@@ -230,7 +230,7 @@ test("Worker verification converges on exact bytes without another deploy", asyn
   const identity = { baseUrl: "https://hub.example.test/", checkpoint: { generation: "exact" } };
   const result = await verifyWorkerConvergence(async (request) => {
     verificationAttempts += 1;
-    assert.equal(request.requestTimeoutMs, 10_000);
+    assert.equal(request.indexDeadline, 10_000);
     assert.equal(deploys, 0);
     assert.equal(identity.checkpoint.generation, "exact");
     if (verificationAttempts < 3) {
@@ -291,6 +291,52 @@ test("Worker verification never retries transport or policy failures", async () 
     throw failure;
   }, { pause: async () => {}, log: () => {} }), (error) => error === failure);
   assert.equal(attempts, 1);
+});
+
+test("index convergence retains one deadline without shortening later request budgets", async (t) => {
+  const output = await mkdtemp(path.join(os.tmpdir(), "ah-worker-budget-"));
+  t.after(() => rm(output, { recursive: true, force: true }));
+  await buildWorkerAssets({ output, includeMobile: false });
+  const index = await readFile(path.join(output, "index.html"));
+  let clock = 10_000;
+  const budgets = [];
+  const events = [];
+  const timeout = AbortSignal.timeout.bind(AbortSignal);
+  t.mock.method(Date, "now", () => clock);
+  t.mock.method(AbortSignal, "timeout", (ms) => { budgets.push(ms); return timeout(ms); });
+  const reachedLargeStatic = new Error("large-static budget observed");
+  await assert.rejects(verifyWorkerRelease({
+    exclusive: (operation) => operation(), before: async () => {},
+    verificationCheckpoint: null,
+    readConfig: async () => ({ routes: ["agent-hub.test/*"] }),
+    now: () => clock, pause: async () => {}, log: () => {},
+    verify: (options) => verifyThemeDeployment({
+      ...options, deployedRoot: output, changedFiles: [],
+      fetchImpl: async () => {
+        events.push("index");
+        if (events.length === 1) { clock += 55_000; return new Response("stale index"); }
+        return new Response(index);
+      },
+      http1Fetch: async () => { events.push("large-static"); throw reachedLargeStatic; },
+    }),
+  }), (error) => error === reachedLargeStatic);
+  assert.deepEqual(events, ["index", "index", "large-static"]);
+  assert.deepEqual(budgets, [60_000, 5_000, 300_000]);
+
+  // A late matching index cannot start any following verification stage.
+  events.length = 0;
+  await assert.rejects(verifyWorkerRelease({
+    exclusive: (operation) => operation(), before: async () => {},
+    verificationCheckpoint: null,
+    readConfig: async () => ({ routes: ["agent-hub.test/*"] }),
+    now: () => clock, pause: async () => {}, log: () => {},
+    verify: (options) => verifyThemeDeployment({
+      ...options, deployedRoot: output, changedFiles: [],
+      fetchImpl: async () => { events.push("index"); clock += 60_001; return new Response(index); },
+      http1Fetch: async () => { events.push("large-static"); throw reachedLargeStatic; },
+    }),
+  }), (error) => error.code === "WORKER_DEPLOYMENT_MISMATCH");
+  assert.deepEqual(events, ["index"]);
 });
 
 test("Worker publication holds one transaction through build, deploy and live verification", async () => {

@@ -202,10 +202,10 @@ test("snapshot transport maps persisted stream UI settings into selection", asyn
     streamCardFixedWidth: 240,
     streamCardGapEnabled: true,
     quickMessageActionMode: "send",
-    pinnedWorkspaceStreams: { "workspace-1": ["stream-architect"] },
+    pinnedWorkspaceStreams: { "workspace-1": ["stream-release-manager"] },
     quickMessages: {
       global: [{ label: "Пинг", text: "пинг" }],
-      streams: { "stream-architect": [{ label: "Релиз", text: "релизь" }] },
+      streams: { "stream-release-manager": [{ label: "Релиз", text: "релизь" }] },
       workspaces: {},
     },
   }, {
@@ -223,10 +223,10 @@ test("snapshot transport maps persisted stream UI settings into selection", asyn
     streamCardFixedWidth: 240,
     streamCardGapEnabled: true,
     quickMessageActionMode: "send",
-    pinnedWorkspaceStreams: { "workspace-1": ["stream-architect"] },
+    pinnedWorkspaceStreams: { "workspace-1": ["stream-release-manager"] },
     quickMessages: {
       global: [{ label: "Пинг", text: "пинг" }],
-      streams: { "stream-architect": [{ label: "Релиз", text: "релизь" }] },
+      streams: { "stream-release-manager": [{ label: "Релиз", text: "релизь" }] },
       workspaces: {},
     },
   });

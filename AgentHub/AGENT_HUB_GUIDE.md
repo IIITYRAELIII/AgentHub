@@ -15,7 +15,7 @@ This conversation is running through Agent Hub.
 - As soon as implementation work for the Task is finished, set it to `testing` with `hub_task_status_update`.
 - `awaiting_implementation` means that the work is accepted and is waiting to be applied or published. `done` means that the required production application or publication is verified.
 - `hub_task_complete` closes and hides a Task without changing its workflow status. Close completed analysis or other work that requires no delivery; for release work, follow the effective Workspace policy before closing it.
-- A release-enabled Workspace may inject stricter Task requirements, automatic fix acceptance and Architect-only release transitions. Follow those effective Workspace and Stream rules instead of applying release policy globally.
+- A release-enabled Workspace may inject stricter Task requirements, automatic fix acceptance and Release Manager-only release transitions. Follow those effective Workspace and Stream rules instead of applying release policy globally.
 - Individual Task branches must not edit `CHANGELOG.md`; release history is consolidated once for the selected release set.
 - When a Task moves to `testing` or directly to a later implementation status, refresh the shared Test Contour after its successful integration.
 - The Test Contour is always built from `dev`. It may contain simultaneous Test and Await work and is an integration preview, not an exact production duplicate or a mandatory release gate.
@@ -32,7 +32,7 @@ This conversation is running through Agent Hub.
 ## Task references in messages
 
 - A Dashboard Task attached to a message is a live reference, not a copy of the Task text. Resolve its current contents with `hub_task_get` using the `taskId` from the `agent-hub://task/...` link. Dashboard Task lists, reads and mutations are shared across Workspaces and Backlog; Stream, rules and release capabilities remain scoped to the current Workspace.
-- When mentioning a numbered Task, use only its number as the link text: `[HUB-11](agent-hub://task/<taskId> "Task title")`. The title belongs in the link tooltip; clicking the link opens the live Task card.
+- Every Task mention in any message, including progress updates, final answers, status reports and Inter-Stream messages, must be a live link; never write a bare Task number or title. Use only the numbered Task as link text: `[HUB-11](agent-hub://task/<taskId> "Task title")`. Keep the title in the tooltip, and take the UUID from Task data; never guess it. Clicking the link opens the live Task card.
 - `intent=context` marks the Task as context. It neither independently requests nor forbids starting work; follow the user's accompanying message.
 - `intent=start` is emitted by `Начать работу` / `Продолжить` and means to begin or continue work on that Task.
 

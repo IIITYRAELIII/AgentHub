@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -378,6 +379,41 @@ def vscode_extension_package(source_package: dict, profile: str = "production") 
     return package
 
 
+def extension_source_fingerprint(source: Path) -> str:
+    digest = hashlib.sha256()
+    for file in sorted(source.rglob("*"), key=lambda item: item.relative_to(source).as_posix()):
+        relative = file.relative_to(source)
+        if (
+            not file.is_file()
+            or file.name.endswith(".vsix")
+            or "node_modules" in relative.parts
+            or "__pycache__" in relative.parts
+            or file.name == ".agent-hub-source.sha256"
+        ):
+            continue
+        digest.update(relative.as_posix().encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(file.read_bytes())
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def numeric_extension_version(value: str) -> tuple[int, int, int]:
+    parts = value.split(".")
+    if len(parts) != 3 or any(not part.isdigit() for part in parts):
+        raise RuntimeError(f"VS Code extension version must be numeric SemVer: {value}")
+    return tuple(int(part) for part in parts)
+
+
+def extension_install_version(requested: str, installed: list[str]) -> str:
+    requested_tuple = numeric_extension_version(requested)
+    installed_tuples = [numeric_extension_version(value) for value in installed]
+    if not installed_tuples or requested_tuple > max(installed_tuples):
+        return requested
+    major, minor, patch = max(installed_tuples)
+    return f"{major}.{minor}.{patch + 1}"
+
+
 def install_vscode_extension(profile: str = "production") -> Path | None:
     source = ROOT / "VSCodeExtension"
     if not source.is_dir():
@@ -385,13 +421,46 @@ def install_vscode_extension(profile: str = "production") -> Path | None:
         return None
     source_package = json.loads((source / "package.json").read_text(encoding="utf-8"))
     package = vscode_extension_package(source_package, profile)
-    extension_id = f"{package['publisher']}.{package['name']}-{package['version']}"
     extensions_root = (Path.home() / ".vscode" / "extensions").resolve()
+    requested_id = f"{package['publisher']}.{package['name']}-{package['version']}"
+    requested_target = (extensions_root / requested_id).resolve()
+    fingerprint = extension_source_fingerprint(source)
+    prefix = f"{package['publisher']}.{package['name']}-"
+    installed_versions = []
+    matching_target = None
+    matching_version = None
+    if extensions_root.is_dir():
+        for candidate in extensions_root.iterdir():
+            if not candidate.is_dir() or not candidate.name.startswith(prefix):
+                continue
+            try:
+                installed_package = json.loads((candidate / "package.json").read_text(encoding="utf-8"))
+                installed_versions.append(str(installed_package["version"]))
+                installed_fingerprint = (candidate / ".agent-hub-source.sha256").read_text(encoding="ascii").strip()
+                if installed_fingerprint == fingerprint:
+                    matching_target = candidate.resolve()
+                    matching_version = str(installed_package["version"])
+            except (OSError, KeyError, json.JSONDecodeError):
+                continue
+    newest_installed = max(
+        (numeric_extension_version(value) for value in installed_versions),
+        default=None,
+    )
+    if (
+        matching_target is not None
+        and numeric_extension_version(str(matching_version)) == newest_installed
+    ):
+        print(f"VS Code extension is current: {matching_target}")
+        return matching_target
+    package["version"] = extension_install_version(str(package["version"]), installed_versions)
+    extension_id = f"{package['publisher']}.{package['name']}-{package['version']}"
     target = (extensions_root / extension_id).resolve()
     if target.parent != extensions_root or not target.name.startswith(f"{package['publisher']}.{package['name']}-"):
         raise RuntimeError(f"Refusing to replace unexpected extension path: {target}")
     extensions_root.mkdir(parents=True, exist_ok=True)
-    recover_interrupted_extension_swap(target, package)
+    recover_interrupted_extension_swap(requested_target, vscode_extension_package(source_package, profile))
+    if target != requested_target:
+        recover_interrupted_extension_swap(target, package)
     staging = extensions_root / f".{target.name}.staging-{uuid4().hex}"
     rollback = extensions_root / f".{target.name}.rollback-{uuid4().hex}"
     # VS Code owns retirement of its previous Agent Hub versions.  A publisher
@@ -409,6 +478,7 @@ def install_vscode_extension(profile: str = "production") -> Path | None:
             json.dumps(package, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
         )
+        (staging / ".agent-hub-source.sha256").write_text(f"{fingerprint}\n", encoding="ascii")
         profile_file = staging / "extension-profile.json"
         if profile == "test-contour":
             profile_file.write_text(

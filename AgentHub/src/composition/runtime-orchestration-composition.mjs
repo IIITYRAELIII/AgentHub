@@ -142,6 +142,7 @@ export function createRuntimeOrchestrationComposition({
   const {
     restartRequestService,
     miniAppLifecycle,
+    desktopAttachments,
     desktopControlServer,
     runtimeCommandServer,
     hubMcpServer,
@@ -373,6 +374,7 @@ export function createRuntimeOrchestrationComposition({
       failedUpdateStore,
       stopCodexAppServerTree,
       miniAppLifecycle,
+      desktopAttachments,
       desktopControlServer,
       runtimeCommandServer,
       hubMcpServer,

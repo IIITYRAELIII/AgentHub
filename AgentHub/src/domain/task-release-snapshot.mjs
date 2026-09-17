@@ -60,12 +60,14 @@ export function mergeTaskChangedFiles(current = [], incoming = []) {
   return normalizedTaskChangedFiles([...values.values()]);
 }
 
-export function taskReleasePlanRevision(workspaceId, tasks = []) {
+// Legacy in-flight publication receipts may still bind the pre-ADR-0061 row revision.
+// Keep this exact hash shape until no supported receipt uses that identity.
+export function taskReleasePlanRevision(workspaceId, tasks = [], { legacy = false } = {}) {
   const payload = JSON.stringify({
     workspaceId: String(workspaceId ?? "").trim(),
     tasks: tasks.map((task) => ({
       id: task.id,
-      taskRevision: task.revision,
+      taskRevision: legacy ? task.revision : (task.releaseRevision ?? task.revision),
       gitReferences: normalizedTaskGitReferences(task.gitReferences),
     })).sort((left, right) => left.id.localeCompare(right.id)),
   });
@@ -97,7 +99,7 @@ export function taskReleasePlan(workspaceId, tasks = []) {
     id: `${task.id}:${reference.projectRoot}`,
     taskId: task.id,
     taskNumber: task.taskNumber ?? null,
-    taskRevision: task.revision,
+    taskRevision: task.releaseRevision ?? task.revision,
     streamId: task.streamId,
     projectRoot: reference.projectRoot,
     branch: reference.branch,
@@ -108,7 +110,8 @@ export function taskReleasePlan(workspaceId, tasks = []) {
   })));
   return {
     workspaceId: String(workspaceId),
-    revision: taskReleasePlanRevision(workspaceId, [...awaiting, ...doneAudit]),
+    revision: taskReleasePlanRevision(workspaceId, awaiting),
+    legacyRevision: taskReleasePlanRevision(workspaceId, [...awaiting, ...doneAudit], { legacy: true }),
     candidates,
     ready,
     doneAudit,

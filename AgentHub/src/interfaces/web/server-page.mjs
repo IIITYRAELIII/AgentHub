@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { publicAccountDisplay } from "../../domain/provider-account-display.mjs";
 import { access, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
@@ -156,9 +157,8 @@ export function serverPageSnapshot({
       version: String(version ?? "").trim() || null,
       activeCount: Math.max(0, Number(activeCount) || 0),
     },
-    // Only the sign-in state. The snapshot also reaches remote clients, so the
-    // sign-in link stays in the local start response and credentials never
-    // enter it.
+    // Sign-in state and allowlisted account display. Sign-in links remain in
+    // local start responses; credentials never enter this shared snapshot.
     accounts: (Array.isArray(accounts) ? accounts : []).map((account) => ({
       provider: String(account?.provider ?? ""),
       status: String(account?.status ?? "idle"),
@@ -166,6 +166,7 @@ export function serverPageSnapshot({
       startedAt: account?.startedAt ?? null,
       finishedAt: account?.finishedAt ?? null,
       error: account?.error || null,
+      currentAccount: publicAccountDisplay(account?.currentAccount),
     })),
     autostart: {
       supported: autostart.supported === true,

@@ -13,6 +13,7 @@ import {
   normalizedTaskTitle,
   normalizedTaskWorkflowStatus,
   TASK_WORKFLOW_STATUSES,
+  TaskLifecycleBeginRejectedError,
   taskPresentation,
 } from "../../domain/task-board-task.mjs";
 import {
@@ -59,6 +60,10 @@ function gitBaselineJson(value) {
     && String(repository?.tree ?? "").trim()
   ));
   return valid ? JSON.stringify(value) : "{}";
+}
+
+function blockedByJson(value) {
+  return value?.taskId ? JSON.stringify(value) : null;
 }
 
 function configure(database) {
@@ -348,6 +353,9 @@ function configure(database) {
     throw error;
   }
   const taskColumns = database.prepare("PRAGMA table_info(hub_board_tasks)").all();
+  if (!taskColumns.some((column) => column.name === "blocked_by_json")) {
+    database.exec("ALTER TABLE hub_board_tasks ADD COLUMN blocked_by_json TEXT");
+  }
   if (!taskColumns.some((column) => column.name === "board_order")) {
     database.exec("ALTER TABLE hub_board_tasks ADD COLUMN board_order INTEGER NOT NULL DEFAULT 0");
   }
@@ -404,6 +412,15 @@ function configure(database) {
   }
   if (!taskColumns.some((column) => column.name === "row_revision")) {
     database.exec("ALTER TABLE hub_board_tasks ADD COLUMN row_revision INTEGER NOT NULL DEFAULT 1");
+  }
+  if (!taskColumns.some((column) => column.name === "release_revision")) {
+    // Preserve the exact pre-upgrade identity; never reseed it on later opens.
+    database.exec(`
+      SAVEPOINT task_release_revision_migration;
+      ALTER TABLE hub_board_tasks ADD COLUMN release_revision INTEGER NOT NULL DEFAULT 1;
+      UPDATE hub_board_tasks SET release_revision = row_revision;
+      RELEASE task_release_revision_migration;
+    `);
   }
   let bindingColumns = database.prepare("PRAGMA table_info(hub_task_turn_bindings)").all();
   if (!bindingColumns.some((column) => column.name === "requested_workflow_status")) {
@@ -529,6 +546,16 @@ function configure(database) {
       END;
   `);
   configureTaskChecklist(database);
+  database.exec(`
+    CREATE TRIGGER IF NOT EXISTS hub_board_tasks_release_revision_update
+      AFTER UPDATE ON hub_board_tasks
+      WHEN NEW.workflow_status IS NOT OLD.workflow_status
+        OR NEW.workspace_id IS NOT OLD.workspace_id OR NEW.bucket IS NOT OLD.bucket
+        OR (NEW.status = 'done') IS NOT (OLD.status = 'done')
+      BEGIN
+        UPDATE hub_board_tasks SET release_revision = OLD.release_revision + 1 WHERE id = OLD.id;
+      END;
+  `);
 }
 
 function taskLocationRows(database, bucket, workspaceId = null) {
@@ -714,6 +741,7 @@ function taskFromRow(row) {
     bucket: row.bucket,
     status: row.status,
     workflowStatus,
+    ...(workflowStatus === "blocked" && row.blocked_by_json ? { blockedBy: parseJson(row.blocked_by_json) } : {}),
     workspaceId: row.workspace_id ?? null,
     streamId: row.stream_id ?? null,
     source: row.source,
@@ -729,6 +757,7 @@ function taskFromRow(row) {
     startedAt: row.started_at_ms == null ? null : new Date(Number(row.started_at_ms)).toISOString(),
     completedAt: row.completed_at_ms == null ? null : new Date(Number(row.completed_at_ms)).toISOString(),
     revision: Number(row.row_revision) || 1,
+    releaseRevision: Number(row.release_revision) || 1,
     startRequestId: row.start_request_id ?? null,
     startStreamName: row.start_stream_name ?? null,
     startDestinationStreamId: row.start_destination_stream_id ?? null,
@@ -1149,6 +1178,39 @@ export class TaskBoardStore {
         createdAt: new Date(Number(row.created_at_ms)).toISOString(),
       };
     });
+    // The journal owns terminal turns; exact Task bindings own membership.
+    // Read scalar fields only: prompts, bodies and diffs do not belong in board snapshots.
+    if (this.#tableExists(database, "journal_records")) {
+      const rows = database.prepare(`
+        SELECT DISTINCT j.provider, j.thread_id AS threadId, j.turn_id AS turnId,
+          j.task_thread_id AS taskThreadId, j.project_root AS projectRoot,
+          j.completed_at_ms AS completedAtMs,
+          substr(json_extract(j.record_json, '$.title'), 1, 2000) AS summary,
+          json_extract(j.record_json, '$.status') AS status
+        FROM hub_task_turn_bindings b
+        JOIN journal_records j ON j.provider = b.provider
+          AND j.thread_id = b.provider_thread_id AND j.turn_id = b.turn_id
+        WHERE b.task_id = ? AND json_valid(j.record_json)
+          AND j.completed_at_ms IS NOT NULL
+          AND coalesce(json_extract(j.record_json, '$.provisional'), 0) = 0
+          AND coalesce(json_extract(j.record_json, '$.contextProbe'), 0) = 0
+          AND coalesce(json_extract(j.record_json, '$.aggregateOnly'), 0) = 0
+          AND json_extract(j.record_json, '$.status') IN ('completed', 'failed', 'cancelled', 'interrupted')
+      `).all(taskId);
+      const key = (row) => JSON.stringify([row.provider, row.threadId, row.turnId]);
+      const current = new Map(rows.map((row) => [key(row), {
+        provider: row.provider, threadId: row.threadId, turnId: row.turnId,
+        taskThreadId: row.taskThreadId || row.threadId, projectRoot: row.projectRoot,
+        summary: row.summary || "", status: row.status, changedFiles: [],
+        createdAt: new Date(Number(row.completedAtMs)).toISOString(),
+      }]));
+      // Keep pre-journal entries when their exact source record is no longer retained.
+      for (let index = workLog.length - 1; index >= 0; index -= 1) {
+        if (current.has(key(workLog[index]))) workLog.splice(index, 1);
+      }
+      workLog.push(...current.values());
+      workLog.sort((a, b) => a.createdAt.localeCompare(b.createdAt) || key(a).localeCompare(key(b)));
+    }
     const gitReferences = database.prepare(`
       SELECT project_root AS projectRoot, branch, result_commit AS resultCommit
       FROM hub_task_git_references WHERE task_id = ? ORDER BY project_root
@@ -1196,7 +1258,18 @@ export class TaskBoardStore {
   }
 
   get revision() {
-    return this.#revision;
+    const journalRevision = this.#database && this.#tableExists(this.#database, "journal_store_meta")
+      ? Number(this.#database.prepare("SELECT value FROM journal_store_meta WHERE key = 'revision'").get()?.value) || 0
+      : 0;
+    return this.#revision + journalRevision;
+  }
+
+  get snapshotRevision() {
+    if (!this.#database) return null;
+    const externalRevision = Number(
+      this.#database.prepare("PRAGMA data_version").get()?.data_version,
+    ) || 0;
+    return `${this.revision}:${externalRevision}`;
   }
 
   get snapshotRevision() {
@@ -2135,7 +2208,7 @@ export class TaskBoardStore {
       const changed = database.prepare(`
         UPDATE hub_board_tasks
         SET bucket = 'workspace', status = 'started', workspace_id = ?, stream_id = ?,
-          workflow_status = 'in_progress', placement_source = 'manual',
+          workflow_status = CASE WHEN workflow_status IN ('testing', 'awaiting_implementation', 'blocked') THEN workflow_status ELSE 'in_progress' END, placement_source = 'manual',
           started_at_ms = COALESCE(started_at_ms, ?),
           completed_at_ms = NULL, start_effect_state = 'completed', start_effect_owner_id = NULL,
           updated_at_ms = ?
@@ -2223,6 +2296,7 @@ export class TaskBoardStore {
       database.exec("BEGIN IMMEDIATE");
       try {
       const current = this.#taskRow(database, taskId);
+      if (current.status === "done") throw new Error("Closed Tasks are an archive; claim an open Task");
       if (String(current.workspace_id ?? "") !== String(workspaceId ?? "")) {
         throw new Error("Task is outside the current Workspace");
       }
@@ -2264,7 +2338,7 @@ export class TaskBoardStore {
       `).run(taskId, ...identity, kind, baselineJson, timestamp);
       assertTaskChecklistWorkspaceTransitionAllowed(database, taskId, String(workspaceId));
       database.prepare(`
-        UPDATE hub_board_tasks SET bucket = 'workspace', status = 'started', workflow_status = 'in_progress',
+        UPDATE hub_board_tasks SET bucket = 'workspace', status = 'started', workflow_status = CASE WHEN workflow_status IN ('testing', 'awaiting_implementation', 'blocked') THEN workflow_status ELSE 'in_progress' END,
           workspace_id = ?, stream_id = ?, placement_source = 'manual',
           started_at_ms = COALESCE(started_at_ms, ?), completed_at_ms = NULL, updated_at_ms = ?
         WHERE id = ?
@@ -2308,6 +2382,34 @@ export class TaskBoardStore {
         operationKind: row.operation_kind,
         requestedWorkflowStatus: row.requested_workflow_status ?? null,
       };
+    });
+  }
+
+  claimBindingForOperation(operationId) {
+    const operation = String(operationId ?? "").trim();
+    if (!operation) return null;
+    return this.#withDatabase((database) => {
+      const rows = database.prepare(`
+        SELECT binding.task_id, task.workspace_id, binding.provider,
+          binding.provider_thread_id, binding.turn_id, binding.operation_id,
+          binding.operation_kind, binding.claimed_at_ms
+        FROM hub_task_turn_bindings binding
+        JOIN hub_board_tasks task ON task.id = binding.task_id
+        WHERE binding.operation_id = ?
+        ORDER BY binding.claimed_at_ms, binding.task_id
+      `).all(operation);
+      if (rows.length > 1) throw new Error("Task claim operation binding is ambiguous");
+      const row = rows[0];
+      return row ? {
+        taskId: row.task_id,
+        workspaceId: row.workspace_id,
+        provider: row.provider,
+        threadId: row.provider_thread_id,
+        turnId: row.turn_id,
+        operationId: row.operation_id,
+        operationKind: row.operation_kind,
+        claimedAtMs: row.claimed_at_ms,
+      } : null;
     });
   }
 
@@ -2459,6 +2561,17 @@ export class TaskBoardStore {
           WHERE task_id = ? AND phase IN ('pending_git', 'cleanup')
         `).get(taskId);
         if (active) throw new Error(`Task lifecycle transition is already active: ${active.operation_id}`);
+        if (evidence?.absorbedInto) {
+          const absorbed = evidence.absorbedInto;
+          const targetTask = this.#taskRow(database, absorbed.taskId);
+          const targetActive = database.prepare(
+            "SELECT operation_id FROM hub_task_lifecycle_transitions WHERE task_id = ? AND phase IN ('pending_git', 'cleanup')",
+          ).get(absorbed.taskId);
+          if (targetTask.status === "done" || targetTask.workspace_id !== current.workspace_id
+              || Number(targetTask.row_revision) !== absorbed.taskRevision || targetActive) {
+            throw new Error("Surviving Task changed or has a pending operation");
+          }
+        }
         database.prepare(`
           INSERT INTO hub_task_lifecycle_transitions (
             operation_id, task_id, kind, phase, target_workflow_status,
@@ -2478,7 +2591,7 @@ export class TaskBoardStore {
         return { task: this.#taskWithRelease(database, current), replayed: false, phase: normalizedKind === "workflow" ? "pending_git" : "cleanup" };
       } catch (error) {
         database.exec("ROLLBACK");
-        throw error;
+        throw new TaskLifecycleBeginRejectedError(error.message);
       }
     });
   }
@@ -2573,11 +2686,15 @@ export class TaskBoardStore {
           : current.status;
         const changed = database.prepare(`
           UPDATE hub_board_tasks
-          SET status = ?, workflow_status = ?, completed_at_ms = NULL, updated_at_ms = ?,
+          SET status = ?, workflow_status = ?, completed_at_ms = NULL, updated_at_ms = ?, blocked_by_json = ?,
             row_revision = row_revision + 1
           WHERE id = ? AND row_revision = ?
         `).run(
-          lifecycleStatus, transition.target_workflow_status, this.now(), transition.task_id,
+          lifecycleStatus, transition.target_workflow_status, this.now(),
+          transition.target_workflow_status === "blocked"
+            ? blockedByJson(evidence?.blockedBy ?? (current.workflow_status === "blocked" ? parseJson(current.blocked_by_json) : null))
+            : null,
+          transition.task_id,
           transition.expected_task_revision,
         );
         if (!Number(changed.changes)) throw new Error("Task workflow CAS failed");
@@ -2650,13 +2767,14 @@ export class TaskBoardStore {
           });
         }
         const restored = database.prepare(`
-          UPDATE hub_board_tasks SET status = ?, workflow_status = ?, completed_at_ms = ?,
+          UPDATE hub_board_tasks SET status = ?, workflow_status = ?, completed_at_ms = ?, blocked_by_json = ?,
             updated_at_ms = ?, row_revision = row_revision + 1
           WHERE id = ? AND row_revision = ? AND workflow_status = ?
         `).run(
           prior.status,
           prior.workflowStatus,
           prior.completedAt ? Date.parse(prior.completedAt) : null,
+          prior.blockedBy ? JSON.stringify(prior.blockedBy) : null,
           this.now(), outcome.task_id, committed.revision, committed.workflowStatus,
         );
         if (!Number(restored.changes)) throw new Error("Task workflow rollback CAS failed");
@@ -3056,11 +3174,17 @@ export class TaskBoardStore {
       const awaiting = tasks.filter((task) => task.status !== "done"
         && task.workflowStatus === "awaiting_implementation");
       const doneAudit = tasks.filter((task) => task.status !== "done" && task.workflowStatus === "done");
-      const currentRevision = taskReleasePlanRevision(workspaceId, [...awaiting, ...doneAudit]);
+      const releaseRevision = taskReleasePlanRevision(workspaceId, awaiting);
+      const legacyRevision = taskReleasePlanRevision(workspaceId, [...awaiting, ...doneAudit], { legacy: true });
+      const legacy = expected !== releaseRevision && expected === legacyRevision;
+      const currentRevision = legacy ? legacyRevision : releaseRevision;
       if (!expected || currentRevision !== expected || plan?.revision !== expected) {
         throw new Error("release plan revision conflict; verify the current release plan again");
       }
       if (!plan.candidates.length) throw new Error("release has no awaiting Task candidates");
+      if (taskReleasePlanRevision(workspaceId, plan.candidates) !== releaseRevision) {
+        throw new Error("release Task results or membership changed before closure");
+      }
       if (!verificationEvidence || typeof verificationEvidence !== "object") {
         throw new Error("release completion requires durable publication evidence");
       }
@@ -3094,12 +3218,14 @@ export class TaskBoardStore {
         });
       }
       const timestamp = this.now();
+      const released = [];
       for (const task of plan.candidates) {
         const current = database.prepare(`
-          SELECT row_revision, workflow_status FROM hub_board_tasks WHERE id = ?
+          SELECT row_revision, release_revision, workflow_status FROM hub_board_tasks WHERE id = ?
         `).get(task.id);
         if (!current
-          || Number(current.row_revision) !== task.revision
+           || (legacy && Number(current.row_revision) !== task.revision)
+           || Number(current.release_revision) !== (task.releaseRevision ?? task.revision)
           || current.workflow_status !== "awaiting_implementation") {
           throw new Error(`release Task revision changed: ${task.id}`);
         }
@@ -3107,16 +3233,14 @@ export class TaskBoardStore {
           UPDATE hub_board_tasks SET workflow_status = 'done', status = 'done',
             completed_at_ms = ?, updated_at_ms = ?
           WHERE id = ? AND row_revision = ? AND workflow_status = 'awaiting_implementation'
-        `).run(timestamp, timestamp, task.id, task.revision);
+        `).run(timestamp, timestamp, task.id, Number(current.row_revision));
         if (!Number(result.changes)) throw new Error(`release Task disappeared: ${task.id}`);
+        released.push({ id: task.id, revision: Number(current.row_revision),
+          releaseRevision: Number(current.release_revision), gitReferences: task.gitReferences });
       }
       const result = {
         workspaceId: String(workspaceId),
-        released: plan.candidates.map((task) => ({
-          id: task.id,
-          revision: task.revision,
-          gitReferences: task.gitReferences,
-        })),
+        released,
         verificationEvidence,
       };
       database.prepare(`

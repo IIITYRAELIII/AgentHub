@@ -326,6 +326,52 @@ class SecureInstallationTests(unittest.TestCase):
             self.assertTrue(newer_agent_hub.exists())
             self.assertTrue(unrelated.exists())
 
+    def test_changed_extension_content_gets_a_new_install_version_automatically(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "agent-hub"
+            source = root / "VSCodeExtension"
+            source.mkdir(parents=True)
+            package = {"publisher": "test", "name": "agent-hub", "version": "1.0.0"}
+            (source / "package.json").write_text(json.dumps(package), encoding="utf-8")
+            (source / "extension.js").write_text("new content", encoding="utf-8")
+            home = Path(temp) / "home"
+            installed = home / ".vscode" / "extensions" / "test.agent-hub-1.0.0"
+            installed.mkdir(parents=True)
+            (installed / "package.json").write_text(json.dumps(package), encoding="utf-8")
+            (installed / "extension.js").write_text("old content", encoding="utf-8")
+
+            with (
+                mock.patch.object(install, "ROOT", root),
+                mock.patch("AgentHub.install.Path.home", return_value=home),
+            ):
+                target = install.install_vscode_extension()
+
+            self.assertEqual("test.agent-hub-1.0.1", target.name)
+            self.assertEqual("1.0.1", json.loads((target / "package.json").read_text(encoding="utf-8"))["version"])
+            self.assertEqual(
+                install.extension_source_fingerprint(source),
+                (target / ".agent-hub-source.sha256").read_text(encoding="ascii").strip(),
+            )
+
+    def test_current_extension_content_is_not_reinstalled(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "agent-hub"
+            source = root / "VSCodeExtension"
+            source.mkdir(parents=True)
+            package = {"publisher": "test", "name": "agent-hub", "version": "1.0.0"}
+            (source / "package.json").write_text(json.dumps(package), encoding="utf-8")
+            home = Path(temp) / "home"
+
+            with (
+                mock.patch.object(install, "ROOT", root),
+                mock.patch("AgentHub.install.Path.home", return_value=home),
+            ):
+                first = install.install_vscode_extension()
+                second = install.install_vscode_extension()
+
+            self.assertEqual(first, second)
+            self.assertFalse((first.parent / "test.agent-hub-1.0.1").exists())
+
     def test_test_contour_extension_uses_an_independent_profile(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp) / "agent-hub"

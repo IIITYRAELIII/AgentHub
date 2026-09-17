@@ -179,6 +179,26 @@ async function processIdentityState(owner, {
   return "alive";
 }
 
+export async function readInterprocessLockStatus(target, options = {}) {
+  const lockPath = `${target}.lock`;
+  const owner = await readOwner(lockPath);
+  if (!owner) return { target, lockPath, status: "available", owner: null };
+  if (owner.unresolved) return { target, lockPath, status: "unknown", owner: null };
+  const identityState = await processIdentityState(owner, options);
+  return {
+    target,
+    lockPath,
+    status: ["dead", "mismatch", "released"].includes(identityState) ? "recoverable" : "held",
+    owner: {
+      pid: owner.pid,
+      processInstanceId: owner.processInstanceId,
+      createdAt: owner.createdAt,
+      identityState,
+      ownerIdHash: createHash("sha256").update(`${lockPath}:${owner.token}`).digest("hex"),
+    },
+  };
+}
+
 async function createOwnership(lockPath, token, staleMs, processInstanceId) {
   const fileName = ownerFileName(token);
   const ownerPath = path.join(lockPath, fileName);

@@ -269,10 +269,10 @@ test("RunJournalService preserves focused-turn interstream identity", async () =
     kind: "interstream",
     workspaceId: "workspace-1",
     workspaceName: "Agent HUB",
-    streamId: "stream-architect",
-    streamName: "Architect",
+    streamId: "stream-release-manager",
+    streamName: "Release Manager",
     provider: "codex",
-    sourceThreadId: "thread-architect",
+    sourceThreadId: "thread-release-manager",
     requestId: "journal-origin-1",
   };
   const rawPrompt = createInterstreamMessage({ ...messageOrigin, text: "Начни работу" });
@@ -299,8 +299,8 @@ test("RunJournalService preserves an envelope-shaped literal after trusted norma
     JSON.stringify({
       workspaceId: "workspace-1",
       workspaceName: "Agent HUB",
-      streamId: "stream-architect",
-      streamName: "Architect",
+      streamId: "stream-release-manager",
+      streamName: "Release Manager",
     }),
     "</agent-hub-stream-message>",
     "Keep this literal.",

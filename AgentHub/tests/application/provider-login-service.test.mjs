@@ -62,6 +62,62 @@ function createService(overrides = {}) {
 
 const settle = () => new Promise((resolve) => setImmediate(resolve));
 
+test("account display reads are nonblocking, coalesced and refreshed independently of login attempts", async () => {
+  let now = 0;
+  const first = deferred();
+  const calls = [];
+  let fail = false;
+  const { service } = createService({ clock: () => now, readAccount: async (provider) => {
+    calls.push(provider);
+    if (provider === "codex" && calls.filter((p) => p === "codex").length === 1) return first.promise;
+    if (fail) throw new Error("private-error-must-not-reach-snapshot");
+    return provider === "codex" ? { account: null, requiresOpenaiAuth: true }
+      : { loggedIn: true, email: "claude@example.test", authMethod: "claude.ai", accessToken: "secret-token" };
+  } });
+  assert.equal(service.snapshot()[0].currentAccount.state, "checking");
+  service.snapshot();
+  await settle();
+  assert.deepEqual(calls, ["codex", "claude"]);
+  assert.equal(service.entry("claude").currentAccount.email, "claude@example.test");
+  first.resolve({ account: { type: "chatgpt", email: "codex@example.test", token: "secret-token" } });
+  await settle();
+  assert.equal(service.entry("codex").status, "idle");
+  assert.equal(service.entry("codex").currentAccount.email, "codex@example.test");
+  now = 30_001;
+  assert.equal(service.entry("codex").currentAccount.state, "checking");
+  await settle();
+  assert.equal(service.entry("codex").currentAccount.state, "signed-out");
+  fail = true;
+  now += 30_001;
+  service.snapshot();
+  await settle();
+  assert.equal(service.entry("codex").currentAccount.state, "unknown");
+  assert.equal(service.entry("claude").currentAccount.state, "unknown");
+  assert.doesNotMatch(JSON.stringify(service.snapshot()), /secret-token|private-error/u);
+  service.dispose();
+});
+
+test("account change rejects a stale in-flight read and shutdown starts no follow-up probe", async () => {
+  const old = deferred();
+  let count = 0;
+  const { service } = createService({ readAccount: async () => {
+    count += 1;
+    return count === 1 ? old.promise : { account: { type: "chatgpt", email: "new@example.test" } };
+  } });
+  service.entry("codex");
+  await settle();
+  service.observeCodexMessage({ method: "account/updated" });
+  old.resolve({ account: { type: "chatgpt", email: "old@example.test" } });
+  await settle();
+  assert.equal(service.entry("codex").currentAccount.email, "new@example.test");
+  assert.equal(count, 2);
+  service.dispose();
+  service.observeCodexMessage({ method: "account/updated" });
+  service.snapshot();
+  await settle();
+  assert.equal(count, 2);
+});
+
 test("Codex sign-in uses the App Server managed login and settles on its exact completion", async () => {
   const { service, calls } = createService();
   const entry = await service.start("codex");

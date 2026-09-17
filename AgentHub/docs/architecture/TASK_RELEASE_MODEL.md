@@ -20,10 +20,10 @@ never silently omitted.
 ## Publication
 
 The release plan revision hashes the current Task IDs, row revisions and Task
-evidence. The Architect integrates that exact plan and verifies the published
+evidence. The Release Manager integrates that exact plan and verifies the published
 repository revisions. Completion CAS-checks the same Task revisions, then marks
 and closes those Tasks. Any intervening Task edit changes the plan revision and
-forces the Architect to read it again.
+forces the Release Manager to read it again.
 
 Legacy release tables and the later Task-freeze tables are migration inputs only.
 Their source rows are physically dropped after Task data has been loaded and an

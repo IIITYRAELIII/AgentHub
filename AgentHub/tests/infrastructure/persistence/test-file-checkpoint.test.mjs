@@ -135,6 +135,7 @@ test("isolated files use bounded parallelism without changing the selected set",
   let maximumActive = 0;
   await runCheckpointedTestFiles(files, {
     concurrency: 2,
+    log: () => {},
     execution: async (file) => file === "exclusive"
       ? { parallel: false, shared: [] }
       : { parallel: true, shared: [] },
@@ -157,6 +158,7 @@ test("shared resource declarations serialize only conflicting files", async () =
   const overlaps = [];
   await runCheckpointedTestFiles(["git-a", "git-b", "browser"], {
     concurrency: 2,
+    log: () => {},
     execution: async (file) => ({
       parallel: true,
       shared: file.startsWith("git") ? ["shared-git"] : ["browser-profile"],
@@ -181,6 +183,7 @@ test("parallel failures retain deterministic file order and successful checkpoin
     identity: "release",
     checkpoint,
     concurrency: 2,
+    log: () => {},
     execution: async () => ({ parallel: true, shared: [] }),
     fingerprint: async (file) => `fingerprint-${file}`,
     run: async (file) => {
@@ -233,6 +236,7 @@ test("checkpoint write failure waits for started siblings and stops new admissio
       write: async () => { throw persistenceFailure; },
     },
     concurrency: 2,
+    log: () => {},
     execution: async () => ({ parallel: true, shared: [] }),
     run: async (file) => {
       started.push(file);

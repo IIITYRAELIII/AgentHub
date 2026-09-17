@@ -183,11 +183,15 @@ export function testContourOperationLockTarget(root = defaultTestContourRoot()) 
 
 export function withTestContourOperationLock(root, operation, {
   lock = withInterprocessLocks,
+  timeoutMs = 10 * 60_000,
+  retryDelayMs = 100,
+  ...lockOptions
 } = {}) {
   if (typeof operation !== "function") throw new TypeError("operation is required");
   return lock([testContourOperationLockTarget(root)], operation, {
-    timeoutMs: 10 * 60_000,
-    retryDelayMs: 100,
+    timeoutMs,
+    retryDelayMs,
+    ...lockOptions,
   });
 }
 

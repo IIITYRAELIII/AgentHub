@@ -26,6 +26,7 @@ import {
 } from "./src/infrastructure/persistence/publication-checkpoint.mjs";
 import { publicationRunStore } from "./src/infrastructure/persistence/publication-run-store.mjs";
 import { completePublication } from "./src/infrastructure/persistence/publication-completion.mjs";
+import { createPublicationArtifactSteps } from "./src/infrastructure/process/publication-artifacts.mjs";
 import {
   assertCleanPublicationTree,
   assertCurrentPublicationRevision,
@@ -314,6 +315,8 @@ export async function publishChanged(args = process.argv.slice(2), {
   publishGit = null,
   finalizePublication = null,
   preparePublication = null,
+  prepareArtifactSteps = async (steps) => steps,
+  verifyArtifacts = async () => {},
 } = {}) {
   return exclusive(async () => {
     const options = parseChangedArguments(args);
@@ -336,6 +339,7 @@ export async function publishChanged(args = process.argv.slice(2), {
       }
       if (preparePublication) await preparePublication(identity, { completionOnly: true });
       if (["succeeded", "published"].includes(pending.status)) {
+        await verifyArtifacts(identity);
         const recorded = await readState();
         if (recorded?.revision !== identity.revision
           || recorded?.generation !== pending.progress.publicationState.generation) {
@@ -353,6 +357,7 @@ export async function publishChanged(args = process.argv.slice(2), {
       if (identity.release && !finalizePublication) throw new Error("Pending Workspace release requires its finalization adapter");
       await journal.start(identity, []);
       try {
+        await verifyArtifacts(identity);
         const completion = await completePublication({
           identity, publicationState: pending.progress.publicationState,
           journal, checkpoint, needsRestart: Boolean(pending.progress.publicationState.plan?.runtimeRestart),
@@ -390,6 +395,7 @@ export async function publishChanged(args = process.argv.slice(2), {
       && savedIdentity.workspaceId === options.workspaceId
       && savedIdentity.testContour === options.testContour
       && (!options.from || options.from === savedIdentity.from)) {
+      await verifyArtifacts(savedIdentity);
       if (saved.progress?.expectedReleaseId) {
         await verifyRestart({ runtimeRoot, expectedReleaseId: saved.progress.expectedReleaseId, readStatus: readRuntimeStatus });
       }
@@ -409,7 +415,7 @@ export async function publishChanged(args = process.argv.slice(2), {
       .digest("hex");
     const workerChangedFiles = files.filter((file) => workerDeploymentFile(file)
       || file === "AgentHub/cloudflare-worker/verify-deployment.mjs");
-    const steps = await withStepFingerprints(focusedSteps(plan, {
+    let steps = await withStepFingerprints(focusedSteps(plan, {
       fullTestCheckpointId,
       testContour: options.testContour,
       workerChangedFiles,
@@ -423,8 +429,10 @@ export async function publishChanged(args = process.argv.slice(2), {
       workspaceId: options.workspaceId,
       labels: steps.map((step) => step.label),
     };
+    steps = await prepareArtifactSteps(steps, identity);
+    identity.labels = steps.map((step) => step.label);
     if (publishGit) {
-      const firstDeployment = steps.findIndex((step) => ["Сборка runtime-релиза", "Развёртывание Mini App Worker", "Активация runtime-релиза", "Установка расширения VS Code"].includes(step.label));
+      const firstDeployment = steps.findIndex((step) => ["Сборка runtime-релиза", "Установка runtime-релиза", "Развёртывание Mini App Worker", "Активация runtime-релиза", "Установка расширения VS Code"].includes(step.label));
       steps.splice(firstDeployment < 0 ? steps.length : firstDeployment, 0, {
         label: "Публикация Git", reusable: false, execute: () => publishGit(identity),
       });
@@ -455,6 +463,7 @@ export async function publishChanged(args = process.argv.slice(2), {
         identity,
         journal,
       });
+      await verifyArtifacts(identity);
       const completion = await completePublication({
         identity, publicationState: {
           revision: head,
@@ -487,12 +496,16 @@ if (invokedFile === fileURLToPath(import.meta.url)) {
     control: callDesktopControl, readState: readPublicationState,
   });
   const adapter = createFrozenReleasePublication({ repositoryRoot: REPOSITORY_ROOT, runtimeRoot: defaultRuntimeRoot(), control });
+  const journal = publicationRunStore();
+  const artifacts = createPublicationArtifactSteps({ sourceRoot: ROOT, runtimeRoot: defaultRuntimeRoot(), journal, run: runStep });
   publishChanged(process.argv.slice(2), {
     preparePublication: adapter.prepare,
     publishGit: adapter.publishGit,
     finalizePublication: adapter.finalizePublication,
     checkpoint: publicationCheckpointStore(),
-    journal: publicationRunStore(),
+    journal,
+    prepareArtifactSteps: artifacts.steps,
+    verifyArtifacts: artifacts.verify,
     before: async () => {
       const marker = await assertReleaseCloneForPublication({ repositoryRoot: REPOSITORY_ROOT });
       const checkpoint = JSON.parse(await readFile(path.join(REPOSITORY_ROOT, "..", "checkpoint.json"), "utf8"));

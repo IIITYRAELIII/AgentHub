@@ -17,6 +17,7 @@ function harness({
   revokeAdmission = null,
   saveState = null,
   commandTrace = null,
+  recordProviderTerminal = null,
 } = {}) {
   const events = [];
   const taskRuns = new TaskRunRegistry();
@@ -49,6 +50,7 @@ function harness({
     beforeCompletion: beforeCompletion ?? (async () => events.push("before")),
     completionAborted: completionAborted ?? (async () => events.push("aborted")),
     afterCompletion: afterCompletion ?? (async () => events.push("after")),
+    ...(recordProviderTerminal ? { recordProviderTerminal } : {}),
   });
   return { service, taskRuns, events };
 }
@@ -356,6 +358,36 @@ test("managed run lifecycle retries completion preparation after a failed hook",
   assert.equal(run.status, "completed");
   assert.equal(attempts, 2);
   assert.deepEqual(events, ["aborted", "before", "approvals", "observer", "claude", "sync-complete", "catalog", "save"]);
+});
+
+test("managed run lifecycle durably records terminal identity before release", async () => {
+  let attempts = 0;
+  const recorded = [];
+  const { service, taskRuns, events } = harness({
+    recordProviderTerminal: async (terminal) => {
+      attempts += 1;
+      if (attempts === 1) throw new Error("terminal ledger unavailable");
+      recorded.push(terminal);
+    },
+  });
+  const run = await service.begin("hello", { provider: "codex", threadId: "thread-terminal" });
+  run.turnId = "turn-terminal";
+  run.providerTerminalStatus = "failed";
+  events.length = 0;
+
+  await assert.rejects(service.complete(run), /terminal ledger unavailable/u);
+  assert.equal(taskRuns.forTask(run), run);
+  assert.equal(run.status, "running");
+  assert.deepEqual(events, ["before", "aborted"]);
+
+  await service.complete(run);
+  assert.deepEqual(recorded, [{
+    provider: "codex",
+    threadId: "thread-terminal",
+    turnId: "turn-terminal",
+    status: "failed",
+  }]);
+  assert.equal(taskRuns.size, 0);
 });
 
 test("managed run lifecycle rolls back post-turn ownership when terminal preparation fails", async () => {

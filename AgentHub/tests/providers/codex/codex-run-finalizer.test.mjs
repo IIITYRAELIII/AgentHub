@@ -148,10 +148,10 @@ test("CodexRunFinalizer preserves canonical message origin independently of prov
     kind: "interstream",
     workspaceId: "workspace-1",
     workspaceName: "Agent HUB",
-    streamId: "stream-architect",
-    streamName: "Architect",
+    streamId: "stream-release-manager",
+    streamName: "Release Manager",
     provider: "codex",
-    sourceThreadId: "thread-architect",
+    sourceThreadId: "thread-release-manager",
     requestId: "finalizer-origin-1",
   };
   value.rawPrompt = "<agent-hub-stream-message>\nraw transport\n</agent-hub-stream-message>\nBody";

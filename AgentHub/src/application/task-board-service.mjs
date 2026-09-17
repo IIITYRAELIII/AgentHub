@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-import { attachmentDescriptor } from "../domain/attachment-files.mjs";
+import { taskAttachmentDescriptors } from "../domain/attachment-files.mjs";
 import { normalizedTaskBucket, normalizedTaskText, taskDisplayText } from "../domain/task-board-task.mjs";
 import { EXPERIMENTS_SYSTEM_KEY } from "../domain/workspace-stream-identity.mjs";
 import { workspaceTaskPrefix } from "../domain/task-number.mjs";
@@ -96,9 +96,7 @@ export class TaskBoardService {
   snapshot() {
     return this.store.list().map((task) => {
       const sourceDetails = { ...(task.sourceDetails ?? {}) };
-      const attachments = (Array.isArray(sourceDetails.attachments) ? sourceDetails.attachments : [])
-        .map(attachmentDescriptor)
-        .filter(Boolean);
+      const attachments = taskAttachmentDescriptors(task);
       delete sourceDetails.attachments;
       return {
         ...task,
@@ -336,6 +334,11 @@ export class TaskBoardService {
 
   claimedTaskForTurn(identity = {}) {
     return this.store.claimedTaskForTurn(identity);
+  }
+
+  claimBindingForOperation(operationId) {
+    requiredMethod(this.store, "claimBindingForOperation");
+    return this.store.claimBindingForOperation(operationId);
   }
 
   requestWorkflowStatus({ id, ...payload } = {}) {

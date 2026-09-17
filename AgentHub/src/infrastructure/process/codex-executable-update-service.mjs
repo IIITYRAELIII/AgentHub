@@ -154,7 +154,9 @@ export class CodexExecutableUpdateService {
     const temporary = path.join(directory, `.${path.basename(this.stateFile)}.${randomUUID()}.tmp`);
     await this.mkdirImpl(directory, { recursive: true });
     try {
-      await this.writeFileImpl(temporary, serialized, "utf8");
+      // Persist the bytes before publishing their name; rename alone does not
+      // flush cached data when Windows loses power.
+      await this.writeFileImpl(temporary, serialized, { encoding: "utf8", flag: "wx", flush: true });
       await this.renameImpl(temporary, this.stateFile);
     } finally {
       await this.unlinkImpl(temporary).catch(() => null);

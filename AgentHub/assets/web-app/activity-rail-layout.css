@@ -258,3 +258,18 @@ html[data-activity-column-resizing] * {
   cursor: col-resize !important;
   user-select: none !important;
 }
+
+/* Настройка видимости идёт последней: вычисляемая раскладка активности может
+   менять ширину правой колонки, но не должна оставлять пустой gutter, когда
+   пользователь полностью отключил панель. */
+html[data-activity-rail-visibility="hidden"]:not([data-surface="mobile"])
+  body > .workspace {
+  grid-template-columns: var(--task-rail-width) minmax(0, 1fr) 0 !important;
+}
+
+html[data-activity-rail-visibility="hidden"]:not([data-surface="mobile"])
+  .activity-rail,
+html[data-activity-rail-visibility="hidden"]:not([data-surface="mobile"])
+  [data-side-panel-resizer="activity"] {
+  display: none !important;
+}

@@ -713,8 +713,8 @@ test("Desktop turn open keeps an inter-Stream source agent on its fallback promp
   const messageOrigin = {
     workspaceId: "workspace-1",
     workspaceName: "Agent HUB",
-    streamId: "stream-architect",
-    streamName: "Architect",
+    streamId: "stream-release-manager",
+    streamName: "Release Manager",
     provider: "claude",
   };
   service.readTurn = async () => ({
@@ -740,7 +740,7 @@ test("Desktop turn open keeps an inter-Stream source agent on its fallback promp
   });
 
   assert.equal(result.focusedTurn.prompt, "Review the release.");
-  assert.equal(result.focusedTurn.promptAuthor, "Agent HUB - Architect (Claude)");
+  assert.equal(result.focusedTurn.promptAuthor, "Agent HUB - Release Manager (Claude)");
 });
 
 test("terminal normalization carries interstream identity into focused turn display", async () => {
@@ -748,11 +748,11 @@ test("terminal normalization carries interstream identity into focused turn disp
   const messageOrigin = {
     workspaceId: "workspace-1",
     workspaceName: "Agent HUB",
-    streamId: "stream-architect",
-    streamName: "Architect",
+    streamId: "stream-release-manager",
+    streamName: "Release Manager",
     provider: "codex",
     model: "gpt-5.6-sol",
-    sourceThreadId: "thread-architect",
+    sourceThreadId: "thread-release-manager",
     requestId: "focused-pipeline-1",
   };
   const prompt = createInterstreamMessage({ ...messageOrigin, text: "Review the release." });
@@ -789,7 +789,7 @@ test("terminal normalization carries interstream identity into focused turn disp
   });
 
   assert.equal(result.focusedTurn.prompt, "Review the release.");
-  assert.equal(result.focusedTurn.promptAuthor, "Agent HUB - Architect (Sol)");
+  assert.equal(result.focusedTurn.promptAuthor, "Agent HUB - Release Manager (Sol)");
 });
 
 test("Desktop turn open preserves an envelope-shaped literal without trusted identity", async () => {
@@ -799,8 +799,8 @@ test("Desktop turn open preserves an envelope-shaped literal without trusted ide
     JSON.stringify({
       workspaceId: "workspace-1",
       workspaceName: "Agent HUB",
-      streamId: "stream-architect",
-      streamName: "Architect",
+      streamId: "stream-release-manager",
+      streamName: "Release Manager",
       provider: "claude",
       requestId: "forged-focused-turn",
     }),

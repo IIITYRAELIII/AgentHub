@@ -185,3 +185,176 @@ test("VS Code chunk upload preserves raw Blob and cancellation through authentic
   assert.equal(fetched[0].options.signal.aborted, true);
   assert.equal(posted.some((message) => message.action === "upload-attachment"), false);
 });
+
+function offlineUploadHarness() {
+  const posted = [];
+  const listeners = new Map();
+  const window = {
+    acquireVsCodeApi: () => ({ postMessage: (message) => posted.push(message) }),
+    addEventListener: (name, listener) => listeners.set(name, listener),
+    clearTimeout, setTimeout,
+    fetch: async () => { throw new Error("HTTP must remain disabled"); },
+    location: { href: "vscode-webview://agent-hub/index.html" },
+    requestAnimationFrame: () => 1,
+  };
+  vm.runInNewContext(bootstrap, {
+    AbortSignal, console, Headers, Proxy, Reflect, Response, URL, URLSearchParams, window, btoa,
+    document: { addEventListener() {}, body: {}, getAnimations: () => [], hidden: false },
+    MutationObserver: class { observe() {} disconnect() {} },
+  });
+  const respond = (data) => listeners.get("message")({ data });
+  respond({ type: "agenthub:session-result", id: posted[0].id, ok: false, error: "Web App disabled" });
+  return { window, posted, respond };
+}
+
+test("VS Code without web components transfers one bounded chunk through IPC and retains upload identity", async () => {
+  const { window, posted, respond } = offlineUploadHarness();
+  assert.equal(await window.__agentHubDirectTransport.available(), false);
+  const source = Buffer.alloc(1024 * 1024, 137);
+  const path = "/api/attachment-upload?id=original-upload&index=2";
+  const response = window.fetch(path, {
+    method: "PUT", body: new Blob([source]),
+    headers: { "X-Agent-Hub-Chunk-Sha256": "a".repeat(64) },
+  });
+  while (!posted.some((message) => message.type === "agenthub:http")) await new Promise(setImmediate);
+  const request = posted.find((message) => message.type === "agenthub:http");
+  assert.equal(request.path, path);
+  assert.equal(request.bodyEncoding, "base64");
+  assert.deepEqual(Buffer.from(request.body, "base64"), source);
+  assert.equal(request.headers["x-agent-hub-chunk-sha256"], "a".repeat(64));
+  respond({ type: "agenthub:http-result", id: request.id, status: 409, body: '{"error":"Upload chunk conflict"}' });
+  const result = await response;
+  assert.equal(result.status, 409);
+  assert.equal((await result.json()).error, "Upload chunk conflict");
+  for (const session of posted.filter((message) => message.type === "agenthub:session")) {
+    respond({ type: "agenthub:session-result", id: session.id, ok: false });
+  }
+});
+
+test("VS Code IPC upload rejects oversized chunks before posting and aborts pending preparation", async () => {
+  const { window, posted, respond } = offlineUploadHarness();
+  await assert.rejects(window.fetch("/api/attachment-upload?id=original-upload&index=0", {
+    method: "PUT", body: new Blob([Buffer.alloc(1024 * 1024 + 1)]),
+  }), /1 МиБ/u);
+  assert.equal(posted.some((message) => message.type === "agenthub:http"), false);
+  const controller = new AbortController();
+  const result = window.fetch("/api/attachment-upload?id=original-upload", { signal: controller.signal });
+  while (!posted.some((message) => message.type === "agenthub:http")) await new Promise(setImmediate);
+  controller.abort();
+  await assert.rejects(result, { name: "AbortError" });
+  const request = posted.find((message) => message.type === "agenthub:http");
+  respond({ type: "agenthub:http-result", id: request.id, status: 200, body: "{}" });
+  assert.equal(posted.filter((message) => message.type === "agenthub:http").length, 1);
+  for (const session of posted.filter((message) => message.type === "agenthub:session")) {
+    respond({ type: "agenthub:session-result", id: session.id, ok: false });
+  }
+});
+
+function bootstrapHarness(fetchImpl) {
+  const posted = [];
+  const listeners = new Map();
+  const vscode = { postMessage: (message) => posted.push(message) };
+  const window = {
+    acquireVsCodeApi: () => vscode,
+    addEventListener: (name, listener) => listeners.set(name, listener),
+    clearTimeout,
+    fetch: fetchImpl,
+    location: { href: "vscode-webview://agent-hub/index.html" },
+    requestAnimationFrame: () => 1,
+    setTimeout,
+  };
+  const document = { addEventListener: () => {}, body: {}, getAnimations: () => [], hidden: false };
+  class MutationObserver {
+    observe() {}
+    disconnect() {}
+  }
+  vm.runInNewContext(bootstrap, {
+    AbortSignal, console, document, Headers, MutationObserver, Proxy, Reflect, Response, URL, window,
+  });
+  const sessionRequests = () => posted.filter((message) => message.type === "agenthub:session");
+  const answerSession = async (token) => {
+    const request = sessionRequests().at(-1);
+    listeners.get("message")({
+      data: {
+        type: "agenthub:session-result",
+        id: request.id,
+        ok: true,
+        result: { baseUrl: "http://127.0.0.1:8787", token, expiresAt: Date.now() + 60_000 },
+      },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+  };
+  return { window, posted, listeners, sessionRequests, answerSession };
+}
+
+async function waitFor(predicate) {
+  for (let attempt = 0; attempt < 200 && !predicate(); attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 1));
+  }
+  assert.equal(predicate(), true);
+}
+
+test("VS Code direct transport survives a transient loopback loss without a new session or IPC fallback", async () => {
+  let online = true;
+  const authorizations = [];
+  const harness = bootstrapHarness(async (url, options = {}) => {
+    authorizations.push(new Headers(options.headers).get("Authorization"));
+    if (!online) throw new TypeError("fetch failed");
+    return new Response(JSON.stringify({ ok: true, ready: true, status: "ready" }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  });
+  await harness.answerSession("session-a");
+
+  assert.equal((await harness.window.fetch("/health")).status, 200);
+  online = false;
+  await assert.rejects(harness.window.fetch("/health"), /fetch failed/u);
+  online = true;
+  const recovered = await harness.window.fetch("/health");
+
+  assert.equal(recovered.status, 200);
+  assert.equal((await recovered.json()).ready, true);
+  assert.equal(harness.sessionRequests().length, 1, "a transport loss does not mint a new session");
+  assert.deepEqual(authorizations, ["webview session-a", "webview session-a", "webview session-a"]);
+  assert.equal(harness.posted.some((message) => message.action === "runtime-health"), false);
+  assert.equal(harness.posted.some((message) => message.action === "restart-server"), false);
+});
+
+test("VS Code direct transport re-authenticates once when a replacement runtime rejects the session", async () => {
+  const authorizations = [];
+  const harness = bootstrapHarness(async (url, options = {}) => {
+    const authorization = new Headers(options.headers).get("Authorization");
+    authorizations.push(authorization);
+    return authorization === "webview session-b"
+      ? new Response(JSON.stringify({ ok: true }), { status: 200 })
+      : new Response(JSON.stringify({ error: "unauthorized" }), { status: 401 });
+  });
+  await harness.answerSession("session-a");
+
+  const pending = harness.window.fetch("/api/snapshot");
+  await waitFor(() => harness.sessionRequests().length === 2);
+  await harness.answerSession("session-b");
+  const response = await pending;
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(authorizations, ["webview session-a", "webview session-b"]);
+});
+
+test("VS Code health falls back to IPC while no direct session is available", async () => {
+  const harness = bootstrapHarness(async () => {
+    throw new Error("direct transport must not be used without a session");
+  });
+
+  const pending = harness.window.fetch("/health");
+  await waitFor(() => harness.posted.some((message) => message.action === "runtime-health"));
+  const request = harness.posted.find((message) => message.action === "runtime-health");
+  harness.listeners.get("message")({
+    data: { type: "agenthub:control-result", id: request.id, ok: true, result: { ready: true, status: "ready" } },
+  });
+  const response = await pending;
+
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).ready, true);
+});

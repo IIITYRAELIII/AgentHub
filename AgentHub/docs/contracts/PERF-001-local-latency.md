@@ -2,6 +2,12 @@
 
 ## Trace contract
 
+Task-card Git previews run only on explicit request and retain at most 64 KiB of
+diff text per response, with visible truncation. Board snapshots never run Git
+for previews. Task journal projection joins exact bindings to indexed journal
+identities and reads summary scalars, not full prompts, bodies or stored diffs.
+The journal revision participates in Task-board cache invalidation (ADR-0051).
+
 The root trace identity is the command ID. Required stages are client submit,
 transport start, Hub HTTP callback or Desktop IPC accept, authenticated control
 handler enter, receipt lock wait, durable intake enqueue/start/commit, response
@@ -80,9 +86,23 @@ unbounded worker memory and event-loop GC pressure.
 
 Provider turn start and completion do not snapshot Git repositories. Test owns
 the Task Git snapshot and `dev` integration outside provider admission and
-terminal-delivery latency. Await changes acceptance metadata without composing
-the Workspace-wide candidate; expensive selected-set projection runs only in
-the explicit release prepare operation.
+terminal-delivery latency. Outside publication freeze, Await prepares PreRelease before committing acceptance
+under the existing Workspace Await and Task ownership boundaries. A failed
+preparation leaves the Task in Test (ADR-0055). It does
+not run release tests, builds or deployment. During freeze, new work stays in
+Test and acceptance is retried after confirmed release completion.
+
+Release validation may run at most two test-file processes concurrently, and
+only when the host reports at least four logical CPUs and 4 GiB of free memory.
+A file is parallel-eligible only when its reviewed v2 input declaration proves
+disposable filesystem, lock, Git, port and browser-profile ownership; every
+child receives a unique temporary environment root. Undeclared files remain
+exclusive, and matching shared-resource tags serialize only the files that name
+that resource. This bound protects Hub CPU and memory headroom while allowing
+independent Git and browser fixtures to overlap. Cache decisions report a
+stable content-free reason (`absent`, `fingerprint changed`, or the exact
+uncacheable policy reason); they never print environment values or fabricate
+reusable evidence.
 
 Release validation may run at most two test-file processes concurrently, and
 only when the host reports at least four logical CPUs and 4 GiB of free memory.

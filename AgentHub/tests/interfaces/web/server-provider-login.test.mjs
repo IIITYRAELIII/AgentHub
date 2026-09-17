@@ -16,22 +16,22 @@ function createController(overrides = {}) {
   });
 }
 
-test("server snapshot, which also reaches remote clients, exposes only sign-in state", async () => {
+test("server snapshot exposes login state and only allowlisted current-account fields", async () => {
   const controller = createController({
     providerLogin: {
       snapshot: () => [
-        { provider: "codex", status: "pending", attemptId: "4", authUrl: "https://auth.example/1", startedAt: "s", finishedAt: null, error: null, loginId: "hidden" },
+        { provider: "codex", status: "pending", attemptId: "4", authUrl: "https://auth.example/1", startedAt: "s", finishedAt: null, error: null, loginId: "hidden", currentAccount: { state: "signed-in", email: "me@example.test", method: "chatgpt", accessToken: "secret-token", accountId: "private-id" } },
         { provider: "claude", status: "failed", attemptId: "3", authUrl: null, startedAt: "s", finishedAt: "f", error: "denied", code: CODE },
       ],
     },
   });
   const snapshot = await controller.snapshot();
   assert.deepEqual(snapshot.accounts, [
-    { provider: "codex", status: "pending", attemptId: "4", startedAt: "s", finishedAt: null, error: null },
-    { provider: "claude", status: "failed", attemptId: "3", startedAt: "s", finishedAt: "f", error: "denied" },
+    { provider: "codex", status: "pending", attemptId: "4", startedAt: "s", finishedAt: null, error: null, currentAccount: { state: "signed-in", email: "me@example.test", method: "chatgpt" } },
+    { provider: "claude", status: "failed", attemptId: "3", startedAt: "s", finishedAt: "f", error: "denied", currentAccount: { state: "unknown" } },
   ]);
   const serialized = JSON.stringify(snapshot);
-  for (const secret of ["auth.example", "hidden", "Kc0de", "sTaTe"]) assert.equal(serialized.includes(secret), false);
+  for (const secret of ["auth.example", "hidden", "Kc0de", "sTaTe", "secret-token", "private-id"]) assert.equal(serialized.includes(secret), false);
 });
 
 test("server controller starts, submits a code and cancels without echoing the code", async () => {

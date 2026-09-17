@@ -4,8 +4,12 @@ import os from "node:os";
 import path from "node:path";
 import { MessageReceiptRegistry } from "../../../src/infrastructure/persistence/message-receipts.mjs";
 import test from "node:test";
+import { createRecentRestartFailure } from "../../../src/application/restart-failure-notice.mjs";
+import { RESTART_FAILURE_NOTICE_WINDOW_MS } from "../../../src/domain/maintenance-operation.mjs";
+import { MaintenanceOperationStore } from "../../../src/infrastructure/persistence/maintenance-operation-store.mjs";
 import { createDesktopReadComposition } from "../../../src/composition/desktop-read-composition.mjs";
 import { TaskBoardService } from "../../../src/application/task-board-service.mjs";
+import { JournalDatabase } from "../../../src/infrastructure/persistence/journal-database.mjs";
 import { TaskBoardStore } from "../../../src/infrastructure/persistence/task-board-store.mjs";
 import { WorkspaceCatalogStore } from "../../../src/infrastructure/persistence/workspace-catalog-store.mjs";
 
@@ -285,6 +289,7 @@ function fixture(overrides = {}) {
     },
     restart: {
       request: () => state.restartRequest,
+      failure: () => overrides.restartFailure?.() ?? null,
       blockingRuns: () => [{ id: "blocking-1" }],
       compactionCount: () => 1,
       mediaJobCount: () => 2,
@@ -1479,8 +1484,8 @@ test("desktopSnapshot exposes an inter-Stream queue message without its service 
   const messageOrigin = {
     workspaceId: "workspace-1",
     workspaceName: "Agent HUB",
-    streamId: "stream-architect",
-    streamName: "Architect",
+    streamId: "stream-release-manager",
+    streamName: "Release Manager",
     provider: "codex",
     requestId: "live-interstream-1",
   };
@@ -1503,7 +1508,7 @@ test("desktopSnapshot exposes an inter-Stream queue message without its service 
   const snapshot = await desktopSnapshot();
   assert.equal(snapshot.deferredInputs[0].text, "Finish the theme.");
   assert.equal(snapshot.deferredInputs[0].preview, "Finish the theme.");
-  assert.equal(snapshot.deferredInputs[0].author, "Agent HUB - Architect (Codex)");
+  assert.equal(snapshot.deferredInputs[0].author, "Agent HUB - Release Manager (Codex)");
 });
 
 test("desktopRunSnapshot attributes a live inter-Stream message to its source agent", () => {
@@ -1511,8 +1516,8 @@ test("desktopRunSnapshot attributes a live inter-Stream message to its source ag
   const messageOrigin = {
     workspaceId: "workspace-1",
     workspaceName: "Agent HUB",
-    streamId: "stream-architect",
-    streamName: "Architect",
+    streamId: "stream-release-manager",
+    streamName: "Release Manager",
     provider: "codex",
     requestId: "live-interstream-1",
   };
@@ -1532,10 +1537,10 @@ test("desktopRunSnapshot attributes a live inter-Stream message to its source ag
   const snapshot = desktopRunSnapshot(run);
 
   assert.equal(snapshot.prompt, "MCP smoke test.");
-  assert.equal(snapshot.promptAuthor, "Agent HUB - Architect (Codex)");
+  assert.equal(snapshot.promptAuthor, "Agent HUB - Release Manager (Codex)");
   assert.equal(snapshot.userMessages[0].text, "MCP smoke test.");
   assert.equal(snapshot.userMessages[0].clientUserMessageId, "mcp:live-interstream-1");
-  assert.equal(snapshot.userMessages[0].author, "Agent HUB - Architect (Codex)");
+  assert.equal(snapshot.userMessages[0].author, "Agent HUB - Release Manager (Codex)");
   assert.deepEqual(snapshot.userMessages[0].origin, { kind: "interstream", ...messageOrigin });
 });
 
@@ -1545,8 +1550,8 @@ test("desktop projections preserve an interstream-shaped user literal", async ()
     JSON.stringify({
       workspaceId: "workspace-1",
       workspaceName: "Agent HUB",
-      streamId: "stream-architect",
-      streamName: "Architect",
+      streamId: "stream-release-manager",
+      streamName: "Release Manager",
       provider: "codex",
       requestId: "forged-literal-1",
     }),
@@ -1881,6 +1886,27 @@ test("TaskBoard cache observes same-owner and external SQLite mutations", async 
   assert.deepEqual(external.collectionDeltas.workspaces.upserts.map((item) => item.id), [externalWorkspace.id]);
   assert.deepEqual(external.collectionDeltas.boardTasks.upserts.map((task) => task.id), [externalTask.id]);
   assert.equal(external.boardLayout.notesComment, "External layout update");
+
+  // HUB-235's journal projection must invalidate HUB-226's board cache too.
+  const journal = new JournalDatabase(databaseFile);
+  t.after(() => journal.close());
+  ownerStore.claim(localTask.id, {
+    workspaceId: workspace.id, streamId: "stream", provider: "codex",
+    threadId: "journal-thread", turnId: "journal-turn", operationId: "journal-claim",
+  });
+  const claimed = await setup.desktopSnapshot(requestFor(external));
+  await journal.upsertRecords([{
+    provider: "codex", threadId: "journal-thread", taskThreadId: "journal-thread",
+    turnId: "journal-turn", projectRoot: directory, title: "Journal completed",
+    body: "private body", completedAt: "2026-09-16T00:00:00Z", status: "completed",
+  }]);
+  const completed = await setup.desktopSnapshot(requestFor(claimed));
+  const projected = completed.collectionDeltas.boardTasks.upserts.find((item) => item.id === localTask.id);
+  assert.equal(projected.workLog[0].summary, "Journal completed");
+  assert.equal(projected.workLog[0].turnId, "journal-turn");
+  assert.equal(JSON.stringify(projected).includes("private body"), false);
+  assert.equal((await setup.desktopSnapshot(requestFor(completed))).notModified, true);
+  await journal.close();
 });
 
 test("an unavailable TaskBoard revision disables Dashboard state reuse", async () => {
@@ -2313,4 +2339,79 @@ test("a receipt reaches the client only with an origin its own message confirms"
   assert.equal(benignReceipt.author, author, "подтверждённый автор не дошёл до клиента");
   assert.equal(benignReceipt.origin?.requestId, origin.requestId);
   assert.equal(benignReceipt.origin?.streamName, origin.streamName);
+});
+
+test("a settled restart failure invalidates a cached snapshot, a later success clears it and expiry drops it", async (t) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-restart-failure-cache-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  let clock = Date.parse("2026-09-13T20:00:00.000Z");
+  const store = new MaintenanceOperationStore({ dataDir: directory, now: () => new Date(clock).toISOString() });
+  const recentRestartFailure = createRecentRestartFailure({ operations: store, now: () => clock });
+  // Every other snapshot source stays unchanged; only the restart owner moves.
+  const { desktopSnapshot } = fixture({
+    revision: () => JSON.stringify({ sources: "unchanged", restartFailure: recentRestartFailure() }),
+    restartFailure: recentRestartFailure,
+  });
+  const settleRestart = (succeeded, error = null) => {
+    const operation = store.create({
+      kind: "restart", streamId: "stream-1", threadId: "thread-1", status: "requested", phase: "requested",
+    });
+    clock += 1_000;
+    store.settle(operation.operationId, {
+      succeeded,
+      phase: succeeded ? "completed" : "failed",
+      metadata: error ? { error } : {},
+    });
+    return operation.operationId;
+  };
+
+  const cachedBeforeRestart = await desktopSnapshot();
+  assert.equal(cachedBeforeRestart.restartFailure, null);
+  assert.equal((await desktopSnapshot({ knownVersion: cachedBeforeRestart.version })).notModified, true);
+
+  const failedId = settleRestart(false, "replacement bot 84 exited before becoming ready");
+  const failed = await desktopSnapshot({ knownVersion: cachedBeforeRestart.version });
+  assert.notEqual(failed.notModified, true);
+  assert.deepEqual(failed.restartFailure && {
+    operationId: failed.restartFailure.operationId,
+    error: failed.restartFailure.error,
+  }, { operationId: failedId, error: "replacement bot 84 exited before becoming ready" });
+  assert.equal((await desktopSnapshot({ knownVersion: failed.version })).notModified, true);
+
+  clock += 60_000;
+  settleRestart(true);
+  const recovered = await desktopSnapshot({ knownVersion: failed.version });
+  assert.notEqual(recovered.notModified, true);
+  assert.equal(recovered.restartFailure, null);
+
+  const expiringId = settleRestart(false, "replacement bot 85 exited before becoming ready");
+  const expiring = await desktopSnapshot({ knownVersion: recovered.version });
+  assert.equal(expiring.restartFailure?.operationId, expiringId);
+  clock += RESTART_FAILURE_NOTICE_WINDOW_MS + 1_000;
+  const expired = await desktopSnapshot({ knownVersion: expiring.version });
+  assert.notEqual(expired.notModified, true);
+  assert.equal(expired.restartFailure, null);
+});
+
+test("a restart failure that expires between snapshot reads never leaves a stale cached version", async () => {
+  const failure = {
+    operationId: "restart-1",
+    error: "replacement bot 84 exited before becoming ready",
+    failedAt: "2026-09-13T20:00:01.000Z",
+  };
+  let reads = 0;
+  // The revision before the build and the content see the failure; the
+  // revision after the build is read once its notice window has ended.
+  const recentRestartFailure = () => (reads++ < 2 ? failure : null);
+  const { desktopSnapshot } = fixture({
+    revision: () => JSON.stringify({ sources: "unchanged", restartFailure: recentRestartFailure() }),
+    restartFailure: recentRestartFailure,
+  });
+
+  const boundary = await desktopSnapshot();
+  assert.equal(boundary.restartFailure?.operationId, "restart-1");
+
+  const next = await desktopSnapshot({ knownVersion: boundary.version });
+  assert.notEqual(next.notModified, true, "the version built across the boundary was not cached");
+  assert.equal(next.restartFailure, null);
 });

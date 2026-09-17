@@ -42,6 +42,7 @@ const TASK_MANAGED_EFFECTS = new Set(["deliverChecklistEvents"]);
 
 const TASK_READS = new Set([
   "task", "list", "pendingTriage", "orderedColumnIds", "notesComment", "claimedTaskForTurn",
+  "claimBindingForOperation",
   "lifecycleTransition", "lifecycleOutcome", "releaseTasks", "captureEnabled", "mutationDiagnostics", "close",
   "checklistRequestResult", "awaitRebuildPending", "releaseFinalizationOutcome",
 ]);

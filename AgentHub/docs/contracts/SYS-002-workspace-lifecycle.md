@@ -31,12 +31,37 @@
 
 ## Cards and menus
 
+- Workspace creation and editing show an independent **Авто-ревью** checkbox
+  immediately after **Релизный процесс**, with a separate help control.
+  `settings.autoReviewEnabled === true` injects the review policy into all
+  Workspace Stream contexts; absent or false leaves it out, independently of
+  release workflow. Settings updates that omit this field preserve its current
+  value. Generated instructions do not become authored Workspace rules.
+  The short Team Lead help describes delegation, not review forwarding.
+
 - Workspace and Stream cards use native click and double-click events without a
   click-delay timer. Double-click is accepted only for the original connected
   node and stable identity; removed, replaced or reordered cards fail closed.
 - A known Codex or Claude Stream menu contains Edit, Rotate and exactly one
   opposite-provider continuation command. Missing or unknown provider exposes
   no enabled continuation command.
+
+## Server account cards
+
+- Account cards display the provider's current account email or authentication
+  method, separately from the state of a login attempt. Idle/succeeded attempt
+  history never proves current authentication. Missing or failed account reads
+  are unknown; only an explicit provider response establishes signed-out state.
+- The existing login service owns this ephemeral display projection. Codex uses
+  account/read without token refresh; Claude uses auth status --json in the same
+  configured invocation as login. Reads are bounded, coalesced per provider and
+  refreshed on snapshot access after 30 seconds, without blocking snapshots.
+  Account-change notifications invalidate earlier reads before refreshing.
+- Shared snapshots contain only allowlisted display state, email and method,
+  never credentials, login URLs, account IDs or raw CLI output. This projection
+  is not usage-attribution evidence and does not alter running turns or auth.
+
+See ADR-0067.
 
 ## Provider Thread names
 

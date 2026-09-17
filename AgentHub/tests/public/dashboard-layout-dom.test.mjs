@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { readFile, readdir } from "node:fs/promises";
 import test from "node:test";
+import os from "node:os";
+import path from "node:path";
 
 const WEB_APP_ROOT = new URL("../../assets/web-app/", import.meta.url);
 const THEMES = (await readdir(new URL("themes/", WEB_APP_ROOT), { withFileTypes: true }))
@@ -101,6 +103,160 @@ async function setBoard(page, boardWorkspaces = workspaces) {
     window.AgentHubTaskBoard.setSnapshot({ tasks, workspaces, columnOrder: ["notes", "workspace:two", "workspace:one"] });
   }, { tasks, workspaces: boardWorkspaces });
 }
+
+test("Task card opens exact journal links and fences on-demand Git previews", { timeout: 30_000 }, async () => {
+  const { chromium } = await import("playwright");
+  const browser = await launchEdge(chromium);
+  try {
+    for (const width of [1440, 390]) {
+      const page = await browser.newPage({ viewport: { width, height: 900 } });
+      page.setDefaultTimeout(5_000);
+      const errors = [];
+      page.on("pageerror", (error) => errors.push(error.message));
+      await openFixture(page);
+      await page.evaluate(({ tasks, workspaces }) => {
+        document.documentElement.dataset.view = "dashboard";
+        tasks[0].workLog = [
+          { provider: "codex", threadId: "old-thread", taskThreadId: "parent-thread", turnId: "exact-turn",
+            summary: "Ревью без правок", status: "completed", createdAt: "2026-09-15T00:00:00Z" },
+          { provider: "claude", summary: "Старая запись без адреса", status: "completed" },
+        ];
+        window.AgentHubTaskBoard.setSnapshot({ tasks, workspaces });
+      }, { tasks, workspaces });
+      await page.locator('[data-board-task-id="1"]').first().click();
+      const panel = page.locator(".task-card-modal");
+      assert.equal(await panel.getByText("Изменённые файлы", { exact: true }).count(), 0);
+      const link = panel.getByRole("link", { name: "Ревью без правок" });
+      assert.equal(await link.count(), 1);
+      assert.equal(await link.getAttribute("href"), "#/chat/codex/parent-thread/turn/old-thread/exact-turn");
+      await panel.getByRole("button", { name: "Git Diff", exact: true }).click();
+      const first = await page.evaluate(() => window.__boardActions.at(-1));
+      assert.equal(first.type, "diff");
+      assert.equal(first.id, "1");
+      await panel.getByRole("button", { name: "Git Diff", exact: true }).click();
+      const second = await page.evaluate(() => window.__boardActions.at(-1));
+      await page.evaluate(({ first, second }) => {
+        window.AgentHubTaskBoard.showDiff({ ...second, result: { repositories: [
+          { branch: "HUB-1", projectRoot: "task/worktree", text: "diff --git a/app.js b/app.js\n+new code" },
+        ], truncated: true } });
+        window.AgentHubTaskBoard.showDiff({ ...first, error: "stale error" });
+      }, { first, second });
+      const diff = panel.locator("[data-task-card-diff]");
+      assert.match(await diff.textContent(), /new code/u);
+      assert.match(await diff.textContent(), /Показана часть diff/u);
+      assert.doesNotMatch(await diff.textContent(), /stale error/u);
+      if (process.env.AGENT_HUB_QA_SCREENSHOT) {
+        await page.screenshot({ path: process.env.AGENT_HUB_QA_SCREENSHOT.replace(".png", "-" + width + ".png") });
+      }
+      await link.click();
+      assert.match(page.url(), /#\/chat\/codex\/parent-thread\/turn\/old-thread\/exact-turn$/u);
+      await page.locator('[data-board-task-id="2"]').first().click();
+      await page.evaluate((old) => window.AgentHubTaskBoard.showDiff({
+        ...old, error: "wrong Task",
+      }), second);
+      assert.equal(await panel.locator("[data-task-card-diff]").isVisible(), false);
+      assert.deepEqual(errors, []);
+      await page.close();
+    }
+  } finally {
+    await browser.close();
+  }
+});
+
+test("Task description editor submits text beyond the former character limit", { timeout: 20_000 }, async () => {
+  const { chromium } = await import("playwright");
+  const browser = await launchEdge(chromium);
+  try {
+    const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await openFixture(page);
+    await setBoard(page);
+    await page.locator('[data-board-task-id="1"]').first().click();
+    await page.locator("[data-task-card-edit-toggle]").click();
+    const editor = page.locator("[data-task-card-description]");
+    const description = "Полное описание 🚀 ".repeat(3_000).trim();
+    await editor.fill("");
+    await editor.focus();
+    await page.keyboard.insertText(description);
+    assert.equal(await editor.inputValue(), description);
+    await page.locator(".task-card-modal").getByRole("button", { name: "Сохранить изменения", exact: true }).click();
+    const action = await page.evaluate(() => window.__boardActions.at(-1));
+    assert.equal(action.type, "update");
+    assert.equal(action.description, description);
+    if (process.env.AGENT_HUB_QA_SCREENSHOT) {
+      await page.screenshot({ path: process.env.AGENT_HUB_QA_SCREENSHOT });
+    }
+    assert.deepEqual(errors, []);
+  } finally {
+    await browser.close();
+  }
+});
+
+test("Task creation form submits complete long text", { timeout: 20_000 }, async () => {
+  const { chromium } = await import("playwright");
+  const browser = await launchEdge(chromium);
+  try {
+    const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+    page.setDefaultTimeout(5_000);
+    await openFixture(page);
+    await setBoard(page);
+    await page.locator("[data-task-board-settings-toggle]").click();
+    await page.locator('[data-task-board-view="workspaces"]').click();
+    await page.locator(".task-board-create-button").first().click();
+    const input = page.locator(".task-board-inline-create textarea").first();
+    const text = "Требования 🚀 ".repeat(3_000).trim();
+    await input.focus();
+    await page.keyboard.insertText(text);
+    assert.equal(await input.inputValue(), text);
+    await page.locator(".task-board-inline-create").first().getByRole("button", { name: "Добавить", exact: true }).click();
+    const action = await page.evaluate(() => window.__boardActions.at(-1));
+    assert.equal(action.type, "create");
+    assert.equal(action.text, text);
+  } finally {
+    await browser.close();
+  }
+});
+
+test("Blocked Dashboard status is red and retains its prerequisite across snapshots", async () => {
+  const { chromium } = await import("playwright");
+  const browser = await launchEdge(chromium);
+  try {
+    for (const width of [1440, 390]) {
+      const page = await browser.newPage({ viewport: { width, height: 900 } });
+      const errors = [];
+      page.on("pageerror", (error) => errors.push(error.message));
+      await openFixture(page);
+      const blocked = task("42", { title: "Подключить фоны", workflowStatus: "blocked",
+        blockedBy: { taskId: "41", taskNumber: "HUB-41" } });
+      await page.evaluate(({ blocked, workspaces }) => {
+        document.documentElement.dataset.view = "dashboard";
+        window.AgentHubTaskBoard.setSnapshot({ tasks: [blocked], workspaces });
+      }, { blocked, workspaces });
+      const card = page.locator('[data-board-task-id="42"]').first();
+      const badge = card.locator('[data-workflow-status="blocked"]');
+      assert.equal(await badge.textContent(), "Blocked");
+      assert.equal(await badge.evaluate((el) => getComputedStyle(el).color), "rgb(229, 72, 77)");
+      assert.notEqual(await page.locator(".is-status-blocked .task-board-column-head h2").evaluate((el) => getComputedStyle(el).color), "rgb(229, 72, 77)");
+      assert.notEqual(await card.locator(".board-task-blocked-reason").evaluate((el) => getComputedStyle(el).color), "rgb(229, 72, 77)");
+      assert.equal(await card.locator(".board-task-blocked-reason").textContent(), "Ожидает релиза HUB-41");
+      await card.click();
+      assert.equal(await page.locator(".task-card-modal[open]").count(), 1);
+      await page.keyboard.press("Escape");
+      await page.evaluate(({ blocked, workspaces }) => window.AgentHubTaskBoard.setSnapshot({
+        tasks: [{ ...blocked, revision: 2 }], workspaces,
+      }), { blocked, workspaces });
+      assert.equal(await badge.textContent(), "Blocked");
+      await page.locator('[data-task-board-settings-toggle]').click();
+      await page.locator('[data-task-board-view="workspaces"]').click();
+      assert.equal(await badge.isVisible(), true);
+      assert.equal(await badge.evaluate((el) => getComputedStyle(el).color), "rgb(229, 72, 77)");
+      await page.screenshot({ path: path.join(os.tmpdir(), `hub235-blocked-${width}.png`) });
+      assert.deepEqual(errors, []);
+      await page.close();
+    }
+  } finally { await browser.close(); }
+});
 
 async function dropTask(page, taskId, target, { confirmMove = false } = {}) {
   const dataTransfer = await page.evaluateHandle((id) => {
@@ -223,9 +379,9 @@ test("Dashboard keeps view and filters visible and restores Workspace grouping",
     assert.equal(await page.locator('#task-board-settings').isVisible(), true);
     assert.equal(await page.locator('[data-task-status-language="ru"]').isVisible(), true);
     await page.locator('[data-task-board-view="workspaces"]').click();
-    assert.equal(await page.locator('.task-board-sidebar').isVisible(), false);
-    assert.ok((await page.locator('[data-task-board-columns]').boundingBox()).x < 25);
-    await page.locator('[data-task-board-scope-select]').selectOption('all', { force: true });
+    assert.equal(await page.locator('.task-board-sidebar').isVisible(), true);
+    assert.equal(await page.locator('.task-board-scope-control').isVisible(), false);
+    await page.locator('[data-board-scope="all"]').click();
     const columns = page.locator('[data-task-board-columns] .task-board-column');
     assert.deepEqual(await columns.locator('h2').allTextContents(), ['Бэклог', 'DevOps', 'Agent HUB', 'Заметки']);
     const workspace = page.locator('[data-task-board-columns] [data-board-destination="workspace:one"]');
@@ -413,7 +569,8 @@ test("Dashboard preserves scope, create, filter and native drop commands", async
     await openFixture(page);
     await setBoard(page);
     const board = page.locator("[data-task-board-columns]");
-    assert.equal(await board.locator(".task-board-column").count(), 6);
+    assert.equal(await board.locator(".task-board-column").count(), 7);
+    assert.equal(await board.locator(".is-status-blocked").count(), 1);
     assert.equal(await board.locator(".is-backlog").count(), 1);
     assert.equal(await board.locator('[data-board-task-id="6"]').count(), 1, "workflow Done remains visible until closed");
     assert.equal(await board.locator('[data-board-task-id="1"]').getAttribute("draggable"), "true");

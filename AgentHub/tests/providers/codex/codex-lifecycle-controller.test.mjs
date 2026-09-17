@@ -240,10 +240,10 @@ test("Codex lifecycle preserves managed message origin over provider-only user p
     kind: "interstream",
     workspaceId: "workspace-1",
     workspaceName: "Agent HUB",
-    streamId: "stream-architect",
-    streamName: "Architect",
+    streamId: "stream-release-manager",
+    streamName: "Release Manager",
     provider: "codex",
-    sourceThreadId: "thread-architect",
+    sourceThreadId: "thread-release-manager",
     requestId: "lifecycle-origin-1",
   };
   const f = await fixture({

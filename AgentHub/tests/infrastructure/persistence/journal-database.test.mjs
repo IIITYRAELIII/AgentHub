@@ -118,7 +118,7 @@ function indexedDay(date, {
     '<details data-work-log-workspace data-work-log-workspace-id="workspace-1"',
     ' data-work-log-workspace-kind="catalog"><summary><strong>Agent HUB</strong></summary>',
     '<details data-work-log-stream data-work-log-stream-id="stream-1">',
-    '<summary><span data-work-log-stream-title>Architect</span></summary>',
+    '<summary><span data-work-log-stream-title>Release Manager</span></summary>',
     '<div data-work-log-row data-work-log-provider="codex" data-work-log-thread-id="thread-1"',
     ' data-work-log-workspace-id="workspace-1" data-work-log-stream-id="stream-1">',
     '<div data-work-log-task-content>Задача</div><div data-work-log-turn-list>',

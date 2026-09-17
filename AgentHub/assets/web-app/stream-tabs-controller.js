@@ -685,12 +685,14 @@
     workingDirectory = "",
     taskPrefix = "",
     releaseWorkflowEnabled = false,
+    autoReviewEnabled = false,
     folderName = "",
   } = {}) {
     const settings = {
       workingDirectory: String(workingDirectory ?? "").trim(),
       taskPrefix: String(taskPrefix ?? "").trim(),
       releaseWorkflowEnabled: releaseWorkflowEnabled === true,
+      autoReviewEnabled: autoReviewEnabled === true,
     };
     const normalizedFolderName = normalizeWorkspaceFolderName(folderName);
     if (normalizedFolderName) settings.catalogFolder = normalizedFolderName;

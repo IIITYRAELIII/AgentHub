@@ -36,7 +36,7 @@ export async function verifyWorkerConvergence(verify, {
     if (remainingMs <= 0) break;
     attempted = attempt;
     try {
-      return await verify({ requestTimeoutMs: remainingMs, attempt });
+      return await verify({ indexDeadline: deadline, attempt });
     } catch (error) {
       if (error?.code !== "WORKER_DEPLOYMENT_NOT_CONVERGED") throw error;
       lastError = error;
@@ -127,11 +127,11 @@ export async function verifyWorkerRelease({
     await before();
     const baseUrl = workerRouteBaseUrl(await readConfig());
     return converge(
-      ({ requestTimeoutMs }) => verify({
+      ({ indexDeadline }) => verify({
         baseUrl,
         changedFiles,
         checkpoint: verificationCheckpoint,
-        requestTimeoutMs,
+        indexDeadline,
         log,
       }),
       {
