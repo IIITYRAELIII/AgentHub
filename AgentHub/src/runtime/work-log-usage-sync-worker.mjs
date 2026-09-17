@@ -169,6 +169,7 @@ function serializedError(error) {
   return {
     message: String(error?.message ?? error),
     code: error?.code,
+    errcode: error?.errcode,
     stack: error?.stack,
   };
 }

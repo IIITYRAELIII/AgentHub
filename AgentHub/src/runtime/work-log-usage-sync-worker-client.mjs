@@ -15,6 +15,7 @@ const TRACE_MEASUREMENTS = [
 function workerError(value) {
   const error = new Error(String(value?.message ?? "usage sync worker failed"));
   error.code = value?.code;
+  error.errcode = value?.errcode;
   if (value?.stack) error.stack = value.stack;
   return error;
 }

@@ -3,7 +3,11 @@ import test from "node:test";
 import { setImmediate } from "node:timers/promises";
 import { CommandTraceService } from "../../src/application/command-trace-service.mjs";
 
-import { TurnEndDeliveryService, fallbackTurnEndMessage } from "../../src/application/turn-end-delivery-service.mjs";
+import {
+  TurnEndDeliveryService,
+  fallbackTurnEndMessage,
+  transientTurnProjectionFailure,
+} from "../../src/application/turn-end-delivery-service.mjs";
 
 function fixture({ completions = [], activeRun = null, projectResult = null } = {}) {
   const events = [];
@@ -184,6 +188,7 @@ test("projection-only recovery ACKs complete readback without rewriting enriched
     accountKey: "chatgpt:durable", accountAttribution: "exact",
   } };
   const calls = [];
+  let commandTraces = 0;
   let state = "pending";
   const item = {
     ...completion, terminalRevision: 1, attempts: 1, state,
@@ -206,15 +211,25 @@ test("projection-only recovery ACKs complete readback without rewriting enriched
     ensureTurnUsageFact: async () => calls.push("usage"),
     readTurnProjection: async () => enriched,
     finalizeRunDelivery: async () => calls.push("telegram"),
+    commandTrace: { recordBestEffort: () => { commandTraces += 1; } },
     rememberLastMessage: () => {}, rememberSeenTurn: () => {}, saveState: async () => {},
   });
 
   await service.retryPendingProjections();
   assert.equal(state, "delivered");
   assert.deepEqual(calls.filter((value) => ["history", "project", "flush", "usage", "telegram"].includes(value)), []);
+  assert.equal(commandTraces, 0);
   assert.equal(enriched.record.taskTitle, "Enriched durable title");
   assert.equal(enriched.record.prompt, "Enriched durable prompt");
   assert.equal(enriched.record.accountKey, "chatgpt:durable");
+});
+
+test("projection retry classification uses typed SQLite and journal evidence only", () => {
+  assert.equal(transientTurnProjectionFailure(Object.assign(new Error("localized"), { errcode: 5 })), true);
+  assert.equal(transientTurnProjectionFailure(Object.assign(new Error("localized"), { code: "SQLITE_LOCKED_SHAREDCACHE" })), true);
+  assert.equal(transientTurnProjectionFailure(Object.assign(new Error("localized"), { code: "JOURNAL_REVISION_CONFLICT" })), true);
+  assert.equal(transientTurnProjectionFailure(new Error("database is locked")), false);
+  assert.equal(transientTurnProjectionFailure(new Error("journal revision conflict")), false);
 });
 
 test("transient projection failure retries in the same runtime with bounded backoff and one owner", async () => {
