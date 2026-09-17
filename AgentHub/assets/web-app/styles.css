@@ -7430,6 +7430,23 @@ html[data-surface="mobile"]
     margin-top: 0;
   }
 
+  html:not([data-surface="mobile"]) .stream-card-settings-group-head {
+    align-items: center;
+    display: flex;
+    gap: 0.65rem;
+    justify-content: space-between;
+    padding-right: 0.65rem;
+  }
+
+  html:not([data-surface="mobile"]) .stream-card-settings-options {
+    display: grid;
+    gap: 0.4rem;
+  }
+
+  html:not([data-surface="mobile"]) .stream-card-settings-options[hidden] {
+    display: none;
+  }
+
   html:not([data-surface="mobile"]) .stream-card-settings-group-title {
     color: var(--text-muted);
     font-size: 0.7rem;

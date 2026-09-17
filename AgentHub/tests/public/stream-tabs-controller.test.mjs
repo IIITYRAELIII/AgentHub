@@ -1046,6 +1046,87 @@ test("an active Stream preserves its answer-ready state", async () => {
   );
 });
 
+test("right panel visibility defaults on and its header switch preserves hidden options across reload", async () => {
+  const { chromium } = await import("playwright");
+  const browser = await launchDomBrowser(chromium);
+  try {
+    for (const width of [1440, 1024]) {
+      const page = await browser.newPage({ viewport: { width, height: 1000 } });
+      const errors = [];
+      page.on("pageerror", (error) => errors.push(error.message));
+      const populate = async () => {
+        await page.evaluate(() => {
+          window.AgentHub.setWorkspaces([{ id: "rail-workspace", name: "Panel preview", settings: {} }]);
+          window.AgentHub.setTasks([{
+            id: "rail-task", threadId: "rail-thread", workspaceId: "rail-workspace",
+            workspaceName: "Panel preview", streamId: "rail-stream", streamName: "Preview",
+            streamOrdinal: 1, provider: "codex", agentLabel: "Codex", status: "ready",
+            statusLabel: "Готов", lastActivity: new Date().toISOString(),
+            running: false, unread: true, selected: true, streamSettings: {},
+          }]);
+        });
+        await page.locator("[data-stream-card-settings-toggle]").click();
+      };
+      await openStreamTabsDomFixture(page);
+      await populate();
+      const group = page.getByRole("region", { name: "Правая панель", exact: true });
+      const toggle = group.getByRole("switch", { name: "Отображать правую панель", exact: true });
+      const options = group.locator("[data-activity-rail-settings]");
+      const recent = group.getByRole("spinbutton", { name: "Часы для недавних Streams" });
+      const detailed = group.getByRole("switch", { name: "Подробные карточки Streams" });
+      assert.equal(await toggle.getAttribute("aria-checked"), "true");
+      assert.equal(await page.locator("[data-activity-rail]").isVisible(), true);
+      assert.equal(await options.isVisible(), true);
+      assert.equal(await page.locator("[data-settings-panel] [data-activity-rail-visibility-toggle]").count(), 0);
+      const headingBox = await group.getByRole("heading", { name: "Правая панель" }).boundingBox();
+      const toggleBox = await toggle.boundingBox();
+      assert.ok(toggleBox.x >= headingBox.x + headingBox.width);
+      assert.ok(Math.abs(toggleBox.y + toggleBox.height / 2 - headingBox.y - headingBox.height / 2) < 4);
+      assert.equal((await toggle.innerText()).trim(), "");
+      await recent.fill("7");
+      await recent.press("Tab");
+      await detailed.click();
+      assert.equal(await detailed.getAttribute("aria-checked"), "true");
+      const screenshotDirectory = String(process.env.HUB157_QA_SCREENSHOT_DIR ?? "").trim();
+      if (screenshotDirectory) {
+        await group.screenshot({
+          path: path.join(screenshotDirectory, `right-panel-on-${width}.png`),
+        });
+      }
+      await toggle.click();
+      assert.equal(await toggle.getAttribute("aria-checked"), "false");
+      assert.equal(await options.isVisible(), false);
+      assert.equal(await page.locator("[data-activity-rail]").isVisible(), false);
+      assert.equal(await toggle.isVisible(), true);
+      if (screenshotDirectory) {
+        await group.screenshot({
+          path: path.join(screenshotDirectory, `right-panel-off-${width}.png`),
+        });
+      }
+      await toggle.click();
+      assert.equal(await recent.inputValue(), "7");
+      assert.equal(await detailed.getAttribute("aria-checked"), "true");
+      await toggle.click();
+      await page.reload();
+      await page.waitForFunction(() => typeof window.AgentHub === "object");
+      await populate();
+      assert.equal(await toggle.getAttribute("aria-checked"), "false");
+      assert.equal(await options.isVisible(), false);
+      assert.equal(await page.locator("[data-activity-rail]").isVisible(), false);
+      await toggle.focus();
+      await toggle.press("Space");
+      assert.equal(await toggle.getAttribute("aria-checked"), "true");
+      assert.equal(await options.isVisible(), true);
+      assert.equal(await detailed.getAttribute("aria-checked"), "true");
+      assert.equal(await page.locator("[data-activity-rail]").isVisible(), true);
+      assert.deepEqual(errors, []);
+      await page.close();
+    }
+  } finally {
+    await browser.close();
+  }
+});
+
 test("Astra uses its compact label only in Stream pills and the active Stream header", async () => {
   const { chromium } = await import("playwright");
   const browser = await launchDomBrowser(chromium);
@@ -3052,6 +3133,83 @@ test("Stream card opens on 20 repeated native dblclicks per viewport without con
       assert.deepEqual(problems, []);
       await page.close();
     }
+  } finally {
+    await browser.close();
+  }
+});
+
+test("Stream card close button does not reopen or hide a legitimately reopened modal", async () => {
+  const { chromium } = await import("playwright");
+  const browser = await launchDomBrowser(chromium);
+  try {
+    const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+    await openStreamTabsDomFixture(page);
+    await page.evaluate(() => {
+      window.AgentHub.setWorkspaces([{
+        id: "workspace-1", name: "One", settings: {},
+      }], ["workspace:workspace-1", "notes"]);
+      window.AgentHub.setTasks([{
+        id: "task-one",
+        selected: true,
+        workspaceId: "workspace-1",
+        workspaceName: "One",
+        workspaceSettings: {},
+        streamId: "stream-one",
+        streamName: "One stream",
+        streamOrdinal: 1,
+        provider: "codex",
+        agentLabel: "Codex",
+        status: "ready",
+        statusLabel: "Готов",
+        lastActivity: "2026-09-04T08:00:00.000Z",
+        running: false,
+        unread: false,
+        streamSettings: {},
+      }]);
+    });
+
+    const tab = page.locator('.stream-tabs-track .stream-tab[data-stream-tab-id="stream-one"]');
+    const dialog = page.locator("[data-dialog-settings]");
+    const closeButton = page.locator("[data-dialog-settings-close]");
+
+    await tab.dblclick();
+    await closeButton.click();
+    assert.deepEqual(await dialog.evaluate((node) => ({
+      open: node.open,
+      modal: node.matches(":modal"),
+      hidden: node.hidden,
+    })), { open: false, modal: false, hidden: true });
+
+    await tab.dblclick();
+    assert.deepEqual(await dialog.evaluate((node) => ({
+      open: node.open,
+      modal: node.matches(":modal"),
+      hidden: node.hidden,
+      visible: getComputedStyle(node).display !== "none",
+    })), { open: true, modal: true, hidden: false, visible: true });
+
+    const reopenedAfterQueuedClose = await page.evaluate(() => new Promise((resolve) => {
+      const modal = document.querySelector("[data-dialog-settings]");
+      modal.addEventListener("close", () => resolve({
+        open: modal.open,
+        modal: modal.matches(":modal"),
+        hidden: modal.hidden,
+        visible: getComputedStyle(modal).display !== "none",
+      }), { once: true });
+      document.querySelector("[data-dialog-settings-close]").click();
+      document.querySelector("[data-dialog-settings-toggle]").click();
+    }));
+    assert.deepEqual(reopenedAfterQueuedClose,
+      { open: true, modal: true, hidden: false, visible: true });
+
+    await closeButton.click();
+    assert.deepEqual(await dialog.evaluate((node) => ({
+      open: node.open,
+      modal: node.matches(":modal"),
+      hidden: node.hidden,
+    })), { open: false, modal: false, hidden: true });
+    await page.locator('[data-view-button="dashboard"]').click();
+    assert.equal(await page.locator("html").getAttribute("data-view"), "dashboard");
   } finally {
     await browser.close();
   }
