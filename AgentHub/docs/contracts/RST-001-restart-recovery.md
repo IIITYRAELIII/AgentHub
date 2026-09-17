@@ -16,6 +16,23 @@ by REL-001 and ADR-0015. It binds contour root/marker/port and source/release
 identity instead of Stream, Thread or provider turn identity. It is likewise not
 a user turn and does not alter the restart/compaction operation schema.
 
+A manual Test Contour test session is a foreground owner of the same canonical
+per-root operation lease. It binds an exact already-ready contour identity, an
+idempotent acquisition receipt and one exact active Agent Hub provider/thread/
+turn. Normal release, handled helper cancellation and the turn's committed
+provider-run terminal record leave through the lease owner, including completed,
+failed and aborted Codex and Claude turns whose helper process remains alive.
+The owning completion boundary writes this minimal record separately from
+message delivery; Codex's existing committed terminal remains valid evidence.
+Missing active-run state without exact terminal evidence is unknown and does
+not release. Abrupt helper death is recovered only after
+confirmed process death. Time or a missed heartbeat alone never releases a live
+or identity-unknown session.
+Provider recovery read, reconnect or reattach failure is likewise unknown: a
+generic recovery exception and a local `interrupted` bookkeeping decision do
+not create provider terminal evidence or release the manual session. Only the
+provider/process completion owner may commit the exact terminal outcome.
+
 ## Invariants
 
 - Timeout is ambiguous until reconciliation; it does not authorize duplicate

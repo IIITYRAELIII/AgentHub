@@ -2,6 +2,37 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 
 import { taskProjectRoot } from "../domain/task-project-root.mjs";
+import { ReleaseCandidateFrozenError } from "../domain/task-board-task.mjs";
+
+export class TaskWithdrawalBusyError extends Error {
+  constructor(cause) {
+    super(cause.message);
+    this.code = "TASK_WITHDRAWAL_BUSY";
+  }
+}
+
+export class TaskIntegrationConflictError extends Error {
+  constructor(details) {
+    super(`Task merge conflict: ${details.conflicts.join(", ")}. dev restored; continue in ${details.projectRoot}. ${JSON.stringify(details)}`);
+    this.code = "TASK_INTEGRATION_CONFLICT";
+    this.details = details;
+  }
+}
+
+export class TaskAwaitIntegrationError extends Error {
+  constructor(cause) {
+    super(`PreRelease integration failed; Task status was not changed: ${cause.message}`);
+    this.code = "TASK_AWAIT_INTEGRATION_FAILED";
+  }
+}
+
+export class TaskWithdrawalDependencyError extends Error {
+  constructor(taskId, cause) {
+    super(`Task ${taskId} was not returned: ${cause.message}. Handle the dependent Task first, or consolidate the Tasks; no dependent Task was changed.`);
+    this.code = "TASK_WITHDRAWAL_DEPENDENCY";
+    this.details = { taskId, blockedTaskIds: cause.blockedTaskIds, integrationCommit: cause.integrationCommit };
+  }
+}
 
 function requiredMethod(value, name) {
   if (typeof value?.[name] !== "function") throw new TypeError(`${name} is required`);
@@ -27,6 +58,7 @@ function confirmation(task, action, preview) {
       untrackedPaths: item.untrackedPaths,
     })),
     gitReferences: preview.gitReferences ?? [],
+    absorbedInto: preview.absorbedInto ?? null,
     deleting: preview.deleting ?? [],
   })).digest("hex");
   return {
@@ -116,8 +148,41 @@ export class TaskLifecycleService {
     }
     return this.releasePreflight.withAwaitTransition(
       workspace.id,
-      () => this.#updateWorkflowStatusLocked(options, { releaseWorkflow: true }),
+      async () => this.#refreshAwaitResult(
+        await this.#updateWorkflowStatusLocked(options, { releaseWorkflow: true }),
+        workspace.id, options.projectRoot || this.#projectRoot(task),
+      ),
+      {
+        changesAwait: async () => {
+          const current = this.#task(options.taskId);
+          const changes = current.workflowStatus === "awaiting_implementation"
+            || options.status === "awaiting_implementation";
+          if (changes && await this.taskBoard.store?.awaitRebuildPending?.(workspace.id)) {
+            throw new ReleaseCandidateFrozenError();
+          }
+          return changes;
+        },
+      },
     );
+  }
+
+  async #refreshAwaitResult(result, workspaceId, projectRoot) {
+    if (result?.releaseCandidate?.status !== "invalidated") return result;
+    try {
+      const prepared = await this.releasePreflight.prepareAwaitSet({
+        workspaceId,
+        fallbackProjectRoots: projectRoot ? [projectRoot] : [],
+        preserveFrozen: true,
+      });
+      return { ...result, releaseCandidate: { ...prepared, status: "ready" } };
+    } catch (error) {
+      // Acceptance is durable already. Candidate failure must not undo it or
+      // turn the known status transition into an ambiguous failed mutation.
+      return { ...result, releaseCandidate: {
+        status: "blocked", reason: String(error?.message ?? error),
+        ...(error?.code ? { code: error.code } : {}),
+      } };
+    }
   }
 
   async updateWorkflowStatusFromSource(options = {}, {
@@ -195,8 +260,15 @@ export class TaskLifecycleService {
           }, { releaseWorkflow: true, lease });
         },
         { guardTaskId: target.id },
-      )
-    ));
+      ).then((result) => this.#refreshAwaitResult(result, workspace.id, projectRoot))
+    ), {
+      changesAwait: async () => {
+        if (await this.taskBoard.store?.awaitRebuildPending?.(workspace.id)) {
+          throw new ReleaseCandidateFrozenError();
+        }
+        return true;
+      },
+    });
   }
 
   async #updateWorkflowStatusLocked({
@@ -223,12 +295,19 @@ export class TaskLifecycleService {
         throw new Error("Task workflow cutover status changed");
       }
       const snapshotsResult = releaseWorkflow && workflowStatus === "testing";
+      const withdrawsResult = releaseWorkflow && ["new", "in_progress", "blocked"].includes(workflowStatus)
+        && ["testing", "awaiting_implementation"].includes(task.workflowStatus);
       const acceptsExistingResult = releaseWorkflow
         && ["awaiting_implementation", "done"].includes(workflowStatus);
       const workspace = task.workspaceId ? this.workspaceCatalog.workspace(task.workspaceId) : null;
       const affectsAwait = workspace?.settings?.releaseWorkflowEnabled === true
         && (task.workflowStatus === "awaiting_implementation" || workflowStatus === "awaiting_implementation");
       const selectedProjectRoot = releaseWorkflow ? projectRoot || this.#projectRoot(task) : null;
+      if (releaseWorkflow && task.workflowStatus === "blocked" && workflowStatus !== "blocked") {
+        await this.taskGitWorkspaces.prepareOwned({
+          taskId: task.id, taskNumber: task.taskNumber, projectRoot: selectedProjectRoot, lease,
+        });
+      }
       let acceptedReference = null;
       if ((affectsAwait || acceptsExistingResult) && !selectedProjectRoot) {
         throw new Error("Task project root is unavailable; exact result was not accepted");
@@ -275,7 +354,92 @@ export class TaskLifecycleService {
         } : {}),
       }), operationId);
       try {
+        if (withdrawsResult) {
+          requiredMethod(this.taskGitWorkspaces, "withdrawResultOwned");
+          const references = task.gitReferences ?? [];
+          const reference = references.find((item) => samePath(item.projectRoot, selectedProjectRoot))
+            ?? (references.length === 1 ? references[0] : null);
+          if (!reference) throw new Error("Task return requires its exact Test result");
+          const tasks = this.taskBoard.releaseTasks(task.workspaceId).filter((candidate) => (
+            candidate.status !== "done" && ["testing", "awaiting_implementation"].includes(candidate.workflowStatus)
+          )).flatMap((candidate) => (candidate.gitReferences ?? []).filter((item) => (
+            samePath(item.projectRoot, reference.projectRoot)
+          )).map((item) => ({ taskId: candidate.id, taskNumber: candidate.taskNumber, ...item })));
+          const result = await this.taskGitWorkspaces.withdrawResultOwned({
+            taskId: task.id, taskNumber: task.taskNumber, projectRoot: reference.projectRoot,
+            resultCommit: reference.resultCommit, operationId, lease, tasks,
+            blockedBy: operationEvidence?.blockedBy,
+            commitWorkflow: async (withdrawal) => {
+              await this.#assertOwned(lease);
+              return this.#mutation(() => this.taskBoard.commitWorkflowTransition({
+                operationId, gitReferences: [], replaceGitReferences: false, ...binding,
+                evidence: {
+                  ...(operationEvidence ?? {}), outcome: "withdrawn_result", resultCommit: reference.resultCommit, withdrawal,
+                  response: { gitWithdrawal: withdrawal, ...(affectsAwait ? {
+                    releaseCandidate: { status: "pending", reason: "Accepted result returned for rework" },
+                  } : {}) },
+                },
+              }), operationId);
+            },
+            readWorkflowOutcome: async () => {
+              try {
+                const outcome = this.taskBoard.lifecycleOutcome(operationId);
+                if (outcome?.taskId === task.id && outcome.result?.task?.workflowStatus === workflowStatus
+                  && outcome.result?.evidence?.withdrawal?.resultCommit === reference.resultCommit) {
+                  return { status: "committed", result: outcome.result.task };
+                }
+                const current = this.#task(task.id);
+                return { status: !outcome && current.revision === task.revision ? "not_committed" : "unknown" };
+              } catch { return { status: "unknown" }; }
+            },
+          });
+          return { task: result.workflow, gitWithdrawal: result.withdrawal,
+            ...(affectsAwait ? { releaseCandidate: { status: "invalidated", reason: "Accepted result returned for rework" } } : {}),
+          };
+        }
         if (!snapshotsResult) {
+          if (releaseWorkflow && workflowStatus === "awaiting_implementation") {
+            let current;
+            const prepared = await this.releasePreflight.prepareAwaitSet({
+              workspaceId: task.workspaceId, fallbackProjectRoots: [selectedProjectRoot], preserveFrozen: true, lease,
+              acceptingTask: { id: task.id, revision: task.revision },
+              commitPrepared: async (candidate) => {
+                await this.#assertOwned(lease);
+                try {
+                  current = await this.#mutation(() => this.taskBoard.commitWorkflowTransition({
+                    operationId, gitReferences: [], replaceGitReferences: false, ...binding,
+                    evidence: {
+                      ...(operationEvidence ?? {}), outcome: "accepted_existing_result",
+                      resultCommit: acceptedReference.resultCommit,
+                      response: { releaseCandidate: { ...candidate, status: "ready" } },
+                    },
+                  }), operationId);
+                } catch (error) {
+                  // A lost SQLite reply is not a rejection. Read the original
+                  // operation before deciding whether Git may be rolled back.
+                  try {
+                    const outcome = this.taskBoard.lifecycleOutcome(operationId);
+                    if (outcome?.taskId === task.id
+                        && outcome.result?.task?.workflowStatus === "awaiting_implementation"
+                        && outcome.result?.task?.revision === task.revision + 1
+                        && outcome.result?.evidence?.response?.releaseCandidate?.planRevision === candidate.planRevision) {
+                      current = outcome.result.task;
+                      return;
+                    }
+                    const transition = this.taskBoard.lifecycleTransition(operationId);
+                    if (!outcome && transition?.taskId === task.id && transition.phase === "pending_git") throw error;
+                  } catch (readError) {
+                    if (readError === error) throw error;
+                  }
+                  const unknown = new Error(`Await commit outcome is unknown: ${error.message}`);
+                  unknown.code = "AWAIT_PREPARATION_UNKNOWN";
+                  throw unknown;
+                }
+              },
+            });
+            if (!current) throw new Error("PreRelease preparation did not commit its Task transition");
+            return { task: current, releaseCandidate: { ...prepared, status: "ready" } };
+          }
           await this.#assertOwned(lease);
           const current = await this.#mutation(() => this.taskBoard.commitWorkflowTransition({
             operationId,
@@ -286,6 +450,9 @@ export class TaskLifecycleService {
               ...(operationEvidence ?? {}),
               outcome: acceptsExistingResult ? "accepted_existing_result" : "not_required",
               ...(acceptedReference ? { resultCommit: acceptedReference.resultCommit } : {}),
+              ...(affectsAwait ? { response: { releaseCandidate: {
+                status: "pending", reason: "Await membership changed; candidate preparation requires readback or retry",
+              } } } : {}),
             },
           }), operationId);
           if (!affectsAwait) return current;
@@ -309,9 +476,26 @@ export class TaskLifecycleService {
           projectRoot: gitWorkspace.projectRoot,
           turnId: null,
           summary: task.title,
+          expectedResultCommit: task.workflowStatus === "testing"
+            ? (task.gitReferences ?? []).find((reference) => samePath(reference.projectRoot, gitWorkspace.gitBaseline?.repoRoot || selectedProjectRoot))?.resultCommit ?? null
+            : null,
           lease,
         });
         if (!integration.resultProved || !integration.integrated) {
+          if (integration.devRestored === true && integration.conflicts?.length) {
+            const failure = new TaskIntegrationConflictError({
+              taskId: task.id, operationId, projectRoot: snapshot.projectRoot,
+              resultCommit: snapshot.headCommit, devCommit: integration.dev.headCommit,
+              conflicts: integration.conflicts, devRestored: true,
+            });
+            await this.#assertOwned(lease);
+            await this.#mutation(() => this.taskBoard.failLifecycleTransition(operationId, failure), operationId);
+            const terminal = this.taskBoard.lifecycleTransition(operationId);
+            if (terminal?.phase !== "failed" || terminal.taskId !== task.id || terminal.error !== failure.message.slice(0, 4000)) {
+              throw new Error("Task conflict outcome could not be confirmed");
+            }
+            throw failure;
+          }
           throw new Error(integration.error || "Task result was not integrated into dev");
         }
         await this.#assertOwned(lease);
@@ -343,7 +527,12 @@ export class TaskLifecycleService {
             outcome: integration.outcome,
             resultCommit: snapshot.headCommit,
             devHeadCommit: integration.dev?.headCommit ?? null,
-            response: { gitWorkspace: gitWorkspaceResult, gitIntegration: gitIntegrationResult },
+            response: {
+              gitWorkspace: gitWorkspaceResult, gitIntegration: gitIntegrationResult,
+              ...(affectsAwait ? { releaseCandidate: {
+                status: "pending", reason: "Await result changed; candidate preparation requires readback or retry",
+              } } : {}),
+            },
           },
         }), operationId);
         return {
@@ -355,6 +544,30 @@ export class TaskLifecycleService {
           } : {}),
         };
       } catch (error) {
+        if (["TASK_WITHDRAWAL_UNKNOWN", "AWAIT_PREPARATION_UNKNOWN"].includes(error?.code)) throw error;
+        if (releaseWorkflow && workflowStatus === "awaiting_implementation") {
+          const failure = new TaskAwaitIntegrationError(error);
+          await this.#failWhileOwned(lease, operationId, failure);
+          const failed = this.taskBoard.lifecycleTransition(operationId);
+          if (failed?.taskId === task.id && failed.phase === "failed"
+              && failed.error === failure.message.slice(0, 4000)) throw failure;
+          throw error;
+        }
+        if (["TASK_WITHDRAWAL_DEPENDENCY", "TASK_WITHDRAWAL_BUSY"].includes(error?.code)) {
+          // The Git owner detects this before writing the withdrawal intent or
+          // exchanging dev. Terminalize only our own failed transition.
+          const failure = error.code === "TASK_WITHDRAWAL_BUSY"
+            ? new TaskWithdrawalBusyError(error)
+            : new TaskWithdrawalDependencyError(task.id, error);
+          await this.#assertOwned(lease);
+          await this.#mutation(() => this.taskBoard.failLifecycleTransition(operationId, failure), operationId);
+          const saved = this.taskBoard.lifecycleTransition(operationId);
+          if (saved?.taskId !== task.id || saved.phase !== "failed"
+              || saved.error !== failure.message.slice(0, 4000)) {
+            throw new Error("Task withdrawal refusal could not be confirmed");
+          }
+          throw failure;
+        }
         await this.#failWhileOwned(lease, operationId, error);
         throw error;
       }
@@ -378,28 +591,55 @@ export class TaskLifecycleService {
   }
 
   async reconcileUnknownWorkflowStatusOwned({
-    taskId, operationId, projectRoot, guardId, proof, lease,
+    taskId, operationId, projectRoot, guardId, proof, lease, finalizeCommittedWithdrawal = false,
   } = {}) {
     await this.#assertOwned(lease);
     const current = this.#task(taskId);
     const transition = this.taskBoard.lifecycleTransition?.(operationId);
+    if (finalizeCommittedWithdrawal) {
+      const outcome = this.taskBoard.lifecycleOutcome(operationId);
+      const withdrawal = outcome?.result?.evidence?.withdrawal;
+      if (transition || outcome?.taskId !== current.id || outcome.result?.evidence?.outcome !== "withdrawn_result"
+        || outcome.result?.task?.revision !== current.revision
+        || outcome.result?.task?.workflowStatus !== current.workflowStatus
+        || !["new", "in_progress", "blocked"].includes(current.workflowStatus)
+        || withdrawal?.taskId !== current.id) {
+        throw new Error("Committed Task withdrawal identity does not match");
+      }
+      const pending = await this.taskGitWorkspaces.pendingWithdrawal({ projectRoot, taskId, operationId });
+      const recovery = pending && guardId ? await this.taskGitWorkspaces.recoverProcessTreeGuard(current.id, {
+        repositoryRoot: projectRoot, guardId, proof, lease,
+      }) : null;
+      if (pending) {
+        await this.taskGitWorkspaces.withdrawResultOwned({
+          taskId, taskNumber: current.taskNumber, projectRoot,
+          resultCommit: withdrawal.resultCommit, operationId, lease,
+          readWorkflowOutcome: async () => ({ status: "committed", result: current }),
+          commitWorkflow: async () => { throw new Error("Committed withdrawal must not replay status mutation"); },
+        });
+      }
+      return { result: { task: current, ...(outcome.result.evidence.response ?? {}) }, recovery };
+    }
+    const pendingWithdrawal = ["new", "in_progress", "blocked"].includes(transition?.targetWorkflowStatus)
+      && ["testing", "awaiting_implementation"].includes(current.workflowStatus);
     if (
       transition?.operationId !== operationId
       || transition.taskId !== current.id
       || transition.kind !== "workflow"
       || transition.phase !== "pending_git"
-      || transition.targetWorkflowStatus !== "awaiting_implementation"
+      || (!pendingWithdrawal && transition.targetWorkflowStatus !== "awaiting_implementation")
       || transition.expectedRevision !== current.revision
-      || current.workflowStatus !== "testing"
+      || (!pendingWithdrawal && current.workflowStatus !== "testing")
     ) {
       throw new Error("Unknown workflow reconciliation identity or Task CAS does not match");
     }
-    const recovery = await this.taskGitWorkspaces.recoverProcessTreeGuard(current.id, {
+    if (!pendingWithdrawal && !guardId) throw new Error("Pending Await recovery requires its process-tree guard");
+    const recovery = guardId ? await this.taskGitWorkspaces.recoverProcessTreeGuard(current.id, {
       repositoryRoot: projectRoot,
       guardId,
       proof,
       lease,
-    });
+    }) : null;
     const result = await this.#updateWorkflowStatusWithLease({
       taskId: current.id,
       status: transition.targetWorkflowStatus,
@@ -407,7 +647,12 @@ export class TaskLifecycleService {
       projectRoot,
       operationEvidence: transition.evidence,
     }, { releaseWorkflow: true, lease });
-    return { result, recovery };
+    return {
+      result: result?.releaseCandidate?.status === "invalidated"
+        ? { ...result, releaseCandidate: { status: "pending", reason: "Status recovered; candidate preparation requires readback or retry" } }
+        : result,
+      recovery,
+    };
   }
 
   reconcileUnknownWorkflowStatus(options = {}) {
@@ -423,7 +668,48 @@ export class TaskLifecycleService {
     return confirmation(task, action, preview);
   }
 
-  async complete({ taskId, operationId, confirmCleanup = false, expectedCleanupToken = null } = {}) {
+  async #completeAbsorbed({ taskId, operationId, confirmCleanup, expectedCleanupToken, absorbedIntoTaskId }) {
+    if (taskId === absorbedIntoTaskId) throw new Error("A Task cannot absorb itself");
+    requiredMethod(this.taskGitWorkspaces, "withTaskLocks");
+    requiredMethod(this.taskGitWorkspaces, "withAbsorptionEvidenceOwned");
+    return this.taskGitWorkspaces.withTaskLocks([taskId, absorbedIntoTaskId], async (lease) => {
+      const task = this.#task(taskId);
+      const target = this.#task(absorbedIntoTaskId);
+      if (!task.workspaceId || task.workspaceId !== target.workspaceId || target.status === "done"
+          || !["testing", "awaiting_implementation"].includes(target.workflowStatus)) {
+        throw new Error("Surviving Task must be open and tested in the same Workspace");
+      }
+      if (!["new", "in_progress", "blocked"].includes(task.workflowStatus)) {
+        throw new Error("Return the source Task from Test/Await before combining it");
+      }
+      return this.taskGitWorkspaces.withAbsorptionEvidenceOwned({ source: task, target, lease }, async (gitEvidence) => {
+        const absorbedInto = { ...gitEvidence, taskRevision: target.revision };
+        const preview = confirmation(task, "complete", { absorbedInto: { ...absorbedInto, taskRevision: target.revision } });
+        preview.warning = "Close the source Task as combined. Its branch, worktree and history are preserved; this does not mark it published.";
+        if (confirmCleanup !== true) return preview;
+        if (expectedCleanupToken !== preview.cleanupToken) throw new Error("Combined closure confirmation is stale; read the preview again");
+        await this.#assertOwned(lease);
+        await this.#mutation(() => this.taskBoard.beginLifecycleTransition({
+          id: task.id, operationId, kind: "complete", expectedRevision: task.revision,
+          evidence: { absorbedInto },
+        }), operationId);
+        try {
+          await this.#assertOwned(lease);
+          return await this.#mutation(() => this.taskBoard.finalizeCleanupTransition(operationId, {
+            receiptEvidence: { absorbedInto },
+          }), operationId);
+        } catch (error) {
+          await this.#failWhileOwned(lease, operationId, error);
+          throw error;
+        }
+      });
+    });
+  }
+
+  async complete({ taskId, operationId, confirmCleanup = false, expectedCleanupToken = null, absorbedIntoTaskId = null } = {}) {
+    if (absorbedIntoTaskId) return this.#completeAbsorbed({
+      taskId, operationId, confirmCleanup, expectedCleanupToken, absorbedIntoTaskId,
+    });
     return this.#withLock(taskId, async (lease = {}) => {
       const task = this.#task(taskId);
       const resumed = this.taskBoard.lifecycleTransition?.(operationId);

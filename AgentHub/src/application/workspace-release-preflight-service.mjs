@@ -145,88 +145,6 @@ function readyRepositories(ready = [], fallbackProjectRoots = []) {
   }));
 }
 
-function sameContourTarget(left, right) {
-  return Boolean(left && right)
-    && canonicalRoot(left.root) === canonicalRoot(right.root)
-    && String(left.contourId ?? "") === String(right.contourId ?? "")
-    && Number(left.port) === Number(right.port)
-    && String(left.model ?? "") === String(right.model ?? "");
-}
-
-function exactContourIdentityReadback({ refreshed, contour, expectedHeadCommit }) {
-  const requested = refreshed?.operation;
-  const readback = contour?.readback;
-  const observed = readback?.operation;
-  const state = contour?.state;
-  const expectedHead = String(expectedHeadCommit ?? "").trim();
-  return Boolean(requested?.operationId)
-    && refreshed?.refreshOutcome === "refreshed"
-    && requested.status === "ready"
-    && requested.phase === "ready"
-    && requested.source?.headCommit === expectedHead
-    && readback?.outcome === "exact"
-    && observed?.operationId === requested.operationId
-    && observed?.status === "ready"
-    && observed?.phase === "ready"
-    && observed?.releaseId === requested.releaseId
-    && observed?.source?.headCommit === expectedHead
-    && sameContourTarget(observed?.target, requested.target)
-    && canonicalRoot(contour?.root) === canonicalRoot(requested.target?.root)
-    && contour?.planned === false
-    && contour?.operation?.operationId === requested.operationId
-    && state?.operationId === requested.operationId
-    && state?.releaseId === requested.releaseId
-    && state?.contourId === requested.target?.contourId
-    && Number(state?.port) === Number(requested.target?.port)
-    && state?.model === requested.target?.model
-    && contour?.source?.headCommit === expectedHead;
-}
-
-function exactReadyContourReadback(context) {
-  return exactContourIdentityReadback(context)
-    && context.contour?.running === true
-    && context.contour?.status === "ready";
-}
-
-function readinessAssessment(context) {
-  const outcome = String(context.contour?.readback?.outcome ?? "missing");
-  if (!exactContourIdentityReadback(context)) {
-    return {
-      status: "failed",
-      reason: outcome === "exact" ? "contour-identity-mismatch" : `operation-readback-${outcome}`,
-    };
-  }
-  if (exactReadyContourReadback(context)) return { status: "ready", reason: "ready" };
-  const observed = context.contour?.readiness;
-  if (context.contour?.status === "not-ready"
-      && context.contour?.running === false
-      && observed?.ready === false
-      && observed?.retryable === true) {
-    return { status: "retry", reason: String(observed.reason ?? "health-not-ready") };
-  }
-  return {
-    status: "failed",
-    reason: String(observed?.reason ?? `contour-${context.contour?.status ?? "missing"}`),
-  };
-}
-
-function readinessFailure(reason, { attempts, elapsedMs, deadlineMs, deadline = false } = {}) {
-  const readbackOutcome = reason.startsWith("operation-readback-")
-    ? reason.slice("operation-readback-".length)
-    : null;
-  const summary = readbackOutcome
-    ? `refreshed Test Contour readback is not exact-ready: ${readbackOutcome}`
-    : reason === "contour-identity-mismatch"
-      ? "refreshed Test Contour readback is not exact-ready: exact; it does not match dev HEAD or the exact operation target"
-      : `refreshed Test Contour readiness ${deadline ? "deadline exceeded" : "failed"}: ${reason}`;
-  const error = new Error(
-    `${summary}; reason=${reason}; attempts=${attempts}; elapsedMs=${elapsedMs}; deadlineMs=${deadlineMs}`,
-  );
-  error.code = deadline ? "TEST_CONTOUR_READINESS_DEADLINE" : "TEST_CONTOUR_READINESS_FAILED";
-  error.reason = reason;
-  return error;
-}
-
 function sameRepositoryIdentity(left, right) {
   const candidateMatches = right?.frozenCandidate
     ? String(left?.candidateCommit ?? "") === String(right.frozenCandidate.preReleaseHead ?? "")
@@ -238,12 +156,6 @@ function sameRepositoryIdentity(left, right) {
     && JSON.stringify([...(left?.resultCommits ?? [])].sort()) === JSON.stringify([...(right?.resultCommits ?? [])].sort())
     && JSON.stringify([...(left?.taskIds ?? [])].sort()) === JSON.stringify([...(right?.taskIds ?? [])].sort())
     && sameFrozenTasks(left?.frozenTasks ?? [], right?.frozenTasks ?? []);
-}
-
-function candidateForRepository(releaseCandidates, repository) {
-  return releaseCandidates.find((candidate) => (
-    canonicalRoot(candidate?.repositoryRoot) === canonicalRoot(repository.projectRoot)
-  )) ?? null;
 }
 
 function sameFrozenTasks(left = [], right = []) {
@@ -316,53 +228,6 @@ function assertOriginalPreflightReceipt(receipt, {
   return { ...receipt, status };
 }
 
-async function readExactReadyContour({
-  readTestContourStatus, refreshed, expectedHeadCommit,
-  deadlineMs, pollIntervalMs, now, delay,
-}) {
-  const request = {
-    expectedOperationId: refreshed?.operationId ?? null,
-    expectedHeadCommit,
-  };
-  const startedAt = now();
-  const deadlineAt = startedAt + deadlineMs;
-  let attempts = 0;
-  let lastReason = "health-not-ready";
-  while (attempts === 0 || now() < deadlineAt) {
-    const remainingMs = Math.max(1, deadlineAt - now());
-    let contour;
-    try {
-      contour = await readTestContourStatus({
-        ...request,
-        healthTimeoutMs: Math.min(2_000, remainingMs),
-      });
-    } catch {
-      throw readinessFailure("readback-error", {
-        attempts: attempts + 1,
-        elapsedMs: Math.max(0, now() - startedAt),
-        deadlineMs,
-      });
-    }
-    attempts += 1;
-    const assessment = readinessAssessment({ refreshed, contour, expectedHeadCommit });
-    lastReason = assessment.reason;
-    const elapsedMs = Math.max(0, now() - startedAt);
-    if (assessment.status === "ready") return contour;
-    if (assessment.status === "failed") {
-      throw readinessFailure(assessment.reason, { attempts, elapsedMs, deadlineMs });
-    }
-    const remainingAfterReadMs = deadlineAt - now();
-    if (remainingAfterReadMs <= 0) break;
-    await delay(Math.min(pollIntervalMs, remainingAfterReadMs));
-  }
-  throw readinessFailure(lastReason, {
-    attempts,
-    elapsedMs: Math.max(0, now() - startedAt),
-    deadlineMs,
-    deadline: true,
-  });
-}
-
 async function defaultProductionValidation(source) {
   throw new Error(source?.reason || "release preflight requires a repository-owned production validation gate");
 }
@@ -370,96 +235,142 @@ async function defaultProductionValidation(source) {
 export class WorkspaceReleasePreflightService {
   constructor({
     releasePlanner, taskGitWorkspaces, releaseGitWorkspaces,
-    resolveTestContourSource, refreshTestContour, readTestContourStatus, readPublicationState,
+    resolveReleaseValidationSource, readPublicationState,
     validateProductionCandidate = defaultProductionValidation,
-    readinessDeadlineMs = 10_000,
-    readinessPollIntervalMs = 100,
-    now = () => Date.now(),
-    delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
   } = {}) {
     requiredMethod(releasePlanner, "plan");
-    requiredMethod(taskGitWorkspaces, "prepareDev");
     requiredMethod(taskGitWorkspaces, "assertExplicitUpstreamAdoption");
-    requiredMethod(taskGitWorkspaces, "verifyReleaseResultsInDev");
     requiredMethod(taskGitWorkspaces, "releaseIntegrationEvidence");
     requiredMethod(releaseGitWorkspaces, "assertPrimaryInvariant");
     requiredMethod(releaseGitWorkspaces, "inspectMainChanges");
     requiredMethod(releaseGitWorkspaces, "prepareCandidate");
     requiredMethod(releaseGitWorkspaces, "withAwaitTransition");
-    requiredFunction(resolveTestContourSource, "resolveTestContourSource");
-    requiredFunction(refreshTestContour, "refreshTestContour");
-    requiredFunction(readTestContourStatus, "readTestContourStatus");
+    requiredFunction(resolveReleaseValidationSource, "resolveReleaseValidationSource");
     requiredFunction(readPublicationState, "readPublicationState");
     requiredFunction(validateProductionCandidate, "validateProductionCandidate");
-    requiredFunction(now, "now");
-    requiredFunction(delay, "delay");
-    if (!Number.isFinite(readinessDeadlineMs) || readinessDeadlineMs <= 0) {
-      throw new TypeError("readinessDeadlineMs must be a positive number");
-    }
-    if (!Number.isFinite(readinessPollIntervalMs) || readinessPollIntervalMs <= 0) {
-      throw new TypeError("readinessPollIntervalMs must be a positive number");
-    }
     this.releasePlanner = releasePlanner;
     this.taskGitWorkspaces = taskGitWorkspaces;
     this.releaseGitWorkspaces = releaseGitWorkspaces;
-    this.resolveTestContourSource = resolveTestContourSource;
-    this.refreshTestContour = refreshTestContour;
-    this.readTestContourStatus = readTestContourStatus;
+    this.resolveReleaseValidationSource = resolveReleaseValidationSource;
     this.readPublicationState = readPublicationState;
     this.validateProductionCandidate = validateProductionCandidate;
-    this.readinessDeadlineMs = readinessDeadlineMs;
-    this.readinessPollIntervalMs = readinessPollIntervalMs;
-    this.now = now;
-    this.delay = delay;
   }
 
-  withAwaitTransition(workspaceId, operation) {
-    return this.releaseGitWorkspaces.withAwaitTransition(workspaceId, operation);
+  withAwaitTransition(workspaceId, operation, { changesAwait = null } = {}) {
+    return this.releaseGitWorkspaces.withAwaitTransition(workspaceId, async () => {
+      if (changesAwait && await changesAwait()) {
+        await this.releaseGitWorkspaces.assertAwaitChangesAllowed(workspaceId);
+      }
+      return operation();
+    });
   }
 
-  async prepareAwaitSet({ workspaceId, expectedPlanRevision = null, fallbackProjectRoots = [] } = {}) {
-    const plan = await this.releasePlanner.plan(workspaceId);
+  async prepareAwaitSet({ workspaceId, expectedPlanRevision = null, fallbackProjectRoots = [], preserveFrozen = false,
+    acceptingTask = null, commitPrepared = null, lease = null,
+  } = {}) {
+    if (acceptingTask && typeof commitPrepared !== "function") {
+      throw new Error("Prospective Await preparation requires its lifecycle commit");
+    }
+    const baseline = await this.releasePlanner.plan(workspaceId);
+    const plan = acceptingTask ? await this.releasePlanner.plan(workspaceId, { acceptingTask }) : baseline;
+    const validatePlan = async () => {
+      const current = await this.releasePlanner.plan(workspaceId);
+      if (current.revision !== baseline.revision) {
+        throw new Error("release plan revision changed during PreRelease rebuild");
+      }
+      if (acceptingTask) {
+        const prospective = await this.releasePlanner.plan(workspaceId, { acceptingTask });
+        if (prospective.revision !== plan.revision) throw new Error("Task changed during PreRelease acceptance preparation");
+      }
+    };
     if (expectedPlanRevision != null && plan.revision !== requiredPlanRevision(expectedPlanRevision)) {
       throw new Error("release plan revision changed; rebuild the current Await set again");
     }
-    if (plan.blocked.length) throw new Error("Await set has blocked Task results");
-    const selectedRepositories = readyRepositories(plan.ready, fallbackProjectRoots);
+    if (plan.blocked.length) throw new Error(`Await set has blocked Task results: ${plan.blocked.map((item) => (
+      `${item.taskNumber ?? item.taskId ?? "Task"}: ${item.reason ?? item.gitError ?? "result unavailable"}`
+    )).join("; ")}`);
+    const fallbackRepositories = [];
+    const checkedPrimaries = new Set();
+    for (const projectRoot of fallbackProjectRoots) {
+      const primary = await this.releaseGitWorkspaces.assertPrimaryInvariant(projectRoot, {
+        phase: "Await PreRelease rebuild",
+      });
+      fallbackRepositories.push(primary.projectRoot);
+      checkedPrimaries.add(canonicalRoot(primary.projectRoot));
+    }
+    const selectedRepositories = readyRepositories(plan.ready, fallbackRepositories);
     if (!selectedRepositories.length) {
+      if (acceptingTask) throw new Error("Task has no PreRelease result to accept");
       return { workspaceId: String(workspaceId), planRevision: plan.revision, taskIds: [], releaseCandidates: [] };
     }
     const releaseCandidates = [];
-    for (const repository of selectedRepositories) {
-      await this.releaseGitWorkspaces.assertPrimaryInvariant(repository.projectRoot, {
-        phase: "Await PreRelease rebuild",
-      });
+    requiredMethod(this.taskGitWorkspaces, "releaseBaseEvidence");
+    const publication = await this.readPublicationState();
+    const baseChecks = [];
+    const validateBases = async () => {
+      const currentPublication = await this.readPublicationState();
+      for (const { repository, base } of baseChecks) {
+        const current = await this.taskGitWorkspaces.releaseBaseEvidence({
+          projectRoot: repository.projectRoot,
+          publishedBaseCommit: publicationBaselineFor(repository, currentPublication).publishedRevision,
+          tasks: repository.frozenTasks, lease,
+        });
+        if (JSON.stringify(current) !== JSON.stringify(base)) {
+          throw new Error("accepted release base changed during PreRelease preparation");
+        }
+      }
+    };
+    const result = () => ({
+      workspaceId: String(workspaceId), planRevision: plan.revision,
+      taskIds: [...new Set(plan.ready.map((entry) => String(entry.taskId)))].sort(),
+      overlaps: plan.conflicts, releaseCandidates,
+    });
+    // Retain each repository's rollback boundary until every candidate and the
+    // one Task status CAS succeed. All callers hold the Workspace Await lock.
+    const prepare = async (index) => {
+      if (index === selectedRepositories.length) {
+        await validatePlan();
+        await validateBases();
+        if (commitPrepared) await commitPrepared(result());
+        return;
+      }
+      const repository = selectedRepositories[index];
+      if (!checkedPrimaries.has(canonicalRoot(repository.projectRoot))) {
+        await this.releaseGitWorkspaces.assertPrimaryInvariant(repository.projectRoot, {
+          phase: "Await PreRelease rebuild",
+        });
+      }
       const evidence = await this.taskGitWorkspaces.releaseIntegrationEvidence({
         projectRoot: repository.projectRoot,
         tasks: repository.frozenTasks,
+        ...(lease ? { lease } : {}),
       });
-      releaseCandidates.push(await this.releaseGitWorkspaces.prepareCandidate({
+      const base = await this.taskGitWorkspaces.releaseBaseEvidence({
+        projectRoot: repository.projectRoot,
+        publishedBaseCommit: publicationBaselineFor(repository, publication).publishedRevision,
+        tasks: repository.frozenTasks, lease,
+      });
+      baseChecks.push({ repository, base });
+      const candidate = await this.releaseGitWorkspaces.prepareCandidate({
         planRevision: plan.revision,
         workspaceId,
         projectRoot: repository.projectRoot,
         frozenTasks: evidence.tasks,
-        validateBeforeCommit: async () => {
-          const current = await this.releasePlanner.plan(workspaceId);
-          if (current.revision !== plan.revision) {
-            throw new Error("release plan revision changed during PreRelease rebuild");
-          }
-        },
-      }));
-    }
-    const current = await this.releasePlanner.plan(workspaceId);
-    if (current.revision !== plan.revision) {
-      throw new Error("release plan revision changed during PreRelease rebuild");
-    }
-    return {
-      workspaceId: String(workspaceId),
-      planRevision: plan.revision,
-      taskIds: [...new Set(plan.ready.map((entry) => String(entry.taskId)))].sort(),
-      overlaps: plan.conflicts,
-      releaseCandidates,
+        approvedBaseCommit: base.baseCommit,
+        preserveFrozen,
+        validateBeforeCommit: async () => { await validatePlan(); await validateBases(); },
+        ...(acceptingTask ? { commitPrepared: async (prepared) => {
+          releaseCandidates.push(prepared);
+          await prepare(index + 1);
+        } } : {}),
+      });
+      if (!acceptingTask) {
+        releaseCandidates.push(candidate);
+        await prepare(index + 1);
+      }
     };
+    await prepare(0);
+    return result();
   }
 
   async preflight({
@@ -605,153 +516,92 @@ export class WorkspaceReleasePreflightService {
     }
     const primaryRepositories = [];
     for (const repository of selectedRepositories) {
-      primaryRepositories.push(await this.releaseGitWorkspaces.assertPrimaryInvariant(repository.projectRoot, {
+      const primary = await this.releaseGitWorkspaces.assertPrimaryInvariant(repository.projectRoot, {
         phase: "release preflight",
-      }));
-    }
-    const preparedRepositories = [];
-    for (const repository of selectedRepositories) {
-      const dev = await this.taskGitWorkspaces.prepareDev(repository.projectRoot);
-      preparedRepositories.push({
-        projectRoot: dev.repositoryRoot,
-        worktreeRoot: dev.projectRoot,
-        branch: dev.branch,
-        headCommit: dev.headCommit,
-        resultCommits: repository.resultCommits,
-        taskIds: repository.taskIds,
-        frozenTasks: repository.frozenTasks,
       });
-    }
-
-    const contourSource = await this.resolveTestContourSource(preparedRepositories);
-    const contourRepositoryRoot = contourSource?.kind === "agent-hub-test-contour" ? contourSource.projectRoot : null;
-    const externalRepositories = contourSource?.kind === "agent-hub-test-contour"
-      ? preparedRepositories.filter((repository) => canonicalRoot(repository.projectRoot) !== canonicalRoot(contourRepositoryRoot))
-      : preparedRepositories;
-    let productionValidation = null;
-    let contour = null;
-    if (contourSource?.kind === "agent-hub-test-contour") {
-      const refreshed = await this.refreshTestContour({
-        sourceRoot: contourSource.sourceRoot,
-        forceFreshCandidate: true,
-      });
-      const expectedContourHead = contourSource.headCommit ?? null;
-      contour = await readExactReadyContour({
-        readTestContourStatus: this.readTestContourStatus,
-        refreshed,
-        expectedHeadCommit: expectedContourHead,
-        deadlineMs: this.readinessDeadlineMs,
-        pollIntervalMs: this.readinessPollIntervalMs,
-        now: this.now,
-        delay: this.delay,
-      });
-      if (!exactReadyContourReadback({ refreshed, contour, expectedHeadCommit: expectedContourHead })) {
-        throw new Error(
-          `refreshed Test Contour readback is not exact-ready: ${contour?.readback?.outcome ?? "missing"}; `
-          + "it does not match dev HEAD or the exact operation target",
-        );
+      const audit = mainAudits.find((entry) => canonicalRoot(entry.projectRoot) === canonicalRoot(repository.projectRoot));
+      if (primary.headCommit !== audit.localMain) {
+        throw new Error(`reviewed local main changed before candidate verification for ${repository.projectRoot}`);
       }
+      primaryRepositories.push(primary);
     }
-
+    requiredMethod(this.releaseGitWorkspaces, "frozenCandidate");
+    const releaseCandidates = [];
     const repositories = [];
     for (const repository of selectedRepositories) {
-      const dev = await this.taskGitWorkspaces.verifyReleaseResultsInDev({
-        projectRoot: repository.projectRoot,
-        resultCommits: repository.resultCommits,
-        taskIds: repository.taskIds,
+      const candidate = await this.releaseGitWorkspaces.frozenCandidate(repository.projectRoot);
+      const audit = mainAudits.find((entry) => canonicalRoot(entry.projectRoot) === canonicalRoot(repository.projectRoot));
+      if (candidate.planRevision !== plan.revision
+          || candidate.manifest?.planRevision !== plan.revision
+          || String(candidate.manifest?.workspaceId ?? "") !== String(workspaceId)
+          || canonicalRoot(candidate.repositoryRoot) !== canonicalRoot(repository.projectRoot)
+          || !sameFrozenTasks(candidate.manifest?.tasks, repository.frozenTasks)) {
+        throw new Error(`prepared PreRelease does not match the accepted release plan for ${repository.projectRoot}`);
+      }
+      if (candidate.baseCommit !== audit.originMain || candidate.manifest?.baseCommit !== candidate.baseCommit) {
+        throw new Error(`prepared PreRelease base does not match reviewed main for ${repository.projectRoot}; integrate the reviewed changes through a Task`);
+      }
+      if (!["prepared", "frozen"].includes(candidate.checkpointPhase)) {
+        throw new Error(`prepared PreRelease has an unfinished operation for ${repository.projectRoot}`);
+      }
+      releaseCandidates.push({
+        ...candidate,
+        branch: candidate.checkpointPhase === "frozen" ? "main" : "PreRelease",
+        frozenTasks: repository.frozenTasks,
+        reused: true,
       });
       repositories.push({
-        projectRoot: dev.repositoryRoot,
-        worktreeRoot: dev.projectRoot,
-        branch: dev.branch,
-        headCommit: dev.headCommit,
-        resultCommits: dev.resultCommits,
-        taskIds: repository.taskIds,
-        frozenTasks: repository.frozenTasks,
+        ...repository,
+        worktreeRoot: candidate.releaseRoot,
+        branch: candidate.checkpointPhase === "frozen" ? "main" : "PreRelease",
+        headCommit: candidate.preReleaseHead,
+        frozenCandidate: candidate,
       });
-    }
-    if (contour) {
-      const contourRepository = repositories.find((repository) => (
-        canonicalRoot(repository.projectRoot) === canonicalRoot(contourSource.projectRoot)
-      ));
-      if (!contourRepository || String(contour.source?.headCommit ?? "") !== contourRepository.headCommit) {
-        throw new Error("refreshed Test Contour source does not match dev HEAD");
-      }
     }
 
-    const releaseCandidates = [];
-    for (const repository of selectedRepositories) {
-      const evidence = await this.taskGitWorkspaces.releaseIntegrationEvidence({
-        projectRoot: repository.projectRoot,
-        tasks: repository.frozenTasks,
-      });
-      releaseCandidates.push(await this.releaseGitWorkspaces.prepareCandidate({
-        planRevision: plan.revision,
-        workspaceId,
-        preflightRequestId: requestId,
-        projectRoot: repository.projectRoot,
-        frozenTasks: evidence.tasks,
-        approvedBaseCommit: mainAudits.find((audit) => (
-          canonicalRoot(audit.projectRoot) === canonicalRoot(repository.projectRoot)
-        ))?.originMain ?? null,
-        validateBeforeCommit: async () => {
-          const current = await this.releasePlanner.plan(workspaceId);
-          if (current.revision !== plan.revision) {
-            throw new Error("release plan revision changed during release candidate preparation");
-          }
-        },
-      }));
-    }
-    const current = await this.releasePlanner.plan(workspaceId);
-    if (current.revision !== plan.revision) {
-      throw new Error("release plan revision changed during release candidate preparation");
-    }
+    // Selection of repository-owned validation is independent of the rolling dev
+    // contour. All validation receives the already prepared candidate identity.
+    const validationSource = await this.resolveReleaseValidationSource(repositories);
+    const pipelineRepositoryRoot = validationSource?.kind === "workspace-release-pipeline"
+      ? validationSource.projectRoot : null;
+    const externalRepositories = pipelineRepositoryRoot
+      ? repositories.filter((repository) => canonicalRoot(repository.projectRoot) !== canonicalRoot(pipelineRepositoryRoot))
+      : repositories;
+    let productionValidation = null;
     if (externalRepositories.length) {
-      if (typeof this.releaseGitWorkspaces.frozenCandidate !== "function") {
-        throw new Error("repository production validation requires frozen candidate readback support");
-      }
-      const validationRepositories = [];
-      for (const repository of externalRepositories) {
-        const preparedCandidate = candidateForRepository(releaseCandidates, repository);
-        if (!preparedCandidate) throw new Error(`release validation is missing prepared candidate for ${repository.projectRoot}`);
-        const frozenCandidate = await this.releaseGitWorkspaces.frozenCandidate(repository.projectRoot);
-        if (String(frozenCandidate.preReleaseHead ?? "") !== String(preparedCandidate.preReleaseHead ?? "")
-            || String(frozenCandidate.manifestHash ?? "") !== String(preparedCandidate.manifestHash ?? "")) {
-          throw new Error(`release validation frozen candidate readback is stale for ${repository.projectRoot}`);
-        }
-        validationRepositories.push({ ...repository, frozenCandidate });
-      }
       productionValidation = assertExactProductionValidation({
         workspaceId,
         planRevision: plan.revision,
-        repositories: validationRepositories,
+        repositories: externalRepositories,
         validation: await this.validateProductionCandidate({
           workspaceId,
           planRevision: plan.revision,
-          source: {
-            kind: "external-validation-required",
-            reason: contourSource?.reason,
-            repositories: validationRepositories,
-            ...(contourRepositoryRoot ? { contourRepositoryRoot } : {}),
-          },
-          repositories: validationRepositories,
+          source: validationSource,
+          repositories: externalRepositories,
         }),
       });
-      const afterValidation = await this.releasePlanner.plan(workspaceId);
-      if (afterValidation.revision !== plan.revision) {
-        throw new Error("release plan revision changed during repository production validation");
+    }
+    for (const [index, repository] of repositories.entries()) {
+      const afterPrimary = await this.releaseGitWorkspaces.assertPrimaryInvariant(repository.projectRoot, {
+        phase: "release preflight completion",
+      });
+      const beforePrimary = primaryRepositories[index];
+      if (afterPrimary.headCommit !== beforePrimary.headCommit
+          || afterPrimary.indexFingerprint !== beforePrimary.indexFingerprint
+          || afterPrimary.dirtyFingerprint !== beforePrimary.dirtyFingerprint) {
+        throw new Error(`primary Workspace changed during release preflight for ${repository.projectRoot}`);
       }
-      for (const repository of validationRepositories) {
-        await this.releaseGitWorkspaces.assertPrimaryInvariant(repository.projectRoot, {
-          phase: "repository production validation completion",
-        });
-        const afterCandidate = await this.releaseGitWorkspaces.frozenCandidate(repository.projectRoot);
-        if (!sameFrozenCandidateIdentity(afterCandidate, repository.frozenCandidate)) {
-          throw new Error(`release validation frozen candidate changed after QA for ${repository.projectRoot}`);
-        }
+      const afterCandidate = await this.releaseGitWorkspaces.frozenCandidate(repository.projectRoot);
+      if (!sameFrozenCandidateIdentity(afterCandidate, repository.frozenCandidate)
+          || afterCandidate.checkpointPhase !== repository.frozenCandidate.checkpointPhase
+          || String(afterCandidate.manifest?.workspaceId ?? "") !== String(workspaceId)) {
+        throw new Error(`prepared release candidate changed during preflight for ${repository.projectRoot}`);
       }
     }
-
+    const current = await this.releasePlanner.plan(workspaceId);
+    if (current.revision !== plan.revision) {
+      throw new Error("release plan revision changed during release preflight");
+    }
     return {
       workspaceId: String(workspaceId),
       planRevision: plan.revision,
@@ -763,12 +613,6 @@ export class WorkspaceReleasePreflightService {
       repositories,
       releaseCandidates,
       ...(productionValidation ? { productionValidation } : {}),
-      ...(contour ? { testContour: {
-        root: contour.root,
-        running: true,
-        branch: contour.source?.branch ?? null,
-        headCommit: contour.source.headCommit,
-      } } : {}),
     };
   }
 }

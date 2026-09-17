@@ -137,6 +137,7 @@ window.addEventListener("message", (event) => {
   }
   pending.delete(String(message.id));
   window.clearTimeout(request.timer);
+  request.cleanup?.();
   if (message.chunked === true) {
     const transfer = request.transfer;
     if (!transfer || transfer.received !== transfer.chunkCount) {
@@ -300,26 +301,55 @@ function fallbackRequestBody(init) {
   return "";
 }
 
-function fallbackFetch(url, input, init) {
+async function fallbackFetch(url, input, init) {
   if (url.pathname === "/health") return runtimeHealth();
+  const attachmentUpload = url.pathname === "/api/attachment-upload";
   if (!url.pathname.startsWith("/api/journal")
-    && url.pathname !== "/api/rate-limits") {
+    && url.pathname !== "/api/rate-limits" && !attachmentUpload) {
     return nativeFetch(input, init);
   }
+  init.signal?.throwIfAborted();
+  let body = fallbackRequestBody(init);
+  let bodyEncoding;
+  if (attachmentUpload && String(init.method).toUpperCase() === "PUT") {
+    const chunk = init.body;
+    if (!chunk || !Number.isSafeInteger(chunk.size) || chunk.size < 1
+      || chunk.size > 1024 * 1024 || typeof chunk.arrayBuffer !== "function") {
+      throw new Error("Некорректная часть вложения: максимум 1 МиБ");
+    }
+    const bytes = new Uint8Array(await chunk.arrayBuffer());
+    let binary = "";
+    for (let offset = 0; offset < bytes.length; offset += 8192) {
+      binary += String.fromCharCode(...bytes.subarray(offset, offset + 8192));
+    }
+    body = btoa(binary);
+    bodyEncoding = "base64";
+  }
+  init.signal?.throwIfAborted();
   const id = `http-${Date.now()}-${++sequence}`;
   return new Promise((resolve, reject) => {
+    const cleanup = () => init.signal?.removeEventListener("abort", abort);
+    const abort = () => {
+      pending.delete(id);
+      window.clearTimeout(timer);
+      cleanup();
+      reject(init.signal.reason);
+    };
     const timer = window.setTimeout(() => {
       pending.delete(id);
-      reject(new Error("Журнал в VS Code не ответил вовремя"));
+      cleanup();
+      reject(new Error(attachmentUpload ? "Загрузка в VS Code не ответила вовремя" : "Журнал в VS Code не ответил вовремя"));
     }, 30_000);
-    pending.set(id, { resolve, reject, timer });
+    pending.set(id, { resolve, reject, timer, cleanup });
+    init.signal?.addEventListener("abort", abort, { once: true });
     vscode.postMessage({
       type: "agenthub:http",
       id,
       method: String(init.method ?? "GET"),
       path: `${url.pathname}${url.search}`,
       headers: Object.fromEntries(new Headers(init.headers).entries()),
-      body: fallbackRequestBody(init),
+      body,
+      ...(bodyEncoding ? { bodyEncoding } : {}),
     });
   });
 }

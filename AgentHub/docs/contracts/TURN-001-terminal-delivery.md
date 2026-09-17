@@ -11,6 +11,16 @@ A provider run is identified by `provider + threadId + turnId`. A terminal
 revision extends that identity. The terminal record is the only durable owner of
 final status and final content.
 
+The minimal `provider_run_terminals` lifecycle ledger is not a second final or
+delivery owner. The managed-run completion boundary records only the immutable
+normalized outcome (`completed`, `failed` or `aborted`) needed by external
+ownership recovery such as a surviving manual Test Contour helper. It contains
+no final content, message command identity or outbox and cannot satisfy or alter
+the terminal projection invariants below. Codex's ordinary terminal record
+remains authoritative for its final status/content and is also valid lifecycle
+evidence; Claude uses the minimal record because it has no Codex delivery
+terminal.
+
 ## Invariants
 
 - Terminal status, final content, usage identity and last-message identity are

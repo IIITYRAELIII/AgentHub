@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -42,11 +42,11 @@ function exactProductionValidation({ workspaceId = "workspace-1", planRevision =
 
 function originalReceipt(overrides = {}) {
   return {
-    requestId: "architect-bwm12-release-preflight-20260912-v1",
+    requestId: "releaseManager-bwm12-release-preflight-20260912-v1",
     workspaceId: "workspace-1",
-    streamId: "architect",
+    streamId: "releaseManager",
     provider: "codex",
-    threadId: "thread-architect",
+    threadId: "thread-release-manager",
     toolName: "hub_release_preflight",
     argumentsHash: "preflight-args",
     expectedArgumentsHash: "preflight-args",
@@ -73,6 +73,7 @@ function fixture({ planRevision = "plan-1", contourHead = "dev-head", rejectDev 
       },
     },
     taskGitWorkspaces: {
+      releaseBaseEvidence: async ({ publishedBaseCommit }) => ({ baseCommit: publishedBaseCommit }),
       assertExplicitUpstreamAdoption: async (request) => {
         calls.push(["verify-upstream-adoption", request]);
         return { adoptedByResultCommit: null };
@@ -151,9 +152,9 @@ function fixture({ planRevision = "plan-1", contourHead = "dev-head", rejectDev 
     readPublicationState: async () => ({
       repositories: [{ root: projectRoot, revision: "published-head" }],
     }),
-    resolveTestContourSource: async (repositories) => {
+    resolveReleaseValidationSource: async (repositories) => {
       calls.push(["resolve-contour", repositories]);
-      return { kind: "agent-hub-test-contour", ...repositories[0], sourceRoot: path.resolve("D:/dev-worktree/AgentHub") };
+      return { kind: "workspace-release-pipeline", ...repositories[0], sourceRoot: path.resolve("D:/dev-worktree/AgentHub") };
     },
     refreshTestContour: async (request) => {
       calls.push(["refresh-contour", request]);
@@ -167,81 +168,31 @@ function fixture({ planRevision = "plan-1", contourHead = "dev-head", rejectDev 
       };
     },
   });
-  const contourTarget = {
-    root: path.resolve("D:/test-contour"),
-    contourId: "contour-1",
-    port: 8877,
-    model: "fake-codex",
-  };
-  const contourOperation = {
-    operationId: "operation-1",
-    status: "ready",
-    phase: "ready",
-    source: {
-      branch: "dev",
-      headCommit: "dev-head",
-      sourceRoot: path.resolve("D:/dev-worktree/AgentHub"),
-    },
-    target: contourTarget,
-    releaseId: "release-1",
-  };
-  // Keep this compatibility fixture additive so concurrent release-candidate
-  // coverage can retain its own service dependencies and call ordering.
-  service.refreshTestContour = async (request) => {
-    calls.push(["refresh-contour", { sourceRoot: request.sourceRoot }]);
+  service.releaseGitWorkspaces.frozenCandidate = async (root) => {
+    calls.push(["read-candidate", root]);
     return {
-      operationId: contourOperation.operationId,
-      operation: contourOperation,
-      source: contourOperation.source,
-      refreshOutcome: "refreshed",
-    };
-  };
-  service.readTestContourStatus = async () => {
-    calls.push(["read-contour"]);
-    return {
-      running: true,
-      root: contourTarget.root,
-      source: { branch: "dev", headCommit: contourHead },
-      status: "ready",
-      planned: false,
-      operation: contourOperation,
-      state: {
-        contourId: contourTarget.contourId,
-        operationId: contourOperation.operationId,
-        releaseId: contourOperation.releaseId,
-        port: contourTarget.port,
-        model: contourTarget.model,
-      },
-      readback: { outcome: "exact", operation: contourOperation, current: contourOperation },
+      repositoryRoot: projectRoot, releaseRoot: path.resolve("D:/release-clone"),
+      checkpointPhase: "prepared", planRevision, baseCommit: "main-head",
+      preReleaseHead: "prerelease-head", tree: "candidate-tree", manifestHash: "manifest-hash",
+      manifest: { workspaceId: "workspace-1", planRevision, baseCommit: "main-head", tasks: plan.ready },
     };
   };
   return { calls, locks, projectRoot, service };
 }
 
-test("release preflight verifies selected results in dev and always refreshes Test Contour", async () => {
-  const { calls, locks, projectRoot, service } = fixture();
+test("release preflight reuses prepared PreRelease without dev preparation or contour refresh", async () => {
+  const { calls, locks, service } = fixture();
   const result = await service.preflight({ workspaceId: "workspace-1", expectedPlanRevision: "plan-1" });
   assert.deepEqual(calls.map(([name]) => name), [
-    "plan", "inspect-main", "verify-upstream-adoption", "guard-primary", "prepare-dev", "resolve-contour", "refresh-contour", "read-contour",
-    "verify-dev", "release-integrations", "prepare-candidate", "plan",
+    "plan", "inspect-main", "verify-upstream-adoption", "guard-primary", "read-candidate",
+    "resolve-contour", "guard-primary", "read-candidate", "plan",
   ]);
   assert.deepEqual(locks, ["workspace-1"]);
-  assert.deepEqual(calls[8][1], {
-    projectRoot,
-    resultCommits: ["task-result"],
-    taskIds: ["task-1"],
-  });
-  assert.deepEqual(calls[6][1], { sourceRoot: path.resolve("D:/dev-worktree/AgentHub") });
-  assert.deepEqual(calls[10][1].frozenTasks, [{
-    taskId: "task-1",
-    taskRevision: 7,
-    resultCommit: "task-result",
-    integrations: [{ commit: "integration-1", parent: "integration-parent", order: 1 }],
-  }]);
-  assert.equal(calls[10][1].approvedBaseCommit, "main-head");
   assert.equal(result.planRevision, "plan-1");
-  assert.equal(result.testContour.headCommit, "dev-head");
+  assert.equal(result.testContour, undefined);
+  assert.equal(result.repositories[0].headCommit, "prerelease-head");
   assert.equal(result.releaseCandidates[0].manifestHash, "manifest-hash");
+  assert.equal(result.releaseCandidates[0].reused, true);
   assert.equal(result.status, "ready");
 });
 
@@ -346,6 +297,12 @@ test("release preflight reads a repository baseline appended from a local publis
 
 test("release preflight binds approved main commits to the selected repository", async () => {
   const { calls, projectRoot, service } = fixture();
+  service.releaseGitWorkspaces.assertPrimaryInvariant = async () => ({ projectRoot, headCommit: "local-main" });
+  const readCandidate = service.releaseGitWorkspaces.frozenCandidate;
+  service.releaseGitWorkspaces.frozenCandidate = async (root) => {
+    const candidate = await readCandidate(root);
+    return { ...candidate, baseCommit: "origin-main", manifest: { ...candidate.manifest, baseCommit: "origin-main" } };
+  };
   service.releaseGitWorkspaces.inspectMainChanges = async (request) => {
     calls.push(["inspect-main", request]);
     return {
@@ -437,7 +394,7 @@ test("release preflight requires repository-scoped top-level approvals for multi
     },
     releaseGitWorkspaces: {
       withAwaitTransition: async (_workspaceId, operation) => operation(),
-      assertPrimaryInvariant: async (projectRoot) => ({ projectRoot, branch: "refs/heads/main", headCommit: `main-${path.basename(projectRoot)}` }),
+      assertPrimaryInvariant: async (projectRoot) => ({ projectRoot, branch: "refs/heads/main", headCommit: `local-${path.basename(projectRoot)}` }),
       inspectMainChanges: async (request) => ({
         projectRoot: request.projectRoot,
         publishedRevision: request.publishedRevision,
@@ -480,7 +437,7 @@ test("release preflight requires repository-scoped top-level approvals for multi
         { root: repoB, revision: "published-b" },
       ],
     }),
-    resolveTestContourSource: async () => ({
+    resolveReleaseValidationSource: async () => ({
       kind: "external-validation-required",
       reason: "non-AgentHub validation required",
     }),
@@ -561,7 +518,7 @@ test("release preflight rejects stale external production validation evidence", 
       }),
     },
     readPublicationState: async () => ({ repositories: [{ root: repo, revision: "published" }] }),
-    resolveTestContourSource: async () => ({ kind: "external-validation-required", repositories: [{ projectRoot: repo }] }),
+    resolveReleaseValidationSource: async () => ({ kind: "external-validation-required", repositories: [{ projectRoot: repo }] }),
     refreshTestContour: async () => assert.fail("external validation must not refresh AgentHub contour"),
     readTestContourStatus: async () => assert.fail("external validation must not read AgentHub contour"),
     validateProductionCandidate: async ({ workspaceId, planRevision, repositories }) => ({
@@ -636,10 +593,11 @@ async function realExternalValidationFixture(t, { afterValidation = null } = {})
         headCommit: resultCommit,
         tasks: tasks.map((task) => ({ ...task, integrations: [] })),
       }),
+      releaseBaseEvidence: async ({ publishedBaseCommit }) => ({ baseCommit: publishedBaseCommit }),
     },
     releaseGitWorkspaces,
     readPublicationState: async () => ({ repositories: [{ root: primary, revision: base }] }),
-    resolveTestContourSource: async () => ({ kind: "external-validation-required", reason: "fixture external QA" }),
+    resolveReleaseValidationSource: async () => ({ kind: "external-validation-required", reason: "fixture external QA" }),
     refreshTestContour: async () => assert.fail("external fixture must not refresh AgentHub contour"),
     readTestContourStatus: async () => assert.fail("external fixture must not read AgentHub contour"),
     validateProductionCandidate: async (request) => {
@@ -661,11 +619,15 @@ async function realExternalValidationFixture(t, { afterValidation = null } = {})
       return result;
     },
   });
+  await service.prepareAwaitSet({ workspaceId: "workspace-1" });
   return { root, primary, dataDir, base, resultCommit, releaseGitWorkspaces, service };
 }
 
-test("release preflight composes real frozen candidate readback with the repository validation adapter", async (t) => {
-  const { primary, service } = await realExternalValidationFixture(t);
+test("release preflight reuses real prepared candidate readback with the repository validation adapter", async (t) => {
+  const { primary, service, releaseGitWorkspaces } = await realExternalValidationFixture(t);
+  const before = await releaseGitWorkspaces.frozenCandidate(primary);
+  const checkpointBefore = await readFile(before.checkpointFile);
+  service.releaseGitWorkspaces.prepareCandidate = () => assert.fail("preflight must not rebuild the prepared candidate");
 
   const result = await service.preflight({ workspaceId: "workspace-1", expectedPlanRevision: "plan-real-adapter" });
 
@@ -675,6 +637,8 @@ test("release preflight composes real frozen candidate readback with the reposit
   assert.equal(typeof result.productionValidation.evidence[0].evidenceHash, "string");
   assert.equal(await git(primary, "symbolic-ref", "HEAD"), "refs/heads/main");
   assert.equal(await git(primary, "status", "--porcelain=v1"), "");
+  assert.deepEqual(await releaseGitWorkspaces.frozenCandidate(primary), before);
+  assert.deepEqual(await readFile(before.checkpointFile), checkpointBefore);
 });
 
 test("release preflight rejects source candidate movement after external validation", async (t) => {
@@ -776,7 +740,7 @@ test("release preflight requires external validation for repositories not covere
     readPublicationState: async () => ({
       repositories: [{ root: repoHub, revision: "published-hub" }, { root: repoAndroid, revision: "published-android" }],
     }),
-    resolveTestContourSource: async (prepared) => ({ kind: "agent-hub-test-contour", ...prepared[0], sourceRoot: path.join(prepared[0].worktreeRoot, "AgentHub") }),
+    resolveReleaseValidationSource: async (prepared) => ({ kind: "workspace-release-pipeline", ...prepared[0], sourceRoot: path.join(prepared[0].worktreeRoot, "AgentHub") }),
     refreshTestContour: async () => ({
       operationId: "mixed-contour",
       refreshOutcome: "refreshed",
@@ -818,27 +782,16 @@ test("release preflight requires external validation for repositories not covere
 
   assert.deepEqual(calls, [[{ projectRoot: repoAndroid, candidate: "candidate-android" }]]);
   assert.equal(result.status, "ready");
-  assert.equal(result.testContour.headCommit, "dev-hub");
+  assert.equal(result.testContour, undefined);
   assert.equal(result.productionValidation.repositories[0].projectRoot, repoAndroid);
 });
 
-test("release preflight rejects a refreshed contour that does not display dev HEAD", async () => {
-  const { service } = fixture({ contourHead: "stale-head" });
-  await assert.rejects(
-    () => service.preflight({ workspaceId: "workspace-1", expectedPlanRevision: "plan-1" }),
-    /does not match dev HEAD/u,
-  );
-});
-
-test("release preflight refreshes the contour before rejecting Task results absent from dev", async () => {
-  const { calls, service } = fixture({ rejectDev: new Error("Task result is not integrated into dev") });
-  await assert.rejects(
-    () => service.preflight({ workspaceId: "workspace-1", expectedPlanRevision: "plan-1" }),
-    /not integrated into dev/u,
-  );
-  assert.deepEqual(calls.map(([name]) => name), [
-    "plan", "inspect-main", "verify-upstream-adoption", "guard-primary", "prepare-dev", "resolve-contour", "refresh-contour", "read-contour", "verify-dev",
-  ]);
+test("unrelated dev or contour state does not gate the prepared release", async () => {
+  const { calls, service } = fixture({ contourHead: "stale-head", rejectDev: new Error("unrelated dev work") });
+  service.taskGitWorkspaces.prepareDev = () => assert.fail("must not prepare dev");
+  service.refreshTestContour = () => assert.fail("must not refresh contour");
+  assert.equal((await service.preflight({ workspaceId: "workspace-1", expectedPlanRevision: "plan-1" })).status, "ready");
+  assert.equal(calls.some(([name]) => name === "verify-dev" || name === "release-integrations"), false);
 });
 
 test("release preflight binds all side effects to the exact plan revision", async () => {
@@ -857,6 +810,109 @@ test("release preflight stops before side effects when the registered primary is
     /attached to main/u,
   );
   assert.deepEqual(calls.map(([name]) => name), ["plan", "inspect-main", "verify-upstream-adoption", "guard-primary"]);
+});
+
+test("Await refuses missing publication authority and changed base before committing acceptance", async () => {
+  const { service } = fixture();
+  const publication = service.readPublicationState;
+  let committed = false;
+  service.releaseGitWorkspaces.prepareCandidate = async (request) => {
+    service.readPublicationState = async () => ({ repositories: [{ root: request.projectRoot, revision: "new-publication" }] });
+    await request.validateBeforeCommit();
+    committed = true;
+  };
+  service.readPublicationState = async () => null;
+  await assert.rejects(service.prepareAwaitSet({ workspaceId: "workspace-1" }), /repository-scoped publication evidence/u);
+  service.readPublicationState = publication;
+  await assert.rejects(service.prepareAwaitSet({ workspaceId: "workspace-1" }), /accepted release base changed/u);
+  assert.equal(committed, false);
+});
+
+test("automatic Await preparation composes accepted code without running release preflight", async () => {
+  const { calls, service } = fixture();
+  const result = await service.prepareAwaitSet({ workspaceId: "workspace-1", preserveFrozen: true });
+  assert.equal(result.releaseCandidates[0].preReleaseHead, "prerelease-head");
+  assert.deepEqual(calls.map(([name]) => name), [
+    "plan", "guard-primary", "release-integrations", "prepare-candidate", "plan",
+  ]);
+  assert.equal(calls.find(([name]) => name === "prepare-candidate")[1].preserveFrozen, true);
+  assert.equal(calls.find(([name]) => name === "prepare-candidate")[1].approvedBaseCommit, "published-head");
+});
+
+for (const refusal of [null, "second-repository", "status-cas"]) {
+  test(`prospective Await holds all candidate boundaries until status CAS (${refusal ?? "success"})`, async () => {
+    const { service, projectRoot } = fixture();
+    const roots = [projectRoot, path.resolve("D:/second-repository")];
+    service.readPublicationState = async () => ({ repositories: roots.map((root) => ({ root, revision: "published" })) });
+    const plan = {
+      revision: "after-acceptance", blocked: [], conflicts: [],
+      ready: roots.map((root, i) => ({ taskId: `task-${i + 1}`, taskRevision: 8,
+        projectRoot: root, resultCommit: "a".repeat(40) })),
+    };
+    service.releasePlanner.plan = async (_workspaceId, options) => options?.acceptingTask
+      ? plan : { ...plan, revision: "before-acceptance" };
+    service.taskGitWorkspaces.releaseIntegrationEvidence = async ({ tasks }) => ({ tasks });
+    const heads = new Map(roots.map((root) => [root, "old"]));
+    const active = new Set();
+    let commits = 0;
+    service.releaseGitWorkspaces.prepareCandidate = async ({ projectRoot: root, commitPrepared, validateBeforeCommit }) => {
+      const prior = heads.get(root);
+      active.add(root);
+      try {
+        if (root === roots[1] && refusal === "second-repository") throw new Error("second repository conflict");
+        await validateBeforeCommit();
+        heads.set(root, "new");
+        const prepared = { repositoryRoot: root, preReleaseHead: "new" };
+        await commitPrepared(prepared);
+        return prepared;
+      } catch (error) {
+        heads.set(root, prior);
+        throw error;
+      } finally { active.delete(root); }
+    };
+    const operation = service.prepareAwaitSet({
+      workspaceId: "workspace-1", acceptingTask: { id: "task-2", revision: 7 }, preserveFrozen: true,
+      commitPrepared: async (prepared) => {
+        assert.equal(active.size, 2);
+        assert.equal(prepared.releaseCandidates.length, 2);
+        assert.deepEqual([...heads.values()], ["new", "new"]);
+        if (refusal === "status-cas") throw new Error("status CAS rejected");
+        commits += 1;
+      },
+    });
+    if (refusal) await assert.rejects(operation, /conflict|CAS rejected/u);
+    else assert.equal((await operation).planRevision, "after-acceptance");
+    assert.equal(commits, refusal ? 0 : 1);
+    assert.deepEqual([...heads.values()], refusal ? ["old", "old"] : ["new", "new"]);
+    assert.equal(active.size, 0);
+  });
+}
+
+test("removing the last Await Task prepares an empty candidate for its repository", async () => {
+  const { calls, projectRoot, service } = fixture();
+  service.releasePlanner.plan = async () => ({ revision: "empty-plan", ready: [], blocked: [], conflicts: [] });
+  service.taskGitWorkspaces.releaseIntegrationEvidence = async (request) => {
+    assert.deepEqual(request.tasks, []);
+    return { tasks: [] };
+  };
+  const result = await service.prepareAwaitSet({
+    workspaceId: "workspace-1", fallbackProjectRoots: [projectRoot], preserveFrozen: true,
+  });
+  assert.deepEqual(result.taskIds, []);
+  assert.deepEqual(calls.find(([name]) => name === "prepare-candidate")[1].frozenTasks, []);
+  assert.equal(result.releaseCandidates.length, 1);
+});
+
+test("a selected project subdirectory does not overwrite the accepted repository with an empty candidate", async () => {
+  const { calls, projectRoot, service } = fixture();
+  service.releaseGitWorkspaces.assertPrimaryInvariant = async () => ({ projectRoot });
+  const result = await service.prepareAwaitSet({
+    workspaceId: "workspace-1", fallbackProjectRoots: [path.join(projectRoot, "AgentHub")], preserveFrozen: true,
+  });
+  assert.equal(result.releaseCandidates.length, 1);
+  const candidates = calls.filter(([name]) => name === "prepare-candidate");
+  assert.equal(candidates.length, 1);
+  assert.equal(candidates[0][1].frozenTasks[0].taskId, "task-1");
 });
 
 test("Await rebuild rejects a stale plan before publishing its candidate", async () => {
@@ -879,7 +935,7 @@ test("Await rebuild rejects a stale plan before publishing its candidate", async
   );
 });
 
-test("release preflight holds the Await lock and rejects a stale plan before publishing its candidate", async () => {
+test("release preflight holds the Await lock and rejects a plan changed during readback", async () => {
   const { locks, projectRoot, service } = fixture();
   let reads = 0;
   service.releasePlanner.plan = async () => ({
@@ -895,7 +951,7 @@ test("release preflight holds the Await lock and rejects a stale plan before pub
 
   await assert.rejects(
     () => service.preflight({ workspaceId: "workspace-1", expectedPlanRevision: "plan-1" }),
-    /revision changed during release candidate preparation/u,
+    /revision changed during release preflight/u,
   );
   assert.deepEqual(locks, ["workspace-1"]);
 });
@@ -917,7 +973,7 @@ test("release preflight reconciliation reads exact frozen checkpoint without rep
       taskIds: ["task-1"],
       tasks: [{ taskId: "task-1", taskRevision: 7, resultCommit: "task-result" }],
     },
-    preflightRequestId: "architect-bwm12-release-preflight-20260912-v1",
+    preflightRequestId: "releaseManager-bwm12-release-preflight-20260912-v1",
     baseCommit: "main-head",
     preReleaseHead: "prerelease-head",
   });
@@ -926,7 +982,7 @@ test("release preflight reconciliation reads exact frozen checkpoint without rep
     workspaceId: "workspace-1",
     expectedPlanRevision: "plan-1",
     expectedRepositories: [{ projectRoot, revision: "prerelease-head" }],
-    originalRequestId: "architect-bwm12-release-preflight-20260912-v1",
+    originalRequestId: "releaseManager-bwm12-release-preflight-20260912-v1",
     errorClass: "serialization_error",
     originalReceipt: originalReceipt(),
   });
@@ -942,7 +998,7 @@ test("release preflight reconciliation reads exact frozen checkpoint without rep
       workspaceId: "workspace-1",
       expectedPlanRevision: "plan-1",
       expectedRepositories: [{ projectRoot, revision: "stale-head" }],
-      originalRequestId: "architect-bwm12-release-preflight-20260912-v1",
+      originalRequestId: "releaseManager-bwm12-release-preflight-20260912-v1",
       originalReceipt: originalReceipt(),
     }),
     /stale/u,
@@ -962,7 +1018,7 @@ test("release preflight reconciliation rejects missing or foreign original MCP r
       baseCommit: "main-head",
       tasks: [{ taskId: "task-1", taskRevision: 7, resultCommit: "task-result" }],
     },
-    preflightRequestId: "architect-bwm12-release-preflight-20260912-v1",
+    preflightRequestId: "releaseManager-bwm12-release-preflight-20260912-v1",
     baseCommit: "main-head",
     preReleaseHead: "prerelease-head",
   });
@@ -970,7 +1026,7 @@ test("release preflight reconciliation rejects missing or foreign original MCP r
     workspaceId: "workspace-1",
     expectedPlanRevision: "plan-1",
     expectedRepositories: [{ projectRoot, revision: "prerelease-head" }],
-    originalRequestId: "architect-bwm12-release-preflight-20260912-v1",
+    originalRequestId: "releaseManager-bwm12-release-preflight-20260912-v1",
   };
 
   await assert.rejects(() => service.reconcilePreflight(request), /receipt was not found/u);
@@ -1010,7 +1066,7 @@ test("release preflight reconciliation keeps old unbound checkpoints as snapshot
     workspaceId: "workspace-1",
     expectedPlanRevision: "plan-1",
     expectedRepositories: [{ projectRoot, revision: "prerelease-head" }],
-    originalRequestId: "architect-bwm12-release-preflight-20260912-v1",
+    originalRequestId: "releaseManager-bwm12-release-preflight-20260912-v1",
     originalReceipt: originalReceipt(),
   });
 
@@ -1032,7 +1088,7 @@ test("release preflight reconciliation rejects stale manifest Task evidence", as
       baseCommit: "main-head",
       tasks: [{ taskId: "task-1", taskRevision: 6, resultCommit: "task-result" }],
     },
-    preflightRequestId: "architect-bwm12-release-preflight-20260912-v1",
+    preflightRequestId: "releaseManager-bwm12-release-preflight-20260912-v1",
     baseCommit: "main-head",
     preReleaseHead: "prerelease-head",
   });
@@ -1041,7 +1097,7 @@ test("release preflight reconciliation rejects stale manifest Task evidence", as
     workspaceId: "workspace-1",
     expectedPlanRevision: "plan-1",
     expectedRepositories: [{ projectRoot, revision: "prerelease-head" }],
-    originalRequestId: "architect-bwm12-release-preflight-20260912-v1",
+    originalRequestId: "releaseManager-bwm12-release-preflight-20260912-v1",
     originalReceipt: originalReceipt(),
   }), /Task evidence is stale/u);
 });
@@ -1066,7 +1122,7 @@ test("release preflight reconciliation rejects plan movement during readback", a
       baseCommit: "main-head",
       tasks: [{ taskId: "task-1", taskRevision: 7, resultCommit: "task-result" }],
     },
-    preflightRequestId: "architect-bwm12-release-preflight-20260912-v1",
+    preflightRequestId: "releaseManager-bwm12-release-preflight-20260912-v1",
     baseCommit: "main-head",
     preReleaseHead: "prerelease-head",
   });
@@ -1075,7 +1131,7 @@ test("release preflight reconciliation rejects plan movement during readback", a
     workspaceId: "workspace-1",
     expectedPlanRevision: "plan-1",
     expectedRepositories: [{ projectRoot, revision: "prerelease-head" }],
-    originalRequestId: "architect-bwm12-release-preflight-20260912-v1",
+    originalRequestId: "releaseManager-bwm12-release-preflight-20260912-v1",
     originalReceipt: originalReceipt(),
   }), /plan revision changed during preflight readback/u);
 });

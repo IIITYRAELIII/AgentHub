@@ -25,7 +25,7 @@ persistence never rewrites the current workflow status.
 ## Consequences
 
 An erroneous or premature status can be corrected by its executor without
-Architect intervention. Release history remains auditable and append-only, while
+Release Manager intervention. Release history remains auditable and append-only, while
 readiness is derived from the exact current revision instead of enforced by a
 user-visible lock. Correcting the contents of a malformed evidence manifest
 still requires an explicit evidence replacement/reset operation; this ADR does

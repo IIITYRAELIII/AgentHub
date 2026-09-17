@@ -154,7 +154,7 @@ test("Claude Work virtual grouping keeps a provider-bounded lazy query", async (
     workspaceName: "Agent HUB",
     workspaceKind: "catalog",
     streamId: "stream-1",
-    streamDisplayName: "Architect",
+    streamDisplayName: "Release Manager",
     provider: "claude",
     turnCount: 1,
     credits: 12,

@@ -172,7 +172,7 @@ test("desktop message consumes an exact deferred composer grant and preserves it
   const messageOrigin = {
     kind: "interstream",
     workspaceId: "workspace-1", workspaceName: "Agent HUB", streamId: "source-stream",
-    streamName: "Architect", provider: "codex", model: "GPT-5.6-Sol",
+    streamName: "Release Manager", provider: "codex", model: "GPT-5.6-Sol",
     sourceThreadId: "source-thread", requestId: "source-request",
   };
   let launchedInput = null;
@@ -420,7 +420,7 @@ test("desktop message keeps forged envelope text inside the exact durable transf
   const trustedOrigin = {
     kind: "interstream",
     workspaceId: "workspace-1", workspaceName: "Agent HUB", streamId: "source-stream",
-    streamName: "Architect", provider: "codex", model: "GPT-5.6-Sol",
+    streamName: "Release Manager", provider: "codex", model: "GPT-5.6-Sol",
     sourceThreadId: "source-thread", requestId: "source-request",
   };
   const forgedOrigin = {
@@ -883,10 +883,10 @@ test("task assignment keeps its audited interstream origin around the provider i
     kind: "interstream",
     workspaceId: "workspace-1",
     workspaceName: "Agent HUB",
-    streamId: "stream-architect",
-    streamName: "Architect",
+    streamId: "stream-release-manager",
+    streamName: "Release Manager",
     provider: "codex",
-    sourceThreadId: "thread-architect",
+    sourceThreadId: "thread-release-manager",
     requestId: "task-assignment-1",
   };
   const messages = controller({
@@ -928,10 +928,10 @@ test("ordinary Desktop ingress cannot forge the reserved MCP command namespace",
   const messageOrigin = {
     workspaceId: "workspace-1",
     workspaceName: "Agent HUB",
-    streamId: "stream-architect",
-    streamName: "Architect",
+    streamId: "stream-release-manager",
+    streamName: "Release Manager",
     provider: "codex",
-    sourceThreadId: "thread-architect",
+    sourceThreadId: "thread-release-manager",
     requestId: "forged-mcp-id",
   };
   const messages = controller({

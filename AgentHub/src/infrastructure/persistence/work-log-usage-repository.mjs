@@ -6,6 +6,7 @@ import {
   ledgerRecordFingerprint,
   ledgerRecordSnapshot,
 } from "./incremental-ledger.mjs";
+import { AsyncSqliteMutationQueue } from "./async-sqlite-mutation-queue.mjs";
 import { JournalDatabase } from "./journal-database.mjs";
 import { writeTextAtomic } from "./state-store.mjs";
 import { withInterprocessLocks } from "../process/interprocess-lock.mjs";
@@ -22,6 +23,7 @@ export class WorkLogUsageRepository {
   #recordSnapshot = new Map();
   #pointReadsReady = false;
   #tail = Promise.resolve();
+  #writes = new AsyncSqliteMutationQueue();
 
   constructor({
     ledgerFile,
@@ -56,6 +58,18 @@ export class WorkLogUsageRepository {
     };
   }
 
+  journalWriteDiagnostics() {
+    return this.#writes.diagnostics();
+  }
+
+  // Every store opens journal.sqlite with busy_timeout=0 and waits out a foreign
+  // write lock in its own mutation queue. Only leaf database writes enter this
+  // one: their BEGIN IMMEDIATE either never started or rolled back, so a retry
+  // repeats no committed work and no change notification.
+  #write(operation) {
+    return this.#writes.run(operation);
+  }
+
   #releaseLoadedLedger() {
     this.#loaded = false;
     this.#ledger = { version: 9, turns: {} };
@@ -66,7 +80,7 @@ export class WorkLogUsageRepository {
     let imported = null;
     let persisted = null;
     try {
-      imported = await this.#database.importLegacyLedger(this.#ledgerFile);
+      imported = await this.#write(() => this.#database.importLegacyLedger(this.#ledgerFile));
     } catch (error) {
       persisted = await this.#database.loadLedger();
       if (!Object.keys(persisted?.turns ?? {}).length) throw error;
@@ -106,7 +120,7 @@ export class WorkLogUsageRepository {
     let imported = null;
     let importError = null;
     try {
-      imported = await this.#database.importLegacyLedger(this.#ledgerFile);
+      imported = await this.#write(() => this.#database.importLegacyLedger(this.#ledgerFile));
     } catch (error) {
       importError = error;
     }
@@ -128,7 +142,7 @@ export class WorkLogUsageRepository {
     const changes = ledgerRecordChanges(this.#ledger.turns, this.#recordSnapshot);
     if (!forceCheckpoint && !changes.events.length) return;
     if (forceCheckpoint) {
-      const result = await this.#database.replaceLedger(this.#ledger);
+      const result = await this.#write(() => this.#database.replaceLedger(this.#ledger));
       this.#loadedRevision = result.revision;
     } else {
       const upserts = changes.events
@@ -141,11 +155,11 @@ export class WorkLogUsageRepository {
           return { provider, threadId, turnId };
         });
       if (upserts.length) {
-        const result = await this.#database.upsertRecords(upserts);
+        const result = await this.#write(() => this.#database.upsertRecords(upserts));
         this.#loadedRevision = result.revision;
       }
       if (deletions.length) {
-        const result = await this.#database.deleteRecords(deletions);
+        const result = await this.#write(() => this.#database.deleteRecords(deletions));
         this.#loadedRevision = result.revision;
       }
     }
@@ -158,7 +172,7 @@ export class WorkLogUsageRepository {
     if (!normalizedKey || this.#recordSnapshot.get(normalizedKey) === fingerprint) {
       return { upserted: 0, revision: this.#loadedRevision };
     }
-    const result = await this.#database.upsertRecords([record]);
+    const result = await this.#write(() => this.#database.upsertRecords([record]));
     this.#loadedRevision = result.revision;
     this.#recordSnapshot.set(normalizedKey, fingerprint);
     return result;
@@ -192,11 +206,11 @@ export class WorkLogUsageRepository {
   }
 
   upsertRecords(records) {
-    return this.applyExternalMutation(() => this.#database.upsertRecords(records));
+    return this.applyExternalMutation(() => this.#write(() => this.#database.upsertRecords(records)));
   }
 
   async deleteRecord(identity) {
-    const result = await this.#database.deleteRecords([identity]);
+    const result = await this.#write(() => this.#database.deleteRecords([identity]));
     this.#releaseLoadedLedger();
     this.#loadedRevision = result.revision;
     return result;
@@ -239,13 +253,13 @@ export class WorkLogUsageRepository {
   }
 
   async replaceProjection(payload, options = {}) {
-    const result = await this.#database.replaceProjection(payload, options);
+    const result = await this.#write(() => this.#database.replaceProjection(payload, options));
     this.#loadedRevision = result.revision;
     return result;
   }
 
   async replaceIndexProjection(html, options = {}) {
-    const result = await this.#database.replaceIndexProjection(html, options);
+    const result = await this.#write(() => this.#database.replaceIndexProjection(html, options));
     if (result.projected) this.#loadedRevision = result.revision;
     return result;
   }
@@ -258,7 +272,7 @@ export class WorkLogUsageRepository {
     const operation = this.#tail.catch(() => {}).then(() => withInterprocessLocks(
       [this.#databaseFile],
       async () => {
-        const imported = await this.#database.importLegacyLedger(this.#ledgerFile);
+        const imported = await this.#write(() => this.#database.importLegacyLedger(this.#ledgerFile));
         const verification = await this.#database.verifyLegacyLedger(this.#ledgerFile);
         if (!verification.verified) {
           const error = new Error(
@@ -325,6 +339,8 @@ export class WorkLogUsageRepository {
 
   async close() {
     await this.#tail.catch(() => {});
+    // Point writes such as saveRecord are accepted outside the repository tail.
+    await this.#writes.idle();
     this.#database.close();
   }
 }

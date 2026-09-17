@@ -1,8 +1,31 @@
 export const TASK_BUCKETS = Object.freeze(["backlog", "workspace", "notes"]);
 export const TASK_STATUSES = Object.freeze(["open", "started", "done"]);
 export const TASK_WORKFLOW_STATUSES = Object.freeze([
-  "new", "in_progress", "testing", "awaiting_implementation", "done",
+  "new", "in_progress", "blocked", "testing", "awaiting_implementation", "done",
 ]);
+
+export class ReleaseCandidateFrozenError extends Error {
+  constructor() {
+    super("Release is frozen until completion. Task status was not changed; keep new work in Test and repeat acceptance after the release.");
+    this.code = "RELEASE_CANDIDATE_FROZEN";
+  }
+}
+
+// Raised only after a rejected lifecycle begin has rolled back its transaction.
+export class TaskLifecycleBeginRejectedError extends Error {
+  constructor(message) {
+    super(message);
+    this.code = "TASK_LIFECYCLE_BEGIN_REJECTED";
+  }
+}
+
+export class TaskDependencyPendingError extends Error {
+  constructor(taskId, blockedBy) {
+    super(`Task ${taskId} waits for publication of Task ${blockedBy.taskNumber || blockedBy.taskId}`);
+    this.code = "TASK_AWAITING_DEPENDENCY_RELEASE";
+    this.blockedBy = blockedBy;
+  }
+}
 export const TASK_REFERENCE_INTENTS = Object.freeze(["context", "start"]);
 export const TASK_REFERENCE_CONTEXT_REQUEST = "Рассматривай прикреплённые Dashboard Task как контекст к сообщению пользователя; intent=context сам по себе не определяет, начинать ли работу.";
 export const TASK_REFERENCE_START_REQUEST = "Начни работу над прикреплённой Dashboard Task.";
@@ -10,17 +33,15 @@ const LEGACY_TASK_REFERENCE_CONTEXT_MIGRATION_GUARD = "Учти прикрепл
 export const TASK_CATEGORIES = Object.freeze(["task", "note", "unknown"]);
 export const TASK_SHORT_TITLE_MAX_LENGTH = 100;
 export const TASK_TITLE_MAX_LENGTH = 160;
-export const TASK_DESCRIPTION_MAX_LENGTH = 20_000;
 export const TELEGRAM_BUNDLE_TRIAGE_INSTRUCTIONS = Object.freeze([
   "Ниже пакет сообщений, собранный пользователем в Telegram.",
   "Сохраняй порядок и авторов. Пересланные реплики — контекст третьих лиц; не путай их с прямыми комментариями пользователя, отмеченными «Вы».",
 ]);
 export const LEGACY_TELEGRAM_BUNDLE_PREFIX = `${TELEGRAM_BUNDLE_TRIAGE_INSTRUCTIONS.join("\n")}\n\n`;
 
-export function normalizedTaskText(value, { maximumLength = 20_000 } = {}) {
+export function normalizedTaskText(value) {
   const text = String(value ?? "").replace(/\r\n?/g, "\n").trim();
   if (!text) throw new Error("Введите текст Task");
-  if (text.length > maximumLength) throw new Error(`Task длиннее ${maximumLength} символов`);
   return text;
 }
 
@@ -35,9 +56,6 @@ export function normalizedTaskTitle(value) {
 
 export function normalizedTaskDescription(value) {
   const description = String(value ?? "").replace(/\r\n?/gu, "\n").trim();
-  if (description.length > TASK_DESCRIPTION_MAX_LENGTH) {
-    throw new Error(`Описание Task длиннее ${TASK_DESCRIPTION_MAX_LENGTH} символов`);
-  }
   return description;
 }
 

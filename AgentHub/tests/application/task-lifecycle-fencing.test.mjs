@@ -118,7 +118,7 @@ test("Task lifecycle rejects a synchronous assertOwned contract before mutation"
   });
 });
 
-test("Await accepts the Test-owned result without eager PreRelease composition", async () => {
+test("Await prepares PreRelease before Task commit and does not commit on composition failure", async () => {
   const previousReference = {
     projectRoot: "D:/project", branch: "HUB-159", resultCommit: "a".repeat(40),
   };
@@ -169,7 +169,15 @@ test("Await accepts the Test-owned result without eager PreRelease composition",
         calls.push(`lock:${workspaceId}`);
         return operation();
       },
-      prepareAwaitSet: async () => { throw new Error("eager Await composition must not run"); },
+      prepareAwaitSet: async (options) => {
+        calls.push("compose");
+        assert.equal(task.workflowStatus, "testing");
+        assert.equal(options.preserveFrozen, true);
+        if (calls.filter((name) => name === "compose").length > 1) throw new Error("Task B depends on unavailable Task A");
+        const prepared = { releaseCandidates: [{ preReleaseHead: "c".repeat(40) }] };
+        await options.commitPrepared(prepared);
+        return prepared;
+      },
     },
   });
 
@@ -179,20 +187,21 @@ test("Await accepts the Test-owned result without eager PreRelease composition",
     operationId: "await-transition",
     projectRoot: "D:/project",
   });
-  const sameAwaitResult = await service.updateWorkflowStatus({
+  task.workflowStatus = "testing";
+  await assert.rejects(service.updateWorkflowStatus({
     taskId: task.id,
     status: "awaiting_implementation",
     operationId: "same-await-transition",
     projectRoot: "D:/project",
-  });
+  }), /Task B depends/u);
 
   assert.deepEqual(calls, [
-    "lock:workspace-1", "begin", "commit",
-    "lock:workspace-1", "begin", "commit",
+    "lock:workspace-1", "begin", "compose", "commit",
+    "lock:workspace-1", "begin", "compose", "fail",
   ]);
-  assert.equal(task.workflowStatus, "awaiting_implementation");
-  assert.equal(result.releaseCandidate.status, "invalidated");
-  assert.equal(sameAwaitResult.releaseCandidate.status, "invalidated");
+  assert.equal(task.workflowStatus, "testing");
+  assert.equal(result.releaseCandidate.status, "ready");
+  assert.equal(result.releaseCandidate.releaseCandidates[0].preReleaseHead, "c".repeat(40));
   assert.deepEqual(task.gitReferences, [previousReference]);
 });
 
@@ -341,7 +350,12 @@ test("unknown workflow recovery retains the repository lease through Git continu
     },
     releasePreflight: {
       withAwaitTransition: (_workspaceId, operation) => operation(),
-      prepareAwaitSet: async () => { calls.push("rebuild"); return { headCommit: "c".repeat(40) }; },
+      prepareAwaitSet: async (options) => {
+        calls.push("rebuild");
+        const result = { headCommit: "c".repeat(40) };
+        await options.commitPrepared(result);
+        return result;
+      },
     },
   });
 
@@ -353,5 +367,5 @@ test("unknown workflow recovery retains the repository lease through Git continu
     proof: { kind: "system-restart-after-guard", confirmed: true, summary: "boot proof" },
   });
   assert.equal(result.result.task.workflowStatus, "awaiting_implementation");
-  assert.deepEqual(calls, ["repository-lock", "recover", "begin", "commit"]);
+  assert.deepEqual(calls, ["repository-lock", "recover", "begin", "rebuild", "commit"]);
 });

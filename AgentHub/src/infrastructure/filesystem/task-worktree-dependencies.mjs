@@ -690,6 +690,19 @@ async function recordPostInstallFailure({ packageRoot, fingerprint, validation, 
   }, { maxBytes: MAX_MARKER_BYTES, fileSystem, lease });
 }
 
+async function installedLockHash(packageRoot, limits, fileSystem) {
+  const lockPath = path.join(packageRoot, "node_modules", ".package-lock.json");
+  const entry = await optionalLstat(lockPath);
+  if (!entry?.isFile() || entry.isSymbolicLink()) return null;
+  const content = await readBoundedFile(lockPath, {
+    maxBytes: limits.maxPackageLockBytes,
+    label: "Task dependency installed lock",
+    fileSystem,
+    expectedEntry: entry,
+  });
+  return createHash("sha256").update(content).digest("hex");
+}
+
 async function prepareNpmProject({
   projectRoot,
   resolvedProjectRoot,
@@ -698,6 +711,7 @@ async function prepareNpmProject({
   limits,
   fileSystem,
   lease,
+  verify,
 }) {
   await assertLeaseOwned(lease);
   const packageRoot = path.dirname(lockfile);
@@ -740,7 +754,15 @@ async function prepareNpmProject({
   const fingerprint = createHash("sha256")
     .update(INSTALL_POLICY)
     .update("\0")
+    .update(JSON.stringify([process.version, process.platform, process.arch, process.versions.modules]))
+    .update("\0")
+    .update(await readBoundedFile(path.join(packageRoot, "package.json"), {
+      maxBytes: MAX_PACKAGE_METADATA_BYTES, label: "Task package manifest", fileSystem, expectedEntry: packageEntry,
+    }))
+    .update("\0")
     .update(lockfileContent)
+    .update("\0")
+    .update(JSON.stringify([...expectedPackages]))
     .digest("hex");
   const relativeProject = path.relative(projectRoot, packageRoot).split(path.sep).join("/") || ".";
   const nodeModulesExists = await assertLocalNodeModules(packageRoot, resolvedPackageRoot);
@@ -748,10 +770,19 @@ async function prepareNpmProject({
   let failureMarker = null;
   let validation = invalidInstalledState();
   if (nodeModulesExists) {
-    [successMarker, failureMarker, validation] = await Promise.all([
+    [successMarker, failureMarker] = await Promise.all([
       readMarker(packageRoot, MARKER_NAME, { fileSystem }),
       readMarker(packageRoot, FAILURE_MARKER_NAME, { fileSystem }),
-      validateInstalledState({
+    ]);
+    const installedLockSha256 = await installedLockHash(packageRoot, limits, fileSystem);
+    if (!verify && !failureMarker && installedLockSha256
+      && successMarker?.installedLockSha256 === installedLockSha256
+      && successMarker?.policy === INSTALL_POLICY
+      && successMarker.lockfileSha256 === fingerprint && /^[a-f0-9]{64}$/u.test(successMarker.installedStateSha256 ?? "")) {
+      await assertLeaseOwned(lease);
+      return { manager: "npm", project: relativeProject, lockfile: "package-lock.json", prepared: false, fingerprint };
+    }
+    validation = await validateInstalledState({
         projectRoot: resolvedProjectRoot,
         packageRoot,
         resolvedPackageRoot,
@@ -759,8 +790,7 @@ async function prepareNpmProject({
         rootOptionalPackages,
         limits,
         fileSystem,
-      }),
-    ]);
+      });
     await assertLeaseOwned(lease);
     const failurePath = path.join(packageRoot, "node_modules", FAILURE_MARKER_NAME);
     if (recordedFailureMatches(failureMarker, { fingerprint, validation })) throw validation.error;
@@ -779,6 +809,15 @@ async function prepareNpmProject({
       && successMarker.lockfileSha256 === fingerprint
       && successMarker.installedStateSha256 === validation.fingerprint) {
       await assertLeaseOwned(lease);
+      if (successMarker.installedLockSha256 !== installedLockSha256) {
+        await writeJsonAtomically(path.join(packageRoot, "node_modules", MARKER_NAME), {
+          policy: INSTALL_POLICY,
+          lockfileSha256: fingerprint,
+          installedStateSha256: validation.fingerprint,
+          installedLockSha256,
+        }, { maxBytes: MAX_MARKER_BYTES, fileSystem, lease });
+        await assertLeaseOwned(lease);
+      }
       return { manager: "npm", project: relativeProject, lockfile: "package-lock.json", prepared: false, fingerprint };
     }
   }
@@ -816,6 +855,7 @@ async function prepareNpmProject({
     policy: INSTALL_POLICY,
     lockfileSha256: fingerprint,
     installedStateSha256: validation.fingerprint,
+    installedLockSha256: await installedLockHash(packageRoot, limits, fileSystem),
   }, { maxBytes: MAX_MARKER_BYTES, fileSystem, lease });
   await assertLeaseOwned(lease);
   await fileSystem.rm(path.join(packageRoot, "node_modules", FAILURE_MARKER_NAME), { force: true });
@@ -831,6 +871,7 @@ export async function prepareTaskWorktreeDependencies({
   runNpm = null,
   lease = null,
   fileSystem: fileSystemOverrides = {},
+  verify = true,
 } = {}) {
   if (lockPath && lease) {
     throw new Error("Task dependency caller must combine its owner with the dependency lock lease");
@@ -858,6 +899,7 @@ export async function prepareTaskWorktreeDependencies({
         limits,
         fileSystem,
         lease: activeLease,
+        verify,
       }));
       await assertLeaseOwned(activeLease);
     }

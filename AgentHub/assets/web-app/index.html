@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="ru" data-theme="orbit" data-surface="desktop" data-view="chat" data-pane="tasks"
-  data-activity-stream-cards="compact">
+  data-activity-stream-cards="compact" data-activity-rail-visibility="hidden">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
@@ -29,6 +29,7 @@
   <script src="/chat-scroll-controller.js" defer></script>
   <script src="/chat-surface-preference.js" defer></script>
   <script src="/background-motion-preference.js" defer></script>
+  <script src="/activity-rail-preference.js" defer></script>
   <script src="/background-image-resolver.js" defer></script>
   <script src="/navigation-tabs-controller.js" defer></script>
   <script src="/stream-tabs-controller.js" defer></script>
@@ -65,6 +66,7 @@
   <script src="/workspace-release-primary-guard.js" defer></script>
   <script src="/stream-role-settings.js" defer></script>
   <script src="/themed-select-placement.js" defer></script>
+  <script src="/directory-field.js" defer></script>
   <script src="/messages/composer-draft-reconciliation.js" defer></script>
   <script src="/app.js" defer></script>
   <script src="/pre-turn-instructions-editor.js" defer></script>
@@ -519,39 +521,42 @@
                   <span class="setting-name">Режим</span>
                   <select data-dialog-options="mode" aria-label="Режим"></select>
                 </label>
-                <label class="setting-stack dialog-working-directory">
+                <div class="setting-stack dialog-working-directory directory-field-setting">
                   <span class="setting-name">Рабочая директория Stream</span>
-                  <input type="text" data-dialog-working-directory
+                  <input type="text" data-dialog-working-directory data-directory-field
+                    data-directory-empty-label="Наследуется от Workspace"
+                    data-directory-empty-status="Пустое значение использует рабочую директорию Workspace."
                     placeholder="Наследуется от Workspace" autocomplete="off" spellcheck="false">
                   <span class="switch-note" data-dialog-working-directory-note>
                     Применится при создании следующего Thread.
                   </span>
-                </label>
+                </div>
                 <label class="setting-switch">
                   <input type="checkbox" data-dialog-toggle="autoApprove">
                   <span class="switch-text">Автоподтверждение</span>
                   <span class="switch-track" aria-hidden="true"></span>
                 </label>
-                <div class="stream-role-setting stream-architect-setting">
+                <div class="stream-role-setting stream-release-manager-setting">
                   <span class="stream-role-setting-heading">
                     <label class="setting-switch">
-                      <input type="checkbox" data-dialog-stream-architect
-                        aria-describedby="stream-architect-note">
-                      <span class="switch-text">Архитектор</span>
+                      <input type="checkbox" data-dialog-stream-release-manager
+                        aria-describedby="stream-release-manager-note">
+                      <span class="switch-text">Релиз-менеджер</span>
                       <span class="switch-track" aria-hidden="true"></span>
                     </label>
                     <span class="stream-role-help-popover">
-                      <button type="button" class="stream-role-help" aria-label="Инструкция роли Архитектор"
-                        popovertarget="stream-architect-note">?</button>
-                      <div class="stream-role-tooltip" id="stream-architect-note" popover>
-                        <p>Ты — архитектор релизов Workspace.</p>
+                      <button type="button" class="stream-role-help" aria-label="Инструкция роли Релиз-менеджер"
+                        popovertarget="stream-release-manager-note">?</button>
+                      <div class="stream-role-tooltip" id="stream-release-manager-note" popover>
+                        <p>Ты — релиз-менеджер Workspace.</p>
                         <p>Ты собираешь, проверяешь и развёртываешь релизы.</p>
-                        <p>Только Streams, отмеченные как Workspace Architect, могут интегрировать и публиковать релизы Workspace.</p>
+                        <p>Только потоки с ролью «Релиз-менеджер» могут интегрировать и публиковать релизы Workspace.</p>
                         <p>Не жди несвязанных черновых или заблокированных работ. Сразу выпускай готовый набор, но остановись, если неготовые, конфликтующие, пересекающиеся или незарегистрированные изменения влияют на зафиксированный состав релиза, целостность сборки или развёртывания.</p>
                         <p>Последовательность проверки релиза</p>
                         <p>Когда пользователь явно разрешает релиз, действуй как интегратор релиза.</p>
-                        <p>В начале релиза обнови локальную ветку main из origin до фиксации состава релиза. Если текущее рабочее дерево мешает безопасному обновлению, используй отдельный интеграционный worktree. Никогда не применяй stash, не удаляй и не перезаписывай изменения, принадлежащие другому Stream.</p>
-                        <p>После обновления main зафиксируй точный состав релиза. Не добавляй молча изменения, появившиеся после фиксации состава.</p>
+                        <p>В начале выпуска создай или продолжи одну задачу «Релиз [версия]». Версию назначает механизм публикации; до её фиксации используй временное название этой же задачи. Весь состав PreRelease перенеси в связанный чек-лист с названиями и краткими результатами задач.</p>
+                        <p>Получи сведения из origin без изменения локальной main, проверь входящие изменения и согласуй их с пользователем. При необходимости объединяй их в рабочей ветке задачи. Основной каталог сохраняй; релиз выполняй только в подготовленном релизном каталоге.</p>
+                        <p>Перед финальной проверкой останови работу исполнителей и заморозь включённые задачи, их ветки и рабочие папки. Проверь отсутствие непринятых коммитов и несохранённых изменений. Не меняй замороженные исходные задачи и не добавляй позднюю работу. Повтор использует ту же задачу релиза, состав и версию.</p>
                         <p>Проверь незарегистрированные изменения рабочего дерева и определи затронутые компоненты и необходимые проверки.</p>
                         <p>До релизных тестов и сборки выполни предписанную для Workspace предварительную проверку зафиксированного состава. Продолжай только если она подтверждает, что релизный кандидат актуален и содержит ровно выбранные изменения.</p>
                         <p>Перед интеграцией релиза запускай только целевые тесты затронутого кода и выполни поиск по репозиторию устаревших проверок, контрактов, подписей и терминологии, связанных с изменённым поведением.</p>
@@ -562,7 +567,8 @@
                         <p>Если конвейер завершился ошибкой, используй его полный агрегированный отчёт. Исправь все выявленные причины одним согласованным пакетом, запусти только необходимые для этих исправлений целевые тесты, интегрируй исправление и повторно запусти тот же релизный конвейер.</p>
                         <p>Продолжай повторные попытки, пока релиз не завершится успешно или дальнейшему выполнению не помешает реальная внешняя блокировка. Повторные попытки, необходимые для завершения того же явно разрешённого релиза, не требуют дополнительного разрешения пользователя.</p>
                         <p>После успешного завершения конвейера проверь, что main содержит интегрированную ревизию релиза и production-развёртывание исправно. Только после этого отметь релиз опубликованным.</p>
-                        <p>После подтверждённой публикации закрой только включённые элементы работы, синхронизируй опубликованный main с интеграционной веткой без потери более поздних изменений и пересобери следующий кандидат из оставшихся принятых элементов.</p>
+                        <p>После подтверждённой публикации переведи включённые задачи в Done и закрой, сохранив карточки и историю. Удали только их проверенные ветки и рабочие папки штатной очисткой. При неожиданных изменениях сохрани их и останови очистку; опубликованный релиз остаётся опубликованным.</p>
+                        <p>Синхронизируй опубликованное в main/dev без потери поздней работы. Повторяй только незавершённые этапы. Заверши чек-лист и закрой задачу релиза после подтверждённой очистки. Следующий кандидат готовится при следующем принятии в Await.</p>
                       </div>
                     </span>
                   </span>
@@ -952,7 +958,7 @@
         </label>
         <label>
           <span>Описание</span>
-          <textarea rows="8" maxlength="20000" placeholder="Добавьте подробности задачи" data-task-card-description></textarea>
+          <textarea rows="8" placeholder="Добавьте подробности задачи" data-task-card-description></textarea>
         </label>
         <button type="submit" class="board-task-primary">Сохранить изменения</button>
       </form>
@@ -981,9 +987,9 @@
           <span>Исполнитель</span>
           <button type="button" class="task-card-executor" data-task-card-executor disabled>Не назначен</button>
         </div>
-        <div class="task-card-changed-files" data-task-card-changed-files>
-          <span>Изменённые файлы</span>
-          <div class="task-card-changed-file-groups" data-task-card-changed-file-groups></div>
+        <div class="task-card-detail-row">
+          <button type="button" class="board-task-quiet" data-task-card-diff-open>Git Diff</button>
+          <div class="task-card-diff" data-task-card-diff hidden></div>
         </div>
         <div class="task-card-work-log" data-task-card-work-log>
           <span>Лог работы</span>
@@ -1118,11 +1124,13 @@
           <span>Комментарий</span>
           <textarea rows="4" maxlength="1000" data-workspace-card-comment></textarea>
         </label>
-        <label>
+        <div class="directory-field-setting">
           <span>Рабочая директория</span>
-          <input type="text" maxlength="1000" data-workspace-card-working-directory
+          <input type="text" maxlength="1000" data-workspace-card-working-directory data-directory-field
+            data-directory-empty-label="Каталог не выбран"
+            data-directory-empty-status="Укажите каталог вручную или выберите через Проводник."
             placeholder="Например, D:\projects\Utilities\AgentHub" autocomplete="off" spellcheck="false">
-        </label>
+        </div>
         <label>
           <span>Префикс воркспейса</span>
           <input type="text" maxlength="40" data-workspace-card-task-prefix
@@ -1160,6 +1168,20 @@
               aria-describedby="workspace-release-workflow-tooltip">?</summary>
             <div id="workspace-release-workflow-tooltip" class="workspace-release-workflow-tooltip"
               data-workspace-release-workflow-tooltip role="tooltip"></div>
+          </details>
+        </div>
+        <div class="workspace-release-workflow-setting workspace-auto-review-setting">
+          <label class="setting-switch workspace-auto-review-switch">
+            <input type="checkbox" data-workspace-auto-review>
+            <span class="switch-text">Авто-ревью</span>
+            <span class="switch-track" aria-hidden="true"></span>
+          </label>
+          <details class="workspace-release-workflow-help-popover">
+            <summary class="workspace-release-workflow-help"
+              aria-label="Что включает авто-ревью"
+              aria-describedby="workspace-auto-review-tooltip">?</summary>
+            <div id="workspace-auto-review-tooltip" class="workspace-release-workflow-tooltip"
+              data-workspace-auto-review-tooltip role="tooltip"></div>
           </details>
         </div>
         <label>
@@ -1981,6 +2003,13 @@
             </span>
             <span class="switch-track" aria-hidden="true"></span>
           </label>
+          <label class="setting-switch">
+            <input type="checkbox" data-activity-rail-visibility-toggle>
+            <span class="switch-text">Боковая панель потоков
+              <span class="switch-note">Показывает справа активные и недавние потоки.</span>
+            </span>
+            <span class="switch-track" aria-hidden="true"></span>
+          </label>
         </div>
       </section>
       <section class="settings-section">
@@ -2073,13 +2102,13 @@
 
   <div class="resource-context-menu" data-resource-context-menu hidden role="menu"
     aria-label="Действия с ресурсом">
+    <button type="button" role="menuitem" data-resource-action="save">Скачать файл</button>
     <button type="button" role="menuitem" data-resource-action="open">Открыть</button>
     <button type="button" role="menuitem" data-resource-action="open-editor">Открыть в VS Code</button>
     <button type="button" role="menuitem" data-resource-action="reveal">Показать в Проводнике</button>
     <button type="button" role="menuitem" data-resource-action="copy">Копировать</button>
     <button type="button" role="menuitem" data-resource-action="copy-path">Копировать путь</button>
     <button type="button" role="menuitem" data-resource-action="copy-object">Скопировать файл</button>
-    <button type="button" role="menuitem" data-resource-action="save">Сохранить как…</button>
   </div>
 
   <div class="toast" data-toast hidden role="status" aria-live="polite"></div>

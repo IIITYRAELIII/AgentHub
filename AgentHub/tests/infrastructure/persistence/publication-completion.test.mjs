@@ -35,6 +35,10 @@ test("deferred publication persists expected runtime and resumes completion afte
   const { common, records, freshJournal } = await fixture(t);
   const pending = await completePublication(common);
   assert.equal(pending.status, "awaiting_restart");
+  assert.deepEqual(pending.handoff, {
+    action: "yield_current_turn",
+    reason: "safe_runtime_restart",
+  });
   const before = await common.journal.read();
   assert.equal(before.status, "awaiting_restart");
   assert.equal(before.finishedAt, null);

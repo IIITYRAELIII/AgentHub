@@ -81,6 +81,14 @@
     };
   }
 
+  function openTaskRequestParams(snapshot, identity, params = {}) {
+    return {
+      ...identity,
+      ...params,
+      ...requestParams(snapshot),
+    };
+  }
+
   function selectionFromSnapshotSettings(settings = {}, streamSettings = {}) {
     return {
       provider: settings.provider,
@@ -104,6 +112,7 @@
   global.AgentHubSnapshotTransport = Object.freeze({
     isBaselineError: (error) => error instanceof SnapshotCollectionBaselineError,
     materialize,
+    openTaskRequestParams,
     requestParams,
     selectionFromSnapshotSettings,
   });

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -48,6 +48,34 @@ function service(stateFile, {
     mkdirImpl,
   });
 }
+
+test("state flush failure preserves the last durable identity and prevents selection", async (context) => {
+  const stateFile = await fixture(context);
+  const known = candidate("0.152.1");
+  const baseline = service(stateFile, { candidates: [known] });
+  await baseline.selectForStart();
+  await baseline.markStartupSuccess();
+  const before = await readFile(stateFile, "utf8");
+  let flushAttempts = 0;
+  const update = service(stateFile, {
+    candidates: [known],
+    writeFileImpl: async (file, content, options) => {
+      await writeFile(file, content, { encoding: "utf8", flag: "wx" });
+      // Model storage accepting buffered bytes but refusing their durable flush.
+      if (options?.flush) {
+        flushAttempts += 1;
+        throw Object.assign(new Error("state flush failed"), { code: "EIO" });
+      }
+    },
+  });
+  await assert.rejects(update.selectForStart(), /state flush failed/u);
+  assert.equal(flushAttempts, 1);
+  assert.equal(await readFile(stateFile, "utf8"), before);
+  assert.deepEqual(await readdir(path.dirname(stateFile)), [path.basename(stateFile)]);
+  const restarted = service(stateFile, { candidates: [known] });
+  assert.equal(await restarted.selectForStart(), known.path);
+  assert.equal(await restarted.verifySelectedForLaunch(known.path), known.path);
+});
 
 test("newest trusted identity is canaried once and reused idempotently", async (context) => {
   const stateFile = await fixture(context);

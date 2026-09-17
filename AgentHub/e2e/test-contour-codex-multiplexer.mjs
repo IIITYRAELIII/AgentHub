@@ -279,9 +279,34 @@ async function reconcileFakeOwnership() {
   if (changed) saveRoutingState();
 }
 
+let testContourLoginSequence = 0;
+
+/*
+ * Test Contour never forwards account sign-in to either child: the real child
+ * would start a real ChatGPT login against the contour's copied auth. Sign-in is
+ * answered synthetically, with a loopback link that reaches no external host.
+ */
+function testContourAccountLogin(method) {
+  if (method === "account/login/start") {
+    testContourLoginSequence += 1;
+    const loginId = `test-contour-login-${process.pid}-${testContourLoginSequence}`;
+    return {
+      type: "chatgpt",
+      loginId,
+      authUrl: `https://127.0.0.1:9/agent-hub-test-contour/codex-login?loginId=${loginId}`,
+    };
+  }
+  if (method === "account/login/cancel") return {};
+  throw childRpcError({ code: -32601, message: `${method} is not available in Test Contour` });
+}
+
 async function handleRequest(message) {
   const { id, method, params = {} } = message;
   try {
+    if (String(method).startsWith("account/login/") || method === "account/logout") {
+      sendClient({ id, result: testContourAccountLogin(method) });
+      return;
+    }
     if (method === "initialize") {
       const [realResult] = await Promise.all([
         callChild("real", method, params),

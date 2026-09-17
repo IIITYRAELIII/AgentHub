@@ -695,7 +695,9 @@ export class WorkLogUsageSyncStore {
         afterObservedAt: delta.revisionCursor ? "" : afterObservedAt,
         defaultRuntimeHomeIds: this.#defaultRuntimeHomeIds,
       });
-      const storeTurns = this.#readAll(database)
+      // A cursor snapshot exports only its journal delta, so stored sync events are
+      // not read for it; auth and limit facts are exported in every snapshot.
+      const storeTurns = (afterObservedAt || afterJournalRevision) ? [] : this.#readAll(database)
         .filter((event) => !ownFactsOnly || event.deviceId === this.#deviceId);
       const authObservations = this.#readAuthObservations(database)
         .filter((fact) => !ownFactsOnly || fact.deviceId === this.#deviceId);
@@ -704,7 +706,7 @@ export class WorkLogUsageSyncStore {
       return {
         ...snapshot,
         events: [
-          ...mergeUsageSyncEvents((afterObservedAt || afterJournalRevision) ? [] : storeTurns, snapshot.events),
+          ...mergeUsageSyncEvents(storeTurns, snapshot.events),
           ...authObservations,
           ...limitObservations,
         ],

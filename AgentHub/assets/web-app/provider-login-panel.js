@@ -4,13 +4,22 @@
 (function () {
   const LABELS = Object.freeze({ codex: "Codex", claude: "Claude" });
   const STATUS = Object.freeze({
-    idle: "Вход не запускался",
     pending: "Ожидает входа в браузере",
-    succeeded: "Вход выполнен",
     cancelled: "Вход отменён",
     failed: "Ошибка входа",
   });
   const MAX_CODE_LENGTH = 4096;
+
+  function accountText(current) {
+    if (current?.state === "checking") return "Проверяем аккаунт…";
+    if (current?.state === "signed-out") return "Не выполнен вход";
+    if (current?.state !== "signed-in") return "Не удалось определить аккаунт";
+    if (current.email) return String(current.email);
+    if (["apiKey", "api_key"].includes(current.method)) return "API-ключ";
+    if (["amazonBedrock", "bedrock"].includes(current.method)) return "Amazon Bedrock";
+    if (current.method === "vertex") return "Google Vertex AI";
+    return "Аккаунт подключён, почта недоступна";
+  }
 
   /* `claude auth login` читает из stdin строку вида code#state. */
   function isManualCode(value) {
@@ -32,7 +41,8 @@
       attemptId,
       status,
       label: LABELS[provider] ?? provider,
-      statusText: STATUS[status] ?? status,
+      statusText: accountText(account?.currentAccount),
+      loginStatusText: STATUS[status] ?? null,
       error: (status === "failed" || pending) && account?.error ? String(account.error) : null,
       startText: pending ? "Войти заново" : "Войти",
       authUrl,
@@ -60,7 +70,8 @@
      пользователь вводит код. */
   function renderKey(views) {
     return JSON.stringify((views ?? []).map((view) => [
-      view.provider, view.attemptId, view.status, view.error, Boolean(view.authUrl), view.acceptsCode,
+      view.provider, view.attemptId, view.status, view.statusText, view.loginStatusText,
+      view.error, Boolean(view.authUrl), view.acceptsCode,
     ]));
   }
 

@@ -124,7 +124,22 @@ Long composer quote previews scroll within a visual height bound and remain
 keyboard-accessible, keeping the quote comment and send controls in view without
 shortening stored or submitted text.
 
+Triple-click paragraph selection remains quotable when the browser includes an
+empty boundary outside the rendered source surface. Normalize only that empty
+boundary before calculating the exact UTF-16 range and hashes. Never silently
+discard selected text from another message, source surface or adjacent control.
+
 ## Agent questions
+
+Task cards expose on-demand Git diff instead of the removed aggregate file list.
+Diff responses apply only to the still-open Task and exact latest request;
+closing or switching cards invalidates pending responses. Truncation and errors
+are visible. Journal links retain the exact provider/task Thread/source Thread/
+turn route, including after rotation. Missing identity has no guessed link.
+
+Task creation and description editors preserve complete normalized text without
+an independent character cap. The title limit and complete-request transport
+bounds remain in force; saving must not silently truncate text (ADR-0050).
 
 Codex typed `agentMessage.questions` are asynchronous question requests, even
 when the provider labels the item `final_answer`. They never become a final

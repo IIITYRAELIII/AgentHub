@@ -225,9 +225,13 @@
     };
   }
 
-  function resourceActions(resource) {
+  function resourceActions(resource, {
+    localWorkspaceFilesAvailable: localFilesAvailable = true,
+    vscode = false,
+  } = {}) {
     if (resource?.kind !== "link") return ["copy", "save"];
     if (String(resource?.localPath ?? "").trim()) {
+      if (!vscode && !localFilesAvailable) return ["save", "copy-path"];
       return ["open-editor", "reveal", "copy-path", "copy-object", "save"];
     }
     return ["open", "copy", "save"];
