@@ -1348,16 +1348,31 @@ Publication plan reads during freeze and Git publication use the bounded
 state and must not inherit the 10-second interactive Desktop deadline.
 This does not relax the exact plan, manifest, repository or Git lease checks.
 
-The canonical planner and completer must reach Desktop through both startup
-composition layers. A first update from an installation missing that wiring
-may explicitly supply a local MCP context bound to its exact published revision
-and Workspace. Only `Task release plan is unavailable` permits a live call to
-the existing `hub_release_plan_get`; its canonical dev preparation remains in
-force. A cached plan is never a substitute. Other errors, Git publication and
-finalization never fall back to MCP through this bridge. The context capability
-is not part of durable publication identity or logs. Delete the local context
-after the first update; retire this compatibility bridge when the old wiring is
-outside the supported migration range.
+Before a replacement runtime is installed, the publisher reads the current
+release plan with the candidate's `TaskReleasePlanService`, the authoritative
+Task database and the ordinary Git release-evidence reader. One short read-only
+SQLite snapshot captures Tasks and accepted lifecycle outcomes; it is closed
+before Git evidence is read. The read-only store never creates a directory or
+database, runs migration or legacy cleanup, and rejects a missing or incompatible
+schema. Freeze, frozen-candidate preparation and the final pre-push guard each
+read a fresh plan and require exact equality with the immutable checkpoint.
+After installation, release completion remains owned by the installed canonical
+Desktop runtime and its durable command identity.
+
+The former `--bootstrap-mcp-context` publication option is obsolete and is
+rejected explicitly. It called the installed public planner and therefore could
+not correct a successfully returned plan from an older schema. Retain the old
+bridge module only while historical callers remain supported; it is not a
+publisher plan source and may be removed after that migration window.
+
+The canonical completer must reach Desktop through both startup composition
+layers. Historical publishers could explicitly supply a local MCP context when
+an installation returned `Task release plan is unavailable`; that bridge called
+the same installed planner and never covered a successful older plan projection.
+It remains source-compatible only for historical direct callers and is no longer
+accepted by `publish:changed`. The context capability was never part of durable
+publication identity or logs; remove the unused bridge module when those callers
+are outside the supported migration range.
 
 An accepted release-projector correction that is not yet installed may bootstrap
 one exact `Test -> Await` transition from its clean Task checkout. The local

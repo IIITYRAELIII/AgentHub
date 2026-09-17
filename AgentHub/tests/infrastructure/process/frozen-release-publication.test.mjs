@@ -46,6 +46,7 @@ function fixture(overrides = {}) {
       if (action.startsWith("read-")) return { revision: overrides.plan ?? "plan", candidates: [{ gitReferences: [{ projectRoot: primaryRoot }] }] };
       return { finalization: { status: overrides.finalization ?? "completed" } };
     },
+    readPlan: overrides.readPlan,
   });
   return { adapter, identity, commands, calls, checkpoint, primaryRoot };
 }
@@ -60,6 +61,41 @@ test("frozen publication validates the manifest and pushes only its candidate wi
   assert.equal(f.commands.some((c) => c.cwd === f.primaryRoot), false);
   assert.ok(f.calls.filter((c) => c.action === "read-workspace-release-plan")
     .every((c) => c.options.timeoutMs === 120_000));
+});
+
+test("candidate plan reader fences prepare and pre-push without consulting stale installed planning", async () => {
+  const planReads = [];
+  const f = fixture({
+    plan: "installed-stale-plan",
+    readPlan: async (workspaceId) => {
+      planReads.push(workspaceId);
+      return { revision: "plan", candidates: [{ gitReferences: [{ projectRoot: path.resolve("test-primary") }] }] };
+    },
+  });
+  f.identity.release = await f.adapter.prepare(f.identity);
+  await f.adapter.publishGit(f.identity);
+  assert.deepEqual(planReads, ["workspace", "workspace"]);
+  assert.equal(f.calls.some((call) => call.action === "read-workspace-release-plan"), false);
+});
+
+test("a candidate plan drift between preparation and publication fails before push", async () => {
+  let reads = 0;
+  const f = fixture({ readPlan: async () => ({
+    revision: ++reads === 1 ? "plan" : "changed-plan",
+    candidates: [{ gitReferences: [{ projectRoot: path.resolve("test-primary") }] }],
+  }) });
+  f.identity.release = await f.adapter.prepare(f.identity);
+  await assert.rejects(f.adapter.publishGit(f.identity), /plan changed/u);
+  assert.equal(f.commands.some((command) => command.args[0] === "push"), false);
+});
+
+test("completion-only resume uses immutable release evidence without a pre-install plan read", async () => {
+  const f = fixture({
+    remote: "b".repeat(40),
+    readPlan: async () => assert.fail("completion-only resume must not read a pre-install plan"),
+  });
+  f.identity.release = await f.adapter.prepare(f.identity, { completionOnly: true });
+  assert.equal((await f.adapter.finalizePublication(f.identity)).status, "completed");
 });
 
 test("moved origin and changed plan fail before push", async () => {
