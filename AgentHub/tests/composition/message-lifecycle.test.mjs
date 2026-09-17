@@ -1743,7 +1743,7 @@ test("empty projected messages never render as blank chat cards", () => {
   assert.deepEqual(visible.map((message) => message.id), ["attachment-only", "answer"]);
 });
 
-test("internal context probe messages never reach the rendered conversation", () => {
+test("former context marker text and identifiers remain in the conversation", () => {
   const visible = lifecycle.visibleConversationMessages([
     {
       provider: "codex",
@@ -1773,7 +1773,7 @@ test("internal context probe messages never reach the rendered conversation", ()
     },
   ]);
 
-  assert.deepEqual(visible.map((message) => message.turnId), ["ordinary-turn"]);
+  assert.deepEqual(visible.map((message) => message.turnId), ["probe-turn", "probe-turn", "ordinary-turn"]);
 });
 
 test("the reserved context probe phrase stays visible for a normal client operation", () => {
@@ -1803,13 +1803,7 @@ test("the reserved context probe phrase stays visible for a normal client operat
     ["user", "Ответь строго: AGENT_HUB_CONTEXT_PROBE_OK_V1"],
     ["agent", "AGENT_HUB_CONTEXT_PROBE_OK_V1"],
   ]);
-  assert.equal(lifecycle.contextProbeRun({
-    clientUserMessageId: "client-manual-probe",
-    prompt: "Ответь строго: AGENT_HUB_CONTEXT_PROBE_OK_V1",
-  }), false);
-  assert.equal(lifecycle.contextProbeRun({
-    clientUserMessageId: "agent-hub-context-probe:automatic",
-  }), true);
+
 });
 
 test("accepted browser messages refresh immediately without waiting for idle polling", () => {
@@ -1827,7 +1821,7 @@ test("accepted browser messages refresh immediately without waiting for idle pol
   );
 });
 
-test("a partial streamed context probe answer never becomes a message card", () => {
+test("partial former marker text remains visible", () => {
   const visible = lifecycle.visibleConversationMessages([{
     provider: "codex",
     threadId: "thread-1",
@@ -1837,7 +1831,7 @@ test("a partial streamed context probe answer never becomes a message card", () 
     text: "AGENT_HUB_CONTEXT_PROBE",
   }]);
 
-  assert.deepEqual(visible, []);
+  assert.equal(visible[0].text, "AGENT_HUB_CONTEXT_PROBE");
 });
 
 test("active agent response is rendered only by the live card after task switching", () => {
@@ -3278,11 +3272,7 @@ test("context compaction start identifies the task and completion stays in chat"
     /invalidZeroAfter[\s\S]*id\.startsWith\("maintenance:compaction:"\)[\s\S]*replace\(\/>0%\$\/u, ">\?%"\)/u,
   );
   assert.match(hubClientSource, /position === 2 && percent === 0 \? null : percent/u);
-  assert.match(hubClientSource, /explicitAfterPercent = contextPercent\(compaction\.afterPercent\) \|\| null/u);
-  assert.match(
-    hubClientSource,
-    /explicitAfterPercent = contextPercent\(compaction\.afterPercent\)[\s\S]*measurementStatus === "completed"[\s\S]*\? explicitAfterPercent[\s\S]*previous\.afterPercent[\s\S]*storedMaintenancePercent\(existingEvent, 2\)[\s\S]*explicitAfterPercent/u,
-  );
+
 });
 
 test("compaction markers keep exact operation identity before provider turn acceptance", () => {
@@ -3341,6 +3331,39 @@ test("unknown and legacy timeout compaction replace false failure and settle by 
   observe({ status: "completed", measurementStatus: "completed", afterPercent: 14 });
   assert.equal(events.get("task-1").length, 1);
   assert.equal(events.get("task-1")[0].maintenanceStatus, "completed");
+
+  observe({ status: "completed", measurementStatus: "completed", measurementKind: "estimated", afterPercent: 14 });
+  const estimated = events.get("task-1")[0];
+  assert.equal(estimated.measurementKind, "estimated");
+  assert.match(estimated.text, /77% → ≈14%/u);
+  assert.match(estimated.maintenanceDetail, /Предварительная оценка провайдера/u);
+
+  sandbox.observeContextCompactions([{
+    provider: "codex", threadId: "thread-1", streamId: "stream-1",
+    context: { compaction: { ...compaction, status: "completed", measurementStatus: "completed",
+      measurementKind: "estimated", afterPercent: 14,
+      rotationStatus: "failed", rotationMessage: "Целевой Thread недоступен",
+    } },
+  }]);
+  const rotationFailure = events.get("task-1").find((item) => item.maintenanceType === "rotation");
+  assert.equal(rotationFailure.maintenanceStatus, "failed");
+  assert.match(rotationFailure.text, /Исходный Thread сохранён/u);
+  assert.match(rotationFailure.maintenanceDetail, /Целевой Thread недоступен/u);
+  assert.equal(events.get("task-1").find((item) => item.maintenanceType === "compaction").maintenanceStatus, "completed");
+  events.set("task-1", events.get("task-1").filter((item) => item.maintenanceType === "compaction"));
+
+  // Neither a previous marker nor a current usage value proves a new measurement.
+  for (const details of [
+    { measurementStatus: "completed", measurementKind: "estimated", afterPercent: null },
+    { measurementStatus: "failed", afterPercent: 14 },
+    { afterPercent: 14 },
+  ]) {
+    observe({ status: "completed", ...details });
+    const missing = events.get("task-1")[0];
+    assert.equal(missing.afterPercent, null);
+    assert.doesNotMatch(missing.text, /(?:≈14%|успешно)/u);
+    assert.match(missing.maintenanceDetail, /замер после не получен/u);
+  }
 });
 
 test("workspace task panel follows the effective local Stream selection", () => {

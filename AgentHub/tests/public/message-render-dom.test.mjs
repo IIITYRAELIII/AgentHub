@@ -282,7 +282,7 @@ test("persisted rotation renders once after missed snapshots and page reload", a
       assert.deepEqual(repeated.messages, first.messages);
       assert.equal(repeated.writes, first.writes, "unchanged polling does not rewrite the notice");
       if (reload) assert.equal(first.writes, 0, "saved projection retains the same exact event on reload");
-      assert.equal(first.messages[0].afterPercent, null);
+      assert.equal(Object.hasOwn(first.messages[0], "afterPercent"), false);
       for (const viewport of [{ width: 1366, height: 900 }, { width: 390, height: 844 }]) {
         await page.setViewportSize(viewport);
         await seedMessages(page, [
@@ -420,12 +420,27 @@ test("compaction without provider turn renders a system marker and unknown compl
           operationId: "operation-1", status, turnId: null, origin: "automatic",
           beforePercent: 77, afterPercent: status === "completed" ? 14 : null,
           measurementStatus: status === "completed" ? "completed" : null,
+          measurementKind: status === "completed" ? "estimated" : null,
         } },
       }), status);
       await seedMessages(page, messages);
       assert.equal(await page.locator(".msg-maintenance").count(), 1);
       assert.ok((await page.locator(".msg-maintenance").textContent()).includes(expectedText));
       assert.equal(await page.locator(".msg-agent").count(), 0);
+      if (status === "completed") {
+        for (const viewport of [{ width: 1366, height: 900 }, { width: 390, height: 844 }]) {
+          await page.setViewportSize(viewport);
+          assert.match(await page.locator(".msg-maintenance").textContent(), /77% → ≈14%/u);
+          assert.match(await page.locator(".msg-maintenance").getAttribute("title"), /Предварительная оценка провайдера/u);
+        }
+        await seedMessages(page, [{ id: "answer-after-compaction", role: "agent", text: "Ответ",
+          activities: [{ id: "compaction", type: "compaction", status: "completed",
+            label: messages[0].maintenanceLabel, detail: messages[0].maintenanceDetail }],
+        }]);
+        await page.locator('.msg-agent .activity-feed > summary').click();
+        const activity = page.locator('.activity-item[data-type="compaction"]');
+        assert.match(await activity.getAttribute("title"), /≈14%.*Предварительная оценка провайдера/u);
+      }
     }
     assert.deepEqual(errors, []);
   } finally {

@@ -56,10 +56,15 @@ same digest regardless of local presentation state.
 | `threadKey`, `taskKey` | yes | existing thread pseudonyms, unchanged |
 | `startedAt`, `completedAt` | yes | ISO 8601 |
 | `usage`, `usageReported`, `model`, `serviceTier` | yes | unchanged semantics |
-| `estimatedCredits`, `estimateKind`, `imageGenerationCount`, `contextProbe` | no | unchanged semantics |
+| `estimatedCredits`, `estimateKind`, `imageGenerationCount` | no | unchanged semantics |
 | `limitSamples[]` | no | inline provider evidence, below |
 | `deviceLabel` | no | display only, never attribution input |
 | `observedAt` | yes | ingest ordering |
+
+Retired context-measurement flags are not part of normalized usage facts. Existing
+rows, turn identities and measured usage remain intact; no historical deletion or
+database rewrite is required. An unused legacy SQLite column may remain on disk
+without being read, written or recreated by the current schema.
 
 A `turn` carries **no** `accountKey`, `accountLabel`, `accountType`,
 `accountPlan` or `accountAttribution`. Producing those fields on a `turn` is a

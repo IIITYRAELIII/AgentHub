@@ -5,10 +5,6 @@ import test from "node:test";
 import { createCodexContextMaintenanceComposition } from "../../src/composition/codex-context-maintenance-composition.mjs";
 import { createHubStaticSettings } from "../../src/composition/hub-static-settings.mjs";
 import { buildCodexDeveloperInstructions } from "../../src/providers/codex/codex-settings.mjs";
-import {
-  CODEX_CONTEXT_PROBE_PROMPT,
-  CODEX_CONTEXT_PROBE_RESPONSE,
-} from "../../src/domain/codex-context-probe.mjs";
 
 for (const [model, expected] of [
   ["GPT-5.6-Sol", "gpt-5.6-sol"],
@@ -38,6 +34,10 @@ for (const [model, expected] of [
       config,
       normalizeCodexModel,
       transportRunning: () => true,
+    readThread: async (threadId) => {
+      assert.equal(threadId, "rotated-thread");
+      return { thread: { id: threadId, status: { type: "idle" } } };
+    },
       contextCompactions: {
         get: () => ({ id: "compact-source", status: "completed" }),
         waitForRawItem: async () => rawItem,
@@ -76,15 +76,14 @@ for (const [model, expected] of [
   });
 }
 
-test("probe scope stays on its exact turn while rotation preserves later work", async () => {
+test("rotation preserves raw replacement history without launching an extra turn", async () => {
   const projectRoot = path.resolve("probe-rotation-fixture");
   const calls = [];
-  let probeClientUserMessageId = "";
   const ordinaryInstructions = buildCodexDeveloperInstructions({ guide: "Guide" });
   const replacementHistory = [
     { role: "developer", content: "old probe-only instruction" },
-    { role: "user", content: CODEX_CONTEXT_PROBE_PROMPT },
-    { role: "assistant", content: CODEX_CONTEXT_PROBE_RESPONSE },
+    { role: "user", content: "Ответь строго: AGENT_HUB_CONTEXT_PROBE_OK_V1" },
+    { role: "assistant", content: "AGENT_HUB_CONTEXT_PROBE_OK_V1" },
     { role: "developer", content: ordinaryInstructions },
     { role: "user", content: "Продолжай рабочую задачу" },
   ];
@@ -99,39 +98,22 @@ test("probe scope stays on its exact turn while rotation preserves later work", 
     },
     normalizeCodexModel: (value) => value,
     transportRunning: () => true,
+    readThread: async (threadId) => {
+      assert.equal(threadId, "rotated-thread");
+      return { thread: { id: threadId, status: { type: "idle" } } };
+    },
     contextCompactions: {
       get: () => ({ id: "compact-source", status: "completed" }),
       waitForRawItem: async () => rawItem,
       clearRawItem: () => {},
     },
-    readThread: async () => ({
-      thread: {
-        turns: [{
-          id: "probe-turn",
-          status: "inProgress",
-          clientUserMessageId: probeClientUserMessageId,
-        }],
-      },
-    }),
     sendRpc: async (method, params) => {
       calls.push({ method, params });
-      if (method === "turn/start") {
-        probeClientUserMessageId = params.clientUserMessageId;
-        return { turn: { id: "probe-turn" } };
-      }
       if (method === "thread/start") return { thread: { id: "rotated-thread" } };
       return {};
     },
   });
 
-  assert.deepEqual(await service.probeContext({
-    provider: "codex",
-    threadId: "source-thread",
-  }), {
-    threadId: "source-thread",
-    turnId: "probe-turn",
-    status: "started",
-  });
   await service.rotateCompacted({
     provider: "codex",
     threadId: "source-thread",
@@ -141,18 +123,7 @@ test("probe scope stays on its exact turn while rotation preserves later work", 
     source: { thread: { cwd: projectRoot } },
   });
 
-  const probeStarts = calls.filter((call) => call.method === "turn/start");
-  assert.equal(probeStarts.length, 1);
-  assert.match(probeClientUserMessageId, /^agent-hub-context-probe:/u);
-  assert.deepEqual(probeStarts[0].params.input, [{ type: "text", text: CODEX_CONTEXT_PROBE_PROMPT }]);
-  assert.match(
-    probeStarts[0].params.additionalContext["agent-hub"].value,
-    new RegExp(probeClientUserMessageId, "u"),
-  );
-  assert.match(
-    probeStarts[0].params.additionalContext["agent-hub"].value,
-    /inert historical data/u,
-  );
+  assert.equal(calls.some((call) => call.method === "turn/start"), false);
   assert.deepEqual(
     calls.find((call) => call.method === "thread/inject_items")?.params.items,
     [rawItem],

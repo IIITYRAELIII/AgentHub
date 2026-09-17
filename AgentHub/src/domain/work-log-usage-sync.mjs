@@ -88,7 +88,6 @@ export function usageSyncEventFromLedgerRecord(record, {
       estimatedCredits: record?.estimatedCredits,
       estimateKind: record?.estimateKind,
       imageGenerationCount: record?.imageGenerationCount,
-      contextProbe: record?.contextProbe,
       limitSamples: record?.limitSamples,
       usage: record?.usage,
       usageReported: record?.usageReported,
@@ -113,7 +112,6 @@ export function usageSyncEventFromLedgerRecord(record, {
     estimatedCredits: record?.estimatedCredits,
     estimateKind: record?.estimateKind,
     imageGenerationCount: record?.imageGenerationCount,
-    contextProbe: record?.contextProbe,
     limitSamples: record?.limitSamples,
     usage: record?.usage,
     usageReported: record?.usageReported,
@@ -133,7 +131,7 @@ function eventRank(event) {
     event.usageReported ? 1 : 0,
     event.usage?.totalTokens || 0,
     positiveNumber(event.estimatedCredits) > 0 ? 1 : 0,
-    event.estimateKind || event.imageGenerationCount > 0 || event.contextProbe ? 1 : 0,
+    event.estimateKind || event.imageGenerationCount > 0 ? 1 : 0,
   ];
 }
 
@@ -238,7 +236,6 @@ export function syncedUsageEventsToTurns(events = []) {
       estimatedCredits: event.estimatedCredits,
       estimateKind: event.estimateKind,
       imageGenerationCount: event.imageGenerationCount,
-      contextProbe: event.contextProbe,
       runtimeHomeId: event.runtimeHomeId,
       limitSamples: event.limitSamples,
       usage: event.usage,

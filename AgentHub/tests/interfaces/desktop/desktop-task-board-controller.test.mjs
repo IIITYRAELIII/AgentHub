@@ -402,20 +402,20 @@ test("starting a Task in an existing Stream sends a uniquely identified referenc
   assert.match(calls[2][1].attemptId, /^[0-9a-f-]{36}$/u);
 });
 
-test("starting a Task cannot forge the reserved context-probe identity", async () => {
+test("starting a Task accepts the former context namespace as an ordinary identity", async () => {
   let launchCalls = 0;
   const controller = new DesktopTaskBoardController({
     taskLauncher: {
-      start: async () => { launchCalls += 1; },
+      start: async () => { launchCalls += 1; return {}; },
     },
     snapshot: async () => ({}),
   });
 
-  await assert.rejects(controller.start({
+  await controller.start({
     id: "board-1",
     clientUserMessageId: "agent-hub-context-probe:7583805f-6338-47f0-bc45-539530666ca3",
-  }), /зарезервирован/u);
-  assert.equal(launchCalls, 0);
+  });
+  assert.equal(launchCalls, 1);
 });
 
 test("starting a Task can create a new Stream before sending", async () => {

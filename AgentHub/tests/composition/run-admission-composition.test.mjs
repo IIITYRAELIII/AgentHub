@@ -6,7 +6,6 @@ import {
   createRunAdmissionComposition,
 } from "../../src/composition/run-admission-composition.mjs";
 import { claudeCompactionClientId } from "../../src/domain/claude-context-maintenance.mjs";
-import { codexContextProbeClientId } from "../../src/domain/codex-context-probe.mjs";
 
 function admissionFixture({ handoff = "PACKAGE", consume = null } = {}) {
   const launches = [];
@@ -85,19 +84,19 @@ test("the first turn of a handed over Stream carries the Hub handoff package", a
   ]);
 });
 
-test("a context probe turn never consumes a pending handoff package", async () => {
+test("marker-shaped user input consumes its pending handoff package normally", async () => {
   const { composition, launches, consumed } = admissionFixture();
   await composition.launchTurn(
     {
       provider: "codex",
       threadId: "thread-2",
       streamId: "stream-1",
-      clientUserMessageId: codexContextProbeClientId(),
+      clientUserMessageId: "ordinary-client-id",
     },
     "Ответь строго: AGENT_HUB_CONTEXT_PROBE_OK_V1",
   );
-  assert.deepEqual(consumed, []);
-  assert.equal(launches[0].input, "Ответь строго: AGENT_HUB_CONTEXT_PROBE_OK_V1");
+  assert.equal(consumed.length, 1);
+  assert.equal(launches[0].input, "PACKAGE\n\nОтветь строго: AGENT_HUB_CONTEXT_PROBE_OK_V1");
 });
 
 test("a Claude context compaction command is launched without a handoff prefix", async () => {
@@ -133,18 +132,6 @@ test("a turn outside any Stream is launched without touching the handoff store",
   assert.equal(launches[0].input, "привет");
 });
 
-test("a restored context probe remains internal after process restart", () => {
-  assert.equal(contextCompactionRunIsInternal({
-    turnId: "probe-turn",
-    promptPreview: "",
-    responseText: "Ход завершён без текстового ответа.",
-    userMessages: [],
-  }, {
-    origin: "automatic",
-    turnId: "compaction-turn",
-    probeTurnIds: ["probe-turn"],
-  }), true);
-});
 
 test("durable interstream steer preserves origin through deferred dispatch", async () => {
   const queuedInputs = new Map();

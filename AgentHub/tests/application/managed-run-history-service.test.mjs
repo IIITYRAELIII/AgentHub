@@ -2,10 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { ManagedRunHistoryService } from "../../src/application/managed-run-history-service.mjs";
-import {
-  CODEX_CONTEXT_PROBE_PROMPT,
-  CODEX_CONTEXT_PROBE_RESPONSE,
-} from "../../src/domain/codex-context-probe.mjs";
 
 function fixture({ terminalCommits = null } = {}) {
   const history = [];
@@ -146,24 +142,6 @@ test("terminal history writes one provider telemetry snapshot", async () => {
   assert.equal(setup.history[0].telemetry.turnId, "turn-1");
 });
 
-test("managed run history never persists an internal context probe", async () => {
-  const setup = fixture();
-  await setup.service.persist({
-    provider: "codex",
-    threadId: "thread-1",
-    turnId: "probe-turn",
-    promptPreview: CODEX_CONTEXT_PROBE_PROMPT,
-    responseText: "stale previous answer",
-    clientUserMessageId: "agent-hub-context-probe:test",
-    userMessages: [{
-      clientUserMessageId: "agent-hub-context-probe:test",
-      text: CODEX_CONTEXT_PROBE_PROMPT,
-    }],
-  });
-
-  assert.deepEqual(setup.history, []);
-  assert.deepEqual(setup.snapshots, []);
-});
 
 test("managed run history preserves a real user message equal to probe text", async () => {
   const setup = fixture();
@@ -171,10 +149,10 @@ test("managed run history preserves a real user message equal to probe text", as
     provider: "codex",
     threadId: "thread-1",
     turnId: "user-turn",
-    promptPreview: CODEX_CONTEXT_PROBE_PROMPT,
-    responseText: CODEX_CONTEXT_PROBE_RESPONSE,
-    userMessages: [{ text: CODEX_CONTEXT_PROBE_PROMPT }],
-  }, { active: false, status: "completed", answer: CODEX_CONTEXT_PROBE_RESPONSE });
+    promptPreview: "Ответь строго: AGENT_HUB_CONTEXT_PROBE_OK_V1",
+    responseText: "AGENT_HUB_CONTEXT_PROBE_OK_V1",
+    userMessages: [{ text: "Ответь строго: AGENT_HUB_CONTEXT_PROBE_OK_V1" }],
+  }, { active: false, status: "completed", answer: "AGENT_HUB_CONTEXT_PROBE_OK_V1" });
 
   assert.equal(setup.history.length, 1);
   assert.equal(setup.snapshots.length, 1);

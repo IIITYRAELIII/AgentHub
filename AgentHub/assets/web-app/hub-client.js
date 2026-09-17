@@ -1166,7 +1166,7 @@ function runBatchedMessageRenders(operation) {
   }
 }
 
-function clearInternalContextProbe(taskIdValue) {
+function clearNonUserLiveProjection(taskIdValue) {
   const cardRemoved = liveCardsByTask.delete(taskIdValue);
   const probeRemoved = liveProbeByTask.delete(taskIdValue);
   const usersRemoved = liveUserMessagesByTask.delete(taskIdValue);
@@ -1184,13 +1184,13 @@ function syncHistoryPagination(taskIdValue) {
 
 function updateLiveMessage(taskIdValue, selected) {
   // Only an explicitly classified user turn may own the live card. Internal or
-  // unknown projections must also clear a previously cached card so a hidden
-  // probe cannot keep later user input queued behind false activity.
+  // unknown projections must also clear a previously cached card so stale
+  // maintenance cannot keep later user input queued behind false activity.
   const run = activeTaskRun(selected);
   if (run && !isUserRunningProjection({ ...run, projectionState: "active" })) {
     const promoted = promoteLiveCompletion(taskIdValue, selected, run.turnId);
     const snapshotCompletionRemembered = rememberSnapshotCompletion(taskIdValue, selected, run.turnId);
-    clearInternalContextProbe(taskIdValue);
+    clearNonUserLiveProjection(taskIdValue);
     if (promoted || snapshotCompletionRemembered) renderTaskMessages(taskIdValue);
     return null;
   }
@@ -2009,20 +2009,27 @@ function observeContextCompactions(tasks) {
     const previousStatus = previous.status;
     const status = String(compaction.status ?? "");
     const measurementStatus = String(compaction.measurementStatus ?? "");
+    if (status === "completed" && compaction.rotationStatus === "failed" && task.streamId) {
+      const rotationId = `maintenance:rotation:${task.streamId}:${task.provider}:${task.threadId}:${compactionId}`;
+      const detail = String(compaction.rotationMessage ?? "Новый Thread не подтвердил готовность");
+      if (rememberMaintenanceEvent(stableTaskId, {
+        id: rotationId, itemId: rotationId, provider: task.provider, threadId: task.threadId,
+        streamId: task.streamId, sourceThreadId: task.threadId,
+        maintenanceType: "rotation", maintenanceStatus: "failed",
+        maintenanceLabel: "Ротация не завершена", maintenanceDetail: detail,
+        text: `Ротация не завершена. Исходный Thread сохранён. ${detail}`,
+        time: compaction.completedAt ?? null,
+      })) changed.add(stableTaskId);
+    }
     const beforePercent = contextPercent(compaction.beforePercent)
       ?? previous.beforePercent
       ?? contextPercent(existingEvent?.beforePercent)
       ?? storedMaintenancePercent(existingEvent, 1)
       ?? (status === "running" ? contextPercent(context?.percent) : null);
-    const explicitAfterPercent = contextPercent(compaction.afterPercent) || null;
-    const afterPercent = ["running", "failed"].includes(measurementStatus)
-      ? null
-      : measurementStatus === "completed"
-        ? explicitAfterPercent
-        : previous.afterPercent
-          ?? contextPercent(existingEvent?.afterPercent)
-          ?? storedMaintenancePercent(existingEvent, 2)
-          ?? explicitAfterPercent;
+    const afterPercent = measurementStatus === "completed"
+      ? contextPercent(compaction.afterPercent)
+      : null;
+    const estimated = compaction.measurementKind === "estimated";
     const requested = requestedContextCompactions.has(compactionId);
     const eventAtMs = Date.parse(String(compaction.completedAt ?? compaction.startedAt ?? "")) || 0;
     const recent = eventAtMs > 0 && Date.now() - eventAtMs < 90_000;
@@ -2067,13 +2074,16 @@ function observeContextCompactions(tasks) {
       const maintenanceLabel = measurementKnown
         ? "Свёртка завершена успешно"
         : "Свёртка завершена";
+      const afterLabel = estimated ? `≈${afterPercent}%` : `${afterPercent}%`;
       const maintenanceDetail = measurementKnown
-        ? `${beforePercent}% → ${afterPercent}%`
+        ? `${beforePercent}% → ${afterLabel}${estimated ? " · Предварительная оценка провайдера после свёртки" : ""}`
         : beforePercent !== null
           ? `${beforePercent}% → замер после не получен`
           : "Замер контекста не получен";
       const text = measurementKnown
-        ? `Свёртка завершена успешно ${beforePercent}%>${afterPercent}%`
+        ? estimated
+          ? `Свёртка контекста · ${beforePercent}% → ${afterLabel}`
+          : `Свёртка завершена успешно ${beforePercent}%>${afterLabel}`
         : beforePercent !== null
           ? `Свёртка завершена; до ${beforePercent}%, замер после не получен`
           : "Свёртка завершена; замер контекста не получен";
@@ -2087,6 +2097,7 @@ function observeContextCompactions(tasks) {
         maintenanceStatus: "completed",
         maintenanceLabel,
         maintenanceDetail,
+        measurementKind: compaction.measurementKind ?? null,
         beforePercent,
         afterPercent,
         text,
@@ -2127,6 +2138,7 @@ function observeStreamRotations(previousTasks, tasks) {
       threadId: transition.task.threadId,
       sourceThreadId: transition.sourceThreadId,
       beforePercent: transition.beforePercent,
+      measurementKind: transition.measurementKind,
       time: transition.time,
     });
   }
@@ -2139,13 +2151,9 @@ function observeStreamRotations(previousTasks, tasks) {
     }
     if (rotationMaintenanceActive(task)) continue;
     const beforePercent = contextPercent(pending.beforePercent);
-    // Текущее использование нового Thread — живое значение, оно растёт вместе
-    // с работой. Замер «сразу после переноса» приходит только из записанной
-    // пробы ротации, поэтому до неё этот этап честно неизвестен.
-    const afterPercent = null;
     const presentation = window.AgentHubStreamTabs.rotationMaintenancePresentation(
       beforePercent,
-      afterPercent,
+      { measurementKind: pending.measurementKind },
     );
     const stableTaskId = taskId(task.provider, task.threadId, streamId);
     const eventId = `maintenance:rotation:${streamId}:${task.threadId}`;
@@ -2161,7 +2169,7 @@ function observeStreamRotations(previousTasks, tasks) {
       maintenanceDetail: presentation.maintenanceDetail,
       placement: "after-source-turn",
       beforePercent,
-      afterPercent,
+      measurementKind: pending.measurementKind ?? null,
       text: presentation.text,
       time: pending.time,
     })) changed.add(stableTaskId);

@@ -9,10 +9,6 @@ import { setImmediate } from "node:timers/promises";
 import { uuidV7TimestampMs } from "./codex-subagent-accounting.mjs";
 import { IMAGE_GENERATION_ESTIMATE_CREDITS } from "../../domain/codex-usage-estimate.mjs";
 import {
-  isCodexContextProbeClientId,
-  isCodexContextProbeTurn,
-} from "../../domain/codex-context-probe.mjs";
-import {
   codexAssistantResponseProjection,
 } from "../../domain/codex-response-annotation.mjs";
 import { addTokenUsage, emptyTokenUsage, normalizeTokenUsage } from "../../domain/token-usage.mjs";
@@ -410,10 +406,6 @@ function acceptUserOperationIdentity(turn, entry) {
   if (entry?.type === "response_item" && payload?.type === "message" && payload?.role === "user") {
     turn.prompt ||= displayUserPrompt(messageText(payload));
   }
-  turn.contextProbe = isCodexContextProbeTurn({
-    clientUserMessageId: turn.clientUserMessageId,
-    prompt: turn.prompt,
-  });
 }
 
 function patchInputFiles(value, workspaceRoot = "") {
@@ -721,7 +713,6 @@ function createTurnAccumulator(turnId) {
     return {
       turnId: requestedTurnId,
       ...(userOperation.clientUserMessageId ? { clientUserMessageId: userOperation.clientUserMessageId } : {}),
-      ...(userOperation.contextProbe ? { contextProbe: true } : {}),
       usage,
       reported,
       started,
@@ -956,7 +947,6 @@ export async function scanCodexTerminalEventsFromOffset(transcriptPath, {
       lastActivityAt: String(turn?.lastActivityAt ?? turn?.startedAt ?? ""),
       ...(turn?.prompt ? { prompt: turn.prompt } : {}),
       ...(turn?.clientUserMessageId ? { clientUserMessageId: turn.clientUserMessageId } : {}),
-      ...(turn?.contextProbe === true ? { contextProbe: true } : {}),
     }]] : [];
   }));
   const start = Math.max(0, Number(startOffset) || 0);
@@ -1002,7 +992,6 @@ export async function scanCodexTerminalEventsFromOffset(transcriptPath, {
       turnId,
       status,
       completedAt: String(entry?.timestamp ?? ""),
-      ...(active?.contextProbe === true ? { contextProbe: true } : {}),
     });
   }
 
@@ -1232,9 +1221,6 @@ export async function scanCodexHistoricalRollout(transcriptPath, {
       turn.completedAt = timestamp || turn.completedAt;
       turn.status = lifecycleTerminalStatus(lifecycle, entry.payload);
       touch(turn, timestamp);
-    }
-    if (lifecycleTurnId && isCodexContextProbeClientId(entry?.payload?.client_id)) {
-      ensureTurn(lifecycleTurnId).contextProbe = true;
     }
     if (lifecycle === "patch_apply_end" && lifecycleTurnId) {
       const turn = ensureTurn(lifecycleTurnId);

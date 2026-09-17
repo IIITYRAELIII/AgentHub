@@ -5,7 +5,6 @@ import {
 } from "../domain/deferred-input.mjs";
 import { DeferredInputController } from "../application/deferred-input-controller.mjs";
 import { activeTurnNotSteerable } from "../application/run-coordinator.mjs";
-import { isCodexContextProbeTurn } from "../domain/codex-context-probe.mjs";
 import { prependStreamHandoff } from "../domain/stream-handoff.mjs";
 import { isClaudeCompactionRun } from "../domain/claude-context-maintenance.mjs";
 import { markProviderTurnAccepted } from "../domain/task-runs.mjs";
@@ -26,15 +25,11 @@ function explicitSkillCandidatesFromInput(input) {
 export function contextCompactionRunIsInternal(run, compaction, turnId = run?.turnId) {
   const normalizedTurnId = String(turnId ?? "").trim();
   const compactionTurnId = String(compaction?.turnId ?? "").trim();
-  const probeTurnIds = (Array.isArray(compaction?.probeTurnIds) ? compaction.probeTurnIds : [])
-    .map((value) => String(value ?? "").trim())
-    .filter(Boolean);
   if (
     !run
     || !normalizedTurnId
-    || (compactionTurnId !== normalizedTurnId && !probeTurnIds.includes(normalizedTurnId))
+    || compactionTurnId !== normalizedTurnId
   ) return false;
-  if (probeTurnIds.includes(normalizedTurnId)) return true;
   if (compaction?.origin === "manual") return true;
   const hasUserInput = Boolean(
     String(run.promptPreview ?? "").trim()
@@ -130,13 +125,11 @@ export function createRunAdmissionComposition({
     }
   }
 
-  // Internal probe turns carry no user intent, so they must not consume the
-  // package that the first real turn of the receiving Thread is waiting for.
   // Свёртка контекста Claude — служебная команда CLI: любой префикс превратил
   // бы её в обычный текст и команда не выполнилась бы.
   async function streamHandoffPrefix(run) {
     if (!streamHandoff || !run?.streamId) return "";
-    if (isCodexContextProbeTurn(run) || isClaudeCompactionRun(run)) return "";
+    if (isClaudeCompactionRun(run)) return "";
     try {
       return await streamHandoff.consume({
         streamId: run.streamId,

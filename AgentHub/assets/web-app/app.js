@@ -7247,6 +7247,7 @@ function activityItemNode(activity) {
     class: "activity-item",
     "data-type": activity.type ?? "stage",
     "data-status": activity.status ?? "",
+    ...(activity.type === "compaction" ? { title: String(activity.detail ?? "") } : {}),
   }, [
     el("span", { class: "activity-marker", "aria-hidden": "true" }),
     el("span", { class: "activity-time", text: activity.time
@@ -7472,6 +7473,9 @@ function renderMessage(message, { readOnly = false, task = currentTask() } = {})
     "data-message-key": message.messageKey ?? "",
     "data-delivery-state": message.deliveryState ?? "",
     "data-provider": String(task?.provider ?? "none"),
+    ...(maintenance && message.measurementKind === "estimated"
+      ? { title: String(message.maintenanceDetail ?? "Предварительная оценка провайдера после свёртки") }
+      : {}),
     ...(subagent ? { "data-subagent-response": true } : {}),
   });
 

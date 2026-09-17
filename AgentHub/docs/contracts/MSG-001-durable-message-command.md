@@ -6,11 +6,9 @@
 outermost client boundary through receipt, queue, run, provider prompt and
 history. A retry reuses it. Equal text is never an identity.
 
-An internal Codex context probe owns a reserved generated
-`clientUserMessageId`. Exact prompt text remains a legacy fallback only when a
-turn has no identity; probe response text alone never classifies or hides an
-ordinary work turn. Ordinary Desktop, Task-launch and MCP intake cannot supply
-the reserved probe namespace; only context maintenance generates that identity.
+Context maintenance never creates a synthetic user turn or reserves a client
+message namespace. Prompt and response text never classify a turn as maintenance
+or hide an ordinary message.
 
 If a provider omits that identity from a user item, the item remains unbound.
 A durable receipt may enrich only a provider item that already carries the same

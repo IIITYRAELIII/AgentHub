@@ -5,7 +5,6 @@ import os from "node:os";
 import path from "node:path";
 
 import { CodexTerminalReconciliationService } from "../../../src/providers/codex/codex-terminal-reconciliation-service.mjs";
-import { CODEX_CONTEXT_PROBE_CLIENT_ID_PREFIX } from "../../../src/domain/codex-context-probe.mjs";
 import { createRunAccountingComposition } from "../../../src/composition/run-accounting-composition.mjs";
 import { RunJournalService } from "../../../src/application/run-journal-service.mjs";
 import { createWorkLogUsageStore } from "../../../src/application/work-log-usage-store.mjs";
@@ -295,55 +294,8 @@ test("recent completed Codex turns keep their grace period before reconciliation
   assert.deepEqual(completions, []);
 });
 
-test("terminal reconciliation ignores a context probe before any recovery", async () => {
-  const { service, calls, completions } = harness();
-  const result = await service.reconcile(thread, project, {
-    turnId: "probe-turn",
-    status: "completed",
-    completedAt: "2026-08-04T10:00:00.000Z",
-    clientUserMessageId: `${CODEX_CONTEXT_PROBE_CLIENT_ID_PREFIX}test`,
-  });
 
-  assert.equal(result, true);
-  assert.deepEqual(calls, []);
-  assert.deepEqual(completions, []);
-});
 
-test("an unclassified live terminal resolved to a probe only produces accounting", async () => {
-  const { service, calls, completions } = harness();
-  const result = await service.reconcile(thread, project, {
-    turnId: "probe-turn",
-    status: "failed",
-    completedAt: "2026-08-04T10:00:00.000Z",
-    usageResult: usage({ contextProbe: true, status: "failed" }),
-  });
-  assert.equal(result, true);
-  assert.deepEqual(completions, []);
-  assert.equal(calls.find(([name]) => name === "project")[1].contextProbe, true);
-  assert.equal(calls.some(([name]) => name === "deliver"), false);
-});
-
-test("historical context probe is projected for accounting without notification", async () => {
-  const { service, calls, completions } = harness();
-  const result = await service.reconcile(thread, project, {
-    turnId: "probe-turn",
-    status: "completed",
-    completedAt: "2026-08-04T10:00:00.000Z",
-    clientUserMessageId: `${CODEX_CONTEXT_PROBE_CLIENT_ID_PREFIX}historical`,
-    historical: true,
-    usageResult: usage({
-      clientUserMessageId: `${CODEX_CONTEXT_PROBE_CLIENT_ID_PREFIX}historical`,
-    }),
-  });
-
-  assert.equal(result, true);
-  assert.deepEqual(completions, []);
-  const projection = calls.find(([name]) => name === "project");
-  assert.equal(projection[1].contextProbe, true);
-  assert.equal(projection[1].usageReported, true);
-  assert.equal(projection[2].deferProjection, true);
-  assert.equal(calls.some(([name]) => name === "deliver"), false);
-});
 
 test("historical reconciliation refreshes an existing turn when rollout usage changed", async () => {
   const { service, calls } = harness({

@@ -426,6 +426,7 @@
         // Только записанный замер после свёртки. Текущее использование Thread —
         // живое значение, под видом исторического этапа его показывать нельзя.
         beforePercent: normalizedContextPercent(sourceCompaction?.afterPercent),
+        measurementKind: sourceCompaction?.measurementKind ?? null,
         time: sourceCompaction?.completedAt ?? new Date().toISOString(),
       });
     }
@@ -447,9 +448,9 @@
       // живое использование нового Thread показывается отдельно и растёт.
       const compactionBeforePercent = normalizedContextPercent(compaction.beforePercent);
       const beforePercent = normalizedContextPercent(compaction.afterPercent);
-      const afterPercent = normalizedContextPercent(compaction.rotationAfterPercent);
-      const presentation = rotationMaintenancePresentation(beforePercent, afterPercent, {
+      const presentation = rotationMaintenancePresentation(beforePercent, {
         compactionBeforePercent,
+        measurementKind: compaction.measurementKind,
       });
       const id = `maintenance:rotation:${streamId}:${provider}:${sourceThreadId}:${operationId}`;
       messages.set(id, {
@@ -461,7 +462,8 @@
         maintenanceLabel: presentation.maintenanceLabel,
         maintenanceDetail: presentation.maintenanceDetail,
         placement: "after-source-turn",
-        beforePercent, afterPercent, compactionBeforePercent,
+        beforePercent, compactionBeforePercent,
+        measurementKind: compaction.measurementKind ?? null,
         text: presentation.text,
         time: compaction.rotationCompletedAt ?? compaction.completedAt ?? null,
       });
@@ -469,23 +471,20 @@
     return [...messages.values()];
   }
 
-  /* Этапы ротации называются явно: до свёртки и после неё — замеры исходного
-     Thread, «сразу после переноса» — проба нового. Отсутствующий замер не
-     достраивается и не выдаётся за результат. */
-  function rotationMaintenancePresentation(beforeValue, afterValue, {
+  // Ротация подтверждает перенос; использование нового Thread приходит отдельно.
+  function rotationMaintenancePresentation(beforeValue, {
     compactionBeforePercent: compactionValue = null,
+    measurementKind = null,
   } = {}) {
     const compactionBeforePercent = normalizedContextPercent(compactionValue);
     const beforePercent = normalizedContextPercent(beforeValue);
-    const afterPercent = normalizedContextPercent(afterValue);
+    const estimated = measurementKind === "estimated";
     const stages = [
       compactionBeforePercent === null ? "" : `до свёртки ${compactionBeforePercent}%`,
-      beforePercent === null ? "" : `после свёртки ${beforePercent}%`,
-      afterPercent === null
-        ? "новый Thread создан, его замер не сохранён"
-        : `новый Thread сразу после переноса ${afterPercent}%`,
+      beforePercent === null ? "" : `после свёртки ${estimated ? "≈" : ""}${beforePercent}%`,
+      "новый Thread создан",
     ].filter(Boolean);
-    const detail = `Использование контекста: ${stages.join(" → ")}`;
+    const detail = `Использование контекста: ${stages.join(" → ")}${estimated ? " · Предварительная оценка провайдера после свёртки" : ""}`;
     return {
       maintenanceLabel: "Ротация завершена",
       maintenanceDetail: detail,

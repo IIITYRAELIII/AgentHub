@@ -132,7 +132,6 @@ export class CodexRunFinalizer {
       serviceTier: tracker.serviceTier ?? run.serviceTier ?? "default",
       startedAt: run.startedAt,
       operationKind: "user-turn",
-      contextProbe: false,
       prompt: run.promptPreview,
       rawPrompt: run.rawPrompt ?? run.promptPreview,
       clientUserMessageId: run.clientUserMessageId ?? null,

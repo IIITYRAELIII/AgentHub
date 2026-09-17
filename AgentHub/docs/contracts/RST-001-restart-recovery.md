@@ -6,10 +6,11 @@ Restart and compaction are persisted operations with `operationId`, kind, exact
 Stream and Thread, optional provider turn identity, status and revision. They are
 not user turns.
 
-The client may show an explicit compaction boundary with its before/after context
-measurement as a system maintenance marker. The internal probe command and
-answer used to obtain that measurement are not user history and are never shown
-as user or agent conversation cards.
+The client may show an explicit compaction boundary with before/after context
+as a system maintenance marker. Codex uses its preliminary provider estimate,
+labelled as approximate; missing evidence remains unknown. Context maintenance
+does not generate measurement turns, including after rotation. Former marker
+text has no special classification or suppression rule.
 
 Test Contour refresh is a separate persisted infrastructure operation governed
 by REL-001 and ADR-0015. It binds contour root/marker/port and source/release
@@ -25,7 +26,10 @@ a user turn and does not alter the restart/compaction operation schema.
   endpoint serving an old release is not successful cutover. A publication may
   cold-start the verified installed launcher only after process absence is
   confirmed; a failed or timed-out restart RPC never authorizes that fallback.
-- Compaction lifecycle writes use a Thread-scoped asynchronous mutation queue.
+- Compaction lifecycle writes and context-estimate classification/observation use
+  the same Thread-scoped asynchronous mutation queue. Concurrent provider event
+  handlers cannot deliver the estimate before its queued compaction boundary;
+  boundary timestamps are captured at event admission, before persistence waits.
   SQLite contention retries only persistence under the same operation identity,
   never the provider RPC. Completion/failure cancels its watchdog only after the
   durable transition succeeds. A successful enclosing user turn cannot become

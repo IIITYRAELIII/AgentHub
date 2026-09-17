@@ -12,7 +12,6 @@ import {
   messageRequestFingerprint,
 } from "../../infrastructure/persistence/message-receipts.mjs";
 import { normalizedResponseAnnotations } from "../../domain/response-annotation-source.mjs";
-import { isCodexContextProbeClientId } from "../../domain/codex-context-probe.mjs";
 
 export function createDesktopMessageController({
   attachmentPaths,
@@ -47,9 +46,6 @@ export function createDesktopMessageController({
       params.clientUserMessageId ?? params.requestId ?? randomUUID(),
     ).trim().slice(0, 200);
     if (!clientUserMessageId) throw new Error("Сообщение не содержит идентификатор доставки");
-    if (isCodexContextProbeClientId(clientUserMessageId)) {
-      throw new Error("Идентификатор проверки контекста зарезервирован для внутреннего замера");
-    }
     const transport = String(context?.source ?? "desktop-control").trim().toLowerCase()
       || "desktop-control";
     const preparation = commandTrace?.startBestEffortSpan?.({

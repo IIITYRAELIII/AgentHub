@@ -3,7 +3,6 @@ import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { TaskBoardLaunchService } from "../../application/task-board-launch-service.mjs";
 import { attachmentUploadLimits } from "../../domain/attachment-upload-policy.mjs";
-import { isCodexContextProbeClientId } from "../../domain/codex-context-probe.mjs";
 import { pathInsideOrSame } from "../../infrastructure/filesystem/config.mjs";
 
 export class DesktopTaskBoardController {
@@ -205,9 +204,6 @@ export class DesktopTaskBoardController {
   }
 
   async start(params, context = {}) {
-    if (isCodexContextProbeClientId(params.clientUserMessageId)) {
-      throw new Error("Идентификатор проверки контекста зарезервирован для внутреннего замера");
-    }
     const result = await this.taskLauncher.start({
       ...params,
       launchRequestId: String(params.launchRequestId ?? params.clientUserMessageId ?? "").trim() || randomUUID(),

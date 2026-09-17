@@ -54,37 +54,24 @@
   is the single rollout `compacted` record whose replacement history carries the
   transferred compaction item. An empty suffix is valid; a missing or
   non-unique boundary refuses the transfer before a new Thread exists.
-- Rotation proves readiness before any authoritative switch. The new Thread is
-  probed while still unbound. Its probe-only application instruction is bound
-  to the exact generated probe `clientUserMessageId`; ordinary turns receive a
-  later current-turn scope that makes historical probe instructions inert even
-  when compaction or rotation retains them. User history is not deleted or
-  rewritten for this isolation. Only a completed probe with an exact usage
-  measurement allows binding it to the Stream, retargeting the selection,
-  client selections and deferred inputs, and recording the rotation together
-  with that probe's turn identity and measurement time. A definite failure
-  deletes the new Thread: either its probe turn ended unsuccessfully, or every
-  accepted probe attempt that did not materialize was then observed terminal in
-  the Thread itself. An acknowledged interrupt request alone is not that
-  evidence. An unknown outcome — an accepted probe could not be interrupted or
-  its stop was not observed, the probe did not settle, stayed active or produced
-  no exact measurement — stops without a further attempt, leaves that Thread
-  untouched and records it as quarantined on the source compaction operation. In both cases the source Thread stays
-  authoritative and its queue is woken normally. One compaction receives at most
-  one rotation attempt; a later compaction may try again.
-- Before its readiness probe the unbound rotation target is named from the
-  source Thread's Workspace and Stream, so probe text and responses cannot
-  become its title. Nothing is pinned for the unbound target; its `rebirth`
-  binding after readiness owns the managed title. Existing explicit custom
-  titles are preserved. Probe title repair has bounded provider calls; failure
-  does not prevent the probe, and repair after confirmed idle cannot hold
-  admission. Normal pinned/expected-title reconciliation retries the intended
-  name and excludes probe text from title history.
-- Probe-time title preservation applies only to exact bindings marked `created`
-  or `rebirth`, using their current Workspace and Stream, and to an unbound
-  rotation target named from its bound source. Foreign and merely discovered
-  Threads remain untouched. Naming adds no bulk legacy-title repair work or
-  provider calls to catalog discovery or startup.
+- Rotation proves readiness before any authoritative switch: create the new
+  Thread, inject the bounded compaction transfer, then freshly read that exact
+  Thread and require its status to be `idle`. These steps never start a model
+  turn or request a generated measurement. Only that successful read permits
+  catalog binding, selection and deferred-input retargeting. Failure keeps the
+  source authoritative, attempts to delete the unbound target, and releases the
+  maintenance reservation through its existing owner. A failed automatic
+  rotation is not retried for the same compaction.
+- The successful `rebirth` binding owns the target's managed title through normal
+  Workspace/Stream naming. Existing explicit custom titles remain preserved;
+  discovered foreign Threads are not renamed. No measurement-specific title
+  repair, startup scan or provider call is added.
+- The post-compaction percentage is a preliminary provider estimate. It belongs
+  to the same exact Thread, turn and current compaction, requires a finite
+  observation timestamp at or after the compaction boundary, and is labelled
+  `estimated`. The first valid estimate is retained; later normal user-turn
+  usage cannot replace that historical value. Missing evidence stays unknown.
+  Rotation neither generates nor invents a target after-transfer percentage.
 
 ## Quick replies and quote input
 

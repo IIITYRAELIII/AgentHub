@@ -330,12 +330,10 @@ export class ProviderTurnTerminalStore {
       responseAttachments: basePayload?.completion?.responseAttachments ?? [],
       telegramIntent,
       ...([basePayload?.completion, basePayload?.history].some((part) => (
-        part?.contextProbe === true
-        || (text(part?.operationKind) && text(part.operationKind) !== "user-turn")
+        text(part?.operationKind) && text(part.operationKind) !== "user-turn"
       )) ? {
           classification: [basePayload?.completion, basePayload?.history].map((part) => ({
             operationKind: text(part?.operationKind) || "user-turn",
-            contextProbe: part?.contextProbe === true,
           })),
         } : {}),
     });

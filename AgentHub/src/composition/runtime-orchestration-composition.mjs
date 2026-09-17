@@ -285,7 +285,6 @@ export function createRuntimeOrchestrationComposition({
       findCodexRolloutPath: knownCodexRolloutPath,
       readCodexThread,
       readCodexRolloutActivity: provider.readCodexRolloutActivity,
-      contextProbeTurnIds: (threadId) => contextCompactions.get(threadId)?.probeTurnIds ?? [],
       readCodexSnapshot: readCodexTaskSnapshot,
       readClaudeSnapshot: (...args) => claudeTaskSnapshots.read(...args),
       attachmentImporter: provider.importCodexDesktopAttachments,

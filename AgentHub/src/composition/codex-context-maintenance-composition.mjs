@@ -1,11 +1,5 @@
 import { CodexContextMaintenanceService } from "../providers/codex/codex-context-maintenance-service.mjs";
-import {
-  buildCodexContextProbeInstructions,
-  CODEX_CONTEXT_PROBE_PROMPT,
-  codexContextProbeClientId,
-} from "../domain/codex-context-probe.mjs";
 import { codexThreadSandboxSettings } from "../providers/codex/codex-sandbox.mjs";
-import { buildCodexApplicationContext } from "../providers/codex/codex-settings.mjs";
 
 export function createCodexContextMaintenanceComposition({
   config,
@@ -30,7 +24,6 @@ export function createCodexContextMaintenanceComposition({
   runForTask,
   sendRpc,
   normalizeCodexModel,
-  preserveProbeTitle = async () => {},
   logger = console,
 }) {
   return new CodexContextMaintenanceService({
@@ -59,7 +52,6 @@ export function createCodexContextMaintenanceComposition({
     invalidateTaskCatalog,
     restartTransportAfterCrash,
     runForTask,
-    preserveProbeTitle,
     logger,
     ensureTransport: async () => {
       if (transportRunning()) return;
@@ -71,29 +63,6 @@ export function createCodexContextMaintenanceComposition({
       ...sandbox,
     }),
     startCompaction: (threadId) => sendRpc("thread/compact/start", { threadId }),
-    startContextProbe: async (threadId, target = null) => {
-      try {
-        await preserveProbeTitle({
-          provider: "codex",
-          threadId,
-          titleSourceThreadId: target?.titleSourceThreadId,
-        });
-      }
-      catch (error) { logger.warn?.(`Cannot preserve Thread title before context probe: ${error.message}`); }
-      const clientUserMessageId = codexContextProbeClientId();
-      return sendRpc("turn/start", {
-        threadId,
-        input: [{ type: "text", text: CODEX_CONTEXT_PROBE_PROMPT }],
-        clientUserMessageId,
-        additionalContext: buildCodexApplicationContext(
-          buildCodexContextProbeInstructions(clientUserMessageId),
-        ),
-      });
-    },
-    interruptContextProbe: (threadId, turnId) => sendRpc("turn/interrupt", {
-      threadId,
-      turnId,
-    }),
     startThread: (params) => sendRpc("thread/start", {
       ...params,
       ...(params.model ? { model: normalizeCodexModel(params.model) } : {}),

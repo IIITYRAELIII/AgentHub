@@ -115,17 +115,17 @@ test("RunJournalService revision changes only when the last-message projection c
   assert.equal(service.revision, 2);
 });
 
-test("RunJournalService rejects live and restored context probe answers", () => {
+test("RunJournalService preserves marker-shaped ordinary answers on live and restored paths", () => {
   const { service } = fixture();
   const task = { provider: "codex", projectRoot: "C:/workspace", threadId: "thread", turnId: "probe" };
 
-  assert.equal(service.rememberLastMessage(task, "AGENT_HUB_CONTEXT_PROBE"), false);
-  assert.equal(service.lastMessage(task), "");
+  assert.equal(service.rememberLastMessage(task, "AGENT_HUB_CONTEXT_PROBE"), true);
+  assert.equal(service.lastMessage(task), "AGENT_HUB_CONTEXT_PROBE");
   assert.equal(service.restoreLastMessages([
     ["probe", { provider: "codex", text: "AGENT_HUB_CONTEXT_PROBE_OK_V1" }],
     ["answer", { provider: "codex", text: "Рабочий ответ" }],
-  ]), 1);
-  assert.deepEqual(service.lastMessageSnapshot().map(([key]) => key), ["answer"]);
+  ]), 2);
+  assert.deepEqual(service.lastMessageSnapshot().map(([, value]) => value.text), ["AGENT_HUB_CONTEXT_PROBE_OK_V1", "Рабочий ответ"]);
 });
 
 test("RunJournalService keeps reserved probe output for an explicit user operation", () => {

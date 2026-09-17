@@ -506,7 +506,7 @@ test("desktop task snapshot exposes active Stream maintenance", () => {
   assert.deepEqual(desktopTaskSnapshot(entry).maintenance, state.maintenance);
 });
 
-test("desktop task snapshot hides an internal context probe run", () => {
+test("desktop task snapshot does not classify user activity by a legacy client prefix", () => {
   const { desktopTaskSnapshot, entry, state } = fixture();
   state.run.clientUserMessageId = "agent-hub-context-probe:probe-1";
   state.run.promptPreview = "Ответь строго: AGENT_HUB_CONTEXT_PROBE_OK_V1";
@@ -517,8 +517,8 @@ test("desktop task snapshot hides an internal context probe run", () => {
 
   const snapshot = desktopTaskSnapshot(entry);
 
-  assert.equal(snapshot.run, null);
-  assert.equal(snapshot.running, false);
+  assert.ok(snapshot.run);
+  assert.equal(snapshot.running, true);
 });
 
 test("desktop task snapshot treats a saved final for the retained run as terminal", () => {
@@ -1085,7 +1085,7 @@ test("an anonymous Codex catalog activity cannot become a live turn", () => {
   assert.equal(snapshot.context.compaction.afterPercent, 24);
 });
 
-test("a recorded post-compaction probe stays internal despite stale user content", () => {
+test("legacy compaction metadata cannot hide current user content", () => {
   const { desktopTaskSnapshot, entry, state } = fixture();
   state.run.turnId = "probe-turn";
   state.run.promptPreview = "Унаследованный пользовательский текст";
@@ -1099,8 +1099,8 @@ test("a recorded post-compaction probe stays internal despite stale user content
     afterPercent: 24,
   };
   const snapshot = desktopTaskSnapshot(entry);
-  assert.equal(snapshot.running, false);
-  assert.equal(snapshot.run, null);
+  assert.equal(snapshot.running, true);
+  assert.ok(snapshot.run);
 });
 
 test("a user turn equal to the probe text remains visible without the internal client id", () => {
@@ -1136,7 +1136,7 @@ test("desktopTaskSnapshot keeps a manual context compaction out of the live turn
   assert.equal(snapshot.context.compacting, true);
 });
 
-test("desktopTaskSnapshot hides an anonymous post-compaction measurement observer", () => {
+test("desktopTaskSnapshot does not infer a hidden measurement from a later usage timestamp", () => {
   const { desktopTaskSnapshot, entry, state } = fixture({ run: null });
   entry.turnId = "measurement-turn";
   state.compaction = {
@@ -1156,8 +1156,8 @@ test("desktopTaskSnapshot hides an anonymous post-compaction measurement observe
 
   const snapshot = desktopTaskSnapshot(entry);
 
-  assert.equal(snapshot.running, false);
-  assert.equal(snapshot.run, null);
+  assert.equal(snapshot.running, true);
+  assert.ok(snapshot.run);
   assert.equal(snapshot.context.turnId, "measurement-turn");
 });
 

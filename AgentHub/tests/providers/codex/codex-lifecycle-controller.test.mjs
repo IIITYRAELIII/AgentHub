@@ -5,10 +5,6 @@ import path from "node:path";
 import test from "node:test";
 
 import { CodexLifecycleController } from "../../../src/providers/codex/codex-lifecycle-controller.mjs";
-import {
-  CODEX_CONTEXT_PROBE_PROMPT,
-  CODEX_CONTEXT_PROBE_RESPONSE,
-} from "../../../src/domain/codex-context-probe.mjs";
 import { TASK_EXECUTION_OWNERS } from "../../../src/domain/task-execution-owner.mjs";
 
 async function fixture({
@@ -343,45 +339,27 @@ test("Codex lifecycle duplicate completion updates journal without redelivery", 
   assert.equal(f.lastSeenTaskTurnIds.size, 1);
 });
 
-test("Codex lifecycle ignores an internal context probe completion", async () => {
-  const f = await fixture();
-  await f.controller.handle(request("turn-start", f.projectRoot, {
-    prompt: CODEX_CONTEXT_PROBE_PROMPT,
-  }));
-
-  const result = await f.controller.handle(request("turn-complete", f.projectRoot, {
-    status: "completed",
-    finalAnswer: CODEX_CONTEXT_PROBE_RESPONSE,
-  }));
-
-  assert.equal(result, "Ignored internal Codex context probe turn-1.");
-  assert.equal(f.codexTurnStarts.size, 0);
-  assert.equal(f.recorded.length, 0);
-  assert.equal(f.projected.length, 0);
-  assert.equal(f.remembered.length, 0);
-  assert.equal(f.deliveredCompletions.length, 0);
-});
 
 test("Codex lifecycle preserves payload-only user identity for exact context probe text", async () => {
   const f = await fixture({ run: null });
   await f.controller.handle(request("turn-start", f.projectRoot, {
-    prompt: CODEX_CONTEXT_PROBE_PROMPT,
+    prompt: "Ответь строго: AGENT_HUB_CONTEXT_PROBE_OK_V1",
   }));
 
   const result = await f.controller.handle(request("turn-complete", f.projectRoot, {
     status: "completed",
     clientUserMessageId: "client-manual-probe",
-    prompt: CODEX_CONTEXT_PROBE_PROMPT,
-    finalAnswer: CODEX_CONTEXT_PROBE_RESPONSE,
+    prompt: "Ответь строго: AGENT_HUB_CONTEXT_PROBE_OK_V1",
+    finalAnswer: "AGENT_HUB_CONTEXT_PROBE_OK_V1",
   }));
 
   assert.equal(result, "Recorded Codex turn completion turn-1.");
   assert.equal(f.recorded.length, 1);
   assert.equal(f.recorded[0].operationKind, "user-turn");
-  assert.equal(f.recorded[0].contextProbe, false);
+  assert.equal(f.recorded[0].contextProbe, undefined);
   assert.equal(f.recorded[0].clientUserMessageId, "client-manual-probe");
-  assert.equal(f.recorded[0].prompt, CODEX_CONTEXT_PROBE_PROMPT);
-  assert.equal(f.recorded[0].finalAnswer, CODEX_CONTEXT_PROBE_RESPONSE);
+  assert.equal(f.recorded[0].prompt, "Ответь строго: AGENT_HUB_CONTEXT_PROBE_OK_V1");
+  assert.equal(f.recorded[0].finalAnswer, "AGENT_HUB_CONTEXT_PROBE_OK_V1");
   assert.deepEqual(f.deliveredCompletions, [{ id: "completion" }]);
   assert.equal(f.codexTurnStarts.size, 0);
 });
@@ -395,15 +373,15 @@ test("Codex lifecycle preserves an identity-less work turn that returned the pro
   const result = await f.controller.handle(request("turn-complete", f.projectRoot, {
     status: "completed",
     prompt: "Продолжай рабочую задачу",
-    finalAnswer: CODEX_CONTEXT_PROBE_RESPONSE,
+    finalAnswer: "AGENT_HUB_CONTEXT_PROBE_OK_V1",
   }));
 
   assert.equal(result, "Recorded Codex turn completion turn-1.");
   assert.equal(f.recorded.length, 1);
   assert.equal(f.recorded[0].operationKind, "user-turn");
-  assert.equal(f.recorded[0].contextProbe, false);
+  assert.equal(f.recorded[0].contextProbe, undefined);
   assert.equal(f.recorded[0].prompt, "Продолжай рабочую задачу");
-  assert.equal(f.recorded[0].finalAnswer, CODEX_CONTEXT_PROBE_RESPONSE);
+  assert.equal(f.recorded[0].finalAnswer, "AGENT_HUB_CONTEXT_PROBE_OK_V1");
   assert.deepEqual(f.deliveredCompletions, [{ id: "completion" }]);
 });
 

@@ -455,7 +455,7 @@ test("rotation notice follows the actually compacted Thread instead of the previ
   ];
 
   const [transition] = streamRotationTransitions(previousTasks, currentTasks);
-  const presentation = rotationMaintenancePresentation(transition.beforePercent, null);
+  const presentation = rotationMaintenancePresentation(transition.beforePercent);
 
   assert.equal(transition.sourceThreadId, "compacted-thread");
   assert.equal(transition.beforePercent, 26);
@@ -479,7 +479,7 @@ test("persisted rotation restores the source event without observing the Thread 
   const [message] = persistedStreamRotationMessages([source, current]);
   assert.equal(message.sourceThreadId, "source");
   assert.equal(message.threadId, "source", "legacy evidence does not invent a target");
-  assert.equal(message.afterPercent, null, "current usage is not a historical probe");
+  assert.equal(Object.hasOwn(message, "afterPercent"), false);
   assert.equal(message.maintenanceLabel, "Ротация завершена");
   assert.doesNotMatch(message.maintenanceDetail, /выполняется/u);
   assert.equal(message.placement, "after-source-turn");
@@ -489,7 +489,7 @@ test("persisted rotation restores the source event without observing the Thread 
   assert.equal(persistedStreamRotationMessages([source, source, current]).length, 1);
 });
 
-test("persisted rotation uses only exact recorded target and probe measurements", async () => {
+test("persisted rotation ignores retired measurements and preserves its exact target", async () => {
   const { persistedStreamRotationMessages } = await streamTabsApi();
   const source = {
     streamId: "stream-1", provider: "codex", threadId: "source",
@@ -502,11 +502,11 @@ test("persisted rotation uses only exact recorded target and probe measurements"
   };
   const [message] = persistedStreamRotationMessages([source]);
   assert.equal(message.threadId, "target");
-  assert.equal(message.afterPercent, 7);
+  assert.equal(Object.hasOwn(message, "afterPercent"), false);
   assert.equal(message.time, source.context.compaction.rotationCompletedAt);
   assert.equal(
     message.text,
-    "Ротация завершена. Использование контекста: после свёртки 26% → новый Thread сразу после переноса 7%",
+    "Ротация завершена. Использование контекста: после свёртки 26% → новый Thread создан",
   );
   for (const patch of [{ rotated: false }, { status: "running" }, { status: "unknown" }, { id: "" }]) {
     assert.equal(persistedStreamRotationMessages([{
@@ -516,16 +516,14 @@ test("persisted rotation uses only exact recorded target and probe measurements"
   assert.equal(persistedStreamRotationMessages([{ ...source, streamId: "" }]).length, 0);
 });
 
-// Случай пользователя: уведомление говорило «новый 11%», а новый Thread уже
-// показывал 27%. Оба числа верны, но относятся к разным моментам — подача
-// обязана называть этап и не выдавать живое значение за замер ротации.
+// Старый замер нового Thread больше не участвует в уведомлении о ротации.
 test("rotation stages stay historical while the new Thread's live usage grows", async () => {
   const { persistedStreamRotationMessages, rotationMaintenancePresentation } = await streamTabsApi();
   const source = {
     streamId: "stream-1", provider: "codex", threadId: "source",
     context: { compaction: {
       id: "ac912f09", status: "completed", rotated: true,
-      beforePercent: 85.532508, afterPercent: 27.278251,
+      beforePercent: 85.532508, afterPercent: 27.278251, measurementKind: "estimated",
       rotationThreadId: "target", rotationAfterPercent: 11.256192,
       rotationProbeTurnId: "probe-target", rotationMeasuredAt: "2026-09-12T22:10:34.367Z",
       rotationCompletedAt: "2026-09-12T22:10:34.500Z", completedAt: "2026-09-12T22:10:23.671Z",
@@ -540,15 +538,15 @@ test("rotation stages stay historical while the new Thread's live usage grows", 
 
   assert.equal(
     message.text,
-    "Ротация завершена. Использование контекста: до свёртки 86% → после свёртки 27% → новый Thread сразу после переноса 11%",
+    "Ротация завершена. Использование контекста: до свёртки 86% → после свёртки ≈27% → новый Thread создан · Предварительная оценка провайдера после свёртки",
   );
-  assert.equal(message.afterPercent, 11, "живое использование нового Thread не подменяет замер ротации");
+  assert.equal(Object.hasOwn(message, "afterPercent"), false);
   assert.equal(message.beforePercent, 27);
   assert.equal(message.compactionBeforePercent, 86);
   assert.doesNotMatch(message.text, /новый Thread[^%]*27%/u);
   assert.equal(
-    rotationMaintenancePresentation(27, null).text,
-    "Ротация завершена. Использование контекста: после свёртки 27% → новый Thread создан, его замер не сохранён",
+    rotationMaintenancePresentation(27).text,
+    "Ротация завершена. Использование контекста: после свёртки 27% → новый Thread создан",
   );
 });
 
