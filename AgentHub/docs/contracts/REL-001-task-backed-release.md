@@ -1,5 +1,27 @@
 # REL-001 — Task-backed Workspace release
 
+## Explicit reviewed-main composition base (2026-09-17)
+
+Ordinary and automatic PreRelease preparation derives its base only from exact
+repository publication authority and selected Task adoption evidence. A Release
+Manager may instead invoke the explicit reviewed-main preparation path with
+complete, unique, repository-scoped local and origin main commit approvals. The
+owner audits those fixed caller-supplied commits against the current primary and
+origin; observations never populate or replace an approval. It retains the last
+published baseline, verifies the existing upstream-adoption boundary, and uses
+the exact reviewed origin commit as the composition base only when the audit no
+longer requires approval.
+
+The immutable candidate manifest and checkpoint bind the published baseline,
+approved local main and approved origin main as composition provenance. Plan,
+publication and adoption authority, both reviewed main identities, and the
+primary invariant are re-read before candidate commit. Missing, duplicated,
+unrelated, partial or stale approval fails before promotion, and a drift failure
+retains the previous candidate. This evidence authorizes candidate composition;
+it does not declare the reviewed commit published, rewrite publication state, or
+create an upstream-adoption receipt. Release preflight continues to require the
+prepared base to equal the currently reviewed origin main.
+
 ## Exact result coverage and absorption composition (2026-09-16)
 
 A squash owner witness may classify a reviewed change as already satisfied only

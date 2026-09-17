@@ -191,6 +191,26 @@ function stableManifest(value) {
   return `${JSON.stringify(value, null, 2)}\n`;
 }
 
+function normalizedBaseProvenance(value, expectedBaseCommit = null) {
+  if (value == null) return null;
+  const normalized = {
+    schemaVersion: Number(value?.schemaVersion),
+    kind: String(value?.kind ?? "").trim(),
+    publishedBaseCommit: String(value?.publishedBaseCommit ?? "").trim(),
+    approvedLocalMainCommit: String(value?.approvedLocalMainCommit ?? "").trim(),
+    approvedOriginMainCommit: String(value?.approvedOriginMainCommit ?? "").trim(),
+  };
+  if (normalized.schemaVersion !== 1 || normalized.kind !== "explicit-reviewed-main-v1"
+      || ![normalized.publishedBaseCommit, normalized.approvedLocalMainCommit,
+        normalized.approvedOriginMainCommit].every((commit) => /^[0-9a-f]{40}$/u.test(commit))) {
+    throw new Error("release candidate has invalid explicit reviewed-main provenance");
+  }
+  if (expectedBaseCommit && normalized.approvedOriginMainCommit !== expectedBaseCommit) {
+    throw new Error("release candidate reviewed-main provenance does not match its approved base");
+  }
+  return normalized;
+}
+
 function githubLoginFromEmail(value) {
   const match = String(value ?? "").trim().match(/^(?:\d+\+)?([A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?)@users\.noreply\.github\.com$/iu);
   return match?.[1] ?? null;
@@ -715,7 +735,7 @@ export class ReleaseGitWorkspaceService {
 
   async prepareCandidate({
     planRevision, projectRoot, workspaceId = null, preflightRequestId = null,
-    frozenTasks = [], approvedBaseCommit = null, validateBeforeCommit = null,
+    frozenTasks = [], approvedBaseCommit = null, baseProvenance = null, validateBeforeCommit = null,
     preserveFrozen = false, commitPrepared = null,
   } = {}) {
     this.#assertAvailable("prepareCandidate");
@@ -723,8 +743,9 @@ export class ReleaseGitWorkspaceService {
     if (!revision) throw new Error("release candidate requires the exact plan revision");
     const acceptedBase = String(approvedBaseCommit ?? "").trim();
     if (!/^[a-f0-9]{40}$/u.test(acceptedBase)) {
-      throw new Error("release candidate requires an exact published or explicitly adopted base commit");
+      throw new Error("release candidate requires an exact published, adopted, or explicitly reviewed base commit");
     }
+    const normalizedProvenance = normalizedBaseProvenance(baseProvenance, acceptedBase);
     const tasks = normalizedFrozenTasks(frozenTasks);
     const initial = await primarySnapshot(projectRoot);
     await this.assertPrimaryInvariant(initial.root, { phase: "release preflight" });
@@ -783,6 +804,26 @@ export class ReleaseGitWorkspaceService {
         await runGit(["fetch", "workspace", acceptedBase], { cwd: clone.releaseRoot, timeoutMs: 300_000 });
       }
       const baseCommit = await runGit(["rev-parse", `${acceptedBase}^{commit}`], { cwd: clone.releaseRoot });
+      const validateReviewedMain = async () => {
+        if (!normalizedProvenance) return;
+        const currentPrimary = await primarySnapshot(initial.root);
+        await this.assertPrimaryInvariant(currentPrimary.root, { phase: "explicit reviewed-main preparation" });
+        if (currentPrimary.headCommit !== normalizedProvenance.approvedLocalMainCommit
+            || currentPrimary.mainCommit !== normalizedProvenance.approvedLocalMainCommit) {
+          throw new Error("reviewed local main changed during PreRelease preparation");
+        }
+        await runGit(["fetch", "--prune", "origin", "+refs/heads/main:refs/remotes/origin/main"], {
+          cwd: clone.releaseRoot,
+          timeoutMs: 300_000,
+        });
+        const currentOriginMain = await runGit(["rev-parse", "refs/remotes/origin/main^{commit}"], {
+          cwd: clone.releaseRoot,
+        });
+        if (currentOriginMain !== normalizedProvenance.approvedOriginMainCommit
+            || baseCommit !== normalizedProvenance.approvedOriginMainCommit) {
+          throw new Error("reviewed origin main changed during PreRelease preparation");
+        }
+      };
       const candidateGit = (args, options = {}) => runGit(args, {
         ...options, cwd: clone.releaseRoot, timeoutMs: 300_000,
       });
@@ -824,6 +865,7 @@ export class ReleaseGitWorkspaceService {
         releaseRoot: clone.releaseRoot,
         releaseGitCommonDir: clone.releaseGitCommonDir,
         baseCommit,
+        ...(normalizedProvenance ? { baseProvenance: normalizedProvenance } : {}),
         tasks,
         ...(candidateReuse ? { candidateReuse } : {}),
       };
@@ -1036,6 +1078,7 @@ export class ReleaseGitWorkspaceService {
             preparedCompositionTree = await runGit(["rev-parse", `${baseCommit}^{tree}`], { cwd: clone.releaseRoot });
           }
           if (typeof validateBeforeCommit === "function") await validateBeforeCommit();
+          await validateReviewedMain();
           const finalIndexTree = await runGit(["write-tree"], { cwd: clone.releaseRoot });
           const finalCommitTree = await runGit(["rev-parse", `${preReleaseHead}^{tree}`], { cwd: clone.releaseRoot });
           if (finalIndexTree !== preparedCompositionTree || finalCommitTree !== preparedCompositionTree) {
@@ -1055,6 +1098,7 @@ export class ReleaseGitWorkspaceService {
             manifestHash,
             manifestFile,
             baseCommit,
+            ...(normalizedProvenance ? { baseProvenance: normalizedProvenance } : {}),
             preReleaseHead,
             updatedAt: new Date().toISOString(),
           });
@@ -1080,6 +1124,10 @@ export class ReleaseGitWorkspaceService {
         }
       }
 
+      if (reused) {
+        if (typeof validateBeforeCommit === "function") await validateBeforeCommit();
+        await validateReviewedMain();
+      }
       const verifyPrimary = async () => {
         const finalPrimary = await primarySnapshot(initial.root);
         await this.assertPrimaryInvariant(finalPrimary.root, { phase: "release candidate preparation" });
@@ -1174,6 +1222,11 @@ export class ReleaseGitWorkspaceService {
       throw new Error("release checkpoint manifest digest changed");
     }
     const manifest = JSON.parse(manifestBytes.toString("utf8"));
+    const manifestBaseProvenance = normalizedBaseProvenance(manifest.baseProvenance, manifest.baseCommit);
+    const checkpointBaseProvenance = normalizedBaseProvenance(checkpoint.baseProvenance, checkpoint.baseCommit);
+    if (stableManifest(manifestBaseProvenance) !== stableManifest(checkpointBaseProvenance)) {
+      throw new Error("release checkpoint reviewed-main provenance disagrees with its immutable manifest");
+    }
     const marker = await assertReleaseCloneForPublication({ repositoryRoot: layout.releaseRoot });
     for (const operation of ["MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "rebase-apply", "rebase-merge", "sequencer", "index.lock"]) {
       const pending = await lstat(path.join(marker.releaseGitCommonDir, operation)).catch((error) => {
@@ -1252,6 +1305,7 @@ export class ReleaseGitWorkspaceService {
         primaryRoot: manifest.primaryRoot,
         releaseRoot: manifest.releaseRoot,
         baseCommit: String(manifest.baseCommit ?? ""),
+        ...(manifestBaseProvenance ? { baseProvenance: manifestBaseProvenance } : {}),
         tasks: manifestTasks.map((task) => ({
           taskId: task.taskId,
           taskRevision: task.taskRevision,

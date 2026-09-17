@@ -572,7 +572,9 @@ test("release preflight rejects stale external production validation evidence", 
   );
 });
 
-async function realExternalValidationFixture(t, { afterValidation = null, squash = false } = {}) {
+async function realExternalValidationFixture(t, {
+  afterValidation = null, squash = false, reviewedMain = false,
+} = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), "hub-preflight-real-adapter-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const origin = path.join(root, "origin.git");
@@ -586,6 +588,12 @@ async function realExternalValidationFixture(t, { afterValidation = null, squash
   await writeFile(path.join(primary, "app.txt"), "base\n", "utf8");
   const base = await commit(primary, "base");
   await git(primary, "push", "-u", "origin", "main");
+  let reviewedMainCommit = base;
+  if (reviewedMain) {
+    await writeFile(path.join(primary, "AgentHub", "reviewed-main.txt"), "reviewed upstream content\n", "utf8");
+    reviewedMainCommit = await commit(primary, "reviewed main");
+    await git(primary, "push", "origin", "main");
+  }
   let sourceResult = null;
   if (squash) {
     const sourceRoot = path.join(root, "source");
@@ -718,12 +726,69 @@ async function realExternalValidationFixture(t, { afterValidation = null, squash
       return result;
     },
   });
-  await service.prepareAwaitSet({ workspaceId: "workspace-1" });
+  if (reviewedMain) {
+    await service.prepareReviewedAwaitSet({
+      workspaceId: "workspace-1",
+      approvedLocalMainCommit: reviewedMainCommit,
+      approvedOriginMainCommit: reviewedMainCommit,
+    });
+  } else await service.prepareAwaitSet({ workspaceId: "workspace-1" });
   return {
-    root, primary, dataDir, base, resultCommit, squashTransfer,
+    root, primary, dataDir, base, reviewedMainCommit, resultCommit, squashTransfer,
     integrationEvidence, releaseGitWorkspaces, service,
   };
 }
+
+test("explicit reviewed-main prepare and preflight retain upstream content and exact authority", async (t) => {
+  const {
+    primary, base, reviewedMainCommit, service, releaseGitWorkspaces,
+  } = await realExternalValidationFixture(t, { reviewedMain: true });
+  const approval = {
+    approvedLocalMainCommit: reviewedMainCommit,
+    approvedOriginMainCommit: reviewedMainCommit,
+  };
+  const expectedProvenance = {
+    schemaVersion: 1,
+    kind: "explicit-reviewed-main-v1",
+    publishedBaseCommit: base,
+    ...approval,
+  };
+  const before = await releaseGitWorkspaces.frozenCandidate(primary);
+  const serializedManifest = JSON.parse(await readFile(before.manifestFile, "utf8"));
+  assert.equal(before.baseCommit, reviewedMainCommit);
+  assert.deepEqual(serializedManifest.baseProvenance, expectedProvenance);
+  assert.deepEqual(before.manifest.baseProvenance, expectedProvenance);
+  assert.equal(await git(before.releaseRoot, "show", `${before.preReleaseHead}:AgentHub/reviewed-main.txt`),
+    "reviewed upstream content");
+
+  const result = await service.preflight({
+    workspaceId: "workspace-1",
+    expectedPlanRevision: "plan-real-adapter",
+    ...approval,
+  });
+  assert.equal(result.status, "ready");
+  assert.deepEqual(result.releaseCandidates[0].manifest.baseProvenance, expectedProvenance);
+
+  const checkpointBytes = await readFile(before.checkpointFile);
+  const checkpoint = JSON.parse(checkpointBytes.toString("utf8"));
+  delete checkpoint.baseProvenance;
+  await writeFile(before.checkpointFile, `${JSON.stringify(checkpoint, null, 2)}\n`, "utf8");
+  await assert.rejects(
+    () => releaseGitWorkspaces.frozenCandidate(primary),
+    /provenance disagrees/u,
+  );
+  await writeFile(before.checkpointFile, checkpointBytes);
+
+  await assert.rejects(
+    () => service.prepareReviewedAwaitSet({
+      workspaceId: "workspace-1",
+      approvedLocalMainCommit: base,
+      approvedOriginMainCommit: reviewedMainCommit,
+    }),
+    /stale/u,
+  );
+  assert.deepEqual(await releaseGitWorkspaces.frozenCandidate(primary), before);
+});
 
 test("release preflight reuses real prepared candidate readback with the repository validation adapter", async (t) => {
   const { primary, service, releaseGitWorkspaces } = await realExternalValidationFixture(t);
@@ -970,6 +1035,99 @@ test("Await refuses missing publication authority and changed base before commit
   service.readPublicationState = publication;
   await assert.rejects(service.prepareAwaitSet({ workspaceId: "workspace-1" }), /accepted release base changed/u);
   assert.equal(committed, false);
+});
+
+test("explicit reviewed-main preparation requires pinned authority and rechecks it before promotion", async () => {
+  const { projectRoot, service } = fixture();
+  const approval = {
+    approvedLocalMainCommit: "main-head",
+    approvedOriginMainCommit: "main-head",
+  };
+  service.releaseGitWorkspaces.inspectMainChanges = async (request) => ({
+    projectRoot,
+    publishedRevision: request.publishedRevision,
+    localMain: "main-head",
+    originMain: "main-head",
+    commits: [{ commit: "reviewed-change" }],
+    changed: true,
+    diverged: false,
+    approved: request.approvedLocalMainCommit === "main-head"
+      && request.approvedOriginMainCommit === "main-head",
+    approvalRequired: request.approvedLocalMainCommit !== "main-head"
+      || request.approvedOriginMainCommit !== "main-head",
+  });
+  let promoted = false;
+  service.releaseGitWorkspaces.prepareCandidate = async (request) => {
+    assert.equal(request.approvedBaseCommit, "main-head");
+    assert.deepEqual(request.baseProvenance, {
+      schemaVersion: 1,
+      kind: "explicit-reviewed-main-v1",
+      publishedBaseCommit: "published-head",
+      ...approval,
+    });
+    service.readPublicationState = async () => ({
+      repositories: [{ root: projectRoot, revision: "changed-publication" }],
+    });
+    await request.validateBeforeCommit();
+    promoted = true;
+  };
+
+  await assert.rejects(
+    () => service.prepareReviewedAwaitSet({ workspaceId: "workspace-1", ...approval }),
+    /published release base changed|accepted release base changed/u,
+  );
+  assert.equal(promoted, false);
+});
+
+test("explicit reviewed-main preparation rejects missing approval before candidate effects", async () => {
+  const { projectRoot, service } = fixture();
+  service.releaseGitWorkspaces.prepareCandidate = () => assert.fail("candidate effects must not start");
+  const cases = [
+    [{ workspaceId: "workspace-1" }, /missing approval/u],
+    [{ workspaceId: "workspace-1", approvedLocalMainCommit: "main-head" }, /require both/u],
+    [{
+      workspaceId: "workspace-1",
+      approvedRepositories: [
+        { projectRoot, approvedLocalMainCommit: "main-head", approvedOriginMainCommit: "main-head" },
+        { projectRoot, approvedLocalMainCommit: "main-head", approvedOriginMainCommit: "main-head" },
+      ],
+    }, /duplicated or ambiguous/u],
+    [{
+      workspaceId: "workspace-1",
+      approvedRepositories: [{
+        projectRoot: path.resolve("D:/unrelated"),
+        approvedLocalMainCommit: "main-head",
+        approvedOriginMainCommit: "main-head",
+      }],
+    }, /unrelated repository/u],
+  ];
+  for (const [request, expected] of cases) {
+    await assert.rejects(() => service.prepareReviewedAwaitSet(request), expected);
+  }
+});
+
+test("preflight rejects an approved reviewed-main base without its immutable provenance", async () => {
+  const { service } = fixture();
+  service.releaseGitWorkspaces.inspectMainChanges = async (request) => ({
+    projectRoot: request.projectRoot,
+    publishedRevision: request.publishedRevision,
+    localMain: "main-head",
+    originMain: "main-head",
+    commits: [{ commit: "reviewed-change" }],
+    changed: true,
+    diverged: false,
+    approved: true,
+    approvalRequired: false,
+  });
+  await assert.rejects(
+    () => service.preflight({
+      workspaceId: "workspace-1",
+      expectedPlanRevision: "plan-1",
+      approvedLocalMainCommit: "main-head",
+      approvedOriginMainCommit: "main-head",
+    }),
+    /reviewed-main authority is stale/u,
+  );
 });
 
 test("automatic Await preparation composes accepted code without running release preflight", async () => {

@@ -140,7 +140,7 @@ test("candidate requires a pinned base and excludes newer remote and local main 
   const setup = await fixture(context);
   const service = new ReleaseGitWorkspaceService({ dataDir: setup.dataDir });
   const request = { planRevision: "pinned-base", projectRoot: setup.primary, frozenTasks: [] };
-  await assert.rejects(service.prepareCandidate(request), /requires an exact published or explicitly adopted base/u);
+  await assert.rejects(service.prepareCandidate(request), /requires an exact published, adopted, or explicitly reviewed base/u);
   const first = await service.prepareCandidate({ ...request, approvedBaseCommit: setup.baseCommit });
   await writeFile(path.join(setup.primary, "unreviewed.txt"), "unreviewed\n");
   const incoming = await commit(setup.primary, "unreviewed local and remote main");

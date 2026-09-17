@@ -17,10 +17,21 @@ reviewed content as the only base and retaining the existing Task isolation.
 The application reads repository-scoped publication authority and asks the Task
 Git owner to verify existing adoption receipts for exact selected results. The
 published commit is the default. Only a comparable, verified adopted commit may
-advance it. The composer requires an explicit exact base; origin fetch remains
-observation. Publication and adoption identities are rechecked before committing
-the candidate and prospective Await status, using the existing locks and rollback
-boundary. No new approval store, lifecycle, or reconciliation owner is added.
+advance it during ordinary or automatic preparation. The composer requires an
+explicit exact base; origin fetch remains observation. Publication and adoption
+identities are rechecked before committing the candidate and prospective Await
+status, using the existing locks and rollback boundary. No new approval store,
+lifecycle, or reconciliation owner is added.
+
+An explicit Release Manager preparation may additionally use exact reviewed local
+and origin main commits supplied by the caller. The existing main audit must match
+both commits, report no remaining approval requirement, and pass the existing
+upstream-adoption check. The candidate's immutable manifest and checkpoint retain
+those two commits together with the last published baseline; all authority and
+primary identities are re-read before promotion. This is composition approval,
+not a publication fact: it does not update publication state, manufacture an
+adoption receipt, or change the preflight requirement that the prepared base equal
+reviewed origin/main. Automatic lifecycle preparation cannot select this mode.
 
 Keep selected effective-delta and net-projection proofs. They preserve accepted
 conflict resolutions without bringing unrelated Test work from dev into release.
