@@ -18,11 +18,18 @@ test("Desktop directory picker allows local Agent Hub surfaces", async () => {
 });
 
 test("Desktop directory picker rejects remote surfaces", async () => {
+  let calls = 0;
   const service = new DesktopDirectoryPickerService({
-    pickDirectory: async () => ({ canceled: true, path: "" }),
+    pickDirectory: async () => {
+      calls += 1;
+      return { canceled: true, path: "" };
+    },
   });
-  await assert.rejects(
-    service.browse({}, { source: "trusted-device" }),
-    /только в локальном Agent Hub/u,
-  );
+  for (const context of [{ source: "trusted-device" }, {}, { source: "" }]) {
+    await assert.rejects(
+      service.browse({}, context),
+      /только в локальном Agent Hub/u,
+    );
+  }
+  assert.equal(calls, 0);
 });

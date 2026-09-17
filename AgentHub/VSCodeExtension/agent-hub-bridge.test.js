@@ -330,6 +330,18 @@ test("installed VS Code bridge resolves backend modules from the active runtime"
       options: { timeoutMs: 180_000 },
       installedLayout: true,
     });
+    assert.deepEqual(await bridge.control("browse-directory", { initialPath: "D:\\repo" }), {
+      action: "browse-directory",
+      params: { initialPath: "D:\\repo" },
+      options: { timeoutMs: 180_000 },
+      installedLayout: true,
+    });
+    assert.deepEqual(await bridge.control("usage-sync"), {
+      action: "usage-sync",
+      params: {},
+      options: { timeoutMs: 180_000 },
+      installedLayout: true,
+    });
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -557,6 +569,47 @@ test("VS Code bridge handles usage sync POST through desktop control without loc
     assert.equal(payload.ok, true);
     assert.equal(payload.result.action, "usage-sync-device-label");
     assert.deepEqual(payload.result.params, { deviceLabel: "Andrey" });
+  } finally {
+    bridge?.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("VS Code bridge does not retry failed usage sync through a second desktop alias", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-vscode-sync-no-duplicate-fallback-"));
+  let bridge;
+  let controlCalls = 0;
+  try {
+    await mkdir(path.join(root, "src", "interfaces", "web"), { recursive: true });
+    await writeFile(path.join(root, "config.json"), JSON.stringify({ miniApp: { host: "127.0.0.1", port: 8787 } }), "utf8");
+    await writeFile(path.join(root, "local-web.secret"), "secret", "utf8");
+    await writeFile(path.join(root, "src", "interfaces", "web", "local-webview-session.mjs"), [
+      "export function createLocalWebviewSession() {",
+      "  return { token: 'session-token', expiresAt: Date.now() + 60000 };",
+      "}",
+    ].join("\n"), "utf8");
+    bridge = new AgentHubBridge({
+      moduleRoot: root,
+      runtimeRoot: root,
+      fetchImpl: async () => {
+        throw new Error("local web unavailable");
+      },
+    });
+    bridge.control = async () => {
+      controlCalls += 1;
+      throw new Error("Неизвестная desktop-команда");
+    };
+
+    const result = await bridge.http({
+      method: "POST",
+      path: "/api/journal/usage-sync",
+      headers: { "Content-Type": "application/json; charset=utf-8" },
+      body: "{}",
+    });
+
+    assert.equal(result.status, 503);
+    assert.match(JSON.parse(result.body).error, /local web unavailable/u);
+    assert.equal(controlCalls, 1);
   } finally {
     bridge?.close();
     await rm(root, { recursive: true, force: true });
