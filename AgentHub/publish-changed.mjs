@@ -19,8 +19,8 @@ import { defaultRuntimeRoot } from "./src/infrastructure/filesystem/runtime-layo
 import { prepareCommittedAgentHubReleaseVersion } from "./src/infrastructure/filesystem/release-version.mjs";
 import { assertReleaseCloneForPublication, ReleaseGitWorkspaceService } from "./src/infrastructure/filesystem/release-git-workspace.mjs";
 import { withPublicationLock } from "./src/infrastructure/process/publication-lock.mjs";
-import { createFrozenReleasePublication, readPublicationReleasePlan } from "./src/infrastructure/process/frozen-release-publication.mjs";
-import { createBootstrapReleasePlanControl } from "./src/infrastructure/process/bootstrap-release-plan-control.mjs";
+import { createFrozenReleasePublication } from "./src/infrastructure/process/frozen-release-publication.mjs";
+import { readCandidatePublicationReleasePlan } from "./src/composition/publication-release-plan-composition.mjs";
 import {
   publicationCheckpointStore,
   runPublicationSteps,
@@ -277,7 +277,6 @@ export function parseChangedArguments(args) {
   let quick = false;
   let resume = false;
   let workspaceId = "";
-  let bootstrapMcpContext = "";
   for (let index = 0; index < args.length; index += 1) {
     if (args[index] === "--skip-restart") skipRestart = true;
     else if (args[index] === "--full-tests") fullTests = true;
@@ -287,14 +286,14 @@ export function parseChangedArguments(args) {
     else if (args[index] === "--validation=focused") { /* default validation */ }
     else if (args[index] === "--resume") resume = true;
     else if (args[index] === "--workspace" && args[index + 1]) workspaceId = args[++index];
-    else if (args[index] === "--bootstrap-mcp-context" && args[index + 1] && !args[index + 1].startsWith("--")) bootstrapMcpContext = args[++index];
+    else if (args[index] === "--bootstrap-mcp-context") {
+      throw new Error("--bootstrap-mcp-context is obsolete; publication reads the release plan from the candidate runtime");
+    }
     else if (args[index] === "--from" && args[index + 1]) from = args[++index];
     else throw new Error(`Неизвестный аргумент: ${args[index]}`);
   }
   if (quick && fullTests) throw new Error("Choose either quick or full validation");
-  return { from, skipRestart, fullTests, testContour, quick, resume, workspaceId,
-    ...(bootstrapMcpContext ? { bootstrapMcpContext } : {}),
-  };
+  return { from, skipRestart, fullTests, testContour, quick, resume, workspaceId };
 }
 
 export async function publishChanged(args = process.argv.slice(2), {
@@ -489,14 +488,57 @@ export async function publishChanged(args = process.argv.slice(2), {
   });
 }
 
+export async function freezePreparedPublication({
+  workspaceId = "",
+  repositoryRoot = REPOSITORY_ROOT,
+  readPlan = readCandidatePublicationReleasePlan,
+  read = readFile,
+  assertClone = assertReleaseCloneForPublication,
+  assertCleanTree = assertCleanPublicationTree,
+  assertCurrentRevision = assertCurrentPublicationRevision,
+  createReleaseWorkspace = (options) => new ReleaseGitWorkspaceService(options),
+} = {}) {
+  const marker = await assertClone({ repositoryRoot });
+  const checkpoint = JSON.parse(await read(path.join(repositoryRoot, "..", "checkpoint.json"), "utf8"));
+  if (!/^[a-f0-9]{64}$/u.test(checkpoint.manifestHash ?? "")) throw new Error("invalid prepared manifest hash");
+  const manifest = JSON.parse(await read(
+    path.join(repositoryRoot, "..", "evidence", `${checkpoint.manifestHash}.json`),
+    "utf8",
+  ));
+  const selectedWorkspace = String(workspaceId || manifest.workspaceId || "").trim();
+  if (!selectedWorkspace) throw new Error("publication freeze requires its Workspace");
+  const changelogContent = await read(path.join(repositoryRoot, "CHANGELOG.md")).catch((error) => {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  });
+  const releaseWorkspace = createReleaseWorkspace({ dataDir: path.dirname(marker.managedRoot) });
+  const frozen = await releaseWorkspace.freezePublicationCandidate({
+    projectRoot: marker.primaryRoot, workspaceId: selectedWorkspace,
+    expectedPlanRevision: checkpoint.planRevision, expectedPreparedHead: checkpoint.preReleaseHead,
+    changelogContent,
+    validateBeforeCommit: async () => {
+      const plan = await readPlan(selectedWorkspace);
+      if (plan.revision !== checkpoint.planRevision) {
+        throw new Error("release plan changed before publication freeze");
+      }
+    },
+  });
+  const frozenManifest = JSON.parse(await read(frozen.manifestFile, "utf8"));
+  const releaseVersion = String(frozenManifest.publication?.releaseVersion ?? "");
+  if (!releaseVersion) throw new Error("frozen release version is missing from the immutable manifest");
+  await assertCleanTree({ cwd: repositoryRoot });
+  await assertCurrentRevision({ cwd: repositoryRoot });
+  return releaseVersion;
+}
+
 const invokedFile = process.argv[1] ? path.resolve(process.argv[1]) : "";
 if (invokedFile === fileURLToPath(import.meta.url)) {
   let frozenReleaseVersion = "";
-  const control = createBootstrapReleasePlanControl({
-    contextFile: parseChangedArguments(process.argv.slice(2)).bootstrapMcpContext,
-    control: callDesktopControl, readState: readPublicationState,
+  const control = callDesktopControl;
+  const readPlan = (workspaceId) => readCandidatePublicationReleasePlan(workspaceId);
+  const adapter = createFrozenReleasePublication({
+    repositoryRoot: REPOSITORY_ROOT, runtimeRoot: defaultRuntimeRoot(), control, readPlan,
   });
-  const adapter = createFrozenReleasePublication({ repositoryRoot: REPOSITORY_ROOT, runtimeRoot: defaultRuntimeRoot(), control });
   const journal = publicationRunStore();
   const artifacts = createPublicationArtifactSteps({
     sourceRoot: ROOT,
@@ -516,30 +558,11 @@ if (invokedFile === fileURLToPath(import.meta.url)) {
     prepareArtifactSteps: artifacts.steps,
     verifyArtifacts: artifacts.verify,
     before: async () => {
-      const marker = await assertReleaseCloneForPublication({ repositoryRoot: REPOSITORY_ROOT });
-      const checkpoint = JSON.parse(await readFile(path.join(REPOSITORY_ROOT, "..", "checkpoint.json"), "utf8"));
-      if (!/^[a-f0-9]{64}$/u.test(checkpoint.manifestHash ?? "")) throw new Error("invalid prepared manifest hash");
-      const manifest = JSON.parse(await readFile(path.join(REPOSITORY_ROOT, "..", "evidence", `${checkpoint.manifestHash}.json`), "utf8"));
-      const workspaceId = parseChangedArguments(process.argv.slice(2)).workspaceId || manifest.workspaceId;
-      const changelogContent = await readFile(path.join(REPOSITORY_ROOT, "CHANGELOG.md")).catch((error) => {
-        if (error.code === "ENOENT") return null;
-        throw error;
+      frozenReleaseVersion = await freezePreparedPublication({
+        workspaceId: parseChangedArguments(process.argv.slice(2)).workspaceId,
+        repositoryRoot: REPOSITORY_ROOT,
+        readPlan,
       });
-      const workspace = new ReleaseGitWorkspaceService({ dataDir: path.dirname(marker.managedRoot) });
-      const frozen = await workspace.freezePublicationCandidate({
-        projectRoot: marker.primaryRoot, workspaceId,
-        expectedPlanRevision: checkpoint.planRevision, expectedPreparedHead: checkpoint.preReleaseHead,
-        changelogContent,
-        validateBeforeCommit: async () => {
-          const plan = await readPublicationReleasePlan(control, workspaceId, defaultRuntimeRoot());
-          if (plan.revision !== checkpoint.planRevision) throw new Error("release plan changed before publication freeze");
-        },
-      });
-      const frozenManifest = JSON.parse(await readFile(frozen.manifestFile, "utf8"));
-      frozenReleaseVersion = String(frozenManifest.publication?.releaseVersion ?? "");
-      if (!frozenReleaseVersion) throw new Error("frozen release version is missing from the immutable manifest");
-      await assertCleanPublicationTree({ cwd: REPOSITORY_ROOT });
-      await assertCurrentPublicationRevision({ cwd: REPOSITORY_ROOT });
     },
     prepareVersion: () => prepareCommittedAgentHubReleaseVersion({ expectedVersion: frozenReleaseVersion }),
   }).catch((error) => {
