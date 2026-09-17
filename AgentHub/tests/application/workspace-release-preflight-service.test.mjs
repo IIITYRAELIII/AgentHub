@@ -177,8 +177,25 @@ function fixture({ planRevision = "plan-1", contourHead = "dev-head", rejectDev 
       manifest: { workspaceId: "workspace-1", planRevision, baseCommit: "main-head", tasks: plan.ready },
     };
   };
-  return { calls, locks, projectRoot, service };
+  return { calls, locks, plan, projectRoot, service };
 }
+
+test("release preflight preserves the Test-owned squash result revision for integration evidence", async () => {
+  const { plan, service } = fixture();
+  plan.ready[0].resultReleaseRevision = 6;
+  plan.ready[0].squashTransfer = { proofHash: "proof-1" };
+  service.taskGitWorkspaces.releaseIntegrationEvidence = async ({ tasks }) => {
+    assert.equal(tasks[0].taskRevision, 7);
+    assert.equal(tasks[0].resultReleaseRevision, 6);
+    assert.deepEqual(tasks[0].squashTransfer, { proofHash: "proof-1" });
+    throw new Error("integration evidence reached");
+  };
+
+  await assert.rejects(
+    service.prepareAwaitSet({ workspaceId: "workspace-1", expectedPlanRevision: "plan-1" }),
+    /integration evidence reached/u,
+  );
+});
 
 test("release preflight reuses prepared PreRelease without dev preparation or contour refresh", async () => {
   const { calls, locks, service } = fixture();

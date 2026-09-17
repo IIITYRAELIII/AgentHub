@@ -127,6 +127,7 @@ function readyRepositories(ready = [], fallbackProjectRoots = []) {
       projectRoot,
       branch: entry.branch,
       resultCommit,
+      ...(entry.resultReleaseRevision != null ? { resultReleaseRevision: entry.resultReleaseRevision } : {}),
       ...(entry.squashTransfer ? { squashTransfer: entry.squashTransfer } : {}),
     });
     repositories.set(key, repository);
