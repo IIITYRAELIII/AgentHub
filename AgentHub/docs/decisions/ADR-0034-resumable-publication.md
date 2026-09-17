@@ -107,7 +107,7 @@ that identity and retry the same idempotent Workspace completion. When a later
 publication replaces a terminal run projection, the exact prior status is
 archived beside its canonical log before replacement.
 
-# Candidate-owned plan reads before runtime replacement (2026-09-17)
+## Candidate-owned plan reads before runtime replacement (2026-09-17)
 
 The publication process may be running candidate code while the installed
 Desktop runtime still implements an older release-plan projection. A successful
