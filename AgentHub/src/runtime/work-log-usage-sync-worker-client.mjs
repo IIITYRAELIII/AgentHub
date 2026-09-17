@@ -122,6 +122,10 @@ export class WorkLogUsageSyncWorkerStore {
     return this.#request("import-snapshot", { snapshot });
   }
 
+  ensureTurnFact(fact) {
+    return this.#request("ensure-turn-fact", { fact });
+  }
+
   reconcileSnapshot(snapshot) {
     return this.#request("reconcile-snapshot", { snapshot });
   }

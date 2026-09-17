@@ -237,19 +237,47 @@ test("canonical recovery preserves enriched partial success and does not infer a
   });
   await runJournal.ensureTurnUsageFact(enriched);
   await runJournal.flushTurnProjections([enriched]);
+  const staleFactWriter = new DatabaseSync(databaseFile);
+  try {
+    staleFactWriter.prepare(`
+      UPDATE usage_sync_events
+      SET input_tokens = 999, total_tokens = 1069
+      WHERE event_id LIKE 'usage:%'
+    `).run();
+  } finally { staleFactWriter.close(); }
+  const staleProjection = await runJournal.turnProjectionStatus(enriched);
+  assert.equal(staleProjection.usageFactMatches, false);
+  assert.equal(staleProjection.current, false);
   const committedPartial = await state.terminal.commit({ ...base, turnId: "partial" });
   const claimedPartial = await state.terminal.claim(committedPartial.outbox);
   await state.terminal.retry(claimedPartial, new Error("Journal projection could not commit after a journal revision conflict"));
   const before = await usage.getTurn(enriched);
-  assert.equal((await runJournal.turnProjectionStatus(enriched)).current, true);
 
   await state.service.retryPendingProjections();
+  const repairedProjection = await runJournal.turnProjectionStatus(enriched);
+  assert.equal(repairedProjection.usageFactMatches, true);
+  assert.equal(repairedProjection.indexFresh, true);
+  assert.ok(repairedProjection.projectionSource.revision >= repairedProjection.recordRevision);
+  assert.equal(repairedProjection.current, true);
   const after = await usage.getTurn(enriched);
   assert.equal(after.taskTitle, before.taskTitle);
   assert.equal(after.prompt, before.prompt);
   assert.equal(after.title, before.title);
   assert.equal(after.accountKey, "chatgpt:historical");
   assert.equal(after.accountAttribution, "exact");
+
+  await usage.recordAutomaticAndProject({
+    ...enriched, taskTitle: "Newer retained task title", title: "Newer retained title",
+    body: enriched.finalAnswer, resolveAccount: false, deferProjection: true,
+  });
+  const staleIndex = await runJournal.turnProjectionStatus(enriched);
+  assert.ok(staleIndex.projectionSource.revision < staleIndex.recordRevision);
+  assert.equal(staleIndex.current, false);
+  await runJournal.flushTurnProjections([enriched]);
+  const refreshedIndex = await runJournal.turnProjectionStatus(enriched);
+  assert.ok(refreshedIndex.projectionSource.revision >= refreshedIndex.recordRevision);
+  assert.equal(refreshedIndex.indexFresh, true);
+  assert.equal(refreshedIndex.current, true);
 
   const missing = { ...base, turnId: "missing" };
   const committedMissing = await state.terminal.commit(missing);
@@ -268,6 +296,7 @@ test("canonical recovery preserves enriched partial success and does not infer a
   try {
     assert.equal(reader.prepare("SELECT COUNT(*) AS count FROM journal_records WHERE thread_id = ?").get(base.threadId).count, 2);
     assert.equal(reader.prepare("SELECT COUNT(*) AS count FROM usage_sync_events WHERE event_id LIKE 'usage:%'").get().count, 2);
+    assert.equal(reader.prepare("SELECT input_tokens FROM usage_sync_events WHERE event_id LIKE 'usage:%' ORDER BY completed_ms LIMIT 1").get().input_tokens, 100);
     assert.equal(reader.prepare("SELECT COUNT(*) AS count FROM journal_turn_index WHERE thread_id = ?").get(base.threadId).count, 2);
     assert.equal(state.rows().filter((row) => row.state === "delivered").length, 2);
   } finally {

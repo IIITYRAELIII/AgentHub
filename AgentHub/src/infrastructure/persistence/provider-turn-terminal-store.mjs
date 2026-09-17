@@ -179,6 +179,8 @@ function configure(database) {
     ) WITHOUT ROWID;
     CREATE INDEX IF NOT EXISTS provider_turn_terminal_outbox_pending_idx
       ON provider_turn_terminal_outbox(state, created_at, provider, thread_id, turn_id, terminal_revision);
+    CREATE INDEX IF NOT EXISTS provider_turn_terminal_outbox_projection_retry_idx
+      ON provider_turn_terminal_outbox(state, updated_at, created_at, provider, thread_id, turn_id, terminal_revision);
   `);
   const terminalColumns = new Set(database.prepare("PRAGMA table_info(provider_turn_terminals)").all()
     .map((column) => String(column.name)));
@@ -486,6 +488,26 @@ export class ProviderTurnTerminalStore {
           FROM provider_turn_terminal_outbox
           WHERE state = 'pending' OR command_state = 'intent' OR telegram_state IN ('intent', 'uncertain')
           ORDER BY created_at, provider, thread_id, turn_id, terminal_revision
+          LIMIT ?
+        `).all(Math.max(1, Math.min(1_000, Number(limit) || 100))).map(outboxRow);
+      } finally {
+        database.close();
+      }
+    });
+  }
+
+  pendingProjections({ limit = 100 } = {}) {
+    return this.#enqueue(() => {
+      const database = this.#database();
+      try {
+        return database.prepare(`
+          SELECT provider, thread_id, turn_id, terminal_revision, state, attempt_count,
+            last_error, payload_json, command_state, command_client_user_message_id,
+            command_last_error, command_updated_at, telegram_state, telegram_intent_json,
+            telegram_delivery_id, telegram_last_error, telegram_updated_at, created_at, updated_at
+          FROM provider_turn_terminal_outbox INDEXED BY provider_turn_terminal_outbox_projection_retry_idx
+          WHERE state = 'pending'
+          ORDER BY updated_at, created_at, provider, thread_id, turn_id, terminal_revision
           LIMIT ?
         `).all(Math.max(1, Math.min(1_000, Number(limit) || 100))).map(outboxRow);
       } finally {

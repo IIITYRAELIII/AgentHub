@@ -141,11 +141,14 @@ Terminal-outbox recovery likewise stages bounded batches before requesting a
 shared journal projection. It must not rebuild the entire retained journal for
 each recovered completion. Exact revisions are acknowledged only after the
 shared projection succeeds and canonical readback confirms the exact journal
-record, deterministic usage fact and current turn index. Recovery drains at
-most 100 pending revisions per listing and projects batches of at most 16; a
-full page schedules another bounded pass. Transient contention uses one
-runtime-scoped single-flight retry with capped exponential backoff, while live
-completion adds no batching delay.
+record, matching immutable accounting fields in the deterministic usage fact
+and a current turn index. Recovery drains at most 100 projection-pending
+revisions per listing and projects batches of at most 16. Attempts use durable
+least-recently-attempted order, so permanent failures cannot starve a later
+page and a full page never creates a zero-delay loop. Transient contention uses
+one runtime-scoped single-flight retry with capped exponential backoff; a
+bounded low-frequency pass retains eventual recovery after that fast budget or
+an enumeration failure, while live completion adds no batching delay.
 Unchanged canonical merged records do not request a new projection; an existing
 pending projection still survives an unchanged replay. Provisional retraction
 checks only the exact turn before mutation. Missing or non-provisional turns

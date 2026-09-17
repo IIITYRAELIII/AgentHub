@@ -72,7 +72,10 @@ final status and final content.
   own delivery identity. Ordinary live completion does not wait for a batch.
 - The durable terminal outbox is the sole retry owner for terminal projection.
   A projection revision is acknowledged only after canonical readback confirms
-  its exact journal record, deterministic usage fact and current turn index.
+  its exact journal record, matching immutable accounting fields in the
+  deterministic usage fact, and a turn index produced from a journal revision
+  at least as new as that record. The index and its source revision are replaced
+  atomically by the existing journal projection owner.
   An already-complete projection is acknowledged without rewriting richer
   display metadata or account attribution. Projection-only recovery never
   repeats the provider turn, command trace or Telegram delivery.
@@ -82,6 +85,11 @@ final status and final content.
   already durable terminal cannot infer its historical account from the
   runtime's current ambient account; independently persisted attribution may
   still be retained or enriched by its existing evidence owner.
+- Projection recovery reads only projection-pending outbox rows in durable
+  least-recently-attempted order. A bounded page of permanent failures moves to
+  the back without starving later rows. Exhausted fast retries and enumeration
+  failures remain eligible for the existing owner's low-frequency pass; no
+  zero-delay full-page loop is allowed.
 - A later user turn cannot suppress or mutate the previous terminal entity.
 - Projection overlays the exact latest terminal independently of a later active
   turn, so both entities remain visible in provider sequence.

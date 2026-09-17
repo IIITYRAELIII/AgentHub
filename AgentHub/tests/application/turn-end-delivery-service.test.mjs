@@ -199,6 +199,7 @@ test("projection-only recovery ACKs complete readback without rewriting enriched
     notifications: { values: () => [], markDelivered: () => calls.push("legacy") },
     terminalCommits: {
       pending: async () => [{ ...item, state, channels: { ...item.channels, projection: { state } } }],
+      pendingProjections: async () => [{ ...item, state, channels: { ...item.channels, projection: { state } } }],
       claim: async () => { state = "projecting"; return { ...item, attempts: 2, state }; },
       get: async () => ({ terminalRevision: 1 }),
       acknowledge: async () => { state = "delivered"; calls.push("ack"); return true; },
@@ -265,6 +266,7 @@ test("transient projection failure retries in the same runtime with bounded back
     acknowledge: async () => { state = "delivered"; return true; },
     retry: async () => { state = "pending"; },
   };
+  terminalCommits.pendingProjections = terminalCommits.pending;
   const service = new TurnEndDeliveryService({
     notifications: { values: () => [], markDelivered() {} }, terminalCommits,
     taskRuns: { forEvent: () => null }, persistHistory: async () => {},
@@ -303,7 +305,7 @@ test("transient projection failure retries in the same runtime with bounded back
   state = "pending";
   let release;
   const gate = new Promise((resolve) => { release = resolve; });
-  terminalCommits.pending = async () => { pendingReads += 1; await gate; return []; };
+  terminalCommits.pendingProjections = async () => { pendingReads += 1; await gate; return []; };
   const first = service.retryPendingProjections();
   const second = service.retryPendingProjections();
   release();
@@ -313,6 +315,169 @@ test("transient projection failure retries in the same runtime with bounded back
   const disposalTimer = timers.shift();
   service.stopProjectionRecovery();
   assert.deepEqual(cleared, [disposalTimer]);
+});
+
+test("bounded projection pages rotate permanent failures so a later recoverable row progresses", async () => {
+  let clock = 0;
+  const rows = Array.from({ length: 101 }, (_, index) => {
+    const completion = {
+      provider: "codex", projectRoot: "C:/workspace", threadId: "thread-page",
+      turnId: `turn-${String(index).padStart(3, "0")}`, status: "completed",
+      finalAnswer: `answer-${index}`, usage: {}, usageReported: false,
+      startedAt: "", completedAt: "", model: "", serviceTier: "",
+    };
+    return {
+      completion, state: "pending", attempts: 0, updated: 0, terminalRevision: 1,
+      payload: { completion, history: completion },
+      channels: { projection: { state: "pending" } },
+    };
+  });
+  const timers = [];
+  const cleared = [];
+  const view = (row) => ({
+    ...row.completion, terminalRevision: row.terminalRevision, attempts: row.attempts, state: row.state,
+    payload: row.payload, channels: { projection: { state: row.state } },
+  });
+  const terminalCommits = {
+    pendingProjections: async ({ limit }) => rows.filter((row) => row.state === "pending")
+      .sort((left, right) => left.updated - right.updated || left.completion.turnId.localeCompare(right.completion.turnId))
+      .slice(0, limit).map(view),
+    claim: async (item) => {
+      const row = rows.find((candidate) => candidate.completion.turnId === item.turnId);
+      if (row?.state !== "pending") return null;
+      row.state = "projecting";
+      row.attempts += 1;
+      return view(row);
+    },
+    get: async () => ({ terminalRevision: 1 }),
+    acknowledge: async (item) => {
+      const row = rows.find((candidate) => candidate.completion.turnId === item.turnId);
+      row.state = "delivered";
+      row.updated = ++clock;
+      return view(row);
+    },
+    retry: async (item) => {
+      const row = rows.find((candidate) => candidate.completion.turnId === item.turnId);
+      row.state = "pending";
+      row.updated = ++clock;
+      return view(row);
+    },
+  };
+  let recovered = false;
+  const service = new TurnEndDeliveryService({
+    notifications: { values: () => [], markDelivered() {} }, terminalCommits,
+    taskRuns: { forEvent: () => null }, persistHistory: async () => {},
+    projectTurn: async (completion) => {
+      if (completion.turnId !== "turn-100") throw new Error("permanent invalid projection");
+      recovered = true;
+      return {};
+    },
+    readTurnProjection: async (completion) => recovered && completion.turnId === "turn-100"
+      ? exactProjection(completion) : { current: false, record: null },
+    rememberLastMessage: () => {}, rememberSeenTurn: () => {}, saveState: async () => {},
+    logger: { error() {} }, projectionRetryMaxMs: 30_000,
+    setTimer: (callback, delay) => { const timer = { callback, delay }; timers.push(timer); return timer; },
+    clearTimer: (timer) => cleared.push(timer),
+  });
+
+  service.startProjectionRecovery();
+  const initial = timers.shift();
+  assert.equal(initial.delay, 0);
+  initial.callback();
+  await service.retryPendingProjections();
+  assert.equal(rows[100].state, "pending");
+  const periodic = timers.shift();
+  assert.equal(periodic.delay, 30_000);
+  assert.ok(timers.every((timer) => timer.delay > 0));
+
+  periodic.callback();
+  await service.retryPendingProjections();
+  assert.equal(rows[100].state, "delivered");
+  assert.equal(rows[100].attempts, 1);
+  service.stopProjectionRecovery();
+  assert.equal(cleared.length, 1);
+});
+
+test("projection enumeration failure rearms only the low-frequency owner", async () => {
+  const timers = [];
+  const cleared = [];
+  let enumerations = 0;
+  const service = new TurnEndDeliveryService({
+    notifications: { values: () => [], markDelivered() {} },
+    terminalCommits: {
+      pendingProjections: async () => {
+        enumerations += 1;
+        if (enumerations === 1) throw Object.assign(new Error("busy"), { errcode: 5 });
+        return [];
+      },
+    },
+    taskRuns: { forEvent: () => null }, projectTurn: async () => {},
+    rememberLastMessage: () => {}, rememberSeenTurn: () => {}, saveState: async () => {},
+    logger: { error() {} }, projectionRetryMaxMs: 30_000,
+    setTimer: (callback, delay) => { const timer = { callback, delay }; timers.push(timer); return timer; },
+    clearTimer: (timer) => cleared.push(timer),
+  });
+  service.startProjectionRecovery();
+  const initial = timers.shift();
+  initial.callback();
+  await assert.rejects(service.retryPendingProjections(), /busy/u);
+  const periodic = timers.shift();
+  assert.equal(periodic.delay, 30_000);
+  periodic.callback();
+  await service.retryPendingProjections();
+  assert.equal(enumerations, 2);
+  service.stopProjectionRecovery();
+  assert.equal(cleared.length, 1);
+});
+
+test("a lock beyond the fast retry budget remains eligible for the low-frequency owner", async () => {
+  const completion = {
+    provider: "codex", projectRoot: "C:/workspace", threadId: "thread-budget", turnId: "turn-budget",
+    status: "completed", finalAnswer: "eventual", usage: {}, usageReported: false,
+    startedAt: "", completedAt: "", model: "", serviceTier: "",
+  };
+  const timers = [];
+  let state = "pending";
+  let attempts = 6;
+  let projections = 0;
+  let telegram = 0;
+  const item = () => ({
+    ...completion, terminalRevision: 1, attempts, state,
+    payload: { completion, history: completion }, channels: { projection: { state } },
+  });
+  const service = new TurnEndDeliveryService({
+    notifications: { values: () => [], markDelivered() {} },
+    terminalCommits: {
+      pendingProjections: async () => state === "pending" ? [item()] : [],
+      claim: async () => { state = "projecting"; attempts += 1; return item(); },
+      retry: async () => { state = "pending"; return item(); },
+      get: async () => ({ terminalRevision: 1 }),
+      acknowledge: async () => { state = "delivered"; return item(); },
+    },
+    taskRuns: { forEvent: () => null }, persistHistory: async () => {},
+    projectTurn: async () => {
+      projections += 1;
+      if (projections === 1) throw Object.assign(new Error("localized"), { errcode: 5 });
+      return {};
+    },
+    readTurnProjection: async () => projections > 1 ? exactProjection(completion) : { current: false, record: null },
+    finalizeRunDelivery: async () => { telegram += 1; },
+    rememberLastMessage: () => {}, rememberSeenTurn: () => {}, saveState: async () => {},
+    logger: { error() {} }, projectionRetryLimit: 3, projectionRetryMaxMs: 30_000,
+    setTimer: (callback, delay) => { const timer = { callback, delay }; timers.push(timer); return timer; },
+    clearTimer() {},
+  });
+  service.startProjectionRecovery();
+  timers.shift().callback();
+  await service.retryPendingProjections();
+  assert.equal(state, "pending");
+  const periodic = timers.shift();
+  assert.equal(periodic.delay, 30_000);
+  periodic.callback();
+  await service.retryPendingProjections();
+  assert.equal(state, "delivered");
+  assert.equal(telegram, 0);
+  service.stopProjectionRecovery();
 });
 
 

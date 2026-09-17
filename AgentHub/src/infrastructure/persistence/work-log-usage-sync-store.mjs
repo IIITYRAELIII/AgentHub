@@ -20,6 +20,7 @@ import {
   usageSyncSnapshotFromLedger,
   USAGE_SYNC_SNAPSHOT_VERSION,
 } from "../../domain/work-log-usage-sync.mjs";
+import { mergeUsageLimitSamples } from "../../domain/usage-facts.mjs";
 
 const SQLITE_BUSY_TIMEOUT_MS = 3_935;
 const UPSERT_CHUNK = 400;
@@ -237,6 +238,19 @@ function strongerStoreEvent(current, incoming, localDeviceId) {
   return winner;
 }
 
+function authoritativeLocalEvent(current, incoming, localDeviceId) {
+  if (!current || !localDeviceId
+    || current.deviceId !== localDeviceId || incoming.deviceId !== localDeviceId) return null;
+  return normalizeUsageSyncEvent({
+    ...incoming,
+    source: incoming.source || current.source,
+    deviceLabel: incoming.deviceLabel || current.deviceLabel,
+    observedAt: [current.observedAt, incoming.observedAt]
+      .filter(Boolean).sort((left, right) => (Date.parse(left) || 0) - (Date.parse(right) || 0))[0],
+    limitSamples: mergeUsageLimitSamples(current.limitSamples, incoming.limitSamples),
+  });
+}
+
 /**
  * Durable store of usage sync events, local and remote. Events are addressed by
  * their turn identity, so an event that arrives twice updates the existing row
@@ -427,7 +441,7 @@ export class WorkLogUsageSyncStore {
   }
 
   /** Applies the domain merge rule and writes only rows that actually change. */
-  #upsert(database, events, { transaction = true } = {}) {
+  #upsert(database, events, { transaction = true, authoritativeLocal = false } = {}) {
     const byId = new Map();
     for (const value of Array.isArray(events) ? events : []) {
       const event = normalizeUsageSyncEvent(value);
@@ -449,7 +463,10 @@ export class WorkLogUsageSyncStore {
         changes.push(event);
         continue;
       }
-      const winner = strongerStoreEvent(current, event, this.#deviceId);
+      const winner = authoritativeLocal
+        ? authoritativeLocalEvent(current, event, this.#deviceId)
+          ?? strongerStoreEvent(current, event, this.#deviceId)
+        : strongerStoreEvent(current, event, this.#deviceId);
       if (JSON.stringify(winner) !== JSON.stringify(current)) changes.push(winner);
     }
     if (!changes.length) return { added: 0, updated: 0 };
@@ -729,6 +746,17 @@ export class WorkLogUsageSyncStore {
         updated: result.updated,
         file: this.#databaseFile,
       };
+    });
+  }
+
+  ensureTurnFact(value) {
+    const event = normalizeUsageSyncEvent(value);
+    if (!event || !this.#deviceId || event.deviceId !== this.#deviceId) {
+      throw new Error("local usage turn fact identity is required");
+    }
+    return this.#enqueue((database) => {
+      const result = this.#upsert(database, [event], { authoritativeLocal: true });
+      return { ensured: true, added: result.added, updated: result.updated, file: this.#databaseFile };
     });
   }
 

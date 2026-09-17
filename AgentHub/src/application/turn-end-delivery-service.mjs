@@ -421,6 +421,9 @@ export class TurnEndDeliveryService {
     const drain = this.#retryPendingProjections({ recoverProjecting })
       .finally(() => {
         if (this.#projectionDrain === drain) this.#projectionDrain = null;
+        if (this.#projectionRecoveryEnabled) {
+          this.#scheduleProjectionRetry(0, this.projectionRetryMaxMs);
+        }
       });
     this.#projectionDrain = drain;
     return drain;
@@ -459,14 +462,13 @@ export class TurnEndDeliveryService {
     if (!this.terminalCommits) return { processed: 0 };
     const pending = [...new Map([
       ...migratedOutbox,
-      ...await this.#measure("terminal-outbox-list", null, () => this.terminalCommits.pending()),
-    ].map((item) => [`${turnEndKey(item)}\0${item.terminalRevision}`, item])).values()]
-      .filter((item) => (item.channels?.projection?.state ?? item.state) === "pending");
+      ...await this.#measure("terminal-outbox-list", null,
+        () => this.terminalCommits.pendingProjections({ limit: 100 })),
+    ].map((item) => [`${turnEndKey(item)}\0${item.terminalRevision}`, item])).values()];
     if (this.flushTurnProjections) {
       for (let offset = 0; offset < pending.length; offset += 16) {
         await this.#deliverProjectionBatch(pending.slice(offset, offset + 16));
       }
-      if (pending.length >= 100) this.#scheduleProjectionRetry(0, 0);
       return { processed: pending.length };
     }
     for (const item of pending) {
@@ -477,7 +479,6 @@ export class TurnEndDeliveryService {
         );
       });
     }
-    if (pending.length >= 100) this.#scheduleProjectionRetry(0, 0);
     return { processed: pending.length };
   }
 
