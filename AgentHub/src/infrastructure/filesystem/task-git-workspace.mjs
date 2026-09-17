@@ -3411,7 +3411,7 @@ export class TaskGitWorkspaceService {
       if (squashTransfer && (
         squashTransfer.survivor.taskId !== String(task.taskId)
         || squashTransfer.survivor.resultCommit !== evidence.resultCommit
-        || squashTransfer.survivor.releaseRevision + 1 !== taskRevision
+        || squashTransfer.survivor.releaseRevision + 1 !== Number(task.resultReleaseRevision)
         || !samePath(squashTransfer.projectRoot, evidence.projectRoot)
       )) throw new Error(`Task ${task.taskId} squash transfer does not match its frozen result`);
       const lineage = new Set(String(await runGit([

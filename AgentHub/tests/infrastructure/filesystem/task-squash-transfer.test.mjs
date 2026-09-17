@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import { promisify } from "node:util";
 
@@ -15,7 +16,10 @@ import { ReleaseGitWorkspaceService } from "../../../src/infrastructure/filesyst
 import { releaseTaskNetProjections } from "../../../src/infrastructure/filesystem/release-task-net-projection.mjs";
 import { TaskBoardService } from "../../../src/application/task-board-service.mjs";
 import { TaskLifecycleService } from "../../../src/application/task-lifecycle-service.mjs";
+import { TaskReleasePlanService } from "../../../src/application/task-release-plan-service.mjs";
+import { WorkspaceReleasePreflightService } from "../../../src/application/workspace-release-preflight-service.mjs";
 import { TaskOperationReconciliationService } from "../../../src/application/task-operation-reconciliation-service.mjs";
+import { normalizedTaskSquashTransfer } from "../../../src/domain/task-squash-transfer.mjs";
 import { TaskBoardStore } from "../../../src/infrastructure/persistence/task-board-store.mjs";
 import { WorkspaceCatalogStore } from "../../../src/infrastructure/persistence/workspace-catalog-store.mjs";
 
@@ -248,6 +252,29 @@ test("exact squash transfer adds the selected delta once and preserves foreign d
   });
   assert.equal(projections.get(SURVIVOR_ID)?.squashTransferHash, applied.transferHash);
   assert.equal(projections.get(SURVIVOR_ID)?.directResultMerge, true);
+  const prospectiveAwaitTask = {
+    taskId: SURVIVOR_ID,
+    taskNumber: "HUB-235",
+    taskRevision: applied.survivor.releaseRevision + 2,
+    resultReleaseRevision: applied.survivor.releaseRevision + 1,
+    projectRoot: root,
+    branch: survivorWorkspace.branch,
+    resultCommit: newResult,
+    squashTransfer: applied,
+  };
+  const prospectiveEvidence = await service.releaseIntegrationEvidence({
+    projectRoot: root, tasks: [prospectiveAwaitTask],
+  });
+  assert.equal(prospectiveEvidence.tasks[0].taskRevision, prospectiveAwaitTask.taskRevision);
+  assert.equal(prospectiveEvidence.tasks[0].resultCommit, newResult);
+  await assert.rejects(service.releaseIntegrationEvidence({
+    projectRoot: root,
+    tasks: [{ ...prospectiveAwaitTask, resultReleaseRevision: prospectiveAwaitTask.taskRevision }],
+  }), /squash transfer does not match its frozen result/u);
+  await assert.rejects(service.releaseIntegrationEvidence({
+    projectRoot: root,
+    tasks: [{ ...prospectiveAwaitTask, resultCommit: baseline }],
+  }), /changed|does not match/u);
   const ordinaryFallback = await releaseTaskNetProjections({
     tasks: [{ ...releaseTask, baseCommit: "9".repeat(40), squashTransfer: undefined }],
     baseCommit: await git(root, "rev-parse", "main"), git: projectorGit,
@@ -499,9 +526,9 @@ test("Git-applied squash reconciles its real SQLite transition without an invent
   await git(dev.projectRoot, "add", "unique.txt");
   const devAfterTree = await git(dev.projectRoot, "write-tree");
   await git(dev.projectRoot, "reset", "--hard", devBefore);
-  const releasePreflight = { withAwaitTransition: async (_id, operation) => operation() };
+  const squashReleasePreflight = { withAwaitTransition: async (_id, operation) => operation() };
   const lifecycle = new TaskLifecycleService({
-    taskBoard, workspaceCatalog, taskGitWorkspaces: gitService, releasePreflight,
+    taskBoard, workspaceCatalog, taskGitWorkspaces: gitService, releasePreflight: squashReleasePreflight,
   });
   const authority = {
     workspaceId: workspace.id, streamId: stream.id, provider: "codex",
@@ -574,4 +601,90 @@ test("Git-applied squash reconciles its real SQLite transition without an invent
   assert.equal(taskBoard.task(source.id).workflowStatus, "in_progress");
   assert.equal(taskBoard.task(survivor.id).gitReferences[0].resultCommit, newResultCommit);
   assert.equal(await readFile(path.join(dev.projectRoot, "unique.txt"), "utf8"), "combined\n");
+
+  const releasePlanner = new TaskReleasePlanService({ taskBoard, taskGitWorkspaces: gitService });
+  let candidateBuilds = 0;
+  const releasePreflight = new WorkspaceReleasePreflightService({
+    releasePlanner,
+    taskGitWorkspaces: gitService,
+    releaseGitWorkspaces: {
+      withAwaitTransition: async (_workspaceId, operation) => operation(),
+      assertAwaitChangesAllowed: async () => {},
+      assertPrimaryInvariant: async () => ({ projectRoot: root, headCommit: await git(root, "rev-parse", "main") }),
+      inspectMainChanges: async () => ({}),
+      prepareCandidate: async () => { candidateBuilds += 1; throw new Error("Await must not build PreRelease"); },
+    },
+    resolveReleaseValidationSource: async () => null,
+    readPublicationState: async () => ({ repositories: [] }),
+  });
+  const current = taskBoard.task(survivor.id);
+  assert.equal(current.resultReleaseRevision, current.releaseRevision);
+  const outcomeDatabase = new DatabaseSync(databaseFile);
+  const exactOutcome = outcomeDatabase.prepare(
+    "SELECT result_json FROM hub_task_lifecycle_outcomes WHERE operation_id = ?",
+  ).get(receipt.requestId).result_json;
+  const uncorroboratedOutcomes = [
+    ["missing outcome Task", (result) => { delete result.task; }],
+    ["stale outcome revision", (result) => { result.task.releaseRevision += 1; }],
+    ["foreign outcome reference", (result) => { result.task.gitReferences[0].projectRoot = `${root}-foreign`; }],
+  ];
+  for (const [label, corrupt] of uncorroboratedOutcomes) {
+    const result = JSON.parse(exactOutcome);
+    corrupt(result);
+    outcomeDatabase.prepare(
+      "UPDATE hub_task_lifecycle_outcomes SET result_json = ? WHERE operation_id = ?",
+    ).run(JSON.stringify(result), receipt.requestId);
+    const projected = taskBoard.task(survivor.id);
+    assert.equal(projected.squashTransfer.survivor.taskId, survivor.id, label);
+    assert.equal(projected.resultReleaseRevision, undefined, label);
+    await assert.rejects(releasePreflight.validateAwaitAcceptance({
+      workspaceId: workspace.id,
+      acceptingTask: { id: projected.id, revision: projected.revision },
+      projectRoot: root,
+    }), /squash transfer does not match its frozen result/u, label);
+  }
+  outcomeDatabase.prepare(
+    "UPDATE hub_task_lifecycle_outcomes SET result_json = ? WHERE operation_id = ?",
+  ).run(exactOutcome, receipt.requestId);
+  outcomeDatabase.close();
+  const originalReleaseTasks = taskBoard.releaseTasks.bind(taskBoard);
+  const tamperedProof = normalizedTaskSquashTransfer({
+    ...current.squashTransfer,
+    transferHash: undefined,
+    survivor: {
+      ...current.squashTransfer.survivor,
+      releaseRevision: current.squashTransfer.survivor.releaseRevision + 1,
+    },
+  });
+  taskBoard.releaseTasks = (workspaceId) => originalReleaseTasks(workspaceId).map((entry) => (
+    entry.id === current.id ? { ...entry, squashTransfer: tamperedProof } : entry
+  ));
+  await assert.rejects(releasePreflight.validateAwaitAcceptance({
+    workspaceId: workspace.id,
+    acceptingTask: { id: current.id, revision: current.revision },
+    projectRoot: root,
+  }), /squash transfer does not match its frozen result/u);
+  taskBoard.releaseTasks = originalReleaseTasks;
+
+  const planBefore = await releasePlanner.plan(workspace.id);
+  const candidateBytes = { head: "preserved-candidate", tree: "preserved-tree" };
+  const acceptanceLifecycle = new TaskLifecycleService({
+    taskBoard, workspaceCatalog, taskGitWorkspaces: gitService, releasePreflight,
+  });
+  const accepted = await acceptanceLifecycle.updateWorkflowStatus({
+    taskId: current.id,
+    status: "awaiting_implementation",
+    operationId: "survivor-await",
+    projectRoot: root,
+    expectedRevision: current.revision,
+    expectedWorkflowStatus: "testing",
+  });
+  const planAfter = await releasePlanner.plan(workspace.id);
+  assert.equal(accepted.task.workflowStatus, "awaiting_implementation");
+  assert.equal(accepted.releaseIntegration.resultCommit, newResultCommit);
+  assert.equal(accepted.releaseCandidate.status, "invalidated");
+  assert.notEqual(planAfter.revision, planBefore.revision);
+  assert.equal(accepted.releaseCandidate.planRevision, planAfter.revision);
+  assert.deepEqual(candidateBytes, { head: "preserved-candidate", tree: "preserved-tree" });
+  assert.equal(candidateBuilds, 0);
 });

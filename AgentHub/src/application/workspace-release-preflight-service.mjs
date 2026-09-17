@@ -127,6 +127,7 @@ function readyRepositories(ready = [], fallbackProjectRoots = []) {
       projectRoot,
       branch: entry.branch,
       resultCommit,
+      ...(entry.resultReleaseRevision != null ? { resultReleaseRevision: entry.resultReleaseRevision } : {}),
       ...(entry.squashTransfer ? { squashTransfer: entry.squashTransfer } : {}),
     });
     repositories.set(key, repository);
@@ -163,6 +164,7 @@ function sameFrozenTasks(left = [], right = []) {
   const normalize = (items) => items.map((item) => ({
     taskId: String(item?.taskId ?? ""),
     taskRevision: Number(item?.taskRevision),
+    resultReleaseRevision: item?.resultReleaseRevision == null ? null : Number(item.resultReleaseRevision),
     resultCommit: String(item?.resultCommit ?? ""),
     squashTransferHash: String(item?.squashTransfer?.transferHash ?? ""),
   })).sort((a, b) => a.taskId.localeCompare(b.taskId));
@@ -265,6 +267,28 @@ export class WorkspaceReleasePreflightService {
       }
       return operation();
     });
+  }
+
+  async validateAwaitAcceptance({ workspaceId, acceptingTask, projectRoot, lease = null } = {}) {
+    const plan = await this.releasePlanner.plan(workspaceId, { acceptingTask });
+    const root = path.resolve(String(projectRoot ?? "").trim());
+    const matches = readyRepositories(plan.ready).flatMap((repository) => (
+      canonicalRoot(repository.projectRoot) === canonicalRoot(root)
+        ? repository.frozenTasks.filter((task) => task.taskId === String(acceptingTask?.id ?? ""))
+        : []
+    ));
+    if (matches.length !== 1) throw new Error("Task has no unique prospective Await result to accept");
+    const evidence = await this.taskGitWorkspaces.releaseIntegrationEvidence({
+      projectRoot: root,
+      tasks: matches,
+      ...(lease ? { lease } : {}),
+    });
+    if (evidence.tasks?.length !== 1
+        || evidence.tasks[0].taskId !== String(acceptingTask.id)
+        || evidence.tasks[0].resultCommit !== matches[0].resultCommit) {
+      throw new Error("Task prospective Await integration evidence changed");
+    }
+    return { planRevision: plan.revision, task: evidence.tasks[0] };
   }
 
   async prepareAwaitSet({ workspaceId, expectedPlanRevision = null, fallbackProjectRoots = [], preserveFrozen = false,

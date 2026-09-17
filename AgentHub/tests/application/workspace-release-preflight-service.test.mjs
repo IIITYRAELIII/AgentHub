@@ -177,8 +177,29 @@ function fixture({ planRevision = "plan-1", contourHead = "dev-head", rejectDev 
       manifest: { workspaceId: "workspace-1", planRevision, baseCommit: "main-head", tasks: plan.ready },
     };
   };
-  return { calls, locks, projectRoot, service };
+  return { calls, locks, plan, projectRoot, service };
 }
+
+test("release preflight preserves the Test-owned squash result revision for integration evidence", async () => {
+  const { plan, projectRoot, service } = fixture();
+  plan.ready[0].resultReleaseRevision = 6;
+  plan.ready[0].squashTransfer = { proofHash: "proof-1" };
+  service.taskGitWorkspaces.releaseIntegrationEvidence = async ({ tasks }) => {
+    assert.equal(tasks[0].taskRevision, 7);
+    assert.equal(tasks[0].resultReleaseRevision, 6);
+    assert.deepEqual(tasks[0].squashTransfer, { proofHash: "proof-1" });
+    return { tasks };
+  };
+  service.releaseGitWorkspaces.prepareCandidate = () => assert.fail("Await acceptance must not build PreRelease");
+
+  const result = await service.validateAwaitAcceptance({
+    workspaceId: "workspace-1",
+    acceptingTask: { id: "task-1", revision: 6 },
+    projectRoot,
+  });
+  assert.equal(result.planRevision, "plan-1");
+  assert.equal(result.task.resultReleaseRevision, 6);
+});
 
 test("release preflight reuses prepared PreRelease without dev preparation or contour refresh", async () => {
   const { calls, locks, service } = fixture();

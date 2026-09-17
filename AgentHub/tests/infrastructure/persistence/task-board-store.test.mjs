@@ -204,9 +204,42 @@ test("squash transfer reserves and atomically updates both exact Task rows", asy
   assert.equal(committed.sourceTask.revision, testedSource.revision + 1);
   assert.equal(store.task(testedSurvivor.id).gitReferences[0].resultCommit, "c".repeat(40));
   assert.equal(store.task(testedSurvivor.id).squashTransfer.integrationCommit, "f".repeat(40));
+  assert.equal(store.task(testedSurvivor.id).resultReleaseRevision, committed.task.releaseRevision);
+  assert.equal(store.task(testedSurvivor.id).resultReleaseRevision, proof.survivor.releaseRevision + 1);
   assert.equal(store.task(testedSource.id).squashAbsorbedBy.survivor.taskId, testedSurvivor.id);
   assert.equal(store.lifecycleTransition("squash"), null);
   assert.equal(store.lifecycleOutcome("squash").result.sourceTask.workflowStatus, "in_progress");
+
+  const database = new DatabaseSync(store.databaseFile);
+  const exactOutcome = database.prepare(
+    "SELECT result_json FROM hub_task_lifecycle_outcomes WHERE operation_id = 'squash'",
+  ).get().result_json;
+  const corruptions = [
+    ["missing proof", (result) => { delete result.evidence.squashTransfer; }],
+    ["missing outcome Task", (result) => { delete result.task; }],
+    ["stale outcome revision", (result) => { result.task.releaseRevision += 1; }],
+    ["foreign reference", (result) => { result.task.gitReferences[0].projectRoot = "D:/foreign"; }],
+    ["changed result", (result) => { result.task.gitReferences[0].resultCommit = "9".repeat(40); }],
+  ];
+  for (const [label, corrupt] of corruptions) {
+    const result = JSON.parse(exactOutcome);
+    corrupt(result);
+    database.prepare(
+      "UPDATE hub_task_lifecycle_outcomes SET result_json = ? WHERE operation_id = 'squash'",
+    ).run(JSON.stringify(result));
+    const projected = store.task(testedSurvivor.id);
+    if (label === "missing proof") {
+      assert.equal(projected.squashTransfer, undefined, label);
+    } else {
+      assert.equal(projected.squashTransfer.survivor.taskId, testedSurvivor.id, label);
+    }
+    assert.equal(projected.resultReleaseRevision, undefined, label);
+  }
+  database.prepare(
+    "UPDATE hub_task_lifecycle_outcomes SET result_json = ? WHERE operation_id = 'squash'",
+  ).run(exactOutcome);
+  database.close();
+  assert.equal(store.task(testedSurvivor.id).resultReleaseRevision, committed.task.releaseRevision);
 });
 
 test("squash cutover commits Test ownership only after exact Git readback", async (t) => {
