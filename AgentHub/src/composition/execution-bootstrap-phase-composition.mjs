@@ -161,6 +161,7 @@ export function createExecutionBootstrapPhase({
     lifecycle: {
       restartRequestService: interaction.restartRequestService,
       miniAppLifecycle: clients.miniAppLifecycle,
+      desktopAttachments: clients.desktopAttachments,
       desktopControlServer: api.desktopControlServer,
       runtimeCommandServer: infrastructure.runtimeCommandServer,
       hubMcpServer: infrastructure.hubMcpServer,

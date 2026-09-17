@@ -8,9 +8,9 @@ import { commandClientContext } from "../application/application-command-service
 import { createDesktopRunInputComposition } from "./desktop-run-input-composition.mjs";
 import { createDesktopRouterComposition } from "./desktop-router-composition.mjs";
 import { DesktopTaskBoardController } from "../interfaces/desktop/desktop-task-board-controller.mjs";
+import { publicUsageSyncStatus } from "../interfaces/web/mini-app-journal-data.mjs";
 import { TaskBoardLaunchService } from "../application/task-board-launch-service.mjs";
 import { taskReferenceDescriptor } from "../domain/task-board-task.mjs";
-import { publicUsageSyncStatus } from "../interfaces/web/mini-app-journal-data.mjs";
 
 export function createDesktopRunRouterWiring({
   config,
@@ -240,7 +240,6 @@ export function createDesktopRunRouterWiring({
     attachmentDirectory: services.attachmentDirectory,
     snapshot: desktop.snapshot,
   });
-
   const router = createDesktopRouterComposition({
     canonicalizeRequest: services.contourCommandMapping?.request,
     handlers: {
@@ -273,6 +272,8 @@ export function createDesktopRunRouterWiring({
       updateRootAgents: services.updateRootAgents,
       compactContext,
       openAttachment: desktop.openAttachment,
+      uploadAttachment: desktop.uploadAttachment,
+      browseDirectory: desktop.browseDirectory,
       submitBugReport: desktop.submitBugReport,
       reportDiagnostic: desktop.reportDiagnostic,
       trustedDevices: desktop.trustedDevices,
@@ -299,6 +300,8 @@ export function createDesktopRunRouterWiring({
       usageSyncInvite,
       usageSyncEnroll,
       usageSyncDeviceLabel,
+      usageSyncStatus,
+      usageSyncNow,
       commandTraceTimeline: (params) => services.commandTrace.readCommandTimeline(
         params?.commandId,
         { limit: params?.limit },

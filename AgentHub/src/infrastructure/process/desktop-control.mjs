@@ -20,8 +20,11 @@ import { defaultRuntimeRoot } from "../filesystem/runtime-layout.mjs";
 import { protectRuntimeConfig } from "../filesystem/runtime-security.mjs";
 
 const PROTOCOL_VERSION = 2;
-const MAX_REQUEST_BYTES = 512 * 1024;
-const MAX_WIRE_REQUEST_BYTES = 768 * 1024;
+// A single 1 MiB upload part is base64 inside authenticated JSON; the protocol
+// encodes that bounded JSON once more for its signed wire envelope.
+const MAX_REQUEST_BYTES = 1536 * 1024;
+const MAX_CONTROL_REQUEST_BYTES = 512 * 1024;
+const MAX_WIRE_REQUEST_BYTES = 2 * 1024 * 1024 + 4096;
 const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
 const HANDSHAKE_TIMEOUT_MS = 10_000;
 const CLIENT_RECONNECT_DELAYS_MS = Object.freeze([80, 220, 500]);
@@ -34,7 +37,7 @@ const TRANSIENT_CONNECT_CODES = new Set([
 const ENDPOINT_ID_PATTERN = /^[a-f0-9]{64}$/;
 const NONCE_PATTERN = /^[a-f0-9]{64}$/;
 const COMMAND_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9:._-]{0,199}$/;
-const BASE64_PATTERN = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+const BASE64_PATTERN = /^[A-Za-z0-9+/]*={0,2}$/;
 
 export function desktopControlSecretFile(runtimeRoot = defaultRuntimeRoot()) {
   return path.join(runtimeRoot, "desktop-control.secret");
@@ -334,7 +337,7 @@ export class DesktopControlServer {
               || !NONCE_PATTERN.test(requestChallenge)) {
               throw new Error("Desktop control challenge mismatch");
             }
-            if (!encodedPayload || !BASE64_PATTERN.test(encodedPayload)) {
+            if (!encodedPayload || encodedPayload.length % 4 !== 0 || !BASE64_PATTERN.test(encodedPayload)) {
               throw new Error("Invalid Desktop control payload");
             }
             const payload = Buffer.from(encodedPayload, "base64");
@@ -352,6 +355,9 @@ export class DesktopControlServer {
               throw new Error("Desktop control client authentication failed");
             }
             const request = validateDesktopControlRequest(parseProtocolLine(payload.toString("utf8")));
+            if (request.action !== "attachment-upload" && payload.length > MAX_CONTROL_REQUEST_BYTES) {
+              throw new Error("Desktop control request is too large");
+            }
             handledCommandId = request.commandId ?? "";
             socket.setTimeout(0);
             const result = await this.#handler({
@@ -466,7 +472,7 @@ async function callDesktopControlOnce(action, params, {
     params,
     commandId,
   })), "utf8");
-  if (requestPayload.length > MAX_REQUEST_BYTES) {
+  if (requestPayload.length > (action === "attachment-upload" ? MAX_REQUEST_BYTES : MAX_CONTROL_REQUEST_BYTES)) {
     throw new Error("Desktop control request is too large");
   }
   const clientNonce = randomBytes(32).toString("hex");

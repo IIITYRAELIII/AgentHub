@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="ru" data-theme="orbit" data-surface="desktop" data-view="chat" data-pane="tasks"
-  data-activity-stream-cards="compact">
+  data-activity-stream-cards="compact" data-activity-rail-visibility="hidden">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
@@ -29,6 +29,7 @@
   <script src="/chat-scroll-controller.js" defer></script>
   <script src="/chat-surface-preference.js" defer></script>
   <script src="/background-motion-preference.js" defer></script>
+  <script src="/activity-rail-preference.js" defer></script>
   <script src="/background-image-resolver.js" defer></script>
   <script src="/navigation-tabs-controller.js" defer></script>
   <script src="/stream-tabs-controller.js" defer></script>
@@ -65,6 +66,7 @@
   <script src="/workspace-release-primary-guard.js" defer></script>
   <script src="/stream-role-settings.js" defer></script>
   <script src="/themed-select-placement.js" defer></script>
+  <script src="/directory-field.js" defer></script>
   <script src="/messages/composer-draft-reconciliation.js" defer></script>
   <script src="/app.js" defer></script>
   <script src="/pre-turn-instructions-editor.js" defer></script>
@@ -524,14 +526,16 @@
                   <span class="setting-name">Режим</span>
                   <select data-dialog-options="mode" aria-label="Режим"></select>
                 </label>
-                <label class="setting-stack dialog-working-directory">
+                <div class="setting-stack dialog-working-directory directory-field-setting">
                   <span class="setting-name">Рабочая директория Stream</span>
-                  <input type="text" data-dialog-working-directory
+                  <input type="text" data-dialog-working-directory data-directory-field
+                    data-directory-empty-label="Наследуется от Workspace"
+                    data-directory-empty-status="Пустое значение использует рабочую директорию Workspace."
                     placeholder="Наследуется от Workspace" autocomplete="off" spellcheck="false">
                   <span class="switch-note" data-dialog-working-directory-note>
                     Применится при создании следующего Thread.
                   </span>
-                </label>
+                </div>
                 <label class="setting-switch">
                   <input type="checkbox" data-dialog-toggle="autoApprove">
                   <span class="switch-text">Автоподтверждение</span>
@@ -1125,11 +1129,13 @@
           <span>Комментарий</span>
           <textarea rows="4" maxlength="1000" data-workspace-card-comment></textarea>
         </label>
-        <label>
+        <div class="directory-field-setting">
           <span>Рабочая директория</span>
-          <input type="text" maxlength="1000" data-workspace-card-working-directory
+          <input type="text" maxlength="1000" data-workspace-card-working-directory data-directory-field
+            data-directory-empty-label="Каталог не выбран"
+            data-directory-empty-status="Укажите каталог вручную или выберите через Проводник."
             placeholder="Например, D:\projects\Utilities\AgentHub" autocomplete="off" spellcheck="false">
-        </label>
+        </div>
         <label>
           <span>Префикс воркспейса</span>
           <input type="text" maxlength="40" data-workspace-card-task-prefix
@@ -1982,6 +1988,13 @@
             </span>
             <span class="switch-track" aria-hidden="true"></span>
           </label>
+          <label class="setting-switch">
+            <input type="checkbox" data-activity-rail-visibility-toggle>
+            <span class="switch-text">Боковая панель потоков
+              <span class="switch-note">Показывает справа активные и недавние потоки.</span>
+            </span>
+            <span class="switch-track" aria-hidden="true"></span>
+          </label>
         </div>
       </section>
       <section class="settings-section">
@@ -2074,13 +2087,13 @@
 
   <div class="resource-context-menu" data-resource-context-menu hidden role="menu"
     aria-label="Действия с ресурсом">
+    <button type="button" role="menuitem" data-resource-action="save">Скачать файл</button>
     <button type="button" role="menuitem" data-resource-action="open">Открыть</button>
     <button type="button" role="menuitem" data-resource-action="open-editor">Открыть в VS Code</button>
     <button type="button" role="menuitem" data-resource-action="reveal">Показать в Проводнике</button>
     <button type="button" role="menuitem" data-resource-action="copy">Копировать</button>
     <button type="button" role="menuitem" data-resource-action="copy-path">Копировать путь</button>
     <button type="button" role="menuitem" data-resource-action="copy-object">Скопировать файл</button>
-    <button type="button" role="menuitem" data-resource-action="save">Сохранить как…</button>
   </div>
 
   <div class="toast" data-toast hidden role="status" aria-live="polite"></div>
