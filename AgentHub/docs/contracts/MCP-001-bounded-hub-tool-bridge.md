@@ -336,7 +336,11 @@ started, the public MCP receipt is terminal `failed` and exact same-request
 replay returns that failure. Errors after intent remain unknown until canonical
 readback. Materialization also treats ignored local files and directories as
 user bytes: native checkout collision protection must refuse rather than replace
-them, and a ref-only effect cannot complete the receipt.
+them, and a ref-only effect cannot complete the receipt. If the accepted target
+is already present in the worktree while the real index still equals the exact
+old tree, reconciliation may finish the old-to-new index merge without repeating
+the worktree update. The merge still refuses any independently changed index
+entry, and final exact worktree/index readback remains mandatory.
 
 For the local bootstrap, the final two-Task SQLite transaction is also the only
 operation that changes the survivor from Progress to Test. It is admitted only

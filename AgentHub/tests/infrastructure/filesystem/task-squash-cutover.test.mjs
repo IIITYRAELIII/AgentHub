@@ -42,6 +42,18 @@ async function snapshotTree(cwd) {
   }
 }
 
+async function trackedWorktreeDiff(cwd, treeish) {
+  const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), "agent-hub-target-index-"));
+  const env = { GIT_INDEX_FILE: path.join(temporaryRoot, "index") };
+  try {
+    await runTaskGitCommand(["read-tree", treeish], { cwd, env });
+    await runTaskGitCommand(["update-index", "--refresh"], { cwd, env });
+    return await runTaskGitCommand(["diff-files", "--name-only", "-z"], { cwd, env });
+  } finally {
+    await rm(temporaryRoot, { recursive: true, force: true });
+  }
+}
+
 function argumentsHash(value) {
   const canonical = (input) => Array.isArray(input)
     ? input.map(canonical)
@@ -401,7 +413,7 @@ test("squash cutover materializes an additions-only reviewed replacement", { tim
   }, { guardTaskId: SURVIVOR_ID });
 });
 
-test("canonical original receipt recovery resumes preserved ref before index preparation", { timeout: 90_000 }, async (context) => {
+test("canonical original receipt recovery resumes survivor and dev index materialization", { timeout: 90_000 }, async (context) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-squash-cutover-reconcile-"));
   const dataDir = `${root}-data`;
   const reviewed = `${root}-reviewed`;
@@ -419,6 +431,7 @@ test("canonical original receipt recovery resumes preserved ref before index pre
   await git(root, "config", "core.autocrlf", "false");
   await writeFile(path.join(root, ".gitignore"), "only-added.txt\nunrelated-ignored.txt\n");
   await writeFile(path.join(root, "app.txt"), "v1\n");
+  await writeFile(path.join(root, "release.txt"), "before\n");
   const main = await commit(root, "main");
   const workspace = await catalog.runMutation(() => catalog.createWorkspace({
     name: "Workspace", settings: { releaseWorkflowEnabled: true, workingDirectory: root },
@@ -431,6 +444,7 @@ test("canonical original receipt recovery resumes preserved ref before index pre
     logger: { error() {}, warn() {} } });
   let interruptAfterPreservedRef = false;
   let interruptAfterDevRef = false;
+  let interruptBeforeDevIndexPromotion = false;
   const gitService = new TaskGitWorkspaceService({
     dataDir: path.join(dataDir, "git"),
     runCommand: async (args, options) => {
@@ -444,6 +458,11 @@ test("canonical original receipt recovery resumes preserved ref before index pre
         interruptAfterDevRef = false;
         await runTaskGitCommand(args, options);
         throw new Error("injected canonical crash after dev ref");
+      }
+      if (interruptBeforeDevIndexPromotion && args[0] === "read-tree"
+          && args[1] === "-i" && args[2] === "-m") {
+        interruptBeforeDevIndexPromotion = false;
+        throw new Error("injected canonical crash before dev index promotion");
       }
       return runTaskGitCommand(args, options);
     },
@@ -489,6 +508,7 @@ test("canonical original receipt recovery resumes preserved ref before index pre
   await writeFile(path.join(reviewed, "selected.txt"), "selected\n");
   await writeFile(path.join(reviewed, "app.txt"), "APPROVED DIRTY EDIT\n");
   const baseline = await commit(reviewed, "reviewed preserved baseline");
+  await writeFile(path.join(reviewed, "release.txt"), "reviewed target\n");
   await writeFile(path.join(reviewed, "only-added.txt"), "reviewed addition\n");
   await git(reviewed, "add", "-f", "only-added.txt");
   const newResult = await commit(reviewed, "reviewed addition only");
@@ -507,7 +527,10 @@ test("canonical original receipt recovery resumes preserved ref before index pre
 
   const dev = await gitService.prepareDev(root);
   const devBefore = await git(dev.projectRoot, "rev-parse", "HEAD");
+  const devBeforeTree = await git(dev.projectRoot, "rev-parse", `${devBefore}^{tree}`);
+  await writeFile(path.join(dev.projectRoot, "release.txt"), "reviewed target\n");
   await writeFile(path.join(dev.projectRoot, "only-added.txt"), "reviewed addition\n");
+  await git(dev.projectRoot, "add", "release.txt");
   await git(dev.projectRoot, "add", "-f", "only-added.txt");
   const devAfterTree = await git(dev.projectRoot, "write-tree");
   await git(dev.projectRoot, "reset", "--hard", devBefore);
@@ -608,6 +631,16 @@ test("canonical original receipt recovery resumes preserved ref before index pre
     assert.equal(readback.status, "pending_materialization");
     assert.equal(readback.proof.integrationCommit, integrationCommit);
   }, { guardTaskId: survivor.id });
+  interruptBeforeDevIndexPromotion = true;
+  const indexInterrupted = await reconciliation.reconcileUnknownWorkflow(reconciliationInput);
+  assert.equal(indexInterrupted.outcome, "unknown");
+  assert.match(indexInterrupted.error, /before dev index promotion/u);
+  assert.equal(catalog.mcpOperation(requestId).receiptState, "unknown");
+  assert.equal(taskBoard.task(survivor.id).workflowStatus, "in_progress");
+  assert.equal(taskBoard.task(source.id).workflowStatus, "testing");
+  assert.equal(await git(dev.projectRoot, "write-tree"), devBeforeTree);
+  assert.equal(await trackedWorktreeDiff(dev.projectRoot, integrationCommit), "");
+  assert.equal(await readFile(path.join(dev.projectRoot, "release.txt"), "utf8"), "reviewed target\n");
   const result = await reconciliation.reconcileUnknownWorkflow(reconciliationInput);
   assert.equal(result.outcome, "succeeded");
   assert.equal(catalog.mcpOperation(requestId).receiptState, "succeeded");
@@ -620,4 +653,6 @@ test("canonical original receipt recovery resumes preserved ref before index pre
     "reviewed addition\n");
   assert.equal(await readFile(path.join(survivorWorkspace.projectRoot, "unrelated-ignored.txt"), "utf8"),
     "keep me\n");
+  assert.equal(await git(dev.projectRoot, "write-tree"), devAfterTree);
+  assert.equal(await trackedWorktreeDiff(dev.projectRoot, integrationCommit), "");
 });

@@ -1507,7 +1507,12 @@ and one expected-old dev CAS. A no-op merge parent is not acceptance evidence.
 After the ref CAS, the Git owner updates managed dev through a temporary Git
 administrative/index view whose old-to-new checkout uses Git's native
 `--no-overwrite-ignore` protection. It then advances the real index only through
-the exact old-to-new two-tree check. A concurrent tracked, ordinary untracked or
+the exact old-to-new two-tree check. That index promotion explicitly ignores the
+already-verified worktree comparison: the temporary target index owns that check,
+while the two-tree merge still rejects any real-index entry that no longer equals
+the expected old tree. Thus recovery can advance an old index when the worktree
+already exactly equals the accepted target without treating those target bytes as
+a conflicting dirty edit. A concurrent tracked, ordinary untracked or
 ignored local file/directory collision is preserved and keeps the operation
 unknown; it is never erased by a hard reset or by treating ignored bytes as
 disposable. Recovery may finish the real index when the worktree already exactly
