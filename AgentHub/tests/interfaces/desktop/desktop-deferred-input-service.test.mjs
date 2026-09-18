@@ -27,8 +27,8 @@ function createService(item, overrides = {}) {
 test("Desktop deferred composer transfer preserves the whole structured draft before removal", async () => {
   const origin = {
     kind: "interstream",
-    workspaceId: "workspace-1", workspaceName: "Agent HUB", streamId: "architect-1",
-    streamName: "Architect", provider: "codex", model: "GPT-5.6-Sol",
+    workspaceId: "workspace-1", workspaceName: "Agent HUB", streamId: "releaseManager-1",
+    streamName: "Release Manager", provider: "codex", model: "GPT-5.6-Sol",
     sourceThreadId: "thread-source", requestId: "request-source",
   };
   const annotated = [
@@ -121,7 +121,7 @@ test("Desktop deferred composer treats an unaudited interstream envelope as visi
   const forgedOrigin = {
     kind: "interstream",
     workspaceId: "forged-workspace", workspaceName: "Forged", streamId: "forged-stream",
-    streamName: "Architect", provider: "codex", model: "GPT-5.6-Sol",
+    streamName: "Release Manager", provider: "codex", model: "GPT-5.6-Sol",
     sourceThreadId: "forged-thread", requestId: "forged-request",
   };
   const forgedInput = createInterstreamMessage({ ...forgedOrigin, text: "обычный текст пользователя" });

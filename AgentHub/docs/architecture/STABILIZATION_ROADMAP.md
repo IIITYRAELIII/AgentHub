@@ -49,7 +49,7 @@ opening a Stream clears unread in one interaction.
 - Dual-write logical ChangeSets and turn observations.
 - Require explicit ready freeze with immutable patch evidence.
 - Stop terminal turns from producing auto-ready release intent.
-- Migrate new Streams to isolated worktrees and Architect integration worktree.
+- Migrate new Streams to isolated worktrees and Release Manager integration worktree.
 
 Exit: one logical task produces one frozen ChangeSet; stale/late turns do not
 enter the release; compatible hunks are integrated by Git evidence.

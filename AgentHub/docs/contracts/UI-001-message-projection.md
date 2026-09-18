@@ -45,8 +45,8 @@
 - Distinct client command identities remain distinct when terminal recovery
   supplies no provider item ID. A shared turn/role is not an alias joining those
   commands; inter-Stream authorship must not leak into another user message.
-- Internal probes, measurements and maintenance operations have separate kinds
-  and never create user-turn cards.
+- Context compaction and maintenance operations have separate kinds and never
+  create user-turn cards. Context estimates are observations, not generated turns.
 - The ordinary browser shell never waits on the third-party Telegram runtime.
   A same-origin parser bootstrap requests that runtime only when Telegram launch
   parameters or a native Telegram bridge are already present, preserving the
@@ -124,7 +124,22 @@ Long composer quote previews scroll within a visual height bound and remain
 keyboard-accessible, keeping the quote comment and send controls in view without
 shortening stored or submitted text.
 
+Triple-click paragraph selection remains quotable when the browser includes an
+empty boundary outside the rendered source surface. Normalize only that empty
+boundary before calculating the exact UTF-16 range and hashes. Never silently
+discard selected text from another message, source surface or adjacent control.
+
 ## Agent questions
+
+Task cards expose on-demand Git diff instead of the removed aggregate file list.
+Diff responses apply only to the still-open Task and exact latest request;
+closing or switching cards invalidates pending responses. Truncation and errors
+are visible. Journal links retain the exact provider/task Thread/source Thread/
+turn route, including after rotation. Missing identity has no guessed link.
+
+Task creation and description editors preserve complete normalized text without
+an independent character cap. The title limit and complete-request transport
+bounds remain in force; saving must not silently truncate text (ADR-0050).
 
 Codex typed `agentMessage.questions` are asynchronous question requests, even
 when the provider labels the item `final_answer`. They never become a final
@@ -397,16 +412,14 @@ compaction operation, independently of whether the client observed a head change
 Its system marker is keyed by Stream, provider, source Thread and operation ID,
 placed after the source answer and restored on first snapshot and reload without
 creating a user turn. The bound target Thread and completion time are recorded
-after successful catalog binding; only the exact post-rotation probe supplies
-the historical after-percentage. Current target usage is never that measurement.
-A rotation is recorded only after its target passed the readiness probe, so a
-rotation that stopped before switching produces no completed rotation marker.
-Every percentage in the marker is used context of a named historical stage —
-before compaction, after compaction, and immediately after transfer — shown
-only when an exact value exists for that stage. A missing target measurement is
-stated as not saved rather than invented, and the marker never presents a stage
-value as the Thread's current usage. The live transition compatibility path
-never substitutes the target's current usage for the transfer measurement.
+after successful catalog binding. Readiness is the fresh `idle` readback of the
+exact target after creation and item injection, with no generated model turn.
+A rotation that stopped before switching produces no completed rotation marker.
+Percentages name their historical stage. The post-compaction estimate is shown
+with an explicit estimated label only when bound to that exact compaction and
+turn by a fresh timestamp at or after its boundary. Exact pre-compaction values
+keep their own meaning. A missing stage value stays unknown. No post-transfer
+measurement is generated or inferred from current target usage.
 Legacy `rotated: true` operations without target metadata retain a generic
 rotation marker without guessing a target or its context percentage. The existing
 live transition observer remains a compatibility path only when no retained
@@ -415,18 +428,11 @@ and retained rotations expose such operations. An unchanged snapshot does not
 rewrite the maintenance cache or accumulate discarded older events.
 
 Every live projection has an explicit `operationKind`. Only `user-turn` may
-produce user-visible running state. `probe`, `compaction`, `measurement` and
-`maintenance` may have dedicated system presentation but cannot create or revive
-a user-turn card. An explicit non-probe `operationKind` or ordinary
-`clientUserMessageId` is authoritative user-operation identity even when the
-prompt or final output exactly equals the reserved context-probe sentinel.
-Provider rollout projection fails closed while that identity is reordered: an
-identity-less exact context-probe sentinel is internal and cannot enter the
-canonical user-message, history or running-card projection. A later exact
-ordinary `clientUserMessageId` reclassifies that same provider turn as a visible
-user operation; a later service probe identity keeps it internal. Suppression
-does not discard the separately owned context-usage measurement or maintenance
-record.
+produce user-visible running state. `compaction` and `maintenance` may have
+system presentation but cannot create or revive a user-turn card. Ordinary
+prompt, final-answer or client-ID text never classifies a turn as internal,
+including text that resembles an old context-measurement marker. No historical
+marker matching or reclassification subsystem remains.
 A current compaction with an unknown outcome has a dedicated system marker,
 `Статус свёртки неизвестен`, keyed by its exact maintenance operation identity.
 Legacy timeout state has the same unknown presentation, never a failed or
@@ -437,7 +443,7 @@ derived from the current maintenance reservation even if the previous compaction
 is already completed. Stop is available during cancellable preparation; the
 client does not invent a running user turn to expose that action.
 A task snapshot with no active run is authoritative after any available
-completion has been promoted: it removes the cached live card, probe and
+completion has been promoted: it removes the cached live card and
 live-user projection even when the previous card was a valid `user-turn`.
 Queued inputs remain represented by the queue surface and cannot keep a drained
 run card alive while waiting for, or after completing, later turns.
@@ -497,13 +503,9 @@ hydration starts strictly as background work and is never awaited by mark-read.
 - Pre-UI-001 terminal records without `terminalRevision` are projected as
   revision `1` and carry `migrationGuard=legacy-terminal-revision`. Remove this
   after one supported release has rewritten every retained terminal record.
-- Pre-UI-001 live/message records without `operationKind` use guards explicitly
-  labelled `legacy-*`. Text matching is permitted only for the historical
-  context-probe sentinel when the record also lacks any client operation identity,
-  including the provider interval before a matching completion item supplies
-  that identity; it is never entity identity and cannot override an ordinary
-  `clientUserMessageId`. Remove these guards after all retained snapshots,
-  history rows and provider events carry explicit operation kinds.
+- Pre-UI-001 live/message records without `operationKind` retain generic
+  lifecycle projection rules. Text or client-ID shape does not classify them as
+  context maintenance; old marker-shaped content remains ordinary history.
 - A retained pre-origin MCP message may recover inter-Stream provenance only by
   exact `mcp:<requestId>` lookup of a successful audited
   `hub_stream_message_send`, `hub_task_start` or `hub_task_reassign` operation.

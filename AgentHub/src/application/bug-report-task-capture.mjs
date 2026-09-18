@@ -1,5 +1,3 @@
-import { TASK_DESCRIPTION_MAX_LENGTH } from "../domain/task-board-task.mjs";
-
 const DEFAULT_BUG_REPORT_TITLE = "Разобрать баг-репорт Agent Hub";
 
 function normalizedWorkspaceName(value) {
@@ -14,11 +12,7 @@ export function bugReportTaskText({ id, folder, text } = {}) {
   const suffix = `\n\n${reportReference}`;
   const fallback = reportId ? `${DEFAULT_BUG_REPORT_TITLE} ${reportId.slice(0, 8)}` : DEFAULT_BUG_REPORT_TITLE;
   const description = String(text ?? "").replace(/\r\n?/gu, "\n").trim() || fallback;
-  const available = TASK_DESCRIPTION_MAX_LENGTH - suffix.length;
-  const clipped = description.length <= available
-    ? description
-    : `${description.slice(0, Math.max(1, available - 1)).trimEnd()}…`;
-  return `${clipped}${suffix}`;
+  return `${description}${suffix}`;
 }
 
 export class BugReportTaskCapture {

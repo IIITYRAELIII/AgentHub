@@ -135,8 +135,8 @@ test("Codex history refresh reads the rollout directly without blocking App Serv
   const input = createInterstreamMessage({
     workspaceId: "workspace-1",
     workspaceName: "Agent HUB",
-    streamId: "stream-architect",
-    streamName: "Architect",
+    streamId: "stream-release-manager",
+    streamName: "Release Manager",
     provider: "codex",
     requestId: "telegram-history-1",
     text: "Новый запрос",
@@ -156,8 +156,8 @@ test("Codex history refresh reads the rollout directly without blocking App Serv
             origin: {
               workspaceId: "workspace-1",
               workspaceName: "Agent HUB",
-              streamId: "stream-architect",
-              streamName: "Architect",
+              streamId: "stream-release-manager",
+              streamName: "Release Manager",
               provider: "codex",
               requestId: "telegram-history-1",
             },
@@ -294,7 +294,7 @@ test("Codex history removes a context probe turn identified by rollout metadata"
   assert.deepEqual(recorded.map((item) => item.id), [realTurnId]);
 });
 
-test("Codex history uses persisted probe ids when the rollout tail no longer contains its prompt", async () => {
+test("Codex history ignores the retired probe-id callback and preserves old messages", async () => {
   const probeTurnId = "019ffc97-c47f-7de0-aea6-00e1da772d7d";
   const view = controller({
     findCodexRolloutPath: async () => "C:/rollout.jsonl",
@@ -322,7 +322,8 @@ test("Codex history uses persisted probe ids when the rollout tail no longer con
     title: "Probe",
     chatId: 1,
   });
-  assert.deepEqual(result.history, []);
+  assert.deepEqual(result.history.map((item) => item.id), [probeTurnId]);
+  assert.equal(result.history[0].answer, "Старый служебный ход");
 });
 
 test("missing Claude transcript keeps the managed exchange in durable history", async () => {
@@ -572,8 +573,8 @@ test("subagent rollout prompt is attributed to the parent Workspace Stream agent
     }),
     readCodexSnapshot: async () => null,
     workspaceCatalogStore: {
-      thread: ({ threadId }) => threadId === "parent-thread" ? { streamId: "architect" } : null,
-      stream: () => ({ id: "architect", workspaceId: "hub", name: "Architect" }),
+      thread: ({ threadId }) => threadId === "parent-thread" ? { streamId: "releaseManager" } : null,
+      stream: () => ({ id: "releaseManager", workspaceId: "hub", name: "Release Manager" }),
       workspace: () => ({ id: "hub", name: "Agent HUB" }),
     },
     taskSyncStore: {
@@ -591,8 +592,8 @@ test("subagent rollout prompt is attributed to the parent Workspace Stream agent
     chatId: 1,
   });
 
-  assert.equal(result.history[0].messages[0].author, "Agent HUB - Architect (Codex)");
-  assert.equal(recorded[0].messages[0].author, "Agent HUB - Architect (Codex)");
+  assert.equal(result.history[0].messages[0].author, "Agent HUB - Release Manager (Codex)");
+  assert.equal(recorded[0].messages[0].author, "Agent HUB - Release Manager (Codex)");
 });
 
 test("a final rollout answer cannot remain active", () => {

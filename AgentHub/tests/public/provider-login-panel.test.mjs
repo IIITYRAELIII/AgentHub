@@ -17,6 +17,19 @@ async function panelApi() {
 
 const CODE = "Kc0de-AbC_123#sTaTe-456_xyz";
 
+test("current account replaces attempt history and account switches change the render key", async () => {
+  const panel = await panelApi();
+  const account = { provider: "codex", status: "idle", currentAccount: { state: "signed-in", email: "one@example.test", method: "chatgpt" } };
+  assert.equal(panel.accountView(account).statusText, "one@example.test");
+  assert.equal(panel.accountView(account).loginStatusText, null);
+  const changed = { ...account, currentAccount: { ...account.currentAccount, email: "two@example.test" } };
+  assert.notEqual(panel.renderKey([panel.accountView(account)]), panel.renderKey([panel.accountView(changed)]));
+  assert.equal(panel.accountView({ ...account, status: "pending" }).loginStatusText, "Ожидает входа в браузере");
+  assert.equal(panel.accountView({ ...account, currentAccount: { state: "signed-out" } }).statusText, "Не выполнен вход");
+  assert.equal(panel.accountView({ ...account, currentAccount: { state: "signed-in", method: "apiKey" } }).statusText, "API-ключ");
+  assert.equal(panel.accountView({ ...account, currentAccount: { state: "checking" } }).statusText, "Проверяем аккаунт…");
+});
+
 test("the sign-in link and code field belong only to the local client of the same attempt", async () => {
   const panel = await panelApi();
   const pending = { provider: "claude", status: "pending", attemptId: "7", error: null };
@@ -78,10 +91,10 @@ test("a start response bound against a prior idle snapshot keeps the link and co
 
 test("status, completion, cancel and failure are shown from the shared state", async () => {
   const panel = await panelApi();
-  assert.equal(panel.accountView({ provider: "codex", status: "idle" }).statusText, "Вход не запускался");
-  assert.equal(panel.accountView({ provider: "claude", status: "succeeded" }).statusText, "Вход выполнен");
+  assert.equal(panel.accountView({ provider: "codex", status: "idle" }).statusText, "Не удалось определить аккаунт");
+  assert.equal(panel.accountView({ provider: "claude", status: "succeeded" }).statusText, "Не удалось определить аккаунт");
   const cancelled = panel.accountView({ provider: "claude", status: "cancelled" });
-  assert.equal(cancelled.statusText, "Вход отменён");
+  assert.equal(cancelled.loginStatusText, "Вход отменён");
   assert.equal(cancelled.canCancel, false);
   const failed = panel.accountView({ provider: "claude", status: "failed", error: "Claude Code завершился с кодом 1" });
   assert.equal(failed.error, "Claude Code завершился с кодом 1");

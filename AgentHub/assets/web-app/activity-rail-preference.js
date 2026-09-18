@@ -4,14 +4,14 @@
   const STORAGE_KEY = "agent-hub:activity-rail-visibility:v1";
 
   function normalize(value) {
-    return value === "visible" ? "visible" : "hidden";
+    return value === "hidden" ? "hidden" : "visible";
   }
 
   function stored(storage) {
     try {
       return normalize(storage?.getItem(STORAGE_KEY));
     } catch {
-      return "hidden";
+      return "visible";
     }
   }
 

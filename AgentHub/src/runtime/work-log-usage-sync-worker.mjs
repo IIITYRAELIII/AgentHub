@@ -169,6 +169,7 @@ function serializedError(error) {
   return {
     message: String(error?.message ?? error),
     code: error?.code,
+    errcode: error?.errcode,
     stack: error?.stack,
   };
 }
@@ -223,6 +224,7 @@ async function handle(message) {
       return result;
     }
     case "import-snapshot": return store.importSnapshot(message.payload.snapshot);
+    case "ensure-turn-fact": return store.ensureTurnFact(message.payload.fact);
     case "reconcile-snapshot": return store.reconcileSnapshot(message.payload.snapshot);
     case "replace-events": return store.replaceEvents(message.payload.events);
     case "adopt-device-ids": return store.adoptDeviceIds(message.payload.deviceIds);

@@ -60,8 +60,11 @@ test("explicit bootstrap reads fresh canonical MCP plans over local HTTP for eve
       name: "hub_release_plan_get", arguments: { context_token: "private-context-token", workspace_id: workspaceId },
     });
   }
-  assert.equal(parseChangedArguments(["--bootstrap-mcp-context", "local.json"]).bootstrapMcpContext, "local.json");
-  assert.throws(() => parseChangedArguments(["--bootstrap-mcp-context", "--resume"]), /Неизвестный аргумент/u);
+  assert.throws(
+    () => parseChangedArguments(["--bootstrap-mcp-context", "local.json"]),
+    /obsolete.*candidate runtime/u,
+  );
+  assert.throws(() => parseChangedArguments(["--bootstrap-mcp-context", "--resume"]), /obsolete/u);
 });
 
 test("the flag never falls back for mutations, different errors, or a working replacement Desktop", async (t) => {

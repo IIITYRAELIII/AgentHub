@@ -306,6 +306,19 @@ export class MaintenanceOperationStore {
     `).get(MAINTENANCE_OPERATION_KINDS.RESTART, exactStreamId, exactThreadId)));
   }
 
+  latestSettledRestart({ since = "" } = {}) {
+    return this.#withDatabase((database) => operationFromRow(database.prepare(`
+      SELECT operation_json FROM maintenance_operations
+      WHERE kind = ? AND status IN (?, ?) AND updated_at >= ?
+      ORDER BY updated_at DESC, revision DESC LIMIT 1
+    `).get(
+      MAINTENANCE_OPERATION_KINDS.RESTART,
+      MAINTENANCE_OPERATION_STATUSES.SUCCEEDED,
+      MAINTENANCE_OPERATION_STATUSES.FAILED,
+      String(since ?? ""),
+    )));
+  }
+
   settle(operationId, { succeeded, phase, metadata = {} } = {}) {
     const current = this.get(operationId);
     if (!current || maintenanceOperationIsTerminal(current)) return current;

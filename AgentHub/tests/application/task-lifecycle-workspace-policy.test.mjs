@@ -31,7 +31,7 @@ async function fixture(t, settings, withGit = true) {
   return { service, taskBoard, task, events };
 }
 
-for (const settings of [{ releaseWorkflowEnabled: false }, {}, undefined]) {
+for (const settings of [{ releaseWorkflowEnabled: false }, { releaseWorkflowEnabled: false, autoReviewEnabled: true }, {}, undefined]) {
   for (const withGit of [true, false]) test(`ordinary Task statuses need only SQLite (${JSON.stringify(settings)}, Git service ${withGit})`, async (t) => {
     const { service, taskBoard, task, events } = await fixture(t, settings, withGit);
     assert.equal(task.streamId, null);

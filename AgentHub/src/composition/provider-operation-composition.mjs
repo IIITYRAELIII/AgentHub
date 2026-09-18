@@ -92,7 +92,6 @@ export function createProviderOperationComposition({
   applyCodexThreadSettings,
   trackTurnTokenUsage,
   latestContextUsage,
-  completeContextTurn,
   setLatestDiff,
   requestApproval,
   formatCommandApproval,
@@ -224,9 +223,6 @@ export function createProviderOperationComposition({
     finishProgress: (...args) => taskProgress().finish(...args),
     completeRun: (run) => managedRunLifecycle.complete(run),
     readThread: readCodexThread,
-    isContextProbeTurn: (threadId, turnId) => (
-      contextCompactions.get(threadId)?.probeTurnIds?.includes(String(turnId ?? "").trim()) === true
-    ),
     developerInstructions: ({ provider, threadId, streamId }) => resolveHubDeveloperInstructions({
       provider,
       threadId,
@@ -274,7 +270,7 @@ export function createProviderOperationComposition({
     applyThreadSettings: applyCodexThreadSettings,
     saveState,
     trackTokenUsage: trackTurnTokenUsage,
-    completeTurn: completeContextTurn,
+    mutateCompaction: (threadId, operation) => contextCompactions.mutate(threadId, operation),
     taskKey: taskRunKey,
     isSelectedRun,
     setSelectedDiff: setLatestDiff,

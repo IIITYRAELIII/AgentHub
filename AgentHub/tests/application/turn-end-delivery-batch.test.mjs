@@ -151,10 +151,13 @@ test("automatic and explicit work-log records persist before one real canonical 
   state.completions[1].message = { workLogId: "cc9b43ae-080f-48bf-bc2e-75af63603acd" };
   const databaseFile = path.join(state.root, "journal.sqlite");
   const journal = new JournalDatabase(databaseFile);
-  const worker = new WorkLogUsageSyncWorkerStore({ databaseFile });
+  const worker = new WorkLogUsageSyncWorkerStore({
+    databaseFile, deviceId: "device-local", defaultRuntimeHomeIds: { codex: "home-local" },
+  });
   const usage = createWorkLogUsageStore({
     ledgerFile: path.join(state.root, "retired.json"), databaseFile,
     defaultProjectRoot: state.root, usageSyncStore: worker,
+    usageSyncDeviceId: "device-local", usageSyncRuntimeHomeIds: { codex: "home-local" },
     repositoryFactory: (options) => new WorkLogUsageRepository(options),
   });
   const runJournal = new RunJournalService({
@@ -165,6 +168,8 @@ test("automatic and explicit work-log records persist before one real canonical 
   const project = worker.projectJournal.bind(worker);
   worker.projectJournal = (...args) => { projections += 1; return project(...args); };
   state.service.projectTurn = (...args) => runJournal.projectTurn(...args);
+  state.service.ensureTurnUsageFact = (...args) => runJournal.ensureTurnUsageFact(...args);
+  state.service.readTurnProjection = (...args) => runJournal.turnProjectionStatus(...args);
   state.service.flushTurnProjections = async (...args) => {
     assert.equal(projections, 0);
     const ledger = await journal.loadLedger();
@@ -179,7 +184,123 @@ test("automatic and explicit work-log records persist before one real canonical 
     const snapshot = JSON.stringify(await journal.snapshot());
     for (const value of state.completions) assert.ok(snapshot.includes(value.finalAnswer));
     assert.equal((await journal.getRecord(state.completions[1])).workLogId, state.completions[1].message.workLogId);
+    const reader = new DatabaseSync(databaseFile, { readOnly: true });
+    try {
+      assert.equal(reader.prepare("SELECT COUNT(*) AS count FROM journal_turn_index").get().count, 3);
+      assert.equal(reader.prepare("SELECT COUNT(*) AS count FROM usage_sync_events").get().count, 3);
+    } finally { reader.close(); }
   } finally {
+    await usage.close();
+    journal.close();
+  }
+});
+
+test("canonical recovery preserves enriched partial success and does not infer a missing turn account", async (t) => {
+  const state = await fixture(t, 1);
+  state.completions.splice(0);
+  const databaseFile = path.join(state.root, "journal.sqlite");
+  const journal = new JournalDatabase(databaseFile);
+  const worker = new WorkLogUsageSyncWorkerStore({ databaseFile, deviceId: "device-local" });
+  let ambientAccountReads = 0;
+  const usage = createWorkLogUsageStore({
+    ledgerFile: path.join(state.root, "retired.json"), databaseFile,
+    defaultProjectRoot: state.root, usageSyncStore: worker,
+    usageSyncDeviceId: "device-local", usageSyncRuntimeHomeIds: { codex: "home-local" },
+    resolveAccount: async () => {
+      ambientAccountReads += 1;
+      return { accountKey: "chatgpt:ambient", accountAttribution: "exact" };
+    },
+    repositoryFactory: (options) => new WorkLogUsageRepository(options),
+  });
+  const runJournal = new RunJournalService({
+    usageStore: usage, defaultProjectRoot: state.root, projectionProjectRoots: [state.root],
+    findProject: (root) => root === state.root ? { path: root } : null,
+  });
+  state.service.projectTurn = (...args) => runJournal.projectTurn(...args);
+  state.service.flushTurnProjections = (...args) => runJournal.flushTurnProjections(...args);
+  state.service.ensureTurnUsageFact = (...args) => runJournal.ensureTurnUsageFact(...args);
+  state.service.readTurnProjection = (...args) => runJournal.turnProjectionStatus(...args);
+  let telegramDeliveries = 0;
+  state.service.finalizeRunDelivery = async () => { telegramDeliveries += 1; };
+
+  const base = {
+    provider: "codex", projectRoot: state.root, threadId: "thread-recovery",
+    status: "completed", finalAnswer: "Exact retained final", model: "gpt-6-astra",
+    serviceTier: "priority", usage: { inputTokens: 100, cachedInputTokens: 50, outputTokens: 20 },
+    usageReported: true, startedAt: "2026-09-17T09:00:00.000Z", completedAt: "2026-09-17T09:01:00.000Z",
+  };
+  const enriched = { ...base, turnId: "partial", taskTitle: "Enriched task", prompt: "Enriched prompt" };
+  await usage.recordAutomaticAndProject({
+    ...enriched, title: "Enriched title", body: enriched.finalAnswer,
+    accountKey: "chatgpt:historical", accountAttribution: "exact",
+    resolveAccount: false, deferProjection: true,
+  });
+  await runJournal.ensureTurnUsageFact(enriched);
+  await runJournal.flushTurnProjections([enriched]);
+  const staleFactWriter = new DatabaseSync(databaseFile);
+  try {
+    staleFactWriter.prepare(`
+      UPDATE usage_sync_events
+      SET input_tokens = 999, total_tokens = 1069
+      WHERE event_id LIKE 'usage:%'
+    `).run();
+  } finally { staleFactWriter.close(); }
+  const staleProjection = await runJournal.turnProjectionStatus(enriched);
+  assert.equal(staleProjection.usageFactMatches, false);
+  assert.equal(staleProjection.current, false);
+  const committedPartial = await state.terminal.commit({ ...base, turnId: "partial" });
+  const claimedPartial = await state.terminal.claim(committedPartial.outbox);
+  await state.terminal.retry(claimedPartial, new Error("Journal projection could not commit after a journal revision conflict"));
+  const before = await usage.getTurn(enriched);
+
+  await state.service.retryPendingProjections();
+  const repairedProjection = await runJournal.turnProjectionStatus(enriched);
+  assert.equal(repairedProjection.usageFactMatches, true);
+  assert.equal(repairedProjection.indexFresh, true);
+  assert.ok(repairedProjection.projectionSource.revision >= repairedProjection.recordRevision);
+  assert.equal(repairedProjection.current, true);
+  const after = await usage.getTurn(enriched);
+  assert.equal(after.taskTitle, before.taskTitle);
+  assert.equal(after.prompt, before.prompt);
+  assert.equal(after.title, before.title);
+  assert.equal(after.accountKey, "chatgpt:historical");
+  assert.equal(after.accountAttribution, "exact");
+
+  await usage.recordAutomaticAndProject({
+    ...enriched, taskTitle: "Newer retained task title", title: "Newer retained title",
+    body: enriched.finalAnswer, resolveAccount: false, deferProjection: true,
+  });
+  const staleIndex = await runJournal.turnProjectionStatus(enriched);
+  assert.ok(staleIndex.projectionSource.revision < staleIndex.recordRevision);
+  assert.equal(staleIndex.current, false);
+  await runJournal.flushTurnProjections([enriched]);
+  const refreshedIndex = await runJournal.turnProjectionStatus(enriched);
+  assert.ok(refreshedIndex.projectionSource.revision >= refreshedIndex.recordRevision);
+  assert.equal(refreshedIndex.indexFresh, true);
+  assert.equal(refreshedIndex.current, true);
+
+  const missing = { ...base, turnId: "missing" };
+  const committedMissing = await state.terminal.commit(missing);
+  const claimedMissing = await state.terminal.claim(committedMissing.outbox);
+  await state.terminal.retry(claimedMissing, Object.assign(new Error("database is locked"), { code: "SQLITE_BUSY" }));
+  await state.service.retryPendingProjections();
+  const recovered = await usage.getTurn(missing);
+  assert.ok(recovered);
+  assert.equal(recovered.accountKey, "");
+  assert.equal(recovered.accountAttribution, "inferred");
+  assert.equal(ambientAccountReads, 0);
+  assert.equal((await runJournal.turnProjectionStatus(missing)).current, true);
+  assert.equal(telegramDeliveries, 0);
+
+  const reader = new DatabaseSync(databaseFile, { readOnly: true });
+  try {
+    assert.equal(reader.prepare("SELECT COUNT(*) AS count FROM journal_records WHERE thread_id = ?").get(base.threadId).count, 2);
+    assert.equal(reader.prepare("SELECT COUNT(*) AS count FROM usage_sync_events WHERE event_id LIKE 'usage:%'").get().count, 2);
+    assert.equal(reader.prepare("SELECT input_tokens FROM usage_sync_events WHERE event_id LIKE 'usage:%' ORDER BY completed_ms LIMIT 1").get().input_tokens, 100);
+    assert.equal(reader.prepare("SELECT COUNT(*) AS count FROM journal_turn_index WHERE thread_id = ?").get(base.threadId).count, 2);
+    assert.equal(state.rows().filter((row) => row.state === "delivered").length, 2);
+  } finally {
+    reader.close();
     await usage.close();
     journal.close();
   }

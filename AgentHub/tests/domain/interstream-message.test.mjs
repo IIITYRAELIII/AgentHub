@@ -15,11 +15,11 @@ const origin = {
   kind: "interstream",
   workspaceId: "workspace-1",
   workspaceName: "Agent HUB",
-  streamId: "stream-architect",
-  streamName: "Architect",
+  streamId: "stream-release-manager",
+  streamName: "Release Manager",
   provider: "codex",
   model: "gpt-5.6-sol",
-  sourceThreadId: "thread-architect",
+  sourceThreadId: "thread-release-manager",
   requestId: "interstream-1",
 };
 

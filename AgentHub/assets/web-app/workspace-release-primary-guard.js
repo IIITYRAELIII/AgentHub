@@ -21,6 +21,7 @@
   }
 
   global.AgentHubWorkspaceReleaseWorkflow = Object.freeze({
+    ...current,
     tooltip,
     primaryRule,
     renderTooltip,

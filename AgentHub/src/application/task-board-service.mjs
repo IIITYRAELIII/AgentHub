@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-import { attachmentDescriptor } from "../domain/attachment-files.mjs";
+import { taskAttachmentDescriptors } from "../domain/attachment-files.mjs";
 import { normalizedTaskBucket, normalizedTaskText, taskDisplayText } from "../domain/task-board-task.mjs";
 import { EXPERIMENTS_SYSTEM_KEY } from "../domain/workspace-stream-identity.mjs";
 import { workspaceTaskPrefix } from "../domain/task-number.mjs";
@@ -96,9 +96,7 @@ export class TaskBoardService {
   snapshot() {
     return this.store.list().map((task) => {
       const sourceDetails = { ...(task.sourceDetails ?? {}) };
-      const attachments = (Array.isArray(sourceDetails.attachments) ? sourceDetails.attachments : [])
-        .map(attachmentDescriptor)
-        .filter(Boolean);
+      const attachments = taskAttachmentDescriptors(task);
       delete sourceDetails.attachments;
       return {
         ...task,
@@ -338,6 +336,11 @@ export class TaskBoardService {
     return this.store.claimedTaskForTurn(identity);
   }
 
+  claimBindingForOperation(operationId) {
+    requiredMethod(this.store, "claimBindingForOperation");
+    return this.store.claimBindingForOperation(operationId);
+  }
+
   requestWorkflowStatus({ id, ...payload } = {}) {
     requiredMethod(this.store, "requestWorkflowStatus");
     return this.#resolved(this.store.requestWorkflowStatus(id, payload), (task) => {
@@ -374,6 +377,17 @@ export class TaskBoardService {
     return this.#resolved(this.store.commitWorkflowTransition(payload), (task) => {
       const event = this.#event("task.workflow-status.updated", task, { workflowStatus: task.workflowStatus });
       return event && typeof event.then === "function" ? event.then(() => task) : task;
+    });
+  }
+
+  commitSquashTransferTransition(payload = {}) {
+    requiredMethod(this.store, "commitSquashTransferTransition");
+    return this.#resolved(this.store.commitSquashTransferTransition(payload), (result) => {
+      const event = this.#event("task.squash-transfer.committed", result.task, {
+        sourceTaskId: result.sourceTask.id,
+        transferHash: result.squashTransfer.transferHash,
+      });
+      return event && typeof event.then === "function" ? event.then(() => result) : result;
     });
   }
 
@@ -429,7 +443,10 @@ export class TaskBoardService {
   }
 
   get snapshotRevision() {
-    return `${Number(this.store.revision) || 0}:${Number(this.workspaceCatalog.revision) || 0}`;
+    const boardRevision = this.store.snapshotRevision ?? this.store.revision;
+    const workspaceRevision = this.workspaceCatalog.snapshotRevision ?? this.workspaceCatalog.revision;
+    if (boardRevision == null || workspaceRevision == null) return "";
+    return `${String(boardRevision)}:${String(workspaceRevision)}`;
   }
 
   prepareStart({ id, workspaceId, streamId, requestId, streamName = null, reassign = false, expectedRevision = null } = {}) {

@@ -56,10 +56,15 @@ same digest regardless of local presentation state.
 | `threadKey`, `taskKey` | yes | existing thread pseudonyms, unchanged |
 | `startedAt`, `completedAt` | yes | ISO 8601 |
 | `usage`, `usageReported`, `model`, `serviceTier` | yes | unchanged semantics |
-| `estimatedCredits`, `estimateKind`, `imageGenerationCount`, `contextProbe` | no | unchanged semantics |
+| `estimatedCredits`, `estimateKind`, `imageGenerationCount` | no | unchanged semantics |
 | `limitSamples[]` | no | inline provider evidence, below |
 | `deviceLabel` | no | display only, never attribution input |
 | `observedAt` | yes | ingest ordering |
+
+Retired context-measurement flags are not part of normalized usage facts. Existing
+rows, turn identities and measured usage remain intact; no historical deletion or
+database rewrite is required. An unused legacy SQLite column may remain on disk
+without being read, written or recreated by the current schema.
 
 A `turn` carries **no** `accountKey`, `accountLabel`, `accountType`,
 `accountPlan` or `accountAttribution`. Producing those fields on a `turn` is a
@@ -120,6 +125,12 @@ still a verifier for guessing it, so hashing is not a sanitizer here.
 
 Re-observing an unchanged fact is idempotent. Merge of two records with one id
 keeps the earlier `observedAt` and never widens attribution.
+Terminal projection recovery may recreate a missing deterministic `turn` fact
+from the exact durable journal record under the configured local device and
+runtime-home identities. It does not copy account fields into that fact and
+does not use the current ambient account to re-attribute a historical terminal;
+independently evidenced historical attribution remains owned by the existing
+observation and correlation rules.
 `installationInstanceId` is part of `auth_observation` identity so a copied
 profile cannot collapse the collision evidence before projection sees it.
 `auth_observation` and `limit_observation` ids are canonical derived identities:

@@ -233,6 +233,7 @@ export function createDesktopRunRouterWiring({
   });
   const taskBoardController = new DesktopTaskBoardController({
     taskBoard: services.taskBoard,
+    taskGitWorkspaces: services.taskGitWorkspaces,
     voiceTranscriber: services.taskVoiceTranscriber,
     workspaceCatalog: services.workspaceCatalog,
     taskLauncher: taskBoardLauncher,
@@ -284,6 +285,7 @@ export function createDesktopRunRouterWiring({
       boardTaskCreate: (params) => taskBoardController.create(params),
       boardTaskIngest: (params) => taskBoardController.ingest(params),
       boardTaskUpdate: (params) => taskBoardController.update(params),
+      boardTaskDiff: (params) => taskBoardController.diff(params),
       boardTaskChecklist: (params) => taskBoardController.checklist(params),
       boardTaskChecklistLinkedAction: (params) => taskBoardController.checklistLinkedTaskAction(params),
       boardTaskAttachmentAdd: (params) => taskBoardController.addAttachments(params),

@@ -6,6 +6,7 @@ const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 const { setTimeout: delay } = require("node:timers/promises");
+const { pathToFileURL } = require("node:url");
 
 const { AgentHubBridge, webviewHttpMessages } = require("./agent-hub-bridge.js");
 
@@ -315,19 +316,31 @@ test("installed VS Code bridge resolves backend modules from the active runtime"
     assert.deepEqual(await bridge.control("snapshot", { sample: 1 }), {
       action: "snapshot",
       params: { sample: 1 },
-      options: { timeoutMs: 10_000 },
+      options: { runtimeRoot: root, timeoutMs: 10_000 },
       installedLayout: true,
     });
     assert.deepEqual(await bridge.control("submit-bug-report", { text: "bug" }), {
       action: "submit-bug-report",
       params: { text: "bug" },
-      options: { timeoutMs: 180_000 },
+      options: { runtimeRoot: root, timeoutMs: 180_000 },
       installedLayout: true,
     });
     assert.deepEqual(await bridge.control("rotate-stream", { streamId: "stream-1" }), {
       action: "rotate-stream",
       params: { streamId: "stream-1" },
-      options: { timeoutMs: 180_000 },
+      options: { runtimeRoot: root, timeoutMs: 180_000 },
+      installedLayout: true,
+    });
+    assert.deepEqual(await bridge.control("browse-directory", { initialPath: "D:\\repo" }), {
+      action: "browse-directory",
+      params: { initialPath: "D:\\repo" },
+      options: { runtimeRoot: root, timeoutMs: 180_000 },
+      installedLayout: true,
+    });
+    assert.deepEqual(await bridge.control("usage-sync"), {
+      action: "usage-sync",
+      params: {},
+      options: { runtimeRoot: root, timeoutMs: 180_000 },
       installedLayout: true,
     });
   } finally {
@@ -563,6 +576,91 @@ test("VS Code bridge handles usage sync POST through desktop control without loc
   }
 });
 
+test("VS Code bridge keeps desktop IPC isolated to its runtime profile", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-vscode-profile-ipc-"));
+  const productionRoot = path.join(root, "production");
+  const contourRoot = path.join(root, "test-contour");
+  const moduleRoot = path.resolve(__dirname, "..");
+  const previousRuntimeRoot = process.env.AGENT_HUB_RUNTIME_ROOT;
+  const { DesktopControlServer } = await import(pathToFileURL(path.join(moduleRoot, "desktop-control.mjs")).href);
+  const productionServer = new DesktopControlServer({
+    runtimeRoot: productionRoot,
+    protectSecret: async () => {},
+    handler: async ({ action }) => ({ action, profile: "production" }),
+  });
+  const contourServer = new DesktopControlServer({
+    runtimeRoot: contourRoot,
+    protectSecret: async () => {},
+    handler: async ({ action }) => ({ action, profile: "test-contour" }),
+  });
+  try {
+    process.env.AGENT_HUB_RUNTIME_ROOT = productionRoot;
+    await productionServer.start();
+    await contourServer.start();
+    const production = new AgentHubBridge({ moduleRoot });
+    const contour = new AgentHubBridge({ moduleRoot, runtimeRoot: contourRoot });
+
+    assert.deepEqual(await production.control("runtime-health"), {
+      action: "runtime-health",
+      profile: "production",
+    });
+    assert.deepEqual(await contour.control("runtime-health"), {
+      action: "runtime-health",
+      profile: "test-contour",
+    });
+    assert.deepEqual(await contour.http({ method: "GET", path: "/api/attachment-upload" }), {
+      action: "attachment-upload",
+      profile: "test-contour",
+    });
+  } finally {
+    if (previousRuntimeRoot == null) delete process.env.AGENT_HUB_RUNTIME_ROOT;
+    else process.env.AGENT_HUB_RUNTIME_ROOT = previousRuntimeRoot;
+    await Promise.all([productionServer.close(), contourServer.close()]);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("VS Code bridge does not retry failed usage sync through a second desktop alias", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-vscode-sync-no-duplicate-fallback-"));
+  let bridge;
+  let controlCalls = 0;
+  try {
+    await mkdir(path.join(root, "src", "interfaces", "web"), { recursive: true });
+    await writeFile(path.join(root, "config.json"), JSON.stringify({ miniApp: { host: "127.0.0.1", port: 8787 } }), "utf8");
+    await writeFile(path.join(root, "local-web.secret"), "secret", "utf8");
+    await writeFile(path.join(root, "src", "interfaces", "web", "local-webview-session.mjs"), [
+      "export function createLocalWebviewSession() {",
+      "  return { token: 'session-token', expiresAt: Date.now() + 60000 };",
+      "}",
+    ].join("\n"), "utf8");
+    bridge = new AgentHubBridge({
+      moduleRoot: root,
+      runtimeRoot: root,
+      fetchImpl: async () => {
+        throw new Error("local web unavailable");
+      },
+    });
+    bridge.control = async () => {
+      controlCalls += 1;
+      throw new Error("Неизвестная desktop-команда");
+    };
+
+    const result = await bridge.http({
+      method: "POST",
+      path: "/api/journal/usage-sync",
+      headers: { "Content-Type": "application/json; charset=utf-8" },
+      body: "{}",
+    });
+
+    assert.equal(result.status, 503);
+    assert.match(JSON.parse(result.body).error, /local web unavailable/u);
+    assert.equal(controlCalls, 1);
+  } finally {
+    bridge?.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("installed VS Code bridge follows the next runtime release without Reload Window", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-vscode-runtime-switch-"));
   async function writeRelease(name) {
@@ -600,17 +698,82 @@ test("installed VS Code bridge keeps the UI on the running release until cutover
     await writeFile(path.join(root, "current.json"), JSON.stringify({ current: "published" }), "utf8");
     await writeFile(path.join(root, "data", "bot.lock"), JSON.stringify({
       pid: 123,
+      instanceToken: "running-owner",
       releaseId: "running",
       ready: true,
     }), "utf8");
-    const bridge = new AgentHubBridge({ runtimeRoot: root, processIsAlive: () => true });
+    let owner = "running-owner";
+    const bridge = new AgentHubBridge({
+      runtimeRoot: root,
+      processIsAlive: () => true,
+      instanceOwner: async () => owner,
+    });
     assert.equal(await bridge.runtimeReleaseRoot(), path.join(root, "releases", "running"));
     await writeFile(path.join(root, "data", "bot.lock"), JSON.stringify({
       pid: 456,
+      instanceToken: "published-owner",
       releaseId: "published",
       ready: true,
     }), "utf8");
+    owner = "published-owner";
     assert.equal(await bridge.runtimeReleaseRoot(), path.join(root, "releases", "published"));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("installed VS Code bridge ignores a reused PID without the canonical instance owner", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-vscode-runtime-reused-pid-"));
+  try {
+    for (const release of ["stale", "current"]) {
+      await mkdir(path.join(root, "releases", release), { recursive: true });
+    }
+    await mkdir(path.join(root, "data"), { recursive: true });
+    await writeFile(path.join(root, "current.json"), JSON.stringify({ current: "current" }), "utf8");
+    await writeFile(path.join(root, "data", "bot.lock"), JSON.stringify({
+      pid: 5050,
+      instanceToken: "stale-owner",
+      releaseId: "stale",
+      ready: true,
+    }), "utf8");
+    await writeFile(path.join(root, "AgentHub.RuntimeHost.exe"), "runtime-host", "utf8");
+    const starts = [];
+    const bridge = new AgentHubBridge({
+      runtimeRoot: root,
+      platform: "win32",
+      processIsAlive: () => true,
+      instanceOwner: async () => "different-owner",
+      startRuntimeHost: async (runtimeRoot) => starts.push(runtimeRoot),
+    });
+
+    assert.equal(await bridge.runtimeReleaseRoot(), path.join(root, "releases", "current"));
+    assert.equal(await bridge.ensureRuntimeStarted(), true);
+    assert.deepEqual(starts, [root]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("installed VS Code bridge preserves a live old runtime until its token reader is available", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-vscode-runtime-legacy-reader-"));
+  try {
+    for (const release of ["running", "current"]) {
+      await mkdir(path.join(root, "releases", release), { recursive: true });
+    }
+    await mkdir(path.join(root, "data"), { recursive: true });
+    await writeFile(path.join(root, "current.json"), JSON.stringify({ current: "current" }), "utf8");
+    await writeFile(path.join(root, "data", "bot.lock"), JSON.stringify({
+      pid: 6060,
+      instanceToken: "legacy-reader-owner",
+      releaseId: "running",
+    }), "utf8");
+    const bridge = new AgentHubBridge({
+      runtimeRoot: root,
+      processIsAlive: () => true,
+      instanceOwner: async () => undefined,
+    });
+
+    assert.equal(await bridge.runtimeReleaseRoot(), path.join(root, "releases", "running"));
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -721,11 +884,17 @@ test("VS Code bridge does not relaunch a live Runtime Host on startup", async ()
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-vscode-live-runtime-"));
   try {
     await mkdir(path.join(root, "data"), { recursive: true });
-    await writeFile(path.join(root, "data", "bot.lock"), JSON.stringify({ pid: 5050 }), "utf8");
+    await writeFile(path.join(root, "current.json"), JSON.stringify({ current: "release-live" }), "utf8");
+    await writeFile(path.join(root, "data", "bot.lock"), JSON.stringify({
+      pid: 5050,
+      instanceToken: "live-owner",
+      releaseId: "release-live",
+    }), "utf8");
     const bridge = new AgentHubBridge({
       runtimeRoot: root,
       platform: "win32",
       processIsAlive: (pid) => pid === 5050,
+      instanceOwner: async () => "live-owner",
       startRuntimeHost: async () => assert.fail("live runtime must not be relaunched"),
     });
 

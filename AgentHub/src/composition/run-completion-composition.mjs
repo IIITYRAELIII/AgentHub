@@ -3,6 +3,7 @@ import { TerminalTurnCommitService } from "../application/terminal-turn-commit-s
 import { TurnEndDeliveryService } from "../application/turn-end-delivery-service.mjs";
 import { CodexRunFinalizer } from "../providers/codex/codex-run-finalizer.mjs";
 import { ProviderTurnTerminalStore } from "../infrastructure/persistence/provider-turn-terminal-store.mjs";
+import { ProviderRunTerminalStore } from "../infrastructure/persistence/provider-run-terminal-store.mjs";
 import { taskRunKey } from "../domain/task-runs.mjs";
 import { providerThreadKey } from "../domain/workspace-stream-identity.mjs";
 
@@ -55,6 +56,7 @@ export function createRunCompletionComposition({
   runtimeStateStore,
   commandTrace = null,
 }) {
+  const runLifecycleTerminals = new ProviderRunTerminalStore({ dataDir: config.dataDir });
   const managedRunLifecycle = new ManagedRunLifecycleService({
     taskRuns,
     currentTarget,
@@ -90,6 +92,7 @@ export function createRunCompletionComposition({
     prepareAdmission: prepareRunAdmission,
     revokeAdmission: revokeRunAdmission,
     commandTrace,
+    recordProviderTerminal: (terminal) => runLifecycleTerminals.record(terminal),
   });
 
   const terminalStore = new ProviderTurnTerminalStore({ dataDir: config.dataDir });
@@ -106,6 +109,8 @@ export function createRunCompletionComposition({
     persistHistory: persistManagedRunHistory,
     projectTurn: (...args) => runJournal.projectTurn(...args),
     flushTurnProjections: (...args) => runJournal.flushTurnProjections(...args),
+    ensureTurnUsageFact: (...args) => runJournal.ensureTurnUsageFact(...args),
+    readTurnProjection: (...args) => runJournal.turnProjectionStatus(...args),
     finalizeRunDelivery,
     rememberLastMessage: (...args) => runJournal.rememberLastMessage(...args),
     rememberSeenTurn: (task, turnId) => {
@@ -136,6 +141,7 @@ export function createRunCompletionComposition({
 
   return {
     managedRunLifecycle,
+    runLifecycleTerminals,
     terminalStore,
     terminalCommits,
     turnEndDelivery,

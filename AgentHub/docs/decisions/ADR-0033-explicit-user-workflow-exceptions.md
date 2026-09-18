@@ -4,7 +4,7 @@ Status: accepted
 
 ## Context
 
-The Release Workflow and Architect checkboxes inject strict developer policy.
+The Release Workflow and Release Manager checkboxes inject strict developer policy.
 An explicit user request to use a different workflow otherwise conflicts with
 that policy, and a continuation can lose the agreed interpretation.
 
@@ -24,7 +24,7 @@ are introduced.
 
 ## Compatibility and evidence
 
-The exact pre-change Workspace and Architect templates remain recognizable
+The exact pre-change Workspace and Release Manager templates remain recognizable
 legacy prefixes. Composition replaces them once; customized text is retained.
 Keep these compatibility entries until no supported persisted rules can contain
 those versions. Existing manually edited policy is not silently rewritten.

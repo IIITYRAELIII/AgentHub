@@ -20,14 +20,13 @@ test("exact bound rotation metadata survives snapshot restore without replacing 
   assert.equal(restored.get("source-thread").rotationThreadId, "target-thread");
   assert.equal(restored.get("source-thread").rotationCompletedAt, "2026-09-11T01:00:00.000Z");
   assert.equal(restored.get("source-thread").rotationAfterPercent, undefined);
-  assert.equal(restored.annotate("source-thread", "unrelated-operation", { rotationAfterPercent: 90 }), null);
-  restored.annotate("source-thread", record.id, { rotationAfterPercent: 6 });
+  assert.equal(restored.annotate("source-thread", "unrelated-operation", { afterPercent: 90 }), null);
   const measured = new ContextCompactionTracker();
   measured.restore(restored.snapshot());
   assert.equal(measured.get("source-thread").rotated, true);
   assert.equal(measured.get("source-thread").beforePercent, 78);
   assert.equal(measured.get("source-thread").afterPercent, 26);
-  assert.equal(measured.get("source-thread").rotationAfterPercent, 6);
+  assert.equal(measured.get("source-thread").rotationAfterPercent, undefined);
   original.dispose();
   restored.dispose();
   measured.dispose();
@@ -123,54 +122,6 @@ test("a late compaction item cannot replace the original context baseline", () =
   tracker.dispose();
 });
 
-test("the first exact context after an automatic compaction is immutable", () => {
-  let now = Date.parse("2026-08-08T19:58:35.000Z");
-  const tracker = new ContextCompactionTracker({
-    clock: () => now,
-    idFactory: () => "mid-turn-id",
-  });
-  tracker.begin("thread-mid-turn", {
-    origin: "automatic",
-    turnId: "turn-long",
-    beforePercent: 87.1,
-  });
-  now += 1_000;
-  tracker.complete("thread-mid-turn", {
-    turnId: "turn-long",
-    completedAt: now,
-  });
-
-  assert.equal(tracker.observeContext({
-    threadId: "thread-mid-turn",
-    turnId: "turn-long",
-    usedTokens: 23_068,
-    modelContextWindow: 258_400,
-    provisional: true,
-    updatedAt: new Date(now + 1).toISOString(),
-  }), null);
-  const measured = tracker.observeContext({
-    threadId: "thread-mid-turn",
-    turnId: "turn-long",
-    usedTokens: 25_247,
-    modelContextWindow: 258_400,
-    provisional: false,
-    updatedAt: new Date(now + 2).toISOString(),
-  });
-  assert.equal(measured.afterPercent, 9.770511);
-  assert.equal(measured.measurementStatus, "completed");
-
-  assert.equal(tracker.observeContext({
-    threadId: "thread-mid-turn",
-    turnId: "turn-long",
-    usedTokens: 79_389,
-    modelContextWindow: 258_400,
-    provisional: false,
-    updatedAt: new Date(now + 399_000).toISOString(),
-  }), null);
-  assert.equal(tracker.get("thread-mid-turn").afterPercent, 9.770511);
-  tracker.dispose();
-});
-
 test("an unavailable measurement never becomes a fabricated zero", () => {
   const tracker = new ContextCompactionTracker({ idFactory: () => "measurement-id" });
   const started = tracker.begin("thread-measurement", { beforePercent: null });
@@ -190,57 +141,6 @@ test("an unavailable measurement never becomes a fabricated zero", () => {
   });
   assert.equal(tracker.get("thread-measurement").afterPercent, 0);
   assert.equal(tracker.get("thread-measurement").measurementStatus, "completed");
-  tracker.dispose();
-});
-
-test("a completed exact measurement cannot be downgraded by a late failure", () => {
-  const tracker = new ContextCompactionTracker({ idFactory: () => "measurement-race-id" });
-  const started = tracker.begin("thread-measurement-race", { beforePercent: 84.572755 });
-  tracker.complete("thread-measurement-race");
-  tracker.annotate("thread-measurement-race", started.id, {
-    measurementStatus: "running",
-    probeTurnId: "probe-race",
-  });
-  tracker.observeContext({
-    threadId: "thread-measurement-race",
-    turnId: "probe-race",
-    usedTokens: 34_420,
-    modelContextWindow: 258_400,
-    provisional: false,
-  });
-
-  const result = tracker.annotate("thread-measurement-race", started.id, {
-    afterPercent: null,
-    measurementStatus: "failed",
-  });
-
-  assert.equal(result.measurementStatus, "completed");
-  assert.equal(result.afterPercent, 13.320433);
-  tracker.dispose();
-});
-
-test("late exact probe usage reconciles a failed measurement", () => {
-  const tracker = new ContextCompactionTracker({ idFactory: () => "measurement-reconcile-id" });
-  const started = tracker.begin("thread-measurement-reconcile", { beforePercent: 85 });
-  tracker.complete("thread-measurement-reconcile");
-  tracker.annotate("thread-measurement-reconcile", started.id, {
-    measurementStatus: "running",
-    probeTurnId: "probe-reconcile",
-  });
-  tracker.annotate("thread-measurement-reconcile", started.id, {
-    measurementStatus: "failed",
-  });
-
-  const result = tracker.observeContext({
-    threadId: "thread-measurement-reconcile",
-    turnId: "probe-reconcile",
-    usedTokens: 34_420,
-    modelContextWindow: 258_400,
-    provisional: false,
-  });
-
-  assert.equal(result.measurementStatus, "completed");
-  assert.equal(result.afterPercent, 13.320433);
   tracker.dispose();
 });
 
@@ -354,7 +254,6 @@ test("a running compaction becomes unknown immediately after process restart", (
     startedAt: "2026-08-11T00:14:30.000Z",
     compactedAt: null,
     completedAt: "2026-08-11T00:15:00.000Z",
-    probeTurnIds: [],
   });
   assert.equal(tracker.isRunning("thread-restarted"), false);
   assert.equal(scheduled, 0);
@@ -446,54 +345,44 @@ test("rotation can await the exact compaction without polling", async () => {
   tracker.dispose();
 });
 
-test("an exact probe restores a compaction result after process restart", () => {
-  const changes = [];
-  const original = new ContextCompactionTracker({
-    idFactory: () => "restart-id",
-    onChanged: (event) => changes.push(event),
-  });
-  const started = original.begin("thread-restart", {
-    origin: "automatic",
-    beforePercent: 89,
-    captureRawItem: true,
-  });
-  original.complete("thread-restart", { turnId: "compaction-turn" });
-  original.annotate("thread-restart", started.id, {
-    measurementStatus: "running",
-    probeTurnId: "probe-turn",
-  });
-
-  const snapshot = original.snapshot();
-  assert.equal(changes.length, 3);
-  assert.deepEqual(snapshot[0][1].probeTurnIds, ["probe-turn"]);
-  assert.equal(snapshot[0][1].rawItem, undefined);
-
+test("first fresh same-turn estimate survives later actual usage and restart", () => {
+  const boundary = "2026-09-17T01:00:00.000Z";
+  const tracker = new ContextCompactionTracker({ clock: () => Date.parse(boundary) });
+  const record = tracker.begin("thread", { turnId: "turn", origin: "automatic" });
+  tracker.beginCleanup("thread", { turnId: "turn", compactedAt: boundary });
+  const estimate = { threadId: "thread", turnId: "turn", usedTokens: 64099,
+    modelContextWindow: 258400, provisional: true, updatedAt: boundary };
+  const observed = tracker.observeContext(estimate);
+  assert.equal(observed.afterPercent, 24.806115);
+  assert.equal(observed.measurementKind, "estimated");
+  tracker.complete("thread", { turnId: "turn" });
+  assert.equal(tracker.observeContext({ ...estimate, provisional: false, usedTokens: 73742 }), null);
+  assert.equal(tracker.observeContext({ ...estimate, usedTokens: 99999 }), null);
+  tracker.annotate("thread", record.id, { measurementStatus: "failed" });
+  assert.equal(tracker.get("thread").measurementStatus, "completed");
   const restored = new ContextCompactionTracker();
-  restored.restore(snapshot);
-  const result = restored.observeContext({
-    threadId: "thread-restart",
-    turnId: "probe-turn",
-    usedTokens: 41_838,
-    modelContextWindow: 258_400,
-    provisional: false,
-  });
-
-  assert.equal(result.measurementStatus, "completed");
-  assert.equal(result.beforePercent, 89);
-  assert.equal(result.afterPercent, 16.191176);
-  original.dispose();
-  restored.dispose();
+  restored.restore(tracker.snapshot());
+  assert.equal(restored.get("thread").afterPercent, 24.806115);
+  assert.equal(restored.get("thread").measurementKind, "estimated");
+  tracker.dispose(); restored.dispose();
 });
 
-test("a later compaction keeps recent probe turn ids for history filtering", () => {
-  let nextId = 0;
-  const tracker = new ContextCompactionTracker({ idFactory: () => `compaction-${++nextId}` });
-  const first = tracker.begin("thread-history");
-  tracker.complete("thread-history");
-  tracker.annotate("thread-history", first.id, { probeTurnId: "probe-old" });
-
-  const second = tracker.begin("thread-history");
-  assert.equal(second.id, "compaction-2");
-  assert.deepEqual(second.probeTurnIds, ["probe-old"]);
+test("old wrong-turn and missing estimates cannot fabricate a zero or replace a new compaction", () => {
+  const boundary = "2026-09-17T01:00:00.000Z";
+  const tracker = new ContextCompactionTracker({ clock: () => Date.parse(boundary) });
+  tracker.begin("thread", { turnId: "turn", origin: "automatic" });
+  tracker.complete("thread", { turnId: "turn", completedAt: boundary });
+  const estimate = { threadId: "thread", turnId: "turn", usedTokens: 0,
+    modelContextWindow: 258400, provisional: true, updatedAt: boundary };
+  for (const delta of [
+    { turnId: "earlier" }, { threadId: "other" }, { updatedAt: "2026-09-16T01:00:00.000Z" },
+    { provisional: false }, { usedTokens: null }, { usedTokens: undefined },
+    { usedTokens: NaN }, { modelContextWindow: 0 },
+  ]) assert.equal(tracker.observeContext({ ...estimate, ...delta }), null);
+  assert.equal(tracker.get("thread").afterPercent, undefined);
+  assert.equal(tracker.observeContext(estimate).afterPercent, 0);
+  tracker.begin("thread", { turnId: "next", origin: "automatic" });
+  assert.equal(tracker.get("thread").afterPercent, undefined);
+  assert.equal(tracker.observeContext(estimate), null);
   tracker.dispose();
 });

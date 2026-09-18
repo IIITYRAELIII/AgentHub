@@ -37,11 +37,6 @@ const LOCAL_ONLY_ACTIONS = Object.freeze([
   "command-trace-timeline",
   "command-trace-percentiles",
   "command-trace-stats",
-  "usage-sync-status",
-  "usage-sync-now",
-  "usage-sync-invite",
-  "usage-sync-enroll",
-  "usage-sync-device-label",
 ]);
 const DEVICE_PAIRING_SOURCES = new Set(["desktop-control", "local-mini-app", "trusted-device"]);
 
@@ -169,6 +164,7 @@ export function createDesktopApplicationRouter({
       "board-task-create": handlers.boardTaskCreate,
       "board-task-ingest": handlers.boardTaskIngest,
       "board-task-update": handlers.boardTaskUpdate,
+      "board-task-diff": handlers.boardTaskDiff,
       "board-task-checklist": handlers.boardTaskChecklist,
       "board-task-checklist-linked-action": handlers.boardTaskChecklistLinkedAction,
       "board-task-attachment-add": handlers.boardTaskAttachmentAdd,

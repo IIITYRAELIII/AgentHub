@@ -99,6 +99,8 @@ export class RunCoordinator {
     this.scheduleProgressUpdate = scheduleProgressUpdate;
     this.rekeyDeferredOccupancy = rekeyDeferredOccupancy;
     this.bindDashboardTask = typeof bindDashboardTask === "function" ? bindDashboardTask : null;
+    this.dispatchingClientMessageIds = new Map();
+    this.beforeDeferredDispatch = null;
   }
 
   async bindStartedDashboardTask(run, input) {
@@ -333,10 +335,17 @@ export class RunCoordinator {
     return { started: true, runId: run.id, run };
   }
 
-  startDeferred(item) {
+  async startDeferred(item) {
+    this.beforeDeferredDispatch?.(item);
+    const id = String(item.clientUserMessageId ?? "");
+    if (id) this.dispatchingClientMessageIds.set(id, (this.dispatchingClientMessageIds.get(id) ?? 0) + 1);
     return this.withPendingAdmission(item, () => (
       this.serialize(item, () => this.startDeferredUnlocked(item))
-    ));
+    )).finally(() => {
+      const count = this.dispatchingClientMessageIds.get(id) ?? 0;
+      if (count <= 1) this.dispatchingClientMessageIds.delete(id);
+      else this.dispatchingClientMessageIds.set(id, count - 1);
+    });
   }
 
   async startDeferredUnlocked(item) {
@@ -483,7 +492,8 @@ export class RunCoordinator {
     };
   }
 
-  acceptClientInput(request) {
+  async acceptClientInput(request) {
+    this.beforeDeferredDispatch?.();
     return this.withPendingAdmission(request.target, () => (
       this.serializeIntake(request.target, () => this.acceptClientInputUnlocked(request))
     ));

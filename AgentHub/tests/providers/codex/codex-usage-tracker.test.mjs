@@ -82,7 +82,7 @@ test("CodexUsageTracker waits for the post-compaction context measurement", asyn
   assert.equal((await pending)?.usedTokens, 180);
 });
 
-test("CodexUsageTracker waits for the exact probe turn", async () => {
+test("CodexUsageTracker waits for context of the exact turn", async () => {
   const times = [
     new Date("2026-08-04T10:00:00.000Z"),
     new Date("2026-08-04T10:01:00.000Z"),
@@ -90,7 +90,7 @@ test("CodexUsageTracker waits for the exact probe turn", async () => {
   const tracker = new CodexUsageTracker({ now: () => times.shift() });
   const pending = tracker.waitForContextUpdate("thread-1", {
     after: "2026-08-04T09:59:00.000Z",
-    turnId: "probe-turn",
+    turnId: "expected-turn",
     timeoutMs: 100,
   });
   tracker.rememberContext({
@@ -100,19 +100,12 @@ test("CodexUsageTracker waits for the exact probe turn", async () => {
   });
   tracker.rememberContext({
     threadId: "thread-1",
-    turnId: "probe-turn",
+    turnId: "expected-turn",
     tokenUsage: { last: usage(470), modelContextWindow: 1_000 },
   });
   assert.equal((await pending)?.usedTokens, 470);
 });
 
-test("CodexUsageTracker waits for exact probe completion", async () => {
-  const tracker = new CodexUsageTracker();
-  const pending = tracker.waitForTurnCompletion("probe-turn", { timeoutMs: 100 });
-  tracker.markTurnCompleted("other-turn");
-  tracker.markTurnCompleted("probe-turn", "completed");
-  assert.deepEqual(await pending, { turnId: "probe-turn", status: "completed" });
-});
 
 test("CodexUsageTracker marks compaction-only context as provisional", () => {
   const times = [

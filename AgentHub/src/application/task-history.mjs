@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
 import { codexSubagentActivity } from "../domain/run-activity.mjs";
-import { isCodexContextProbeTurn } from "../domain/codex-context-probe.mjs";
 import {
   interstreamOriginAuthor,
   normalizeInterstreamOrigin,
@@ -397,7 +396,6 @@ export function mergeSyntheticRolloutUsers(messages) {
 }
 
 function codexTurnMessages(turn, { userAuthor = "" } = {}) {
-  if (isCodexContextProbeTurn(turn)) return [];
   const turnId = String(turn?.id ?? "").trim();
   const items = Array.isArray(turn?.items) ? turn.items : [];
   const subagentModels = new Map(items.flatMap((item) => (
@@ -565,7 +563,6 @@ export function userTaskReferencePromptDetails(value) {
 }
 
 export function codexExplicitFinalTurnAnswer(turn) {
-  if (isCodexContextProbeTurn(turn)) return "";
   const explicitFinal = (turn?.items ?? [])
     .filter((item) => isCodexAnswerItem(item) && String(item.text ?? "").trim());
   return codexAssistantResponseProjection(explicitFinal.findLast((item) => (
@@ -576,7 +573,6 @@ export function codexExplicitFinalTurnAnswer(turn) {
 export function codexFinalTurnAnswer(turn) {
   const explicitFinal = codexExplicitFinalTurnAnswer(turn);
   if (explicitFinal) return explicitFinal;
-  if (isCodexContextProbeTurn(turn)) return "";
   const messages = (turn?.items ?? [])
     .filter((item) => isCodexAnswerItem(item) && String(item.text ?? "").trim()
       && !codexAnswerPhase(item).trim());

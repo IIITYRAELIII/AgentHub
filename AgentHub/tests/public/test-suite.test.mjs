@@ -1,10 +1,19 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { testFingerprint, runWindowsTestFile, runTestSuite } from "../../test-suite.mjs";
+import {
+  boundedTestFileConcurrency,
+  testFingerprint,
+  runWindowsTestFile,
+  runTestSuite,
+} from "../../test-suite.mjs";
+import {
+  explainTestInputFingerprint,
+  parallelTestExecution,
+} from "../../src/infrastructure/persistence/test-input-fingerprint.mjs";
 import { withPublicationLock } from "../../src/infrastructure/process/publication-lock.mjs";
 
 test("test checkpoint fingerprints only transitive module dependencies", async () => {
@@ -40,6 +49,64 @@ test("test execution never retries an assertion or an unclassified OS error", as
     }), (error) => error === failure);
     assert.equal(calls, 1);
   }
+});
+
+test("test process concurrency requires both CPU and memory headroom", () => {
+  const gib = 1024 ** 3;
+  assert.equal(boundedTestFileConcurrency({ availableParallelism: 8, freeMemory: 8 * gib }), 2);
+  assert.equal(boundedTestFileConcurrency({ availableParallelism: 3, freeMemory: 8 * gib }), 1);
+  assert.equal(boundedTestFileConcurrency({ availableParallelism: 8, freeMemory: 3 * gib }), 1);
+});
+
+test("parallel admission requires a complete valid isolation declaration", () => {
+  assert.equal(parallelTestExecution({ execution: { parallel: true } }), null);
+  assert.equal(parallelTestExecution({
+    execution: {
+      parallel: true,
+      isolation: {
+        filesystem: "per-child-temp", locks: "per-test-temp", git: "none",
+        ports: "none", browerProfile: "none",
+      },
+    },
+  }), null);
+  assert.equal(parallelTestExecution({
+    execution: {
+      parallel: true,
+      isolation: {
+        filesystem: "none", locks: "per-test-temp", git: "none",
+        ports: "none", browserProfile: "none",
+      },
+    },
+  }), null);
+  assert.deepEqual(parallelTestExecution({
+    execution: {
+      parallel: true,
+      isolation: {
+        filesystem: "per-child-temp", locks: "per-test-temp", git: "none",
+        ports: "none", browserProfile: "none",
+      },
+      shared: ["fixture-a"],
+    },
+  }), { parallel: true, shared: ["fixture-a"] });
+});
+
+test("each test process receives a disposable environment root", async () => {
+  const roots = [];
+  for (let index = 0; index < 2; index += 1) {
+    await runWindowsTestFile("environment.test.mjs", {
+      env: { LOCALAPPDATA: "must-not-be-inherited", TEMP: "must-not-be-inherited" },
+      execute: async (_command, _args, { env }) => {
+        assert.notEqual(env.LOCALAPPDATA, "must-not-be-inherited");
+        assert.equal(env.LOCALAPPDATA, env.TEMP);
+        assert.equal(env.TEMP, env.TMP);
+        assert.ok(path.basename(env.LOCALAPPDATA).length <= 10);
+        await access(env.LOCALAPPDATA);
+        roots.push(env.LOCALAPPDATA);
+      },
+    });
+  }
+  assert.notEqual(roots[0], roots[1]);
+  for (const root of roots) await assert.rejects(access(root), { code: "ENOENT" });
 });
 
 test("test child processes never inherit publication mutation ownership", async () => {
@@ -108,9 +175,45 @@ test("visual matrices run explicitly and exactly once in all, never in the unit 
   }
   const unit = await invoked("unit");
   assert.deepEqual(unit, ["tests/domain/example.test.mjs", "tests/public/message-behavior.test.mjs"]);
-  assert.deepEqual(await invoked("visual"), visual);
+  assert.deepEqual((await invoked("visual")).toSorted(), visual.toSorted());
   const all = await invoked("all");
   for (const file of discovery) assert.equal(all.filter((actual) => actual === file).length, 1, file);
+});
+
+test("sequential and bounded isolated runners execute the same declared file set", async () => {
+  const discovery = [
+    "tests/infrastructure/filesystem/task-git-workspace.test.mjs",
+    "tests/infrastructure/filesystem/release-git-workspace.test.mjs",
+    "tests/infrastructure/filesystem/release-task-net-projection.test.mjs",
+    "tests/public/stream-tabs-controller.test.mjs",
+  ];
+  async function observed(testConcurrency) {
+    const files = [];
+    let active = 0;
+    let maximumActive = 0;
+    await runTestSuite("unit", {
+      checkpointIdentity: "",
+      checkpoint: null,
+      discover: async () => discovery,
+      testConcurrency,
+      execute: async (_command, args) => {
+        const file = args.find((argument) => argument.endsWith(".test.mjs"));
+        files.push(file);
+        active += 1;
+        maximumActive = Math.max(maximumActive, active);
+        await new Promise((resolve) => setTimeout(resolve, 15));
+        active -= 1;
+      },
+    });
+    return { files: files.toSorted(), maximumActive };
+  }
+
+  const sequential = await observed(1);
+  const bounded = await observed(2);
+  assert.deepEqual(sequential.files, discovery.toSorted());
+  assert.deepEqual(bounded.files, sequential.files);
+  assert.equal(sequential.maximumActive, 1);
+  assert.equal(bounded.maximumActive, 2);
 });
 
 test("fingerprints cover locks, declared fixtures, environment and toolchain without unrelated contour input", async () => {
@@ -160,6 +263,20 @@ test("undeclared IO, computed imports and missing browser identity cannot reuse 
     const before = await testFingerprint("test.mjs", options);
     await writeFile(binary, "browser-version-2");
     assert.notEqual(await testFingerprint("test.mjs", options), before);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("fingerprint diagnostics explain misses without exposing input contents", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-fingerprint-reason-"));
+  try {
+    await writeFile(path.join(root, "test.mjs"), "const token = process.env.SECRET; await fetch('https://example.invalid');");
+    const result = await explainTestInputFingerprint("test.mjs", {
+      cwd: root,
+      environment: { SECRET: "sensitive-value" },
+    });
+    assert.equal(result.fingerprint, null);
+    assert.deepEqual(result.missReasons, ["undeclared-global:process", "undeclared-network-fetch"]);
+    assert.equal(JSON.stringify(result).includes("sensitive-value"), false);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
