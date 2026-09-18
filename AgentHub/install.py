@@ -511,6 +511,12 @@ def _installed_vscode_extensions(package: dict, extensions_root: Path) -> list[d
             installed_package = json.loads((candidate / "package.json").read_text(encoding="utf-8"))
             installed_version = str(installed_package["version"])
             numeric_extension_version(installed_version)
+            if (
+                installed_package.get("publisher") != package["publisher"]
+                or installed_package.get("name") != package["name"]
+                or candidate.name != f"{prefix}{installed_version}"
+            ):
+                continue
             try:
                 installed_fingerprint = (candidate / ".agent-hub-source.sha256").read_text(
                     encoding="ascii",
@@ -575,8 +581,8 @@ def vscode_extension_install_plan(
             "profile": profile,
             "action": "current",
             "package": json.loads((newest["target"] / "package.json").read_text(encoding="utf-8")),
-            "provenance": provenance,
-            "sourceFingerprint": fingerprint,
+            "provenance": newest["provenance"],
+            "sourceFingerprint": newest["fingerprint"],
             "installedIdentity": installed_identity,
             "targetName": newest["target"].name,
         }

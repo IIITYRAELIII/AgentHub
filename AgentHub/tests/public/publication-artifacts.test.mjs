@@ -282,6 +282,39 @@ test("prepared extension is applied and reconciled by the real Python installer 
   assert.equal(JSON.parse(await readFile(path.join(f.home, ".vscode/extensions/test.hub-1.0.1/.agent-hub-source.json"), "utf8")).releaseVersion, "2026.9.18");
 });
 
+test("unchanged extension bytes retain installed provenance across publication revisions", async (t) => {
+  const f = await fixture(t);
+  await cp(path.resolve(import.meta.dirname, "../../install.py"), path.join(f.sourceRoot, "install.py"));
+  await save(path.join(f.sourceRoot, "package.json"), JSON.stringify({ version: "2026.9.18" }));
+  const invoke = async (command, args) => (await promisify(execFile)(command, args, { encoding: "utf8", windowsHide: true,
+    env: { ...process.env, HOME: f.home, USERPROFILE: f.home, LOCALAPPDATA: path.join(f.home, "AppData", "Local"), PYTHONUTF8: "1" },
+  })).stdout;
+  let installations = 0;
+  const install = async (step) => {
+    if (step.label !== "Установка расширения VS Code") return;
+    installations += 1;
+    await invoke(step.command, step.args);
+  };
+  const applyRevision = async (revision, runtimeRoot) => {
+    const journal = publicationRunStore({ runtimeRoot });
+    const artifacts = createPublicationArtifactSteps({ sourceRoot: f.sourceRoot, runtimeRoot, home: f.home, journal, run: install, capture: invoke });
+    const identity = { revision, files: ["AgentHub/VSCodeExtension/extension.js"], labels: [] };
+    const steps = await artifacts.steps([{ label: "Установка расширения VS Code" }], identity);
+    identity.labels = steps.map((step) => step.label);
+    await journal.start(identity, steps);
+    await steps[0].execute();
+    await steps[1].execute();
+    await artifacts.verify(identity);
+  };
+
+  await applyRevision("a".repeat(40), f.runtimeRoot);
+  await applyRevision("b".repeat(40), path.join(f.root, "runtime-second"));
+
+  assert.equal(installations, 1, "identical extension bytes must not be installed again");
+  const provenance = JSON.parse(await readFile(path.join(f.home, ".vscode/extensions/test.hub-1.0.0/.agent-hub-source.json"), "utf8"));
+  assert.equal(provenance.sourceRevision, "a".repeat(40));
+});
+
 test("the pinned Wrangler builds a deployable Worker bundle before any remote effect", async (t) => {
   const f = await fixture(t);
   const sourceRoot = path.resolve(import.meta.dirname, "../..");

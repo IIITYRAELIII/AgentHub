@@ -376,9 +376,13 @@ class SecureInstallationTests(unittest.TestCase):
             ):
                 first = install.install_vscode_extension()
                 second = install.install_vscode_extension()
+                next_revision_plan = install.vscode_extension_install_plan(source_revision="b" * 40)
 
             self.assertEqual(first, second)
             self.assertFalse((first.parent / "test.agent-hub-1.0.1").exists())
+            self.assertEqual("current", next_revision_plan["action"])
+            self.assertEqual("a" * 40, next_revision_plan["provenance"]["sourceRevision"])
+            self.assertEqual(f"revision:{'a' * 40}", next_revision_plan["installedIdentity"])
 
     def test_extension_provenance_orders_same_package_sources_and_requires_exact_rollback_cas(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -436,17 +440,29 @@ class SecureInstallationTests(unittest.TestCase):
                 "contributes": {"viewsContainers": {}, "views": {}, "commands": []},
             }
             (source / "package.json").write_text(json.dumps(package), encoding="utf-8")
+            extension = source / "extension.js"
+            extension.write_text("shared source", encoding="utf-8")
             home = Path(temp) / "home"
 
             with (
                 mock.patch.object(install, "ROOT", root),
                 mock.patch("AgentHub.install.Path.home", return_value=home),
+                mock.patch.object(install, "extension_revision_is_ancestor", return_value=True),
             ):
-                production = install.install_vscode_extension(source_revision="b" * 40)
+                production_revision = "a" * 40
+                contour_revision = "c" * 40
+                production = install.install_vscode_extension(source_revision=production_revision)
                 contour = install.install_vscode_extension("test-contour", source_revision="a" * 40)
+                extension.write_text("newer contour source", encoding="utf-8")
+                newer_contour = install.install_vscode_extension("test-contour", source_revision=contour_revision)
+                production_identity = install.installed_vscode_extension_identity("production")
+                contour_identity = install.installed_vscode_extension_identity("test-contour")
 
             self.assertEqual("test.agent-hub-1.0.0", production.name)
             self.assertEqual("test.agent-hub-test-contour-1.0.0", contour.name)
+            self.assertEqual("test.agent-hub-test-contour-1.0.1", newer_contour.name)
+            self.assertEqual(f"revision:{production_revision}", production_identity)
+            self.assertEqual(f"revision:{contour_revision}", contour_identity)
 
     def test_prepared_extension_plan_retries_exact_install_but_rejects_a_newer_baseline(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
