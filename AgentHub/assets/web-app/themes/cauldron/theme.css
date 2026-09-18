@@ -92,8 +92,48 @@ html[data-theme="cauldron"] {
 }
 
 html[data-theme="cauldron"] body { background: var(--bg); }
-html[data-theme="cauldron"] body::before,
-html[data-theme="cauldron"] body::after { content: none; }
+html[data-theme="cauldron"] body::before { content: none; }
+html[data-theme="cauldron"] body::after {
+  content: "";
+  background: url("./plating.png") center / cover no-repeat;
+}
+html[data-background-override="true"][data-background="cauldron"] {
+  --hub-background-color: #090c0e;
+  --hub-background-image: var(--cauldron-image);
+}
+html[data-background-override="true"][data-background="cauldron-assembly"] {
+  --hub-background-color: #090c0e;
+  --hub-background-image: var(--cauldron-assembly-image);
+}
+html[data-background-override="true"][data-background="cauldron-core"] {
+  --hub-background-color: #090c0e;
+  --hub-background-image: var(--cauldron-core-image);
+}
+html[data-background-override="true"][data-background="cauldron-metal"] {
+  --hub-background-color: #090c0e;
+  --hub-background-image: none;
+}
+
+/* Reuse the accepted frame on every page; layout and controls stay shared. */
+html[data-theme="cauldron"] :is(.task-board-sidebar, .journal-shell,
+  .statistics-card, .current-limits-card, .server-card, .server-health-card) {
+  border: 12px solid transparent;
+  border-image: var(--cauldron-panel-frame-asset, url("./panel-frame.svg")) 40 / 22px / 0 stretch;
+  border-radius: 0;
+  background-color: rgb(9 12 14 / 94%);
+}
+html[data-theme="cauldron"] .task-board-column-head {
+  border: 1px solid transparent;
+  border-image: var(--cauldron-tile-frame-asset, url("./tile-frame.svg")) 16 / 8px / 0 stretch;
+  background-color: rgb(9 12 14 / 80%);
+}
+@media (max-width: 700px) {
+  html[data-theme="cauldron"] :is(.task-board-sidebar, .journal-shell,
+    .statistics-card, .current-limits-card, .server-card, .server-health-card) {
+    border-width: 8px;
+    border-image-width: 15px;
+  }
+}
 
 /* Border images keep corners fixed while the existing panel resizers own width.
    No pseudo-elements on Workspace entries: those belong to status effects. */

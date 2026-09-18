@@ -10,5 +10,28 @@
     "panel-frame": "panel-frame.svg",
     "tile-frame": "tile-frame.svg"
   },
-  "backgrounds": [{ "id": "cauldron", "name": "Чёрный металл" }]
+  "backgrounds": [
+    {
+      "id": "cauldron",
+      "name": "Обшивка",
+      "asset": "plating.png",
+      "preload": true
+    },
+    {
+      "id": "cauldron-assembly",
+      "name": "Сборочная камера",
+      "asset": "assembly.png",
+      "preload": true
+    },
+    {
+      "id": "cauldron-core",
+      "name": "Ядро",
+      "asset": "core.png",
+      "preload": true
+    },
+    {
+      "id": "cauldron-metal",
+      "name": "Чёрный металл"
+    }
+  ]
 }
