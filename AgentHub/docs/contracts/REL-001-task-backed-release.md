@@ -1223,6 +1223,18 @@ evidence only: Task/Release Git operations must fail before Git effects and Task
 CAS until an independently owned Git cohort is available. A locally recorded
 delivery or excluded operation cannot authorize production publication.
 
+An ordinary production-data clone has no recording effect policy, so its
+isolation is established in the cloned journal itself (HUB-217). Every cloned
+Workspace takes the contour project as its working directory and has its release
+workflow disabled, because a Stream with an empty working directory inherits the
+Workspace directory before its own project and release startup reconciliation
+addresses registered Workspace roots. Every historical Task Git reference keeps
+its Task, branch, result commit and timestamp, but its repository is remapped to
+an uncreated contour-owned path derived from the original repository key. Task
+cleanup, which deletes branches and Task refs from references even without a
+contour worktree, therefore fails inside the contour instead of reaching a
+production repository. The production journal is only read by the clone.
+
 Complete/Delete confirmation is a projection of the authoritative server cleanup
 preview. Before the confirmed request the client displays every available Task
 branch, managed worktree and HEAD, dirty/changed/untracked paths, result commit,

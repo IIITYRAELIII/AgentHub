@@ -108,6 +108,7 @@ export function testContourPaths(root = defaultTestContourRoot()) {
     configFile: path.join(resolved, CONFIG_FILE),
     sourceFile: path.join(resolved, SOURCE_FILE),
     taskGitDataDirectory: path.join(resolved, "task-git"),
+    detachedGitDirectory: path.join(resolved, "detached-git"),
     projectRoot: path.join(resolved, "project"),
     codexHome: path.join(resolved, "codex-home"),
     fakeCodexExecutable: path.join(resolved, "providers", "fake-codex-app-server.mjs"),
@@ -1412,6 +1413,7 @@ async function cloneProductionDataToTestContourUnlocked({
     destinationDatabaseFile: path.join(paths.dataDir, "journal.sqlite"),
     backupRoot: paths.dataBackupsDirectory,
     projectRoot: paths.projectRoot,
+    detachedGitRoot: paths.detachedGitDirectory,
     model,
     now,
   });
