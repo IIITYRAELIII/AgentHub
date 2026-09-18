@@ -172,7 +172,7 @@ test("mandatory clean result advances before exact five-Task replay without hist
   const primary = path.join(root, "primary");
   await git(root, ["clone", "--no-hardlinks", "--no-checkout", repositoryRoot, primary]);
   await git(primary, ["config", "core.autocrlf", "false"]);
-  await git(primary, ["checkout", "main"]);
+  await git(primary, ["checkout", "--detach", MAIN]);
 
   let devAfterTree = REVIEWED_DEV_AFTER_TREE;
   let integrationCommit = REVIEWED_INTEGRATION;
@@ -219,6 +219,7 @@ test("mandatory clean result advances before exact five-Task replay without hist
   }
   await git(primary, ["update-ref", "refs/heads/dev", integrationCommit]);
   await git(primary, ["update-ref", "refs/heads/main", MAIN]);
+  await git(primary, ["checkout", "main"]);
 
   const proof = await canonicalProof(primary, path.join(root, "task-data"), integrationCommit, devAfterTree);
   const normalizationPaths = proof.ownerWitnesses

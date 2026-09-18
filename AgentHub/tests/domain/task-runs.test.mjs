@@ -539,6 +539,13 @@ test("an observed completion is delivered only after an explicit live view reque
   assert.equal(isRecentDuplicateTaskAnswer(previous, "Новый ответ", { now }), true);
   assert.equal(shouldDeliverObservedCompletion(displayed, "Новый ответ", previous, { now }), false);
   assert.equal(shouldDeliverObservedCompletion(displayed, "Другой ответ", previous, { now }), true);
+
+  const displayedWithProgress = run({
+    displayRequested: true,
+    progressMessageIds: [42],
+    observedResponseChanged: true,
+  });
+  assert.equal(shouldDeliverObservedCompletion(displayedWithProgress, "Новый ответ", previous, { now }), true);
 });
 
 test("a restored task run adopts the current title of the same thread", () => {

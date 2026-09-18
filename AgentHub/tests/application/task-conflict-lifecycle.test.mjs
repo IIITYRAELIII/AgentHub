@@ -41,7 +41,17 @@ async function fixture(t) {
     dataDir: path.join(root, "data"), readPublication: async () => publication,
   });
   const lifecycle = new TaskLifecycleService({ taskBoard, workspaceCatalog, taskGitWorkspaces,
-    releasePreflight: { withAwaitTransition: (_id, op) => op(), prepareAwaitSet: async (options) => { const result = { releaseCandidates: [] }; if (options.commitPrepared) await options.commitPrepared(result); return result; } },
+    releasePreflight: {
+      withAwaitTransition: (_id, op) => op(),
+      validateAwaitAcceptance: async ({ acceptingTask }) => {
+        const current = taskBoard.task(acceptingTask.id);
+        return {
+          planRevision: `plan-${current.revision}`,
+          task: { taskId: current.id, resultCommit: current.gitReferences[0].resultCommit },
+        };
+      },
+      prepareAwaitSet: async (options) => { const result = { releaseCandidates: [] }; if (options.commitPrepared) await options.commitPrepared(result); return result; },
+    },
   });
   async function create(name) {
     const task = store.create({ text: name, bucket: "workspace", workspaceId: workspace.id });
@@ -155,9 +165,10 @@ for (const previouslyTested of [false, true]) test(`agent consolidation preserve
   assert.throws(() => f.store.claim(a.task.id, { workspaceId: f.workspace.id, streamId: "s", provider: "codex",
     threadId: "thread", turnId: "turn", operationId: "reopen" }), /archive/);
   const accepted = await f.status(b.task.id, "awaiting_implementation", "accept-combined");
-  assert.equal(accepted.releaseCandidate.status, "ready", accepted.releaseCandidate.reason);
-  assert.deepEqual(accepted.releaseCandidate.taskIds, [b.task.id]);
-  const candidate = accepted.releaseCandidate.releaseCandidates[0];
+  assert.equal(accepted.releaseCandidate.status, "invalidated", accepted.releaseCandidate.reason);
+  const prepared = await f.lifecycle.releasePreflight.prepareAwaitSet({ workspaceId: f.workspace.id });
+  assert.deepEqual(prepared.taskIds, [b.task.id]);
+  const candidate = prepared.releaseCandidates[0];
   assert.equal(await git(candidate.releaseRoot, "show", "PreRelease:a.txt"), previouslyTested ? "source work revised" : "source work");
   assert.equal(await git(candidate.releaseRoot, "show", "PreRelease:b.txt"), "surviving work");
   const plan = await new TaskReleasePlanService({ taskBoard: f.taskBoard, taskGitWorkspaces: f.taskGitWorkspaces }).plan(f.workspace.id);

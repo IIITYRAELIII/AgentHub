@@ -1214,3 +1214,29 @@ test("Telegram channel intent survives projection ACK and records uncertain then
   assert.equal(acked.channels.telegram.state, "acked");
   assert.deepEqual(await terminal.pending(), []);
 });
+
+test("a silent correction cannot revoke a pending Telegram terminal intent", async (context) => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "agent-hub-terminal-intent-correction-"));
+  context.after(() => rm(dataDir, { recursive: true, force: true }));
+  const terminal = new TerminalTurnCommitService({
+    store: new ProviderTurnTerminalStore({ dataDir }),
+  });
+  const first = await terminal.commit(completion(), {
+    channelIntents: {
+      telegram: {
+        requested: true,
+        run: { provider: "codex", threadId: "thread-1", turnId: "turn-1", chatId: 7 },
+        message: "Final answer",
+      },
+    },
+  });
+
+  const duplicate = await terminal.commit(completion());
+  assert.equal(duplicate.terminal.terminalRevision, 1);
+  assert.equal(duplicate.outbox.channels.telegram.state, "intent");
+
+  const corrected = await terminal.commit(completion({ finalAnswer: "Corrected final answer" }));
+  assert.equal(corrected.terminal.terminalRevision, 2);
+  assert.equal(corrected.outbox.channels.telegram.state, "intent");
+  assert.equal(corrected.outbox.channels.telegram.intent.message, "Corrected final answer");
+});
