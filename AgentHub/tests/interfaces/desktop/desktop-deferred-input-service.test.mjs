@@ -214,6 +214,73 @@ test("Desktop deferred queue can pause and resume one message", async () => {
   assert.deepEqual(calls, [["cancel", item.id], ["schedule", item.id, 0]]);
 });
 
+test("Desktop deferred retry preserves exact steer while queue explicitly authorizes later intake", async () => {
+  for (const [action, expectedConflictKind] of [
+    ["retry", "message-steer"],
+    ["queue", "message-intake"],
+  ]) {
+    const origin = { kind: "interstream", requestId: `request-${action}` };
+    const item = {
+      id: `message-${action}`,
+      input: "exact intent",
+      temporaryFiles: ["stored.png"],
+      conflictKind: "message-steer",
+      clientUserMessageId: `mcp:request-${action}`,
+      steerTargetRunId: "run-original",
+      steerTargetTurnId: "turn-original",
+      messageOrigin: origin,
+      lastErrorCode: "ERR_PROVIDER_STEER_NOT_DELIVERED",
+      lastError: "not delivered",
+      laneReleased: true,
+    };
+    const pendingInputs = new Map([[item.id, item]]);
+    const queuedInputs = new Map();
+    const service = createService(item, { pendingInputs, queuedInputs });
+
+    await service.handle({ id: item.id, action });
+
+    assert.equal(pendingInputs.has(item.id), false);
+    assert.equal(queuedInputs.get(item.id), item);
+    assert.equal(item.conflictKind, expectedConflictKind);
+    assert.equal(item.clientUserMessageId, `mcp:request-${action}`);
+    assert.equal(item.steerTargetRunId, "run-original");
+    assert.equal(item.steerTargetTurnId, "turn-original");
+    assert.deepEqual(item.messageOrigin, origin);
+    assert.deepEqual(item.temporaryFiles, ["stored.png"]);
+    assert.equal(item.lastErrorCode, undefined);
+    assert.equal(item.laneReleased, undefined);
+  }
+});
+
+test("Desktop deferred queue authorization rolls back exact steer intent when persistence fails", async () => {
+  const item = {
+    id: "message-queue-failure",
+    input: "exact intent",
+    temporaryFiles: [],
+    conflictKind: "message-steer",
+    clientUserMessageId: "mcp:request-queue-failure",
+    steerTargetRunId: "run-original",
+    steerTargetTurnId: "turn-original",
+    lastErrorCode: "ERR_PROVIDER_STEER_NOT_DELIVERED",
+    lastError: "not delivered",
+    laneReleased: true,
+  };
+  const original = structuredClone(item);
+  const pendingInputs = new Map([[item.id, item]]);
+  const queuedInputs = new Map();
+  const service = createService(item, {
+    pendingInputs,
+    queuedInputs,
+    saveState: async () => { throw new Error("disk full"); },
+  });
+
+  await assert.rejects(service.handle({ id: item.id, action: "queue" }), /disk full/u);
+
+  assert.equal(pendingInputs.get(item.id), item);
+  assert.equal(queuedInputs.has(item.id), false);
+  assert.deepEqual(item, original);
+});
+
 test("Desktop deferred pause restores the queue item when durable save fails", async () => {
   const item = {
     id: "message-1", input: "later", temporaryFiles: [], lastError: "retry",

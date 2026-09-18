@@ -11,7 +11,6 @@ import { codexThreadSandboxSettings, codexTurnSandboxSettings } from "./codex/co
 import { emptyTokenUsage } from "../domain/token-usage.mjs";
 import { estimateCodexContextBreakdown } from "../domain/context-usage-breakdown.mjs";
 import { markProviderTurnAccepted, markProviderTurnRequested } from "../domain/task-runs.mjs";
-import { isCodexContextProbeTurn } from "../domain/codex-context-probe.mjs";
 import { rememberProviderRunTerminalStatus } from "../domain/provider-run-terminal.mjs";
 
 function requiredFunction(value, name) {
@@ -152,10 +151,7 @@ export class CodexTurnService {
       "saveState", "startTyping", "scheduleObservedRun", "finishProgress", "completeRun",
       "readThread", "developerInstructions",
     ]) requiredFunction(dependencies[name], name);
-    this.#d = {
-      isContextProbeTurn: () => false,
-      ...dependencies,
-    };
+    this.#d = { ...dependencies };
   }
 
   async launch(run, input, temporaryFiles = [], { forceSpeechButton = false } = {}) {
@@ -358,20 +354,6 @@ export class CodexTurnService {
   async #registeredTurnId(target, run) {
     const turnId = String(run?.turnId ?? "").trim();
     if (!turnId) return null;
-    if (isCodexContextProbeTurn(run, { allowTextFallback: true })) return null;
-    if (this.#d.isContextProbeTurn(target.threadId, turnId)) return null;
-    if (String(run?.clientUserMessageId ?? "").trim()) return turnId;
-    const result = await this.#d.readThread(target.threadId, {
-      fresh: true,
-      includeTurns: true,
-      priority: "interactive",
-      turnLimit: 8,
-      turnPageSize: 8,
-    });
-    const thread = result?.thread ?? result;
-    const exact = (Array.isArray(thread?.turns) ? thread.turns : [])
-      .find((turn) => String(turn?.id ?? "").trim() === turnId);
-    if (exact && isCodexContextProbeTurn(exact, { allowTextFallback: true })) return null;
     return turnId;
   }
 
@@ -419,12 +401,7 @@ export class CodexTurnService {
     });
     const thread = result?.thread ?? result;
     const active = (Array.isArray(thread?.turns) ? thread.turns : [])
-      .filter((turn) => ["inProgress", "in_progress", "running"].includes(String(turn?.status ?? "")))
-      .filter((turn) => {
-        const turnId = String(turn?.id ?? "").trim();
-        return !isCodexContextProbeTurn(turn, { allowTextFallback: true })
-          && !this.#d.isContextProbeTurn(target.threadId, turnId);
-      });
+      .filter((turn) => ["inProgress", "in_progress", "running"].includes(String(turn?.status ?? "")));
     if (active.length === 1) {
       const turnId = String(active[0]?.id ?? "").trim();
       return turnId || null;

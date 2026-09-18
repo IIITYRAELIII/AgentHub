@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="300" height="200" viewBox="0 0 300 200" fill="none">
+  <defs>
+    <linearGradient id="ceramic" x1="0" y1="0" x2="120" y2="200" gradientUnits="userSpaceOnUse"><stop stop-color="#ece9df"/><stop offset=".45" stop-color="#a9ada6"/><stop offset="1" stop-color="#d4d1c7"/></linearGradient>
+  </defs>
+  <path d="M26 1H282L299 18V175L276 199H24L1 176V27Z M34 21H271L279 30V165L266 179H34L21 165V34Z" fill="#111719" fill-rule="evenodd" stroke="#535d58"/>
+  <path d="M28 6H103L112 13H275L292 30V171L273 192H30L8 170V30Z M34 21H271L279 30V165L266 179H34L21 165V34Z" fill="url(#ceramic)" fill-rule="evenodd" stroke="#e6e3d8"/>
+  <path d="M35 25H268L275 33V163L264 175H37L25 163V37Z" stroke="#68736b" stroke-width="2"/>
+  <path d="M37 29H265L271 36V161L261 171H39L29 160V39" stroke="#252e2b" stroke-width="2"/>
+  <path d="M13 49V163L35 186H225M44 10H95M132 16H269M286 46V154" stroke="#f0ece1" stroke-opacity=".6"/>
+  <path d="M259 180H278L261 197H242Z" fill="#f56a15" stroke="#ffae65"/>
+  <path d="M258 185H266L259 192H251Z" fill="#141b1a"/>
+</svg>

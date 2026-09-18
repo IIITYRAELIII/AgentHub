@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { execFile } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 
 import { openTaskOperationReconciliationStores } from "../../../src/interfaces/cli/task-operation-reconciliation-runtime.mjs";
 import { TaskOperationReconciliationService } from "../../../src/application/task-operation-reconciliation-service.mjs";
@@ -53,7 +56,8 @@ test("operator reconciliation store composition closes partial stores and preser
   assert.equal(catalogClosed, 1);
 });
 
-test("real SQLite failed Test CAS terminalizes only its original unknown receipt", async (t) => {
+for (const viaCli of [false, true]) {
+test(`real SQLite failed Test CAS terminalizes only its original unknown receipt via ${viaCli ? "CLI" : "service"}`, async (t) => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-operation-cas-reconcile-"));
   const projectRoot = path.join(directory, "repository");
   const databaseFile = path.join(directory, "journal.sqlite");
@@ -133,14 +137,52 @@ test("real SQLite failed Test CAS terminalizes only its original unknown receipt
     },
   });
 
-  const result = await service.reconcileUnknownWorkflow({
+  const reconcileOptions = {
     workspaceId: workspace.id,
     taskId: task.id,
     operationRequestId: operationId,
     projectRoot,
     expectedTaskRevision: task.revision,
     expectedWorkflowStatus: "in_progress",
-  });
+  };
+  let result;
+  if (viaCli) {
+    const unrelatedRequest = "unrelated-unknown-operation";
+    await workspaceCatalogStore.runMutation(() => workspaceCatalogStore.beginMcpOperation({
+      requestId: unrelatedRequest,
+      workspaceId: workspace.id,
+      streamId: stream.id,
+      provider: "codex",
+      threadId: "thread-cas-recovery",
+      toolName: "hub_task_status_update",
+      argumentsHash: "f".repeat(64),
+    }));
+    await workspaceCatalogStore.runMutation(() => workspaceCatalogStore.markMcpOperationUnknown(
+      unrelatedRequest, new Error("unrelated outcome remains unknown"),
+    ));
+    const configFile = path.join(directory, "config.json");
+    await writeFile(configFile, JSON.stringify({
+      projectRoot, dataDir: directory, components: { telegram: false },
+    }), "utf8");
+    const { stdout } = await promisify(execFile)(process.execPath, [
+      fileURLToPath(new URL("../../../task-operation-reconcile.mjs", import.meta.url)),
+      "--workspace", workspace.id,
+      "--task", task.id,
+      "--operation", operationId,
+      "--repository", projectRoot,
+      "--expected-task-revision", String(task.revision),
+      "--expected-workflow-status", "in_progress",
+    ], {
+      env: { ...process.env, AGENT_HUB_CONFIG: configFile, CODEX_PROJECT_ROOT: projectRoot, AI_PROVIDER: "codex" },
+      windowsHide: true,
+      timeout: 10_000,
+      encoding: "utf8",
+    });
+    result = JSON.parse(stdout);
+    assert.equal(workspaceCatalogStore.mcpOperation(unrelatedRequest).receiptState, "unknown");
+  } else {
+    result = await service.reconcileUnknownWorkflow(reconcileOptions);
+  }
 
   assert.equal(result.outcome, "failed");
   assert.equal(result.reconciliation.durableState, "failed_transition");
@@ -154,3 +196,4 @@ test("real SQLite failed Test CAS terminalizes only its original unknown receipt
   assert.equal(taskBoardStore.lifecycleTransition(operationId).phase, "failed");
   assert.equal(taskBoardStore.lifecycleOutcome(operationId), null);
 });
+}

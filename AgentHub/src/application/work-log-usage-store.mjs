@@ -4,7 +4,7 @@ import {
   IMAGE_GENERATION_ESTIMATE_CREDITS,
   looksLikeImageGenerationPrompt,
 } from "../domain/codex-usage-estimate.mjs";
-import { normalizeServiceTier } from "../domain/token-usage.mjs";
+import { normalizeServiceTier, normalizeTokenUsage } from "../domain/token-usage.mjs";
 import { journalProjectionVersion, replaceJournalProjectionFromMarkdown } from "./journal-projection-service.mjs";
 import { buildLazyJournalPayload } from "./journal-projection-data.mjs";
 import {
@@ -24,9 +24,42 @@ import {
   WORK_LOG_ACCOUNT_USAGE_PROJECTION_VERSION,
   workLogTurnKey,
 } from "./work-log-usage-projection.mjs";
-import { usageSyncSnapshotFromLedger } from "../domain/work-log-usage-sync.mjs";
+import {
+  usageSyncEventFromLedgerRecord,
+  usageSyncSnapshotFromLedger,
+} from "../domain/work-log-usage-sync.mjs";
 import { normalizeAuthObservation } from "../domain/usage-facts.mjs";
 import { ledgerRecordFingerprint } from "../domain/ledger-record-fingerprint.mjs";
+
+function usageProjectionBody(value) {
+  if (!value) return null;
+  return {
+    schemaVersion: Number(value.schemaVersion),
+    type: String(value.type ?? ""),
+    eventId: String(value.eventId ?? ""),
+    provider: String(value.provider ?? "").trim().toLowerCase(),
+    threadKey: String(value.threadKey ?? ""),
+    taskKey: String(value.taskKey ?? ""),
+    startedAt: String(value.startedAt ?? ""),
+    completedAt: String(value.completedAt ?? ""),
+    usage: normalizeTokenUsage(value.usage),
+    usageReported: value.usageReported === true,
+    model: String(value.model ?? "").trim().toLowerCase(),
+    serviceTier: normalizeServiceTier(value.serviceTier),
+    estimatedCredits: Number(value.estimatedCredits) || 0,
+    estimateKind: String(value.estimateKind ?? ""),
+    imageGenerationCount: Math.max(0, Math.floor(Number(value.imageGenerationCount) || 0)),
+    contextProbe: value.contextProbe === true,
+  };
+}
+
+function usageProjectionMatches(actual, expected) {
+  if (JSON.stringify(usageProjectionBody(actual)) !== JSON.stringify(usageProjectionBody(expected))) return false;
+  const actualSamples = new Set((Array.isArray(actual?.limitSamples) ? actual.limitSamples : [])
+    .map((sample) => JSON.stringify(sample)));
+  return (Array.isArray(expected?.limitSamples) ? expected.limitSamples : [])
+    .every((sample) => actualSamples.has(JSON.stringify(sample)));
+}
 
 export function createWorkLogUsageStore({
   repositoryFactory,
@@ -320,6 +353,63 @@ export class WorkLogUsageStore {
       async () => structuredClone(await this.#repository.getRecord({ provider, threadId, turnId })),
       { load: false, pointRead: true },
     );
+  }
+
+  async ensureTurnUsageFact(identity) {
+    if (!this.#usageSyncStore?.importSnapshot) return { supported: false, added: 0, updated: 0 };
+    const record = await this.getTurn(identity);
+    if (!record) return { supported: true, missing: true, added: 0, updated: 0 };
+    const fact = usageSyncEventFromLedgerRecord(record, {
+      deviceId: this.#usageSyncDeviceId,
+      defaultRuntimeHomeIds: this.#usageSyncRuntimeHomeIds,
+    });
+    if (!fact) return { supported: true, missing: true, added: 0, updated: 0 };
+    if (typeof this.#usageSyncStore.ensureTurnFact === "function") {
+      const result = await this.#usageSyncStore.ensureTurnFact(fact);
+      return { supported: true, missing: false, ...result };
+    }
+    const snapshot = usageSyncSnapshotFromLedger({ [workLogTurnKey(record)]: record }, {
+      deviceId: this.#usageSyncDeviceId,
+      deviceLabel: this.#usageSyncDeviceLabel,
+      defaultRuntimeHomeIds: this.#usageSyncRuntimeHomeIds,
+    });
+    const result = await this.#usageSyncStore.importSnapshot(snapshot);
+    return { supported: true, missing: false, ...result };
+  }
+
+  async turnProjectionStatus(identity) {
+    if (typeof this.#repository.turnProjectionStatus !== "function") return null;
+    const status = await this.#repository.turnProjectionStatus(identity);
+    const sourceRevision = Number(status?.projectionSource?.revision);
+    const recordRevision = Number(status?.recordRevision);
+    const roots = Array.isArray(status?.projectionSource?.projectRoots)
+      ? status.projectionSource.projectRoots : [];
+    const covered = status?.record && (
+      !roots.some(Boolean)
+      || roots.some((root) => sameProjectRoot(root, status.record.projectRoot))
+    );
+    const expectedUsageFact = status?.record ? usageSyncEventFromLedgerRecord(status.record, {
+      deviceId: this.#usageSyncDeviceId,
+      defaultRuntimeHomeIds: this.#usageSyncRuntimeHomeIds,
+    }) : null;
+    const recordCompletedAtMs = Date.parse(status?.record?.completedAt ?? "");
+    const exactIndex = status?.indexed === true
+      && Number.isFinite(recordCompletedAtMs)
+      && status?.index?.completedAtMs === recordCompletedAtMs;
+    return {
+      ...status,
+      usageFactMatches: usageProjectionMatches(status?.usageFact, expectedUsageFact),
+      indexFresh: exactIndex,
+      current: Boolean(
+        status?.record
+        && exactIndex
+        && usageProjectionMatches(status?.usageFact, expectedUsageFact)
+        && covered
+        && Number.isFinite(sourceRevision)
+        && Number.isFinite(recordRevision)
+        && sourceRevision >= recordRevision
+      ),
+    };
   }
 
   threadTurns(identities = [], { limit = 20 } = {}) {
@@ -950,7 +1040,6 @@ export class WorkLogUsageStore {
     estimatedCredits,
     estimateKind,
     imageGenerationCount,
-    contextProbe,
     model,
     serviceTier,
     taskThreadId,
@@ -1007,7 +1096,6 @@ export class WorkLogUsageStore {
         estimatedCredits,
         estimateKind,
         imageGenerationCount,
-        contextProbe,
         model,
         serviceTier,
         taskThreadId,
@@ -1085,7 +1173,6 @@ export class WorkLogUsageStore {
     estimatedCredits,
     estimateKind,
     imageGenerationCount,
-    contextProbe,
     model,
     serviceTier,
     taskThreadId,
@@ -1133,7 +1220,6 @@ export class WorkLogUsageStore {
           estimatedCredits,
           estimateKind,
           imageGenerationCount,
-          contextProbe,
           model,
           serviceTier,
           taskThreadId,
@@ -1196,7 +1282,6 @@ export class WorkLogUsageStore {
         estimatedCredits,
         estimateKind,
         imageGenerationCount,
-        contextProbe,
         model,
         serviceTier,
         taskThreadId,

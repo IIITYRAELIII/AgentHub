@@ -10,9 +10,6 @@ import {
 } from "../../application/task-history.mjs";
 import { TASK_EXECUTION_OWNERS } from "../../domain/task-execution-owner.mjs";
 import {
-  isCodexContextProbeTurn,
-} from "../../domain/codex-context-probe.mjs";
-import {
   codexAssistantResponseProjection,
   visibleCodexAssistantText,
 } from "../../domain/codex-response-annotation.mjs";
@@ -1137,60 +1134,6 @@ function codexCompletedAtMsByTurnId(finalMessages, lastSeenAtByTurnId) {
     .map((turnId) => [turnId, timestamps.get(turnId)]));
 }
 
-function withoutCodexContextProbeTurns(activity) {
-  const candidateTurnIds = new Set([
-    ...Object.keys(activity.userMessages ?? {}),
-    ...Object.keys(activity.latestMessages ?? {}),
-    ...Object.keys(activity.finalMessages ?? {}),
-  ]);
-  const hidden = new Set([...candidateTurnIds].filter((turnId) => (
-    isCodexContextProbeTurn({
-      userMessages: activity.userMessages?.[turnId] ?? [],
-      finalAnswer: activity.finalMessages?.[turnId] ?? activity.latestMessages?.[turnId] ?? "",
-    })
-  )));
-  if (!hidden.size) return activity;
-  const withoutHiddenKeys = (value) => Object.fromEntries(
-    Object.entries(value ?? {}).filter(([turnId]) => !hidden.has(turnId)),
-  );
-  const activeTurnIds = (activity.activeTurnIds ?? []).filter((turnId) => !hidden.has(turnId));
-  const activeVscodeTurnIds = (activity.activeVscodeTurnIds ?? [])
-    .filter((turnId) => !hidden.has(turnId));
-  const knownTurnIds = [
-    ...Object.keys(activity.userMessages ?? {}),
-    ...Object.keys(activity.latestMessages ?? {}),
-    ...Object.keys(activity.finalMessages ?? {}),
-  ].filter((turnId) => !hidden.has(turnId));
-  return {
-    ...activity,
-    running: activeTurnIds.length > 0,
-    activeTurnIds,
-    activeVscodeTurnIds,
-    internalTurnIds: [...new Set([...(activity.internalTurnIds ?? []), ...hidden])],
-    activityAtMsByTurnId: withoutHiddenKeys(activity.activityAtMsByTurnId),
-    startedAtMsByTurnId: withoutHiddenKeys(activity.startedAtMsByTurnId),
-    completedAtMsByTurnId: withoutHiddenKeys(activity.completedAtMsByTurnId),
-    latestTurnId: hidden.has(String(activity.latestTurnId ?? "")) ? knownTurnIds.at(-1) ?? null : activity.latestTurnId,
-    latestMessages: withoutHiddenKeys(activity.latestMessages),
-    finalMessages: withoutHiddenKeys(activity.finalMessages),
-    ...(activity.responseAnnotationReferences
-      ? { responseAnnotationReferences: withoutHiddenKeys(activity.responseAnnotationReferences) }
-      : {}),
-    userMessages: withoutHiddenKeys(activity.userMessages),
-    generatedImageSources: withoutHiddenKeys(activity.generatedImageSources),
-    ...(activity.activityGroups
-      ? { activityGroups: withoutHiddenKeys(activity.activityGroups) }
-      : {}),
-    ...(activity.userMessageSnapshotAuthorityByTurnId
-      ? {
-        userMessageSnapshotAuthorityByTurnId: withoutHiddenKeys(
-          activity.userMessageSnapshotAuthorityByTurnId,
-        ),
-      }
-      : {}),
-    unscopedLatestMessage: activity.unscopedLatestMessage,
-  };
-}
 
 function withoutStalePromptlessTurns(activity, userMessages, latestMessages, nowMs) {
   const messages = userMessages instanceof Map ? userMessages : new Map();
@@ -1272,7 +1215,7 @@ export function parseCodexRolloutActivity(text, options = {}) {
     }
   }
   const snapshotAuthority = codexUserSnapshotAuthority(metadata, { sourceComplete: true });
-  return withoutCodexContextProbeTurns({
+  return ({
     ...snapshotAuthority,
     ...codexActivity(activeTurnIds, lastSeenAtByTurnId, {
       ...options,
@@ -1320,7 +1263,7 @@ export async function readCodexRolloutActivityOnCurrentThread(
   const normalized = String(rolloutPath ?? "").trim();
   const shouldPinCache = () => pinCache === true || pinCacheState?.requested === true;
   if (!normalized) {
-    return withoutCodexContextProbeTurns({
+    return ({
       running: false,
       activeTurnIds: [],
       activeVscodeTurnIds: [],
@@ -1371,7 +1314,7 @@ export async function readCodexRolloutActivityOnCurrentThread(
   }
   if (nowMs - info.mtimeMs > freshnessMs) {
     const cached = cachedActivity(normalized, shouldPinCache());
-    return withoutCodexContextProbeTurns({
+    return ({
       running: false,
       activeTurnIds: [],
       activeVscodeTurnIds: [],
@@ -1415,7 +1358,7 @@ export async function readCodexRolloutActivityOnCurrentThread(
           startedAtMsByTurnId: new Map(cached.startedAtMsByTurnId ?? []),
         },
       );
-    return withoutCodexContextProbeTurns({
+    return ({
       ...withoutStalePromptlessTurns(
         activity,
         new Map(cached.userMessages ?? []),
@@ -1744,7 +1687,7 @@ export async function readCodexRolloutActivityOnCurrentThread(
     discardUntilNewline,
     suffix: await rolloutSuffix(normalized, info.size),
   }, shouldPinCache());
-  return withoutCodexContextProbeTurns({
+  return ({
     ...withoutStalePromptlessTurns(
       activity,
       metadata.userMessages,

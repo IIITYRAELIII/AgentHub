@@ -66,12 +66,12 @@ import {
 } from "./test-contour-operation-state.mjs";
 
 export const TEST_CONTOUR_SPARK_MODEL = "gpt-5.3-codex-spark";
-export const TEST_CONTOUR_TERRA_MODEL = "gpt-5.6-terra";
+export const TEST_CONTOUR_LUNA_MODEL = "gpt-5.6-luna";
 export const TEST_CONTOUR_FAKE_MODEL = "fake-codex";
 export const TEST_CONTOUR_MODEL = TEST_CONTOUR_FAKE_MODEL;
 export const TEST_CONTOUR_MODELS = Object.freeze([
   Object.freeze({ value: TEST_CONTOUR_SPARK_MODEL, label: "GPT-5.3-Codex-Spark" }),
-  Object.freeze({ value: TEST_CONTOUR_TERRA_MODEL, label: "GPT-5.6-Terra" }),
+  Object.freeze({ value: TEST_CONTOUR_LUNA_MODEL, label: "GPT-5.6-Luna" }),
   Object.freeze({ value: TEST_CONTOUR_FAKE_MODEL, label: "Fake Codex · Принято" }),
 ]);
 export const TEST_CONTOUR_COMPONENT = "testContour";
@@ -108,6 +108,7 @@ export function testContourPaths(root = defaultTestContourRoot()) {
     configFile: path.join(resolved, CONFIG_FILE),
     sourceFile: path.join(resolved, SOURCE_FILE),
     taskGitDataDirectory: path.join(resolved, "task-git"),
+    detachedGitDirectory: path.join(resolved, "detached-git"),
     projectRoot: path.join(resolved, "project"),
     codexHome: path.join(resolved, "codex-home"),
     fakeCodexExecutable: path.join(resolved, "providers", "fake-codex-app-server.mjs"),
@@ -1412,6 +1413,7 @@ async function cloneProductionDataToTestContourUnlocked({
     destinationDatabaseFile: path.join(paths.dataDir, "journal.sqlite"),
     backupRoot: paths.dataBackupsDirectory,
     projectRoot: paths.projectRoot,
+    detachedGitRoot: paths.detachedGitDirectory,
     model,
     now,
   });

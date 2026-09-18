@@ -141,13 +141,18 @@ export function createPublicationArtifactSteps({
     const artifact = await read(identity, "extension");
     if (!artifact) throw new Error("Prepared extension artifact is missing");
     const sourceFiles = (await artifactFiles(path.join(payload(identity, "extension"), "VSCodeExtension")))
-      .filter((entry) => !["package.json", "extension-profile.json"].includes(entry.path));
-    for (const { profile, package: pkg } of artifact.result.profiles) {
-      const target = path.join(home, ".vscode", "extensions", `${pkg.publisher}.${pkg.name}-${pkg.version}`);
+      .filter((entry) => !["package.json", "extension-profile.json", ".agent-hub-source.sha256", ".agent-hub-source.json"].includes(entry.path));
+    for (const { profile, plan } of artifact.result.profiles) {
+      const pkg = plan.package;
+      const target = path.join(home, ".vscode", "extensions", plan.targetName);
       const installed = await json(path.join(target, "package.json")).catch(absent);
       if (!installed || JSON.stringify(installed) !== JSON.stringify(pkg)) return false;
-      const files = (await artifactFiles(target)).filter((entry) => !["package.json", "extension-profile.json"].includes(entry.path));
+      const files = (await artifactFiles(target))
+        .filter((entry) => !["package.json", "extension-profile.json", ".agent-hub-source.sha256", ".agent-hub-source.json"].includes(entry.path));
       if (JSON.stringify(files) !== JSON.stringify(sourceFiles)) return false;
+      const fingerprint = await readFile(path.join(target, ".agent-hub-source.sha256"), "ascii").catch(absent);
+      const provenance = await json(path.join(target, ".agent-hub-source.json")).catch(absent);
+      if (fingerprint?.trim() !== plan.sourceFingerprint || JSON.stringify(provenance) !== JSON.stringify(plan.provenance)) return false;
       const installedProfile = await json(path.join(target, "extension-profile.json")).catch(absent);
       if (profile === "test-contour" ? installedProfile?.profile !== profile : installedProfile !== null) return false;
     }
@@ -207,14 +212,28 @@ export function createPublicationArtifactSteps({
         });
         const config = await json(path.join(runtimeRoot, "config.json")).catch(absent);
         const profiles = ["production", ...(config?.components?.testContour === true ? ["test-contour"] : [])];
-        const script = "import runpy,json,sys; m=runpy.run_path(sys.argv[1]); p=json.loads((m['ROOT']/'VSCodeExtension'/'package.json').read_text(encoding='utf-8')); print(json.dumps([{'profile': x, 'package': m['vscode_extension_package'](p,x)} for x in sys.argv[2:]],ensure_ascii=False))";
-        const packages = JSON.parse(await capture(python, ["-X", "utf8", "-c", script, path.join(output, "install.py"), ...profiles]));
-        for (const { package: pkg } of packages) {
-          if (![pkg.publisher, pkg.name, pkg.version].every((value) => typeof value === "string" && /^[\w.-]+$/.test(value) && !value.includes(".."))) {
+        const extensionsRoot = path.join(home, ".vscode", "extensions");
+        const script = `import json, pathlib, runpy, sys
+m = runpy.run_path(sys.argv[1])
+revision = sys.argv[2]
+extensions_root = pathlib.Path(sys.argv[3])
+values = []
+for profile in sys.argv[4:]:
+    baseline = m["installed_vscode_extension_identity"](profile, extensions_root=extensions_root)
+    expected = baseline if profile == "test-contour" else None
+    plan = m["vscode_extension_install_plan"](profile, source_revision=revision, expected_installed_identity=expected, extensions_root=extensions_root)
+    values.append({"profile": profile, "plan": plan})
+print(json.dumps(values, ensure_ascii=False))`;
+        const plans = JSON.parse(await capture(python, ["-X", "utf8", "-c", script,
+          path.join(sourceRoot, "install.py"), identity.revision, extensionsRoot, ...profiles]));
+        for (const { plan } of plans) {
+          const pkg = plan?.package;
+          if (![pkg?.publisher, pkg?.name, pkg?.version, plan?.targetName].every((value) =>
+            typeof value === "string" && /^[\w.-]+$/.test(value) && !value.includes(".."))) {
             throw new Error("Invalid prepared extension identity");
           }
         }
-        return { profiles: packages };
+        return { profiles: plans };
       });
     }
   }
@@ -300,10 +319,10 @@ export function createPublicationArtifactSteps({
           result.push({ ...step, reusable: false, execute: () => effect(identity, step.label,
             () => extensionInstalled(identity), async () => {
               const artifact = await read(identity, "extension");
-              for (const { profile } of artifact.result.profiles) {
+              for (const { profile, plan } of artifact.result.profiles) {
                 await execute({ ...step, command: python, cwd: sourceRoot, args: ["-X", "utf8", "-c",
-                  "import runpy,sys; runpy.run_path(sys.argv[1])['install_vscode_extension'](sys.argv[2])",
-                  path.join(payload(identity, "extension"), "install.py"), profile] });
+                  "import json,runpy,sys; m=runpy.run_path(sys.argv[1]); p=json.loads(sys.argv[4]); m['install_vscode_extension'](sys.argv[2],source_revision=sys.argv[3],release_version=p['provenance']['releaseVersion'],expected_installed_identity=p['installedIdentity'],prepared_plan=p)",
+                  path.join(payload(identity, "extension"), "install.py"), profile, identity.revision, JSON.stringify(plan)] });
               }
             }) });
         } else if (step.label === "Активация runtime-релиза") {

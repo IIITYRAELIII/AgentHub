@@ -248,7 +248,7 @@ test("selected external task is observed automatically only while its turn is ac
       prompt: "Ответь строго: AGENT_HUB_CONTEXT_PROBE_OK_V1",
       clientUserMessageId: "agent-hub-context-probe:test",
     },
-  }), false);
+  }), true);
   assert.equal(shouldAutoObserveTask({
     task,
     snapshot: {

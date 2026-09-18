@@ -46,7 +46,14 @@ async function fixture(t) {
       if (state.failWorker) { state.failWorker = false; throw new Error("lost Worker reply"); }
     }
     if (step.label === "Установка расширения VS Code") {
-      await cp(path.join(path.dirname(step.args.at(-2)), "VSCodeExtension"), path.join(home, ".vscode", "extensions", "test.hub-1.0.0"), { recursive: true });
+      const plan = JSON.parse(step.args.at(-1));
+      const source = path.join(path.dirname(step.args[4]), "VSCodeExtension");
+      const target = path.join(home, ".vscode", "extensions", plan.targetName);
+      await cp(source, target, { recursive: true });
+      await save(path.join(target, "package.json"), `${JSON.stringify(plan.package, null, 2)}\n`);
+      await save(path.join(target, ".agent-hub-source.sha256"), `${plan.sourceFingerprint}\n`);
+      await save(path.join(target, ".agent-hub-source.json"), `${JSON.stringify(plan.provenance, null, 2)}\n`);
+      if (step.args[5] === "test-contour") await save(path.join(target, "extension-profile.json"), `${JSON.stringify({ profile: "test-contour" }, null, 2)}\n`);
       if (state.failExtension) { state.failExtension = false; throw new Error("lost extension reply"); }
     }
     if (step.label === "Активация runtime-релиза") await save(path.join(runtimeRoot, "active.json"), JSON.stringify({ release: state.release }));
@@ -57,7 +64,12 @@ async function fixture(t) {
       capture: async (_command, args) => {
         if (args.includes("deployments")) return JSON.stringify(state.remoteTag ? [{ id: "deployment", created_on: "2026-09-16", versions: [{ version_id: "version", percentage: 100 }] }] : []);
         if (args.includes("versions")) return JSON.stringify({ id: "version", annotations: { "workers/tag": state.remoteTag } });
-        return JSON.stringify([{ profile: "production", package: pkg }]);
+        const revision = args.find((value) => /^[a-f0-9]{40}$/u.test(value)) ?? "a".repeat(40);
+        return JSON.stringify([{ profile: "production", plan: {
+          profile: "production", action: "install", package: pkg,
+          provenance: { schemaVersion: 1, releaseVersion: pkg.version, sourceRevision: revision, sourceFingerprint: "f".repeat(64) },
+          sourceFingerprint: "f".repeat(64), installedIdentity: "none", targetName: "test.hub-1.0.0",
+        } }]);
       },
       loadWorker: async (file) => {
         if (file === "build-assets.mjs") return { buildWorkerAssets: async ({ output, mobileRoot }) => {
@@ -241,7 +253,10 @@ test("checkpoint reuse checks the actual result before skipping a saved stage", 
 test("prepared extension is applied and reconciled by the real Python installer in an isolated home", async (t) => {
   const f = await fixture(t);
   await cp(path.resolve(import.meta.dirname, "../../install.py"), path.join(f.sourceRoot, "install.py"));
-  const options = f.create();
+  await save(path.join(f.sourceRoot, "package.json"), JSON.stringify({ version: "2026.9.18" }));
+  const legacy = path.join(f.home, ".vscode/extensions/test.hub-1.0.0");
+  await save(path.join(legacy, "package.json"), JSON.stringify({ publisher: "test", name: "hub", version: "1.0.0" }));
+  await save(path.join(legacy, "extension.js"), "legacy extension");
   const invoke = async (command, args) => (await promisify(execFile)(command, args, { encoding: "utf8", windowsHide: true,
     env: { ...process.env, HOME: f.home, USERPROFILE: f.home, LOCALAPPDATA: path.join(f.home, "AppData", "Local"), PYTHONUTF8: "1" },
   })).stdout;
@@ -253,16 +268,51 @@ test("prepared extension is applied and reconciled by the real Python installer 
       throw new Error("installer reply lost after actual swap");
     }
   };
-  const create = () => {
-    const journal = publicationRunStore({ runtimeRoot: f.runtimeRoot });
-    const artifacts = createPublicationArtifactSteps({ sourceRoot: f.sourceRoot, runtimeRoot: f.runtimeRoot, home: f.home, journal, run, capture: invoke });
-    return { ...options, journal, run, diff: async () => ["AgentHub/VSCodeExtension/extension.js"],
-      prepareArtifactSteps: artifacts.steps, verifyArtifacts: artifacts.verify };
-  };
-  await assert.rejects(publishChanged(["--full-tests"], create()), /installer reply lost/);
-  await publishChanged(["--resume"], create());
+  const journal = publicationRunStore({ runtimeRoot: f.runtimeRoot });
+  const artifacts = createPublicationArtifactSteps({ sourceRoot: f.sourceRoot, runtimeRoot: f.runtimeRoot, home: f.home, journal, run, capture: invoke });
+  const identity = { revision: "a".repeat(40), files: ["AgentHub/VSCodeExtension/extension.js"], labels: [] };
+  const steps = await artifacts.steps([{ label: "Установка расширения VS Code" }], identity);
+  identity.labels = steps.map((step) => step.label);
+  await journal.start(identity, steps);
+  await steps[0].execute();
+  await assert.rejects(steps[1].execute(), /installer reply lost/);
+  await steps[1].execute();
   assert.equal(installations, 1);
-  assert.equal(await readFile(path.join(f.home, ".vscode/extensions/test.hub-1.0.0/extension.js"), "utf8"), "prepared extension");
+  assert.equal(await readFile(path.join(f.home, ".vscode/extensions/test.hub-1.0.1/extension.js"), "utf8"), "prepared extension");
+  assert.equal(JSON.parse(await readFile(path.join(f.home, ".vscode/extensions/test.hub-1.0.1/.agent-hub-source.json"), "utf8")).releaseVersion, "2026.9.18");
+});
+
+test("unchanged extension bytes retain installed provenance across publication revisions", async (t) => {
+  const f = await fixture(t);
+  await cp(path.resolve(import.meta.dirname, "../../install.py"), path.join(f.sourceRoot, "install.py"));
+  await save(path.join(f.sourceRoot, "package.json"), JSON.stringify({ version: "2026.9.18" }));
+  const invoke = async (command, args) => (await promisify(execFile)(command, args, { encoding: "utf8", windowsHide: true,
+    env: { ...process.env, HOME: f.home, USERPROFILE: f.home, LOCALAPPDATA: path.join(f.home, "AppData", "Local"), PYTHONUTF8: "1" },
+  })).stdout;
+  let installations = 0;
+  const install = async (step) => {
+    if (step.label !== "Установка расширения VS Code") return;
+    installations += 1;
+    await invoke(step.command, step.args);
+  };
+  const applyRevision = async (revision, runtimeRoot) => {
+    const journal = publicationRunStore({ runtimeRoot });
+    const artifacts = createPublicationArtifactSteps({ sourceRoot: f.sourceRoot, runtimeRoot, home: f.home, journal, run: install, capture: invoke });
+    const identity = { revision, files: ["AgentHub/VSCodeExtension/extension.js"], labels: [] };
+    const steps = await artifacts.steps([{ label: "Установка расширения VS Code" }], identity);
+    identity.labels = steps.map((step) => step.label);
+    await journal.start(identity, steps);
+    await steps[0].execute();
+    await steps[1].execute();
+    await artifacts.verify(identity);
+  };
+
+  await applyRevision("a".repeat(40), f.runtimeRoot);
+  await applyRevision("b".repeat(40), path.join(f.root, "runtime-second"));
+
+  assert.equal(installations, 1, "identical extension bytes must not be installed again");
+  const provenance = JSON.parse(await readFile(path.join(f.home, ".vscode/extensions/test.hub-1.0.0/.agent-hub-source.json"), "utf8"));
+  assert.equal(provenance.sourceRevision, "a".repeat(40));
 });
 
 test("the pinned Wrangler builds a deployable Worker bundle before any remote effect", async (t) => {

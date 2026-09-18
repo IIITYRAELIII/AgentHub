@@ -278,7 +278,7 @@ for (const rejectReleaseSave of [false, true]) test(
         return { accepted: true, compactionId: "compact-1" };
       },
       probeContext() {}, rotate() {}, rotateCompacted() {}, discardCompactionTransfer() {},
-      waitForContextProbeIdle: async () => true,
+      waitForTurnIdle: async () => true,
       compactions: { get: () => null, waitForSettlement: () => settlement, annotate() {} },
     },
     latestContextUsage: () => ({ usedTokens: 80, modelContextWindow: 100 }),

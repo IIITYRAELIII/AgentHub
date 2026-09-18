@@ -85,10 +85,8 @@ import {
   mergeActiveTaskHistory,
   mergeCompletedTaskHistory,
 } from "../../../src/application/task-history.mjs";
-import {
-  CODEX_CONTEXT_PROBE_PROMPT,
-  CODEX_CONTEXT_PROBE_RESPONSE,
-} from "../../../src/domain/codex-context-probe.mjs";
+const CODEX_CONTEXT_PROBE_PROMPT = "Ответь строго: AGENT_HUB_CONTEXT_PROBE_OK_V1";
+const CODEX_CONTEXT_PROBE_RESPONSE = "AGENT_HUB_CONTEXT_PROBE_OK_V1";
 import {
   createInterstreamMessage,
   interstreamAuditContentHash,
@@ -781,7 +779,7 @@ test("desktop task history resolves selection and merges the active run", async 
   assert.match(result.version, /^[A-Za-z0-9_-]{22}$/u);
 });
 
-test("durable probe repair supersedes a warm ordinary cache and accepts late user identity", async () => {
+test("durable history retains legacy marker metadata and late user identity", async () => {
   const turn = { id: "probe-repair", prompt: CODEX_CONTEXT_PROBE_PROMPT, answer: "Ход завершён.", completed: true, contextProbe: false, messages: [] };
   const { desktopTaskHistory, state } = fixture({ run: null, history: [turn] });
   const initial = await desktopTaskHistory({ includeActive: false, limit: 10 });
@@ -789,13 +787,13 @@ test("durable probe repair supersedes a warm ordinary cache and accepts late use
   await new Promise((resolve) => setImmediate(resolve));
   state.history = [{ ...turn, operationKind: "probe", contextProbe: true }];
   const repaired = await desktopTaskHistory({ includeActive: false, limit: 10 });
-  assert.deepEqual(repaired.items, []);
+  assert.deepEqual(repaired.items.map((item) => item.id), [turn.id]);
   state.history = [{ ...turn, operationKind: "user-turn", clientUserMessageId: "ordinary-command" }];
   const ordinary = await desktopTaskHistory({ includeActive: false, limit: 10 });
   assert.deepEqual(ordinary.items.map((item) => item.id), [turn.id]);
 });
 
-test("desktop task history removes an already persisted context probe turn", async () => {
+test("desktop task history preserves existing messages with legacy context identifiers", async () => {
   const { desktopTaskHistory } = fixture({
     run: null,
     history: [{
@@ -825,10 +823,10 @@ test("desktop task history removes an already persisted context probe turn", asy
 
   const result = await desktopTaskHistory({ includeActive: false, limit: 10 });
 
-  assert.deepEqual(result.items.map((item) => item.id), ["real-turn"]);
+  assert.deepEqual(result.items.map((item) => item.id), ["real-turn", "probe-turn"]);
 });
 
-test("desktop task history hides the reserved probe text without metadata", async () => {
+test("desktop task history preserves former marker text without metadata", async () => {
   const { desktopTaskHistory } = fixture({
     run: null,
     history: [{
@@ -850,7 +848,7 @@ test("desktop task history hides the reserved probe text without metadata", asyn
 
   const result = await desktopTaskHistory({ includeActive: false, limit: 10 });
 
-  assert.deepEqual(result.items, []);
+  assert.deepEqual(result.items.map((item) => item.id), ["user-turn"]);
 });
 
 for (const topLevelIdentity of [true, false]) {
@@ -915,7 +913,7 @@ test("desktop task history restores a reserved final from explicit journal ident
   assert.equal(result.items[0].terminalRevision, 1);
 });
 
-test("desktop task history hides an identity-less reserved final from the journal overlay", async () => {
+test("desktop task history preserves an identity-less work final that equals the probe marker", async () => {
   const { desktopTaskHistory } = fixture({
     run: null,
     history: [],
@@ -930,7 +928,11 @@ test("desktop task history hides an identity-less reserved final from the journa
 
   const result = await desktopTaskHistory({ includeActive: false, limit: 10 });
 
-  assert.deepEqual(result.items, []);
+  assert.equal(result.items.length, 1);
+  assert.equal(result.items[0].id, "legacy-synthetic-probe");
+  assert.equal(result.items[0].operationKind, "user-turn");
+  assert.equal(result.items[0].answer, CODEX_CONTEXT_PROBE_RESPONSE);
+  assert.equal(result.items[0].messages.at(-1).text, CODEX_CONTEXT_PROBE_RESPONSE);
 });
 
 test("desktop task history preserves the author of an interstream message", async () => {

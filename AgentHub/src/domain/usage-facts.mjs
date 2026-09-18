@@ -222,7 +222,6 @@ function turnFactBody(value, { eventId, threadKey }) {
     estimatedCredits: positiveNumber(value.estimatedCredits ?? value.credits),
     estimateKind: text(value.estimateKind),
     imageGenerationCount: Math.max(0, Math.floor(Number(value.imageGenerationCount) || 0)),
-    contextProbe: value.contextProbe === true,
     limitSamples: mergeUsageLimitSamples(value.limitSamples),
     deviceLabel: boundedText(value.deviceLabel, 80),
     observedAt: timestamp(value.observedAt) || timestamp(value.completedAt),

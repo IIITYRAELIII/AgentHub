@@ -294,7 +294,7 @@ test("Codex history removes a context probe turn identified by rollout metadata"
   assert.deepEqual(recorded.map((item) => item.id), [realTurnId]);
 });
 
-test("Codex history uses persisted probe ids when the rollout tail no longer contains its prompt", async () => {
+test("Codex history ignores the retired probe-id callback and preserves old messages", async () => {
   const probeTurnId = "019ffc97-c47f-7de0-aea6-00e1da772d7d";
   const view = controller({
     findCodexRolloutPath: async () => "C:/rollout.jsonl",
@@ -322,7 +322,8 @@ test("Codex history uses persisted probe ids when the rollout tail no longer con
     title: "Probe",
     chatId: 1,
   });
-  assert.deepEqual(result.history, []);
+  assert.deepEqual(result.history.map((item) => item.id), [probeTurnId]);
+  assert.equal(result.history[0].answer, "Старый служебный ход");
 });
 
 test("missing Claude transcript keeps the managed exchange in durable history", async () => {

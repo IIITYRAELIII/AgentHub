@@ -1,12 +1,15 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { execFile, spawn } from "node:child_process";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
+import { promisify } from "node:util";
 
+import { taskRepositoryKey } from "../../src/domain/task-git-reference.mjs";
 import { canonicalPath } from "../../src/infrastructure/filesystem/config.mjs";
+import { TaskGitWorkspaceService } from "../../src/infrastructure/filesystem/task-git-workspace.mjs";
 import { LoopbackTelegramApi } from "../../src/infrastructure/network/loopback-telegram-api.mjs";
 import { WorkLogUsageSyncStore } from "../../src/infrastructure/persistence/work-log-usage-sync-store.mjs";
 import { MessageCommandLedgerStore } from "../../src/infrastructure/persistence/message-command-ledger-store.mjs";
@@ -27,7 +30,7 @@ import {
   TEST_CONTOUR_MODEL,
   TEST_CONTOUR_MODELS,
   TEST_CONTOUR_SPARK_MODEL,
-  TEST_CONTOUR_TERRA_MODEL,
+  TEST_CONTOUR_LUNA_MODEL,
   TEST_CONTOUR_FAKE_MODEL,
   TEST_CONTOUR_WEB_HOST,
   testContourComponentEnabled,
@@ -263,7 +266,11 @@ test("Test Contour defaults to Fake Codex while exposing optional real models", 
   });
   assert.equal(config.codexModel, TEST_CONTOUR_MODEL);
   assert.deepEqual(config.codexModels, TEST_CONTOUR_MODELS);
-  assert.ok(config.codexModels.some((item) => item.value === TEST_CONTOUR_TERRA_MODEL));
+  assert.deepEqual(config.codexModels.find((item) => item.value === TEST_CONTOUR_LUNA_MODEL), {
+    value: "gpt-5.6-luna",
+    label: "GPT-5.6-Luna",
+  });
+  assert.equal(config.codexModels.some((item) => item.value === "gpt-5.6-terra"), false);
   assert.ok(config.codexModels.some((item) => item.value === TEST_CONTOUR_FAKE_MODEL));
   assert.equal(config.codexExecutable, process.execPath);
   assert.deepEqual(config.codexExecutableArgs, [
@@ -524,7 +531,14 @@ test("production data clone keeps history but detaches live threads and forces F
     const sourceFile = path.join(productionData, "journal.sqlite");
     const source = new DatabaseSync(sourceFile);
     source.exec(`
-      CREATE TABLE hub_workspaces (id TEXT PRIMARY KEY) WITHOUT ROWID;
+      CREATE TABLE hub_workspaces (
+        id TEXT PRIMARY KEY, settings_json TEXT NOT NULL DEFAULT '{}'
+      ) WITHOUT ROWID;
+      CREATE TABLE hub_task_git_references (
+        task_id TEXT NOT NULL, project_root TEXT NOT NULL, branch TEXT NOT NULL,
+        result_commit TEXT NOT NULL, updated_at_ms INTEGER NOT NULL,
+        PRIMARY KEY (task_id, project_root)
+      ) WITHOUT ROWID;
       CREATE TABLE hub_streams (
         id TEXT PRIMARY KEY, settings_json TEXT NOT NULL, updated_at_ms INTEGER NOT NULL
       ) WITHOUT ROWID;
@@ -547,7 +561,14 @@ test("production data clone keeps history but detaches live threads and forces F
         task_thread_id TEXT, completed_at_ms INTEGER, record_json TEXT,
         PRIMARY KEY (provider, thread_id, turn_id)
       );
-      INSERT INTO hub_workspaces VALUES ('workspace-1');
+      INSERT INTO hub_workspaces VALUES (
+        'workspace-1',
+        '{"workingDirectory":"D:/production","releaseWorkflowEnabled":true,"taskPrefix":"HUB"}'
+      );
+      INSERT INTO hub_task_git_references VALUES
+        ('task-1', 'D:/production', 'HUB-1', '${"a".repeat(40)}', 11),
+        ('task-2', 'D:/production', 'HUB-2', '${"b".repeat(40)}', 12),
+        ('task-2', 'D:/other-repository', 'HUB-2', '${"c".repeat(40)}', 13);
       INSERT INTO hub_streams VALUES (
         'stream-1', '{"provider":"claude","model":"claude-opus","custom":true}', 1
       );
@@ -650,6 +671,44 @@ test("production data clone keeps history but detaches live threads and forces F
       assert.equal(settings.project, contourPaths.projectRoot);
       assert.equal(settings.custom, true);
       assert.equal(clone.prepare("SELECT updated_at_ms FROM hub_streams").get().updated_at_ms, 1);
+      assert.deepEqual(JSON.parse(clone.prepare(
+        "SELECT settings_json FROM hub_workspaces WHERE id = 'workspace-1'",
+      ).get().settings_json), {
+        workingDirectory: contourPaths.projectRoot,
+        releaseWorkflowEnabled: false,
+        taskPrefix: "HUB",
+      });
+      assert.equal(result.isolatedWorkspaces, 1);
+      const detached = (projectRoot) => path.join(contourPaths.detachedGitDirectory, taskRepositoryKey(projectRoot));
+      assert.deepEqual(clone.prepare(`
+        SELECT task_id, project_root, branch, result_commit, updated_at_ms
+        FROM hub_task_git_references ORDER BY task_id, updated_at_ms
+      `).all().map((row) => ({ ...row })), [
+        { task_id: "task-1", project_root: detached("D:/production"), branch: "HUB-1",
+          result_commit: "a".repeat(40), updated_at_ms: 11 },
+        { task_id: "task-2", project_root: detached("D:/production"), branch: "HUB-2",
+          result_commit: "b".repeat(40), updated_at_ms: 12 },
+        { task_id: "task-2", project_root: detached("D:/other-repository"), branch: "HUB-2",
+          result_commit: "c".repeat(40), updated_at_ms: 13 },
+      ]);
+      assert.notEqual(detached("D:/production"), detached("D:/other-repository"));
+      assert.deepEqual(
+        result.detachedGitReferences.map((item) => item.originalProjectRoot).sort(),
+        ["D:/other-repository", "D:/production"],
+      );
+      // Mapped roots are deliberately never created, so Git cannot resolve them.
+      await assert.rejects(stat(contourPaths.detachedGitDirectory), { code: "ENOENT" });
+      const production = new DatabaseSync(sourceFile, { readOnly: true });
+      try {
+        assert.equal(JSON.parse(production.prepare(
+          "SELECT settings_json FROM hub_workspaces WHERE id = 'workspace-1'",
+        ).get().settings_json).workingDirectory, "D:/production");
+        assert.deepEqual(production.prepare(`
+          SELECT DISTINCT project_root FROM hub_task_git_references ORDER BY project_root
+        `).all().map((row) => row.project_root), ["D:/other-repository", "D:/production"]);
+      } finally {
+        production.close();
+      }
       assert.deepEqual({ ...clone.prepare(`
         SELECT project_root, detached_at_ms FROM hub_threads
       `).get() }, {
@@ -733,6 +792,79 @@ test("production data clone keeps history but detaches live threads and forces F
       rm(productionRoot, { recursive: true, force: true }),
     ]);
   }
+});
+
+test("cloned Task Git references cannot delete production branches through Task cleanup", async (context) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-test-contour-git-clone-"));
+  const productionRoot = await mkdtemp(path.join(os.tmpdir(), "agent-hub-production-git-clone-"));
+  const repository = await mkdtemp(path.join(os.tmpdir(), "agent-hub-production-repository-"));
+  context.after(() => Promise.all([root, productionRoot, repository].map((item) => (
+    rm(item, { recursive: true, force: true })
+  ))));
+  const git = async (...args) => (await promisify(execFile)("git", args, {
+    cwd: repository, encoding: "utf8", windowsHide: true,
+  })).stdout.trim();
+  await git("init", "-b", "main");
+  await writeFile(path.join(repository, "file.txt"), "production\n", "utf8");
+  await git("add", "file.txt");
+  await git("-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "production");
+  const head = await git("rev-parse", "HEAD");
+  // A Task branch without a checked-out worktree is exactly what cleanup deletes.
+  await git("branch", "HUB-900", head);
+  const refs = () => git("for-each-ref", "--format=%(refname) %(objectname)");
+  const productionRefs = await refs();
+  assert.match(productionRefs, /refs\/heads\/HUB-900 /u);
+
+  const { paths: contourPaths } = await installTestContour({ root, run: async () => null });
+  const productionData = path.join(productionRoot, "data");
+  await mkdir(productionData, { recursive: true });
+  const source = new DatabaseSync(path.join(productionData, "journal.sqlite"));
+  source.exec(`
+    CREATE TABLE hub_streams (id TEXT PRIMARY KEY, settings_json TEXT NOT NULL) WITHOUT ROWID;
+    CREATE TABLE hub_threads (provider TEXT, stream_id TEXT, project_root TEXT);
+    CREATE TABLE hub_task_git_references (
+      task_id TEXT NOT NULL, project_root TEXT NOT NULL, branch TEXT NOT NULL,
+      result_commit TEXT NOT NULL, updated_at_ms INTEGER NOT NULL,
+      PRIMARY KEY (task_id, project_root)
+    ) WITHOUT ROWID;
+  `);
+  source.prepare("INSERT INTO hub_task_git_references VALUES (?, ?, ?, ?, ?)")
+    .run("task-900", repository, "HUB-900", head, 1);
+  source.close();
+
+  const result = await cloneProductionDataToTestContour({ root, productionRoot });
+  const clone = new DatabaseSync(result.destinationDatabaseFile, { readOnly: true });
+  let cloned;
+  try {
+    cloned = { ...clone.prepare(`
+      SELECT project_root AS projectRoot, branch, result_commit AS resultCommit
+      FROM hub_task_git_references WHERE task_id = 'task-900'
+    `).get() };
+  } finally {
+    clone.close();
+  }
+  assert.equal(cloned.branch, "HUB-900");
+  assert.equal(cloned.resultCommit, head);
+  assert.notEqual(canonicalPath(cloned.projectRoot), canonicalPath(repository));
+
+  const service = new TaskGitWorkspaceService({
+    dataDir: contourPaths.dataDir,
+    readPublication: async () => ({ revision: head, generation: "production" }),
+  });
+  // Task Delete uses allowDirty=true/requirePublished=false; it must not reach Git.
+  await assert.rejects(service.cleanup("task-900", {
+    allowDirty: true, requirePublished: false, gitReferences: [cloned],
+  }));
+  assert.equal(await refs(), productionRefs);
+
+  // Control: the unremapped production reference does delete the branch, so
+  // the assertion above proves the isolation rather than an inert cleanup.
+  await service.cleanup("task-900", {
+    allowDirty: true,
+    requirePublished: false,
+    gitReferences: [{ projectRoot: repository, branch: "HUB-900", resultCommit: head }],
+  });
+  assert.doesNotMatch(await refs(), /refs\/heads\/HUB-900 /u);
 });
 
 test("Test Contour component is default-off and read from production config", async () => {

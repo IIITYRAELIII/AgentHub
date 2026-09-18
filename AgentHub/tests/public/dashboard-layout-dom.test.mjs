@@ -360,7 +360,7 @@ test("Flat status drop from Backlog asks for a Workspace only when the destinati
   } finally { await browser.close(); }
 });
 
-test("Dashboard separates settings from filters and restores Workspace grouping", async () => {
+test("Dashboard keeps view and filters visible and restores Workspace grouping", async () => {
   const { chromium } = await import("playwright");
   const browser = await launchEdge(chromium);
   try {
@@ -372,16 +372,16 @@ test("Dashboard separates settings from filters and restores Workspace grouping"
       await page.locator(`[data-task-board-view="${view}"]`).click();
     };
     await page.locator('[data-board-scope="workspace:one"]').click();
-    assert.equal(await page.locator('.task-board-toolbar [data-task-board-view]').count(), 0);
-    await page.locator('[data-task-board-filter-toggle]').click();
+    assert.equal(await page.locator('.task-board-toolbar [data-task-board-view]').count(), 3);
     assert.equal(await page.locator('[data-task-board-filter-controls] [data-task-status-language]').count(), 0);
     assert.equal(await page.locator('[data-task-board-completed-toggle]').isVisible(), true);
     await page.locator('[data-task-board-settings-toggle]').click();
     assert.equal(await page.locator('#task-board-settings').isVisible(), true);
     assert.equal(await page.locator('[data-task-status-language="ru"]').isVisible(), true);
     await page.locator('[data-task-board-view="workspaces"]').click();
-    assert.equal(await page.locator('.task-board-sidebar').isVisible(), false);
-    assert.ok((await page.locator('[data-task-board-columns]').boundingBox()).x < 25);
+    assert.equal(await page.locator('.task-board-sidebar').isVisible(), true);
+    assert.equal(await page.locator('.task-board-scope-control').isVisible(), false);
+    await page.locator('[data-board-scope="all"]').click();
     const columns = page.locator('[data-task-board-columns] .task-board-column');
     assert.deepEqual(await columns.locator('h2').allTextContents(), ['Бэклог', 'DevOps', 'Agent HUB', 'Заметки']);
     const workspace = page.locator('[data-task-board-columns] [data-board-destination="workspace:one"]');
@@ -398,10 +398,10 @@ test("Dashboard separates settings from filters and restores Workspace grouping"
       { type: 'move', id: '1', bucket: 'workspace', workspaceId: 'two', beforeId: null });
     await changeView('statuses');
     assert.equal(await page.locator('.task-board-sidebar').isVisible(), true);
-    assert.equal(await page.locator('[data-board-scope="workspace:one"]').getAttribute('aria-pressed'), 'true');
+    await page.locator('[data-board-scope="workspace:one"]').click();
     await page.locator('[data-board-scope="folder:Team"]').click();
     await changeView('workspaces');
-    assert.equal(await columns.count(), 4, 'hidden folder selection does not restrict Workspace view');
+    assert.equal(await columns.count(), 3, 'visible folder scope restricts Workspaces and keeps Backlog');
     await page.reload();
     await setBoard(page);
     assert.equal(await page.locator('[data-task-board-view="workspaces"]').getAttribute('aria-pressed'), 'true');
@@ -597,8 +597,6 @@ test("Dashboard preserves scope, create, filter and native drop commands", async
     await page.getByRole("button", { name: /^Agent HUB ·/u }).click();
     assert.deepEqual(await dropTask(page, "1", page.locator(".is-backlog")), { type: "move", id: "1", bucket: "backlog", beforeId: null });
     await page.getByRole("button", { name: /^Все задачи ·/u }).click();
-    assert.equal(await page.locator("[data-task-board-filter-controls]").isVisible(), false);
-    await page.locator("[data-task-board-filter-toggle]").click();
     assert.equal(await page.locator("[data-task-board-filter-controls]").isVisible(), true);
     await page.locator('[data-task-board-settings-toggle]').click();
     await page.locator('[data-task-status-language="ru"]').click();
@@ -631,16 +629,16 @@ test("Dashboard detail is a theme-safe grid panel and becomes a modal on narrow 
           return { x: r.x, y: r.y, right: r.right, bottom: r.bottom, width: r.width };
         };
         return { board: box("[data-task-board-columns]"), detail: box("[data-task-card-modal]"), toolbar: box(".task-board-toolbar"),
-          filter: box("[data-task-board-filter-toggle]"), scopes: box("[data-task-board-scopes]"),
+          filter: box("[data-task-board-completed-toggle]"), scopes: box("[data-task-board-scopes]"),
           modal: document.querySelector("[data-task-card-modal]").matches(":modal") };
       });
       assert.equal(boxes.modal, false, theme);
       assert.ok(boxes.board.right <= boxes.detail.x + 1, `${theme}: board does not overlap detail`);
       assert.ok(Math.abs(boxes.board.y - boxes.detail.y) < 1, `${theme}: aligned top boundaries`);
-      assert.ok(Math.abs(boxes.toolbar.y - boxes.board.y) < 1, `${theme}: no empty toolbar row above board`);
-      assert.ok(boxes.toolbar.right <= boxes.board.x, `${theme}: controls stay beside board`);
+      assert.ok(boxes.toolbar.bottom <= boxes.board.y + 1, `${theme}: controls are above the board`);
+      assert.ok(boxes.toolbar.x >= boxes.board.x - 1, `${theme}: controls align with board`);
       assert.ok(boxes.filter.right <= boxes.toolbar.right, `${theme}: filters stay inside toolbar with many Workspaces`);
-      assert.ok(boxes.toolbar.bottom <= boxes.scopes.y, `${theme}: scopes scroll below controls`);
+      assert.ok(boxes.scopes.right <= boxes.board.x + 1, `${theme}: Workspace catalog stays beside board`);
       assert.ok(boxes.board.x >= 8 && boxes.detail.right < 1487, `${theme}: small outer gutters`);
       assert.equal(await page.locator('.task-board-row-head').first().evaluate((el) => {
         const cells = [...el.children].map((child) => child.getBoundingClientRect());
@@ -745,9 +743,11 @@ test("Dashboard groups existing folders, selects their Workspaces and opens the 
     assert.deepEqual(await dropTask(page, '1', sidebar.locator('[data-board-scope="workspace:two"]'), { confirmMove: true }),
       { type: 'move', id: '1', bucket: 'workspace', workspaceId: 'two', beforeId: null });
     await page.setViewportSize({ width: 390, height: 844 });
-    const mobileSidebar = await sidebar.boundingBox();
-    assert.ok(mobileSidebar.x >= 0 && mobileSidebar.x + mobileSidebar.width <= 390);
-    await sidebar.locator('[data-board-scope="workspace:two"]').click();
+    assert.equal(await sidebar.isVisible(), false);
+    const mobileScope = page.locator('[data-task-board-scope-select]');
+    const mobileControl = await mobileScope.locator('..').boundingBox();
+    assert.ok(mobileControl.x >= 0 && mobileControl.x + mobileControl.width <= 390);
+    await mobileScope.selectOption('workspace:two', { force: true });
     assert.equal(await rows.locator('[data-board-task-id="1"]').count(), 0);
     assert.equal(await rows.locator('[data-board-task-id="3"]').count(), 1);
     await setBoard(page, workspaces);
@@ -851,7 +851,7 @@ test("Status matrix groups by Workspace, preserves navigation and supports the o
     assert.ok((await board.boundingBox()).x + (await board.boundingBox()).width <= 391);
     await matrix.evaluate(el => { el.scrollLeft = 300; el.scrollTop = 80; });
     const scroll = await matrix.evaluate(el => ({ x: el.scrollLeft, y: el.scrollTop }));
-    assert.ok(scroll.x > 0 && scroll.y > 0);
+    assert.ok(scroll.x > 0, 'optional mobile Kanban remains horizontally scrollable');
     await setBoard(page);
     assert.deepEqual(await matrix.evaluate(el => ({ x: el.scrollLeft, y: el.scrollTop })), scroll);
     assert.deepEqual(errors, []);
@@ -894,7 +894,6 @@ test("Status card surfaces survive theme overrides for open, started and complet
           assert.ok(card.border >= 1 && card.radius >= 5, `${theme}: card outline and rounding`);
         }
       }
-      await page.locator('[data-task-board-filter-toggle]').click();
       await page.locator('[data-task-board-completed-toggle]').click();
       for (const theme of THEMES) {
         await page.evaluate(theme => { document.documentElement.dataset.theme = theme; }, theme);
@@ -903,7 +902,6 @@ test("Status card surfaces survive theme overrides for open, started and complet
         assert.ok(cards[0].alpha >= 240 && cards[0].border >= 1 && cards[0].radius >= 5, `${theme}: closed surface`);
       }
       await page.locator('[data-task-board-completed-toggle]').click();
-      await page.locator('[data-task-board-filter-toggle]').click();
     }
     await page.evaluate(() => { document.documentElement.dataset.theme = 'pulsar'; });
     await board.locator('[data-board-task-id="started"]').dblclick();

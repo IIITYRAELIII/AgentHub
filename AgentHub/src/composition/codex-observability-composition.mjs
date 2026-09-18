@@ -65,7 +65,6 @@ export function createCodexObservabilityComposition({
   saveState,
   deliverTurnEndNotification,
   repairTurnEndAttachments,
-  reclassifyTurnEndContextProbe,
   defaultNotificationChatId,
   findProject,
   resolveTaskByProviderRef,
@@ -203,7 +202,6 @@ export function createCodexObservabilityComposition({
     saveState,
     deliverNotification: deliverTurnEndNotification,
     repairTerminalAttachments: repairTurnEndAttachments,
-    reclassifyTerminalContextProbe: reclassifyTurnEndContextProbe,
     resolveTerminalAttachments,
   });
   const terminalAudit = new CodexTerminalAudit({

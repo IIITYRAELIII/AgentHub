@@ -23,10 +23,6 @@ import {
   visibleTaskHistory,
   withoutMisclassifiedSubagentUsers,
 } from "../../src/application/task-history.mjs";
-import {
-  CODEX_CONTEXT_PROBE_PROMPT,
-  CODEX_CONTEXT_PROBE_RESPONSE,
-} from "../../src/domain/codex-context-probe.mjs";
 
 test("subagent occurrence repair fails closed without unique unbound source evidence", () => {
   const sourceOccurrenceId = `codex-rollout:${"b".repeat(64)}`;
@@ -212,29 +208,6 @@ test("completed history overlay preserves the canonical completion time", () => 
   assert.equal(history[0].messages[0].time, "2026-08-04T01:53:46.371Z");
 });
 
-test("Codex history hides the internal context probe exchange", () => {
-  const turn = {
-    id: "probe-turn",
-    status: "completed",
-    items: [
-      {
-        id: "probe-user",
-        type: "userMessage",
-        clientId: "agent-hub-context-probe:test",
-        content: [{ type: "text", text: CODEX_CONTEXT_PROBE_PROMPT }],
-      },
-      {
-        id: "probe-agent",
-        type: "agentMessage",
-        text: CODEX_CONTEXT_PROBE_RESPONSE,
-        phase: "final_answer",
-      },
-    ],
-  };
-
-  assert.deepEqual(codexThreadHistory([turn]), []);
-  assert.equal(codexFinalTurnAnswer(turn), "");
-});
 
 test("Codex history keeps reserved probe text for a normal client identity", () => {
   const turn = {
@@ -244,20 +217,20 @@ test("Codex history keeps reserved probe text for a normal client identity", () 
       id: "manual-user",
       type: "userMessage",
       clientId: "client-manual-probe",
-      content: [{ type: "text", text: CODEX_CONTEXT_PROBE_PROMPT }],
+      content: [{ type: "text", text: "Ответь строго: AGENT_HUB_CONTEXT_PROBE_OK_V1" }],
     }, {
       id: "manual-agent",
       type: "agentMessage",
-      text: CODEX_CONTEXT_PROBE_RESPONSE,
+      text: "AGENT_HUB_CONTEXT_PROBE_OK_V1",
       phase: "final_answer",
     }],
   };
 
   const history = codexThreadHistory([turn]);
   assert.equal(history.length, 1);
-  assert.equal(history[0].prompt, CODEX_CONTEXT_PROBE_PROMPT);
-  assert.equal(history[0].answer, CODEX_CONTEXT_PROBE_RESPONSE);
-  assert.equal(codexFinalTurnAnswer(turn), CODEX_CONTEXT_PROBE_RESPONSE);
+  assert.equal(history[0].prompt, "Ответь строго: AGENT_HUB_CONTEXT_PROBE_OK_V1");
+  assert.equal(history[0].answer, "AGENT_HUB_CONTEXT_PROBE_OK_V1");
+  assert.equal(codexFinalTurnAnswer(turn), "AGENT_HUB_CONTEXT_PROBE_OK_V1");
 });
 
 test("Codex history preserves a safe activity feed", () => {

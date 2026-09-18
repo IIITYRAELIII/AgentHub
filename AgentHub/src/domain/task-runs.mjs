@@ -1,7 +1,5 @@
 import path from "node:path";
 
-import { isCodexContextProbeTurn } from "./codex-context-probe.mjs";
-
 function normalizedProjectRoot(projectRoot) {
   const resolved = path.resolve(String(projectRoot ?? ""));
   return process.platform === "win32" ? resolved.toLowerCase() : resolved;
@@ -713,12 +711,11 @@ export function shouldAutoObserveTask({
       && String(selectedTask?.threadId ?? "") === String(task.threadId)
       && snapshot?.active
       // Codex completion is correlated by turn id. An active transport-level
-      // snapshot without one can be a short-lived context probe or reconnect
+      // snapshot without one can be a short-lived reconnect
       // state and must not become a task run that blocks normal input.
       && (provider !== "codex" || (
         snapshot?.turnId
         && codexHasUserInput
-        && !isCodexContextProbeTurn(snapshot, { allowTextFallback: false })
       ))
       && (!snapshot?.turnId || String(snapshot.turnId) !== String(lastSeenTurnId ?? ""))
       && !existingRun

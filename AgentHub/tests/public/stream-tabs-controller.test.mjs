@@ -455,7 +455,7 @@ test("rotation notice follows the actually compacted Thread instead of the previ
   ];
 
   const [transition] = streamRotationTransitions(previousTasks, currentTasks);
-  const presentation = rotationMaintenancePresentation(transition.beforePercent, null);
+  const presentation = rotationMaintenancePresentation(transition.beforePercent);
 
   assert.equal(transition.sourceThreadId, "compacted-thread");
   assert.equal(transition.beforePercent, 26);
@@ -479,7 +479,7 @@ test("persisted rotation restores the source event without observing the Thread 
   const [message] = persistedStreamRotationMessages([source, current]);
   assert.equal(message.sourceThreadId, "source");
   assert.equal(message.threadId, "source", "legacy evidence does not invent a target");
-  assert.equal(message.afterPercent, null, "current usage is not a historical probe");
+  assert.equal(Object.hasOwn(message, "afterPercent"), false);
   assert.equal(message.maintenanceLabel, "Ротация завершена");
   assert.doesNotMatch(message.maintenanceDetail, /выполняется/u);
   assert.equal(message.placement, "after-source-turn");
@@ -489,7 +489,7 @@ test("persisted rotation restores the source event without observing the Thread 
   assert.equal(persistedStreamRotationMessages([source, source, current]).length, 1);
 });
 
-test("persisted rotation uses only exact recorded target and probe measurements", async () => {
+test("persisted rotation ignores retired measurements and preserves its exact target", async () => {
   const { persistedStreamRotationMessages } = await streamTabsApi();
   const source = {
     streamId: "stream-1", provider: "codex", threadId: "source",
@@ -502,11 +502,11 @@ test("persisted rotation uses only exact recorded target and probe measurements"
   };
   const [message] = persistedStreamRotationMessages([source]);
   assert.equal(message.threadId, "target");
-  assert.equal(message.afterPercent, 7);
+  assert.equal(Object.hasOwn(message, "afterPercent"), false);
   assert.equal(message.time, source.context.compaction.rotationCompletedAt);
   assert.equal(
     message.text,
-    "Ротация завершена. Использование контекста: после свёртки 26% → новый Thread сразу после переноса 7%",
+    "Ротация завершена. Использование контекста: после свёртки 26% → новый Thread создан",
   );
   for (const patch of [{ rotated: false }, { status: "running" }, { status: "unknown" }, { id: "" }]) {
     assert.equal(persistedStreamRotationMessages([{
@@ -516,16 +516,14 @@ test("persisted rotation uses only exact recorded target and probe measurements"
   assert.equal(persistedStreamRotationMessages([{ ...source, streamId: "" }]).length, 0);
 });
 
-// Случай пользователя: уведомление говорило «новый 11%», а новый Thread уже
-// показывал 27%. Оба числа верны, но относятся к разным моментам — подача
-// обязана называть этап и не выдавать живое значение за замер ротации.
+// Старый замер нового Thread больше не участвует в уведомлении о ротации.
 test("rotation stages stay historical while the new Thread's live usage grows", async () => {
   const { persistedStreamRotationMessages, rotationMaintenancePresentation } = await streamTabsApi();
   const source = {
     streamId: "stream-1", provider: "codex", threadId: "source",
     context: { compaction: {
       id: "ac912f09", status: "completed", rotated: true,
-      beforePercent: 85.532508, afterPercent: 27.278251,
+      beforePercent: 85.532508, afterPercent: 27.278251, measurementKind: "estimated",
       rotationThreadId: "target", rotationAfterPercent: 11.256192,
       rotationProbeTurnId: "probe-target", rotationMeasuredAt: "2026-09-12T22:10:34.367Z",
       rotationCompletedAt: "2026-09-12T22:10:34.500Z", completedAt: "2026-09-12T22:10:23.671Z",
@@ -540,15 +538,15 @@ test("rotation stages stay historical while the new Thread's live usage grows", 
 
   assert.equal(
     message.text,
-    "Ротация завершена. Использование контекста: до свёртки 86% → после свёртки 27% → новый Thread сразу после переноса 11%",
+    "Ротация завершена. Использование контекста: до свёртки 86% → после свёртки ≈27% → новый Thread создан · Предварительная оценка провайдера после свёртки",
   );
-  assert.equal(message.afterPercent, 11, "живое использование нового Thread не подменяет замер ротации");
+  assert.equal(Object.hasOwn(message, "afterPercent"), false);
   assert.equal(message.beforePercent, 27);
   assert.equal(message.compactionBeforePercent, 86);
   assert.doesNotMatch(message.text, /новый Thread[^%]*27%/u);
   assert.equal(
-    rotationMaintenancePresentation(27, null).text,
-    "Ротация завершена. Использование контекста: после свёртки 27% → новый Thread создан, его замер не сохранён",
+    rotationMaintenancePresentation(27).text,
+    "Ротация завершена. Использование контекста: после свёртки 27% → новый Thread создан",
   );
 });
 
@@ -1046,6 +1044,87 @@ test("an active Stream preserves its answer-ready state", async () => {
     JSON.parse(JSON.stringify(streamStatusPresentation({ running: true, unread: true }))),
     { running: true, answerReady: true, statusLabel: "Ход выполняется · Ответ готов" },
   );
+});
+
+test("right panel visibility defaults on and its header switch preserves hidden options across reload", async () => {
+  const { chromium } = await import("playwright");
+  const browser = await launchDomBrowser(chromium);
+  try {
+    for (const width of [1440, 1024]) {
+      const page = await browser.newPage({ viewport: { width, height: 1000 } });
+      const errors = [];
+      page.on("pageerror", (error) => errors.push(error.message));
+      const populate = async () => {
+        await page.evaluate(() => {
+          window.AgentHub.setWorkspaces([{ id: "rail-workspace", name: "Panel preview", settings: {} }]);
+          window.AgentHub.setTasks([{
+            id: "rail-task", threadId: "rail-thread", workspaceId: "rail-workspace",
+            workspaceName: "Panel preview", streamId: "rail-stream", streamName: "Preview",
+            streamOrdinal: 1, provider: "codex", agentLabel: "Codex", status: "ready",
+            statusLabel: "Готов", lastActivity: new Date().toISOString(),
+            running: false, unread: true, selected: true, streamSettings: {},
+          }]);
+        });
+        await page.locator("[data-stream-card-settings-toggle]").click();
+      };
+      await openStreamTabsDomFixture(page);
+      await populate();
+      const group = page.getByRole("region", { name: "Правая панель", exact: true });
+      const toggle = group.getByRole("switch", { name: "Отображать правую панель", exact: true });
+      const options = group.locator("[data-activity-rail-settings]");
+      const recent = group.getByRole("spinbutton", { name: "Часы для недавних Streams" });
+      const detailed = group.getByRole("switch", { name: "Подробные карточки Streams" });
+      assert.equal(await toggle.getAttribute("aria-checked"), "true");
+      assert.equal(await page.locator("[data-activity-rail]").isVisible(), true);
+      assert.equal(await options.isVisible(), true);
+      assert.equal(await page.locator("[data-settings-panel] [data-activity-rail-visibility-toggle]").count(), 0);
+      const headingBox = await group.getByRole("heading", { name: "Правая панель" }).boundingBox();
+      const toggleBox = await toggle.boundingBox();
+      assert.ok(toggleBox.x >= headingBox.x + headingBox.width);
+      assert.ok(Math.abs(toggleBox.y + toggleBox.height / 2 - headingBox.y - headingBox.height / 2) < 4);
+      assert.equal((await toggle.innerText()).trim(), "");
+      await recent.fill("7");
+      await recent.press("Tab");
+      await detailed.click();
+      assert.equal(await detailed.getAttribute("aria-checked"), "true");
+      const screenshotDirectory = String(process.env.HUB157_QA_SCREENSHOT_DIR ?? "").trim();
+      if (screenshotDirectory) {
+        await group.screenshot({
+          path: path.join(screenshotDirectory, `right-panel-on-${width}.png`),
+        });
+      }
+      await toggle.click();
+      assert.equal(await toggle.getAttribute("aria-checked"), "false");
+      assert.equal(await options.isVisible(), false);
+      assert.equal(await page.locator("[data-activity-rail]").isVisible(), false);
+      assert.equal(await toggle.isVisible(), true);
+      if (screenshotDirectory) {
+        await group.screenshot({
+          path: path.join(screenshotDirectory, `right-panel-off-${width}.png`),
+        });
+      }
+      await toggle.click();
+      assert.equal(await recent.inputValue(), "7");
+      assert.equal(await detailed.getAttribute("aria-checked"), "true");
+      await toggle.click();
+      await page.reload();
+      await page.waitForFunction(() => typeof window.AgentHub === "object");
+      await populate();
+      assert.equal(await toggle.getAttribute("aria-checked"), "false");
+      assert.equal(await options.isVisible(), false);
+      assert.equal(await page.locator("[data-activity-rail]").isVisible(), false);
+      await toggle.focus();
+      await toggle.press("Space");
+      assert.equal(await toggle.getAttribute("aria-checked"), "true");
+      assert.equal(await options.isVisible(), true);
+      assert.equal(await detailed.getAttribute("aria-checked"), "true");
+      assert.equal(await page.locator("[data-activity-rail]").isVisible(), true);
+      assert.deepEqual(errors, []);
+      await page.close();
+    }
+  } finally {
+    await browser.close();
+  }
 });
 
 test("Astra uses its compact label only in Stream pills and the active Stream header", async () => {
@@ -3054,6 +3133,83 @@ test("Stream card opens on 20 repeated native dblclicks per viewport without con
       assert.deepEqual(problems, []);
       await page.close();
     }
+  } finally {
+    await browser.close();
+  }
+});
+
+test("Stream card close button does not reopen or hide a legitimately reopened modal", async () => {
+  const { chromium } = await import("playwright");
+  const browser = await launchDomBrowser(chromium);
+  try {
+    const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+    await openStreamTabsDomFixture(page);
+    await page.evaluate(() => {
+      window.AgentHub.setWorkspaces([{
+        id: "workspace-1", name: "One", settings: {},
+      }], ["workspace:workspace-1", "notes"]);
+      window.AgentHub.setTasks([{
+        id: "task-one",
+        selected: true,
+        workspaceId: "workspace-1",
+        workspaceName: "One",
+        workspaceSettings: {},
+        streamId: "stream-one",
+        streamName: "One stream",
+        streamOrdinal: 1,
+        provider: "codex",
+        agentLabel: "Codex",
+        status: "ready",
+        statusLabel: "Готов",
+        lastActivity: "2026-09-04T08:00:00.000Z",
+        running: false,
+        unread: false,
+        streamSettings: {},
+      }]);
+    });
+
+    const tab = page.locator('.stream-tabs-track .stream-tab[data-stream-tab-id="stream-one"]');
+    const dialog = page.locator("[data-dialog-settings]");
+    const closeButton = page.locator("[data-dialog-settings-close]");
+
+    await tab.dblclick();
+    await closeButton.click();
+    assert.deepEqual(await dialog.evaluate((node) => ({
+      open: node.open,
+      modal: node.matches(":modal"),
+      hidden: node.hidden,
+    })), { open: false, modal: false, hidden: true });
+
+    await tab.dblclick();
+    assert.deepEqual(await dialog.evaluate((node) => ({
+      open: node.open,
+      modal: node.matches(":modal"),
+      hidden: node.hidden,
+      visible: getComputedStyle(node).display !== "none",
+    })), { open: true, modal: true, hidden: false, visible: true });
+
+    const reopenedAfterQueuedClose = await page.evaluate(() => new Promise((resolve) => {
+      const modal = document.querySelector("[data-dialog-settings]");
+      modal.addEventListener("close", () => resolve({
+        open: modal.open,
+        modal: modal.matches(":modal"),
+        hidden: modal.hidden,
+        visible: getComputedStyle(modal).display !== "none",
+      }), { once: true });
+      document.querySelector("[data-dialog-settings-close]").click();
+      document.querySelector("[data-dialog-settings-toggle]").click();
+    }));
+    assert.deepEqual(reopenedAfterQueuedClose,
+      { open: true, modal: true, hidden: false, visible: true });
+
+    await closeButton.click();
+    assert.deepEqual(await dialog.evaluate((node) => ({
+      open: node.open,
+      modal: node.matches(":modal"),
+      hidden: node.hidden,
+    })), { open: false, modal: false, hidden: true });
+    await page.locator('[data-view-button="dashboard"]').click();
+    assert.equal(await page.locator("html").getAttribute("data-view"), "dashboard");
   } finally {
     await browser.close();
   }

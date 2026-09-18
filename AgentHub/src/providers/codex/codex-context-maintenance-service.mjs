@@ -4,7 +4,6 @@ import {
   readLatestCodexCompactionItem,
 } from "./codex-compaction-rollout.mjs";
 import { readCodexRolloutActivity } from "./codex-rollout-activity.mjs";
-import { isCodexContextProbeTurn } from "../../domain/codex-context-probe.mjs";
 
 const DEFAULT_CLEANUP_RETRY_MS = 15_000;
 const MINIMUM_CLEANUP_RETRY_WINDOW_MS = 2 * 60_000;
@@ -12,14 +11,6 @@ const RAW_COMPACTION_EVENT_GRACE_MS = 1_000;
 
 function normalizedId(value) {
   return String(value ?? "").trim();
-}
-
-function unsettledContextProbeError(turnId, reason, cause = undefined) {
-  return Object.assign(
-    new Error(`Скрытый замер ${turnId} принят Codex App Server, но ${reason}; его ход мог остаться активным`,
-      cause ? { cause } : undefined),
-    { code: "CODEX_CONTEXT_PROBE_UNSETTLED" },
-  );
 }
 
 export class CodexContextMaintenanceService {
@@ -52,9 +43,6 @@ export class CodexContextMaintenanceService {
     ensureTransport = async () => {},
     resumeThread = async () => {},
     startCompaction = async () => {},
-    startContextProbe = async () => null,
-    interruptContextProbe = async () => null,
-    preserveProbeTitle = async () => {},
     startThread = async () => null,
     injectItems = async () => null,
     deleteThread = async () => null,
@@ -95,9 +83,6 @@ export class CodexContextMaintenanceService {
     this.ensureTransport = ensureTransport;
     this.resumeThread = resumeThread;
     this.startCompaction = startCompaction;
-    this.startContextProbe = startContextProbe;
-    this.interruptContextProbe = interruptContextProbe;
-    this.preserveProbeTitle = preserveProbeTitle;
     this.startThread = startThread;
     this.injectItems = injectItems;
     this.deleteThread = deleteThread;
@@ -200,57 +185,7 @@ export class CodexContextMaintenanceService {
     return this.start(target, { ...options, origin: "manual" });
   }
 
-  async probeContext(target, {
-    materializationTimeoutMs = 10_000,
-    pollMs = 100,
-    retryDelayMs = 250,
-    compactionId = null,
-  } = {}) {
-    const threadId = normalizedId(target?.threadId);
-    if (!threadId) throw new Error("Укажите корректный поток Codex");
-    await this.ensureTransport();
-    for (let attempt = 1; attempt <= 2; attempt += 1) {
-      const result = await this.startContextProbe(threadId, target);
-      const turnId = normalizedId(result?.turn?.id ?? result?.turnId);
-      if (!turnId) throw new Error("Codex App Server не вернул Turn скрытого замера");
-      if (normalizedId(compactionId)) {
-        this.compactions.annotate?.(threadId, normalizedId(compactionId), { probeTurnId: turnId });
-      }
-      const observed = await this.#observeProbeTurn(threadId, turnId, {
-        timeoutMs: materializationTimeoutMs,
-        pollMs,
-      });
-      if (observed.state === "materialized") return { threadId, turnId, status: "started" };
-      if (observed.state !== "terminal") {
-        /* Принятый ход не показался и мог остаться активным. Ответ на
-           turn/interrupt сам по себе не доказывает остановку: она засчитывается,
-           только когда Thread показал этот ход завершённым. Иначе исход
-           неизвестен — второй запуск не делается. */
-        try {
-          await this.interruptContextProbe(threadId, turnId);
-        } catch (error) {
-          throw unsettledContextProbeError(turnId, `остановить его не удалось: ${error.message}`, error);
-        }
-        const settled = await this.#observeProbeTurn(threadId, turnId, {
-          timeoutMs: materializationTimeoutMs,
-          pollMs,
-          settleOnly: true,
-        });
-        if (settled.state !== "terminal") {
-          throw unsettledContextProbeError(turnId, "его остановка не подтверждена");
-        }
-      }
-      if (attempt < 2) await this.sleep(Math.max(1, Number(retryDelayMs) || 250));
-    }
-    // Каждый принятый запуск подтверждённо завершился без фактического хода:
-    // провал доказан, а не просто не дождались.
-    throw Object.assign(
-      new Error("Codex App Server дважды принял скрытый замер без фактического запуска"),
-      { code: "CODEX_CONTEXT_PROBE_NOT_STARTED" },
-    );
-  }
-
-  async waitForContextProbeIdle(target, turnId, {
+  async waitForTurnIdle(target, turnId, {
     timeoutMs = 5_000,
     pollMs = 25,
     quietMs = 250,
@@ -283,17 +218,12 @@ export class CodexContextMaintenanceService {
           : null;
         // Recheck the managed run after the asynchronous observation.
         const run = this.runForTask(target);
-        const probeBusy = normalizedId(run?.turnId) === expectedTurnId || activity?.running === true;
+        const turnBusy = normalizedId(run?.turnId) === expectedTurnId || activity?.running === true;
         const currentTime = this.now();
         if (currentTime >= deadline) return false;
-        if (probeBusy) idleSince = null;
+        if (turnBusy) idleSince = null;
         else if (idleSince === null) idleSince = currentTime;
         else if (currentTime - idleSince >= Math.max(1, Number(quietMs) || 250)) {
-          // Naming is presentation maintenance; it never holds admission after
-          // the exact probe became idle, and the catalog retries stale names.
-          void this.preserveProbeTitle(target).catch((error) => {
-            this.logger.warn?.(`Cannot restore Thread title after context probe: ${error.message}`);
-          });
           return true;
         }
         stage = "idle-poll";
@@ -306,24 +236,6 @@ export class CodexContextMaintenanceService {
       clearTimeout(timeout);
     }
   }
-
-  async #observeProbeTurn(threadId, turnId, { timeoutMs, pollMs, settleOnly = false }) {
-    const deadline = this.now() + Math.max(1, Number(timeoutMs) || 10_000);
-    while (true) {
-      const response = await this.readThread(threadId, { fresh: true, includeTurns: true });
-      const thread = response?.thread ?? response;
-      const turn = (Array.isArray(thread?.turns) ? thread.turns : [])
-        .find((candidate) => normalizedId(candidate?.id) === turnId);
-      const status = normalizedId(turn?.status);
-      if (!settleOnly && turn && isCodexContextProbeTurn(turn)) return { state: "materialized", status };
-      if (turn && status && !["inProgress", "in_progress", "running"].includes(status)) {
-        return { state: "terminal", status };
-      }
-      if (this.now() >= deadline) return { state: "timeout", status };
-      await this.sleep(Math.max(1, Number(pollMs) || 100));
-    }
-  }
-
 
   async rotate(target) {
     const sourceThreadId = normalizedId(target?.threadId);
@@ -406,6 +318,12 @@ export class CodexContextMaintenanceService {
       }
       try {
         await this.injectItems(threadId, [compactionItem, ...turnItems]);
+        const loaded = await this.readThread(threadId, { fresh: true, includeTurns: false });
+        const readyThread = loaded?.thread ?? loaded;
+        if (normalizedId(readyThread?.id) !== threadId
+          || readyThread?.status?.type !== "idle") {
+          throw new Error("Новый Thread не подтвердил готовность после переноса контекста");
+        }
         return {
           accepted: true,
           compactionId: expectedId,
@@ -414,7 +332,7 @@ export class CodexContextMaintenanceService {
             transferredTurnId,
             transferredItemCount: turnItems.length,
           } : {}),
-          thread: result.thread,
+          thread: readyThread,
         };
       } catch (error) {
         await this.deleteThread(threadId).catch(() => {});
@@ -425,13 +343,6 @@ export class CodexContextMaintenanceService {
     } finally {
       this.compactions.clearRawItem(sourceThreadId, expectedId);
     }
-  }
-
-  async discardRotationTarget(threadId) {
-    const key = normalizedId(threadId);
-    if (!key) return false;
-    await this.deleteThread(key);
-    return true;
   }
 
   discardCompactionTransfer(threadId, compactionId) {

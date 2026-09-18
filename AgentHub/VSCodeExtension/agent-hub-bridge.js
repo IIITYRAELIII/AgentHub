@@ -103,6 +103,19 @@ function defaultProcessIsAlive(pid) {
   }
 }
 
+async function defaultInstanceOwner(runtimeRoot, releaseRoot) {
+  try {
+    const { readInstanceLockOwner } = await import(pathToFileURL(
+      path.join(releaseRoot, "src", "infrastructure", "process", "instance-lock.mjs"),
+    ).href);
+    if (typeof readInstanceLockOwner !== "function") return undefined;
+    return readInstanceLockOwner(path.join(runtimeRoot, "data"));
+  } catch (error) {
+    if (["ERR_MODULE_NOT_FOUND", "ERR_PACKAGE_PATH_NOT_EXPORTED"].includes(error?.code)) return undefined;
+    throw error;
+  }
+}
+
 async function readJsonFile(file) {
   try {
     return JSON.parse(await readFile(file, "utf8"));
@@ -144,6 +157,7 @@ class AgentHubBridge {
     fetchImpl = globalThis.fetch,
     platform = process.platform,
     startRuntimeHost = defaultStartRuntimeHost,
+    instanceOwner = defaultInstanceOwner,
     waitImpl = wait,
   } = {}) {
     this.moduleRoot = moduleRoot ? path.resolve(moduleRoot) : null;
@@ -161,6 +175,7 @@ class AgentHubBridge {
     this.fetchImpl = fetchImpl;
     this.platform = platform;
     this.startRuntimeHost = startRuntimeHost;
+    this.instanceOwner = instanceOwner;
     this.waitImpl = waitImpl;
     this.runtimeStartPromise = null;
   }
@@ -178,10 +193,9 @@ class AgentHubBridge {
       path.join(this.runtimeRoot, "data", "bot.lock"),
       "utf8",
     ).catch(() => "{}"));
-    const runningRelease = this.processIsAlive(Number(lock.pid))
-      ? String(lock.releaseId ?? "").trim()
-      : "";
-    const release = runningRelease || String(manifest.current ?? "");
+    const currentRelease = String(manifest.current ?? "").trim();
+    const runningRelease = await this.runningRelease(lock, currentRelease);
+    const release = runningRelease || currentRelease;
     if (!/^[A-Za-z0-9._-]+$/u.test(release)) {
       throw new Error("Активный runtime Agent Hub не определён");
     }
@@ -195,6 +209,27 @@ class AgentHubBridge {
     }
     this.resolvedModuleRoot = root;
     return root;
+  }
+
+  async runningRelease(lock, currentRelease) {
+    const pid = Number(lock?.pid);
+    const instanceToken = String(lock?.instanceToken ?? "").trim();
+    const releaseId = String(lock?.releaseId ?? "").trim();
+    if (!this.processIsAlive(pid) || !instanceToken || !/^[A-Za-z0-9._-]+$/u.test(releaseId)) return "";
+    const probeRelease = /^[A-Za-z0-9._-]+$/u.test(currentRelease) ? currentRelease : releaseId;
+    try {
+      const owner = await this.instanceOwner(
+        this.runtimeRoot,
+        path.join(this.runtimeRoot, "releases", probeRelease),
+      );
+      // An extension may update before the runtime pointer switches to a
+      // release that exports the token reader. Preserve the live old owner in
+      // that bounded compatibility window instead of starting a duplicate.
+      if (owner === undefined) return releaseId;
+      return String(owner ?? "") === instanceToken ? releaseId : "";
+    } catch {
+      return "";
+    }
   }
 
   async desktop() {
@@ -284,9 +319,12 @@ class AgentHubBridge {
   async desktopControl(action, params = {}, { commandId = "" } = {}) {
     const { callDesktopControl } = await this.desktop();
     return callDesktopControl(action, params, {
+      runtimeRoot: this.runtimeRoot,
       timeoutMs: [
+        "browse-directory",
         "rotate-stream",
         "submit-bug-report",
+        "usage-sync",
         "usage-sync-now",
         "usage-sync-invite",
         "usage-sync-enroll",
@@ -304,7 +342,11 @@ class AgentHubBridge {
         path.join(this.runtimeRoot, "data", "bot.lock"),
         "utf8",
       ).catch(() => "{}"));
-      if (this.processIsAlive(Number(lock.pid))) return false;
+      const manifest = JSON.parse(await readFile(
+        path.join(this.runtimeRoot, "current.json"),
+        "utf8",
+      ).catch(() => "{}"));
+      if (await this.runningRelease(lock, String(manifest.current ?? "").trim())) return false;
       const launcher = path.join(this.runtimeRoot, "AgentHub.RuntimeHost.exe");
       const info = await stat(launcher);
       if (!info.isFile()) throw new Error("Agent Hub Runtime Host недоступен");
@@ -323,32 +365,6 @@ class AgentHubBridge {
     } catch {
       return this.storedUsageSyncStatus();
     }
-  }
-
-  async usageSyncHttpFallback(url, body = "") {
-    let params = {};
-    try {
-      params = body ? JSON.parse(String(body)) : {};
-    } catch {
-      return jsonResponse({ error: "Некорректные параметры Sync" }, 400);
-    }
-    if (!params || typeof params !== "object" || Array.isArray(params)) {
-      return jsonResponse({ error: "Некорректные параметры Sync" }, 400);
-    }
-    const actions = new Map([
-      ["/api/journal/usage-sync", "usage-sync-now"],
-      ["/api/journal/usage-sync/invite", "usage-sync-invite"],
-      ["/api/journal/usage-sync/enroll", "usage-sync-enroll"],
-      ["/api/journal/usage-sync/device-label", "usage-sync-device-label"],
-    ]);
-    const action = actions.get(url.pathname);
-    if (!action) return jsonResponse({ error: "Not Found" }, 404);
-    const result = await this.control(action, params);
-    return jsonResponse({
-      ok: true,
-      result,
-      usageSync: await this.usageSyncStatus(),
-    });
   }
 
   async localControl(action, params, commandId) {
@@ -689,12 +705,8 @@ class AgentHubBridge {
           },
           body: await response.text(),
         };
-      } catch {
-        try {
-          return await this.usageSyncHttpFallback(url, body);
-        } catch (error) {
-          return jsonResponse({ error: `Sync в VS Code недоступен: ${error.message}` }, 503);
-        }
+      } catch (error) {
+        return jsonResponse({ error: `Sync в VS Code недоступен: ${error.message}` }, 503);
       }
     }
     if (requestMethod !== "GET") {

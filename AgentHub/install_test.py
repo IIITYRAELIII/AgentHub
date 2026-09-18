@@ -290,6 +290,7 @@ class SecureInstallationTests(unittest.TestCase):
             with (
                 mock.patch.object(install, "ROOT", root),
                 mock.patch("AgentHub.install.Path.home", return_value=home),
+                mock.patch.object(install, "extension_source_revision", return_value="a" * 40),
                 mock.patch.object(install.shutil, "copytree", side_effect=OSError("copy failed")),
             ):
                 with self.assertRaisesRegex(OSError, "copy failed"):
@@ -317,6 +318,7 @@ class SecureInstallationTests(unittest.TestCase):
             with (
                 mock.patch.object(install, "ROOT", root),
                 mock.patch("AgentHub.install.Path.home", return_value=home),
+                mock.patch.object(install, "extension_source_revision", return_value="a" * 40),
             ):
                 target = install.install_vscode_extension()
 
@@ -343,6 +345,7 @@ class SecureInstallationTests(unittest.TestCase):
             with (
                 mock.patch.object(install, "ROOT", root),
                 mock.patch("AgentHub.install.Path.home", return_value=home),
+                mock.patch.object(install, "extension_source_revision", return_value="a" * 40),
             ):
                 target = install.install_vscode_extension()
 
@@ -351,6 +354,10 @@ class SecureInstallationTests(unittest.TestCase):
             self.assertEqual(
                 install.extension_source_fingerprint(source),
                 (target / ".agent-hub-source.sha256").read_text(encoding="ascii").strip(),
+            )
+            self.assertEqual(
+                "a" * 40,
+                json.loads((target / ".agent-hub-source.json").read_text(encoding="utf-8"))["sourceRevision"],
             )
 
     def test_current_extension_content_is_not_reinstalled(self) -> None:
@@ -365,12 +372,142 @@ class SecureInstallationTests(unittest.TestCase):
             with (
                 mock.patch.object(install, "ROOT", root),
                 mock.patch("AgentHub.install.Path.home", return_value=home),
+                mock.patch.object(install, "extension_source_revision", return_value="a" * 40),
             ):
                 first = install.install_vscode_extension()
                 second = install.install_vscode_extension()
+                next_revision_plan = install.vscode_extension_install_plan(source_revision="b" * 40)
 
             self.assertEqual(first, second)
             self.assertFalse((first.parent / "test.agent-hub-1.0.1").exists())
+            self.assertEqual("current", next_revision_plan["action"])
+            self.assertEqual("a" * 40, next_revision_plan["provenance"]["sourceRevision"])
+            self.assertEqual(f"revision:{'a' * 40}", next_revision_plan["installedIdentity"])
+
+    def test_extension_provenance_orders_same_package_sources_and_requires_exact_rollback_cas(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "agent-hub"
+            source = root / "VSCodeExtension"
+            source.mkdir(parents=True)
+            package = {"publisher": "test", "name": "agent-hub", "version": "1.0.0"}
+            (source / "package.json").write_text(json.dumps(package), encoding="utf-8")
+            extension = source / "extension.js"
+            extension.write_text("first source", encoding="utf-8")
+            home = Path(temp) / "home"
+            first_revision = "a" * 40
+            second_revision = "b" * 40
+
+            with (
+                mock.patch.object(install, "ROOT", root),
+                mock.patch("AgentHub.install.Path.home", return_value=home),
+                mock.patch.object(
+                    install,
+                    "extension_revision_is_ancestor",
+                    side_effect=lambda previous, current: (previous, current) == (first_revision, second_revision),
+                ),
+            ):
+                first = install.install_vscode_extension(source_revision=first_revision)
+                extension.write_text("second source", encoding="utf-8")
+                second = install.install_vscode_extension(source_revision=second_revision)
+                self.assertEqual("test.agent-hub-1.0.1", second.name)
+
+                extension.write_text("first source", encoding="utf-8")
+                with self.assertRaisesRegex(RuntimeError, "without descendant proof"):
+                    install.install_vscode_extension(source_revision=first_revision)
+                self.assertFalse((second.parent / "test.agent-hub-1.0.2").exists())
+
+                rollback = install.install_vscode_extension(
+                    source_revision=first_revision,
+                    expected_installed_identity=f"revision:{second_revision}",
+                )
+
+            self.assertEqual("test.agent-hub-1.0.2", rollback.name)
+            self.assertEqual("first source", (rollback / "extension.js").read_text(encoding="utf-8"))
+            self.assertNotEqual(first, second)
+
+    def test_extension_profiles_keep_independent_provenance_order(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "agent-hub"
+            source = root / "VSCodeExtension"
+            source.mkdir(parents=True)
+            package = {
+                "publisher": "test",
+                "name": "agent-hub",
+                "displayName": "Agent Hub",
+                "description": "production",
+                "version": "1.0.0",
+                "activationEvents": [],
+                "contributes": {"viewsContainers": {}, "views": {}, "commands": []},
+            }
+            (source / "package.json").write_text(json.dumps(package), encoding="utf-8")
+            extension = source / "extension.js"
+            extension.write_text("shared source", encoding="utf-8")
+            home = Path(temp) / "home"
+
+            with (
+                mock.patch.object(install, "ROOT", root),
+                mock.patch("AgentHub.install.Path.home", return_value=home),
+                mock.patch.object(install, "extension_revision_is_ancestor", return_value=True),
+            ):
+                production_revision = "a" * 40
+                contour_revision = "c" * 40
+                production = install.install_vscode_extension(source_revision=production_revision)
+                contour = install.install_vscode_extension("test-contour", source_revision="a" * 40)
+                extension.write_text("newer contour source", encoding="utf-8")
+                newer_contour = install.install_vscode_extension("test-contour", source_revision=contour_revision)
+                production_identity = install.installed_vscode_extension_identity("production")
+                contour_identity = install.installed_vscode_extension_identity("test-contour")
+
+            self.assertEqual("test.agent-hub-1.0.0", production.name)
+            self.assertEqual("test.agent-hub-test-contour-1.0.0", contour.name)
+            self.assertEqual("test.agent-hub-test-contour-1.0.1", newer_contour.name)
+            self.assertEqual(f"revision:{production_revision}", production_identity)
+            self.assertEqual(f"revision:{contour_revision}", contour_identity)
+
+    def test_prepared_extension_plan_retries_exact_install_but_rejects_a_newer_baseline(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "agent-hub"
+            source = root / "VSCodeExtension"
+            source.mkdir(parents=True)
+            package = {"publisher": "test", "name": "agent-hub", "version": "1.0.0"}
+            (source / "package.json").write_text(json.dumps(package), encoding="utf-8")
+            extension = source / "extension.js"
+            extension.write_text("prepared source", encoding="utf-8")
+            home = Path(temp) / "home"
+            prepared_revision = "a" * 40
+            newer_revision = "b" * 40
+
+            with (
+                mock.patch.object(install, "ROOT", root),
+                mock.patch("AgentHub.install.Path.home", return_value=home),
+                mock.patch.object(install, "extension_revision_is_ancestor", return_value=True),
+            ):
+                plan = install.vscode_extension_install_plan(
+                    source_revision=prepared_revision,
+                    expected_installed_identity="none",
+                )
+                first = install.install_vscode_extension(
+                    source_revision=prepared_revision,
+                    expected_installed_identity="none",
+                    prepared_plan=plan,
+                )
+                retry = install.install_vscode_extension(
+                    source_revision=prepared_revision,
+                    expected_installed_identity="none",
+                    prepared_plan=plan,
+                )
+                self.assertEqual(first, retry)
+                self.assertFalse((first.parent / "test.agent-hub-1.0.1").exists())
+
+                extension.write_text("newer source", encoding="utf-8")
+                install.install_vscode_extension(source_revision=newer_revision)
+                extension.write_text("prepared source", encoding="utf-8")
+                with self.assertRaisesRegex(RuntimeError, "installed identity changed"):
+                    install.install_vscode_extension(
+                        source_revision=prepared_revision,
+                        expected_installed_identity="none",
+                        prepared_plan=plan,
+                    )
 
     def test_test_contour_extension_uses_an_independent_profile(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -396,6 +533,7 @@ class SecureInstallationTests(unittest.TestCase):
             with (
                 mock.patch.object(install, "ROOT", root),
                 mock.patch("AgentHub.install.Path.home", return_value=home),
+                mock.patch.object(install, "extension_source_revision", return_value="a" * 40),
             ):
                 target = install.install_vscode_extension("test-contour")
 
@@ -432,6 +570,7 @@ class SecureInstallationTests(unittest.TestCase):
             with (
                 mock.patch.object(install, "ROOT", root),
                 mock.patch("AgentHub.install.Path.home", return_value=home),
+                mock.patch.object(install, "extension_source_revision", return_value="a" * 40),
                 mock.patch.object(install.shutil, "copytree", side_effect=OSError("copy failed")),
             ):
                 with self.assertRaisesRegex(OSError, "copy failed"):

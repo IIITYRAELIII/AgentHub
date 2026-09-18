@@ -7,7 +7,6 @@ import {
 import { codexTurnAnswer } from "./codex-turn-answers.mjs";
 import { codexThreadHistory } from "../../application/task-history.mjs";
 import { codexThreadWaitingOnApproval } from "./codex-approvals.mjs";
-import { isCodexContextProbeTurn } from "../../domain/codex-context-probe.mjs";
 import {
   mergeCanonicalUserMessages,
   mergedUserMessageSnapshotAuthority,
@@ -202,8 +201,7 @@ export class CodexTaskSnapshotService {
       includeTurns: false,
       priority: "interactive",
     });
-    const turns = (Array.isArray(result.thread?.turns) ? result.thread.turns : [])
-      .filter((turn) => !isCodexContextProbeTurn(turn));
+    const turns = Array.isArray(result.thread?.turns) ? result.thread.turns : [];
     const exact = run.observer !== true || run.exactTurnObserver === true;
     const activity = await d.readRolloutActivity(
       result.thread?.path,

@@ -6,10 +6,11 @@ Restart and compaction are persisted operations with `operationId`, kind, exact
 Stream and Thread, optional provider turn identity, status and revision. They are
 not user turns.
 
-The client may show an explicit compaction boundary with its before/after context
-measurement as a system maintenance marker. The internal probe command and
-answer used to obtain that measurement are not user history and are never shown
-as user or agent conversation cards.
+The client may show an explicit compaction boundary with before/after context
+as a system maintenance marker. Codex uses its preliminary provider estimate,
+labelled as approximate; missing evidence remains unknown. Context maintenance
+does not generate measurement turns, including after rotation. Former marker
+text has no special classification or suppression rule.
 
 Test Contour refresh is a separate persisted infrastructure operation governed
 by REL-001 and ADR-0015. It binds contour root/marker/port and source/release
@@ -42,7 +43,10 @@ provider/process completion owner may commit the exact terminal outcome.
   endpoint serving an old release is not successful cutover. A publication may
   cold-start the verified installed launcher only after process absence is
   confirmed; a failed or timed-out restart RPC never authorizes that fallback.
-- Compaction lifecycle writes use a Thread-scoped asynchronous mutation queue.
+- Compaction lifecycle writes and context-estimate classification/observation use
+  the same Thread-scoped asynchronous mutation queue. Concurrent provider event
+  handlers cannot deliver the estimate before its queued compaction boundary;
+  boundary timestamps are captured at event admission, before persistence waits.
   SQLite contention retries only persistence under the same operation identity,
   never the provider RPC. Completion/failure cancels its watchdog only after the
   durable transition succeeds. A successful enclosing user turn cannot become
@@ -52,7 +56,11 @@ provider/process completion owner may commit the exact terminal outcome.
   Terminal reconciliation accounts their usage without emitting a user response
   or changing the last message. Inline compaction inside an ordinary turn and
   legacy operations lacking that marker do not authorize suppressing its final.
-- Admission is blocked only by an exact active maintenance operation.
+- Ordinary and new-turn admission is blocked by an exact active maintenance
+  operation. An explicit steer targeting an exact active managed turn may be
+  admitted during provider-internal compaction, but its provider dispatch waits
+  durably for that compaction to settle. Hub-owned compaction and rotation
+  reservations remain admission barriers.
 - A restart requested with no selected Stream and Thread is persisted under the
   explicit runtime scope; a target naming only one of them is rejected.
 - Restart is a barrier over durable finals, command receipts, delivery outbox and
@@ -103,6 +111,12 @@ provider/process completion owner may commit the exact terminal outcome.
   Candidate discovery uses terminal-store-owned persisted payload-byte metadata
   and deterministic covering-index order; the read-model owner never scans or
   sorts terminal JSON to discover candidates.
+- Startup also drains the existing durable terminal projection outbox before
+  readiness whether Telegram is enabled or disabled. Only that startup barrier
+  may return abandoned `projecting` rows to their exact pending identities;
+  same-runtime periodic recovery claims pending rows only and cannot steal an
+  active projection. The projection drain has no provider, command or Telegram
+  side effects and is disposed with the runtime timers.
 - Restart UI appears only for a real persisted restart phase and cannot hide a
   final response.
   A disconnected health request alone never asserts a restart. While waiting

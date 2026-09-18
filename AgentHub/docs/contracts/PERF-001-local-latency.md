@@ -104,6 +104,18 @@ stable content-free reason (`absent`, `fingerprint changed`, or the exact
 uncacheable policy reason); they never print environment values or fabricate
 reusable evidence.
 
+Release validation may run at most two test-file processes concurrently, and
+only when the host reports at least four logical CPUs and 4 GiB of free memory.
+A file is parallel-eligible only when its reviewed v2 input declaration proves
+disposable filesystem, lock, Git, port and browser-profile ownership; every
+child receives a unique temporary environment root. Undeclared files remain
+exclusive, and matching shared-resource tags serialize only the files that name
+that resource. This bound protects Hub CPU and memory headroom while allowing
+independent Git and browser fixtures to overlap. Cache decisions report a
+stable content-free reason (`absent`, `fingerprint changed`, or the exact
+uncacheable policy reason); they never print environment values or fabricate
+reusable evidence.
+
 Codex rollout activity fallback runs outside the main Hub event loop. Concurrent
 reads of the same rollout and read options share one in-flight operation. A cold
 fallback physically reads/projects at most the latest 16 MiB plus two bounded
@@ -186,6 +198,14 @@ historical batches read only their exact turn identities, merge repeated
 identities within the batch and commit changed records in one transaction before
 requesting the existing worker projection. Unrelated retained answers and diffs
 do not enter the Hub event loop for these operations.
+Canonical terminal-outbox readback confirms the exact journal record, matching
+immutable accounting fields in the deterministic usage fact and a current turn
+index. Recovery drains at most 100 projection-pending revisions per listing and
+projects batches of at most 16. Attempts use durable least-recently-attempted
+order, so permanent failures cannot starve a later page and a full page never
+creates a zero-delay loop. Transient contention uses one runtime-scoped
+single-flight retry with capped exponential backoff; a bounded low-frequency
+pass retains eventual recovery after that fast budget or an enumeration failure.
 Usage-history aggregation and pricing/image-estimate metadata scans also execute
 in that existing worker. After legacy-read readiness is established, statistics
 reads do not wait on the runtime mutation FIFO or materialize its ledger. They

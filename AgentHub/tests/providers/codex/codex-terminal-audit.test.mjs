@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { CodexTerminalAudit } from "../../../src/providers/codex/codex-terminal-audit.mjs";
-import { CODEX_CONTEXT_PROBE_PROMPT } from "../../../src/domain/codex-context-probe.mjs";
 
 const project = { path: "D:\\workspace" };
 
@@ -177,81 +176,7 @@ test("terminal audit bootstraps recent turns and seeds older rollout positions",
   ]);
 });
 
-test("terminal audit projects an internal context probe for accounting", async () => {
-  const recovered = [];
-  const audit = new CodexTerminalAudit({
-    now: () => Date.parse("2026-08-08T10:01:00.000Z"),
-    listPage: async () => ({
-      data: [thread("probe-thread", "2026-08-08T10:00:30.000Z", "probe.jsonl")],
-      nextCursor: null,
-    }),
-    resolveProject: () => project,
-    statFile: async () => ({ size: 100 }),
-    scanFile: async () => ({
-      terminals: [{
-        turnId: "probe-turn",
-        status: "completed",
-        completedAt: "2026-08-08T10:00:30.000Z",
-        contextProbe: true,
-      }],
-      activeTurns: [],
-      nextOffset: 100,
-    }),
-    reconcile: async (_thread, _project, terminal) => recovered.push(terminal.turnId),
-  });
 
-  await audit.run();
-
-  assert.deepEqual(recovered, ["probe-turn"]);
-});
-
-test("terminal audit projects a late-identified probe for accounting", async () => {
-  let nowMs = Date.parse("2026-08-08T10:00:00.000Z");
-  let scans = 0;
-  const recovered = [];
-  const audit = new CodexTerminalAudit({
-    now: () => nowMs,
-    statusIdleMs: 5_000,
-    listPage: async () => ({
-      data: [thread("probe-thread", nowMs, "probe.jsonl")],
-      nextCursor: null,
-    }),
-    readThread: async () => ({
-      thread: {
-        ...thread("probe-thread", nowMs, "probe.jsonl"),
-        turns: [{
-          id: "probe-turn",
-          status: "completed",
-          items: [{
-            type: "userMessage",
-            clientId: "agent-hub-context-probe:late",
-            content: [{ type: "text", text: CODEX_CONTEXT_PROBE_PROMPT }],
-          }],
-        }],
-      },
-    }),
-    resolveProject: () => project,
-    statFile: async () => ({ size: 100, mtimeMs: nowMs }),
-    scanFile: async () => ({
-      terminals: [],
-      activeTurns: scans++ === 0 ? [{
-        turnId: "probe-turn",
-        startedAt: "2026-08-08T10:00:00.000Z",
-        lastActivityAt: "2026-08-08T10:00:00.000Z",
-      }] : [],
-      nextOffset: 100,
-    }),
-    reconcile: async (_thread, _project, terminal) => recovered.push(terminal.turnId),
-  });
-
-  await audit.run();
-  assert.equal(audit.snapshot().pendingTurns.length, 1);
-  nowMs += 6_000;
-  await audit.run();
-
-  assert.deepEqual(recovered, ["probe-turn"]);
-  assert.equal(audit.snapshot().pendingTurns.length, 0);
-});
 
 test("terminal audit resumes byte positions after a long server outage", async () => {
   const scans = [];

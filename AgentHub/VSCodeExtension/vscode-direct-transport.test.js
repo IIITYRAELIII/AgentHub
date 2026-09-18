@@ -186,6 +186,70 @@ test("VS Code chunk upload preserves raw Blob and cancellation through authentic
   assert.equal(posted.some((message) => message.action === "upload-attachment"), false);
 });
 
+function offlineUploadHarness() {
+  const posted = [];
+  const listeners = new Map();
+  const window = {
+    acquireVsCodeApi: () => ({ postMessage: (message) => posted.push(message) }),
+    addEventListener: (name, listener) => listeners.set(name, listener),
+    clearTimeout, setTimeout,
+    fetch: async () => { throw new Error("HTTP must remain disabled"); },
+    location: { href: "vscode-webview://agent-hub/index.html" },
+    requestAnimationFrame: () => 1,
+  };
+  vm.runInNewContext(bootstrap, {
+    AbortSignal, console, Headers, Proxy, Reflect, Response, URL, URLSearchParams, window, btoa,
+    document: { addEventListener() {}, body: {}, getAnimations: () => [], hidden: false },
+    MutationObserver: class { observe() {} disconnect() {} },
+  });
+  const respond = (data) => listeners.get("message")({ data });
+  respond({ type: "agenthub:session-result", id: posted[0].id, ok: false, error: "Web App disabled" });
+  return { window, posted, respond };
+}
+
+test("VS Code without web components transfers one bounded chunk through IPC and retains upload identity", async () => {
+  const { window, posted, respond } = offlineUploadHarness();
+  assert.equal(await window.__agentHubDirectTransport.available(), false);
+  const source = Buffer.alloc(1024 * 1024, 137);
+  const path = "/api/attachment-upload?id=original-upload&index=2";
+  const response = window.fetch(path, {
+    method: "PUT", body: new Blob([source]),
+    headers: { "X-Agent-Hub-Chunk-Sha256": "a".repeat(64) },
+  });
+  while (!posted.some((message) => message.type === "agenthub:http")) await new Promise(setImmediate);
+  const request = posted.find((message) => message.type === "agenthub:http");
+  assert.equal(request.path, path);
+  assert.equal(request.bodyEncoding, "base64");
+  assert.deepEqual(Buffer.from(request.body, "base64"), source);
+  assert.equal(request.headers["x-agent-hub-chunk-sha256"], "a".repeat(64));
+  respond({ type: "agenthub:http-result", id: request.id, status: 409, body: '{"error":"Upload chunk conflict"}' });
+  const result = await response;
+  assert.equal(result.status, 409);
+  assert.equal((await result.json()).error, "Upload chunk conflict");
+  for (const session of posted.filter((message) => message.type === "agenthub:session")) {
+    respond({ type: "agenthub:session-result", id: session.id, ok: false });
+  }
+});
+
+test("VS Code IPC upload rejects oversized chunks before posting and aborts pending preparation", async () => {
+  const { window, posted, respond } = offlineUploadHarness();
+  await assert.rejects(window.fetch("/api/attachment-upload?id=original-upload&index=0", {
+    method: "PUT", body: new Blob([Buffer.alloc(1024 * 1024 + 1)]),
+  }), /1 МиБ/u);
+  assert.equal(posted.some((message) => message.type === "agenthub:http"), false);
+  const controller = new AbortController();
+  const result = window.fetch("/api/attachment-upload?id=original-upload", { signal: controller.signal });
+  while (!posted.some((message) => message.type === "agenthub:http")) await new Promise(setImmediate);
+  controller.abort();
+  await assert.rejects(result, { name: "AbortError" });
+  const request = posted.find((message) => message.type === "agenthub:http");
+  respond({ type: "agenthub:http-result", id: request.id, status: 200, body: "{}" });
+  assert.equal(posted.filter((message) => message.type === "agenthub:http").length, 1);
+  for (const session of posted.filter((message) => message.type === "agenthub:session")) {
+    respond({ type: "agenthub:session-result", id: session.id, ok: false });
+  }
+});
+
 function bootstrapHarness(fetchImpl) {
   const posted = [];
   const listeners = new Map();
@@ -293,68 +357,4 @@ test("VS Code health falls back to IPC while no direct session is available", as
 
   assert.equal(response.status, 200);
   assert.equal((await response.json()).ready, true);
-});
-
-function offlineUploadHarness() {
-  const posted = [];
-  const listeners = new Map();
-  const window = {
-    acquireVsCodeApi: () => ({ postMessage: (message) => posted.push(message) }),
-    addEventListener: (name, listener) => listeners.set(name, listener),
-    clearTimeout, setTimeout,
-    fetch: async () => { throw new Error("HTTP must remain disabled"); },
-    location: { href: "vscode-webview://agent-hub/index.html" },
-    requestAnimationFrame: () => 1,
-  };
-  vm.runInNewContext(bootstrap, {
-    AbortSignal, console, Headers, Proxy, Reflect, Response, URL, URLSearchParams, window, btoa,
-    document: { addEventListener() {}, body: {}, getAnimations: () => [], hidden: false },
-    MutationObserver: class { observe() {} disconnect() {} },
-  });
-  const respond = (data) => listeners.get("message")({ data });
-  respond({ type: "agenthub:session-result", id: posted[0].id, ok: false, error: "Web App disabled" });
-  return { window, posted, respond };
-}
-
-test("VS Code without web components transfers one bounded chunk through IPC and retains upload identity", async () => {
-  const { window, posted, respond } = offlineUploadHarness();
-  assert.equal(await window.__agentHubDirectTransport.available(), false);
-  const source = Buffer.alloc(1024 * 1024, 137);
-  const path = "/api/attachment-upload?id=original-upload&index=2";
-  const response = window.fetch(path, {
-    method: "PUT", body: new Blob([source]),
-    headers: { "X-Agent-Hub-Chunk-Sha256": "a".repeat(64) },
-  });
-  while (!posted.some((message) => message.type === "agenthub:http")) await new Promise(setImmediate);
-  const request = posted.find((message) => message.type === "agenthub:http");
-  assert.equal(request.path, path);
-  assert.equal(request.bodyEncoding, "base64");
-  assert.deepEqual(Buffer.from(request.body, "base64"), source);
-  assert.equal(request.headers["x-agent-hub-chunk-sha256"], "a".repeat(64));
-  respond({ type: "agenthub:http-result", id: request.id, status: 409, body: '{"error":"Upload chunk conflict"}' });
-  const result = await response;
-  assert.equal(result.status, 409);
-  assert.equal((await result.json()).error, "Upload chunk conflict");
-  for (const session of posted.filter((message) => message.type === "agenthub:session")) {
-    respond({ type: "agenthub:session-result", id: session.id, ok: false });
-  }
-});
-
-test("VS Code IPC upload rejects oversized chunks before posting and aborts pending preparation", async () => {
-  const { window, posted, respond } = offlineUploadHarness();
-  await assert.rejects(window.fetch("/api/attachment-upload?id=original-upload&index=0", {
-    method: "PUT", body: new Blob([Buffer.alloc(1024 * 1024 + 1)]),
-  }), /1 МиБ/u);
-  assert.equal(posted.some((message) => message.type === "agenthub:http"), false);
-  const controller = new AbortController();
-  const result = window.fetch("/api/attachment-upload?id=original-upload", { signal: controller.signal });
-  while (!posted.some((message) => message.type === "agenthub:http")) await new Promise(setImmediate);
-  controller.abort();
-  await assert.rejects(result, { name: "AbortError" });
-  const request = posted.find((message) => message.type === "agenthub:http");
-  respond({ type: "agenthub:http-result", id: request.id, status: 200, body: "{}" });
-  assert.equal(posted.filter((message) => message.type === "agenthub:http").length, 1);
-  for (const session of posted.filter((message) => message.type === "agenthub:session")) {
-    respond({ type: "agenthub:session-result", id: session.id, ok: false });
-  }
 });

@@ -37,11 +37,6 @@ const LOCAL_ONLY_ACTIONS = Object.freeze([
   "command-trace-timeline",
   "command-trace-percentiles",
   "command-trace-stats",
-  "usage-sync-status",
-  "usage-sync-now",
-  "usage-sync-invite",
-  "usage-sync-enroll",
-  "usage-sync-device-label",
 ]);
 const DEVICE_PAIRING_SOURCES = new Set(["desktop-control", "local-mini-app", "trusted-device"]);
 

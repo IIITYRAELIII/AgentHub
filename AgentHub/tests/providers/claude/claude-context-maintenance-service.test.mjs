@@ -135,7 +135,6 @@ test("a compaction turn that ends without a boundary is not reported as success"
 test("Claude measures its own context and never rotates the thread", () => {
   const { instance } = service();
   assert.equal(instance.measuresContextItself, true);
-  assert.throws(() => instance.probeContext(), /скрытый замер/u);
   assert.throws(() => instance.rotate(), /только для Codex/u);
   assert.throws(() => instance.rotateCompacted(), /только для Codex/u);
 });

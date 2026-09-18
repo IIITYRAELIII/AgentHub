@@ -835,8 +835,8 @@
   const board = document.querySelector("[data-task-board]");
   const columns = document.querySelector("[data-task-board-columns]");
   const scopeStrip = document.querySelector("[data-task-board-scopes]");
-  const filterToggle = document.querySelector("[data-task-board-filter-toggle]");
-  const filterControls = document.querySelector("[data-task-board-filter-controls]");
+  const scopeSelect = document.querySelector("[data-task-board-scope-select]");
+  const statusFilter = document.querySelector("[data-task-board-status-filter]");
   const settingsToggle = document.querySelector("[data-task-board-settings-toggle]");
   const settingsPanel = document.querySelector("#task-board-settings");
   const groupingToggle = document.querySelector('[data-task-board-grouping-toggle]');
@@ -936,8 +936,9 @@
     deferredInputs: [],
     statusLanguage: storedTaskStatusLanguage(),
     completedOnly: false,
-    filtersOpen: false,
-    boardView: storedBoardPreference("view", ["statuses", "workspaces"], "statuses"),
+    statusFilter: "all",
+    boardView: storedBoardPreference("view", ["statuses", "workspaces", "list"],
+      window.matchMedia?.("(max-width: 959px)").matches ? "list" : "statuses"),
     groupByWorkspace: storedBoardPreference("group-workspaces", ["on", "off"], "on") === "on",
     collapsedBoardGroups: new Set(),
     taskOpenMode: storedBoardPreference("task-open", ["modal", "side", "both"], "both"),
@@ -2180,7 +2181,7 @@
     for (const id of order) {
       const groupTasks = groups.get(id);
       const workspace = id.startsWith('workspace:') ? workspaceById(id.slice(10)) : null;
-      const title = id === 'notes' ? 'Заметки' : workspace?.name || 'Workspace недоступен';
+      const title = id === 'backlog' ? 'Бэклог' : id === 'notes' ? 'Заметки' : workspace?.name || 'Workspace недоступен';
       const lane = node('details', {
         class: 'task-board-lane', 'data-task-board-group': id,
         open: state.collapsedBoardGroups.has(id) ? null : '',
@@ -2222,6 +2223,7 @@
   }
 
   function selectedScopeTasks(tasks) {
+    if (state.boardScope === "backlog") return tasks.filter((task) => task.bucket === "backlog");
     if (state.boardScope === "notes") return tasks.filter((task) => task.bucket === "notes");
     if (state.boardScope.startsWith("folder:")) {
       const folder = state.boardScope.slice(7);
@@ -2291,9 +2293,12 @@
 
   function renderScopeStrip() {
     if (!scopeStrip) return;
+    const workspaceCount = document.querySelector("[data-task-board-workspace-count]");
+    if (workspaceCount) workspaceCount.textContent = String(state.workspaces.length);
     const openTasks = (predicate) => tasksForMode(state.tasks, { completedOnly: state.completedOnly }).filter(predicate).length;
     const scopes = [
       { id: "all", label: "Все задачи", count: openTasks(() => true) },
+      { id: "backlog", label: "Бэклог", count: openTasks((task) => task.bucket === "backlog") },
       ...state.workspaces.map((workspace) => ({
         id: `workspace:${workspace.id}`,
         label: workspace.name,
@@ -2338,6 +2343,14 @@
       }, [node("div", { class: "task-board-folder-heading" }, [main, toggle]), memberList]));
     }
     scopeStrip.replaceChildren(...groups);
+    if (scopeSelect) {
+      const options = [
+        ...orderedScopes,
+        ...[...folders].map((folder) => ({ id: `folder:${folder}`, label: `Папка: ${folder}` })),
+      ];
+      scopeSelect.replaceChildren(...options.map((scope) => node("option", { value: scope.id, text: scope.label })));
+      scopeSelect.value = state.boardScope;
+    }
   }
 
   function renderBoard() {
@@ -2347,7 +2360,8 @@
   function renderBoardContent() {
     const scrollSnapshot = taskBoardScrollSnapshot({ workspaces: boardColumnRegions.columns });
     pointerTaskDrag.cancelForRerender();
-    const visibleTasks = tasksForMode(state.tasks, { completedOnly: state.completedOnly });
+    const visibleTasks = tasksForMode(state.tasks, { completedOnly: state.completedOnly })
+      .filter((task) => state.statusFilter === "all" || taskWorkflowStatus(task) === state.statusFilter);
     const emptyText = state.completedOnly ? "Нет закрытых задач" : "Нет задач";
     if ((state.boardScope.startsWith("workspace:") && !workspaceById(state.boardScope.slice(10)))
       || (state.boardScope.startsWith("folder:") && !state.workspaces.some((workspace) => workspaceFolder(workspace) === state.boardScope.slice(7)))) {
@@ -2356,7 +2370,10 @@
     board.classList.toggle("has-workspace-context", showsWorkspaceContext());
     board.classList.toggle("is-workspace-view", state.boardView === "workspaces");
     board.classList.toggle('is-status-view', state.boardView === 'statuses');
-    const grouped = state.boardView === 'statuses' && state.groupByWorkspace;
+    board.classList.toggle('is-list-view', state.boardView === 'list');
+    const singleStatusView = state.boardView === 'statuses' && state.statusFilter !== 'all';
+    board.classList.toggle('has-status-filter', singleStatusView);
+    const grouped = state.boardView === 'statuses' && state.groupByWorkspace && state.boardScope !== "backlog";
     board.classList.toggle('is-grouped-view', grouped);
     if (groupingToggle) groupingToggle.checked = state.groupByWorkspace;
     if (groupingSetting) groupingSetting.hidden = state.boardView !== 'statuses';
@@ -2379,16 +2396,22 @@
       );
     }
     board.classList.toggle("is-completed-only", state.completedOnly);
-    if (filterControls) filterControls.hidden = !state.filtersOpen;
-    filterToggle?.setAttribute("aria-expanded", String(state.filtersOpen));
+    if (statusFilter) {
+      statusFilter.replaceChildren(node("option", { value: "all", text: "Все статусы" }),
+        ...TASK_WORKFLOW_STATUSES.map((status) => node("option", {
+          value: status, text: taskWorkflowPresentation({ workflowStatus: status }, state.statusLanguage).full,
+        })));
+      statusFilter.value = state.statusFilter;
+    }
     renderScopeStrip();
-    const rendered = [renderColumn({
+    const rendered = singleStatusView ? [] : [renderColumn({
       id: "backlog", title: "Бэклог", subtitle: "Неразобранные входящие",
       tasks: visibleTasks.filter((task) => task.bucket === "backlog"), accent: "is-backlog", emptyText,
       acceptsTaskDrops: !state.completedOnly,
     })];
-    const scopedTasks = selectedScopeTasks(visibleTasks);
-    const statuses = state.completedOnly ? ["done"] : TASK_WORKFLOW_STATUSES.filter((status) => (
+    const scopedTasks = singleStatusView && state.boardScope === "all"
+      ? visibleTasks : selectedScopeTasks(visibleTasks);
+    const statuses = singleStatusView ? [state.statusFilter] : state.boardScope === "backlog" ? [] : state.completedOnly ? ["done"] : TASK_WORKFLOW_STATUSES.filter((status) => (
       status !== "done" || scopedTasks.some((task) => taskWorkflowStatus(task) === "done")
     ));
     if (grouped) rendered.push(renderStatusMatrix(scopedTasks, statuses, emptyText));
@@ -2407,8 +2430,9 @@
       }));
     }
     if (state.boardView === "workspaces") {
-      const workspaceColumns = new Map([["backlog", rendered[0]]]);
+      const workspaceColumns = new Map(rendered[0] ? [["backlog", rendered[0]]] : []);
       for (const workspace of state.workspaces) {
+        if (state.boardScope !== "all" && !selectedScopeTasks([{ bucket: "workspace", workspaceId: workspace.id }]).length) continue;
         const id = `workspace:${workspace.id}`;
         workspaceColumns.set(id, renderColumn({
           id, title: workspace.name, subtitle: workspace.comment ?? "",
@@ -2416,13 +2440,21 @@
           workspace, movable: !state.completedOnly, emptyText,
         }));
       }
-      workspaceColumns.set("notes", renderColumn({
+      if (["all", "notes"].includes(state.boardScope)) workspaceColumns.set("notes", renderColumn({
         id: "notes", title: "Заметки", subtitle: state.notesComment,
         tasks: visibleTasks.filter((task) => task.bucket === "notes"),
         accent: "is-notes", movable: !state.completedOnly, emptyText,
       }));
       rendered.splice(0, rendered.length, ...orderedDashboardColumnIds(state.columnOrder, workspaceColumns.keys())
         .map((id) => workspaceColumns.get(id)));
+    }
+    if (state.boardView === "list") {
+      const listTasks = state.boardScope === "all" ? visibleTasks : scopedTasks;
+      rendered.splice(0, rendered.length, renderColumn({
+        id: "task-list", title: scopeSelect?.selectedOptions?.[0]?.textContent || "Задачи",
+        tasks: listTasks, acceptsTaskDrops: false, emptyText,
+        workspace: state.boardScope.startsWith("workspace:") ? workspaceById(state.boardScope.slice(10)) : null,
+      }));
     }
     replaceBoardColumnsPreservingScroll(boardColumnRegions.columns, rendered);
     restoreTaskBoardScroll({ workspaces: boardColumnRegions.columns }, scrollSnapshot);
@@ -2462,10 +2494,16 @@
   completedToggle?.addEventListener("click", () => {
     closeTaskCard();
     state.completedOnly = !state.completedOnly;
+    state.statusFilter = "all";
     renderBoard();
   });
-  filterToggle?.addEventListener("click", () => {
-    state.filtersOpen = !state.filtersOpen;
+  scopeSelect?.addEventListener("change", () => {
+    state.boardScope = scopeSelect.value;
+    state.creatingWorkspaceId = null;
+    renderBoard();
+  });
+  statusFilter?.addEventListener("change", () => {
+    state.statusFilter = statusFilter.value;
     renderBoard();
   });
   function positionBoardSettings() {

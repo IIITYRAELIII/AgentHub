@@ -5,7 +5,6 @@ import {
   codexTurnSnapshot,
   describeCodexItem,
 } from "../../../src/providers/codex/codex-task-snapshot-service.mjs";
-import { CODEX_CONTEXT_PROBE_PROMPT } from "../../../src/domain/codex-context-probe.mjs";
 import { codexRolloutTurnState } from "../../../src/providers/codex/codex-rollout-activity.mjs";
 
 test("active commentary stays in its trace and never becomes an answer or final", () => {
@@ -280,63 +279,6 @@ test("Codex snapshot service preserves complete App Server users while increment
   ]);
 });
 
-test("Codex snapshot service never selects a context probe from thread reads", async () => {
-  const selected = [];
-  const readOptions = [];
-  const userTurn = { id: "user-turn", status: "completed", items: [] };
-  const probeTurn = {
-    id: "probe-turn",
-    status: "inProgress",
-    items: [{
-      type: "userMessage",
-      clientId: "agent-hub-context-probe:probe-1",
-      content: [{ type: "text", text: CODEX_CONTEXT_PROBE_PROMPT }],
-    }],
-  };
-  const service = new CodexTaskSnapshotService({
-    knownRolloutPath: async () => "",
-    readRolloutActivity: async () => ({
-      activeTurnIds: ["probe-turn"],
-      activityAtMsByTurnId: {},
-      completedAtMsByTurnId: {},
-      startedAtMsByTurnId: {},
-      lastActivityAtMs: 0,
-    }),
-    rolloutTurnState: () => ({}),
-    capturedOwner: () => null,
-    runtimeActive: async () => true,
-    resolveOwner: async () => "agent-hub",
-    readThread: async (_threadId, options) => {
-      readOptions.push(options);
-      return { thread: { turns: [userTurn, probeTurn] } };
-    },
-    selectTurn: (turns) => {
-      selected.push(...turns);
-      return turns[0];
-    },
-    turnSnapshot: () => ({ completed: true, active: false, status: "completed" }),
-    turnStartedAt: () => null,
-    describeItem: () => "stage",
-    hubOwner: () => "agent-hub",
-    agentHubPid: () => 42,
-    modelLabel: (value) => value,
-    runtimeLabel: (value) => value,
-    delay: async () => {},
-    reasoningLabels: {},
-    logger: { warn() {} },
-    reindexRun: () => {},
-  });
-
-  const snapshot = await service.read({
-    observer: false,
-    threadId: "thread-1",
-    turnId: "user-turn",
-  });
-
-  assert.equal(snapshot.turnId, "user-turn");
-  assert.deepEqual(selected.map((turn) => turn.id), ["user-turn"]);
-  assert.equal(readOptions[0].priority, "interactive");
-});
 
 test("Codex snapshot service reads a delayed final answer and applies runtime projection", async () => {
   let reads = 0;
