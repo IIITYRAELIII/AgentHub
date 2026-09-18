@@ -405,11 +405,15 @@ test("disposable public squash bootstrap reaches real Test then canonical Await 
   let candidateBuilds = 0;
   const releasePreflight = {
     withAwaitTransition: async (_workspaceId, operation) => operation(),
+    validateAwaitAcceptance: async ({ acceptingTask }) => ({
+      planRevision: "validated-bootstrap-plan",
+      task: { taskId: acceptingTask.id, resultCommit: newResult },
+    }),
     prepareAwaitSet: async ({ workspaceId, acceptingTask = null, commitPrepared = null }) => {
       candidateBuilds += 1;
       const prepared = { workspaceId, planRevision: `plan-${candidateBuilds}`,
         taskIds: [survivorCreated.id], releaseCandidates: [{ repositoryRoot,
-          preReleaseHead: acceptingTask?.gitReferences?.[0]?.resultCommit ?? "candidate" }] };
+          preReleaseHead: newResult }] };
       if (commitPrepared) await commitPrepared(prepared);
       return prepared;
     },
@@ -496,8 +500,11 @@ test("disposable public squash bootstrap reaches real Test then canonical Await 
     request_id: "survivor-await", task_id: survivorCreated.id, status: "awaiting_implementation",
     expected_task_revision: confirmed.task.revision, expected_workflow_status: "testing" });
   assert.equal(awaited.workflowStatus, "awaiting_implementation");
-  assert.equal(awaited.releaseCandidate.status, "ready");
+  assert.equal(awaited.releaseCandidate.status, "invalidated");
   assert.equal(awaited.gitReferences[0].resultCommit, newResult);
+  const rebuilt = await releasePreflight.prepareAwaitSet({ workspaceId: workspace.id });
+  assert.equal(rebuilt.planRevision, `plan-${candidateBuilds}`);
+  assert.deepEqual(rebuilt.taskIds, [survivorCreated.id]);
   assert.ok(candidateBuilds >= 1);
   assert.equal(await readFile(path.join(survivorWorkspace.projectRoot, "approved-dirty.txt"), "utf8")
     .catch((error) => error.code), "ENOENT");
@@ -579,6 +586,10 @@ test("production cutover composer writes the canonical receipt and leaves unrela
   const releasePreflight = {
     preflight: async () => ({}),
     withAwaitTransition: async (_workspaceId, operation) => operation(),
+    validateAwaitAcceptance: async ({ acceptingTask }) => ({
+      planRevision: "validated-cutover-plan",
+      task: { taskId: acceptingTask.id, resultCommit: sha },
+    }),
     prepareAwaitSet: async (options) => {
       const prepared = { workspaceId: workspace.id, planRevision: "plan-after-cutover", taskIds: [created.id], releaseCandidates: [] };
       await options.commitPrepared(prepared);
@@ -607,7 +618,7 @@ test("production cutover composer writes the canonical receipt and leaves unrela
     }),
   });
   assert.equal(result.result.workflowStatus, "awaiting_implementation");
-  assert.equal(result.result.releaseCandidate.status, "ready");
+  assert.equal(result.result.releaseCandidate.status, "invalidated");
 
   readCatalog = new WorkspaceCatalogStore({ databaseFile });
   await readCatalog.load();
@@ -699,6 +710,7 @@ test("production cross-Task cutover stays in Test after candidate composition fa
   const releasePreflight = {
     preflight: async () => ({}),
     withAwaitTransition: async (_workspaceId, operation) => operation(),
+    validateAwaitAcceptance: async () => { throw new Error("injected PreRelease validation failure"); },
     prepareAwaitSet: async () => { throw new Error("injected PreRelease rebuild failure"); },
   };
   const openRuntime = () => openTaskAwaitCutoverRuntime({
@@ -858,6 +870,10 @@ test("production cross-Task pending recovery preserves its immutable source evid
     releasePreflight: {
       preflight: async () => ({}),
       withAwaitTransition: async (_workspaceId, operation) => operation(),
+      validateAwaitAcceptance: async ({ acceptingTask }) => ({
+        planRevision: "pending-cross-validation",
+        task: { taskId: acceptingTask.id, resultCommit: "c".repeat(40) },
+      }),
       prepareAwaitSet: async (options) => {
         const prepared = { planRevision: "pending-cross-plan" };
         await options.commitPrepared(prepared);

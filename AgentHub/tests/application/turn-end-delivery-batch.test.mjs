@@ -47,7 +47,8 @@ async function fixture(t, count = 3) {
       return { projected: true };
     },
     rememberLastMessage: (value) => events.push(["message", value.turnId]),
-    rememberSeenTurn() {}, saveState: async () => {}, logger: { error() {} },
+    rememberSeenTurn() {}, saveState: async () => {},
+    logger: { error: (...args) => events.push(["error", ...args]) },
   });
   return { root, terminal, completions, service, events, rows };
 }
@@ -120,7 +121,7 @@ test("same-revision live delivery cannot steal a staged claim and late correctio
   assert.equal((await state.terminal.get(original)).finalAnswer, "Richer exact final");
 });
 
-test("a correction during saved-state persistence keeps the newer message and cannot acknowledge the superseded batch revision", async (t) => {
+test("a correction during saved-state persistence delivers only the newer terminal revision", async (t) => {
   const state = await fixture(t, 1);
   const original = state.completions[0];
   original.clientUserMessageId = "command-1";
@@ -132,9 +133,9 @@ test("a correction during saved-state persistence keeps the newer message and ca
   state.service.rememberLastMessage = (...args) => lastMessages.rememberLastMessage(...args);
   state.service.logger = { error: (...args) => state.events.push(["error", ...args]) };
   let visible = 0;
-  let telegram = 0;
+  const telegram = [];
   state.service.commandTrace = { recordBestEffort: () => { visible += 1; } };
-  state.service.finalizeRunDelivery = async () => { telegram += 1; };
+  state.service.finalizeRunDelivery = async (_run, options) => { telegram.push(options); };
   state.service.saveState = async () => {
     await state.terminal.commit({ ...original, finalAnswer: "Newer final" });
     lastMessages.rememberLastMessage(original, "Newer final", { terminalRevision: 2 });
@@ -142,7 +143,8 @@ test("a correction during saved-state persistence keeps the newer message and ca
   await state.service.retryPending();
   assert.equal(lastMessages.lastMessage(original), "Newer final", JSON.stringify(state.events));
   assert.equal(visible, 0);
-  assert.equal(telegram, 0);
+  assert.equal(telegram.length, 1);
+  assert.equal(telegram[0].message, "Newer final");
   assert.deepEqual(state.rows().map((row) => [row.terminal_revision, row.state]), [[1, "superseded"], [2, "pending"]]);
 });
 
@@ -180,7 +182,8 @@ test("automatic and explicit work-log records persist before one real canonical 
   try {
     await state.service.retryPending();
     assert.equal(projections, 1);
-    assert.ok(state.rows().every((row) => row.state === "delivered"));
+    const statuses = await Promise.all(state.completions.map((completion) => runJournal.turnProjectionStatus(completion)));
+    assert.ok(state.rows().every((row) => row.state === "delivered"), JSON.stringify({ events: state.events, statuses }));
     const snapshot = JSON.stringify(await journal.snapshot());
     for (const value of state.completions) assert.ok(snapshot.includes(value.finalAnswer));
     assert.equal((await journal.getRecord(state.completions[1])).workLogId, state.completions[1].message.workLogId);
@@ -255,10 +258,10 @@ test("canonical recovery preserves enriched partial success and does not infer a
 
   await state.service.retryPendingProjections();
   const repairedProjection = await runJournal.turnProjectionStatus(enriched);
-  assert.equal(repairedProjection.usageFactMatches, true);
+  assert.equal(repairedProjection.usageFactMatches, true, JSON.stringify(repairedProjection));
   assert.equal(repairedProjection.indexFresh, true);
   assert.ok(repairedProjection.projectionSource.revision >= repairedProjection.recordRevision);
-  assert.equal(repairedProjection.current, true);
+  assert.equal(repairedProjection.current, true, JSON.stringify(repairedProjection));
   const after = await usage.getTurn(enriched);
   assert.equal(after.taskTitle, before.taskTitle);
   assert.equal(after.prompt, before.prompt);

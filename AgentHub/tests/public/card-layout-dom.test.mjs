@@ -602,8 +602,8 @@ test("Prompt-шаблоны показывают значение в одной 
     });
     assert.equal(rows.sameRow, true, "подпись и значение Prompt-шаблонов оказались в разных строках");
     assert.ok(rows.valueRight > rows.nameRight, "значение не прижато к правому краю строки");
-    assert.ok(rows.addWidth < rows.editorWidth * 0.6,
-      `кнопка входа в форму шаблонов растянулась на ${rows.addWidth} из ${rows.editorWidth}`);
+    assert.ok(rows.addWidth >= rows.editorWidth * 0.9,
+      `кнопка входа в форму шаблонов не заняла строку: ${rows.addWidth} из ${rows.editorWidth}`);
   } finally {
     await browser.close();
   }

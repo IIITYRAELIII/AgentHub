@@ -1790,7 +1790,7 @@ test("message attachments keep timestamps, previews and an explicit open action"
   assert.match(client, /agentHub\.on\("attachment:load"/u);
   assert.match(client, /bridgeCall\("resolve-attachment", \{ id \}\)/u);
   assert.match(extension, /action === "resolve-attachment"/u);
-  assert.match(html, /data-resource-context-menu[\s\S]*data-resource-action="open"[\s\S]*data-resource-action="copy"[\s\S]*data-resource-action="save"/u);
+  assert.match(html, /data-resource-context-menu[\s\S]*data-resource-action="save"[\s\S]*data-resource-action="open"[\s\S]*data-resource-action="copy"/u);
   assert.match(client, /agentHub\.on\("resource:copy"[\s\S]*agentHub\.on\("resource:save"/u);
   assert.match(client, /value\.url = `\/api\/message-attachment\/\$\{encodeURIComponent\(id\)\}`/u);
   assert.doesNotMatch(client, /window\.open\(url, "_blank"/u);
@@ -1813,7 +1813,7 @@ test("background navigation is empty and settings expose the bug report flow", (
   assert.match(client, /control\("submit-bug-report"/u);
   assert.match(app, /if \(bugReportForm\) bugReportForm\.hidden = next\.formHidden/u);
   assert.match(app, /bugReportToggle\?\.setAttribute\("aria-expanded", String\(next\.expanded\)\)/u);
-  assert.match(client, /LONG_CONTROL_ACTIONS = new Set\(\["rotate-stream", "submit-bug-report"\]\)/u);
+  assert.match(client, /LONG_CONTROL_ACTIONS = new Set\(\["rotate-stream", "submit-bug-report", "browse-directory"\]\)/u);
   assert.match(client, /LONG_CONTROL_ACTIONS\.has\(action\) \? LONG_CONTROL_TIMEOUT_MS/u);
 });
 

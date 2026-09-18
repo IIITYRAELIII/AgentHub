@@ -31,6 +31,7 @@ function claimOnlyTaskGit(overrides = {}) {
       async assertOwned() {},
       async beginProcessTreeGuard() { throw new Error("unexpected test guard"); },
     }),
+    withTaskRepositoryRecoveryLock: async (_taskId, _projectRoot, taskLease, operation) => operation(taskLease),
     prepareOwned: async (params) => service.prepare(params),
     snapshotAndMergeOwned: async () => { throw new Error("unexpected test snapshot"); },
     cleanupOwned: async () => { throw new Error("unexpected test cleanup"); },
@@ -400,6 +401,7 @@ async function fixture(context, {
       signal: new AbortController().signal,
       async assertOwned() {},
     }),
+    withTaskRepositoryRecoveryLock: async (_taskId, _projectRoot, taskLease, operation) => operation(taskLease),
     cleanupPreview: async (taskId, { gitReferences = [] } = {}) => ({
       taskId, workspaces: [], gitReferences, dirty: false,
       unpublished: gitReferences.filter((item) => item.published === false), deleting: [],
@@ -423,6 +425,13 @@ async function fixture(context, {
     },
     releasePreflight: {
       withAwaitTransition: async (_workspaceId, operation) => operation(),
+      validateAwaitAcceptance: async ({ acceptingTask }) => {
+        const task = taskBoard.task(acceptingTask.id);
+        return {
+          planRevision: `plan-${task.revision}`,
+          task: { taskId: task.id, resultCommit: task.gitReferences[0].resultCommit },
+        };
+      },
       prepareAwaitSet: async (options) => {
         const result = { releaseCandidates: [] };
         if (options.commitPrepared) await options.commitPrepared(result);
