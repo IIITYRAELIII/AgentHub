@@ -322,7 +322,9 @@ function normalizedFrozenTasks(tasks = []) {
 }
 
 async function selectedResultSuccessorReuse({ checkpoint, clone, tasks, baseCommit, workspaceId }) {
-  if (checkpoint?.phase !== "frozen" || !checkpoint.manifestHash || !checkpoint.preReleaseHead) return null;
+  const checkpointPhase = String(checkpoint?.phase ?? "");
+  if (!["prepared", "frozen"].includes(checkpointPhase)
+      || !checkpoint.manifestHash || !checkpoint.preReleaseHead) return null;
   const manifestFile = path.join(clone.evidenceRoot, `${checkpoint.manifestHash}.json`);
   if (checkpoint.manifestFile && !samePath(checkpoint.manifestFile, manifestFile)) return null;
   const bytes = await readFile(manifestFile).catch((error) => {
@@ -333,14 +335,55 @@ async function selectedResultSuccessorReuse({ checkpoint, clone, tasks, baseComm
   const previous = JSON.parse(bytes.toString("utf8"));
   if (previous.schemaVersion !== 2
       || previous.baseCommit !== baseCommit
-      || previous.publication?.head !== checkpoint.preReleaseHead
-      || previous.publication?.preparedHead !== checkpoint.publicationFreeze?.preparedHead
       || (workspaceId && previous.workspaceId && String(previous.workspaceId) !== String(workspaceId))) return null;
+  if (checkpointPhase === "frozen"
+      && (previous.publication?.head !== checkpoint.preReleaseHead
+        || previous.publication?.preparedHead !== checkpoint.publicationFreeze?.preparedHead)) return null;
   const branchHead = await gitMaybe(["rev-parse", `refs/heads/${RELEASE_BRANCH}^{commit}`], {
     cwd: clone.releaseRoot,
   });
   if (branchHead !== checkpoint.preReleaseHead) return null;
   const priorTasks = normalizedFrozenTasks(previous.tasks ?? []);
+  if (priorTasks.length + 1 === tasks.length) {
+    const currentById = new Map(tasks.map((task) => [task.taskId, task]));
+    for (const prior of priorTasks) {
+      const current = currentById.get(prior.taskId);
+      if (!current || prior.baseCommit !== current.baseCommit
+          || prior.resultCommit !== current.resultCommit
+          || String(prior.squashTransfer?.transferHash ?? "")
+            !== String(current.squashTransfer?.transferHash ?? "")) return null;
+    }
+    const added = tasks.filter((task) => !priorTasks.some((prior) => prior.taskId === task.taskId));
+    if (added.length !== 1 || added[0].squashTransfer || !added[0].baseCommit) return null;
+    const [correction] = added;
+    const correctionParents = (await runGit([
+      "show", "-s", "--format=%P", correction.resultCommit,
+    ], { cwd: clone.releaseRoot })).split(" ").filter(Boolean);
+    if (correctionParents.length !== 1) return null;
+    const [correctionBaseCommit] = correctionParents;
+    if (await gitMaybe(["merge-base", "--is-ancestor", correction.baseCommit, correctionBaseCommit], {
+      cwd: clone.releaseRoot,
+    }) === null) return null;
+    const changedPaths = (await runGit([
+      "diff", "--name-only", correctionBaseCommit, correction.resultCommit, "--",
+    ], { cwd: clone.releaseRoot })).split("\n").filter(Boolean);
+    const publicationMetadata = new Set([
+      "CHANGELOG.md", "AgentHub/package.json", "AgentHub/package-lock.json",
+    ]);
+    const forbiddenPath = changedPaths.find((relativePath) => publicationMetadata.has(relativePath));
+    if (forbiddenPath) {
+      throw new Error(`PreRelease selected correction cannot change publication metadata: ${forbiddenPath}`);
+    }
+    return {
+      policy: "selected-correction-addition-v1",
+      sourceManifestHash: checkpoint.manifestHash,
+      sourceHead: checkpoint.preReleaseHead,
+      taskId: correction.taskId,
+      correctionBaseCommit,
+      resultCommit: correction.resultCommit,
+    };
+  }
+  if (checkpointPhase !== "frozen") return null;
   if (priorTasks.length !== tasks.length) return null;
   const priorById = new Map(priorTasks.map((task) => [task.taskId, task]));
   const changed = [];
@@ -862,7 +905,7 @@ export class ReleaseGitWorkspaceService {
         projectionPolicy: [
           "task-net-ancestry-v2",
           ...(hasSquashTransfer ? ["mandatory-squash-v1"] : []),
-          ...(candidateReuse ? ["selected-result-successor-v1"] : []),
+          ...(candidateReuse ? [candidateReuse.policy] : []),
         ].join("+"),
         ...(workspaceId ? { workspaceId: String(workspaceId) } : {}),
         ...(preflightRequestId ? { preflightRequestId: String(preflightRequestId) } : {}),
@@ -911,21 +954,41 @@ export class ReleaseGitWorkspaceService {
           if (candidateReuse) {
             await runGit(["checkout", "--detach", candidateReuse.sourceHead], { cwd: clone.releaseRoot });
             netProjectedTaskIds = checkpoint.netProjectedTaskIds ?? [];
-            const patch = await runGit([
-              "diff", "--binary", "--full-index", "--find-renames",
-              candidateReuse.priorResultCommit, candidateReuse.resultCommit,
-              "--", ".", ":(exclude,glob)**/CHANGELOG.md", ":(exclude)CHANGELOG.md",
-            ], { cwd: clone.releaseRoot, timeoutMs: 300_000, rawOutput: true });
-            if (patch.length) {
+            if (candidateReuse.policy === "selected-correction-addition-v1") {
               try {
-                await runGitWithInput([
-                  "apply", "--index", "--whitespace=nowarn", "-",
-                ], patch, { cwd: clone.releaseRoot, timeoutMs: 300_000 });
+                const mergedTree = String(await runGit([
+                  "merge-tree", "--write-tree", `--merge-base=${candidateReuse.correctionBaseCommit}`,
+                  candidateReuse.sourceHead, candidateReuse.resultCommit,
+                ], { cwd: clone.releaseRoot, timeoutMs: 300_000 })).split(/\r?\n/u)[0];
+                await runGit(["read-tree", "--reset", "-u", mergedTree], { cwd: clone.releaseRoot });
+                const readbackTree = await runGit(["write-tree"], { cwd: clone.releaseRoot });
+                if (readbackTree !== mergedTree) {
+                  throw new Error("materialized tree does not match the exact correction merge result");
+                }
+                netProjectedTaskIds = [...new Set([...netProjectedTaskIds, candidateReuse.taskId])];
               } catch (error) {
                 throw new Error(
-                  `PreRelease selected result successor ${candidateReuse.priorResultCommit}..`
+                  `PreRelease selected correction ${candidateReuse.correctionBaseCommit}..`
                   + `${candidateReuse.resultCommit} failed for Task ${candidateReuse.taskId}: ${error.message}`,
                 );
+              }
+            } else {
+              const patch = await runGit([
+                "diff", "--binary", "--full-index", "--find-renames",
+                candidateReuse.priorResultCommit, candidateReuse.resultCommit,
+                "--", ".", ":(exclude,glob)**/CHANGELOG.md", ":(exclude)CHANGELOG.md",
+              ], { cwd: clone.releaseRoot, timeoutMs: 300_000, rawOutput: true });
+              if (patch.length) {
+                try {
+                  await runGitWithInput([
+                    "apply", "--index", "--whitespace=nowarn", "-",
+                  ], patch, { cwd: clone.releaseRoot, timeoutMs: 300_000 });
+                } catch (error) {
+                  throw new Error(
+                    `PreRelease selected result successor ${candidateReuse.priorResultCommit}..`
+                    + `${candidateReuse.resultCommit} failed for Task ${candidateReuse.taskId}: ${error.message}`,
+                  );
+                }
               }
             }
           } else {
