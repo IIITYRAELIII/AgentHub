@@ -726,7 +726,6 @@ export class JournalDatabase {
         estimatedCredits: Number(usageRow.estimated_credits) || 0,
         estimateKind: usageRow.estimate_kind,
         imageGenerationCount: Number(usageRow.image_generation_count) || 0,
-        contextProbe: Number(usageRow.context_probe) !== 0,
         usage: {
           inputTokens: Number(usageRow.input_tokens) || 0,
           cachedInputTokens: Number(usageRow.cached_input_tokens) || 0,

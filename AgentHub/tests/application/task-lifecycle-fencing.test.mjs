@@ -493,8 +493,14 @@ test("unknown workflow recovery retains the repository lease through Git continu
     withTaskRecoveryLock: (_taskId, operation) => operation(taskLease),
     withTaskRepositoryRecoveryLock: (_taskId, root, ownedTaskLease, operation) => {
       assert.equal(root, projectRoot);
-      assert.equal(ownedTaskLease, taskLease);
-      calls.push("repository-lock");
+      if (ownedTaskLease.repositoryLockKeys) {
+        assert.equal(ownedTaskLease, repositoryLease);
+        assert.deepEqual([...ownedTaskLease.repositoryLockKeys], ["owned-repository"]);
+        calls.push("repository-lock-reused");
+      } else {
+        assert.equal(ownedTaskLease, taskLease);
+        calls.push("repository-lock");
+      }
       return operation(repositoryLease);
     },
     recoverProcessTreeGuard: async (_taskId, options) => {
@@ -533,6 +539,13 @@ test("unknown workflow recovery retains the repository lease through Git continu
     },
     releasePreflight: {
       withAwaitTransition: (_workspaceId, operation) => operation(),
+      validateAwaitAcceptance: async () => {
+        calls.push("validate");
+        return {
+          planRevision: "recovered-plan",
+          task: { taskId: task.id, resultCommit: task.gitReferences[0].resultCommit },
+        };
+      },
       prepareAwaitSet: async (options) => {
         calls.push("rebuild");
         const result = { headCommit: "c".repeat(40) };
@@ -550,5 +563,5 @@ test("unknown workflow recovery retains the repository lease through Git continu
     proof: { kind: "system-restart-after-guard", confirmed: true, summary: "boot proof" },
   });
   assert.equal(result.result.task.workflowStatus, "awaiting_implementation");
-  assert.deepEqual(calls, ["repository-lock", "recover", "begin", "rebuild", "commit"]);
+  assert.deepEqual(calls, ["repository-lock", "recover", "begin", "repository-lock-reused", "validate", "commit"]);
 });

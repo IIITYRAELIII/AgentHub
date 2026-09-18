@@ -673,6 +673,10 @@ export function isRecentDuplicateTaskAnswer(previousMessage, answer, {
 }
 
 export function shouldDeliverObservedCompletion(run, answer, previousMessage, options = {}) {
+  // A visible progress card is an explicit delivery request. Its terminal
+  // answer must replace that card even if another observer recorded the same
+  // answer in the task journal while completion was being finalized.
+  if (run?.displayRequested === true && run?.progressMessageIds?.length > 0) return true;
   if (isRecentDuplicateTaskAnswer(previousMessage, answer, options)) return false;
   return run?.displayRequested === true;
 }
