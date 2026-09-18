@@ -696,7 +696,7 @@ export class DeferredInputController {
   }
 
   wakeAll() {
-    this.expireCommands?.();
+    this.maintainCommandExpiry();
     const lanes = new Map();
     for (const item of [
       ...this.queuedInputs.values(),
@@ -729,22 +729,27 @@ export class DeferredInputController {
     }
     if (record.item) {
       try { this.onStateChange(record.item, "expired", record.result); }
-      catch (error) {
-        // Diagnostics cannot prevent cleanup of the remaining committed commands.
-        try { this.onExpiryError(error); } catch { /* best-effort diagnostic */ }
-      }
+      catch (error) { this.reportExpiryError(error); }
     }
+  }
+
+  reportExpiryError(error) {
+    // Diagnostics cannot prevent cleanup or stop unrelated runtime services.
+    try { this.onExpiryError(error); } catch { /* best-effort diagnostic */ }
+  }
+
+  maintainCommandExpiry() {
+    try { this.expireCommands?.(); }
+    catch (error) { this.reportExpiryError(error); }
   }
 
   startExpiryMaintenance() {
     if (!this.expireCommands || this.expiryTimer != null) return;
     const tick = () => {
       this.expiryTimer = null;
-      try { this.expireCommands(); }
+      try { this.maintainCommandExpiry(); }
       finally {
-        this.expiryTimer = this.setTimeoutImpl(() => {
-          try { tick(); } catch (error) { this.onExpiryError(error); }
-        }, 60_000);
+        this.expiryTimer = this.setTimeoutImpl(tick, 60_000);
         this.expiryTimer?.unref?.();
       }
     };

@@ -115,7 +115,7 @@ Only after durable expiry may queue projections be removed and capacity released
 Expired commands, including uncertain starts, are never automatically replayed.
 Same-ID retries retain that outcome, including compact tombstones; later exact
 provider terminal evidence may still reconcile it through the existing owner.
-History and attachment files are not deleted by this expiry operation. See ADR-0045.
+History and attachment files are not deleted by this expiry operation. See ADR-0071.
 
 A provider rejection received before provider acceptance moves that command to
 `attention-required` and releases its FIFO lane only after the rejection is

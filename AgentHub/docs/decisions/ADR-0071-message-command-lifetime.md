@@ -1,4 +1,4 @@
-# ADR-0045 — Bounded durable message command lifetime
+# ADR-0071 — Bounded durable message command lifetime
 
 ## Status
 

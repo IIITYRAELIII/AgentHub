@@ -131,7 +131,7 @@ test("expiry removes paused and pending projections durably and stale manual dis
   await f.controller.process("runnable");
   assert.equal(f.queuedInputs.size, 0);
   assert.equal(f.pendingInputs.size, 0);
-  assert.throws(() => f.coordinator.startDeferred(paused.item), { code: "MESSAGE_COMMAND_EXPIRED" });
+  await assert.rejects(f.coordinator.startDeferred(paused.item), { code: "MESSAGE_COMMAND_EXPIRED" });
   assert.equal(f.launches(), 0);
   assert.equal(f.receipts.filter((entry) => entry[1] === "expired").length, 3);
 });
@@ -169,6 +169,32 @@ test("SQLite expiry failure retains queue ownership and retries without provider
   } finally { writer.close(); }
   assert.equal(f.store.expireMessageCommands().expired, 1);
   assert.equal(f.queuedInputs.size, 0);
+  assert.equal(f.launches(), 0);
+});
+
+test("busy expiry cannot abort startup or wake; dispatch fails closed and maintenance recovers", async (context) => {
+  const f = await fixture(context);
+  const command = await f.accept("busy-startup", { inMemory: true });
+  const errors = [];
+  f.controller.onExpiryError = (error) => errors.push(error.message);
+  f.advance(MESSAGE_COMMAND_LIFETIME_MS);
+  const writer = new DatabaseSync(messageCommandLedgerPath(f.dataDir));
+  try {
+    writer.exec("BEGIN IMMEDIATE;");
+    assert.doesNotThrow(() => f.controller.startExpiryMaintenance());
+    assert.doesNotThrow(() => f.controller.wakeAll());
+    await assert.rejects(f.controller.process(command.item.id), /locked/);
+    await assert.rejects(f.coordinator.startDeferred(command.item), /locked/);
+    await assert.rejects(f.coordinator.acceptClientInput({ target: command.item }), /locked/);
+    assert.equal(f.queuedInputs.size, 1);
+    assert.equal(f.launches(), 0);
+    assert.equal(errors.length, 2);
+    writer.exec("ROLLBACK;");
+  } finally { writer.close(); }
+  const tick = [...f.timers.values()].find((timer) => timer.delay === 60_000);
+  tick.callback();
+  assert.equal(f.queuedInputs.size, 0);
+  assert.equal(f.store.messageCommand("busy-startup").result.expired, true);
   assert.equal(f.launches(), 0);
 });
 

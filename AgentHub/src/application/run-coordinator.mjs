@@ -335,7 +335,7 @@ export class RunCoordinator {
     return { started: true, runId: run.id, run };
   }
 
-  startDeferred(item) {
+  async startDeferred(item) {
     this.beforeDeferredDispatch?.(item);
     const id = String(item.clientUserMessageId ?? "");
     if (id) this.dispatchingClientMessageIds.set(id, (this.dispatchingClientMessageIds.get(id) ?? 0) + 1);
@@ -492,7 +492,7 @@ export class RunCoordinator {
     };
   }
 
-  acceptClientInput(request) {
+  async acceptClientInput(request) {
     this.beforeDeferredDispatch?.();
     return this.withPendingAdmission(request.target, () => (
       this.serializeIntake(request.target, () => this.acceptClientInputUnlocked(request))
