@@ -49,7 +49,6 @@ function usageProjectionBody(value) {
     estimatedCredits: Number(value.estimatedCredits) || 0,
     estimateKind: String(value.estimateKind ?? ""),
     imageGenerationCount: Math.max(0, Math.floor(Number(value.imageGenerationCount) || 0)),
-    contextProbe: value.contextProbe === true,
   };
 }
 

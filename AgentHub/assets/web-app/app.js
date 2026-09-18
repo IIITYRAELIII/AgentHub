@@ -10224,18 +10224,6 @@ dialogSettings.addEventListener("change", (event) => {
     selectDialogSetting(setting.dataset.dialogOptions, setting.value);
     return;
   }
-  const directory = event.target.closest("[data-dialog-working-directory]");
-  if (directory) {
-    const task = currentTask();
-    if (!task?.streamId) return;
-    task.streamSettings = {
-      ...(task.streamSettings ?? {}),
-      workingDirectory: directory.value.trim(),
-    };
-    emit("stream:settings-save", { streamId: task.streamId, settings: { ...task.streamSettings } });
-    renderOptions();
-    return;
-  }
   const releaseManager = event.target.closest("[data-dialog-stream-release-manager]");
   if (releaseManager) {
     const task = currentTask();

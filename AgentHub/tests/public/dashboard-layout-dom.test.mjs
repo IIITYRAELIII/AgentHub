@@ -232,6 +232,7 @@ test("Blocked Dashboard status is red and retains its prerequisite across snapsh
       await page.evaluate(({ blocked, workspaces }) => {
         document.documentElement.dataset.view = "dashboard";
         window.AgentHubTaskBoard.setSnapshot({ tasks: [blocked], workspaces });
+        document.querySelector('[data-task-board-view="statuses"]')?.click();
       }, { blocked, workspaces });
       const card = page.locator('[data-board-task-id="42"]').first();
       const badge = card.locator('[data-workflow-status="blocked"]');

@@ -1122,6 +1122,7 @@ export class TaskGitWorkspaceService {
   }
 
   async claimAdmissionNoEffectEvidence({ taskId, projectRoot, error } = {}) {
+    this.#assertAvailable("claimAdmissionNoEffectEvidence");
     const id = normalizedTaskId(taskId);
     const repositoryRootValue = await repositoryIdentityFromPath(projectRoot);
     const message = String(error?.message ?? error ?? "");
@@ -3802,7 +3803,7 @@ export class TaskGitWorkspaceService {
     return { repositories, truncated: false };
   }
 
-  async withAbsorptionEvidenceOwned({ source, target, lease }, operation) {
+  async withAbsorptionEvidenceOwned({ source, target, lease } = {}, operation) {
     this.#assertAvailable("withAbsorptionEvidenceOwned");
     await requiredGuardLease(lease).assertOwned();
     const workspaces = await this.describe(source.id);

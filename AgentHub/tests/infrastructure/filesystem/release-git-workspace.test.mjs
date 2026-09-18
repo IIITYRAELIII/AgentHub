@@ -1325,6 +1325,71 @@ test("a frozen 13-Task candidate accepts one descendant result delta without for
     "reviewed fix");
 });
 
+test("prepared candidate reuses one newly selected correction from its snapshot parent", { timeout: 30000 }, async (context) => {
+  const setup = await fixture(context);
+  const staleResult = await taskResult(setup, context, {
+    branch: "HUB-correction-stale", file: "AgentHub/shared.txt", content: "stale\n",
+  });
+  const staleTask = {
+    taskId: "task-stale", taskRevision: 1, baseCommit: setup.baseCommit, resultCommit: staleResult,
+    integrations: [{ commit: staleResult, parent: setup.baseCommit, order: 1 }],
+  };
+  const accepted = await setup.service.prepareCandidate({
+    planRevision: "plan-correction-old", workspaceId: "workspace", projectRoot: setup.primary,
+    frozenTasks: [staleTask],
+  });
+  const correctionRoot = path.join(setup.root, "task-correction");
+  await git(setup.primary, "worktree", "add", "-b", "HUB-correction", correctionRoot, staleResult);
+  context.after(() => git(setup.primary, "worktree", "remove", "--force", correctionRoot).catch(() => {}));
+  await writeFile(path.join(correctionRoot, "AgentHub", "shared.txt"), "fixed\n");
+  const correctionResult = await commit(correctionRoot, "exact correction");
+  const correctionTask = {
+    taskId: "task-correction", taskRevision: 1, baseCommit: setup.baseCommit, resultCommit: correctionResult,
+    integrations: [{ commit: correctionResult, parent: staleResult, order: 2 }],
+  };
+  const refreshed = await setup.service.prepareCandidate({
+    planRevision: "plan-correction-new", workspaceId: "workspace", projectRoot: setup.primary,
+    frozenTasks: [staleTask, correctionTask],
+  });
+  const manifest = JSON.parse(await readFile(refreshed.manifestFile, "utf8"));
+  assert.equal(manifest.candidateReuse.policy, "selected-correction-addition-v1");
+  assert.equal(manifest.candidateReuse.sourceHead, accepted.preReleaseHead);
+  assert.equal(manifest.candidateReuse.correctionBaseCommit, staleResult);
+  assert.equal(manifest.candidateReuse.resultCommit, correctionResult);
+  assert.equal(await git(refreshed.releaseRoot, "show", `${refreshed.preReleaseHead}:AgentHub/shared.txt`), "fixed");
+  assert.deepEqual((await git(refreshed.releaseRoot, "diff", "--name-only", accepted.preReleaseHead,
+    refreshed.preReleaseHead)).split("\n").filter(Boolean), ["AgentHub/shared.txt"]);
+});
+
+test("prepared candidate rejects correction-owned publication metadata", { timeout: 30000 }, async (context) => {
+  const setup = await fixture(context);
+  const staleResult = await taskResult(setup, context, {
+    branch: "HUB-metadata-stale", file: "AgentHub/shared.txt", content: "stale\n",
+  });
+  const staleTask = {
+    taskId: "task-stale", taskRevision: 1, baseCommit: setup.baseCommit, resultCommit: staleResult,
+    integrations: [{ commit: staleResult, parent: setup.baseCommit, order: 1 }],
+  };
+  const accepted = await setup.service.prepareCandidate({
+    planRevision: "plan-metadata-old", workspaceId: "workspace", projectRoot: setup.primary,
+    frozenTasks: [staleTask],
+  });
+  const correctionRoot = path.join(setup.root, "task-metadata-correction");
+  await git(setup.primary, "worktree", "add", "-b", "HUB-metadata-correction", correctionRoot, staleResult);
+  context.after(() => git(setup.primary, "worktree", "remove", "--force", correctionRoot).catch(() => {}));
+  await writeFile(path.join(correctionRoot, "AgentHub", "package.json"), "{\"version\":\"forbidden\"}\n");
+  const correctionResult = await commit(correctionRoot, "forbidden release metadata correction");
+  const correctionTask = {
+    taskId: "task-correction", taskRevision: 1, baseCommit: setup.baseCommit, resultCommit: correctionResult,
+    integrations: [{ commit: correctionResult, parent: staleResult, order: 2 }],
+  };
+  await assert.rejects(setup.service.prepareCandidate({
+    planRevision: "plan-metadata-new", workspaceId: "workspace", projectRoot: setup.primary,
+    frozenTasks: [staleTask, correctionTask],
+  }), /selected correction cannot change publication metadata: AgentHub\/package\.json/);
+  assert.equal(await git(accepted.releaseRoot, "rev-parse", "PreRelease"), accepted.preReleaseHead);
+});
+
 for (const scenario of ["changed selection", "changed base", "non-descendant result"]) {
   test(`frozen candidate reuse rejects ${scenario}`, { timeout: 30000 }, async (context) => {
     const setup = await fixture(context);

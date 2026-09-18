@@ -321,35 +321,55 @@ export class ProviderTurnTerminalStore {
     const finalAnswer = String(value.finalAnswer ?? "").trim();
     const usageIdentity = text(value.usageIdentity);
     const lastMessage = value.lastMessage == null ? null : jsonValue(value.lastMessage);
-    const telegramIntent = value.channels?.telegram?.requested === true
+    const requestedTelegramIntent = value.channels?.telegram?.requested === true
       ? jsonValue(value.channels.telegram)
       : null;
-    const hash = contentHash({
-      status,
-      finalAnswer,
-      usageIdentity,
-      lastMessageText: String(lastMessage?.text ?? "").trim(),
-      responseAttachments: basePayload?.completion?.responseAttachments ?? [],
-      telegramIntent,
-      ...([basePayload?.completion, basePayload?.history].some((part) => (
-        text(part?.operationKind) && text(part.operationKind) !== "user-turn"
-      )) ? {
-          classification: [basePayload?.completion, basePayload?.history].map((part) => ({
-            operationKind: text(part?.operationKind) || "user-turn",
-          })),
-        } : {}),
-    });
     return this.#enqueue(() => {
       const database = this.#database();
       try {
         database.exec("BEGIN IMMEDIATE");
         const current = selectTerminal(database, key);
+        const currentOutbox = current ? selectOutbox(database, current) : null;
+        const storedTelegramIntent = ["intent", "uncertain"].includes(
+          currentOutbox?.channels?.telegram?.state,
+        ) ? currentOutbox.channels.telegram.intent : null;
+        const inheritedTelegramIntent = storedTelegramIntent
+          ? (({ id: _id, identity: _identity, channel: _channel, ...intent }) => {
+              const previousAnswer = String(current?.finalAnswer ?? "").trim();
+              const previousMessage = String(intent.message ?? "");
+              if (Object.hasOwn(intent, "answer")) intent.answer = finalAnswer;
+              if (Object.hasOwn(intent, "speechText")) intent.speechText = finalAnswer;
+              if (!previousMessage || previousMessage === previousAnswer) intent.message = finalAnswer;
+              else if (previousAnswer && previousMessage.startsWith(previousAnswer)) {
+                intent.message = `${finalAnswer}${previousMessage.slice(previousAnswer.length)}`;
+              }
+              return intent;
+            })(storedTelegramIntent)
+          : null;
+        // A later projection of the same provider turn may be silent, but it
+        // cannot revoke a delivery intent already committed for that turn.
+        const telegramIntent = requestedTelegramIntent ?? inheritedTelegramIntent;
+        const hash = contentHash({
+          status,
+          finalAnswer,
+          usageIdentity,
+          lastMessageText: String(lastMessage?.text ?? "").trim(),
+          responseAttachments: basePayload?.completion?.responseAttachments ?? [],
+          telegramIntent,
+          ...([basePayload?.completion, basePayload?.history].some((part) => (
+            text(part?.operationKind) && text(part.operationKind) !== "user-turn"
+          )) ? {
+              classification: [basePayload?.completion, basePayload?.history].map((part) => ({
+                operationKind: text(part?.operationKind) || "user-turn",
+              })),
+            } : {}),
+        });
         if (expectedTerminalRevision != null
           && current?.terminalRevision !== expectedTerminalRevision) {
           database.exec("COMMIT");
           return {
             terminal: current,
-            outbox: current ? selectOutbox(database, current) : null,
+            outbox: currentOutbox,
             created: false,
             conflict: true,
           };
@@ -366,7 +386,7 @@ export class ProviderTurnTerminalStore {
         }
         if (current?.contentHash === hash) {
           database.exec("COMMIT");
-          return { terminal: current, outbox: selectOutbox(database, current), created: false };
+          return { terminal: current, outbox: currentOutbox, created: false };
         }
         const terminalRevision = (current?.terminalRevision ?? 0) + 1;
         const committedAt = new Date().toISOString();

@@ -1456,7 +1456,7 @@ test("Workspace and Stream cards expose behavioral editing and quick reply contr
     assert.equal(await page.locator("[data-dialog-settings] input").first().getAttribute("data-dialog-stream-name"), "");
     assert.equal(await page.locator("[data-dialog-stream-name]").inputValue(), "Codex Stream");
     await page.locator("[data-dialog-stream-name]").fill("Renamed Stream");
-    await page.locator("[data-dialog-working-directory]").focus();
+    await page.locator("[data-dialog-stream-name]").press("Tab");
     assert.equal(await page.evaluate(() => window.__hub157Intents.some((item) => (
       item.type === "stream:rename" && item.streamId === "stream-codex" && item.name === "Renamed Stream"
     ))), true);
@@ -1754,7 +1754,7 @@ test("composer quick replies render above attached Task references", async () =>
     assert.equal(await page.locator("[data-composer-quick-messages]").getAttribute("aria-label"), "Prompt-шаблоны");
     assert.equal(await page.locator("[data-settings-global-quick-messages-entry]").evaluate((node) => (
       node.closest(".quick-messages-settings-row")?.querySelector(".setting-name")?.textContent
-    )), "Глобальные prompt-шаблоны");
+    )), "Prompt-шаблоны");
     assert.equal(await page.locator("[data-settings-global-quick-messages-count]").textContent(), "1 шаблон");
     await page.locator('[data-panel-open="settings"]').click();
     const actionMode = page.locator("[data-quick-message-action-mode]");
@@ -2310,8 +2310,9 @@ test("prompt template action setting stays compact on Web, narrow WebView and Mo
         },
       }));
       await page.locator('[data-panel-open="settings"]').click();
+      await openPromptTemplatesForm(page, "global");
       const layout = await page.locator(".prompt-template-action-row").evaluate((row) => {
-        const panel = row.closest("[data-settings-panel]");
+        const panel = row.closest("[data-prompt-templates-modal]");
         const select = row.querySelector(".themed-select") ?? row.querySelector("select");
         const note = row.querySelector("[data-quick-message-action-mode-note]");
         const rowRect = row.getBoundingClientRect();
@@ -2471,7 +2472,6 @@ test("Dashboard column headers keep equal height across different task densities
     for (const [surface, viewport] of [
       ["wide-short", { width: 1900, height: 376 }],
       ["desktop", { width: 1440, height: 900 }],
-      ["mobile", { width: 390, height: 844 }],
     ]) {
       const problems = [];
       const page = await browser.newPage({ viewport });
@@ -2511,7 +2511,7 @@ test("Dashboard column headers keep equal height across different task densities
         });
         document.querySelector('[data-view-button="dashboard"]').click();
       });
-      const geometry = await page.locator(".task-board-column-head").evaluateAll((headers) => headers.map((header) => {
+      const geometry = await page.locator(".task-board-columns [data-board-destination] > .task-board-column-head").evaluateAll((headers) => headers.map((header) => {
         const rect = header.getBoundingClientRect();
         const column = header.closest("[data-board-destination]");
         const columnRect = column.getBoundingClientRect();

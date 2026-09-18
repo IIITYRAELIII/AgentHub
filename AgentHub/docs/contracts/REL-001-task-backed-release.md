@@ -22,6 +22,21 @@ it does not declare the reviewed commit published, rewrite publication state, or
 create an upstream-adoption receipt. Release preflight continues to require the
 prepared base to equal the currently reviewed origin main.
 
+After a candidate is prepared or frozen, explicit preparation may add exactly
+one newly selected correction Task while every previously selected Task result,
+base and squash proof remains identical. The correction snapshot has exactly one
+parent, its recorded Task base is an ancestor of that parent, and the candidate
+owner performs an exact three-way tree merge using the snapshot parent as the
+forced merge base, the prior candidate as the retained side and the correction
+result as the new side. This deliberately does not infer ancestry from the aggregate commit graph:
+an earlier candidate may already contain the correction result as a merge parent
+while still lacking one of its bytes after selected composition. A conflict,
+non-descendant correction result, second membership change, changed prior result
+or missing mandatory squash proof rejects reuse and preserves the prior
+candidate. CHANGELOG and version bytes remain owned by publication freeze.
+The correction delta is rejected if it changes CHANGELOG or package-version
+metadata.
+
 ## Exact result coverage and absorption composition (2026-09-16)
 
 A squash owner witness may classify a reviewed change as already satisfied only

@@ -56,7 +56,7 @@ for (const width of [1600, 390]) test(`status filter shows one full-width column
       assert.equal(await board.locator('[data-board-task-id]').count(), 18, 'matching Backlog tasks remain visible');
       if (grouped) assert.equal(await board.locator('[data-task-board-group="backlog"] .task-board-lane-heading').textContent(), 'Бэклог1');
       await choose(page, '[data-task-board-status-filter]', 'all');
-      assert.equal(await headings.count(), grouped ? 4 : 5, 'all statuses restores the board');
+      assert.equal(await headings.count(), grouped ? 5 : 6, 'all statuses restores the board');
       assert.equal(await board.locator('.task-board-column.is-backlog').count(), 1);
     }
     assert.deepEqual(diagnostics, []);
