@@ -70,7 +70,7 @@ test("terminal store strips conflicting top-level and root identity", async (con
     workspaceId: "workspace-1",
     workspaceName: "Agent HUB",
     streamId: "stream-1",
-    streamName: "Architect",
+    streamName: "Release Manager",
     provider: "codex",
     sourceThreadId: "thread-source",
     requestId: "request-a",
@@ -1161,6 +1161,8 @@ test("startup pending reconciliation repairs a command left started after termin
   assert.equal(ledger.get("message-1").state, "started");
 
   transitionUnavailable = false;
+  assert.equal((await terminal.pendingProjections()).length, 1);
+  assert.equal(ledger.get("message-1").state, "started", "projection-only enumeration cannot reconcile commands");
   await terminal.pending();
   assert.equal(ledger.get("message-1").state, "completed");
   assert.equal(ledger.get("message-1").result.terminalRevision, 1);
@@ -1187,6 +1189,7 @@ test("Telegram channel intent survives projection ACK and records uncertain then
   await terminal.acknowledge(projection);
   assert.equal((await terminal.pending())[0].channels.projection.state, "delivered");
   assert.equal((await terminal.pending())[0].channels.telegram.state, "intent");
+  assert.deepEqual(await terminal.pendingProjections(), []);
 
   const materialized = [];
   const restarted = new TurnEndDeliveryService({

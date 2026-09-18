@@ -9,6 +9,7 @@ import {
   profileCohortVirtualJournalSummary,
   virtualJournalDaySections,
 } from "../../domain/journal-virtual-projection.mjs";
+import { usageTurnFactId } from "../../domain/usage-facts.mjs";
 import { applyLedgerDelta } from "./incremental-ledger.mjs";
 import { readJsonWithBackup } from "./state-store.mjs";
 
@@ -682,6 +683,80 @@ export class JournalDatabase {
       return normalizedRecord(JSON.parse(row.record_json), ledgerKey(identity));
     } catch {
       return null;
+    }
+  }
+
+  async turnProjectionStatus({ provider = "codex", threadId, turnId } = {}) {
+    const identity = normalizedIdentity({ provider, threadId, turnId });
+    if (!identity) return { record: null, recordRevision: null, indexed: false, usageFact: false, projectionSource: null };
+    const database = await this.#open();
+    database.exec("BEGIN");
+    try {
+      const row = database.prepare(`
+        SELECT record_json, changed_revision FROM journal_records
+        WHERE provider = ? AND thread_id = ? AND turn_id = ?
+      `).get(identity.provider, identity.threadId, identity.turnId);
+      let record = null;
+      try {
+        record = row ? normalizedRecord(JSON.parse(row.record_json), ledgerKey(identity)) : null;
+      } catch {}
+      const indexRow = database.prepare(`
+        SELECT turn_ref AS turnRef, completed_at_ms AS completedAtMs
+        FROM journal_turn_index
+        WHERE provider = ? AND thread_id = ? AND turn_id = ? LIMIT 1
+      `).get(identity.provider, identity.threadId, identity.turnId);
+      const usageRow = tableExists(database, "usage_sync_events") ? database.prepare(`
+        SELECT * FROM usage_sync_events WHERE event_id = ? LIMIT 1
+      `).get(usageTurnFactId(identity)) : null;
+      let limitSamples = [];
+      try { limitSamples = JSON.parse(usageRow?.limit_samples_json ?? "[]"); } catch {}
+      const usageFact = usageRow ? {
+        schemaVersion: Number(usageRow.schema_version ?? 1),
+        type: "turn",
+        eventId: usageRow.event_id,
+        deviceId: usageRow.device_id,
+        source: usageRow.source,
+        provider: usageRow.provider,
+        threadKey: usageRow.thread_key,
+        taskKey: usageRow.task_key,
+        completedAt: usageRow.completed_at,
+        startedAt: usageRow.started_at,
+        runtimeHomeId: usageRow.runtime_home_id,
+        limitSamples,
+        estimatedCredits: Number(usageRow.estimated_credits) || 0,
+        estimateKind: usageRow.estimate_kind,
+        imageGenerationCount: Number(usageRow.image_generation_count) || 0,
+        contextProbe: Number(usageRow.context_probe) !== 0,
+        usage: {
+          inputTokens: Number(usageRow.input_tokens) || 0,
+          cachedInputTokens: Number(usageRow.cached_input_tokens) || 0,
+          outputTokens: Number(usageRow.output_tokens) || 0,
+          reasoningOutputTokens: Number(usageRow.reasoning_output_tokens) || 0,
+          totalTokens: Number(usageRow.total_tokens) || 0,
+        },
+        usageReported: Number(usageRow.usage_reported) !== 0,
+        model: usageRow.model,
+        serviceTier: usageRow.service_tier,
+        deviceLabel: usageRow.device_label,
+        observedAt: usageRow.observed_at,
+      } : null;
+      const sourceValue = database.prepare(
+        "SELECT value FROM journal_store_meta WHERE key = 'journal_projection_source'",
+      ).get()?.value;
+      let projectionSource = null;
+      try { projectionSource = sourceValue ? JSON.parse(sourceValue) : null; } catch {}
+      database.exec("COMMIT");
+      return {
+        record,
+        recordRevision: row ? Number(row.changed_revision) : null,
+        indexed: Boolean(indexRow),
+        index: indexRow ? { ...indexRow, completedAtMs: Number(indexRow.completedAtMs) } : null,
+        usageFact,
+        projectionSource,
+      };
+    } catch (error) {
+      database.exec("ROLLBACK");
+      throw error;
     }
   }
 

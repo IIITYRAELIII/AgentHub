@@ -1,11 +1,14 @@
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { lstat, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
+import { ReleaseCandidateFrozenError } from "../../domain/task-board-task.mjs";
 import process from "node:process";
 import { assertContourExternalEffects, assertContourGitAvailable } from "../../ports/contour-external-effects.mjs";
 
 import { taskRepositoryKey } from "../../domain/task-git-reference.mjs";
+import { normalizedTaskSquashTransfer } from "../../domain/task-squash-transfer.mjs";
 import { canonicalPath } from "./config.mjs";
 import { withInterprocessLocks } from "../process/interprocess-lock.mjs";
 import { freezePreparedPublicationCandidate } from "./freeze-publication-candidate.mjs";
@@ -82,6 +85,13 @@ async function gitMaybe(args, options) {
 async function pendingTaskIntegrations(tasks, baseCommit, git) {
   const pending = [];
   for (const task of tasks) {
+    if (task.squashTransfer) {
+      try {
+        await git(["merge-base", "--is-ancestor", task.resultCommit, baseCommit]);
+        pending.push({ ...task, integrations: [] });
+        continue;
+      } catch { /* A squash result absent from the approved base requires its exact projection. */ }
+    }
     const integrations = [];
     for (const integration of task.integrations) {
       const parents = String(await git(["show", "-s", "--format=%P", integration.commit]))
@@ -181,6 +191,26 @@ function stableManifest(value) {
   return `${JSON.stringify(value, null, 2)}\n`;
 }
 
+function normalizedBaseProvenance(value, expectedBaseCommit = null) {
+  if (value == null) return null;
+  const normalized = {
+    schemaVersion: Number(value?.schemaVersion),
+    kind: String(value?.kind ?? "").trim(),
+    publishedBaseCommit: String(value?.publishedBaseCommit ?? "").trim(),
+    approvedLocalMainCommit: String(value?.approvedLocalMainCommit ?? "").trim(),
+    approvedOriginMainCommit: String(value?.approvedOriginMainCommit ?? "").trim(),
+  };
+  if (normalized.schemaVersion !== 1 || normalized.kind !== "explicit-reviewed-main-v1"
+      || ![normalized.publishedBaseCommit, normalized.approvedLocalMainCommit,
+        normalized.approvedOriginMainCommit].every((commit) => /^[0-9a-f]{40}$/u.test(commit))) {
+    throw new Error("release candidate has invalid explicit reviewed-main provenance");
+  }
+  if (expectedBaseCommit && normalized.approvedOriginMainCommit !== expectedBaseCommit) {
+    throw new Error("release candidate reviewed-main provenance does not match its approved base");
+  }
+  return normalized;
+}
+
 function githubLoginFromEmail(value) {
   const match = String(value ?? "").trim().match(/^(?:\d+\+)?([A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?)@users\.noreply\.github\.com$/iu);
   return match?.[1] ?? null;
@@ -243,10 +273,17 @@ function normalizedFrozenTasks(tasks = []) {
   for (const task of tasks) {
     const taskId = String(task?.taskId ?? "").trim();
     const taskRevision = Number(task?.taskRevision);
+    const resultReleaseRevision = task?.resultReleaseRevision == null
+      ? null
+      : Number(task.resultReleaseRevision);
     const baseCommit = String(task?.baseCommit ?? "").trim();
     const resultCommit = String(task?.resultCommit ?? "").trim();
     if (!taskId || !Number.isInteger(taskRevision) || taskRevision < 1 || !resultCommit) {
       throw new Error("release candidate requires exact Task IDs, revisions and result commits");
+    }
+    if (resultReleaseRevision != null
+        && (!Number.isInteger(resultReleaseRevision) || resultReleaseRevision < 1)) {
+      throw new Error(`release Task ${taskId} has an invalid result release revision`);
     }
     if (baseCommit && !/^[0-9a-f]{40}$/u.test(baseCommit)) {
       throw new Error(`release Task ${taskId} has an invalid base commit`);
@@ -260,7 +297,12 @@ function normalizedFrozenTasks(tasks = []) {
       !integration.commit || !integration.parent || !Number.isInteger(integration.order) || integration.order < 0
     ))) throw new Error(`release Task ${taskId} has invalid dev integration evidence`);
     const normalized = {
-      taskId, taskRevision, ...(baseCommit ? { baseCommit } : {}), resultCommit, integrations,
+      taskId, taskRevision,
+      ...(resultReleaseRevision != null ? { resultReleaseRevision } : {}),
+      ...(baseCommit ? { baseCommit } : {}), resultCommit, integrations,
+      ...(task?.squashTransfer ? {
+        squashTransfer: normalizedTaskSquashTransfer(task.squashTransfer),
+      } : {}),
     };
     const existing = unique.get(taskId);
     if (existing && stableManifest(existing) !== stableManifest(normalized)) {
@@ -300,7 +342,9 @@ async function selectedResultSuccessorReuse({ checkpoint, clone, tasks, baseComm
   const changed = [];
   for (const current of tasks) {
     const prior = priorById.get(current.taskId);
-    if (!prior || prior.baseCommit !== current.baseCommit) return null;
+    if (!prior || prior.baseCommit !== current.baseCommit
+        || String(prior.squashTransfer?.transferHash ?? "")
+          !== String(current.squashTransfer?.transferHash ?? "")) return null;
     if (prior.resultCommit !== current.resultCommit) changed.push({ prior, current });
   }
   if (changed.length !== 1) return null;
@@ -447,6 +491,7 @@ export async function assertReleaseCandidateContourSource({ sourceRoot: requeste
 
 export class ReleaseGitWorkspaceService {
   #contourExternalEffects;
+  #validationBundle = null;
 
   constructor({ dataDir, contourExternalEffects = null } = {}) {
     this.#contourExternalEffects = assertContourExternalEffects(contourExternalEffects);
@@ -475,6 +520,20 @@ export class ReleaseGitWorkspaceService {
     const identity = sha256(String(workspaceId ?? "").trim()).slice(0, 24);
     const lock = path.join(this.dataDir, "locks", `release-await-${identity}`);
     return withInterprocessLocks([lock], operation);
+  }
+
+  async assertAwaitChangesAllowed(workspaceId) {
+    this.#assertAvailable("assertAwaitChangesAllowed");
+    const entries = await readdir(this.releaseRepositoriesRoot, { withFileTypes: true }).catch((error) => {
+      if (error.code === "ENOENT") return [];
+      throw error;
+    });
+    for (const entry of entries.filter((item) => item.isDirectory())) {
+      const checkpoint = await readJson(path.join(this.releaseRepositoriesRoot, entry.name, "checkpoint.json"));
+      if (!["freezing", "frozen"].includes(checkpoint?.phase)) continue;
+      const manifest = checkpoint.manifestFile ? await readJson(checkpoint.manifestFile) : null;
+      if (manifest?.workspaceId === workspaceId) throw new ReleaseCandidateFrozenError();
+    }
   }
 
   async inspectMainChanges({
@@ -585,7 +644,7 @@ export class ReleaseGitWorkspaceService {
       await runGit([
         "-c", "core.longpaths=true", "clone", "--single-branch", "--branch", "main",
         "--no-local", "--no-hardlinks", "--no-checkout",
-        primary.root, layout.releaseRoot,
+        this.#validationBundle ?? primary.root, layout.releaseRoot,
       ], {
         cwd: layout.root,
         timeoutMs: 300_000,
@@ -633,13 +692,60 @@ export class ReleaseGitWorkspaceService {
     return { ...layout, ...marker, markerFile };
   }
 
+  // This is the ordinary composer in a disposable owned repository, not a second
+  // projection policy. No live candidate/checkpoint is promoted or rolled back.
+  // The application owner holds Await/Task/dev leases and revalidates identities.
+  async validateCandidate({
+    planRevision, projectRoot, workspaceId = null, frozenTasks = [],
+    approvedBaseCommit = null, validateBeforeCommit = null, commitPrepared = null,
+  } = {}) {
+    this.#assertAvailable("validateCandidate");
+    if (commitPrepared != null) throw new Error("Composition validation cannot commit Task acceptance");
+    const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), "ah-composition-"));
+    try {
+      const isolated = new ReleaseGitWorkspaceService({
+        dataDir: temporaryRoot, contourExternalEffects: this.#contourExternalEffects,
+      });
+      // Copy Git objects/refs only, never local repository configuration or
+      // hooks. Git's clone protection remains enabled for the bundle transport.
+      // The live primary still supplies identity and invariant checks.
+      const bundle = path.join(temporaryRoot, "source.bundle");
+      await runGit(["bundle", "create", bundle, "--all"], {
+        cwd: await repositoryRoot(projectRoot), timeoutMs: 300_000,
+      });
+      isolated.#validationBundle = bundle;
+      const candidate = await isolated.prepareCandidate({
+        planRevision, projectRoot, workspaceId, frozenTasks, approvedBaseCommit, validateBeforeCommit,
+      });
+      const tree = await runGit(["rev-parse", `${candidate.preReleaseHead}^{tree}`], { cwd: candidate.releaseRoot });
+      // Recheck after the final read as well; callers must not close a Task from
+      // a result whose selection or approved base changed during validation.
+      if (typeof validateBeforeCommit === "function") await validateBeforeCommit();
+      return {
+        status: "validated", repositoryRoot: candidate.repositoryRoot,
+        planRevision, baseCommit: candidate.baseCommit, tree,
+        taskIds: candidate.frozenTasks.map((task) => task.taskId).sort(),
+        netProjectedTaskIds: candidate.netProjectedTaskIds,
+      };
+    } finally {
+      // Only the exact freshly allocated directory is owned by this invocation.
+      await rm(temporaryRoot, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+    }
+  }
+
   async prepareCandidate({
     planRevision, projectRoot, workspaceId = null, preflightRequestId = null,
-    frozenTasks = [], approvedBaseCommit = null, validateBeforeCommit = null,
+    frozenTasks = [], approvedBaseCommit = null, baseProvenance = null, validateBeforeCommit = null,
+    preserveFrozen = false, commitPrepared = null,
   } = {}) {
     this.#assertAvailable("prepareCandidate");
     const revision = String(planRevision ?? "").trim();
     if (!revision) throw new Error("release candidate requires the exact plan revision");
+    const acceptedBase = String(approvedBaseCommit ?? "").trim();
+    if (!/^[a-f0-9]{40}$/u.test(acceptedBase)) {
+      throw new Error("release candidate requires an exact published, adopted, or explicitly reviewed base commit");
+    }
+    const normalizedProvenance = normalizedBaseProvenance(baseProvenance, acceptedBase);
     const tasks = normalizedFrozenTasks(frozenTasks);
     const initial = await primarySnapshot(projectRoot);
     await this.assertPrimaryInvariant(initial.root, { phase: "release preflight" });
@@ -653,12 +759,35 @@ export class ReleaseGitWorkspaceService {
         cwd: clone.releaseRoot,
         timeoutMs: 300_000,
       });
+      const checkpoint = await readJson(clone.checkpointFile);
+      const acceptanceBefore = commitPrepared ? {
+        head: await runGit(["rev-parse", "HEAD^{commit}"], { cwd: clone.releaseRoot }),
+        checkout: await gitMaybe(["symbolic-ref", "-q", "HEAD"], { cwd: clone.releaseRoot }),
+        branch: await gitMaybe(["rev-parse", `refs/heads/${RELEASE_BRANCH}^{commit}`], { cwd: clone.releaseRoot }),
+      } : null;
+      if (preserveFrozen && ["freezing", "frozen"].includes(checkpoint?.phase)) {
+        throw new ReleaseCandidateFrozenError();
+      }
       await runGit(["fetch", "--prune", "workspace", "+refs/heads/*:refs/remotes/workspace/*"], {
         cwd: clone.releaseRoot,
         timeoutMs: 300_000,
       });
       for (const task of tasks) {
-        for (const commit of [task.resultCommit, ...task.integrations.flatMap((item) => [item.parent, item.commit])]) {
+        const squashCommits = task.squashTransfer ? [
+          task.squashTransfer.source.baseCommit,
+          task.squashTransfer.source.resultCommit,
+          task.squashTransfer.survivor.baseCommit,
+          task.squashTransfer.survivor.resultCommit,
+          task.squashTransfer.previousResultCommit,
+          task.squashTransfer.baselineResultCommit,
+          task.squashTransfer.devBeforeCommit,
+          task.squashTransfer.integrationCommit,
+        ] : [];
+        for (const commit of new Set([
+          task.resultCommit,
+          ...task.integrations.flatMap((item) => [item.parent, item.commit]),
+          ...squashCommits,
+        ].filter(Boolean))) {
           if (await gitMaybe(["cat-file", "-e", `${commit}^{commit}`], { cwd: clone.releaseRoot }) === null) {
             await runGit(["fetch", "workspace", commit], { cwd: clone.releaseRoot, timeoutMs: 300_000 });
           }
@@ -669,19 +798,65 @@ export class ReleaseGitWorkspaceService {
         const parent = await runGit(["rev-parse", `${task.resultCommit}^1`], { cwd: clone.releaseRoot });
         task.integrations = [{ commit: task.resultCommit, parent, order }];
       }
-      const baseCommit = await runGit(["rev-parse", "refs/remotes/origin/main^{commit}"], { cwd: clone.releaseRoot });
-      if (approvedBaseCommit != null && String(approvedBaseCommit).trim() !== baseCommit) {
-        throw new Error(`approved origin/main changed: expected ${approvedBaseCommit}, got ${baseCommit}`);
+      // Fetch observes remote movement; only the caller's verified authority
+      // chooses the base. Never replace it with the freshly fetched remote tip.
+      if (await gitMaybe(["cat-file", "-e", `${acceptedBase}^{commit}`], { cwd: clone.releaseRoot }) === null) {
+        await runGit(["fetch", "workspace", acceptedBase], { cwd: clone.releaseRoot, timeoutMs: 300_000 });
       }
-      const checkpoint = await readJson(clone.checkpointFile);
-      const candidateReuse = await selectedResultSuccessorReuse({
+      const baseCommit = await runGit(["rev-parse", `${acceptedBase}^{commit}`], { cwd: clone.releaseRoot });
+      const validateReviewedMain = async () => {
+        if (!normalizedProvenance) return;
+        const currentPrimary = await primarySnapshot(initial.root);
+        await this.assertPrimaryInvariant(currentPrimary.root, { phase: "explicit reviewed-main preparation" });
+        if (currentPrimary.headCommit !== normalizedProvenance.approvedLocalMainCommit
+            || currentPrimary.mainCommit !== normalizedProvenance.approvedLocalMainCommit) {
+          throw new Error("reviewed local main changed during PreRelease preparation");
+        }
+        await runGit(["fetch", "--prune", "origin", "+refs/heads/main:refs/remotes/origin/main"], {
+          cwd: clone.releaseRoot,
+          timeoutMs: 300_000,
+        });
+        const currentOriginMain = await runGit(["rev-parse", "refs/remotes/origin/main^{commit}"], {
+          cwd: clone.releaseRoot,
+        });
+        if (currentOriginMain !== normalizedProvenance.approvedOriginMainCommit
+            || baseCommit !== normalizedProvenance.approvedOriginMainCommit) {
+          throw new Error("reviewed origin main changed during PreRelease preparation");
+        }
+      };
+      const candidateGit = (args, options = {}) => runGit(args, {
+        ...options, cwd: clone.releaseRoot, timeoutMs: 300_000,
+      });
+      const hasSquashTransfer = tasks.some((task) => task.squashTransfer);
+      let pendingTasks = hasSquashTransfer
+        ? await pendingTaskIntegrations(tasks, baseCommit, candidateGit)
+        : null;
+      const verifiedProjections = pendingTasks
+        ? await releaseTaskNetProjections({ tasks: pendingTasks, baseCommit, git: candidateGit })
+        : null;
+      const mandatorySquashTaskIds = (pendingTasks ?? [])
+        .filter((task) => task.squashTransfer && task.integrations.length)
+        .map((task) => task.taskId);
+      for (const task of (pendingTasks ?? []).filter((item) => item.squashTransfer && item.integrations.length)) {
+        const projection = verifiedProjections?.get(task.taskId);
+        if (!projection || projection.squashTransferHash !== task.squashTransfer.transferHash) {
+          throw new Error(`PreRelease requires the exact squash projection for Task ${task.taskId}`);
+        }
+      }
+      const checkpointHasMandatorySquashProof = mandatorySquashTaskIds.every((taskId) => (
+        checkpoint?.netProjectedTaskIds?.includes(taskId)
+      ));
+      let candidateReuse = await selectedResultSuccessorReuse({
         checkpoint, clone, tasks, baseCommit, workspaceId,
       });
+      if (candidateReuse && !checkpointHasMandatorySquashProof) candidateReuse = null;
       const manifest = {
         schemaVersion: 2,
-        projectionPolicy: candidateReuse
-          ? "task-net-ancestry-v2+selected-result-successor-v1"
-          : "task-net-ancestry-v2",
+        projectionPolicy: [
+          "task-net-ancestry-v2",
+          ...(hasSquashTransfer ? ["mandatory-squash-v1"] : []),
+          ...(candidateReuse ? ["selected-result-successor-v1"] : []),
+        ].join("+"),
         ...(workspaceId ? { workspaceId: String(workspaceId) } : {}),
         ...(preflightRequestId ? { preflightRequestId: String(preflightRequestId) } : {}),
         planRevision: revision,
@@ -690,6 +865,7 @@ export class ReleaseGitWorkspaceService {
         releaseRoot: clone.releaseRoot,
         releaseGitCommonDir: clone.releaseGitCommonDir,
         baseCommit,
+        ...(normalizedProvenance ? { baseProvenance: normalizedProvenance } : {}),
         tasks,
         ...(candidateReuse ? { candidateReuse } : {}),
       };
@@ -697,9 +873,11 @@ export class ReleaseGitWorkspaceService {
       const manifestHash = sha256(manifestText);
       const manifestFile = path.join(clone.evidenceRoot, `${manifestHash}.json`);
       let preReleaseHead = null;
+      let preparedCompositionTree = null;
       let reused = false;
       let netProjectedTaskIds = [];
-      if (checkpoint?.manifestHash === manifestHash && checkpoint?.preReleaseHead) {
+      if (checkpoint?.manifestHash === manifestHash && checkpoint?.preReleaseHead
+          && checkpointHasMandatorySquashProof) {
         const storedHead = await gitMaybe(["rev-parse", `${checkpoint.preReleaseHead}^{commit}`], { cwd: clone.releaseRoot });
         const branchHead = await gitMaybe(["rev-parse", `refs/heads/${RELEASE_BRANCH}^{commit}`], { cwd: clone.releaseRoot });
         if (storedHead && storedHead === branchHead) {
@@ -712,11 +890,15 @@ export class ReleaseGitWorkspaceService {
       if (!preReleaseHead) {
         const branchRef = `refs/heads/${RELEASE_BRANCH}`;
         const previousBranchHead = await gitMaybe(["rev-parse", `${branchRef}^{commit}`], { cwd: clone.releaseRoot });
+        const previousHead = await runGit(["rev-parse", "HEAD^{commit}"], { cwd: clone.releaseRoot });
+        const previousCheckoutRef = await gitMaybe(["symbolic-ref", "-q", "HEAD"], { cwd: clone.releaseRoot });
         let branchCommitted = false;
         const restoreWorkingTree = async () => {
-          await runGit(["reset", "--hard", previousBranchHead || baseCommit], { cwd: clone.releaseRoot });
-          if (previousBranchHead) await runGit(["checkout", "-f", RELEASE_BRANCH], { cwd: clone.releaseRoot });
-          else await runGit(["checkout", "--detach", baseCommit], { cwd: clone.releaseRoot });
+          await runGit(["checkout", "--detach", "--force", previousHead], { cwd: clone.releaseRoot });
+          if (previousCheckoutRef) {
+            await runGit(["symbolic-ref", "HEAD", previousCheckoutRef], { cwd: clone.releaseRoot });
+            await runGit(["reset", "--hard", previousHead], { cwd: clone.releaseRoot });
+          }
         };
         try {
           if (candidateReuse) {
@@ -741,11 +923,9 @@ export class ReleaseGitWorkspaceService {
             }
           } else {
             await runGit(["checkout", "--detach", baseCommit], { cwd: clone.releaseRoot });
-            const pendingTasks = await pendingTaskIntegrations(tasks, baseCommit,
-            (args) => runGit(args, { cwd: clone.releaseRoot, timeoutMs: 300_000 }));
-          const projections = await releaseTaskNetProjections({
-            tasks: pendingTasks, baseCommit,
-            git: (args) => runGit(args, { cwd: clone.releaseRoot, timeoutMs: 300_000 }),
+          pendingTasks ??= await pendingTaskIntegrations(tasks, baseCommit, candidateGit);
+          const projections = verifiedProjections ?? await releaseTaskNetProjections({
+            tasks: pendingTasks, baseCommit, git: candidateGit,
           });
           const integrationOwners = new Map();
           for (const task of pendingTasks) {
@@ -767,8 +947,55 @@ export class ReleaseGitWorkspaceService {
               taskResultCommit: task.resultCommit,
             }));
           }).sort((left, right) => left.order - right.order || left.commit.localeCompare(right.commit));
-          for (const integration of integrations) {
+          const directResultKey = (integration) => `${integration.taskId}\0${integration.commit}`;
+          const consumedDirectResults = new Set();
+          const mergeDirectResult = async (integration, priorTaskResults, phase) => {
             const priorTree = await runGit(["write-tree"], { cwd: clone.releaseRoot });
+            const parents = [baseCommit, ...priorTaskResults].flatMap((commit) => ["-p", commit]);
+            try {
+              const priorCommit = await runGit([
+                "-c", "user.name=Agent Hub", "-c", "user.email=agent-hub@local.invalid",
+                "commit-tree", priorTree, ...parents, "-m", "release: exact squash composition input",
+              ], { cwd: clone.releaseRoot });
+              const mergedTree = String(await runGit([
+                "merge-tree", "--write-tree", priorCommit, integration.commit,
+              ], { cwd: clone.releaseRoot, timeoutMs: 300_000 })).split(/\r?\n/u)[0];
+              await runGit(["read-tree", "--reset", "-u", mergedTree], { cwd: clone.releaseRoot });
+              const readbackTree = await runGit(["write-tree"], { cwd: clone.releaseRoot });
+              if (readbackTree !== mergedTree) {
+                throw new Error("materialized tree does not match the exact merge result");
+              }
+              return mergedTree;
+            } catch (error) {
+              await runGit(["read-tree", "--reset", "-u", priorTree], { cwd: clone.releaseRoot });
+              throw new Error(
+                `Exact squash result ${phase} failed for Task ${integration.taskId}: ${error.message}`,
+              );
+            }
+          };
+          const advancedTaskResults = [];
+          // A mandatory squash result is a clean, proof-bound composition base.
+          // Advance it first, then replay every other selected delta in its
+          // durable order. The same projection is consumed exactly once.
+          for (const integration of integrations.filter((item) => item.directResultMerge)) {
+            await mergeDirectResult(integration, advancedTaskResults, "advance");
+            advancedTaskResults.push(integration.taskResultCommit);
+            consumedDirectResults.add(directResultKey(integration));
+          }
+          const appliedTaskResults = new Set();
+          for (const integration of integrations) {
+            if (integration.directResultMerge
+                && consumedDirectResults.has(directResultKey(integration))) {
+              appliedTaskResults.add(integration.taskResultCommit);
+              continue;
+            }
+            const priorTree = await runGit(["write-tree"], { cwd: clone.releaseRoot });
+            const priorTaskResults = [...appliedTaskResults];
+            appliedTaskResults.add(integration.taskResultCommit);
+            if (integration.directResultMerge) {
+              await mergeDirectResult(integration, priorTaskResults, "composition");
+              continue;
+            }
             const actualParents = String(await runGit([
               "show", "-s", "--format=%P", integration.commit,
             ], { cwd: clone.releaseRoot })).split(" ").filter(Boolean);
@@ -831,6 +1058,8 @@ export class ReleaseGitWorkspaceService {
           const staged = await gitMaybe(["diff", "--cached", "--quiet", "--"], { cwd: clone.releaseRoot }) === null;
           if (staged || candidateReuse) {
             const tree = await runGit(["write-tree"], { cwd: clone.releaseRoot });
+            preparedCompositionTree = tree;
+            if (typeof validateBeforeCommit === "function") await validateBeforeCommit();
             const parents = [candidateReuse?.sourceHead ?? baseCommit, ...new Set(tasks.map((task) => task.resultCommit))]
               .flatMap((commit) => ["-p", commit]);
             preReleaseHead = await runGit([
@@ -840,8 +1069,21 @@ export class ReleaseGitWorkspaceService {
                 ? `release: refresh accepted Task ${candidateReuse.taskId}`
                 : `release: aggregate ${tasks.length} Await Tasks`,
             ], { cwd: clone.releaseRoot });
-          } else preReleaseHead = baseCommit;
+            const committedTree = await runGit(["rev-parse", `${preReleaseHead}^{tree}`], { cwd: clone.releaseRoot });
+            if (committedTree !== preparedCompositionTree) {
+              throw new Error("PreRelease commit does not match the exact composed tree");
+            }
+          } else {
+            preReleaseHead = baseCommit;
+            preparedCompositionTree = await runGit(["rev-parse", `${baseCommit}^{tree}`], { cwd: clone.releaseRoot });
+          }
           if (typeof validateBeforeCommit === "function") await validateBeforeCommit();
+          await validateReviewedMain();
+          const finalIndexTree = await runGit(["write-tree"], { cwd: clone.releaseRoot });
+          const finalCommitTree = await runGit(["rev-parse", `${preReleaseHead}^{tree}`], { cwd: clone.releaseRoot });
+          if (finalIndexTree !== preparedCompositionTree || finalCommitTree !== preparedCompositionTree) {
+            throw new Error("PreRelease final tree changed after selected composition validation");
+          }
           await mkdir(clone.evidenceRoot, { recursive: true });
           if (!await fileExists(manifestFile)) await writeFile(manifestFile, manifestText, "utf8");
           const previousRef = previousBranchHead || "0".repeat(40);
@@ -856,36 +1098,45 @@ export class ReleaseGitWorkspaceService {
             manifestHash,
             manifestFile,
             baseCommit,
+            ...(normalizedProvenance ? { baseProvenance: normalizedProvenance } : {}),
             preReleaseHead,
             updatedAt: new Date().toISOString(),
           });
           await runGit(["symbolic-ref", "HEAD", branchRef], { cwd: clone.releaseRoot });
           await runGit(["reset", "--hard", preReleaseHead], { cwd: clone.releaseRoot });
         } catch (error) {
-          if (branchCommitted) {
-            if (previousBranchHead) {
-              await runGit(["update-ref", branchRef, previousBranchHead, preReleaseHead], { cwd: clone.releaseRoot });
-            } else {
-              await runGit(["update-ref", "-d", branchRef, preReleaseHead], { cwd: clone.releaseRoot });
+          try {
+            if (branchCommitted) {
+              if (previousBranchHead) {
+                await runGit(["update-ref", branchRef, previousBranchHead, preReleaseHead], { cwd: clone.releaseRoot });
+              } else {
+                await runGit(["update-ref", "-d", branchRef, preReleaseHead], { cwd: clone.releaseRoot });
+              }
+              if (checkpoint) await writeJsonAtomic(clone.checkpointFile, checkpoint);
+              else await rm(clone.checkpointFile, { force: true });
             }
-            if (checkpoint) await writeJsonAtomic(clone.checkpointFile, checkpoint);
-            else await rm(clone.checkpointFile, { force: true });
+            await restoreWorkingTree();
+          } catch (restoreError) {
+            if (commitPrepared) restoreError.code = "AWAIT_PREPARATION_UNKNOWN";
+            throw restoreError;
           }
-          await restoreWorkingTree();
           throw error;
         }
       }
 
-      const finalPrimary = await primarySnapshot(initial.root);
-      await this.assertPrimaryInvariant(finalPrimary.root, { phase: "release candidate preparation" });
-      if (
-        finalPrimary.headCommit !== initial.headCommit
-        || finalPrimary.branchRef !== initial.branchRef
-        || finalPrimary.dirty.indexFingerprint !== initial.dirty.indexFingerprint
-      ) {
-        throw new Error("release candidate preparation changed the registered primary Workspace");
+      if (reused) {
+        if (typeof validateBeforeCommit === "function") await validateBeforeCommit();
+        await validateReviewedMain();
       }
-      return {
+      const verifyPrimary = async () => {
+        const finalPrimary = await primarySnapshot(initial.root);
+        await this.assertPrimaryInvariant(finalPrimary.root, { phase: "release candidate preparation" });
+        if (finalPrimary.headCommit !== initial.headCommit || finalPrimary.branchRef !== initial.branchRef
+            || finalPrimary.dirty.indexFingerprint !== initial.dirty.indexFingerprint) {
+          throw new Error("release candidate preparation changed the registered primary Workspace");
+        }
+      };
+      const result = {
         repositoryRoot: initial.root,
         releaseRoot: clone.releaseRoot,
         branch: RELEASE_BRANCH,
@@ -902,6 +1153,35 @@ export class ReleaseGitWorkspaceService {
         primaryPreserved: true,
         legacyLinkedHolders: initial.legacyLinkedHolders,
       };
+      if (commitPrepared) {
+        try {
+          await verifyPrimary();
+          await commitPrepared(result);
+        } catch (error) {
+          if (error?.code === "AWAIT_PREPARATION_UNKNOWN") throw error;
+          try {
+            const branchRef = `refs/heads/${RELEASE_BRANCH}`;
+            await runGit(["checkout", "--detach", "--force", acceptanceBefore.head], { cwd: clone.releaseRoot });
+            if (acceptanceBefore.branch) {
+              await runGit(["update-ref", branchRef, acceptanceBefore.branch, preReleaseHead], { cwd: clone.releaseRoot });
+            } else {
+              await runGit(["update-ref", "-d", branchRef, preReleaseHead], { cwd: clone.releaseRoot });
+            }
+            if (checkpoint) await writeJsonAtomic(clone.checkpointFile, checkpoint);
+            else await rm(clone.checkpointFile, { force: true });
+            if (acceptanceBefore.checkout) {
+              await runGit(["symbolic-ref", "HEAD", acceptanceBefore.checkout], { cwd: clone.releaseRoot });
+              await runGit(["reset", "--hard", acceptanceBefore.head], { cwd: clone.releaseRoot });
+            }
+          } catch (rollbackError) {
+            const unknown = new Error(`Await preparation rollback requires reconciliation: ${rollbackError.message}`);
+            unknown.code = "AWAIT_PREPARATION_UNKNOWN";
+            throw unknown;
+          }
+          throw error;
+        }
+      } else await verifyPrimary();
+      return result;
     });
   }
 
@@ -942,7 +1222,21 @@ export class ReleaseGitWorkspaceService {
       throw new Error("release checkpoint manifest digest changed");
     }
     const manifest = JSON.parse(manifestBytes.toString("utf8"));
+    const manifestBaseProvenance = normalizedBaseProvenance(manifest.baseProvenance, manifest.baseCommit);
+    const checkpointBaseProvenance = normalizedBaseProvenance(checkpoint.baseProvenance, checkpoint.baseCommit);
+    if (stableManifest(manifestBaseProvenance) !== stableManifest(checkpointBaseProvenance)) {
+      throw new Error("release checkpoint reviewed-main provenance disagrees with its immutable manifest");
+    }
     const marker = await assertReleaseCloneForPublication({ repositoryRoot: layout.releaseRoot });
+    for (const operation of ["MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "rebase-apply", "rebase-merge", "sequencer", "index.lock"]) {
+      const pending = await lstat(path.join(marker.releaseGitCommonDir, operation)).catch((error) => {
+        if (error.code === "ENOENT") return null;
+        throw error;
+      });
+      if (pending) {
+        throw new Error(`release checkpoint has an unfinished Git operation: ${operation}`);
+      }
+    }
     const [branchHead, mainHead] = await Promise.all([
       runGit(["rev-parse", `refs/heads/${RELEASE_BRANCH}^{commit}`], { cwd: marker.releaseRoot }),
       runGit(["rev-parse", "refs/heads/main^{commit}"], { cwd: marker.releaseRoot }),
@@ -1011,11 +1305,16 @@ export class ReleaseGitWorkspaceService {
         primaryRoot: manifest.primaryRoot,
         releaseRoot: manifest.releaseRoot,
         baseCommit: String(manifest.baseCommit ?? ""),
+        ...(manifestBaseProvenance ? { baseProvenance: manifestBaseProvenance } : {}),
         tasks: manifestTasks.map((task) => ({
           taskId: task.taskId,
           taskRevision: task.taskRevision,
+          ...(task.resultReleaseRevision != null
+            ? { resultReleaseRevision: task.resultReleaseRevision }
+            : {}),
           ...(task.baseCommit ? { baseCommit: task.baseCommit } : {}),
           resultCommit: task.resultCommit,
+          ...(task.squashTransfer ? { squashTransfer: task.squashTransfer } : {}),
         })),
         taskIds: manifestTasks.map((task) => task.taskId).sort(),
       },

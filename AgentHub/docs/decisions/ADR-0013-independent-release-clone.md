@@ -39,9 +39,9 @@ If its `releaseRoot` exists without the matching checkpoint and ownership marker
 or is not a valid independent clone, it is reported as an orphan requiring manual
 resolution and is never adopted, repaired or removed during startup.
 
-Injected Workspace and Architect rules identify `releaseCandidates[].releaseRoot`
+Injected Workspace and Release Manager rules identify `releaseCandidates[].releaseRoot`
 as the only frozen-release checkout. The compatibility layer removes the former
-Architect instruction to update local `main` or use a linked integration worktree.
+Release Manager instruction to update local `main` or use a linked integration worktree.
 The web tooltip adds the same invariant without replacing the current workflow
 text supplied by later policy revisions.
 

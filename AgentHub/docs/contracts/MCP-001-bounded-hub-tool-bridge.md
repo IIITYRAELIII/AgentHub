@@ -1,5 +1,74 @@
 # MCP-001 — Bounded Agent Hub tool bridge
 
+## Confirmed Task conflicts
+
+The existing mutation receipt owner stores `failed` for a typed Task integration
+conflict only after the lifecycle owner proves dev restoration and reads back
+its durable failed transition. The diagnostic includes conflicting paths, exact
+Task/dev commits and the Task checkout. A snapshot may already exist: this is a
+known failed integration, not a claim of zero Git effects. Exact request retries
+return the same failure without replay. Changed work is a new Test attempt.
+Other Git/persistence failures retain the ordinary unknown/reconciliation path;
+message matching alone cannot terminalize them. Workflow schemas accept
+`blocked`; Task readbacks retain the persisted `blockedBy` prerequisite.
+The typed publication-wait admission refusal is also a known terminal failure:
+its owning gate runs before Task Git effects. It must not create another unknown
+receipt merely because a user tries to resume a still-blocked Task.
+
+A dependency that prevents withdrawal is detected before the Git owner writes
+a withdrawal intent or changes dev. The lifecycle owner records and reads back
+its own failed attempt, then returns TASK_WITHDRAWAL_DEPENDENCY naming the Task
+to handle first. It never starts a recursive return or changes another Task.
+A rejected lifecycle begin is terminal only after its transaction rolls back;
+an existing foreign transition remains untouched.
+
+TASK_WITHDRAWAL_BUSY is terminal only after the lifecycle reads back its own
+failed transition; the foreign withdrawal is untouched. RELEASE_CANDIDATE_FROZEN
+is a terminal pre-mutation refusal: new work stays in Test until the caller
+repeats acceptance after release completion. Exact retries return the same
+refusal and never silently resume an acceptance.
+
+TASK_AWAIT_INTEGRATION_FAILED is a terminal refusal only after the existing
+lifecycle owner reads back its own failed transition. PreRelease composition
+precedes the Await status CAS; a composition or proven SQLite rejection leaves
+the previous Task status and restores the prior candidate. A lost SQLite reply
+must be resolved from the original lifecycle outcome before rollback. Ambiguous
+commit or rollback outcomes remain unknown/pending and use the existing exact
+operation reconciliation, not a new request or a second recovery owner. Ordinary
+Workspaces without the release workflow keep database-only status transitions.
+
+Combined closure uses the existing hub_task_complete with optional
+absorbed_into_task_id. Preview and confirmation bind the source, surviving Task
+revision and Git evidence. It preserves Git artifacts and workflow status while
+archiving the source; its lifecycle receipt records absorbedInto. It does not
+publish or run an automatic merge. hub_task_claim dependency_override_reason is
+an explicit, audited user exception to a prerequisite release wait, never an
+automatic consequence of starting a turn. Claim/launch preserve Test/Await/Blocked
+workflow status.
+
+For release-enabled Workspaces, combined closure also binds canonical selected
+composition validation (plan, approved base and tree) into that same preview and
+receipt. Validation precedes source closure and never accepts the survivor or
+promotes the live PreRelease. Changed evidence requires a new preview. Await
+acceptance rejects incomplete latest-result integration evidence through its
+existing failed-transition/readback path; no new replay or recovery owner is
+introduced. See REL-001 and ADR-0068.
+TASK_ABSORPTION_COMPOSITION_FAILED is a typed terminal refusal only from the
+composition proof before the source lifecycle transition begins. Exact request
+retry returns that refusal. Errors after closure admission retain the existing
+unknown-outcome semantics; they are never classified by message text.
+
+## Task attachment readback
+
+Task list, exact Task reads and attachment-add results project the same persisted
+attachment membership from Task source metadata. Attachment reads authorize the
+exact requested Task/attachment pair against that membership. A successful add
+requires both the copied file and confirmed Task linkage, and an exact request
+retry cannot copy or attach it again. A post-write failure may not delete the
+file if Task linkage committed or cannot be read back. Previously persisted
+attachments become visible through the corrected projection without rewriting
+Task rows or copying their files again.
+
 ## Deadline ownership
 
 The Codex MCP client owns a finite `agent_hub` tool deadline outside
@@ -37,6 +106,16 @@ readback:
 - `unknown` is an explicit terminal receipt state when authoritative readback is
   unavailable or an effect completed but its receipt could not be committed.
 
+Release Manager workflow reconciliation reconstructs the exact original
+`hub_task_status_update` argument family before inspecting terminal state:
+plain status, ordinary status with either or both optional Task revision/current
+workflow CAS fields, or a complete cutover identity. An ordinary CAS is checked
+again against the lifecycle transition or outcome's immutable prior Task. It is
+not treated as cutover evidence. Missing, added or changed CAS fields therefore
+change the arguments hash and fail closed. An already failed transition or
+authoritative outcome settles only the original receipt without Git replay;
+pending Git work still requires its existing process-tree guard and owner.
+
 The local Await cutover uses the same canonical `hub_task_status_update` receipt.
 When its projector source is a separate Task, the receipt includes that source
 Task's exact ID, Test revision, result commit and projector hash. Both Task locks
@@ -49,6 +128,12 @@ source Task state or replay the target lifecycle. The transition records the
 accepted result and invalidates older release-plan identity; it does not compose
 `PreRelease`. Candidate assembly is owned only by the later explicit release
 prepare operation.
+`hub_release_preflight` audits reviewed main and reads the existing exact prepared
+PreRelease. It does not refresh the rolling contour or rebuild missing/stale
+candidates. Its ready response pins candidate head/tree/manifest and retains
+configured repository-owned validation. Publication freeze remains a separate
+existing operation. Request identity and unknown-outcome handling are unchanged.
+
 `hub_release_preflight_reconcile` is a read-only release-specific readback path,
 not a replay of `hub_release_preflight`. It requires the original request id plus
 the exact original preflight arguments, expected plan and repository revisions.
@@ -59,7 +144,7 @@ checkpoint evidence owned by the release Git boundary. A prepared checkpoint is
 at most a candidate snapshot, whether or not it is causally bound to the original
 request; it is not a reconciled original outcome without separate authoritative
 final-phase evidence. Contradictory checkpoint/manifest request identity, wrong
-Workspace, stale Task revision/result evidence or failed primary/release
+Workspace, stale Task acceptance revision/result evidence or failed primary/release
 invariant readback keep the original outcome unknown. The tool cannot create a
 candidate, repeat validation, finalize an unknown MCP receipt, or infer success
 from transport text.
@@ -77,6 +162,30 @@ never externally replayed.
 Startup scans every pending receipt, not only receipts reached by a retry. A
 mutation exception after dispatch is treated as a possibly partial effect and
 therefore becomes `unknown` unless an authoritative readback disproves it.
+Task create/update field validation has an explicit synchronous boundary before
+the Task owner is called. Rejection at that boundary proves no Task effect and
+terminalizes the original receipt as `failed` with the validation message. The
+same request identity returns that terminal failure without dispatch; corrected
+arguments are a new submission. The MCP schema and validator retain the
+160-character title limit. Task description and combined creation text have no
+independent character limit; complete-request transport bounds still apply.
+Creation, editing and imported Task text preserve the complete normalized
+description without silent clipping (ADR-0050). Errors from
+the Task owner or receipt persistence remain potentially ambiguous; neither
+error text nor a general validation-looking exception proves absence of effects.
+
+`hub_task_claim` accepts `dependency_mode=skip|ensure|verify` with default `skip`.
+Git preparation and the exact turn binding remain part of claim in every mode;
+`ensure` requests on-demand dependencies and `verify` requests full installed
+validation under the Task owner, as defined in REL-001.
+
+Task return reconciliation keeps the original status request identity. Exact
+withdrawal outcomes require matching prior/result Task references, withdrawn
+result and old/new dev evidence. Any remaining Git intent is finalized before
+settling the original receipt; failed finalization leaves it unknown. Pending
+withdrawal without a process guard may resume only from the proven original
+Test/Await state. An existing process guard keeps its ordinary proof requirement.
+
 Production composition cannot access raw Task/Workspace transactions or the
 callback-based queue primitive. Its immutable asynchronous owners queue the
 complete mutator inventory, including Desktop ingest/reassignment/events,
@@ -102,10 +211,17 @@ so transport ACK retirement cannot erase release completion. A definitive
 `retry_required` response permits a new finalization attempt against the same
 pending plan; an ambiguous response retains its original command ID. Other
 interrupted Desktop mutations remain unknown and are not replayed.
-`hub_task_claim` enters Git through public Task admission, which
-creates the durable per-Task/repository process-tree guard before the first
-child process; an unproven survivor blocks claim effects and retries until the
-operator proves the tree absent.
+`hub_task_claim` enters Git through public Task admission. Repository admission
+first holds the shared dev lease and then checks foreign process-tree guards;
+the guarded child runs before that lease is released. A concurrent live owner
+therefore makes the claim wait, while a guard that outlives its owner remains an
+operator-recovery blocker. The guard is created before the first child process.
+Finding an orphan at this boundary is a structured failed-before-effects claim:
+no Git mutation or Task binding has occurred, so the exact receipt is failed
+rather than left unknown. Same-ID retry may also terminalize the recognized
+legacy pre-lock variant only when exact receipt identity, canonical guard path
+and repository key match and the Task store proves no binding for its operation
+ID. It performs no Git replay or guard removal; any ambiguity remains unknown.
 
 The underlying interprocess lease is represented by an immutable
 token-addressed owner file held by its creator. Stale time alone never permits
@@ -146,7 +262,7 @@ origin recovery requires the successful tool, exact `mcp:<request_id>`, stored
 arguments hash and stored content hash; absent pre-migration content hashes fail
 closed and are not reconstructed from message text or ordering.
 
-`hub_task_launch_cancel` is an Architect-only terminal reconciliation, not a
+`hub_task_launch_cancel` is a Release Manager-only terminal reconciliation, not a
 replay lease. It may change an original start receipt from `pending`,
 `reconciling` or `unknown` to a structured failed/cancelled result only when the
 same caller Workspace, Stream, provider and provider Thread presents the exact
@@ -172,6 +288,66 @@ rejection leaves the durable prepare
 blocked for explicit cancellation and is not silently converted to success.
 
 ## Queue diagnostics
+
+## Exact squash transfer
+
+`hub_task_status_update` exposes the Release Manager-only Test-to-Test squash
+transfer through `squash_*` fields. All identity fields are supplied together.
+The first request omits `expected_squash_transfer_hash` and returns a read-only
+preview. A later request uses a new request ID and the exact returned hash to
+authorize the bounded Git and two-Task lifecycle effect. Confirmation also
+supplies `squash_proof_request_id`, the exact request ID of that preview. The
+preview identity is part of the content-addressed proof; the new confirmation
+request ID owns only its own MCP receipt. Reusing the preview request ID with
+different confirmation arguments remains forbidden by the ordinary immutable
+arguments hash. The survivor Task revision is mandatory; the source Task
+revision is always explicit.
+`squash_baseline_result_commit` is the reviewed clean-before commit and must be
+an ancestor of the requested new clean result. The durable proof separately
+captures the survivor's current accepted Test result, so a stale card cannot be
+hidden by supplying a different clean baseline.
+
+The installed public squash contract remains Test-to-Test. A bounded local
+one-shot entrypoint may additionally bootstrap one reviewed replacement when
+the survivor is currently Progress but still owns its exact prior Test result,
+and the source is still Test. That entrypoint binds the reviewed checkout
+commit/tree, projector hash, clean-package ZIP/bundle/manifest/inventory hashes,
+expected main/dev commits, preserved survivor tree, both Task revisions, normal
+transfer hash and a second cutover hash into the canonical
+`hub_task_status_update` receipt. Preview and confirmation have different
+request IDs; `squash_proof_request_id` remains the stable preview identity. The
+entrypoint re-verifies its clean checkout and artifact bytes while both Task,
+repository and Await locks are held. It does not manufacture a prior Test,
+write SQLite or refs directly, or create another receipt/reconciliation owner.
+
+A lost confirmed response is reconciled only through
+`hub_task_operation_reconcile` with the original confirmation arguments and
+hash. A squash transition whose Git commands ended normally has no process-tree
+guard to invent; exact Git and worktree/index readback owns its recovery. If an
+unresolved process guard actually exists, ordinary exact guard proof remains
+mandatory. Reconciliation first reads the exact dev parent/tree/result effect
+and complete clean materialization. It reuses the same lifecycle transition and
+Task/Git locks, never invents a new owner or infers success from ancestry, equal
+trees, a ref-only effect or an unavailable read.
+
+A changed confirmation hash, stale Task revision or non-Test participant is a
+typed pre-transition rejection. Because no lifecycle intent or Git effect has
+started, the public MCP receipt is terminal `failed` and exact same-request
+replay returns that failure. Errors after intent remain unknown until canonical
+readback. Materialization also treats ignored local files and directories as
+user bytes: native checkout collision protection must refuse rather than replace
+them, and a ref-only effect cannot complete the receipt. If the accepted target
+is already present in the worktree while the real index still equals the exact
+old tree, reconciliation may finish the old-to-new index merge without repeating
+the worktree update. The merge still refuses any independently changed index
+entry, and final exact worktree/index readback remains mandatory.
+
+For the local bootstrap, the final two-Task SQLite transaction is also the only
+operation that changes the survivor from Progress to Test. It is admitted only
+after exact survivor staging, branch CAS, ordinary squash dev CAS and complete
+Git materialization readback. Unknown-operation reconciliation reproduces every
+cutover argument and both hashes from the original receipt; missing or mixed
+artifact, source, Task, main/dev or preserved-tree identity performs no replay.
 
 `hub_active_runs_list` and `hub_parallel_streams_list` expose bounded,
 payload-free deferred-input summaries separately from live runs. The summary

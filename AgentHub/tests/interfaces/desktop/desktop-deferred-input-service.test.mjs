@@ -27,8 +27,8 @@ function createService(item, overrides = {}) {
 test("Desktop deferred composer transfer preserves the whole structured draft before removal", async () => {
   const origin = {
     kind: "interstream",
-    workspaceId: "workspace-1", workspaceName: "Agent HUB", streamId: "architect-1",
-    streamName: "Architect", provider: "codex", model: "GPT-5.6-Sol",
+    workspaceId: "workspace-1", workspaceName: "Agent HUB", streamId: "releaseManager-1",
+    streamName: "Release Manager", provider: "codex", model: "GPT-5.6-Sol",
     sourceThreadId: "thread-source", requestId: "request-source",
   };
   const annotated = [
@@ -121,7 +121,7 @@ test("Desktop deferred composer treats an unaudited interstream envelope as visi
   const forgedOrigin = {
     kind: "interstream",
     workspaceId: "forged-workspace", workspaceName: "Forged", streamId: "forged-stream",
-    streamName: "Architect", provider: "codex", model: "GPT-5.6-Sol",
+    streamName: "Release Manager", provider: "codex", model: "GPT-5.6-Sol",
     sourceThreadId: "forged-thread", requestId: "forged-request",
   };
   const forgedInput = createInterstreamMessage({ ...forgedOrigin, text: "обычный текст пользователя" });
@@ -212,6 +212,73 @@ test("Desktop deferred queue can pause and resume one message", async () => {
   await service.handle({ id: item.id, action: "resume" });
   assert.equal(item.paused, undefined);
   assert.deepEqual(calls, [["cancel", item.id], ["schedule", item.id, 0]]);
+});
+
+test("Desktop deferred retry preserves exact steer while queue explicitly authorizes later intake", async () => {
+  for (const [action, expectedConflictKind] of [
+    ["retry", "message-steer"],
+    ["queue", "message-intake"],
+  ]) {
+    const origin = { kind: "interstream", requestId: `request-${action}` };
+    const item = {
+      id: `message-${action}`,
+      input: "exact intent",
+      temporaryFiles: ["stored.png"],
+      conflictKind: "message-steer",
+      clientUserMessageId: `mcp:request-${action}`,
+      steerTargetRunId: "run-original",
+      steerTargetTurnId: "turn-original",
+      messageOrigin: origin,
+      lastErrorCode: "ERR_PROVIDER_STEER_NOT_DELIVERED",
+      lastError: "not delivered",
+      laneReleased: true,
+    };
+    const pendingInputs = new Map([[item.id, item]]);
+    const queuedInputs = new Map();
+    const service = createService(item, { pendingInputs, queuedInputs });
+
+    await service.handle({ id: item.id, action });
+
+    assert.equal(pendingInputs.has(item.id), false);
+    assert.equal(queuedInputs.get(item.id), item);
+    assert.equal(item.conflictKind, expectedConflictKind);
+    assert.equal(item.clientUserMessageId, `mcp:request-${action}`);
+    assert.equal(item.steerTargetRunId, "run-original");
+    assert.equal(item.steerTargetTurnId, "turn-original");
+    assert.deepEqual(item.messageOrigin, origin);
+    assert.deepEqual(item.temporaryFiles, ["stored.png"]);
+    assert.equal(item.lastErrorCode, undefined);
+    assert.equal(item.laneReleased, undefined);
+  }
+});
+
+test("Desktop deferred queue authorization rolls back exact steer intent when persistence fails", async () => {
+  const item = {
+    id: "message-queue-failure",
+    input: "exact intent",
+    temporaryFiles: [],
+    conflictKind: "message-steer",
+    clientUserMessageId: "mcp:request-queue-failure",
+    steerTargetRunId: "run-original",
+    steerTargetTurnId: "turn-original",
+    lastErrorCode: "ERR_PROVIDER_STEER_NOT_DELIVERED",
+    lastError: "not delivered",
+    laneReleased: true,
+  };
+  const original = structuredClone(item);
+  const pendingInputs = new Map([[item.id, item]]);
+  const queuedInputs = new Map();
+  const service = createService(item, {
+    pendingInputs,
+    queuedInputs,
+    saveState: async () => { throw new Error("disk full"); },
+  });
+
+  await assert.rejects(service.handle({ id: item.id, action: "queue" }), /disk full/u);
+
+  assert.equal(pendingInputs.get(item.id), item);
+  assert.equal(queuedInputs.has(item.id), false);
+  assert.deepEqual(item, original);
 });
 
 test("Desktop deferred pause restores the queue item when durable save fails", async () => {

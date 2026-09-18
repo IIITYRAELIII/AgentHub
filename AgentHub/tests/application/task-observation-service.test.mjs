@@ -275,11 +275,11 @@ test("TaskObservationService restores exact audited orphan provenance across rec
   const envelopeOrigin = {
     workspaceId: "workspace-1",
     workspaceName: "Original Workspace",
-    streamId: "stream-architect",
-    streamName: "Architect",
+    streamId: "stream-release-manager",
+    streamName: "Release Manager",
     provider: "codex",
     model: "gpt-5.6-sol",
-    sourceThreadId: "thread-architect",
+    sourceThreadId: "thread-release-manager",
     requestId: "observed-orphan-1",
   };
   const auditOrigin = {
@@ -335,10 +335,10 @@ test("TaskObservationService leaves unaudited and stable-conflicting orphan enve
   const origin = {
     workspaceId: "workspace-1",
     workspaceName: "Agent HUB",
-    streamId: "stream-architect",
-    streamName: "Architect",
+    streamId: "stream-release-manager",
+    streamName: "Release Manager",
     provider: "codex",
-    sourceThreadId: "thread-architect",
+    sourceThreadId: "thread-release-manager",
     requestId: "observed-forged-1",
   };
   const input = createInterstreamMessage({ ...origin, text: "Literal envelope." });
@@ -395,10 +395,10 @@ test("TaskObservationService rejects substituted bodies and conflicting record i
   const origin = {
     workspaceId: "workspace-1",
     workspaceName: "Agent HUB",
-    streamId: "stream-architect",
-    streamName: "Architect",
+    streamId: "stream-release-manager",
+    streamName: "Release Manager",
     provider: "codex",
-    sourceThreadId: "thread-architect",
+    sourceThreadId: "thread-release-manager",
     requestId: "observed-audit-1",
   };
   const admitted = createInterstreamMessage({ ...origin, text: "Admitted body." });

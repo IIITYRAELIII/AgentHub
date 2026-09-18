@@ -455,7 +455,7 @@ test("rotation notice follows the actually compacted Thread instead of the previ
   ];
 
   const [transition] = streamRotationTransitions(previousTasks, currentTasks);
-  const presentation = rotationMaintenancePresentation(transition.beforePercent, null);
+  const presentation = rotationMaintenancePresentation(transition.beforePercent);
 
   assert.equal(transition.sourceThreadId, "compacted-thread");
   assert.equal(transition.beforePercent, 26);
@@ -479,7 +479,7 @@ test("persisted rotation restores the source event without observing the Thread 
   const [message] = persistedStreamRotationMessages([source, current]);
   assert.equal(message.sourceThreadId, "source");
   assert.equal(message.threadId, "source", "legacy evidence does not invent a target");
-  assert.equal(message.afterPercent, null, "current usage is not a historical probe");
+  assert.equal(Object.hasOwn(message, "afterPercent"), false);
   assert.equal(message.maintenanceLabel, "Ротация завершена");
   assert.doesNotMatch(message.maintenanceDetail, /выполняется/u);
   assert.equal(message.placement, "after-source-turn");
@@ -489,7 +489,7 @@ test("persisted rotation restores the source event without observing the Thread 
   assert.equal(persistedStreamRotationMessages([source, source, current]).length, 1);
 });
 
-test("persisted rotation uses only exact recorded target and probe measurements", async () => {
+test("persisted rotation ignores retired measurements and preserves its exact target", async () => {
   const { persistedStreamRotationMessages } = await streamTabsApi();
   const source = {
     streamId: "stream-1", provider: "codex", threadId: "source",
@@ -502,11 +502,11 @@ test("persisted rotation uses only exact recorded target and probe measurements"
   };
   const [message] = persistedStreamRotationMessages([source]);
   assert.equal(message.threadId, "target");
-  assert.equal(message.afterPercent, 7);
+  assert.equal(Object.hasOwn(message, "afterPercent"), false);
   assert.equal(message.time, source.context.compaction.rotationCompletedAt);
   assert.equal(
     message.text,
-    "Ротация завершена. Использование контекста: после свёртки 26% → новый Thread сразу после переноса 7%",
+    "Ротация завершена. Использование контекста: после свёртки 26% → новый Thread создан",
   );
   for (const patch of [{ rotated: false }, { status: "running" }, { status: "unknown" }, { id: "" }]) {
     assert.equal(persistedStreamRotationMessages([{
@@ -516,16 +516,14 @@ test("persisted rotation uses only exact recorded target and probe measurements"
   assert.equal(persistedStreamRotationMessages([{ ...source, streamId: "" }]).length, 0);
 });
 
-// Случай пользователя: уведомление говорило «новый 11%», а новый Thread уже
-// показывал 27%. Оба числа верны, но относятся к разным моментам — подача
-// обязана называть этап и не выдавать живое значение за замер ротации.
+// Старый замер нового Thread больше не участвует в уведомлении о ротации.
 test("rotation stages stay historical while the new Thread's live usage grows", async () => {
   const { persistedStreamRotationMessages, rotationMaintenancePresentation } = await streamTabsApi();
   const source = {
     streamId: "stream-1", provider: "codex", threadId: "source",
     context: { compaction: {
       id: "ac912f09", status: "completed", rotated: true,
-      beforePercent: 85.532508, afterPercent: 27.278251,
+      beforePercent: 85.532508, afterPercent: 27.278251, measurementKind: "estimated",
       rotationThreadId: "target", rotationAfterPercent: 11.256192,
       rotationProbeTurnId: "probe-target", rotationMeasuredAt: "2026-09-12T22:10:34.367Z",
       rotationCompletedAt: "2026-09-12T22:10:34.500Z", completedAt: "2026-09-12T22:10:23.671Z",
@@ -540,15 +538,15 @@ test("rotation stages stay historical while the new Thread's live usage grows", 
 
   assert.equal(
     message.text,
-    "Ротация завершена. Использование контекста: до свёртки 86% → после свёртки 27% → новый Thread сразу после переноса 11%",
+    "Ротация завершена. Использование контекста: до свёртки 86% → после свёртки ≈27% → новый Thread создан · Предварительная оценка провайдера после свёртки",
   );
-  assert.equal(message.afterPercent, 11, "живое использование нового Thread не подменяет замер ротации");
+  assert.equal(Object.hasOwn(message, "afterPercent"), false);
   assert.equal(message.beforePercent, 27);
   assert.equal(message.compactionBeforePercent, 86);
   assert.doesNotMatch(message.text, /новый Thread[^%]*27%/u);
   assert.equal(
-    rotationMaintenancePresentation(27, null).text,
-    "Ротация завершена. Использование контекста: после свёртки 27% → новый Thread создан, его замер не сохранён",
+    rotationMaintenancePresentation(27).text,
+    "Ротация завершена. Использование контекста: после свёртки 27% → новый Thread создан",
   );
 });
 
@@ -878,7 +876,7 @@ test("Stream deck key ignores live status churn but tracks physical chat identit
   const first = [{
     id: "stream-1",
     workspaceName: "Agent HUB",
-    streamName: "Architect",
+    streamName: "Release Manager",
     running: false,
   }];
   const active = [{ ...first[0], running: true, statusLabel: "Ход выполняется" }];
@@ -1208,15 +1206,15 @@ test("background status changes rerender visible top Stream tabs", async () => {
     await openStreamTabsDomFixture(page);
     const result = await page.evaluate(() => {
       const lastActivity = "2026-09-02T08:00:00.000Z";
-      const architect = {
-        id: "task-architect",
-        threadId: "thread-architect",
+      const releaseManager = {
+        id: "task-releaseManager",
+        threadId: "thread-release-manager",
         workspaceId: "workspace-agent-hub",
         workspaceName: "Agent HUB",
-        streamId: "stream-architect",
-        streamName: "Architect",
+        streamId: "stream-release-manager",
+        streamName: "Release Manager",
         streamOrdinal: 1,
-        title: "Architect",
+        title: "Release Manager",
         provider: "codex",
         agentLabel: "Codex",
         modelLabel: "Sol",
@@ -1228,7 +1226,7 @@ test("background status changes rerender visible top Stream tabs", async () => {
         selected: true,
       };
       const idleS2 = {
-        ...architect,
+        ...releaseManager,
         id: "task-s2",
         threadId: "thread-s2",
         streamId: "stream-s2",
@@ -1242,7 +1240,7 @@ test("background status changes rerender visible top Stream tabs", async () => {
         name: "Agent HUB",
         title: "Agent HUB",
       }]);
-      window.AgentHub.setTasks([architect, idleS2]);
+      window.AgentHub.setTasks([releaseManager, idleS2]);
       const initialTopS2 = document.querySelector(
         '.stream-tabs-track .stream-tab[data-stream-name="S2"]',
       );
@@ -1252,7 +1250,7 @@ test("background status changes rerender visible top Stream tabs", async () => {
         topCurrent: initialTopS2?.hasAttribute("data-current") ?? null,
       };
 
-      window.AgentHub.setTasks([architect, {
+      window.AgentHub.setTasks([releaseManager, {
         ...idleS2,
         running: true,
         status: "in_progress",
@@ -1266,8 +1264,8 @@ test("background status changes rerender visible top Stream tabs", async () => {
       const rightS2 = document.querySelector(
         '.activity-stream-item[data-activity-task-id="task-s2"]',
       );
-      const architectTab = document.querySelector(
-        '.stream-tabs-track .stream-tab[data-stream-name="Architect"]',
+      const releaseManagerTab = document.querySelector(
+        '.stream-tabs-track .stream-tab[data-stream-name="Release Manager"]',
       );
       const effect = topS2?.querySelector(".stream-tab-status-layer")
         ? getComputedStyle(topS2.querySelector(".stream-tab-status-layer"), "::after")
@@ -1278,12 +1276,12 @@ test("background status changes rerender visible top Stream tabs", async () => {
         topState: topS2?.dataset.state ?? null,
         rightRunning: rightS2?.hasAttribute("data-running") ?? null,
         rightCurrent: rightS2?.hasAttribute("data-current") ?? null,
-        architectCurrent: architectTab?.hasAttribute("data-current") ?? null,
+        releaseManagerCurrent: releaseManagerTab?.hasAttribute("data-current") ?? null,
         effectAnimation: effect?.animationName ?? null,
         effectDisplay: effect?.display ?? null,
       };
 
-      window.AgentHub.setTasks([architect, idleS2]);
+      window.AgentHub.setTasks([releaseManager, idleS2]);
       window.AgentHub.setRunning("task-s2", true);
       const patchedTopS2 = document.querySelector(
         '.stream-tabs-track .stream-tab[data-stream-name="S2"]',
@@ -1300,8 +1298,8 @@ test("background status changes rerender visible top Stream tabs", async () => {
           topState: patchedTopS2?.dataset.state ?? null,
           rightRunning: patchedRightS2?.hasAttribute("data-running") ?? null,
           rightCurrent: patchedRightS2?.hasAttribute("data-current") ?? null,
-          architectCurrent: document.querySelector(
-            '.stream-tabs-track .stream-tab[data-stream-name="Architect"]',
+          releaseManagerCurrent: document.querySelector(
+            '.stream-tabs-track .stream-tab[data-stream-name="Release Manager"]',
           )?.hasAttribute("data-current") ?? null,
         },
       };
@@ -1315,7 +1313,7 @@ test("background status changes rerender visible top Stream tabs", async () => {
         topState: "running",
         rightRunning: true,
         rightCurrent: false,
-        architectCurrent: true,
+        releaseManagerCurrent: true,
         effectAnimation: "stream-running-wave",
         effectDisplay: "block",
       },
@@ -1325,7 +1323,7 @@ test("background status changes rerender visible top Stream tabs", async () => {
         topState: "running",
         rightRunning: true,
         rightCurrent: false,
-        architectCurrent: true,
+        releaseManagerCurrent: true,
       },
     });
   } finally {
@@ -2384,7 +2382,7 @@ test("shared prompt template editor stays responsive across every scope and surf
         });
         window.AgentHub.setTasks([{
           id: "task-1", selected: true, workspaceId: "workspace-1", workspaceName: "Agent HUB",
-          streamId: "stream-1", streamName: "Architect", streamOrdinal: 1, provider: "codex",
+          streamId: "stream-1", streamName: "Release Manager", streamOrdinal: 1, provider: "codex",
           agentLabel: "Codex", status: "ready", statusLabel: "Готов", running: false,
           unread: false, streamSettings: {},
         }]);
@@ -3366,7 +3364,7 @@ test("Workspace and Stream cards survive logical-identity rerenders while stale 
 
 test("Stream display identity never exposes a blank name", async () => {
   const { streamDisplayName } = await streamTabsApi();
-  assert.equal(streamDisplayName({ name: " Architect ", ordinal: 2 }, 3), "Architect");
+  assert.equal(streamDisplayName({ name: " Release Manager ", ordinal: 2 }, 3), "Release Manager");
   assert.equal(streamDisplayName({ name: "", ordinal: 2 }, 3), "Stream 2");
   assert.equal(streamDisplayName({ name: "", ordinal: 7 }, 1), "Stream");
 });
@@ -3395,9 +3393,9 @@ test("overflow visibility mutations do not rebuild Stream settings", async () =>
 test("answer arrival animation does not replay during Thread selection", async () => {
   const { answerArrivalTaskIds } = await streamTabsApi();
   const observedFinals = new Map();
-  const architectFinal = {
+  const releaseManagerFinal = {
     provider: "codex",
-    threadId: "thread-architect",
+    threadId: "thread-release-manager",
     turnId: "turn-1",
     revision: 1,
   };
@@ -3408,11 +3406,11 @@ test("answer arrival animation does not replay during Thread selection", async (
     revision: 1,
   };
   const previous = [
-    { id: "architect", selected: true, unread: true, latestFinal: architectFinal },
+    { id: "releaseManager", selected: true, unread: true, latestFinal: releaseManagerFinal },
     { id: "statistics", selected: false, unread: false, latestFinal: statisticsFinal },
   ];
   const selectedAnotherThread = [
-    { id: "architect", selected: false, unread: true, latestFinal: architectFinal },
+    { id: "releaseManager", selected: false, unread: true, latestFinal: releaseManagerFinal },
     { id: "statistics", selected: true, unread: false, latestFinal: statisticsFinal },
   ];
 
@@ -3437,24 +3435,24 @@ test("transient snapshot without latest final does not replay answer arrival", a
   const observedFinals = new Map();
   const final = {
     provider: "codex",
-    threadId: "thread-architect",
+    threadId: "thread-release-manager",
     turnId: "turn-1",
     revision: 1,
   };
-  const current = [{ id: "architect", unread: true, latestFinal: final }];
+  const current = [{ id: "releaseManager", unread: true, latestFinal: final }];
 
   assert.deepEqual(Array.from(answerArrivalTaskIds(current, observedFinals)), []);
   assert.deepEqual(Array.from(answerArrivalTaskIds([
-    { id: "architect", unread: true, latestFinal: null },
+    { id: "releaseManager", unread: true, latestFinal: null },
   ], observedFinals)), []);
   assert.deepEqual(Array.from(answerArrivalTaskIds(current, observedFinals)), []);
   assert.deepEqual(Array.from(answerArrivalTaskIds([
     {
-      id: "architect",
+      id: "releaseManager",
       unread: true,
       latestFinal: { ...final, turnId: "turn-2" },
     },
-  ], observedFinals)), ["architect"]);
+  ], observedFinals)), ["releaseManager"]);
 });
 
 test("task hierarchy is recovered by Stream identity when a transient task lacks Workspace fields", async () => {
@@ -3631,11 +3629,13 @@ test("Workspace folder mutations carry only identity and folder while creation c
     workingDirectory: "  project  ",
     taskPrefix: " HUB ",
     releaseWorkflowEnabled: true,
+    autoReviewEnabled: true,
     folderName: "  Новые   проекты ",
   }))), {
     workingDirectory: "project",
     taskPrefix: "HUB",
     releaseWorkflowEnabled: true,
+    autoReviewEnabled: true,
     catalogFolder: "Новые проекты",
   });
   assert.deepEqual(JSON.parse(JSON.stringify(
@@ -3644,6 +3644,7 @@ test("Workspace folder mutations carry only identity and folder while creation c
     workingDirectory: "project",
     taskPrefix: "",
     releaseWorkflowEnabled: false,
+    autoReviewEnabled: false,
   });
   assert.deepEqual(JSON.parse(JSON.stringify(workspaceFolderRenamePlan([
     { id: "one", settings: { catalogFolder: "Клиенты" } },

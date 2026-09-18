@@ -35,3 +35,15 @@ test("web shell loads the primary guard after the current release tooltip", asyn
   assert.ok(workflowIndex >= 0);
   assert.ok(guardIndex > workflowIndex);
 });
+
+test("release guard preserves independent auto-review tooltip rendering", async () => {
+  const workflow = await guardedWorkflowApi();
+  let rendered;
+  const container = {
+    ownerDocument: { createElement: () => ({ textContent: "" }) },
+    replaceChildren: (...children) => { rendered = children; },
+  };
+  assert.equal(workflow.renderAutoReviewTooltip(container), true);
+  assert.deepEqual(rendered.map((node) => node.textContent), Array.from(workflow.autoReviewTooltip));
+  assert.ok(rendered.some((node) => node.textContent.includes("напрямую")));
+});

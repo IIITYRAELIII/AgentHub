@@ -362,6 +362,7 @@ export function createExecutionBootstrapPhase({
       return measure("startup-pricing-backfill", () => api.backfillWorkLogPricingMetadata(threads, { signal, propagateErrors: true }));
     },
     recoverRuns: (...args) => runtime.runRecovery.recoverAll(...args),
+    retryTerminalProjections: () => api.retryPendingTurnEndProjections({ recoverProjecting: true }),
     retryNotifications: api.retryPendingTurnEndNotifications,
     restoreBackgroundJobs: () => provider.backgroundJobs.restore(),
     startRuntimeTimers: runtime.startRuntimeTimers,

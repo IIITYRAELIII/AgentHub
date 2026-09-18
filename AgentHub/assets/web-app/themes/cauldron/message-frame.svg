@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="300" height="200" viewBox="0 0 300 200" fill="none">
+  <defs>
+    <linearGradient id="ceramic" x1="0" y1="0" x2="140" y2="220" gradientUnits="userSpaceOnUse"><stop stop-color="#e3e0d7"/><stop offset=".4" stop-color="#b8b6af"/><stop offset=".72" stop-color="#d2cfc6"/><stop offset="1" stop-color="#93938e"/></linearGradient>
+    <linearGradient id="edge" x1="0" y1="0" x2="0" y2="200" gradientUnits="userSpaceOnUse"><stop stop-color="#666b69"/><stop offset=".5" stop-color="#343a39"/><stop offset="1" stop-color="#74756f"/></linearGradient>
+  </defs>
+  <path d="M27 3H286L299 16V166L269 197H25L13 184V128L2 115V28Z M35 20H279L287 28V158L264 180H38L30 171V29Z" fill="#080a0b" fill-rule="evenodd" stroke="#484c4a"/>
+  <path d="M29 5H83L91 12H35L23 25V171L33 184H266L255 194H26L15 182V125L4 114V30Z" fill="url(#ceramic)" stroke="#e6e3da" stroke-width=".8"/>
+  <path d="M91 7H283L293 17V164L279 179H269L291 158V22L279 12H96Z" fill="url(#ceramic)" stroke="#dfdcd4" stroke-width=".6"/>
+  <path d="M35 17H282L286 22V159L266 182H36L28 171V29Z" stroke="url(#edge)" stroke-width="2"/>
+  <path d="M32 20H280M31 35V168L39 177H261" stroke="#171c1c" stroke-width="2"/>
+  <path d="M7 48V39L26 20M10 54V103L19 113V173L29 184M31 189H244" stroke="#777c78" stroke-width=".8"/>
+  <path d="M9 51V99M20 126V173M43 9H76" stroke="#eeece2" stroke-opacity=".6"/>
+  <path d="M260 164H282L252 195H230Z" fill="#f56611" stroke="#ff9e53" stroke-width="1"/>
+  <path d="M258 170H267L250 188H241Z" fill="#121719"/>
+  <path d="M230 196H250L281 164M254 165H266" stroke="#893b12"/>
+  <path d="M17 42L20 39M12 69L15 66M22 146L24 143M43 10H48" stroke="#777b76" stroke-width=".8"/>
+</svg>

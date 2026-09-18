@@ -392,6 +392,7 @@ export async function createClientRuntimeComposition({
       changedFilesForRun,
       turnEndNotifications,
       resolveTerminalAttachments: resolveCodexTerminalAttachments,
+      repairTurnEndAttachments: api.repairTurnEndAttachments,
       defaultNotificationChatId: provider.defaultNotificationChatId,
       projectTurnUsageToWorkLog,
       rememberLastTaskMessage: api.rememberLastTaskMessage,

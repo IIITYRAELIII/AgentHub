@@ -4,7 +4,7 @@ import {
   IMAGE_GENERATION_ESTIMATE_CREDITS,
   looksLikeImageGenerationPrompt,
 } from "../domain/codex-usage-estimate.mjs";
-import { normalizeServiceTier } from "../domain/token-usage.mjs";
+import { normalizeServiceTier, normalizeTokenUsage } from "../domain/token-usage.mjs";
 import { journalProjectionVersion, replaceJournalProjectionFromMarkdown } from "./journal-projection-service.mjs";
 import { buildLazyJournalPayload } from "./journal-projection-data.mjs";
 import {
@@ -24,9 +24,42 @@ import {
   WORK_LOG_ACCOUNT_USAGE_PROJECTION_VERSION,
   workLogTurnKey,
 } from "./work-log-usage-projection.mjs";
-import { usageSyncSnapshotFromLedger } from "../domain/work-log-usage-sync.mjs";
+import {
+  usageSyncEventFromLedgerRecord,
+  usageSyncSnapshotFromLedger,
+} from "../domain/work-log-usage-sync.mjs";
 import { normalizeAuthObservation } from "../domain/usage-facts.mjs";
 import { ledgerRecordFingerprint } from "../domain/ledger-record-fingerprint.mjs";
+
+function usageProjectionBody(value) {
+  if (!value) return null;
+  return {
+    schemaVersion: Number(value.schemaVersion),
+    type: String(value.type ?? ""),
+    eventId: String(value.eventId ?? ""),
+    provider: String(value.provider ?? "").trim().toLowerCase(),
+    threadKey: String(value.threadKey ?? ""),
+    taskKey: String(value.taskKey ?? ""),
+    startedAt: String(value.startedAt ?? ""),
+    completedAt: String(value.completedAt ?? ""),
+    usage: normalizeTokenUsage(value.usage),
+    usageReported: value.usageReported === true,
+    model: String(value.model ?? "").trim().toLowerCase(),
+    serviceTier: normalizeServiceTier(value.serviceTier),
+    estimatedCredits: Number(value.estimatedCredits) || 0,
+    estimateKind: String(value.estimateKind ?? ""),
+    imageGenerationCount: Math.max(0, Math.floor(Number(value.imageGenerationCount) || 0)),
+    contextProbe: value.contextProbe === true,
+  };
+}
+
+function usageProjectionMatches(actual, expected) {
+  if (JSON.stringify(usageProjectionBody(actual)) !== JSON.stringify(usageProjectionBody(expected))) return false;
+  const actualSamples = new Set((Array.isArray(actual?.limitSamples) ? actual.limitSamples : [])
+    .map((sample) => JSON.stringify(sample)));
+  return (Array.isArray(expected?.limitSamples) ? expected.limitSamples : [])
+    .every((sample) => actualSamples.has(JSON.stringify(sample)));
+}
 
 export function createWorkLogUsageStore({
   repositoryFactory,
@@ -90,6 +123,7 @@ export class WorkLogUsageStore {
   #workspaceAssignments = new Map();
   #beforeProjectionWrite;
   #logger;
+  #journalProjections = new Map();
 
   constructor({
     repository,
@@ -179,6 +213,10 @@ export class WorkLogUsageStore {
 
   diagnostics() {
     return this.#repository.diagnostics?.() ?? {};
+  }
+
+  journalWriteDiagnostics() {
+    return this.#repository.journalWriteDiagnostics?.() ?? null;
   }
 
   async #projectionSource() {
@@ -315,6 +353,63 @@ export class WorkLogUsageStore {
       async () => structuredClone(await this.#repository.getRecord({ provider, threadId, turnId })),
       { load: false, pointRead: true },
     );
+  }
+
+  async ensureTurnUsageFact(identity) {
+    if (!this.#usageSyncStore?.importSnapshot) return { supported: false, added: 0, updated: 0 };
+    const record = await this.getTurn(identity);
+    if (!record) return { supported: true, missing: true, added: 0, updated: 0 };
+    const fact = usageSyncEventFromLedgerRecord(record, {
+      deviceId: this.#usageSyncDeviceId,
+      defaultRuntimeHomeIds: this.#usageSyncRuntimeHomeIds,
+    });
+    if (!fact) return { supported: true, missing: true, added: 0, updated: 0 };
+    if (typeof this.#usageSyncStore.ensureTurnFact === "function") {
+      const result = await this.#usageSyncStore.ensureTurnFact(fact);
+      return { supported: true, missing: false, ...result };
+    }
+    const snapshot = usageSyncSnapshotFromLedger({ [workLogTurnKey(record)]: record }, {
+      deviceId: this.#usageSyncDeviceId,
+      deviceLabel: this.#usageSyncDeviceLabel,
+      defaultRuntimeHomeIds: this.#usageSyncRuntimeHomeIds,
+    });
+    const result = await this.#usageSyncStore.importSnapshot(snapshot);
+    return { supported: true, missing: false, ...result };
+  }
+
+  async turnProjectionStatus(identity) {
+    if (typeof this.#repository.turnProjectionStatus !== "function") return null;
+    const status = await this.#repository.turnProjectionStatus(identity);
+    const sourceRevision = Number(status?.projectionSource?.revision);
+    const recordRevision = Number(status?.recordRevision);
+    const roots = Array.isArray(status?.projectionSource?.projectRoots)
+      ? status.projectionSource.projectRoots : [];
+    const covered = status?.record && (
+      !roots.some(Boolean)
+      || roots.some((root) => sameProjectRoot(root, status.record.projectRoot))
+    );
+    const expectedUsageFact = status?.record ? usageSyncEventFromLedgerRecord(status.record, {
+      deviceId: this.#usageSyncDeviceId,
+      defaultRuntimeHomeIds: this.#usageSyncRuntimeHomeIds,
+    }) : null;
+    const recordCompletedAtMs = Date.parse(status?.record?.completedAt ?? "");
+    const exactIndex = status?.indexed === true
+      && Number.isFinite(recordCompletedAtMs)
+      && status?.index?.completedAtMs === recordCompletedAtMs;
+    return {
+      ...status,
+      usageFactMatches: usageProjectionMatches(status?.usageFact, expectedUsageFact),
+      indexFresh: exactIndex,
+      current: Boolean(
+        status?.record
+        && exactIndex
+        && usageProjectionMatches(status?.usageFact, expectedUsageFact)
+        && covered
+        && Number.isFinite(sourceRevision)
+        && Number.isFinite(recordRevision)
+        && sourceRevision >= recordRevision
+      ),
+    };
   }
 
   threadTurns(identities = [], { limit = 20 } = {}) {
@@ -842,23 +937,10 @@ export class WorkLogUsageStore {
     projectionProjectRoots,
   } = {}) {
     if (typeof this.#usageSyncStore?.projectJournal === "function" && !this.#beforeProjectionWrite) {
-      return this.#repository.enqueue(() => undefined, { load: false, pointRead: true }).then(async () => {
-        let projection;
-        for (let attempt = 0; attempt < 2; attempt += 1) {
-          projection = await this.#usageSyncStore.projectJournal({
-            defaultProjectRoot: this.#defaultProjectRoot,
-            projectRoots: Array.isArray(projectionProjectRoots) && projectionProjectRoots.length
-              ? projectionProjectRoots : [projectRoot],
-            includeClaudeUsage,
-            localDeviceId: this.#usageSyncDeviceId,
-            localDeviceLabel: this.#usageSyncDeviceLabel,
-          }, { workspaceResolver: this.#workspaceResolver() });
-          if (!projection.conflict && !projection.projectionDeferred) return projection;
-        }
-        const error = new Error("Journal projection could not commit after a journal revision conflict");
-        error.code = "JOURNAL_PROJECTION_CONFLICT";
-        error.projection = projection;
-        throw error;
+      return this.#coalescedWorkerProjection({
+        includeClaudeUsage,
+        projectRoots: Array.isArray(projectionProjectRoots) && projectionProjectRoots.length
+          ? projectionProjectRoots : [projectRoot],
       });
     }
     const operation = this.#enqueueMutation(workLogFile, async () => {
@@ -866,6 +948,58 @@ export class WorkLogUsageStore {
       return this.#projectDatabase(selectedTurns, { includeClaudeUsage });
     });
     return operation;
+  }
+
+  // A projection answers only requests made before it started, so its revision
+  // read covers every durable write that preceded them. Requests arriving while
+  // it is in flight share one trailing projection of the exact same scope; an
+  // older run never acknowledges a later terminal revision.
+  #coalescedWorkerProjection(scope) {
+    const key = JSON.stringify([scope.includeClaudeUsage, scope.projectRoots]);
+    const lane = this.#journalProjections.get(key);
+    if (!lane) return this.#startWorkerProjection(key, scope);
+    if (!lane.trailing) {
+      let settle;
+      const promise = new Promise((resolve, reject) => { settle = { resolve, reject }; });
+      lane.trailing = { promise, settle };
+    }
+    return lane.trailing.promise;
+  }
+
+  #startWorkerProjection(key, scope) {
+    const lane = { trailing: null };
+    this.#journalProjections.set(key, lane);
+    const run = this.#workerProjection(scope);
+    const advance = () => {
+      const { trailing } = lane;
+      if (!trailing) {
+        this.#journalProjections.delete(key);
+        return;
+      }
+      this.#startWorkerProjection(key, scope).then(trailing.settle.resolve, trailing.settle.reject);
+    };
+    run.then(advance, advance);
+    return run;
+  }
+
+  #workerProjection({ includeClaudeUsage, projectRoots }) {
+    return this.#repository.enqueue(() => undefined, { load: false, pointRead: true }).then(async () => {
+      let projection;
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        projection = await this.#usageSyncStore.projectJournal({
+          defaultProjectRoot: this.#defaultProjectRoot,
+          projectRoots,
+          includeClaudeUsage,
+          localDeviceId: this.#usageSyncDeviceId,
+          localDeviceLabel: this.#usageSyncDeviceLabel,
+        }, { workspaceResolver: this.#workspaceResolver() });
+        if (!projection.conflict && !projection.projectionDeferred) return projection;
+      }
+      const error = new Error("Journal projection could not commit after a journal revision conflict");
+      error.code = "JOURNAL_PROJECTION_CONFLICT";
+      error.projection = projection;
+      throw error;
+    });
   }
 
   projectRateLimits(workLogFile, summary, sampledAt = "") {
@@ -906,7 +1040,6 @@ export class WorkLogUsageStore {
     estimatedCredits,
     estimateKind,
     imageGenerationCount,
-    contextProbe,
     model,
     serviceTier,
     taskThreadId,
@@ -963,7 +1096,6 @@ export class WorkLogUsageStore {
         estimatedCredits,
         estimateKind,
         imageGenerationCount,
-        contextProbe,
         model,
         serviceTier,
         taskThreadId,
@@ -1041,7 +1173,6 @@ export class WorkLogUsageStore {
     estimatedCredits,
     estimateKind,
     imageGenerationCount,
-    contextProbe,
     model,
     serviceTier,
     taskThreadId,
@@ -1089,7 +1220,6 @@ export class WorkLogUsageStore {
           estimatedCredits,
           estimateKind,
           imageGenerationCount,
-          contextProbe,
           model,
           serviceTier,
           taskThreadId,
@@ -1152,7 +1282,6 @@ export class WorkLogUsageStore {
         estimatedCredits,
         estimateKind,
         imageGenerationCount,
-        contextProbe,
         model,
         serviceTier,
         taskThreadId,

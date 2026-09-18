@@ -261,10 +261,10 @@ test("TaskBoardLaunchService forwards the audited assignment origin to message i
     kind: "interstream",
     workspaceId: "workspace-1",
     workspaceName: "Agent HUB",
-    streamId: "stream-architect",
-    streamName: "Architect",
+    streamId: "stream-release-manager",
+    streamName: "Release Manager",
     provider: "codex",
-    sourceThreadId: "thread-architect",
+    sourceThreadId: "thread-release-manager",
     requestId: "mcp-assignment-origin",
   };
 
@@ -409,14 +409,14 @@ test("TaskBoardLaunchService preserves the executor until durable reassignment s
     workspaceId: "workspace-1",
     streamId: "stream-new",
     reassign: true,
-    message: "Пришли результат в Architect.",
+    message: "Пришли результат в Release Manager.",
     launchRequestId: "reassign-1",
   });
 
   assert.deepEqual(calls.find(([kind]) => kind === "prepare"), [
     "prepare", "reassign-1", "stream-new", true, "stream-old",
   ]);
-  assert.equal(calls.find(([kind]) => kind === "send")[1].text, "Пришли результат в Architect.");
+  assert.equal(calls.find(([kind]) => kind === "send")[1].text, "Пришли результат в Release Manager.");
   assert.equal(task.streamId, "stream-new");
   assert.equal(result.task.streamId, "stream-new");
 });

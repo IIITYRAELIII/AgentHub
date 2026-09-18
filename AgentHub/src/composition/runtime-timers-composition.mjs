@@ -16,6 +16,7 @@ export function createRuntimeTimersComposition({
   queuedInputs,
   scheduleQueuedInput,
   scheduleDeliveryOutboxFlush,
+  turnEndDelivery = null,
   selectedTaskWatch,
   scheduleCodexTerminalAudit,
   scheduleBugReportScan,
@@ -30,6 +31,7 @@ export function createRuntimeTimersComposition({
     providerLogin?.dispose?.();
     usageSyncAuto?.stop?.();
     testContourJournalSync?.stop?.();
+    turnEndDelivery?.stopProjectionRecovery?.();
     runtimeTimers.clearAll();
     deferredInputController.stop();
     for (const run of taskRuns.values()) {
@@ -45,6 +47,7 @@ export function createRuntimeTimersComposition({
       for (const item of queuedInputs.values()) scheduleQueuedInput(item, 500);
     }
     if (telegramEnabled) scheduleDeliveryOutboxFlush(1_000);
+    turnEndDelivery?.startProjectionRecovery?.();
     selectedTaskWatch.schedule(500);
     scheduleCodexTerminalAudit(500);
     scheduleBugReportScan(500);

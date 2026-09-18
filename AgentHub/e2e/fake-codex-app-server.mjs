@@ -362,21 +362,25 @@ function startTurn(params) {
       item: compactionItem,
       startedAtMs: Date.now(),
     }), 35);
-    schedule(() => notify("thread/tokenUsage/updated", {
-      threadId: thread.id,
-      turnId: turn.id,
-      tokenUsage: {
-        total: { inputTokens: 100, cachedInputTokens: 40, outputTokens: 20, reasoningOutputTokens: 10, totalTokens: 130 },
-        last: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0, totalTokens: 92_592 },
-        modelContextWindow: 200_000,
-      },
-    }), 220);
-    schedule(() => notify("item/completed", {
-      threadId: thread.id,
-      turnId: turn.id,
-      item: compactionItem,
-      completedAtMs: Date.now(),
-    }), 260);
+    const finishCompaction = () => {
+      if (state.autoCompactionReleaseFile && !existsSync(state.autoCompactionReleaseFile)) {
+        schedule(finishCompaction, 10);
+        return;
+      }
+      notify("item/completed", {
+        threadId: thread.id, turnId: turn.id, item: compactionItem, completedAtMs: Date.now(),
+      });
+      notify("thread/tokenUsage/updated", {
+        threadId: thread.id,
+        turnId: turn.id,
+        tokenUsage: {
+          total: { inputTokens: 100, cachedInputTokens: 40, outputTokens: 20, reasoningOutputTokens: 10, totalTokens: 130 },
+          last: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0, totalTokens: 92_592 },
+          modelContextWindow: 200_000,
+        },
+      });
+    };
+    schedule(finishCompaction, 260);
   }
 
   if (prompt.includes("[hold]")) return turn;

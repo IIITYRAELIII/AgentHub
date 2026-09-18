@@ -11,7 +11,7 @@ changing immutable freeze or verified release-completion evidence.
 including a release-enabled Workspace. The status remains visible and does not
 close the Task.
 
-Verified Architect release completion remains a separate transaction. It
+Verified Release Manager release completion remains a separate transaction. It
 records publication and deployment evidence and closes only its exact frozen
 Tasks. A manually selected `done` status does not claim or fabricate that
 evidence.

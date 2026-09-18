@@ -199,7 +199,6 @@ export async function createProviderApplicationComposition({
     saveState: api.saveState,
     deliverTurnEndNotification: api.deliverTurnEndNotification,
     repairTurnEndAttachments: api.repairTurnEndAttachments,
-    reclassifyTurnEndContextProbe: api.reclassifyTurnEndContextProbe,
     defaultNotificationChatId,
     findProject,
     resolveTaskByProviderRef: ({ provider, providerTaskId }) => providerCatalog.taskCatalog.find((entry) => (
@@ -287,7 +286,6 @@ export async function createProviderApplicationComposition({
     saveTitles: api.savePinnedTaskTitles, saveState: api.saveState,
   });
   const codexContextMaintenance = createCodexContextMaintenanceComposition({
-    preserveProbeTitle: hubThreadNaming.preserveProbeTitle,
     config, runtimeTimers,
     contextCompactions: codexObservability.compactions,
     sanitizer: codexRolloutContextSanitizer,
@@ -333,9 +331,6 @@ export async function createProviderApplicationComposition({
     },
     waitForContextUpdate: (threadId, options) => (
       codexObservability.usageTracker.waitForContextUpdate(threadId, options)
-    ),
-    waitForTurnCompletion: (turnId, options) => (
-      codexObservability.usageTracker.waitForTurnCompletion(turnId, options)
     ),
     workspaceCatalog: workspaceCatalogStore,
     selectionStore,
@@ -497,9 +492,6 @@ export async function createProviderApplicationComposition({
     applyCodexThreadSettings: api.applyCodexThreadSettings,
     trackTurnTokenUsage: api.trackTurnTokenUsage,
     latestContextUsage: (threadId) => codexObservability.usageTracker.latestExactContext(threadId),
-    completeContextTurn: (turnId, status) => (
-      codexObservability.usageTracker.markTurnCompleted(turnId, status)
-    ),
     setLatestDiff: (value) => hostState.setLatestDiff(value),
     requestApproval: api.requestApproval,
     formatCommandApproval: api.formatCommandApproval,

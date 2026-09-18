@@ -25,19 +25,19 @@ test("hub_task_start carries the audited source Stream into message intake", asy
     id: "workspace-1",
     name: "Agent HUB",
     streams: [{
-      id: "stream-architect",
-      displayName: "Architect",
+      id: "stream-release-manager",
+      displayName: "Release Manager",
       settings: { workingDirectory: "D:/work" },
-      threads: [{ provider: "codex", threadId: "thread-architect" }],
+      threads: [{ provider: "codex", threadId: "thread-release-manager" }],
     }],
   };
   const workspaceCatalog = {
-    resolveThread: ({ provider, threadId }) => provider === "codex" && threadId === "thread-architect"
+    resolveThread: ({ provider, threadId }) => provider === "codex" && threadId === "thread-release-manager"
       ? {
         workspaceId: workspace.id,
         workspaceName: workspace.name,
-        streamId: "stream-architect",
-        streamDisplayName: "Architect",
+        streamId: "stream-release-manager",
+        streamDisplayName: "Release Manager",
         thread: { projectRoot: "D:/work" },
       }
       : null,
@@ -102,7 +102,7 @@ test("hub_task_start carries the audited source Stream into message intake", asy
   });
   service.setActiveRuns(() => [{
     provider: "codex",
-    threadId: "thread-architect",
+    threadId: "thread-release-manager",
     model: "Sol",
   }]);
   let launch = null;
@@ -113,13 +113,13 @@ test("hub_task_start carries the audited source Stream into message intake", asy
       text: params.message,
     }));
     return {
-      task: { ...task, status: "started", workflowStatus: "in_progress", streamId: "stream-architect" },
-      target: { streamId: "stream-architect", provider: "codex", threadId: "thread-target" },
+      task: { ...task, status: "started", workflowStatus: "in_progress", streamId: "stream-release-manager" },
+      target: { streamId: "stream-release-manager", provider: "codex", threadId: "thread-target" },
     };
   });
 
   await service.call("hub_task_start", {
-    context_token: service.contextToken({ provider: "codex", threadId: "thread-architect" }),
+    context_token: service.contextToken({ provider: "codex", threadId: "thread-release-manager" }),
     request_id: "task-start-origin-1",
     task_id: task.id,
     message: "Исправь дефект полностью.",
@@ -132,11 +132,11 @@ test("hub_task_start carries the audited source Stream into message intake", asy
     kind: "interstream",
     workspaceId: "workspace-1",
     workspaceName: "Agent HUB",
-    streamId: "stream-architect",
-    streamName: "Architect",
+    streamId: "stream-release-manager",
+    streamName: "Release Manager",
     provider: "codex",
     model: "Sol",
-    sourceThreadId: "thread-architect",
+    sourceThreadId: "thread-release-manager",
     requestId: "task-start-origin-1",
   });
 });

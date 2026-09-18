@@ -150,6 +150,7 @@ export function createDesktopReadSystemWiring({
       restart: {
         request: state.restartRequest,
         blockingRuns: services.restartBlockingRuns,
+        failure: services.recentRestartFailure,
         compactionCount: services.compactionCount,
         mediaJobCount: services.mediaJobCount,
         speechJobCount: services.speechJobCount,

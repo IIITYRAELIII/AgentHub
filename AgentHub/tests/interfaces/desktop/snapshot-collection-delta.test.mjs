@@ -37,3 +37,28 @@ test("snapshot collection delta rejects unstable and duplicate identities", () =
   assert.throws(() => project([{ value: 1 }]), /stable key/u);
   assert.throws(() => project([{ id: "same" }, { id: "same" }]), /duplicate key/u);
 });
+
+test("snapshot collection delta reuses serialization for an exact source version", () => {
+  let serializations = 0;
+  const project = createSnapshotCollectionDelta({
+    keyOf: (item) => item.id,
+    serialize: (item) => {
+      serializations += 1;
+      return JSON.stringify(item);
+    },
+  });
+  const item = { id: "a", value: 1 };
+  const first = project([item], "", { sourceVersion: "source:1" });
+  assert.equal(serializations, 1);
+
+  item.value = 999;
+  assert.deepEqual(project([item], first.version, { sourceVersion: "source:1" }), {
+    baseVersion: first.version,
+    version: first.version,
+  });
+  assert.equal(serializations, 1);
+
+  const next = project([item], first.version, { sourceVersion: "source:2" });
+  assert.equal(serializations, 2);
+  assert.deepEqual(next.upserts, [{ id: "a", value: 999 }]);
+});

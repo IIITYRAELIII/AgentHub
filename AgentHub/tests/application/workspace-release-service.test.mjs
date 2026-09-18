@@ -89,6 +89,23 @@ test("release completion rejects a raw Task store dependency", () => {
   }), /Task mutation owner facade/u);
 });
 
+test("exact legacy plan identity reaches the existing frozen publication verifier", async () => {
+  const plan = { revision: "current-plan", legacyRevision: "legacy-plan", ready: [{ id: "change" }],
+    candidates: [{ gitReferences: [{ projectRoot: "D:/repo", resultCommit: "task-result" }] }],
+    draft: [], blocked: [], conflicts: [] };
+  const { service, calls } = fixture(plan);
+  await service.completeRelease({ workspaceId: "workspace", expectedPlanRevision: "legacy-plan",
+    expectedRepositories: [{ projectRoot: "D:/repo", revision: "abc" }],
+    deploymentVerified: true, verificationSummary: "Exact legacy publication" });
+  assert.equal(calls.find(([name]) => name === "verify")[1].plan.revision, "legacy-plan");
+  assert.equal(calls.find(([name]) => name === "complete")[2].expectedPlanRevision, "legacy-plan");
+  const other = fixture(plan);
+  await assert.rejects(other.service.completeRelease({ workspaceId: "workspace", expectedPlanRevision: "unrelated-plan",
+    expectedRepositories: [{ projectRoot: "D:/repo", revision: "abc" }],
+    deploymentVerified: true, verificationSummary: "Wrong identity" }), /revision changed/u);
+  assert.equal(other.calls.some(([name]) => name === "verify"), false);
+});
+
 test("release completion requires explicit deployment evidence before changing the registry", async () => {
   const { calls, service } = fixture();
   await assert.rejects(
