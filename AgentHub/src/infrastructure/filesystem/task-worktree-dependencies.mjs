@@ -133,7 +133,7 @@ async function writeJsonAtomically(target, value, { maxBytes, fileSystem, lease 
   throw lastCollision;
 }
 
-async function assertLocalNodeModules(packageRoot) {
+async function assertLocalNodeModules(packageRoot, resolvedPackageRoot) {
   const nodeModules = path.join(packageRoot, "node_modules");
   const entry = await optionalLstat(nodeModules);
   if (!entry) return false;
@@ -141,7 +141,7 @@ async function assertLocalNodeModules(packageRoot) {
     throw new Error(`Task dependencies must use a local directory: ${nodeModules}`);
   }
   const resolved = await realpath(nodeModules);
-  if (!pathInside(packageRoot, resolved)) {
+  if (!pathInside(resolvedPackageRoot, resolved)) {
     throw new Error(`Task dependencies escaped their package root: ${nodeModules}`);
   }
   return true;
@@ -344,8 +344,13 @@ function canonicalPackageName(packagePath) {
   return segments[0].startsWith("@") ? `${segments[0]}/${segments[1]}` : segments[0];
 }
 
-async function physicalPackageRoots({ projectRoot, packageRoot, limits }) {
+function resolvedPackageName(packagePath, entry) {
+  return entry?.expectedPackageName ?? entry?.name ?? canonicalPackageName(packagePath);
+}
+
+async function physicalPackageRoots({ projectRoot, packageRoot, expectedPackages, installedPackages, limits }) {
   const roots = new Map();
+  const generatedArtifacts = [];
   const pending = [{ directory: path.join(packageRoot, "node_modules"), prefix: "node_modules", depth: 1 }];
   const visited = new Set();
   let totalDirectoryEntries = 0;
@@ -401,6 +406,58 @@ async function physicalPackageRoots({ projectRoot, packageRoot, limits }) {
       depth: depth + 1,
     });
   };
+  const scanGeneratedPrisma = async ({ directory, prefix }) => {
+    const clientPackagePath = `${prefix}/@prisma/client`;
+    const expectedClient = expectedPackages.get(clientPackagePath);
+    const installedClient = installedPackages.get(clientPackagePath);
+    if (!expectedClient || !installedClient
+      || resolvedPackageName(clientPackagePath, expectedClient) !== "@prisma/client"
+      || resolvedPackageName(clientPackagePath, installedClient) !== "@prisma/client") return false;
+    const prismaDirectory = path.join(directory, ".prisma");
+    if (!await localDirectory(prismaDirectory)) return false;
+    const prismaEntries = await sortedEntries(prismaDirectory);
+    if (prismaEntries.length !== 1 || prismaEntries[0].name !== "client") return false;
+    const clientDirectory = path.join(prismaDirectory, "client");
+    if (!await localDirectory(clientDirectory)) return false;
+    const generatedPending = [{
+      directory: clientDirectory,
+      relative: `${prefix}/.prisma/client`,
+      depth: 1,
+    }];
+    generatedArtifacts.push({ path: `${prefix}/.prisma/client`, type: "directory" });
+    let files = 0;
+    for (let index = 0; index < generatedPending.length; index += 1) {
+      const current = generatedPending[index];
+      if (current.depth > limits.maxNodeModulesNestingDepth) {
+        throw treeLimitError(
+          `Task dependency tree exceeds maxNodeModulesNestingDepth=${limits.maxNodeModulesNestingDepth}`,
+        );
+      }
+      for (const entry of await sortedEntries(current.directory)) {
+        if (entry.name.startsWith(".") || entry.name === "node_modules") return false;
+        const artifactPath = path.join(current.directory, entry.name);
+        const artifactEntry = await optionalLstat(artifactPath);
+        if (!artifactEntry) return false;
+        if (artifactEntry.isSymbolicLink()) {
+          throw new Error(`Task dependency generated artifacts must use local entries: ${artifactPath}`);
+        }
+        const resolvedArtifact = await realpath(artifactPath);
+        if (!pathInside(projectRoot, resolvedArtifact)) {
+          throw new Error(`Task dependency generated artifact escaped its managed project: ${artifactPath}`);
+        }
+        const relative = `${current.relative}/${entry.name}`;
+        if (artifactEntry.isDirectory()) {
+          generatedArtifacts.push({ path: relative, type: "directory" });
+          generatedPending.push({ directory: artifactPath, relative, depth: current.depth + 1 });
+          continue;
+        }
+        if (!artifactEntry.isFile()) return false;
+        generatedArtifacts.push({ path: relative, type: "file", size: artifactEntry.size });
+        files += 1;
+      }
+    }
+    return files > 0;
+  };
 
   for (let index = 0; index < pending.length; index += 1) {
     const current = pending[index];
@@ -416,6 +473,10 @@ async function physicalPackageRoots({ projectRoot, packageRoot, limits }) {
     if (visited.has(visitKey)) return null;
     visited.add(visitKey);
     for (const entry of await sortedEntries(current.directory)) {
+      if (entry.name === ".prisma") {
+        if (!await scanGeneratedPrisma(current)) return null;
+        continue;
+      }
       if (entry.name.startsWith(".")) {
         if (!ALLOWED_SERVICE_ENTRIES.has(entry.name)) return null;
         continue;
@@ -446,7 +507,7 @@ async function physicalPackageRoots({ projectRoot, packageRoot, limits }) {
       await queueNestedNodeModules(packageDirectory, packagePath, current.depth);
     }
   }
-  return roots;
+  return { roots, generatedArtifacts };
 }
 
 async function installedPackageMetadata({ projectRoot, packageDirectory, packagePath, expected, fileSystem }) {
@@ -465,7 +526,7 @@ async function installedPackageMetadata({ projectRoot, packageDirectory, package
       expectedEntry: packageJsonEntry,
     });
     const packageJson = JSON.parse(packageJsonContent.toString("utf8"));
-    const expectedName = expected.expectedPackageName ?? expected.name ?? canonicalPackageName(packagePath);
+    const expectedName = resolvedPackageName(packagePath, expected);
     const expectedVersion = expected.expectedPackageVersion ?? expected.version;
     if (packageJson.name !== expectedName
       || (expectedVersion != null && packageJson.version !== expectedVersion)) {
@@ -481,6 +542,7 @@ async function installedPackageMetadata({ projectRoot, packageDirectory, package
 async function installedStateFingerprint({
   projectRoot,
   packageRoot,
+  resolvedPackageRoot,
   expectedPackages,
   rootOptionalPackages,
   limits,
@@ -491,7 +553,7 @@ async function installedStateFingerprint({
     const installedLockPath = path.join(packageRoot, "node_modules", ".package-lock.json");
     const installedLockEntry = await optionalLstat(installedLockPath);
     if (!installedLockEntry?.isFile() || installedLockEntry.isSymbolicLink()) return null;
-    if (!pathInside(path.join(packageRoot, "node_modules"), await realpath(installedLockPath))) return null;
+    if (!pathInside(path.join(resolvedPackageRoot, "node_modules"), await realpath(installedLockPath))) return null;
     const installedLockContent = await readBoundedFile(installedLockPath, {
       maxBytes: limits.maxPackageLockBytes,
       label: "Task installed lock",
@@ -504,8 +566,15 @@ async function installedStateFingerprint({
     throw error;
   }
   const installedPackages = boundedLockedPackages(installedLock, limits);
-  const physicalPackages = await physicalPackageRoots({ projectRoot, packageRoot, limits });
-  if (!physicalPackages || physicalPackages.size !== installedPackages.size) return null;
+  const physicalState = await physicalPackageRoots({
+    projectRoot,
+    packageRoot,
+    expectedPackages,
+    installedPackages,
+    limits,
+  });
+  if (!physicalState || physicalState.roots.size !== installedPackages.size) return null;
+  const physicalPackages = physicalState.roots;
   for (const packagePath of physicalPackages.keys()) if (!installedPackages.has(packagePath)) return null;
   for (const packagePath of installedPackages.keys()) if (!expectedPackages.has(packagePath)) return null;
 
@@ -535,6 +604,9 @@ async function installedStateFingerprint({
       packageName: physical.name,
       packageVersion: physical.version,
     });
+  }
+  if (physicalState.generatedArtifacts.length > 0) {
+    evidence.push({ service: ".prisma", entries: physicalState.generatedArtifacts });
   }
   return createHash("sha256").update(JSON.stringify(evidence)).digest("hex");
 }
@@ -618,7 +690,29 @@ async function recordPostInstallFailure({ packageRoot, fingerprint, validation, 
   }, { maxBytes: MAX_MARKER_BYTES, fileSystem, lease });
 }
 
-async function prepareNpmProject({ projectRoot, lockfile, runNpm, limits, fileSystem, lease }) {
+async function installedLockHash(packageRoot, limits, fileSystem) {
+  const lockPath = path.join(packageRoot, "node_modules", ".package-lock.json");
+  const entry = await optionalLstat(lockPath);
+  if (!entry?.isFile() || entry.isSymbolicLink()) return null;
+  const content = await readBoundedFile(lockPath, {
+    maxBytes: limits.maxPackageLockBytes,
+    label: "Task dependency installed lock",
+    fileSystem,
+    expectedEntry: entry,
+  });
+  return createHash("sha256").update(content).digest("hex");
+}
+
+async function prepareNpmProject({
+  projectRoot,
+  resolvedProjectRoot,
+  lockfile,
+  runNpm,
+  limits,
+  fileSystem,
+  lease,
+  verify,
+}) {
   await assertLeaseOwned(lease);
   const packageRoot = path.dirname(lockfile);
   if (!pathInside(projectRoot, packageRoot)) {
@@ -636,9 +730,10 @@ async function prepareNpmProject({ projectRoot, lockfile, runNpm, limits, fileSy
     throw new Error(`Tracked npm lockfile has no adjacent package.json: ${lockfile}`);
   }
   const resolvedLockfile = await realpath(lockfile);
-  if (!pathInside(projectRoot, resolvedLockfile)) {
+  if (!pathInside(resolvedProjectRoot, resolvedLockfile)) {
     throw new Error(`Task dependency lockfile escaped its project root: ${lockfile}`);
   }
+  const resolvedPackageRoot = path.dirname(resolvedLockfile);
   const lockfileContent = await readBoundedFile(resolvedLockfile, {
     maxBytes: limits.maxPackageLockBytes,
     label: "Task dependency source",
@@ -648,7 +743,7 @@ async function prepareNpmProject({ projectRoot, lockfile, runNpm, limits, fileSy
   await assertLeaseOwned(lease);
   const lock = JSON.parse(lockfileContent.toString("utf8"));
   const expectedPackages = await linkedPackageExpectations({
-    projectRoot,
+    projectRoot: resolvedProjectRoot,
     packageRoot,
     lock,
     expectedPackages: boundedLockedPackages(lock, limits, { source: true }),
@@ -659,26 +754,43 @@ async function prepareNpmProject({ projectRoot, lockfile, runNpm, limits, fileSy
   const fingerprint = createHash("sha256")
     .update(INSTALL_POLICY)
     .update("\0")
+    .update(JSON.stringify([process.version, process.platform, process.arch, process.versions.modules]))
+    .update("\0")
+    .update(await readBoundedFile(path.join(packageRoot, "package.json"), {
+      maxBytes: MAX_PACKAGE_METADATA_BYTES, label: "Task package manifest", fileSystem, expectedEntry: packageEntry,
+    }))
+    .update("\0")
     .update(lockfileContent)
+    .update("\0")
+    .update(JSON.stringify([...expectedPackages]))
     .digest("hex");
   const relativeProject = path.relative(projectRoot, packageRoot).split(path.sep).join("/") || ".";
-  const nodeModulesExists = await assertLocalNodeModules(packageRoot);
+  const nodeModulesExists = await assertLocalNodeModules(packageRoot, resolvedPackageRoot);
   let successMarker = null;
   let failureMarker = null;
   let validation = invalidInstalledState();
   if (nodeModulesExists) {
-    [successMarker, failureMarker, validation] = await Promise.all([
+    [successMarker, failureMarker] = await Promise.all([
       readMarker(packageRoot, MARKER_NAME, { fileSystem }),
       readMarker(packageRoot, FAILURE_MARKER_NAME, { fileSystem }),
-      validateInstalledState({
-        projectRoot,
+    ]);
+    const installedLockSha256 = await installedLockHash(packageRoot, limits, fileSystem);
+    if (!verify && !failureMarker && installedLockSha256
+      && successMarker?.installedLockSha256 === installedLockSha256
+      && successMarker?.policy === INSTALL_POLICY
+      && successMarker.lockfileSha256 === fingerprint && /^[a-f0-9]{64}$/u.test(successMarker.installedStateSha256 ?? "")) {
+      await assertLeaseOwned(lease);
+      return { manager: "npm", project: relativeProject, lockfile: "package-lock.json", prepared: false, fingerprint };
+    }
+    validation = await validateInstalledState({
+        projectRoot: resolvedProjectRoot,
         packageRoot,
+        resolvedPackageRoot,
         expectedPackages,
         rootOptionalPackages,
         limits,
         fileSystem,
-      }),
-    ]);
+      });
     await assertLeaseOwned(lease);
     const failurePath = path.join(packageRoot, "node_modules", FAILURE_MARKER_NAME);
     if (recordedFailureMatches(failureMarker, { fingerprint, validation })) throw validation.error;
@@ -697,6 +809,15 @@ async function prepareNpmProject({ projectRoot, lockfile, runNpm, limits, fileSy
       && successMarker.lockfileSha256 === fingerprint
       && successMarker.installedStateSha256 === validation.fingerprint) {
       await assertLeaseOwned(lease);
+      if (successMarker.installedLockSha256 !== installedLockSha256) {
+        await writeJsonAtomically(path.join(packageRoot, "node_modules", MARKER_NAME), {
+          policy: INSTALL_POLICY,
+          lockfileSha256: fingerprint,
+          installedStateSha256: validation.fingerprint,
+          installedLockSha256,
+        }, { maxBytes: MAX_MARKER_BYTES, fileSystem, lease });
+        await assertLeaseOwned(lease);
+      }
       return { manager: "npm", project: relativeProject, lockfile: "package-lock.json", prepared: false, fingerprint };
     }
   }
@@ -707,14 +828,15 @@ async function prepareNpmProject({ projectRoot, lockfile, runNpm, limits, fileSy
   await assertLeaseOwned(lease);
   await runNpm([...NPM_CI_ARGS], { cwd: packageRoot, lease, signal: lease?.signal ?? null });
   await assertLeaseOwned(lease);
-  if (!await assertLocalNodeModules(packageRoot)) {
+  if (!await assertLocalNodeModules(packageRoot, resolvedPackageRoot)) {
     await assertLeaseOwned(lease);
     await mkdir(path.join(packageRoot, "node_modules"), { recursive: true });
     await assertLeaseOwned(lease);
   }
   validation = await validateInstalledState({
-    projectRoot,
+    projectRoot: resolvedProjectRoot,
     packageRoot,
+    resolvedPackageRoot,
     expectedPackages,
     rootOptionalPackages,
     limits,
@@ -733,6 +855,7 @@ async function prepareNpmProject({ projectRoot, lockfile, runNpm, limits, fileSy
     policy: INSTALL_POLICY,
     lockfileSha256: fingerprint,
     installedStateSha256: validation.fingerprint,
+    installedLockSha256: await installedLockHash(packageRoot, limits, fileSystem),
   }, { maxBytes: MAX_MARKER_BYTES, fileSystem, lease });
   await assertLeaseOwned(lease);
   await fileSystem.rm(path.join(packageRoot, "node_modules", FAILURE_MARKER_NAME), { force: true });
@@ -748,6 +871,7 @@ export async function prepareTaskWorktreeDependencies({
   runNpm = null,
   lease = null,
   fileSystem: fileSystemOverrides = {},
+  verify = true,
 } = {}) {
   if (lockPath && lease) {
     throw new Error("Task dependency caller must combine its owner with the dependency lock lease");
@@ -756,6 +880,11 @@ export async function prepareTaskWorktreeDependencies({
     const activeLease = lease ?? lockLease;
     await assertLeaseOwned(activeLease);
     const root = path.resolve(String(projectRoot ?? ""));
+    const rootEntry = await lstat(root);
+    if (rootEntry.isSymbolicLink() || !rootEntry.isDirectory()) {
+      throw new Error(`Task dependency project root must use a local directory: ${root}`);
+    }
+    const resolvedRoot = await realpath(root);
     const limits = resolvedTreeLimits(limitOverrides);
     const fileSystem = { ...DEFAULT_FILE_SYSTEM, ...fileSystemOverrides };
     const normalizedLockfiles = [...new Set(lockfiles.map((lockfile) => path.resolve(lockfile)))].sort();
@@ -764,11 +893,13 @@ export async function prepareTaskWorktreeDependencies({
       await assertLeaseOwned(activeLease);
       results.push(await prepareNpmProject({
         projectRoot: root,
+        resolvedProjectRoot: resolvedRoot,
         lockfile,
         runNpm,
         limits,
         fileSystem,
         lease: activeLease,
+        verify,
       }));
       await assertLeaseOwned(activeLease);
     }

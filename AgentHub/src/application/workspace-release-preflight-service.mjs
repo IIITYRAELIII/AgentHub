@@ -1,3 +1,4 @@
+import { realpathSync } from "node:fs";
 import path from "node:path";
 
 function requiredMethod(value, name) {
@@ -15,8 +16,89 @@ function requiredPlanRevision(value) {
 }
 
 function canonicalRoot(value) {
-  const resolved = path.resolve(String(value ?? "").trim());
+  const source = String(value ?? "").trim();
+  let resolved = path.resolve(source);
+  try {
+    resolved = realpathSync.native(resolved);
+  } catch {
+    // Some tests use synthetic roots. Fall back to path resolution when the
+    // repository is not materialized on disk.
+  }
   return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+}
+
+function repositoryRootOf(value) {
+  return String(value?.root ?? value?.projectRoot ?? "").trim();
+}
+
+function repositoryRevisionOf(value) {
+  return String(value?.revision ?? value?.publishedRevision ?? "").trim();
+}
+
+function publicationBaselineFor(repository, publication) {
+  const selectedRoot = canonicalRoot(repository.projectRoot);
+  const candidates = Array.isArray(publication?.repositories) ? publication.repositories : [];
+  for (const candidate of candidates) {
+    const candidateRoot = repositoryRootOf(candidate);
+    if (!candidateRoot || canonicalRoot(candidateRoot) !== selectedRoot) continue;
+    const revision = repositoryRevisionOf(candidate);
+    if (!revision) throw new Error(`release preflight publication evidence for ${repository.projectRoot} has no revision`);
+    return { publishedRevision: revision, evidence: candidate };
+  }
+  const publicationRoot = repositoryRootOf(publication);
+  if (publicationRoot && canonicalRoot(publicationRoot) === selectedRoot) {
+    const revision = repositoryRevisionOf(publication);
+    if (!revision) throw new Error(`release preflight publication evidence for ${repository.projectRoot} has no revision`);
+    return { publishedRevision: revision, evidence: publication };
+  }
+  throw new Error(
+    `release preflight requires repository-scoped publication evidence for ${repository.projectRoot}; `
+      + "unscoped publication revision is not authoritative for this repository",
+  );
+}
+
+function approvedRepositoryEntries(entries = []) {
+  if (!Array.isArray(entries)) throw new Error("approved release main commits must be repository-scoped");
+  const approvals = new Map();
+  for (const entry of entries) {
+    const projectRoot = repositoryRootOf(entry);
+    if (!projectRoot) throw new Error("approved release main commits require projectRoot");
+    const key = canonicalRoot(projectRoot);
+    const approval = {
+      projectRoot,
+      approvedLocalMainCommit: String(entry?.approvedLocalMainCommit ?? entry?.localMainCommit ?? "").trim(),
+      approvedOriginMainCommit: String(entry?.approvedOriginMainCommit ?? entry?.originMainCommit ?? "").trim(),
+    };
+    if (!approval.approvedLocalMainCommit || !approval.approvedOriginMainCommit) {
+      throw new Error(`approved release main commits for ${projectRoot} require both local and origin commits`);
+    }
+    const existing = approvals.get(key);
+    if (existing) throw new Error(`approved release main commits for ${projectRoot} are duplicated or ambiguous`);
+    approvals.set(key, approval);
+  }
+  return approvals;
+}
+
+function approvalForRepository(repository, selectedRepositories, {
+  approvedLocalMainCommit = null, approvedOriginMainCommit = null, approvedRepositories = [],
+} = {}) {
+  const approvals = approvedRepositoryEntries(approvedRepositories);
+  const selected = new Set(selectedRepositories.map((candidate) => canonicalRoot(candidate.projectRoot)));
+  for (const approvalRoot of approvals.keys()) {
+    if (!selected.has(approvalRoot)) throw new Error("approved release main commits target an unrelated repository");
+  }
+  const repositoryApproval = approvals.get(canonicalRoot(repository.projectRoot));
+  if (repositoryApproval) return repositoryApproval;
+  const approvedLocal = String(approvedLocalMainCommit ?? "").trim();
+  const approvedOrigin = String(approvedOriginMainCommit ?? "").trim();
+  if (!approvedLocal && !approvedOrigin) return {};
+  if (!approvedLocal || !approvedOrigin) {
+    throw new Error("approved release main commits require both local and origin commits");
+  }
+  if (selectedRepositories.length !== 1) {
+    throw new Error("top-level approved release main commits are valid only for a single selected repository");
+  }
+  return { approvedLocalMainCommit: approvedLocal, approvedOriginMainCommit: approvedOrigin };
 }
 
 function readyRepositories(ready = [], fallbackProjectRoots = []) {
@@ -43,6 +125,8 @@ function readyRepositories(ready = [], fallbackProjectRoots = []) {
       projectRoot,
       branch: entry.branch,
       resultCommit,
+      ...(entry.resultReleaseRevision != null ? { resultReleaseRevision: entry.resultReleaseRevision } : {}),
+      ...(entry.squashTransfer ? { squashTransfer: entry.squashTransfer } : {}),
     });
     repositories.set(key, repository);
   }
@@ -61,147 +145,365 @@ function readyRepositories(ready = [], fallbackProjectRoots = []) {
   }));
 }
 
-function sameContourTarget(left, right) {
-  return Boolean(left && right)
-    && canonicalRoot(left.root) === canonicalRoot(right.root)
-    && String(left.contourId ?? "") === String(right.contourId ?? "")
-    && Number(left.port) === Number(right.port)
-    && String(left.model ?? "") === String(right.model ?? "");
+function sameRepositoryIdentity(left, right) {
+  const candidateMatches = right?.frozenCandidate
+    ? String(left?.candidateCommit ?? "") === String(right.frozenCandidate.preReleaseHead ?? "")
+      && (right.frozenCandidate.tree == null || String(left?.candidateTree ?? "") === String(right.frozenCandidate.tree))
+    : true;
+  return candidateMatches
+    && canonicalRoot(left?.projectRoot) === canonicalRoot(right?.projectRoot)
+    && String(left?.headCommit ?? "") === String(right?.headCommit ?? "")
+    && JSON.stringify([...(left?.resultCommits ?? [])].sort()) === JSON.stringify([...(right?.resultCommits ?? [])].sort())
+    && JSON.stringify([...(left?.taskIds ?? [])].sort()) === JSON.stringify([...(right?.taskIds ?? [])].sort())
+    && sameFrozenTasks(left?.frozenTasks ?? [], right?.frozenTasks ?? []);
 }
 
-function exactContourIdentityReadback({ refreshed, contour, expectedHeadCommit }) {
-  const requested = refreshed?.operation;
-  const readback = contour?.readback;
-  const observed = readback?.operation;
-  const state = contour?.state;
-  const expectedHead = String(expectedHeadCommit ?? "").trim();
-  return Boolean(requested?.operationId)
-    && refreshed?.refreshOutcome === "refreshed"
-    && requested.status === "ready"
-    && requested.phase === "ready"
-    && requested.source?.headCommit === expectedHead
-    && readback?.outcome === "exact"
-    && observed?.operationId === requested.operationId
-    && observed?.status === "ready"
-    && observed?.phase === "ready"
-    && observed?.releaseId === requested.releaseId
-    && observed?.source?.headCommit === expectedHead
-    && sameContourTarget(observed?.target, requested.target)
-    && canonicalRoot(contour?.root) === canonicalRoot(requested.target?.root)
-    && contour?.planned === false
-    && contour?.operation?.operationId === requested.operationId
-    && state?.operationId === requested.operationId
-    && state?.releaseId === requested.releaseId
-    && state?.contourId === requested.target?.contourId
-    && Number(state?.port) === Number(requested.target?.port)
-    && state?.model === requested.target?.model
-    && contour?.source?.headCommit === expectedHead;
+function sameFrozenTasks(left = [], right = []) {
+  const normalize = (items) => items.map((item) => ({
+    taskId: String(item?.taskId ?? ""),
+    taskRevision: Number(item?.taskRevision),
+    resultReleaseRevision: item?.resultReleaseRevision == null ? null : Number(item.resultReleaseRevision),
+    resultCommit: String(item?.resultCommit ?? ""),
+    squashTransferHash: String(item?.squashTransfer?.transferHash ?? ""),
+  })).sort((a, b) => a.taskId.localeCompare(b.taskId));
+  return JSON.stringify(normalize(left)) === JSON.stringify(normalize(right));
 }
 
-function exactReadyContourReadback(context) {
-  return exactContourIdentityReadback(context)
-    && context.contour?.running === true
-    && context.contour?.status === "ready";
+function sameFrozenCandidateIdentity(left = {}, right = {}) {
+  return String(left.preReleaseHead ?? "") === String(right.preReleaseHead ?? "")
+    && String(left.tree ?? "") === String(right.tree ?? "")
+    && String(left.manifestHash ?? "") === String(right.manifestHash ?? "")
+    && String(left.baseCommit ?? "") === String(right.baseCommit ?? "")
+    && String(left.planRevision ?? "") === String(right.planRevision ?? "")
+    && JSON.stringify(left.manifest?.baseProvenance ?? null)
+      === JSON.stringify(right.manifest?.baseProvenance ?? null)
+    && sameFrozenTasks(left.manifest?.tasks ?? [], right.manifest?.tasks ?? []);
 }
 
-async function readExactReadyContour({
-  readTestContourStatus, refreshed, expectedHeadCommit,
-}) {
-  const request = {
-    expectedOperationId: refreshed?.operationId ?? null,
-    expectedHeadCommit,
-  };
-  let contour = null;
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    contour = await readTestContourStatus(request);
-    const context = { refreshed, contour, expectedHeadCommit };
-    if (exactReadyContourReadback(context)) return contour;
-    if (!exactContourIdentityReadback(context)
-        || contour?.running !== false
-        || contour?.status !== "not-ready") return contour;
-    await new Promise((resolve) => setTimeout(resolve, 25));
+function reviewedBaseProvenance({ repository, publishedRevision, approval }) {
+  const publishedBaseCommit = String(publishedRevision ?? "").trim();
+  const approvedLocalMainCommit = String(approval?.approvedLocalMainCommit ?? "").trim();
+  const approvedOriginMainCommit = String(approval?.approvedOriginMainCommit ?? "").trim();
+  if (!publishedBaseCommit || !approvedLocalMainCommit || !approvedOriginMainCommit) {
+    throw new Error(`explicit reviewed-main preparation requires complete approval for ${repository.projectRoot}`);
   }
-  return contour;
+  return {
+    schemaVersion: 1,
+    kind: "explicit-reviewed-main-v1",
+    publishedBaseCommit,
+    approvedLocalMainCommit,
+    approvedOriginMainCommit,
+  };
+}
+
+function sameReviewedBaseProvenance(actual, expected) {
+  return JSON.stringify(actual ?? null) === JSON.stringify(expected ?? null);
+}
+
+function assertExactProductionValidation({
+  validation, workspaceId, planRevision, repositories,
+}) {
+  if (validation?.status !== "ready") {
+    throw new Error(validation?.reason || "repository production validation did not return ready evidence");
+  }
+  if (String(validation.workspaceId ?? "") !== String(workspaceId)
+    || String(validation.planRevision ?? "") !== String(planRevision)) {
+    throw new Error("repository production validation evidence does not match Workspace release plan");
+  }
+  const checked = Array.isArray(validation.repositories) ? validation.repositories : [];
+  if (checked.length !== repositories.length) {
+    throw new Error("repository production validation evidence does not cover every external repository");
+  }
+  for (const repository of repositories) {
+    const evidence = checked.find((candidate) => canonicalRoot(candidate?.projectRoot) === canonicalRoot(repository.projectRoot));
+    if (!sameRepositoryIdentity(evidence, repository)) {
+      throw new Error(`repository production validation evidence is stale for ${repository.projectRoot}`);
+    }
+  }
+  if (!validation.check || !String(validation.check.id ?? validation.check.checkId ?? "").trim()
+      || !String(validation.check.kind ?? "").trim()) {
+    throw new Error("repository production validation requires exact check evidence");
+  }
+  return validation;
+}
+
+function assertOriginalPreflightReceipt(receipt, {
+  workspaceId, originalRequestId, expectedArgumentsHash = null,
+} = {}) {
+  const requestId = String(originalRequestId ?? "").trim();
+  if (!receipt) throw new Error("original release preflight MCP receipt was not found");
+  if (String(receipt.requestId ?? "") !== requestId) {
+    throw new Error("original release preflight MCP receipt does not match the requested id");
+  }
+  if (String(receipt.toolName ?? "") !== "hub_release_preflight") {
+    throw new Error("original MCP receipt is not a release preflight");
+  }
+  if (String(receipt.workspaceId ?? "") !== String(workspaceId)) {
+    throw new Error("original release preflight MCP receipt belongs to another Workspace");
+  }
+  const status = String(receipt.status ?? "").trim();
+  if (!["pending", "reconciling", "unknown"].includes(status)) {
+    throw new Error("original release preflight MCP receipt is already terminal");
+  }
+  const expectedHash = String(expectedArgumentsHash ?? "").trim();
+  if (expectedHash && String(receipt.argumentsHash ?? "") !== expectedHash) {
+    throw new Error("original release preflight MCP receipt arguments do not match");
+  }
+  return { ...receipt, status };
+}
+
+async function defaultProductionValidation(source) {
+  throw new Error(source?.reason || "release preflight requires a repository-owned production validation gate");
 }
 
 export class WorkspaceReleasePreflightService {
   constructor({
     releasePlanner, taskGitWorkspaces, releaseGitWorkspaces,
-    resolveTestContourSource, refreshTestContour, readTestContourStatus, readPublicationState,
+    resolveReleaseValidationSource, readPublicationState,
+    validateProductionCandidate = defaultProductionValidation,
   } = {}) {
     requiredMethod(releasePlanner, "plan");
-    requiredMethod(taskGitWorkspaces, "prepareDev");
-    requiredMethod(taskGitWorkspaces, "verifyReleaseResultsInDev");
+    requiredMethod(taskGitWorkspaces, "assertExplicitUpstreamAdoption");
     requiredMethod(taskGitWorkspaces, "releaseIntegrationEvidence");
     requiredMethod(releaseGitWorkspaces, "assertPrimaryInvariant");
     requiredMethod(releaseGitWorkspaces, "inspectMainChanges");
     requiredMethod(releaseGitWorkspaces, "prepareCandidate");
     requiredMethod(releaseGitWorkspaces, "withAwaitTransition");
-    requiredFunction(resolveTestContourSource, "resolveTestContourSource");
-    requiredFunction(refreshTestContour, "refreshTestContour");
-    requiredFunction(readTestContourStatus, "readTestContourStatus");
+    requiredFunction(resolveReleaseValidationSource, "resolveReleaseValidationSource");
     requiredFunction(readPublicationState, "readPublicationState");
+    requiredFunction(validateProductionCandidate, "validateProductionCandidate");
     this.releasePlanner = releasePlanner;
     this.taskGitWorkspaces = taskGitWorkspaces;
     this.releaseGitWorkspaces = releaseGitWorkspaces;
-    this.resolveTestContourSource = resolveTestContourSource;
-    this.refreshTestContour = refreshTestContour;
-    this.readTestContourStatus = readTestContourStatus;
+    this.resolveReleaseValidationSource = resolveReleaseValidationSource;
     this.readPublicationState = readPublicationState;
+    this.validateProductionCandidate = validateProductionCandidate;
   }
 
-  withAwaitTransition(workspaceId, operation) {
-    return this.releaseGitWorkspaces.withAwaitTransition(workspaceId, operation);
+  withAwaitTransition(workspaceId, operation, { changesAwait = null } = {}) {
+    return this.releaseGitWorkspaces.withAwaitTransition(workspaceId, async () => {
+      if (changesAwait && await changesAwait()) {
+        await this.releaseGitWorkspaces.assertAwaitChangesAllowed(workspaceId);
+      }
+      return operation();
+    });
   }
 
-  async prepareAwaitSet({ workspaceId, expectedPlanRevision = null, fallbackProjectRoots = [] } = {}) {
-    const plan = await this.releasePlanner.plan(workspaceId);
+  async validateAwaitAcceptance({ workspaceId, acceptingTask, projectRoot, lease = null } = {}) {
+    const plan = await this.releasePlanner.plan(workspaceId, { acceptingTask });
+    const root = path.resolve(String(projectRoot ?? "").trim());
+    const matches = readyRepositories(plan.ready).flatMap((repository) => (
+      canonicalRoot(repository.projectRoot) === canonicalRoot(root)
+        ? repository.frozenTasks.filter((task) => task.taskId === String(acceptingTask?.id ?? ""))
+        : []
+    ));
+    if (matches.length !== 1) throw new Error("Task has no unique prospective Await result to accept");
+    const evidence = await this.taskGitWorkspaces.releaseIntegrationEvidence({
+      projectRoot: root,
+      tasks: matches,
+      ...(lease ? { lease } : {}),
+    });
+    if (evidence.tasks?.length !== 1
+        || evidence.tasks[0].taskId !== String(acceptingTask.id)
+        || evidence.tasks[0].resultCommit !== matches[0].resultCommit) {
+      throw new Error("Task prospective Await integration evidence changed");
+    }
+    return { planRevision: plan.revision, task: evidence.tasks[0] };
+  }
+
+  async prepareAwaitSet(options = {}) {
+    return this.#prepareAwaitSet(options);
+  }
+
+  async prepareReviewedAwaitSet({
+    workspaceId, expectedPlanRevision = null, fallbackProjectRoots = [], preserveFrozen = false,
+    approvedLocalMainCommit = null, approvedOriginMainCommit = null, approvedRepositories = [],
+  } = {}) {
+    return this.withAwaitTransition(workspaceId, () => this.#prepareAwaitSet({
+      workspaceId, expectedPlanRevision, fallbackProjectRoots, preserveFrozen,
+      reviewedMainApprovals: {
+        approvedLocalMainCommit, approvedOriginMainCommit, approvedRepositories,
+      },
+    }));
+  }
+
+  async #prepareAwaitSet({ workspaceId, expectedPlanRevision = null, fallbackProjectRoots = [], preserveFrozen = false,
+    acceptingTask = null, commitPrepared = null, lease = null, validateOnly = false,
+    reviewedMainApprovals = null,
+  } = {}) {
+    if (validateOnly && commitPrepared) throw new Error("Composition validation cannot commit Task acceptance");
+    if (validateOnly) requiredMethod(this.releaseGitWorkspaces, "validateCandidate");
+    if (acceptingTask && !validateOnly && typeof commitPrepared !== "function") {
+      throw new Error("Prospective Await preparation requires its lifecycle commit");
+    }
+    const baseline = await this.releasePlanner.plan(workspaceId);
+    const plan = acceptingTask ? await this.releasePlanner.plan(workspaceId, { acceptingTask }) : baseline;
+    const validatePlan = async () => {
+      const current = await this.releasePlanner.plan(workspaceId);
+      if (current.revision !== baseline.revision) {
+        throw new Error("release plan revision changed during PreRelease rebuild");
+      }
+      if (acceptingTask) {
+        const prospective = await this.releasePlanner.plan(workspaceId, { acceptingTask });
+        if (prospective.revision !== plan.revision) throw new Error("Task changed during PreRelease acceptance preparation");
+      }
+    };
     if (expectedPlanRevision != null && plan.revision !== requiredPlanRevision(expectedPlanRevision)) {
       throw new Error("release plan revision changed; rebuild the current Await set again");
     }
-    if (plan.blocked.length) throw new Error("Await set has blocked Task results");
-    const selectedRepositories = readyRepositories(plan.ready, fallbackProjectRoots);
+    if (plan.blocked.length) throw new Error(`Await set has blocked Task results: ${plan.blocked.map((item) => (
+      `${item.taskNumber ?? item.taskId ?? "Task"}: ${item.reason ?? item.gitError ?? "result unavailable"}`
+    )).join("; ")}`);
+    const fallbackRepositories = [];
+    const checkedPrimaries = new Set();
+    for (const projectRoot of fallbackProjectRoots) {
+      const primary = await this.releaseGitWorkspaces.assertPrimaryInvariant(projectRoot, {
+        phase: "Await PreRelease rebuild",
+      });
+      fallbackRepositories.push(primary.projectRoot);
+      checkedPrimaries.add(canonicalRoot(primary.projectRoot));
+    }
+    const selectedRepositories = readyRepositories(plan.ready, fallbackRepositories);
     if (!selectedRepositories.length) {
+      if (acceptingTask) throw new Error("Task has no PreRelease result to accept");
       return { workspaceId: String(workspaceId), planRevision: plan.revision, taskIds: [], releaseCandidates: [] };
     }
     const releaseCandidates = [];
-    for (const repository of selectedRepositories) {
-      await this.releaseGitWorkspaces.assertPrimaryInvariant(repository.projectRoot, {
-        phase: "Await PreRelease rebuild",
-      });
+    requiredMethod(this.taskGitWorkspaces, "releaseBaseEvidence");
+    const publication = await this.readPublicationState();
+    const explicitApprovals = reviewedMainApprovals == null ? null : new Map(selectedRepositories.map((repository) => {
+      const approval = approvalForRepository(repository, selectedRepositories, reviewedMainApprovals);
+      if (!approval.approvedLocalMainCommit || !approval.approvedOriginMainCommit) {
+        throw new Error(`explicit reviewed-main preparation is missing approval for ${repository.projectRoot}`);
+      }
+      return [canonicalRoot(repository.projectRoot), approval];
+    }));
+    const baseChecks = [];
+    const validateBases = async () => {
+      const currentPublication = await this.readPublicationState();
+      for (const { repository, base, reviewed } of baseChecks) {
+        const currentBaseline = publicationBaselineFor(repository, currentPublication);
+        const current = await this.taskGitWorkspaces.releaseBaseEvidence({
+          projectRoot: repository.projectRoot,
+          publishedBaseCommit: currentBaseline.publishedRevision,
+          tasks: repository.frozenTasks, lease,
+        });
+        if (JSON.stringify(current) !== JSON.stringify(base)) {
+          throw new Error("accepted release base changed during PreRelease preparation");
+        }
+        if (reviewed) {
+          if (currentBaseline.publishedRevision !== reviewed.provenance.publishedBaseCommit) {
+            throw new Error("published release base changed during explicit reviewed-main preparation");
+          }
+          const currentAdoption = await this.taskGitWorkspaces.assertExplicitUpstreamAdoption({
+            projectRoot: repository.projectRoot,
+            acceptedLocalMainCommit: reviewed.provenance.approvedLocalMainCommit,
+            approvedUpstreamCommit: reviewed.provenance.approvedOriginMainCommit,
+            frozenTasks: repository.frozenTasks,
+          });
+          if (JSON.stringify(currentAdoption) !== JSON.stringify(reviewed.adoption)) {
+            throw new Error("reviewed main adoption authority changed during PreRelease preparation");
+          }
+        }
+      }
+    };
+    const result = () => ({
+      workspaceId: String(workspaceId), planRevision: plan.revision,
+      taskIds: [...new Set(plan.ready.map((entry) => String(entry.taskId)))].sort(),
+      overlaps: plan.conflicts, releaseCandidates,
+    });
+    // Retain each repository's rollback boundary until every candidate and the
+    // one Task status CAS succeed. All callers hold the Workspace Await lock.
+    const prepare = async (index) => {
+      if (index === selectedRepositories.length) {
+        await validatePlan();
+        await validateBases();
+        if (commitPrepared) await commitPrepared(result());
+        return;
+      }
+      const repository = selectedRepositories[index];
+      if (!checkedPrimaries.has(canonicalRoot(repository.projectRoot))) {
+        await this.releaseGitWorkspaces.assertPrimaryInvariant(repository.projectRoot, {
+          phase: "Await PreRelease rebuild",
+        });
+      }
       const evidence = await this.taskGitWorkspaces.releaseIntegrationEvidence({
         projectRoot: repository.projectRoot,
         tasks: repository.frozenTasks,
+        ...(lease ? { lease } : {}),
       });
-      releaseCandidates.push(await this.releaseGitWorkspaces.prepareCandidate({
+      const base = await this.taskGitWorkspaces.releaseBaseEvidence({
+        projectRoot: repository.projectRoot,
+        publishedBaseCommit: publicationBaselineFor(repository, publication).publishedRevision,
+        tasks: repository.frozenTasks, lease,
+      });
+      let reviewed = null;
+      if (explicitApprovals) {
+        const baseline = publicationBaselineFor(repository, publication);
+        const approval = explicitApprovals.get(canonicalRoot(repository.projectRoot));
+        const provenance = reviewedBaseProvenance({
+          repository, publishedRevision: baseline.publishedRevision, approval,
+        });
+        const audit = await this.releaseGitWorkspaces.inspectMainChanges({
+          projectRoot: repository.projectRoot,
+          publishedRevision: baseline.publishedRevision,
+          approvedLocalMainCommit: provenance.approvedLocalMainCommit,
+          approvedOriginMainCommit: provenance.approvedOriginMainCommit,
+        });
+        if (audit.approvalRequired || !audit.approved
+            || canonicalRoot(audit.projectRoot) !== canonicalRoot(repository.projectRoot)
+            || audit.publishedRevision !== provenance.publishedBaseCommit
+            || audit.localMain !== provenance.approvedLocalMainCommit
+            || audit.originMain !== provenance.approvedOriginMainCommit) {
+          throw new Error(`explicit reviewed-main approval is stale for ${repository.projectRoot}`);
+        }
+        const adoption = await this.taskGitWorkspaces.assertExplicitUpstreamAdoption({
+          projectRoot: repository.projectRoot,
+          acceptedLocalMainCommit: audit.localMain,
+          approvedUpstreamCommit: audit.originMain,
+          frozenTasks: repository.frozenTasks,
+        });
+        reviewed = { provenance, adoption };
+      }
+      baseChecks.push({ repository, base, reviewed });
+      const approvedBaseCommit = reviewed?.provenance.approvedOriginMainCommit ?? base.baseCommit;
+      if (validateOnly) {
+        releaseCandidates.push(await this.releaseGitWorkspaces.validateCandidate({
+          planRevision: plan.revision, workspaceId, projectRoot: repository.projectRoot,
+          frozenTasks: evidence.tasks, approvedBaseCommit,
+          validateBeforeCommit: async () => { await validatePlan(); await validateBases(); },
+        }));
+        await prepare(index + 1);
+        return;
+      }
+      const candidate = await this.releaseGitWorkspaces.prepareCandidate({
         planRevision: plan.revision,
         workspaceId,
         projectRoot: repository.projectRoot,
         frozenTasks: evidence.tasks,
-        validateBeforeCommit: async () => {
-          const current = await this.releasePlanner.plan(workspaceId);
-          if (current.revision !== plan.revision) {
-            throw new Error("release plan revision changed during PreRelease rebuild");
-          }
-        },
-      }));
-    }
-    const current = await this.releasePlanner.plan(workspaceId);
-    if (current.revision !== plan.revision) {
-      throw new Error("release plan revision changed during PreRelease rebuild");
-    }
-    return {
-      workspaceId: String(workspaceId),
-      planRevision: plan.revision,
-      taskIds: [...new Set(plan.ready.map((entry) => String(entry.taskId)))].sort(),
-      overlaps: plan.conflicts,
-      releaseCandidates,
+        approvedBaseCommit,
+        ...(reviewed ? { baseProvenance: reviewed.provenance } : {}),
+        preserveFrozen,
+        validateBeforeCommit: async () => { await validatePlan(); await validateBases(); },
+        ...(acceptingTask ? { commitPrepared: async (prepared) => {
+          releaseCandidates.push(prepared);
+          await prepare(index + 1);
+        } } : {}),
+      });
+      if (!acceptingTask) {
+        releaseCandidates.push(candidate);
+        await prepare(index + 1);
+      }
     };
+    await prepare(0);
+    return result();
   }
 
   async preflight({
     workspaceId, expectedPlanRevision, conflictsResolved = false,
     approvedLocalMainCommit = null, approvedOriginMainCommit = null,
+    approvedRepositories = [],
+    requestId = null,
   } = {}) {
     return this.withAwaitTransition(workspaceId, () => this.#preflightLocked({
       workspaceId,
@@ -209,12 +511,88 @@ export class WorkspaceReleasePreflightService {
       conflictsResolved,
       approvedLocalMainCommit,
       approvedOriginMainCommit,
+      approvedRepositories,
+      requestId,
     }));
+  }
+
+  async reconcilePreflight({
+    workspaceId, expectedPlanRevision, expectedRepositories = [], originalRequestId = null,
+    errorClass = null, originalReceipt = null,
+  } = {}) {
+    if (typeof this.releaseGitWorkspaces.frozenCandidate !== "function") {
+      throw new Error("release preflight reconciliation requires frozen candidate readback support");
+    }
+    const receipt = assertOriginalPreflightReceipt(originalReceipt, {
+      workspaceId,
+      originalRequestId,
+      expectedArgumentsHash: originalReceipt?.expectedArgumentsHash,
+    });
+    const plan = await this.releasePlanner.plan(workspaceId);
+    const requestedPlanRevision = requiredPlanRevision(expectedPlanRevision);
+    if (plan.revision !== requestedPlanRevision) {
+      throw new Error("release plan revision changed; preflight outcome remains unknown");
+    }
+    const selectedRepositories = readyRepositories(plan.ready);
+    const expected = new Map();
+    for (const item of expectedRepositories) {
+      const projectRoot = repositoryRootOf(item);
+      const revision = repositoryRevisionOf(item);
+      if (!projectRoot || !revision) throw new Error("preflight reconciliation requires exact repository revisions");
+      expected.set(canonicalRoot(projectRoot), { projectRoot, revision });
+    }
+    if (expected.size !== selectedRepositories.length) {
+      throw new Error("preflight reconciliation evidence does not cover the selected repositories");
+    }
+    const releaseCandidates = [];
+    for (const repository of selectedRepositories) {
+      const expectedRepository = expected.get(canonicalRoot(repository.projectRoot));
+      if (!expectedRepository) throw new Error(`preflight reconciliation is missing ${repository.projectRoot}`);
+      const candidate = await this.releaseGitWorkspaces.frozenCandidate(repository.projectRoot);
+      if (candidate.planRevision !== plan.revision || candidate.preReleaseHead !== expectedRepository.revision) {
+        throw new Error(`preflight reconciliation checkpoint is stale for ${repository.projectRoot}`);
+      }
+      if (candidate.checkpointPhase !== "prepared") {
+        throw new Error(`preflight reconciliation requires a prepared checkpoint for ${repository.projectRoot}`);
+      }
+      if (candidate.manifest?.planRevision !== plan.revision
+          || candidate.manifest?.baseCommit !== candidate.baseCommit
+          || candidate.manifestHash !== candidate.manifest?.manifestHash) {
+        throw new Error(`preflight reconciliation manifest is stale for ${repository.projectRoot}`);
+      }
+      if (String(candidate.manifest?.workspaceId ?? "") !== String(workspaceId)) {
+        throw new Error(`preflight reconciliation manifest belongs to another Workspace for ${repository.projectRoot}`);
+      }
+      if (!sameFrozenTasks(candidate.manifest?.tasks ?? [], repository.frozenTasks)) {
+        throw new Error(`preflight reconciliation manifest Task evidence is stale for ${repository.projectRoot}`);
+      }
+      releaseCandidates.push(candidate);
+    }
+    const current = await this.releasePlanner.plan(workspaceId);
+    if (current.revision !== plan.revision) {
+      throw new Error("release plan revision changed during preflight readback; outcome remains unknown");
+    }
+    const causallyBound = releaseCandidates.every((candidate) => (
+      String(candidate.preflightRequestId ?? "") === receipt.requestId
+    ));
+    return {
+      workspaceId: String(workspaceId),
+      planRevision: plan.revision,
+      status: "candidate_snapshot_only",
+      originalRequestId: receipt.requestId,
+      errorClass: String(errorClass ?? "").trim() || "unknown",
+      originalOutcome: "unknown",
+      replayed: false,
+      reason: causallyBound
+        ? "prepared checkpoint is not final preflight outcome evidence"
+        : "prepared checkpoint is not causally bound to the original MCP request",
+      releaseCandidates,
+    };
   }
 
   async #preflightLocked({
     workspaceId, expectedPlanRevision, conflictsResolved,
-    approvedLocalMainCommit, approvedOriginMainCommit,
+    approvedLocalMainCommit, approvedOriginMainCommit, approvedRepositories, requestId,
   }) {
     const plan = await this.releasePlanner.plan(workspaceId);
     const requestedPlanRevision = requiredPlanRevision(expectedPlanRevision);
@@ -226,16 +604,24 @@ export class WorkspaceReleasePreflightService {
 
     const selectedRepositories = readyRepositories(plan.ready);
     const publication = await this.readPublicationState();
-    const publishedRevision = String(publication?.revision ?? "").trim();
-    if (!publishedRevision) throw new Error("release preflight has no last published revision");
+    if (!publication) throw new Error("release preflight has no last published revision");
     const mainAudits = [];
+    const mainAuthorities = [];
     for (const repository of selectedRepositories) {
-      mainAudits.push(await this.releaseGitWorkspaces.inspectMainChanges({
-        projectRoot: repository.projectRoot,
-        publishedRevision,
+      const baseline = publicationBaselineFor(repository, publication);
+      const approval = approvalForRepository(repository, selectedRepositories, {
         approvedLocalMainCommit,
         approvedOriginMainCommit,
-      }));
+        approvedRepositories,
+      });
+      const audit = await this.releaseGitWorkspaces.inspectMainChanges({
+        projectRoot: repository.projectRoot,
+        publishedRevision: baseline.publishedRevision,
+        approvedLocalMainCommit: approval.approvedLocalMainCommit,
+        approvedOriginMainCommit: approval.approvedOriginMainCommit,
+      });
+      mainAudits.push(audit);
+      mainAuthorities.push({ repository, baseline, approval, audit });
     }
     if (mainAudits.some((audit) => audit.approvalRequired)) {
       return {
@@ -246,93 +632,128 @@ export class WorkspaceReleasePreflightService {
         mainAudits,
       };
     }
+    for (const authority of mainAuthorities) {
+      const { repository, audit } = authority;
+      authority.adoption = await this.taskGitWorkspaces.assertExplicitUpstreamAdoption({
+        projectRoot: repository.projectRoot,
+        acceptedLocalMainCommit: audit.localMain,
+        approvedUpstreamCommit: audit.originMain,
+        frozenTasks: repository.frozenTasks,
+      });
+    }
     const primaryRepositories = [];
     for (const repository of selectedRepositories) {
-      primaryRepositories.push(await this.releaseGitWorkspaces.assertPrimaryInvariant(repository.projectRoot, {
+      const primary = await this.releaseGitWorkspaces.assertPrimaryInvariant(repository.projectRoot, {
         phase: "release preflight",
-      }));
-    }
-    const preparedRepositories = [];
-    for (const repository of selectedRepositories) {
-      const dev = await this.taskGitWorkspaces.prepareDev(repository.projectRoot);
-      preparedRepositories.push({
-        projectRoot: dev.repositoryRoot,
-        worktreeRoot: dev.projectRoot,
-        branch: dev.branch,
-        headCommit: dev.headCommit,
-        resultCommits: repository.resultCommits,
-        taskIds: repository.taskIds,
       });
+      const audit = mainAudits.find((entry) => canonicalRoot(entry.projectRoot) === canonicalRoot(repository.projectRoot));
+      if (primary.headCommit !== audit.localMain) {
+        throw new Error(`reviewed local main changed before candidate verification for ${repository.projectRoot}`);
+      }
+      primaryRepositories.push(primary);
     }
-
-    const contourSource = await this.resolveTestContourSource(preparedRepositories);
-    const refreshed = await this.refreshTestContour({
-      sourceRoot: contourSource.sourceRoot,
-      forceFreshCandidate: true,
-    });
-    const expectedContourHead = contourSource.headCommit ?? null;
-    const contour = await readExactReadyContour({
-      readTestContourStatus: this.readTestContourStatus,
-      refreshed,
-      expectedHeadCommit: expectedContourHead,
-    });
-    if (!exactReadyContourReadback({ refreshed, contour, expectedHeadCommit: expectedContourHead })) {
-      throw new Error(
-        `refreshed Test Contour readback is not exact-ready: ${contour?.readback?.outcome ?? "missing"}; `
-          + "it does not match dev HEAD or the exact operation target",
-      );
-    }
-
+    requiredMethod(this.releaseGitWorkspaces, "frozenCandidate");
+    const releaseCandidates = [];
     const repositories = [];
     for (const repository of selectedRepositories) {
-      const dev = await this.taskGitWorkspaces.verifyReleaseResultsInDev({
-        projectRoot: repository.projectRoot,
-        resultCommits: repository.resultCommits,
-        taskIds: repository.taskIds,
+      const candidate = await this.releaseGitWorkspaces.frozenCandidate(repository.projectRoot);
+      const authority = mainAuthorities.find((entry) => (
+        canonicalRoot(entry.repository.projectRoot) === canonicalRoot(repository.projectRoot)
+      ));
+      const { audit, baseline, approval } = authority;
+      if (candidate.planRevision !== plan.revision
+          || candidate.manifest?.planRevision !== plan.revision
+          || String(candidate.manifest?.workspaceId ?? "") !== String(workspaceId)
+          || canonicalRoot(candidate.repositoryRoot) !== canonicalRoot(repository.projectRoot)
+          || !sameFrozenTasks(candidate.manifest?.tasks, repository.frozenTasks)) {
+        throw new Error(`prepared PreRelease does not match the accepted release plan for ${repository.projectRoot}`);
+      }
+      if (candidate.baseCommit !== audit.originMain || candidate.manifest?.baseCommit !== candidate.baseCommit) {
+        throw new Error(`prepared PreRelease base does not match reviewed main for ${repository.projectRoot}; integrate the reviewed changes through a Task`);
+      }
+      const actualProvenance = candidate.manifest?.baseProvenance ?? null;
+      const explicitApprovalSupplied = Boolean(
+        approval.approvedLocalMainCommit && approval.approvedOriginMainCommit,
+      );
+      let provenanceRequired = false;
+      if ((actualProvenance || explicitApprovalSupplied)
+          && baseline.publishedRevision !== audit.originMain && audit.localMain === audit.originMain) {
+        requiredMethod(this.taskGitWorkspaces, "releaseBaseEvidence");
+        const releaseBase = await this.taskGitWorkspaces.releaseBaseEvidence({
+          projectRoot: repository.projectRoot,
+          publishedBaseCommit: baseline.publishedRevision,
+          tasks: repository.frozenTasks,
+        });
+        provenanceRequired = explicitApprovalSupplied && releaseBase.baseCommit !== audit.originMain;
+      }
+      const expectedProvenance = actualProvenance || provenanceRequired
+        ? reviewedBaseProvenance({ repository, publishedRevision: baseline.publishedRevision, approval })
+        : null;
+      if ((provenanceRequired && !sameReviewedBaseProvenance(actualProvenance, expectedProvenance))
+          || (actualProvenance && !sameReviewedBaseProvenance(actualProvenance, expectedProvenance))) {
+        throw new Error(`prepared PreRelease reviewed-main authority is stale for ${repository.projectRoot}`);
+      }
+      if (!["prepared", "frozen"].includes(candidate.checkpointPhase)) {
+        throw new Error(`prepared PreRelease has an unfinished operation for ${repository.projectRoot}`);
+      }
+      releaseCandidates.push({
+        ...candidate,
+        branch: candidate.checkpointPhase === "frozen" ? "main" : "PreRelease",
+        frozenTasks: repository.frozenTasks,
+        reused: true,
       });
       repositories.push({
-        projectRoot: dev.repositoryRoot,
-        worktreeRoot: dev.projectRoot,
-        branch: dev.branch,
-        headCommit: dev.headCommit,
-        resultCommits: dev.resultCommits,
-        taskIds: repository.taskIds,
+        ...repository,
+        worktreeRoot: candidate.releaseRoot,
+        branch: candidate.checkpointPhase === "frozen" ? "main" : "PreRelease",
+        headCommit: candidate.preReleaseHead,
+        frozenCandidate: candidate,
       });
-    }
-    const contourRepository = repositories.find((repository) => (
-      canonicalRoot(repository.projectRoot) === canonicalRoot(contourSource.projectRoot)
-    ));
-    if (!contourRepository || String(contour.source?.headCommit ?? "") !== contourRepository.headCommit) {
-      throw new Error("refreshed Test Contour source does not match dev HEAD");
     }
 
-    const releaseCandidates = [];
-    for (const repository of selectedRepositories) {
-      const evidence = await this.taskGitWorkspaces.releaseIntegrationEvidence({
-        projectRoot: repository.projectRoot,
-        tasks: repository.frozenTasks,
-      });
-      releaseCandidates.push(await this.releaseGitWorkspaces.prepareCandidate({
-        planRevision: plan.revision,
+    // Selection of repository-owned validation is independent of the rolling dev
+    // contour. All validation receives the already prepared candidate identity.
+    const validationSource = await this.resolveReleaseValidationSource(repositories);
+    const pipelineRepositoryRoot = validationSource?.kind === "workspace-release-pipeline"
+      ? validationSource.projectRoot : null;
+    const externalRepositories = pipelineRepositoryRoot
+      ? repositories.filter((repository) => canonicalRoot(repository.projectRoot) !== canonicalRoot(pipelineRepositoryRoot))
+      : repositories;
+    let productionValidation = null;
+    if (externalRepositories.length) {
+      productionValidation = assertExactProductionValidation({
         workspaceId,
-        projectRoot: repository.projectRoot,
-        frozenTasks: evidence.tasks,
-        approvedBaseCommit: mainAudits.find((audit) => (
-          canonicalRoot(audit.projectRoot) === canonicalRoot(repository.projectRoot)
-        ))?.originMain ?? null,
-        validateBeforeCommit: async () => {
-          const current = await this.releasePlanner.plan(workspaceId);
-          if (current.revision !== plan.revision) {
-            throw new Error("release plan revision changed during release candidate preparation");
-          }
-        },
-      }));
+        planRevision: plan.revision,
+        repositories: externalRepositories,
+        validation: await this.validateProductionCandidate({
+          workspaceId,
+          planRevision: plan.revision,
+          source: validationSource,
+          repositories: externalRepositories,
+        }),
+      });
+    }
+    for (const [index, repository] of repositories.entries()) {
+      const afterPrimary = await this.releaseGitWorkspaces.assertPrimaryInvariant(repository.projectRoot, {
+        phase: "release preflight completion",
+      });
+      const beforePrimary = primaryRepositories[index];
+      if (afterPrimary.headCommit !== beforePrimary.headCommit
+          || afterPrimary.indexFingerprint !== beforePrimary.indexFingerprint
+          || afterPrimary.dirtyFingerprint !== beforePrimary.dirtyFingerprint) {
+        throw new Error(`primary Workspace changed during release preflight for ${repository.projectRoot}`);
+      }
+      const afterCandidate = await this.releaseGitWorkspaces.frozenCandidate(repository.projectRoot);
+      if (!sameFrozenCandidateIdentity(afterCandidate, repository.frozenCandidate)
+          || afterCandidate.checkpointPhase !== repository.frozenCandidate.checkpointPhase
+          || String(afterCandidate.manifest?.workspaceId ?? "") !== String(workspaceId)) {
+        throw new Error(`prepared release candidate changed during preflight for ${repository.projectRoot}`);
+      }
     }
     const current = await this.releasePlanner.plan(workspaceId);
     if (current.revision !== plan.revision) {
-      throw new Error("release plan revision changed during release candidate preparation");
+      throw new Error("release plan revision changed during release preflight");
     }
-
     return {
       workspaceId: String(workspaceId),
       planRevision: plan.revision,
@@ -343,12 +764,7 @@ export class WorkspaceReleasePreflightService {
       primaryRepositories,
       repositories,
       releaseCandidates,
-      testContour: {
-        root: contour.root,
-        running: true,
-        branch: contour.source?.branch ?? null,
-        headCommit: contour.source.headCommit,
-      },
+      ...(productionValidation ? { productionValidation } : {}),
     };
   }
 }

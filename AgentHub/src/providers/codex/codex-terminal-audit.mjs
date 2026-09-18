@@ -2,7 +2,6 @@ import { contourRolloutPolicy } from "../../infrastructure/filesystem/test-conto
 import { createHash } from "node:crypto";
 import { open, stat } from "node:fs/promises";
 
-import { isCodexContextProbeTurn } from "../../domain/codex-context-probe.mjs";
 import { scanCodexHistoricalRollout } from "./codex-turn-usage.mjs";
 import { uuidV7TimestampMs } from "./codex-subagent-accounting.mjs";
 
@@ -132,7 +131,6 @@ function normalizedLiveScanResult(result, threadId) {
         turnId: String(turn.turnId),
         status: terminalTurnStatus(turn.status) || "completed",
         completedAt: String(turn.completedAt ?? turn.lastActivityAt ?? ""),
-        ...(turn.contextProbe === true ? { contextProbe: true } : {}),
         ...(attachmentCandidates.has(String(turn.turnId)) ? {
           generatedImageSources: attachmentCandidates.get(String(turn.turnId)),
         } : {}),
@@ -148,7 +146,6 @@ function normalizedLiveScanResult(result, threadId) {
       turnId: String(turn.turnId),
       startedAt: String(turn.startedAt ?? ""),
       lastActivityAt: String(turn.lastActivityAt ?? turn.startedAt ?? ""),
-      ...(turn.contextProbe === true ? { contextProbe: true } : {}),
     })),
     nextOffset: result.nextOffset,
     resumeState: result.resumeState ?? null,
@@ -211,7 +208,6 @@ function restoredPendingThread(value) {
       turnId,
       startedAt: String(turn?.startedAt ?? ""),
       lastActivityAt: String(turn?.lastActivityAt ?? turn?.startedAt ?? ""),
-      ...(turn?.contextProbe === true ? { contextProbe: true } : {}),
     });
   }
   if (!turns.size) return null;
@@ -266,7 +262,6 @@ function restoredHistoricalSubagentBackfill(value) {
           turnId,
           startedAt: String(turn?.startedAt ?? ""),
           lastActivityAt: String(turn?.lastActivityAt ?? turn?.startedAt ?? ""),
-          ...(turn?.contextProbe === true ? { contextProbe: true } : {}),
         }] : [];
       }) : [],
     });
@@ -584,7 +579,6 @@ export class CodexTerminalAudit {
         turnId,
         startedAt: String(turn?.startedAt ?? ""),
         lastActivityAt: String(turn?.lastActivityAt ?? turn?.startedAt ?? ""),
-        ...(turn?.contextProbe === true ? { contextProbe: true } : {}),
       });
     }
     pending.lastActivityMs = activityMs;
@@ -648,7 +642,7 @@ export class CodexTerminalAudit {
     await this.#rememberActiveTurns(
       thread,
       project,
-      (result.activeTurns ?? []).filter((turn) => !isCodexContextProbeTurn(turn)),
+      result.activeTurns ?? [],
       {
         lowerBoundMs,
         canResume,
@@ -665,10 +659,7 @@ export class CodexTerminalAudit {
     for (; terminalIndex < terminals.length; terminalIndex += 1) {
       if (!this.#hasBudget(budget)) break;
       const terminal = terminals[terminalIndex];
-      const candidate = isCodexContextProbeTurn(terminal)
-        ? { ...terminal, historical: true, resolveCurrentAccount: true }
-        : terminal;
-      const handled = await this.#reconcileLive(thread, project, candidate);
+      const handled = await this.#reconcileLive(thread, project, terminal);
       budget.workUnits += 1;
       if (handled === false) {
         allHandled = false;
@@ -773,7 +764,6 @@ export class CodexTerminalAudit {
               continue;
             }
             const exactTurn = turns.get(turn.turnId);
-            const contextProbe = isCodexContextProbeTurn(exactTurn);
             const status = terminalTurnStatus(exactTurn?.status);
             if (!status) continue;
             const handled = await this.#reconcileLive(fullThread, project, {
@@ -786,7 +776,6 @@ export class CodexTerminalAudit {
                 || nowMs,
               ).toISOString(),
               authoritative: true,
-              ...(contextProbe ? { historical: true, resolveCurrentAccount: true } : {}),
             });
             if (handled === false) continue;
             budget.turns += 1;

@@ -39,6 +39,7 @@ test("local control client survives App Server exit during delayed startup and s
   const projectRoot = path.join(runtimeRoot, "project");
   const configPath = path.join(runtimeRoot, "config.json");
   const codexStatePath = path.join(runtimeRoot, "fake-codex-state.json");
+  const autoCompactionReleaseFile = path.join(runtimeRoot, "release-auto-compaction");
   const codexPidPath = path.join(runtimeRoot, "fake-codex.pid");
   const savedThreadId = "10000000-0000-4000-8000-000000000001";
   await Promise.all([mkdir(dataDir, { recursive: true }), mkdir(projectRoot, { recursive: true })]);
@@ -80,6 +81,7 @@ test("local control client survives App Server exit during delayed startup and s
     // Keep the manual compaction observable long enough for the settings guard
     // assertion even on a loaded Windows host.
     manualCompactionDelayMs: 1_500,
+    autoCompactionReleaseFile,
     threads: [{
       id: savedThreadId,
       cwd: projectRoot,
@@ -269,7 +271,7 @@ test("local control client survives App Server exit during delayed startup and s
     provider: "codex",
     threadId: firstThreadId,
     clientUserMessageId: "desktop-message-during-compaction",
-    followUpMode: "steer",
+    followUpMode: "queue",
   }, { runtimeRoot });
   assert.equal(compactingInput.accepted, false);
   assert.equal(compactingInput.deferred, true);
@@ -280,6 +282,7 @@ test("local control client survives App Server exit during delayed startup and s
     steerCountBeforeCompactionInput,
     "input during compaction must not be steered into the compacting turn",
   );
+  await writeFile(autoCompactionReleaseFile, "release", "utf8");
   await waitFor(async () => {
     const snapshot = await callDesktopControl("snapshot", {}, { runtimeRoot });
     const context = snapshot.tasks.find((item) => item.threadId === firstThreadId)?.context;
@@ -351,7 +354,8 @@ test("local control client survives App Server exit during delayed startup and s
       String(item.clientId ?? "").startsWith("agent-hub-context-probe:")
     )))
     .map((turn) => turn.id);
-  assert.ok(syntheticProbeTurnIds.length > 0, "automatic maintenance did not create a service-identified probe");
+  assert.deepEqual(syntheticProbeTurnIds, ["00000000-0000-4000-8000-000000000001"],
+    "context maintenance must not generate a synthetic turn beyond the retained fixture history");
   const compactionQueuedHistory = await waitFor(async () => {
     const result = await callDesktopControl("task-history", {
       provider: "codex",
@@ -363,10 +367,9 @@ test("local control client survives App Server exit during delayed startup and s
     )));
     return exchange?.answer?.endsWith("ФИНАЛ_НЕ_ОБРЕЗАН") ? { result, exchange } : null;
   }, "full queued answer history after context compaction", 5_000);
-  assert.equal(compactionQueuedHistory.result.total, 2);
-  assert.equal(compactionQueuedHistory.result.items.some((item) => (
-    syntheticProbeTurnIds.includes(item.id)
-  )), false, "a service-identified context probe reached user history");
+  assert.equal(compactionQueuedHistory.result.items.filter((item) => (
+    !syntheticProbeTurnIds.includes(item.id)
+  )).length, 2);
   assert.ok(compactionQueuedHistory.exchange.answer.length > 6_000);
   assert.match(compactionQueuedHistory.exchange.answer, /ФИНАЛ_НЕ_ОБРЕЗАН$/u);
   const beforeCompaction = await callDesktopControl("snapshot", {}, { runtimeRoot });
@@ -445,6 +448,11 @@ test("local control client survives App Server exit during delayed startup and s
   }, "desktop context compaction after reconnect", 5_000);
 
   const startupProcess = (await callDesktopControl("snapshot", {}, { runtimeRoot })).server.process;
+  const startupHealth = await callDesktopControl("runtime-health", {}, { runtimeRoot });
+  assert.equal(startupHealth.live, true);
+  assert.equal(startupHealth.ready, true);
+  assert.equal(startupHealth.process.pid, startupProcess.pid);
+  assert.equal(startupHealth.process.releaseId, startupProcess.releaseId);
   const expectedStartupStages = ["configuration", "infrastructure", "web", "desktop-control", "runtime-command", "hub-mcp", "history",
     "provider", "runs", "readiness", "timers"].map((stage) => `startup-${stage}`);
   const startupSpans = await waitFor(() => {
@@ -666,12 +674,22 @@ test("local control client survives App Server exit during delayed startup and s
     const slowExchange = result.items.find((item) => item.messages.some((message) => (
       message.clientUserMessageId === firstMessageId
     )));
-    return result.total === 3
+    return result.total === 4
       && /Готово: \[slow\]\[unkeyed-history-tail\] desktop A/u.test(slowExchange?.answer ?? "")
       ? result
       : null;
-  }, "background task history hydration", 5_000);
-  assert.equal(history.total, 3);
+  }, "background task history hydration", 5_000).catch(async (error) => {
+    const result = await callDesktopControl("task-history", {
+      provider: "codex", threadId: firstThreadId, limit: 10,
+    }, { runtimeRoot });
+    throw new Error(`${error.message}; history=${JSON.stringify(result.items.map((item) => ({
+      id: item.id, prompt: item.prompt, answer: item.answer?.slice(0, 150),
+      clientIds: item.messages.map((message) => message.clientUserMessageId),
+    })))}`, { cause: error });
+  });
+  assert.equal(history.total, 4);
+  assert.equal(history.items.find((item) => syntheticProbeTurnIds.includes(item.id))?.answer,
+    "AGENT_HUB_CONTEXT_PROBE_OK_V1", "retained marker-shaped history remains visible");
   const slowExchange = history.items.find((item) => item.messages.some((message) => (
     message.clientUserMessageId === firstMessageId
   )));
@@ -1496,7 +1514,7 @@ test("local control client survives App Server exit during delayed startup and s
   }, "ordinary reserved-phrase journal projection", 5_000);
   assert.equal(reservedJournalTurn.prompt, reservedPrompt);
   assert.equal(reservedJournalTurn.body, reservedAnswer);
-  assert.equal(reservedJournalTurn.contextProbe, false);
+  assert.equal(reservedJournalTurn.contextProbe, undefined);
 
   const reservedProviderPid = Number((await readFile(codexPidPath, "utf8")).trim());
   await stopPid(reservedProviderPid);

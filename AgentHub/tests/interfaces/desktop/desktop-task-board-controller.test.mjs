@@ -4,6 +4,9 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+import { TaskBoardService } from "../../../src/application/task-board-service.mjs";
+import { TaskBoardStore } from "../../../src/infrastructure/persistence/task-board-store.mjs";
+import { WorkspaceCatalogStore } from "../../../src/infrastructure/persistence/workspace-catalog-store.mjs";
 import { DesktopTaskBoardController } from "../../../src/interfaces/desktop/desktop-task-board-controller.mjs";
 
 function fixture({ activeThread = null, sourceDetails = undefined, voiceTranscriber = null, attachmentDirectory = null } = {}) {
@@ -16,6 +19,9 @@ function fixture({ activeThread = null, sourceDetails = undefined, voiceTranscri
     workspaceId: "workspace-1",
     streamId: null,
     sourceDetails,
+    revision: 1,
+    startEffectState: null,
+    startEffectOwnerId: null,
   };
   const controller = new DesktopTaskBoardController({
     taskBoard: {
@@ -41,13 +47,59 @@ function fixture({ activeThread = null, sourceDetails = undefined, voiceTranscri
       move: (value) => calls.push(["move", value]),
       moveColumn: (value) => calls.push(["move-column", value]),
       setNotesComment: (value) => calls.push(["notes-comment", value]),
-      prepareStart: ({ workspaceId, streamId, streamName, requestId }) => Object.assign(task, {
-        status: "starting", workspaceId, streamId, startStreamName: streamName, startRequestId: requestId,
-      }),
-      cancelPreparedStart: () => Object.assign(task, {
-        status: "open", streamId: null, startStreamName: null, startRequestId: null,
-      }),
-      markStarted: (value) => calls.push(["started", value]),
+      prepareStart: ({ workspaceId, streamId, streamName, requestId, expectedRevision }) => {
+        assert.equal(expectedRevision, task.revision);
+        return Object.assign(task, {
+          status: "starting",
+          workspaceId,
+          streamId,
+          startStreamName: streamName,
+          startRequestId: requestId,
+          startDestinationStreamId: streamId,
+          startEffectState: "prepared",
+          startEffectOwnerId: null,
+          revision: task.revision + 1,
+        });
+      },
+      admitPreparedStart: ({ id, requestId, attemptId, expectedRevision }) => {
+        assert.equal(id, task.id);
+        assert.equal(requestId, task.startRequestId);
+        assert.equal(expectedRevision, task.revision);
+        assert.equal(task.startEffectState, "prepared");
+        return Object.assign(task, {
+          startEffectState: "admitted",
+          startEffectOwnerId: attemptId,
+          revision: task.revision + 1,
+        });
+      },
+      cancelPreparedStart: ({ requestId, attemptId, expectedRevision }) => {
+        assert.equal(requestId, task.startRequestId);
+        assert.equal(attemptId, task.startEffectOwnerId);
+        assert.equal(expectedRevision, task.revision);
+        return Object.assign(task, {
+          status: "open",
+          streamId: null,
+          startStreamName: null,
+          startRequestId: null,
+          startDestinationStreamId: null,
+          startEffectState: null,
+          startEffectOwnerId: null,
+          revision: task.revision + 1,
+        });
+      },
+      markStarted: (value) => {
+        assert.equal(value.requestId, task.startRequestId);
+        assert.equal(value.attemptId, task.startEffectOwnerId);
+        assert.equal(value.expectedRevision, task.revision);
+        calls.push(["started", value]);
+        return Object.assign(task, {
+          status: "started",
+          streamId: value.streamId,
+          startEffectState: "completed",
+          startEffectOwnerId: null,
+          revision: task.revision + 1,
+        });
+      },
     },
     taskLifecycle: {
       updateWorkflowStatus: async (value) => { calls.push(["lifecycle-status", value]); return task; },
@@ -79,6 +131,26 @@ function fixture({ activeThread = null, sourceDetails = undefined, voiceTranscri
   });
   return { controller, calls };
 }
+
+test("Dashboard diff resolves only the requested persisted Task identity", async () => {
+  const calls = [];
+  const controller = new DesktopTaskBoardController({
+    taskBoard: { task(id) {
+      if (id !== "exact-task") throw new Error("Task не найден");
+      return { id, taskNumber: "HUB-235" };
+    } },
+    taskLauncher: {},
+    taskGitWorkspaces: { async reviewDiff(input) {
+      calls.push(input);
+      return { repositories: [], truncated: false };
+    } },
+  });
+  assert.deepEqual(await controller.diff({ id: "exact-task", projectRoot: "untrusted-path" }),
+    { taskId: "exact-task", repositories: [], truncated: false });
+  assert.deepEqual(calls, [{ taskId: "exact-task", taskNumber: "HUB-235" }]);
+  await assert.rejects(controller.diff({ id: "missing-task" }), /Task не найден/u);
+  assert.equal(calls.length, 1);
+});
 
 test("dashboard attachment mutation accepts only files from the runtime attachment directory", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-task-attachments-"));
@@ -171,11 +243,12 @@ test("a screenshot reply augments the existing dashboard Task", async () => {
 
 test("shared Telegram bot adds a Terra-refined voice transcript and keeps the audio attachment", async () => {
   const transcribed = [];
+  const transcript = "Нужно исправить фильтр до пятницы. ".repeat(1_000).trim();
   const { controller, calls } = fixture({
     voiceTranscriber: {
       transcribe: async (file) => {
         transcribed.push(file);
-        return "Нужно исправить фильтр до пятницы.";
+        return transcript;
       },
     },
   });
@@ -187,6 +260,7 @@ test("shared Telegram bot adds a Terra-refined voice transcript and keeps the au
   });
   assert.deepEqual(transcribed, ["D:/runtime/attachments/voice.ogg"]);
   assert.match(calls[0][1].text, /Расшифровка голосового сообщения 1[\s\S]*исправить фильтр/u);
+  assert.ok(calls[0][1].text.endsWith(transcript));
   assert.deepEqual(calls[0][1].sourceDetails.attachments, ["D:/runtime/attachments/voice.ogg"]);
 });
 
@@ -336,10 +410,34 @@ test("starting a Task in an existing Stream sends a uniquely identified referenc
   assert.equal(calls[1][1].clientUserMessageId, "board-task:board-1:launch-2");
   assert.deepEqual(calls[1][1].taskReferences, [{ taskId: "board-1", intent: "start" }]);
   assert.equal("attachments" in calls[1][1], false);
-  assert.deepEqual(calls[2], ["started", {
+  assert.equal(calls[2][0], "started");
+  assert.deepEqual({
+    id: calls[2][1].id,
+    workspaceId: calls[2][1].workspaceId,
+    streamId: calls[2][1].streamId,
+    requestId: calls[2][1].requestId,
+    expectedRevision: calls[2][1].expectedRevision,
+  }, {
     id: "board-1", workspaceId: "workspace-1", streamId: "stream-1",
-    requestId: "board-task:board-1:launch-2",
-  }]);
+    requestId: "board-task:board-1:launch-2", expectedRevision: 3,
+  });
+  assert.match(calls[2][1].attemptId, /^[0-9a-f-]{36}$/u);
+});
+
+test("starting a Task accepts the former context namespace as an ordinary identity", async () => {
+  let launchCalls = 0;
+  const controller = new DesktopTaskBoardController({
+    taskLauncher: {
+      start: async () => { launchCalls += 1; return {}; },
+    },
+    snapshot: async () => ({}),
+  });
+
+  await controller.start({
+    id: "board-1",
+    clientUserMessageId: "agent-hub-context-probe:7583805f-6338-47f0-bc45-539530666ca3",
+  });
+  assert.equal(launchCalls, 1);
 });
 
 test("starting a Task can create a new Stream before sending", async () => {
@@ -350,4 +448,86 @@ test("starting a Task can create a new Stream before sending", async () => {
   assert.equal(calls[0][1], "task.create");
   assert.match(calls[0][2].streamId, /^task-launch-/u);
   assert.equal(calls[1][1].streamId, "stream-new");
+});
+
+test("default Desktop launcher admits real TaskBoardService starts for existing and new Streams", async (context) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-desktop-task-launch-"));
+  const databaseFile = path.join(root, "hub.sqlite");
+  const workspaceCatalog = new WorkspaceCatalogStore({ databaseFile });
+  await workspaceCatalog.load();
+  const taskStore = new TaskBoardStore({ databaseFile });
+  const taskBoard = new TaskBoardService({ store: taskStore, workspaceCatalog });
+  context.after(async () => {
+    taskStore.close();
+    workspaceCatalog.close();
+    await rm(root, { recursive: true, force: true });
+  });
+
+  const workspace = await workspaceCatalog.createWorkspace({
+    id: "workspace-desktop-launch", name: "Desktop launch",
+  });
+  const existingStream = await workspaceCatalog.createStream({
+    id: "stream-desktop-existing", workspaceId: workspace.id, name: "Existing",
+  });
+  await workspaceCatalog.bindThread({
+    streamId: existingStream.id,
+    provider: "codex",
+    threadId: "thread-desktop-existing",
+    projectRoot: root,
+  });
+  const effects = [];
+  const controller = new DesktopTaskBoardController({
+    taskBoard,
+    workspaceCatalog,
+    dispatchCommand: async (type, payload) => {
+      effects.push([type, payload.streamId]);
+      if (type === "task.select") return {};
+      assert.equal(type, "task.create");
+      const threadId = `thread-${payload.streamId}`;
+      await workspaceCatalog.bindThread({
+        streamId: payload.streamId, provider: "codex", threadId, projectRoot: root,
+      });
+      return { createdTask: {
+        streamId: payload.streamId, provider: "codex", threadId, projectRoot: root,
+      } };
+    },
+    sendMessage: async (params) => {
+      effects.push(["delivery", params.streamId]);
+      return { accepted: true, id: `delivery-${params.streamId}` };
+    },
+    snapshot: async () => ({ boardTasks: await taskBoard.snapshot() }),
+  });
+
+  const existingTask = await taskBoard.create({
+    text: "Existing Stream start", bucket: "workspace", workspaceId: workspace.id,
+  });
+  await controller.start({
+    id: existingTask.id,
+    workspaceId: workspace.id,
+    streamId: existingStream.id,
+    launchRequestId: "desktop-existing-launch",
+  });
+  const existingStarted = await taskBoard.task(existingTask.id);
+  assert.equal(existingStarted.status, "started");
+  assert.equal(existingStarted.startEffectState, "completed");
+  assert.equal(existingStarted.startEffectOwnerId, null);
+
+  const newTask = await taskBoard.create({
+    text: "New Stream start", bucket: "workspace", workspaceId: workspace.id,
+  });
+  await controller.start({
+    id: newTask.id,
+    workspaceId: workspace.id,
+    streamName: "Created by Desktop",
+    provider: "codex",
+    launchRequestId: "desktop-new-launch",
+  });
+  const newStarted = await taskBoard.task(newTask.id);
+  assert.equal(newStarted.status, "started");
+  assert.equal(newStarted.startEffectState, "completed");
+  assert.equal(newStarted.startEffectOwnerId, null);
+  assert.ok(workspaceCatalog.stream(newStarted.streamId));
+  assert.deepEqual(effects.map(([type]) => type), [
+    "task.select", "delivery", "task.create", "delivery",
+  ]);
 });

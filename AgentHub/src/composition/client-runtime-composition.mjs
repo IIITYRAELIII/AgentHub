@@ -366,7 +366,10 @@ export async function createClientRuntimeComposition({
     runtimeDependencies: {
       getActiveProjectRoot: selectedProjectRoot,
       stopProcessTree: late.stopProcessTree,
-      handleMessage: api.handleCodexMessage,
+      handleMessage: (message) => {
+        clients.providerLogin.observeCodexMessage(message);
+        return api.handleCodexMessage(message);
+      },
       isStopping: () => hostState.stopping,
       providerSelected: isCodex,
       activeRuns: () => taskRuns.values(),
@@ -389,6 +392,7 @@ export async function createClientRuntimeComposition({
       changedFilesForRun,
       turnEndNotifications,
       resolveTerminalAttachments: resolveCodexTerminalAttachments,
+      repairTurnEndAttachments: api.repairTurnEndAttachments,
       defaultNotificationChatId: provider.defaultNotificationChatId,
       projectTurnUsageToWorkLog,
       rememberLastTaskMessage: api.rememberLastTaskMessage,

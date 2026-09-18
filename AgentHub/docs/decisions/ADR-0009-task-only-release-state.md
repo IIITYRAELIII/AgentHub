@@ -27,5 +27,5 @@ payload verification. The retained history is not a live release authority.
 
 Dashboard status and release readiness cannot disagree. Editing an awaiting
 Task changes the plan revision through normal Task CAS rather than invalidating
-a hidden frozen revision. Missing evidence is visible to the Architect and must
+a hidden frozen revision. Missing evidence is visible to the Release Manager and must
 be repaired at the Task ownership boundary before publication.

@@ -1,14 +1,4 @@
-import { isCodexContextProbeText } from "../domain/codex-context-probe.mjs";
-
 const normalized = (value) => String(value ?? "").replace(/\s+/gu, " ").trim().slice(0, 80);
-const ownedSources = new Set(["created", "rebirth"]);
-const TITLE_RPC_TIMEOUT_MS = 1_000;
-
-export function isAutomaticHubThreadTitle(value) {
-  const title = normalized(value);
-  return !title || isCodexContextProbeText(title) || /^Telegram · /u.test(title)
-    || /^(?:Codex|Claude) · [\da-f-]{8,}$/iu.test(title);
-}
 
 export function workspaceProviderThreadTitle(workspace, stream) {
   const workspaceName = normalized(workspace?.name);
@@ -51,19 +41,5 @@ export function createHubThreadNamingService({
       workspaceProviderThreadTitle(resolved.workspace, resolved.stream));
   }
 
-  async function preserveProbeTitle(target) {
-    const reference = { provider: "codex", threadId: String(target?.threadId ?? "").trim() };
-    const resolved = context(reference);
-    if (!resolved || !ownedSources.has(resolved.binding.source)) return "";
-    const rpcOptions = { timeoutMs: TITLE_RPC_TIMEOUT_MS };
-    const result = await sendRpc("thread/read", { threadId: reference.threadId, includeTurns: false }, rpcOptions);
-    const current = normalized(result?.thread?.name);
-    const pending = taskMetadata.pendingTitle(reference);
-    const pinned = taskMetadata.pinnedTitle(reference);
-    const title = [pending, current, pinned].find((value) => !isAutomaticHubThreadTitle(value))
-      || workspaceProviderThreadTitle(resolved.workspace, resolved.stream);
-    return apply(reference, title, current, rpcOptions);
-  }
-
-  return { nameCreatedThread, preserveProbeTitle };
+  return { nameCreatedThread };
 }

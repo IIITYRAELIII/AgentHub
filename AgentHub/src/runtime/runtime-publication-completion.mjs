@@ -3,7 +3,7 @@ import { publicationRunStore } from "../infrastructure/persistence/publication-r
 import { publicationCheckpointStore } from "../infrastructure/persistence/publication-checkpoint.mjs";
 import { writePublicationState } from "../infrastructure/persistence/publication-state.mjs";
 import { resumePendingPublicationCompletion } from "../infrastructure/persistence/publication-completion.mjs";
-import { withPublicationLock } from "../infrastructure/process/publication-lock.mjs";
+import { clearInheritedPublicationOwnership, withPublicationLock } from "../infrastructure/process/publication-lock.mjs";
 import { createFrozenReleasePublication } from "../infrastructure/process/frozen-release-publication.mjs";
 import { publicationRuntimeStatus } from "./runtime-publication-start.mjs";
 import { waitForRuntimeReplacement } from "./publication-readiness.mjs";
@@ -12,6 +12,12 @@ function isPending(saved, runtimeRoot) {
   return ["awaiting_restart", "awaiting_finalization", "failed", "running"].includes(saved?.status)
     && saved.identity?.runtimeRoot === runtimeRoot
     && Boolean(saved.progress?.publicationState && saved.progress?.expectedReleaseId);
+}
+
+function schedulePublicationCompletion(operation, delayMs = 0) {
+  const handle = delayMs > 0 ? setTimeout(operation, delayMs) : setImmediate(operation);
+  handle.unref?.();
+  return handle;
 }
 
 export async function resumeRuntimePublicationCompletion({
@@ -30,7 +36,7 @@ export async function resumeRuntimePublicationCompletion({
   // A replacement may inherit the publisher's session. It is a different lock
   // owner and must wait for that live publisher, never bypass its lease.
   const lockEnvironment = { ...environment };
-  delete lockEnvironment.AGENT_HUB_PUBLICATION_SESSION;
+  clearInheritedPublicationOwnership(lockEnvironment);
   return lock(async () => {
     const saved = await journal.read();
     if (!isPending(saved, runtimeRoot)) return { status: "not_pending" };
@@ -50,15 +56,49 @@ export function publicationAwareReadiness({
   markReady,
   runtimeRoot,
   resume = () => resumeRuntimePublicationCompletion({ runtimeRoot }),
-  schedule = setImmediate,
+  schedule = schedulePublicationCompletion,
+  retryDelayMs = 1_000,
+  maxFinalizationAttempts = 3,
   onError = (error) => console.warn(`Publication completion recovery failed: ${error.message ?? error}`),
 }) {
+  if (!Number.isInteger(maxFinalizationAttempts) || maxFinalizationAttempts < 1) {
+    throw new TypeError("Publication completion recovery requires a positive attempt limit");
+  }
+  let activated = false;
   let scheduled = false;
+  let running = false;
+  let attempts = 0;
+  const enqueue = (delayMs = 0) => {
+    if (scheduled || running) return;
+    scheduled = true;
+    schedule(async () => {
+      scheduled = false;
+      running = true;
+      let retry = false;
+      try {
+        attempts += 1;
+        const result = await resume();
+        if (result?.status === "awaiting_finalization") {
+          retry = attempts < maxFinalizationAttempts;
+          if (!retry) {
+            onError(new Error(
+              `Publication completion remains awaiting_finalization after ${attempts} automatic attempts`,
+            ));
+          }
+        }
+      } catch (error) {
+        onError(error);
+      } finally {
+        running = false;
+        if (retry) enqueue(retryDelayMs);
+      }
+    }, delayMs);
+  };
   return async () => {
     await markReady();
-    if (scheduled) return;
-    scheduled = true;
+    if (activated) return;
+    activated = true;
     // Startup and admission continue without awaiting Git/Task finalization.
-    schedule(() => Promise.resolve().then(resume).catch(onError));
+    enqueue();
   };
 }

@@ -4,7 +4,6 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { AsyncSqliteMutationQueue } from "./async-sqlite-mutation-queue.mjs";
 
-import { editableWorkspaceDeveloperRules } from "../../domain/editable-workspace-developer-rules.mjs";
 import { normalizeInterstreamOrigin } from "../../domain/interstream-message.mjs";
 
 import {
@@ -20,14 +19,13 @@ import {
 import {
   effectiveStreamDeveloperRules,
   effectiveWorkspaceDeveloperRules,
-  legacyReleaseWorkflowRules,
   RELEASE_WORKFLOW_SETTING,
   releaseWorkflowEnabled,
   workspaceSettingsWithReleaseWorkflow,
 } from "../../domain/workspace-release-workflow.mjs";
 import { workspaceSettingsWithTaskPrefix } from "../../domain/task-number.mjs";
 import {
-  withArchitectReleasePrimaryWorkspaceRule,
+  withReleaseManagerReleasePrimaryWorkspaceRule,
   withReleasePrimaryWorkspaceRule,
 } from "../../domain/release-primary-workspace-policy.mjs";
 
@@ -326,6 +324,8 @@ function mcpOperationFromRow(row) {
     argumentsHash: String(row.arguments_hash),
     interstreamContentHash: String(row.interstream_content_hash ?? ""),
     status: String(row.receipt_state ?? row.status),
+    operationStatus: String(row.status),
+    receiptState: String(row.receipt_state ?? row.status),
     result,
     error: String(row.error_text ?? ""),
     createdAtMs: Number(row.created_at_ms) || 0,
@@ -333,13 +333,13 @@ function mcpOperationFromRow(row) {
   };
 }
 
-function compactMcpOperationResult(result) {
+function compactMcpOperationResult(result, { outcome = "succeeded" } = {}) {
   const serialized = JSON.stringify(result ?? null);
   if (Buffer.byteLength(serialized, "utf8") <= 64 * 1024) return serialized;
   const taskId = String(result?.task?.id ?? result?.taskId ?? "").trim() || null;
   return JSON.stringify({
     receiptCompacted: true,
-    outcome: "succeeded",
+    outcome,
     taskId,
     resultType: Array.isArray(result) ? "array" : typeof result,
   });
@@ -385,9 +385,8 @@ export class WorkspaceCatalogStore {
     await this.#open();
     if (this.#readOnly) return this;
     this.#migratePermanentWorkspaceArchive();
-    this.#migrateReleaseWorkflowSettings();
-    this.#migrateWorkspaceDeveloperRules();
     this.#migrateArchitectStreamSettings();
+    this.#migrateReleaseManagerStreamSettings();
     this.ensureExperiments();
     return this;
   }
@@ -395,6 +394,14 @@ export class WorkspaceCatalogStore {
   get revision() {
     if (!this.#database) return 0;
     return Number(this.#database.prepare("SELECT total_changes() AS value").get()?.value) || 0;
+  }
+
+  get snapshotRevision() {
+    if (!this.#database) return null;
+    const externalRevision = Number(
+      this.#database.prepare("PRAGMA data_version").get()?.data_version,
+    ) || 0;
+    return `${this.revision}:${externalRevision}`;
   }
 
   async #open() {
@@ -434,53 +441,6 @@ export class WorkspaceCatalogStore {
   #nowMs() {
     const value = Number(this.#now());
     return Number.isSafeInteger(value) && value > 0 ? value : Date.now();
-  }
-
-  #migrateReleaseWorkflowSettings() {
-    const rows = this.#database.prepare("SELECT id, settings_json FROM hub_workspaces").all();
-    const pending = rows.filter((row) => {
-      try {
-        const settings = JSON.parse(String(row.settings_json ?? "{}"));
-        return typeof settings?.[RELEASE_WORKFLOW_SETTING] !== "boolean";
-      } catch {
-        return true;
-      }
-    });
-    if (!pending.length) return;
-    this.#transaction(() => {
-      const update = this.#database.prepare(`
-        UPDATE hub_workspaces SET settings_json = ? WHERE id = ?
-      `);
-      for (const row of pending) {
-        let settings = {};
-        try { settings = JSON.parse(String(row.settings_json ?? "{}")); } catch { settings = {}; }
-        const currentRules = this.#developerRules("workspace", row.id);
-        const migration = legacyReleaseWorkflowRules(currentRules?.content ?? "");
-        const editableContent = editableWorkspaceDeveloperRules(currentRules?.content ?? "");
-        update.run(
-          JSON.stringify(workspaceSettingsWithReleaseWorkflow(settings, migration.enabled)),
-          row.id,
-        );
-        if (editableContent !== (currentRules?.content ?? "")) {
-          this.#updateWorkspaceDeveloperRules(row.id, editableContent);
-        }
-      }
-    });
-  }
-
-  #migrateWorkspaceDeveloperRules() {
-    const key = "workspace_system_rules_removed_v2";
-    if (this.#database.prepare("SELECT 1 FROM hub_workspace_catalog_meta WHERE key = ?").get(key)) return;
-    this.#transaction(() => {
-      for (const row of this.#database.prepare("SELECT id FROM hub_workspaces").all()) {
-        const current = this.#developerRules("workspace", row.id);
-        const content = editableWorkspaceDeveloperRules(current?.content ?? "");
-        if (content !== (current?.content ?? "")) this.#updateWorkspaceDeveloperRules(row.id, content);
-      }
-      this.#database.prepare(
-        "INSERT INTO hub_workspace_catalog_meta (key, value) VALUES (?, ?)",
-      ).run(key, "completed");
-    });
   }
 
   #migratePermanentWorkspaceArchive() {
@@ -581,6 +541,12 @@ export class WorkspaceCatalogStore {
       ? releaseWorkflowEnabled(settings)
       : releaseWorkflowEnabled(current.settings);
     const nextSettings = workspaceSettingsWithReleaseWorkflow(workspaceSettingsWithTaskPrefix(settings), enabled);
+    if (Object.prototype.hasOwnProperty.call(settings ?? {}, "autoReviewEnabled")
+      || Object.prototype.hasOwnProperty.call(current.settings ?? {}, "autoReviewEnabled")) {
+      nextSettings.autoReviewEnabled = Object.prototype.hasOwnProperty.call(settings ?? {}, "autoReviewEnabled")
+        ? settings.autoReviewEnabled === true
+        : current.settings?.autoReviewEnabled === true;
+    }
     this.#database.prepare(`
       UPDATE hub_workspaces SET settings_json = ?, updated_at_ms = ? WHERE id = ?
     `).run(JSON.stringify(nextSettings), this.#nowMs(), id);
@@ -771,6 +737,26 @@ export class WorkspaceCatalogStore {
     });
   }
 
+  #migrateReleaseManagerStreamSettings() {
+    const key = "release_manager_stream_settings_migrated_v1";
+    if (this.#database.prepare("SELECT 1 FROM hub_workspace_catalog_meta WHERE key = ?").get(key)) return;
+    this.#transaction(() => {
+      const update = this.#database.prepare("UPDATE hub_streams SET settings_json = ? WHERE id = ?");
+      for (const row of this.#database.prepare("SELECT id, settings_json FROM hub_streams").all()) {
+        let settings = {};
+        try { settings = JSON.parse(String(row.settings_json ?? "{}")); } catch { continue; }
+        if (!settings || typeof settings !== "object" || Array.isArray(settings)) continue;
+        const next = { ...settings };
+        if (typeof next.releaseManager !== "boolean" && typeof next.architect === "boolean") {
+          next.releaseManager = next.architect;
+        }
+        delete next.architect;
+        update.run(JSON.stringify(next), row.id);
+      }
+      this.#database.prepare("INSERT INTO hub_workspace_catalog_meta (key, value) VALUES (?, 'completed')").run(key);
+    });
+  }
+
   recordWorkspaceEvent({
     workspaceId, streamId = null, type, subjectId = null, payload = {}, dedupeKey = null,
   } = {}) {
@@ -924,6 +910,41 @@ export class WorkspaceCatalogStore {
     ).get(id));
   }
 
+  cancelMcpOperation(requestId, { taskId, cancellationRequestId } = {}) {
+    const id = safeIdentifier(requestId, "MCP request id");
+    const task = safeIdentifier(taskId, "Task id");
+    const cancellation = safeIdentifier(cancellationRequestId, "cancellation request id");
+    const operation = this.mcpOperation(id);
+    const previous = operation?.result;
+    if (
+      operation?.status === "failed"
+      && previous?.cancelled === true
+      && previous?.taskId === task
+    ) return operation;
+    if (!operation || operation.toolName !== "hub_task_start") {
+      throw new Error("MCP operation is not a Task launch");
+    }
+    if (operation.interstreamContentHash) {
+      throw new Error("MCP Task launch has admitted interstream content");
+    }
+    if (!["pending", "reconciling", "unknown"].includes(operation.status)) {
+      throw new Error("MCP Task launch is not cancellable");
+    }
+    const resultJson = compactMcpOperationResult({
+      cancelled: true,
+      taskId: task,
+      cancellationRequestId: cancellation,
+    });
+    const updated = this.#database.prepare(`
+      UPDATE hub_mcp_operations
+      SET status = 'failed', receipt_state = 'failed', result_json = ?,
+        error_text = 'Task launch cancelled by exact reconciliation', completed_at_ms = ?
+      WHERE request_id = ? AND receipt_state IN ('pending', 'reconciling', 'unknown')
+    `).run(resultJson, this.#nowMs(), id);
+    if (!Number(updated.changes)) throw new Error("MCP Task launch cancellation CAS failed");
+    return this.mcpOperation(id);
+  }
+
   beginMcpOperationReconciliation(requestId) {
     const id = safeIdentifier(requestId, "MCP request id");
     const updated = this.#database.prepare(`
@@ -946,6 +967,83 @@ export class WorkspaceCatalogStore {
     return mcpOperationFromRow(this.#database.prepare(
       "SELECT * FROM hub_mcp_operations WHERE request_id = ?",
     ).get(id));
+  }
+
+  completeUnknownMcpOperation(requestId, {
+    workspaceId, toolName, result, reconciliation,
+  } = {}) {
+    const id = safeIdentifier(requestId, "MCP request id");
+    const workspace = safeIdentifier(workspaceId, "workspace id");
+    const tool = safeIdentifier(toolName, "MCP tool name");
+    this.#database.exec("BEGIN IMMEDIATE");
+    try {
+      const operation = mcpOperationFromRow(this.#database.prepare(
+        "SELECT * FROM hub_mcp_operations WHERE request_id = ?",
+      ).get(id));
+      if (
+        !operation
+        || operation.workspaceId !== workspace
+        || operation.toolName !== tool
+        || operation.operationStatus !== "pending"
+        || operation.receiptState !== "unknown"
+      ) {
+        throw new Error("Unknown MCP operation identity or receipt state does not match");
+      }
+      const resultJson = compactMcpOperationResult({
+        ...result,
+        operatorReconciliation: reconciliation,
+      });
+      const updated = this.#database.prepare(`
+        UPDATE hub_mcp_operations
+        SET status = 'succeeded', receipt_state = 'succeeded', result_json = ?, error_text = '', completed_at_ms = ?
+        WHERE request_id = ? AND status = 'pending' AND receipt_state = 'unknown'
+      `).run(resultJson, this.#nowMs(), id);
+      if (Number(updated.changes) !== 1) throw new Error("Unknown MCP operation completion CAS failed");
+      this.#database.exec("COMMIT");
+      return this.mcpOperation(id);
+    } catch (error) {
+      this.#database.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  failUnknownMcpOperation(requestId, {
+    workspaceId, toolName, error, reconciliation,
+  } = {}) {
+    const id = safeIdentifier(requestId, "MCP request id");
+    const workspace = safeIdentifier(workspaceId, "workspace id");
+    const tool = safeIdentifier(toolName, "MCP tool name");
+    this.#database.exec("BEGIN IMMEDIATE");
+    try {
+      const operation = mcpOperationFromRow(this.#database.prepare(
+        "SELECT * FROM hub_mcp_operations WHERE request_id = ?",
+      ).get(id));
+      if (
+        !operation
+        || operation.workspaceId !== workspace
+        || operation.toolName !== tool
+        || operation.operationStatus !== "pending"
+        || operation.receiptState !== "unknown"
+      ) {
+        throw new Error("Unknown MCP operation identity or receipt state does not match");
+      }
+      const errorText = String(error?.message ?? error ?? "authoritative reconciliation failed").slice(0, 2_000);
+      const resultJson = compactMcpOperationResult(
+        { operatorReconciliation: reconciliation },
+        { outcome: "failed" },
+      );
+      const updated = this.#database.prepare(`
+        UPDATE hub_mcp_operations
+        SET status = 'failed', receipt_state = 'failed', result_json = ?, error_text = ?, completed_at_ms = ?
+        WHERE request_id = ? AND status = 'pending' AND receipt_state = 'unknown'
+      `).run(resultJson, errorText, this.#nowMs(), id);
+      if (Number(updated.changes) !== 1) throw new Error("Unknown MCP operation failure CAS failed");
+      this.#database.exec("COMMIT");
+      return this.mcpOperation(id);
+    } catch (failure) {
+      this.#database.exec("ROLLBACK");
+      throw failure;
+    }
   }
 
   mcpOperation(requestId) {
@@ -1148,7 +1246,7 @@ export class WorkspaceCatalogStore {
     const rawStreamRules = this.#developerRules("stream", stream.id);
     const workspace = this.workspace(stream.workspaceId);
     const streamContent = releaseWorkflowEnabled(workspace?.settings)
-      ? withArchitectReleasePrimaryWorkspaceRule(
+      ? withReleaseManagerReleasePrimaryWorkspaceRule(
         effectiveStreamDeveloperRules(rawStreamRules?.content ?? "", stream.settings),
         stream.settings,
       )
@@ -1214,8 +1312,7 @@ export class WorkspaceCatalogStore {
   }
 
   #updateWorkspaceDeveloperRules(workspaceId, content) {
-    const editableContent = developerRuleContent(editableWorkspaceDeveloperRules(content));
-    return this.#updateDeveloperRules("workspace", workspaceId, editableContent);
+    return this.#updateDeveloperRules("workspace", workspaceId, content);
   }
 
   #updateDeveloperRules(scopeType, scopeId, content, maximumBytes = DEVELOPER_RULES_MAX_BYTES) {

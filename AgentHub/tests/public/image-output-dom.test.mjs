@@ -148,7 +148,7 @@ test("shipped Desktop DOM renders every durable ImageGen output and a missing pl
         itemId: "turn-image:agent:final",
         turnId: "turn-image",
         role: "agent",
-        text: "Три варианта",
+        text: "Шесть вариантов",
         attachments: [
           { id: "codex-generated-one.png", name: "Изображение", type: "image/png" },
           { id: "codex-generated-two.png", name: "Изображение", type: "image/png" },
@@ -158,25 +158,46 @@ test("shipped Desktop DOM renders every durable ImageGen output and a missing pl
             type: "image/png",
             missing: true,
           },
+          { id: "codex-generated-four.png", name: "Изображение", type: "image/png" },
+          { id: "codex-generated-five.png", name: "Изображение", type: "image/png" },
+          { id: "codex-generated-six.png", name: "Изображение", type: "image/png" },
         ],
       }]);
+      window.AgentHub.setLive(taskId, {
+        provider: "codex",
+        threadId: "thread-image-live",
+        turnId: "turn-image-live",
+        role: "agent",
+        author: "Codex",
+        text: "",
+        stage: "",
+        attachments: [
+          { id: "codex-generated-live-one.png", name: "Live one", type: "image/png" },
+          { id: "codex-generated-live-two.png", name: "Live two", type: "image/png" },
+        ],
+      });
       const message = document.querySelector('.msg-agent[data-turn-id="turn-image"]');
       const attachments = [...message.querySelectorAll(".attachment-image")];
+      const live = document.querySelector("[data-chat-live]");
       return {
         messageCount: document.querySelectorAll('.msg-agent[data-turn-id="turn-image"]').length,
         attachmentCount: attachments.length,
         missingCount: attachments.filter((node) => node.classList.contains("attachment-missing")).length,
         missingDisabled: attachments.find((node) => node.classList.contains("attachment-missing"))?.disabled,
         missingLabel: message.querySelector(".attachment-missing-label")?.textContent,
+        liveHidden: live.hidden,
+        liveAttachmentCount: live.querySelectorAll(".attachment-image").length,
       };
     });
 
     assert.deepEqual(result, {
       messageCount: 1,
-      attachmentCount: 3,
+      attachmentCount: 6,
       missingCount: 1,
       missingDisabled: true,
       missingLabel: "Файл недоступен",
+      liveHidden: false,
+      liveAttachmentCount: 2,
     });
   } finally {
     await browser.close();

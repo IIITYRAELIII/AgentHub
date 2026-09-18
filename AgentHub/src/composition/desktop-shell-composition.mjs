@@ -5,15 +5,20 @@ import { createDesktopRunRouterWiring } from "./desktop-run-router-wiring-compos
 import { createDesktopTaskCreationPreparation } from "./desktop-task-creation-composition.mjs";
 import { WorkspaceCatalogService } from "../application/workspace-catalog-service.mjs";
 import { ClientTaskSelectionService } from "../application/client-task-selection-service.mjs";
+import { recoverRejectedContourSelection } from "./contour-selection-recovery.mjs";
+import { createRecentRestartFailure } from "../application/restart-failure-notice.mjs";
+import { createDesktopSnapshotRevision } from "./desktop-snapshot-revision.mjs";
 import { agentHubRuntimeHealth } from "../application/runtime-health.mjs";
 import { retryAgentHubStartup } from "../application/agent-hub-startup-coordinator.mjs";
 import { StreamMessagePinService } from "../application/stream-message-pin-service.mjs";
+import { DesktopDirectoryPickerService } from "../interfaces/desktop/desktop-directory-picker-service.mjs";
 
 export function createDesktopShellComposition({
-  config, diagnostics, limits, models, state, catalog,
+  config, server = {}, diagnostics, limits, models, state, catalog,
   runtime, provider, clients, presentation, repositories,
   serverControlController, desktopCommandsPort,
 }) {
+  const desktopDirectoryPicker = new DesktopDirectoryPickerService();
   const { projects, maxSpeechJobs, maxDeferredInputs, taskExecutionOwners,
     globalWorkLogProjectRoots } = limits;
   const {
@@ -90,6 +95,7 @@ export function createDesktopShellComposition({
     taskVoiceTranscriber,
     attachmentDirectory,
     usageSyncAuto,
+    usageSyncRemoteConfigStore,
   } = runtime;
   const {
     agentProviders,
@@ -115,6 +121,7 @@ export function createDesktopShellComposition({
     desktopAttachmentDescriptors,
     desktopAttachmentPaths,
     desktopOpenAttachment,
+    desktopUploadAttachment,
     desktopSubmitBugReport,
     readCachedHistory,
     refreshHistory,
@@ -144,6 +151,8 @@ export function createDesktopShellComposition({
     workspaceCatalog: workspaceCatalogStore,
     resolveMessage: (identity) => taskSyncStore.durableMessageCandidate(identity),
   });
+
+  const recentRestartFailure = createRecentRestartFailure({ operations: maintenanceOperations });
 
   const contourCommandMapping = config.testContourRecording
     ? createContourCommandMapping({ root: config.testContourRecording.root,
@@ -202,31 +211,27 @@ export function createDesktopShellComposition({
       isCompacting: (contextThreadId) => contextCompactions.isRunning(contextThreadId),
       compactionFor: (contextThreadId) => contextCompactions.get(contextThreadId),
       maintenanceFor: (target) => streamMaintenance.entry(target),
-      desktopSnapshotRevision: async () => {
-        if (
-          pendingInputs.size
-          || queuedInputs.size
-          || approvalController.pending.size
-          || hostState.restartRequest
-          || contextCompactions.runningCount()
-        ) return null;
-        const entries = taskCatalogService.entries;
-        if (entries.some((entry) => streamMaintenance.entry(entry))) return null;
-        return JSON.stringify({
-          catalog: taskCatalogService.snapshotRevision,
-          runs: taskRuns.revision,
-          selection: selectionStore.revision,
-          preferences: agentPreferences.snapshot(),
-          autoApprove: hostState.autoApprove,
-          board: taskBoard.snapshotRevision,
-          messages: runtime.lastTaskMessageRevision(),
-          readState: taskReadStateStore.revision,
-          receipts: desktopMessageReceipts.revision,
-          messagePins: messagePins.revision, taskHistory: taskSyncStore.revision,
-          exchangeRates: usdRubRateStore.snapshot(),
-          server: await serverControlController.snapshot({ activeCount: 0, restart: null }),
-        });
-      },
+      desktopSnapshotRevision: createDesktopSnapshotRevision({
+        pendingInputs,
+        queuedInputs,
+        approvalController,
+        hostState,
+        contextCompactions,
+        taskCatalogService,
+        streamMaintenance,
+        taskRuns,
+        selectionStore,
+        agentPreferences,
+        taskBoard,
+        lastTaskMessageRevision: () => runtime.lastTaskMessageRevision(),
+        taskReadStateStore,
+        desktopMessageReceipts,
+        messagePins,
+        taskSyncStore,
+        usdRubRateStore,
+        serverControlController,
+        recentRestartFailure,
+      }),
       runForTask: (task) => taskRuns.forTask(task),
       runTitle: runTaskTitle,
       findProject,
@@ -253,6 +258,7 @@ export function createDesktopShellComposition({
       ),
       approvalSnapshot: () => approvalController.snapshot(),
       restartBlockingRuns: runtime.restartBlockingRuns,
+      recentRestartFailure,
       compactionCount: () => contextCompactions.runningCount(),
       mediaJobCount: () => backgroundJobs.mediaSize,
       speechJobCount: () => backgroundJobs.speechSize,
@@ -305,6 +311,12 @@ export function createDesktopShellComposition({
     saveState,
   });
 
+  recoverRejectedContourSelection({
+    mapping: contourCommandMapping,
+    selectionStore,
+    selectedTask,
+    logger: console,
+  });
   const canonicalSelection = (value) => contourCommandMapping ? contourCommandMapping.target(value) : value;
   const telegramSelection = new ClientTaskSelectionService({
     sessionState: hostState,
@@ -458,6 +470,8 @@ export function createDesktopShellComposition({
       setPinnedWorkspaceStreams: (value) => agentPreferences.setPinnedWorkspaceStreams(value),
       getQuickMessages: () => agentPreferences.quickMessages,
       setQuickMessages: (value) => agentPreferences.setQuickMessages(value),
+      getQuickMessageActionMode: () => agentPreferences.quickMessageActionMode,
+      setQuickMessageActionMode: (value) => agentPreferences.setQuickMessageActionMode(value),
       projectUsage: (includeClaudeUsage) => workLogUsageStore.project(null, {
         includeClaudeUsage,
         projectRoot: config.projectRoot,
@@ -562,6 +576,9 @@ export function createDesktopShellComposition({
       runForTask: (target) => taskRuns.forTask(target),
       setAutostart: (params) => serverControlController.setAutostart(params),
       updateServerConfiguration: (params) => serverControlController.updateConfiguration(params),
+      startProviderLogin: (params) => serverControlController.startProviderLogin(params),
+      submitProviderLoginCode: (params) => serverControlController.submitProviderLoginCode(params),
+      cancelProviderLogin: (params) => serverControlController.cancelProviderLogin(params),
       readPreTurnInstructions: () => serverControlController.readPreTurnInstructions(),
       updateGlobalPreTurnInstructions: (params) => serverControlController.updateGlobalPreTurnInstructions(params),
       readRootAgents: () => serverControlController.readRootAgents(),
@@ -570,12 +587,21 @@ export function createDesktopShellComposition({
       taskVoiceTranscriber,
       taskLifecycle,
       attachmentDirectory,
+      usageSyncAuto,
+      usageSyncRemoteConfigStore,
       workspaceCatalog: workspaceCatalogStore,
       streamMessagePins,
     },
     desktop: {
       snapshot: desktopReadSystem.desktopSnapshot,
-      runtimeHealth: () => agentHubRuntimeHealth.snapshot(),
+      runtimeHealth: () => ({
+        ...agentHubRuntimeHealth.snapshot(),
+        process: {
+          pid: process.pid,
+          instanceId: String(server.instanceId ?? ""),
+          releaseId: String(server.releaseId ?? ""),
+        },
+      }),
       retryStartup: retryAgentHubStartup,
       taskHistory: desktopReadSystem.desktopTaskHistory,
       rateLimitHistory: desktopReadSystem.desktopRateLimitHistory,
@@ -590,6 +616,8 @@ export function createDesktopShellComposition({
       speakLastAnswer: desktopReadSystem.desktopSpeakLastAnswer,
       restartServer: desktopActions.restartServer,
       openAttachment: desktopOpenAttachment,
+      uploadAttachment: desktopUploadAttachment,
+      browseDirectory: (params, context) => desktopDirectoryPicker.browse(params, context),
       submitBugReport: desktopSubmitBugReport,
       reportDiagnostic: diagnostics.reportClientError,
       trustedDevices: desktopReadSystem.desktopTrustedDevices,

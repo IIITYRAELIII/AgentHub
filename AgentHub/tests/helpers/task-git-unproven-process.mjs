@@ -56,6 +56,11 @@ export async function unprovenProcessTaskGit({ context, root, dataDir, taskId })
   let descendantPid = null;
   const service = new TaskGitWorkspaceService({
     dataDir,
+    readSystemBootIdentity: () => ({
+      source: "Win32_OperatingSystem.LastBootUpTime",
+      executablePath: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+      bootTime: "2100-01-01T00:00:00.000Z",
+    }),
     runCommand: async (args, options) => {
       if (!intercepted && args[0] === "worktree" && args[1] === "add") {
         intercepted = true;
@@ -88,7 +93,15 @@ export async function unprovenProcessTaskGit({ context, root, dataDir, taskId })
     await wait(100);
     return service.recoverProcessTreeGuard(taskId, {
       repositoryRoot: root,
-      operatorProof: "confirmed-no-descendants",
+      guardId: JSON.parse(await readFile(path.join(
+        dataDir, "task-process-tree-guards", taskId,
+        (await readdir(path.join(dataDir, "task-process-tree-guards", taskId)))[0],
+      ), "utf8")).guardId,
+      proof: {
+        kind: "system-restart-after-guard",
+        confirmed: true,
+        summary: "test fixture boot boundary",
+      },
     });
   }
   context.after(async () => {

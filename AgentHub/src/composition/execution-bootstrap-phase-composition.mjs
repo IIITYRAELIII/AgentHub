@@ -73,6 +73,7 @@ export function createExecutionBootstrapPhase({
       scheduleDeliveryOutboxFlush: clients.scheduleDeliveryOutboxFlush,
       scheduleCodexTerminalAudit: api.scheduleCodexTerminalAudit,
       rateLimitTelemetry: clients.rateLimitTelemetry,
+      providerLogin: clients.providerLogin,
       usageSyncAuto: provider.usageSyncAuto,
       taskSyncStore: provider.taskSyncStore,
       messagePins: provider.messagePins,
@@ -160,6 +161,7 @@ export function createExecutionBootstrapPhase({
     lifecycle: {
       restartRequestService: interaction.restartRequestService,
       miniAppLifecycle: clients.miniAppLifecycle,
+      desktopAttachments: clients.desktopAttachments,
       desktopControlServer: api.desktopControlServer,
       runtimeCommandServer: infrastructure.runtimeCommandServer,
       hubMcpServer: infrastructure.hubMcpServer,
@@ -360,6 +362,7 @@ export function createExecutionBootstrapPhase({
       return measure("startup-pricing-backfill", () => api.backfillWorkLogPricingMetadata(threads, { signal, propagateErrors: true }));
     },
     recoverRuns: (...args) => runtime.runRecovery.recoverAll(...args),
+    retryTerminalProjections: () => api.retryPendingTurnEndProjections({ recoverProjecting: true }),
     retryNotifications: api.retryPendingTurnEndNotifications,
     restoreBackgroundJobs: () => provider.backgroundJobs.restore(),
     startRuntimeTimers: runtime.startRuntimeTimers,

@@ -16,11 +16,16 @@ class Control {
   dispatch(type, event = {}) {
     let prevented = false;
     this.listeners.get(type)?.({
+      type,
       target: this,
       clientX: -1,
       clientY: -1,
+      button: 0,
+      isPrimary: true,
       ...event,
       preventDefault: () => { prevented = true; },
+      stopPropagation: () => {},
+      stopImmediatePropagation: () => {},
     });
     return prevented;
   }
@@ -87,6 +92,10 @@ test("task deletion requires explicit confirmation and supports cancellation", a
 
   controller.request("task-1");
   assert.equal(dialog.dispatch("click"), false);
+  assert.equal(dialog.open, true);
+  assert.equal(dialog.dispatch("pointerdown", { button: 2 }), false);
+  assert.equal(dialog.open, true);
+  assert.equal(dialog.dispatch("pointerdown"), true);
   assert.equal(dialog.open, false);
   assert.deepEqual(confirmed, []);
 

@@ -1,6 +1,7 @@
 "use strict";
 
-const { randomUUID } = require("node:crypto");
+const { createHash, randomUUID } = require("node:crypto");
+const { execFile } = require("node:child_process");
 const { watch } = require("node:fs");
 const { mkdir, readFile, stat, writeFile } = require("node:fs/promises");
 const { homedir } = require("node:os");
@@ -41,6 +42,14 @@ function jsonResponse(value, status = 200, headers = {}) {
     },
     body: `${JSON.stringify(value)}\n`,
   };
+}
+
+function journalResponseEtag(journal, usageSync = null) {
+  const digest = createHash("sha256").update(JSON.stringify({
+    version: String(journal?.version ?? ""),
+    usageSync,
+  }), "utf8").digest("hex");
+  return `"sha256:${digest}"`;
 }
 
 /* VS Code пересылает данные между extension host и webview через IPC. Большой
@@ -94,12 +103,49 @@ function defaultProcessIsAlive(pid) {
   }
 }
 
+async function defaultInstanceOwner(runtimeRoot, releaseRoot) {
+  try {
+    const { readInstanceLockOwner } = await import(pathToFileURL(
+      path.join(releaseRoot, "src", "infrastructure", "process", "instance-lock.mjs"),
+    ).href);
+    if (typeof readInstanceLockOwner !== "function") return undefined;
+    return readInstanceLockOwner(path.join(runtimeRoot, "data"));
+  } catch (error) {
+    if (["ERR_MODULE_NOT_FOUND", "ERR_PACKAGE_PATH_NOT_EXPORTED"].includes(error?.code)) return undefined;
+    throw error;
+  }
+}
+
 async function readJsonFile(file) {
   try {
     return JSON.parse(await readFile(file, "utf8"));
   } catch {
     return {};
   }
+}
+
+function webAppDisabledError() {
+  const error = new Error("Локальный Web App Agent Hub отключён");
+  error.code = "AGENT_HUB_WEB_APP_DISABLED";
+  return error;
+}
+
+function defaultStartRuntimeHost(runtimeRoot) {
+  const launcher = path.join(runtimeRoot, "AgentHub.RuntimeHost.exe");
+  return new Promise((resolve, reject) => {
+    execFile(launcher, ["--spawn-independent"], {
+      cwd: runtimeRoot,
+      windowsHide: true,
+      timeout: 10_000,
+    }, (error) => {
+      if (error) reject(error);
+      else resolve();
+    });
+  });
+}
+
+function wait(delayMs) {
+  return new Promise((resolve) => setTimeout(resolve, delayMs));
 }
 
 class AgentHubBridge {
@@ -109,6 +155,10 @@ class AgentHubBridge {
     journalDatabase = null,
     processIsAlive = defaultProcessIsAlive,
     fetchImpl = globalThis.fetch,
+    platform = process.platform,
+    startRuntimeHost = defaultStartRuntimeHost,
+    instanceOwner = defaultInstanceOwner,
+    waitImpl = wait,
   } = {}) {
     this.moduleRoot = moduleRoot ? path.resolve(moduleRoot) : null;
     this.runtimeRoot = runtimeRoot ? path.resolve(runtimeRoot) : defaultRuntimeRoot();
@@ -123,6 +173,11 @@ class AgentHubBridge {
     this.resolvedModuleRoot = null;
     this.processIsAlive = processIsAlive;
     this.fetchImpl = fetchImpl;
+    this.platform = platform;
+    this.startRuntimeHost = startRuntimeHost;
+    this.instanceOwner = instanceOwner;
+    this.waitImpl = waitImpl;
+    this.runtimeStartPromise = null;
   }
 
   async backendRoot() {
@@ -138,10 +193,9 @@ class AgentHubBridge {
       path.join(this.runtimeRoot, "data", "bot.lock"),
       "utf8",
     ).catch(() => "{}"));
-    const runningRelease = this.processIsAlive(Number(lock.pid))
-      ? String(lock.releaseId ?? "").trim()
-      : "";
-    const release = runningRelease || String(manifest.current ?? "");
+    const currentRelease = String(manifest.current ?? "").trim();
+    const runningRelease = await this.runningRelease(lock, currentRelease);
+    const release = runningRelease || currentRelease;
     if (!/^[A-Za-z0-9._-]+$/u.test(release)) {
       throw new Error("Активный runtime Agent Hub не определён");
     }
@@ -155,6 +209,27 @@ class AgentHubBridge {
     }
     this.resolvedModuleRoot = root;
     return root;
+  }
+
+  async runningRelease(lock, currentRelease) {
+    const pid = Number(lock?.pid);
+    const instanceToken = String(lock?.instanceToken ?? "").trim();
+    const releaseId = String(lock?.releaseId ?? "").trim();
+    if (!this.processIsAlive(pid) || !instanceToken || !/^[A-Za-z0-9._-]+$/u.test(releaseId)) return "";
+    const probeRelease = /^[A-Za-z0-9._-]+$/u.test(currentRelease) ? currentRelease : releaseId;
+    try {
+      const owner = await this.instanceOwner(
+        this.runtimeRoot,
+        path.join(this.runtimeRoot, "releases", probeRelease),
+      );
+      // An extension may update before the runtime pointer switches to a
+      // release that exports the token reader. Preserve the live old owner in
+      // that bounded compatibility window instead of starting a duplicate.
+      if (owner === undefined) return releaseId;
+      return String(owner ?? "") === instanceToken ? releaseId : "";
+    } catch {
+      return "";
+    }
   }
 
   async desktop() {
@@ -216,12 +291,80 @@ class AgentHubBridge {
       if (commandId !== clientUserMessageId) {
         throw new Error("VS Code message command identity mismatch");
       }
-      return this.localControl(action, params, commandId);
+      try {
+        return await this.localControl(action, params, commandId);
+      } catch (error) {
+        if (error?.code !== "AGENT_HUB_WEB_APP_DISABLED") throw error;
+        return this.desktopControl(action, params, { commandId });
+      }
     }
+    try {
+      return await this.desktopControl(action, params);
+    } catch (error) {
+      if (action !== "runtime-health" || this.moduleRoot || this.platform !== "win32") throw error;
+      await this.ensureRuntimeStarted();
+      let lastError = error;
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        await this.waitImpl(250);
+        try {
+          return await this.desktopControl(action, params);
+        } catch (retryError) {
+          lastError = retryError;
+        }
+      }
+      throw lastError;
+    }
+  }
+
+  async desktopControl(action, params = {}, { commandId = "" } = {}) {
     const { callDesktopControl } = await this.desktop();
     return callDesktopControl(action, params, {
-      timeoutMs: ["rotate-stream", "submit-bug-report"].includes(action) ? 180_000 : 10_000,
+      runtimeRoot: this.runtimeRoot,
+      timeoutMs: [
+        "browse-directory",
+        "rotate-stream",
+        "submit-bug-report",
+        "usage-sync",
+        "usage-sync-now",
+        "usage-sync-invite",
+        "usage-sync-enroll",
+        "usage-sync-device-label",
+      ].includes(action) ? 180_000 : action === "attachment-upload" ? 30_000 : 10_000,
+      ...(commandId ? { commandId } : {}),
     });
+  }
+
+  async ensureRuntimeStarted() {
+    if (this.moduleRoot || this.platform !== "win32") return false;
+    if (this.runtimeStartPromise) return this.runtimeStartPromise;
+    this.runtimeStartPromise = (async () => {
+      const lock = JSON.parse(await readFile(
+        path.join(this.runtimeRoot, "data", "bot.lock"),
+        "utf8",
+      ).catch(() => "{}"));
+      const manifest = JSON.parse(await readFile(
+        path.join(this.runtimeRoot, "current.json"),
+        "utf8",
+      ).catch(() => "{}"));
+      if (await this.runningRelease(lock, String(manifest.current ?? "").trim())) return false;
+      const launcher = path.join(this.runtimeRoot, "AgentHub.RuntimeHost.exe");
+      const info = await stat(launcher);
+      if (!info.isFile()) throw new Error("Agent Hub Runtime Host недоступен");
+      await this.startRuntimeHost(this.runtimeRoot);
+      return true;
+    })().finally(() => {
+      this.runtimeStartPromise = null;
+    });
+    return this.runtimeStartPromise;
+  }
+
+  async usageSyncStatus() {
+    try {
+      const status = await this.control("usage-sync-status");
+      return status && typeof status === "object" ? status : { configured: false };
+    } catch {
+      return this.storedUsageSyncStatus();
+    }
   }
 
   async localControl(action, params, commandId) {
@@ -254,7 +397,16 @@ class AgentHubBridge {
 
   async localWebAddress() {
     const config = JSON.parse(await readFile(path.join(this.runtimeRoot, "config.json"), "utf8"));
-    if (config?.miniApp?.enabled === false) throw new Error("Локальный Web App Agent Hub отключён");
+    const configuredComponents = config?.components && typeof config.components === "object"
+      ? config.components
+      : null;
+    /* Raw config stores the authoritative component flags in `components`;
+       `miniApp.enabled` is derived only after the Hub loads that config. Keep
+       the legacy field solely for installations that predate `components`. */
+    const webAppEnabled = configuredComponents
+      ? configuredComponents.miniApp === true || configuredComponents.androidApp === true
+      : config?.miniApp?.enabled !== false;
+    if (!webAppEnabled) throw webAppDisabledError();
     const host = String(config?.miniApp?.host ?? "127.0.0.1").trim().toLowerCase();
     if (!["127.0.0.1", "localhost", "::1"].includes(host)) {
       throw new Error("miniApp.host должен быть локальным");
@@ -267,6 +419,7 @@ class AgentHubBridge {
   }
 
   async webviewSession() {
+    const baseUrl = await this.localWebAddress();
     const root = await this.backendRoot();
     const secret = String(await readFile(path.join(this.runtimeRoot, "local-web.secret"), "utf8")).trim();
     this.webviewSessionModule ??= import(pathToFileURL(path.join(
@@ -278,7 +431,7 @@ class AgentHubBridge {
     )).href);
     const { createLocalWebviewSession } = await this.webviewSessionModule;
     return {
-      baseUrl: await this.localWebAddress(),
+      baseUrl,
       ...createLocalWebviewSession(secret),
     };
   }
@@ -375,7 +528,7 @@ class AgentHubBridge {
     }
   }
 
-  async usageSyncStatus() {
+  async storedUsageSyncStatus() {
     try {
       const { publicUsageSyncStatus } = await this.journalData();
       const dataDirectory = path.join(this.runtimeRoot, "data");
@@ -506,9 +659,18 @@ class AgentHubBridge {
     };
   }
 
-  async http({ method = "GET", path: requestPath = "", headers = {}, body = "" }) {
+  async http({ method = "GET", path: requestPath = "", headers = {}, body = "", bodyEncoding }) {
     const requestMethod = String(method).toUpperCase();
     const url = new URL(requestPath, "https://agent-hub.local");
+    if (url.pathname === "/api/attachment-upload") {
+      return this.desktopControl("attachment-upload", {
+        method: requestMethod,
+        path: `${url.pathname}${url.search}`,
+        headers,
+        body,
+        bodyEncoding,
+      });
+    }
     const proxyPaths = new Set([
       "/api/journal/usage-sync",
       "/api/journal/usage-sync/invite",
@@ -552,18 +714,7 @@ class AgentHubBridge {
     }
     if (url.pathname === "/health") {
       try {
-        const response = await this.fetchImpl(`${await this.localWebAddress()}/health`, {
-          headers: { Accept: "application/json" },
-          signal: AbortSignal.timeout(10_000),
-        });
-        return {
-          status: response.status,
-          headers: {
-            "Cache-Control": "no-store",
-            "Content-Type": response.headers.get("content-type") ?? "application/json; charset=utf-8",
-          },
-          body: await response.text(),
-        };
+        return jsonResponse(await this.control("runtime-health"));
       } catch (error) {
         return jsonResponse({ error: `Состояние Agent Hub недоступно: ${error.message}` }, 503);
       }

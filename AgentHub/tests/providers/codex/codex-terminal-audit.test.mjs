@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { CodexTerminalAudit } from "../../../src/providers/codex/codex-terminal-audit.mjs";
-import { CODEX_CONTEXT_PROBE_PROMPT } from "../../../src/domain/codex-context-probe.mjs";
 
 const project = { path: "D:\\workspace" };
 
@@ -177,81 +176,7 @@ test("terminal audit bootstraps recent turns and seeds older rollout positions",
   ]);
 });
 
-test("terminal audit projects an internal context probe for accounting", async () => {
-  const recovered = [];
-  const audit = new CodexTerminalAudit({
-    now: () => Date.parse("2026-08-08T10:01:00.000Z"),
-    listPage: async () => ({
-      data: [thread("probe-thread", "2026-08-08T10:00:30.000Z", "probe.jsonl")],
-      nextCursor: null,
-    }),
-    resolveProject: () => project,
-    statFile: async () => ({ size: 100 }),
-    scanFile: async () => ({
-      terminals: [{
-        turnId: "probe-turn",
-        status: "completed",
-        completedAt: "2026-08-08T10:00:30.000Z",
-        contextProbe: true,
-      }],
-      activeTurns: [],
-      nextOffset: 100,
-    }),
-    reconcile: async (_thread, _project, terminal) => recovered.push(terminal.turnId),
-  });
 
-  await audit.run();
-
-  assert.deepEqual(recovered, ["probe-turn"]);
-});
-
-test("terminal audit projects a late-identified probe for accounting", async () => {
-  let nowMs = Date.parse("2026-08-08T10:00:00.000Z");
-  let scans = 0;
-  const recovered = [];
-  const audit = new CodexTerminalAudit({
-    now: () => nowMs,
-    statusIdleMs: 5_000,
-    listPage: async () => ({
-      data: [thread("probe-thread", nowMs, "probe.jsonl")],
-      nextCursor: null,
-    }),
-    readThread: async () => ({
-      thread: {
-        ...thread("probe-thread", nowMs, "probe.jsonl"),
-        turns: [{
-          id: "probe-turn",
-          status: "completed",
-          items: [{
-            type: "userMessage",
-            clientId: "agent-hub-context-probe:late",
-            content: [{ type: "text", text: CODEX_CONTEXT_PROBE_PROMPT }],
-          }],
-        }],
-      },
-    }),
-    resolveProject: () => project,
-    statFile: async () => ({ size: 100, mtimeMs: nowMs }),
-    scanFile: async () => ({
-      terminals: [],
-      activeTurns: scans++ === 0 ? [{
-        turnId: "probe-turn",
-        startedAt: "2026-08-08T10:00:00.000Z",
-        lastActivityAt: "2026-08-08T10:00:00.000Z",
-      }] : [],
-      nextOffset: 100,
-    }),
-    reconcile: async (_thread, _project, terminal) => recovered.push(terminal.turnId),
-  });
-
-  await audit.run();
-  assert.equal(audit.snapshot().pendingTurns.length, 1);
-  nowMs += 6_000;
-  await audit.run();
-
-  assert.deepEqual(recovered, ["probe-turn"]);
-  assert.equal(audit.snapshot().pendingTurns.length, 0);
-});
 
 test("terminal audit resumes byte positions after a long server outage", async () => {
   const scans = [];
@@ -1801,7 +1726,7 @@ test("terminal audit catches up a recent 200 MiB rollout while advancing thousan
   const candidates = Array.from({ length: 1_000 }, (_, index) => thread(
     `old-${index}`, "2026-09-01T12:00:00.000Z", `old-${index}.jsonl`,
   ));
-  candidates.splice(470, 0, thread("architect", "2026-09-03T11:59:00.000Z", "architect.jsonl"));
+  candidates.splice(470, 0, thread("releaseManager", "2026-09-03T11:59:00.000Z", "releaseManager.jsonl"));
   const scannedOffsets = [];
   const inspected = [];
   const options = {
@@ -1810,10 +1735,10 @@ test("terminal audit catches up a recent 200 MiB rollout while advancing thousan
     resolveProject: () => project,
     statFile: async (file) => {
       inspected.push(file);
-      return { size: file === "architect.jsonl" ? size : 10, mtimeMs: file === "architect.jsonl" ? nowMs : Date.parse("2026-09-01T12:00:00.000Z") };
+      return { size: file === "releaseManager.jsonl" ? size : 10, mtimeMs: file === "releaseManager.jsonl" ? nowMs : Date.parse("2026-09-01T12:00:00.000Z") };
     },
     scanFile: async (file, { startOffset, maxBytes }) => {
-      assert.equal(file, "architect.jsonl");
+      assert.equal(file, "releaseManager.jsonl");
       assert.equal(maxBytes, chunkBytes);
       scannedOffsets.push(startOffset);
       nowMs += 80;
@@ -1832,7 +1757,7 @@ test("terminal audit catches up a recent 200 MiB rollout while advancing thousan
     assert.ok(inspected.length - before <= 128);
     assert.ok(checkpoint.lastRun.bytes <= 2 * chunkBytes);
     assert.ok(checkpoint.lastRun.threads <= 8);
-    if (passes === 0) assert.deepEqual(inspected, ["architect.jsonl"]);
+    if (passes === 0) assert.deepEqual(inspected, ["releaseManager.jsonl"]);
     audit = new CodexTerminalAudit(options);
     audit.restore(checkpoint);
     passes += 1;
@@ -1841,7 +1766,7 @@ test("terminal audit catches up a recent 200 MiB rollout while advancing thousan
   assert.deepEqual(scannedOffsets, Array.from({ length: 50 }, (_, index) => index * chunkBytes));
   assert.ok(passes <= 100);
   assert.ok(inspected.includes("old-999.jsonl"));
-  assert.equal(audit.snapshot().positions.find(([id]) => id === "architect")[1].offset, size);
+  assert.equal(audit.snapshot().positions.find(([id]) => id === "releaseManager")[1].offset, size);
   assert.equal(audit.snapshot().lastRun.backlog, false);
 });
 
@@ -2025,7 +1950,7 @@ test("live native rollout projection rejects inherited turns and honors explicit
   }
 });
 
-test("native ownership filtering preserves all eight affected Architect turns", async () => {
+test("native ownership filtering preserves all eight affected Release Manager turns", async () => {
   const threadId = "01a0804b-ed48-7d01-88f5-b26d78a54f90";
   const turnIds = [
     "01a0822a-93ec-7d21-830e-21349fef1502",
@@ -2040,7 +1965,7 @@ test("native ownership filtering preserves all eight affected Architect turns", 
   const reconciled = [];
   const audit = new CodexTerminalAudit({
     now: () => Date.parse("2026-09-08T19:30:00.000Z"),
-    discoverHistoricalThreads: async () => [{ id: threadId, path: "architect.jsonl" }],
+    discoverHistoricalThreads: async () => [{ id: threadId, path: "releaseManager.jsonl" }],
     resolveProject: () => project,
     statFile: async () => ({ size: 100 }),
     scanFile: async () => ({

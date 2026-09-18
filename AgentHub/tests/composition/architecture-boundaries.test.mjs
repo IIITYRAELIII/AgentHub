@@ -324,7 +324,9 @@ test("turn-end projection and retry policy have one delivery owner", async () =>
   assert.equal((source.match(/new TurnEndDeliveryService\s*\(/g) ?? []).length, 1);
   assert.equal(source.includes("const deliveringTurnEndKeys = new Set()"), false);
   assert.equal(delivery.includes("this.delivering = new Set()"), true);
-  assert.equal(delivery.includes("async retryPending()"), true);
+  assert.equal(delivery.includes("async retryPending("), true);
+  assert.equal(delivery.includes("async retryPendingProjections("), true);
+  assert.equal(delivery.includes("async retryPendingTelegram("), true);
   assert.equal(delivery.includes("async waitForCompletion("), true);
 });
 

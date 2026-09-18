@@ -23,6 +23,8 @@ import { BugReportRepository } from "../infrastructure/filesystem/bug-report-rep
 import { BugReportCaptureCursorStore } from "../infrastructure/persistence/bug-report-capture-cursor-store.mjs";
 import { QuickTunnelController } from "../infrastructure/network/quick-tunnel.mjs";
 import { readClaudeAccount } from "../providers/claude/claude-account.mjs";
+import { ProviderLoginService } from "../application/provider-login-service.mjs";
+import { spawn } from "node:child_process";
 
 const BUG_REPORT_SCAN_INTERVAL_MS = 5 * 60_000;
 
@@ -264,6 +266,35 @@ export async function createClientInterfaceComposition({
     timers: runtimeTimers,
     isStopping,
   });
+  const readClaudeAuthStatus = async (timeoutMs = 5_000) => {
+    const invocation = resolveClaudeInvocation();
+    const result = await spawnCapture(invocation.command, [
+      ...invocation.prefixArgs, "auth", "status", "--json",
+    ], { timeoutMs, maxOutputBytes: 64 * 1024 });
+    if (result.error) throw new Error("Claude account status unavailable");
+    let status;
+    try { status = JSON.parse(result.stdout); } catch { throw new Error("Claude account status unavailable"); }
+    // Signed-out is a valid status even when the CLI exits nonzero.
+    if (typeof status?.loggedIn !== "boolean" || (result.code !== 0 && status.loggedIn)) {
+      throw new Error("Claude account status unavailable");
+    }
+    return status;
+  };
+  const providerLogin = new ProviderLoginService({
+    sendRpc,
+    resolveClaudeInvocation,
+    spawnProcess: spawn,
+    stopProcessTree,
+    readClaudeLoggedIn: async () => (await readClaudeAuthStatus(15_000)).loggedIn,
+    readAccount: (provider) => provider === "codex"
+      ? sendRpc("account/read", { refreshToken: false }, { timeoutMs: 5_000 })
+      : readClaudeAuthStatus(),
+    // Codex limits belong to the account that just signed in; Claude account
+    // identity is re-read from its config file on the next access.
+    onAccountChanged: async (providerName) => {
+      if (providerName === "codex") await rateLimitTelemetry.refreshCodex();
+    },
+  });
   workLogUsageStore.setResolveAccount?.(async (providerName) => {
     const normalized = String(providerName ?? "").trim().toLowerCase();
     if (normalized === "codex") {
@@ -326,6 +357,7 @@ export async function createClientInterfaceComposition({
     desktopAttachmentDescriptors: (...args) => desktopAttachments.descriptors(...args),
     importCodexDesktopAttachments: (...args) => desktopAttachments.importCodex(...args),
     desktopOpenAttachment: (...args) => desktopAttachments.open(...args),
+    desktopUploadAttachment: (...args) => desktopAttachments.upload(...args),
     desktopSubmitBugReport,
     scheduleBugReportScan,
     telegramMultipart,
@@ -338,6 +370,7 @@ export async function createClientInterfaceComposition({
     deferredInputPresentation,
     telegramSettingsMenu,
     rateLimitTelemetry,
+    providerLogin,
     telegramStatusController,
     mediaController,
     approvalController,

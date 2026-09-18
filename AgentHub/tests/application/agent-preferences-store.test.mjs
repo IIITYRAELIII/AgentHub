@@ -51,6 +51,7 @@ test("agent preferences restore and validate both providers in one state owner",
     streamCardWidthMode: "fixed",
     streamCardFixedWidth: 237,
     streamCardGapEnabled: true,
+    quickMessageActionMode: "send",
     pinnedWorkspaceStreams: {
       "workspace-1": ["stream-1", "stream-2", "stream-1"],
       "": ["ignored"],
@@ -79,6 +80,7 @@ test("agent preferences restore and validate both providers in one state owner",
     streamCardWidthMode: "fixed",
     streamCardFixedWidth: 237,
     streamCardGapEnabled: true,
+    quickMessageActionMode: "send",
     pinnedWorkspaceStreams: {
       "workspace-1": ["stream-1", "stream-2"],
     },
@@ -119,6 +121,22 @@ test("agent preferences restore and validate both providers in one state owner",
     streams: {},
     workspaces: { "workspace-2": [{ title: "релизь", text: "релизь" }] },
   });
+  assert.deepEqual(store.setQuickMessageActionMode("invalid"), { changed: true });
+  assert.equal(store.quickMessageActionMode, "insert");
+  assert.deepEqual(store.setQuickMessageActionMode("send"), { changed: true });
+  assert.equal(store.quickMessageActionMode, "send");
+});
+
+test("prompt template action mode defaults safely and survives persistence", () => {
+  const { store } = fixture();
+  assert.equal(store.quickMessageActionMode, "insert");
+  store.restore({ quickMessageActionMode: "unknown" });
+  assert.equal(store.quickMessageActionMode, "insert");
+  store.setQuickMessageActionMode("send");
+
+  const { store: restored } = fixture();
+  restored.restore(JSON.parse(JSON.stringify(store.snapshot())));
+  assert.equal(restored.quickMessageActionMode, "send");
 });
 
 test("task preferences follow the selected Codex thread without becoming task identity", () => {

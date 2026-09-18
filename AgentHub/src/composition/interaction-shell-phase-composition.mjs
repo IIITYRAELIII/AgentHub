@@ -113,10 +113,12 @@ export function createInteractionShellPhase({
     desktopSnapshot: api.desktopSnapshot,
     spawnCapture: provider.spawnCapture,
     preTurnInstructions: infrastructure.preTurnInstructions,
+    providerLogin: clients.providerLogin,
   });
 
   const desktopShell = createDesktopShellComposition({
     config,
+    server,
     diagnostics: {
       reportClientError: (event, context) => sentryDiagnostics.captureClientEvent(event, context),
     },
@@ -229,6 +231,7 @@ export function createInteractionShellPhase({
       streamContextMaintenance: provider.streamContextMaintenance,
       streamMaintenance: provider.streamMaintenance,
       usageSyncAuto: provider.usageSyncAuto,
+      usageSyncRemoteConfigStore: infrastructure.workLogUsageRemoteConfigStore,
     },
     provider: {
       agentProviders: provider.agentProviders,
@@ -254,6 +257,7 @@ export function createInteractionShellPhase({
       desktopAttachmentDescriptors: clients.desktopAttachmentDescriptors,
       desktopAttachmentPaths: clients.desktopAttachmentPaths,
       desktopOpenAttachment: clients.desktopOpenAttachment,
+      desktopUploadAttachment: clients.desktopUploadAttachment,
       desktopSubmitBugReport: clients.desktopSubmitBugReport,
       readCachedHistory: api.readCachedHistory,
       refreshHistory: api.refreshHistory,
@@ -329,6 +333,7 @@ export function createInteractionShellPhase({
     },
     admission: {
       config,
+      runtimeStateStore: infrastructure.runtimeStateStore,
       samePath,
       sendRpc: api.sendRpc,
       contextCompactions: provider.contextCompactions,

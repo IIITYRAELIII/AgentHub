@@ -8,21 +8,29 @@ function fixture(plan = {
   revision: "plan-1", ready: [{ id: "change-1" }],
   candidates: [{ gitReferences: [{ projectRoot: "D:/repo", resultCommit: "task-result" }] }],
   draft: [], blocked: [], conflicts: [],
-}, { primarySync = null, devSync = null, rebuildFailures = 0 } = {}) {
+}, { primarySync = null, devSync = null } = {}) {
   const calls = [];
   let pending = null;
-  let remainingRebuildFailures = rebuildFailures;
+  let completedOutcome = null;
   const service = new WorkspaceReleaseService({
     store: createTaskBoardMutationOwner({
       runMutation: (operation) => Promise.resolve().then(operation),
       awaitRebuildPending: () => structuredClone(pending),
-      releaseFinalizationOutcome: () => null,
+      releaseFinalizationOutcome: (_workspaceId, planRevision) => (
+        completedOutcome?.planRevision === planRevision ? structuredClone(completedOutcome) : null
+      ),
       recordReleaseFinalizationStage: (_workspaceId, { stage, projectRoot, receipt }) => {
         if (stage === "await") pending.awaitResult = structuredClone(receipt);
         else pending.repositories.find((item) => item.projectRoot === projectRoot)[stage] = structuredClone(receipt);
       },
       clearAwaitRebuildPending: () => {
         calls.push(["clear-pending"]);
+        completedOutcome = {
+          planRevision: pending.planRevision,
+          repositories: pending.repositories.map(({ projectRoot, publishedRevision }) => ({
+            projectRoot, publishedRevision,
+          })),
+        };
         pending = null;
         return true;
       },
@@ -54,14 +62,7 @@ function fixture(plan = {
         calls.push(["lock-await", workspaceId]);
         return operation();
       },
-      prepareAwaitSet: async (options) => {
-        calls.push(["rebuild-await", options]);
-        if (remainingRebuildFailures > 0) {
-          remainingRebuildFailures -= 1;
-          throw new Error("injected rebuild failure");
-        }
-        return { rebuilt: true, ...options };
-      },
+      prepareAwaitSet: async () => { throw new Error("release completion must not prepare the next candidate"); },
     },
     verifyPublication: async (value) => {
       calls.push(["verify", value]);
@@ -88,6 +89,23 @@ test("release completion rejects a raw Task store dependency", () => {
   }), /Task mutation owner facade/u);
 });
 
+test("exact legacy plan identity reaches the existing frozen publication verifier", async () => {
+  const plan = { revision: "current-plan", legacyRevision: "legacy-plan", ready: [{ id: "change" }],
+    candidates: [{ gitReferences: [{ projectRoot: "D:/repo", resultCommit: "task-result" }] }],
+    draft: [], blocked: [], conflicts: [] };
+  const { service, calls } = fixture(plan);
+  await service.completeRelease({ workspaceId: "workspace", expectedPlanRevision: "legacy-plan",
+    expectedRepositories: [{ projectRoot: "D:/repo", revision: "abc" }],
+    deploymentVerified: true, verificationSummary: "Exact legacy publication" });
+  assert.equal(calls.find(([name]) => name === "verify")[1].plan.revision, "legacy-plan");
+  assert.equal(calls.find(([name]) => name === "complete")[2].expectedPlanRevision, "legacy-plan");
+  const other = fixture(plan);
+  await assert.rejects(other.service.completeRelease({ workspaceId: "workspace", expectedPlanRevision: "unrelated-plan",
+    expectedRepositories: [{ projectRoot: "D:/repo", revision: "abc" }],
+    deploymentVerified: true, verificationSummary: "Wrong identity" }), /revision changed/u);
+  assert.equal(other.calls.some(([name]) => name === "verify"), false);
+});
+
 test("release completion requires explicit deployment evidence before changing the registry", async () => {
   const { calls, service } = fixture();
   await assert.rejects(
@@ -110,7 +128,7 @@ test("release completion verifies repositories before atomically closing ready c
   assert.equal(result.publication.planRevision, "plan-1");
   assert.deepEqual(
     calls.map(([name]) => name),
-    ["lock-await", "verify", "verify", "complete", "sync-primary", "sync-dev", "rebuild-await", "clear-pending"],
+    ["lock-await", "verify", "verify", "complete", "sync-primary", "sync-dev", "clear-pending"],
   );
   assert.deepEqual(calls[4][1], {
     projectRoot: "D:/repo",
@@ -155,15 +173,11 @@ test("release completion verifies repositories before atomically closing ready c
       awaitResult: null,
     },
   });
-  assert.deepEqual(calls[6][1], {
-    workspaceId: "workspace-1",
-    fallbackProjectRoots: ["D:/repo"],
-  });
-  assert.equal(result.preReleaseIntegration.rebuilt, true);
+  assert.equal(result.releaseCandidate.status, "invalidated");
 });
 
-test("failed post-publication Await rebuild is durable and retryable without completing twice", async () => {
-  const { calls, service, state } = fixture(undefined, { rebuildFailures: 1 });
+test("post-publication candidate invalidation is durable and never rebuilds Await eagerly", async () => {
+  const { calls, service, state } = fixture();
   const request = {
     workspaceId: "workspace-1",
     expectedRepositories: [{ projectRoot: "D:/repo", revision: "abc" }],
@@ -173,22 +187,18 @@ test("failed post-publication Await rebuild is durable and retryable without com
   };
 
   const first = await service.completeRelease(request);
-  assert.equal(first.preReleaseIntegration.status, "retry_required");
-  assert.match(first.preReleaseIntegration.reason, /injected rebuild failure/u);
-  assert.equal(state.pending.planRevision, "plan-1");
-  assert.equal(state.pending.version, 2);
-  assert.equal(state.pending.repositories[0].primary.completed, true);
-  assert.equal(state.pending.repositories[0].dev.completed, true);
-  assert.equal(state.pending.awaitResult.completed, false);
+  assert.equal(first.releaseCandidate.status, "invalidated");
+  assert.equal(first.finalization.status, "completed");
+  assert.equal(state.pending, null);
 
   const second = await service.completeRelease(request);
   assert.equal(second.releaseAlreadyCompleted, true);
   assert.equal(second.recoveredPlanRevision, "plan-1");
-  assert.equal(second.preReleaseIntegration.rebuilt, true);
+  assert.equal(second.releaseCandidate.status, "invalidated");
   assert.equal(state.pending, null);
   assert.equal(calls.filter(([name]) => name === "complete").length, 1);
   assert.equal(calls.filter(([name]) => name === "verify").length, 2);
-  assert.equal(calls.filter(([name]) => name === "rebuild-await").length, 2);
+  assert.equal(calls.filter(([name]) => name === "rebuild-await").length, 0);
 });
 
 test("release completion treats overlapping ready paths as diagnostic evidence", async () => {
@@ -240,7 +250,7 @@ test("manual primary synchronization does not undo verified release completion",
   assert.equal(result.finalization.status, "retry_required");
   assert.deepEqual(
     calls.map(([name]) => name),
-    ["lock-await", "verify", "verify", "complete", "sync-primary", "sync-dev", "rebuild-await"],
+    ["lock-await", "verify", "verify", "complete", "sync-primary", "sync-dev"],
   );
 });
 
@@ -269,7 +279,7 @@ test("release completion records a dev conflict without hiding publication succe
   assert.equal(result.finalization.status, "retry_required");
   assert.deepEqual(
     calls.map(([name]) => name),
-    ["lock-await", "verify", "verify", "complete", "sync-primary", "sync-dev", "rebuild-await"],
+    ["lock-await", "verify", "verify", "complete", "sync-primary", "sync-dev"],
   );
 });
 
@@ -298,7 +308,7 @@ test("publication generation change between verify and closure blocks Task compl
 
 
 test("pending finalization rejects another plan without reusing its publication authority", async () => {
-  const { service, calls } = fixture(undefined, { rebuildFailures: 1 });
+  const { service, calls } = fixture(undefined, { devSync: { status: "conflict", integrated: false } });
   const request = { workspaceId: "workspace-1", expectedPlanRevision: "plan-1", deploymentVerified: true,
     verificationSummary: "verified", expectedRepositories: [{ projectRoot: "D:/repo", revision: "abc" }] };
   await service.completeRelease(request);
@@ -321,7 +331,7 @@ test("retry preserves completed stages and reconciles failed dev with the origin
   assert.equal(result.finalization.status, "completed");
   assert.equal(state.pending, null);
   assert.equal(calls.filter(([name]) => name === "sync-primary").length, 1);
-  assert.equal(calls.filter(([name]) => name === "rebuild-await").length, 1);
+  assert.equal(calls.filter(([name]) => name === "rebuild-await").length, 0);
   assert.equal(calls.filter(([name]) => name === "complete").length, 1);
   assert.deepEqual(calls.filter(([name]) => name === "sync-dev").map(([, args]) => args), [
     { projectRoot: "D:/repo", publishedRevision: "abc" },

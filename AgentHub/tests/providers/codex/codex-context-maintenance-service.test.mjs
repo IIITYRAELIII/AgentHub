@@ -2,9 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { CodexContextMaintenanceService } from "../../../src/providers/codex/codex-context-maintenance-service.mjs";
-import { CODEX_CONTEXT_PROBE_CLIENT_ID_PREFIX } from "../../../src/domain/codex-context-probe.mjs";
-
-const PROBE_CLIENT_ID = `${CODEX_CONTEXT_PROBE_CLIENT_ID_PREFIX}test`;
+import { CodexCompactionBoundaryError } from "../../../src/providers/codex/codex-compaction-rollout.mjs";
 
 function harness(overrides = {}) {
   const calls = [];
@@ -187,104 +185,9 @@ test("compaction start still fails when the provider turn was not observed", asy
   ]);
 });
 
-test("context probe returns only after its prompt materializes", async () => {
-  const { service, calls } = harness({
-    ensureTransport: async () => calls.push(["transport"]),
-    startContextProbe: async (...args) => {
-      calls.push(["probe", ...args]);
-      return { turn: { id: "probe-turn" } };
-    },
-    readThread: async (...args) => {
-      calls.push(["read", ...args]);
-      return {
-        thread: {
-          turns: [{ id: "probe-turn", status: "inProgress", clientUserMessageId: PROBE_CLIENT_ID }],
-        },
-      };
-    },
-  });
-
-  const result = await service.probeContext(
-    { provider: "codex", threadId: "thread-compacted" },
-    { compactionId: "compaction-id" },
-  );
-
-  assert.deepEqual(result, {
-    threadId: "thread-compacted",
-    turnId: "probe-turn",
-    status: "started",
-  });
-  assert.deepEqual(calls[1], ["probe", "thread-compacted"]);
-  assert.deepEqual(calls.find(([name]) => name === "annotate"), [
-    "annotate",
-    "thread-compacted",
-    "compaction-id",
-    { probeTurnId: "probe-turn" },
-  ]);
-  assert.deepEqual(calls.find(([name]) => name === "read"), [
-    "read",
-    "thread-compacted",
-    { fresh: true, includeTurns: true },
-  ]);
-});
-
-test("context probe interrupts one empty start and retries once", async () => {
-  let attempt = 0;
-  const { service, calls } = harness({
-    ensureTransport: async () => calls.push(["transport"]),
-    startContextProbe: async (...args) => {
-      attempt += 1;
-      calls.push(["probe", ...args, attempt]);
-      return { turn: { id: `probe-${attempt}` } };
-    },
-    readThread: async (...args) => {
-      calls.push(["read", ...args, attempt]);
-      return {
-        thread: {
-          turns: attempt === 1
-            ? [{ id: "probe-1", status: "completed" }]
-            : [{ id: "probe-2", status: "inProgress", clientUserMessageId: PROBE_CLIENT_ID }],
-        },
-      };
-    },
-    interruptContextProbe: async (...args) => calls.push(["interrupt", ...args]),
-    sleep: async (...args) => calls.push(["sleep", ...args]),
-  });
-
-  const result = await service.probeContext({ provider: "codex", threadId: "thread-compacted" });
-
-  assert.equal(result.turnId, "probe-2");
-  assert.equal(calls.filter(([name]) => name === "probe").length, 2);
-  assert.deepEqual(calls.find(([name]) => name === "interrupt"), [
-    "interrupt",
-    "thread-compacted",
-    "probe-1",
-  ]);
-  assert.deepEqual(calls.find(([name]) => name === "sleep"), ["sleep", 250]);
-});
-
-test("context probe fails after two empty starts without an unbounded loop", async () => {
-  let attempt = 0;
-  const { service, calls } = harness({
-    startContextProbe: async () => ({ turn: { id: `probe-${++attempt}` } }),
-    readThread: async () => ({
-      thread: { turns: [{ id: `probe-${attempt}`, status: "completed" }] },
-    }),
-    interruptContextProbe: async (...args) => calls.push(["interrupt", ...args]),
-    sleep: async () => {},
-  });
-
-  await assert.rejects(
-    service.probeContext({ provider: "codex", threadId: "thread-compacted" }),
-    /дважды принял скрытый замер без фактического запуска/u,
-  );
-  assert.equal(attempt, 2);
-  assert.equal(calls.filter(([name]) => name === "interrupt").length, 2);
-});
-
-test("context probe cleanup waits for stable managed and rollout inactivity", async () => {
+test("turn settlement waits for stable managed and rollout inactivity", async () => {
   let now = 0;
-  let run = { turnId: "probe-turn" };
+  let run = { turnId: "settling-turn" };
   let rolloutReads = 0;
   const { service, calls } = harness({
     runForTask: () => run,
@@ -298,9 +201,9 @@ test("context probe cleanup waits for stable managed and rollout inactivity", as
     },
   });
 
-  assert.equal(await service.waitForContextProbeIdle(
+  assert.equal(await service.waitForTurnIdle(
     { provider: "codex", threadId: "thread-compacted" },
-    "probe-turn",
+    "settling-turn",
     { pollMs: 25, quietMs: 50 },
   ), true);
   assert.deepEqual(calls, [
@@ -320,7 +223,7 @@ for (const stage of ["rollout-path", "rollout-activity"]) {
       knownRolloutPath: () => stage === "rollout-path" ? blocked : "rollout.jsonl",
       readRolloutActivity: () => { reads += 1; return blocked; },
     });
-    await assert.rejects(service.waitForContextProbeIdle(
+    await assert.rejects(service.waitForTurnIdle(
       { provider: "codex", threadId: "thread-1" }, "turn-1", { timeoutMs: 20 },
     ), { code: "CODEX_CONTEXT_IDLE_TIMEOUT", stage });
     const readsAtTimeout = reads;
@@ -339,7 +242,7 @@ test("context idle deadline is shared across observations instead of renewed per
     now: () => now,
     sleep: async (milliseconds) => { now += milliseconds; },
   });
-  assert.equal(await service.waitForContextProbeIdle(
+  assert.equal(await service.waitForTurnIdle(
     { provider: "codex", threadId: "thread-1" }, "turn-1",
     { timeoutMs: 20, pollMs: 1, quietMs: 1 },
   ), false);
@@ -356,7 +259,7 @@ test("rotation compacts into a clean Thread and injects only the raw compaction 
     startCompaction: async (...args) => calls.push(["compact", ...args]),
     readThread: async (...args) => {
       calls.push(["read", ...args]);
-      return { thread: { id: "thread-1", cwd: "D:\\repo", modelProvider: "openai" } };
+      return { thread: { id: args[0], cwd: "D:\\repo", modelProvider: "openai", status: { type: "idle" } } };
     },
     startThread: async (params) => {
       calls.push(["start-thread", params]);
@@ -395,6 +298,7 @@ test("rotation compacts into a clean Thread and injects only the raw compaction 
       sandbox: "danger-full-access",
     }],
     ["inject", "thread-2", [rawItem]],
+    ["read", "thread-2", { fresh: true, includeTurns: false }],
     ["clear-raw", "thread-1", "compact-thread-1"],
   ]);
 });
@@ -407,9 +311,10 @@ test("rotation falls back to the exact rollout compaction when the raw event is 
     ensureTransport: async () => calls.push(["transport"]),
     resumeThread: async (...args) => calls.push(["resume", ...args]),
     startCompaction: async (...args) => calls.push(["compact", ...args]),
-    readThread: async () => ({
+    readThread: async (threadId) => ({
       thread: {
-        id: "thread-1",
+        id: threadId,
+        status: { type: "idle" },
         path: "rollout.jsonl",
         cwd: "D:\\repo",
         modelProvider: "openai",
@@ -442,7 +347,34 @@ test("rotation falls back to the exact rollout compaction when the raw event is 
   ]);
 });
 
-test("deferred rotation injects the compaction, finished turn, and requested working directory", async () => {
+for (const readiness of ["read-failed", "wrong-thread", "busy", "missing-status"]) {
+  test(`rotation ${readiness} refuses the target without changing the source`, async () => {
+    const source = { thread: { id: "source", cwd: "D:/repo" } };
+    const calls = [];
+    const { service } = harness({
+      startThread: async () => { calls.push(["create", "target"]); return { thread: { id: "target" } }; },
+      injectItems: async (threadId, items) => calls.push(["inject", threadId, items]),
+      readThread: async (threadId, options) => {
+        calls.push(["read", threadId, options]);
+        if (readiness === "read-failed") throw new Error("read unavailable");
+        return { thread: { id: readiness === "wrong-thread" ? "other" : "target",
+          ...(readiness === "missing-status" ? {} : { status: { type: readiness === "busy" ? "active" : "idle" } }),
+        } };
+      },
+      deleteThread: async (threadId) => calls.push(["delete", threadId]),
+    });
+    await assert.rejects(service.rotateCompacted({ provider: "codex", threadId: "source" }, {
+      compactionId: "compact-source", source, settlement: { status: "completed" },
+    }), /Не удалось передать свёрнутый контекст/u);
+    assert.deepEqual(calls.map(([name, threadId]) => [name, threadId]), [
+      ["create", "target"], ["inject", "target"], ["read", "target"], ["delete", "target"],
+    ]);
+    assert.deepEqual(calls[2][2], { fresh: true, includeTurns: false });
+    assert.deepEqual(source, { thread: { id: "source", cwd: "D:/repo" } });
+  });
+}
+
+test("deferred rotation injects the compaction, the turn suffix after it, and the requested working directory", async () => {
   const compactionItem = { type: "compaction", encrypted_content: "summary" };
   const turnItems = [
     { type: "message", role: "user", content: [{ type: "input_text", text: "Запрос" }] },
@@ -450,9 +382,10 @@ test("deferred rotation injects the compaction, finished turn, and requested wor
   ];
   const { service, calls, entries } = harness({
     ensureTransport: async () => calls.push(["transport"]),
-    readThread: async () => ({
+    readThread: async (threadId) => ({
       thread: {
-        id: "thread-1",
+        id: threadId,
+        status: { type: "idle" },
         path: "rollout.jsonl",
         cwd: "D:\\repo",
         modelProvider: "openai",
@@ -489,16 +422,76 @@ test("deferred rotation injects the compaction, finished turn, and requested wor
   assert.equal(result.transferredTurnId, "turn-1");
   assert.equal(result.transferredItemCount, 2);
   assert.equal(calls.find(([name]) => name === "start-thread")[1].cwd, "D:\\repo\\AgentHub");
+  // Читатель получает переносимую свёртку: граница хода — именно она.
   assert.deepEqual(calls.find(([name]) => name === "read-turn"), [
     "read-turn",
     "rollout.jsonl",
     "turn-1",
+    compactionItem,
   ]);
   assert.deepEqual(calls.find(([name]) => name === "inject"), [
     "inject",
     "thread-2",
     [compactionItem, ...turnItems],
   ]);
+});
+
+function deferredRotationHarness({ readTurnResponseItems }) {
+  const compactionItem = { type: "compaction", encrypted_content: "summary" };
+  const { service, calls, entries } = harness({
+    ensureTransport: async () => calls.push(["transport"]),
+    readThread: async (threadId) => ({
+      thread: { id: threadId, status: { type: "idle" }, path: "rollout.jsonl", cwd: "D:\\repo", modelProvider: "openai" },
+    }),
+    readTurnResponseItems,
+    startThread: async (params) => {
+      calls.push(["start-thread", params]);
+      return { thread: { id: "thread-2" } };
+    },
+    injectItems: async (...args) => calls.push(["inject", ...args]),
+  });
+  service.compactions.waitForRawItem = async () => compactionItem;
+  entries.set("thread-1", {
+    id: "compact-1",
+    origin: "automatic",
+    status: "completed",
+    startedAt: "2026-08-08T10:00:00.000Z",
+  });
+  const rotate = () => service.rotateCompacted({ provider: "codex", threadId: "thread-1" }, {
+    compactionId: "compact-1",
+    settlement: entries.get("thread-1"),
+    includeTurnId: "turn-1",
+  });
+  return { calls, compactionItem, rotate };
+}
+
+test("a compaction at the end of the turn is transferred alone with an empty suffix", async () => {
+  const { calls, compactionItem, rotate } = deferredRotationHarness({
+    readTurnResponseItems: async () => [],
+  });
+
+  const result = await rotate();
+
+  assert.equal(result.transferredTurnId, "turn-1");
+  assert.equal(result.transferredItemCount, 0);
+  assert.deepEqual(calls.find(([name]) => name === "inject"), ["inject", "thread-2", [compactionItem]]);
+});
+
+test("an unproven compaction boundary aborts rotation before a new Thread is created", async () => {
+  const { calls, rotate } = deferredRotationHarness({
+    readTurnResponseItems: async () => {
+      throw new CodexCompactionBoundaryError("Граница переносимой свёртки неоднозначна", {
+        reason: "boundary-ambiguous",
+        matches: 2,
+      });
+    },
+  });
+
+  await assert.rejects(rotate, (error) => error instanceof CodexCompactionBoundaryError);
+
+  assert.equal(calls.some(([name]) => name === "start-thread"), false, "новый Thread создан без доказанной границы");
+  assert.equal(calls.some(([name]) => name === "inject"), false);
+  assert.deepEqual(calls.find(([name]) => name === "clear-raw"), ["clear-raw", "thread-1", "compact-1"]);
 });
 
 test("compaction-triggered cleanup stays disabled until the unstable feature is re-enabled", () => {

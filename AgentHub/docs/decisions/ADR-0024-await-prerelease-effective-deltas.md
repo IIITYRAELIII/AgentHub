@@ -2,7 +2,8 @@
 
 ## Status
 
-Accepted.
+Accepted for effective-delta projection. The eager Await and post-publication
+materialization portions are superseded by ADR-0043.
 
 ## Context
 
@@ -27,7 +28,7 @@ the user resolves ownership, normally by combining the work into one Task.
 
 The mutable Await-only `PreRelease` is rebuilt whenever Await membership or an
 accepted result changes. Explicit release authorization freezes its complete
-identity. Before selecting the main base, Architect fetches and discloses any
+identity. Before selecting the main base, Release Manager fetches and discloses any
 remote or unpublished local changes since the revision recorded by the last
 successful publication, with authorship and impact, then waits for the user's
 decision. Both reviewed local and remote main SHAs are repeated exactly before

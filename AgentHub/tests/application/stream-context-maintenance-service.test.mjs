@@ -8,24 +8,28 @@ import {
   StreamContextMaintenanceService,
 } from "../../src/application/stream-context-maintenance-service.mjs";
 import { StreamMaintenanceRegistry } from "../../src/application/stream-maintenance-registry.mjs";
+import { ContextCompactionTracker } from "../../src/providers/codex/context-compaction-tracker.mjs";
 import { CodexContextMaintenanceService } from "../../src/providers/codex/codex-context-maintenance-service.mjs";
+
+async function waitFor(predicate, attempts = 200) {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    if (predicate()) return;
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  assert.fail("ожидаемое состояние не наступило");
+}
 
 function fixture({
   beforePercent = 80,
   afterPercent = 18,
   rotate = true,
   externalCompacting = false,
-  preliminaryProvisional = false,
-  probePercent = afterPercent,
-  probeFails = false,
-  rotationProbePercent = 6,
-  rotationProbeFails = false,
+  estimateAvailable = true,
+  rotationFails = false,
   autoCompact = true,
   observedCompaction = false,
   observedAfterPercent = null,
-  observedMeasurementStatus = "",
   sourceIdle = true,
-  probeIdle = true,
 } = {}) {
   const events = [];
   const registry = new StreamMaintenanceRegistry();
@@ -54,50 +58,41 @@ function fixture({
     status: "finishing",
     turnId: "turn-1",
   };
-  let compaction = observedCompaction ? {
-    id: "compact-observed",
-    origin: "automatic",
-    status: "completed",
-    turnId: source.turnId,
-    completedAt: "2026-08-07T09:59:00.000Z",
-    ...(observedAfterPercent !== null ? {
-      afterPercent: observedAfterPercent,
-      measurementStatus: "completed",
-    } : {}),
-    ...(observedMeasurementStatus ? { measurementStatus: observedMeasurementStatus } : {}),
-  } : null;
+  const tracker = new ContextCompactionTracker();
+  const newCompaction = (origin = "automatic", percent = null) => {
+    const record = tracker.begin(source.threadId, { origin, turnId: source.turnId });
+    tracker.complete(source.threadId, { turnId: source.turnId });
+    if (percent !== null) tracker.observeContext({
+      threadId: source.threadId, turnId: source.turnId, usedTokens: percent,
+      modelContextWindow: 100, provisional: true, updatedAt: new Date().toISOString(),
+    });
+    return record.id;
+  };
+  if (observedCompaction) newCompaction("automatic", observedAfterPercent);
   const provider = {
     compactions: {
       isRunning: (threadId) => externalCompacting && threadId === source.threadId,
-      get: (threadId) => threadId === source.threadId ? compaction : null,
-      annotate: (...args) => {
-        events.push(["annotate", ...args]);
-        if (compaction?.id === args[1]) compaction = { ...compaction, ...args[2] };
-      },
+      get: (threadId) => tracker.get(threadId),
+      observeContext: (context) => tracker.observeContext(context),
+      annotate: (...args) => { events.push(["annotate", ...args]); return tracker.annotate(...args); },
       waitForSettlement: async (...args) => {
         events.push(["settled", ...args, registry.isActive(source)]);
-        return { status: "completed" };
+        tracker.complete(args[0], { turnId: source.turnId });
+        return tracker.get(args[0]);
       },
     },
     start: async (...args) => {
       events.push(["compact", ...args, registry.isActive(source)]);
-      return { accepted: true, compactionId: "compact-1" };
+      const record = tracker.begin(source.threadId, { origin: "automatic", turnId: source.turnId });
+      return { accepted: true, compactionId: record.id };
     },
-    startManual: async () => ({ accepted: true, compactionId: "manual-1" }),
-    probeContext: async (...args) => {
-      events.push(["probe", ...args, registry.isActive(source)]);
-      const target = args[0];
-      const afterRotation = target?.threadId === "thread-new";
-      if (probeFails || (afterRotation && rotationProbeFails)) throw new Error("probe timed out");
-      return {
-        threadId: target.threadId,
-        turnId: afterRotation ? "rotation-probe-1" : "probe-1",
-        status: "completed",
-      };
+    startManual: async () => {
+      const record = tracker.begin(source.threadId, { origin: "manual", turnId: source.turnId });
+      return { accepted: true, compactionId: record.id };
     },
-    waitForContextProbeIdle: async (...args) => {
-      events.push(["probe-idle", ...args, registry.isActive(source)]);
-      return args[1] === source.turnId ? sourceIdle : probeIdle;
+    waitForTurnIdle: async (...args) => {
+      events.push(["turn-idle", ...args, registry.isActive(source)]);
+      return sourceIdle;
     },
     rotate: async () => ({ compactionId: "manual-1", thread: { id: "thread-new" } }),
     rotateCompacted: async (...args) => {
@@ -107,6 +102,7 @@ function fixture({
         registry.isActive(source),
         registry.entry(source)?.reason,
       ]);
+      if (rotationFails) throw new Error("new Thread readiness failed");
       return {
         accepted: true,
         sourceThreadId: "thread-old",
@@ -137,22 +133,11 @@ function fixture({
       updatedAt: "2026-08-07T10:00:00.000Z",
     }),
     waitForContextUpdate: async (...args) => {
-      const probeTarget = events.filter(([name]) => name === "probe").at(-1)?.[1];
-      const probeStarted = Boolean(probeTarget);
-      const afterRotation = probeTarget?.threadId === "thread-new";
       events.push(["usage", ...args]);
-      return {
-        usedTokens: afterRotation ? rotationProbePercent : probeStarted ? probePercent : afterPercent,
-        modelContextWindow: 100,
-        provisional: probeStarted ? false : preliminaryProvisional,
-        updatedAt: probeStarted
-          ? "2026-08-07T10:02:00.000Z"
-          : "2026-08-07T10:01:00.000Z",
-      };
-    },
-    waitForTurnCompletion: async (...args) => {
-      events.push(["turn-completed", ...args]);
-      return { turnId: args[0], status: "completed" };
+      return estimateAvailable ? {
+        threadId: source.threadId, turnId: source.turnId, usedTokens: afterPercent,
+        modelContextWindow: 100, provisional: true, updatedAt: new Date().toISOString(),
+      } : null;
     },
     workspaceCatalog,
     selectionStore,
@@ -166,7 +151,7 @@ function fixture({
     autoRotateEnabled: () => rotate,
     autoRotateThreshold: () => 20,
   });
-  return { clientSelections, deferredInputs, events, registry, service, source };
+  return { clientSelections, deferredInputs, events, registry, service, source, tracker };
 }
 
 test("hung post-turn rollout read releases maintenance and wakes the original queued input", async () => {
@@ -184,7 +169,7 @@ test("hung post-turn rollout read releases maintenance and wakes the original qu
     readRolloutActivity: () => { reads += 1; return blocked; },
   });
   // Use the real provider deadline and the production post-turn timeout.
-  state.service.provider.waitForContextProbeIdle = provider.waitForContextProbeIdle.bind(provider);
+  state.service.provider.waitForTurnIdle = provider.waitForTurnIdle.bind(provider);
   const errors = [];
   state.service.logger = { error: (...args) => errors.push(args) };
   assert.equal(state.service.reserveAfterTurn(state.source), true);
@@ -211,7 +196,7 @@ test("cancelling preparation wakes once and late idle read cannot start work or 
   state.deferredInputs.put({ id: "queued-cancel", streamId: state.source.streamId,
     provider: state.source.provider, threadId: state.source.threadId, prompt: "next" }, "queued");
   let finishIdle;
-  state.service.provider.waitForContextProbeIdle = () => new Promise((resolve) => { finishIdle = resolve; });
+  state.service.provider.waitForTurnIdle = () => new Promise((resolve) => { finishIdle = resolve; });
   assert.equal(state.service.reserveAfterTurn(state.source), true);
   const old = state.registry.entry(state.source);
   assert.equal(old.phase, "preparing");
@@ -252,7 +237,7 @@ test("provider compaction failure releases its reservation and wakes the origina
   assert.equal(result.compacted, false);
   assert.equal(state.registry.isActive(state.source), false);
   assert.deepEqual(state.events.filter(([name]) => name === "wake"), [["wake", "queued-failure"]]);
-  assert.equal(state.events.some(([name]) => name === "probe" || name === "rotate"), false);
+  assert.equal(state.events.some(([name]) => name === "rotate"), false);
 });
 
 function claudeFixture({ measuresContextItself = true, settlementStatus = "completed" } = {}) {
@@ -282,10 +267,6 @@ function claudeFixture({ measuresContextItself = true, settlementStatus = "compl
       running = true;
       return { accepted: true, compactionId: "claude-compaction-1" };
     },
-    probeContext: async () => {
-      events.push(["claude-probe"]);
-      return { turnId: "probe-1" };
-    },
   };
   const codex = {
     compactions: {
@@ -298,10 +279,6 @@ function claudeFixture({ measuresContextItself = true, settlementStatus = "compl
     startManual: async (...args) => {
       events.push(["codex-compact", ...args]);
       return { accepted: true, compactionId: "codex-compaction-1" };
-    },
-    probeContext: async () => {
-      events.push(["codex-probe"]);
-      return { turnId: "probe-1" };
     },
     rotate: async () => ({ thread: { id: "thread-new" } }),
     rotateCompacted: async () => ({ accepted: true }),
@@ -317,11 +294,8 @@ function claudeFixture({ measuresContextItself = true, settlementStatus = "compl
     },
     waitForContextUpdate: async () => {
       events.push(["context-update"]);
-      // Предварительное значение ненадёжно, поэтому провайдер без собственного
-      // замера обязан продолжить скрытым ходом.
       return { usedTokens: 10, modelContextWindow: 100, provisional: !measuresContextItself };
     },
-    waitForTurnCompletion: async () => ({ status: "completed" }),
     workspaceCatalog: { thread: () => null, stream: () => null, workspace: () => null, bindThread: () => {} },
     selectionStore: { threadId: target.threadId, setThread: () => {} },
     deferredInputs: new DeferredInputStore(),
@@ -341,20 +315,11 @@ test("manual compaction of a Claude Stream goes to its own provider", async () =
   assert.equal(events.some(([name]) => name === "codex-compact"), false);
 });
 
-test("Claude reports its own context after compaction, so no hidden probe runs", async () => {
+test("Claude reports its own context after compaction without extra requests", async () => {
   const { events, registry, service, target } = claudeFixture();
   await service.compact(target);
   while (registry.isActive(target)) await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(events.some(([name]) => name === "claude-probe"), false);
-  assert.equal(events.some(([name]) => name === "codex-probe"), false);
   assert.equal(events.some(([name]) => name === "context-update"), false);
-});
-
-test("a provider without its own measurement still gets the hidden probe", async () => {
-  const { events, registry, service, target } = claudeFixture({ measuresContextItself: false });
-  await service.compact(target);
-  while (registry.isActive(target)) await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(events.some(([name]) => name === "claude-probe"), true);
 });
 
 test("thread rebirth stays unavailable for Claude", async () => {
@@ -483,290 +448,78 @@ test("post-turn automation compacts once and does not rotate below 20 percent", 
   );
   assert.equal(state.events.some(([name]) => name === "rotate"), false);
   assert.equal(state.events.some(([name]) => name === "discard"), true);
-  assert.equal(state.events.some(([name]) => name === "probe"), false);
 });
 
-test("exact probe terminal settlement wins over lagging activity state", async () => {
-  const state = fixture({
-    beforePercent: 86,
-    afterPercent: 55,
-    preliminaryProvisional: true,
-    probePercent: 7,
-    probeIdle: false,
-    rotate: false,
-  });
-  state.service.reserveAfterTurn(state.source);
-  const result = await state.service.maintainAfterTurn(state.source);
-
-  assert.equal(Math.round(result.afterPercent), 7);
-  assert.equal(state.events.filter(([name]) => name === "probe").length, 1);
-  assert.equal(state.events.find(([name]) => name === "probe").at(-1), true);
-  assert.equal(state.events.filter(([name]) => name === "turn-completed").length, 1);
-  assert.equal(state.events.some(([name, _target, turnId]) => (
-    name === "probe-idle" && turnId === "probe-1"
-  )), false);
-  assert.equal(
-    state.events.filter(([name]) => name === "usage").at(-1).at(-1).turnId,
-    "probe-1",
-  );
-  assert.deepEqual(state.events.filter(([name]) => name === "annotate").at(-1).at(-1), {
-    afterPercent: 7,
-    measurementStatus: "completed",
-  });
-});
-
-test("zero-token probe measurement remains unknown", async () => {
-  const state = fixture({
-    beforePercent: 86,
-    afterPercent: 55,
-    preliminaryProvisional: true,
-    probePercent: 0,
-    rotate: false,
-  });
-  state.service.reserveAfterTurn(state.source);
-  const result = await state.service.maintainAfterTurn(state.source);
-
-  assert.equal(result.afterPercent, null);
-  assert.deepEqual(state.events.filter(([name]) => name === "annotate").at(-1).at(-1), {
-    afterPercent: null,
-    measurementStatus: "failed",
-  });
-});
-
-test("failed post-compaction measurement stays unknown and prevents rotation", async () => {
-  const state = fixture({
-    beforePercent: 80,
-    afterPercent: 55,
-    preliminaryProvisional: true,
-    probeFails: true,
-  });
-  state.service.reserveAfterTurn(state.source);
-  const result = await state.service.maintainAfterTurn(state.source);
-
-  assert.equal(result.compacted, true);
-  assert.equal(result.rotated, false);
-  assert.equal(result.afterPercent, null);
-  assert.equal(state.events.some(([name]) => name === "rotate"), false);
-  assert.deepEqual(state.events.filter(([name]) => name === "annotate").at(-1).at(-1), {
-    afterPercent: null,
-    measurementStatus: "failed",
-  });
-});
-
-test("rotation reuses the completed compaction and retargets the blocked queue", async () => {
-  const state = fixture({ beforePercent: 80, afterPercent: 21 });
-  state.deferredInputs.put({
-    id: "queued-1",
-    provider: "codex",
-    streamId: "stream-1",
-    threadId: "thread-old",
-    projectRoot: "D:/Work",
-    taskTitle: "Workspace",
-  }, "queued");
-  state.service.reserveAfterTurn(state.source);
-  const result = await state.service.maintainAfterTurn(state.source);
-
-  assert.equal(result.rotated, true);
-  assert.equal(state.events.filter(([name]) => name === "compact").length, 1);
-  assert.equal(state.events.filter(([name]) => name === "rotate").length, 1);
-  assert.equal(state.events.find(([name]) => name === "rotate").at(-2), true);
-  assert.equal(
-    state.events.find(([name]) => name === "rotate").at(-1),
-    "automatic-rotation",
-  );
-  const rotationProbe = state.events.find(([name, target]) => (
-    name === "probe" && target.threadId === "thread-new"
-  ));
-  assert.equal(rotationProbe.at(-1), true);
-  assert.equal(
-    state.events.find(([name, threadId]) => name === "usage" && threadId === "thread-new").at(-1).turnId,
-    "rotation-probe-1",
-  );
-  assert.equal(
-    state.events.findIndex(([name]) => name === "wake")
-      > state.events.findIndex(([name, target]) => name === "probe" && target.threadId === "thread-new"),
-    true,
-  );
-  assert.equal(state.deferredInputs.get("queued-1").threadId, "thread-new");
-  assert.equal(state.clientSelections.get("telegram:42").threadId, "thread-new");
-  assert.equal(state.clientSelections.get("telegram:43").threadId, "thread-other");
-  assert.equal(state.clientSelections.get("desktop:7").threadId, "thread-old");
-  assert.equal(state.events.some(([name, id]) => name === "wake" && id === "queued-1"), true);
-  assert.equal(state.registry.isActive(state.source), false);
-});
-
-test("manual rotation retargets the active Telegram task binding", async () => {
-  const state = fixture();
-  await state.service.rotate(state.source);
-  assert.deepEqual(state.clientSelections.get("telegram:42"), {
-    streamId: "stream-1",
-    provider: "codex",
-    projectRoot: "D:/Work",
-    threadId: "thread-new",
-    taskTitle: "Workspace",
-  });
-  assert.equal(
-    state.events.some(([name, target]) => name === "probe" && target.threadId === "thread-new"),
-    true,
-  );
-});
-
-test("a failed post-rotation probe keeps the new Thread and releases the queue", async () => {
-  const state = fixture({ rotationProbeFails: true });
-  state.deferredInputs.put({
-    id: "queued-after-failed-probe",
-    provider: "codex",
-    streamId: "stream-1",
-    threadId: "thread-old",
-    projectRoot: "D:/Work",
-    taskTitle: "Workspace",
-  }, "queued");
-
-  const result = await state.service.rotate(state.source);
-
-  assert.equal(result.thread.id, "thread-new");
-  assert.equal(state.deferredInputs.get("queued-after-failed-probe").threadId, "thread-new");
-  assert.equal(state.events.some(([name, id]) => name === "wake" && id === "queued-after-failed-probe"), true);
-  assert.equal(state.registry.isActive(state.source), false);
-  const rotation = state.events.find(([name, , , details]) => name === "annotate" && details.rotated);
-  assert.equal(rotation[2], "manual-1");
-  assert.equal(rotation[3].rotationThreadId, "thread-new");
-  assert.ok(Number.isFinite(Date.parse(rotation[3].rotationCompletedAt)));
-  assert.equal(state.events.some(([name, , , details]) => (
-    name === "annotate" && details.rotationAfterPercent !== undefined
-  )), false);
-  assert.ok(state.events.findIndex(([name]) => name === "save") > state.events.indexOf(rotation));
-});
-
-for (const mode of ["manual", "automatic", "observed"]) {
-  test(`${mode} rotation records its exact target only after binding and saves before releasing maintenance`, async () => {
-    const state = fixture({
-      afterPercent: 28,
-      observedCompaction: mode === "observed",
-      observedAfterPercent: 28,
-    });
-    let bind;
-    state.service.workspaceCatalog.bindThread = () => new Promise((resolve) => { bind = resolve; });
-    const snapshots = [];
-    let finishSave;
-    state.service.saveState = () => {
-      snapshots.push({
-        active: state.registry.isActive(state.source),
-        annotations: structuredClone(state.events.filter(([name]) => name === "annotate")),
-      });
-      return snapshots.length === 1 ? new Promise((resolve) => { finishSave = resolve; }) : Promise.resolve();
-    };
-    if (mode !== "manual") assert.equal(state.service.reserveAfterTurn(state.source), true);
-    const result = mode === "manual"
-      ? state.service.rotate(state.source)
-      : state.service.maintainAfterTurn(state.source);
-    await new Promise((resolve) => setImmediate(resolve));
-    assert.equal(typeof bind, "function");
-    assert.equal(state.events.some(([name, , , details]) => name === "annotate" && details.rotated), false);
-    bind();
-    await new Promise((resolve) => setImmediate(resolve));
-    const rotation = snapshots[0].annotations.find(([, , , details]) => details.rotated);
-    assert.equal(rotation[2], mode === "manual" ? "manual-1" : mode === "observed" ? "compact-observed" : "compact-1");
-    assert.equal(rotation[3].rotationThreadId, "thread-new");
-    assert.ok(Number.isFinite(Date.parse(rotation[3].rotationCompletedAt)));
-    assert.equal(state.registry.isActive(state.source), true);
-    assert.equal(state.events.some(([name, target]) => name === "probe" && target.threadId === "thread-new"), false);
-    finishSave();
-    await result;
-    assert.equal(snapshots.length, 2);
-    assert.equal(snapshots.every((snapshot) => snapshot.active), true);
-    assert.equal(snapshots[1].annotations.at(-1)[3].rotationAfterPercent, 6);
-    assert.equal(state.registry.isActive(state.source), false);
-  });
-
-  test(`${mode} failed binding cannot report a completed rotation`, async () => {
-    const state = fixture({ afterPercent: 28, observedCompaction: mode === "observed", observedAfterPercent: 28 });
-    state.service.workspaceCatalog.bindThread = async () => { throw new Error("binding failed"); };
-    state.service.logger = { error() {} };
-    if (mode === "manual") {
-      await assert.rejects(state.service.rotate(state.source), /binding failed/);
-    } else {
-      state.service.reserveAfterTurn(state.source);
-      assert.equal((await state.service.maintainAfterTurn(state.source)).error, "binding failed");
-    }
-    assert.equal(state.events.some(([name, , , details]) => name === "annotate" && details.rotated), false);
-    assert.equal(state.events.some(([name]) => name === "save"), false);
+for (const afterPercent of [0, 19, 20, 21, 34]) {
+  test(`preliminary estimate ${afterPercent}% alone controls threshold rotation`, async () => {
+    const state = fixture({ afterPercent });
+    assert.equal(state.service.reserveAfterTurn(state.source), true);
+    const result = await state.service.maintainAfterTurn(state.source);
+    assert.equal(result.afterPercent, afterPercent);
+    assert.equal(result.rotated, afterPercent > 20);
+    assert.equal(state.events.filter(([name]) => name === "bind").length, afterPercent > 20 ? 1 : 0);
+    assert.equal(state.tracker.get(state.source.threadId).measurementKind, "estimated");
     assert.equal(state.registry.isActive(state.source), false);
   });
 }
 
-test("manual rotation without a returned compaction identity never annotates another operation", async () => {
-  const state = fixture({ observedCompaction: true, observedAfterPercent: 28 });
-  state.service.provider.rotate = async () => ({ thread: { id: "thread-new" } });
-  await state.service.rotate(state.source);
-  assert.equal(state.events.some(([name]) => name === "annotate"), false);
-});
-
-test("a mid-turn compaction rotates only after completion and transfers that whole turn", async () => {
-  const state = fixture({
-    beforePercent: 31,
-    observedCompaction: true,
-    observedAfterPercent: 28,
-    autoCompact: false,
-  });
-
-  assert.equal(state.service.reserveAfterTurn(state.source), true);
-  const result = await state.service.maintainAfterTurn(state.source);
-
-  assert.equal(result.compacted, true);
-  assert.equal(result.rotated, true);
-  assert.equal(result.deferredRotation, true);
-  assert.equal(state.events.some(([name]) => name === "compact"), false);
-  assert.deepEqual(state.events.find(([name]) => name === "rotate")[2], {
-    compactionId: "compact-observed",
-    settlement: {
-      id: "compact-observed",
-      origin: "automatic",
-      status: "completed",
-      turnId: "turn-1",
-      completedAt: "2026-08-07T09:59:00.000Z",
-      afterPercent: 28,
-      measurementStatus: "completed",
-    },
-    includeTurnId: "turn-1",
-  });
-  assert.equal(state.events.find(([name]) => name === "rotate").at(-1), "automatic-rotation");
-  assert.equal(state.service.reserveAfterTurn(state.source), false);
-});
-
-test("a mid-turn compaction does not rotate when the finished turn stays at the boundary", async () => {
-  const state = fixture({
-    beforePercent: 31,
-    observedCompaction: true,
-    observedAfterPercent: 20,
-    autoCompact: false,
-  });
-
+test("missing estimate stays unknown and never rotates", async () => {
+  const state = fixture({ estimateAvailable: false });
   state.service.reserveAfterTurn(state.source);
   const result = await state.service.maintainAfterTurn(state.source);
-
+  assert.equal(result.afterPercent, null);
   assert.equal(result.rotated, false);
-  assert.equal(result.afterPercent, 20);
-  assert.equal(state.events.some(([name]) => name === "rotate"), false);
-  assert.equal(state.events.some(([name]) => name === "discard"), true);
+  assert.equal(state.tracker.get(state.source.threadId).measurementStatus, "failed");
+  assert.equal(state.events.some(([name]) => name === "bind"), false);
 });
 
-test("rotation uses the compaction-end context instead of the final turn context", async () => {
-  const state = fixture({
-    beforePercent: 31,
-    observedCompaction: true,
-    observedAfterPercent: 9,
-    autoCompact: false,
-  });
-
+test("native mid-turn estimate is retained until terminal; later usage does not control rotation", async () => {
+  const state = fixture({ observedCompaction: true, observedAfterPercent: 34, beforePercent: 10 });
+  state.source.status = "running";
+  assert.equal(state.service.reserveAfterTurn(state.source), false);
+  state.source.status = "finishing";
   assert.equal(state.service.reserveAfterTurn(state.source), true);
   const result = await state.service.maintainAfterTurn(state.source);
+  assert.equal(result.rotated, true);
+  assert.equal(result.afterPercent, 34);
+  assert.equal(state.events.some(([name]) => name === "compact"), false);
+  assert.equal(state.events.find(([name]) => name === "rotate")[2].includeTurnId, "turn-1");
+});
 
+test("rotation failure keeps old binding and remains visible on completed compaction", async () => {
+  const state = fixture({ afterPercent: 34, rotationFails: true });
+  state.service.logger = { error() {} };
+  state.service.reserveAfterTurn(state.source);
+  const result = await state.service.maintainAfterTurn(state.source);
+  assert.equal(result.compacted, true);
   assert.equal(result.rotated, false);
-  assert.equal(result.afterPercent, 9);
-  assert.equal(state.events.some(([name]) => name === "usage"), false);
-  assert.equal(state.events.some(([name]) => name === "probe"), false);
-  assert.equal(state.events.some(([name]) => name === "rotate"), false);
-  assert.equal(state.events.some(([name]) => name === "discard"), true);
-  assert.equal(state.registry.isActive(state.source), false);
+  assert.equal(state.events.some(([name]) => name === "bind"), false);
+  assert.equal(state.tracker.get(state.source.threadId).rotationStatus, "failed");
+  assert.match(state.tracker.get(state.source.threadId).rotationMessage, /readiness/);
+});
+
+for (const mode of ["automatic", "manual"]) {
+  test(`${mode} rotation retargets queue and clients without a measurement request on new Thread`, async () => {
+    const state = fixture({ afterPercent: 34 });
+    state.deferredInputs.put({ id: "pending", streamId: "stream-1", threadId: "thread-old", prompt: "continue" }, "queued");
+    if (mode === "automatic") {
+      state.service.reserveAfterTurn(state.source);
+      await state.service.maintainAfterTurn(state.source);
+    } else await state.service.rotate(state.source);
+    assert.equal(state.events.filter(([name]) => name === "bind").length, 1);
+    assert.equal(state.deferredInputs.get("pending").threadId, "thread-new");
+    assert.equal(state.clientSelections.get("telegram:42").threadId, "thread-new");
+    assert.equal(state.clientSelections.get("telegram:43").threadId, "thread-other");
+    assert.equal(state.events.some(([name, id]) => name === "usage" && id === "thread-new"), false);
+  });
+}
+
+test("manual compaction records preliminary estimate without a generated turn", async () => {
+  const state = fixture({ afterPercent: 26 });
+  await state.service.compact(state.source);
+  await waitFor(() => !state.registry.isActive(state.source));
+  const record = state.tracker.get(state.source.threadId);
+  assert.equal(record.afterPercent, 26);
+  assert.equal(record.measurementKind, "estimated");
+  assert.equal(state.events.some(([name]) => name === "bind"), false);
 });

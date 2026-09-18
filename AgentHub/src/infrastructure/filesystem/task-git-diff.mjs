@@ -388,6 +388,43 @@ export async function taskGitDiff(
   }
 }
 
+// Read-only preview: never stage files, write trees, invoke textconv or external diff drivers.
+export async function taskWorkingTreeDiff(repoRoot, baseCommit, { maxOutputBytes = DEFAULT_MAX_DIFF_BYTES } = {}) {
+  const deadline = Date.now() + 15_000;
+  const run = async (args, { bytes = maxOutputBytes, difference = false } = {}) => {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) throw new Error("Чтение Git diff превысило время ожидания");
+    const result = await runGit(["--no-optional-locks", "-c", "core.quotePath=false", ...args], {
+      cwd: repoRoot, timeoutMs: remaining, maxOutputBytes: bytes,
+    });
+    if (result.error || (result.code !== 0 && !(difference && result.code === 1))) {
+      throw result.error ?? new Error(result.stderr.trim() || "Не удалось прочитать Git diff");
+    }
+    return result;
+  };
+  const tracked = await run(["diff", "--no-ext-diff", "--no-textconv", baseCommit, "--",
+    ".", ":(exclude,glob)**/CHANGELOG.md"]);
+  const parts = [tracked.stdout];
+  let truncated = tracked.stdoutTruncated;
+  let remainingBytes = maxOutputBytes - Buffer.byteLength(tracked.stdout, "utf8");
+  if (remainingBytes <= 0) truncated = true;
+  if (!truncated && remainingBytes > 0) {
+    const files = await run(["ls-files", "--others", "--exclude-standard", "-z", "--",
+      ".", ":(exclude,glob)**/CHANGELOG.md"]);
+    if (files.stdoutTruncated) throw new Error("Список новых файлов слишком велик для просмотра diff");
+    const paths = files.stdout.split("\0").filter(Boolean);
+    for (const file of paths) {
+      if (remainingBytes <= 0) { truncated = true; break; }
+      const result = await run(["diff", "--no-index", "--no-ext-diff", "--no-textconv", "--", "/dev/null", file],
+        { bytes: remainingBytes, difference: true });
+      parts.push(result.stdout);
+      remainingBytes -= Buffer.byteLength(result.stdout, "utf8");
+      if (result.stdoutTruncated) { truncated = true; break; }
+    }
+  }
+  return { text: parts.join(""), truncated };
+}
+
 export async function cleanupTaskGitIndexes(dataDir) {
   const indexDir = path.join(dataDir, "task-diff-indexes");
   let entries;

@@ -278,6 +278,8 @@ export function createDesktopCommandWiring({
       setPinnedWorkspaceStreams: services.setPinnedWorkspaceStreams,
       getQuickMessages: services.getQuickMessages,
       setQuickMessages: services.setQuickMessages,
+      getQuickMessageActionMode: services.getQuickMessageActionMode,
+      setQuickMessageActionMode: services.setQuickMessageActionMode,
       projectUsage: services.projectUsage,
       findProjectIndex: (value) => projects.findIndex((project) => (
         services.samePath(project.path, value)

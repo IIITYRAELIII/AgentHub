@@ -14,16 +14,30 @@ import {
   runStep,
   waitForRuntimeReplacement,
 } from "../../publish-all.mjs";
-import { classifyPublicationChanges, parseChangedArguments, publishChanged } from "../../publish-changed.mjs";
+import {
+  classifyPublicationChanges,
+  freezePreparedPublication,
+  parseChangedArguments,
+  publishChanged,
+} from "../../publish-changed.mjs";
 import { runPublicationSteps } from "../../src/infrastructure/persistence/publication-checkpoint.mjs";
 import { detectGitCommonDirectory, ensureWrangler, resolveWrangler } from "../../wrangler-runner.mjs";
 import {
   assertCleanPublicationTree,
   assertCurrentPublicationRevision,
   parseWorkingTreeStatus,
+  readPublicationState,
 } from "../../src/infrastructure/persistence/publication-state.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
+const previousLocalAppData = process.env.LOCALAPPDATA;
+const fixtureLocalAppData = fs.mkdtempSync(path.join(os.tmpdir(), "agent-hub-publish-all-lock-"));
+process.env.LOCALAPPDATA = fixtureLocalAppData;
+test.after(() => {
+  if (previousLocalAppData === undefined) delete process.env.LOCALAPPDATA;
+  else process.env.LOCALAPPDATA = previousLocalAppData;
+  fs.rmSync(fixtureLocalAppData, { recursive: true, force: true });
+});
 
 test("publication rejects a dirty AgentHub working tree", async () => {
   assert.deepEqual(parseWorkingTreeStatus(" M AgentHub/server.mjs\n?? AgentHub/new.mjs\n"), [
@@ -152,6 +166,46 @@ test("publication requests the server's safe deferred restart last", async () =>
   ]);
 });
 
+test("full publication default writer records supplied repository-scoped publication state", async () => {
+  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "agent-hub-publication-state-"));
+  const previousLocalAppData = process.env.LOCALAPPDATA;
+  let savedCheckpoint = null;
+  try {
+    process.env.LOCALAPPDATA = temporary;
+    await publishAll(["--skip-tests", "--skip-worker", "--skip-restart"], {
+      run: async () => {},
+      revision: async () => "published-head",
+      checkpoint: {
+        read: async () => savedCheckpoint,
+        write: async (value) => {
+          savedCheckpoint = structuredClone(value);
+        },
+        clear: async () => { savedCheckpoint = null; },
+      },
+      readRuntimeStatus: async () => ({
+        current: "release-new",
+        running: true,
+        ready: true,
+        runningRelease: "release-new",
+      }),
+      verifyRestart: async () => {},
+    });
+
+    const state = await readPublicationState(path.join(temporary, "AgentHub", "publication-state.json"));
+    assert.equal(state.revision, "published-head");
+    assert.equal(state.mode, "full");
+    assert.equal(state.validationMode, "quick");
+    assert.equal(state.repositories.length, 1);
+    assert.equal(path.resolve(state.repositories[0].root), path.resolve(ROOT, ".."));
+    assert.equal(state.repositories[0].revision, "published-head");
+    assert.match(state.generation, /^[0-9a-f-]{36}$/u);
+  } finally {
+    if (previousLocalAppData == null) delete process.env.LOCALAPPDATA;
+    else process.env.LOCALAPPDATA = previousLocalAppData;
+    fs.rmSync(temporary, { recursive: true, force: true });
+  }
+});
+
 test("publication restart tolerates a stalled outgoing runtime", async () => {
   let request = null;
   await restartRuntimeAndVerify(async (...args) => {
@@ -250,12 +304,12 @@ test("runtime readiness requires a replacement endpoint and a successful probe",
     readEndpoint: async () => endpoints.shift() ?? { endpointId: "new" },
     probe: async (action) => {
       probes.push(action);
-      return { server: { process: { releaseId: "release-new", pid: 12 } } };
+      return { live: true, ready: true, process: { releaseId: "release-new", pid: 12 } };
     },
     delay: async () => {},
   });
   assert.equal(result.endpointId, "new");
-  assert.deepEqual(probes, ["snapshot"]);
+  assert.deepEqual(probes, ["runtime-health"]);
 });
 
 test("selective publication maps shared UI to runtime, Worker and surface tests", async () => {
@@ -361,6 +415,49 @@ test("selective publication runs unit and cross-surface E2E tests for runtime co
     "Активация runtime-релиза",
   ]);
   assert.ok(!labels.includes("Полные тесты Agent Hub"));
+});
+
+test("publication freeze uses a fresh candidate plan and rejects drift before promotion", async () => {
+  const repositoryRoot = path.resolve("release-candidate");
+  const checkpoint = {
+    manifestHash: "a".repeat(64), planRevision: "accepted-plan", preReleaseHead: "b".repeat(40),
+  };
+  const preparedManifest = { workspaceId: "workspace" };
+  const frozenManifest = { publication: { releaseVersion: "2026.9.17" } };
+  const reads = [];
+  const read = async (file) => {
+    reads.push(file);
+    if (file.endsWith("checkpoint.json")) return JSON.stringify(checkpoint);
+    if (file.endsWith(`${checkpoint.manifestHash}.json`)) return JSON.stringify(preparedManifest);
+    if (file.endsWith("frozen.json")) return JSON.stringify(frozenManifest);
+    if (file.endsWith("CHANGELOG.md")) return "release notes";
+    throw new Error(`unexpected file: ${file}`);
+  };
+  const createReleaseWorkspace = () => ({
+    freezePublicationCandidate: async (request) => {
+      await request.validateBeforeCommit();
+      return { manifestFile: path.join(repositoryRoot, "frozen.json") };
+    },
+  });
+  const common = {
+    repositoryRoot,
+    read,
+    assertClone: async () => ({
+      releaseRoot: repositoryRoot,
+      primaryRoot: path.resolve("primary"),
+      managedRoot: path.resolve("managed", "release-repositories", "key"),
+    }),
+    createReleaseWorkspace,
+    assertCleanTree: async () => {},
+    assertCurrentRevision: async () => {},
+  };
+  assert.equal(await freezePreparedPublication({
+    ...common, readPlan: async (workspaceId) => ({ workspaceId, revision: "accepted-plan" }),
+  }), "2026.9.17");
+  await assert.rejects(freezePreparedPublication({
+    ...common, readPlan: async () => ({ revision: "installed-stale-plan" }),
+  }), /plan changed before publication freeze/u);
+  assert.ok(reads.some((file) => file.endsWith("CHANGELOG.md")));
 });
 
 test("selective publication keeps Test Contour optional with full tests", async () => {

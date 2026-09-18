@@ -248,7 +248,7 @@ test("selected external task is observed automatically only while its turn is ac
       prompt: "Ответь строго: AGENT_HUB_CONTEXT_PROBE_OK_V1",
       clientUserMessageId: "agent-hub-context-probe:test",
     },
-  }), false);
+  }), true);
   assert.equal(shouldAutoObserveTask({
     task,
     snapshot: {
@@ -539,6 +539,13 @@ test("an observed completion is delivered only after an explicit live view reque
   assert.equal(isRecentDuplicateTaskAnswer(previous, "Новый ответ", { now }), true);
   assert.equal(shouldDeliverObservedCompletion(displayed, "Новый ответ", previous, { now }), false);
   assert.equal(shouldDeliverObservedCompletion(displayed, "Другой ответ", previous, { now }), true);
+
+  const displayedWithProgress = run({
+    displayRequested: true,
+    progressMessageIds: [42],
+    observedResponseChanged: true,
+  });
+  assert.equal(shouldDeliverObservedCompletion(displayedWithProgress, "Новый ответ", previous, { now }), true);
 });
 
 test("a restored task run adopts the current title of the same thread", () => {

@@ -49,6 +49,8 @@ export async function runCheckpointedTestFiles(files, {
   now = Date.now,
   retentionMs = 30 * 24 * 60 * 60_000,
   maxEntries = 2_000,
+  concurrency = 1,
+  execution = async () => ({ parallel: false, shared: [] }),
 } = {}) {
   const saved = checkpoint && identity ? await checkpoint.read() : null;
   // Legacy hashes omitted IO inputs and toolchains, so never upgrade them into
@@ -76,25 +78,39 @@ export async function runCheckpointedTestFiles(files, {
   const completedFingerprints = Object.fromEntries(Object.entries(savedSuite?.completedFingerprints ?? {}).filter(([file]) => selected.has(file)));
   const completedAt = { ...(savedSuite?.completedAt ?? {}) };
   const failures = [];
+  const pending = [];
+  const normalizedConcurrency = Math.max(1, Math.floor(Number(concurrency) || 1));
 
-  for (const file of files) {
-    const currentFingerprint = await fingerprint(file);
+  for (const [index, file] of files.entries()) {
+    const fingerprintResult = await fingerprint(file);
+    const currentFingerprint = typeof fingerprintResult === "string"
+      ? fingerprintResult : fingerprintResult?.fingerprint ?? null;
+    const missReasons = Array.isArray(fingerprintResult?.missReasons)
+      ? fingerprintResult.missReasons.filter((value) => typeof value === "string" && value) : [];
     if (checkpoint && identity && currentFingerprint && completedFingerprints[file] === currentFingerprint) {
       log(`Тест уже пройден, продолжаю: ${file}`);
       continue;
     }
     delete completedFingerprints[file];
     delete completedAt[file];
-    if (!currentFingerprint && checkpoint && identity) log(`Тест без кэша (входные данные не подтверждены): ${file}`);
-    try {
-      await run(file);
-      if (currentFingerprint) {
-        completedFingerprints[file] = currentFingerprint;
-        completedAt[file] = now();
-      }
-    } catch (error) {
-      failures.push({ file, error });
+    if (checkpoint && identity) {
+      if (!currentFingerprint) log(`Тест без кэша (${missReasons.join(", ") || "input-proof-unavailable"}): ${file}`);
+      else if (savedSuite?.completedFingerprints?.[file]) log(`Кэш теста изменился (input fingerprint): ${file}`);
+      else log(`Кэш теста отсутствует: ${file}`);
     }
+    const policy = await execution(file);
+    pending.push({
+      file,
+      index,
+      currentFingerprint,
+      parallel: policy?.parallel === true,
+      shared: new Set(Array.isArray(policy?.shared) ? policy.shared : []),
+    });
+  }
+
+  let persist = Promise.resolve();
+  let persistenceError = null;
+  const persistState = () => {
     state.suites = {
       ...state.suites,
       [suite]: {
@@ -110,13 +126,73 @@ export async function runCheckpointedTestFiles(files, {
       delete state.suites[entry.name].completedAt[entry.key];
     }
     state.updatedAt = new Date(now()).toISOString();
-    if (checkpoint && identity) await checkpoint.write(state);
+    if (checkpoint && identity) {
+      const snapshot = structuredClone(state);
+      persist = persist
+        .then(() => persistenceError ? undefined : checkpoint.write(snapshot))
+        .catch((error) => { persistenceError ??= error; });
+    }
+    return persist;
+  };
+  const active = new Set();
+  const conflicts = (candidate) => !candidate.parallel
+    ? active.size > 0
+    : [...active].some((running) => !running.parallel
+      || [...candidate.shared].some((resource) => running.shared.has(resource)));
+  const ordered = [
+    ...pending.filter((item) => item.parallel),
+    ...pending.filter((item) => !item.parallel),
+  ];
+  const executeOne = async (item) => {
+    let error = null;
+    try {
+      await run(item.file);
+      if (item.currentFingerprint) {
+        completedFingerprints[item.file] = item.currentFingerprint;
+        completedAt[item.file] = now();
+      }
+    } catch (caught) {
+      error = caught;
+      failures.push({ file: item.file, error: caught, index: item.index });
+    } finally {
+      active.delete(item);
+      await persistState();
+    }
+    return error;
+  };
+  const running = new Set();
+  while (ordered.length || running.size) {
+    if (persistenceError) {
+      await Promise.all(running);
+      break;
+    }
+    let launched = false;
+    while (ordered.length && running.size < normalizedConcurrency) {
+      const candidateIndex = ordered.findIndex((item) => !conflicts(item));
+      if (candidateIndex < 0) break;
+      const [item] = ordered.splice(candidateIndex, 1);
+      active.add(item);
+      const operation = executeOne(item).finally(() => running.delete(operation));
+      running.add(operation);
+      launched = true;
+    }
+    if (running.size) await Promise.race(running);
+    else if (!launched && ordered.length) throw new Error("Test scheduler cannot make progress");
   }
 
   // A wholly reused suite still persists pruning and its current release ID.
-  if (checkpoint && identity) await checkpoint.write(state);
+  if (checkpoint && identity) await persistState();
+
+  if (persistenceError) {
+    if (!failures.length) throw persistenceError;
+    throw new AggregateError(
+      [persistenceError, ...failures.map(({ error }) => error)],
+      `${suite}: checkpoint persistence failed after ${failures.length} test failure(s): ${persistenceError.message}`,
+    );
+  }
 
   if (failures.length) {
+    failures.sort((a, b) => a.index - b.index);
     const summary = failures.map(({ file, error }) => `${file}: ${error.message}`).join("\n");
     throw new AggregateError(
       failures.map(({ error }) => error),

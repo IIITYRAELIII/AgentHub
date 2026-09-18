@@ -18,6 +18,7 @@ export class DesktopSettingsService {
       "getStreamOrderMode", "setStreamOrderMode", "getStreamCardWidthMode", "setStreamCardWidthMode",
       "getStreamCardFixedWidth", "setStreamCardFixedWidth", "getStreamCardGapEnabled", "setStreamCardGapEnabled",
       "getPinnedWorkspaceStreams", "setPinnedWorkspaceStreams", "getQuickMessages", "setQuickMessages",
+      "getQuickMessageActionMode", "setQuickMessageActionMode",
       "findProjectIndex", "switchProject", "snapshot",
     ]) requiredFunction(dependencies[name], name);
     this.#d = dependencies;
@@ -139,6 +140,11 @@ export class DesktopSettingsService {
       const previous = JSON.stringify(d.getQuickMessages());
       d.setQuickMessages(parsed);
       changed = previous !== JSON.stringify(d.getQuickMessages());
+      await d.saveState();
+    } else if (name === "quickMessageActionMode") {
+      if (!["insert", "send"].includes(value)) throw new Error("Неизвестный режим prompt-шаблонов");
+      changed = d.getQuickMessageActionMode() !== value;
+      d.setQuickMessageActionMode(value);
       await d.saveState();
     } else if (name === "project") {
       const index = d.findProjectIndex(value);

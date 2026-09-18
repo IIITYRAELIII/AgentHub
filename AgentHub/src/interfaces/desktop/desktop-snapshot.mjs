@@ -6,7 +6,6 @@ import {
   userTaskReferencePromptDetails,
 } from "../../application/task-history.mjs";
 import { isClaudeCompactionRun } from "../../domain/claude-context-maintenance.mjs";
-import { isCodexContextProbeTurn } from "../../domain/codex-context-probe.mjs";
 import {
   confirmedInterstreamOrigin,
   interstreamOriginAuthor,
@@ -121,6 +120,37 @@ export function createDesktopSnapshotFactory({
   });
   const messagePinDelta = createSnapshotCollectionDelta({ keyOf: (item) => item?.id });
   let catalogRefresh = null;
+  let boardStateCache = null;
+
+  function boardRevision() {
+    try {
+      const value = board.snapshotRevision;
+      return value == null ? "" : String(value);
+    } catch (error) {
+      warn?.("Cannot read TaskBoard snapshot revision:", error.message);
+      return "";
+    }
+  }
+
+  function boardSnapshotState() {
+    const beforeRevision = boardRevision();
+    if (beforeRevision && boardStateCache?.sourceVersion === beforeRevision) {
+      return boardStateCache;
+    }
+    const state = {
+      workspaces: board.workspaces?.() ?? catalog.hierarchy?.() ?? [],
+      archivedWorkspaces: board.archivedWorkspaces?.() ?? [],
+      boardTasks: board.snapshot?.() ?? [],
+      boardLayout: board.layout?.() ?? { columnOrder: [], notesComment: "" },
+      sourceVersion: "",
+    };
+    const afterRevision = boardRevision();
+    if (beforeRevision && beforeRevision === afterRevision) {
+      state.sourceVersion = afterRevision;
+      boardStateCache = state;
+    }
+    return state;
+  }
 
   function catalogActiveRun(entry, lastMessage) {
     if (entry?.running !== true) return null;
@@ -460,6 +490,9 @@ export function createDesktopSnapshotFactory({
       }),
       progress: String(run.progressReasoning ?? ""),
       response: String(run.responseText ?? ""),
+      responseAttachments: Array.isArray(run.responseAttachments)
+        ? run.responseAttachments.map((attachment) => ({ ...attachment }))
+        : [],
       ...((run.responseAnnotationReferences ?? responseItem?.responseAnnotationReferences)?.length
         ? {
           responseAnnotationReferences: structuredClone(
@@ -502,50 +535,10 @@ export function createDesktopSnapshotFactory({
       && !String(run.responseText ?? "").trim();
   }
 
-  function isPostCompactionMeasurementObserver(run, context) {
-    if (run?.observer !== true || context?.compaction?.status !== "completed") return false;
-    const hasVisibleContent = Boolean(
-      String(run.promptPreview ?? "").trim()
-      || String(run.responseText ?? "").trim()
-      || String(run.progressReasoning ?? "").trim()
-      || (Array.isArray(run.userMessages) && run.userMessages.some((message) => (
-        String(message?.text ?? "").trim()
-        || (Array.isArray(message?.attachments) && message.attachments.length)
-      )))
-      || (Array.isArray(run.messageAttachments) && run.messageAttachments.length)
-      || (Array.isArray(run.activities) && run.activities.length)
-      || (Array.isArray(run.activityGroups) && run.activityGroups.length)
-    );
-    if (hasVisibleContent) return false;
-    if (context.usagePending === true) return true;
-    const runTurnId = String(run.turnId ?? "").trim();
-    const usageTurnId = String(context.turnId ?? "").trim();
-    const compactionTurnId = String(context.compaction.turnId ?? "").trim();
-    return Boolean(
-      runTurnId
-      && runTurnId === usageTurnId
-      && runTurnId !== compactionTurnId
-    );
-  }
-
   function isInternalMaintenanceObserver(run, context) {
     if (!run) return false;
-    const turnId = String(run.turnId ?? "").trim();
-    const probeTurnIds = new Set(
-      (context?.compaction?.probeTurnIds ?? [])
-        .map((value) => String(value ?? "").trim())
-        .filter(Boolean),
-    );
     return isCompactionOnlyObserver(run, context)
-      || isPostCompactionMeasurementObserver(run, context)
-      || (turnId && probeTurnIds.has(turnId))
-      || isClaudeCompactionRun(run)
-      || (run.provider === "codex" && isCodexContextProbeTurn({
-        prompt: run.promptPreview,
-        finalAnswer: run.responseText,
-        clientUserMessageId: run.clientUserMessageId,
-        userMessages: run.userMessages,
-      }, { allowTextFallback: false }));
+      || isClaudeCompactionRun(run);
   }
 
   function desktopTaskSnapshot(entry, { accountId = "", compactSnapshot = false, computeUnread = true } = {}) {
@@ -698,7 +691,8 @@ export function createDesktopSnapshotFactory({
       return finishTiming({ notModified: true, version: knownVersion }, true);
     }
     phaseStartedAt = monotonicNow();
-    const workspaces = board.workspaces?.() ?? catalog.hierarchy?.() ?? [];
+    const boardState = boardSnapshotState();
+    const { workspaces } = boardState;
     let entries = catalog.entries();
     if (
       !entries.some((entry) => tasks.entryIsSelected(entry, selection.selectedTask()))
@@ -778,8 +772,7 @@ export function createDesktopSnapshotFactory({
       : null;
     snapshotTiming.serverStateMs = Math.round((monotonicNow() - phaseStartedAt) * 10) / 10;
     phaseStartedAt = monotonicNow();
-    const boardTasks = board.snapshot?.() ?? [];
-    const archivedWorkspaces = board.archivedWorkspaces?.() ?? [];
+    const { boardTasks, archivedWorkspaces, boardLayout } = boardState;
     const messageReceipts = desktopMessageReceiptSnapshot();
     const messagePins = pins.snapshot?.() ?? [];
     const snapshot = {
@@ -787,7 +780,7 @@ export function createDesktopSnapshotFactory({
       workspaces,
       archivedWorkspaces,
       boardTasks,
-      boardLayout: board.layout?.() ?? { columnOrder: [], notesComment: "" },
+      boardLayout,
       selected: {
         ...selectedIdentity,
         workspaceId: selectedTaskSnapshot?.workspaceId ?? selectedIdentity.workspaceId ?? null,
@@ -829,6 +822,7 @@ export function createDesktopSnapshotFactory({
         streamCardGapEnabled: current.streamCardGapEnabled === true,
         pinnedWorkspaceStreams: current.pinnedWorkspaceStreams ?? {},
         quickMessages: current.quickMessages ?? { global: [], streams: {}, workspaces: {} },
+        quickMessageActionMode: current.quickMessageActionMode === "send" ? "send" : "insert",
         models: activeProvider === "codex"
           ? current.codexModels.map((model) => ({ value: model.value, label: model.label }))
           : claudeOptions,
@@ -918,6 +912,7 @@ export function createDesktopSnapshotFactory({
       restartPending: restartProjection.pending,
       restartWaiting,
       restartBlockingCount,
+      restartFailure: restart.failure?.() ?? null,
       exchangeRates: exchangeRates?.snapshot?.() ?? null,
       activeCount,
       server: serverSnapshot,
@@ -927,8 +922,12 @@ export function createDesktopSnapshotFactory({
     phaseStartedAt = monotonicNow();
     const collectionDeltas = protocol >= 4 ? {
       conversations: conversationDelta(taskSnapshots, conversationsVersion),
-      workspaces: workspaceDelta(workspaces, workspacesVersion),
-      boardTasks: boardTaskDelta(boardTasks, boardTasksVersion),
+      workspaces: workspaceDelta(workspaces, workspacesVersion, {
+        sourceVersion: boardState.sourceVersion,
+      }),
+      boardTasks: boardTaskDelta(boardTasks, boardTasksVersion, {
+        sourceVersion: boardState.sourceVersion,
+      }),
       messageReceipts: messageReceiptDelta(messageReceipts, messageReceiptsVersion),
       messagePins: messagePinDelta(messagePins, messagePinsVersion),
     } : null;

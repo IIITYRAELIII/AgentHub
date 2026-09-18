@@ -8,9 +8,9 @@ import { commandClientContext } from "../application/application-command-service
 import { createDesktopRunInputComposition } from "./desktop-run-input-composition.mjs";
 import { createDesktopRouterComposition } from "./desktop-router-composition.mjs";
 import { DesktopTaskBoardController } from "../interfaces/desktop/desktop-task-board-controller.mjs";
+import { publicUsageSyncStatus } from "../interfaces/web/mini-app-journal-data.mjs";
 import { TaskBoardLaunchService } from "../application/task-board-launch-service.mjs";
 import { taskReferenceDescriptor } from "../domain/task-board-task.mjs";
-import { publicUsageSyncStatus } from "../interfaces/web/mini-app-journal-data.mjs";
 
 export function createDesktopRunRouterWiring({
   config,
@@ -233,6 +233,7 @@ export function createDesktopRunRouterWiring({
   });
   const taskBoardController = new DesktopTaskBoardController({
     taskBoard: services.taskBoard,
+    taskGitWorkspaces: services.taskGitWorkspaces,
     voiceTranscriber: services.taskVoiceTranscriber,
     workspaceCatalog: services.workspaceCatalog,
     taskLauncher: taskBoardLauncher,
@@ -240,7 +241,6 @@ export function createDesktopRunRouterWiring({
     attachmentDirectory: services.attachmentDirectory,
     snapshot: desktop.snapshot,
   });
-
   const router = createDesktopRouterComposition({
     canonicalizeRequest: services.contourCommandMapping?.request,
     handlers: {
@@ -264,12 +264,17 @@ export function createDesktopRunRouterWiring({
       restartServer: desktop.restartServer,
       setAutostart: services.setAutostart,
       updateServerConfiguration: services.updateServerConfiguration,
+      startProviderLogin: services.startProviderLogin,
+      submitProviderLoginCode: services.submitProviderLoginCode,
+      cancelProviderLogin: services.cancelProviderLogin,
       readPreTurnInstructions: services.readPreTurnInstructions,
       updateGlobalPreTurnInstructions: services.updateGlobalPreTurnInstructions,
       readRootAgents: services.readRootAgents,
       updateRootAgents: services.updateRootAgents,
       compactContext,
       openAttachment: desktop.openAttachment,
+      uploadAttachment: desktop.uploadAttachment,
+      browseDirectory: desktop.browseDirectory,
       submitBugReport: desktop.submitBugReport,
       reportDiagnostic: desktop.reportDiagnostic,
       trustedDevices: desktop.trustedDevices,
@@ -280,6 +285,7 @@ export function createDesktopRunRouterWiring({
       boardTaskCreate: (params) => taskBoardController.create(params),
       boardTaskIngest: (params) => taskBoardController.ingest(params),
       boardTaskUpdate: (params) => taskBoardController.update(params),
+      boardTaskDiff: (params) => taskBoardController.diff(params),
       boardTaskChecklist: (params) => taskBoardController.checklist(params),
       boardTaskChecklistLinkedAction: (params) => taskBoardController.checklistLinkedTaskAction(params),
       boardTaskAttachmentAdd: (params) => taskBoardController.addAttachments(params),
@@ -296,6 +302,8 @@ export function createDesktopRunRouterWiring({
       usageSyncInvite,
       usageSyncEnroll,
       usageSyncDeviceLabel,
+      usageSyncStatus,
+      usageSyncNow,
       commandTraceTimeline: (params) => services.commandTrace.readCommandTimeline(
         params?.commandId,
         { limit: params?.limit },

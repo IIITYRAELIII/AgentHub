@@ -6,8 +6,9 @@ const WORKSPACE_MUTATIONS = new Set([
   "archiveWorkspace", "restoreWorkspace", "deleteArchivedWorkspace",
   "updateWorkspaceDeveloperRules", "recordWorkspaceEvent", "beginMcpOperation",
   "bindMcpOperationInterstreamContentHash",
-  "completeMcpOperation", "failMcpOperation", "beginMcpOperationReconciliation",
-  "markMcpOperationUnknown", "mergeWorkspaces", "createWorkspaceFromStream", "createStream", "renameStream",
+  "completeMcpOperation", "failMcpOperation", "cancelMcpOperation", "beginMcpOperationReconciliation",
+  "markMcpOperationUnknown", "completeUnknownMcpOperation", "failUnknownMcpOperation",
+  "mergeWorkspaces", "createWorkspaceFromStream", "createStream", "renameStream",
   "archiveStream", "updateStreamSettings", "updateStreamDeveloperRules", "moveStream",
   "moveStreamToStart", "reorderStream", "moveStreamOrdered", "bindThread", "rebindThread",
   "assignUnknownThread", "assignCatalogEntries", "moveThreadToNewStream", "setMeta",
@@ -27,9 +28,10 @@ const TASK_MUTATIONS = new Set([
   "mergeSourceMessage", "disablePendingTriage", "markTriageRunning", "updatePresentation",
   "applyTriage", "markTriageFailed", "retryTriage", "move", "reassignWorkspace",
   "assignWorkspaceTaskNumbers", "moveColumn", "setNotesComment", "prepareStart",
-  "cancelPreparedStart", "markStarted", "complete", "setWorkflowStatus", "claim",
+  "admitPreparedStart", "cancelPreparedStart", "fencePreparedStartCancellation",
+  "completePreparedStartCancellation", "markStarted", "complete", "setWorkflowStatus", "claim",
   "requestWorkflowStatus", "beginLifecycleTransition", "failLifecycleTransition",
-  "commitWorkflowTransition", "rollbackWorkflowOutcome", "finalizeCleanupTransition", "recordTaskTurn",
+  "commitWorkflowTransition", "commitSquashTransferTransition", "rollbackWorkflowOutcome", "finalizeCleanupTransition", "recordTaskTurn",
   "recordTaskGitReference", "adoptLegacyGitReference", "completeRelease", "remove", "setCaptureEnabled",
   "updateChecklist", "applyChecklistLinkedTaskAction", "clearAwaitRebuildPending", "recordReleaseFinalizationStage",
 ]);
@@ -40,11 +42,12 @@ const TASK_MANAGED_EFFECTS = new Set(["deliverChecklistEvents"]);
 
 const TASK_READS = new Set([
   "task", "list", "pendingTriage", "orderedColumnIds", "notesComment", "claimedTaskForTurn",
+  "claimBindingForOperation",
   "lifecycleTransition", "lifecycleOutcome", "releaseTasks", "captureEnabled", "mutationDiagnostics", "close",
   "checklistRequestResult", "awaitRebuildPending", "releaseFinalizationOutcome",
 ]);
 
-const READ_PROPERTIES = new Set(["revision"]);
+const READ_PROPERTIES = new Set(["revision", "snapshotRevision"]);
 const OWNER_SCOPES = new WeakMap();
 
 function stableValue(value, seen = new WeakSet()) {

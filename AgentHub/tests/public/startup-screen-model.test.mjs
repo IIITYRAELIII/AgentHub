@@ -299,3 +299,19 @@ test("a lost connection reports only mandatory failures", () => {
   assert.deepEqual(disconnectedMandatory.failedOperations.map((item) => item.id), ["provider"]);
   assert.deepEqual(createStartupDisconnectedModel(withMandatory, { restarting: true }).failedOperations, []);
 });
+
+test("replacement wait shows measured waiting time and proves only a responding process", () => {
+  const lost = createStartupDisconnectedModel(null, { restarting: true, sinceMs: 10_000, nowMs: 75_000 });
+  assert.equal(lost.elapsed, "00:01:05");
+  assert.equal(lost.waitingSinceMs, 10_000);
+  assert.equal(lost.stageLabel, "Соединение временно недоступно");
+
+  const responding = createStartupDisconnectedModel(null, {
+    restarting: true, responding: true, sinceMs: 10_000, nowMs: 12_000,
+  });
+  assert.equal(responding.stageLabel, "Прежний процесс ещё отвечает — ожидаю замену");
+  assert.equal(responding.elapsed, "00:00:02");
+
+  assert.equal(createStartupDisconnectedModel(null, { restarting: true }).elapsed, "—");
+  assert.match(startupScreenSource, /waitingSinceMs/u);
+});

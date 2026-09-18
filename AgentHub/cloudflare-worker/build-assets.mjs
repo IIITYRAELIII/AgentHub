@@ -72,6 +72,7 @@ function headersWithDirectAssetOrigin(source, assetOrigin) {
 export async function buildWorkerAssets({
   output = defaultOutput,
   includeMobile = true,
+  mobileRoot = path.join(root, "assets", "mobile"),
 } = {}) {
   const themeRegistry = loadThemeRegistry(source);
   const assetOrigin = await directAssetOrigin();
@@ -159,7 +160,7 @@ export async function buildWorkerAssets({
   );
 
   if (includeMobile) {
-    const mobileAssets = path.join(root, "assets", "mobile");
+    const mobileAssets = mobileRoot;
     const androidApk = path.join(mobileAssets, "AgentHub-Mobile.apk");
     const androidManifest = path.join(mobileAssets, "update.json");
     try {

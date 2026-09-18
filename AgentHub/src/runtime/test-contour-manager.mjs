@@ -66,12 +66,12 @@ import {
 } from "./test-contour-operation-state.mjs";
 
 export const TEST_CONTOUR_SPARK_MODEL = "gpt-5.3-codex-spark";
-export const TEST_CONTOUR_TERRA_MODEL = "gpt-5.6-terra";
+export const TEST_CONTOUR_LUNA_MODEL = "gpt-5.6-luna";
 export const TEST_CONTOUR_FAKE_MODEL = "fake-codex";
 export const TEST_CONTOUR_MODEL = TEST_CONTOUR_FAKE_MODEL;
 export const TEST_CONTOUR_MODELS = Object.freeze([
   Object.freeze({ value: TEST_CONTOUR_SPARK_MODEL, label: "GPT-5.3-Codex-Spark" }),
-  Object.freeze({ value: TEST_CONTOUR_TERRA_MODEL, label: "GPT-5.6-Terra" }),
+  Object.freeze({ value: TEST_CONTOUR_LUNA_MODEL, label: "GPT-5.6-Luna" }),
   Object.freeze({ value: TEST_CONTOUR_FAKE_MODEL, label: "Fake Codex · Принято" }),
 ]);
 export const TEST_CONTOUR_COMPONENT = "testContour";
@@ -108,11 +108,14 @@ export function testContourPaths(root = defaultTestContourRoot()) {
     configFile: path.join(resolved, CONFIG_FILE),
     sourceFile: path.join(resolved, SOURCE_FILE),
     taskGitDataDirectory: path.join(resolved, "task-git"),
+    detachedGitDirectory: path.join(resolved, "detached-git"),
     projectRoot: path.join(resolved, "project"),
     codexHome: path.join(resolved, "codex-home"),
     fakeCodexExecutable: path.join(resolved, "providers", "fake-codex-app-server.mjs"),
     codexMultiplexerExecutable: path.join(resolved, "providers", "test-contour-codex-multiplexer.mjs"),
+    fakeClaudeExecutable: path.join(resolved, "providers", "test-contour-claude-cli.mjs"),
     fakeCodexStateFile: path.join(resolved, "data", "fake-codex-state.json"),
+    fakeClaudeStateFile: path.join(resolved, "data", "fake-claude-auth-state.json"),
     codexMultiplexerStateFile: path.join(resolved, "data", "codex-multiplexer-state.json"),
     dataDir: path.join(resolved, "data"),
     dataBackupsDirectory: path.join(resolved, "backups", "data-clones"),
@@ -181,11 +184,15 @@ export function testContourOperationLockTarget(root = defaultTestContourRoot()) 
 
 export function withTestContourOperationLock(root, operation, {
   lock = withInterprocessLocks,
+  timeoutMs = 10 * 60_000,
+  retryDelayMs = 100,
+  ...lockOptions
 } = {}) {
   if (typeof operation !== "function") throw new TypeError("operation is required");
   return lock([testContourOperationLockTarget(root)], operation, {
-    timeoutMs: 10 * 60_000,
-    retryDelayMs: 100,
+    timeoutMs,
+    retryDelayMs,
+    ...lockOptions,
   });
 }
 
@@ -615,6 +622,11 @@ export function testContourConfig({
       "--routing-state",
       paths.codexMultiplexerStateFile,
     ],
+    // The contour's Claude sign-in runs the synthetic CLI, never the real one.
+    ...(recording ? {} : {
+      claudeExecutable: process.execPath,
+      claudeExecutableArgs: [paths.fakeClaudeExecutable, "--state", paths.fakeClaudeStateFile],
+    }),
     codexRateLimitPolling: false,
     claudeRateLimitPolling: false,
     createInitialThreadOnStartup: false,
@@ -673,6 +685,8 @@ export function testContourEnvironment({
     "AGENT_HUB_PROFILE",
     "CODEX_EXECUTABLE",
     "CODEX_EXECUTABLE_ARGS",
+    // CLAUDE_EXECUTABLE would override the contour's synthetic Claude CLI.
+    "CLAUDE_EXECUTABLE",
     "AGENT_HUB_RECORDING_PROVIDER_ROOT",
   ]) delete result[key];
   if (recording) delete result.CODEX_PROJECT_ROOT;
@@ -709,6 +723,7 @@ export async function prepareTestContourCodexProviders({
   const sources = [
     [path.join(sourceRoot, "e2e", "fake-codex-app-server.mjs"), paths.fakeCodexExecutable],
     [path.join(sourceRoot, "e2e", "test-contour-codex-multiplexer.mjs"), paths.codexMultiplexerExecutable],
+    [path.join(sourceRoot, "e2e", "test-contour-claude-cli.mjs"), paths.fakeClaudeExecutable],
   ];
   await mkdir(path.dirname(paths.fakeCodexExecutable), { recursive: true });
   await Promise.all(sources.map(async ([sourceFile, targetFile]) => {
@@ -717,6 +732,7 @@ export async function prepareTestContourCodexProviders({
   return {
     fakeCodexExecutable: paths.fakeCodexExecutable,
     codexMultiplexerExecutable: paths.codexMultiplexerExecutable,
+    fakeClaudeExecutable: paths.fakeClaudeExecutable,
   };
 }
 
@@ -950,33 +966,74 @@ async function waitFor(operation, description, timeoutMs = 120_000) {
   throw new Error(`Timeout waiting for ${description}: ${lastError?.message ?? "not ready"}`);
 }
 
-export async function readyTestContourHealth(port, {
+function unavailableHealth(reason, { retryable = true } = {}) {
+  return {
+    health: null,
+    readiness: { ready: false, retryable, reason },
+  };
+}
+
+async function inspectReadyTestContourHealth(port, {
   root = defaultTestContourRoot(),
   requireFakeQueue = false,
   expectedIdentity = null,
+  timeoutMs = 2_000,
 } = {}) {
   const baseUrl = `http://127.0.0.1:${port}`;
-  const response = await fetch(`${baseUrl}/health`, { signal: AbortSignal.timeout(2_000) });
-  if (!response.ok) return null;
-  const body = await response.json();
-  if (body?.ok !== true || body?.live !== true || body?.ready !== true) return null;
+  let response;
+  try {
+    response = await fetch(`${baseUrl}/health`, { signal: AbortSignal.timeout(Math.max(1, timeoutMs)) });
+  } catch {
+    return unavailableHealth("health-request-failed");
+  }
+  if (!response.ok) return unavailableHealth("health-http-status");
+  let body;
+  try {
+    body = await response.json();
+  } catch {
+    return unavailableHealth("health-invalid-response");
+  }
+  if (body?.ok !== true || body?.live !== true || body?.ready !== true) {
+    return unavailableHealth("health-not-ready");
+  }
   if (expectedIdentity) {
     const served = body?.testContourRuntime;
     const lock = await readJson(path.join(testContourPaths(root).dataDir, "bot.lock"));
-    if (!served
-        || served.contourId !== expectedIdentity.contourId
-        || served.releaseId !== expectedIdentity.releaseId
-        || (served.operationId ?? null) !== (expectedIdentity.operationId ?? null)
-        || served.model !== expectedIdentity.model
-        || served.runtimeNonce !== expectedIdentity.runtimeNonce
-        || Number(served.pid) !== Number(expectedIdentity.runtimePid)
-        || Number(served.expectedPort) !== Number(expectedIdentity.port)
-        || Number(served.actualPort) !== Number(port)
-        || Number(lock?.pid) !== Number(expectedIdentity.runtimePid)
-        || lock?.releaseId !== expectedIdentity.releaseId
-        || lock?.ready !== true) return null;
+    if (!served) return unavailableHealth("health-runtime-identity-missing", { retryable: false });
+    if (served.contourId !== expectedIdentity.contourId) {
+      return unavailableHealth("health-contour-mismatch", { retryable: false });
+    }
+    if (served.releaseId !== expectedIdentity.releaseId) {
+      return unavailableHealth("health-release-mismatch", { retryable: false });
+    }
+    if ((served.operationId ?? null) !== (expectedIdentity.operationId ?? null)) {
+      return unavailableHealth("health-operation-mismatch", { retryable: false });
+    }
+    if (served.model !== expectedIdentity.model) {
+      return unavailableHealth("health-model-mismatch", { retryable: false });
+    }
+    if (served.runtimeNonce !== expectedIdentity.runtimeNonce) {
+      return unavailableHealth("health-runtime-nonce-mismatch", { retryable: false });
+    }
+    if (Number(served.pid) !== Number(expectedIdentity.runtimePid)) {
+      return unavailableHealth("health-runtime-pid-mismatch", { retryable: false });
+    }
+    if (Number(served.expectedPort) !== Number(expectedIdentity.port)
+        || Number(served.actualPort) !== Number(port)) {
+      return unavailableHealth("health-port-mismatch", { retryable: false });
+    }
+    if (!lock) return unavailableHealth("health-lock-missing");
+    if (Number(lock.pid) !== Number(expectedIdentity.runtimePid)) {
+      return unavailableHealth("health-lock-pid-mismatch", { retryable: false });
+    }
+    if (lock.releaseId !== expectedIdentity.releaseId) {
+      return unavailableHealth("health-lock-release-mismatch", { retryable: false });
+    }
+    if (lock.ready !== true) return unavailableHealth("health-lock-not-ready");
   }
-  if (!requireFakeQueue) return body;
+  if (!requireFakeQueue) {
+    return { health: body, readiness: { ready: true, retryable: false, reason: "ready" } };
+  }
   const paths = testContourPaths(root);
   const fakeState = await readJson(paths.fakeCodexStateFile, {});
   const recovery = fakeState?.hubRecovery ?? { status: "missing" };
@@ -984,13 +1041,18 @@ export async function readyTestContourHealth(port, {
   if (recovery.status !== "ready" || queue.status !== "ready") {
     throw new Error(`Fake Codex queue recovery is ${queue.status}: ${JSON.stringify({ recovery, queue })}`);
   }
-  return {
+  const health = {
     ...body,
     testContour: {
       fakeCodexRecovery: recovery,
       fakeCodexQueue: queue,
     },
   };
+  return { health, readiness: { ready: true, retryable: false, reason: "ready" } };
+}
+
+export async function readyTestContourHealth(port, options = {}) {
+  return (await inspectReadyTestContourHealth(port, options)).health;
 }
 
 async function requireRecordingBoot(paths, recording) {
@@ -1141,6 +1203,7 @@ export async function readTestContourStatus({
   root = defaultTestContourRoot(),
   expectedOperationId = null,
   expectedHeadCommit = null,
+  healthTimeoutMs = 2_000,
 } = {}) {
   const paths = testContourPaths(root);
   const [state, source, operationDocument] = await Promise.all([
@@ -1156,7 +1219,10 @@ export async function readTestContourStatus({
     ? { ...source, ...state.source }
     : source;
   const planned = operationDocument.current?.status === "running";
-  if (!state || !processIsAlive(state.managerPid) || !processIsAlive(state.runtimePid)) {
+  const managerAlive = Boolean(state) && processIsAlive(state.managerPid);
+  const runtimeAlive = Boolean(state) && processIsAlive(state.runtimePid);
+  if (!state || !managerAlive || !runtimeAlive) {
+    const reason = !state ? "state-missing" : (!managerAlive ? "manager-stopped" : "runtime-stopped");
     return {
       running: false,
       root: paths.root,
@@ -1166,11 +1232,12 @@ export async function readTestContourStatus({
       planned,
       operation: operationReadback.current,
       readback: operationReadback,
+      readiness: { ready: false, retryable: false, reason },
     };
   }
   const recording = await readTestContourRecordingConfiguration(root);
   await requireRecordingBoot(paths, recording);
-  const health = await readyTestContourHealth(state.port, {
+  const inspection = await inspectReadyTestContourHealth(state.port, {
     root: paths.root,
     requireFakeQueue: !recording && state.model === TEST_CONTOUR_FAKE_MODEL,
     expectedIdentity: state.contourId && state.releaseId ? {
@@ -1182,7 +1249,9 @@ export async function readTestContourStatus({
       runtimeNonce: state.runtimeNonce,
       runtimePid: state.runtimePid,
     } : null,
-  }).catch(() => null);
+    timeoutMs: healthTimeoutMs,
+  }).catch(() => unavailableHealth("health-check-failed"));
+  const health = inspection.health;
   return {
     running: Boolean(health),
     root: paths.root,
@@ -1193,6 +1262,7 @@ export async function readTestContourStatus({
     planned,
     operation: operationReadback.current,
     readback: operationReadback,
+    readiness: inspection.readiness,
   };
 }
 
@@ -1343,6 +1413,7 @@ async function cloneProductionDataToTestContourUnlocked({
     destinationDatabaseFile: path.join(paths.dataDir, "journal.sqlite"),
     backupRoot: paths.dataBackupsDirectory,
     projectRoot: paths.projectRoot,
+    detachedGitRoot: paths.detachedGitDirectory,
     model,
     now,
   });

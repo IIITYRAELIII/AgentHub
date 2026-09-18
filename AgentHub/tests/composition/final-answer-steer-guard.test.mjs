@@ -11,13 +11,13 @@ import { CodexEventService } from "../../src/providers/codex/codex-event-service
 function eventService(run) {
   const noop = () => {};
   return new CodexEventService({
+    mutateCompaction: (_threadId, operation) => operation(),
     invalidateThreadRead: noop,
     forEvent: ({ turnId }) => turnId === run.turnId ? run : null,
     reindexRun: noop,
     applyThreadSettings: noop,
     saveState: async () => {},
     trackTokenUsage: noop,
-    completeTurn: noop,
     taskKey: () => "task",
     isSelectedRun: () => false,
     setSelectedDiff: noop,
@@ -61,7 +61,7 @@ function eventService(run) {
   });
 }
 
-test("final-answer protocol events durably queue exact FIFO commands across reload", async (context) => {
+test("provider-authoritative final-answer steers persist exact FIFO commands across reload", async (context) => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "agent-hub-final-answer-guard-"));
   let now = Date.parse("2026-09-02T12:00:00.000Z");
   let ledger = new MessageCommandLedgerStore({ dataDir, now: () => ++now });
@@ -165,7 +165,9 @@ test("final-answer protocol events durably queue exact FIFO commands across relo
     followUpMode: "steer",
   });
 
-  assert.deepEqual([first.reason, second.reason], ["final-answer-active", "final-answer-active"]);
+  assert.deepEqual([first.accepted, second.accepted], [true, true]);
+  assert.deepEqual([first.steerPending, second.steerPending], [true, true]);
+  assert.deepEqual([first.queued, second.queued], [false, false]);
   assert.equal(providerCalls.length, 0);
   assert.deepEqual(ledger.activeRecords().map((record) => record.clientUserMessageId), [
     "client-next-1",
@@ -179,7 +181,7 @@ test("final-answer protocol events durably queue exact FIFO commands across relo
     "client-next-1",
     "client-next-2",
   ]);
-  assert.equal(restored.queuedInputs.every((item) => item.conflictKind === "message-intake"), true);
+  assert.equal(restored.queuedInputs.every((item) => item.conflictKind === "message-steer"), true);
 
   run.status = "completed";
   const duplicate = await coordinator.acceptClientInput({

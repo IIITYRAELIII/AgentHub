@@ -148,6 +148,9 @@ function completedLiveAgentMessage(previous, selected) {
     author: previous.author,
     phase: "final",
     text: answer,
+    attachments: Array.isArray(previous.attachments)
+      ? previous.attachments.map((attachment) => ({ ...attachment }))
+      : [],
     responseAnnotationReferences: Array.isArray(previous.responseAnnotationReferences)
       ? previous.responseAnnotationReferences.map((reference) => ({ ...reference }))
       : [],
@@ -851,59 +854,6 @@ function liveMessageMatch(messages, probe) {
   return turnMatches.length === 1 ? turnMatches[0] : null;
 }
 
-const CONTEXT_PROBE_CLIENT_ID_PREFIX = "agent-hub-context-probe:";
-const CONTEXT_PROBE_PROMPT = "Ответь строго: AGENT_HUB_CONTEXT_PROBE_OK_V1";
-const CONTEXT_PROBE_RESPONSE_PREFIX = "AGENT_HUB_CONTEXT_PROBE";
-
-function contextProbeClientId(value) {
-  return String(value ?? "").trim().startsWith(CONTEXT_PROBE_CLIENT_ID_PREFIX);
-}
-
-function legacyContextProbeTextMigrationGuard(value) {
-  // Removal condition: all pre-UI-001 probe records carry operationKind=probe.
-  // Text is classification evidence only and never an entity identity.
-  const text = String(value ?? "").trim();
-  return text === CONTEXT_PROBE_PROMPT || text.startsWith(CONTEXT_PROBE_RESPONSE_PREFIX);
-}
-
-function contextProbeRun(run) {
-  if (!run) return false;
-  if (String(run.operationKind ?? "").trim() === "probe") return true;
-  if (String(run.operationKind ?? "").trim()) return false;
-  const clientIds = [
-    run.clientUserMessageId,
-    ...(Array.isArray(run.userMessages) ? run.userMessages : []).map((message) => (
-      message?.clientUserMessageId ?? message?.clientId
-    )),
-  ].map((value) => String(value ?? "").trim()).filter(Boolean);
-  if (clientIds.some(contextProbeClientId)) return true;
-  if (clientIds.length) return false;
-  if (legacyContextProbeTextMigrationGuard(run.prompt ?? run.promptPreview)) return true;
-  return (Array.isArray(run.userMessages) ? run.userMessages : [])
-    .some((message) => legacyContextProbeTextMigrationGuard(message?.text));
-}
-
-function contextProbeMessage(message) {
-  if (String(message?.operationKind ?? "").trim() === "probe") return true;
-  if (String(message?.operationKind ?? "").trim()) return false;
-  const clientId = String(message?.clientUserMessageId ?? message?.clientId ?? "").trim();
-  if (contextProbeClientId(clientId)) return true;
-  if (clientId) return false;
-  return legacyContextProbeTextMigrationGuard(message?.text);
-}
-
-function withoutContextProbeMessages(messages) {
-  const values = Array.isArray(messages) ? messages : [];
-  const hiddenTurns = new Set(values
-    .filter(contextProbeMessage)
-    .map((message) => String(message?.turnId ?? "").trim())
-    .filter(Boolean));
-  return values.filter((message) => !(
-    contextProbeMessage(message)
-    || hiddenTurns.has(String(message?.turnId ?? "").trim())
-  ));
-}
-
 function visibleConversationMessages(messages, {
   deferredClientUserMessageIds = [],
   liveProbe = null,
@@ -911,7 +861,7 @@ function visibleConversationMessages(messages, {
   const deferredIds = new Set([...deferredClientUserMessageIds]
     .map((value) => String(value ?? "").trim())
     .filter(Boolean));
-  const visible = withoutContextProbeMessages(messages).filter((message) => {
+  const visible = (Array.isArray(messages) ? messages : []).filter((message) => {
     if (messageAwaitsProviderAcceptance(message)) return false;
     const clientUserMessageId = String(
       message?.clientUserMessageId ?? message?.clientId ?? "",
@@ -1745,7 +1695,6 @@ globalThis.AgentHubMessageLifecycle = Object.freeze({
   conversationTaskId,
   completedConversationTurnVisible,
   confirmedOutgoingMessageIds,
-  contextProbeRun,
   conversationMessageAuthor,
   deduplicateConversationMessages,
   deferredInputConversationProjection,

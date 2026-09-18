@@ -1,4 +1,6 @@
-import { attachmentDescriptor } from "../domain/attachment-files.mjs";
+import { createHash } from "node:crypto";
+
+import { taskAttachmentDescriptors } from "../domain/attachment-files.mjs";
 import { normalizedTaskBucket, normalizedTaskText, taskDisplayText } from "../domain/task-board-task.mjs";
 import { EXPERIMENTS_SYSTEM_KEY } from "../domain/workspace-stream-identity.mjs";
 import { workspaceTaskPrefix } from "../domain/task-number.mjs";
@@ -55,15 +57,16 @@ export class TaskBoardService {
     return this.store.close?.();
   }
 
-  #event(type, task, payload = {}) {
+  #event(type, task, payload = {}, options = {}) {
     if (!task?.workspaceId || !this.recordEvent) return;
     try {
       const pending = this.recordEvent({
         workspaceId: task.workspaceId,
-        streamId: task.streamId ?? null,
+        streamId: Object.hasOwn(options, "streamId") ? options.streamId : (task.streamId ?? null),
         type,
         subjectId: task.id,
         payload: { taskId: task.id, status: task.status, bucket: task.bucket, ...payload },
+        ...(options.dedupeKey ? { dedupeKey: options.dedupeKey } : {}),
       });
       pending?.catch?.((error) => this.logger.warn(`Cannot record Task event: ${error.message}`));
       return pending;
@@ -93,9 +96,7 @@ export class TaskBoardService {
   snapshot() {
     return this.store.list().map((task) => {
       const sourceDetails = { ...(task.sourceDetails ?? {}) };
-      const attachments = (Array.isArray(sourceDetails.attachments) ? sourceDetails.attachments : [])
-        .map(attachmentDescriptor)
-        .filter(Boolean);
+      const attachments = taskAttachmentDescriptors(task);
       delete sourceDetails.attachments;
       return {
         ...task,
@@ -297,11 +298,15 @@ export class TaskBoardService {
     });
   }
 
-  markStarted({ id, workspaceId, streamId, requestId = null, expectedRevision = null } = {}) {
+  markStarted({
+    id, workspaceId, streamId, requestId = null, expectedRevision = null, attemptId = null,
+  } = {}) {
     const stream = this.workspaceCatalog.stream(streamId);
     if (!stream || stream.workspaceId !== workspaceId) throw new Error("Stream не найден в выбранном Workspace");
     return this.#withEvent(
-      this.store.markStarted(id, { workspaceId, streamId, requestId, expectedRevision }),
+      this.store.markStarted(id, {
+        workspaceId, streamId, requestId, expectedRevision, attemptId,
+      }),
       "task.started",
     );
   }
@@ -329,6 +334,11 @@ export class TaskBoardService {
 
   claimedTaskForTurn(identity = {}) {
     return this.store.claimedTaskForTurn(identity);
+  }
+
+  claimBindingForOperation(operationId) {
+    requiredMethod(this.store, "claimBindingForOperation");
+    return this.store.claimBindingForOperation(operationId);
   }
 
   requestWorkflowStatus({ id, ...payload } = {}) {
@@ -367,6 +377,17 @@ export class TaskBoardService {
     return this.#resolved(this.store.commitWorkflowTransition(payload), (task) => {
       const event = this.#event("task.workflow-status.updated", task, { workflowStatus: task.workflowStatus });
       return event && typeof event.then === "function" ? event.then(() => task) : task;
+    });
+  }
+
+  commitSquashTransferTransition(payload = {}) {
+    requiredMethod(this.store, "commitSquashTransferTransition");
+    return this.#resolved(this.store.commitSquashTransferTransition(payload), (result) => {
+      const event = this.#event("task.squash-transfer.committed", result.task, {
+        sourceTaskId: result.sourceTask.id,
+        transferHash: result.squashTransfer.transferHash,
+      });
+      return event && typeof event.then === "function" ? event.then(() => result) : result;
     });
   }
 
@@ -422,7 +443,10 @@ export class TaskBoardService {
   }
 
   get snapshotRevision() {
-    return `${Number(this.store.revision) || 0}:${Number(this.workspaceCatalog.revision) || 0}`;
+    const boardRevision = this.store.snapshotRevision ?? this.store.revision;
+    const workspaceRevision = this.workspaceCatalog.snapshotRevision ?? this.workspaceCatalog.revision;
+    if (boardRevision == null || workspaceRevision == null) return "";
+    return `${String(boardRevision)}:${String(workspaceRevision)}`;
   }
 
   prepareStart({ id, workspaceId, streamId, requestId, streamName = null, reassign = false, expectedRevision = null } = {}) {
@@ -431,12 +455,56 @@ export class TaskBoardService {
     const result = this.store.prepareStart(id, {
       workspaceId, streamId, requestId, streamName, reassign, expectedRevision,
     });
-    return this.#withEvent(result, "task.starting");
+    return this.#resolved(result, (task) => {
+      const destinationStreamId = task.startDestinationStreamId ?? streamId;
+      const existingDestination = this.workspaceCatalog.stream(destinationStreamId);
+      const event = this.#event("task.starting", task, {
+        requestId,
+        destinationStreamId,
+      }, {
+        // A newly planned Stream is not a catalog member until launch creates
+        // it. Until then the durable prepare event belongs to the Workspace and
+        // names the intended destination in its payload.
+        streamId: existingDestination?.workspaceId === task.workspaceId ? destinationStreamId : null,
+        dedupeKey: `task.starting:${createHash("sha256")
+          .update(`${task.id}\0${requestId}`)
+          .digest("hex")}`,
+      });
+      return event && typeof event.then === "function" ? event.then(() => task) : task;
+    });
   }
 
-  cancelPreparedStart({ id, requestId, reassign = false } = {}) {
+  admitPreparedStart({ id, requestId, attemptId, expectedRevision } = {}) {
+    requiredMethod(this.store, "admitPreparedStart");
+    return this.store.admitPreparedStart(id, {
+      requestId, attemptId, expectedRevision,
+    });
+  }
+
+  fencePreparedStartCancellation({
+    id, requestId, cancellationRequestId, expectedRevision,
+  } = {}) {
+    requiredMethod(this.store, "fencePreparedStartCancellation");
+    return this.store.fencePreparedStartCancellation(id, {
+      requestId, cancellationRequestId, expectedRevision,
+    });
+  }
+
+  completePreparedStartCancellation({ id, requestId, expectedRevision } = {}) {
+    requiredMethod(this.store, "completePreparedStartCancellation");
     return this.#withEvent(
-      this.store.cancelPreparedStart(id, { requestId, reassign }),
+      this.store.completePreparedStartCancellation(id, { requestId, expectedRevision }),
+      "task.start-cancelled",
+    );
+  }
+
+  cancelPreparedStart({
+    id, requestId, reassign = false, expectedRevision = null, attemptId = null,
+  } = {}) {
+    return this.#withEvent(
+      this.store.cancelPreparedStart(id, {
+        requestId, reassign, expectedRevision, attemptId,
+      }),
       "task.start-cancelled",
     );
   }

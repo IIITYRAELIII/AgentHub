@@ -31,7 +31,7 @@ async function fixture(t, settings, withGit = true) {
   return { service, taskBoard, task, events };
 }
 
-for (const settings of [{ releaseWorkflowEnabled: false }, {}, undefined]) {
+for (const settings of [{ releaseWorkflowEnabled: false }, { releaseWorkflowEnabled: false, autoReviewEnabled: true }, {}, undefined]) {
   for (const withGit of [true, false]) test(`ordinary Task statuses need only SQLite (${JSON.stringify(settings)}, Git service ${withGit})`, async (t) => {
     const { service, taskBoard, task, events } = await fixture(t, settings, withGit);
     assert.equal(task.streamId, null);
@@ -56,4 +56,25 @@ test("release-enabled Task still requires release preflight before changing stat
     /Git\/release machinery must not run/u);
   assert.equal(taskBoard.task(task.id).workflowStatus, task.workflowStatus);
   assert.equal(taskBoard.lifecycleOutcome("release"), null);
+});
+
+test("workflow cutover CAS rejects a stale revision or status before lifecycle effects", async (t) => {
+  const { service, taskBoard, task } = await fixture(t, { releaseWorkflowEnabled: false }, false);
+  await assert.rejects(service.updateWorkflowStatus({
+    taskId: task.id,
+    status: "awaiting_implementation",
+    operationId: "stale-revision",
+    expectedRevision: task.revision + 1,
+    expectedWorkflowStatus: task.workflowStatus,
+  }), /revision changed/u);
+  await assert.rejects(service.updateWorkflowStatus({
+    taskId: task.id,
+    status: "awaiting_implementation",
+    operationId: "stale-status",
+    expectedRevision: task.revision,
+    expectedWorkflowStatus: "testing",
+  }), /status changed/u);
+  assert.equal(taskBoard.task(task.id).revision, task.revision);
+  assert.equal(taskBoard.lifecycleOutcome("stale-revision"), null);
+  assert.equal(taskBoard.lifecycleOutcome("stale-status"), null);
 });

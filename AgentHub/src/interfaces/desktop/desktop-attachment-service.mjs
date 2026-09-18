@@ -8,6 +8,7 @@ import {
 } from "../../domain/attachment-files.mjs";
 import { pathInsideOrSame } from "../../infrastructure/filesystem/config.mjs";
 import { attachmentUploadLimits } from "../../domain/attachment-upload-policy.mjs";
+import { acquireAttachmentUploadService } from "../../infrastructure/filesystem/attachment-upload-service.mjs";
 
 export class DesktopAttachmentService {
   #attachmentRoot;
@@ -21,9 +22,12 @@ export class DesktopAttachmentService {
   #generatedImageRoot;
   #importer = null;
   #maxAttachmentBytes;
+  #uploadLimits;
+  #uploadLease = null;
 
   constructor(options = {}) {
-    this.#maxAttachmentBytes = (options.attachmentUploadPolicy ?? attachmentUploadLimits()).maxBytes;
+    this.#uploadLimits = options.attachmentUploadPolicy ?? attachmentUploadLimits();
+    this.#maxAttachmentBytes = this.#uploadLimits.maxBytes;
     this.#attachmentRoot = path.join(path.resolve(options.runtimeCommandRoot), "attachments");
     this.#projectRoot = path.resolve(options.projectRoot);
     this.#projectRoots = (options.projectRoots ?? []).map((value) => path.resolve(value));
@@ -34,6 +38,63 @@ export class DesktopAttachmentService {
     this.#attachmentThumbnails = options.attachmentThumbnails ?? null;
     const codexHome = String(options.codexHome ?? "").trim() || path.join(os.homedir(), ".codex");
     this.#generatedImageRoot = path.join(path.resolve(codexHome), "generated_images");
+  }
+
+  async upload(params = {}, context = {}) {
+    const response = (status, value) => ({ status,
+      headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" },
+      body: JSON.stringify(value),
+    });
+    if (context.source !== "desktop-control") return response(403, { error: "Local desktop transport required" });
+    try {
+      const url = new URL(String(params.path ?? ""), "https://agent-hub.local");
+      if (url.origin !== "https://agent-hub.local" || url.pathname !== "/api/attachment-upload") {
+        return response(404, { error: "Unknown attachment upload route" });
+      }
+      const method = String(params.method ?? "GET").toUpperCase();
+      const id = url.searchParams.get("id");
+      let chunk;
+      if (method === "PUT") {
+        const encoded = params.body;
+        if (params.bodyEncoding !== "base64" || typeof encoded !== "string"
+          || encoded.length > 4 * Math.ceil(this.#uploadLimits.chunkBytes / 3)) {
+          return response(413, { error: "Attachment chunk exceeds transport limit" });
+        }
+        if (encoded.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/u.test(encoded)) {
+          return response(400, { error: "Invalid attachment chunk encoding" });
+        }
+        chunk = Buffer.from(encoded, "base64");
+        if (chunk.length > this.#uploadLimits.chunkBytes) return response(413, { error: "Attachment chunk exceeds transport limit" });
+      }
+      this.#uploadLease ??= acquireAttachmentUploadService({
+        attachmentDirectory: this.#attachmentRoot, limits: this.#uploadLimits,
+      }).catch((error) => { this.#uploadLease = null; throw error; });
+      const { service } = await this.#uploadLease;
+      // The authenticated HTTP WebView uses this same local owner and service.
+      const owner = "local";
+      let result;
+      if (method === "GET") result = id ? await service.status(owner, id) : service.capabilities();
+      else if (method === "POST" && id && url.searchParams.get("complete") === "1") result = await service.complete(owner, id);
+      else if (method === "POST" && !id) {
+        if (typeof params.body !== "string" || params.body.length > 16_384) return response(413, { error: "Upload metadata exceeds transport limit" });
+        result = await service.begin(owner, JSON.parse(params.body));
+      } else if (method === "PUT" && id) {
+        const index = url.searchParams.get("index");
+        if (!/^\d+$/u.test(index ?? "")) return response(400, { error: "Invalid attachment chunk index" });
+        const headers = new Headers(params.headers);
+        result = await service.putChunk(owner, id, Number(index), chunk, headers.get("X-Agent-Hub-Chunk-Sha256") ?? "");
+      } else if (method === "DELETE" && id) result = await service.cancel(owner, id);
+      else return response(405, { error: "Unsupported upload operation" });
+      return response(200, { ok: true, ...result });
+    } catch (error) {
+      return response(error.statusCode ?? 400, { ok: false, error: String(error.message ?? error) });
+    }
+  }
+
+  async close() {
+    const lease = this.#uploadLease;
+    this.#uploadLease = null;
+    if (lease) await (await lease).release();
   }
 
   async paths(values) {

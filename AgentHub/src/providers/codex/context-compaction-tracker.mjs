@@ -28,12 +28,6 @@ function boundedPercent(value) {
   return Number.isFinite(percent) ? Math.max(0, Math.min(100, percent)) : null;
 }
 
-function normalizedProbeTurnIds(value) {
-  return [...new Set((Array.isArray(value) ? value : [])
-    .map(normalizedThreadId)
-    .filter(Boolean))].slice(-4);
-}
-
 function persistedCompaction(record) {
   if (!record || typeof record !== "object") return null;
   const operationId = normalizedThreadId(record.operationId ?? record.id);
@@ -59,20 +53,24 @@ function persistedCompaction(record) {
     startedAt: normalizedThreadId(record.startedAt) || null,
     compactedAt: normalizedThreadId(record.compactedAt) || null,
     completedAt: normalizedThreadId(record.completedAt) || null,
-    probeTurnIds: normalizedProbeTurnIds(record.probeTurnIds),
   };
-  for (const name of ["beforePercent", "afterPercent", "rotationAfterPercent"]) {
+  for (const name of ["beforePercent", "afterPercent"]) {
     const percent = boundedPercent(record[name]);
     if (percent !== null) value[name] = percent;
   }
   if (["running", "completed", "failed"].includes(String(record.measurementStatus))) {
     value.measurementStatus = String(record.measurementStatus);
   }
+  if (record.measurementKind === "estimated") value.measurementKind = "estimated";
   if (record.rotated !== undefined) value.rotated = record.rotated === true;
   const rotationThreadId = normalizedThreadId(record.rotationThreadId);
   const rotationCompletedAt = normalizedTimestamp(record.rotationCompletedAt, null);
   if (rotationThreadId) value.rotationThreadId = rotationThreadId;
   if (rotationCompletedAt) value.rotationCompletedAt = rotationCompletedAt;
+  if (["failed", "unknown"].includes(String(record.rotationStatus))) {
+    value.rotationStatus = String(record.rotationStatus);
+    if (record.rotationMessage) value.rotationMessage = String(record.rotationMessage);
+  }
   return value;
 }
 
@@ -145,7 +143,7 @@ export class ContextCompactionTracker {
     const existing = this.entries.get(key);
     if (!existing || (expectedId && existing.id !== expectedId)) return null;
     const record = { ...existing };
-    for (const name of ["beforePercent", "afterPercent", "rotationAfterPercent"]) {
+    for (const name of ["beforePercent", "afterPercent"]) {
       const value = boundedPercent(details[name]);
       if (value !== null) record[name] = value;
     }
@@ -159,17 +157,16 @@ export class ContextCompactionTracker {
         record.measurementStatus = measurementStatus;
       }
     }
+    if (details.measurementKind === "estimated") record.measurementKind = "estimated";
     if (details.rotated !== undefined) record.rotated = details.rotated === true;
     const rotationThreadId = normalizedThreadId(details.rotationThreadId);
     const rotationCompletedAt = normalizedTimestamp(details.rotationCompletedAt, null);
     if (rotationThreadId) record.rotationThreadId = rotationThreadId;
     if (rotationCompletedAt) record.rotationCompletedAt = rotationCompletedAt;
-    const probeTurnId = normalizedThreadId(details.probeTurnId);
-    if (probeTurnId) {
-      record.probeTurnIds = normalizedProbeTurnIds([
-        ...(record.probeTurnIds ?? []),
-        probeTurnId,
-      ]);
+    const rotationStatus = String(details.rotationStatus ?? "").trim();
+    if (["failed", "unknown"].includes(rotationStatus)) {
+      record.rotationStatus = rotationStatus;
+      if (details.rotationMessage) record.rotationMessage = String(details.rotationMessage);
     }
     this.store(key, record);
     return record;
@@ -237,26 +234,24 @@ export class ContextCompactionTracker {
     const threadId = normalizedThreadId(context?.threadId);
     const turnId = normalizedThreadId(context?.turnId);
     const record = this.get(threadId);
-    if (!record || context?.provisional === true) return null;
-    const usedTokens = Math.max(0, Number(context?.usedTokens) || 0);
-    const modelContextWindow = Math.max(0, Number(context?.modelContextWindow) || 0);
-    if (!modelContextWindow || !usedTokens) return null;
-    const probeMeasurement = record.status === "completed"
-      && ["running", "failed"].includes(record.measurementStatus)
-      && normalizedProbeTurnIds(record.probeTurnIds).includes(turnId);
+    // Codex emits its estimate with zero billable usage at the compaction boundary.
+    // Keep that first estimate: a later model request includes additional context.
+    if (!record || context?.provisional !== true || record.measurementKind === "estimated") return null;
+    const usedTokens = Number(context?.usedTokens);
+    const modelContextWindow = Number(context?.modelContextWindow);
+    if (context.usedTokens === null || context.usedTokens === undefined
+      || !Number.isFinite(usedTokens) || usedTokens < 0
+      || !Number.isFinite(modelContextWindow) || !(modelContextWindow > 0)) return null;
     const compactedAt = Date.parse(String(record.compactedAt ?? record.completedAt ?? ""));
     const contextUpdatedAt = Date.parse(String(context?.updatedAt ?? ""));
-    const immediateAutomaticMeasurement = record.origin === "automatic"
-      && !record.measurementStatus
-      && ["running", "completed"].includes(record.status)
-      && turnId === normalizedThreadId(record.turnId)
-      && Number.isFinite(compactedAt)
-      && Number.isFinite(contextUpdatedAt)
-      && contextUpdatedAt >= compactedAt;
-    if (!probeMeasurement && !immediateAutomaticMeasurement) return null;
+    if (!["running", "completed"].includes(record.status)
+      || !turnId || turnId !== normalizedThreadId(record.turnId)
+      || !Number.isFinite(compactedAt) || !Number.isFinite(contextUpdatedAt)
+      || contextUpdatedAt < compactedAt) return null;
     return this.annotate(threadId, record.id, {
       afterPercent: Math.round((usedTokens / modelContextWindow) * 100_000_000) / 1_000_000,
       measurementStatus: "completed",
+      measurementKind: "estimated",
     });
   }
 
@@ -364,7 +359,6 @@ export class ContextCompactionTracker {
         itemId: String(itemId ?? "").trim() || null,
         captureRawItem: Boolean(captureRawItem),
         ...(dedicatedProviderTurn ? { dedicatedProviderTurn: true } : {}),
-        probeTurnIds: normalizedProbeTurnIds(existing?.probeTurnIds),
         ...(initialBeforePercent !== null
           ? { beforePercent: initialBeforePercent }
           : {}),

@@ -81,6 +81,14 @@
     };
   }
 
+  function openTaskRequestParams(snapshot, identity, params = {}) {
+    return {
+      ...identity,
+      ...params,
+      ...requestParams(snapshot),
+    };
+  }
+
   function selectionFromSnapshotSettings(settings = {}, streamSettings = {}) {
     return {
       provider: settings.provider,
@@ -97,12 +105,14 @@
       pinnedWorkspaceStreams: settings.pinnedWorkspaceStreams ?? {},
       quickMessages: settings.quickMessages ?? { global: [], streams: {}, workspaces: {} },
       ...(streamSettings ?? {}),
+      quickMessageActionMode: settings.quickMessageActionMode === "send" ? "send" : "insert",
     };
   }
 
   global.AgentHubSnapshotTransport = Object.freeze({
     isBaselineError: (error) => error instanceof SnapshotCollectionBaselineError,
     materialize,
+    openTaskRequestParams,
     requestParams,
     selectionFromSnapshotSettings,
   });

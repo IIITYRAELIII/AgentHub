@@ -4,6 +4,8 @@ import { isDeepStrictEqual } from "node:util";
 import { createContourOperationalPaths } from "../../domain/test-contour-operational-paths.mjs";
 import { assertContourOwnedPath } from "./test-contour-external-effects.mjs";
 
+export const CONTOUR_TARGET_PROJECT_MISMATCH = "CONTOUR_TARGET_PROJECT_MISMATCH";
+
 // Durable state keeps original coordinates; only the recording provider maps
 // canonical input to execution paths. UI/catalog coordinates return here before
 // receipts and admission. Lookup is a point read from the existing ledger owner.
@@ -44,7 +46,7 @@ export function createContourCommandMapping({ root, readCommand = () => null }) 
       const thread = threads.get(`${value.provider}\0${value.threadId}`);
       if (!thread) throw new Error("Target Thread is not in the captured canonical binding");
       if (value.streamId && value.streamId !== thread.streamId) throw new Error("Target Stream differs from canonical Thread binding");
-      if (execution && result.projectRoot && path.relative(paths.map(result.projectRoot, "project"), paths.map(thread.cwd, "project"))) throw new Error("Target project differs from canonical Thread binding");
+      if (execution && result.projectRoot && path.relative(paths.map(result.projectRoot, "project"), paths.map(thread.cwd, "project"))) throw Object.assign(new Error("Target project differs from canonical Thread binding"), { code: CONTOUR_TARGET_PROJECT_MISMATCH });
       if (execution && Object.hasOwn(value, "projectRoot")) result.projectRoot = thread.cwd;
       // Do not inject absent transport fields: request shape is fingerprinted.
     }

@@ -6,7 +6,7 @@ import { attachmentUploadLimits } from "../../domain/attachment-upload-policy.mj
 import { pathInsideOrSame } from "../../infrastructure/filesystem/config.mjs";
 
 export class DesktopTaskBoardController {
-  constructor({ taskBoard, workspaceCatalog, dispatchCommand, sendMessage, taskLauncher = null, taskLifecycle = null, voiceTranscriber = null, attachmentDirectory = null, snapshot, logger = console } = {}) {
+  constructor({ taskBoard, workspaceCatalog, dispatchCommand, sendMessage, taskLauncher = null, taskLifecycle = null, taskGitWorkspaces = null, voiceTranscriber = null, attachmentDirectory = null, snapshot, logger = console } = {}) {
     this.taskBoard = taskBoard;
     this.workspaceCatalog = workspaceCatalog;
     this.dispatchCommand = dispatchCommand;
@@ -15,6 +15,7 @@ export class DesktopTaskBoardController {
       taskBoard, workspaceCatalog, dispatchCommand, sendMessage,
     });
     this.taskLifecycle = taskLifecycle;
+    this.taskGitWorkspaces = taskGitWorkspaces;
     this.voiceTranscriber = voiceTranscriber;
     this.attachmentDirectory = attachmentDirectory ? path.resolve(attachmentDirectory) : null;
     this.snapshot = snapshot;
@@ -24,6 +25,14 @@ export class DesktopTaskBoardController {
   async #mutate(operation) {
     await operation();
     return this.snapshot({ refresh: true });
+  }
+
+  async diff({ id } = {}) {
+    const task = this.taskBoard.task(id);
+    if (!this.taskGitWorkspaces) throw new Error("Просмотр Git diff недоступен");
+    return { taskId: task.id, ...await this.taskGitWorkspaces.reviewDiff({
+      taskId: task.id, taskNumber: task.taskNumber,
+    }) };
   }
 
   create(params) {
@@ -107,7 +116,7 @@ export class DesktopTaskBoardController {
       }
     }
     const combined = [text, ...blocks].filter(Boolean).join("\n\n");
-    return { text: combined.slice(0, 20_000), failures };
+    return { text: combined, failures };
   }
 
   move(params) {

@@ -35,7 +35,6 @@ export class WorkspaceReleaseService {
     requiredMethod(releaseGitWorkspaces, "synchronizePublishedPrimary");
     requiredMethod(releaseGitWorkspaces, "frozenCandidate");
     requiredMethod(taskGitWorkspaces, "synchronizeMainIntoDev");
-    requiredMethod(releasePreflight, "prepareAwaitSet");
     requiredMethod(releasePreflight, "withAwaitTransition");
     if (typeof verifyPublication !== "function") throw new TypeError("verifyPublication is required");
     this.store = store;
@@ -61,7 +60,7 @@ export class WorkspaceReleaseService {
         return { workspaceId: String(workspaceId), releaseAlreadyCompleted: true,
           recoveredPlanRevision: requestedRevision,
           finalization: { status: "completed", planRevision: requestedRevision },
-          preReleaseIntegration: { status: "already_completed" } };
+          releaseCandidate: { status: "invalidated", reason: "released Task membership changed" } };
       }
       const pending = await this.store.awaitRebuildPending(workspaceId);
       if (pending) {
@@ -78,8 +77,13 @@ export class WorkspaceReleaseService {
       }
 
       if (reconcileOnly) throw new Error("no durable release finalization evidence for interrupted command");
-      const plan = await this.releasePlanner.plan(workspaceId);
+      let plan = await this.releasePlanner.plan(workspaceId);
       const requestedPlanRevision = requiredPlanRevision(expectedPlanRevision);
+      // Only exact legacy receipt identity may finish an already published old candidate.
+      // The unchanged verifier below still requires its exact frozen head and manifest.
+      if (plan.revision !== requestedPlanRevision && plan.legacyRevision === requestedPlanRevision) {
+        plan = { ...plan, revision: requestedPlanRevision };
+      }
       if (plan.revision !== requestedPlanRevision) {
         throw new Error("release plan revision changed; read and verify the current release plan again");
       }
@@ -202,28 +206,22 @@ export class WorkspaceReleaseService {
         }
       }
     }
-    let preReleaseIntegration = pending.awaitResult?.completed ? pending.awaitResult.result : null;
-    if (!preReleaseIntegration) {
-      try {
-        preReleaseIntegration = await this.releasePreflight.prepareAwaitSet({
-          workspaceId,
-          fallbackProjectRoots: pending.fallbackProjectRoots,
-        });
-      } catch (error) {
-        preReleaseIntegration = { status: "retry_required", planRevision: pending.planRevision, reason: error.message };
-      }
-      if (!legacy) {
-        await this.store.recordReleaseFinalizationStage(workspaceId, {
-          planRevision: pending.planRevision, stage: "await",
-          receipt: { completed: preReleaseIntegration.status !== "retry_required", result: preReleaseIntegration },
-        });
-      }
+    const releaseCandidate = {
+      status: "invalidated",
+      planRevision: pending.planRevision,
+      reason: "released Task membership changed; the next acceptance into Await prepares the next candidate",
+    };
+    if (!legacy && !pending.awaitResult?.completed) {
+      await this.store.recordReleaseFinalizationStage(workspaceId, {
+        planRevision: pending.planRevision, stage: "await",
+        receipt: { completed: true, result: releaseCandidate },
+      });
     }
-    const complete = !synchronizationPending && preReleaseIntegration.status !== "retry_required";
+    const complete = !synchronizationPending;
     if (complete) await this.store.clearAwaitRebuildPending(workspaceId, pending.planRevision);
     return {
       publication,
-      preReleaseIntegration,
+      releaseCandidate,
       finalization: {
         status: complete ? "completed" : "retry_required",
         planRevision: pending.planRevision,

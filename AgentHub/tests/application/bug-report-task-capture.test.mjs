@@ -63,14 +63,13 @@ test("bug report capture is disabled when no personal Workspace name is configur
   assert.equal(await capture.capture({ id: "id", folder: "folder" }, { text: "Не создавать" }), null);
 });
 
-test("bug report Task text stays bounded and always contains its report path", () => {
+test("bug report Task text preserves long descriptions and their report path", () => {
   const text = bugReportTaskText({
     id: "12345678-1234-4234-8234-123456789abc",
     folder: "AgentHub/Bugs/bug-12345678-1234-4234-8234-123456789abc",
     text: "а".repeat(20_000),
   });
-  assert.equal(text.length, 20_000);
-  assert.match(text, /…\n\nОтчёт: AgentHub\/Bugs\/bug-12345678-1234-4234-8234-123456789abc\/report\.md$/u);
+  assert.equal(text, `${"а".repeat(20_000)}\n\nОтчёт: AgentHub/Bugs/bug-12345678-1234-4234-8234-123456789abc/report.md`);
 });
 
 test("first personal bug report scan imports existing reports before recording its baseline", async () => {

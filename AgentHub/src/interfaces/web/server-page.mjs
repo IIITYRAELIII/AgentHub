@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { publicAccountDisplay } from "../../domain/provider-account-display.mjs";
 import { access, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
@@ -138,6 +139,7 @@ export function serverPageSnapshot({
   restart = {},
   autostart = { supported: false, enabled: false },
   pendingConfiguration = {},
+  accounts = [],
 } = {}) {
   const webAppEnabled = config?.miniApp?.enabled === true
     || config?.components?.miniApp === true
@@ -155,6 +157,17 @@ export function serverPageSnapshot({
       version: String(version ?? "").trim() || null,
       activeCount: Math.max(0, Number(activeCount) || 0),
     },
+    // Sign-in state and allowlisted account display. Sign-in links remain in
+    // local start responses; credentials never enter this shared snapshot.
+    accounts: (Array.isArray(accounts) ? accounts : []).map((account) => ({
+      provider: String(account?.provider ?? ""),
+      status: String(account?.status ?? "idle"),
+      attemptId: account?.attemptId ? String(account.attemptId) : null,
+      startedAt: account?.startedAt ?? null,
+      finishedAt: account?.finishedAt ?? null,
+      error: account?.error || null,
+      currentAccount: publicAccountDisplay(account?.currentAccount),
+    })),
     autostart: {
       supported: autostart.supported === true,
       enabled: autostart.enabled === true,

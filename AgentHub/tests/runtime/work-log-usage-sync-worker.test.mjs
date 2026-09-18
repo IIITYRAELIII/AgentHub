@@ -8,6 +8,7 @@ import test from "node:test";
 
 import { WorkLogUsageSyncWorkerStore } from "../../src/runtime/work-log-usage-sync-worker-client.mjs";
 import { JournalDatabase } from "../../src/infrastructure/persistence/journal-database.mjs";
+import { USAGE_FACT_SCHEMA_VERSION } from "../../src/domain/usage-facts.mjs";
 import { WorkLogUsageRepository } from "../../src/infrastructure/persistence/work-log-usage-repository.mjs";
 import { createWorkLogUsageStore } from "../../src/application/work-log-usage-store.mjs";
 import { buildLazyJournalPayload } from "../../src/application/journal-projection-data.mjs";
@@ -831,6 +832,51 @@ test("usage sync worker keeps turns without startedAt as accountless legacy even
   } finally {
     await source.close();
     await target.close();
+    await removeRoot(root);
+  }
+});
+
+test("cursor usage snapshot keeps auth and limit facts without re-exporting stored sync events", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-usage-cursor-facts-"));
+  const databaseFile = path.join(root, "journal.sqlite");
+  const journal = new JournalDatabase(databaseFile);
+  const initial = await journal.upsertRecords([{
+    provider: "codex", threadId: "thread-local", taskThreadId: "thread-local", turnId: "turn-local",
+    projectRoot: root, startedAt: "2026-08-20T09:59:00.000Z", completedAt: "2026-08-20T10:00:00.000Z",
+    observedAt: "2026-08-20T10:01:00.000Z", accountKey: "chatgpt:owner", accountAttribution: "exact",
+    usageReported: true, usage: { inputTokens: 10 },
+  }]);
+  journal.close();
+  const store = new WorkLogUsageSyncWorkerStore({
+    databaseFile, deviceId: "device-local", defaultRuntimeHomeIds: { codex: "1".repeat(64) },
+  });
+  try {
+    await store.importSnapshot({ events: [{
+      deviceId: "device-remote", provider: "codex", threadId: "thread-remote", turnId: "turn-remote",
+      completedAt: "2026-08-20T09:00:00.000Z", estimatedCredits: 2,
+    }, {
+      schemaVersion: USAGE_FACT_SCHEMA_VERSION,
+      type: "auth_observation", deviceId: "device-remote", provider: "codex", runtimeHomeId: "2".repeat(64),
+      accountKey: "chatgpt:owner", observedAt: "2026-08-20T09:30:00.000Z",
+      installationInstanceId: "0b7f3a52-3c1e-4c55-9a8e-5d2f1a7c9e10",
+    }, {
+      schemaVersion: USAGE_FACT_SCHEMA_VERSION,
+      type: "limit_observation", deviceId: "device-remote", provider: "codex", accountKey: "chatgpt:owner",
+      limitId: "codex", window: "primary", observedAt: "2026-08-20T09:30:00.000Z", usedPercent: 40,
+    }] });
+    const turns = (snapshot) => snapshot.events.filter((event) => event.type === "turn").map((event) => event.deviceId).sort();
+    const observations = (snapshot) => snapshot.events.filter((event) => event.observationId).map((event) => event.type).sort();
+
+    const full = await store.usageSyncSnapshot();
+    assert.deepEqual(turns(full), ["device-local", "device-remote"]);
+    assert.deepEqual(observations(full), ["auth_observation", "limit_observation"]);
+
+    const cursor = await store.usageSyncSnapshot({ afterJournalRevision: initial.revision });
+    assert.equal(cursor.journalRevision, initial.revision);
+    assert.deepEqual(turns(cursor), []);
+    assert.deepEqual(observations(cursor), ["auth_observation", "limit_observation"]);
+  } finally {
+    await store.close();
     await removeRoot(root);
   }
 });

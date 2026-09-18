@@ -17,6 +17,7 @@ import {
   transitionTestContourOperation,
 } from "../../src/runtime/test-contour-operation-state.mjs";
 import {
+  readTestContourStatus,
   readyTestContourHealth,
   startTestContour,
   TEST_CONTOUR_SPARK_MODEL,
@@ -576,6 +577,53 @@ test("readiness rejects a healthy server from another contour identity", async (
   } finally {
     await closeServer(server);
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("status distinguishes an exact operation health mismatch from a stopped runtime", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-contour-readiness-reason-"));
+  const server = await healthServer();
+  try {
+    const paths = await writeRunningContour(root, server, { headCommit: "head-readiness" });
+    const state = JSON.parse(await readFile(paths.stateFile, "utf8"));
+    server.testContourIdentity = {
+      ...server.testContourIdentity,
+      operationId: "foreign-operation",
+    };
+
+    const mismatch = await readTestContourStatus({
+      root,
+      expectedOperationId: state.operationId,
+      expectedHeadCommit: "head-readiness",
+    });
+    assert.equal(mismatch.readback.outcome, "exact");
+    assert.equal(mismatch.running, false);
+    assert.equal(mismatch.status, "not-ready");
+    assert.deepEqual(mismatch.readiness, {
+      ready: false,
+      retryable: false,
+      reason: "health-operation-mismatch",
+    });
+
+    await rm(paths.stateFile, { force: true });
+    const stopped = await readTestContourStatus({
+      root,
+      expectedOperationId: state.operationId,
+      expectedHeadCommit: "head-readiness",
+    });
+    assert.equal(stopped.readback.outcome, "exact");
+    assert.equal(stopped.status, "stopped");
+    assert.deepEqual(stopped.readiness, {
+      ready: false,
+      retryable: false,
+      reason: "state-missing",
+    });
+  } finally {
+    await closeServer(server);
+    await Promise.all([
+      rm(root, { recursive: true, force: true }),
+      rm(`${root}-operation.lock`, { recursive: true, force: true }),
+    ]);
   }
 });
 

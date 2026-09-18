@@ -21,7 +21,7 @@ function remoteWorkspaceFileBridgeAvailable() {
     && window.AgentHubBrowserDevice?.isPaired?.() === true;
 }
 
-async function launchWorkspaceFileBridge(action, localPath) {
+async function requestWorkspaceFileTransfer(localPath) {
   const response = await hubFetch("/api/workspace-file/transfer-ticket", {
     method: "POST",
     headers: { ...authorizationHeaders(), "Content-Type": "application/json" },
@@ -31,6 +31,21 @@ async function launchWorkspaceFileBridge(action, localPath) {
   if (!response.ok || payload.ok === false) {
     throw new Error(String(payload.error ?? `Не удалось подготовить файл: HTTP ${response.status}`));
   }
+  return payload;
+}
+
+function startBrowserDownload(downloadPath, name) {
+  const link = document.createElement("a");
+  link.href = new URL(String(downloadPath ?? ""), window.location.origin).href;
+  link.download = String(name ?? "file.bin");
+  link.hidden = true;
+  document.body.append(link);
+  link.click();
+  link.remove();
+}
+
+async function launchWorkspaceFileBridge(action, localPath) {
+  const payload = await requestWorkspaceFileTransfer(localPath);
   const source = new URL(String(payload.downloadPath ?? ""), window.location.origin);
   const launch = new URL(`agenthub-file://${action}`);
   launch.searchParams.set("source", source.href);
@@ -69,6 +84,14 @@ let refreshRequested = false;
 let connectionFailureCount = 0;
 let connectionFailureSince = 0;
 let connectionOfflineTimer = null;
+const restartFailureStorageKey = "agentHub.announcedRestartFailure";
+let announcedRestartFailureId = (() => {
+  try {
+    return sessionStorage.getItem(restartFailureStorageKey) ?? "";
+  } catch {
+    return "";
+  }
+})();
 let connectionOfflineBreadcrumbRecorded = false;
 let connectionLatencyMs = null;
 let connectionLatencyProbe = null;
@@ -88,7 +111,7 @@ const REMOTE_WAIT_MS = 0;
 const REMOTE_RESULT_FALLBACK_POLL_MS = 600;
 const DEFAULT_CONTROL_TIMEOUT_MS = 45_000;
 const LONG_CONTROL_TIMEOUT_MS = 180_000;
-const LONG_CONTROL_ACTIONS = new Set(["rotate-stream", "submit-bug-report"]);
+const LONG_CONTROL_ACTIONS = new Set(["rotate-stream", "submit-bug-report", "browse-directory"]);
 const VSCODE_MESSAGE_CONTROL_TIMEOUT_MS = LONG_CONTROL_TIMEOUT_MS;
 const VSCODE_MESSAGE_RETRY_DELAYS_MS = Object.freeze([150, 600]);
 const VSCODE_DIRECT_SEND_HEDGE_DELAY_MS = 250;
@@ -99,7 +122,9 @@ const CONNECTION_OFFLINE_FAILURES = 3;
 const CONNECTION_OFFLINE_GRACE_MS = 6_000;
 const CONNECTION_LATENCY_PROBE_INTERVAL_MS = 5_000;
 const historyByTask = new Map();
+const historyWindowByTask = new Map();
 const historyPageByTask = new Map();
+const focusedHistoryWindowByTask = new Map();
 const historyCatchUpDeadlines = new Map();
 const historyCatchUpTurnIds = new Map();
 const historyAttachmentSettleDeadlines = new Map();
@@ -471,6 +496,10 @@ function stableIdentity(identity) {
   };
 }
 
+function taskOpenParams(identity, params = {}) {
+  return window.AgentHubSnapshotTransport.openTaskRequestParams(lastSnapshot, identity, params);
+}
+
 function sameIdentity(left, right) {
   const a = stableIdentity(left);
   const b = stableIdentity(right);
@@ -486,6 +515,10 @@ function beginHistoryRequest(id, identity) {
 function currentHistoryRequest(request) {
   return historyRequestGenerationByTask.get(request.id) === request.generation
     && sameIdentity(taskIdentity(request.id), request.identity);
+}
+
+function invalidateHistoryRequests(id) {
+  historyRequestGenerationByTask.set(id, (historyRequestGenerationByTask.get(id) ?? 0) + 1);
 }
 
 function beginNavigation(identity = null) {
@@ -1148,7 +1181,7 @@ function runBatchedMessageRenders(operation) {
   }
 }
 
-function clearInternalContextProbe(taskIdValue) {
+function clearNonUserLiveProjection(taskIdValue) {
   const cardRemoved = liveCardsByTask.delete(taskIdValue);
   const probeRemoved = liveProbeByTask.delete(taskIdValue);
   const usersRemoved = liveUserMessagesByTask.delete(taskIdValue);
@@ -1166,13 +1199,13 @@ function syncHistoryPagination(taskIdValue) {
 
 function updateLiveMessage(taskIdValue, selected) {
   // Only an explicitly classified user turn may own the live card. Internal or
-  // unknown projections must also clear a previously cached card so a hidden
-  // probe cannot keep later user input queued behind false activity.
+  // unknown projections must also clear a previously cached card so stale
+  // maintenance cannot keep later user input queued behind false activity.
   const run = activeTaskRun(selected);
   if (run && !isUserRunningProjection({ ...run, projectionState: "active" })) {
     const promoted = promoteLiveCompletion(taskIdValue, selected, run.turnId);
     const snapshotCompletionRemembered = rememberSnapshotCompletion(taskIdValue, selected, run.turnId);
-    clearInternalContextProbe(taskIdValue);
+    clearNonUserLiveProjection(taskIdValue);
     if (promoted || snapshotCompletionRemembered) renderTaskMessages(taskIdValue);
     return null;
   }
@@ -1233,6 +1266,7 @@ function updateLiveMessage(taskIdValue, selected) {
     stage: activeStageLabel(run.stage),
     reasoning: run.progress || "",
     text: response,
+    attachments: attachmentViews(run.responseAttachments),
     activities: run.activities ?? [],
     activityGroups: run.activityGroups ?? [],
     responsePhase: run.responsePhase ?? "",
@@ -1990,20 +2024,27 @@ function observeContextCompactions(tasks) {
     const previousStatus = previous.status;
     const status = String(compaction.status ?? "");
     const measurementStatus = String(compaction.measurementStatus ?? "");
+    if (status === "completed" && compaction.rotationStatus === "failed" && task.streamId) {
+      const rotationId = `maintenance:rotation:${task.streamId}:${task.provider}:${task.threadId}:${compactionId}`;
+      const detail = String(compaction.rotationMessage ?? "Новый Thread не подтвердил готовность");
+      if (rememberMaintenanceEvent(stableTaskId, {
+        id: rotationId, itemId: rotationId, provider: task.provider, threadId: task.threadId,
+        streamId: task.streamId, sourceThreadId: task.threadId,
+        maintenanceType: "rotation", maintenanceStatus: "failed",
+        maintenanceLabel: "Ротация не завершена", maintenanceDetail: detail,
+        text: `Ротация не завершена. Исходный Thread сохранён. ${detail}`,
+        time: compaction.completedAt ?? null,
+      })) changed.add(stableTaskId);
+    }
     const beforePercent = contextPercent(compaction.beforePercent)
       ?? previous.beforePercent
       ?? contextPercent(existingEvent?.beforePercent)
       ?? storedMaintenancePercent(existingEvent, 1)
       ?? (status === "running" ? contextPercent(context?.percent) : null);
-    const explicitAfterPercent = contextPercent(compaction.afterPercent) || null;
-    const afterPercent = ["running", "failed"].includes(measurementStatus)
-      ? null
-      : measurementStatus === "completed"
-        ? explicitAfterPercent
-        : previous.afterPercent
-          ?? contextPercent(existingEvent?.afterPercent)
-          ?? storedMaintenancePercent(existingEvent, 2)
-          ?? explicitAfterPercent;
+    const afterPercent = measurementStatus === "completed"
+      ? contextPercent(compaction.afterPercent)
+      : null;
+    const estimated = compaction.measurementKind === "estimated";
     const requested = requestedContextCompactions.has(compactionId);
     const eventAtMs = Date.parse(String(compaction.completedAt ?? compaction.startedAt ?? "")) || 0;
     const recent = eventAtMs > 0 && Date.now() - eventAtMs < 90_000;
@@ -2048,13 +2089,16 @@ function observeContextCompactions(tasks) {
       const maintenanceLabel = measurementKnown
         ? "Свёртка завершена успешно"
         : "Свёртка завершена";
+      const afterLabel = estimated ? `≈${afterPercent}%` : `${afterPercent}%`;
       const maintenanceDetail = measurementKnown
-        ? `${beforePercent}% → ${afterPercent}%`
+        ? `${beforePercent}% → ${afterLabel}${estimated ? " · Предварительная оценка провайдера после свёртки" : ""}`
         : beforePercent !== null
           ? `${beforePercent}% → замер после не получен`
           : "Замер контекста не получен";
       const text = measurementKnown
-        ? `Свёртка завершена успешно ${beforePercent}%>${afterPercent}%`
+        ? estimated
+          ? `Свёртка контекста · ${beforePercent}% → ${afterLabel}`
+          : `Свёртка завершена успешно ${beforePercent}%>${afterLabel}`
         : beforePercent !== null
           ? `Свёртка завершена; до ${beforePercent}%, замер после не получен`
           : "Свёртка завершена; замер контекста не получен";
@@ -2068,6 +2112,7 @@ function observeContextCompactions(tasks) {
         maintenanceStatus: "completed",
         maintenanceLabel,
         maintenanceDetail,
+        measurementKind: compaction.measurementKind ?? null,
         beforePercent,
         afterPercent,
         text,
@@ -2108,6 +2153,7 @@ function observeStreamRotations(previousTasks, tasks) {
       threadId: transition.task.threadId,
       sourceThreadId: transition.sourceThreadId,
       beforePercent: transition.beforePercent,
+      measurementKind: transition.measurementKind,
       time: transition.time,
     });
   }
@@ -2120,12 +2166,9 @@ function observeStreamRotations(previousTasks, tasks) {
     }
     if (rotationMaintenanceActive(task)) continue;
     const beforePercent = contextPercent(pending.beforePercent);
-    const afterPercent = task.context?.usagePending
-      ? null
-      : contextPercent(task.context?.percent);
     const presentation = window.AgentHubStreamTabs.rotationMaintenancePresentation(
       beforePercent,
-      afterPercent,
+      { measurementKind: pending.measurementKind },
     );
     const stableTaskId = taskId(task.provider, task.threadId, streamId);
     const eventId = `maintenance:rotation:${streamId}:${task.threadId}`;
@@ -2141,11 +2184,10 @@ function observeStreamRotations(previousTasks, tasks) {
       maintenanceDetail: presentation.maintenanceDetail,
       placement: "after-source-turn",
       beforePercent,
-      afterPercent,
+      measurementKind: pending.measurementKind ?? null,
       text: presentation.text,
       time: pending.time,
     })) changed.add(stableTaskId);
-    if (afterPercent !== null) pendingStreamRotations.delete(streamId);
   }
   for (const streamId of pendingStreamRotations.keys()) {
     if (currentByStream.has(streamId)) continue;
@@ -2188,6 +2230,7 @@ function applySnapshotContent(snapshot, { materialized = false } = {}) {
     agentHub.setExchangeRates(snapshot.exchangeRates ?? null);
     agentHub.setServerStatus(snapshot.server ?? null);
     agentHub.setWorkspaces(snapshot.workspaces ?? [], snapshot.boardLayout?.columnOrder ?? []);
+    const focusedHistoryChanged = reconcileFocusedHistoryWindows(snapshot.messagePins ?? []);
     agentHub.setMessagePins(snapshot.messagePins ?? []);
     agentHub.setArchivedWorkspaces(snapshot.archivedWorkspaces ?? []);
     const maintenanceChanged = new Set([
@@ -2321,6 +2364,7 @@ function applySnapshotContent(snapshot, { materialized = false } = {}) {
     for (const task of representativeTasks) {
       renderTaskQueue(taskId(task.provider, task.threadId, task.streamId), snapshot);
     }
+    for (const id of focusedHistoryChanged) renderTaskMessages(id, { preserveScroll: true });
     for (const task of representativeTasks) {
       const stableTaskId = taskId(task.provider, task.threadId, task.streamId);
       agentHub.setApprovals(stableTaskId, window.AgentHubApprovalForm.approvalsForTask(
@@ -2348,6 +2392,21 @@ function applySnapshotContent(snapshot, { materialized = false } = {}) {
 function applySnapshotConnection(snapshot, idleStatus = "online") {
   const connection = window.AgentHubConnectionBanner.snapshotConnectionState(snapshot, idleStatus);
   agentHub.setConnection(connection.status, { blockingCount: connection.blockingCount });
+  announceRestartFailure(snapshot);
+}
+
+// The reason comes from the persisted restart operation and is shown once for
+// that operation identity, including across reloads of this client session.
+function announceRestartFailure(snapshot) {
+  const notice = window.AgentHubConnectionBanner.restartFailureNotice?.(snapshot?.restartFailure);
+  if (!notice || notice.operationId === announcedRestartFailureId) return;
+  announcedRestartFailureId = notice.operationId;
+  try {
+    sessionStorage.setItem(restartFailureStorageKey, notice.operationId);
+  } catch {
+    // The notice stays deduplicated for the lifetime of this client.
+  }
+  agentHub.toast(notice.message);
 }
 
 function resetConnectionFailures() {
@@ -2608,6 +2667,66 @@ function prependOlderHistory(previous, older) {
   return projectCanonicalMessages([...uniqueOlder, ...previous]);
 }
 
+function focusedHistoryMessages(focusedTurn) {
+  if (!focusedTurn) return [];
+  return historyMessages({
+    provider: focusedTurn.provider,
+    threadId: focusedTurnTaskThreadId(focusedTurn),
+    start: 0,
+    items: [],
+  }, focusedTurn);
+}
+
+function displayedHistory(id, base = historyWindowByTask.get(id) ?? []) {
+  const focused = focusedHistoryWindowByTask.get(id);
+  return focused ? mergeNewestHistory(base, focused.messages) : base;
+}
+
+function setHistoryWindow(id, messages) {
+  const base = projectCanonicalMessages(messages);
+  historyWindowByTask.set(id, base);
+  historyByTask.set(id, displayedHistory(id, base));
+}
+
+function setFocusedHistoryWindow(id, result, exactNavigation) {
+  if (!result?.focusedTurn || !exactNavigation) return;
+  focusedHistoryWindowByTask.set(id, {
+    streamId: String(result.history?.streamId ?? exactNavigation.streamId ?? ""),
+    pinId: String(exactNavigation.pinId ?? ""),
+    messageKey: String(exactNavigation.messageKey ?? ""),
+    turnId: String(exactNavigation.turnId ?? ""),
+    itemId: String(exactNavigation.itemId ?? ""),
+    role: String(exactNavigation.role ?? ""),
+    messages: focusedHistoryMessages(result.focusedTurn),
+  });
+}
+
+function clearFocusedHistoryWindow(id) {
+  if (!focusedHistoryWindowByTask.delete(id)) return false;
+  historyByTask.set(id, historyWindowByTask.get(id) ?? []);
+  return true;
+}
+
+function pinMatchesFocusedHistory(pin, focused) {
+  if (!pin || pin.available !== true) return false;
+  if (focused.pinId && String(pin.id ?? "") !== focused.pinId) return false;
+  return String(pin.streamId ?? "") === focused.streamId
+    && String(pin.turnId ?? "") === focused.turnId
+    && String(pin.itemId ?? "") === focused.itemId
+    && (!focused.role || String(pin.role ?? "") === focused.role)
+    && (!focused.messageKey || String(pin.messageKey ?? "") === focused.messageKey);
+}
+
+function reconcileFocusedHistoryWindows(pins) {
+  if (!Array.isArray(pins)) return [];
+  const changed = [];
+  for (const [id, focused] of focusedHistoryWindowByTask) {
+    if (pins.some((pin) => pinMatchesFocusedHistory(pin, focused))) continue;
+    if (clearFocusedHistoryWindow(id)) changed.push(id);
+  }
+  return changed;
+}
+
 function applyOpened(result, {
   preserveScroll = false,
   skipSnapshot = false,
@@ -2625,35 +2744,46 @@ function applyOpened(result, {
     if (page) page.version = history.version;
     return;
   }
-  const newest = historyMessages(history, result.focusedTurn);
+  const retainsPinnedFocus = Boolean(result.focusedTurn && exactNavigation?.pinId);
+  const newest = historyMessages(history, retainsPinnedFocus ? null : result.focusedTurn);
   const previousPage = historyPageByTask.get(id);
   const preserveOlder = !result.focusedTurn
     && previousPage
     && Number(previousPage.start) < Number(history.start);
-  historyByTask.set(
-    id,
-    preserveOlder
-      ? mergeNewestHistory(historyByTask.get(id) ?? [], newest)
-      : newest,
-  );
+  if (retainsPinnedFocus) setFocusedHistoryWindow(id, result, exactNavigation);
+  const previousWindow = historyWindowByTask.get(id);
+  setHistoryWindow(id, retainsPinnedFocus && previousWindow
+    ? previousWindow
+    : preserveOlder
+      ? mergeNewestHistory(previousWindow ?? [], newest)
+      : newest);
   clearDurablyCompletedLiveCard(id);
-  historyPageByTask.set(id, {
-    start: preserveOlder ? previousPage.start : history.start,
-    end: history.end,
-    total: history.total,
-    messageTotal: history.messageTotal,
-    nextBefore: preserveOlder ? previousPage.nextBefore : history.nextBefore,
-    loading: false,
-    version: history.version ?? "",
-  });
+  if (!retainsPinnedFocus || !previousPage) {
+    historyPageByTask.set(id, {
+      start: preserveOlder ? previousPage.start : history.start,
+      end: history.end,
+      total: history.total,
+      messageTotal: history.messageTotal,
+      nextBefore: preserveOlder ? previousPage.nextBefore : history.nextBefore,
+      loading: false,
+      version: history.version ?? "",
+    });
+  }
   if (selectTask) rememberSelectedTaskId(id);
-  if (!skipSnapshot) applySnapshot(result?.snapshot);
+  if (!skipSnapshot && result?.snapshot?.notModified !== true) {
+    try {
+      applySnapshot(result?.snapshot);
+    } catch (error) {
+      if (!window.AgentHubSnapshotTransport.isBaselineError(error)) throw error;
+      void refresh();
+    }
+  }
   if (!skipSnapshot && result?.snapshotDeferred === true) void refresh();
   if (selectTask) agentHub.selectTask(id);
   syncHistoryPagination(id);
   const renderedMessages = renderTaskMessages(id, { preserveScroll, exactNavigation });
-  renderTaskQueue(id, result?.snapshot ?? lastSnapshot);
-  const acknowledgementSnapshot = result?.snapshot ?? lastSnapshot;
+  renderTaskQueue(id, lastSnapshot);
+  const acknowledgementSnapshot = lastSnapshot;
   const acknowledgementTask = (acknowledgementSnapshot?.tasks ?? []).find((item) => taskId(
     item.provider,
     item.threadId,
@@ -2680,7 +2810,7 @@ function applyOpened(result, {
       threadId: history.threadId,
     });
   }
-  const task = (result.snapshot ?? lastSnapshot)?.tasks?.find(
+  const task = lastSnapshot?.tasks?.find(
     (item) => item.provider === history.provider && item.threadId === history.threadId,
   );
   updateHistoryCatchUp(id, history, task);
@@ -2728,9 +2858,6 @@ function dataUrlBody(dataUrl) {
 
 const attachmentUploader = window.AgentHubAttachmentUpload.create({
   request: async (path, init) => {
-    if (vscode && !(await window.__agentHubDirectTransport?.available())) {
-      throw new Error("Локальное соединение для загрузки файлов недоступно. Повтори после подключения Hub.");
-    }
     await localSessionReady;
     const signal = AbortSignal.any([...(init?.signal ? [init.signal] : []), AbortSignal.timeout(30_000)]);
     return hubFetch(path, { ...init, signal, headers: { ...authorizationHeaders(), ...init?.headers } });
@@ -2769,10 +2896,11 @@ async function uploadAttachment(attachment, options) {
   return payload.path;
 }
 
-async function runAction(operation) {
+async function runAction(operation, onError = null) {
   try {
     return await commandTrace.measure("ui-interaction", "intent-handler", operation);
   } catch (error) {
+    onError?.(error);
     agentHub.toast(error?.agentHubComposerRecoveryFailed === true
       ? "Сообщение отклонено. Браузер не сохранил вложения; повтори отправку до перезагрузки страницы."
       : hubErrorMessage(error));
@@ -2801,7 +2929,7 @@ agentHub.on("task:select", ({ id }) => {
   selectionTail = runNavigation(
     identity,
     async () => {
-      const opened = await control("open-task", { ...identity, limit: 20 });
+      const opened = await control("open-task", taskOpenParams(identity, { limit: 20 }));
       if (opened?.history) verifiedTaskHistory(opened.history, identity);
       return opened;
     },
@@ -2975,9 +3103,9 @@ agentHub.on("history:load-older", ({ taskId: id }) => runAction(async () => {
     // A task switch can finish while the remote command was in flight.  Its
     // old result must not alter the pagination and scroll of the new task.
     if (historyPageByTask.get(id) !== page) return;
-    historyByTask.set(
+    setHistoryWindow(
       id,
-      prependOlderHistory(historyByTask.get(id) ?? [], historyMessages(history)),
+      prependOlderHistory(historyWindowByTask.get(id) ?? [], historyMessages(history)),
     );
     const nextBefore = Number(history.nextBefore);
     Object.assign(page, {
@@ -3237,7 +3365,7 @@ function sendUserMessage(request, frozenParams = null) {
           provider: result?.provider ?? identity?.provider,
           threadId: result.threadId,
         };
-        const opened = await control("open-task", { ...identity, limit: 20 });
+        const opened = await control("open-task", taskOpenParams(identity, { limit: 20 }));
         applyOpened(opened);
         const route = window.AgentHubNavigationTabs.resolvedChatRoute(
           { history: identity },
@@ -3357,6 +3485,8 @@ agentHub.on("message-pins:clear", ({ mutationId, ...params }) => runAction(async
   }
 }));
 agentHub.on("message-pin:open", ({ pin }) => runAction(async () => {
+  const id = taskId(pin.provider, pin.taskThreadId, pin.streamId);
+  invalidateHistoryRequests(id);
   const result = await control("open-turn", {
     streamId: pin.streamId,
     provider: pin.provider,
@@ -3369,11 +3499,20 @@ agentHub.on("message-pin:open", ({ pin }) => runAction(async () => {
   });
   applyOpened(result, {
     exactNavigation: {
+      streamId: pin.streamId,
+      pinId: pin.id,
+      messageKey: pin.messageKey,
       turnId: result?.focusedMessage?.turnId ?? pin.turnId,
       itemId: result?.focusedMessage?.itemId ?? pin.itemId,
+      role: result?.focusedMessage?.role ?? pin.role,
     },
   });
 }));
+
+agentHub.on("history:return-bottom", ({ taskId: id }) => {
+  if (!clearFocusedHistoryWindow(id)) return;
+  renderTaskMessages(id);
+});
 
 agentHub.on("task:rename", ({ id, title }) => runAction(async () => {
   const targetId = id || selectedTaskId;
@@ -3425,7 +3564,7 @@ agentHub.on("workspace:delete-permanently", ({ workspaceId, confirmationName }) 
   }
 }));
 agentHub.on("workspace:create", ({
-  name, folderName, comment, workingDirectory, taskPrefix, rules, releaseWorkflowEnabled, beforeColumnId,
+  name, folderName, comment, workingDirectory, taskPrefix, rules, releaseWorkflowEnabled, autoReviewEnabled, beforeColumnId,
 }) => runAction(async () => {
   let snapshot = await control("create-workspace", {
     name,
@@ -3434,6 +3573,7 @@ agentHub.on("workspace:create", ({
       workingDirectory,
       taskPrefix,
       releaseWorkflowEnabled,
+      autoReviewEnabled,
       folderName,
     }),
   });
@@ -3450,7 +3590,7 @@ agentHub.on("workspace:create", ({
   applySnapshot(snapshot);
 }));
 agentHub.on("workspace:update", ({
-  workspaceId, name, folderName, comment, workingDirectory, taskPrefix, rules, releaseWorkflowEnabled,
+  workspaceId, name, folderName, comment, workingDirectory, taskPrefix, rules, releaseWorkflowEnabled, autoReviewEnabled,
   beforeColumnId,
 }) => runAction(async () => {
   if (!lastSnapshot?.boardLayout) {
@@ -3465,11 +3605,14 @@ agentHub.on("workspace:update", ({
     workingDirectory: String(workingDirectory ?? "").trim(),
     taskPrefix: String(taskPrefix ?? "").trim(),
     releaseWorkflowEnabled: releaseWorkflowEnabled === true,
+    autoReviewEnabled: autoReviewEnabled === undefined
+      ? workspace?.settings?.autoReviewEnabled === true : autoReviewEnabled === true,
   };
   const settingsChanged = nextSettings.catalogFolder !== String(workspace?.settings?.catalogFolder ?? "")
     || nextSettings.workingDirectory !== String(workspace?.settings?.workingDirectory ?? "")
     || nextSettings.taskPrefix !== String(workspace?.settings?.taskPrefix ?? "")
-    || nextSettings.releaseWorkflowEnabled !== (workspace?.settings?.releaseWorkflowEnabled === true);
+    || nextSettings.releaseWorkflowEnabled !== (workspace?.settings?.releaseWorkflowEnabled === true)
+    || nextSettings.autoReviewEnabled !== (workspace?.settings?.autoReviewEnabled === true);
   if (settingsChanged) {
     snapshot = await control("update-workspace-settings", {
       workspaceId,
@@ -3498,8 +3641,18 @@ agentHub.on("workspace:update", ({
   }
   applySnapshot(snapshot);
 }));
+agentHub.on("directory:browse", ({ initialPath, resolve, reject }) => {
+  void control("browse-directory", { initialPath }).then(resolve, reject);
+});
 document.addEventListener("agenthub:board-action", (event) => {
   const detail = event.detail ?? {};
+  if (detail.type === "diff") {
+    void control("board-task-diff", { id: detail.id }).then(
+      (result) => window.AgentHubTaskBoard.showDiff({ ...detail, result }),
+      (error) => window.AgentHubTaskBoard.showDiff({ ...detail, error: error.message }),
+    );
+    return;
+  }
   let succeeded = false;
   void runAction(async () => {
     if (!lastSnapshot?.boardLayout && ["move-column", "update-comment"].includes(detail.type)) {
@@ -3839,7 +3992,7 @@ agentHub.on("comparison:open", ({ range, seriesId, accountKey, turnTimeMode }) =
     usage,
   });
 }));
-agentHub.on("selection:set", async ({ key, value }) => {
+agentHub.on("selection:set", async ({ key, value, mutationId = "" }) => {
   const names = {
     model: "model",
     reasoning: "reasoning",
@@ -3854,12 +4007,14 @@ agentHub.on("selection:set", async ({ key, value }) => {
     streamCardGapEnabled: "streamCardGapEnabled",
     pinnedWorkspaceStreams: "pinnedWorkspaceStreams",
     quickMessages: "quickMessages",
+    quickMessageActionMode: "quickMessageActionMode",
   };
   const name = names[key];
   if (!name) return;
   const tracksProjection = key === "includeClaudeUsage";
-  const tracksPending = tracksProjection || ["pinnedWorkspaceStreams", "quickMessages"].includes(key);
-  if (tracksPending) agentHub.setSelectionPending(key, true);
+  const tracksPending = tracksProjection
+    || ["pinnedWorkspaceStreams", "quickMessages", "quickMessageActionMode"].includes(key);
+  if (tracksPending) agentHub.setSelectionPending(key, true, mutationId);
   const taskIdentity = ["provider", "project", "model", "reasoning", "mode"].includes(name)
     ? exactSelectedTaskParams()
     : {};
@@ -3878,9 +4033,10 @@ agentHub.on("selection:set", async ({ key, value }) => {
         requestUsageHistory(usageState.range, { force: true });
         await loadJournal({ force: true });
       }
-    });
+      return true;
+    }, () => agentHub.rejectSelection?.(key, mutationId));
   } finally {
-    if (tracksPending) agentHub.setSelectionPending(key, false);
+    if (tracksPending) agentHub.setSelectionPending(key, false, mutationId);
   }
 });
 agentHub.on("approval:respond", ({ id, decision, answers }) => runAction(async () => {
@@ -4347,7 +4503,13 @@ async function saveLinkResource(resource) {
   }
   if (String(resource?.localPath ?? "").trim()) {
     if (!localWorkspaceFilesAvailable) {
-      throw new Error("Локальный файл Workspace доступен только на этом компьютере");
+      if (!remoteWorkspaceFileBridgeAvailable()) {
+        throw new Error("Чтобы скачать файл с компьютера Agent Hub, сначала сопряги это устройство");
+      }
+      const ticket = await requestWorkspaceFileTransfer(resource.localPath);
+      startBrowserDownload(ticket.downloadPath, ticket.name || resourceFileName(resource));
+      agentHub.toast("Скачивание файла началось");
+      return;
     }
     await localSessionReady;
     const response = await hubFetch(
@@ -4492,6 +4654,40 @@ agentHub.on("server:autostart", ({ enabled }) => runAction(async () => {
   else applySnapshot(await control("snapshot"));
   agentHub.toast(result?.message ?? "Автозапуск Agent Hub обновлён");
 }));
+/* Страница входа провайдера открывается во внешнем браузере Hub-машины: туда
+   же возвращается OAuth callback. */
+async function openProviderLoginPage(authUrl) {
+  const href = String(authUrl ?? "");
+  if (!/^https:\/\//u.test(href)) return;
+  if (vscode) await bridgeCall("open-link", { href });
+  else window.open(href, "_blank", "noopener,noreferrer");
+}
+agentHub.on("server:provider-login", ({ provider }) => runAction(async () => {
+  const result = await control("start-provider-login", { provider });
+  const login = result?.login;
+  /* Сначала снапшот с новой попыткой, затем её локальная привязка: иначе
+     перерисовка по прежнему снапшоту сбросила бы ссылку и поле кода. */
+  if (result?.snapshot) applySnapshot(result.snapshot);
+  else applySnapshot(await control("snapshot"));
+  agentHub.setProviderLoginUrl?.(provider, { attemptId: login?.attemptId ?? null, authUrl: login?.authUrl ?? null });
+  /* Claude Code сам открывает браузер со своим callback; его печатная ссылка —
+     ручной путь с кодом, поэтому она открывается только кнопкой. */
+  if (provider === "codex" && login?.authUrl) await openProviderLoginPage(login.authUrl);
+  agentHub.toast(result?.message ?? "Вход запущен");
+}));
+agentHub.on("server:provider-login-code", ({ provider, attemptId, code }) => runAction(async () => {
+  const result = await control("submit-provider-login-code", { provider, attemptId, code });
+  if (result?.snapshot) applySnapshot(result.snapshot);
+  else applySnapshot(await control("snapshot"));
+  agentHub.toast(result?.message ?? "Код передан Claude Code");
+}));
+agentHub.on("server:provider-login-open", ({ authUrl }) => runAction(() => openProviderLoginPage(authUrl)));
+agentHub.on("server:provider-login-cancel", ({ provider }) => runAction(async () => {
+  const result = await control("cancel-provider-login", { provider });
+  if (result?.snapshot) applySnapshot(result.snapshot);
+  else applySnapshot(await control("snapshot"));
+  agentHub.toast(result?.message ?? "Вход отменён");
+}));
 agentHub.on("server:config-update", ({ key, value, changes }) => runAction(async () => {
   /* Страница сохраняет всю карточку разом, поэтому принимаем и набор правок,
      и одиночную настройку. */
@@ -4632,7 +4828,7 @@ document.addEventListener("click", (event) => {
       ?? openTask.closest("[data-work-log-thread-id]")?.dataset.workLogThreadId;
     void runNavigation(
       { provider, threadId },
-      () => control("open-task", { provider, threadId, limit: 20 }),
+      () => control("open-task", taskOpenParams({ provider, threadId }, { limit: 20 })),
       (opened) => {
         applyOpened(opened);
         document.querySelector("[data-view-button='chat']")?.click();
@@ -4705,7 +4901,7 @@ async function openRoute() {
       };
       const opened = await runNavigation(
         identity,
-        () => control("open-task", { ...identity, limit: 20 }),
+        () => control("open-task", taskOpenParams(identity, { limit: 20 })),
         applyOpened,
       );
       return Boolean(opened);
@@ -4747,7 +4943,7 @@ async function openRoute() {
     };
     const opened = await runNavigation(
       identity,
-      () => control("open-task", { ...identity, limit: 20 }),
+      () => control("open-task", taskOpenParams(identity, { limit: 20 })),
       applyOpened,
     );
     if (!opened) return false;
@@ -4923,7 +5119,7 @@ void runAction(async () => {
     if (identity) {
       await runNavigation(
         identity,
-        () => control("open-task", { ...identity, limit: 20 }),
+        () => control("open-task", taskOpenParams(identity, { limit: 20 })),
         applyOpened,
       );
     }

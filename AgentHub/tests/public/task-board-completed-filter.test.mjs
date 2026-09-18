@@ -82,15 +82,15 @@ test("a freshly completed Task lands at the bottom of completed Tasks", async ()
 
 test("Dashboard presents every workflow status in the selected language", async () => {
   const view = await loadBoardView();
-  const statuses = ["new", "in_progress", "testing", "awaiting_implementation", "done"];
+  const statuses = ["new", "in_progress", "blocked", "testing", "awaiting_implementation", "done"];
 
   assert.deepEqual(
     statuses.map((workflowStatus) => view.taskWorkflowPresentation({ workflowStatus }, "en").short),
-    ["New", "InProg", "Test", "Await", "Done"],
+    ["New", "InProg", "Blocked", "Test", "Await", "Done"],
   );
   assert.deepEqual(
     statuses.map((workflowStatus) => view.taskWorkflowPresentation({ workflowStatus }, "ru").short),
-    ["Новая", "ВРаботе", "Тест", "Прим", "Готово"],
+    ["Новая", "ВРаботе", "Блок", "Тест", "Прим", "Готово"],
   );
   assert.equal(view.taskWorkflowPresentation({ status: "started" }, "ru").status, "in_progress");
   assert.equal(view.normalizedTaskStatusLanguage("unknown"), "en");
@@ -104,6 +104,7 @@ test("Task status control keeps its native option list stable across snapshots",
     options: [
       { value: "new", textContent: "New" },
       { value: "in_progress", textContent: "In progress" },
+      { value: "blocked", textContent: "Blocked" },
       { value: "testing", textContent: "Testing" },
       { value: "awaiting_implementation", textContent: "Awaiting implementation" },
       { value: "done", textContent: "Done" },
@@ -141,10 +142,10 @@ test("Task status control keeps its native option list stable across snapshots",
     { optionsChanged: true, statusChanged: false },
   );
   assert.equal(control.replacements, 1);
-  assert.equal(control.options[3].textContent, "К применению");
+  assert.equal(control.options[4].textContent, "К применению");
 });
 
-test("Task release details use the canonical executor and changed-file projection", async () => {
+test("Task details preserve executor and exact journal identity", async () => {
   const view = await loadBoardView();
   const workspaces = [{
     id: "workspace-1",
@@ -154,38 +155,12 @@ test("Task release details use the canonical executor and changed-file projectio
   const task = {
     workspaceId: "workspace-1",
     streamId: "stream-1",
-    changedFiles: [
-      { projectRoot: "D:/VSC_Tyrael/Utilities", path: "AgentHub/app.js", operation: "modified", turnId: "turn-1" },
-      { projectRoot: "D:/VSC_Tyrael/Utilities", path: "AgentHub/new.js", operation: "added", turnId: null },
-      { projectRoot: "D:/VSC_Tyrael/FirstBit", path: "old.xml", operation: "deleted", turnId: "turn-2" },
-    ],
   };
 
   assert.equal(view.taskExecutorPresentation(task, workspaces).label, "Agent HUB — Dash");
   assert.equal(
     view.taskExecutorPresentation({ workspaceId: "workspace-1" }, workspaces).label,
     "Agent HUB — Stream не назначен",
-  );
-  assert.deepEqual(
-    Array.from(view.taskChangedFileGroups(task), (group) => ({
-      projectRoot: group.projectRoot,
-      files: Array.from(group.files, (file) => ({ ...file })),
-    })),
-    [
-      {
-        projectRoot: "D:/VSC_Tyrael/Utilities",
-        files: [
-          { projectRoot: "D:/VSC_Tyrael/Utilities", path: "AgentHub/app.js", operation: "modified", turnId: "turn-1" },
-          { projectRoot: "D:/VSC_Tyrael/Utilities", path: "AgentHub/new.js", operation: "added", turnId: null },
-        ],
-      },
-      {
-        projectRoot: "D:/VSC_Tyrael/FirstBit",
-        files: [
-          { projectRoot: "D:/VSC_Tyrael/FirstBit", path: "old.xml", operation: "deleted", turnId: "turn-2" },
-        ],
-      },
-    ],
   );
   assert.deepEqual(
     Array.from(view.taskWorkLogEntries({
@@ -204,7 +179,8 @@ test("Task release details use the canonical executor and changed-file projectio
       status: "interrupted",
       summary: "Изменения сохранены",
       createdAt: "2026-08-29T12:00:00.000Z",
-      changedFileCount: 1,
+      threadId: "",
+      taskThreadId: "",
     }],
   );
 });

@@ -127,3 +127,132 @@ test("changed fingerprints rerun only affected test files", async () => {
   });
   assert.deepEqual(rerun, ["b.test.mjs"]);
 });
+
+test("isolated files use bounded parallelism without changing the selected set", async () => {
+  const files = ["a", "b", "c", "exclusive"];
+  const started = [];
+  let active = 0;
+  let maximumActive = 0;
+  await runCheckpointedTestFiles(files, {
+    concurrency: 2,
+    log: () => {},
+    execution: async (file) => file === "exclusive"
+      ? { parallel: false, shared: [] }
+      : { parallel: true, shared: [] },
+    run: async (file) => {
+      started.push([file, active]);
+      active += 1;
+      maximumActive = Math.max(maximumActive, active);
+      await new Promise((resolve) => setTimeout(resolve, 15));
+      active -= 1;
+    },
+  });
+
+  assert.equal(maximumActive, 2);
+  assert.deepEqual(started.map(([file]) => file).toSorted(), files.toSorted());
+  assert.deepEqual(started.find(([file]) => file === "exclusive"), ["exclusive", 0]);
+});
+
+test("shared resource declarations serialize only conflicting files", async () => {
+  const active = new Set();
+  const overlaps = [];
+  await runCheckpointedTestFiles(["git-a", "git-b", "browser"], {
+    concurrency: 2,
+    log: () => {},
+    execution: async (file) => ({
+      parallel: true,
+      shared: file.startsWith("git") ? ["shared-git"] : ["browser-profile"],
+    }),
+    run: async (file) => {
+      overlaps.push([file, [...active].toSorted()]);
+      active.add(file);
+      await new Promise((resolve) => setTimeout(resolve, 15));
+      active.delete(file);
+    },
+  });
+
+  const gitB = overlaps.find(([file]) => file === "git-b");
+  assert.equal(gitB[1].includes("git-a"), false);
+  assert.equal(overlaps.some(([file, running]) => file === "browser" && running.length === 1), true);
+});
+
+test("parallel failures retain deterministic file order and successful checkpoints", async () => {
+  const checkpoint = memoryCheckpoint();
+  await assert.rejects(runCheckpointedTestFiles(["slow", "fast", "ok"], {
+    suite: "unit",
+    identity: "release",
+    checkpoint,
+    concurrency: 2,
+    log: () => {},
+    execution: async () => ({ parallel: true, shared: [] }),
+    fingerprint: async (file) => `fingerprint-${file}`,
+    run: async (file) => {
+      if (file === "slow") {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        throw new Error("slow failed");
+      }
+      if (file === "fast") throw new Error("fast failed");
+    },
+  }), (error) => {
+    assert.equal(error instanceof AggregateError, true);
+    assert.match(error.message, /slow: slow failed\nfast: fast failed/u);
+    return true;
+  });
+  assert.deepEqual(checkpoint.value().suites.unit.completedFingerprints, {
+    ok: "fingerprint-ok",
+  });
+});
+
+test("uncached files report stable content-free miss reasons", async () => {
+  const messages = [];
+  await runCheckpointedTestFiles(["opaque.test.mjs"], {
+    suite: "unit",
+    identity: "release",
+    checkpoint: memoryCheckpoint(),
+    fingerprint: async () => ({
+      fingerprint: null,
+      missReasons: ["undeclared-network-fetch", "undeclared-global:process"],
+    }),
+    run: async () => {},
+    log: (message) => messages.push(message),
+  });
+  assert.deepEqual(messages, [
+    "Тест без кэша (undeclared-network-fetch, undeclared-global:process): opaque.test.mjs",
+  ]);
+});
+
+test("checkpoint write failure waits for started siblings and stops new admission", async () => {
+  let releaseSibling;
+  const siblingGate = new Promise((resolve) => { releaseSibling = resolve; });
+  const started = [];
+  let siblingFinished = false;
+  let settled = false;
+  const persistenceFailure = new Error("checkpoint storage unavailable");
+  const operation = runCheckpointedTestFiles(["first", "sibling", "later"], {
+    suite: "unit",
+    identity: "release",
+    checkpoint: {
+      read: async () => null,
+      write: async () => { throw persistenceFailure; },
+    },
+    concurrency: 2,
+    log: () => {},
+    execution: async () => ({ parallel: true, shared: [] }),
+    run: async (file) => {
+      started.push(file);
+      if (file === "sibling") {
+        await siblingGate;
+        siblingFinished = true;
+      }
+    },
+  }).finally(() => { settled = true; });
+
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(started, ["first", "sibling"]);
+  assert.equal(settled, false);
+  releaseSibling();
+  await assert.rejects(operation, (error) => error === persistenceFailure);
+  assert.equal(siblingFinished, true);
+  assert.equal(started.includes("later"), false);
+});

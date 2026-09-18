@@ -3,7 +3,6 @@ import path from "node:path";
 
 import { isInheritedSubagentTurn } from "./codex-subagent-accounting.mjs";
 import { scanCodexHistoricalRollout } from "./codex-turn-usage.mjs";
-import { isCodexContextProbeTurn } from "../../domain/codex-context-probe.mjs";
 import { applyLedgerDelta } from "../../infrastructure/persistence/incremental-ledger.mjs";
 import { JournalDatabase } from "../../infrastructure/persistence/journal-database.mjs";
 import { openWorkLogProjectionSync } from "../../infrastructure/persistence/work-log-projection-sync.mjs";
@@ -215,7 +214,6 @@ export async function buildWorkLogRolloutBackfill({
         estimatedCredits: Number(turn.estimatedCredits ?? 0) || 0,
         estimateKind: String(turn.estimateKind ?? ""),
         imageGenerationCount: Math.max(0, Math.floor(Number(turn.imageGenerationCount) || 0)),
-        contextProbe: isCodexContextProbeTurn(turn),
         model: String(turn.model ?? "").trim().toLowerCase(),
         serviceTier: String(turn.serviceTier ?? "default").trim().toLowerCase() || "default",
         pricingMetadataResolved: true,

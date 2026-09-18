@@ -6,6 +6,7 @@ export function createFatalProcessHandler({
   flushDiagnostics = (timeoutMs) => sentryDiagnostics.flush(timeoutMs),
   logger = console,
   processRef = process,
+  exitAfterShutdown = false,
 } = {}) {
   if (typeof shutdown !== "function") throw new TypeError("shutdown must be a function");
   let handling = false;
@@ -26,6 +27,10 @@ export function createFatalProcessHandler({
     } catch (shutdownError) {
       logger.error("Agent Hub fatal shutdown failed:", shutdownError);
       processRef.exit?.(1);
+      return;
     }
+    // A failed startup may keep the instance pipe, SQLite or timers open. Without
+    // an explicit exit that half-started process would hold its lock forever.
+    if (exitAfterShutdown) processRef.exit?.(1);
   };
 }

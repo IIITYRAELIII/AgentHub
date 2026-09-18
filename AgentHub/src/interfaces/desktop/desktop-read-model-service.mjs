@@ -113,14 +113,11 @@ export class DesktopReadModelService {
 
   projectedOperation(run, context) {
     const explicit = String(run?.operationKind ?? "").trim().toLowerCase();
-    if (["user-turn", "probe", "compaction", "measurement", "maintenance"].includes(explicit)) {
+    if (explicit) {
       return { kind: explicit };
     }
     if (!run) return { kind: "unknown" };
     const clientId = String(run.clientUserMessageId ?? "").trim();
-    if (run.contextProbe === true || clientId.startsWith("agent-hub-context-probe:")) {
-      return { kind: "probe", migrationGuard: "legacy-context-probe" };
-    }
     if (context?.compaction?.status === "running"
       && String(context.compaction.turnId ?? "") === String(run.turnId ?? "")) {
       return { kind: "compaction", migrationGuard: "legacy-compaction-observer" };

@@ -31,12 +31,37 @@
 
 ## Cards and menus
 
+- Workspace creation and editing show an independent **Авто-ревью** checkbox
+  immediately after **Релизный процесс**, with a separate help control.
+  `settings.autoReviewEnabled === true` injects the review policy into all
+  Workspace Stream contexts; absent or false leaves it out, independently of
+  release workflow. Settings updates that omit this field preserve its current
+  value. Generated instructions do not become authored Workspace rules.
+  The short Team Lead help describes delegation, not review forwarding.
+
 - Workspace and Stream cards use native click and double-click events without a
   click-delay timer. Double-click is accepted only for the original connected
   node and stable identity; removed, replaced or reordered cards fail closed.
 - A known Codex or Claude Stream menu contains Edit, Rotate and exactly one
   opposite-provider continuation command. Missing or unknown provider exposes
   no enabled continuation command.
+
+## Server account cards
+
+- Account cards display the provider's current account email or authentication
+  method, separately from the state of a login attempt. Idle/succeeded attempt
+  history never proves current authentication. Missing or failed account reads
+  are unknown; only an explicit provider response establishes signed-out state.
+- The existing login service owns this ephemeral display projection. Codex uses
+  account/read without token refresh; Claude uses auth status --json in the same
+  configured invocation as login. Reads are bounded, coalesced per provider and
+  refreshed on snapshot access after 30 seconds, without blocking snapshots.
+  Account-change notifications invalidate earlier reads before refreshing.
+- Shared snapshots contain only allowlisted display state, email and method,
+  never credentials, login URLs, account IDs or raw CLI output. This projection
+  is not usage-attribution evidence and does not alter running turns or auth.
+
+See ADR-0067.
 
 ## Provider Thread names
 
@@ -48,16 +73,30 @@
 - The durable Workspace/Stream binding precedes the provider name write. The
   existing pinned-title and expected-title stores retain the intended name for
   normal catalog reconciliation; naming introduces no second identity owner.
-- Rotation names its newly bound Thread before the hidden context probe. Probe
-  text and responses cannot become a retained managed Thread title. Existing
-  explicit custom titles are preserved. Probe title repair has bounded provider
-  calls; failure does not prevent the probe, and repair after confirmed idle
-  cannot hold admission. Normal pinned/expected-title reconciliation retries the
-  intended name and excludes probe text from title history.
-- Probe-time title preservation applies only to exact bindings marked `created`
-  or `rebirth`, using their current Workspace and Stream. Foreign and merely
-  discovered Threads remain untouched. Naming adds no bulk legacy-title repair
-  work or provider calls to catalog discovery or startup.
+- Rotation transfers the compaction result and only the ordered suffix of the
+  compacted turn after that exact compaction: turn items before it are already
+  represented by the compaction and are never transferred again. The boundary
+  is the single rollout `compacted` record whose replacement history carries the
+  transferred compaction item. An empty suffix is valid; a missing or
+  non-unique boundary refuses the transfer before a new Thread exists.
+- Rotation proves readiness before any authoritative switch: create the new
+  Thread, inject the bounded compaction transfer, then freshly read that exact
+  Thread and require its status to be `idle`. These steps never start a model
+  turn or request a generated measurement. Only that successful read permits
+  catalog binding, selection and deferred-input retargeting. Failure keeps the
+  source authoritative, attempts to delete the unbound target, and releases the
+  maintenance reservation through its existing owner. A failed automatic
+  rotation is not retried for the same compaction.
+- The successful `rebirth` binding owns the target's managed title through normal
+  Workspace/Stream naming. Existing explicit custom titles remain preserved;
+  discovered foreign Threads are not renamed. No measurement-specific title
+  repair, startup scan or provider call is added.
+- The post-compaction percentage is a preliminary provider estimate. It belongs
+  to the same exact Thread, turn and current compaction, requires a finite
+  observation timestamp at or after the compaction boundary, and is labelled
+  `estimated`. The first valid estimate is retained; later normal user-turn
+  usage cannot replace that historical value. Missing evidence stays unknown.
+  Rotation neither generates nor invents a target after-transfer percentage.
 
 ## Quick replies and quote input
 
@@ -71,3 +110,22 @@
   IME composition, repeated keydown and a pending send cannot duplicate it.
 
 See [ADR-0021](../decisions/ADR-0021-permanent-workspace-archive.md).
+
+## Squash-absorbed Task cards
+
+Exact squash absorption never deletes either Task card or its audit history.
+The survivor remains in Test with a new release identity; the source returns to
+work and carries the immutable transfer outcome linking it to the survivor.
+Both row updates are one SQLite transaction after exact Git readback. Ordinary
+edits and lifecycle operations are excluded from both cards while that shared
+transition is active. After durable publication, explicit confirmed completion
+may close the source and remove only its exact clean branch/worktree; the card
+and lifecycle outcome remain available as history.
+
+The bounded local squash bootstrap is the only exception to the ordinary
+Test-to-Test admission precondition. It may start with the survivor in Progress
+only when that survivor still has its exact previously accepted Test result and
+the source remains in Test. The pending lifecycle transition does not project a
+synthetic Test state. The survivor becomes Test, and the source returns to
+Progress, only in the same two-row commit after exact cutover and squash Git
+readback. All ordinary public squash calls continue to require two Test Tasks.
