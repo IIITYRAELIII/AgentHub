@@ -8,7 +8,10 @@ import test from "node:test";
 
 import { taskBranchName } from "../../../src/domain/task-git-reference.mjs";
 import { taskReleasePlanRevision } from "../../../src/domain/task-release-snapshot.mjs";
-import { TaskBoardStore } from "../../../src/infrastructure/persistence/task-board-store.mjs";
+import {
+  LATEST_TASK_SQUASH_TRANSFER_OUTCOME_SQL,
+  TaskBoardStore,
+} from "../../../src/infrastructure/persistence/task-board-store.mjs";
 import { WorkspaceCatalogStore } from "../../../src/infrastructure/persistence/workspace-catalog-store.mjs";
 import { JournalDatabase } from "../../../src/infrastructure/persistence/journal-database.mjs";
 
@@ -209,9 +212,38 @@ test("squash transfer reserves and atomically updates both exact Task rows", asy
   assert.equal(store.lifecycleOutcome("squash").result.sourceTask.workflowStatus, "in_progress");
 
   const database = new DatabaseSync(store.databaseFile);
+  const plan = database.prepare(
+    `EXPLAIN QUERY PLAN ${LATEST_TASK_SQUASH_TRANSFER_OUTCOME_SQL}`,
+  ).all(testedSurvivor.id, testedSurvivor.id).map((row) => row.detail);
+  assert.ok(plan.some((detail) => detail.includes(
+    "SEARCH hub_task_lifecycle_outcomes USING INDEX hub_task_lifecycle_outcome_squash_survivor_idx",
+  )), plan.join("\n"));
+  assert.ok(plan.some((detail) => detail.includes(
+    "SEARCH hub_task_lifecycle_outcomes USING INDEX hub_task_lifecycle_outcome_squash_source_idx",
+  )), plan.join("\n"));
+  assert.equal(plan.some((detail) => detail.startsWith("SCAN hub_task_lifecycle_outcomes")), false,
+    plan.join("\n"));
+
   const exactOutcome = database.prepare(
     "SELECT result_json FROM hub_task_lifecycle_outcomes WHERE operation_id = 'squash'",
   ).get().result_json;
+  database.prepare(`
+    INSERT INTO hub_task_lifecycle_outcomes (
+      operation_id, task_id, kind, result_json, completed_at_ms
+    ) VALUES (?, ?, 'workflow', ?, ?)
+  `).run("latest-malformed-squash", testedSurvivor.id, JSON.stringify({
+    evidence: { squashTransfer: {
+      survivor: { taskId: testedSurvivor.id },
+      source: { taskId: testedSource.id },
+    } },
+  }), 9_000_000_000_000);
+  assert.equal(store.task(testedSurvivor.id).squashTransfer, undefined,
+    "latest malformed survivor evidence must block older authority");
+  assert.equal(store.task(testedSource.id).squashAbsorbedBy, undefined,
+    "latest malformed source evidence must block older authority");
+  database.prepare(
+    "DELETE FROM hub_task_lifecycle_outcomes WHERE operation_id = 'latest-malformed-squash'",
+  ).run();
   const corruptions = [
     ["missing proof", (result) => { delete result.evidence.squashTransfer; }],
     ["missing outcome Task", (result) => { delete result.task; }],
