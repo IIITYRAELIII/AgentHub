@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { createServer } from "node:net";
+import { connect, createServer } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -29,6 +29,36 @@ test("single-instance guard rejects a concurrent owner and releases cleanly", as
   assert.equal(await readInstanceLockOwner(dataDir), null);
   await second.acquire();
   await second.release();
+});
+
+test("a reader that closes before the token write cannot stop the instance owner", { timeout: 5_000 }, async (context) => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "telegram-instance-lock-early-close-"));
+  const endpoint = instanceLockEndpoint(dataDir);
+  const guard = new SingleInstanceGuard({ dataDir, releaseId: "release-owner" });
+  context.after(async () => {
+    await guard.release();
+    await rm(dataDir, { recursive: true, force: true });
+  });
+  await guard.acquire();
+
+  await new Promise((resolve) => {
+    const reader = connect(endpoint);
+    reader.once("connect", () => {
+      try {
+        if (typeof reader.resetAndDestroy === "function") reader.resetAndDestroy();
+        else reader.destroy();
+      } catch {
+        reader.destroy();
+      }
+    });
+    reader.once("error", resolve);
+    reader.once("close", resolve);
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(await readInstanceLockOwner(dataDir), guard.instanceToken);
+  const duplicate = new SingleInstanceGuard({ dataDir });
+  await assert.rejects(() => duplicate.acquire(), /already running/);
 });
 
 test("instance owner read has an absolute deadline when a channel stays silent", async (context) => {

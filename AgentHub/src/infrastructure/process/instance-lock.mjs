@@ -128,7 +128,13 @@ export class SingleInstanceGuard {
   async acquire() {
     await mkdir(this.#dataDir, { recursive: true });
     const endpoint = pipeName(this.#dataDir);
-    const server = createServer((socket) => socket.end(this.#token));
+    const server = createServer((socket) => {
+      // The identity reply is best-effort for this one client. A probe that
+      // disconnects early must not turn its socket write error into an owner
+      // process failure or release the single-instance channel.
+      socket.on("error", () => socket.destroy());
+      socket.end(this.#token);
+    });
     try {
       await listen(server, endpoint);
     } catch (error) {
