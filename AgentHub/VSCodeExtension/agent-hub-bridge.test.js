@@ -6,6 +6,7 @@ const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 const { setTimeout: delay } = require("node:timers/promises");
+const { pathToFileURL } = require("node:url");
 
 const { AgentHubBridge, webviewHttpMessages } = require("./agent-hub-bridge.js");
 
@@ -315,31 +316,31 @@ test("installed VS Code bridge resolves backend modules from the active runtime"
     assert.deepEqual(await bridge.control("snapshot", { sample: 1 }), {
       action: "snapshot",
       params: { sample: 1 },
-      options: { timeoutMs: 10_000 },
+      options: { runtimeRoot: root, timeoutMs: 10_000 },
       installedLayout: true,
     });
     assert.deepEqual(await bridge.control("submit-bug-report", { text: "bug" }), {
       action: "submit-bug-report",
       params: { text: "bug" },
-      options: { timeoutMs: 180_000 },
+      options: { runtimeRoot: root, timeoutMs: 180_000 },
       installedLayout: true,
     });
     assert.deepEqual(await bridge.control("rotate-stream", { streamId: "stream-1" }), {
       action: "rotate-stream",
       params: { streamId: "stream-1" },
-      options: { timeoutMs: 180_000 },
+      options: { runtimeRoot: root, timeoutMs: 180_000 },
       installedLayout: true,
     });
     assert.deepEqual(await bridge.control("browse-directory", { initialPath: "D:\\repo" }), {
       action: "browse-directory",
       params: { initialPath: "D:\\repo" },
-      options: { timeoutMs: 180_000 },
+      options: { runtimeRoot: root, timeoutMs: 180_000 },
       installedLayout: true,
     });
     assert.deepEqual(await bridge.control("usage-sync"), {
       action: "usage-sync",
       params: {},
-      options: { timeoutMs: 180_000 },
+      options: { runtimeRoot: root, timeoutMs: 180_000 },
       installedLayout: true,
     });
   } finally {
@@ -571,6 +572,50 @@ test("VS Code bridge handles usage sync POST through desktop control without loc
     assert.deepEqual(payload.result.params, { deviceLabel: "Andrey" });
   } finally {
     bridge?.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("VS Code bridge keeps desktop IPC isolated to its runtime profile", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-vscode-profile-ipc-"));
+  const productionRoot = path.join(root, "production");
+  const contourRoot = path.join(root, "test-contour");
+  const moduleRoot = path.resolve(__dirname, "..");
+  const previousRuntimeRoot = process.env.AGENT_HUB_RUNTIME_ROOT;
+  const { DesktopControlServer } = await import(pathToFileURL(path.join(moduleRoot, "desktop-control.mjs")).href);
+  const productionServer = new DesktopControlServer({
+    runtimeRoot: productionRoot,
+    protectSecret: async () => {},
+    handler: async ({ action }) => ({ action, profile: "production" }),
+  });
+  const contourServer = new DesktopControlServer({
+    runtimeRoot: contourRoot,
+    protectSecret: async () => {},
+    handler: async ({ action }) => ({ action, profile: "test-contour" }),
+  });
+  try {
+    process.env.AGENT_HUB_RUNTIME_ROOT = productionRoot;
+    await productionServer.start();
+    await contourServer.start();
+    const production = new AgentHubBridge({ moduleRoot });
+    const contour = new AgentHubBridge({ moduleRoot, runtimeRoot: contourRoot });
+
+    assert.deepEqual(await production.control("runtime-health"), {
+      action: "runtime-health",
+      profile: "production",
+    });
+    assert.deepEqual(await contour.control("runtime-health"), {
+      action: "runtime-health",
+      profile: "test-contour",
+    });
+    assert.deepEqual(await contour.http({ method: "GET", path: "/api/attachment-upload" }), {
+      action: "attachment-upload",
+      profile: "test-contour",
+    });
+  } finally {
+    if (previousRuntimeRoot == null) delete process.env.AGENT_HUB_RUNTIME_ROOT;
+    else process.env.AGENT_HUB_RUNTIME_ROOT = previousRuntimeRoot;
+    await Promise.all([productionServer.close(), contourServer.close()]);
     await rm(root, { recursive: true, force: true });
   }
 });

@@ -319,6 +319,7 @@ class AgentHubBridge {
   async desktopControl(action, params = {}, { commandId = "" } = {}) {
     const { callDesktopControl } = await this.desktop();
     return callDesktopControl(action, params, {
+      runtimeRoot: this.runtimeRoot,
       timeoutMs: [
         "browse-directory",
         "rotate-stream",
