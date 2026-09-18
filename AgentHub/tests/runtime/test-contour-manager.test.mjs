@@ -27,7 +27,7 @@ import {
   TEST_CONTOUR_MODEL,
   TEST_CONTOUR_MODELS,
   TEST_CONTOUR_SPARK_MODEL,
-  TEST_CONTOUR_TERRA_MODEL,
+  TEST_CONTOUR_LUNA_MODEL,
   TEST_CONTOUR_FAKE_MODEL,
   TEST_CONTOUR_WEB_HOST,
   testContourComponentEnabled,
@@ -263,7 +263,11 @@ test("Test Contour defaults to Fake Codex while exposing optional real models", 
   });
   assert.equal(config.codexModel, TEST_CONTOUR_MODEL);
   assert.deepEqual(config.codexModels, TEST_CONTOUR_MODELS);
-  assert.ok(config.codexModels.some((item) => item.value === TEST_CONTOUR_TERRA_MODEL));
+  assert.deepEqual(config.codexModels.find((item) => item.value === TEST_CONTOUR_LUNA_MODEL), {
+    value: "gpt-5.6-luna",
+    label: "GPT-5.6-Luna",
+  });
+  assert.equal(config.codexModels.some((item) => item.value === "gpt-5.6-terra"), false);
   assert.ok(config.codexModels.some((item) => item.value === TEST_CONTOUR_FAKE_MODEL));
   assert.equal(config.codexExecutable, process.execPath);
   assert.deepEqual(config.codexExecutableArgs, [
