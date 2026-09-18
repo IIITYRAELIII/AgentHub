@@ -3454,15 +3454,13 @@ export class TaskGitWorkspaceService {
         : null;
       if (squashTransfer && (
         squashTransfer.survivor.taskId !== String(task.taskId)
+        || squashTransfer.survivor.resultCommit !== evidence.resultCommit
         || squashTransfer.survivor.releaseRevision + 1 !== Number(task.resultReleaseRevision)
         || !samePath(squashTransfer.projectRoot, evidence.projectRoot)
       )) throw new Error(`Task ${task.taskId} squash transfer does not match its frozen result`);
       const lineage = new Set(String(await runGit([
         "rev-list", "--first-parent", evidence.resultCommit, `^${evidence.baseCommit}`,
       ], { cwd: dev.projectRoot })).split(/\r?\n/u).filter(Boolean));
-      if (squashTransfer && !lineage.has(squashTransfer.survivor.resultCommit)) {
-        throw new Error(`Task ${task.taskId} squash transfer does not match its frozen result lineage`);
-      }
       const integrations = firstParentHistory.filter((entry) => (
         entry.parents.slice(1).some((parent) => lineage.has(parent))
       )).map((entry) => ({

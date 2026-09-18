@@ -161,20 +161,6 @@ test("runtime state restoration preserves equal chat text with different client 
   assert.deepEqual(transitions, [["first", "queued"], ["duplicate", "queued"]]);
 });
 
-test("restoration retains old ledger-backed queue items until durable expiry after run recovery", async () => {
-  const { context } = restorationFixture();
-  const removed = [];
-  context.removeFiles = async (files) => removed.push(...files);
-  await restoreHubRuntimeSnapshot({
-    queuedInputs: [{ id: "old-command", clientUserMessageId: "command-1", destination: "queued",
-      createdAt: "2020-01-01T00:00:00Z", temporaryFiles: ["retained-attachment"] }],
-    activeRuns: [{ id: "active", clientUserMessageId: "command-1", status: "running" }],
-  }, context);
-  assert.equal(context.queuedInputs.has("old-command"), true);
-  assert.equal(context.taskRuns.values[0].id, "active");
-  assert.deepEqual(removed, []);
-});
-
 test("state coordinator coalesces queued snapshots and isolates a missing initial state", async () => {
   const saved = [];
   let releaseFirst;

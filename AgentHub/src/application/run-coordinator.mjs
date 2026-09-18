@@ -60,6 +60,7 @@ export class RunCoordinator {
     notifyInputStart = () => {},
     hasDeferredBacklog = () => false,
     isMaintenanceActive = () => false,
+    isManagedMaintenanceActive = isMaintenanceActive,
     isRestartPending = () => false,
     scheduleDeferred = () => {},
     setProgressStage = () => {},
@@ -92,6 +93,7 @@ export class RunCoordinator {
     this.notifyInputStart = notifyInputStart;
     this.hasDeferredBacklog = hasDeferredBacklog;
     this.isMaintenanceActive = isMaintenanceActive;
+    this.isManagedMaintenanceActive = isManagedMaintenanceActive;
     this.isRestartPending = isRestartPending;
     this.scheduleDeferred = scheduleDeferred;
     this.setProgressStage = setProgressStage;
@@ -99,8 +101,6 @@ export class RunCoordinator {
     this.scheduleProgressUpdate = scheduleProgressUpdate;
     this.rekeyDeferredOccupancy = rekeyDeferredOccupancy;
     this.bindDashboardTask = typeof bindDashboardTask === "function" ? bindDashboardTask : null;
-    this.dispatchingClientMessageIds = new Map();
-    this.beforeDeferredDispatch = null;
   }
 
   async bindStartedDashboardTask(run, input) {
@@ -129,10 +129,16 @@ export class RunCoordinator {
     return deferred;
   }
 
-  admissionBarrier(target) {
+  maintenanceBarrier(target, { exactManagedSteer = false } = {}) {
+    const active = exactManagedSteer
+      ? this.isManagedMaintenanceActive(target)
+      : this.isMaintenanceActive(target);
+    return active ? "context-maintenance" : null;
+  }
+
+  admissionBarrier(target, options = {}) {
     if (this.isRestartPending()) return "runtime-restart";
-    if (this.isMaintenanceActive(target)) return "context-maintenance";
-    return null;
+    return this.maintenanceBarrier(target, options);
   }
 
   async deferredOccupancy(target) {
@@ -335,17 +341,10 @@ export class RunCoordinator {
     return { started: true, runId: run.id, run };
   }
 
-  async startDeferred(item) {
-    this.beforeDeferredDispatch?.(item);
-    const id = String(item.clientUserMessageId ?? "");
-    if (id) this.dispatchingClientMessageIds.set(id, (this.dispatchingClientMessageIds.get(id) ?? 0) + 1);
+  startDeferred(item) {
     return this.withPendingAdmission(item, () => (
       this.serialize(item, () => this.startDeferredUnlocked(item))
-    )).finally(() => {
-      const count = this.dispatchingClientMessageIds.get(id) ?? 0;
-      if (count <= 1) this.dispatchingClientMessageIds.delete(id);
-      else this.dispatchingClientMessageIds.set(id, count - 1);
-    });
+    ));
   }
 
   async startDeferredUnlocked(item) {
@@ -492,8 +491,7 @@ export class RunCoordinator {
     };
   }
 
-  async acceptClientInput(request) {
-    this.beforeDeferredDispatch?.();
+  acceptClientInput(request) {
     return this.withPendingAdmission(request.target, () => (
       this.serializeIntake(request.target, () => this.acceptClientInputUnlocked(request))
     ));
@@ -509,8 +507,10 @@ export class RunCoordinator {
     followUpMode = "",
   }) {
     const existingRun = this.activeRun(target);
-    const admissionBarrier = this.admissionBarrier(target);
-    if (admissionBarrier) {
+    const admissionBarrier = this.admissionBarrier(target, {
+      exactManagedSteer: followUpMode === "steer" && Boolean(existingRun),
+    });
+    if (admissionBarrier && !(followUpMode === "steer" && existingRun)) {
       return this.queue(input, attachments, {
         target,
         executionOwner: TASK_EXECUTION_OWNERS.HUB,
@@ -520,7 +520,7 @@ export class RunCoordinator {
         reason: admissionBarrier,
       });
     }
-    if (existingRun?.status === "finishing") {
+    if (existingRun?.status === "finishing" && followUpMode !== "steer") {
       return this.queue(input, attachments, {
         target,
         executionOwner: existingRun.executionOwner ?? TASK_EXECUTION_OWNERS.HUB,
@@ -688,7 +688,11 @@ export class RunCoordinator {
     clientProjectionIntent = null,
     followUpMode = "",
   }) {
-    if (this.isMaintenanceActive(target)) {
+    const existingRun = this.activeRun(target);
+    const maintenanceBarrier = this.maintenanceBarrier(target, {
+      exactManagedSteer: followUpMode === "steer" && Boolean(existingRun),
+    });
+    if (maintenanceBarrier) {
       return this.queue(input, attachments, {
         target,
         executionOwner: TASK_EXECUTION_OWNERS.HUB,
@@ -697,7 +701,6 @@ export class RunCoordinator {
         reason: "context-maintenance",
       });
     }
-    const existingRun = this.activeRun(target);
     const externalActivity = existingRun
       ? { state: "active", executionOwner: existingRun.executionOwner }
       : await this.externalActivity(target);

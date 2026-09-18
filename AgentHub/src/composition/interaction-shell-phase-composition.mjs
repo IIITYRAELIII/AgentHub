@@ -333,7 +333,6 @@ export function createInteractionShellPhase({
     },
     admission: {
       config,
-      runtimeStateStore: infrastructure.runtimeStateStore,
       samePath,
       sendRpc: api.sendRpc,
       contextCompactions: provider.contextCompactions,

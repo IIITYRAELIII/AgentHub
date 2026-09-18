@@ -278,7 +278,6 @@ async function archiveLegacyFiles(dataDir, files, label) {
 export class RuntimeStateStore {
   #database;
   #messageCommands;
-  #messageCommandExpiry = null;
   #writer;
   #dataDir;
   #legacyFile;
@@ -375,7 +374,6 @@ export class RuntimeStateStore {
       metadata: { destination, itemId: item?.id ?? null, stateBytes },
     });
     try {
-      this.expireMessageCommands();
       const result = this.#messageCommands.accept(payload);
       span?.finish({
         outcome: "succeeded",
@@ -390,16 +388,6 @@ export class RuntimeStateStore {
 
   transitionMessageCommand(transition) {
     return Promise.resolve(this.#messageCommands.transition(transition));
-  }
-
-  configureMessageCommandExpiry(options) {
-    this.#messageCommandExpiry = options;
-  }
-
-  expireMessageCommands() {
-    return this.#messageCommandExpiry
-      ? this.#messageCommands.expire(this.#messageCommandExpiry)
-      : { scanned: 0, expired: 0 };
   }
 
   rekeyMessageCommandOccupancy(binding) {

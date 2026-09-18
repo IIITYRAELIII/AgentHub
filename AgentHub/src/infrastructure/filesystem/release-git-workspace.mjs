@@ -91,10 +91,6 @@ async function pendingTaskIntegrations(tasks, baseCommit, git) {
         pending.push({ ...task, integrations: [] });
         continue;
       } catch { /* A squash result absent from the approved base requires its exact projection. */ }
-      // The verifier needs complete history, including published continuation
-      // integrations. It removes their deltas only after proving that history.
-      pending.push(task);
-      continue;
     }
     const integrations = [];
     for (const integration of task.integrations) {
@@ -353,9 +349,6 @@ async function selectedResultSuccessorReuse({ checkpoint, clone, tasks, baseComm
   }
   if (changed.length !== 1) return null;
   const [{ prior, current }] = changed;
-  // A descendant may have adopted foreign dev context. Only its owned
-  // integration deltas, never its full result-to-result diff, are releasable.
-  if (current.squashTransfer) return null;
   if (await gitMaybe(["merge-base", "--is-ancestor", prior.resultCommit, current.resultCommit], {
     cwd: clone.releaseRoot,
   }) === null) return null;
@@ -948,7 +941,7 @@ export class ReleaseGitWorkspaceService {
             const selected = projection ? [{
               ...projection, netProjection: true,
               order: Math.max(...task.integrations.map((item) => item.order)),
-            }, ...(projection.subsequentIntegrations ?? [])] : task.integrations;
+            }] : task.integrations;
             return selected.map((integration) => ({
               ...integration, taskId: task.taskId, taskBaseCommit: task.baseCommit,
               taskResultCommit: task.resultCommit,
@@ -986,7 +979,7 @@ export class ReleaseGitWorkspaceService {
           // durable order. The same projection is consumed exactly once.
           for (const integration of integrations.filter((item) => item.directResultMerge)) {
             await mergeDirectResult(integration, advancedTaskResults, "advance");
-            advancedTaskResults.push(integration.commit);
+            advancedTaskResults.push(integration.taskResultCommit);
             consumedDirectResults.add(directResultKey(integration));
           }
           const appliedTaskResults = new Set();

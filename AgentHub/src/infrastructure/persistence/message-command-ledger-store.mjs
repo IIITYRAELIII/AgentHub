@@ -1,7 +1,6 @@
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { taskOccupancyIdentity } from "../../domain/task-runs.mjs";
-import { MESSAGE_COMMAND_LIFETIME_MS } from "../../domain/message-command-expiry.mjs";
 
 const BUSY_TIMEOUT_MS = 0;
 const TERMINAL_STATES = new Set(["completed", "failed", "cancelled"]);
@@ -443,7 +442,7 @@ function projectedReceipt(record) {
     result.started = true;
     if (record.state === "completed") result.completed = true;
   } else if (record.state === "cancelled") {
-    if (result.expired !== true) result.accepted = false;
+    result.accepted = false;
     result.deferred = false;
     result.queued = false;
     result.dispatching = false;
@@ -467,14 +466,13 @@ function terminalRetryTombstone(record) {
   const result = {};
   for (const key of [
     "accepted", "pending", "deferred", "queued", "dispatching", "started",
-    "completed", "failed", "cancelled", "rejected", "unknown", "steered", "expired",
+    "completed", "failed", "cancelled", "rejected", "unknown", "steered",
   ]) {
     if (typeof source[key] === "boolean") result[key] = source[key];
   }
   for (const [key, limit] of [
     ["provider", 40], ["threadId", 500], ["turnId", 500], ["runId", 500],
     ["id", 500], ["status", 100], ["error", 2_000], ["message", 2_000],
-    ["reason", 100], ["providerEffectOutcome", 100], ["expiredAt", 100],
   ]) {
     const value = String(source[key] ?? "").trim();
     if (value) result[key] = value.slice(0, limit);
@@ -872,53 +870,6 @@ export class MessageCommandLedgerStore {
     return { changed: true, idempotent: false, conflict: false, record: this.get(id) };
   }
 
-  expire({ isProtected, onExpired = () => {} } = {}) {
-    // The runtime must supply its live ownership view. Opening a database alone
-    // is never authority to expire a command belonging to a live provider run.
-    if (typeof isProtected !== "function") throw new TypeError("expiry ownership guard is required");
-    const now = this.#now();
-    const placeholders = ACTIVE_STATES.map(() => "?").join(", ");
-    const candidates = this.#database.prepare(`
-      SELECT * FROM message_commands
-      WHERE state IN (${placeholders}) AND accepted_at_ms <= ?
-      ORDER BY accepted_at_ms, client_user_message_id
-    `).all(...ACTIVE_STATES, now - MESSAGE_COMMAND_LIFETIME_MS).map(recordFromRow);
-    const expired = [];
-    if (!candidates.length) return { scanned: 0, expired: 0 };
-    const update = this.#database.prepare(`
-      UPDATE message_commands SET state = 'cancelled', result_json = ?,
-        terminal_at_ms = ?, updated_at_ms = ?, revision = revision + 1
-      WHERE client_user_message_id = ? AND state = ? AND revision = ?
-    `);
-    this.#database.exec("BEGIN IMMEDIATE;");
-    try {
-      for (const record of candidates) {
-        if (isProtected(record)) continue;
-        const prior = projectedReceipt(record)?.result ?? record.result ?? {};
-        const result = {
-          ...prior,
-          pending: false, deferred: false, queued: false, dispatching: false,
-          completed: false, failed: false, cancelled: true, expired: true,
-          reason: "message-command-expired",
-          providerEffectOutcome: "unknown",
-          expiredAt: new Date(now).toISOString(),
-          message: "Срок жизни команды истёк (72 часа). Повторная отправка не выполнялась; исход у провайдера не установлен.",
-        };
-        const outcome = update.run(JSON.stringify(result), now, now,
-          record.clientUserMessageId, record.state, record.revision);
-        if (outcome.changes) expired.push({ ...record, state: "cancelled", result,
-          terminalAtMs: now, updatedAtMs: now, revision: record.revision + 1 });
-      }
-      this.#database.exec("COMMIT;");
-    } catch (error) {
-      this.#database.exec("ROLLBACK;");
-      throw error;
-    }
-    // Projection removal follows the one durable commit, never precedes it.
-    for (const record of expired) onExpired(record);
-    return { scanned: candidates.length, expired: expired.length };
-  }
-
   rekeyOccupancy({ clientUserMessageId, expectedOccupancyKey = null, target }) {
     const id = String(clientUserMessageId ?? "").trim();
     if (!id) throw new TypeError("clientUserMessageId is required for occupancy rekey");
@@ -1046,28 +997,11 @@ export class MessageCommandLedgerStore {
   }
 
   overlay(value) {
-    return overlayRecords(value, this.#recordsForSnapshot(value));
+    return overlayRecords(value, this.projectionRecords());
   }
 
   withoutOwnedProjections(value) {
-    return withoutOwnedProjectionRecords(value, this.#recordsForSnapshot(value));
-  }
-
-  #recordsForSnapshot(value) {
-    const records = new Map(this.projectionRecords().map((record) => [record.clientUserMessageId, record]));
-    // A stale snapshot can still reference a command whose payload was archived.
-    // Resolve only those exact IDs; tombstones remain authority beyond hot retention.
-    for (const item of [
-      ...(Array.isArray(value?.pendingInputs) ? value.pendingInputs : []),
-      ...(Array.isArray(value?.queuedInputs) ? value.queuedInputs : []),
-      ...(Array.isArray(value?.desktopMessageReceipts) ? value.desktopMessageReceipts : []),
-    ]) {
-      const id = clientMessageId(item);
-      if (!id || records.has(id)) continue;
-      const record = this.get(id);
-      if (record) records.set(id, record);
-    }
-    return [...records.values()];
+    return withoutOwnedProjectionRecords(value, this.projectionRecords());
   }
 
   #archiveTerminalPayloads() {

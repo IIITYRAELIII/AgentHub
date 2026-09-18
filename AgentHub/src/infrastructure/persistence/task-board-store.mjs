@@ -40,18 +40,6 @@ import {
 
 const NOTES_COLUMN_ID = "notes";
 
-export const LATEST_TASK_SQUASH_TRANSFER_OUTCOME_SQL = `
-  SELECT result_json FROM (
-    SELECT result_json, completed_at_ms FROM hub_task_lifecycle_outcomes
-    WHERE kind = 'workflow'
-      AND json_extract(result_json, '$.evidence.squashTransfer.survivor.taskId') = ?
-    UNION ALL
-    SELECT result_json, completed_at_ms FROM hub_task_lifecycle_outcomes
-    WHERE kind = 'workflow'
-      AND json_extract(result_json, '$.evidence.squashTransfer.source.taskId') = ?
-  ) ORDER BY completed_at_ms DESC LIMIT 1
-`;
-
 function sameResolvedPath(left, right) {
   const a = path.resolve(String(left ?? ""));
   const b = path.resolve(String(right ?? ""));
@@ -1218,7 +1206,14 @@ export class TaskBoardStore {
     let squashTransfer = null;
     let resultReleaseRevision = null;
     let squashAbsorbedBy = null;
-    const transferRow = database.prepare(LATEST_TASK_SQUASH_TRANSFER_OUTCOME_SQL).get(taskId, taskId);
+    const transferRow = database.prepare(`
+      SELECT result_json FROM hub_task_lifecycle_outcomes
+      WHERE kind = 'workflow' AND (
+        json_extract(result_json, '$.evidence.squashTransfer.survivor.taskId') = ?
+        OR json_extract(result_json, '$.evidence.squashTransfer.source.taskId') = ?
+      )
+      ORDER BY completed_at_ms DESC LIMIT 1
+    `).get(taskId, taskId);
     if (transferRow) {
       try {
         const outcome = JSON.parse(transferRow.result_json);
@@ -1363,6 +1358,14 @@ export class TaskBoardStore {
       this.#database.prepare("PRAGMA data_version").get()?.data_version,
     ) || 0;
     return `${this.revision}:${externalRevision}`;
+  }
+
+  get snapshotRevision() {
+    if (!this.#database) return null;
+    const externalRevision = Number(
+      this.#database.prepare("PRAGMA data_version").get()?.data_version,
+    ) || 0;
+    return `${this.#revision}:${externalRevision}`;
   }
 
   close() {

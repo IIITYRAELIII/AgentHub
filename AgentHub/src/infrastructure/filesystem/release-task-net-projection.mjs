@@ -110,56 +110,12 @@ export async function releaseTaskNetProjections({ tasks, baseCommit, git }) {
         const tree = integration ? await git(["rev-parse", `${integration.commit}^{tree}`]) : null;
         await git(["merge-base", "--is-ancestor", proof.baselineResultCommit, proof.survivor.resultCommit]);
         if (proof.survivor.taskId !== task.taskId
+            || proof.survivor.resultCommit !== task.resultCommit
             || !integration || values.length !== 2
             || values[0] !== proof.devBeforeCommit || values[1] !== proof.survivor.resultCommit
             || tree !== proof.devAfterTree
             || integrationOwners.get(integration.commit)?.size !== 1) {
           throw new Error("integration identity or unique ownership does not match the transfer");
-        }
-        const lineage = (await git([
-          "rev-list", `--max-count=${MAX_ANCESTRY + 1}`, "--first-parent",
-          task.resultCommit, `^${proof.survivor.resultCommit}^`,
-        ])).split(/\r?\n/u).filter(Boolean);
-        if (lineage.length > MAX_ANCESTRY || !lineage.includes(proof.survivor.resultCommit)) {
-          throw new Error("selected result does not continue the exact squash first-parent lineage");
-        }
-        const subsequentIntegrations = task.integrations
-          .filter((item) => compareIntegrations(integration, item) < 0).sort(compareIntegrations);
-        const ordered = [integration, ...subsequentIntegrations];
-        if (new Set(ordered.map((item) => item.commit)).size !== ordered.length
-            || new Set(ordered.map((item) => item.order)).size !== ordered.length) {
-          throw new Error("squash continuation integrations are duplicated or ambiguously ordered");
-        }
-        let prior = integration;
-        for (const next of subsequentIntegrations) {
-          const nextParents = await getParents(next.commit);
-          if (integrationOwners.get(next.commit)?.size !== 1 || nextParents.length !== 2
-              || !lineage.includes(nextParents[1]) || !await isAutomatic(next.commit)) {
-            throw new Error("squash continuation lacks an exact automatic uniquely owned integration");
-          }
-          await git(["merge-base", "--is-ancestor", prior.commit, next.parent]);
-          prior = next;
-        }
-        if ((await getParents(prior.commit))[1] !== task.resultCommit) {
-          throw new Error("latest squash descendant is not covered by its exact integration");
-        }
-        const continuationHistory = (await git([
-          "rev-list", `--max-count=${MAX_ANCESTRY + 1}`, "--first-parent",
-          prior.commit, `^${integration.commit}`,
-        ])).split(/\r?\n/u).filter(Boolean);
-        if (continuationHistory.length > MAX_ANCESTRY) {
-          throw new Error("squash continuation exceeds the integration proof bound");
-        }
-        const declared = new Set(subsequentIntegrations.map((item) => item.commit));
-        for (const commit of continuationHistory) {
-          const commitParents = await getParents(commit);
-          if (commitParents.slice(1).some((parent) => lineage.includes(parent)) && !declared.has(commit)) {
-            throw new Error("squash continuation omits an owned integration");
-          }
-        }
-        const pendingContinuations = [];
-        for (const next of subsequentIntegrations) {
-          if (!await isApproved((await getParents(next.commit))[1])) pendingContinuations.push(next);
         }
         const sourcePaths = await changedPaths(proof.source.baseCommit, proof.source.resultCommit);
         const ownerPaths = await changedPaths(proof.baselineResultCommit, proof.survivor.resultCommit);
@@ -195,13 +151,12 @@ export async function releaseTaskNetProjections({ tasks, baseCommit, git }) {
         if (devPaths.some((name) => !ownerPaths.includes(name))) {
           throw new Error("rolling dev contains changes outside the exact squash owner delta");
         }
-        const bases = (await git(["merge-base", "--all", baseCommit, proof.survivor.resultCommit]))
+        const bases = (await git(["merge-base", "--all", baseCommit, task.resultCommit]))
           .split(/\r?\n/u).filter(Boolean);
         if (bases.length !== 1) throw new Error("approved base has no unique merge boundary with the squash result");
-        const paths = await changedPaths(bases[0], proof.survivor.resultCommit);
+        const paths = await changedPaths(bases[0], task.resultCommit);
         proofs.set(task.taskId, {
-          parent: bases[0], commit: proof.survivor.resultCommit, paths,
-          subsequentIntegrations: pendingContinuations,
+          parent: bases[0], commit: task.resultCommit, paths,
           directResultMerge: true,
           orderPreserving: true, squashTransferHash: proof.transferHash,
         });

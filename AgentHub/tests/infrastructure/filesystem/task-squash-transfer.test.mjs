@@ -391,88 +391,6 @@ test("exact squash transfer adds the selected delta once and preserves foreign d
     tasks: [{ ...releaseTask, squashTransfer: damaged }],
     baseCommit: await git(root, "rev-parse", "main"), git: projectorGit,
   }), /requires the exact squash projection/u);
-
-  // A later ordinary result can contain adopted dev context. Release only the
-  // immutable clean squash plus the subsequent exact integration deltas.
-  await git(survivorWorkspace.projectRoot, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
-    "merge", "--no-ff", laterIntegration, "-m", "adopt dev context after squash");
-  await writeFile(path.join(survivorWorkspace.projectRoot, "first-followup.txt"), "first owned fix\n");
-  const firstDescendant = await commit(survivorWorkspace.projectRoot, "first ordinary follow-up");
-  await git(dev.projectRoot, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
-    "merge", "--no-ff", firstDescendant, "-m", "Test first descendant");
-  const firstDescendantIntegration = await git(dev.projectRoot, "rev-parse", "HEAD");
-  await writeFile(path.join(survivorWorkspace.projectRoot, "followup.txt"), "SQL fix\n");
-  const descendant = await commit(survivorWorkspace.projectRoot, "ordinary survivor follow-up");
-  const beforeDescendant = await git(dev.projectRoot, "rev-parse", "HEAD");
-  await git(dev.projectRoot, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
-    "merge", "--no-ff", descendant, "-m", "Test descendant");
-  const descendantIntegration = await git(dev.projectRoot, "rev-parse", "HEAD");
-  const descendantEvidence = await service.releaseIntegrationEvidence({
-    projectRoot: root, tasks: [{ ...prospectiveAwaitTask, resultCommit: descendant }],
-  });
-  const descendantTask = descendantEvidence.tasks[0];
-  assert.deepEqual(descendantTask.squashTransfer, applied);
-  const descendantProjection = (await releaseTaskNetProjections({
-    tasks: [descendantTask], baseCommit: await git(root, "rev-parse", "main"), git: projectorGit,
-  })).get(SURVIVOR_ID);
-  assert.equal(descendantProjection.commit, newResult);
-  assert.deepEqual(descendantProjection.subsequentIntegrations.map((entry) => entry.commit), [firstDescendantIntegration, descendantIntegration]);
-  const descendantPrepared = await release.prepareCandidate({
-    planRevision: "squash-descendant", workspaceId: "workspace", projectRoot: root,
-    approvedBaseCommit: await git(root, "rev-parse", "main"), frozenTasks: [descendantTask],
-  });
-  assert.equal(await git(descendantPrepared.releaseRoot, "show", `${descendantPrepared.preReleaseHead}:source.txt`), "source-result");
-  assert.equal(await git(descendantPrepared.releaseRoot, "show", `${descendantPrepared.preReleaseHead}:followup.txt`), "SQL fix");
-  assert.equal(await git(descendantPrepared.releaseRoot, "show", `${descendantPrepared.preReleaseHead}:first-followup.txt`), "first owned fix");
-  assert.equal(await git(descendantPrepared.releaseRoot, "show", `${descendantPrepared.preReleaseHead}:unique.txt`), "new-survivor-effect");
-  for (const name of ["foreign.txt", "excluded.txt"]) {
-    await assert.rejects(git(descendantPrepared.releaseRoot, "show", `${descendantPrepared.preReleaseHead}:${name}`));
-    assert.ok(await readFile(path.join(survivorWorkspace.projectRoot, name), "utf8"));
-  }
-  const latestDelta = descendantTask.integrations.find((entry) => entry.commit === descendantIntegration);
-  await assert.rejects(releaseTaskNetProjections({
-    tasks: [{ ...descendantTask, integrations: descendantTask.integrations.filter((entry) => entry.commit !== firstDescendantIntegration) }],
-    baseCommit: await git(root, "rev-parse", "main"), git: projectorGit,
-  }), /omits an owned integration/u);
-  await assert.rejects(releaseTaskNetProjections({
-    tasks: [{ ...descendantTask, integrations: descendantTask.integrations.filter((entry) => entry !== latestDelta) }],
-    baseCommit: await git(root, "rev-parse", "main"), git: projectorGit,
-  }), /latest squash descendant is not covered/u);
-  await assert.rejects(releaseTaskNetProjections({
-    tasks: [descendantTask, { ...descendantTask, taskId: "foreign-owner", squashTransfer: undefined, integrations: [latestDelta] }],
-    baseCommit: await git(root, "rev-parse", "main"), git: projectorGit,
-  }), /uniquely owned integration/u);
-  const undeclared = await git(root, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
-    "commit-tree", `${newResult}^{tree}`, "-p", beforeDescendant, "-p", descendant, "-m", "unproved integration tree");
-  await assert.rejects(releaseTaskNetProjections({
-    tasks: [{ ...descendantTask, integrations: descendantTask.integrations.map((entry) => (
-      entry === latestDelta ? { ...entry, commit: undeclared } : entry
-    )) }], baseCommit: await git(root, "rev-parse", "main"), git: projectorGit,
-  }), /exact automatic uniquely owned integration/u);
-
-  // Selected overlapping work remains at its original integration position;
-  // the descendant must neither import nor swallow the other Task's update.
-  const orderedPrepared = await release.prepareCandidate({
-    planRevision: "squash-descendant-selected-overlap", workspaceId: "workspace", projectRoot: root,
-    approvedBaseCommit: await git(root, "rev-parse", "main"),
-    frozenTasks: [descendantTask, {
-      taskId: "33333333-3333-4333-8333-333333333333", taskRevision: 1,
-      baseCommit: newResult, resultCommit: laterResult,
-      integrations: [{ commit: laterIntegration, parent: beforeLaterIntegration, order: latestDelta.order - 2 }],
-    }],
-  });
-  assert.equal(await git(orderedPrepared.releaseRoot, "show", `${orderedPrepared.preReleaseHead}:unique.txt`), "later-selected-edit");
-  assert.equal(await git(orderedPrepared.releaseRoot, "show", `${orderedPrepared.preReleaseHead}:followup.txt`), "SQL fix");
-  const partialBaseProjection = (await releaseTaskNetProjections({
-    tasks: [descendantTask], baseCommit: firstDescendant, git: projectorGit,
-  })).get(SURVIVOR_ID);
-  assert.deepEqual(partialBaseProjection.subsequentIntegrations.map((entry) => entry.commit), [descendantIntegration]);
-  const partialBasePrepared = await release.prepareCandidate({
-    planRevision: "squash-partially-published-descendant", workspaceId: "workspace", projectRoot: root,
-    approvedBaseCommit: firstDescendant, frozenTasks: [descendantTask],
-  });
-  assert.equal(await git(partialBasePrepared.releaseRoot, "show", `${partialBasePrepared.preReleaseHead}:first-followup.txt`), "first owned fix");
-  assert.equal(await git(partialBasePrepared.releaseRoot, "show", `${partialBasePrepared.preReleaseHead}:followup.txt`), "SQL fix");
   await git(root, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
     "merge", "--no-ff", newResult, "-m", "publish clean survivor");
   await git(root, "push", "origin", "main");
@@ -756,30 +674,17 @@ test("Git-applied squash reconciles its real SQLite transition without an invent
   const acceptanceLifecycle = new TaskLifecycleService({
     taskBoard, workspaceCatalog, taskGitWorkspaces: gitService, releasePreflight,
   });
-  await writeFile(path.join(survivorWorkspace.projectRoot, "after-squash.txt"), "ordinary Test child\n");
-  const childTest = await acceptanceLifecycle.updateWorkflowStatus({
-    taskId: current.id, status: "testing", operationId: "survivor-child-test",
-    projectRoot: root, expectedRevision: current.revision, expectedWorkflowStatus: "testing",
-  });
-  const testedChild = taskBoard.task(current.id);
-  assert.equal(childTest.task.workflowStatus, "testing");
-  assert.equal(testedChild.releaseRevision, current.releaseRevision);
-  assert.equal(testedChild.resultReleaseRevision, current.resultReleaseRevision);
-  assert.deepEqual(testedChild.squashTransfer, current.squashTransfer);
-  assert.notEqual(testedChild.gitReferences[0].resultCommit, newResultCommit);
   const accepted = await acceptanceLifecycle.updateWorkflowStatus({
     taskId: current.id,
     status: "awaiting_implementation",
     operationId: "survivor-await",
     projectRoot: root,
-    expectedRevision: testedChild.revision,
+    expectedRevision: current.revision,
     expectedWorkflowStatus: "testing",
   });
   const planAfter = await releasePlanner.plan(workspace.id);
   assert.equal(accepted.task.workflowStatus, "awaiting_implementation");
-  assert.ok(accepted.task.releaseRevision > testedChild.releaseRevision);
-  assert.equal(accepted.task.resultReleaseRevision, current.resultReleaseRevision);
-  assert.equal(accepted.releaseIntegration.resultCommit, testedChild.gitReferences[0].resultCommit);
+  assert.equal(accepted.releaseIntegration.resultCommit, newResultCommit);
   assert.equal(accepted.releaseCandidate.status, "invalidated");
   assert.notEqual(planAfter.revision, planBefore.revision);
   assert.equal(accepted.releaseCandidate.planRevision, planAfter.revision);

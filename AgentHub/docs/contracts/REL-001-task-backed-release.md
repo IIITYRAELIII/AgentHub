@@ -1611,17 +1611,6 @@ same proof and requires its Task ID in the stored projected set. A result alread
 contained in the approved base needs no pending projection. Generic manual
 merges receive no exception.
 
-An ordinary later Test result may continue the squash survivor's first-parent
-lineage without rewriting the immutable transfer outcome or its result revision.
-The exact later result still needs its own uniquely owned Test integration.
-Composition revalidates and projects the original clean squash result, then
-replays only subsequent automatic, uniquely owned integration deltas in their
-durable order. It never projects the descendant's whole tree or a broad
-result-to-result diff: adopted dev context is not new release authority. Missing
-latest-result coverage, ambiguous order/ownership, non-automatic continuation
-integrations or a changed witness fail closed. Other selected Tasks keep their
-original integration order relative to these continuation deltas.
-
 Await validates the exact Test-owned result and its dev integration under the
 Workspace Await, Task and repository leases, then commits only the lifecycle CAS.
 It does not build, rebuild or mutate `PreRelease`. The new accepted-plan revision

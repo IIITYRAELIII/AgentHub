@@ -308,8 +308,7 @@ function fixture(overrides = {}) {
         restart,
       }),
     },
-    revision: overrides.revision
-      ?? (() => (overrides.revisionFn ? overrides.revisionFn() : state.revision)),
+    revision: overrides.revision ?? (() => state.revision),
     readState: {
       hasUnread: (value) => value.accountId === "owner" && value.answerTurnId !== "turn-previous",
     },
@@ -2350,7 +2349,7 @@ test("a settled restart failure invalidates a cached snapshot, a later success c
   const recentRestartFailure = createRecentRestartFailure({ operations: store, now: () => clock });
   // Every other snapshot source stays unchanged; only the restart owner moves.
   const { desktopSnapshot } = fixture({
-    revisionFn: () => JSON.stringify({ sources: "unchanged", restartFailure: recentRestartFailure() }),
+    revision: () => JSON.stringify({ sources: "unchanged", restartFailure: recentRestartFailure() }),
     restartFailure: recentRestartFailure,
   });
   const settleRestart = (succeeded, error = null) => {
@@ -2405,7 +2404,7 @@ test("a restart failure that expires between snapshot reads never leaves a stale
   // revision after the build is read once its notice window has ended.
   const recentRestartFailure = () => (reads++ < 2 ? failure : null);
   const { desktopSnapshot } = fixture({
-    revisionFn: () => JSON.stringify({ sources: "unchanged", restartFailure: recentRestartFailure() }),
+    revision: () => JSON.stringify({ sources: "unchanged", restartFailure: recentRestartFailure() }),
     restartFailure: recentRestartFailure,
   });
 
