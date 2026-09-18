@@ -230,6 +230,8 @@ export async function restoreHubRuntimeSnapshot(saved, context) {
   const deferredCutoff = Date.now() - deferredInputTtlMs;
   for (let index = restoredDeferred.length - 1; index >= 0; index -= 1) {
     const entry = restoredDeferred[index];
+    // Command age belongs to the durable ledger, after active-run recovery.
+    if (entry.item.clientUserMessageId) continue;
     const createdAt = Date.parse(String(entry.item.createdAt ?? ""));
     if (!Number.isFinite(createdAt) || createdAt >= deferredCutoff) continue;
     entry.collection.delete(entry.item.id);

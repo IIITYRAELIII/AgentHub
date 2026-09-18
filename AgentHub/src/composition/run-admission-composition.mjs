@@ -9,6 +9,7 @@ import { isCodexContextProbeTurn } from "../domain/codex-context-probe.mjs";
 import { prependStreamHandoff } from "../domain/stream-handoff.mjs";
 import { isClaudeCompactionRun } from "../domain/claude-context-maintenance.mjs";
 import { markProviderTurnAccepted } from "../domain/task-runs.mjs";
+import { messageCommandMatchesRun } from "../domain/message-command-expiry.mjs";
 
 function explicitSkillCandidatesFromInput(input) {
   const text = typeof input === "string"
@@ -77,6 +78,7 @@ export function createRunAdmissionComposition({
   abortLaunchAdmission,
   logger = console,
   commandTrace = null,
+  runtimeStateStore = null,
 }) {
   const removeRuntimeFile = createRuntimeFileRemoval(config);
   if (typeof stageLaunchAdmission !== "function") {
@@ -377,8 +379,31 @@ export function createRunAdmissionComposition({
       );
     },
     maxAgeMs: config.deferredInputTtlHours * 60 * 60 * 1000,
+    expireCommands: runtimeStateStore ? () => runtimeStateStore.expireMessageCommands() : null,
     commandTrace,
   });
+
+  if (runtimeStateStore) {
+    runtimeStateStore.configureMessageCommandExpiry({
+      isProtected: (record) => (
+        runCoordinator.dispatchingClientMessageIds.has(record.clientUserMessageId)
+        || [...pendingInputs.values(), ...queuedInputs.values()].some((item) => (
+          item.clientUserMessageId === record.clientUserMessageId
+          && deferredInputController.isProcessing(item.id)
+        ))
+        || taskRuns.values().some((run) => messageCommandMatchesRun(record, run))
+      ),
+      onExpired: (record) => deferredInputController.removeExpiredCommand(record),
+    });
+    runCoordinator.beforeDeferredDispatch = (item) => {
+      runtimeStateStore.expireMessageCommands();
+      if (item && runtimeStateStore.messageCommand(item.clientUserMessageId)?.result?.expired === true) {
+        throw Object.assign(new Error("Срок жизни команды истёк (72 часа)."), {
+          code: "MESSAGE_COMMAND_EXPIRED",
+        });
+      }
+    };
+  }
 
   function scheduleQueuedInput(item, delayMs = 2000) {
     deferredInputController.schedule(item, delayMs);

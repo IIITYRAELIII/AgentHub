@@ -40,6 +40,7 @@ export function createRuntimeTimersComposition({
   }
 
   function startRuntimeTimers() {
+    deferredInputController.startExpiryMaintenance?.();
     codexContextMaintenance.schedulePeriodic();
     if (!deferredInputController.wakeAll()) {
       for (const item of queuedInputs.values()) scheduleQueuedInput(item, 500);

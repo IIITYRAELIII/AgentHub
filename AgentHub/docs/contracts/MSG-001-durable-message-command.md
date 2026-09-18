@@ -100,6 +100,23 @@ permission to create a second effect.
 Transitions are monotonic and idempotent. A canonical record atomically replaces
 its optimistic projection by the same identity.
 
+The durable command has a 72-hour lifetime from its original `accepted_at_ms`,
+including migrated active records. Updates, retries and restarts do not renew it.
+The ledger expires overdue commands in one bounded transaction at runtime queue
+startup, once per minute, and before intake capacity and dispatch checks.
+Expiry is an administrative `cancelled` command with `expired=true` and
+`providerEffectOutcome=unknown`; it is neither evidence of provider completion
+nor an instruction to interrupt a provider. Original acceptance and execution
+identity remain retained. An exact active managed run protects its root, explicit
+user-message aliases and exact provider/Thread/run or turn bindings. A queue or
+manual dispatch already claimed by the canonical orchestrator is also protected.
+These protections are re-evaluated; losing them does not renew the deadline.
+Only after durable expiry may queue projections be removed and capacity released.
+Expired commands, including uncertain starts, are never automatically replayed.
+Same-ID retries retain that outcome, including compact tombstones; later exact
+provider terminal evidence may still reconcile it through the existing owner.
+History and attachment files are not deleted by this expiry operation. See ADR-0045.
+
 A provider rejection received before provider acceptance moves that command to
 `attention-required` and releases its FIFO lane only after the rejection is
 durable. A launch with an unknown outcome keeps the lane until exact
