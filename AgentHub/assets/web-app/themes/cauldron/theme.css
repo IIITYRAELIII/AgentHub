@@ -155,7 +155,16 @@ html[data-theme="cauldron"] :is(.task-workspace-item, .board-task-card) {
 
 html[data-theme="cauldron"] .task-workspace-item[data-selected] {
   background: linear-gradient(110deg, #70401e, #33251c);
-  box-shadow: inset 4px 0 #f56a15;
+  box-shadow: inset 0 0 0 5px #f56a15;
+}
+
+/* Match the tile's fixed-size cuts. Workspace owns both activity pseudo-layers;
+   clipping its paint keeps their glow inside the frame without replacing them. */
+html[data-theme="cauldron"][data-view][data-surface] .task-list .task-workspace-item {
+  border-color: transparent;
+  clip-path: polygon(7px 0, calc(100% - 7px) 0, 100% 7px,
+    100% calc(100% - 7px), calc(100% - 7px) 100%, 7px 100%,
+    0 calc(100% - 7px), 0 7px);
 }
 
 html[data-theme="cauldron"] :is(.task-workspace-item, .board-task-card):hover {
@@ -234,9 +243,36 @@ html[data-theme="cauldron"] .stream-chat-header::after {
   pointer-events: none;
 }
 
-html[data-theme="cauldron"] .stream-tab[aria-pressed="true"] {
-  --shell-stream-tab-shadow: inset 0 -2px 0 var(--accent);
-  box-shadow: var(--shell-stream-tab-shadow);
+/* Shared chrome uses these semantic tokens. Paint only the interior status
+   layer, so selection, hover and every status effect share the same contour.
+   The button, its text and its drag target remain the original rectangle. */
+html[data-theme="cauldron"] .stream-tabs-track .stream-tab {
+  --dialog-canvas: transparent;
+  --dialog-control-hover: transparent;
+  --dialog-accent: transparent;
+  --cauldron-tab-fill: linear-gradient(115deg, #232828, #111719 75%);
+}
+
+html[data-theme="cauldron"] .stream-tabs-track .stream-tab:hover {
+  --cauldron-tab-fill: linear-gradient(115deg, #343937, #18201e);
+}
+
+html[data-theme="cauldron"] .stream-tabs-track .stream-tab[data-current] {
+  --cauldron-tab-fill: linear-gradient(110deg, #70401e, #33251c);
+  --cauldron-tab-selection: inset 0 -2px 0 var(--accent);
+}
+
+html[data-theme="cauldron"][data-view="chat"][data-surface] .stream-tabs-track .stream-tab > .stream-tab-status-layer {
+  inset: 5px 14px;
+  background: var(--cauldron-tab-fill);
+  box-shadow: var(--cauldron-tab-selection, none);
+  clip-path: polygon(4px 0, calc(100% - 4px) 0, 100% 4px,
+    100% calc(100% - 4px), calc(100% - 4px) 100%, 4px 100%,
+    0 calc(100% - 4px), 0 4px);
+}
+
+html[data-theme="cauldron"] .stream-tabs-track .stream-tab:focus-visible {
+  --cauldron-tab-selection: inset 0 0 0 2px #ffad64;
 }
 
 /* If no tab strip is shown, the header needs its own top edge. */
