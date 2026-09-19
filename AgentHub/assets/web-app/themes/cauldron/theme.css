@@ -47,6 +47,8 @@ html[data-theme="cauldron"] {
   --dialog-canvas: #090c0e;
   --dialog-chrome: #101416;
   --dialog-raised: #101416;
+  --dialog-stream-tabs-inset-top: 10px;
+  --dialog-stream-tabs-inset-inline: 12px;
   --dialog-bubble-agent: #0d1113;
   --dialog-bubble-user: #111618;
   --dialog-code-bg: #080b0d;
