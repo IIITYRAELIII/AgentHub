@@ -265,7 +265,7 @@ html[data-theme="cauldron"] .stream-tabs-track .stream-tab[data-current] {
 }
 
 html[data-theme="cauldron"][data-view="chat"][data-surface] .stream-tabs-track .stream-tab > .stream-tab-status-layer {
-  inset: 5px 14px;
+  inset: 5px calc(var(--stream-tab-inline-padding, 16px) - 2px);
   background: var(--cauldron-tab-fill);
   box-shadow: var(--cauldron-tab-selection, none);
   clip-path: polygon(4px 0, calc(100% - 4px) 0, 100% 4px,
