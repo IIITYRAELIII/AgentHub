@@ -1148,6 +1148,7 @@ export class TaskLifecycleService {
         await this.#assertOwned(lease);
         if (hasGitArtifacts) await this.taskGitWorkspaces.cleanupOwned(task.id, {
           allowDirty: false, requirePublished: true, gitReferences: task.gitReferences,
+          squashAbsorbedBy: task.squashAbsorbedBy,
           expectedPreview: preview.preview, lease,
         });
         await this.#assertOwned(lease);
@@ -1177,6 +1178,7 @@ export class TaskLifecycleService {
         await this.#assertOwned(lease);
         await this.taskGitWorkspaces?.cleanupOwned(task.id, {
           allowDirty: true, requirePublished: false, gitReferences: task.gitReferences,
+          squashAbsorbedBy: task.squashAbsorbedBy,
           expectedPreview: preview.preview, lease,
         });
         await this.#assertOwned(lease);
