@@ -56,7 +56,11 @@ provider/process completion owner may commit the exact terminal outcome.
   Terminal reconciliation accounts their usage without emitting a user response
   or changing the last message. Inline compaction inside an ordinary turn and
   legacy operations lacking that marker do not authorize suppressing its final.
-- Admission is blocked only by an exact active maintenance operation.
+- Ordinary and new-turn admission is blocked by an exact active maintenance
+  operation. An explicit steer targeting an exact active managed turn may be
+  admitted during provider-internal compaction, but its provider dispatch waits
+  durably for that compaction to settle. Hub-owned compaction and rotation
+  reservations remain admission barriers.
 - A restart requested with no selected Stream and Thread is persisted under the
   explicit runtime scope; a target naming only one of them is rejected.
 - Restart is a barrier over durable finals, command receipts, delivery outbox and

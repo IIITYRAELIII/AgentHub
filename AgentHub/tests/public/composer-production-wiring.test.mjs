@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { DeferredInputController } from "../../src/application/deferred-input-controller.mjs";
+import { deferredPendingInputSnapshot } from "../../src/interfaces/desktop/desktop-snapshot.mjs";
 import {
   task,
   snapshot,
@@ -265,24 +267,45 @@ test("production queue corrects stale idle placement and survives receipt evicti
 test("attention-required exact steer exposes explicit retry and queue decisions", {
   timeout: 90_000,
 }, async () => {
-  const deferred = {
+  const pendingInputs = new Map();
+  const queuedInputs = new Map();
+  const item = {
     id: "exact-steer-decision",
-    state: "pending",
-    attentionRequired: true,
     provider: "codex",
     threadId: "thread-a",
     streamId: "stream-a",
     taskTitle: "Agent HUB - Sirius",
     clientUserMessageId: "exact-steer-client",
     clientProjectionIntent: "conversation",
-    text: "Exact steer retained",
+    input: "Exact steer retained",
     conflictKind: "message-steer",
-    lastError: "Уточнение не доставлено в исходный ход; выберите дальнейшее действие.",
-    queueAfterTurnAvailable: true,
-    attempts: 1,
+    steerTargetRunId: "run-a",
+    steerTargetTurnId: "turn-a",
     createdAt: "2026-09-13T22:00:00.000Z",
-    attachments: [],
   };
+  queuedInputs.set(item.id, item);
+  const controller = new DeferredInputController({
+    pendingInputs,
+    queuedInputs,
+    isBlocked: async () => false,
+    occupancy: async () => ({ occupied: true, run: { id: "run-a", turnId: "turn-a" } }),
+    steer: async () => null,
+    start: async () => {},
+    persist: async () => {},
+    updateMessage: async () => {},
+    pendingKeyboard: () => ({ inline_keyboard: [] }),
+    notifyReturned: async () => {},
+    now: () => Date.parse("2026-09-13T22:00:01.000Z"),
+  });
+  await controller.process(item.id);
+  const deferred = deferredPendingInputSnapshot(pendingInputs.get(item.id), {
+    editableText: (input) => input,
+    inputPreview: (input) => input,
+    responseAnnotations: () => [],
+    describeAttachments: () => [],
+  }, { forMessage: () => null });
+  assert.equal(deferred.queueAfterTurnAvailable, true);
+  assert.equal(deferred.attentionRequired, true);
 
   for (const [selector, expectedAction] of [
     ["queue-retry", "retry"],
