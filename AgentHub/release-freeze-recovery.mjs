@@ -14,6 +14,8 @@ const sourceRoot = path.dirname(moduleFile);
 const ownerFile = path.join(sourceRoot, "src", "infrastructure", "filesystem", "release-git-workspace.mjs");
 const commitPattern = /^[a-f0-9]{40}$/u;
 const digestPattern = /^[a-f0-9]{64}$/u;
+const FREEZING_MODE = "abandon-freezing-candidate-v1";
+const FAILED_FROZEN_MODE = "abandon-failed-frozen-candidate-v1";
 
 function required(values, name) {
   const value = String(values[name] ?? "").trim();
@@ -38,6 +40,7 @@ export function parseReleaseFreezeRecoveryArguments(argv) {
   }
   const expectedSourceCommit = required(values, "expected-source-commit").toLowerCase();
   const expectedOwnerSha256 = required(values, "expected-owner-sha256").toLowerCase();
+  const recoveryMode = String(values["recovery-mode"] ?? FREEZING_MODE).trim();
   if (!commitPattern.test(expectedSourceCommit)) throw new Error("--expected-source-commit must be an exact commit");
   if (!digestPattern.test(expectedOwnerSha256)) throw new Error("--expected-owner-sha256 must be a SHA-256 digest");
   const parsed = {
@@ -46,6 +49,7 @@ export function parseReleaseFreezeRecoveryArguments(argv) {
     requestId: required(values, "request-id"),
     expectedSourceCommit,
     expectedOwnerSha256,
+    recoveryMode,
     expected: {
       planRevision: required(values, "expected-plan-revision"),
       manifestHash: required(values, "expected-manifest-hash").toLowerCase(),
@@ -58,8 +62,21 @@ export function parseReleaseFreezeRecoveryArguments(argv) {
     confirm: values["confirm-recovery"] === true,
     expectedProofHash: String(values["expected-proof"] ?? "").trim().toLowerCase() || null,
   };
+  if (![FREEZING_MODE, FAILED_FROZEN_MODE].includes(recoveryMode)) {
+    throw new Error("--recovery-mode is unsupported");
+  }
+  if (recoveryMode === FAILED_FROZEN_MODE) {
+    parsed.expected.publicationRunId = required(values, "expected-publication-run-id");
+    parsed.expected.publicationRunSha256 = required(values, "expected-publication-run-sha256").toLowerCase();
+    parsed.expected.publicationCheckpointSha256 = required(
+      values, "expected-publication-checkpoint-sha256",
+    ).toLowerCase();
+    parsed.expected.publicationLogSha256 = required(values, "expected-publication-log-sha256").toLowerCase();
+  }
   for (const [name, value] of Object.entries(parsed.expected)) {
-    const pattern = ["planRevision"].includes(name) ? digestPattern : (name === "manifestHash" ? digestPattern : commitPattern);
+    if (name === "publicationRunId") continue;
+    const pattern = ["planRevision", "manifestHash", "publicationRunSha256", "publicationCheckpointSha256",
+      "publicationLogSha256"].includes(name) ? digestPattern : commitPattern;
     if (!pattern.test(value)) throw new Error(`invalid exact recovery identity: ${name}`);
   }
   if (parsed.confirm !== Boolean(parsed.expectedProofHash)) {

@@ -7,10 +7,79 @@ import { publicationCheckpointFile, readPublicationCheckpoint } from "./publicat
 import { publicationLockOwned } from "../process/publication-lock.mjs";
 
 const TERMINAL_STATUSES = new Set(["succeeded", "published", "failed", "interrupted"]);
-const PRE_EFFECT_STEPS = new Set([
-  "Проверка release candidate в изолированном контуре",
-  "Полные тесты Agent Hub",
+export const PUBLICATION_STAGE_CONTRACT_VERSION = 1;
+export const PUBLICATION_STAGE_CONTRACT = Object.freeze([
+  { id: "release-candidate-contour", label: "Проверка release candidate в изолированном контуре", effect: false },
+  { id: "agent-hub-full-tests", label: "Полные тесты Agent Hub", effect: false },
+  { id: "prepare-publication-artifacts", label: "Подготовка артефактов публикации", effect: true },
+  { id: "publish-git", label: "Публикация Git", effect: true },
+  { id: "install-runtime-release", label: "Установка runtime-релиза", effect: true },
+  { id: "deploy-mini-app-worker", label: "Развёртывание Mini App Worker", effect: true },
+  { id: "verify-mini-app-worker", label: "Проверка Mini App Worker", effect: true },
+  { id: "activate-runtime-release", label: "Активация runtime-релиза", effect: true },
+  { id: "install-vscode-extension", label: "Установка расширения VS Code", effect: true },
 ]);
+const PUBLICATION_STAGE_BY_LABEL = new Map(PUBLICATION_STAGE_CONTRACT.map((stage) => [stage.label, stage]));
+const PRE_EFFECT_STEPS = new Set(PUBLICATION_STAGE_CONTRACT.filter((stage) => !stage.effect)
+  .map((stage) => stage.label));
+
+function stageRecord(label) {
+  const stage = PUBLICATION_STAGE_BY_LABEL.get(label);
+  return { label, stageId: stage?.id ?? null, status: "pending" };
+}
+
+export function failedFrozenPublicationEvidence(run, checkpoint, {
+  expectedRunId, allowLegacyHashBound = false,
+} = {}) {
+  if (run?.version !== 2 || run.status !== "failed" || !run.finishedAt || run.currentStep !== null
+      || !emptyRecord(run.progress) || run.runId !== expectedRunId) {
+    throw new Error("publication freeze recovery requires one exact terminal failed publication run");
+  }
+  const steps = Array.isArray(run.steps) ? run.steps : [];
+  const labels = steps.map((step) => step.label);
+  if (stableText(run.identity?.labels ?? []) !== stableText(labels)
+      || stableText(labels) !== stableText(PUBLICATION_STAGE_CONTRACT.map((stage) => stage.label))) {
+    throw new Error("publication freeze recovery found an unknown or incomplete publication stage contract");
+  }
+  const legacy = run.stageContractVersion == null;
+  if (legacy && !allowLegacyHashBound) {
+    throw new Error("publication freeze recovery legacy publication stages require an exact raw run hash");
+  }
+  if (!legacy && run.stageContractVersion !== PUBLICATION_STAGE_CONTRACT_VERSION) {
+    throw new Error("publication freeze recovery publication stage schema changed");
+  }
+  for (let index = 0; index < steps.length; index += 1) {
+    const expectedStage = PUBLICATION_STAGE_CONTRACT[index];
+    const step = steps[index];
+    if ((!legacy && step.stageId !== expectedStage.id)
+        || (expectedStage.effect && step.status !== "pending")
+        || (!expectedStage.effect && !["completed", "failed", "reused"].includes(step.status))) {
+      throw new Error("publication freeze recovery found publication effect or ambiguous stage evidence");
+    }
+  }
+  if (!["completed", "reused"].includes(steps[0].status) || steps[1].status !== "failed") {
+    throw new Error("publication freeze recovery requires the exact failed full-test boundary");
+  }
+  if (!checkpoint || stableText(checkpoint.identity) !== stableText(run.identity)
+      || stableText(checkpoint.checkpointScope) !== stableText({
+        mode: "changed", from: run.identity.from, runtimeRoot: run.identity.runtimeRoot,
+        validationMode: run.identity.validationMode,
+      })) {
+    throw new Error("publication freeze recovery publication checkpoint identity changed");
+  }
+  const completedLabels = [...(checkpoint.completedLabels ?? [])];
+  const fingerprintLabels = Object.keys(checkpoint.completedFingerprints ?? {});
+  if (stableText(completedLabels) !== stableText(fingerprintLabels)
+      || stableText(completedLabels) !== stableText([steps[0].label])
+      || [...completedLabels, ...fingerprintLabels].some((label) => !PRE_EFFECT_STEPS.has(label))) {
+    throw new Error("publication freeze recovery publication checkpoint reached an effect stage");
+  }
+  return {
+    stageContractVersion: legacy ? "legacy-hash-bound-v1" : PUBLICATION_STAGE_CONTRACT_VERSION,
+    stageIds: PUBLICATION_STAGE_CONTRACT.map((stage) => stage.id),
+    failedStageId: PUBLICATION_STAGE_CONTRACT[1].id,
+  };
+}
 
 function stable(value) {
   if (Array.isArray(value)) return value.map(stable);
@@ -207,6 +276,7 @@ export function publicationRunStore({
       const timestamp = startedAt.toISOString().replaceAll(":", "-");
       state = {
         version: 2,
+        stageContractVersion: PUBLICATION_STAGE_CONTRACT_VERSION,
         runId,
         status: "running",
         startedAt: startedAt.toISOString(),
@@ -217,7 +287,7 @@ export function publicationRunStore({
         progress: {},
         identity,
         logFile: path.join(paths.logDirectory, `${timestamp}-${runId}.log`),
-        steps: steps.map((step) => ({ label: step.label, status: "pending" })),
+        steps: steps.map((step) => stageRecord(step.label)),
         error: null,
       };
       await mkdir(paths.logDirectory, { recursive: true });
@@ -227,7 +297,7 @@ export function publicationRunStore({
     async stepStarted(label) {
       let step = state.steps.find((item) => item.label === label);
       if (!step) {
-        step = { label, status: "pending" };
+        step = stageRecord(label);
         state.steps.push(step);
       }
       Object.assign(step, { status: "running", startedAt: now().toISOString() });
@@ -237,7 +307,7 @@ export function publicationRunStore({
     async stepFinished(label, { status, error = null } = {}) {
       let step = state.steps.find((item) => item.label === label);
       if (!step) {
-        step = { label };
+        step = stageRecord(label);
         state.steps.push(step);
       }
       Object.assign(step, {

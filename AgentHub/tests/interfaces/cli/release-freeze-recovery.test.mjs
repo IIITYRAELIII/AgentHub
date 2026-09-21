@@ -45,3 +45,42 @@ test("release freeze recovery CLI requires a proof-bound confirmation", () => {
   assert.equal(parsed.confirm, true);
   assert.equal(parsed.expectedProofHash, digest);
 });
+
+test("release freeze recovery CLI binds terminal frozen publication evidence and imports without execution", async () => {
+  const input = parseReleaseFreezeRecoveryArguments(argumentsFor(
+    "--recovery-mode", "abandon-failed-frozen-candidate-v1",
+    "--expected-publication-run-id", "failed-run",
+    "--expected-publication-run-sha256", digest,
+    "--expected-publication-checkpoint-sha256", digest,
+    "--expected-publication-log-sha256", digest,
+  ));
+  assert.equal(input.recoveryMode, "abandon-failed-frozen-candidate-v1");
+  assert.deepEqual({
+    runId: input.expected.publicationRunId,
+    run: input.expected.publicationRunSha256,
+    checkpoint: input.expected.publicationCheckpointSha256,
+    log: input.expected.publicationLogSha256,
+  }, { runId: "failed-run", run: digest, checkpoint: digest, log: digest });
+  let observed = null;
+  await executeReleaseFreezeRecovery(input, {
+    inspectSource: async () => ({ head: commit, ownerSha256: digest }),
+    load: async () => ({ dataDir: "fixture" }),
+    createService: () => ({
+      recoverFreezingPublicationCandidate: async (request) => {
+        observed = request;
+        return { status: "preview", proofHash: digest, effects: [] };
+      },
+    }),
+  });
+  assert.equal(observed.recoveryMode, "abandon-failed-frozen-candidate-v1");
+  assert.equal(observed.expected.publicationRunId, "failed-run");
+});
+
+test("release freeze recovery CLI rejects incomplete failed-frozen identity", () => {
+  assert.throws(() => parseReleaseFreezeRecoveryArguments(argumentsFor(
+    "--recovery-mode", "abandon-failed-frozen-candidate-v1",
+  )), /expected-publication-run-id/u);
+  assert.throws(() => parseReleaseFreezeRecoveryArguments(argumentsFor(
+    "--recovery-mode", "unknown-recovery-mode",
+  )), /recovery-mode is unsupported/u);
+});
