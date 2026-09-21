@@ -281,6 +281,45 @@ test("Desktop deferred queue authorization rolls back exact steer intent when pe
   assert.deepEqual(item, original);
 });
 
+test("Desktop deferred generic steer cannot retarget an exact attention decision", async () => {
+  for (const errorCode of [
+    "ERR_PROVIDER_STEER_NOT_DELIVERED",
+    "ERR_PROVIDER_STEER_UNCONFIRMED",
+  ]) {
+    let providerCalls = 0;
+    const item = {
+      id: `message-${errorCode}`,
+      input: "exact intent",
+      temporaryFiles: ["stored.png"],
+      conflictKind: "message-steer",
+      clientUserMessageId: `mcp:${errorCode}`,
+      steerTargetRunId: "run-original",
+      steerTargetTurnId: "turn-original",
+      lastErrorCode: errorCode,
+      lastError: "attention required",
+      laneReleased: errorCode === "ERR_PROVIDER_STEER_NOT_DELIVERED",
+    };
+    const original = structuredClone(item);
+    const pendingInputs = new Map([[item.id, item]]);
+    const queuedInputs = new Map();
+    const service = createService(item, {
+      pendingInputs,
+      queuedInputs,
+      steerActiveInput: async () => { providerCalls += 1; return {}; },
+    });
+
+    await assert.rejects(
+      service.handle({ id: item.id, action: "steer" }),
+      /Точное уточнение нельзя переназначить/u,
+    );
+
+    assert.equal(providerCalls, 0);
+    assert.equal(pendingInputs.get(item.id), item);
+    assert.equal(queuedInputs.has(item.id), false);
+    assert.deepEqual(item, original);
+  }
+});
+
 test("Desktop deferred pause restores the queue item when durable save fails", async () => {
   const item = {
     id: "message-1", input: "later", temporaryFiles: [], lastError: "retry",

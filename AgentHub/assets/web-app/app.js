@@ -8146,19 +8146,24 @@ function renderQueueForTask(taskId, container) {
       }
     } else {
       const steerAvailable = Boolean(task?.running && ["codex", "claude"].includes(String(task?.provider ?? "")));
-      actions.push(el("button", {
-        type: "button",
-        class: "queue-steer",
-        "data-action": "queue-steer",
-        "data-queue-id": entry.id,
-        title: steerAvailable
-          ? (task.provider === "claude"
-            ? "Прервать текущий ход и продолжить его этим сообщением"
-            : "Добавить это сообщение в текущий ход")
-          : "Доступно, пока эта задача выполняет ход",
-        disabled: !steerAvailable,
-        text: "В текущий ход",
-      }));
+      const exactSteerDecision = entry.state === "pending"
+        && entry.attentionRequired === true
+        && entry.conflictKind === "message-steer";
+      if (!exactSteerDecision) {
+        actions.push(el("button", {
+          type: "button",
+          class: "queue-steer",
+          "data-action": "queue-steer",
+          "data-queue-id": entry.id,
+          title: steerAvailable
+            ? (task.provider === "claude"
+              ? "Прервать текущий ход и продолжить его этим сообщением"
+              : "Добавить это сообщение в текущий ход")
+            : "Доступно, пока эта задача выполняет ход",
+          disabled: !steerAvailable,
+          text: "В текущий ход",
+        }));
+      }
       actions.push(el("button", {
         type: "button",
         class: "queue-edit",

@@ -284,12 +284,13 @@ test("attention-required exact steer exposes explicit retry and queue decisions"
     createdAt: "2026-09-13T22:00:00.000Z",
   };
   queuedInputs.set(item.id, item);
+  let providerCalls = 0;
   const controller = new DeferredInputController({
     pendingInputs,
     queuedInputs,
     isBlocked: async () => false,
-    occupancy: async () => ({ occupied: true, run: { id: "run-a", turnId: "turn-a" } }),
-    steer: async () => null,
+    occupancy: async () => ({ occupied: false, run: null }),
+    steer: async () => { providerCalls += 1; return null; },
     start: async () => {},
     persist: async () => {},
     updateMessage: async () => {},
@@ -298,6 +299,7 @@ test("attention-required exact steer exposes explicit retry and queue decisions"
     now: () => Date.parse("2026-09-13T22:00:01.000Z"),
   });
   await controller.process(item.id);
+  assert.equal(providerCalls, 0);
   const deferred = deferredPendingInputSnapshot(pendingInputs.get(item.id), {
     editableText: (input) => input,
     inputPreview: (input) => input,
@@ -323,6 +325,7 @@ test("attention-required exact steer exposes explicit retry and queue decisions"
       await row.waitFor({ state: "visible" });
       assert.equal(await row.locator("[data-action='queue-retry']").count(), 1);
       assert.equal(await row.locator("[data-action='queue-accept']").count(), 1);
+      assert.equal(await row.locator("[data-action='queue-steer']").count(), 0);
       assert.equal((await bridgeCalls(page, "deferred-input")).length, 0);
       await row.locator(`[data-action='${selector}']`).click();
       await page.waitForFunction((action) => {
@@ -355,6 +358,7 @@ test("attention-required exact steer exposes explicit retry and queue decisions"
     await row.waitFor({ state: "visible" });
     assert.equal(await row.locator("[data-action='queue-retry']").count(), 1);
     assert.equal(await row.locator("[data-action='queue-accept']").count(), 0);
+    assert.equal(await row.locator("[data-action='queue-steer']").count(), 0);
     assert.equal((await bridgeCalls(page, "deferred-input")).length, 0);
   } finally {
     await browser.close();

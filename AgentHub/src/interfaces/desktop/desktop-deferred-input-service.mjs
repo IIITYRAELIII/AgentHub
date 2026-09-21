@@ -145,6 +145,9 @@ export class DesktopDeferredInputService {
       };
     }
     if (action === "steer") {
+      if (item.conflictKind === "message-steer") {
+        throw new Error("Точное уточнение нельзя переназначить в другой ход; используйте явный повтор или очередь");
+      }
       if (item.dispatchingAt || d.isProcessing(id)) {
         throw new Error("Сообщение уже отправляется; изменить текущий ход нельзя");
       }
