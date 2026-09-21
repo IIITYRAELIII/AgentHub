@@ -6,7 +6,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { callDesktopControl } from "../../desktop-control.mjs";
-import { delay, stopPid, waitFor } from "../../e2e/telegram-harness.mjs";
+import { E2eChildProcessOwner, waitFor } from "../../e2e/telegram-harness.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "..", "..");
 const BOT_FILE = path.join(ROOT, "agent-hub-main.mjs");
@@ -31,7 +31,8 @@ test("core-only components start without Telegram and keep Web App disabled", { 
     miniApp: { enabled: true, host: "127.0.0.1", port: 65533 },
   }, null, 2)}\n`, "utf8");
 
-  const bot = spawn(process.execPath, [BOT_FILE], {
+  const botOwner = new E2eChildProcessOwner({ label: "journal Agent Hub" });
+  const bot = botOwner.start(() => spawn(process.execPath, [BOT_FILE], {
     cwd: ROOT,
     env: {
       ...process.env,
@@ -42,7 +43,7 @@ test("core-only components start without Telegram and keep Web App disabled", { 
     },
     stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true,
-  });
+  }));
   let stdout = "";
   let stderr = "";
   bot.stdout.setEncoding("utf8");
@@ -50,11 +51,7 @@ test("core-only components start without Telegram and keep Web App disabled", { 
   bot.stdout.on("data", (chunk) => { stdout += chunk; });
   bot.stderr.on("data", (chunk) => { stderr += chunk; });
   t.after(async () => {
-    if (bot.exitCode == null) {
-      bot.kill("SIGTERM");
-      await Promise.race([new Promise((resolve) => bot.once("exit", resolve)), delay(2_000)]);
-    }
-    if (bot.exitCode == null) await stopPid(bot.pid);
+    await botOwner.stop();
     await rm(runtimeRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
 

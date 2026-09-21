@@ -10,6 +10,7 @@ import { runtimeDatabasePath } from "../../src/infrastructure/persistence/runtim
 import {
   CHAT_ID,
   delay,
+  E2eChildProcessOwner,
   e2eTimeoutMs,
   FakeTelegramApi,
   readJson,
@@ -87,12 +88,13 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   let stderr = "";
   let currentStdout = "";
   let currentStderr = "";
+  const botOwner = new E2eChildProcessOwner({ label: "Telegram Agent Hub" });
 
   async function startBot() {
     const pollingMark = telegram.calls.length;
     currentStdout = "";
     currentStderr = "";
-    bot = spawn(process.execPath, [BOT_FILE], {
+    bot = botOwner.start(() => spawn(process.execPath, [BOT_FILE], {
       cwd: AGENT_HUB_ROOT,
       env: {
         ...process.env,
@@ -103,7 +105,7 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
       },
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
-    });
+    }));
     bot.stdout.setEncoding("utf8");
     bot.stderr.setEncoding("utf8");
     bot.stdout.on("data", (chunk) => { stdout += chunk; currentStdout += chunk; });
@@ -114,19 +116,12 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
 
   async function stopBot() {
     const stoppingBot = bot;
-    if (stoppingBot && stoppingBot.exitCode == null) {
-      stoppingBot.kill("SIGTERM");
-      const exited = await Promise.race([
-        new Promise((resolve) => stoppingBot.once("exit", () => resolve(true))),
-        delay(2_000).then(() => false),
-      ]);
-      if (!exited && stoppingBot.exitCode == null) await stopPid(stoppingBot.pid);
-    }
+    if (stoppingBot) await botOwner.stop();
     try {
       const replacementPid = await readLockPid(lockPath);
       if (replacementPid !== stoppingBot?.pid) await stopPid(replacementPid);
     } catch {}
-    bot = null;
+    if (bot === stoppingBot) bot = null;
   }
 
   async function waitForRestartPolling(after, description = "restarted Telegram polling") {
