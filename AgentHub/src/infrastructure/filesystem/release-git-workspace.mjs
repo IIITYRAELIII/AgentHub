@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import { link, lstat, mkdir, mkdtemp, open, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { ReleaseCandidateFrozenError } from "../../domain/task-board-task.mjs";
@@ -11,6 +11,10 @@ import { taskRepositoryKey } from "../../domain/task-git-reference.mjs";
 import { normalizedTaskSquashTransfer } from "../../domain/task-squash-transfer.mjs";
 import { canonicalPath } from "./config.mjs";
 import { withInterprocessLocks } from "../process/interprocess-lock.mjs";
+import { withPublicationLock } from "../process/publication-lock.mjs";
+import { publicationCheckpointFile, readPublicationCheckpoint } from "../persistence/publication-checkpoint.mjs";
+import { publicationRunPaths, readPublicationRunStatus } from "../persistence/publication-run-store.mjs";
+import { publicationStateFile, publicationStateRepositories, readPublicationState } from "../persistence/publication-state.mjs";
 import { freezePreparedPublicationCandidate } from "./freeze-publication-candidate.mjs";
 import {
   resolveExactDirectTaskSideMerge,
@@ -200,6 +204,25 @@ function sha256(value) {
 function stableManifest(value) {
   return `${JSON.stringify(value, null, 2)}\n`;
 }
+
+function stableValue(value) {
+  if (Array.isArray(value)) return value.map(stableValue);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.entries(value).sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, item]) => [key, stableValue(item)]));
+}
+
+function recoveryDigest(value) {
+  return sha256(`${JSON.stringify(stableValue(value))}\n`);
+}
+
+function assertExactRecoveryExpectation(actual, expected, label) {
+  if (!expected || actual !== String(expected).trim()) {
+    throw new Error(`publication freeze recovery ${label} changed`);
+  }
+}
+
+const PUBLICATION_TERMINAL_STATUSES = new Set(["succeeded", "published", "failed", "interrupted"]);
 
 function normalizedBaseProvenance(value, expectedBaseCommit = null) {
   if (value == null) return null;
@@ -547,10 +570,20 @@ export async function assertReleaseCandidateContourSource({ sourceRoot: requeste
 
 export class ReleaseGitWorkspaceService {
   #contourExternalEffects;
+  #environment;
+  #recoveryEvidenceWrite;
+  #recoveryPhase;
   #validationBundle = null;
 
-  constructor({ dataDir, contourExternalEffects = null } = {}) {
+  constructor({
+    dataDir, contourExternalEffects = null, environment = process.env,
+    recoveryEvidenceWrite = (handle, value) => handle.writeFile(value, "utf8"),
+    recoveryPhase = async () => {},
+  } = {}) {
     this.#contourExternalEffects = assertContourExternalEffects(contourExternalEffects);
+    this.#environment = environment;
+    this.#recoveryEvidenceWrite = recoveryEvidenceWrite;
+    this.#recoveryPhase = recoveryPhase;
     this.dataDir = canonicalPath(String(dataDir ?? ""));
     this.releaseRepositoriesRoot = path.join(this.dataDir, "release-repositories");
     this.lastReconciliation = {
@@ -1281,6 +1314,308 @@ export class ReleaseGitWorkspaceService {
         return result;
       });
     });
+  }
+
+  async recoverFreezingPublicationCandidate({
+    projectRoot, workspaceId, requestId, sourceIdentity, expected = {}, confirm = false, expectedProofHash = null,
+  } = {}) {
+    this.#assertAvailable("recoverFreezingPublicationCandidate");
+    const operationId = String(requestId ?? "").trim();
+    if (!operationId) throw new Error("publication freeze recovery requires an operation request ID");
+    if (!String(workspaceId ?? "").trim()) throw new Error("publication freeze recovery requires its Workspace");
+    const verifiedSource = {
+      commit: String(sourceIdentity?.commit ?? "").trim().toLowerCase(),
+      ownerSha256: String(sourceIdentity?.ownerSha256 ?? "").trim().toLowerCase(),
+    };
+    if (!/^[a-f0-9]{40}$/u.test(verifiedSource.commit)
+        || !/^[a-f0-9]{64}$/u.test(verifiedSource.ownerSha256)) {
+      throw new Error("publication freeze recovery requires the verified source identity");
+    }
+    return withPublicationLock(async () => this.withAwaitTransition(workspaceId, async () => {
+      const initial = await this.assertPrimaryInvariant(projectRoot, { phase: "publication freeze recovery" });
+      const layout = this.#layout(initial.projectRoot);
+      const repositoryLock = path.join(this.dataDir, "locks", `release-git-${layout.repositoryKey}`);
+      return withInterprocessLocks([repositoryLock], async () => {
+        const marker = await assertReleaseCloneForPublication({ repositoryRoot: layout.releaseRoot });
+        if (!samePath(marker.primaryRoot, initial.projectRoot)) {
+          throw new Error("publication freeze recovery clone belongs to another primary");
+        }
+        const result = await this.#recoverFreezingPublicationCandidateOwned({
+          layout, marker, workspaceId: String(workspaceId), operationId, sourceIdentity: verifiedSource, expected,
+          confirm, expectedProofHash: String(expectedProofHash ?? "").trim().toLowerCase() || null,
+        });
+        const final = await this.assertPrimaryInvariant(projectRoot, { phase: "publication freeze recovery completion" });
+        if (initial.headCommit !== final.headCommit || initial.indexFingerprint !== final.indexFingerprint
+          || initial.dirtyFingerprint !== final.dirtyFingerprint) {
+          throw new Error("primary Workspace changed during publication freeze recovery");
+        }
+        return result;
+      });
+    }), { environment: this.#environment });
+  }
+
+  async #recoverFreezingPublicationCandidateOwned({
+    layout, marker, workspaceId, operationId, sourceIdentity, expected, confirm, expectedProofHash,
+  }) {
+    const checkpointBytes = await readFile(layout.checkpointFile);
+    let checkpoint = JSON.parse(checkpointBytes.toString("utf8"));
+    if (!["freezing", "abandoning", "abandoned"].includes(checkpoint?.phase)) {
+      throw new Error("publication freeze recovery requires an exact freezing attempt");
+    }
+    if (!checkpoint?.publicationFreeze || !checkpoint?.manifestHash || !checkpoint?.preReleaseHead) {
+      throw new Error("publication freeze recovery checkpoint is incomplete");
+    }
+    const manifestFile = path.join(layout.evidenceRoot, `${checkpoint.manifestHash}.json`);
+    if (checkpoint.manifestFile && !samePath(checkpoint.manifestFile, manifestFile)) {
+      throw new Error("publication freeze recovery manifest path changed");
+    }
+    const manifestBytes = await readFile(manifestFile);
+    if (sha256(manifestBytes) !== checkpoint.manifestHash) {
+      throw new Error("publication freeze recovery manifest digest changed");
+    }
+    const manifest = JSON.parse(manifestBytes.toString("utf8"));
+    if (!samePath(manifest.primaryRoot, marker.primaryRoot)
+        || !samePath(manifest.releaseRoot, layout.releaseRoot)
+        || manifest.workspaceId !== workspaceId
+        || manifest.planRevision !== checkpoint.planRevision
+        || manifest.publication?.head !== checkpoint.preReleaseHead
+        || manifest.publication?.preparedHead !== checkpoint.publicationFreeze.preparedHead) {
+      throw new Error("publication freeze recovery manifest identity changed");
+    }
+    for (const operation of [
+      "MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "rebase-apply", "rebase-merge", "sequencer", "index.lock",
+    ]) {
+      const pending = await lstat(path.join(marker.releaseGitCommonDir, operation)).catch((error) => {
+        if (error?.code === "ENOENT") return null;
+        throw error;
+      });
+      if (pending) throw new Error(`publication freeze recovery refuses pending Git operation: ${operation}`);
+    }
+    const frozenHead = checkpoint.preReleaseHead;
+    const frozenTree = await runGit(["rev-parse", `${frozenHead}^{tree}`], { cwd: layout.releaseRoot });
+    const intent = checkpoint.publicationFreeze;
+    const baseProvenance = normalizedBaseProvenance(checkpoint.baseProvenance, checkpoint.baseCommit);
+    assertExactRecoveryExpectation(checkpoint.planRevision, expected.planRevision, "plan revision");
+    assertExactRecoveryExpectation(checkpoint.manifestHash, expected.manifestHash, "manifest hash");
+    assertExactRecoveryExpectation(intent.preparedHead, expected.preparedHead, "prepared head");
+    assertExactRecoveryExpectation(frozenHead, expected.frozenHead, "frozen head");
+    assertExactRecoveryExpectation(frozenTree, expected.frozenTree, "frozen tree");
+    assertExactRecoveryExpectation(intent.oldMain, expected.publishedRevision, "published revision");
+    assertExactRecoveryExpectation(baseProvenance?.approvedOriginMainCommit, expected.approvedOriginMain, "approved origin main");
+    if (checkpoint.phase === "abandoned") {
+      if (checkpoint.recovery?.operationId !== operationId || !checkpoint.recovery?.proofHash
+          || JSON.stringify(checkpoint.recovery?.sourceIdentity) !== JSON.stringify(sourceIdentity)
+          || (expectedProofHash && checkpoint.recovery.proofHash !== expectedProofHash)) {
+        throw new Error("publication freeze recovery belongs to another exact operation");
+      }
+      return {
+        status: "abandoned", reused: true,
+        proofHash: checkpoint.recovery.proofHash, recovery: checkpoint.recovery,
+      };
+    }
+
+    const [head, headRef, main, preRelease, dirty, unmerged, remoteLine] = await Promise.all([
+      runGit(["rev-parse", "HEAD^{commit}"], { cwd: layout.releaseRoot }),
+      gitMaybe(["symbolic-ref", "-q", "HEAD"], { cwd: layout.releaseRoot }),
+      runGit(["rev-parse", "refs/heads/main^{commit}"], { cwd: layout.releaseRoot }),
+      runGit(["rev-parse", "refs/heads/PreRelease^{commit}"], { cwd: layout.releaseRoot }),
+      runGit(["--no-optional-locks", "status", "--porcelain=v1", "--untracked-files=all"], { cwd: layout.releaseRoot }),
+      runGit(["ls-files", "--unmerged"], { cwd: layout.releaseRoot }),
+      runGit(["ls-remote", "origin", "refs/heads/main"], { cwd: layout.releaseRoot, timeoutMs: 300_000 }),
+    ]);
+    if (dirty || unmerged) throw new Error("publication freeze recovery requires a clean unconflicted clone");
+    const originMain = remoteLine.split(/\s+/u)[0];
+    if (originMain !== baseProvenance.approvedOriginMainCommit) {
+      throw new Error("publication freeze recovery approved origin main changed");
+    }
+    const validMain = [frozenHead, intent.oldMain].includes(main);
+    const validPreRelease = [frozenHead, intent.oldPreRelease].includes(preRelease);
+    const validCheckout = (head === frozenHead && ["refs/heads/main", null].includes(headRef))
+      || (head === intent.oldPreRelease && ["refs/heads/PreRelease", null].includes(headRef));
+    if (!validMain || !validPreRelease || !validCheckout) {
+      throw new Error("publication freeze recovery refs or checkout changed");
+    }
+
+    const publicationStatePath = publicationStateFile(this.#environment);
+    const publicationRunPath = publicationRunPaths(this.#environment).statusFile;
+    const publicationStepPath = publicationCheckpointFile(this.#environment);
+    const [publicationState, publicationRun, publicationStep] = await Promise.all([
+      readPublicationState(publicationStatePath),
+      readPublicationRunStatus(publicationRunPath),
+      readPublicationCheckpoint(publicationStepPath),
+    ]);
+    const publishedRepository = publicationStateRepositories(publicationState ?? {})
+      .find((entry) => samePath(entry.root, marker.primaryRoot));
+    if (!publishedRepository || publishedRepository.revision !== intent.oldMain) {
+      throw new Error("publication freeze recovery durable published revision changed");
+    }
+    if (publicationRun && !PUBLICATION_TERMINAL_STATUSES.has(publicationRun.status)) {
+      throw new Error("publication freeze recovery refuses an active or ambiguous publication run");
+    }
+    const matchesCandidate = (value) => value != null && [frozenHead, checkpoint.manifestHash, checkpoint.planRevision]
+      .some((identity) => JSON.stringify(value).includes(identity));
+    if (matchesCandidate(publicationRun) || matchesCandidate(publicationStep)) {
+      throw new Error("publication freeze recovery found publication progress for this candidate");
+    }
+
+    const recoveryIdentity = {
+      schemaVersion: 1,
+      mode: "abandon-freezing-candidate-v1",
+      operationId,
+      sourceIdentity,
+      workspaceId,
+      repositoryKey: layout.repositoryKey,
+      primaryRoot: marker.primaryRoot,
+      releaseRoot: layout.releaseRoot,
+      sourceCheckpointSha256: checkpoint.recovery?.sourceCheckpointSha256 ?? sha256(checkpointBytes),
+      sourceManifestSha256: checkpoint.recovery?.sourceManifestSha256 ?? sha256(manifestBytes),
+      planRevision: checkpoint.planRevision,
+      manifestHash: checkpoint.manifestHash,
+      preparedHead: intent.preparedHead,
+      frozenHead,
+      frozenTree,
+      oldMain: intent.oldMain,
+      oldPreRelease: intent.oldPreRelease,
+      baseCommit: checkpoint.baseCommit,
+      baseProvenance,
+      frozenTasks: (manifest.tasks ?? []).map((task) => ({
+        taskId: task.taskId,
+        taskRevision: task.taskRevision,
+        resultCommit: task.resultCommit,
+        integrations: task.integrations,
+      })),
+      originMain,
+      publicationStateSha256: recoveryDigest(publishedRepository),
+      publicationRunObservation: "no-current-candidate-evidence",
+      publicationCheckpointObservation: "no-current-candidate-evidence",
+      effects: [
+        `refs/heads/main:${frozenHead}->${intent.oldMain}`,
+        `refs/heads/PreRelease:${frozenHead}->${intent.oldPreRelease}`,
+        `checkout:refs/heads/PreRelease@${intent.oldPreRelease}`,
+      ],
+    };
+    const proofHash = recoveryDigest(recoveryIdentity);
+    if (checkpoint.phase !== "freezing") {
+      if (checkpoint.recovery?.operationId !== operationId || checkpoint.recovery?.proofHash !== proofHash) {
+        throw new Error("publication freeze recovery belongs to another exact operation");
+      }
+    }
+    if (!confirm) return { status: "preview", proofHash, identity: recoveryIdentity, effects: recoveryIdentity.effects };
+    if (!expectedProofHash || expectedProofHash !== proofHash) {
+      throw new Error("publication freeze recovery confirmation proof changed");
+    }
+
+    // The source-checkpoint digest, rather than the caller proof, owns this
+    // filename. If a process stops after evidence creation but before the
+    // checkpoint CAS, another operation can observe and must not replace the
+    // already admitted recovery identity.
+    const evidenceFile = path.join(layout.evidenceRoot,
+      `freeze-recovery-${recoveryIdentity.sourceCheckpointSha256}.json`);
+    let existingEvidence = await readFile(evidenceFile).catch((error) => {
+      if (error?.code === "ENOENT") return null;
+      throw error;
+    });
+    let evidenceSha256 = null;
+    if (existingEvidence) {
+      const parsedEvidence = JSON.parse(existingEvidence.toString("utf8"));
+      if (parsedEvidence.proofHash !== proofHash || parsedEvidence.operationId !== operationId
+          || stableManifest(parsedEvidence) !== existingEvidence.toString("utf8")
+          || sha256(Buffer.from(parsedEvidence.sourceCheckpointBytesBase64 ?? "", "base64"))
+            !== recoveryIdentity.sourceCheckpointSha256
+          || sha256(Buffer.from(parsedEvidence.sourceManifestBytesBase64 ?? "", "base64"))
+            !== recoveryIdentity.sourceManifestSha256
+          || Object.entries(recoveryIdentity).some(([key, value]) => (
+            JSON.stringify(parsedEvidence[key]) !== JSON.stringify(value)
+          ))) {
+        throw new Error("publication freeze recovery evidence conflicts with the exact operation");
+      }
+      evidenceSha256 = sha256(existingEvidence);
+    } else {
+      if (checkpoint.phase !== "freezing") throw new Error("publication freeze recovery evidence is missing");
+      const evidence = { ...recoveryIdentity, proofHash,
+        sourceCheckpointBytesBase64: checkpointBytes.toString("base64"),
+        sourceManifestBytesBase64: manifestBytes.toString("base64"),
+        sourceCheckpoint: checkpoint, sourceManifest: manifest,
+        publicationState, publicationRun, publicationCheckpoint: publicationStep };
+      const evidenceText = stableManifest(evidence);
+      const temporary = path.join(layout.evidenceRoot,
+        `.freeze-recovery-${recoveryIdentity.sourceCheckpointSha256}-${randomUUID()}.tmp`);
+      let handle = null;
+      try {
+        handle = await open(temporary, "wx");
+        await this.#recoveryEvidenceWrite(handle, evidenceText);
+        await handle.sync();
+        await handle.close();
+        handle = null;
+        await this.#recoveryPhase("evidence-temporary");
+        try {
+          await link(temporary, evidenceFile);
+        } catch (error) {
+          if (error?.code !== "EEXIST") throw error;
+        }
+      } finally {
+        await handle?.close().catch(() => {});
+        await rm(temporary, { force: true });
+      }
+      existingEvidence = await readFile(evidenceFile);
+      if (!existingEvidence.equals(Buffer.from(evidenceText))) {
+        throw new Error("publication freeze recovery evidence conflicts with the exact operation");
+      }
+      evidenceSha256 = sha256(existingEvidence);
+    }
+    if (checkpoint.recovery?.evidenceSha256 && checkpoint.recovery.evidenceSha256 !== evidenceSha256) {
+      throw new Error("publication freeze recovery evidence digest changed");
+    }
+    await this.#recoveryPhase("evidence");
+    if (checkpoint.phase === "freezing") {
+      checkpoint = { ...checkpoint, phase: "abandoning", recovery: {
+        operationId, proofHash, evidenceFile, evidenceSha256, sourceIdentity,
+        sourceCheckpointSha256: recoveryIdentity.sourceCheckpointSha256,
+        sourceManifestSha256: recoveryIdentity.sourceManifestSha256, oldMain: intent.oldMain,
+        oldPreRelease: intent.oldPreRelease, frozenHead, frozenTree,
+      }, updatedAt: new Date().toISOString() };
+      await writeJsonAtomic(layout.checkpointFile, checkpoint);
+      await this.#recoveryPhase("intent");
+    }
+    if (headRef !== null || head !== frozenHead) {
+      await runGit(["checkout", "--detach", "--force", frozenHead], { cwd: layout.releaseRoot });
+    }
+    await this.#recoveryPhase("detached");
+    const currentMain = await runGit(["rev-parse", "refs/heads/main^{commit}"], { cwd: layout.releaseRoot });
+    if (currentMain === frozenHead) {
+      await runGit(["update-ref", "refs/heads/main", intent.oldMain, frozenHead], { cwd: layout.releaseRoot });
+    } else if (currentMain !== intent.oldMain) throw new Error("publication freeze recovery main CAS changed");
+    await this.#recoveryPhase("main");
+    const currentPreRelease = await runGit(["rev-parse", "refs/heads/PreRelease^{commit}"], { cwd: layout.releaseRoot });
+    if (currentPreRelease === frozenHead) {
+      await runGit(["update-ref", "refs/heads/PreRelease", intent.oldPreRelease, frozenHead], { cwd: layout.releaseRoot });
+    } else if (currentPreRelease !== intent.oldPreRelease) throw new Error("publication freeze recovery PreRelease CAS changed");
+    await this.#recoveryPhase("refs");
+    const preparedHead = await runGit(["rev-parse", "HEAD^{commit}"], { cwd: layout.releaseRoot });
+    const preparedRef = await gitMaybe(["symbolic-ref", "-q", "HEAD"], { cwd: layout.releaseRoot });
+    if (preparedHead !== intent.oldPreRelease || preparedRef !== null) {
+      await runGit(["checkout", "--detach", "--force", intent.oldPreRelease], { cwd: layout.releaseRoot });
+    }
+    await this.#recoveryPhase("prepared-detached");
+    await runGit(["symbolic-ref", "HEAD", "refs/heads/PreRelease"], { cwd: layout.releaseRoot });
+    await this.#recoveryPhase("checkout");
+    const [finalHead, finalRef, finalMain, finalPreRelease, finalDirty] = await Promise.all([
+      runGit(["rev-parse", "HEAD^{commit}"], { cwd: layout.releaseRoot }),
+      runGit(["symbolic-ref", "HEAD"], { cwd: layout.releaseRoot }),
+      runGit(["rev-parse", "refs/heads/main^{commit}"], { cwd: layout.releaseRoot }),
+      runGit(["rev-parse", "refs/heads/PreRelease^{commit}"], { cwd: layout.releaseRoot }),
+      runGit(["--no-optional-locks", "status", "--porcelain=v1", "--untracked-files=all"], { cwd: layout.releaseRoot }),
+    ]);
+    if (finalHead !== intent.oldPreRelease || finalRef !== "refs/heads/PreRelease"
+        || finalMain !== intent.oldMain || finalPreRelease !== intent.oldPreRelease || finalDirty) {
+      throw new Error("publication freeze recovery did not restore the exact prepared state");
+    }
+    checkpoint = { ...checkpoint, phase: "abandoned", recovery: {
+      ...checkpoint.recovery, outcome: "abandoned", completedAt: new Date().toISOString(),
+    }, updatedAt: new Date().toISOString() };
+    await writeJsonAtomic(layout.checkpointFile, checkpoint);
+    await this.#recoveryPhase("completed");
+    return { status: "abandoned", reused: false, proofHash, recovery: checkpoint.recovery };
   }
 
   async frozenCandidate(projectRoot) {

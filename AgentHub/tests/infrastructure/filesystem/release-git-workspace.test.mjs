@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 
 import {
@@ -22,6 +23,7 @@ import {
 } from "../../../src/runtime/test-contour-manager.mjs";
 
 const execFileAsync = promisify(execFile);
+const RECOVERY_SOURCE = { commit: "c".repeat(40), ownerSha256: "d".repeat(64) };
 
 async function git(cwd, ...args) {
   return String((await execFileAsync("git", args, { cwd, windowsHide: true })).stdout).trim();
@@ -185,6 +187,272 @@ test("release candidate uses an independent clone and leaves a clean primary att
     assertReleaseCloneForPublication({ repositoryRoot: setup.primary }),
     /requires an Agent Hub-owned independent release clone/u,
   );
+});
+
+async function interruptedFreezeFixture(context, {
+  recoveryEvidenceWrite = (handle, value) => handle.writeFile(value, "utf8"),
+  recoveryPhase = async () => {},
+} = {}) {
+  const setup = await fixture(context);
+  const environment = { ...process.env, LOCALAPPDATA: path.join(setup.root, "state") };
+  const resultCommit = await taskResult(setup, context, { branch: "HUB-recovery" });
+  const planRevision = "7".repeat(64);
+  const baseProvenance = {
+    schemaVersion: 1,
+    kind: "explicit-reviewed-main-v1",
+    publishedBaseCommit: setup.baseCommit,
+    approvedLocalMainCommit: setup.baseCommit,
+    approvedOriginMainCommit: setup.baseCommit,
+  };
+  const candidate = await setup.service.prepareCandidate({
+    planRevision, projectRoot: setup.primary, workspaceId: "workspace-recovery",
+    approvedBaseCommit: setup.baseCommit, baseProvenance,
+    frozenTasks: [{ taskId: "task-recovery", taskRevision: 2, resultCommit }],
+  });
+  const changelog = Buffer.from("# release\n\nrecovery fixture\n", "utf8");
+  await writeFile(path.join(candidate.releaseRoot, "CHANGELOG.md"), changelog);
+  const frozen = await setup.service.freezePublicationCandidate({
+    projectRoot: setup.primary, workspaceId: "workspace-recovery",
+    expectedPlanRevision: planRevision, expectedPreparedHead: candidate.preReleaseHead,
+    changelogContent: changelog, releaseDate: new Date("2026-09-21T00:00:00Z"),
+  });
+  const checkpointFile = path.join(setup.dataDir, "release-repositories", taskRepositoryKey(setup.primary), "checkpoint.json");
+  const checkpoint = JSON.parse(await readFile(checkpointFile, "utf8"));
+  checkpoint.phase = "freezing";
+  await writeFile(checkpointFile, `${JSON.stringify(checkpoint, null, 2)}\n`, "utf8");
+  const publicationStateFile = path.join(environment.LOCALAPPDATA, "AgentHub", "publication-state.json");
+  await mkdir(path.dirname(publicationStateFile), { recursive: true });
+  await writeFile(publicationStateFile, `${JSON.stringify({ repositories: [{
+    root: setup.primary, revision: setup.baseCommit,
+  }] }, null, 2)}\n`, "utf8");
+  const expected = {
+    planRevision,
+    manifestHash: checkpoint.manifestHash,
+    preparedHead: checkpoint.publicationFreeze.preparedHead,
+    frozenHead: checkpoint.preReleaseHead,
+    frozenTree: await git(candidate.releaseRoot, "rev-parse", `${checkpoint.preReleaseHead}^{tree}`),
+    publishedRevision: setup.baseCommit,
+    approvedOriginMain: setup.baseCommit,
+  };
+  return {
+    ...setup, candidate, checkpointFile, expected, environment,
+    service: new ReleaseGitWorkspaceService({
+      dataDir: setup.dataDir, environment, recoveryEvidenceWrite, recoveryPhase,
+    }),
+  };
+}
+
+test("freezing recovery previews exact proof and abandons with preserved evidence", async (context) => {
+  const setup = await interruptedFreezeFixture(context);
+  const request = {
+    projectRoot: setup.primary, workspaceId: "workspace-recovery", requestId: "recover-one",
+    sourceIdentity: RECOVERY_SOURCE, expected: setup.expected,
+  };
+  const preview = await setup.service.recoverFreezingPublicationCandidate(request);
+  assert.equal(preview.status, "preview");
+  assert.deepEqual(preview.effects, [
+    `refs/heads/main:${setup.expected.frozenHead}->${setup.baseCommit}`,
+    `refs/heads/PreRelease:${setup.expected.frozenHead}->${setup.expected.preparedHead}`,
+    `checkout:refs/heads/PreRelease@${setup.expected.preparedHead}`,
+  ]);
+  assert.equal(await git(setup.candidate.releaseRoot, "rev-parse", "main"), setup.expected.frozenHead);
+  await assert.rejects(setup.service.recoverFreezingPublicationCandidate({
+    ...request,
+    sourceIdentity: { commit: "e".repeat(40), ownerSha256: "f".repeat(64) },
+    confirm: true,
+    expectedProofHash: preview.proofHash,
+  }), /confirmation proof changed/u);
+  const completed = await setup.service.recoverFreezingPublicationCandidate({
+    ...request, confirm: true, expectedProofHash: preview.proofHash,
+  });
+  assert.equal(completed.status, "abandoned");
+  assert.equal(await git(setup.candidate.releaseRoot, "rev-parse", "main"), setup.baseCommit);
+  assert.equal(await git(setup.candidate.releaseRoot, "rev-parse", "PreRelease"), setup.expected.preparedHead);
+  assert.equal(await git(setup.candidate.releaseRoot, "symbolic-ref", "HEAD"), "refs/heads/PreRelease");
+  assert.equal(await git(setup.candidate.releaseRoot, "status", "--porcelain=v1"), "");
+  const finalCheckpoint = JSON.parse(await readFile(setup.checkpointFile, "utf8"));
+  assert.equal(finalCheckpoint.phase, "abandoned");
+  assert.equal(finalCheckpoint.recovery.proofHash, preview.proofHash);
+  assert.equal((await stat(finalCheckpoint.recovery.evidenceFile)).isFile(), true);
+  assert.equal((await stat(path.join(setup.dataDir, "release-repositories", taskRepositoryKey(setup.primary),
+    "evidence", `${setup.expected.manifestHash}.json`))).isFile(), true);
+  assert.equal(await git(setup.candidate.releaseRoot, "cat-file", "-t", setup.expected.frozenHead), "commit");
+  const stateRoot = path.join(setup.environment.LOCALAPPDATA, "AgentHub");
+  await writeFile(path.join(stateRoot, "publication-state.json"), `${JSON.stringify({ repositories: [{
+    root: setup.primary, revision: "f".repeat(40),
+  }] }, null, 2)}\n`);
+  await writeFile(path.join(stateRoot, "publication-status.json"), `${JSON.stringify({
+    version: 2, status: "running", identity: { planRevision: setup.expected.planRevision },
+  }, null, 2)}\n`);
+  const reused = await setup.service.recoverFreezingPublicationCandidate({
+    ...request, confirm: true, expectedProofHash: preview.proofHash,
+  });
+  assert.equal(reused.reused, true);
+  await assert.rejects(setup.service.recoverFreezingPublicationCandidate({
+    ...request, requestId: "recover-other",
+  }), /belongs to another exact operation/u);
+});
+
+for (const crashPhase of [
+  "evidence-temporary", "evidence", "intent", "detached", "main", "refs", "prepared-detached", "checkout", "completed",
+]) {
+  test(`freezing recovery resumes the same operation after ${crashPhase}`, async (context) => {
+    let interrupt = true;
+    const setup = await interruptedFreezeFixture(context, {
+      recoveryPhase: async (phase) => {
+        if (phase === crashPhase && interrupt) {
+          interrupt = false;
+          throw new Error(`simulated ${crashPhase} interruption`);
+        }
+      },
+    });
+    const request = {
+      projectRoot: setup.primary, workspaceId: "workspace-recovery", requestId: `recover-${crashPhase}`,
+      sourceIdentity: RECOVERY_SOURCE, expected: setup.expected,
+    };
+    const preview = await setup.service.recoverFreezingPublicationCandidate(request);
+    await assert.rejects(setup.service.recoverFreezingPublicationCandidate({
+      ...request, confirm: true, expectedProofHash: preview.proofHash,
+    }), new RegExp(`simulated ${crashPhase} interruption`, "u"));
+    if (crashPhase === "evidence") {
+      const foreignRequest = { ...request, requestId: "recover-foreign-after-evidence" };
+      const foreignPreview = await setup.service.recoverFreezingPublicationCandidate(foreignRequest);
+      await assert.rejects(setup.service.recoverFreezingPublicationCandidate({
+        ...foreignRequest, confirm: true, expectedProofHash: foreignPreview.proofHash,
+      }), /evidence conflicts with the exact operation/u);
+    }
+    const resumedService = new ReleaseGitWorkspaceService({ dataDir: setup.dataDir, environment: setup.environment });
+    const resumed = await resumedService.recoverFreezingPublicationCandidate({
+      ...request, confirm: true, expectedProofHash: preview.proofHash,
+    });
+    assert.equal(resumed.status, "abandoned");
+    assert.equal(await git(setup.candidate.releaseRoot, "rev-parse", "main"), setup.baseCommit);
+    assert.equal(await git(setup.candidate.releaseRoot, "rev-parse", "PreRelease"), setup.expected.preparedHead);
+  });
+}
+
+test("freezing recovery removes a partial temporary evidence write and retries exactly", async (context) => {
+  let interruptWrite = true;
+  const setup = await interruptedFreezeFixture(context, {
+    recoveryEvidenceWrite: async (handle, value) => {
+      if (interruptWrite) {
+        interruptWrite = false;
+        await handle.writeFile(value.slice(0, Math.floor(value.length / 2)), "utf8");
+        await handle.sync();
+        throw new Error("simulated partial evidence write");
+      }
+      await handle.writeFile(value, "utf8");
+    },
+  });
+  const request = {
+    projectRoot: setup.primary, workspaceId: "workspace-recovery", requestId: "recover-partial-evidence",
+    sourceIdentity: RECOVERY_SOURCE, expected: setup.expected,
+  };
+  const preview = await setup.service.recoverFreezingPublicationCandidate(request);
+  await assert.rejects(setup.service.recoverFreezingPublicationCandidate({
+    ...request, confirm: true, expectedProofHash: preview.proofHash,
+  }), /simulated partial evidence write/u);
+  const evidenceRoot = path.join(setup.dataDir, "release-repositories", taskRepositoryKey(setup.primary), "evidence");
+  assert.equal((await readdir(evidenceRoot)).some((file) => file.startsWith(".freeze-recovery-")), false);
+  assert.equal((await readdir(evidenceRoot)).some((file) => file.startsWith("freeze-recovery-")), false);
+  const completed = await setup.service.recoverFreezingPublicationCandidate({
+    ...request, confirm: true, expectedProofHash: preview.proofHash,
+  });
+  assert.equal(completed.status, "abandoned");
+});
+
+test("freezing recovery rejects drift and publication evidence before effects", async (context) => {
+  const setup = await interruptedFreezeFixture(context);
+  const request = {
+    projectRoot: setup.primary, workspaceId: "workspace-recovery", requestId: "recover-drift",
+    sourceIdentity: RECOVERY_SOURCE, expected: setup.expected,
+  };
+  await assert.rejects(setup.service.recoverFreezingPublicationCandidate({
+    ...request, expected: { ...setup.expected, approvedOriginMain: "a".repeat(40) },
+  }), /approved origin main changed/u);
+  const statusFile = path.join(setup.environment.LOCALAPPDATA, "AgentHub", "publication-status.json");
+  await writeFile(statusFile, `${JSON.stringify({ version: 2, status: "running", identity: {} }, null, 2)}\n`);
+  await assert.rejects(setup.service.recoverFreezingPublicationCandidate(request), /active or ambiguous publication run/u);
+  assert.equal(await git(setup.candidate.releaseRoot, "rev-parse", "main"), setup.expected.frozenHead);
+});
+
+test("abandoned freeze rebuild preserves reviewed incoming base and composes the fixed publisher Task", async (context) => {
+  const setup = await fixture(context);
+  const environment = { ...process.env, LOCALAPPDATA: path.join(setup.root, "state") };
+  await setup.service.prepareCandidate({
+    planRevision: "1".repeat(64), projectRoot: setup.primary, workspaceId: "workspace-rebuild",
+    approvedBaseCommit: setup.baseCommit, frozenTasks: [],
+  });
+  const incomingRoot = path.join(setup.root, "incoming");
+  await git(setup.root, "clone", setup.origin, incomingRoot);
+  await git(incomingRoot, "config", "core.autocrlf", "false");
+  await writeFile(path.join(incomingRoot, "incoming.txt"), "approved incoming\n");
+  const incomingCommit = await commit(incomingRoot, "approved incoming main");
+  await git(incomingRoot, "push", "origin", "main");
+  await git(setup.primary, "fetch", "origin", "main");
+  const initialPlan = "2".repeat(64);
+  const provenance = {
+    schemaVersion: 1, kind: "explicit-reviewed-main-v1",
+    publishedBaseCommit: setup.baseCommit,
+    approvedLocalMainCommit: setup.baseCommit,
+    approvedOriginMainCommit: incomingCommit,
+  };
+  const prepared = await setup.service.prepareCandidate({
+    planRevision: initialPlan, projectRoot: setup.primary, workspaceId: "workspace-rebuild",
+    approvedBaseCommit: incomingCommit, baseProvenance: provenance, frozenTasks: [],
+  });
+  const changelog = Buffer.from("# incoming release\n", "utf8");
+  await writeFile(path.join(prepared.releaseRoot, "CHANGELOG.md"), changelog);
+  await setup.service.freezePublicationCandidate({
+    projectRoot: setup.primary, workspaceId: "workspace-rebuild", expectedPlanRevision: initialPlan,
+    expectedPreparedHead: prepared.preReleaseHead, changelogContent: changelog,
+    releaseDate: new Date("2026-09-21T00:00:00Z"),
+  });
+  const checkpointFile = path.join(setup.dataDir, "release-repositories", taskRepositoryKey(setup.primary), "checkpoint.json");
+  const checkpoint = JSON.parse(await readFile(checkpointFile, "utf8"));
+  checkpoint.phase = "freezing";
+  await writeFile(checkpointFile, `${JSON.stringify(checkpoint, null, 2)}\n`);
+  const stateFile = path.join(environment.LOCALAPPDATA, "AgentHub", "publication-state.json");
+  await mkdir(path.dirname(stateFile), { recursive: true });
+  await writeFile(stateFile, `${JSON.stringify({ repositories: [{ root: setup.primary, revision: setup.baseCommit }] }, null, 2)}\n`);
+  const recovery = new ReleaseGitWorkspaceService({ dataDir: setup.dataDir, environment });
+  const request = {
+    projectRoot: setup.primary, workspaceId: "workspace-rebuild", requestId: "recover-before-rebuild",
+    sourceIdentity: RECOVERY_SOURCE,
+    expected: {
+      planRevision: initialPlan, manifestHash: checkpoint.manifestHash,
+      preparedHead: checkpoint.publicationFreeze.preparedHead, frozenHead: checkpoint.preReleaseHead,
+      frozenTree: await git(prepared.releaseRoot, "rev-parse", `${checkpoint.preReleaseHead}^{tree}`),
+      publishedRevision: setup.baseCommit, approvedOriginMain: incomingCommit,
+    },
+  };
+  const preview = await recovery.recoverFreezingPublicationCandidate(request);
+  await recovery.recoverFreezingPublicationCandidate({ ...request, confirm: true, expectedProofHash: preview.proofHash });
+
+  const taskRoot = path.join(setup.root, "task-HUB-256");
+  await git(setup.primary, "worktree", "add", "-b", "HUB-256-rebuild", taskRoot, incomingCommit);
+  context.after(() => git(setup.primary, "worktree", "remove", "--force", taskRoot).catch(() => {}));
+  const helperFile = path.join(taskRoot, "AgentHub", "src", "infrastructure", "filesystem", "freeze-publication-candidate.mjs");
+  const publisherFile = path.join(taskRoot, "AgentHub", "publish-changed.mjs");
+  await mkdir(path.dirname(helperFile), { recursive: true });
+  await writeFile(helperFile, "export const persistedPayloadOwner = 'HUB-256';\n");
+  await writeFile(publisherFile,
+    "import { persistedPayloadOwner } from './src/infrastructure/filesystem/freeze-publication-candidate.mjs';\n"
+    + "export const freezeOwnerReadback = () => persistedPayloadOwner;\n");
+  const hub256Result = await commit(taskRoot, "HUB-256 fixed public publisher");
+  const rebuilt = await recovery.prepareCandidate({
+    planRevision: "3".repeat(64), projectRoot: setup.primary, workspaceId: "workspace-rebuild",
+    approvedBaseCommit: incomingCommit, baseProvenance: provenance,
+    frozenTasks: [{ taskId: "HUB-256", taskRevision: 6, resultCommit: hub256Result }],
+  });
+  const rebuiltManifest = JSON.parse(await readFile(rebuilt.manifestFile, "utf8"));
+  assert.deepEqual(rebuiltManifest.tasks.map((task) => task.taskId), ["HUB-256"]);
+  assert.equal(await git(rebuilt.releaseRoot, "show", `${rebuilt.preReleaseHead}:incoming.txt`), "approved incoming");
+  const rebuiltPublisherFile = path.join(rebuilt.releaseRoot, "AgentHub", "publish-changed.mjs");
+  const publisher = await import(`${pathToFileURL(rebuiltPublisherFile).href}?fixture=${Date.now()}`);
+  assert.equal(publisher.freezeOwnerReadback(), "HUB-256");
+  assert.equal(await git(rebuilt.releaseRoot, "rev-parse", "main"), setup.baseCommit);
+  assert.equal(await git(setup.origin, "rev-parse", "main"), incomingCommit);
 });
 
 test("frozen candidate readback validates prepared manifest identity and request binding", async (context) => {

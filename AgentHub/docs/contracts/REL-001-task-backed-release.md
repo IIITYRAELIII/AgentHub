@@ -941,6 +941,23 @@ checkpoint requires an exact clean `main` checkout while both `main` and
 any branch, ref, tree, index or worktree drift fail closed. Freeze remains the
 only owner that promotes and attaches the standalone clone to `main`.
 
+A failed pre-publication freeze may be explicitly abandoned only through the
+Release Git Workspace recovery owner. Preview takes the canonical publication,
+Workspace Await and repository leases and binds the exact checkpoint and
+manifest bytes, plan, prepared/freeze commits and tree, clean clone, both local
+refs, durable published revision, reviewed incoming `origin/main`, publication
+run/checkpoint state and caller operation. Confirmation repeats that proof and
+first preserves the original checkpoint, manifest and publication observations
+as content-addressed evidence. It then CAS-restores only local `main` and
+`PreRelease` to the exact values recorded by the freeze intent, restores the
+clean prepared checkout and records an idempotent `abandoned` outcome. A retry
+of the same operation resumes its durable phases; another operation, any drift,
+or publication evidence for the candidate has no effect. Recovery never pushes,
+deploys, mutates Tasks, deletes candidate objects/evidence, invents a result or
+silently starts rebuilding. A later candidate is built through ordinary
+reviewed Await preparation, so an approved incoming base remains distinct from
+the last locally published revision.
+
 Completion performs one transaction that checks every accepted Task identity
 and the plan hash, CAS-writes each current row, then changes only those Tasks to `done` and persists a
 versioned finalization marker in the same commit. That marker binds the exact
