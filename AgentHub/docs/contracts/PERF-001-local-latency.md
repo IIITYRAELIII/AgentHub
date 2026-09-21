@@ -18,6 +18,14 @@ Cross-process timestamps use UTC epoch; durations inside one process use a
 monotonic clock. Every blocking span reports outcome, queue depth and relevant
 lock or SQLite wait.
 
+Managed-run admission reports content-free child spans for provider preparation,
+Task-diff persistence, detached task-sync enqueue and runtime-state persistence.
+The task-sync span covers only its synchronous enqueue boundary; diagnostics do
+not add an await or change launch ordering. An unchanged most-recent Task diff
+shares the already scheduled durable write instead of serializing and fsyncing
+the complete bounded cache again. A changed value or eviction-order change is
+still persisted, and a failed write remains retryable with the same content.
+
 ## Unified performance evidence
 
 Client interactions, navigation, control ACKs, request and rendering durations,
@@ -216,6 +224,12 @@ lane through the exact metadata-mutation handshake. Export, import and account
 projection perform worker I/O outside the lane; journal commits re-enter it
 with the existing revision fence. The handshake acquires the lane only when
 the worker reaches that mutation and releases it before any further request.
+Automatic terminal provider-account resolution likewise runs before the journal
+mutation lane. Concurrent records for one provider share only the in-flight
+account read; each exact record still commits independently with that observed
+account identity. A settled or failed read is not cached, so a later terminal
+observes an account change and a failed read remains retryable. Replacing the
+account resolver invalidates every in-flight sharing slot for subsequent reads.
 Runtime journal repository writes follow the same contention protocol as worker
 journal commits. Each leaf database write that meets a foreign SQLite write lock
 waits within the existing mutation window and is repeated only when its
