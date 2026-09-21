@@ -151,6 +151,29 @@ confirmation token binds both Tasks and Git evidence; the durable completion
 receipt records the surviving Task. Closed sources are excluded from the release
 set. Ordinary claim cannot reopen them.
 
+An already-published zero-own-delta duplicate uses the same lifecycle owner but
+requires the explicit `absorption_mode=published_duplicate` Release Manager
+request. It does not relax ordinary absorption's open/tested-survivor guard.
+The source must remain open in the same Workspace, have a Hub-owned clean
+worktree with no untracked paths, Git result, legacy adoption or squash evidence,
+and its exact HEAD must equal repository-scoped durable publication, local main
+and origin/main. The survivor must already be workflow/status Done, retain one
+exact Test result per source repository, and that result must be an ancestor of
+the same published revision. Clean or ancestral state without these identities
+is insufficient.
+
+Preview binds both Task revisions, every source base/branch/HEAD, every survivor
+result, repository-scoped published revisions, publication generation, explicit
+mode and a preserve-only cleanup plan. Confirmation repeats the Git proof under
+the existing Await -> Task -> repository lease order before lifecycle admission.
+It closes only the duplicate Task row, records durable `absorbedInto` evidence,
+attributes no result commit to the duplicate, and preserves its managed branch
+and worktree. Therefore a failure after admission has no partial Git deletion;
+retry of the same operation resumes the existing cleanup-phase transition, and
+does so from its stored admission evidence before reading a newer publication.
+A lost successful reply is recovered from the exact lifecycle outcome. Source
+history or valuable artifacts are never deleted by this mode.
+
 A sibling Task merge is not upstream adoption. The Git owner recognizes managed
 Task heads and inspects their merge ancestry; an unknown upstream/dev merge
 inside the sibling still requires its existing adoption evidence.
@@ -1100,6 +1123,9 @@ each branch ref with its observed old commit as a compare-and-swap. A late file
 edit prevents worktree removal; a late branch move preserves the changed ref.
 Publication remains recorded if cleanup needs repair. Task records and history
 are retained after release; destructive Task deletion is not release cleanup.
+The explicit published-duplicate absorption above is the only exception to the
+ordinary source workflow-Done prerequisite. It is not ordinary Complete and it
+does not use cleanup publication as a substitute for survivor ownership.
 
 ## Test Contour
 

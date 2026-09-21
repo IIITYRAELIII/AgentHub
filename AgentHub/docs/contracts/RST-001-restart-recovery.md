@@ -56,7 +56,11 @@ provider/process completion owner may commit the exact terminal outcome.
   Terminal reconciliation accounts their usage without emitting a user response
   or changing the last message. Inline compaction inside an ordinary turn and
   legacy operations lacking that marker do not authorize suppressing its final.
-- Admission is blocked only by an exact active maintenance operation.
+- Ordinary and new-turn admission is blocked by an exact active maintenance
+  operation. An explicit steer targeting an exact active managed turn may be
+  admitted during provider-internal compaction, but its provider dispatch waits
+  durably for that compaction to settle. Hub-owned compaction and rotation
+  reservations remain admission barriers.
 - A restart requested with no selected Stream and Thread is persisted under the
   explicit runtime scope; a target naming only one of them is rejected.
 - Restart is a barrier over durable finals, command receipts, delivery outbox and
@@ -103,7 +107,9 @@ provider/process completion owner may commit the exact terminal outcome.
 - Startup performs one bounded read-model reprojection for recent terminal
   turns whose retained payload identities are all confirmed by exact terminal
   command-ledger bindings. The reprojection is idempotent, preserves terminal
-  state and never dispatches a provider effect; ambiguous evidence is skipped.
+  state, including a typed bounded provider failure, and never dispatches a
+  provider effect; ambiguous evidence is skipped. Reload cannot promote a
+  retained failed terminal to completed merely because commentary text exists.
   Candidate discovery uses terminal-store-owned persisted payload-byte metadata
   and deterministic covering-index order; the read-model owner never scans or
   sorts terminal JSON to discover candidates.

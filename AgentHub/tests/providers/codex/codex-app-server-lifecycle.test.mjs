@@ -35,6 +35,8 @@ function fixture(overrides = {}) {
     attachSelectedThread: async () => events.push(["attach"]),
     onStartupSuccess: overrides.onStartupSuccess,
     onStartupFailure: overrides.onStartupFailure,
+    onInitialized: overrides.onInitialized,
+    onTransportExit: overrides.onTransportExit,
     scheduleRetry: (...args) => events.push(["retry", ...args]),
     logger: { log: (...args) => events.push(["log", ...args]), error: (...args) => events.push(["error", ...args]) },
   });
@@ -84,6 +86,27 @@ test("Codex App Server lifecycle initializes the transport and selected thread",
   assert.equal(lifecycle.pid, 17);
   assert.deepEqual(events.map(([name]) => name), ["initialize", "notify", "attach"]);
   assert.equal(events[0][1].clientInfo.version, AGENT_HUB_VERSION);
+});
+
+test("Codex App Server lifecycle schedules browser inventory without blocking initialization", async () => {
+  const browserInventory = deferred();
+  let inspection = null;
+  const { lifecycle, events } = fixture({
+    onInitialized: ({ generation, request }) => {
+      inspection = { generation, result: request("mcpServerStatus/list", { limit: 1 }) };
+      return browserInventory.promise;
+    },
+  });
+
+  await lifecycle.initialize();
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(inspection.generation, 1);
+  assert.deepEqual(await inspection.result, {});
+  assert.deepEqual(events.map(([name]) => name), [
+    "initialize", "notify", "attach", "request",
+  ]);
+  browserInventory.resolve();
 });
 
 test("Codex App Server lifecycle owns crash recovery", async () => {
@@ -333,11 +356,16 @@ test("Codex App Server lifecycle ignores a timeout before the request reaches tr
 });
 
 test("Codex App Server lifecycle still restarts after a transport crash", async () => {
-  const { events, exit } = fixture();
+  const { events, exit } = fixture({
+    onTransportExit: async () => {
+      await new Promise((resolve) => setImmediate(resolve));
+      events.push(["browser-cleanup"]);
+    },
+  });
   await exit({ detail: "code=1" });
   await new Promise((resolve) => setImmediate(resolve));
 
   assert.deepEqual(events.map(([name]) => name), [
-    "error", "start", "initialize", "notify", "attach", "recover",
+    "browser-cleanup", "error", "start", "initialize", "notify", "attach", "recover",
   ]);
 });

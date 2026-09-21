@@ -123,6 +123,7 @@ export class WorkLogUsageStore {
   #beforeProjectionWrite;
   #logger;
   #journalProjections = new Map();
+  #accountResolutions = new Map();
 
   constructor({
     repository,
@@ -185,6 +186,7 @@ export class WorkLogUsageStore {
 
   setResolveAccount(resolveAccount) {
     this.#resolveAccount = typeof resolveAccount === "function" ? resolveAccount : null;
+    this.#accountResolutions.clear();
   }
 
   setUsageSyncDeviceLabel(value) {
@@ -921,13 +923,24 @@ export class WorkLogUsageStore {
     if (!this.#resolveAccount) return supplied;
     const normalizedProvider = String(provider ?? "").trim().toLowerCase();
     if (!normalizedProvider) return supplied;
-    try {
-      const account = await this.#resolveAccount(normalizedProvider);
-      return account ? { ...supplied, account } : supplied;
-    } catch (error) {
-      this.#logger?.warn?.(`Cannot identify ${normalizedProvider} account for journal record: ${error.message}`);
-      return supplied;
+    let resolution = this.#accountResolutions.get(normalizedProvider);
+    if (!resolution) {
+      const resolveAccount = this.#resolveAccount;
+      resolution = Promise.resolve()
+        .then(() => resolveAccount(normalizedProvider))
+        .catch((error) => {
+          this.#logger?.warn?.(`Cannot identify ${normalizedProvider} account for journal record: ${error.message}`);
+          return null;
+        })
+        .finally(() => {
+          if (this.#accountResolutions.get(normalizedProvider) === resolution) {
+            this.#accountResolutions.delete(normalizedProvider);
+          }
+        });
+      this.#accountResolutions.set(normalizedProvider, resolution);
     }
+    const account = await resolution;
+    return account ? { ...supplied, account } : supplied;
   }
 
   project(workLogFile, {
@@ -1064,6 +1077,7 @@ export class WorkLogUsageStore {
     startedAt,
     completedAt,
     status,
+    terminalFailure,
     text,
     workLogFile,
     projectionProjectRoots,
@@ -1120,6 +1134,7 @@ export class WorkLogUsageStore {
         startedAt,
         completedAt,
         status,
+        terminalFailure,
       });
       this.#ledger.turns[key] = mergeLedgerRecord(existing, incoming);
       await this.#save();
@@ -1161,7 +1176,7 @@ export class WorkLogUsageStore {
     });
   }
 
-  recordAutomaticAndProject({
+  async recordAutomaticAndProject({
     provider = "codex",
     threadId,
     turnId,
@@ -1197,11 +1212,15 @@ export class WorkLogUsageStore {
     startedAt,
     completedAt,
     status,
+    terminalFailure,
     text,
     workLogFile,
     projectionProjectRoots,
     deferProjection = false,
   }) {
+    const resolvedAccountFields = resolveAccount === false
+      ? { account, accountKey, accountAttribution }
+      : await this.#resolvedAccountFields(provider, { account, accountKey, accountAttribution });
     if (deferProjection || (typeof this.#usageSyncStore?.projectJournal === "function"
       && !this.#beforeProjectionWrite)) {
       const operation = this.#repository.enqueue(async () => {
@@ -1238,12 +1257,11 @@ export class WorkLogUsageStore {
           skillsUsed,
           mcpCalls,
           toolMetricsKnown,
-          ...(resolveAccount === false
-            ? { account, accountKey, accountAttribution }
-            : await this.#resolvedAccountFields(provider, { account, accountKey, accountAttribution })),
+          ...resolvedAccountFields,
           startedAt,
           completedAt,
           status,
+          terminalFailure,
         });
         const record = mergeLedgerRecord(existing, incoming);
         const changed = !existing || ledgerRecordFingerprint(record) !== previousFingerprint;
@@ -1300,12 +1318,11 @@ export class WorkLogUsageStore {
         skillsUsed,
         mcpCalls,
         toolMetricsKnown,
-        ...(resolveAccount === false
-          ? { account, accountKey, accountAttribution }
-          : await this.#resolvedAccountFields(provider, { account, accountKey, accountAttribution })),
+        ...resolvedAccountFields,
         startedAt,
         completedAt,
         status,
+        terminalFailure,
       });
       this.#ledger.turns[key] = mergeLedgerRecord(existing, incoming);
       await this.#save();

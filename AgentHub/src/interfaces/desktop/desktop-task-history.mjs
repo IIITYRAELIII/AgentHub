@@ -10,6 +10,7 @@ import {
   withoutMisclassifiedSubagentUsers,
 } from "../../application/task-history.mjs";
 import { normalizedResponseAnnotations } from "../../domain/response-annotation-source.mjs";
+import { normalizeProviderTerminalFailure } from "../../domain/provider-terminal-failure.mjs";
 import {
   canonicalizeUserMessages,
   mergedUserMessageSnapshotAuthority,
@@ -653,6 +654,8 @@ export function createDesktopTaskHistoryFactory({
         answer: completed.text,
         completedAt: completed.updatedAt,
         terminalRevision: completed.terminalRevision,
+        status: completed.status,
+        terminalFailure: completed.terminalFailure,
       }, {
         matchSingleActive: !unrelatedActiveTurnVisible,
       });
@@ -769,6 +772,10 @@ export function createDesktopTaskHistoryFactory({
         });
         const promptAuthor = interstreamOriginAuthor(promptOrigin)
           || String(item.promptAuthor ?? "").trim();
+        const terminalFailure = normalizeProviderTerminalFailure(
+          item.terminalFailure,
+          { status: item.status },
+        );
         const projectedTurn = {
           id: String(item.id ?? ""),
           // Stream history is an aggregate of sequential provider Threads.
@@ -785,6 +792,7 @@ export function createDesktopTaskHistoryFactory({
           status: String(item.status ?? ""),
           active: item.active === true,
           completed: item.completed === true,
+          ...(terminalFailure ? { terminalFailure } : {}),
           terminalRevision: Number(item.terminalRevision) || null,
           operationKind: String(item.operationKind ?? "user-turn"),
           ...(!item.operationKind ? { operationKindMigrationGuard: "legacy-history-user-turn" } : {}),

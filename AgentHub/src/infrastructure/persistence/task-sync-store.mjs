@@ -16,6 +16,10 @@ import {
 import { normalizedCodexResponseAnnotationReferences } from "../../domain/codex-response-annotation.mjs";
 import { normalizedResponseAnnotations } from "../../domain/response-annotation-source.mjs";
 import {
+  mergeProviderTerminalFailure,
+  normalizeProviderTerminalFailure,
+} from "../../domain/provider-terminal-failure.mjs";
+import {
   durableUserCommandItemId,
   indexedDurableMessageMetadata,
   indexedDurableMessageMetadataWithEvidence,
@@ -23,7 +27,7 @@ import {
 } from "../../domain/stream-message-pin.mjs";
 
 const FORMAT_VERSION = 1;
-const TASK_SCHEMA_VERSION = 12;
+const TASK_SCHEMA_VERSION = 13;
 const MODEL_BACKFILL_VERSION = "1";
 const SUBAGENT_MODEL_BACKFILL_VERSION = "1";
 const SEARCH_BACKFILL_VERSION = "5";
@@ -173,6 +177,9 @@ function cleanHistory(history, limit, { provider = "" } = {}) {
         || cleanText(item?.promptAuthor, 1_000);
       const sourceMessages = Array.isArray(item?.messages) ? item.messages : [];
       const messagesTruncated = sourceMessages.length > 100;
+      const terminalFailure = normalizeProviderTerminalFailure(item?.terminalFailure, {
+        status: item?.status,
+      });
       return {
         id: cleanText(item?.id, 100),
         ...(item?.operationKind ? { operationKind: cleanText(item.operationKind, 40) } : {}),
@@ -183,6 +190,7 @@ function cleanHistory(history, limit, { provider = "" } = {}) {
         status: cleanText(item?.status, 40),
         active: item?.active === true,
         completed: item?.completed === true,
+        ...(terminalFailure ? { terminalFailure } : {}),
         ...(item?.userMessageAuthority === "terminal-ledger"
           ? { userMessageAuthority: "terminal-ledger" }
           : {}),
@@ -740,6 +748,7 @@ function configure(database) {
       status TEXT NOT NULL,
       active INTEGER NOT NULL CHECK (active IN (0, 1)),
       completed INTEGER NOT NULL CHECK (completed IN (0, 1)),
+      terminal_failure_json TEXT NOT NULL DEFAULT '{}',
       started_at TEXT,
       completed_at TEXT,
       prompt_author TEXT NOT NULL DEFAULT '',
@@ -868,6 +877,9 @@ function configure(database) {
   }
   if (!turnColumns.has("user_message_snapshot_authority")) {
     database.exec("ALTER TABLE task_read_model_turns ADD COLUMN user_message_snapshot_authority TEXT NOT NULL DEFAULT ''");
+  }
+  if (!turnColumns.has("terminal_failure_json")) {
+    database.exec("ALTER TABLE task_read_model_turns ADD COLUMN terminal_failure_json TEXT NOT NULL DEFAULT '{}'");
   }
   const messageColumns = new Set(database.prepare(
     "PRAGMA table_info(task_read_model_messages)",
@@ -1337,6 +1349,10 @@ export class LocalTaskSyncStore {
     }
     return turns.map((row) => {
       const promptOrigin = parseInterstreamOrigin(row.prompt_origin_json);
+      const terminalFailure = normalizeProviderTerminalFailure(
+        parseJsonObject(row.terminal_failure_json),
+        { status: row.status },
+      );
       return withDurableMessageMetadata({
         id: String(row.id ?? ""),
         prompt: String(row.prompt ?? ""),
@@ -1346,6 +1362,7 @@ export class LocalTaskSyncStore {
         status: String(row.status ?? ""),
         active: Number(row.active) === 1,
         completed: Number(row.completed) === 1,
+        ...(terminalFailure ? { terminalFailure } : {}),
         ...(row.user_message_authority === "terminal-ledger"
           ? { userMessageAuthority: "terminal-ledger" }
           : {}),
@@ -1463,6 +1480,11 @@ export class LocalTaskSyncStore {
     return turns.map((turn) => {
       const record = terminals.get(String(turn?.id ?? "").trim());
       if (!record) return turn;
+      const terminalFailure = mergeProviderTerminalFailure(
+        turn.terminalFailure,
+        record.terminalFailure,
+        { status: record.status },
+      );
       return {
         ...turn,
         prompt: cleanText(record.prompt, 12_000) || turn.prompt,
@@ -1470,6 +1492,7 @@ export class LocalTaskSyncStore {
         status: cleanText(record.status, 40),
         active: false,
         completed: true,
+        ...(terminalFailure ? { terminalFailure } : {}),
         ...(record.startedAt ? { startedAt: cleanText(record.startedAt, 80) } : {}),
         ...(record.completedAt ? { completedAt: cleanText(record.completedAt, 80) } : {}),
       };
@@ -1737,11 +1760,11 @@ export class LocalTaskSyncStore {
     const insertTurn = this.#database.prepare(`
       INSERT INTO task_read_model_turns (
         provider, thread_id, position, id, prompt, answer, status, active,
-        completed, started_at, completed_at, prompt_author, prompt_origin_json,
+        completed, terminal_failure_json, started_at, completed_at, prompt_author, prompt_origin_json,
         prompt_annotations_json, prompt_request,
         attachments_json, activities_json, activity_groups_json, user_message_authority,
         user_message_snapshot_authority
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const insertMessage = this.#database.prepare(`
       INSERT INTO task_read_model_messages (
@@ -1765,6 +1788,7 @@ export class LocalTaskSyncStore {
         turn.status,
         turn.active ? 1 : 0,
         turn.completed ? 1 : 0,
+        JSON.stringify(turn.terminalFailure ?? {}),
         turn.startedAt ?? null,
         turn.completedAt ?? null,
         turn.promptAuthor ?? "",

@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
 import test from "node:test";
-import { appendFile, mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import {
   ClaudeOutputReader,
   claudeRunDirectory,
@@ -26,6 +28,23 @@ async function withTempDir(run) {
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+}
+
+async function waitFor(read, message, { timeoutMs = 5_000 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const value = await read();
+    if (value != null) return value;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(message);
+}
+
+function waitForExit(child) {
+  return new Promise((resolve, reject) => {
+    child.once("error", reject);
+    child.once("exit", (code) => resolve(code));
+  });
 }
 
 test("run output paths live in a dedicated directory", () => {
@@ -107,25 +126,150 @@ test("reader tolerates a missing file", async () => {
   });
 });
 
-test("spawn failure reaches the handler instead of crashing the bot", async () => {
+test("spawn failure reaches a terminal callback instead of crashing the bot", async () => {
   await withTempDir(async (directory) => {
     const output = await openClaudeRunOutput(directory, "turn-spawn");
     const missing = path.join(directory, "definitely-missing-cli.exe");
-    const failure = new Promise((resolve) => {
+    const terminal = new Promise((resolve) => {
       spawnClaudeWorker({
         command: missing,
         args: [],
         cwd: directory,
         stdout: output.outputHandle.fd,
         stderr: output.errorHandle.fd,
-        onError: resolve,
+        onError: (error) => resolve({ kind: "error", error }),
+        onExit: (code) => resolve({ kind: "exit", code }),
       });
     });
     // Настоящее файловое ожидание между запуском и проверкой: именно оно
     // раньше пропускало событие ошибки мимо обработчика.
     await Promise.all([output.outputHandle.close(), output.errorHandle.close()]);
-    const error = await failure;
-    assert.equal(error.code, "ENOENT");
+    const result = await terminal;
+    if (process.platform === "win32") {
+      assert.deepEqual(result, { kind: "exit", code: 127 });
+      assert.match(await readFile(output.errorPath, "utf8"), /could not start Claude/u);
+    } else {
+      assert.equal(result.kind, "error");
+      assert.equal(result.error.code, "ENOENT");
+    }
+    await removeClaudeRunOutput(output);
+  });
+});
+
+test("Windows Claude worker keeps provider console descendants hidden", {
+  skip: process.platform !== "win32",
+}, async () => {
+  await withTempDir(async (directory) => {
+    const report = path.join(directory, "console.json");
+    const powershellProbe = String.raw`
+Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public static class AgentHubConsoleProbe { [DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow(); [DllImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)] public static extern bool IsWindowVisible(IntPtr handle); [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow(); [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr handle, int command); }'
+$handle = [AgentHubConsoleProbe]::GetConsoleWindow()
+$visible = [AgentHubConsoleProbe]::IsWindowVisible($handle)
+$foreground = [AgentHubConsoleProbe]::GetForegroundWindow() -eq $handle
+if ($handle -ne [IntPtr]::Zero) { [void][AgentHubConsoleProbe]::ShowWindow($handle, 0) }
+[IO.File]::WriteAllText($env:AGENT_HUB_CONSOLE_REPORT, (@{ handle = $handle.ToInt64(); visible = $visible; foreground = $foreground } | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
+`;
+    const fakeProvider = String.raw`
+const { spawn } = require("node:child_process");
+const powershell = process.env.SystemRoot + "\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
+const probe = spawn(powershell, ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", process.env.AGENT_HUB_CONSOLE_PROBE], { stdio: "ignore", env: process.env });
+probe.once("error", () => process.exit(2));
+probe.once("exit", (code) => process.exit(Number.isInteger(code) ? code : 3));
+`;
+    const worker = spawnClaudeWorker({
+      command: process.execPath,
+      args: ["-e", fakeProvider],
+      cwd: directory,
+      env: {
+        ...process.env,
+        AGENT_HUB_CONSOLE_REPORT: report,
+        AGENT_HUB_CONSOLE_PROBE: Buffer.from(powershellProbe, "utf16le").toString("base64"),
+      },
+    });
+
+    assert.equal(await waitForExit(worker), 0);
+    const observed = JSON.parse(await readFile(report, "utf8"));
+    assert.equal(observed.visible, false, "provider descendant exposed a console window");
+    assert.equal(observed.foreground, false, "provider descendant stole foreground focus");
+  });
+});
+
+test("Windows Claude worker survives its Agent Hub parent and retains file output", {
+  skip: process.platform !== "win32",
+}, async () => {
+  await withTempDir(async (directory) => {
+    const output = path.join(directory, "survived.txt");
+    const workerPid = path.join(directory, "worker.pid");
+    const moduleUrl = pathToFileURL(path.resolve(
+      import.meta.dirname,
+      "../../../src/providers/claude/claude-run-io.mjs",
+    )).href;
+    const fakeProvider = String.raw`
+setTimeout(() => {
+  require("node:fs").writeFileSync(process.env.AGENT_HUB_SURVIVAL_OUTPUT, "survived");
+}, 750);
+`;
+    const parentScript = `
+import { writeFileSync } from "node:fs";
+import { spawnClaudeWorker } from ${JSON.stringify(moduleUrl)};
+const worker = spawnClaudeWorker({ command: process.execPath, args: ["-e", process.env.AGENT_HUB_FAKE_PROVIDER], cwd: process.cwd(), env: process.env });
+writeFileSync(process.env.AGENT_HUB_WORKER_PID, String(worker.pid));
+`;
+    const parent = spawn(process.execPath, ["--input-type=module", "-e", parentScript], {
+      cwd: directory,
+      env: {
+        ...process.env,
+        AGENT_HUB_FAKE_PROVIDER: fakeProvider,
+        AGENT_HUB_SURVIVAL_OUTPUT: output,
+        AGENT_HUB_WORKER_PID: workerPid,
+      },
+      stdio: "ignore",
+      windowsHide: true,
+    });
+
+    assert.equal(await waitForExit(parent), 0);
+    const pid = Number(await waitFor(
+      () => readFile(workerPid, "utf8").catch(() => null),
+      "Claude worker PID was not persisted",
+    ));
+    assert.equal(processIsAlive(pid), true, "Claude worker exited with its Agent Hub parent");
+    assert.equal(await waitFor(
+      () => readFile(output, "utf8").catch(() => null),
+      "Claude provider output did not survive its Agent Hub parent",
+    ), "survived");
+    await waitFor(
+      () => processIsAlive(pid) ? null : true,
+      "Claude worker did not exit after its provider",
+    );
+  });
+});
+
+test("Windows Claude worker cancellation stops its provider descendant", {
+  skip: process.platform !== "win32",
+}, async () => {
+  await withTempDir(async (directory) => {
+    const providerPid = path.join(directory, "provider.pid");
+    const fakeProvider = String.raw`
+require("node:fs").writeFileSync(process.env.AGENT_HUB_PROVIDER_PID, String(process.pid));
+setInterval(() => {}, 1000);
+`;
+    const worker = spawnClaudeWorker({
+      command: process.execPath,
+      args: ["-e", fakeProvider],
+      cwd: directory,
+      env: { ...process.env, AGENT_HUB_PROVIDER_PID: providerPid },
+    });
+    const pid = Number(await waitFor(
+      () => readFile(providerPid, "utf8").catch(() => null),
+      "Claude provider PID was not persisted",
+    ));
+    assert.equal(processIsAlive(pid), true);
+
+    assert.equal(await stopProcessTree(worker.pid), true);
+    await waitFor(
+      () => processIsAlive(pid) ? null : true,
+      "Claude provider survived cancellation of its worker tree",
+    );
   });
 });
 

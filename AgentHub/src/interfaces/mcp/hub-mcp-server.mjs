@@ -160,11 +160,13 @@ export class HubMcpServer {
     const server = this.#server;
     this.#server = null;
     this.#url = null;
-    if (!server?.listening) return;
-    await new Promise((resolve, reject) => {
-      server.close((error) => error ? reject(error) : resolve());
-      server.closeAllConnections?.();
-    });
+    if (server?.listening) {
+      await new Promise((resolve, reject) => {
+        server.close((error) => error ? reject(error) : resolve());
+        server.closeAllConnections?.();
+      });
+    }
+    await this.service.close?.();
   }
 
   async #handle(request, response) {

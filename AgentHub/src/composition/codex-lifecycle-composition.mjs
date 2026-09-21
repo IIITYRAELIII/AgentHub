@@ -3,6 +3,10 @@ import path from "node:path";
 import { CodexExecutableUpdateService } from "../infrastructure/process/codex-executable-update-service.mjs";
 import { unavailableLocalMcpOverrides } from "../infrastructure/process/local-mcp-preflight.mjs";
 import { CodexAppServerLifecycle } from "../providers/codex/codex-app-server-lifecycle.mjs";
+import {
+  CodexBrowserToolMonitor,
+  codexBrowserToolArgs,
+} from "../providers/codex/codex-browser-tool.mjs";
 import { CodexLifecycleController } from "../providers/codex/codex-lifecycle-controller.mjs";
 import { agentHubRuntimeHealth } from "../application/runtime-health.mjs";
 import { runCodexAppServerCompatibilityCanary } from "./codex-app-server-canary.mjs";
@@ -14,6 +18,10 @@ export function createCodexLifecycleComposition({
   runtimeDependencies,
   controllerDependencies,
 }) {
+  const browserTool = new CodexBrowserToolMonitor({
+    fallback: hubMcpServer.service.browserFallback,
+    logger: runtimeDependencies.logger ?? console,
+  });
   const executableUpdates = new CodexExecutableUpdateService({
     stateFile: path.join(config.dataDir, "codex-executable-state.json"),
     requestedExecutable: config.codexExecutable,
@@ -34,12 +42,18 @@ export function createCodexLifecycleComposition({
     onStartupFailure: (error) => executableUpdates.markStartupFailure(error),
     unavailableMcpOverrides: async () => {
       const existing = await unavailableLocalMcpOverrides();
-      return { ...existing, args: [...existing.args, ...hubMcpServer.codexArgs()] };
+      return {
+        ...existing,
+        args: [...existing.args, ...codexBrowserToolArgs(), ...hubMcpServer.codexArgs()],
+      };
     },
     executableArgs: config.codexExecutableArgs,
     projectRoot: runtimeDependencies.getActiveProjectRoot,
     stopProcessTree: runtimeDependencies.stopProcessTree,
-    onMessage: runtimeDependencies.handleMessage,
+    onMessage: (message) => {
+      browserTool.observe(message);
+      return runtimeDependencies.handleMessage(message);
+    },
     rpcTimeoutMs,
     isStopping: runtimeDependencies.isStopping,
     providerSelected: runtimeDependencies.providerSelected,
@@ -50,6 +64,8 @@ export function createCodexLifecycleComposition({
     attachSelectedThread: runtimeDependencies.attachSelectedThread,
     scheduleRetry: (operation, delayMs) => setTimeout(() => void operation(), delayMs),
     logger: runtimeDependencies.logger ?? console,
+    onInitialized: ({ request }) => browserTool.refresh(request),
+    onTransportExit: () => browserTool.disconnected(),
   });
   const transport = runtime.transport;
   agentHubRuntimeHealth.setDiagnosticSource("codexAppServer", () => ({
@@ -58,6 +74,7 @@ export function createCodexLifecycleComposition({
     hubOwnedProcessTrees: transport.running ? 1 : 0,
   }));
   agentHubRuntimeHealth.setDiagnosticSource("codexExecutableUpdate", () => executableUpdates.diagnostics());
+  agentHubRuntimeHealth.setDiagnosticSource("codexBrowserTool", () => browserTool.diagnostics());
 
   async function start() {
     executableUpdates.startBackgroundChecks({
@@ -124,6 +141,7 @@ export function createCodexLifecycleComposition({
     transport,
     controller,
     executableUpdates,
+    browserTool,
     start,
     stop,
     restartAfterCrash,

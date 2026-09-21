@@ -3,10 +3,21 @@ import path from "node:path";
 import { turnEndKey } from "../../application/turn-end-notifications.mjs";
 import { conciseTurnTitle } from "../../application/turn-title.mjs";
 import { MAINTENANCE_OPERATION_KINDS } from "../../domain/maintenance-operation.mjs";
+import {
+  mergeProviderTerminalFailure,
+  normalizeProviderTerminalFailure,
+} from "../../domain/provider-terminal-failure.mjs";
 import { normalizeServiceTier, normalizeTokenUsage } from "../../domain/token-usage.mjs";
 
-function sameHistoricalUsage(record, usageResult) {
+function comparableTerminalFailure(value, status) {
+  if (value == null) return null;
+  return normalizeProviderTerminalFailure(value, { status });
+}
+
+function sameHistoricalUsage(record, usageResult, status, terminalFailure) {
   if (!record || record.provisional === true) return false;
+  const recordStatus = String(record.status ?? "").trim().toLowerCase();
+  const resolvedStatus = String(status ?? "").trim().toLowerCase();
   return record.usageReported === (usageResult.reported === true)
     && JSON.stringify(normalizeTokenUsage(record.usage)) === JSON.stringify(normalizeTokenUsage(usageResult.usage))
     && (Number(record.estimatedCredits) || 0) === (Number(usageResult.estimatedCredits) || 0)
@@ -14,7 +25,10 @@ function sameHistoricalUsage(record, usageResult) {
     && Math.max(0, Math.floor(Number(record.imageGenerationCount) || 0))
       === Math.max(0, Math.floor(Number(usageResult.imageGenerationCount) || 0))
     && String(record.model ?? "").trim().toLowerCase() === String(usageResult.model ?? "").trim().toLowerCase()
-    && normalizeServiceTier(record.serviceTier) === normalizeServiceTier(usageResult.serviceTier);
+    && normalizeServiceTier(record.serviceTier) === normalizeServiceTier(usageResult.serviceTier)
+    && recordStatus === resolvedStatus
+    && JSON.stringify(comparableTerminalFailure(record.terminalFailure, recordStatus))
+      === JSON.stringify(comparableTerminalFailure(terminalFailure, resolvedStatus));
 }
 
 function exactGeneratedImageSources(...values) {
@@ -154,7 +168,21 @@ export class CodexTerminalReconciliationService {
       }
       if (terminal?.historical === true) {
         const existingJournalTurn = await this.workLogStore.getTurn(identity);
-        if (sameHistoricalUsage(existingJournalTurn, usageResult)) {
+        // The historical short-circuit keeps its own status/failure view so the
+        // authoritative resolution below stays in its released order.
+        const historicalStatus = usageResult.terminal
+          ? (usageResult.status || terminal.status)
+          : terminal.status;
+        if (sameHistoricalUsage(
+          existingJournalTurn,
+          usageResult,
+          historicalStatus,
+          mergeProviderTerminalFailure(
+            terminal.terminalFailure,
+            usageResult.terminalFailure,
+            { status: historicalStatus },
+          ),
+        )) {
           this.turnStarts.delete(key);
           return true;
         }
@@ -173,6 +201,11 @@ export class CodexTerminalReconciliationService {
       const resolvedCompletedAt = usageResult.terminal
         ? (usageResult.completedAt || terminal.completedAt)
         : terminal.completedAt;
+      const terminalFailure = mergeProviderTerminalFailure(
+        terminal.terminalFailure,
+        usageResult.terminalFailure,
+        { status: resolvedStatus },
+      );
       const provisional = authoritativeStatus && !usageResult.terminal;
       const turnStart = this.turnStarts.get(key);
       const baselineDiff = turnStart?.gitBaseline
@@ -202,6 +235,7 @@ export class CodexTerminalReconciliationService {
           parentTurnId,
           resolvedStatus,
           resolvedCompletedAt,
+          terminalFailure,
           provisional,
           changedFiles,
           turnDiff,
@@ -222,6 +256,7 @@ export class CodexTerminalReconciliationService {
           usageResult,
           resolvedStatus,
           resolvedCompletedAt,
+          terminalFailure,
           changedFiles,
           turnDiff,
           gitBaseline: turnStart?.gitBaseline ?? null,
@@ -244,6 +279,7 @@ export class CodexTerminalReconciliationService {
         taskTitle: await this.taskTitle({ ...identity, thread }),
         chatId: this.defaultChatId(),
         status: resolvedStatus,
+        terminalFailure,
         provisional,
         usage: usageResult.usage,
         usageReported: usageResult.reported === true,
@@ -291,6 +327,7 @@ export class CodexTerminalReconciliationService {
     parentTurnId,
     resolvedStatus,
     resolvedCompletedAt,
+    terminalFailure,
     provisional,
     changedFiles,
     turnDiff,
@@ -311,6 +348,7 @@ export class CodexTerminalReconciliationService {
         thread: accountingThread.thread,
       }),
       status: resolvedStatus,
+      terminalFailure,
       provisional,
       usage: usageResult.usage,
       usageReported: usageResult.reported === true,
@@ -352,6 +390,7 @@ export class CodexTerminalReconciliationService {
     usageResult,
     resolvedStatus,
     resolvedCompletedAt,
+    terminalFailure,
     changedFiles,
     turnDiff,
     gitBaseline,
@@ -371,6 +410,7 @@ export class CodexTerminalReconciliationService {
       projectRoot: project.path,
       taskTitle: await this.taskTitle({ ...identity, thread }),
       status: resolvedStatus,
+      terminalFailure,
       usage: usageResult.usage,
       usageReported: usageResult.reported === true,
       estimatedCredits: usageResult.estimatedCredits,
@@ -406,7 +446,11 @@ export class CodexTerminalReconciliationService {
         projectRoot: project.path,
         operationKind: "user-turn",
       };
-      this.rememberLastMessage(task, correctedBody, { updatedAt: resolvedCompletedAt });
+      this.rememberLastMessage(task, correctedBody, {
+        updatedAt: resolvedCompletedAt,
+        status: resolvedStatus,
+        terminalFailure,
+      });
       this.rememberSeenTurn(task, identity.turnId);
     }
     if (registeredMessage || correctedBody) await this.saveState();

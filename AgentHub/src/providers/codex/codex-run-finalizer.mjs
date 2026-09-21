@@ -1,6 +1,7 @@
 import { emptyTokenUsage, formatTurnTokenUsage } from "../../domain/token-usage.mjs";
 import { turnEndKey } from "../../application/turn-end-notifications.mjs";
 import { conciseTurnTitle } from "../../application/turn-title.mjs";
+import { normalizeProviderTerminalFailure } from "../../domain/provider-terminal-failure.mjs";
 
 function exactRunChangedFiles(run) {
   if (run?.rolloutChangeTrackingKnown !== true) return [];
@@ -71,6 +72,7 @@ export class CodexRunFinalizer {
     answer,
     turnId: completedTurnId = run?.turnId,
     status = "completed",
+    terminalFailure = null,
     tracker = { usage: emptyTokenUsage(), reported: false },
     forceSpeechButton = false,
     deliver,
@@ -115,6 +117,7 @@ export class CodexRunFinalizer {
       tracker.responseAnnotationReferences,
       run.responseAnnotationReferences,
     );
+    const normalizedTerminalFailure = normalizeProviderTerminalFailure(terminalFailure, { status });
     const completionInput = {
       ...identity,
       streamId: run.streamId ?? null,
@@ -122,6 +125,7 @@ export class CodexRunFinalizer {
       taskTitle: this.runTitle(run),
       chatId: run.chatId ?? this.currentChatId() ?? this.defaultNotificationChatId(),
       status,
+      ...(normalizedTerminalFailure ? { terminalFailure: normalizedTerminalFailure } : {}),
       usage: tracker.usage,
       usageReported: tracker.reported === true,
       imageGenerationCount: tracker.imageGenerationCount ?? 0,

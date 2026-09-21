@@ -28,6 +28,7 @@ const BACKGROUND_METHODS = new Set([
   "thread/search",
   "thread/searchOccurrences",
   "skills/list",
+  "mcpServerStatus/list",
   "account/read",
   "account/rateLimits/read",
   "account/usage/read",

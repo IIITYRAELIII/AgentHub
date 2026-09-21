@@ -226,6 +226,73 @@ test("Task Git preview includes committed, staged and untracked work without cha
   assert.ok(Buffer.byteLength(large.repositories[0].text) <= 64 * 1024);
 });
 
+test("published duplicate proof requires exact clean published main and survivor lineage", { timeout: 90_000 }, async (context) => {
+  const { root } = await repositoryWithOrigin(context);
+  const dataDir = path.join(root, "..", `${path.basename(root)}-published-duplicate-data`);
+  context.after(() => rm(dataDir, { recursive: true, force: true }));
+  let publication = null;
+  const service = new TaskGitWorkspaceService({ dataDir, readPublication: async () => publication });
+  const source = await service.prepare({
+    taskId: "11111111-1111-4111-8111-111111111111", taskNumber: "HUB-241", projectRoot: root,
+  });
+  const survivorWorkspace = await service.prepare({
+    taskId: "22222222-2222-4222-8222-222222222222", taskNumber: "HUB-217", projectRoot: root,
+  });
+  await writeFile(path.join(survivorWorkspace.projectRoot, "published.txt"), "published fix\n", "utf8");
+  const tested = await service.snapshotAndMerge({
+    taskId: survivorWorkspace.taskId, taskNumber: "HUB-217", projectRoot: survivorWorkspace.projectRoot,
+  });
+  await git(root, "merge", "--ff-only", tested.snapshot.headCommit);
+  await git(root, "push", "origin", "main");
+  await git(root, "update-ref", "refs/remotes/origin/main", tested.snapshot.headCommit);
+  await git(source.projectRoot, "merge", "--ff-only", tested.snapshot.headCommit);
+  publication = {
+    generation: "release-published-duplicate",
+    repositories: [{ root, revision: tested.snapshot.headCommit }],
+  };
+  const sourceTask = {
+    id: source.taskId, taskNumber: "HUB-241", revision: 6,
+    gitReferences: [], gitAdoptions: [],
+  };
+  const targetTask = {
+    id: survivorWorkspace.taskId, taskNumber: "HUB-217", revision: 93,
+    gitReferences: [{
+      projectRoot: root,
+      branch: survivorWorkspace.branch,
+      resultCommit: tested.snapshot.headCommit,
+    }],
+  };
+  const proof = await service.withTaskLocks([source.taskId, survivorWorkspace.taskId], (lease) => (
+    service.withPublishedDuplicateEvidenceOwned({ source: sourceTask, target: targetTask, lease },
+      async (evidence) => evidence)
+  ));
+  assert.equal(proof.mode, "published_duplicate");
+  assert.equal(proof.repositories[0].sourceHead, tested.snapshot.headCommit);
+  assert.equal(proof.repositories[0].survivorResult, tested.snapshot.headCommit);
+  assert.deepEqual(proof.cleanupPlan, { strategy: "preserve_managed_source", deleting: [] });
+
+  await writeFile(path.join(source.projectRoot, "valuable-untracked.txt"), "preserve\n", "utf8");
+  await assert.rejects(service.withTaskLocks([source.taskId, survivorWorkspace.taskId], (lease) => (
+    service.withPublishedDuplicateEvidenceOwned({ source: sourceTask, target: targetTask, lease }, async () => null)
+  )), /clean source Task worktree/u);
+  await rm(path.join(source.projectRoot, "valuable-untracked.txt"));
+
+  const unpublishedTarget = { ...targetTask, gitReferences: [{
+    ...targetTask.gitReferences[0], resultCommit: "f".repeat(40),
+  }] };
+  await assert.rejects(service.withTaskLocks([source.taskId, survivorWorkspace.taskId], (lease) => (
+    service.withPublishedDuplicateEvidenceOwned({ source: sourceTask, target: unpublishedTarget, lease }, async () => null)
+  )), /not contained in published main/u);
+
+  await writeFile(path.join(source.projectRoot, "unique.txt"), "unique\n", "utf8");
+  await git(source.projectRoot, "add", "unique.txt");
+  await git(source.projectRoot, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+    "commit", "-m", "unique source work");
+  await assert.rejects(service.withTaskLocks([source.taskId, survivorWorkspace.taskId], (lease) => (
+    service.withPublishedDuplicateEvidenceOwned({ source: sourceTask, target: targetTask, lease }, async () => null)
+  )), /HEAD must equal exact durable local and origin published main/u);
+});
+
 async function advanceOriginMain(context, origin, files) {
   const clone = await mkdtemp(path.join(os.tmpdir(), "agent-hub-task-origin-clone-"));
   context.after(() => rm(clone, { recursive: true, force: true }));

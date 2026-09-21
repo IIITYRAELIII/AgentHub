@@ -3,6 +3,10 @@ import { stat } from "node:fs/promises";
 
 import { legacyTaskRunKeys, taskRunKey } from "../domain/task-runs.mjs";
 import { normalizeInterstreamClientUserMessageId } from "../domain/interstream-message.mjs";
+import {
+  mergeProviderTerminalFailure,
+  normalizeProviderTerminalFailure,
+} from "../domain/provider-terminal-failure.mjs";
 import { displayUserPrompt } from "./task-history.mjs";
 import { conciseTurnTitle } from "./turn-title.mjs";
 
@@ -65,7 +69,12 @@ export class RunJournalService {
     this.lastTaskMessages = new Map();
   }
 
-  rememberLastMessage(run, text, { updatedAt = null, terminalRevision = null } = {}) {
+  rememberLastMessage(run, text, {
+    updatedAt = null,
+    terminalRevision = null,
+    status = null,
+    terminalFailure = undefined,
+  } = {}) {
     const value = String(text ?? "").trim();
     if (!run?.threadId || !value) return false;
     const key = taskRunKey(run);
@@ -88,6 +97,16 @@ export class RunJournalService {
         )
       )
     ) return false;
+    const suppliedStatus = String(status ?? "").trim().toLowerCase();
+    const currentStatus = sameTurn ? String(current?.status ?? "").trim().toLowerCase() : "";
+    const normalizedStatus = currentStatus === "failed" && suppliedStatus !== "failed"
+      ? "failed"
+      : suppliedStatus || currentStatus || "completed";
+    const normalizedFailure = mergeProviderTerminalFailure(
+      sameTurn ? current?.terminalFailure : null,
+      terminalFailure,
+      { status: normalizedStatus },
+    );
     const next = {
       text: value,
       provider: String(run.provider ?? "").trim() || null,
@@ -98,6 +117,8 @@ export class RunJournalService {
       startedAt: startedAt || (sameTurn ? current.startedAt : null) || null,
       turnId,
       terminalRevision: Number(terminalRevision) || (sameTurn ? current?.terminalRevision : null) || null,
+      status: normalizedStatus,
+      ...(normalizedFailure ? { terminalFailure: normalizedFailure } : {}),
       operationKind: String(run.operationKind ?? "").trim()
         || "user-turn",
       clientUserMessageId: normalizeInterstreamClientUserMessageId(run.clientUserMessageId),
@@ -111,6 +132,8 @@ export class RunJournalService {
       && current.startedAt === next.startedAt
       && current.turnId === next.turnId
       && current.terminalRevision === next.terminalRevision
+      && current.status === next.status
+      && JSON.stringify(current.terminalFailure ?? null) === JSON.stringify(next.terminalFailure ?? null)
       && current.operationKind === next.operationKind
       && current.clientUserMessageId === next.clientUserMessageId
     ) return false;
@@ -155,7 +178,13 @@ export class RunJournalService {
       if (!Array.isArray(entry) || typeof entry[0] !== "string" || typeof entry[1]?.text !== "string") {
         continue;
       }
-      this.lastTaskMessages.set(entry[0], { ...entry[1] });
+      const restoredRecord = { ...entry[1] };
+      const terminalFailure = normalizeProviderTerminalFailure(restoredRecord.terminalFailure, {
+        status: restoredRecord.status,
+      });
+      if (terminalFailure) restoredRecord.terminalFailure = terminalFailure;
+      else delete restoredRecord.terminalFailure;
+      this.lastTaskMessages.set(entry[0], restoredRecord);
       restored += 1;
     }
     if (restored) this.#revision += 1;
@@ -204,6 +233,7 @@ export class RunJournalService {
       startedAt: completion.startedAt,
       completedAt: completion.completedAt,
       status: completion.status,
+      terminalFailure: completion.terminalFailure,
       deferProjection,
       projectRoot: project.path,
       projectionProjectRoots: this.projectionProjectRoots,

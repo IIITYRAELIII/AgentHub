@@ -7,6 +7,7 @@ import {
 import { codexTurnAnswer } from "./codex-turn-answers.mjs";
 import { codexThreadHistory } from "../../application/task-history.mjs";
 import { codexThreadWaitingOnApproval } from "./codex-approvals.mjs";
+import { codexTerminalFailure } from "../../domain/provider-terminal-failure.mjs";
 import {
   mergeCanonicalUserMessages,
   mergedUserMessageSnapshotAuthority,
@@ -69,6 +70,8 @@ export function codexTurnSnapshot(turn, threadStatus = null) {
     .map((message) => ({ ...message }));
   const userMessages = turnMessages.filter((message) => message.role === "user");
   const prompt = exchange?.prompt ?? "";
+  const status = turn?.status === "completed" ? "completed" : String(turn?.status ?? "stopped");
+  const terminalFailure = codexTerminalFailure(turn, status);
   return {
     answer,
     userMessageSnapshotAuthority: "complete",
@@ -86,7 +89,8 @@ export function codexTurnSnapshot(turn, threadStatus = null) {
     completedAt: codexTurnCompletedAt(turn),
     completed: turn?.status !== "inProgress",
     active: turn?.status === "inProgress",
-    status: turn?.status === "completed" ? "completed" : String(turn?.status ?? "stopped"),
+    status,
+    ...(terminalFailure ? { terminalFailure } : {}),
     waitingOnApproval,
     stage: turn?.status === "inProgress"
       ? waitingOnApproval

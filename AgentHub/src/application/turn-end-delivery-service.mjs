@@ -168,6 +168,8 @@ export class TurnEndDeliveryService {
       clientUserMessageId: completion.clientUserMessageId,
     }, notificationBody, {
       updatedAt: completion.completedAt,
+      status: completion.status,
+      terminalFailure: completion.terminalFailure,
       ...(Number.isSafeInteger(completion.terminalRevision) && completion.terminalRevision > 0
         ? { terminalRevision: completion.terminalRevision }
         : {}),

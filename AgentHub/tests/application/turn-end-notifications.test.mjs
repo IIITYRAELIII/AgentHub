@@ -82,6 +82,51 @@ test("turn-end registry preserves every prompt while merging repeated completion
   ]);
 });
 
+test("turn-end registry preserves a failed provider reason across later weak completion overlays", () => {
+  const registry = new TurnEndNotificationRegistry();
+  registry.recordCompletion(completion({
+    status: "failed",
+    terminalFailure: { message: "Unable to verify model access right now. Please retry.", code: "other" },
+    finalAnswer: "Промежуточный commentary",
+  }));
+  const ready = registry.recordCompletion(completion({
+    status: "completed",
+    finalAnswer: "Промежуточный commentary",
+  }));
+
+  assert.equal(ready.status, "failed");
+  assert.deepEqual(ready.terminalFailure, {
+    type: "provider_error",
+    message: "Unable to verify model access right now. Please retry.",
+    code: "other",
+  });
+  assert.deepEqual(
+    new TurnEndNotificationRegistry(registry.snapshot()).get(completion()).terminalFailure,
+    ready.terminalFailure,
+  );
+});
+
+test("turn-end registry does not replace an exact failed reason with a weak failed fallback", () => {
+  const registry = new TurnEndNotificationRegistry();
+  registry.recordCompletion(completion({
+    status: "failed",
+    terminalFailure: { message: "exact reason", code: "other" },
+  }));
+  const ready = registry.recordCompletion(completion({ status: "failed" }));
+
+  assert.deepEqual(ready.terminalFailure, {
+    type: "provider_error",
+    message: "exact reason",
+    code: "other",
+  });
+
+  const corrected = registry.recordCompletion(completion({
+    status: "failed",
+    terminalFailure: { message: "new authoritative reason", code: "other" },
+  }));
+  assert.equal(corrected.terminalFailure.message, "new authoritative reason");
+});
+
 test("turn-end registry keeps the raw inter-Stream prompt for durable projection", () => {
   const registry = new TurnEndNotificationRegistry();
   const origin = {

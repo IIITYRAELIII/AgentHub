@@ -15,6 +15,11 @@ import { taskReferencePromptDetails } from "../domain/task-board-task.mjs";
 import { codexAssistantResponseProjection } from "../domain/codex-response-annotation.mjs";
 import { normalizedResponseAnnotations } from "../domain/response-annotation-source.mjs";
 import {
+  codexTerminalFailure,
+  mergeProviderTerminalFailure,
+  normalizeProviderTerminalFailure,
+} from "../domain/provider-terminal-failure.mjs";
+import {
   hasCanonicalUserMessages,
   mergedUserMessageSnapshotAuthority,
   mergeCanonicalUserMessages,
@@ -598,14 +603,18 @@ export function codexThreadHistory(turns, options = {}) {
     const answer = turn?.status === "completed"
       ? codexFinalTurnAnswer(turn)
       : visibleAnswer;
+    const status = String(turn?.status ?? "");
+    const terminal = ["completed", "failed", "cancelled", "aborted"].includes(status.toLowerCase());
+    const terminalFailure = codexTerminalFailure(turn, status);
     return [{
       id: String(turn?.id ?? ""),
       userMessageSnapshotAuthority: "complete",
       prompt,
       answer,
-      status: String(turn?.status ?? ""),
+      status,
       active: turn?.status === "inProgress",
-      completed: turn?.status === "completed",
+      completed: terminal,
+      ...(terminalFailure ? { terminalFailure } : {}),
       ...(userMessage?.responseAnnotations?.length
         ? {
           promptAnnotations: userMessage.responseAnnotations.map((annotation) => ({ ...annotation })),
@@ -809,9 +818,23 @@ export function mergeCompletedTaskHistory(history, completedTurn = {}, {
     values.push(current);
   }
 
+  const suppliedStatus = String(completedTurn.status ?? "").trim().toLowerCase();
+  const retainedStatus = String(current.status ?? "").trim().toLowerCase();
+  const status = ["completed", "failed", "cancelled", "aborted"].includes(suppliedStatus)
+    ? suppliedStatus
+    : current.completed === true && ["completed", "failed", "cancelled", "aborted"].includes(retainedStatus)
+      ? retainedStatus
+      : "completed";
+  const terminalFailure = mergeProviderTerminalFailure(
+    current.terminalFailure,
+    completedTurn.terminalFailure,
+    { status },
+  );
   current.active = false;
   current.completed = true;
-  current.status = "completed";
+  current.status = status;
+  if (terminalFailure) current.terminalFailure = terminalFailure;
+  else delete current.terminalFailure;
   current.answer = answer;
   const terminalRevision = Number(completedTurn.terminalRevision);
   if (Number.isSafeInteger(terminalRevision) && terminalRevision > 0) {

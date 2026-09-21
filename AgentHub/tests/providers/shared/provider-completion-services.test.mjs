@@ -48,6 +48,51 @@ test("Codex completion commits without waiting for rollout metadata", async () =
   assert.equal(rolloutReads, 0);
 });
 
+test("failed Codex completion keeps commentary and carries the exact provider failure", async () => {
+  const delivered = [];
+  const remembered = [];
+  const run = {
+    threadId: "thread-failed",
+    turnId: "turn-failed",
+    status: "running",
+    responseText: "Проверяю доступ модели",
+  };
+  const service = new CodexCompletionService({
+    runForTask: () => run,
+    consumeTracker: () => ({ usage: {}, reported: false }),
+    waitForCompletion: async () => null,
+    readThread: async () => ({ thread: {} }),
+    readTurnUsage: async () => null,
+    applyRolloutContext: () => {},
+    finalizeDelivery: async (_run, value) => delivered.push(value),
+    finishProgress: async () => {},
+    completedAnswer: async () => "Проверяю доступ модели",
+    rememberSeenTurn: async () => {},
+    rememberLastMessage: (...args) => remembered.push(args),
+    temporaryFiles: new Map(),
+    speechButtons: new Map(),
+  });
+
+  await service.completeManaged(run, { eventTurn: {
+    id: run.turnId,
+    status: "failed",
+    last_agent_message: null,
+    error: {
+      message: "stream disconnected before completion: Unable to verify model access right now. Please retry.",
+      codex_error_info: "other",
+    },
+  } });
+
+  assert.equal(delivered[0].answer, "Проверяю доступ модели");
+  assert.deepEqual(delivered[0].terminalFailure, {
+    type: "provider_error",
+    message: "stream disconnected before completion: Unable to verify model access right now. Please retry.",
+    code: "other",
+  });
+  assert.equal(remembered[0][2].status, "failed");
+  assert.deepEqual(remembered[0][2].terminalFailure, delivered[0].terminalFailure);
+});
+
 test("observed Codex completion marks a real terminal transition", async () => {
   const run = {
     threadId: "thread-observed",

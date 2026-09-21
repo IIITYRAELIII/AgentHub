@@ -24,6 +24,11 @@ terminal.
 
 - Terminal status, final content, usage identity and last-message identity are
   committed before admission or queue ownership is released.
+- Ordinary Claude turns remain background work on Windows: starting a turn or
+  any console descendant must not expose a console window or steal foreground
+  focus. The durable worker survives an Agent Hub restart, retains redirected
+  file output and stream input, and cancellation still owns its complete process
+  tree.
 - The post-turn reservation is acquired before admission release. Once the
   terminal is durable, admission completion starts reserved post-turn
   maintenance independently of outbox delivery. A stalled delivery cannot hold
@@ -39,9 +44,16 @@ terminal.
   resume the abandoned check or start provider work. A read timeout is not
   evidence that an already-started provider operation has finished.
 - A Codex `task_complete` event carrying an error is a failed terminal, not a
-  successful empty answer. Exact-turn, tail and historical readers retain the
-  same outcome. Context maintenance does not generate a user turn, and terminal
-  reconciliation has no special prompt, client-ID or response-text classifier.
+  successful empty answer. Its bounded provider message and optional safe code
+  are retained as the typed `terminalFailure` of that exact terminal revision;
+  existing commentary remains answer content and never masks or replaces the
+  failure. Exact-turn, tail and historical readers, the terminal store, journal
+  projection and Task history retain the same failed outcome across restart.
+  A later weak `completed` overlay cannot promote that revision to success, and
+  a weak failed observation cannot replace a retained specific reason with the
+  synthesized no-details fallback. Context maintenance does not generate a user
+  turn, and terminal reconciliation has no special prompt, client-ID or
+  response-text classifier.
 - Optional rollout usage, pricing and tool-metadata reconstruction never delays
   terminal commit or admission release. The terminal audit resumes from its
   durable append-only byte checkpoint and reconciles that metadata afterward.

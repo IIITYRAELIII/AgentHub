@@ -65,7 +65,6 @@ export function createTaskStateWiring({
   }
 
   async function persistTaskDiff(key, value) {
-    taskDiffs.remember(key, value);
     try {
       await taskDiffs.set(key, value);
     } catch (error) {

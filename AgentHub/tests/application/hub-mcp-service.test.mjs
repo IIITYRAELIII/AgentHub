@@ -6,6 +6,7 @@ import process from "node:process";
 import test from "node:test";
 
 import { HubMcpService } from "../../src/application/hub-mcp-service.mjs";
+import { HubMcpServer } from "../../src/interfaces/mcp/hub-mcp-server.mjs";
 import { TaskIntegrationConflictError, TaskAwaitIntegrationError, TaskWithdrawalBusyError } from "../../src/application/task-lifecycle-service.mjs";
 import { ReleaseCandidateFrozenError, TaskAbsorptionCompositionError } from "../../src/domain/task-board-task.mjs";
 import { TaskBoardService } from "../../src/application/task-board-service.mjs";
@@ -45,6 +46,7 @@ async function fixture(context, {
   releaseWorkflowEnabled = false,
   taskGitWorkspacesFactory = null,
   taskOperationReconciliation = null,
+  browserFallback = null,
 } = {}) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-mcp-"));
   context.after(() => rm(directory, { recursive: true, force: true }));
@@ -417,6 +419,7 @@ async function fixture(context, {
   const service = new HubMcpService({
     workspaceCatalog, taskBoard, workLog, attachmentDirectory, secret: "secret",
     taskGitWorkspaces, taskOperationReconciliation,
+    browserFallback,
     releasePlanner: {
       plan: async (workspaceId) => {
         releasePlanWorkspaceIds.push(workspaceId);
@@ -513,6 +516,58 @@ async function fixture(context, {
     activeRun,
   };
 }
+
+test("Codex browser fallback is exposed through the authenticated Hub MCP context", async (t) => {
+  const invocations = [];
+  const browserFallback = {
+    invoke: async (context, args) => {
+      invocations.push({ context, args });
+      return { url: args.url, snapshot: "- heading: Browser ready", sessionReused: false };
+    },
+    close: async () => invocations.push({ closed: true }),
+  };
+  const { service, token } = await fixture(t, { browserFallback });
+  const server = new HubMcpServer({
+    service,
+    secret: "browser-test-secret",
+    logger: { log() {}, error() {} },
+  });
+  await server.start();
+
+  const listed = await fetch(server.url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }),
+  }).then((response) => response.json());
+  const definition = listed.result.tools.find((tool) => tool.name === "hub_browser");
+  assert.deepEqual(definition.inputSchema.required, ["context_token", "action"]);
+  const called = await fetch(server.url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "tools/call",
+      params: {
+        name: "hub_browser",
+        arguments: { context_token: token, action: "open", url: "https://example.test" },
+      },
+    }),
+  }).then((response) => response.json());
+
+  assert.equal(called.result.isError, false);
+  assert.equal(called.result.structuredContent.snapshot, "- heading: Browser ready");
+  assert.equal(invocations[0].context.provider, "codex");
+  assert.equal(invocations[0].context.threadId, "thread-1");
+  assert.equal(invocations[0].context.streamId, "stream-1");
+  assert.deepEqual(invocations[0].args, {
+    context_token: token,
+    action: "open",
+    url: "https://example.test",
+  });
+  await server.close();
+  assert.deepEqual(invocations.at(-1), { closed: true });
+});
 
 test("a proved conflict is a terminal MCP failure and exact retry preserves its diagnostics", async (t) => {
   const { service, token, operations } = await fixture(t, { releaseWorkflowEnabled: true });
@@ -1796,7 +1851,7 @@ test("hub_task_claim defaults to skipping dependencies and forwards explicit ens
   assert.equal(taskClaimCalls.length, 3);
 });
 
-test("claim forwards an explicit user dependency exception and complete forwards its surviving Task", async (t) => {
+test("claim forwards an explicit user dependency exception and complete forwards its absorption contract", async (t) => {
   const { service, token, taskGitPrepareCalls } = await fixture(t);
   const reason = "User requested consolidation before prerequisite release";
   await service.call("hub_task_claim", { context_token: token, request_id: "override-wait",
@@ -1808,9 +1863,21 @@ test("claim forwards an explicit user dependency exception and complete forwards
     return { confirmationRequired: true, task: { id: "task-current" }, cleanupToken: "preview" };
   };
   const result = await service.call("hub_task_complete", { context_token: token, request_id: "absorb-preview",
-    task_id: "task-current", absorbed_into_task_id: "task-survivor" });
+    task_id: "task-current", absorbed_into_task_id: "task-survivor",
+    absorption_mode: "published_duplicate" });
   assert.equal(received.absorbedIntoTaskId, "task-survivor");
+  assert.equal(received.absorptionMode, "published_duplicate");
   assert.equal(result.cleanupToken, "preview");
+  const schema = service.tools().find((tool) => tool.name === "hub_task_complete").inputSchema;
+  assert.deepEqual(schema.properties.absorption_mode.enum, ["published_duplicate"]);
+  const otherToken = service.contextToken({ provider: "codex", threadId: "thread-2" });
+  await assert.rejects(service.call("hub_task_complete", {
+    context_token: otherToken,
+    request_id: "absorb-published-non-manager",
+    task_id: "task-current",
+    absorbed_into_task_id: "task-survivor",
+    absorption_mode: "published_duplicate",
+  }), /requires a Release Manager Stream/u);
 });
 
 test("HubMcpService describes the steering fallback to queued delivery", async (context) => {

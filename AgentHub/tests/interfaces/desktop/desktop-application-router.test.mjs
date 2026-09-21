@@ -182,10 +182,10 @@ test("Desktop application router enforces Mini App history limits", async () => 
 test("Desktop application router exposes root AGENTS read and serialized update", async () => {
   const control = router([]);
   assert.equal((await control.handleDesktopControl({
-    action: "read-root-agents", params: { path: "C:/ignored" },
+    action: "read-root-agents", params: { path: "C:/ignored" }, context: { source: "desktop-control" },
   })).params.path, "C:/ignored");
   assert.equal((await control.handleDesktopControl({
-    action: "update-root-agents", params: { content: "# Rules" },
+    action: "update-root-agents", params: { content: "# Rules" }, context: { source: "desktop-control" },
   })).params.content, "# Rules");
 });
 
@@ -202,10 +202,10 @@ test("Desktop application router exposes the local directory picker", async () =
 test("Desktop application router exposes pre-turn instructions read and Global update", async () => {
   const control = router([]);
   assert.equal((await control.handleDesktopControl({
-    action: "read-pre-turn-instructions", params: {},
+    action: "read-pre-turn-instructions", params: {}, context: { source: "desktop-control" },
   })).params.constructor, Object);
   assert.equal((await control.handleDesktopControl({
-    action: "update-global-pre-turn-instructions", params: { content: "Rules" },
+    action: "update-global-pre-turn-instructions", params: { content: "Rules" }, context: { source: "desktop-control" },
   })).params.content, "Rules");
 });
 
@@ -493,6 +493,51 @@ test("trusted devices may delegate enrollment while server configuration stays l
       action: "update-server-configuration",
       params: {},
       context: { source, userId: "7" },
+    }));
+  }
+});
+
+test("host administration stays local while authenticated remote restart remains available", async () => {
+  const invoked = [];
+  const overrides = Object.fromEntries([
+    "setAutostart", "readPreTurnInstructions", "updateGlobalPreTurnInstructions",
+    "readRootAgents", "updateRootAgents",
+  ].map((name) => [name, async () => {
+    invoked.push(name);
+    return { accepted: true, name };
+  }]));
+  const control = router([], { overrides });
+  const actions = [
+    ["set-autostart", { enabled: true }],
+    ["read-pre-turn-instructions", {}],
+    ["update-global-pre-turn-instructions", { content: "Rules" }],
+    ["read-root-agents", {}],
+    ["update-root-agents", { content: "# Rules" }],
+  ];
+
+  for (const source of ["trusted-device", "telegram-mini-app", "shared-dashboard-bot", ""]) {
+    for (const [action, params] of actions) {
+      await assert.rejects(
+        () => control.handleDesktopControl({ action, params, context: { source, userId: "7" } }),
+        /только локальному Agent Hub/u,
+        `${action} must be refused for ${source || "an unnamed source"}`,
+      );
+    }
+  }
+  assert.deepEqual(invoked, []);
+
+  for (const source of ["desktop-control", "local-mini-app", "local-vscode-webview"]) {
+    for (const [action, params] of actions) {
+      assert.ok(await control.handleDesktopControl({ action, params, context: { source, userId: "7" } }));
+    }
+  }
+  assert.equal(invoked.length, actions.length * 3);
+
+  for (const action of ["restart-server", "retry-startup"]) {
+    assert.ok(await control.handleDesktopControl({
+      action,
+      params: action === "retry-startup" ? { startedAtMs: 1234 } : {},
+      context: { source: "trusted-device", userId: "7" },
     }));
   }
 });

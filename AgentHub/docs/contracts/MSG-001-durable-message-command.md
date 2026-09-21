@@ -101,6 +101,13 @@ hash validation remain unchanged.
 `failed` and `cancelled`. A timeout with an unobserved result is `unknown`, not
 permission to create a second effect.
 
+A provider-declared failed terminal retains its typed bounded failure reason on
+the same terminal identity. Prior commentary may remain visible answer content,
+but it is not success evidence and cannot replace the failed state. Projection
+or reload preserves a retained specific reason over a later synthesized
+no-details fallback and never authorizes an automatic retry or another provider
+effect.
+
 Transitions are monotonic and idempotent. A canonical record atomically replaces
 its optimistic projection by the same identity.
 
@@ -156,9 +163,10 @@ persisted wait reason is not authority: it is recalculated from current exact
 occupancy and self-heals after restart without manual interaction. When terminal
 admission is released, every queued lane head
 preempts polling backoff and is scheduled immediately because repository
-occupancy can couple otherwise independent lanes. A steer that no longer has
-an active turn is downgraded to ordinary intake before the later-turn FIFO
-choice.
+occupancy can couple otherwise independent lanes. A steer whose exact run or
+turn is no longer active becomes attention-required with that identity intact;
+it cannot enter the later-turn FIFO unless the user explicitly chooses the
+ordinary queue action.
 
 An attention-required lane head created by `task-running` or
 `activity-unknown` is rechecked against current exact occupancy. Once the
@@ -235,8 +243,9 @@ For a nonterminal Hub-owned managed run, its exact registered `run.turnId` is
 the primary steer identity. A lagging or temporarily incomplete Thread
 projection must not suppress the `turn/steer` attempt. Thread projection is
 consulted only when no exact managed identity exists or when the provider
-rejects that identity as stale; only a real provider rejection downgrades the
-durable command to queued intake.
+rejects that identity as stale. A real provider rejection moves the durable
+command to visible attention-required state without changing its exact steer
+identity.
 
 Provider `turn/steer` is the authority for whether one exact nonterminal managed
 turn remains steerable. Local response projection, including an observed Codex
@@ -244,13 +253,21 @@ turn remains steerable. Local response projection, including an observed Codex
 the same provider turn may still accept steering after that marker. Admission
 first persists one durable `message-steer` item under its original
 `clientUserMessageId`, exact run ID and exact turn ID, then dispatch attempts the
-provider RPC once. A provider stale/not-steerable rejection converts that same
-durable item to ordinary queued intake once; it does not create a second command
-or change FIFO identity. Timeout or an unknown provider outcome enters bounded
-receipt/provider reconciliation and is never blindly replayed. Exact run/turn
-movement still fails before the RPC, and stale provider identity still follows
-the existing recovery path. Local text, phase, elapsed time and rendered state
-are observations, never steer authority.
+provider RPC once. Provider-internal compaction of that same ordinary turn does
+not downgrade admission to generic later-turn intake: the exact steer remains
+durable until the compaction barrier clears, then dispatches against its original
+run and turn. A Hub-owned compaction, rotation or restart reservation remains an
+admission barrier: the exact steer identity remains durable while its dispatcher
+waits. Exact run/turn movement before dispatch and a definite provider
+stale/not-steerable rejection have no provider effect, so the same durable item
+becomes visible attention-required state with its command, origin, attachments
+and exact steer identity intact. The lane is released, but the item cannot start
+a later turn automatically. An explicit `retry` keeps the exact steer identity;
+only the explicit ordinary queue action authorizes conversion to later-turn
+intake. Timeout or an unknown provider outcome enters bounded receipt/provider
+reconciliation, keeps the lane fail-closed and is never blindly replayed. Local
+text, phase, elapsed time and rendered state are observations, never steer
+authority.
 
 For an inter-Stream command, the envelope `requestId` deterministically restores
 the `mcp:<requestId>` command alias when a provider rollout omits
@@ -296,6 +313,21 @@ work-log storage retain the raw root prompt and its separately bounded
 - Cancellation commits durably before cleanup. Once dispatch is in progress,
   cancellation fails explicitly instead of reporting an effect that may already
   have reached the provider.
+
+## Control-channel authority
+
+The server assigns the authenticated control source; action parameters cannot
+claim a local source. Host autostart and the local root AGENTS and global
+pre-turn instruction files are readable or mutable only through
+`desktop-control`, `local-mini-app` or `local-vscode-webview`. An authenticated
+Telegram, trusted-device, shared-Dashboard or unnamed remote source fails before
+the host handler runs. Server configuration, provider sign-in and local command
+trace diagnostics retain the same local-only boundary.
+
+Remote restart and exact startup retry are deliberate recovery controls exposed
+by the public remote transport allow-list. They remain available to an
+authenticated remote owner and do not broaden authority over local host files,
+autostart or credentials.
 
 ## Remote attachment transport
 

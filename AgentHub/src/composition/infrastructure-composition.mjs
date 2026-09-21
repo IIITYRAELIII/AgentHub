@@ -56,6 +56,7 @@ import { agentHubRuntimeHealth } from "../application/runtime-health.mjs";
 import { ensureLocalWebSecret } from "../interfaces/web/local-web-auth.mjs";
 import { TrustedDeviceRegistry } from "../interfaces/web/trusted-device-access.mjs";
 import { CodexRolloutContextSanitizer } from "../providers/codex/codex-rollout-context.mjs";
+import { CodexBrowserFallbackService } from "../providers/codex/codex-browser-fallback-service.mjs";
 import {
   CodexSparkTaskClassifier,
   ensureDashBotStream,
@@ -434,6 +435,9 @@ export async function createHubInfrastructure({
     releasePreflight: workspaceReleasePreflight,
     verifyPublication: verifyWorkspaceReleasePublication,
   });
+  const codexBrowserFallback = new CodexBrowserFallbackService({
+    dataDir: config.dataDir,
+  });
   const hubMcpService = new HubMcpService({
     workspaceCatalog: workspaceCatalogStore,
     taskBoard,
@@ -446,7 +450,11 @@ export async function createHubInfrastructure({
     releaseCompleter: workspaceReleaseService,
     taskGitWorkspaces,
     releaseGitWorkspaces,
+    browserFallback: codexBrowserFallback,
   });
+  agentHubRuntimeHealth.setDiagnosticSource("codexBrowserFallback", () => (
+    codexBrowserFallback.diagnostics()
+  ));
   agentHubRuntimeHealth.setDiagnosticSource("sqliteContention", () => (
     hubMcpService.databaseContentionDiagnostics()
   ));

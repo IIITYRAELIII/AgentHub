@@ -231,6 +231,12 @@ A busy-origin command
 with `clientProjectionIntent=queue` remains queue-only if admission later finds
 the Stream idle. Attention-required and ambiguous commands remain queue-owned.
 Reconciliation never renders both forms and never loses the logical entity.
+After an exact steer is authoritatively known to have had no provider effect,
+its attention-required row exposes both exact retry and explicit after-turn
+queue actions; neither action runs before its own click. The generic current-turn
+action is absent from both definite and unknown exact-steer decisions, and the
+server rejects a forged generic retarget action. An unknown provider effect
+remains fail-closed and does not expose the after-turn conversion.
 Every canonical queue row exposes an explicit cancellation action. The action
 removes a waiting or attention-required command only after durable commit; if
 dispatch already owns it, the UI reports that cancellation was not confirmed.
@@ -330,6 +336,12 @@ also absorbs later legacy revision `0`, while a positive revision may upgrade
 legacy revision `0`. At the same revision, the durable canonical projection wins
 over a temporary terminal overlay; a higher overlay revision still wins over
 older durable history. `unknown` is a distinct state and is never projected as active.
+An agent card for a failed terminal keeps any preceding commentary as its body
+and displays the bounded `terminalFailure.message` beside it with an explicit
+error state. Missing failure detail uses a safe generic explanation; it never
+turns commentary into a successful final. Live completion, paged history and a
+cold reload project the same failure only on the exact terminal agent entity.
+Displaying that reason does not retry, continue, authenticate or change models.
 The client considers final content caught up only on exact text equality for the
 exact provider turn. Prefix equality never proves that a complete final was
 rendered and cannot stop history refresh or remove a completion overlay.

@@ -31,6 +31,10 @@ import {
   usageSyncEventFromLedgerRecord,
 } from "../domain/work-log-usage-sync.mjs";
 import { mergeUsageLimitSamples, normalizeAuthObservation } from "../domain/usage-facts.mjs";
+import {
+  mergeProviderTerminalFailure,
+  normalizeProviderTerminalFailure,
+} from "../domain/provider-terminal-failure.mjs";
 
 const WORK_LOG_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const ACCOUNT_ATTRIBUTIONS = new Set(["exact", "inferred"]);
@@ -260,6 +264,7 @@ export function normalizedLedger(value = {}, { defaultProjectRoot = "" } = {}) {
             : estimate?.estimatedCredits),
       );
       const estimateKind = String(record?.estimateKind ?? estimate?.estimateKind ?? "").trim();
+      const terminalFailure = normalizeProviderTerminalFailure(record?.terminalFailure, { status });
       turns[key] = {
         workLogId,
         projectRoot: normalizeProjectRoot(record?.projectRoot, defaultProjectRoot),
@@ -305,6 +310,7 @@ export function normalizedLedger(value = {}, { defaultProjectRoot = "" } = {}) {
         completedAt: String(record?.completedAt ?? ""),
         observedAt: String(record?.observedAt ?? ""),
         status,
+        ...(terminalFailure ? { terminalFailure } : {}),
         ...account,
       };
     } catch (error) {
@@ -2976,6 +2982,7 @@ export function incomingLedgerRecord({
   completedAt,
   observedAt,
   status,
+  terminalFailure,
 }) {
   const accountFields = normalizedAccountFields({ account, accountKey, accountAttribution });
   const normalizedEstimatedCredits = normalizeEstimatedCredits(estimatedCredits);
@@ -2986,6 +2993,10 @@ export function incomingLedgerRecord({
     && normalizedClientUserMessageId !== `mcp:${suppliedMessageOrigin.requestId}`
     ? null
     : suppliedMessageOrigin;
+  const normalizedStatus = String(status ?? "completed").trim() || "completed";
+  const normalizedTerminalFailure = normalizeProviderTerminalFailure(terminalFailure, {
+    status: normalizedStatus,
+  });
   return {
     workLogId,
     projectRoot: normalizeProjectRoot(projectRoot),
@@ -3027,7 +3038,8 @@ export function incomingLedgerRecord({
     startedAt: String(startedAt ?? ""),
     completedAt: String(completedAt ?? new Date().toISOString()),
     observedAt: String(observedAt ?? new Date().toISOString()),
-    status: String(status ?? "completed").trim() || "completed",
+    status: normalizedStatus,
+    ...(normalizedTerminalFailure ? { terminalFailure: normalizedTerminalFailure } : {}),
   };
 }
 
@@ -3122,8 +3134,17 @@ export function mergeLedgerRecord(existing, incoming) {
   if (incoming.toolMetricsKnown) existing.toolMetricsKnown = true;
   existing.provisional = incoming.provisional === true;
   if (incoming.status && (incoming.status !== "unknown" || !existing.status || existing.status === "unknown")) {
-    existing.status = incoming.status;
+    existing.status = existing.status === "failed" && incoming.status !== "failed"
+      ? existing.status
+      : incoming.status;
   }
+  if (existing.status === "failed") {
+    existing.terminalFailure = mergeProviderTerminalFailure(
+      existing.terminalFailure,
+      incoming.terminalFailure,
+      { status: existing.status },
+    );
+  } else delete existing.terminalFailure;
   existing.observedAt = usageSyncContent(existing) === previousSyncContent
     ? previousObservedAt
     : String(incoming.observedAt ?? new Date().toISOString());

@@ -1,6 +1,7 @@
 import { receiptUserDisplay } from "../domain/user-message-display.mjs";
 import { isClaudeCompactionRun } from "../domain/claude-context-maintenance.mjs";
 import { providerTurnTelemetrySnapshot } from "../domain/task-runs.mjs";
+import { mergeProviderTerminalFailure } from "../domain/provider-terminal-failure.mjs";
 
 export class ManagedRunHistoryService {
   constructor({
@@ -90,6 +91,13 @@ export class ManagedRunHistoryService {
         current.active = active;
         current.completed = !active;
         current.status = status;
+        const terminalFailure = mergeProviderTerminalFailure(
+          current.terminalFailure,
+          run.terminalFailure,
+          { status },
+        );
+        if (terminalFailure) current.terminalFailure = terminalFailure;
+        else delete current.terminalFailure;
         current.answer = String(answer || run.responseText || "").trim();
         current.activities = Array.isArray(run.activities)
           ? run.activities.map((item) => ({ ...item }))
