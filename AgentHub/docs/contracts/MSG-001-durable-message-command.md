@@ -297,6 +297,21 @@ work-log storage retain the raw root prompt and its separately bounded
   cancellation fails explicitly instead of reporting an effect that may already
   have reached the provider.
 
+## Control-channel authority
+
+The server assigns the authenticated control source; action parameters cannot
+claim a local source. Host autostart and the local root AGENTS and global
+pre-turn instruction files are readable or mutable only through
+`desktop-control`, `local-mini-app` or `local-vscode-webview`. An authenticated
+Telegram, trusted-device, shared-Dashboard or unnamed remote source fails before
+the host handler runs. Server configuration, provider sign-in and local command
+trace diagnostics retain the same local-only boundary.
+
+Remote restart and exact startup retry are deliberate recovery controls exposed
+by the public remote transport allow-list. They remain available to an
+authenticated remote owner and do not broaden authority over local host files,
+autostart or credentials.
+
 ## Remote attachment transport
 
 The shared Dashboard bot's queue notice confirms remote queue admission only.

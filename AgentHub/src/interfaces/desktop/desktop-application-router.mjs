@@ -23,14 +23,20 @@ const CONCURRENT_MUTATION_ACTIONS = Object.freeze([
 ]);
 
 /**
- * Server configuration remains local. Provider sign-in is local too: its browser
- * callback reaches only the Hub machine. Device enrollment may also be delegated
- * by an already trusted device; Telegram and unnamed remote sources cannot mint
- * credentials.
+ * Host configuration and instruction files remain local. Provider sign-in is
+ * local too: its browser callback reaches only the Hub machine. Device
+ * enrollment may also be delegated by an already trusted device; Telegram and
+ * unnamed remote sources cannot mint credentials. Restart and startup retry are
+ * intentionally remote recovery actions and are not part of this local-only set.
  */
 const LOCAL_ONLY_ACTIONS = Object.freeze([
   "attachment-upload",
+  "set-autostart",
   "update-server-configuration",
+  "read-pre-turn-instructions",
+  "update-global-pre-turn-instructions",
+  "read-root-agents",
+  "update-root-agents",
   "start-provider-login",
   "submit-provider-login-code",
   "cancel-provider-login",
