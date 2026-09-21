@@ -191,15 +191,24 @@ test("published duplicate closure binds Done publication proof, preserves Git an
   let finalizeAttempts = 0;
   let transition = null;
   let outcome = null;
+  let publicationDrift = false;
   const calls = [];
   const taskBoard = {
     task: (id) => structuredClone(id === survivor.id ? survivor : source),
-    lifecycleTransition: () => transition,
-    lifecycleOutcome: () => outcome,
+    lifecycleTransition: (operationId) => transition?.operationId === operationId ? transition : null,
+    lifecycleOutcome: (operationId) => outcome?.operationId === operationId ? outcome : null,
     beginLifecycleTransition: (options) => {
       calls.push(["begin", options.evidence.absorbedInto]);
       if (transition) return { replayed: true, phase: transition.phase };
-      transition = { taskId: source.id, kind: "complete", phase: "cleanup", evidence: options.evidence };
+      transition = {
+        operationId: options.operationId,
+        taskId: source.id,
+        kind: "complete",
+        phase: "cleanup",
+        expectedRevision: source.revision,
+        priorTask: structuredClone(source),
+        evidence: options.evidence,
+      };
       return { replayed: false, phase: "cleanup" };
     },
     commitWorkflowTransition() {},
@@ -210,7 +219,12 @@ test("published duplicate closure binds Done publication proof, preserves Git an
       calls.push(["finalize", options.receiptEvidence]);
       if (finalizeAttempts === 1) throw new Error("database reply unavailable before commit");
       const result = { ...source, status: "done" };
-      outcome = { taskId: source.id, kind: "complete", result: { result, evidence: options.receiptEvidence } };
+      outcome = {
+        operationId: _operationId,
+        taskId: source.id,
+        kind: "complete",
+        result: { result, evidence: options.receiptEvidence },
+      };
       transition = null;
       return result;
     },
@@ -230,7 +244,10 @@ test("published duplicate closure binds Done publication proof, preserves Git an
   const taskGitWorkspaces = {
     withTaskLock: (_id, operation) => operation(lease),
     withTaskLocks: (_ids, operation) => operation(lease),
-    withPublishedDuplicateEvidenceOwned: (_options, operation) => operation(evidence(), lease),
+    withPublishedDuplicateEvidenceOwned: (_options, operation) => {
+      if (publicationDrift) throw new Error("current publication advanced beyond preserved source");
+      return operation(evidence(), lease);
+    },
     prepareOwned() {}, snapshotAndMergeOwned() {}, cleanupOwned() {},
     cleanupPreview: async () => ({ workspaces: [], gitReferences: [], dirty: false, unpublished: [], deleting: [] }),
   };
@@ -260,12 +277,21 @@ test("published duplicate closure binds Done publication proof, preserves Git an
   await assert.rejects(service.complete({ ...request, confirmCleanup: true,
     expectedCleanupToken: current.cleanupToken }), /database reply unavailable/u);
   assert.equal(transition.phase, "cleanup");
+  generation = "release-3";
+  publicationDrift = true;
+  await assert.rejects(service.complete({ ...request, operationId: "different-operation" }),
+    /current publication advanced/u);
+  await assert.rejects(service.complete({ ...request, absorbedIntoTaskId: "different-survivor",
+    confirmCleanup: true, expectedCleanupToken: current.cleanupToken }), /does not match this published duplicate closure/u);
   const completed = await service.complete({ ...request, confirmCleanup: true,
     expectedCleanupToken: current.cleanupToken });
   assert.equal(completed.status, "done");
   assert.equal(finalizeAttempts, 2);
-  assert.equal(calls.filter(([name]) => name === "begin").length, 2);
+  assert.equal(calls.filter(([name]) => name === "begin").length, 1);
   assert.equal(calls.some(([, value]) => value?.cleanupPlan?.strategy === "preserve_managed_source"), true);
+  assert.equal((await service.complete({ ...request, confirmCleanup: true,
+    expectedCleanupToken: current.cleanupToken })).status, "done");
+  assert.equal(finalizeAttempts, 2);
 
   survivor.workspaceId = "workspace-2";
   outcome = null;

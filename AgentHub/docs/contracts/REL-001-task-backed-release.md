@@ -170,7 +170,8 @@ It closes only the duplicate Task row, records durable `absorbedInto` evidence,
 attributes no result commit to the duplicate, and preserves its managed branch
 and worktree. Therefore a failure after admission has no partial Git deletion;
 retry of the same operation resumes the existing cleanup-phase transition, and
-a lost successful reply is recovered from the exact lifecycle outcome. Source
+does so from its stored admission evidence before reading a newer publication.
+A lost successful reply is recovered from the exact lifecycle outcome. Source
 history or valuable artifacts are never deleted by this mode.
 
 A sibling Task merge is not upstream adoption. The Git owner recognizes managed

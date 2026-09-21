@@ -60,8 +60,9 @@ the existing open/tested-survivor contract.
 The published-duplicate result records durable `absorbedInto` evidence without
 creating a Git result, squash receipt or publication claim for the duplicate.
 No Git artifact is deleted. A post-admission failure leaves the same lifecycle
-operation in cleanup phase for exact retry; a committed outcome is returned by
-readback instead of replaying closure. Task/Git/publication drift before
+operation in cleanup phase for exact retry from its stored admission evidence;
+a later publication does not strand that admitted operation. A committed
+outcome is returned by readback instead of replaying closure. Task/Git/publication drift before
 admission is a refusal and requires a fresh preview.
 
 For release-enabled Workspaces, combined closure also binds canonical selected

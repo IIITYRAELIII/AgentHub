@@ -1132,11 +1132,50 @@ export class TaskLifecycleService {
     if (releaseWorkflow) requiredMethod(this.releasePreflight, "withAwaitTransition");
     const complete = () => this.taskGitWorkspaces.withTaskLocks([taskId, absorbedIntoTaskId], async (lease) => {
       const task = this.#task(taskId);
-      const target = this.#task(absorbedIntoTaskId);
       if (task.workspaceId !== initial.workspaceId
           || (this.workspaceCatalog.workspace(task.workspaceId)?.settings?.releaseWorkflowEnabled === true) !== releaseWorkflow) {
         throw new Error("Workspace changed during published duplicate closure");
       }
+      const resumed = this.taskBoard.lifecycleTransition?.(operationId);
+      if (resumed) {
+        const absorbedInto = resumed.evidence?.absorbedInto;
+        const cleanup = resumed.evidence?.cleanup;
+        const prior = resumed.priorTask;
+        if (resumed.taskId !== task.id || resumed.kind !== "complete" || resumed.phase !== "cleanup"
+            || absorbedInto?.mode !== "published_duplicate"
+            || absorbedInto.taskId !== absorbedIntoTaskId
+            || absorbedInto.source?.taskId !== task.id
+            || absorbedInto.survivor?.taskId !== absorbedIntoTaskId
+            || Number(absorbedInto.sourceTaskRevision) !== Number(task.revision)
+            || Number(resumed.expectedRevision) !== Number(task.revision)
+            || absorbedInto.cleanupPlan?.strategy !== "preserve_managed_source"
+            || !cleanup || cleanup.taskId !== task.id || (cleanup.deleting ?? []).length
+            || !prior || prior.workspaceId !== task.workspaceId || prior.status !== task.status
+            || prior.workflowStatus !== task.workflowStatus || Number(prior.revision) !== Number(task.revision)) {
+          throw new Error("Task lifecycle operation id does not match this published duplicate closure");
+        }
+        if (confirmCleanup !== true) {
+          throw new Error("Published duplicate lifecycle is already admitted; retry the exact confirmed operation");
+        }
+        const storedPreview = confirmation(task, "complete", { ...cleanup, absorbedInto });
+        if (String(expectedCleanupToken ?? "") !== storedPreview.cleanupToken) {
+          throw new Error("Published duplicate retry does not match its admitted confirmation");
+        }
+        try {
+          await this.#assertOwned(lease);
+          return await this.#mutation(() => this.taskBoard.finalizeCleanupTransition(operationId, {
+            receiptEvidence: { absorbedInto, cleanup },
+          }), operationId);
+        } catch (error) {
+          const outcome = this.taskBoard.lifecycleOutcome?.(operationId);
+          if (outcome?.taskId === task.id && outcome.kind === "complete"
+              && JSON.stringify(outcome.result?.evidence?.absorbedInto) === JSON.stringify(absorbedInto)) {
+            return outcome.result.result;
+          }
+          throw error;
+        }
+      }
+      const target = this.#task(absorbedIntoTaskId);
       if (!task.workspaceId || task.workspaceId !== target.workspaceId
           || target.status !== "done" || target.workflowStatus !== "done") {
         throw new Error("Published duplicate survivor must be Done in the same Workspace");

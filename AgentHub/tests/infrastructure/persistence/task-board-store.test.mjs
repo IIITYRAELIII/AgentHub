@@ -194,6 +194,61 @@ test("published duplicate absorption admits only an exact Done survivor and exac
   }), /Surviving Task changed/u);
 });
 
+test("published duplicate cleanup transition preserves exact replay evidence across reopen", async (t) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "published-duplicate-replay-"));
+  const databaseFile = path.join(directory, "journal.sqlite");
+  let store = new TaskBoardStore({ databaseFile });
+  t.after(async () => {
+    store?.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+  const source = store.move(store.create({ text: "Source" }).id, {
+    bucket: "workspace", workspaceId: "workspace",
+  });
+  let survivor = store.move(store.create({ text: "Survivor" }).id, {
+    bucket: "workspace", workspaceId: "workspace",
+  });
+  survivor = store.complete(store.setWorkflowStatus(survivor.id, "done").id);
+  const absorbedInto = {
+    version: 1,
+    mode: "published_duplicate",
+    taskId: survivor.id,
+    taskRevision: survivor.revision,
+    sourceTaskRevision: source.revision,
+    source: { taskId: source.id, taskRevision: source.revision },
+    survivor: { taskId: survivor.id, taskRevision: survivor.revision },
+    publicationGeneration: "release-g1",
+    cleanupPlan: { strategy: "preserve_managed_source", deleting: [] },
+    repositories: [{ projectRoot: path.resolve("D:/repo"), sourceHead: "a".repeat(40),
+      survivorResult: "b".repeat(40), publishedRevision: "c".repeat(40) }],
+  };
+  const cleanup = {
+    taskId: source.id, workspaces: [], gitReferences: [], dirty: false,
+    unpublished: [], deleting: [], preserving: [],
+  };
+  store.beginLifecycleTransition(source.id, {
+    operationId: "published-reopen",
+    kind: "complete",
+    expectedRevision: source.revision,
+    evidence: { absorbedInto, cleanup },
+  });
+  store.close();
+  store = new TaskBoardStore({ databaseFile });
+  const resumed = store.lifecycleTransition("published-reopen");
+  assert.equal(resumed.phase, "cleanup");
+  assert.equal(resumed.expectedRevision, source.revision);
+  assert.deepEqual(resumed.evidence, { absorbedInto, cleanup });
+  assert.equal(resumed.priorTask.id, source.id);
+  const completed = store.finalizeCleanupTransition("published-reopen", {
+    receiptEvidence: resumed.evidence,
+  });
+  assert.equal(completed.status, "done");
+  store.close();
+  store = new TaskBoardStore({ databaseFile });
+  assert.equal(store.lifecycleTransition("published-reopen"), null);
+  assert.deepEqual(store.lifecycleOutcome("published-reopen").result.evidence, resumed.evidence);
+});
+
 test("squash transfer reserves and atomically updates both exact Task rows", async (t) => {
   const store = await fixture(t);
   const source = store.create({ text: "Source", bucket: "workspace", workspaceId: "workspace" });
