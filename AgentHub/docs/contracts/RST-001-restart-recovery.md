@@ -103,7 +103,9 @@ provider/process completion owner may commit the exact terminal outcome.
 - Startup performs one bounded read-model reprojection for recent terminal
   turns whose retained payload identities are all confirmed by exact terminal
   command-ledger bindings. The reprojection is idempotent, preserves terminal
-  state and never dispatches a provider effect; ambiguous evidence is skipped.
+  state, including a typed bounded provider failure, and never dispatches a
+  provider effect; ambiguous evidence is skipped. Reload cannot promote a
+  retained failed terminal to completed merely because commentary text exists.
   Candidate discovery uses terminal-store-owned persisted payload-byte metadata
   and deterministic covering-index order; the read-model owner never scans or
   sorts terminal JSON to discover candidates.

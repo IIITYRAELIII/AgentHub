@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { CodexTerminalReconciliationService } from "../../../src/providers/codex/codex-terminal-reconciliation-service.mjs";
+import { PROVIDER_TERMINAL_FAILURE_FALLBACK } from "../../../src/domain/provider-terminal-failure.mjs";
 import { createRunAccountingComposition } from "../../../src/composition/run-accounting-composition.mjs";
 import { RunJournalService } from "../../../src/application/run-journal-service.mjs";
 import { createWorkLogUsageStore } from "../../../src/application/work-log-usage-store.mjs";
@@ -229,7 +230,11 @@ test("historical and subagent audit flushes follow actual deferred mutations rat
       const candidate = { ...thread, ...(kind === "subagent" ? { parentThreadId: "parent" } : {}) };
       const { service, calls } = harness({
         accountingThread: async (value) => ({ threadId: value.id, thread: value, isSubagent: kind === "subagent" }),
-        workLogStore: { getTurn: async () => kind === "already-equal" ? { usageReported: true, usage: { totalTokens: 10 } } : null },
+        workLogStore: {
+          getTurn: async () => kind === "already-equal"
+            ? { status: "completed", usageReported: true, usage: { totalTokens: 10 } }
+            : null,
+        },
         projectTurn: async () => { projections += 1; return { projected: false, projectionDeferred: changed }; },
       });
       const terminal = { turnId: "checked", status: "completed", completedAt: "2026-08-04T10:00:00.000Z", usageResult: usage(), ...(kind === "subagent" ? {} : { historical: true }) };
@@ -294,6 +299,28 @@ test("recent completed Codex turns keep their grace period before reconciliation
   assert.deepEqual(completions, []);
 });
 
+test("terminal reconciliation restores provider failure into journal and completion", async () => {
+  const failure = {
+    type: "provider_error",
+    message: "Unable to verify model access right now. Please retry.",
+    code: "other",
+  };
+  const { service, calls, completions } = harness({
+    readTurnUsage: async () => usage({
+      status: "failed",
+      finalAnswer: "Проверяю доступ модели",
+      terminalFailure: failure,
+    }),
+  });
+  await service.reconcile(thread, project, {
+    turnId: "turn-failed",
+    status: "failed",
+    completedAt: "2026-08-04T10:00:00.000Z",
+  });
+
+  assert.deepEqual(completions[0].terminalFailure, failure);
+  assert.equal(calls.some(([name]) => name === "deliver"), true);
+});
 
 
 
@@ -318,6 +345,63 @@ test("historical reconciliation refreshes an existing turn when rollout usage ch
 
   assert.equal(result, true);
   assert.equal(calls.some(([name]) => name === "project"), true);
+});
+
+test("historical reconciliation enriches the same usage with the authoritative terminal failure", async () => {
+  const terminalFailure = {
+    type: "provider_error",
+    message: "Unable to verify model access right now. Please retry.",
+    code: "other",
+  };
+  const { service, calls } = harness({
+    workLogStore: {
+      getTurn: async () => ({
+        provisional: false,
+        status: "failed",
+        usageReported: true,
+        usage: { totalTokens: 10 },
+      }),
+    },
+  });
+
+  const result = await service.reconcile(thread, project, {
+    turnId: "turn-1",
+    status: "failed",
+    terminalFailure,
+    completedAt: "2026-08-04T10:00:00.000Z",
+    historical: true,
+    usageResult: usage({
+      status: "failed",
+      terminalFailure: { message: PROVIDER_TERMINAL_FAILURE_FALLBACK },
+    }),
+  });
+
+  assert.equal(result, true);
+  assert.deepEqual(calls.find(([name]) => name === "project")[1].terminalFailure, terminalFailure);
+});
+
+test("delivered reconciliation retains an authoritative reason over the reader fallback", async () => {
+  const terminalFailure = {
+    type: "provider_error",
+    message: "Unable to verify model access right now. Please retry.",
+    code: "other",
+  };
+  const { service, calls, delivered } = harness();
+  delivered.add("turn-1");
+
+  await service.reconcile(thread, project, {
+    turnId: "turn-1",
+    status: "failed",
+    terminalFailure,
+    completedAt: "2026-08-04T10:00:00.000Z",
+    usageResult: usage({
+      status: "failed",
+      terminalFailure: { message: PROVIDER_TERMINAL_FAILURE_FALLBACK },
+    }),
+  });
+
+  assert.deepEqual(calls.find(([name]) => name === "project")[1].terminalFailure, terminalFailure);
+  assert.deepEqual(calls.find(([name]) => name === "remember")[3].terminalFailure, terminalFailure);
 });
 
 test("unhooked terminal Codex turn is recorded, saved and delivered once", async () => {

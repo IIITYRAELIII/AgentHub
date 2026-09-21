@@ -1,6 +1,7 @@
 import { unlink } from "node:fs/promises";
 
 import { isClaudeCompactionRun } from "../domain/claude-context-maintenance.mjs";
+import { codexTerminalFailure } from "../domain/provider-terminal-failure.mjs";
 import { claudeFailureMessage, formatClaudeUsage } from "./claude/claude.mjs";
 import { TASK_EXECUTION_OWNERS } from "../domain/task-execution-owner.mjs";
 import { rememberProviderRunTerminalStatus } from "../domain/provider-run-terminal.mjs";
@@ -51,6 +52,7 @@ export class CodexCompletionService {
       answer,
       turnId: completedTurnId,
       status: snapshot?.status ?? "completed",
+      terminalFailure: codexTerminalFailure(snapshot, snapshot?.status ?? "completed"),
       tracker: resolvedTracker,
       deliver,
       silent: run.displayRequested !== true,
@@ -75,6 +77,7 @@ export class CodexCompletionService {
       answer,
       turnId: completedTurnId,
       status: snapshot?.status ?? "completed",
+      terminalFailure: codexTerminalFailure(snapshot, snapshot?.status ?? "completed"),
       tracker,
       forceSpeechButton,
       description: "восстановленный финальный ответ Codex",
@@ -92,6 +95,7 @@ export class CodexCompletionService {
     run.status = "finishing";
     const status = eventTurn?.status ?? "completed";
     const error = eventTurn?.error?.message;
+    const terminalFailure = codexTerminalFailure(eventTurn, status);
     const answer = await this.#d.completedAnswer(run, completedTurnId, eventTurn)
       || (error ? `Ошибка: ${error}` : `Поток завершён: ${status}`);
     this.#rememberTerminalAnswer(run, completedTurnId, answer, eventTurn);
@@ -107,6 +111,7 @@ export class CodexCompletionService {
       answer,
       turnId: completedTurnId,
       status,
+      terminalFailure,
       tracker,
       forceSpeechButton,
       description: "финальный ответ Codex",
@@ -117,7 +122,12 @@ export class CodexCompletionService {
     const completedAtMs = Number(run?.providerStart?.completedAtMs);
     const updatedAt = completion?.completedAt
       ?? (Number.isFinite(completedAtMs) ? new Date(completedAtMs).toISOString() : null);
-    this.#d.rememberLastMessage({ ...run, turnId }, answer, { updatedAt });
+    const status = completion?.status ?? "completed";
+    this.#d.rememberLastMessage({ ...run, turnId }, answer, {
+      updatedAt,
+      status,
+      terminalFailure: codexTerminalFailure(completion, status),
+    });
   }
 
   async #releaseTurnResources(turnId) {

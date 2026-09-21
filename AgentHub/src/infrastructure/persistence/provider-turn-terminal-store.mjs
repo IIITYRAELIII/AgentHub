@@ -1,6 +1,10 @@
 import { createHash } from "node:crypto";
 
 import { consistentInterstreamRecordIdentity } from "../../domain/interstream-message.mjs";
+import {
+  mergeProviderTerminalFailure,
+  normalizeProviderTerminalFailure,
+} from "../../domain/provider-terminal-failure.mjs";
 import { AsyncSqliteMutationQueue } from "./async-sqlite-mutation-queue.mjs";
 import { openRuntimeDatabase } from "./runtime-state-store.mjs";
 
@@ -68,6 +72,14 @@ function sanitizedTerminalPayload(value) {
   const payload = jsonValue(value ?? {});
   sanitizeMessageIdentity(payload?.completion);
   sanitizeMessageIdentity(payload?.history);
+  for (const part of [payload?.completion, payload?.history]) {
+    if (!part || typeof part !== "object") continue;
+    const terminalFailure = normalizeProviderTerminalFailure(part.terminalFailure, {
+      status: part.status,
+    });
+    if (terminalFailure) part.terminalFailure = terminalFailure;
+    else delete part.terminalFailure;
+  }
   return payload;
 }
 
@@ -355,6 +367,11 @@ export class ProviderTurnTerminalStore {
           usageIdentity,
           lastMessageText: String(lastMessage?.text ?? "").trim(),
           responseAttachments: basePayload?.completion?.responseAttachments ?? [],
+          terminalFailure: mergeProviderTerminalFailure(
+            basePayload?.history?.terminalFailure,
+            basePayload?.completion?.terminalFailure,
+            { status },
+          ),
           telegramIntent,
           ...([basePayload?.completion, basePayload?.history].some((part) => (
             text(part?.operationKind) && text(part.operationKind) !== "user-turn"

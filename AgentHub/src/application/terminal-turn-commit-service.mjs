@@ -4,6 +4,10 @@ import {
   consistentInterstreamRecordIdentity,
   normalizeInterstreamClientUserMessageId,
 } from "../domain/interstream-message.mjs";
+import {
+  mergeProviderTerminalFailure,
+  normalizeProviderTerminalFailure,
+} from "../domain/provider-terminal-failure.mjs";
 
 function usageIdentity(completion) {
   const value = {
@@ -94,6 +98,11 @@ function historySnapshot(run, completion) {
     && completion.responseAnnotationReferences.length
     ? completion.responseAnnotationReferences
     : source.responseAnnotationReferences;
+  const terminalFailure = mergeProviderTerminalFailure(
+    source.terminalFailure,
+    completion.terminalFailure,
+    { status: completion.status },
+  );
   return {
     id: String(source.id ?? "").trim() || null,
     streamId: source.streamId ?? completion.streamId ?? null,
@@ -101,6 +110,10 @@ function historySnapshot(run, completion) {
     projectRoot: completion.projectRoot,
     threadId: completion.threadId,
     turnId: completion.turnId,
+    status: completion.status,
+    completed: true,
+    active: false,
+    ...(terminalFailure ? { terminalFailure } : {}),
     operationKind: completion.operationKind ?? source.operationKind,
     taskTitle: completion.taskTitle,
     promptPreview: String(source.rawPrompt ?? source.promptPreview ?? completion.prompt ?? ""),
@@ -166,6 +179,12 @@ export class TerminalTurnCommitService {
     }
     const finalAnswer = String(completion.finalAnswer ?? "").trim();
     const durableCompletion = structuredClone(completion);
+    const terminalFailure = normalizeProviderTerminalFailure(
+      durableCompletion.terminalFailure,
+      { status: durableCompletion.status },
+    );
+    if (terminalFailure) durableCompletion.terminalFailure = terminalFailure;
+    else delete durableCompletion.terminalFailure;
     const completionRootMessage = (Array.isArray(durableCompletion.userMessages)
       ? durableCompletion.userMessages
       : []).find((message) => message?.role === "user") ?? null;

@@ -3,6 +3,8 @@ import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 
+import { normalizeProviderTerminalFailure } from "../../src/domain/provider-terminal-failure.mjs";
+
 const WEB_APP_ROOT = new URL("../../assets/web-app/", import.meta.url);
 const TEST_THEME_CATALOG = JSON.stringify([{
   id: "orbit",
@@ -700,6 +702,107 @@ test("citation navigation materializes a deferred source before range lookup", a
     assert.equal(await sourceArticle.locator(".msg-deferred-preview").count(), 0);
     assert.equal(await sourceArticle.locator(".msg-body").getAttribute("data-response-citation-source-focus"), "");
     assert.equal(await sourceArticle.locator(".msg-source-citation-highlight").textContent(), selectedText);
+  } finally {
+    await page.close();
+  }
+});
+
+test("failed terminal card preserves commentary and renders the provider reason", async () => {
+  const page = await browser.newPage();
+  try {
+    await openWebApp(page);
+    const base = {
+      id: "agent-failed",
+      provider: "codex",
+      threadId: "thread-1",
+      turnId: "turn-failed",
+      itemId: "agent-final",
+      role: "agent",
+      author: "Codex",
+      text: "Проверяю доступ модели",
+      projectionState: "completed",
+    };
+    await seedMessages(page, [base]);
+    const article = page.locator('[data-message-id="agent-failed"]');
+    assert.equal(await article.getAttribute("data-terminal-status"), null);
+
+    await seedMessages(page, [{
+      ...base,
+      projectionState: "failed",
+      terminalFailure: {
+        type: "provider_error",
+        message: "Unable to verify model access right now. Please retry.",
+        code: "other",
+      },
+    }]);
+    assert.equal(await article.getAttribute("data-terminal-status"), "failed");
+    assert.equal(await article.locator(".msg-terminal-status").textContent(), "Ошибка");
+    assert.equal(await article.locator(".msg-body").textContent(), "Проверяю доступ модели");
+    assert.equal(
+      await article.locator(".msg-terminal-failure").textContent(),
+      "Unable to verify model access right now. Please retry.",
+    );
+
+    await seedMessages(page, [{ ...base, projectionState: "failed" }]);
+    assert.equal(
+      await article.locator(".msg-terminal-failure").textContent(),
+      "Провайдер завершил ход с ошибкой без подробностей.",
+    );
+  } finally {
+    await page.close();
+  }
+});
+
+test("a rendered failure carries no provider credentials or private paths", async () => {
+  const page = await browser.newPage();
+  try {
+    await openWebApp(page);
+    // The owning boundary is the domain normalizer, so the card is fed exactly
+    // what the terminal store, journal and history would hand to a client.
+    const raw = "Request failed: Authorization: Bearer SYNTHETIC_SECRET_TOKEN "
+      + "api_key=SYNTHETIC_API_KEY token: SYNTHETIC_TOKEN "
+      + "while reading C:\\Users\\operator\\.codex\\auth.json and /home/operator/.codex/auth.json";
+    const terminalFailure = normalizeProviderTerminalFailure({ message: raw, code: "other" }, {
+      status: "failed",
+    });
+    for (const secret of [
+      "SYNTHETIC_SECRET_TOKEN", "SYNTHETIC_API_KEY", "SYNTHETIC_TOKEN",
+      "C:\\Users\\operator", "/home/operator",
+    ]) {
+      assert.equal(JSON.stringify(terminalFailure).includes(secret), false, secret);
+    }
+
+    await seedMessages(page, [{
+      id: "agent-redacted",
+      provider: "codex",
+      threadId: "thread-1",
+      turnId: "turn-redacted",
+      itemId: "agent-final",
+      role: "agent",
+      author: "Codex",
+      text: "Проверяю доступ модели",
+      projectionState: "failed",
+      terminalFailure,
+    }]);
+
+    const article = page.locator('[data-message-id="agent-redacted"]');
+    assert.equal(await article.getAttribute("data-terminal-status"), "failed");
+    assert.equal(await article.locator(".msg-body").textContent(), "Проверяю доступ модели");
+    assert.equal(
+      await article.locator(".msg-terminal-failure").textContent(),
+      terminalFailure.message,
+    );
+    // Markup, not only text: escaping alone would still ship the raw secret.
+    const markup = await page.evaluate(() => document.documentElement.outerHTML);
+    for (const secret of [
+      "SYNTHETIC_SECRET_TOKEN", "SYNTHETIC_API_KEY", "SYNTHETIC_TOKEN",
+      "C:\\Users\\operator", "/home/operator",
+    ]) {
+      assert.equal(markup.includes(secret), false, secret);
+    }
+    assert.equal(terminalFailure.message.includes("[redacted]"), true, terminalFailure.message);
+    assert.equal(terminalFailure.message.includes("[path]"), true, terminalFailure.message);
+    assert.equal(terminalFailure.message.startsWith("Request failed:"), true);
   } finally {
     await page.close();
   }

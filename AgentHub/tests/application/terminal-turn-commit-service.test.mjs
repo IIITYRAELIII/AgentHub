@@ -89,6 +89,69 @@ test("terminal commit keeps structured response annotations beside the canonical
   assert.deepEqual(stored.payload.history.userMessages[0].responseAnnotations, responseAnnotations);
 });
 
+test("terminal commit persists provider failure beside commentary in completion and history", async () => {
+  let stored = null;
+  const service = new TerminalTurnCommitService({
+    store: {
+      commit: async (value) => {
+        stored = value;
+        return { terminal: { ...value, terminalRevision: 1 }, outbox: {} };
+      },
+      get: async () => null,
+    },
+  });
+
+  await service.commit({
+    provider: "codex",
+    threadId: "thread-failed",
+    turnId: "turn-failed",
+    status: "failed",
+    finalAnswer: "Промежуточный commentary",
+    terminalFailure: { message: "Provider unavailable", code: "other" },
+  }, { run: { id: "run-failed" } });
+
+  for (const payload of [stored.payload.completion, stored.payload.history]) {
+    assert.equal(payload.status, "failed");
+    assert.deepEqual(payload.terminalFailure, {
+      type: "provider_error",
+      message: "Provider unavailable",
+      code: "other",
+    });
+  }
+});
+
+test("terminal commit history keeps a run reason over a weak completion fallback", async () => {
+  let stored = null;
+  const service = new TerminalTurnCommitService({
+    store: {
+      commit: async (value) => {
+        stored = value;
+        return { terminal: { ...value, terminalRevision: 1 }, outbox: {} };
+      },
+      get: async () => null,
+    },
+  });
+
+  await service.commit({
+    provider: "codex",
+    threadId: "thread-failed",
+    turnId: "turn-failed",
+    status: "failed",
+    finalAnswer: "Промежуточный commentary",
+  }, {
+    run: {
+      id: "run-failed",
+      terminalFailure: { message: "exact reason", code: "other" },
+    },
+  });
+
+  assert.deepEqual(stored.payload.history.terminalFailure, {
+    type: "provider_error",
+    message: "exact reason",
+    code: "other",
+  });
+});
+
 test("terminal commit keeps live citation refs when completion tracking is empty", async () => {
   let stored = null;
   const service = new TerminalTurnCommitService({

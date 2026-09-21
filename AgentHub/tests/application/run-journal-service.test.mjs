@@ -82,6 +82,26 @@ test("RunJournalService never replaces a newer exact terminal revision with an o
   assert.equal(service.revision, revision);
 });
 
+test("RunJournalService never promotes a failed terminal message through a weak later overlay", () => {
+  const { service } = fixture();
+  const task = { provider: "codex", projectRoot: "C:/workspace", threadId: "thread", turnId: "turn" };
+  service.rememberLastMessage(task, "Промежуточный commentary", {
+    status: "failed",
+    terminalFailure: { message: "Provider unavailable", code: "other" },
+  });
+  service.rememberLastMessage(task, "Промежуточный commentary", {
+    status: "failed",
+    terminalFailure: { message: "Провайдер завершил ход с ошибкой без подробностей." },
+  });
+
+  assert.equal(service.lastMessageRecord(task).status, "failed");
+  assert.deepEqual(service.lastMessageRecord(task).terminalFailure, {
+    type: "provider_error",
+    message: "Provider unavailable",
+    code: "other",
+  });
+});
+
 test("RunJournalService rejects an older turn that finishes projection after a newer turn", () => {
   const { service } = fixture();
   const task = { provider: "codex", projectRoot: "C:/workspace", threadId: "thread" };

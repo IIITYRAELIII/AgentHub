@@ -1064,6 +1064,7 @@ export class WorkLogUsageStore {
     startedAt,
     completedAt,
     status,
+    terminalFailure,
     text,
     workLogFile,
     projectionProjectRoots,
@@ -1120,6 +1121,7 @@ export class WorkLogUsageStore {
         startedAt,
         completedAt,
         status,
+        terminalFailure,
       });
       this.#ledger.turns[key] = mergeLedgerRecord(existing, incoming);
       await this.#save();
@@ -1197,6 +1199,7 @@ export class WorkLogUsageStore {
     startedAt,
     completedAt,
     status,
+    terminalFailure,
     text,
     workLogFile,
     projectionProjectRoots,
@@ -1244,6 +1247,7 @@ export class WorkLogUsageStore {
           startedAt,
           completedAt,
           status,
+          terminalFailure,
         });
         const record = mergeLedgerRecord(existing, incoming);
         const changed = !existing || ledgerRecordFingerprint(record) !== previousFingerprint;
@@ -1306,6 +1310,7 @@ export class WorkLogUsageStore {
         startedAt,
         completedAt,
         status,
+        terminalFailure,
       });
       this.#ledger.turns[key] = mergeLedgerRecord(existing, incoming);
       await this.#save();

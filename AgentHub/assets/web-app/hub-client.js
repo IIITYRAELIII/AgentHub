@@ -707,6 +707,8 @@ function reconciledMessages(taskIdValue) {
         turnId,
         answer: overlay.answer,
         requireAgent: Boolean(overlay.answer),
+        projectionState: overlay.status,
+        terminalFailure: overlay.terminalFailure,
       })) overlays.delete(turnId);
     }
     if (!overlays.size) completionOverlaysByTask.delete(taskIdValue);
@@ -1023,6 +1025,8 @@ function rememberSnapshotCompletion(taskIdValue, selected, incomingTurnId = "") 
     turnId: completion.turnId,
     answer: completion.answer,
     requireAgent: true,
+    projectionState: completion.status,
+    terminalFailure: completion.terminalFailure,
   })) {
     const overlays = completionOverlaysByTask.get(taskIdValue);
     if (!overlays?.delete(completion.turnId)) return false;
@@ -1037,6 +1041,8 @@ function rememberSnapshotCompletion(taskIdValue, selected, incomingTurnId = "") 
     .findLast((message) => message?.role === "agent" && message?.kind !== "subagent");
   overlays.set(replacement.turnId, {
     answer: replacement.answer,
+    status: replacement.status,
+    terminalFailure: replacement.terminalFailure,
     messages: [{
       id: `${replacement.provider}:${replacement.threadId}:${replacement.turnId}:snapshot-final`,
       provider: replacement.provider,
@@ -1046,7 +1052,10 @@ function rememberSnapshotCompletion(taskIdValue, selected, incomingTurnId = "") 
       role: "agent",
       operationKind: "user-turn",
       projectionAuthority: "terminal",
-      projectionState: "completed",
+      projectionState: replacement.status,
+      ...(replacement.terminalFailure
+        ? { terminalFailure: { ...replacement.terminalFailure } }
+        : {}),
       terminalRevision: Number(selected?.lastAnswerRevision) || 1,
       ...(selected?.latestFinal?.migrationGuard
         ? { terminalRevisionMigrationGuard: String(selected.latestFinal.migrationGuard) }
@@ -1085,7 +1094,12 @@ function promoteLiveCompletion(taskIdValue, selected, incomingTurnId = "") {
   const messages = mergeLiveUserMessages([], liveUsers);
   messages.push(agentMessage);
   const overlays = completionOverlaysByTask.get(taskIdValue) ?? new Map();
-  overlays.set(previousTurnId, { answer, messages });
+  overlays.set(previousTurnId, {
+    answer,
+    status: agentMessage.projectionState,
+    terminalFailure: agentMessage.terminalFailure,
+    messages,
+  });
   while (overlays.size > 20) overlays.delete(overlays.keys().next().value);
   completionOverlaysByTask.set(taskIdValue, overlays);
   liveCardsByTask.delete(taskIdValue);
@@ -2499,6 +2513,9 @@ function historyMessages(history, focusedTurn = null) {
           : "completed")
         : item.active === true ? "active" : "unknown",
       terminalRevision: item.completed === true ? Number(item.terminalRevision) || 1 : 0,
+      ...(messageIndex === traceMessageIndex && message.role === "agent" && item.terminalFailure
+        ? { terminalFailure: { ...item.terminalFailure } }
+        : {}),
       ...(item.completed === true && !Number(item.terminalRevision)
         ? { terminalRevisionMigrationGuard: "legacy-terminal-revision" }
         : {}),
@@ -2572,6 +2589,12 @@ function historyMessages(history, focusedTurn = null) {
         semanticSlot: String(message.semanticSlot ?? ""),
         pinEligible: message.pinEligible === true,
         role: message.role,
+        ...(itemId === focusedTraceItemId && message.role === "agent" ? {
+          projectionState: String(focusedTurn.status ?? "").trim().toLowerCase() || "unknown",
+          ...(focusedTurn.terminalFailure
+            ? { terminalFailure: { ...focusedTurn.terminalFailure } }
+            : {}),
+        } : {}),
         ...(message.kind ? { kind: message.kind } : {}),
         ...(message.origin ? { origin: message.origin } : {}),
         ...(message.agentThreadId ? { agentThreadId: message.agentThreadId } : {}),
@@ -2632,6 +2655,10 @@ function historyMessages(history, focusedTurn = null) {
       turnId: focusedTurn.turnId,
       itemId: `${focusedTurn.turnId}:focused:agent`,
       role: "agent",
+      projectionState: String(focusedTurn.status ?? "").trim().toLowerCase() || "unknown",
+      ...(focusedTurn.terminalFailure
+        ? { terminalFailure: { ...focusedTurn.terminalFailure } }
+        : {}),
       author: focusedTurn.provider === "claude" ? "Claude" : "Codex",
       text: focusedTurn.answer || focusedTurn.title || "Ход завершён",
       responseAnnotationReferences: normalizedResponseAnnotationReferences(

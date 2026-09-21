@@ -14,6 +14,10 @@ import {
 } from "../domain/interstream-message.mjs";
 import { normalizeServiceTier, normalizeTokenUsage } from "../domain/token-usage.mjs";
 import { mergeUsageLimitSamples } from "../domain/usage-facts.mjs";
+import {
+  mergeProviderTerminalFailure,
+  normalizeProviderTerminalFailure,
+} from "../domain/provider-terminal-failure.mjs";
 import { normalizeWorkLogId } from "./work-log-usage-projection.mjs";
 
 export const TURN_END_TITLE_LIMIT = 100;
@@ -171,13 +175,16 @@ function normalizedCompletion(value) {
       .filter((index) => Number.isSafeInteger(index) && index > 0)
       .map((index) => ({ index }))
     : [];
+  const status = String(value.status ?? "completed").trim() || "completed";
+  const terminalFailure = normalizeProviderTerminalFailure(value.terminalFailure, { status });
   return {
     ...base,
     turnId,
     projectRoot: path.resolve(projectRoot),
     taskTitle: String(value.taskTitle ?? "").trim(),
     chatId: Number(value.chatId),
-    status: String(value.status ?? "completed").trim() || "completed",
+    status,
+    ...(terminalFailure ? { terminalFailure } : {}),
     usage: normalizeTokenUsage(value.usage),
     usageReported,
     estimatedCredits,
@@ -327,7 +334,16 @@ export class TurnEndNotificationRegistry {
     const completion = existing ?? incoming;
     completion.projectRoot = incoming.projectRoot || completion.projectRoot;
     completion.chatId = Number.isSafeInteger(incoming.chatId) ? incoming.chatId : completion.chatId;
-    completion.status = incoming.status || completion.status;
+    completion.status = completion.status === "failed" && incoming.status !== "failed"
+      ? completion.status
+      : incoming.status || completion.status;
+    if (completion.status === "failed") {
+      completion.terminalFailure = mergeProviderTerminalFailure(
+        completion.terminalFailure,
+        incoming.terminalFailure,
+        { status: completion.status },
+      );
+    } else delete completion.terminalFailure;
     completion.provisional = incoming.provisional === true;
     completion.completedAt = completion.completedAt || incoming.completedAt;
     completion.startedAt = completion.startedAt || incoming.startedAt;

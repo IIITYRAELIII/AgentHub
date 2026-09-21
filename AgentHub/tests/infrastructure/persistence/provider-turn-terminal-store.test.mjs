@@ -105,6 +105,75 @@ test("terminal store strips conflicting top-level and root identity", async (con
   assert.equal(result.outbox.channels.command.clientUserMessageId, null);
 });
 
+test("terminal store durably retains a bounded provider failure", async (context) => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "agent-hub-terminal-failure-"));
+  context.after(() => rm(dataDir, { recursive: true, force: true }));
+  const store = new ProviderTurnTerminalStore({ dataDir });
+  const result = await store.commit({
+    provider: "codex",
+    threadId: "thread-failed",
+    turnId: "turn-failed",
+    status: "failed",
+    finalAnswer: "Промежуточный commentary",
+    usageIdentity: "usage",
+    payload: {
+      completion: {
+        status: "failed",
+        terminalFailure: { message: "Provider unavailable", code: "other" },
+      },
+      history: {
+        status: "failed",
+        terminalFailure: { message: "Provider unavailable", code: "other" },
+      },
+    },
+  });
+
+  assert.deepEqual(result.terminal.payload.completion.terminalFailure, {
+    type: "provider_error",
+    message: "Provider unavailable",
+    code: "other",
+  });
+  assert.deepEqual((await store.get({
+    provider: "codex", threadId: "thread-failed", turnId: "turn-failed",
+  })).payload.history.terminalFailure, result.terminal.payload.completion.terminalFailure);
+});
+
+test("a provider failure never persists credentials or private paths", async (context) => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "agent-hub-terminal-redaction-"));
+  context.after(() => rm(dataDir, { recursive: true, force: true }));
+  const store = new ProviderTurnTerminalStore({ dataDir });
+  const leaking = "Request failed: Authorization: Bearer SYNTHETIC_SECRET_TOKEN "
+    + "api_key=SYNTHETIC_API_KEY token: SYNTHETIC_TOKEN "
+    + "while reading C:\\Users\\operator\\AppData\\Local\\AgentHub\\auth.json "
+    + "and /home/operator/.codex/auth.json";
+  const identity = { provider: "codex", threadId: "thread-redacted", turnId: "turn-redacted" };
+  const result = await store.commit({
+    ...identity,
+    status: "failed",
+    finalAnswer: "Промежуточный commentary",
+    usageIdentity: "usage",
+    payload: {
+      completion: { status: "failed", terminalFailure: { message: leaking, code: "other" } },
+      history: { status: "failed", terminalFailure: { message: leaking, code: "other" } },
+    },
+  });
+
+  const stored = await store.get(identity);
+  const persisted = JSON.stringify(stored);
+  for (const secret of [
+    "SYNTHETIC_SECRET_TOKEN", "SYNTHETIC_API_KEY", "SYNTHETIC_TOKEN",
+    "C:\\Users\\operator", "/home/operator",
+  ]) {
+    assert.equal(persisted.includes(secret), false, secret);
+  }
+  const { message } = result.terminal.payload.completion.terminalFailure;
+  assert.equal(message.includes("[redacted]"), true, message);
+  assert.equal(message.includes("[path]"), true, message);
+  // The safe part of the provider reason survives redaction.
+  assert.equal(message.startsWith("Request failed:"), true, message);
+  assert.deepEqual(stored.payload.history.terminalFailure, result.terminal.payload.completion.terminalFailure);
+});
+
 test("terminal commit is idempotent and revisions supersede pending projections", async (context) => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "agent-hub-terminal-"));
   context.after(() => rm(dataDir, { recursive: true, force: true }));

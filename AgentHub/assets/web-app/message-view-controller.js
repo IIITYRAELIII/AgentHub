@@ -4,6 +4,14 @@
   const MAX_RESPONSE_ANNOTATION_INDEX = 20;
   const DEFERRED_USER_MESSAGE_THRESHOLD = 4_000;
   const DEFERRED_USER_MESSAGE_PREVIEW_CHARS = 1_600;
+  const TERMINAL_FAILURE_FALLBACK = "Провайдер завершил ход с ошибкой без подробностей.";
+
+  function terminalFailurePresentation(message) {
+    if (String(message?.projectionState ?? "").trim().toLowerCase() !== "failed") return null;
+    const detail = String(message?.terminalFailure?.message ?? "").trim()
+      || TERMINAL_FAILURE_FALLBACK;
+    return { label: "Ошибка", detail };
+  }
 
   function normalizedResponseAnnotationReferences(references) {
     const normalized = [];
@@ -61,6 +69,8 @@
         activities: message?.activities ?? [],
         activityGroups: message?.activityGroups ?? [],
         attachments: message?.attachments ?? [],
+        projectionState: message?.projectionState ?? "",
+        terminalFailure: terminalFailurePresentation(message),
         withDiff: withDiff === true,
         diffText: withDiff ? String(diffText ?? "") : "",
       });
@@ -616,6 +626,7 @@
     responseAnnotationCardControl,
     responseCitationControl,
     responseCitationPresentations,
+    terminalFailurePresentation,
     messageTailWindow,
     inlineMarkdownTokens,
     normalizeSystemEventText,

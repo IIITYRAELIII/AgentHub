@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { ManagedRunHistoryService } from "../../../src/application/managed-run-history-service.mjs";
 import { MessageReceiptRegistry } from "../../../src/infrastructure/persistence/message-receipts.mjs";
-import { appendFile, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -2681,4 +2681,107 @@ test("desktop task history rejects invalid and missing tasks", async () => {
     desktopTaskHistory({ provider: "codex", threadId: "missing" }),
     /Поток не найден/,
   );
+});
+
+test("failed provider reason survives Task history SQLite reload", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "hub-terminal-failure-reload-"));
+  const filePath = path.join(directory, "tasks.json");
+  const task = { provider: "codex", threadId: "thread-failed", projectRoot: directory };
+  let store = new LocalTaskSyncStore({ filePath });
+  try {
+    await store.load();
+    await store.recordHistory(task, [{
+      id: "turn-failed",
+      prompt: "Продолжай",
+      answer: "Проверяю доступ модели",
+      status: "failed",
+      active: false,
+      completed: true,
+      terminalFailure: {
+        type: "provider_error",
+        message: "Unable to verify model access right now. Please retry.",
+        code: "other",
+      },
+      messages: [
+        { itemId: "user", role: "user", text: "Продолжай" },
+        { itemId: "agent", role: "agent", text: "Проверяю доступ модели" },
+      ],
+    }]);
+    store.close();
+    store = new LocalTaskSyncStore({ filePath });
+    await store.load();
+
+    const [turn] = store.history(task);
+    assert.equal(turn.status, "failed");
+    assert.equal(turn.answer, "Проверяю доступ модели");
+    assert.deepEqual(turn.terminalFailure, {
+      type: "provider_error",
+      message: "Unable to verify model access right now. Please retry.",
+      code: "other",
+    });
+  } finally {
+    store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("Task history never stores provider credentials or private paths", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "hub-terminal-failure-redaction-"));
+  const filePath = path.join(directory, "tasks.json");
+  // The authoritative row lives in the sibling SQLite database, not in tasks.json.
+  const databaseFile = path.join(directory, "journal.sqlite");
+  const task = { provider: "codex", threadId: "thread-redacted", projectRoot: directory };
+  const leaking = "Request failed: Authorization: Bearer SYNTHETIC_SECRET_TOKEN "
+    + "api_key=SYNTHETIC_API_KEY while reading C:\\Users\\operator\\.codex\\auth.json";
+  let store = new LocalTaskSyncStore({ filePath, databaseFile });
+  try {
+    await store.load();
+    await store.recordHistory(task, [{
+      id: "turn-redacted",
+      prompt: "Продолжай",
+      answer: "Проверяю доступ модели",
+      status: "failed",
+      active: false,
+      completed: true,
+      terminalFailure: { type: "provider_error", message: leaking, code: "other" },
+      messages: [
+        { itemId: "user", role: "user", text: "Продолжай" },
+        { itemId: "agent", role: "agent", text: "Проверяю доступ модели" },
+      ],
+    }]);
+    store.close();
+    store = new LocalTaskSyncStore({ filePath, databaseFile });
+    await store.load();
+
+    // The stored column is the invariant; read hydration normalizes again and
+    // could hide a raw secret that is actually on disk.
+    const database = new DatabaseSync(databaseFile, { readOnly: true });
+    let stored;
+    try {
+      stored = database.prepare(
+        "SELECT terminal_failure_json FROM task_read_model_turns WHERE provider = ? AND thread_id = ? AND id = ?",
+      ).get("codex", "thread-redacted", "turn-redacted");
+    } finally {
+      database.close();
+    }
+    assert.ok(stored, "the authoritative turn row is missing");
+    const storedFailure = String(stored.terminal_failure_json ?? "");
+    assert.equal(storedFailure.includes("[redacted]"), true, storedFailure);
+    assert.equal(storedFailure.includes("[path]"), true, storedFailure);
+
+    const [turn] = store.history(task);
+    for (const secret of ["SYNTHETIC_SECRET_TOKEN", "SYNTHETIC_API_KEY", "C:\\\\Users\\\\operator"]) {
+      assert.equal(storedFailure.includes(secret), false, `${secret} in ${databaseFile}`);
+    }
+    for (const secret of ["SYNTHETIC_SECRET_TOKEN", "SYNTHETIC_API_KEY", "C:\\Users\\operator"]) {
+      assert.equal(JSON.stringify(turn).includes(secret), false, secret);
+    }
+    assert.equal(turn.terminalFailure.message.includes("[redacted]"), true, turn.terminalFailure.message);
+    assert.equal(turn.terminalFailure.message.includes("[path]"), true, turn.terminalFailure.message);
+    assert.equal(turn.terminalFailure.message.startsWith("Request failed:"), true);
+    assert.equal(turn.answer, "Проверяю доступ модели");
+  } finally {
+    store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
 });

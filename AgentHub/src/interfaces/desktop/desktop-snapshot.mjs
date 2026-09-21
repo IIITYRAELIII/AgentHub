@@ -622,6 +622,10 @@ export function createDesktopSnapshotFactory({
       lastAnswer: compactSnapshot && lastMessage?.turnId ? "" : lastMessage?.text ?? "",
       lastAnswerAt: lastMessage?.updatedAt ?? null,
       lastAnswerTurnId: lastMessage?.turnId ?? null,
+      lastAnswerStatus: lastMessage?.status ?? null,
+      ...(lastMessage?.terminalFailure
+        ? { lastAnswerFailure: structuredClone(lastMessage.terminalFailure) }
+        : {}),
       unread,
       maintenance: maintenance.entryFor?.(task) ?? null,
       context,
