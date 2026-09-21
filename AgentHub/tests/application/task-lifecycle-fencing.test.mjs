@@ -333,7 +333,7 @@ test("published duplicate closure binds Done publication proof, preserves Git an
   await assert.rejects(service.complete({ ...request, operationId: "wrong-workspace" }), /same Workspace/u);
 });
 
-test("Await validates the exact Test result, commits acceptance and only invalidates the prior candidate", async () => {
+test("Await composes PreRelease before it commits acceptance and keeps the prior candidate on refusal", async () => {
   const previousReference = {
     projectRoot: "D:/project", branch: "HUB-159", resultCommit: "a".repeat(40),
   };
@@ -397,7 +397,23 @@ test("Await validates the exact Test result, commits acceptance and only invalid
         calls.push(`lock:${workspaceId}`);
         return operation();
       },
-      prepareAwaitSet: async () => { throw new Error("Await must not build or mutate PreRelease"); },
+      prepareAwaitSet: async (options) => {
+        calls.push("prepare");
+        assert.equal(task.workflowStatus, "testing", "composition precedes the acceptance CAS");
+        assert.deepEqual(options.acceptingTask, { id: task.id, revision: task.revision });
+        assert.equal(options.preserveFrozen, true);
+        assert.equal(options.lease, lease);
+        const prepared = {
+          workspaceId: "workspace-1",
+          planRevision: "prospective-plan",
+          taskIds: [task.id],
+          releaseCandidates: [{ preReleaseHead: "new-candidate", manifestHash: "new-manifest" }],
+        };
+        await options.commitPrepared(prepared);
+        candidateBytes.head = "new-candidate";
+        candidateBytes.tree = "new-tree";
+        return prepared;
+      },
       validateAwaitAcceptance: async (options) => {
         calls.push("validate");
         assert.equal(task.workflowStatus, "testing");
@@ -433,15 +449,17 @@ test("Await validates the exact Test result, commits acceptance and only invalid
   });
 
   assert.deepEqual(calls, [
-    "lock:workspace-1", "begin", "repo", "validate", "commit",
+    "lock:workspace-1", "begin", "repo", "validate", "prepare", "commit",
     "lock:workspace-1", "begin", "repo", "validate", "fail",
-    "lock:workspace-1", "begin", "repo", "validate", "commit",
+    "lock:workspace-1", "begin", "repo", "validate", "prepare", "commit",
   ]);
   assert.equal(task.workflowStatus, "awaiting_implementation");
-  assert.equal(result.releaseCandidate.status, "invalidated");
-  assert.equal(retry.releaseCandidate.status, "invalidated");
+  assert.equal(result.releaseCandidate.status, "ready");
+  assert.equal(result.releaseCandidate.releaseCandidates[0].preReleaseHead, "new-candidate");
+  assert.equal(retry.releaseCandidate.status, "ready");
   assert.equal(result.releaseIntegration.resultCommit, previousReference.resultCommit);
-  assert.deepEqual(candidateBytes, { head: "old-candidate", tree: "old-tree" });
+  // The refused attempt never composed, so its candidate bytes stayed put.
+  assert.deepEqual(candidateBytes, { head: "new-candidate", tree: "new-tree" });
   assert.notEqual(
     taskReleasePlanRevision("workspace-1", [existingAwait, task]),
     oldCandidatePlanRevision,
@@ -721,5 +739,9 @@ test("unknown workflow recovery retains the repository lease through Git continu
     proof: { kind: "system-restart-after-guard", confirmed: true, summary: "boot proof" },
   });
   assert.equal(result.result.task.workflowStatus, "awaiting_implementation");
-  assert.deepEqual(calls, ["repository-lock", "recover", "begin", "repository-lock-reused", "validate", "commit"]);
+  // Recovery reuses the held repository lease and still composes PreRelease
+  // before the recovered acceptance commits.
+  assert.deepEqual(calls, [
+    "repository-lock", "recover", "begin", "repository-lock-reused", "validate", "rebuild", "commit",
+  ]);
 });

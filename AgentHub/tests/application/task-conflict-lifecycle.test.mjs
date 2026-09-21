@@ -165,8 +165,9 @@ for (const previouslyTested of [false, true]) test(`agent consolidation preserve
   assert.throws(() => f.store.claim(a.task.id, { workspaceId: f.workspace.id, streamId: "s", provider: "codex",
     threadId: "thread", turnId: "turn", operationId: "reopen" }), /archive/);
   const accepted = await f.status(b.task.id, "awaiting_implementation", "accept-combined");
-  assert.equal(accepted.releaseCandidate.status, "invalidated", accepted.releaseCandidate.reason);
-  const prepared = await f.lifecycle.releasePreflight.prepareAwaitSet({ workspaceId: f.workspace.id });
+  // Acceptance composes the combined result itself.
+  assert.equal(accepted.releaseCandidate.status, "ready", accepted.releaseCandidate.reason);
+  const prepared = accepted.releaseCandidate;
   assert.deepEqual(prepared.taskIds, [b.task.id]);
   const candidate = prepared.releaseCandidates[0];
   assert.equal(await git(candidate.releaseRoot, "show", "PreRelease:a.txt"), previouslyTested ? "source work revised" : "source work");

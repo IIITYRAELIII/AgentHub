@@ -944,9 +944,12 @@ publication revision/generation readback immediately before the Task closure
 transaction. Once verified, only included Tasks are completed
 and their managed branches and worktrees may be removed. Published `main` is
 incorporated into `dev` without discarding later Test work. Remaining Await
-Tasks stay accepted and the previous candidate is durably invalidated; their
-next `PreRelease` is prepared promptly after confirmed completion, as a separate
-preparation step without another publication pipeline. This post-completion
+Tasks stay accepted and the previous candidate is durably invalidated. No
+candidate is rebuilt automatically after completion and there is no separate
+public prepare operation: the next acceptance into Await composes the next
+candidate, and an accepted Task whose candidate is stale is repaired by
+repeating its Await transition with the same status. Release preflight stays
+read-only and fails closed on a stale candidate. This post-completion
 orchestration remains HUB-235 checklist item 15. A repeated
 completion request resumes only unfinished synchronization stages, never Task
 closure or candidate preparation. Each successful stage
@@ -1664,11 +1667,16 @@ integrations or a changed witness fail closed. Other selected Tasks keep their
 original integration order relative to these continuation deltas.
 
 Await validates the exact Test-owned result and its dev integration under the
-Workspace Await, Task and repository leases, then commits only the lifecycle CAS.
-It does not build, rebuild or mutate `PreRelease`. The new accepted-plan revision
-makes every prior candidate stale; the existing candidate reuse and publication
-verification gates reject that old plan while its bytes remain unchanged. Explicit
-release preparation remains the sole candidate builder.
+Workspace Await, Task and repository leases, composes that result into the
+prospective `PreRelease` while the Task is still in Test, and commits the
+lifecycle CAS only after every selected repository candidate succeeded. A
+composition conflict or preparation error leaves the Task in Test and keeps the
+last good candidate, including its refs, checkpoint and checkout. The acceptance
+is therefore proof of membership in the current candidate, not permission to
+publish. The 2026-09-17 acceptance-only Await identity, which committed the CAS
+without composing and reported the candidate as `invalidated`, is superseded by
+this rule (HUB-251, 2026-09-21); its lease ordering, exact-result validation and
+unknown-outcome handling remain in force.
 
 After the survivor is durably published, the same transfer evidence may prove
 the source result and branch/worktree published-by-transfer for cleanup. Exact
