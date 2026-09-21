@@ -901,11 +901,15 @@ is retried after completion. A push alone does not release the freeze.
 Freeze keeps the exact raw identity of the supplied CHANGELOG payload separate
 from the canonical Git blob that owns its materialized checkout. Before durable
 intent, the checkout bytes must equal the supplied payload byte for byte. Once
-intent exists, every retry must present the same raw payload hash, while the
-checkout may differ only through Git attributes or clean/smudge conversion and
-must still resolve through `hash-object --path` to the stored blob. This split
-does not relax source, manifest, plan, version, ref, dirty-path, regular-file or
-Workspace fences.
+intent exists, the release owner retains the exact raw payload as immutable,
+content-addressed evidence and binds its file identity and SHA-256 into both the
+manifest and checkpoint. A direct retry must still present the same raw payload;
+the public publication retry reads that evidence instead of deriving caller
+identity from a checkout that Git may already have rewritten. Missing, linked or
+digest-mismatched evidence fails closed. The checkout may differ only through
+Git attributes or clean/smudge conversion and must still resolve through
+`hash-object --path` to the stored blob. This split does not relax source,
+manifest, plan, version, ref, dirty-path, regular-file or Workspace fences.
 
 Candidate readback is phase-specific. A `prepared` checkpoint requires the
 standalone clone to be an exact clean `PreRelease` checkout. A `frozen`
