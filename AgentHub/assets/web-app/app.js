@@ -6573,6 +6573,7 @@ function patchRenderedMessage(node, message) {
   const role = message.role === "user" ? "user" : message.role === "system" ? "system" : "agent";
   const author = renderedMessageAuthor(message, role);
   const head = article.querySelector(".msg-head");
+  syncTerminalFailurePresentation(article, head, message, role);
   syncMessageUploadActions(head, message);
   const authorNode = head?.querySelector(".msg-author");
   if (authorNode) authorNode.textContent = author;
@@ -6614,6 +6615,29 @@ function patchRenderedMessage(node, message) {
   } else {
     duration?.remove();
   }
+}
+
+function syncTerminalFailurePresentation(article, head, message, role) {
+  const failure = role === "agent" ? MessageView.terminalFailurePresentation(message) : null;
+  article.classList.toggle("msg-terminal-failed", Boolean(failure));
+  if (failure) article.dataset.terminalStatus = "failed";
+  else delete article.dataset.terminalStatus;
+  let badge = head?.querySelector(".msg-terminal-status");
+  if (failure) {
+    if (!badge) {
+      badge = el("span", { class: "msg-terminal-status" });
+      head?.append(badge);
+    }
+    badge.textContent = failure.label;
+  } else badge?.remove();
+  let detail = article.querySelector(":scope > .msg-terminal-failure");
+  if (failure) {
+    if (!detail) {
+      detail = el("div", { class: "msg-terminal-failure", role: "alert" });
+      article.append(detail);
+    }
+    detail.textContent = failure.detail;
+  } else detail?.remove();
 }
 
 function messageRenderSpec(message, index, lastAgentIndex, taskDiff, citationPresentations = []) {
@@ -7544,6 +7568,12 @@ function renderMessage(message, { readOnly = false, task = currentTask() } = {})
         })
       : null,
   ]);
+  const terminalFailure = role === "agent" ? MessageView.terminalFailurePresentation(message) : null;
+  if (terminalFailure) {
+    article.classList.add("msg-terminal-failed");
+    article.dataset.terminalStatus = "failed";
+    head.append(el("span", { class: "msg-terminal-status", text: terminalFailure.label }));
+  }
 
   const body = el("div", {
     class: "msg-body",
@@ -7587,6 +7617,11 @@ function renderMessage(message, { readOnly = false, task = currentTask() } = {})
     article.append(el("div", { class: "msg-user-bubble" }, [body, attachmentStrip]));
   } else if (!maintenance) {
     article.append(body);
+    if (terminalFailure) article.append(el("div", {
+      class: "msg-terminal-failure",
+      role: "alert",
+      text: terminalFailure.detail,
+    }));
     if (attachmentStrip) article.append(attachmentStrip);
   }
   const actions = readOnly ? null : renderMessageActions(message, role);

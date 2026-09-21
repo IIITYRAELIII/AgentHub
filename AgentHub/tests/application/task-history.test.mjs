@@ -135,6 +135,31 @@ test("completed history overlay replaces a stale live answer immediately", () =>
   assert.equal(history[0].terminalRevision, 2);
 });
 
+test("terminal history overlay preserves failed status and provider reason", () => {
+  const history = [{
+    id: "turn-failed",
+    active: false,
+    completed: true,
+    status: "failed",
+    answer: "Промежуточный commentary",
+    terminalFailure: { type: "provider_error", message: "Provider unavailable", code: "other" },
+    messages: [{ role: "agent", text: "Промежуточный commentary" }],
+  }];
+
+  mergeCompletedTaskHistory(history, {
+    turnId: "turn-failed",
+    answer: "Промежуточный commentary",
+    status: "failed",
+  });
+
+  assert.equal(history[0].status, "failed");
+  assert.deepEqual(history[0].terminalFailure, {
+    type: "provider_error",
+    message: "Provider unavailable",
+    code: "other",
+  });
+});
+
 test("completed history overlay preserves the live activity trace", () => {
   const activities = [{ id: "tool-1", type: "command" }];
   const activityGroups = [{ id: "group-1", reasoning: "Проверяю.", activities }];

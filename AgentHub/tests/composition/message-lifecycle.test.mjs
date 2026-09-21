@@ -471,6 +471,47 @@ test("focused completed turn cannot append commentary after its durable final", 
   );
 });
 
+test("failed history projects the provider reason only onto the terminal agent card", () => {
+  const source = clientFunctionSource("historyMessages", "function mergeNewestHistory");
+  const sandbox = vm.createContext({
+    attachmentViews: () => [],
+    conversationMessageAuthor: (_message, provider) => provider,
+    focusedTurnAlreadyVisible: lifecycle.focusedTurnAlreadyVisible,
+    focusedTurnTaskThreadId: lifecycle.focusedTurnTaskThreadId,
+    historicalMessagesForDisplay: lifecycle.historicalMessagesForDisplay,
+  });
+  vm.runInContext(`${source}; globalThis.mapHistory = historyMessages;`, sandbox);
+  const messages = sandbox.mapHistory({
+    provider: "codex",
+    threadId: "thread-failed",
+    items: [{
+      id: "turn-failed",
+      status: "failed",
+      completed: true,
+      terminalRevision: 3,
+      terminalFailure: {
+        type: "provider_error",
+        message: "Unable to verify model access right now. Please retry.",
+        code: "other",
+      },
+      messages: [
+        { itemId: "user", role: "user", text: "Продолжай" },
+        { itemId: "agent", role: "agent", text: "Проверяю доступ модели" },
+      ],
+    }],
+  });
+
+  const user = messages.find((message) => message.role === "user");
+  const agent = messages.find((message) => message.role === "agent");
+  assert.equal(user.terminalFailure, undefined);
+  assert.equal(agent.projectionState, "failed");
+  assert.deepEqual(JSON.parse(JSON.stringify(agent.terminalFailure)), {
+    type: "provider_error",
+    message: "Unable to verify model access right now. Please retry.",
+    code: "other",
+  });
+});
+
 test("repeated older pages retain each exact provider entity once after a Thread rebind", () => {
   const source = clientFunctionSource("prependOlderHistory", "function applyOpened");
   const sandbox = vm.createContext({
@@ -3709,6 +3750,7 @@ test("snapshot completion survives a new run when the previous live card is alre
       threadId: "thread-1",
       turnId: "turn-completed",
       answer: "Финальный ответ",
+      status: "completed",
       time: "2026-08-16T22:29:34.987Z",
     },
   );
@@ -3760,6 +3802,7 @@ test("terminal snapshot run cannot mask its own final answer", () => {
       threadId: "thread-1",
       turnId: "turn-completed",
       answer: "Финальный ответ",
+      status: "completed",
       time: "2026-08-17T17:11:43.988Z",
     },
   );

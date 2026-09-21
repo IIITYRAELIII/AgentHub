@@ -330,6 +330,12 @@ also absorbs later legacy revision `0`, while a positive revision may upgrade
 legacy revision `0`. At the same revision, the durable canonical projection wins
 over a temporary terminal overlay; a higher overlay revision still wins over
 older durable history. `unknown` is a distinct state and is never projected as active.
+An agent card for a failed terminal keeps any preceding commentary as its body
+and displays the bounded `terminalFailure.message` beside it with an explicit
+error state. Missing failure detail uses a safe generic explanation; it never
+turns commentary into a successful final. Live completion, paged history and a
+cold reload project the same failure only on the exact terminal agent entity.
+Displaying that reason does not retry, continue, authenticate or change models.
 The client considers final content caught up only on exact text equality for the
 exact provider turn. Prefix equality never proves that a complete final was
 rendered and cannot stop history refresh or remove a completion overlay.

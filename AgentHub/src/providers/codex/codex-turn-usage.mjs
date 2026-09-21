@@ -12,6 +12,7 @@ import {
   codexAssistantResponseProjection,
 } from "../../domain/codex-response-annotation.mjs";
 import { addTokenUsage, emptyTokenUsage, normalizeTokenUsage } from "../../domain/token-usage.mjs";
+import { codexTerminalFailure } from "../../domain/provider-terminal-failure.mjs";
 import { mergeUsageLimitSamples } from "../../domain/usage-facts.mjs";
 import { displayUserPrompt } from "../../application/task-history.mjs";
 
@@ -547,6 +548,7 @@ function createTurnAccumulator(turnId) {
   let prompt = "";
   const prompts = [];
   let status = "";
+  let terminalFailure = null;
   let workspaceRoot = "";
   let latestModel = "";
   let latestServiceTier = "default";
@@ -594,6 +596,7 @@ function createTurnAccumulator(turnId) {
         terminal = true;
         completedAt ||= String(entry?.timestamp ?? "");
         status = lifecycleTerminalStatus(lifecycle, entry.payload);
+        terminalFailure = codexTerminalFailure(entry.payload, status);
         const terminalProjection = codexAssistantResponseProjection(entry.payload?.last_agent_message);
         const terminalAnswer = terminalProjection.text.trim();
         if (terminalAnswer && !finalAnswer) {
@@ -725,6 +728,7 @@ function createTurnAccumulator(turnId) {
         : finalTokenIndex > finalAnswerIndex,
       startedAt,
       completedAt,
+      ...(terminalFailure ? { terminalFailure } : {}),
       prompt,
       prompts,
       changedFiles: [...changedFiles],
@@ -862,6 +866,9 @@ export function codexRecentTerminalTurnsFromJsonl(text) {
       turnId,
       status,
       completedAt: String(entry?.timestamp ?? ""),
+      ...(codexTerminalFailure(entry.payload, status)
+        ? { terminalFailure: codexTerminalFailure(entry.payload, status) }
+        : {}),
     });
   }
   return [...values.values()].slice(-16);
@@ -992,6 +999,9 @@ export async function scanCodexTerminalEventsFromOffset(transcriptPath, {
       turnId,
       status,
       completedAt: String(entry?.timestamp ?? ""),
+      ...(codexTerminalFailure(entry.payload, status)
+        ? { terminalFailure: codexTerminalFailure(entry.payload, status) }
+        : {}),
     });
   }
 
@@ -1065,6 +1075,7 @@ function createHistoricalTurn(turnId) {
     model: "",
     serviceTier: "default",
     status: "",
+    terminalFailure: null,
     contextCompacted: false,
     hasOwnTurnContent: false,
     limitSamples: [],
@@ -1220,6 +1231,7 @@ export async function scanCodexHistoricalRollout(transcriptPath, {
       turn.terminal = true;
       turn.completedAt = timestamp || turn.completedAt;
       turn.status = lifecycleTerminalStatus(lifecycle, entry.payload);
+      turn.terminalFailure = codexTerminalFailure(entry.payload, turn.status);
       touch(turn, timestamp);
     }
     if (lifecycle === "patch_apply_end" && lifecycleTurnId) {

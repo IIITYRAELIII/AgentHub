@@ -122,6 +122,26 @@ test("CodexRunFinalizer adopts audited start data and completes one durable deli
   assert.equal(terminalIntent.message, "Final\n\nUsage");
 });
 
+test("CodexRunFinalizer commits a bounded terminal provider failure", async () => {
+  const state = fixture();
+  await state.finalizer.finalize(run(), {
+    answer: "Проверяю доступ модели",
+    status: "failed",
+    terminalFailure: {
+      message: "Unable to verify model access right now. Please retry.",
+      codex_error_info: "other",
+    },
+  });
+  const recorded = state.events.find(([name]) => name === "record")[1];
+  const committed = state.events.find(([name]) => name === "commit")[1];
+  assert.deepEqual(recorded.terminalFailure, {
+    type: "provider_error",
+    message: "Unable to verify model access right now. Please retry.",
+    code: "other",
+  });
+  assert.deepEqual(committed.terminalFailure, recorded.terminalFailure);
+});
+
 test("CodexRunFinalizer prices the live summary at the durable completion time", async () => {
   let formattedTracker = null;
   const state = fixture({

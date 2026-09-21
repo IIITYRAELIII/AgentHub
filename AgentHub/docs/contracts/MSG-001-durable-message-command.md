@@ -101,6 +101,13 @@ hash validation remain unchanged.
 `failed` and `cancelled`. A timeout with an unobserved result is `unknown`, not
 permission to create a second effect.
 
+A provider-declared failed terminal retains its typed bounded failure reason on
+the same terminal identity. Prior commentary may remain visible answer content,
+but it is not success evidence and cannot replace the failed state. Projection
+or reload preserves a retained specific reason over a later synthesized
+no-details fallback and never authorizes an automatic retry or another provider
+effect.
+
 Transitions are monotonic and idempotent. A canonical record atomically replaces
 its optimistic projection by the same identity.
 

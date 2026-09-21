@@ -1,7 +1,3 @@
-export function redactSecrets(value) {
-  return String(value ?? "")
-    .replace(/(authorization\s*[:=]\s*(?:bearer\s+)?)[^\s,;]+/giu, "$1[redacted]")
-    .replace(/\b(token|api[_-]?key|secret|password)\s*[:=]\s*["']?[^"'\s,;]+/giu, "$1=[redacted]")
-    .replace(/([?#&]access=)[^&#\s"'<>]+/giu, "$1[redacted]")
-    .replace(/\b(access)\s*[:=]\s*["']?[^"'\s,;]+/giu, "$1=[redacted]");
-}
+// The redaction itself is pure domain policy; diagnostics keeps this module
+// path for its existing consumers.
+export { redactSecrets } from "../../domain/secret-redaction.mjs";

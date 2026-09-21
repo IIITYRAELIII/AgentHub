@@ -138,6 +138,7 @@ function completedLiveAgentMessage(previous, selected) {
   const completionTime = taskAnswerTurnId === turnId
     ? selected?.lastAnswerAt ?? previous?.time ?? null
     : previous?.time ?? null;
+  const status = String(selected?.lastAnswerStatus ?? "completed").trim().toLowerCase() || "completed";
   return {
     id: `${previous.provider}:${previous.threadId}:${turnId}:completion-overlay:agent`,
     provider: previous.provider,
@@ -147,6 +148,10 @@ function completedLiveAgentMessage(previous, selected) {
     role: "agent",
     author: previous.author,
     phase: "final",
+    projectionState: status,
+    ...(status === "failed" && selected?.lastAnswerFailure
+      ? { terminalFailure: { ...selected.lastAnswerFailure } }
+      : {}),
     text: answer,
     attachments: Array.isArray(previous.attachments)
       ? previous.attachments.map((attachment) => ({ ...attachment }))
@@ -169,18 +174,28 @@ function snapshotCompletionCandidate(selected, incomingTurnId = "") {
   const provider = String(selected?.provider ?? "").trim();
   const threadId = String(selected?.threadId ?? "").trim();
   if (!provider || !threadId) return null;
+  const status = String(selected?.lastAnswerStatus ?? "completed").trim().toLowerCase() || "completed";
   return {
     provider,
     threadId,
     turnId,
     answer,
+    status,
+    ...(status === "failed" && selected?.lastAnswerFailure
+      ? { terminalFailure: { ...selected.lastAnswerFailure } }
+      : {}),
     time: selected?.lastAnswerAt ?? null,
   };
 }
 
 function snapshotCompletionReplacement(existing, completion) {
   const answer = String(completion?.answer ?? "").trim();
-  if (!answer || answer === String(existing?.answer ?? "").trim()) return null;
+  if (!answer) return null;
+  const existingStatus = String(existing?.status ?? "completed").trim().toLowerCase() || "completed";
+  if (answer === String(existing?.answer ?? "").trim()
+    && String(completion?.status ?? "completed").trim().toLowerCase() === existingStatus
+    && JSON.stringify(completion?.terminalFailure ?? null)
+      === JSON.stringify(existing?.terminalFailure ?? null)) return null;
   return completion;
 }
 
@@ -257,7 +272,10 @@ function latestAnswerTransition(previous, current) {
   return Boolean(previous.running && !current.running)
     || String(previous.lastAnswerAt ?? "") !== String(current.lastAnswerAt ?? "")
     || String(previous.lastAnswerTurnId ?? "") !== String(current.lastAnswerTurnId ?? "")
-    || String(previous.lastAnswer ?? "") !== String(current.lastAnswer ?? "");
+    || String(previous.lastAnswer ?? "") !== String(current.lastAnswer ?? "")
+    || String(previous.lastAnswerStatus ?? "") !== String(current.lastAnswerStatus ?? "")
+    || JSON.stringify(previous.lastAnswerFailure ?? null)
+      !== JSON.stringify(current.lastAnswerFailure ?? null);
 }
 
 // The App Server may replay a materialized user item while reconnecting. A
@@ -702,6 +720,8 @@ function completedConversationTurnVisible(messages, {
   answer = "",
   requireAgent = false,
   requireTerminalAgent = false,
+  projectionState = "",
+  terminalFailure = null,
 } = {}) {
   const exactProvider = String(provider ?? "").trim().toLowerCase();
   const exactThreadId = String(threadId ?? "").trim();
@@ -714,11 +734,16 @@ function completedConversationTurnVisible(messages, {
   ));
   const hasUser = turnMessages.some(userMessageHasVisibleContent);
   if (!hasUser) return false;
+  const expectedProjectionState = String(projectionState ?? "").trim().toLowerCase();
+  const expectedFailureMessage = String(terminalFailure?.message ?? "").trim();
   const agentTexts = turnMessages
     .filter((message) => {
       if (message?.role !== "agent") return false;
-      if (!requireTerminalAgent) return true;
       const state = String(message?.projectionState ?? message?.status ?? "").trim().toLowerCase();
+      if (expectedProjectionState && state !== expectedProjectionState) return false;
+      if (expectedFailureMessage
+        && String(message?.terminalFailure?.message ?? "").trim() !== expectedFailureMessage) return false;
+      if (!requireTerminalAgent) return true;
       const phase = String(message?.phase ?? "").trim().toLowerCase();
       return ["completed", "failed", "cancelled"].includes(state)
         || Number(message?.terminalRevision) > 0

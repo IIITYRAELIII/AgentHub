@@ -1533,8 +1533,17 @@ test("failed marker-shaped user text is reported consistently by exact, tail and
   for (const result of [exact, terminal.terminals[0], historical.turns[0]]) {
     assert.equal(result.status, "failed");
     assert.equal(result.contextProbe, undefined);
+    assert.deepEqual(result.terminalFailure, {
+      type: "provider_error",
+      message: "Unsupported model",
+      code: "other",
+    });
   }
-  assert.equal(codexRecentTerminalTurnsFromJsonl(source)[0].status, "failed");
+  assert.deepEqual(codexRecentTerminalTurnsFromJsonl(source)[0].terminalFailure, {
+    type: "provider_error",
+    message: "Unsupported model",
+    code: "other",
+  });
 });
 
 test("ordinary client identity survives earlier identity-less user text", async () => {
