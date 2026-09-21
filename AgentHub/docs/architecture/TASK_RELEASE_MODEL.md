@@ -1,7 +1,10 @@
 # Agent Hub Task release model
 
-Dashboard Tasks are the only live release authority. There is no separate
-release registry, readiness row, frozen manifest or release-entry lifecycle.
+Dashboard Tasks are the only live release authority: readiness, membership and
+ownership are read from Tasks, not from a separate release registry, readiness
+row or release-entry lifecycle. The release candidate does have its own durable
+checkpoint and frozen manifest, but they are derived evidence of an exact
+prepared or frozen composition and never an independent source of readiness.
 
 ## Readiness
 
@@ -10,9 +13,10 @@ release registry, readiness row, frozen manifest or release-entry lifecycle.
 - `awaiting_implementation` means the Task is ready for the next release.
 - `done` means production publication was verified and the Task was closed.
 
-An exact bound turn selects the Task and its dedicated worktree. On Await, Git
+An exact bound turn selects the Task and its dedicated worktree. On Test, Git
 snapshots that Task branch, merges it into `dev`, and records changed files and
-repository revisions directly on the Task. Release planning reads every open
+repository revisions directly on the Task. Await then composes that already
+integrated result into `PreRelease` before it commits the acceptance. Release planning reads every open
 `awaiting_implementation` Task. A Task without changed-file or
 repository-revision evidence remains visible in the plan as `blocked`; it is
 never silently omitted.

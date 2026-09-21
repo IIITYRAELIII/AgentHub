@@ -21,6 +21,12 @@ import { releaseTaskNetProjections } from "./release-task-net-projection.mjs";
 
 const RELEASE_MARKER = "agent-hub-release-clone.json";
 const RELEASE_BRANCH = "PreRelease";
+// Both layers report an unknown Await outcome: this module owns the candidate
+// restore, the lifecycle owns the Task CAS readback.
+const AWAIT_UNKNOWN_OUTCOME_CODES = new Set([
+  "AWAIT_PREPARATION_UNKNOWN",
+  "AWAIT_ACCEPTANCE_UNKNOWN",
+]);
 
 function runGit(args, { cwd, timeoutMs = 120_000, rawOutput = false } = {}) {
   return new Promise((resolve, reject) => {
@@ -1228,7 +1234,10 @@ export class ReleaseGitWorkspaceService {
           await verifyPrimary();
           await commitPrepared(result);
         } catch (error) {
-          if (error?.code === "AWAIT_PREPARATION_UNKNOWN") throw error;
+          // An unknown Task acceptance outcome must never roll the candidate
+          // back: the accepted result may already be durable. The lifecycle
+          // reports that case as AWAIT_ACCEPTANCE_UNKNOWN.
+          if (AWAIT_UNKNOWN_OUTCOME_CODES.has(error?.code)) throw error;
           try {
             const branchRef = `refs/heads/${RELEASE_BRANCH}`;
             await runGit(["checkout", "--detach", "--force", acceptanceBefore.head], { cwd: clone.releaseRoot });

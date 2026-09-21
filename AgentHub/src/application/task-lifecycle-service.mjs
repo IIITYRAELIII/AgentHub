@@ -171,6 +171,28 @@ export class TaskLifecycleService {
     );
   }
 
+  // A proven withdrawal is durable before this runs. The remaining accepted
+  // membership is recomposed so the candidate keeps matching the accepted set;
+  // a failure here never undoes the withdrawal and never reports ready.
+  async #recomposeAfterWithdrawal(workspaceId, projectRoot, lease) {
+    try {
+      const prepared = await this.releasePreflight.prepareAwaitSet({
+        workspaceId,
+        fallbackProjectRoots: projectRoot ? [projectRoot] : [],
+        preserveFrozen: true,
+        lease,
+      });
+      return { ...prepared, status: "ready" };
+    } catch (error) {
+      return {
+        status: "blocked",
+        reason: `Accepted result returned for rework; remaining Await set requires explicit preparation: ${
+          String(error?.message ?? error)}`,
+        ...(error?.code ? { code: error.code } : {}),
+      };
+    }
+  }
+
   async updateWorkflowStatusFromSource(options = {}, {
     taskId: sourceTaskId,
     expectedRevision: expectedSourceRevision,
@@ -648,19 +670,27 @@ export class TaskLifecycleService {
               } catch { return { status: "unknown" }; }
             },
           });
-          return { task: result.workflow, gitWithdrawal: result.withdrawal,
-            ...(affectsAwait ? { releaseCandidate: { status: "invalidated", reason: "Accepted result returned for rework" } } : {}),
+          if (!affectsAwait) return { task: result.workflow, gitWithdrawal: result.withdrawal };
+          return {
+            task: result.workflow,
+            gitWithdrawal: result.withdrawal,
+            releaseCandidate: await this.#recomposeAfterWithdrawal(
+              task.workspaceId, reference.projectRoot, lease,
+            ),
           };
         }
         if (!snapshotsResult) {
           if (releaseWorkflow && workflowStatus === "awaiting_implementation") {
             requiredMethod(this.taskGitWorkspaces, "withTaskRepositoryRecoveryLock");
             requiredMethod(this.releasePreflight, "validateAwaitAcceptance");
+            requiredMethod(this.releasePreflight, "prepareAwaitSet");
             return await this.taskGitWorkspaces.withTaskRepositoryRecoveryLock(
               task.id,
               selectedProjectRoot,
               lease,
               async (repositoryLease) => {
+                // The acceptance identity is validated before any composition so
+                // a drifted prospective result cannot enter PreRelease.
                 const validation = await this.releasePreflight.validateAwaitAcceptance({
                   workspaceId: task.workspaceId,
                   acceptingTask: { id: task.id, revision: task.revision },
@@ -672,46 +702,56 @@ export class TaskLifecycleService {
                 }
                 await this.#assertOwned(repositoryLease);
                 let current;
-                try {
-                  current = await this.#mutation(() => this.taskBoard.commitWorkflowTransition({
-                    operationId, gitReferences: [], replaceGitReferences: false, ...binding,
-                    evidence: {
-                      ...(operationEvidence ?? {}), outcome: "accepted_existing_result",
-                      resultCommit: acceptedReference.resultCommit,
-                      releaseIntegration: validation.task,
-                      response: { releaseCandidate: {
-                        status: "invalidated", reason: "Await membership changed",
-                        planRevision: validation.planRevision,
-                      } },
-                    },
-                  }), operationId);
-                } catch (error) {
-                  try {
-                    const outcome = this.taskBoard.lifecycleOutcome(operationId);
-                    if (outcome?.taskId === task.id
-                        && outcome.result?.task?.workflowStatus === "awaiting_implementation"
-                        && outcome.result?.task?.revision === task.revision + 1
-                        && outcome.result?.evidence?.resultCommit === acceptedReference.resultCommit) {
-                      current = outcome.result.task;
-                    } else {
-                      const transition = this.taskBoard.lifecycleTransition(operationId);
-                      if (!outcome && transition?.taskId === task.id && transition.phase === "pending_git") throw error;
-                      throw new Error("Await acceptance durable outcome does not match its exact result");
+                // Await commits only after the accepted result is composed into
+                // PreRelease. A composition failure leaves the Task in Test and
+                // keeps the last good candidate.
+                const prepared = await this.releasePreflight.prepareAwaitSet({
+                  workspaceId: task.workspaceId,
+                  fallbackProjectRoots: [selectedProjectRoot],
+                  preserveFrozen: true,
+                  lease: repositoryLease,
+                  acceptingTask: { id: task.id, revision: task.revision },
+                  commitPrepared: async (candidate) => {
+                    await this.#assertOwned(repositoryLease);
+                    try {
+                      current = await this.#mutation(() => this.taskBoard.commitWorkflowTransition({
+                        operationId, gitReferences: [], replaceGitReferences: false, ...binding,
+                        evidence: {
+                          ...(operationEvidence ?? {}), outcome: "accepted_existing_result",
+                          resultCommit: acceptedReference.resultCommit,
+                          releaseIntegration: validation.task,
+                          response: { releaseCandidate: { ...candidate, status: "ready" } },
+                        },
+                      }), operationId);
+                    } catch (error) {
+                      // A lost SQLite reply is not a rejection. Read the original
+                      // operation before deciding whether Git may be rolled back.
+                      try {
+                        const outcome = this.taskBoard.lifecycleOutcome(operationId);
+                        if (outcome?.taskId === task.id
+                            && outcome.result?.task?.workflowStatus === "awaiting_implementation"
+                            && outcome.result?.task?.revision === task.revision + 1
+                            && outcome.result?.evidence?.resultCommit === acceptedReference.resultCommit) {
+                          current = outcome.result.task;
+                          return;
+                        }
+                        const transition = this.taskBoard.lifecycleTransition(operationId);
+                        if (!outcome && transition?.taskId === task.id && transition.phase === "pending_git") throw error;
+                        throw new Error("Await acceptance durable outcome does not match its exact result");
+                      } catch (readError) {
+                        if (readError === error) throw error;
+                        const unknown = new Error(`Await acceptance outcome is unknown: ${readError.message}`);
+                        unknown.code = "AWAIT_ACCEPTANCE_UNKNOWN";
+                        throw unknown;
+                      }
                     }
-                  } catch (readError) {
-                    if (readError === error) throw error;
-                    const unknown = new Error(`Await acceptance outcome is unknown: ${readError.message}`);
-                    unknown.code = "AWAIT_ACCEPTANCE_UNKNOWN";
-                    throw unknown;
-                  }
-                }
+                  },
+                });
+                if (!current) throw new Error("PreRelease preparation did not commit its Task transition");
                 return {
                   task: current,
                   releaseIntegration: validation.task,
-                  releaseCandidate: {
-                    status: "invalidated", reason: "Await membership changed",
-                    planRevision: validation.planRevision,
-                  },
+                  releaseCandidate: { ...prepared, status: "ready" },
                 };
               },
             );

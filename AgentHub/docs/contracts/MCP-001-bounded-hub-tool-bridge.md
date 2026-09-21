@@ -125,9 +125,17 @@ identity are fenced atomically by the transition transaction. A later pending re
 preserves the transition's immutable source evidence in its outcome; terminal
 reconciliation reproduces those durable arguments and does not consult a newer
 source Task state or replay the target lifecycle. The transition records the
-accepted result and invalidates older release-plan identity; it does not compose
-`PreRelease`. Candidate assembly is owned only by the later explicit release
-prepare operation.
+accepted result. An ordinary Await transition composes that result into the
+prospective `PreRelease` first and commits only after the composition succeeded;
+a conflict leaves the Task in Test with the last good candidate intact. There is
+no separate public prepare tool: an accepted set whose candidate is stale is
+repaired by repeating `hub_task_status_update` for that exact Task with the same
+`awaiting_implementation` status, which recomposes while its acceptance identity
+stays stable and ingests no new result. Returning an accepted Task recomposes the
+remaining membership under its own withdrawal owner, and after a published
+release the next acceptance prepares the next candidate. Release selection and
+freeze stay with the explicit release command; `hub_release_preflight` only
+reads.
 `hub_release_preflight` audits reviewed main and reads the existing exact prepared
 PreRelease. It does not refresh the rolling contour or rebuild missing/stale
 candidates. Its ready response pins candidate head/tree/manifest and retains
