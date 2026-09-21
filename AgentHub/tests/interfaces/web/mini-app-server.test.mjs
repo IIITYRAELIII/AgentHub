@@ -250,6 +250,98 @@ test("the local VS Code webview session reaches local-only provider sign-in thro
   }
 });
 
+test("the real /api/control authorizer keeps host administration local without blocking remote restart", async () => {
+  const secret = "w".repeat(43);
+  const deviceToken = "y".repeat(43);
+  const calls = [];
+  const handlers = new Proxy({}, {
+    get: (_target, name) => async () => {
+      calls.push(String(name));
+      return { accepted: true, handler: String(name) };
+    },
+  });
+  const router = createDesktopApplicationRouter({
+    handlers,
+    commands: { dispatch: async () => ({ accepted: true }), settingTarget: () => ({}) },
+  });
+  const server = new MiniAppServer({
+    host: "127.0.0.1",
+    port: 0,
+    journalDatabase: memoryJournal(),
+    localAccessSecret: secret,
+    botToken: BOT_TOKEN,
+    allowedUserIds: new Set([42]),
+    deviceStore: {
+      async resolveSession(token) {
+        if (token !== deviceToken) throw new Error("device session is invalid");
+        return { id: "remote-owner", deviceId: "phone" };
+      },
+    },
+    controlHandler: (request) => router.handleDesktopControl(request),
+  });
+  const post = (address, authorization, action, params, headers = {}) => fetch(`${address.url}api/control`, {
+    method: "POST",
+    headers: { Authorization: authorization, "Content-Type": "application/json", ...headers },
+    body: JSON.stringify({ action, params }),
+  });
+  const hostActions = [
+    ["set-autostart", { enabled: true }],
+    ["read-pre-turn-instructions", {}],
+    ["update-global-pre-turn-instructions", { content: "Rules" }],
+    ["read-root-agents", {}],
+    ["update-root-agents", { content: "# Rules" }],
+  ];
+
+  try {
+    const address = await server.start();
+    const remoteSessions = [
+      {
+        name: "trusted device",
+        authorization: `device ${deviceToken}`,
+        headers: {},
+        expectedStatus: 400,
+        expectedError: /только локальному Agent Hub/u,
+      },
+      {
+        name: "Telegram Mini App",
+        authorization: `tma ${signedInitData()}`,
+        headers: { "CF-Connecting-IP": "203.0.113.10" },
+        expectedStatus: 400,
+        expectedError: /только локальному Agent Hub/u,
+      },
+    ];
+    for (const session of remoteSessions) {
+      for (const [action, params] of hostActions) {
+        const remote = await post(address, session.authorization, action, params, session.headers);
+        assert.equal(remote.status, session.expectedStatus, `${session.name}: ${action}`);
+        const body = await remote.json();
+        assert.equal(typeof body.error, "string", `${session.name}: ${action}`);
+        assert.notEqual(body.error.length, 0, `${session.name}: ${action}`);
+        if (session.expectedError) assert.match(body.error, session.expectedError);
+      }
+    }
+    assert.deepEqual(calls, []);
+
+    const webview = `webview ${createLocalWebviewSession(secret).token}`;
+    for (const [action, params] of hostActions) {
+      const local = await post(address, webview, action, params);
+      assert.equal(local.status, 200, `${action}: ${await local.text()}`);
+    }
+    assert.deepEqual(calls, [
+      "setAutostart", "readPreTurnInstructions", "updateGlobalPreTurnInstructions",
+      "readRootAgents", "updateRootAgents",
+    ]);
+
+    for (const session of remoteSessions) {
+      const restart = await post(address, session.authorization, "restart-server", {}, session.headers);
+      assert.equal(restart.status, 200, `${session.name}: ${await restart.text()}`);
+      assert.equal(calls.at(-1), "restartServer");
+    }
+  } finally {
+    await server.close();
+  }
+});
+
 test("large snapshot responses use gzip when the client accepts it", async () => {
   const payload = { tasks: [{ id: "large", text: "snapshot".repeat(8_192) }] };
   const server = new MiniAppServer({
