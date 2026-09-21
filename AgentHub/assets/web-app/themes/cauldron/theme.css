@@ -69,13 +69,13 @@ html[data-theme="cauldron"] {
   --shell-panel-border-image: var(--cauldron-panel-frame-asset, url("./panel-frame.svg")) 40 / 22px / 0 stretch;
   --shell-panel-border-width: 12px;
   --shell-panel-border-image-width: 22px;
-  --shell-chat-border: 1px solid #414b44;
+  --shell-chat-border: 1px solid transparent;
   --shell-chat-border-image: none;
   --shell-chat-panel-border-width: 1px;
   --shell-workspace-gap: 7px;
   --shell-workspace-padding-bottom: 8px;
   --cauldron-header-metal: repeating-linear-gradient(0deg, rgb(222 227 213 / 2%) 0 1px, transparent 1px 3px), linear-gradient(110deg, rgb(31 39 37 / 96%), rgb(12 18 20 / 94%) 65%, rgb(28 34 32 / 96%));
-  --shell-stream-tabs-background: var(--cauldron-header-metal);
+  --shell-stream-tabs-background: transparent;
   --shell-stream-tabs-border: 0;
   --shell-stream-tabs-border-bottom: 0;
   --shell-stream-tabs-border-image: var(--cauldron-panel-frame-asset, url("./panel-frame.svg")) 40 / 14px 14px 0 / 0 stretch;
@@ -160,6 +160,24 @@ html[data-theme="cauldron"] .task-workspace-item[data-selected] {
   box-shadow: inset 0 0 0 5px #f56a15;
 }
 
+/* Leave the transparent cuts of the ceramic border unpainted. Content,
+   menus and focus outlines keep their original overflow/hit-test geometry. */
+html[data-theme="cauldron"][data-view][data-surface] :is(
+  .task-rail, .activity-rail, .task-board-sidebar, .journal-shell,
+  .statistics-card, .current-limits-card, .server-card, .server-health-card,
+  .task-card-modal, .workspace-card-modal, .settings-panel,
+  .stream-chat-header, .stream-chat-preview-head) {
+  background-clip: padding-box;
+}
+
+html[data-theme="cauldron"] .journal-shell-head {
+  padding: 8px 12px 0;
+}
+
+html[data-theme="cauldron"][data-view="chat"][data-surface] .chat.chat {
+  background: transparent;
+}
+
 /* Match the tile's fixed-size cuts. Workspace owns both activity pseudo-layers;
    clipping its paint keeps their glow inside the frame without replacing them. */
 html[data-theme="cauldron"][data-view][data-surface] .task-list .task-workspace-item {
@@ -206,22 +224,28 @@ html[data-theme="cauldron"] .activity-stream-item::after {
 /* Join the top and bottom frame halves without wrapping or moving shared DOM.
    Each header still belongs to its chat pane, including split Stream views. */
 html[data-theme="cauldron"] .stream-tabs {
-  --dialog-chrome: var(--cauldron-header-metal);
+  --dialog-chrome: transparent;
+  isolation: isolate;
 }
 
 html[data-theme="cauldron"] .stream-tabs::after {
   content: "";
   position: absolute;
   inset: 0;
-  border: 0 solid transparent;
+  border: 8px solid transparent;
+  border-bottom: 0;
   border-image: var(--shell-stream-tabs-border-image);
+  background: var(--cauldron-header-metal);
+  background-clip: padding-box;
   pointer-events: none;
+  z-index: -1;
 }
 
 html[data-theme="cauldron"][data-view="chat"][data-surface] .chat :is(.stream-chat-header, .stream-chat-preview-head) {
   position: relative;
   background: var(--cauldron-header-metal);
   border: 6px solid transparent;
+  background-clip: padding-box;
   border-top: 0;
   border-image: var(--cauldron-panel-frame-asset, url("./panel-frame.svg")) 40 / 0 14px 14px / 0 stretch;
   min-height: 70px;
