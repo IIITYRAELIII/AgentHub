@@ -921,6 +921,15 @@ freeze, publication and completion CAS. During publication freeze and unfinished
 finalization, Await membership cannot change. New work stays in Test; acceptance
 is retried after completion. A push alone does not release the freeze.
 
+Freeze keeps the exact raw identity of the supplied CHANGELOG payload separate
+from the canonical Git blob that owns its materialized checkout. Before durable
+intent, the checkout bytes must equal the supplied payload byte for byte. Once
+intent exists, every retry must present the same raw payload hash, while the
+checkout may differ only through Git attributes or clean/smudge conversion and
+must still resolve through `hash-object --path` to the stored blob. This split
+does not relax source, manifest, plan, version, ref, dirty-path, regular-file or
+Workspace fences.
+
 Candidate readback is phase-specific. A `prepared` checkpoint requires the
 standalone clone to be an exact clean `PreRelease` checkout. A `frozen`
 checkpoint requires an exact clean `main` checkout while both `main` and

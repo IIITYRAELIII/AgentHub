@@ -10,7 +10,11 @@ import { ReleaseGitWorkspaceService, assertReleaseCandidateContourSource } from 
 
 const execute = promisify(execFile);
 const git = async (cwd, ...args) => String((await execute("git", args, { cwd, windowsHide: true, encoding: "utf8" })).stdout).trimEnd();
-async function fixture(t) {
+async function fixture(t, {
+  releaseAutoCrlf = "false",
+  attributes = "* text eol=lf\n",
+  changelogContent = Buffer.from("consolidated\n"),
+} = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-freeze-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const primary = path.join(root, "primary");
@@ -18,7 +22,7 @@ async function fixture(t) {
   await git(root, "clone", path.join(root, "origin.git"), primary);
   await git(primary, "config", "core.autocrlf", "false");
   await mkdir(path.join(primary, "AgentHub"));
-  await writeFile(path.join(primary, ".gitattributes"), "* text eol=lf\n");
+  if (attributes !== null) await writeFile(path.join(primary, ".gitattributes"), attributes);
   await writeFile(path.join(primary, "AgentHub", "package.json"), `${JSON.stringify({
     name: "agent-hub", version: "2026.8.23",
   }, null, 2)}\n`);
@@ -33,12 +37,12 @@ async function fixture(t) {
   const service = new ReleaseGitWorkspaceService({ dataDir: path.join(root, "data") });
   const candidate = await service.prepareCandidate({ projectRoot: primary, workspaceId: "workspace", planRevision: "plan", frozenTasks: [],
     approvedBaseCommit: await git(primary, "rev-parse", "main") });
-  await git(candidate.releaseRoot, "config", "core.autocrlf", "false");
+  await git(candidate.releaseRoot, "config", "core.autocrlf", releaseAutoCrlf);
   const checkpointFile = path.join(candidate.releaseRoot, "..", "checkpoint.json");
   const freeze = (options = {}) => service.freezePublicationCandidate({ projectRoot: primary, workspaceId: "workspace",
     expectedPlanRevision: "plan", expectedPreparedHead: candidate.preReleaseHead,
-    changelogContent: Buffer.from("consolidated\n"), releaseDate: new Date(2026, 7, 24, 23, 59), ...options });
-  return { primary, service, candidate, freeze, checkpointFile };
+    changelogContent, releaseDate: new Date(2026, 7, 24, 23, 59), ...options });
+  return { primary, service, candidate, freeze, checkpointFile, changelogContent };
 }
 
 test("freeze commits only supplied CHANGELOG, promotes clone main and preserves dirty primary", async (t) => {
@@ -105,9 +109,10 @@ for (const phase of ["intent", "refs"]) test(`freeze resumes exact persisted com
   const pending = JSON.parse(await readFile(f.checkpointFile, "utf8"));
   assert.equal(pending.phase, "freezing");
   await writeFile(path.join(f.candidate.releaseRoot, "CHANGELOG.md"), "replaced\n");
-  await assert.rejects(f.freeze({ changelogContent: Buffer.from("replaced\n") }), /no longer matches frozen content/u);
+  await assert.rejects(f.freeze({ changelogContent: Buffer.from("replaced\n") }), /supplied publication CHANGELOG bytes changed/u);
+  await assert.rejects(f.freeze(), /publication CHANGELOG no longer matches frozen content/u);
   await writeFile(path.join(f.candidate.releaseRoot, "CHANGELOG.md"), "consolidated\r\n");
-  await assert.rejects(f.freeze({ changelogContent: Buffer.from("consolidated\r\n") }), /no longer matches frozen content/u);
+  await assert.rejects(f.freeze({ changelogContent: Buffer.from("consolidated\r\n") }), /supplied publication CHANGELOG bytes changed/u);
   await writeFile(path.join(f.candidate.releaseRoot, "CHANGELOG.md"), "consolidated\n");
   const frozen = await f.freeze({ releaseDate: new Date(2026, 7, 25, 12) });
   assert.equal(JSON.parse(await readFile(frozen.manifestFile, "utf8")).publication.releaseVersion, "2026.8.24");
@@ -116,4 +121,43 @@ for (const phase of ["intent", "refs"]) test(`freeze resumes exact persisted com
   assert.equal(frozen.phase, "frozen");
   assert.equal(await git(f.candidate.releaseRoot, "status", "--porcelain"), "");
   assert.equal(await git(f.candidate.releaseRoot, "symbolic-ref", "HEAD"), "refs/heads/main");
+});
+
+test("freeze accepts the exact mixed-EOL payload after autocrlf materializes canonical checkout bytes", async (t) => {
+  const mixed = Buffer.from("consolidated\r\ninserted\nending\r\n");
+  const canonicalCheckout = Buffer.from("consolidated\r\ninserted\r\nending\r\n");
+  const f = await fixture(t, { releaseAutoCrlf: "true", attributes: null, changelogContent: mixed });
+  await writeFile(path.join(f.candidate.releaseRoot, "CHANGELOG.md"), mixed);
+
+  const frozen = await f.freeze();
+
+  assert.equal(frozen.phase, "frozen");
+  assert.deepEqual(await readFile(path.join(f.candidate.releaseRoot, "CHANGELOG.md")), canonicalCheckout);
+  assert.equal(await git(f.candidate.releaseRoot, "hash-object", "--path=CHANGELOG.md", "CHANGELOG.md"),
+    frozen.publicationFreeze.changelogBlob);
+  await assert.rejects(f.freeze({ changelogContent: canonicalCheckout }), /supplied publication CHANGELOG bytes changed/u);
+  assert.equal((await f.freeze()).reused, true);
+});
+
+for (const phase of ["intent", "refs"]) test(`autocrlf freeze resumes exact mixed-EOL payload after crash at ${phase}`, async (t) => {
+  const mixed = Buffer.from("consolidated\r\ninserted\nending\r\n");
+  const canonicalCheckout = Buffer.from("consolidated\r\ninserted\r\nending\r\n");
+  const f = await fixture(t, { releaseAutoCrlf: "true", attributes: null, changelogContent: mixed });
+  const changelogFile = path.join(f.candidate.releaseRoot, "CHANGELOG.md");
+  await writeFile(changelogFile, mixed);
+  await assert.rejects(f.freeze({
+    onPhase: (value) => { if (value === phase) throw new Error("simulated interruption"); },
+  }), /simulated interruption/u);
+  const pending = JSON.parse(await readFile(f.checkpointFile, "utf8"));
+  assert.equal(pending.phase, "freezing");
+  assert.equal(pending.publicationFreeze.changelogContentHash,
+    createHash("sha256").update(mixed).digest("hex"));
+
+  await assert.rejects(f.freeze({ changelogContent: canonicalCheckout }), /supplied publication CHANGELOG bytes changed/u);
+  const frozen = await f.freeze();
+  assert.equal(frozen.phase, "frozen");
+  assert.deepEqual(await readFile(changelogFile), canonicalCheckout);
+  const repeated = await f.freeze({ validateBeforeCommit: () => assert.fail("frozen repeat must reuse persisted identity") });
+  assert.equal(repeated.reused, true);
+  assert.equal(repeated.preReleaseHead, frozen.preReleaseHead);
 });
