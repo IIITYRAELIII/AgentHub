@@ -24,6 +24,11 @@ terminal.
 
 - Terminal status, final content, usage identity and last-message identity are
   committed before admission or queue ownership is released.
+- Ordinary Claude turns remain background work on Windows: starting a turn or
+  any console descendant must not expose a console window or steal foreground
+  focus. The durable worker survives an Agent Hub restart, retains redirected
+  file output and stream input, and cancellation still owns its complete process
+  tree.
 - The post-turn reservation is acquired before admission release. Once the
   terminal is durable, admission completion starts reserved post-turn
   maintenance independently of outbox delivery. A stalled delivery cannot hold

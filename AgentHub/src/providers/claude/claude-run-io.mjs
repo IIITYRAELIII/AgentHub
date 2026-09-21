@@ -7,6 +7,8 @@ import { stopProcessTree } from "../../infrastructure/process/process-tree.mjs";
 
 export { processIsAlive, stopProcessTree };
 
+const WINDOWS_CLAUDE_WORKER = path.join(import.meta.dirname, "claude-windows-worker.mjs");
+
 // Claude Code запускается отдельным CLI-процессом и раньше отдавал stream-json
 // в pipe: при перезапуске бота поток обрывался вместе с родителем и ход
 // приходилось помечать прерванным. Теперь вывод пишется в файл хода, а бот
@@ -50,7 +52,16 @@ export function spawnClaudeWorker({
   onError = () => {},
   onExit = () => {},
 }) {
-  const worker = spawn(command, args, {
+  // A detached console process receives its own Windows console. `windowsHide`
+  // hides that initial window, but a console descendant started by the provider
+  // can show it again. Keep the durable detached root as a Node shim and launch
+  // the actual provider below it without detaching, so the provider and its
+  // descendants stay attached to the shim's hidden console while the shim still
+  // survives an Agent Hub restart.
+  const windows = process.platform === "win32";
+  const worker = spawn(windows ? process.execPath : command, windows
+    ? [WINDOWS_CLAUDE_WORKER, command, ...args]
+    : args, {
     cwd,
     env,
     stdio: [stdin, stdout, stderr],
