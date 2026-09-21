@@ -15,6 +15,41 @@ function requiredFunction(value, name) {
   return value;
 }
 
+async function tracedAdmissionStep(commandTrace, { commandId, transport, stage }, operation) {
+  const span = commandTrace?.startBestEffortSpan?.({ commandId, stage, transport });
+  try {
+    const value = await operation();
+    span?.finish({ outcome: "succeeded" });
+    return value;
+  } catch (error) {
+    span?.finish({
+      outcome: "failed",
+      metadata: {
+        errorCode: String(error?.code ?? "").slice(0, 96) || null,
+        sqliteErrorCode: Number.isInteger(error?.errcode) ? error.errcode : null,
+      },
+    });
+    throw error;
+  }
+}
+
+function tracedAdmissionEnqueue(commandTrace, { commandId, transport, stage }, operation) {
+  const span = commandTrace?.startBestEffortSpan?.({ commandId, stage, transport });
+  try {
+    operation();
+    span?.finish({ outcome: "succeeded" });
+  } catch (error) {
+    span?.finish({
+      outcome: "failed",
+      metadata: {
+        errorCode: String(error?.code ?? "").slice(0, 96) || null,
+        sqliteErrorCode: Number.isInteger(error?.errcode) ? error.errcode : null,
+      },
+    });
+    throw error;
+  }
+}
+
 export function runInputPreview(input) {
   const text = typeof input === "string"
     ? input
@@ -53,10 +88,12 @@ export class ManagedRunLifecycleService {
   async #begin(input, target, { authorize }) {
     const d = this.#d;
     const commandId = String(target?.clientUserMessageId ?? "").trim();
+    const transport = String(target?.clientSource ?? "desktop-control").trim().toLowerCase()
+      || "desktop-control";
     const admissionSpan = d.commandTrace?.startBestEffortSpan?.({
       commandId,
       stage: "admission",
-      transport: String(target?.clientSource ?? "desktop-control").trim().toLowerCase() || "desktop-control",
+      transport,
     });
     const current = d.currentTarget();
     const provider = target?.provider ?? current.provider;
@@ -64,13 +101,15 @@ export class ManagedRunLifecycleService {
     const project = d.findProject(projectRoot);
     const targetThreadId = target?.threadId ?? current.threadId;
     const taskTitle = target?.taskTitle ?? current.taskTitle;
-    const admission = authorize ? await d.prepareAdmission({
+    const admission = authorize ? await tracedAdmissionStep(d.commandTrace, {
+      commandId, transport, stage: "admission-prepare",
+    }, () => d.prepareAdmission({
       ...target,
       provider,
       projectRoot,
       threadId: targetThreadId,
       taskTitle,
-    }) : null;
+    })) : null;
     if (provider === "claude" && targetThreadId) {
       d.clearClaudeCancellation?.({ provider, threadId: targetThreadId });
     }
@@ -139,14 +178,22 @@ export class ManagedRunLifecycleService {
     try {
       d.invalidateCatalog();
       admissionOperation = "persist-task-diff";
-      await d.persistTaskDiff(taskRunKey(run), "");
+      await tracedAdmissionStep(d.commandTrace, {
+        commandId, transport, stage: "admission-task-diff",
+      }, () => d.persistTaskDiff(taskRunKey(run), ""));
       admissionOperation = "sync-run";
       d.clearSelectedDiff(run);
       run.gitBaseline = null;
-      d.syncRun(run);
+      tracedAdmissionEnqueue(d.commandTrace, {
+        commandId, transport, stage: "admission-sync-run-enqueue",
+      }, () => {
+        d.syncRun(run);
+      });
       if (deferredInput) deferredInput.dispatchingRunId = run.id;
       admissionOperation = "save-state";
-      await d.saveState();
+      await tracedAdmissionStep(d.commandTrace, {
+        commandId, transport, stage: "admission-state-save",
+      }, () => d.saveState());
     } catch (error) {
       admissionSpan?.finish({
         outcome: "failed",
