@@ -1,6 +1,6 @@
 import { randomUUID, createHash } from "node:crypto";
 import { execFile } from "node:child_process";
-import { lstat, readFile, writeFile, rename, rm } from "node:fs/promises";
+import { link, lstat, readFile, writeFile, rename, rm } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 
@@ -27,10 +27,47 @@ async function save(file, value) {
   } finally { await rm(temporary, { force: true }); }
 }
 
+const changelogPayloadName = (hash) => hash === null
+  ? null
+  : `publication-changelog-${hash}.bin`;
+
+async function readPersistedChangelogPayload(layout, fileName, expectedHash) {
+  if (expectedHash === null) {
+    if (fileName !== null) throw new Error("persisted publication CHANGELOG payload identity is invalid");
+    return null;
+  }
+  const expectedName = changelogPayloadName(expectedHash);
+  if (fileName !== expectedName) throw new Error("persisted publication CHANGELOG payload identity is invalid");
+  const file = path.join(layout.evidenceRoot, expectedName);
+  const info = await lstat(file).catch((error) => { if (error.code === "ENOENT") return null; throw error; });
+  if (!info || !info.isFile() || info.isSymbolicLink()) {
+    throw new Error("persisted publication CHANGELOG payload is missing or invalid");
+  }
+  const content = await readFile(file);
+  if (digest(content) !== expectedHash) throw new Error("persisted publication CHANGELOG payload digest changed");
+  return content;
+}
+
+async function persistChangelogPayload(layout, content, expectedHash) {
+  if (content === null) return null;
+  const fileName = changelogPayloadName(expectedHash);
+  const target = path.join(layout.evidenceRoot, fileName);
+  const temporary = path.join(layout.evidenceRoot, `.${fileName}.${randomUUID()}.tmp`);
+  try {
+    await writeFile(temporary, content, { flag: "wx" });
+    try { await link(temporary, target); }
+    catch (error) { if (error.code !== "EEXIST") throw error; }
+  } finally { await rm(temporary, { force: true }); }
+  const persisted = await readPersistedChangelogPayload(layout, fileName, expectedHash);
+  if (!persisted.equals(content)) throw new Error("persisted publication CHANGELOG payload bytes changed");
+  return fileName;
+}
+
 // Called only under the ReleaseGitWorkspaceService's release and repository locks.
 export async function freezePreparedPublicationCandidate({
   layout, marker, expectedPlanRevision, expectedPreparedHead, workspaceId,
-  changelogContent = null, releaseDate = new Date(), validateBeforeCommit = async () => {}, onPhase = async () => {},
+  changelogContent, reusePersistedChangelog = false, releaseDate = new Date(),
+  validateBeforeCommit = async () => {}, onPhase = async () => {},
 }) {
   const root = layout.releaseRoot;
   let checkpoint = JSON.parse(await readFile(layout.checkpointFile, "utf8"));
@@ -39,8 +76,10 @@ export async function freezePreparedPublicationCandidate({
   if (digest(manifestBytes) !== checkpoint.manifestHash) throw new Error("prepared release manifest digest changed");
   let manifest = JSON.parse(manifestBytes.toString("utf8"));
   const priorFreeze = checkpoint.publicationFreeze;
-  const suppliedChangelog = changelogContent === null ? null : Buffer.from(changelogContent);
-  const suppliedChangelogHash = suppliedChangelog === null ? null : digest(suppliedChangelog);
+  const callerSuppliedChangelog = changelogContent == null ? null : Buffer.from(changelogContent);
+  const callerSuppliedChangelogHash = callerSuppliedChangelog === null ? null : digest(callerSuppliedChangelog);
+  let suppliedChangelog = callerSuppliedChangelog;
+  let suppliedChangelogHash = callerSuppliedChangelogHash;
   if (checkpoint.planRevision !== expectedPlanRevision || manifest.planRevision !== expectedPlanRevision
     || ![checkpoint.preReleaseHead, priorFreeze?.preparedHead].includes(expectedPreparedHead)
     || checkpoint.baseCommit !== manifest.baseCommit
@@ -49,7 +88,25 @@ export async function freezePreparedPublicationCandidate({
     || (manifest.workspaceId && manifest.workspaceId !== workspaceId)) {
     throw new Error("prepared release head, plan or Workspace changed before freeze");
   }
-  if (["freezing", "frozen"].includes(checkpoint.phase)
+  const resumingFreeze = ["freezing", "frozen"].includes(checkpoint.phase);
+  if (resumingFreeze) {
+    if (!priorFreeze) throw new Error("publication freeze intent is incomplete");
+    const persistedChangelog = await readPersistedChangelogPayload(
+      layout,
+      priorFreeze.changelogPayloadFile,
+      priorFreeze.changelogContentHash,
+    );
+    if (reusePersistedChangelog) {
+      suppliedChangelog = persistedChangelog;
+      suppliedChangelogHash = suppliedChangelog === null ? null : digest(suppliedChangelog);
+      if (changelogContent !== undefined && callerSuppliedChangelogHash !== suppliedChangelogHash) {
+        throw new Error("supplied publication CHANGELOG bytes changed");
+      }
+    }
+  } else if (reusePersistedChangelog) {
+    throw new Error("persisted publication CHANGELOG payload is available only after freeze intent");
+  }
+  if (resumingFreeze
       && (!priorFreeze || suppliedChangelogHash !== priorFreeze.changelogContentHash)) {
     throw new Error("supplied publication CHANGELOG bytes changed");
   }
@@ -107,6 +164,7 @@ export async function freezePreparedPublicationCandidate({
     const oldMain = await git(root, ["rev-parse", "refs/heads/main^{commit}"]);
     const oldPreRelease = await git(root, ["rev-parse", "refs/heads/PreRelease^{commit}"]);
     if (oldPreRelease !== preparedHead) throw new Error("prepared PreRelease branch changed");
+    const changelogPayloadFile = await persistChangelogPayload(layout, suppliedChangelog, suppliedChangelogHash);
     const versionState = await inspectAgentHubReleaseVersion({
       root: path.join(root, "AgentHub"), now: releaseDate,
     });
@@ -142,7 +200,8 @@ export async function freezePreparedPublicationCandidate({
     } finally { await rm(indexFile, { force: true }); }
     const changelogContentHash = suppliedChangelogHash;
     manifest = { ...manifest, workspaceId, publication: {
-      preparedHead, head, changelogBlob, changelogContentHash, releaseVersion: versionState.version,
+      preparedHead, head, changelogBlob, changelogContentHash, changelogPayloadFile,
+      releaseVersion: versionState.version,
       sourceManifestHash: checkpoint.manifestHash,
     } };
     const text = `${JSON.stringify(manifest, null, 2)}\n`;
@@ -151,7 +210,7 @@ export async function freezePreparedPublicationCandidate({
     await writeFile(manifestFile, text, "utf8");
     checkpoint = { ...checkpoint, phase: "freezing", manifestHash, manifestFile, preReleaseHead: head,
       publicationFreeze: {
-        preparedHead, oldMain, oldPreRelease, changelogBlob, changelogContentHash,
+        preparedHead, oldMain, oldPreRelease, changelogBlob, changelogContentHash, changelogPayloadFile,
         releaseVersion: versionState.version,
       }, updatedAt: new Date().toISOString() };
     await save(layout.checkpointFile, checkpoint);
@@ -162,6 +221,7 @@ export async function freezePreparedPublicationCandidate({
     || manifest.publication?.preparedHead !== intent.preparedHead
     || manifest.publication?.changelogContentHash !== intent.changelogContentHash
     || manifest.publication?.changelogBlob !== intent.changelogBlob
+    || manifest.publication?.changelogPayloadFile !== intent.changelogPayloadFile
     || manifest.publication?.releaseVersion !== intent.releaseVersion) throw new Error("publication freeze intent is incomplete");
   state = await inspect({ requireSuppliedBytes: false });
   if (![intent.preparedHead, checkpoint.preReleaseHead].includes(state.head)) throw new Error("release branch moved during publication freeze");
