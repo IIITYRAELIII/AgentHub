@@ -24,8 +24,7 @@ function nonNegativeTokens(value) {
 
 /* Claude Code описывает свёртку тремя служебными событиями потока: началом
    (`status: compacting`), исходом (`compact_result`) и границей, которая несёт
-   точные счётчики контекста до и после. Поэтому провайдеру Claude не нужен
-   скрытый замерочный ход: CLI сам отдаёт обе величины. */
+   точные счётчики контекста до и после. CLI сам отдаёт обе величины. */
 export function claudeCompactionEvent(event) {
   if (event?.type !== "system") return null;
   if (event.subtype === "status") {

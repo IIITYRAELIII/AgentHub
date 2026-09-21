@@ -1,7 +1,7 @@
 {
   "name": "agent-hub",
   "private": true,
-  "version": "2026.9.13",
+  "version": "2026.9.18",
   "type": "module",
   "engines": {
     "node": ">=22.5.0"
@@ -63,6 +63,9 @@
     "contour:clone-data": "node test-contour.mjs clone-data",
     "contour:open": "node test-contour.mjs open",
     "contour:status": "node test-contour.mjs status",
+    "contour:lock": "node test-contour.mjs lock",
+    "contour:lock-status": "node test-contour.mjs lock-status",
+    "contour:unlock": "node test-contour.mjs unlock",
     "contour:stop": "node test-contour.mjs stop",
     "contour:verify": "node test-contour.mjs verify"
   },

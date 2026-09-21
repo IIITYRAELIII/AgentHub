@@ -2,6 +2,12 @@
 
 ## Trace contract
 
+Task-card Git previews run only on explicit request and retain at most 64 KiB of
+diff text per response, with visible truncation. Board snapshots never run Git
+for previews. Task journal projection joins exact bindings to indexed journal
+identities and reads summary scalars, not full prompts, bodies or stored diffs.
+The journal revision participates in Task-board cache invalidation (ADR-0051).
+
 The root trace identity is the command ID. Required stages are client submit,
 transport start, Hub HTTP callback or Desktop IPC accept, authenticated control
 handler enter, receipt lock wait, durable intake enqueue/start/commit, response
@@ -80,9 +86,23 @@ unbounded worker memory and event-loop GC pressure.
 
 Provider turn start and completion do not snapshot Git repositories. Test owns
 the Task Git snapshot and `dev` integration outside provider admission and
-terminal-delivery latency. Await changes acceptance metadata without composing
-the Workspace-wide candidate; expensive selected-set projection runs only in
-the explicit release prepare operation.
+terminal-delivery latency. Outside publication freeze, Await prepares PreRelease before committing acceptance
+under the existing Workspace Await and Task ownership boundaries. A failed
+preparation leaves the Task in Test (ADR-0055). It does
+not run release tests, builds or deployment. During freeze, new work stays in
+Test and acceptance is retried after confirmed release completion.
+
+Release validation may run at most two test-file processes concurrently, and
+only when the host reports at least four logical CPUs and 4 GiB of free memory.
+A file is parallel-eligible only when its reviewed v2 input declaration proves
+disposable filesystem, lock, Git, port and browser-profile ownership; every
+child receives a unique temporary environment root. Undeclared files remain
+exclusive, and matching shared-resource tags serialize only the files that name
+that resource. This bound protects Hub CPU and memory headroom while allowing
+independent Git and browser fixtures to overlap. Cache decisions report a
+stable content-free reason (`absent`, `fingerprint changed`, or the exact
+uncacheable policy reason); they never print environment values or fabricate
+reusable evidence.
 
 Codex rollout activity fallback runs outside the main Hub event loop. Concurrent
 reads of the same rollout and read options share one in-flight operation. A cold
@@ -141,6 +161,13 @@ Terminal-outbox recovery likewise stages bounded batches before requesting a
 shared journal projection. It must not rebuild the entire retained journal for
 each recovered completion. Exact revisions are acknowledged only after the
 shared projection succeeds; live completion adds no batching delay.
+Concurrent full-projection requests share work only forward and only within one
+exact scope: the ordered project roots and Claude-usage inclusion. A projection
+answers requests made before it started; every request arriving while it runs
+joins a single trailing projection that starts after it settles. An in-flight
+projection never acknowledges a later terminal revision, different scopes never
+share a run, and a failed or conflicting trailing run leaves each of its exact
+revisions pending.
 Unchanged canonical merged records do not request a new projection; an existing
 pending projection still survives an unchanged replay. Provisional retraction
 checks only the exact turn before mutation. Missing or non-provisional turns
@@ -159,6 +186,14 @@ historical batches read only their exact turn identities, merge repeated
 identities within the batch and commit changed records in one transaction before
 requesting the existing worker projection. Unrelated retained answers and diffs
 do not enter the Hub event loop for these operations.
+Canonical terminal-outbox readback confirms the exact journal record, matching
+immutable accounting fields in the deterministic usage fact and a current turn
+index. Recovery drains at most 100 projection-pending revisions per listing and
+projects batches of at most 16. Attempts use durable least-recently-attempted
+order, so permanent failures cannot starve a later page and a full page never
+creates a zero-delay loop. Transient contention uses one runtime-scoped
+single-flight retry with capped exponential backoff; a bounded low-frequency
+pass retains eventual recovery after that fast budget or an enumeration failure.
 Usage-history aggregation and pricing/image-estimate metadata scans also execute
 in that existing worker. After legacy-read readiness is established, statistics
 reads do not wait on the runtime mutation FIFO or materialize its ledger. They
@@ -181,6 +216,13 @@ lane through the exact metadata-mutation handshake. Export, import and account
 projection perform worker I/O outside the lane; journal commits re-enter it
 with the existing revision fence. The handshake acquires the lane only when
 the worker reaches that mutation and releases it before any further request.
+Runtime journal repository writes follow the same contention protocol as worker
+journal commits. Each leaf database write that meets a foreign SQLite write lock
+waits within the existing mutation window and is repeated only when its
+transaction never started or was rolled back, so no committed change or change
+notification repeats. The window is not a delivery timeout: when it is exhausted
+the terminal revision stays pending and neither the repository revision nor the
+record fingerprint advances. Repository close waits for every accepted write.
 
 When the Codex transport is offline or reconnecting, versioned historical
 maintenance resolves subagent accounting roots only from retained rollout files.
@@ -201,7 +243,9 @@ update remains visible even when its `observedAt` shares or predates the prior
 millisecond watermark. Upgrades without a revision cursor perform one full
 export before persisting the new cursor. The legacy timestamp fallback replays
 the acknowledged millisecond and relies on exact event-id merge rather than
-dropping equal-timestamp rows.
+dropping equal-timestamp rows. A cursor snapshot does not read stored sync
+events, which only a full export merges; auth and limit observations are
+exported by both.
 Exact-turn and bounded Thread reads use SQLite primary/index queries and do not
 materialize the complete ledger after durable point-read readiness is known.
 The first read imports and normalizes legacy JSON only when it is newly imported
@@ -297,6 +341,21 @@ insertion is excluded from body-wide themed-select and VS Code motion subtree
 scans. Periodic external history refresh runs only while chat is visible, and
 unchanged Dashboard collections retain their snapshot identity so they do not
 incur stringify comparison or card rebuild.
+The Desktop snapshot owner may reuse Dashboard workspaces, tasks and layout only
+under the TaskBoard's exact authoritative snapshot revision, including mutations
+committed by another supported SQLite owner or connection. Unrelated live-run
+revisions must not rebuild or reserialize those collections. A changed or
+unavailable TaskBoard revision invalidates that reuse atomically and preserves
+the existing content-derived collection versions and delta recovery behavior.
+The TaskBoard snapshot revision deliberately includes its own mutation counter,
+the durable `journal_store_meta` revision and SQLite's external data version, so
+a journal-only write invalidates a cached board even when no Task row changed.
+Opening a Task carries the client's exact snapshot and collection versions into
+the selection command. The ordered selection mutation and its exact local
+history read run concurrently; the first response contains the history page and
+explicitly defers the authoritative snapshot to the ordinary version-fenced
+refresh. A missing or stale baseline still receives the existing authoritative
+reset, and no provider hydration enters this critical path.
 
 A lazy Journal version conflict supersedes that read. The client requests at
 most one refresh per displayed version through the existing refresh owner,
@@ -347,3 +406,9 @@ paint p95 is at most 200 ms and no navigation-owned main-thread task exceeds
 50 ms. A hidden startup screen owns no animation frame; its canvas animation is
 scheduled only while that screen is visible. The shared invariant applies to
 the browser shell and the VS Code WebView, which execute the same client assets.
+
+Exact squash absorption is an explicit release operation, not an interactive
+read path. Its Git witness work is bounded by the changed paths in the source
+result and survivor replacement delta. It performs one repository-lock phase,
+one expected-old `dev` ref update and one two-Task SQLite commit; it does not scan
+arbitrary Workspace history or add background work to ordinary Task reads.

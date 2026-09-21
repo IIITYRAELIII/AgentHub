@@ -8,6 +8,7 @@ import {
   normalizeInterstreamClientUserMessageId,
   normalizeInterstreamOrigin,
 } from "../domain/interstream-message.mjs";
+import { providerRunTerminalIdentity } from "../domain/provider-run-terminal.mjs";
 
 function requiredFunction(value, name) {
   if (typeof value !== "function") throw new TypeError(`${name} is required`);
@@ -32,6 +33,9 @@ export class ManagedRunLifecycleService {
       "clearApprovals", "pauseObservation", "pauseClaude", "stopTyping",
       "prepareAdmission", "revokeAdmission", "beforeCompletion", "completionAborted", "afterCompletion",
     ]) requiredFunction(dependencies[name], name);
+    if (dependencies.recordProviderTerminal != null) {
+      requiredFunction(dependencies.recordProviderTerminal, "recordProviderTerminal");
+    }
     if (!dependencies.taskRuns?.add || !dependencies.taskRuns?.remove) {
       throw new TypeError("taskRuns registry is required");
     }
@@ -215,6 +219,8 @@ export class ManagedRunLifecycleService {
     run.completionPreparing = (async () => {
       try {
         await d.beforeCompletion(run);
+        const terminal = providerRunTerminalIdentity(run);
+        if (terminal) await d.recordProviderTerminal?.(terminal);
         d.clearApprovals(run);
         d.pauseObservation(run);
         d.pauseClaude(run);

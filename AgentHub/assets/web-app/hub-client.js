@@ -21,7 +21,7 @@ function remoteWorkspaceFileBridgeAvailable() {
     && window.AgentHubBrowserDevice?.isPaired?.() === true;
 }
 
-async function launchWorkspaceFileBridge(action, localPath) {
+async function requestWorkspaceFileTransfer(localPath) {
   const response = await hubFetch("/api/workspace-file/transfer-ticket", {
     method: "POST",
     headers: { ...authorizationHeaders(), "Content-Type": "application/json" },
@@ -31,6 +31,21 @@ async function launchWorkspaceFileBridge(action, localPath) {
   if (!response.ok || payload.ok === false) {
     throw new Error(String(payload.error ?? `Не удалось подготовить файл: HTTP ${response.status}`));
   }
+  return payload;
+}
+
+function startBrowserDownload(downloadPath, name) {
+  const link = document.createElement("a");
+  link.href = new URL(String(downloadPath ?? ""), window.location.origin).href;
+  link.download = String(name ?? "file.bin");
+  link.hidden = true;
+  document.body.append(link);
+  link.click();
+  link.remove();
+}
+
+async function launchWorkspaceFileBridge(action, localPath) {
+  const payload = await requestWorkspaceFileTransfer(localPath);
   const source = new URL(String(payload.downloadPath ?? ""), window.location.origin);
   const launch = new URL(`agenthub-file://${action}`);
   launch.searchParams.set("source", source.href);
@@ -69,6 +84,14 @@ let refreshRequested = false;
 let connectionFailureCount = 0;
 let connectionFailureSince = 0;
 let connectionOfflineTimer = null;
+const restartFailureStorageKey = "agentHub.announcedRestartFailure";
+let announcedRestartFailureId = (() => {
+  try {
+    return sessionStorage.getItem(restartFailureStorageKey) ?? "";
+  } catch {
+    return "";
+  }
+})();
 let connectionOfflineBreadcrumbRecorded = false;
 let connectionLatencyMs = null;
 let connectionLatencyProbe = null;
@@ -88,7 +111,7 @@ const REMOTE_WAIT_MS = 0;
 const REMOTE_RESULT_FALLBACK_POLL_MS = 600;
 const DEFAULT_CONTROL_TIMEOUT_MS = 45_000;
 const LONG_CONTROL_TIMEOUT_MS = 180_000;
-const LONG_CONTROL_ACTIONS = new Set(["rotate-stream", "submit-bug-report"]);
+const LONG_CONTROL_ACTIONS = new Set(["rotate-stream", "submit-bug-report", "browse-directory"]);
 const VSCODE_MESSAGE_CONTROL_TIMEOUT_MS = LONG_CONTROL_TIMEOUT_MS;
 const VSCODE_MESSAGE_RETRY_DELAYS_MS = Object.freeze([150, 600]);
 const VSCODE_DIRECT_SEND_HEDGE_DELAY_MS = 250;
@@ -471,6 +494,10 @@ function stableIdentity(identity) {
     provider: String(identity?.provider ?? "").trim(),
     threadId: String(identity?.threadId ?? "").trim(),
   };
+}
+
+function taskOpenParams(identity, params = {}) {
+  return window.AgentHubSnapshotTransport.openTaskRequestParams(lastSnapshot, identity, params);
 }
 
 function sameIdentity(left, right) {
@@ -1154,7 +1181,7 @@ function runBatchedMessageRenders(operation) {
   }
 }
 
-function clearInternalContextProbe(taskIdValue) {
+function clearNonUserLiveProjection(taskIdValue) {
   const cardRemoved = liveCardsByTask.delete(taskIdValue);
   const probeRemoved = liveProbeByTask.delete(taskIdValue);
   const usersRemoved = liveUserMessagesByTask.delete(taskIdValue);
@@ -1172,13 +1199,13 @@ function syncHistoryPagination(taskIdValue) {
 
 function updateLiveMessage(taskIdValue, selected) {
   // Only an explicitly classified user turn may own the live card. Internal or
-  // unknown projections must also clear a previously cached card so a hidden
-  // probe cannot keep later user input queued behind false activity.
+  // unknown projections must also clear a previously cached card so stale
+  // maintenance cannot keep later user input queued behind false activity.
   const run = activeTaskRun(selected);
   if (run && !isUserRunningProjection({ ...run, projectionState: "active" })) {
     const promoted = promoteLiveCompletion(taskIdValue, selected, run.turnId);
     const snapshotCompletionRemembered = rememberSnapshotCompletion(taskIdValue, selected, run.turnId);
-    clearInternalContextProbe(taskIdValue);
+    clearNonUserLiveProjection(taskIdValue);
     if (promoted || snapshotCompletionRemembered) renderTaskMessages(taskIdValue);
     return null;
   }
@@ -1997,20 +2024,27 @@ function observeContextCompactions(tasks) {
     const previousStatus = previous.status;
     const status = String(compaction.status ?? "");
     const measurementStatus = String(compaction.measurementStatus ?? "");
+    if (status === "completed" && compaction.rotationStatus === "failed" && task.streamId) {
+      const rotationId = `maintenance:rotation:${task.streamId}:${task.provider}:${task.threadId}:${compactionId}`;
+      const detail = String(compaction.rotationMessage ?? "Новый Thread не подтвердил готовность");
+      if (rememberMaintenanceEvent(stableTaskId, {
+        id: rotationId, itemId: rotationId, provider: task.provider, threadId: task.threadId,
+        streamId: task.streamId, sourceThreadId: task.threadId,
+        maintenanceType: "rotation", maintenanceStatus: "failed",
+        maintenanceLabel: "Ротация не завершена", maintenanceDetail: detail,
+        text: `Ротация не завершена. Исходный Thread сохранён. ${detail}`,
+        time: compaction.completedAt ?? null,
+      })) changed.add(stableTaskId);
+    }
     const beforePercent = contextPercent(compaction.beforePercent)
       ?? previous.beforePercent
       ?? contextPercent(existingEvent?.beforePercent)
       ?? storedMaintenancePercent(existingEvent, 1)
       ?? (status === "running" ? contextPercent(context?.percent) : null);
-    const explicitAfterPercent = contextPercent(compaction.afterPercent) || null;
-    const afterPercent = ["running", "failed"].includes(measurementStatus)
-      ? null
-      : measurementStatus === "completed"
-        ? explicitAfterPercent
-        : previous.afterPercent
-          ?? contextPercent(existingEvent?.afterPercent)
-          ?? storedMaintenancePercent(existingEvent, 2)
-          ?? explicitAfterPercent;
+    const afterPercent = measurementStatus === "completed"
+      ? contextPercent(compaction.afterPercent)
+      : null;
+    const estimated = compaction.measurementKind === "estimated";
     const requested = requestedContextCompactions.has(compactionId);
     const eventAtMs = Date.parse(String(compaction.completedAt ?? compaction.startedAt ?? "")) || 0;
     const recent = eventAtMs > 0 && Date.now() - eventAtMs < 90_000;
@@ -2055,13 +2089,16 @@ function observeContextCompactions(tasks) {
       const maintenanceLabel = measurementKnown
         ? "Свёртка завершена успешно"
         : "Свёртка завершена";
+      const afterLabel = estimated ? `≈${afterPercent}%` : `${afterPercent}%`;
       const maintenanceDetail = measurementKnown
-        ? `${beforePercent}% → ${afterPercent}%`
+        ? `${beforePercent}% → ${afterLabel}${estimated ? " · Предварительная оценка провайдера после свёртки" : ""}`
         : beforePercent !== null
           ? `${beforePercent}% → замер после не получен`
           : "Замер контекста не получен";
       const text = measurementKnown
-        ? `Свёртка завершена успешно ${beforePercent}%>${afterPercent}%`
+        ? estimated
+          ? `Свёртка контекста · ${beforePercent}% → ${afterLabel}`
+          : `Свёртка завершена успешно ${beforePercent}%>${afterLabel}`
         : beforePercent !== null
           ? `Свёртка завершена; до ${beforePercent}%, замер после не получен`
           : "Свёртка завершена; замер контекста не получен";
@@ -2075,6 +2112,7 @@ function observeContextCompactions(tasks) {
         maintenanceStatus: "completed",
         maintenanceLabel,
         maintenanceDetail,
+        measurementKind: compaction.measurementKind ?? null,
         beforePercent,
         afterPercent,
         text,
@@ -2115,6 +2153,7 @@ function observeStreamRotations(previousTasks, tasks) {
       threadId: transition.task.threadId,
       sourceThreadId: transition.sourceThreadId,
       beforePercent: transition.beforePercent,
+      measurementKind: transition.measurementKind,
       time: transition.time,
     });
   }
@@ -2127,13 +2166,9 @@ function observeStreamRotations(previousTasks, tasks) {
     }
     if (rotationMaintenanceActive(task)) continue;
     const beforePercent = contextPercent(pending.beforePercent);
-    // Текущее использование нового Thread — живое значение, оно растёт вместе
-    // с работой. Замер «сразу после переноса» приходит только из записанной
-    // пробы ротации, поэтому до неё этот этап честно неизвестен.
-    const afterPercent = null;
     const presentation = window.AgentHubStreamTabs.rotationMaintenancePresentation(
       beforePercent,
-      afterPercent,
+      { measurementKind: pending.measurementKind },
     );
     const stableTaskId = taskId(task.provider, task.threadId, streamId);
     const eventId = `maintenance:rotation:${streamId}:${task.threadId}`;
@@ -2149,7 +2184,7 @@ function observeStreamRotations(previousTasks, tasks) {
       maintenanceDetail: presentation.maintenanceDetail,
       placement: "after-source-turn",
       beforePercent,
-      afterPercent,
+      measurementKind: pending.measurementKind ?? null,
       text: presentation.text,
       time: pending.time,
     })) changed.add(stableTaskId);
@@ -2357,6 +2392,21 @@ function applySnapshotContent(snapshot, { materialized = false } = {}) {
 function applySnapshotConnection(snapshot, idleStatus = "online") {
   const connection = window.AgentHubConnectionBanner.snapshotConnectionState(snapshot, idleStatus);
   agentHub.setConnection(connection.status, { blockingCount: connection.blockingCount });
+  announceRestartFailure(snapshot);
+}
+
+// The reason comes from the persisted restart operation and is shown once for
+// that operation identity, including across reloads of this client session.
+function announceRestartFailure(snapshot) {
+  const notice = window.AgentHubConnectionBanner.restartFailureNotice?.(snapshot?.restartFailure);
+  if (!notice || notice.operationId === announcedRestartFailureId) return;
+  announcedRestartFailureId = notice.operationId;
+  try {
+    sessionStorage.setItem(restartFailureStorageKey, notice.operationId);
+  } catch {
+    // The notice stays deduplicated for the lifetime of this client.
+  }
+  agentHub.toast(notice.message);
 }
 
 function resetConnectionFailures() {
@@ -2720,13 +2770,20 @@ function applyOpened(result, {
     });
   }
   if (selectTask) rememberSelectedTaskId(id);
-  if (!skipSnapshot) applySnapshot(result?.snapshot);
+  if (!skipSnapshot && result?.snapshot?.notModified !== true) {
+    try {
+      applySnapshot(result?.snapshot);
+    } catch (error) {
+      if (!window.AgentHubSnapshotTransport.isBaselineError(error)) throw error;
+      void refresh();
+    }
+  }
   if (!skipSnapshot && result?.snapshotDeferred === true) void refresh();
   if (selectTask) agentHub.selectTask(id);
   syncHistoryPagination(id);
   const renderedMessages = renderTaskMessages(id, { preserveScroll, exactNavigation });
-  renderTaskQueue(id, result?.snapshot ?? lastSnapshot);
-  const acknowledgementSnapshot = result?.snapshot ?? lastSnapshot;
+  renderTaskQueue(id, lastSnapshot);
+  const acknowledgementSnapshot = lastSnapshot;
   const acknowledgementTask = (acknowledgementSnapshot?.tasks ?? []).find((item) => taskId(
     item.provider,
     item.threadId,
@@ -2753,7 +2810,7 @@ function applyOpened(result, {
       threadId: history.threadId,
     });
   }
-  const task = (result.snapshot ?? lastSnapshot)?.tasks?.find(
+  const task = lastSnapshot?.tasks?.find(
     (item) => item.provider === history.provider && item.threadId === history.threadId,
   );
   updateHistoryCatchUp(id, history, task);
@@ -2801,9 +2858,6 @@ function dataUrlBody(dataUrl) {
 
 const attachmentUploader = window.AgentHubAttachmentUpload.create({
   request: async (path, init) => {
-    if (vscode && !(await window.__agentHubDirectTransport?.available())) {
-      throw new Error("Локальное соединение для загрузки файлов недоступно. Повтори после подключения Hub.");
-    }
     await localSessionReady;
     const signal = AbortSignal.any([...(init?.signal ? [init.signal] : []), AbortSignal.timeout(30_000)]);
     return hubFetch(path, { ...init, signal, headers: { ...authorizationHeaders(), ...init?.headers } });
@@ -2875,7 +2929,7 @@ agentHub.on("task:select", ({ id }) => {
   selectionTail = runNavigation(
     identity,
     async () => {
-      const opened = await control("open-task", { ...identity, limit: 20 });
+      const opened = await control("open-task", taskOpenParams(identity, { limit: 20 }));
       if (opened?.history) verifiedTaskHistory(opened.history, identity);
       return opened;
     },
@@ -3311,7 +3365,7 @@ function sendUserMessage(request, frozenParams = null) {
           provider: result?.provider ?? identity?.provider,
           threadId: result.threadId,
         };
-        const opened = await control("open-task", { ...identity, limit: 20 });
+        const opened = await control("open-task", taskOpenParams(identity, { limit: 20 }));
         applyOpened(opened);
         const route = window.AgentHubNavigationTabs.resolvedChatRoute(
           { history: identity },
@@ -3510,7 +3564,7 @@ agentHub.on("workspace:delete-permanently", ({ workspaceId, confirmationName }) 
   }
 }));
 agentHub.on("workspace:create", ({
-  name, folderName, comment, workingDirectory, taskPrefix, rules, releaseWorkflowEnabled, beforeColumnId,
+  name, folderName, comment, workingDirectory, taskPrefix, rules, releaseWorkflowEnabled, autoReviewEnabled, beforeColumnId,
 }) => runAction(async () => {
   let snapshot = await control("create-workspace", {
     name,
@@ -3519,6 +3573,7 @@ agentHub.on("workspace:create", ({
       workingDirectory,
       taskPrefix,
       releaseWorkflowEnabled,
+      autoReviewEnabled,
       folderName,
     }),
   });
@@ -3535,7 +3590,7 @@ agentHub.on("workspace:create", ({
   applySnapshot(snapshot);
 }));
 agentHub.on("workspace:update", ({
-  workspaceId, name, folderName, comment, workingDirectory, taskPrefix, rules, releaseWorkflowEnabled,
+  workspaceId, name, folderName, comment, workingDirectory, taskPrefix, rules, releaseWorkflowEnabled, autoReviewEnabled,
   beforeColumnId,
 }) => runAction(async () => {
   if (!lastSnapshot?.boardLayout) {
@@ -3550,11 +3605,14 @@ agentHub.on("workspace:update", ({
     workingDirectory: String(workingDirectory ?? "").trim(),
     taskPrefix: String(taskPrefix ?? "").trim(),
     releaseWorkflowEnabled: releaseWorkflowEnabled === true,
+    autoReviewEnabled: autoReviewEnabled === undefined
+      ? workspace?.settings?.autoReviewEnabled === true : autoReviewEnabled === true,
   };
   const settingsChanged = nextSettings.catalogFolder !== String(workspace?.settings?.catalogFolder ?? "")
     || nextSettings.workingDirectory !== String(workspace?.settings?.workingDirectory ?? "")
     || nextSettings.taskPrefix !== String(workspace?.settings?.taskPrefix ?? "")
-    || nextSettings.releaseWorkflowEnabled !== (workspace?.settings?.releaseWorkflowEnabled === true);
+    || nextSettings.releaseWorkflowEnabled !== (workspace?.settings?.releaseWorkflowEnabled === true)
+    || nextSettings.autoReviewEnabled !== (workspace?.settings?.autoReviewEnabled === true);
   if (settingsChanged) {
     snapshot = await control("update-workspace-settings", {
       workspaceId,
@@ -3583,8 +3641,18 @@ agentHub.on("workspace:update", ({
   }
   applySnapshot(snapshot);
 }));
+agentHub.on("directory:browse", ({ initialPath, resolve, reject }) => {
+  void control("browse-directory", { initialPath }).then(resolve, reject);
+});
 document.addEventListener("agenthub:board-action", (event) => {
   const detail = event.detail ?? {};
+  if (detail.type === "diff") {
+    void control("board-task-diff", { id: detail.id }).then(
+      (result) => window.AgentHubTaskBoard.showDiff({ ...detail, result }),
+      (error) => window.AgentHubTaskBoard.showDiff({ ...detail, error: error.message }),
+    );
+    return;
+  }
   let succeeded = false;
   void runAction(async () => {
     if (!lastSnapshot?.boardLayout && ["move-column", "update-comment"].includes(detail.type)) {
@@ -4435,7 +4503,13 @@ async function saveLinkResource(resource) {
   }
   if (String(resource?.localPath ?? "").trim()) {
     if (!localWorkspaceFilesAvailable) {
-      throw new Error("Локальный файл Workspace доступен только на этом компьютере");
+      if (!remoteWorkspaceFileBridgeAvailable()) {
+        throw new Error("Чтобы скачать файл с компьютера Agent Hub, сначала сопряги это устройство");
+      }
+      const ticket = await requestWorkspaceFileTransfer(resource.localPath);
+      startBrowserDownload(ticket.downloadPath, ticket.name || resourceFileName(resource));
+      agentHub.toast("Скачивание файла началось");
+      return;
     }
     await localSessionReady;
     const response = await hubFetch(
@@ -4754,7 +4828,7 @@ document.addEventListener("click", (event) => {
       ?? openTask.closest("[data-work-log-thread-id]")?.dataset.workLogThreadId;
     void runNavigation(
       { provider, threadId },
-      () => control("open-task", { provider, threadId, limit: 20 }),
+      () => control("open-task", taskOpenParams({ provider, threadId }, { limit: 20 })),
       (opened) => {
         applyOpened(opened);
         document.querySelector("[data-view-button='chat']")?.click();
@@ -4827,7 +4901,7 @@ async function openRoute() {
       };
       const opened = await runNavigation(
         identity,
-        () => control("open-task", { ...identity, limit: 20 }),
+        () => control("open-task", taskOpenParams(identity, { limit: 20 })),
         applyOpened,
       );
       return Boolean(opened);
@@ -4869,7 +4943,7 @@ async function openRoute() {
     };
     const opened = await runNavigation(
       identity,
-      () => control("open-task", { ...identity, limit: 20 }),
+      () => control("open-task", taskOpenParams(identity, { limit: 20 })),
       applyOpened,
     );
     if (!opened) return false;
@@ -5045,7 +5119,7 @@ void runAction(async () => {
     if (identity) {
       await runNavigation(
         identity,
-        () => control("open-task", { ...identity, limit: 20 }),
+        () => control("open-task", taskOpenParams(identity, { limit: 20 })),
         applyOpened,
       );
     }

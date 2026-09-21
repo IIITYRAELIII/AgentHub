@@ -7,12 +7,38 @@ import test from "node:test";
 import {
   activateRuntime,
   deployRuntime,
+  prepareRuntime,
+  installPreparedRuntime,
+  verifyInstalledRuntime,
   prepareRuntimeConfig,
   rollbackRuntime,
   runtimeStatus,
 } from "../../runtime-manager.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "..", "..");
+
+test("preparing a runtime leaves the current installation intact; applying consumes exact prepared bytes", async (t) => {
+  const { sourceRoot, runtimeRoot } = await fixture();
+  t.after(() => rm(path.dirname(runtimeRoot), { recursive: true, force: true }));
+  await deployRuntime({ sourceRoot, runtimeRoot, releaseId: "old" });
+  const pointer = await readFile(path.join(runtimeRoot, "current.json"));
+  const launcher = await readFile(path.join(runtimeRoot, "codex-stop-hook-launcher.mjs"));
+  await writeFile(path.join(sourceRoot, "helper.mjs"), "export const value = 2;\n");
+  const prepared = await prepareRuntime({ sourceRoot, runtimeRoot, releaseId: "prepared", publicationRevision: "a".repeat(40) });
+  assert.deepEqual(await readFile(path.join(runtimeRoot, "current.json")), pointer);
+  assert.deepEqual(await readFile(path.join(runtimeRoot, "codex-stop-hook-launcher.mjs")), launcher);
+  assert.equal(await verifyInstalledRuntime({ runtimeRoot, ...prepared }), false);
+  await writeFile(path.join(sourceRoot, "helper.mjs"), "export const value = 3;\n");
+  await installPreparedRuntime({ runtimeRoot, ...prepared });
+  assert.equal(await readFile(path.join(prepared.releaseRoot, "helper.mjs"), "utf8"), "export const value = 2;\n");
+  assert.equal(await verifyInstalledRuntime({ runtimeRoot, ...prepared }), true);
+  const installedPointer = await readFile(path.join(runtimeRoot, "current.json"));
+  const repeated = await installPreparedRuntime({ runtimeRoot, ...prepared, beforePointerCommit: () => assert.fail("no duplicate pointer write") });
+  assert.equal(repeated.reused, true);
+  assert.deepEqual(await readFile(path.join(runtimeRoot, "current.json")), installedPointer);
+  await writeFile(path.join(prepared.releaseRoot, "helper.mjs"), "damaged");
+  await assert.rejects(installPreparedRuntime({ runtimeRoot, ...prepared }), /mismatch/);
+});
 
 async function fixture() {
   const root = await mkdtemp(path.join(os.tmpdir(), "telegram-runtime-"));

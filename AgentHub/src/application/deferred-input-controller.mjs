@@ -103,6 +103,8 @@ export class DeferredInputController {
     notifyReturned,
     onStateChange = () => {},
     expire = async () => {},
+    expireCommands = null,
+    onExpiryError = (error) => console.warn("Cannot maintain message command expiry:", error.message),
     isRetryableLaunchError = isRetryableDeferredLaunchError,
     maxAgeMs = 7 * 24 * 60 * 60 * 1000,
     providerReconciliationMaxAgeMs = 5 * 60 * 1000,
@@ -130,6 +132,9 @@ export class DeferredInputController {
     this.notifyReturned = notifyReturned;
     this.onStateChange = onStateChange;
     this.expire = expire;
+    this.expireCommands = expireCommands;
+    this.expiryTimer = null;
+    this.onExpiryError = onExpiryError;
     this.isRetryableLaunchError = isRetryableLaunchError;
     this.maxAgeMs = maxAgeMs;
     this.providerReconciliationMaxAgeMs = Math.max(
@@ -217,6 +222,7 @@ export class DeferredInputController {
   }
 
   async process(id) {
+    this.expireCommands?.();
     const queuedItem = this.queuedInputs.get(id);
     const pendingItem = this.pendingInputs.get(id);
     const item = queuedItem ?? (autoReleasablePendingConflict(pendingItem) ? pendingItem : null);
@@ -264,7 +270,8 @@ export class DeferredInputController {
       }
       delete item.recheckRequested;
       const createdAt = Date.parse(String(item.createdAt ?? ""));
-      if (Number.isFinite(createdAt) && this.now() - createdAt >= this.maxAgeMs) {
+      if (!(this.expireCommands && item.clientUserMessageId)
+        && Number.isFinite(createdAt) && this.now() - createdAt >= this.maxAgeMs) {
         this.queuedInputs.delete(id);
         await this.expire(item);
         await this.persist();
@@ -689,6 +696,7 @@ export class DeferredInputController {
   }
 
   wakeAll() {
+    this.maintainCommandExpiry();
     const lanes = new Map();
     for (const item of [
       ...this.queuedInputs.values(),
@@ -705,7 +713,46 @@ export class DeferredInputController {
   }
 
   stop() {
+    if (this.expiryTimer != null) this.clearTimeoutImpl(this.expiryTimer);
+    this.expiryTimer = null;
     for (const timer of this.timers.values()) this.clearTimeoutImpl(timer);
     this.timers.clear();
+  }
+
+  removeExpiredCommand(record) {
+    for (const collection of [this.pendingInputs, this.queuedInputs]) {
+      for (const item of collection.values()) {
+        if (item.clientUserMessageId !== record.clientUserMessageId) continue;
+        collection.delete(item.id);
+        this.cancelSchedule(item.id);
+      }
+    }
+    if (record.item) {
+      try { this.onStateChange(record.item, "expired", record.result); }
+      catch (error) { this.reportExpiryError(error); }
+    }
+  }
+
+  reportExpiryError(error) {
+    // Diagnostics cannot prevent cleanup or stop unrelated runtime services.
+    try { this.onExpiryError(error); } catch { /* best-effort diagnostic */ }
+  }
+
+  maintainCommandExpiry() {
+    try { this.expireCommands?.(); }
+    catch (error) { this.reportExpiryError(error); }
+  }
+
+  startExpiryMaintenance() {
+    if (!this.expireCommands || this.expiryTimer != null) return;
+    const tick = () => {
+      this.expiryTimer = null;
+      try { this.maintainCommandExpiry(); }
+      finally {
+        this.expiryTimer = this.setTimeoutImpl(tick, 60_000);
+        this.expiryTimer?.unref?.();
+      }
+    };
+    tick();
   }
 }

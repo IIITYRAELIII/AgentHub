@@ -31,7 +31,8 @@ async function fixture(t) {
   await git(primary, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "base");
   await git(primary, "push", "-u", "origin", "main");
   const service = new ReleaseGitWorkspaceService({ dataDir: path.join(root, "data") });
-  const candidate = await service.prepareCandidate({ projectRoot: primary, workspaceId: "workspace", planRevision: "plan", frozenTasks: [] });
+  const candidate = await service.prepareCandidate({ projectRoot: primary, workspaceId: "workspace", planRevision: "plan", frozenTasks: [],
+    approvedBaseCommit: await git(primary, "rev-parse", "main") });
   await git(candidate.releaseRoot, "config", "core.autocrlf", "false");
   const checkpointFile = path.join(candidate.releaseRoot, "..", "checkpoint.json");
   const freeze = (options = {}) => service.freezePublicationCandidate({ projectRoot: primary, workspaceId: "workspace",
@@ -60,9 +61,18 @@ test("freeze commits only supplied CHANGELOG, promotes clone main and preserves 
   assert.equal(createHash("sha256").update(manifestBytes).digest("hex"), frozen.manifestHash);
   assert.equal(JSON.parse(manifestBytes).workspaceId, "workspace");
   assert.equal((await assertReleaseCandidateContourSource({ sourceRoot: path.join(f.candidate.releaseRoot, "AgentHub") })).headCommit, frozen.preReleaseHead);
-  const repeat = await f.freeze({ validateBeforeCommit: () => assert.fail("frozen repeat must not require a changed Await plan") });
+  const repeat = await f.freeze({ releaseDate: new Date(2026, 7, 25, 12),
+    validateBeforeCommit: () => assert.fail("frozen repeat must not require a changed Await plan") });
   assert.equal(repeat.reused, true);
   assert.equal(repeat.preReleaseHead, frozen.preReleaseHead);
+  assert.equal(repeat.manifestHash, frozen.manifestHash);
+  assert.equal(JSON.parse(await readFile(repeat.manifestFile, "utf8")).publication.releaseVersion, "2026.8.24");
+  const packageRoot = path.join(f.candidate.releaseRoot, "AgentHub");
+  assert.equal(JSON.parse(await readFile(path.join(packageRoot, "package.json"), "utf8")).version, "2026.8.24");
+  const lock = JSON.parse(await readFile(path.join(packageRoot, "package-lock.json"), "utf8"));
+  assert.equal(lock.version, "2026.8.24");
+  assert.equal(lock.packages[""].version, "2026.8.24");
+  assert.equal(await readFile(path.join(f.candidate.releaseRoot, "CHANGELOG.md"), "utf8"), "consolidated\n");
   assert.deepEqual(await snapshot(), before);
 });
 
@@ -99,7 +109,8 @@ for (const phase of ["intent", "refs"]) test(`freeze resumes exact persisted com
   await writeFile(path.join(f.candidate.releaseRoot, "CHANGELOG.md"), "consolidated\r\n");
   await assert.rejects(f.freeze({ changelogContent: Buffer.from("consolidated\r\n") }), /no longer matches frozen content/u);
   await writeFile(path.join(f.candidate.releaseRoot, "CHANGELOG.md"), "consolidated\n");
-  const frozen = await f.freeze();
+  const frozen = await f.freeze({ releaseDate: new Date(2026, 7, 25, 12) });
+  assert.equal(JSON.parse(await readFile(frozen.manifestFile, "utf8")).publication.releaseVersion, "2026.8.24");
   assert.equal(frozen.preReleaseHead, pending.preReleaseHead);
   assert.equal(frozen.manifestHash, pending.manifestHash);
   assert.equal(frozen.phase, "frozen");

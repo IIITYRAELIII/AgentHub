@@ -199,9 +199,35 @@ test("общая форма открывается из настроек, кар
     });
 
     await page.locator('[data-panel-open="settings"]').click();
+    assert.equal(await page.locator(MODAL).isVisible(), false);
+    assert.equal(await page.locator('.settings-panel [data-quick-message-action-mode]').count(), 0);
+    assert.equal(await page.locator('.quick-messages-settings-row .setting-name').textContent(), 'Prompt-шаблоны');
+    assert.equal(await page.locator('.quick-messages-settings-row').getByRole('button').count(), 1);
+    assert.equal(await page.locator('.quick-messages-settings-row').getByRole('button', { name: 'Настроить шаблоны' }).count(), 0);
+    const heading = page.locator('.quick-messages-settings-row').getByRole('button', { name: /Prompt-шаблоны/u });
+    for (const key of ['Enter', 'Space']) {
+      await heading.focus();
+      await page.keyboard.press(key);
+      assert.equal(await page.locator(MODAL).isVisible(), true);
+      await page.keyboard.press('Escape');
+      assert.equal(await page.locator(MODAL).isVisible(), false);
+    }
     assert.equal(await page.locator(".settings-panel [data-quick-message-row]").count(), 0,
       "встроенный редактор остался в панели настроек");
     await openForm(page, "global");
+    const actionSelect = page.locator(`${MODAL} [data-quick-message-action-mode]`);
+    const actionShell = actionSelect.locator('..');
+    const actionButton = actionShell.locator('button').first();
+    await actionButton.click();
+    const actionMenu = await actionButton.getAttribute('aria-controls');
+    await page.locator(`#${actionMenu} [data-value="send"]`).click();
+    assert.equal(await actionSelect.inputValue(), 'send');
+    assert.equal(await page.evaluate(() => window.__promptTemplateIntents
+      .filter((item) => item.type === 'selection:set' && item.key === 'quickMessageActionMode')
+      .at(-1)?.value), 'send');
+    const actionRect = await actionShell.boundingBox();
+    const scopeRect = await page.locator(SCOPES).boundingBox();
+    assert.ok(actionRect.y + actionRect.height <= scopeRect.y);
     assert.equal(await activeScope(page), "global");
     assert.deepEqual(await summaries(page), ["Принято"]);
     assert.equal(await page.locator("[data-prompt-templates-note]").textContent(),
@@ -224,6 +250,7 @@ test("общая форма открывается из настроек, кар
     // Escape снимает только верхний слой: панель настроек под формой остаётся.
     await page.keyboard.press("Escape");
     assert.equal(await page.locator(MODAL).evaluate((node) => node.open), false);
+    assert.equal(await page.locator(MODAL).isVisible(), false);
     assert.equal(await page.locator(".settings-panel").evaluate((node) => node.hidden), false,
       "Escape закрыл вместе с формой и панель настроек");
     assert.equal(await page.evaluate(() => document.activeElement?.dataset?.promptTemplatesOpen), "global",

@@ -2,7 +2,6 @@ import { createHash } from "node:crypto";
 import { stat } from "node:fs/promises";
 
 import { legacyTaskRunKeys, taskRunKey } from "../domain/task-runs.mjs";
-import { isCodexContextProbeTurn } from "../domain/codex-context-probe.mjs";
 import { normalizeInterstreamClientUserMessageId } from "../domain/interstream-message.mjs";
 import { displayUserPrompt } from "./task-history.mjs";
 import { conciseTurnTitle } from "./turn-title.mjs";
@@ -69,8 +68,6 @@ export class RunJournalService {
   rememberLastMessage(run, text, { updatedAt = null, terminalRevision = null } = {}) {
     const value = String(text ?? "").trim();
     if (!run?.threadId || !value) return false;
-    if (String(run.provider ?? "").trim().toLowerCase() === "codex"
-      && isCodexContextProbeTurn({ ...run, finalAnswer: value })) return false;
     const key = taskRunKey(run);
     const current = this.lastMessageRecord(run);
     const turnId = String(run.turnId ?? "").trim() || null;
@@ -102,8 +99,7 @@ export class RunJournalService {
       turnId,
       terminalRevision: Number(terminalRevision) || (sameTurn ? current?.terminalRevision : null) || null,
       operationKind: String(run.operationKind ?? "").trim()
-        || (run.contextProbe === true ? "probe" : "user-turn"),
-      contextProbe: run.contextProbe === true,
+        || "user-turn",
       clientUserMessageId: normalizeInterstreamClientUserMessageId(run.clientUserMessageId),
     };
     if (
@@ -116,7 +112,6 @@ export class RunJournalService {
       && current.turnId === next.turnId
       && current.terminalRevision === next.terminalRevision
       && current.operationKind === next.operationKind
-      && current.contextProbe === next.contextProbe
       && current.clientUserMessageId === next.clientUserMessageId
     ) return false;
     this.lastTaskMessages.delete(key);
@@ -160,8 +155,6 @@ export class RunJournalService {
       if (!Array.isArray(entry) || typeof entry[0] !== "string" || typeof entry[1]?.text !== "string") {
         continue;
       }
-      if (String(entry[1].provider ?? "").trim().toLowerCase() === "codex"
-        && isCodexContextProbeTurn({ ...entry[1], finalAnswer: entry[1].text })) continue;
       this.lastTaskMessages.set(entry[0], { ...entry[1] });
       restored += 1;
     }
@@ -188,7 +181,6 @@ export class RunJournalService {
       estimatedCredits: completion.estimatedCredits,
       estimateKind: completion.estimateKind,
       imageGenerationCount: completion.imageGenerationCount,
-      contextProbe: completion.contextProbe,
       limitSamples: completion.limitSamples,
       resolveAccount: completion.resolveAccount,
       model: completion.model,
@@ -260,6 +252,14 @@ export class RunJournalService {
       projectRoot: this.defaultProjectRoot,
       projectionProjectRoots: projectRoots,
     });
+  }
+
+  ensureTurnUsageFact(completion) {
+    return this.usageStore.ensureTurnUsageFact?.(completion) ?? Promise.resolve({ supported: false });
+  }
+
+  turnProjectionStatus(completion) {
+    return this.usageStore.turnProjectionStatus?.(completion) ?? Promise.resolve(null);
   }
 
   async initialize(restoredTurnEndSnapshot = {}) {

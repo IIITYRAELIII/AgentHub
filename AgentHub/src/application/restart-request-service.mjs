@@ -4,11 +4,14 @@ import {
   MAINTENANCE_OPERATION_STATUSES,
   maintenanceOperationIsTerminal,
   restartRequestProjection,
+  RUNTIME_RESTART_SCOPE,
 } from "../domain/maintenance-operation.mjs";
 
 function normalizedTarget(value) {
   const streamId = String(value?.streamId ?? "").trim();
   const threadId = String(value?.threadId ?? "").trim();
+  // No selection at all is a runtime restart; a half-specified target stays ambiguous.
+  if (!streamId && !threadId) return { ...RUNTIME_RESTART_SCOPE };
   if (!streamId || !threadId) throw new Error("Restart requires an exact Stream and Thread");
   return { streamId, threadId };
 }

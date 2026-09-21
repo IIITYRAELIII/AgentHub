@@ -32,6 +32,9 @@ export class DeferredInputPresentationService {
     };
     if (!identity.clientUserMessageId) return false;
     const base = { id: item.id, clientUserMessageId: item.clientUserMessageId };
+    if (state === "expired") {
+      return this.receipts.updateResult(identity, { ...base, ...started });
+    }
     if (state === "started") {
       return this.receipts.updateResult(identity, {
         accepted: true,

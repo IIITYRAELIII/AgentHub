@@ -13,7 +13,7 @@ commits, then merges the Task head into the shared local `dev` branch.
 
 The one shared Test Contour is always built from `dev`. It is not duplicated per
 Task branch. A candidate must be prepared successfully before the running
-contour is stopped. At release, Architect freezes the selected `dev` head,
+contour is stopped. At release, Release Manager freezes the selected `dev` head,
 validates it, integrates it into `main`, publishes production and closes only
 the included Tasks.
 

@@ -627,7 +627,6 @@ export class TaskViewController {
           );
           const internalTurnIds = [...new Set([
             ...(rolloutActivity?.internalTurnIds ?? []),
-            ...(d.contextProbeTurnIds?.(binding.threadId) ?? []),
           ])];
           const history = mergeCodexHistory(
             cached,
@@ -660,7 +659,6 @@ export class TaskViewController {
         const userAuthor = subagentPromptAuthor(binding, parentThreadId, d.workspaceCatalogStore);
         const internalTurnIds = [...new Set([
           ...(rolloutActivity?.internalTurnIds ?? []),
-          ...(d.contextProbeTurnIds?.(binding.threadId) ?? []),
         ])];
         const history = mergeCodexHistory(
           cached,

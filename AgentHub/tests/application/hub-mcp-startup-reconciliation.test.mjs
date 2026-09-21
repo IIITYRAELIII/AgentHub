@@ -130,11 +130,11 @@ test("exact cancel fences an in-flight launch before Stream and provider effects
     await rm(root, { recursive: true, force: true });
   });
   const workspace = await current.workspaceCatalog.createWorkspace({ name: "Agent HUB" });
-  const architect = await current.workspaceCatalog.createStream({
-    workspaceId: workspace.id, name: "Architect", settings: { architect: true },
+  const releaseManager = await current.workspaceCatalog.createStream({
+    workspaceId: workspace.id, name: "Release Manager", settings: { releaseManager: true },
   });
   await current.workspaceCatalog.bindThread({
-    streamId: architect.id, provider: "codex", threadId: "thread-architect-race", projectRoot: root,
+    streamId: releaseManager.id, provider: "codex", threadId: "thread-release-manager-race", projectRoot: root,
   });
   const task = await current.taskBoard.create({
     text: "Cancel in-flight launch", source: "hub", bucket: "workspace", workspaceId: workspace.id,
@@ -142,7 +142,7 @@ test("exact cancel fences an in-flight launch before Stream and provider effects
   const evidence = { projectRoot: root, threadCreates: [], selects: [], deliveries: [] };
   const service = hub({ ...current, attachmentDirectory });
   attachRealLauncher(service, current, evidence);
-  const token = service.contextToken({ provider: "codex", threadId: "thread-architect-race" });
+  const token = service.contextToken({ provider: "codex", threadId: "thread-release-manager-race" });
   const input = {
     context_token: token,
     request_id: "original-in-flight-launch",
@@ -200,11 +200,11 @@ test("exact cancel rejects after a launch attempt durably admits effects", async
     await rm(root, { recursive: true, force: true });
   });
   const workspace = await current.workspaceCatalog.createWorkspace({ name: "Agent HUB" });
-  const architect = await current.workspaceCatalog.createStream({
-    workspaceId: workspace.id, name: "Architect", settings: { architect: true },
+  const releaseManager = await current.workspaceCatalog.createStream({
+    workspaceId: workspace.id, name: "Release Manager", settings: { releaseManager: true },
   });
   await current.workspaceCatalog.bindThread({
-    streamId: architect.id, provider: "codex", threadId: "thread-architect-admitted", projectRoot: root,
+    streamId: releaseManager.id, provider: "codex", threadId: "thread-release-manager-admitted", projectRoot: root,
   });
   const task = await current.taskBoard.create({
     text: "Admitted launch", source: "hub", bucket: "workspace", workspaceId: workspace.id,
@@ -219,7 +219,7 @@ test("exact cancel rejects after a launch attempt durably admits effects", async
   const evidence = { projectRoot: root, threadCreates: [], selects: [], deliveries: [] };
   const service = hub({ ...current, attachmentDirectory });
   attachRealLauncher(service, current, evidence);
-  const token = service.contextToken({ provider: "codex", threadId: "thread-architect-admitted" });
+  const token = service.contextToken({ provider: "codex", threadId: "thread-release-manager-admitted" });
   const input = {
     context_token: token,
     request_id: "original-admitted-launch",
@@ -268,11 +268,11 @@ test("exact cancel resumes after receipt terminalization but before Task fence c
     await rm(root, { recursive: true, force: true });
   });
   const workspace = await current.workspaceCatalog.createWorkspace({ name: "Agent HUB" });
-  const architect = await current.workspaceCatalog.createStream({
-    workspaceId: workspace.id, name: "Architect", settings: { architect: true },
+  const releaseManager = await current.workspaceCatalog.createStream({
+    workspaceId: workspace.id, name: "Release Manager", settings: { releaseManager: true },
   });
   await current.workspaceCatalog.bindThread({
-    streamId: architect.id, provider: "codex", threadId: "thread-cancel-crash", projectRoot: root,
+    streamId: releaseManager.id, provider: "codex", threadId: "thread-cancel-crash", projectRoot: root,
   });
   const created = await current.taskBoard.create({
     text: "Cancel crash recovery", source: "hub", bucket: "workspace", workspaceId: workspace.id,
@@ -281,7 +281,7 @@ test("exact cancel resumes after receipt terminalization but before Task fence c
   await current.workspaceCatalog.beginMcpOperation({
     requestId,
     workspaceId: workspace.id,
-    streamId: architect.id,
+    streamId: releaseManager.id,
     provider: "codex",
     threadId: "thread-cancel-crash",
     toolName: "hub_task_start",
@@ -340,11 +340,11 @@ test("real launch recovery cancels an unknown prepared owner before existing-Str
     await rm(root, { recursive: true, force: true });
   });
   const workspace = await current.workspaceCatalog.createWorkspace({ name: "Agent HUB" });
-  const architect = await current.workspaceCatalog.createStream({
-    workspaceId: workspace.id, name: "Architect", settings: { architect: true },
+  const releaseManager = await current.workspaceCatalog.createStream({
+    workspaceId: workspace.id, name: "Release Manager", settings: { releaseManager: true },
   });
   await current.workspaceCatalog.bindThread({
-    streamId: architect.id, provider: "codex", threadId: "thread-architect", projectRoot: root,
+    streamId: releaseManager.id, provider: "codex", threadId: "thread-release-manager", projectRoot: root,
   });
   const existingExecutor = await current.workspaceCatalog.createStream({
     workspaceId: workspace.id, name: "Existing executor",
@@ -354,7 +354,7 @@ test("real launch recovery cancels an unknown prepared owner before existing-Str
   });
   const foreignWorkspace = await current.workspaceCatalog.createWorkspace({ name: "Foreign" });
   const foreignStream = await current.workspaceCatalog.createStream({
-    workspaceId: foreignWorkspace.id, name: "Foreign source", settings: { architect: true },
+    workspaceId: foreignWorkspace.id, name: "Foreign source", settings: { releaseManager: true },
   });
   await current.workspaceCatalog.bindThread({
     streamId: foreignStream.id, provider: "codex", threadId: "thread-foreign", projectRoot: root,
@@ -366,8 +366,8 @@ test("real launch recovery cancels an unknown prepared owner before existing-Str
   let service = hub({ ...current, attachmentDirectory });
   attachRealLauncher(service, current, evidence);
   const input = {
-    context_token: service.contextToken({ provider: "codex", threadId: "thread-architect" }),
-    request_id: "architect-hub106-single-owner-launch-20260911-01",
+    context_token: service.contextToken({ provider: "codex", threadId: "thread-release-manager" }),
+    request_id: "releaseManager-hub106-single-owner-launch-20260911-01",
     task_id: task.id,
     workspace_id: workspace.id,
     new_stream_name: "Recovered HUB-106",
@@ -393,7 +393,7 @@ test("real launch recovery cancels an unknown prepared owner before existing-Str
   current = await launchStores(databaseFile);
   service = hub({ ...current, attachmentDirectory });
   attachRealLauncher(service, current, evidence);
-  const exactToken = service.contextToken({ provider: "codex", threadId: "thread-architect" });
+  const exactToken = service.contextToken({ provider: "codex", threadId: "thread-release-manager" });
   const foreignToken = service.contextToken({ provider: "codex", threadId: "thread-foreign" });
   await service.call("hub_tasks_list", { context_token: exactToken });
   assert.equal(current.rawWorkspaceCatalog.mcpOperation(input.request_id).status, "unknown");
@@ -482,7 +482,7 @@ test("real-store startup terminalizes begin transition and completed-effect rece
     () => current.workspaceCatalog.createWorkspace({ name: "Agent HUB" }),
   );
   const stream = await current.workspaceCatalog.runMutation(
-    () => current.workspaceCatalog.createStream({ workspaceId: workspace.id, name: "Architect" }),
+    () => current.workspaceCatalog.createStream({ workspaceId: workspace.id, name: "Release Manager" }),
   );
   await current.workspaceCatalog.runMutation(() => current.workspaceCatalog.bindThread({
     streamId: stream.id, provider: "codex", threadId: "thread-startup", projectRoot: root,
@@ -554,7 +554,7 @@ test("real MCP Workspace mutation retries one exact request under SQLite content
     () => current.workspaceCatalog.createWorkspace({ name: "Agent HUB" }),
   );
   const stream = await current.workspaceCatalog.runMutation(
-    () => current.workspaceCatalog.createStream({ workspaceId: workspace.id, name: "Architect" }),
+    () => current.workspaceCatalog.createStream({ workspaceId: workspace.id, name: "Release Manager" }),
   );
   await current.workspaceCatalog.runMutation(() => current.workspaceCatalog.bindThread({
     streamId: stream.id, provider: "codex", threadId: "thread-contention", projectRoot: root,

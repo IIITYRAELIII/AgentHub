@@ -3,7 +3,7 @@
 
   const MIME = "application/x-agent-hub-board-task";
   const WORKFLOW_STATUSES = new Set([
-    "new", "in_progress", "testing", "awaiting_implementation", "done",
+    "new", "in_progress", "blocked", "testing", "awaiting_implementation", "done",
   ]);
   const INTENTS = new Set(["context", "start"]);
   const TASK_URI_PATTERN = /^agent-hub:\/\/task\/([^/?#]+)$/iu;

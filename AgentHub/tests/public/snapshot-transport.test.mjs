@@ -59,6 +59,24 @@ test("snapshot transport materializes bootstrap resets and conversation naming",
     messageReceiptsVersion: "receipts-1",
     messagePinsVersion: "pins-1",
   });
+  assert.deepEqual(plain(api.openTaskRequestParams(snapshot, {
+    streamId: "stream-1",
+    provider: "codex",
+    threadId: "thread-1",
+  }, { limit: 20 })), {
+    streamId: "stream-1",
+    provider: "codex",
+    threadId: "thread-1",
+    limit: 20,
+    knownVersion: "snapshot-1",
+    compactSnapshot: true,
+    snapshotProtocol: 4,
+    conversationsVersion: "conversations-1",
+    workspacesVersion: "workspaces-1",
+    boardTasksVersion: "board-1",
+    messageReceiptsVersion: "receipts-1",
+    messagePinsVersion: "pins-1",
+  });
 });
 
 test("snapshot transport applies ordered upserts and removals", async () => {
@@ -111,6 +129,8 @@ test("snapshot transport applies ordered upserts and removals", async () => {
   assert.deepEqual(plain(snapshot.boardTasks), previous.boardTasks);
   assert.deepEqual(plain(snapshot.messageReceipts), previous.messageReceipts);
   assert.deepEqual(plain(snapshot.messagePins), [{ id: "pin-new" }]);
+  assert.equal(snapshot.boardTasks, previous.boardTasks);
+  assert.equal(snapshot.messageReceipts, previous.messageReceipts);
 });
 
 test("snapshot transport rejects a delta without a local baseline", async () => {
@@ -182,10 +202,10 @@ test("snapshot transport maps persisted stream UI settings into selection", asyn
     streamCardFixedWidth: 240,
     streamCardGapEnabled: true,
     quickMessageActionMode: "send",
-    pinnedWorkspaceStreams: { "workspace-1": ["stream-architect"] },
+    pinnedWorkspaceStreams: { "workspace-1": ["stream-release-manager"] },
     quickMessages: {
       global: [{ label: "Пинг", text: "пинг" }],
-      streams: { "stream-architect": [{ label: "Релиз", text: "релизь" }] },
+      streams: { "stream-release-manager": [{ label: "Релиз", text: "релизь" }] },
       workspaces: {},
     },
   }, {
@@ -203,10 +223,10 @@ test("snapshot transport maps persisted stream UI settings into selection", asyn
     streamCardFixedWidth: 240,
     streamCardGapEnabled: true,
     quickMessageActionMode: "send",
-    pinnedWorkspaceStreams: { "workspace-1": ["stream-architect"] },
+    pinnedWorkspaceStreams: { "workspace-1": ["stream-release-manager"] },
     quickMessages: {
       global: [{ label: "Пинг", text: "пинг" }],
-      streams: { "stream-architect": [{ label: "Релиз", text: "релизь" }] },
+      streams: { "stream-release-manager": [{ label: "Релиз", text: "релизь" }] },
       workspaces: {},
     },
   });

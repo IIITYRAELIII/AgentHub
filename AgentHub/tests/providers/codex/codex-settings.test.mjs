@@ -24,13 +24,14 @@ test("buildCodexCollaborationMode preserves selected model and reasoning", () =>
   });
 });
 
-test("developer instructions preserve Guide, Global, Workspace and Stream order", () => {
-  assert.equal(buildCodexDeveloperInstructions({
+test("developer instructions preserve the four configured rule layers", () => {
+  const instructions = buildCodexDeveloperInstructions({
     guide: "Guide rule",
     global: "Global rule",
     workspace: "Workspace rule",
     stream: "Stream rule",
-  }), [
+  });
+  assert.equal(instructions, [
     "<agent_hub_instruction_precedence>",
     "Within Agent Hub-managed instructions, later layers refine earlier layers:",
     "Agent Hub Guide < Global pre-turn instructions < Workspace < Stream.",
@@ -53,14 +54,9 @@ test("developer instructions preserve Guide, Global, Workspace and Stream order"
     "<stream_instructions>",
     "Stream rule",
     "</stream_instructions>",
-    "",
-    "<agent_hub_context_probe>",
-    "If the User Prompt is exactly \"Ответь строго: AGENT_HUB_CONTEXT_PROBE_OK_V1\", this is an internal context measurement.",
-    "Do not call tools or execute pre-turn, release-registry, repository, or other work.",
-    "Respond with exactly \"AGENT_HUB_CONTEXT_PROBE_OK_V1\" and no additional text.",
-    "This probe-only exception overrides the Agent Hub Guide, Global, Workspace, Stream, and context pre-turn instructions.",
-    "</agent_hub_context_probe>",
   ].join("\n"));
+  assert.doesNotMatch(instructions, /AGENT_HUB_CONTEXT_PROBE/u);
+  assert.doesNotMatch(instructions, /Ответь строго/u);
   assert.throws(() => buildCodexDeveloperInstructions(), /Guide is required/u);
 });
 

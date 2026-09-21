@@ -4,7 +4,6 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { AsyncSqliteMutationQueue } from "./async-sqlite-mutation-queue.mjs";
 
-import { editableWorkspaceDeveloperRules } from "../../domain/editable-workspace-developer-rules.mjs";
 import { normalizeInterstreamOrigin } from "../../domain/interstream-message.mjs";
 
 import {
@@ -20,14 +19,13 @@ import {
 import {
   effectiveStreamDeveloperRules,
   effectiveWorkspaceDeveloperRules,
-  legacyReleaseWorkflowRules,
   RELEASE_WORKFLOW_SETTING,
   releaseWorkflowEnabled,
   workspaceSettingsWithReleaseWorkflow,
 } from "../../domain/workspace-release-workflow.mjs";
 import { workspaceSettingsWithTaskPrefix } from "../../domain/task-number.mjs";
 import {
-  withArchitectReleasePrimaryWorkspaceRule,
+  withReleaseManagerReleasePrimaryWorkspaceRule,
   withReleasePrimaryWorkspaceRule,
 } from "../../domain/release-primary-workspace-policy.mjs";
 
@@ -387,9 +385,8 @@ export class WorkspaceCatalogStore {
     await this.#open();
     if (this.#readOnly) return this;
     this.#migratePermanentWorkspaceArchive();
-    this.#migrateReleaseWorkflowSettings();
-    this.#migrateWorkspaceDeveloperRules();
     this.#migrateArchitectStreamSettings();
+    this.#migrateReleaseManagerStreamSettings();
     this.ensureExperiments();
     return this;
   }
@@ -397,6 +394,14 @@ export class WorkspaceCatalogStore {
   get revision() {
     if (!this.#database) return 0;
     return Number(this.#database.prepare("SELECT total_changes() AS value").get()?.value) || 0;
+  }
+
+  get snapshotRevision() {
+    if (!this.#database) return null;
+    const externalRevision = Number(
+      this.#database.prepare("PRAGMA data_version").get()?.data_version,
+    ) || 0;
+    return `${this.revision}:${externalRevision}`;
   }
 
   async #open() {
@@ -436,53 +441,6 @@ export class WorkspaceCatalogStore {
   #nowMs() {
     const value = Number(this.#now());
     return Number.isSafeInteger(value) && value > 0 ? value : Date.now();
-  }
-
-  #migrateReleaseWorkflowSettings() {
-    const rows = this.#database.prepare("SELECT id, settings_json FROM hub_workspaces").all();
-    const pending = rows.filter((row) => {
-      try {
-        const settings = JSON.parse(String(row.settings_json ?? "{}"));
-        return typeof settings?.[RELEASE_WORKFLOW_SETTING] !== "boolean";
-      } catch {
-        return true;
-      }
-    });
-    if (!pending.length) return;
-    this.#transaction(() => {
-      const update = this.#database.prepare(`
-        UPDATE hub_workspaces SET settings_json = ? WHERE id = ?
-      `);
-      for (const row of pending) {
-        let settings = {};
-        try { settings = JSON.parse(String(row.settings_json ?? "{}")); } catch { settings = {}; }
-        const currentRules = this.#developerRules("workspace", row.id);
-        const migration = legacyReleaseWorkflowRules(currentRules?.content ?? "");
-        const editableContent = editableWorkspaceDeveloperRules(currentRules?.content ?? "");
-        update.run(
-          JSON.stringify(workspaceSettingsWithReleaseWorkflow(settings, migration.enabled)),
-          row.id,
-        );
-        if (editableContent !== (currentRules?.content ?? "")) {
-          this.#updateWorkspaceDeveloperRules(row.id, editableContent);
-        }
-      }
-    });
-  }
-
-  #migrateWorkspaceDeveloperRules() {
-    const key = "workspace_system_rules_removed_v2";
-    if (this.#database.prepare("SELECT 1 FROM hub_workspace_catalog_meta WHERE key = ?").get(key)) return;
-    this.#transaction(() => {
-      for (const row of this.#database.prepare("SELECT id FROM hub_workspaces").all()) {
-        const current = this.#developerRules("workspace", row.id);
-        const content = editableWorkspaceDeveloperRules(current?.content ?? "");
-        if (content !== (current?.content ?? "")) this.#updateWorkspaceDeveloperRules(row.id, content);
-      }
-      this.#database.prepare(
-        "INSERT INTO hub_workspace_catalog_meta (key, value) VALUES (?, ?)",
-      ).run(key, "completed");
-    });
   }
 
   #migratePermanentWorkspaceArchive() {
@@ -583,6 +541,12 @@ export class WorkspaceCatalogStore {
       ? releaseWorkflowEnabled(settings)
       : releaseWorkflowEnabled(current.settings);
     const nextSettings = workspaceSettingsWithReleaseWorkflow(workspaceSettingsWithTaskPrefix(settings), enabled);
+    if (Object.prototype.hasOwnProperty.call(settings ?? {}, "autoReviewEnabled")
+      || Object.prototype.hasOwnProperty.call(current.settings ?? {}, "autoReviewEnabled")) {
+      nextSettings.autoReviewEnabled = Object.prototype.hasOwnProperty.call(settings ?? {}, "autoReviewEnabled")
+        ? settings.autoReviewEnabled === true
+        : current.settings?.autoReviewEnabled === true;
+    }
     this.#database.prepare(`
       UPDATE hub_workspaces SET settings_json = ?, updated_at_ms = ? WHERE id = ?
     `).run(JSON.stringify(nextSettings), this.#nowMs(), id);
@@ -770,6 +734,26 @@ export class WorkspaceCatalogStore {
       this.#database.prepare(
         "INSERT INTO hub_workspace_catalog_meta (key, value) VALUES (?, 'completed')",
       ).run(key);
+    });
+  }
+
+  #migrateReleaseManagerStreamSettings() {
+    const key = "release_manager_stream_settings_migrated_v1";
+    if (this.#database.prepare("SELECT 1 FROM hub_workspace_catalog_meta WHERE key = ?").get(key)) return;
+    this.#transaction(() => {
+      const update = this.#database.prepare("UPDATE hub_streams SET settings_json = ? WHERE id = ?");
+      for (const row of this.#database.prepare("SELECT id, settings_json FROM hub_streams").all()) {
+        let settings = {};
+        try { settings = JSON.parse(String(row.settings_json ?? "{}")); } catch { continue; }
+        if (!settings || typeof settings !== "object" || Array.isArray(settings)) continue;
+        const next = { ...settings };
+        if (typeof next.releaseManager !== "boolean" && typeof next.architect === "boolean") {
+          next.releaseManager = next.architect;
+        }
+        delete next.architect;
+        update.run(JSON.stringify(next), row.id);
+      }
+      this.#database.prepare("INSERT INTO hub_workspace_catalog_meta (key, value) VALUES (?, 'completed')").run(key);
     });
   }
 
@@ -1262,7 +1246,7 @@ export class WorkspaceCatalogStore {
     const rawStreamRules = this.#developerRules("stream", stream.id);
     const workspace = this.workspace(stream.workspaceId);
     const streamContent = releaseWorkflowEnabled(workspace?.settings)
-      ? withArchitectReleasePrimaryWorkspaceRule(
+      ? withReleaseManagerReleasePrimaryWorkspaceRule(
         effectiveStreamDeveloperRules(rawStreamRules?.content ?? "", stream.settings),
         stream.settings,
       )
@@ -1328,8 +1312,7 @@ export class WorkspaceCatalogStore {
   }
 
   #updateWorkspaceDeveloperRules(workspaceId, content) {
-    const editableContent = developerRuleContent(editableWorkspaceDeveloperRules(content));
-    return this.#updateDeveloperRules("workspace", workspaceId, editableContent);
+    return this.#updateDeveloperRules("workspace", workspaceId, content);
   }
 
   #updateDeveloperRules(scopeType, scopeId, content, maximumBytes = DEVELOPER_RULES_MAX_BYTES) {

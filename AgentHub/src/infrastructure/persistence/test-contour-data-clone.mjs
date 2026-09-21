@@ -10,7 +10,14 @@ import path from "node:path";
 import { backup, DatabaseSync } from "node:sqlite";
 import { setTimeout as delay } from "node:timers/promises";
 
+import { taskRepositoryKey } from "../../domain/task-git-reference.mjs";
+
 const WINDOWS_RENAME_RETRY_MS = 5_000;
+
+function pathInsideOrSame(child, parent) {
+  const relative = path.relative(path.resolve(parent), path.resolve(child));
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
 
 function tableExists(database, name) {
   return Boolean(database.prepare(`
@@ -90,9 +97,11 @@ async function snapshotDatabase(sourceFile, destinationFile) {
 
 function sanitizeTestContourDatabase(databaseFile, {
   projectRoot,
+  detachedGitRoot,
   model,
   nowMs,
 } = {}) {
+  const detachedRoot = path.resolve(detachedGitRoot);
   const database = new DatabaseSync(databaseFile);
   database.exec("PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 10000");
   try {
@@ -106,8 +115,46 @@ function sanitizeTestContourDatabase(databaseFile, {
     let detachedThreads = 0;
     let preservedCatalogTasks = 0;
     let remappedJournalRecords = 0;
+    let isolatedWorkspaces = 0;
+    const detachedGitReferences = [];
     database.exec("BEGIN IMMEDIATE");
     try {
+      // A Stream with an empty workingDirectory inherits the Workspace one before
+      // its own project, so the cloned Workspace must not keep a production path.
+      // Release workflow stays off: its startup reconciliation and Task Git
+      // transitions would otherwise address the registered production checkout.
+      if (tableColumns(database, "hub_workspaces").has("settings_json")) {
+        const workspaces = database.prepare("SELECT id, settings_json FROM hub_workspaces").all();
+        const updateWorkspace = database.prepare("UPDATE hub_workspaces SET settings_json = ? WHERE id = ?");
+        for (const workspace of workspaces) {
+          updateWorkspace.run(JSON.stringify({
+            ...objectFromJson(workspace.settings_json),
+            workingDirectory: projectRoot,
+            releaseWorkflowEnabled: false,
+          }), workspace.id);
+        }
+        isolatedWorkspaces = workspaces.length;
+      }
+      // Task cleanup deletes branches and Task refs through these references even
+      // without a contour worktree. Each repository is remapped to an uncreated
+      // contour path, so Git fails there instead of reaching the production
+      // repository. Branch, result commit and history rows are kept unchanged.
+      if (tableExists(database, "hub_task_git_references")) {
+        const originals = database.prepare(`
+          SELECT DISTINCT project_root AS projectRoot FROM hub_task_git_references
+        `).all().map((row) => String(row.projectRoot));
+        const updateReference = database.prepare(`
+          UPDATE hub_task_git_references SET project_root = ? WHERE project_root = ?
+        `);
+        for (const original of originals) {
+          const detached = path.join(detachedRoot, taskRepositoryKey(original));
+          if (pathInsideOrSame(detached, original)) {
+            throw new Error(`Detached Task Git root is inside its production repository: ${original}`);
+          }
+          updateReference.run(detached, original);
+          detachedGitReferences.push({ originalProjectRoot: original, detachedProjectRoot: detached });
+        }
+      }
       for (const stream of streams) {
         const settings = {
           ...objectFromJson(stream.settings_json),
@@ -221,6 +268,8 @@ function sanitizeTestContourDatabase(databaseFile, {
       detachedThreads,
       preservedCatalogTasks,
       remappedJournalRecords,
+      isolatedWorkspaces,
+      detachedGitReferences,
       workspaces: tableExists(database, "hub_workspaces")
         ? Number(database.prepare("SELECT COUNT(*) AS count FROM hub_workspaces").get()?.count ?? 0)
         : 0,
@@ -284,6 +333,7 @@ export async function cloneJournalToTestContour({
   destinationDatabaseFile,
   backupRoot,
   projectRoot,
+  detachedGitRoot,
   model,
   now = new Date(),
 } = {}) {
@@ -292,7 +342,9 @@ export async function cloneJournalToTestContour({
   if (!sourceDatabaseFile || !destinationDatabaseFile || source === destination) {
     throw new Error("Test Contour clone requires different source and destination journals");
   }
-  if (!projectRoot || !model) throw new Error("Test Contour clone requires projectRoot and model");
+  if (!projectRoot || !detachedGitRoot || !model) {
+    throw new Error("Test Contour clone requires projectRoot, detachedGitRoot and model");
+  }
   const sourceInfo = await stat(source);
   if (!sourceInfo.isFile()) throw new Error(`Production journal is not a file: ${source}`);
   await mkdir(path.dirname(destination), { recursive: true });
@@ -307,6 +359,7 @@ export async function cloneJournalToTestContour({
     await snapshotDatabase(source, temporary);
     const stats = sanitizeTestContourDatabase(temporary, {
       projectRoot: path.resolve(projectRoot),
+      detachedGitRoot,
       model,
       nowMs: now.getTime(),
     });

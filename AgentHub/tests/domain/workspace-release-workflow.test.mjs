@@ -1,87 +1,80 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-
 import {
-  ARCHITECT_RELEASE_DEVELOPER_RULES,
+  RELEASE_PRIMARY_WORKSPACE_RULE,
+  RELEASE_MANAGER_RELEASE_PRIMARY_WORKSPACE_RULE,
+  withReleasePrimaryWorkspaceRule,
+  withReleaseManagerReleasePrimaryWorkspaceRule,
+} from "../../src/domain/release-primary-workspace-policy.mjs";
+import {
+  AUTO_REVIEW_DEVELOPER_RULES,
   EXPLICIT_USER_WORKFLOW_EXCEPTION,
-  effectiveStreamDeveloperRules,
-  effectiveWorkspaceDeveloperRules,
-  LEGACY_AGENT_HUB_WORKSPACE_DEVELOPER_RULES_RU_V1,
-  LEGACY_TASK_BRANCH_RELEASE_WORKFLOW_DEVELOPER_RULES,
-  LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_RU_V1,
-  LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_RU_V2,
-  LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V1,
-  LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V2,
-  LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V3,
-  LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V4,
-  LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V5,
-  LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V6,
-  LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V7,
-  LEGACY_ARCHITECT_RELEASE_DEVELOPER_RULES_V1,
-  LEGACY_ARCHITECT_RELEASE_DEVELOPER_RULES_V2,
-  LEGACY_ARCHITECT_RELEASE_DEVELOPER_RULES_V3,
+  RELEASE_MANAGER_RELEASE_DEVELOPER_RULES,
   RELEASE_WORKFLOW_DEVELOPER_RULES,
   TEAM_LEAD_DEVELOPER_RULES,
+  effectiveStreamDeveloperRules,
+  effectiveWorkspaceDeveloperRules,
 } from "../../src/domain/workspace-release-workflow.mjs";
 
-test("legacy v1 policy is stripped once and replaced by Task workflow rules", () => {
-  const rules = effectiveWorkspaceDeveloperRules(
-    `${LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V1}\n\nCustom rule`,
-    { releaseWorkflowEnabled: true },
-  );
-  assert.equal(
-    rules,
-    `${RELEASE_WORKFLOW_DEVELOPER_RULES}\n\nCustom rule`,
-  );
-  assert.match(rules, /hub_task_claim/u);
-  assert.match(rules, /sparse worktree/u);
-  assert.match(rules, /Do not create a Task for diagnosis/u);
-  assert.match(rules, /preserve the user's original request in its description/iu);
-  assert.match(rules, /Moving a Task to Await.*does not build, rebuild or mutate PreRelease/iu);
-  assert.match(rules, /Test is the sole snapshot and dev-integration gate.*Await and Done reuse/iu);
-  assert.doesNotMatch(rules, /directly to a later status/iu);
-  assert.match(rules, /explicit release start.*effective first-parent dev integration deltas/iu);
-  assert.match(rules, /Never merge dev into PreRelease.*never publish a broad dominating Task snapshot/iu);
-  assert.match(rules, /fit it within 36 characters.*only when.*cannot be preserved/iu);
-  assert.doesNotMatch(rules, /[А-Яа-яЁё]/u);
-});
-
-test("previous release policies are stripped after title and freeze guidance changes", () => {
-  for (const legacyRules of [
-    LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V3,
-    LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V4,
-    LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V5,
-    LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V6,
-    LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V7,
+test("primary checkout protection appends its rule without rewriting old authored instructions", () => {
+  const authored = [
+    "After updating main, freeze the exact release set. Custom continuation.",
+    "At the start of the release, update local main from origin. My instruction.",
+    "  Trailing spaces  ",
+  ].join("\r\n");
+  for (const [append, setting, rule] of [
+    [withReleasePrimaryWorkspaceRule, "releaseWorkflowEnabled", RELEASE_PRIMARY_WORKSPACE_RULE],
+    [withReleaseManagerReleasePrimaryWorkspaceRule, "releaseManager", RELEASE_MANAGER_RELEASE_PRIMARY_WORKSPACE_RULE],
   ]) {
-    const rules = effectiveWorkspaceDeveloperRules(
-      `${legacyRules}\n\nCustom rule`,
-      { releaseWorkflowEnabled: true },
-    );
-    assert.equal(rules, `${RELEASE_WORKFLOW_DEVELOPER_RULES}\n\nCustom rule`);
-    assert.equal((rules.match(/Release workflow — applies only/gu) ?? []).length, 1);
+    assert.equal(append(authored, {}), authored);
+    assert.equal(append(authored, { [setting]: true }), authored + "\n" + rule);
+    assert.equal(append(rule, { [setting]: true }), rule + "\n" + rule);
   }
 });
 
-test("legacy v2 Task policy is stripped before the change-only policy is injected", () => {
-  const rules = effectiveWorkspaceDeveloperRules(
-    `${LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V2}\n\nCustom rule`,
-    { releaseWorkflowEnabled: true },
-  );
-  assert.equal(
-    rules,
-    `${RELEASE_WORKFLOW_DEVELOPER_RULES}\n\nCustom rule`,
-  );
+test("composition preserves copied policies and authored whitespace across checkbox settings", () => {
+  for (const [compose, flags, policies] of [
+    [effectiveWorkspaceDeveloperRules,
+      ["releaseWorkflowEnabled", "autoReviewEnabled"],
+      [RELEASE_WORKFLOW_DEVELOPER_RULES, AUTO_REVIEW_DEVELOPER_RULES]],
+    [effectiveStreamDeveloperRules,
+      ["releaseManager", "teamLead"],
+      [RELEASE_MANAGER_RELEASE_DEVELOPER_RULES, TEAM_LEAD_DEVELOPER_RULES]],
+  ]) {
+    const copied = [...policies, ...policies, "Custom rule"].join("\n\n");
+    for (const authored of ["", " \r\n\t ", copied, "\r\n" + copied.replace(/\n/gu, "\r\n")]) {
+      for (const first of [false, true]) {
+        for (const second of [false, true]) {
+          const settings = { [flags[0]]: first, [flags[1]]: second };
+          const expected = [first ? policies[0] : "", second ? policies[1] : "", authored]
+            .filter((part) => part !== "").join("\n\n");
+          assert.equal(compose(authored, settings), expected);
+          assert.equal(compose(authored, settings), expected);
+          assert.equal(compose(authored, {}), authored);
+          assert.equal(compose(authored, { [flags[0]]: "true", [flags[1]]: "true" }), authored);
+        }
+      }
+    }
+    assert.equal(compose(null, {}), "");
+  }
 });
 
-test("the previous Task policy is stripped after the title guidance changes", () => {
-  const rules = effectiveWorkspaceDeveloperRules(
-    `${LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V3}\n\nCustom rule`,
-    { releaseWorkflowEnabled: true },
-  );
-  assert.equal(rules, `${RELEASE_WORKFLOW_DEVELOPER_RULES}\n\nCustom rule`);
-  assert.match(rules, /fit it within 36 characters/iu);
-  assert.equal((rules.match(/Release workflow — applies only/gu) ?? []).length, 1);
+test("active policy retains release freeze, conditional test lock and renamed role", () => {
+  const role = effectiveStreamDeveloperRules("", { releaseManager: true });
+  assert.doesNotMatch(role, /architect/iu);
+  assert.match(role, /At the beginning.*create or reuse one service Task/u);
+  assert.match(role, /every Task already included in PreRelease.*native linked checklist/u);
+  assert.match(role, /Freeze the included Tasks, their branches and managed worktrees/u);
+  assert.match(role, /do not delete Task records/u);
+  assert.match(role, /Remove only their managed branches and worktrees/u);
+  const workspace = effectiveWorkspaceDeveloperRules("", { releaseWorkflowEnabled: true });
+  assert.doesNotMatch(workspace, /architect/iu);
+  assert.match(workspace, /If the project provides a shared test environment/iu);
+  assert.match(workspace, /also provides a lock.*acquire it immediately before testing only after confirming.*expected version/iu);
+  assert.match(workspace, /release it as soon as testing finishes, fails or is cancelled/iu);
+  assert.match(workspace, /Do not hold it during coding, fixes, local tests, review, or waiting/iu);
+  assert.doesNotMatch(workspace, /coordinate replacement with checks using that environment/iu);
+  assert.equal(effectiveStreamDeveloperRules("", { architect: true }), "");
 });
 
 test("explicit user rules matching the former hidden English block are preserved", () => {
@@ -107,7 +100,7 @@ test("release-disabled Workspace injects no hidden rules", () => {
 test("both generated policies grant a scoped explicit user exception", () => {
   for (const output of [
     effectiveWorkspaceDeveloperRules("", { releaseWorkflowEnabled: true }),
-    effectiveStreamDeveloperRules("", { architect: true }),
+    effectiveStreamDeveloperRules("", { releaseManager: true }),
   ]) {
     assert.equal(output.split(EXPLICIT_USER_WORKFLOW_EXCEPTION).length - 1, 1);
     assert.match(output, /Explicit user instructions for the current work take precedence/u);
@@ -119,126 +112,64 @@ test("both generated policies grant a scoped explicit user exception", () => {
   }
 });
 
-test("generated Architect prefixes are replaced once while authored edits survive", () => {
-  for (const prefix of [
-    LEGACY_ARCHITECT_RELEASE_DEVELOPER_RULES_V1,
-    LEGACY_ARCHITECT_RELEASE_DEVELOPER_RULES_V2,
-    LEGACY_ARCHITECT_RELEASE_DEVELOPER_RULES_V3,
-    ARCHITECT_RELEASE_DEVELOPER_RULES,
-  ]) {
-    const stored = `${prefix}\n\n${prefix}\n\nCustom rule`.replace(/\n/gu, "\r\n");
-    const output = effectiveStreamDeveloperRules(stored, { architect: true });
-    assert.equal(output, `${ARCHITECT_RELEASE_DEVELOPER_RULES}\n\nCustom rule`);
-    assert.equal(effectiveStreamDeveloperRules(output, { architect: true }), output);
-    assert.equal(effectiveStreamDeveloperRules(stored, { architect: false }), "Custom rule");
-  }
-  const authored = LEGACY_ARCHITECT_RELEASE_DEVELOPER_RULES_V1.replace(
-    "You assemble, validate, and deploy releases.", "Custom validation and publication rule.",
-  );
-  assert.equal(effectiveStreamDeveloperRules(authored, {}), authored);
-  assert.equal(effectiveStreamDeveloperRules(authored, { architect: true }), `${ARCHITECT_RELEASE_DEVELOPER_RULES}\n\n${authored}`);
-});
-
-test("Workspace legacy exception cutover is idempotent and preserves authored variants", () => {
-  const settings = { releaseWorkflowEnabled: true };
-  const stored = `${LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V6}\n\nCustom rule`;
-  const effective = effectiveWorkspaceDeveloperRules(stored, settings);
-  assert.equal(effectiveWorkspaceDeveloperRules(effective, settings), effective);
-  assert.equal(effectiveWorkspaceDeveloperRules(stored, {}), "Custom rule");
-  const authored = LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V6.replace(
-    "Any work that changes code", "Custom policy for work that changes code",
-  );
-  assert.equal(effectiveWorkspaceDeveloperRules(authored, {}), authored);
-});
-
-test("Architect rules use only explicit settings.architect and allow multiple Streams", () => {
-  assert.equal(effectiveStreamDeveloperRules("Stream rule", { releaseRole: "architect" }), "Stream rule");
+test("Release Manager rules use only explicit settings.releaseManager and allow multiple Streams", () => {
+  assert.equal(effectiveStreamDeveloperRules("Stream rule", { releaseRole: "releaseManager" }), "Stream rule");
   assert.equal(effectiveStreamDeveloperRules("Stream rule", {}), "Stream rule");
   assert.equal(
-    effectiveStreamDeveloperRules("Stream rule", { architect: true }),
-    `${ARCHITECT_RELEASE_DEVELOPER_RULES}\n\nStream rule`,
+    effectiveStreamDeveloperRules("Stream rule", { releaseManager: true }),
+    `${RELEASE_MANAGER_RELEASE_DEVELOPER_RULES}\n\nStream rule`,
   );
-  assert.match(ARCHITECT_RELEASE_DEVELOPER_RULES, /Workspace release architect/u);
-  assert.match(ARCHITECT_RELEASE_DEVELOPER_RULES, /frozen release set/u);
-  assert.match(ARCHITECT_RELEASE_DEVELOPER_RULES, /fetch origin without changing local main/iu);
-  assert.match(ARCHITECT_RELEASE_DEVELOPER_RULES, /authors and committers.*GitHub logins.*signatures.*changed files/iu);
-  assert.match(ARCHITECT_RELEASE_DEVELOPER_RULES, /Immediately before push.*frozen approved main commit/iu);
-  assert.match(ARCHITECT_RELEASE_DEVELOPER_RULES, /invalidate the old candidate.*later explicit release preparation/iu);
-  assert.match(ARCHITECT_RELEASE_DEVELOPER_RULES, /Workspace-prescribed preflight/u);
-  assert.match(ARCHITECT_RELEASE_DEVELOPER_RULES, /immutable candidate/u);
-  assert.match(ARCHITECT_RELEASE_DEVELOPER_RULES, /production deployment is healthy/u);
+  assert.match(RELEASE_MANAGER_RELEASE_DEVELOPER_RULES, /Workspace release manager/u);
+  assert.match(RELEASE_MANAGER_RELEASE_DEVELOPER_RULES, /frozen release set/u);
+  assert.match(RELEASE_MANAGER_RELEASE_DEVELOPER_RULES, /fetch origin without changing local main/iu);
+  assert.match(RELEASE_MANAGER_RELEASE_DEVELOPER_RULES, /authors and committers.*GitHub logins.*signatures.*changed files/iu);
+  assert.match(RELEASE_MANAGER_RELEASE_DEVELOPER_RULES, /Immediately before push.*frozen approved main commit/iu);
+  assert.match(RELEASE_MANAGER_RELEASE_DEVELOPER_RULES, /Workspace-prescribed preflight/u);
+  assert.match(RELEASE_MANAGER_RELEASE_DEVELOPER_RULES, /immutable candidate/u);
+  assert.match(RELEASE_MANAGER_RELEASE_DEVELOPER_RULES, /production deployment is healthy/u);
   assert.doesNotMatch(
-    ARCHITECT_RELEASE_DEVELOPER_RULES,
+    RELEASE_MANAGER_RELEASE_DEVELOPER_RULES,
     /hub_release_preflight|TestContour|CHANGELOG\.md/u,
   );
 });
 
-test("Team Lead rules are independent and compose after Architect rules", () => {
+test("Team Lead rules are independent and compose after Release Manager rules", () => {
   assert.equal(effectiveStreamDeveloperRules("Stream rule", { teamLead: false }), "Stream rule");
   assert.equal(
     effectiveStreamDeveloperRules("Stream rule", { teamLead: true }),
     `${TEAM_LEAD_DEVELOPER_RULES}\n\nStream rule`,
   );
   assert.equal(
-    effectiveStreamDeveloperRules("Stream rule", { architect: true, teamLead: true }),
-    `${ARCHITECT_RELEASE_DEVELOPER_RULES}\n\n${TEAM_LEAD_DEVELOPER_RULES}\n\nStream rule`,
+    effectiveStreamDeveloperRules("Stream rule", { releaseManager: true, teamLead: true }),
+    `${RELEASE_MANAGER_RELEASE_DEVELOPER_RULES}\n\n${TEAM_LEAD_DEVELOPER_RULES}\n\nStream rule`,
   );
-  assert.match(TEAM_LEAD_DEVELOPER_RULES, /Prefer delegating/u);
-  assert.match(TEAM_LEAD_DEVELOPER_RULES, /Architect release actions/u);
-  assert.match(TEAM_LEAD_DEVELOPER_RULES, /hub_parallel_streams_list/u);
-  assert.match(TEAM_LEAD_DEVELOPER_RULES, /queuedInputCount is zero/u);
-  assert.match(TEAM_LEAD_DEVELOPER_RULES, /hub_task_reassign/u);
-  assert.match(TEAM_LEAD_DEVELOPER_RULES, /Never use subagents/u);
-  assert.match(
-    TEAM_LEAD_DEVELOPER_RULES,
-    /exact result.*independent review by another Workspace Stream.*must not review its own work/iu,
-  );
-  assert.match(
-    TEAM_LEAD_DEVELOPER_RULES,
-    /review request.*Task requirements.*actual diff.*consequences of the changes/iu,
-  );
-  assert.match(
-    TEAM_LEAD_DEVELOPER_RULES,
-    /fail its requirements.*cause or worsen any real regression.*unnecessary functionality that must be removed/iu,
-  );
-  assert.match(
-    TEAM_LEAD_DEVELOPER_RULES,
-    /Pre-existing unrelated defects.*artificial edge cases.*unsupported findings.*out-of-scope issues must not block/iu,
-  );
-  assert.match(
-    TEAM_LEAD_DEVELOPER_RULES,
-    /Initial review may use any suitable independent Stream.*After a RETURN.*corrected result must go back to the same reviewer.*RETURN remains open until that reviewer confirms/iu,
-  );
-  assert.match(TEAM_LEAD_DEVELOPER_RULES, /highest number.*S<number>.*add one.*name the new Stream S2/iu);
-  assert.match(TEAM_LEAD_DEVELOPER_RULES, /provider, model, and reasoning/u);
 });
 
-test("Architect role requires one service Task per release and keeps the rest", () => {
-  const issued = effectiveStreamDeveloperRules("", { architect: true });
+test("Release Manager role requires one service Task per release and keeps the rest", () => {
+  const issued = effectiveStreamDeveloperRules("", { releaseManager: true });
   assert.match(issued, /Релиз \[версия\]/u);
   assert.match(issued, /Do not create a\s+separate Task per release operation/u);
   // Служебные шаги одного выпуска не поглощают самостоятельные доработки механизмов.
   assert.match(issued, /never absorbs independent work on release mechanisms/u);
   // Прочие инструкции роли сохранены.
-  assert.match(issued, /You are a Workspace release architect/u);
+  assert.match(issued, /You are a Workspace release manager/u);
   assert.ok(issued.includes(EXPLICIT_USER_WORKFLOW_EXCEPTION));
 });
 
-test("previously issued Architect prefix migrates to the release-Task rule once", () => {
-  const authored = "Мои личные правила.";
-  const migrated = effectiveStreamDeveloperRules(
-    `${LEGACY_ARCHITECT_RELEASE_DEVELOPER_RULES_V2}
-
-${authored}`,
-    { architect: true },
-  );
-  assert.ok(migrated.startsWith(ARCHITECT_RELEASE_DEVELOPER_RULES));
-  assert.ok(migrated.endsWith(authored));
-  assert.equal(migrated.split("Релиз [версия]").length - 1, 1);
-  assert.equal(migrated.split(EXPLICIT_USER_WORKFLOW_EXCEPTION).length - 1, 1);
-});
-
-test("the release-Task rule belongs to the Architect role only", () => {
+test("the release-Task rule belongs to the Release Manager role only", () => {
   assert.doesNotMatch(effectiveStreamDeveloperRules("", { teamLead: true }), /Релиз \[версия\]/u);
   assert.doesNotMatch(effectiveWorkspaceDeveloperRules("", { releaseWorkflow: true }), /Релиз \[версия\]/u);
+});
+
+test("issued rules require selected composition and retained absorption sources", () => {
+  const workspace = effectiveWorkspaceDeveloperRules("Authored suffix", { releaseWorkflowEnabled: true });
+  const manager = effectiveStreamDeveloperRules("Authored suffix", { releaseManager: true });
+  assert.match(workspace, /Never merge rolling dev into a Task branch/u);
+  assert.match(workspace, /A new result must pass Test and acceptance again/u);
+  assert.match(workspace, /successful canonical composition of the surviving result with the selected release Tasks/u);
+  assert.match(workspace, /Preserve original cards, history, branches and worktrees until verified publication/u);
+  assert.match(manager, /immediately after each selected-result, absorption or release-membership change/u);
+  assert.match(manager, /A changed main or approved base requires renewed base verification/u);
+  assert.ok(workspace.endsWith("Authored suffix"));
+  assert.ok(manager.endsWith("Authored suffix"));
 });

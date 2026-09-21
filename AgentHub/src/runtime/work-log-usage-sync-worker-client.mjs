@@ -15,6 +15,7 @@ const TRACE_MEASUREMENTS = [
 function workerError(value) {
   const error = new Error(String(value?.message ?? "usage sync worker failed"));
   error.code = value?.code;
+  error.errcode = value?.errcode;
   if (value?.stack) error.stack = value.stack;
   return error;
 }
@@ -119,6 +120,10 @@ export class WorkLogUsageSyncWorkerStore {
 
   importSnapshot(snapshot) {
     return this.#request("import-snapshot", { snapshot });
+  }
+
+  ensureTurnFact(fact) {
+    return this.#request("ensure-turn-fact", { fact });
   }
 
   reconcileSnapshot(snapshot) {

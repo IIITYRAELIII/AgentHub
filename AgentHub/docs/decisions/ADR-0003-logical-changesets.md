@@ -9,7 +9,7 @@ immutable Git evidence are retained and refined there.
 
 Release ownership moves from one auto-ready entry per provider turn to one
 explicitly frozen ChangeSet per logical task. Turn observations remain audit
-evidence. New Streams ultimately work in isolated Git worktrees; Architect
+evidence. New Streams ultimately work in isolated Git worktrees; Release Manager
 integrates frozen commit ranges in a separate integration worktree.
 
 ## Consequences

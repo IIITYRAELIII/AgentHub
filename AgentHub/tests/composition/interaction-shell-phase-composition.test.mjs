@@ -46,7 +46,7 @@ function mcpTaskLaunchFixture() {
     ["stream-source", {
       id: "stream-source",
       workspaceId,
-      displayName: "Architect",
+      displayName: "Release Manager",
       settings: { workingDirectory: "C:\\source" },
       threads: [{ provider: "codex", threadId: "thread-source", projectRoot: "C:\\source" }],
     }],
@@ -349,7 +349,7 @@ test("production MCP task launcher preserves audited context for start and reass
       workspaceId: "workspace-1",
       workspaceName: "Agent HUB",
       streamId: "stream-source",
-      streamName: "Architect",
+      streamName: "Release Manager",
       provider: "codex",
       sourceThreadId: "thread-source",
       requestId: scenario.requestId,

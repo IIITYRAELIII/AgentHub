@@ -3,6 +3,8 @@ import path from "node:path";
 
 import { normalizedTaskGitReferences } from "../domain/task-git-reference.mjs";
 import { taskProjectRoot } from "../domain/task-project-root.mjs";
+import { normalizedTaskSquashTransfer } from "../domain/task-squash-transfer.mjs";
+import { normalizedTaskSquashCutover } from "../domain/task-squash-cutover.mjs";
 
 function requiredMethod(value, name) {
   if (typeof value?.[name] !== "function") throw new TypeError(`${name} is required`);
@@ -20,7 +22,11 @@ function samePath(left, right) {
   return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
 }
 
-const WORKFLOW_STATUSES = new Set(["new", "in_progress", "testing", "awaiting_implementation", "done"]);
+const WORKFLOW_STATUSES = new Set(["new", "in_progress", "blocked", "testing", "awaiting_implementation", "done"]);
+
+function supplied(value) {
+  return value != null && String(value).trim() !== "";
+}
 
 function canonicalValue(value) {
   if (Array.isArray(value)) return value.map(canonicalValue);
@@ -32,11 +38,10 @@ function cutoverArguments({
   expectedTaskRevision, expectedWorkflowStatus, cutoverSourceCommit, cutoverProjectorSha256,
   cutoverSourceTaskId, cutoverSourceTaskRevision,
 } = {}) {
-  const values = [
-    expectedTaskRevision, expectedWorkflowStatus, cutoverSourceCommit, cutoverProjectorSha256,
-    cutoverSourceTaskId, cutoverSourceTaskRevision,
+  const cutoverValues = [
+    cutoverSourceCommit, cutoverProjectorSha256, cutoverSourceTaskId, cutoverSourceTaskRevision,
   ];
-  if (values.every((value) => value == null || String(value).trim() === "")) return null;
+  if (cutoverValues.every((value) => !supplied(value))) return null;
   const revision = Number(expectedTaskRevision);
   const workflowStatus = String(expectedWorkflowStatus ?? "").trim();
   const sourceCommit = String(cutoverSourceCommit ?? "").trim().toLowerCase();
@@ -65,12 +70,109 @@ function cutoverArguments({
   };
 }
 
-function workflowArgumentsHash({ operationId, taskId, status, cutover = null }) {
+function workflowCasArguments({ expectedTaskRevision, expectedWorkflowStatus } = {}) {
+  const hasRevision = supplied(expectedTaskRevision);
+  const hasStatus = supplied(expectedWorkflowStatus);
+  if (!hasRevision && !hasStatus) return null;
+  const revision = hasRevision ? Number(expectedTaskRevision) : null;
+  const workflowStatus = hasStatus ? String(expectedWorkflowStatus).trim() : null;
+  if ((hasRevision && (!Number.isInteger(revision) || revision < 1))
+      || (hasStatus && !WORKFLOW_STATUSES.has(workflowStatus))) {
+    throw new Error("invalid workflow CAS operation identity");
+  }
+  return {
+    ...(hasRevision ? { expected_task_revision: revision } : {}),
+    ...(hasStatus ? { expected_workflow_status: workflowStatus } : {}),
+  };
+}
+
+function squashArguments(options = {}) {
+  const values = [
+    options.squashSourceTaskId, options.squashSourceTaskRevision,
+    options.squashBaselineResultCommit, options.squashNewResultCommit,
+    options.squashDevAfterTree, options.squashProofRequestId,
+    options.expectedSquashTransferHash,
+    options.squashCutoverSourceTree, options.squashCutoverExpectedMainCommit,
+    options.squashCutoverExpectedDevCommit, options.squashCutoverExpectedPreservedTree,
+    options.squashCutoverSourceZipSha256, options.squashCutoverBundleSha256,
+    options.squashCutoverManifestSha256, options.squashCutoverFilesSha256,
+    options.expectedSquashCutoverHash,
+  ];
+  if (values.every((value) => !supplied(value))) return null;
+  const revision = Number(options.expectedTaskRevision);
+  const sourceRevision = Number(options.squashSourceTaskRevision);
+  const commit = (value) => String(value ?? "").trim().toLowerCase();
+  const sourceTaskId = String(options.squashSourceTaskId ?? "").trim();
+  const proofRequestId = String(options.squashProofRequestId ?? "").trim();
+  const baseline = commit(options.squashBaselineResultCommit);
+  const result = commit(options.squashNewResultCommit);
+  const tree = commit(options.squashDevAfterTree);
+  const hash = commit(options.expectedSquashTransferHash);
+  const cutoverValues = [
+    options.cutoverSourceCommit, options.cutoverProjectorSha256,
+    options.squashCutoverSourceTree, options.squashCutoverExpectedMainCommit,
+    options.squashCutoverExpectedDevCommit, options.squashCutoverExpectedPreservedTree,
+    options.squashCutoverSourceZipSha256, options.squashCutoverBundleSha256,
+    options.squashCutoverManifestSha256, options.squashCutoverFilesSha256,
+    options.expectedSquashCutoverHash,
+  ];
+  const hasCutover = cutoverValues.some((value) => supplied(value));
+  const cutoverCommit = (value) => String(value ?? "").trim().toLowerCase();
+  const cutoverHash = cutoverCommit(options.expectedSquashCutoverHash);
+  if (!Number.isInteger(revision) || revision < 1
+      || !Number.isInteger(sourceRevision) || sourceRevision < 1 || !sourceTaskId
+      || !proofRequestId || proofRequestId.length > 200 || /[\r\n\0]/u.test(proofRequestId)
+      || (supplied(options.expectedWorkflowStatus)
+        && String(options.expectedWorkflowStatus).trim() !== (hasCutover ? "in_progress" : "testing"))
+      || ![baseline, result, tree].every((value) => /^[0-9a-f]{40}$/u.test(value))
+      || !/^[0-9a-f]{64}$/u.test(hash)
+      || (hasCutover && (
+        String(options.expectedWorkflowStatus ?? "").trim() !== "in_progress"
+        || ![options.cutoverSourceCommit, options.squashCutoverSourceTree,
+          options.squashCutoverExpectedMainCommit, options.squashCutoverExpectedDevCommit,
+          options.squashCutoverExpectedPreservedTree]
+          .every((value) => /^[0-9a-f]{40}$/u.test(cutoverCommit(value)))
+        || ![options.cutoverProjectorSha256, options.squashCutoverSourceZipSha256,
+          options.squashCutoverBundleSha256, options.squashCutoverManifestSha256,
+          options.squashCutoverFilesSha256, cutoverHash]
+          .every((value) => /^[0-9a-f]{64}$/u.test(cutoverCommit(value)))
+      ))) {
+    throw new Error("invalid Task squash transfer reconciliation identity");
+  }
+  return {
+    expected_task_revision: revision,
+    ...(supplied(options.expectedWorkflowStatus) ? {
+      expected_workflow_status: String(options.expectedWorkflowStatus).trim(),
+    } : {}),
+    squash_source_task_id: sourceTaskId,
+    squash_source_task_revision: sourceRevision,
+    squash_baseline_result_commit: baseline,
+    squash_new_result_commit: result,
+    squash_dev_after_tree: tree,
+    squash_proof_request_id: proofRequestId,
+    expected_squash_transfer_hash: hash,
+    ...(hasCutover ? {
+      cutover_source_commit: cutoverCommit(options.cutoverSourceCommit),
+      cutover_projector_sha256: cutoverCommit(options.cutoverProjectorSha256),
+      squash_cutover_source_tree: cutoverCommit(options.squashCutoverSourceTree),
+      squash_cutover_expected_main_commit: cutoverCommit(options.squashCutoverExpectedMainCommit),
+      squash_cutover_expected_dev_commit: cutoverCommit(options.squashCutoverExpectedDevCommit),
+      squash_cutover_expected_preserved_tree: cutoverCommit(options.squashCutoverExpectedPreservedTree),
+      squash_cutover_source_zip_sha256: cutoverCommit(options.squashCutoverSourceZipSha256),
+      squash_cutover_bundle_sha256: cutoverCommit(options.squashCutoverBundleSha256),
+      squash_cutover_manifest_sha256: cutoverCommit(options.squashCutoverManifestSha256),
+      squash_cutover_files_sha256: cutoverCommit(options.squashCutoverFilesSha256),
+      expected_squash_cutover_hash: cutoverHash,
+    } : {}),
+  };
+}
+
+function workflowArgumentsHash({ operationId, taskId, status, identityArguments = null }) {
   return createHash("sha256").update(JSON.stringify(canonicalValue({
     request_id: operationId,
     status,
     task_id: taskId,
-    ...(cutover ?? {}),
+    ...(identityArguments ?? {}),
   })), "utf8").digest("hex");
 }
 
@@ -98,6 +200,19 @@ function exactCutoverEvidence({ cutover, task, transition, outcome, projectRoot,
   return !outcome || evidenceCommit === cutover.cutover_source_commit;
 }
 
+function exactWorkflowCasEvidence({ workflowCas, task, transition, outcome }) {
+  if (!workflowCas) return true;
+  const priorTask = transition?.priorTask ?? outcome?.result?.priorTask ?? null;
+  if (!priorTask || priorTask.id !== task.id || priorTask.workspaceId !== task.workspaceId) return false;
+  if (workflowCas.expected_task_revision != null
+      && (Number(priorTask.revision) !== workflowCas.expected_task_revision
+        || (transition && Number(transition.expectedRevision) !== workflowCas.expected_task_revision))) {
+    return false;
+  }
+  return workflowCas.expected_workflow_status == null
+    || priorTask.workflowStatus === workflowCas.expected_workflow_status;
+}
+
 function sameTaskState(current, expected) {
   const state = (task) => task ? {
     id: task.id,
@@ -122,6 +237,22 @@ function exactCommittedEvidence(committed, evidence, projectRoot, targetWorkflow
     .find((item) => samePath(item.projectRoot, projectRoot));
   if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u.test(resultCommit)
       || reference?.resultCommit !== resultCommit) return false;
+  if (evidence?.outcome === "withdrawn_result") {
+    const withdrawal = evidence.withdrawal;
+    const priorReferences = normalizedTaskGitReferences(priorTask?.gitReferences)
+      .filter((item) => samePath(item.projectRoot, projectRoot));
+    return ["new", "in_progress", "blocked"].includes(targetWorkflowStatus)
+      && ["testing", "awaiting_implementation"].includes(priorTask?.workflowStatus)
+      && priorReferences.length === 1
+      && priorReferences[0].branch === reference.branch
+      && priorReferences[0].resultCommit === resultCommit
+      && withdrawal?.taskId === committed.id
+      && withdrawal?.resultCommit === resultCommit
+      && ["withdrawn", "already_published"].includes(withdrawal?.outcome)
+      && [withdrawal?.beforeDevCommit, withdrawal?.afterDevCommit]
+        .every((commit) => /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u.test(String(commit ?? "")))
+      && JSON.stringify(canonicalValue(evidence.response?.gitWithdrawal)) === JSON.stringify(canonicalValue(withdrawal));
+  }
   if (evidence?.outcome === "accepted_existing_result") {
     const priorReferences = normalizedTaskGitReferences(priorTask?.gitReferences)
       .filter((item) => samePath(item.projectRoot, projectRoot));
@@ -165,7 +296,9 @@ export class TaskOperationReconciliationService {
     const targetWorkflowStatus = transition?.targetWorkflowStatus
       ?? outcome?.result?.task?.workflowStatus
       ?? null;
-    const cutover = cutoverArguments(options);
+    const squash = squashArguments(options);
+    const cutover = squash ? null : cutoverArguments(options);
+    const workflowCas = squash || cutover ? null : workflowCasArguments(options);
     const validTarget = WORKFLOW_STATUSES.has(targetWorkflowStatus);
     const taskRoot = taskProjectRoot({
       workspace,
@@ -176,7 +309,8 @@ export class TaskOperationReconciliationService {
       && receipt.toolName === "hub_task_status_update"
       && validTarget
       && receipt.argumentsHash === workflowArgumentsHash({
-        operationId, taskId: task.id, status: targetWorkflowStatus, cutover,
+        operationId, taskId: task.id, status: targetWorkflowStatus,
+        identityArguments: squash ?? cutover ?? workflowCas,
       })
       && receipt.operationStatus === "pending"
       && receipt.receiptState === "unknown";
@@ -194,12 +328,58 @@ export class TaskOperationReconciliationService {
     const cutoverMatches = exactCutoverEvidence({
       cutover, task, transition, outcome, projectRoot: root, targetWorkflowStatus,
     });
-    if (!receiptMatches || !transitionMatches || !outcomeMatches || !cutoverMatches
+    const workflowCasMatches = exactWorkflowCasEvidence({ workflowCas, task, transition, outcome });
+    let squashMatches = true;
+    let squashSourceTask = null;
+    if (squash) {
+      const proofValue = transition?.evidence?.squashTransfer
+        ?? outcome?.result?.evidence?.squashTransfer;
+      try {
+        const proof = normalizedTaskSquashTransfer(proofValue);
+        const cutoverValue = transition?.evidence?.squashCutover
+          ?? outcome?.result?.evidence?.squashCutover ?? null;
+        const expectedCutover = squash.expected_squash_cutover_hash ?? null;
+        const cutoverProof = cutoverValue ? normalizedTaskSquashCutover(cutoverValue) : null;
+        squashSourceTask = this.taskBoard.task(proof.source.taskId);
+        squashMatches = targetWorkflowStatus === "testing"
+          && proof.transferHash === squash.expected_squash_transfer_hash
+          && proof.survivor.taskId === task.id
+          && proof.survivor.revision === squash.expected_task_revision
+          && proof.source.taskId === squash.squash_source_task_id
+          && proof.source.revision === squash.squash_source_task_revision
+          && proof.baselineResultCommit === squash.squash_baseline_result_commit
+          && proof.survivor.resultCommit === squash.squash_new_result_commit
+          && proof.devAfterTree === squash.squash_dev_after_tree
+          && proof.authority.proofRequestId === squash.squash_proof_request_id
+          && samePath(proof.projectRoot, root)
+          && Boolean(squashSourceTask)
+          && Boolean(cutoverProof) === Boolean(expectedCutover)
+          && (!cutoverProof || (
+            cutoverProof.cutoverHash === expectedCutover
+            && cutoverProof.reviewedSourceCommit === squash.cutover_source_commit
+            && cutoverProof.reviewedSourceTree === squash.squash_cutover_source_tree
+            && cutoverProof.expectedMainCommit === squash.squash_cutover_expected_main_commit
+            && cutoverProof.expectedDevCommit === squash.squash_cutover_expected_dev_commit
+            && cutoverProof.expectedPreservedTree === squash.squash_cutover_expected_preserved_tree
+            && cutoverProof.projectorSha256 === squash.cutover_projector_sha256
+            && cutoverProof.artifacts.sourceZipSha256 === squash.squash_cutover_source_zip_sha256
+            && cutoverProof.artifacts.bundleSha256 === squash.squash_cutover_bundle_sha256
+            && cutoverProof.artifacts.manifestSha256 === squash.squash_cutover_manifest_sha256
+            && cutoverProof.artifacts.filesSha256 === squash.squash_cutover_files_sha256
+          ));
+      } catch { squashMatches = false; }
+    }
+    if (!receiptMatches || !transitionMatches || !outcomeMatches || !cutoverMatches || !workflowCasMatches
+        || !squashMatches
         || !taskRoot || !samePath(taskRoot, root)) {
       throw new Error("Unknown workflow operation identity, lifecycle state, project root or Task CAS does not match");
     }
     let state = null;
     if (outcome && !transition) {
+      if (squash) {
+        if (sameTaskState(task, outcome.result?.task)
+            && sameTaskState(squashSourceTask, outcome.result?.sourceTask)) state = "succeeded";
+      } else
       if (outcome.result?.rollback?.completed === true) {
         if (
           sameTaskState(task, outcome.result?.restoredTask)
@@ -219,8 +399,12 @@ export class TaskOperationReconciliationService {
       }
     } else if (transition && !outcome) {
       const revisionUnchanged = transition.expectedRevision === task.revision;
-      const pendingUnchanged = revisionUnchanged && task.workflowStatus !== targetWorkflowStatus;
-      const failedUnchanged = revisionUnchanged && sameTaskState(task, transition.priorTask);
+      const pendingUnchanged = squash
+        ? revisionUnchanged && sameTaskState(task, transition.priorTask)
+          && sameTaskState(squashSourceTask, transition.priorSourceTask)
+        : revisionUnchanged && task.workflowStatus !== targetWorkflowStatus;
+      const failedUnchanged = revisionUnchanged && sameTaskState(task, transition.priorTask)
+        && (!squash || sameTaskState(squashSourceTask, transition.priorSourceTask));
       if (transition.phase === "pending_git" && pendingUnchanged) state = "pending";
       if (transition.phase === "failed" && failedUnchanged) state = "failed";
     }
@@ -238,12 +422,27 @@ export class TaskOperationReconciliationService {
       operationId,
       projectRoot: root,
       guardId: exactGuardId,
+      squash,
+      sourceTaskId: squash?.squash_source_task_id ?? null,
+      withdrawal: state === "succeeded" && outcome?.result?.evidence?.outcome === "withdrawn_result"
+        || state === "pending" && ["new", "in_progress", "blocked"].includes(targetWorkflowStatus)
+          && ["testing", "awaiting_implementation"].includes(task.workflowStatus)
+          && sameTaskState(task, transition?.priorTask)
+          && normalizedTaskGitReferences(task.gitReferences)
+            .filter((reference) => samePath(reference.projectRoot, root)).length === 1,
     };
   }
 
   async #settle(identity, { recovery = null } = {}) {
     if (identity.state === "succeeded") {
-      const originalResult = {
+      const originalResult = identity.squash ? {
+        task: identity.outcome.result.task,
+        sourceTask: identity.outcome.result.sourceTask,
+        squashTransfer: identity.outcome.result.evidence.squashTransfer,
+        ...(identity.outcome.result.evidence.squashCutover ? {
+          squashCutover: identity.outcome.result.evidence.squashCutover,
+        } : {}),
+      } : {
         ...identity.outcome.result.task,
         ...(identity.outcome.result?.evidence?.response ?? {}),
       };
@@ -288,18 +487,41 @@ export class TaskOperationReconciliationService {
   async reconcileUnknownWorkflow(options = {}) {
     return this.taskLifecycle.withUnknownWorkflowReconciliationLock({
       taskId: requiredText(options.taskId, "task id", 200),
+      sourceTaskId: options.squashSourceTaskId
+        ? requiredText(options.squashSourceTaskId, "squash source task id", 200)
+        : null,
       projectRoot: path.resolve(requiredText(options.projectRoot, "project root")),
     }, async (lease) => {
       let identity = this.#identity(options);
-      if (identity.state !== "pending") return this.#settle(identity);
-      if (!identity.guardId) {
+      const needsRecovery = identity.state === "pending" || identity.withdrawal;
+      if (identity.state === "pending" && !identity.guardId && !identity.withdrawal && !identity.squash) {
         throw new Error("Pending workflow reconciliation requires the exact process-tree guard id");
       }
-      const proof = {
+      const proof = needsRecovery && identity.guardId ? {
         kind: requiredText(options.proofKind, "proof kind", 100),
         confirmed: options.confirmed === true,
         summary: requiredText(options.proofSummary, "proof summary", 1_000),
+      } : null;
+      const settle = async (terminal, recovery = null) => {
+        if (terminal.state === "succeeded" && terminal.withdrawal) {
+          try {
+            const finalized = await this.taskLifecycle.reconcileUnknownWorkflowStatusOwned({
+              taskId: terminal.task.id, operationId: terminal.operationId,
+              projectRoot: terminal.projectRoot, guardId: terminal.guardId, proof, lease,
+              finalizeCommittedWithdrawal: true,
+            });
+            recovery = finalized?.recovery ?? recovery;
+            terminal = this.#identity(options);
+            if (terminal.state !== "succeeded" || !terminal.withdrawal) {
+              throw new Error("Withdrawal state changed before receipt settlement");
+            }
+          } catch (error) {
+            return { resolved: false, outcome: "unknown", error: String(error?.message ?? error) };
+          }
+        }
+        return this.#settle(terminal, { recovery });
       };
+      if (identity.state !== "pending") return settle(identity);
       let recoveryResult = null;
       try {
         recoveryResult = await this.taskLifecycle.reconcileUnknownWorkflowStatusOwned({
@@ -324,7 +546,7 @@ export class TaskOperationReconciliationService {
             transition: identity.transition,
           };
         }
-        return this.#settle(identity, { recovery: recoveryResult?.recovery ?? null });
+        return settle(identity, recoveryResult?.recovery ?? null);
       }
       try {
         identity = this.#identity(options);
@@ -334,7 +556,7 @@ export class TaskOperationReconciliationService {
       if (identity.state === "pending") {
         return { resolved: false, outcome: "unknown", error: "Workflow reconciliation did not reach a durable terminal state" };
       }
-      return this.#settle(identity, { recovery: recoveryResult?.recovery ?? null });
+      return settle(identity, recoveryResult?.recovery ?? null);
     });
   }
 }

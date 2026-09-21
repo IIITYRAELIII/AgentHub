@@ -48,7 +48,7 @@ test("Task summary keeps the status in its third slot when the number is absent"
   const workspaces = [{
     id: "workspace-1",
     name: "Agent HUB",
-    streams: [{ id: "stream-1", displayName: "Architect" }],
+    streams: [{ id: "stream-1", displayName: "Release Manager" }],
   }];
   const task = {
     title: "Исправить геометрию",

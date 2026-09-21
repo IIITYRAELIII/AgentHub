@@ -3,6 +3,7 @@ import { unlink } from "node:fs/promises";
 import { isClaudeCompactionRun } from "../domain/claude-context-maintenance.mjs";
 import { claudeFailureMessage, formatClaudeUsage } from "./claude/claude.mjs";
 import { TASK_EXECUTION_OWNERS } from "../domain/task-execution-owner.mjs";
+import { rememberProviderRunTerminalStatus } from "../domain/provider-run-terminal.mjs";
 
 function requiredFunction(value, name) {
   if (typeof value !== "function") throw new TypeError(`${name} is required`);
@@ -21,6 +22,7 @@ export class CodexCompletionService {
   }
 
   async completeObserved(run, { snapshot, answer, deliver, completedTurnId, tracker }) {
+    rememberProviderRunTerminalStatus(run, snapshot?.status ?? "completed");
     run.status = "finishing";
     await this.#d.rememberSeenTurn(run, completedTurnId);
     this.#rememberTerminalAnswer(run, completedTurnId, answer, snapshot);
@@ -58,6 +60,7 @@ export class CodexCompletionService {
 
   async finishManagedSnapshot(run, snapshot) {
     if (this.#d.runForTask(run) !== run || run.status !== "running") return;
+    rememberProviderRunTerminalStatus(run, snapshot?.status ?? "completed");
     run.status = "finishing";
     const completedTurnId = run.turnId;
     const answer = String(snapshot?.finalAnswer ?? "").trim()
@@ -85,6 +88,7 @@ export class CodexCompletionService {
   } = {}) {
     if (snapshot) return this.finishManagedSnapshot(run, snapshot);
     if (this.#d.runForTask(run) !== run || run.status !== "running") return;
+    rememberProviderRunTerminalStatus(run, eventTurn?.status ?? "completed");
     run.status = "finishing";
     const status = eventTurn?.status ?? "completed";
     const error = eventTurn?.error?.message;
@@ -138,9 +142,13 @@ export class ClaudeCompletionService {
   }
 
   async completeObserved(run, { snapshot, answer, deliver }) {
+    const terminalStatus = rememberProviderRunTerminalStatus(
+      run,
+      snapshot?.cancelled === true ? "aborted" : snapshot?.status ?? "completed",
+    );
     await this.#d.projectWorkLog(run, {
       answer,
-      status: snapshot?.status ?? "completed",
+      status: terminalStatus,
       snapshot,
     }).catch((error) => {
       this.#d.logError?.(`Cannot update journal for observed Claude turn ${run.turnId}:`, error.message);
@@ -184,6 +192,7 @@ export class ClaudeCompletionService {
         await this.#d.saveState();
       }
       const failed = (exitCode !== null && exitCode !== 0) || result.is_error === true;
+      rememberProviderRunTerminalStatus(run, failed ? "failed" : "completed");
       const answer = failed
         ? claudeFailureMessage(result, { streamFailureText: run.claudeFailureText, errorText, exitCode })
         : String(result.result ?? "").trim() || "Поток завершён.";
@@ -200,6 +209,7 @@ export class ClaudeCompletionService {
         description: "финальный ответ Claude",
       });
     } catch (error) {
+      rememberProviderRunTerminalStatus(run, "failed");
       await this.#d.finishProgress(run, `Claude остановлен: ${error.message}`);
       const answer = `Ошибка Claude Code: ${error.message}`;
       await this.#persistAndDeliver(run, {
@@ -220,10 +230,11 @@ export class ClaudeCompletionService {
   }
 
   async #persistAndDeliver(run, options) {
-    await this.#d.persistHistory(run, { answer: options.response, status: options.status, active: false });
+    const terminalStatus = rememberProviderRunTerminalStatus(run, options.status);
+    await this.#d.persistHistory(run, { answer: options.response, status: terminalStatus, active: false });
     await this.#d.projectWorkLog(run, {
       answer: options.response,
-      status: options.status,
+      status: terminalStatus,
       result: options.result,
     }).catch((error) => {
       this.#d.logError?.(`Cannot update journal for Claude turn ${run.turnId}:`, error.message);

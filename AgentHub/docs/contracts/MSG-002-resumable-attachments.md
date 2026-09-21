@@ -69,6 +69,15 @@ whole file. Existing message, queue and receipt ownership is unchanged.
 
 ## Migration and surface limits
 
+VS Code also carries this protocol over its authenticated desktop pipe when
+the optional local Web App is disabled. Each PUT carries at most one 1 MiB
+part encoded as base64; it never materializes a whole-file base64 request.
+The runtime desktop adapter leases the same AttachmentUploadService instance
+and local owner as the HTTP WebView, preserving receipts, mutation ordering,
+quotas and upload identity across transports. It releases its lease during
+runtime shutdown. Optional external components remain disabled. Upload
+preparation does not enter message-command receipts or admission queues.
+
 The whole-body `/api/attachment` and old VS Code bridge remain bounded to 20 MiB
 for old clients. They are a rolling-deployment boundary, removable once every
 supported client/server advertises upload-v1. Large files never fall back to a

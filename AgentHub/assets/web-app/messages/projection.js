@@ -2,7 +2,6 @@
   "use strict";
 
   const TERMINAL_STATES = new Set(["completed", "failed", "cancelled"]);
-  const INTERNAL_OPERATION_KINDS = new Set(["probe", "compaction", "measurement", "maintenance"]);
   const STATE_RANK = new Map([
     ["optimistic", 0],
     ["queued", 1],
@@ -69,9 +68,6 @@
   function legacyOperationKindMigrationGuard(value) {
     // Removal condition: every persisted pre-UI-001 message and live snapshot
     // carries operationKind. This guard never defines entity identity.
-    if (value?.contextProbe === true) return "probe";
-    const clientId = text(value?.clientUserMessageId ?? value?.submissionId);
-    if (clientId.startsWith("agent-hub-context-probe:")) return "probe";
     if (value?.maintenance === true || value?.kind === "maintenance") return "maintenance";
     if (["user", "agent", "assistant"].includes(text(value?.role))) return "user-turn";
     return "unknown";
@@ -79,7 +75,7 @@
 
   function operationKind(value) {
     const explicit = text(value?.operationKind).toLowerCase();
-    if (["user-turn", "probe", "compaction", "measurement", "maintenance"].includes(explicit)) {
+    if (explicit) {
       return explicit;
     }
     return legacyOperationKindMigrationGuard(value);
@@ -190,7 +186,7 @@
 
   function visibleProjectionEntity(value) {
     const kind = operationKind(value);
-    if (!INTERNAL_OPERATION_KINDS.has(kind)) return true;
+    if (kind === "user-turn" || kind === "unknown") return true;
     return text(value?.role) === "system" && projectionState(value) !== "active";
   }
 

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
+import path from "node:path";
 import test from "node:test";
 
 import { cosmeticMatrix } from "../helpers/test-profile.mjs";
@@ -95,7 +96,7 @@ function openStreamCard() {
   }
   // Роли выключены, пока карточка не привязана к Stream (app.js: disabled = !task?.streamId).
   // Проверяется раскладка и работа включённого переключателя, поэтому фикстура его включает.
-  for (const role of ["[data-dialog-stream-architect]", "[data-dialog-stream-team-lead]"]) {
+  for (const role of ["[data-dialog-stream-release-manager]", "[data-dialog-stream-team-lead]"]) {
     dialog.querySelector(role).disabled = false;
   }
 }
@@ -150,26 +151,38 @@ test("чип агента занимает ту же колонку, что се
   }
 });
 
-test("переключатель роли остаётся кликабельным, а знак вопроса его не трогает", async () => {
+for (const width of [1440, 390]) test(`переключатель роли остаётся кликабельным, а знак вопроса его не трогает ${width}px`, async () => {
   const { chromium } = await import("playwright");
   const browser = await launchEdge(chromium);
   try {
-    const page = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
+    const page = await browser.newPage({ viewport: { width, height: 1000 } });
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
     await openFixture(page);
     await page.evaluate(openStreamCard);
-    const architect = page.locator("[data-dialog-stream-architect]");
-    assert.equal(await architect.isChecked(), false);
+    const releaseManager = page.locator("[data-dialog-stream-release-manager]");
+    assert.equal(await page.locator(".stream-release-manager-setting .switch-text").textContent(), "Релиз-менеджер");
+    assert.equal(await releaseManager.isChecked(), false);
 
-    await page.locator(".stream-architect-setting .switch-track").click();
-    assert.equal(await architect.isChecked(), true, "клик по тумблеру не переключил роль");
+    await page.locator(".stream-release-manager-setting .switch-track").click();
+    assert.equal(await releaseManager.isChecked(), true, "клик по тумблеру не переключил роль");
 
-    await page.locator(".stream-architect-setting .switch-text").click();
-    assert.equal(await architect.isChecked(), false, "клик по подписи не переключил роль");
+    await page.locator(".stream-release-manager-setting .switch-text").click();
+    assert.equal(await releaseManager.isChecked(), false, "клик по подписи не переключил роль");
 
-    await page.locator(".stream-architect-setting .stream-role-help").click();
-    assert.equal(await architect.isChecked(), false, "знак вопроса переключил роль");
-    assert.equal(await page.locator("#stream-architect-note").isVisible(), true,
+    await page.locator(".stream-release-manager-setting .stream-role-help").click();
+    assert.equal(await releaseManager.isChecked(), false, "знак вопроса переключил роль");
+    assert.equal(await page.locator("#stream-release-manager-note").isVisible(), true,
       "знак вопроса не открыл пояснение роли");
+    const instructions = await page.locator("#stream-release-manager-note").textContent();
+    assert.match(instructions, /связанный чек-лист/u);
+    assert.match(instructions, /сохранив карточки и историю/u);
+    assert.doesNotMatch(instructions, /архитектор|Architect/iu);
+    assert.deepEqual(errors, []);
+    if (process.env.AGENT_HUB_QA_SCREENSHOT_DIR) {
+      await mkdir(process.env.AGENT_HUB_QA_SCREENSHOT_DIR, { recursive: true });
+      await page.screenshot({ path: path.join(process.env.AGENT_HUB_QA_SCREENSHOT_DIR, `release-manager-${width}.png`) });
+    }
   } finally {
     await browser.close();
   }
@@ -202,6 +215,73 @@ test("переключатель релизного процесса Workspace �
     await browser.close();
   }
 });
+
+for (const width of [1440, 390]) {
+  test(`Workspace auto-review can be saved, reopened and disabled independently at ${width}px`, async () => {
+    const { chromium } = await import("playwright");
+    const browser = await launchEdge(chromium);
+    try {
+      const page = await browser.newPage({ viewport: { width, height: 1000 } });
+      const errors = [];
+      page.on("pageerror", (error) => errors.push(error.message));
+      await openFixture(page);
+      await page.evaluate(() => {
+        window.__reviewWorkspace = { id: "review-workspace", name: "Review Workspace",
+          settings: { releaseWorkflowEnabled: false, autoReviewEnabled: false } };
+        const render = () => window.AgentHub.setWorkspaces([window.__reviewWorkspace], ["workspace:review-workspace", "notes"]);
+        window.__reviewIntents = [];
+        window.AgentHub.on("workspace:update", (value) => {
+          window.__reviewIntents.push(value);
+          window.__reviewWorkspace.settings = { ...window.__reviewWorkspace.settings,
+            releaseWorkflowEnabled: value.releaseWorkflowEnabled, autoReviewEnabled: value.autoReviewEnabled };
+          render();
+        });
+        render();
+        window.AgentHub.setTasks([{
+          id: "review-task", workspaceId: "review-workspace", workspaceName: "Review Workspace",
+          streamId: "review-stream", streamName: "Executor", streamOrdinal: 1,
+          provider: "codex", agentLabel: "Codex", selected: true,
+          status: "ready", statusLabel: "Готов", running: false, unread: false,
+          streamSettings: {}, messages: [],
+        }]);
+      });
+      const workspace = page.locator('[data-workspace-select="review-workspace"]');
+      await workspace.dblclick();
+      const review = page.locator("[data-workspace-auto-review]");
+      const release = page.locator("[data-workspace-release-workflow]");
+      assert.equal(await review.isChecked(), false);
+      assert.equal(await page.locator("[data-workspace-card-modal]").isVisible(), true);
+      assert.equal(await page.locator(".workspace-auto-review-setting").evaluate((node) =>
+        Boolean(node.previousElementSibling?.querySelector("[data-workspace-release-workflow]"))), true);
+      await page.locator(".workspace-auto-review-switch .switch-track").click();
+      assert.equal(await review.isChecked(), true);
+      assert.equal(await release.isChecked(), false);
+      await page.locator(".workspace-auto-review-setting summary").click();
+      assert.equal(await page.locator("#workspace-auto-review-tooltip").isVisible(), true);
+      assert.equal(await review.isChecked(), true);
+      assert.ok((await page.locator("#workspace-auto-review-tooltip").innerText()).includes("напрямую"));
+      await page.locator(".workspace-auto-review-setting summary").click();
+      if (process.env.AGENT_HUB_QA_SCREENSHOT_DIR) {
+        await mkdir(process.env.AGENT_HUB_QA_SCREENSHOT_DIR, { recursive: true });
+        await page.screenshot({ path: path.join(process.env.AGENT_HUB_QA_SCREENSHOT_DIR, `auto-review-${width}.png`) });
+      }
+      await page.locator("[data-workspace-card-submit]").click();
+      assert.equal(await page.evaluate(() => window.__reviewIntents[0].autoReviewEnabled), true);
+      await workspace.dblclick();
+      assert.equal(await review.isChecked(), true);
+      await page.locator(".workspace-auto-review-switch .switch-text").click();
+      await page.locator("[data-workspace-card-submit]").click();
+      await workspace.dblclick();
+      assert.equal(await review.isChecked(), false);
+      assert.equal(await release.isChecked(), false);
+      assert.deepEqual(errors, []);
+      assert.equal(new URL(page.url()).hostname, "agent-hub.test");
+      assert.ok(await page.title());
+    } finally {
+      await browser.close();
+    }
+  });
+}
 
 test("действия карточки задачи одного размера, а удаление отделено справа", async () => {
   const { chromium } = await import("playwright");
@@ -522,9 +602,54 @@ test("Prompt-шаблоны показывают значение в одной 
     });
     assert.equal(rows.sameRow, true, "подпись и значение Prompt-шаблонов оказались в разных строках");
     assert.ok(rows.valueRight > rows.nameRight, "значение не прижато к правому краю строки");
-    assert.ok(rows.addWidth < rows.editorWidth * 0.6,
-      `кнопка входа в форму шаблонов растянулась на ${rows.addWidth} из ${rows.editorWidth}`);
+    assert.ok(rows.addWidth >= rows.editorWidth * 0.9,
+      `кнопка входа в форму шаблонов не заняла строку: ${rows.addWidth} из ${rows.editorWidth}`);
   } finally {
     await browser.close();
   }
+});
+
+test("Server account cards show live identity and preserve login controls at desktop and mobile widths", async () => {
+  const { chromium } = await import("playwright");
+  const browser = await launchEdge(chromium);
+  try {
+    for (const width of [1440, 390]) {
+      const page = await browser.newPage({ viewport: { width, height: 1000 } });
+      const errors = [];
+      page.on("pageerror", (error) => errors.push(error.message));
+      await openFixture(page);
+      await page.locator(width < 600 ? '[data-mobile-button="server"]' : '[data-view-button="server"]').click();
+      const email = "long.account.for.provider.login.check@example.test";
+      await page.evaluate((email) => window.AgentHub.setServerStatus({
+        process: { status: "running" }, accounts: [
+          { provider: "codex", status: "idle", currentAccount: { state: "signed-in", email } },
+          { provider: "claude", status: "pending", attemptId: "8", currentAccount: { state: "signed-out" } },
+        ],
+      }), email);
+      const cards = page.locator("[data-server-accounts]");
+      await cards.getByText(email, { exact: true }).waitFor({ state: "visible" });
+      assert.equal(await cards.getByText("Вход не запускался", { exact: true }).count(), 0);
+      await cards.getByText("Не выполнен вход", { exact: true }).waitFor({ state: "visible" });
+      await cards.getByText("Ожидает входа в браузере", { exact: true }).waitFor({ state: "visible" });
+      assert.equal(await cards.getByRole("button", { name: "Отменить", exact: true }).isVisible(), true);
+      const fits = await cards.evaluate((host) => [...host.querySelectorAll(".server-account")].every((card) => card.scrollWidth <= card.clientWidth + 1));
+      assert.equal(fits, true);
+      const shotRoot = path.join(process.env.TEMP || process.env.TMP || process.cwd(), "agent-hub-account-ui-20260916");
+      await mkdir(shotRoot, { recursive: true });
+      await cards.screenshot({ path: path.join(shotRoot, "accounts-" + width + ".png") });
+      await page.evaluate(() => window.AgentHub.setServerStatus({
+        accounts: [
+          { provider: "codex", status: "idle", currentAccount: { state: "signed-in", email: "new@example.test" } },
+          { provider: "claude", status: "cancelled", attemptId: "8", currentAccount: { state: "unknown" } },
+        ],
+      }));
+      await cards.getByText("new@example.test", { exact: true }).waitFor({ state: "visible" });
+      assert.equal(await cards.getByText(email, { exact: true }).count(), 0);
+      await cards.getByText("Не удалось определить аккаунт", { exact: true }).waitFor({ state: "visible" });
+      await cards.getByText("Вход отменён", { exact: true }).waitFor({ state: "visible" });
+      assert.equal(await cards.getByRole("button", { name: "Отменить", exact: true }).count(), 0);
+      assert.deepEqual(errors, []);
+      await page.close();
+    }
+  } finally { await browser.close(); }
 });
