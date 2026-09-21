@@ -8181,19 +8181,24 @@ function renderQueueForTask(taskId, container) {
       }
     } else {
       const steerAvailable = Boolean(task?.running && ["codex", "claude"].includes(String(task?.provider ?? "")));
-      actions.push(el("button", {
-        type: "button",
-        class: "queue-steer",
-        "data-action": "queue-steer",
-        "data-queue-id": entry.id,
-        title: steerAvailable
-          ? (task.provider === "claude"
-            ? "Прервать текущий ход и продолжить его этим сообщением"
-            : "Добавить это сообщение в текущий ход")
-          : "Доступно, пока эта задача выполняет ход",
-        disabled: !steerAvailable,
-        text: "В текущий ход",
-      }));
+      const exactSteerDecision = entry.state === "pending"
+        && entry.attentionRequired === true
+        && entry.conflictKind === "message-steer";
+      if (!exactSteerDecision) {
+        actions.push(el("button", {
+          type: "button",
+          class: "queue-steer",
+          "data-action": "queue-steer",
+          "data-queue-id": entry.id,
+          title: steerAvailable
+            ? (task.provider === "claude"
+              ? "Прервать текущий ход и продолжить его этим сообщением"
+              : "Добавить это сообщение в текущий ход")
+            : "Доступно, пока эта задача выполняет ход",
+          disabled: !steerAvailable,
+          text: "В текущий ход",
+        }));
+      }
       actions.push(el("button", {
         type: "button",
         class: "queue-edit",
@@ -8247,14 +8252,26 @@ function renderQueueForTask(taskId, container) {
         }));
       }
       if (entry.state === "pending") {
-        actions.push(el("button", {
-          type: "button",
-          class: "queue-accept",
-          "data-action": entry.lastError ? "queue-retry" : "queue-accept",
-          "data-queue-id": entry.id,
-          title: "Отправить после завершения текущего хода",
-          text: entry.lastError ? "Повторить" : "После хода",
-        }));
+        if (entry.lastError) {
+          actions.push(el("button", {
+            type: "button",
+            class: "queue-accept",
+            "data-action": "queue-retry",
+            "data-queue-id": entry.id,
+            title: "Повторить доставку в исходный ход с тем же идентификатором",
+            text: "Повторить",
+          }));
+        }
+        if (!entry.lastError || entry.queueAfterTurnAvailable === true) {
+          actions.push(el("button", {
+            type: "button",
+            class: "queue-accept",
+            "data-action": "queue-accept",
+            "data-queue-id": entry.id,
+            title: "Явно разрешить отправку после завершения текущего хода",
+            text: "После хода",
+          }));
+        }
       }
       actions.push(el("button", {
         type: "button", class: "queue-remove", "data-action": "queue-remove", "data-queue-id": entry.id,

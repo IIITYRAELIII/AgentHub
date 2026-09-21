@@ -86,6 +86,33 @@ function deferredMessageProjection(item, deferred, receipts) {
   };
 }
 
+export function deferredPendingInputSnapshot(item, deferred, receipts, taskTitle = item?.taskTitle ?? null) {
+  const waitProjection = deferredWaitProjection(item);
+  return {
+    id: item.id,
+    state: item.manualAction === "steer" ? "steering" : "pending",
+    ...(item.manualAction !== "steer" && waitProjection.lastError ? { attentionRequired: true } : {}),
+    provider: item.provider,
+    threadId: item.threadId,
+    streamId: item.streamId ?? null,
+    taskTitle,
+    clientUserMessageId: item.clientUserMessageId ?? null,
+    ...(item.clientProjectionIntent ? { clientProjectionIntent: item.clientProjectionIntent } : {}),
+    ...deferredMessageProjection(item, deferred, receipts),
+    annotations: deferred.responseAnnotations?.(item.input) ?? [],
+    allowForce: item.allowForce === true,
+    conflictKind: item.conflictKind ?? null,
+    ...(item.conflictKind === "message-steer"
+      && item.lastErrorCode === "ERR_PROVIDER_STEER_NOT_DELIVERED"
+      ? { queueAfterTurnAvailable: true }
+      : {}),
+    ...waitProjection,
+    attempts: Number(item.attempts) || 0,
+    createdAt: item.createdAt ?? null,
+    attachments: deferredInputAttachments(item, deferred.describeAttachments),
+  };
+}
+
 export function createDesktopSnapshotFactory({
   clock,
   context,
@@ -862,28 +889,9 @@ export function createDesktopSnapshotFactory({
       messageReceipts,
       messagePins,
       deferredInputs: [
-        ...deferred.pendingValues().map((item) => {
-          const waitProjection = deferredWaitProjection(item);
-          return {
-            id: item.id,
-            state: item.manualAction === "steer" ? "steering" : "pending",
-            ...(item.manualAction !== "steer" && waitProjection.lastError ? { attentionRequired: true } : {}),
-            provider: item.provider,
-            threadId: item.threadId,
-            streamId: item.streamId ?? null,
-            taskTitle: deferredTaskTitle(item),
-            clientUserMessageId: item.clientUserMessageId ?? null,
-            ...(item.clientProjectionIntent ? { clientProjectionIntent: item.clientProjectionIntent } : {}),
-            ...deferredMessageProjection(item, deferred, receipts),
-            annotations: deferred.responseAnnotations?.(item.input) ?? [],
-            allowForce: item.allowForce === true,
-            conflictKind: item.conflictKind ?? null,
-            ...waitProjection,
-            attempts: Number(item.attempts) || 0,
-            createdAt: item.createdAt ?? null,
-            attachments: deferredInputAttachments(item, deferred.describeAttachments),
-          };
-        }),
+        ...deferred.pendingValues().map((item) => (
+          deferredPendingInputSnapshot(item, deferred, receipts, deferredTaskTitle(item))
+        )),
         ...deferred.queuedValues().map((item) => ({
           id: item.id,
           state: item.dispatchingAt
