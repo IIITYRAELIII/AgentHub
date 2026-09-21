@@ -132,6 +132,68 @@ test("Blocked persists its prerequisite and workflow rollback restores it", asyn
   assert.deepEqual(store.task(task.id).blockedBy, blockedBy);
 });
 
+test("published duplicate absorption admits only an exact Done survivor and exact replay", async (t) => {
+  const store = await fixture(t);
+  const source = store.move(store.create({ text: "Published duplicate" }).id, {
+    bucket: "workspace", workspaceId: "workspace",
+  });
+  let survivor = store.move(store.create({ text: "Published survivor" }).id, {
+    bucket: "workspace", workspaceId: "workspace",
+  });
+  survivor = store.setWorkflowStatus(survivor.id, "done");
+  survivor = store.complete(survivor.id);
+  const absorbedInto = {
+    version: 1,
+    mode: "published_duplicate",
+    taskId: survivor.id,
+    taskRevision: survivor.revision,
+    sourceTaskRevision: source.revision,
+    source: { taskId: source.id, taskRevision: source.revision },
+    survivor: { taskId: survivor.id, taskRevision: survivor.revision },
+    publicationGeneration: "release-1",
+    cleanupPlan: { strategy: "preserve_managed_source", deleting: [] },
+    repositories: [],
+  };
+  const begun = store.beginLifecycleTransition(source.id, {
+    operationId: "published-duplicate",
+    kind: "complete",
+    expectedRevision: source.revision,
+    evidence: { absorbedInto },
+  });
+  assert.equal(begun.phase, "cleanup");
+  assert.equal(store.beginLifecycleTransition(source.id, {
+    operationId: "published-duplicate",
+    kind: "complete",
+    expectedRevision: source.revision,
+    evidence: { absorbedInto },
+  }).replayed, true);
+  assert.throws(() => store.beginLifecycleTransition(source.id, {
+    operationId: "published-duplicate",
+    kind: "complete",
+    expectedRevision: source.revision,
+    evidence: { absorbedInto: { ...absorbedInto, publicationGeneration: "release-2" } },
+  }), /another absorption/u);
+  assert.equal(store.finalizeCleanupTransition("published-duplicate", {
+    receiptEvidence: { absorbedInto },
+  }).status, "done");
+  assert.equal(store.lifecycleOutcome("published-duplicate").result.evidence.absorbedInto.mode,
+    "published_duplicate");
+
+  const ordinary = store.move(store.create({ text: "Ordinary absorption" }).id, {
+    bucket: "workspace", workspaceId: "workspace",
+  });
+  assert.throws(() => store.beginLifecycleTransition(ordinary.id, {
+    operationId: "ordinary-into-done",
+    kind: "complete",
+    expectedRevision: ordinary.revision,
+    evidence: { absorbedInto: {
+      taskId: survivor.id,
+      taskRevision: survivor.revision,
+      sourceTaskRevision: ordinary.revision,
+    } },
+  }), /Surviving Task changed/u);
+});
+
 test("squash transfer reserves and atomically updates both exact Task rows", async (t) => {
   const store = await fixture(t);
   const source = store.create({ text: "Source", bucket: "workspace", workspaceId: "workspace" });

@@ -175,6 +175,103 @@ test("absorption validates under Await then Task and dev ownership and binds con
     expectedCleanupToken: currentPreview.cleanupToken }), (error) => error === uncertain);
 });
 
+test("published duplicate closure binds Done publication proof, preserves Git and retries finalization", async () => {
+  const source = {
+    id: "published-duplicate", taskNumber: "HUB-241", revision: 6, status: "started",
+    workspaceId: "workspace-1", streamId: "stream-1", workflowStatus: "in_progress",
+    gitReferences: [], gitAdoptions: [],
+  };
+  const survivor = {
+    ...source, id: "published-survivor", taskNumber: "HUB-217", revision: 93,
+    status: "done", workflowStatus: "done",
+    gitReferences: [{ projectRoot: "D:/project", branch: "HUB-217", resultCommit: "a".repeat(40) }],
+  };
+  const lease = { async assertOwned() {} };
+  let generation = "release-1";
+  let finalizeAttempts = 0;
+  let transition = null;
+  let outcome = null;
+  const calls = [];
+  const taskBoard = {
+    task: (id) => structuredClone(id === survivor.id ? survivor : source),
+    lifecycleTransition: () => transition,
+    lifecycleOutcome: () => outcome,
+    beginLifecycleTransition: (options) => {
+      calls.push(["begin", options.evidence.absorbedInto]);
+      if (transition) return { replayed: true, phase: transition.phase };
+      transition = { taskId: source.id, kind: "complete", phase: "cleanup", evidence: options.evidence };
+      return { replayed: false, phase: "cleanup" };
+    },
+    commitWorkflowTransition() {},
+    rollbackWorkflowOutcome() {},
+    failLifecycleTransition() { throw new Error("published duplicate retry must retain cleanup transition"); },
+    finalizeCleanupTransition: (_operationId, options) => {
+      finalizeAttempts += 1;
+      calls.push(["finalize", options.receiptEvidence]);
+      if (finalizeAttempts === 1) throw new Error("database reply unavailable before commit");
+      const result = { ...source, status: "done" };
+      outcome = { taskId: source.id, kind: "complete", result: { result, evidence: options.receiptEvidence } };
+      transition = null;
+      return result;
+    },
+  };
+  const evidence = () => ({
+    version: 1, mode: "published_duplicate",
+    source: { taskId: source.id, taskRevision: source.revision },
+    survivor: { taskId: survivor.id, taskRevision: survivor.revision },
+    publicationGeneration: generation,
+    cleanupPlan: { strategy: "preserve_managed_source", deleting: [] },
+    repositories: [{
+      projectRoot: "D:/project", sourceBranch: "HUB-241", sourceBaseCommit: "b".repeat(40),
+      sourceHead: "c".repeat(40), survivorBranch: "HUB-217",
+      survivorResult: "a".repeat(40), publishedRevision: "c".repeat(40),
+    }],
+  });
+  const taskGitWorkspaces = {
+    withTaskLock: (_id, operation) => operation(lease),
+    withTaskLocks: (_ids, operation) => operation(lease),
+    withPublishedDuplicateEvidenceOwned: (_options, operation) => operation(evidence(), lease),
+    prepareOwned() {}, snapshotAndMergeOwned() {}, cleanupOwned() {},
+    cleanupPreview: async () => ({ workspaces: [], gitReferences: [], dirty: false, unpublished: [], deleting: [] }),
+  };
+  const service = new TaskLifecycleService({
+    taskBoard,
+    taskGitWorkspaces,
+    workspaceCatalog: {
+      workspace: () => ({ id: "workspace-1", settings: { releaseWorkflowEnabled: true } }),
+      stream: () => ({ id: "stream-1", workspaceId: "workspace-1", settings: {} }),
+    },
+    releasePreflight: { withAwaitTransition: (_id, operation) => operation() },
+  });
+  const request = {
+    taskId: source.id, absorbedIntoTaskId: survivor.id, absorptionMode: "published_duplicate",
+    operationId: "published-duplicate-close",
+  };
+  const preview = await service.complete(request);
+  assert.deepEqual(preview.preview.deleting, []);
+  assert.deepEqual(preview.preview.preserving, [{
+    kind: "managed_source", projectRoot: "D:/project", branch: "HUB-241", headCommit: "c".repeat(40),
+  }]);
+  generation = "release-2";
+  await assert.rejects(service.complete({ ...request, confirmCleanup: true,
+    expectedCleanupToken: preview.cleanupToken }), /confirmation is stale/u);
+  assert.equal(transition, null);
+  const current = await service.complete(request);
+  await assert.rejects(service.complete({ ...request, confirmCleanup: true,
+    expectedCleanupToken: current.cleanupToken }), /database reply unavailable/u);
+  assert.equal(transition.phase, "cleanup");
+  const completed = await service.complete({ ...request, confirmCleanup: true,
+    expectedCleanupToken: current.cleanupToken });
+  assert.equal(completed.status, "done");
+  assert.equal(finalizeAttempts, 2);
+  assert.equal(calls.filter(([name]) => name === "begin").length, 2);
+  assert.equal(calls.some(([, value]) => value?.cleanupPlan?.strategy === "preserve_managed_source"), true);
+
+  survivor.workspaceId = "workspace-2";
+  outcome = null;
+  await assert.rejects(service.complete({ ...request, operationId: "wrong-workspace" }), /same Workspace/u);
+});
+
 test("Await validates the exact Test result, commits acceptance and only invalidates the prior candidate", async () => {
   const previousReference = {
     projectRoot: "D:/project", branch: "HUB-159", resultCommit: "a".repeat(40),

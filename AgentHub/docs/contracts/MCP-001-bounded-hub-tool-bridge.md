@@ -46,6 +46,24 @@ an explicit, audited user exception to a prerequisite release wait, never an
 automatic consequence of starting a turn. Claim/launch preserve Test/Await/Blocked
 workflow status.
 
+`hub_task_complete` additionally accepts the exact enum
+`absorption_mode=published_duplicate` only with `absorbed_into_task_id` and only
+from a Release Manager Stream. This mode is for an open Task whose own managed
+checkout is exactly current durable published main while the named survivor is
+already Done with an exact published result. It does not infer delivery from an
+ancestor relation, a clean checkout, response text or manual history. The
+preview/confirmation token binds source and survivor revisions, repository Git
+identities, publication generation and a preserve-only cleanup plan. Ordinary
+callers cannot select the mode, unknown modes are rejected, and omission retains
+the existing open/tested-survivor contract.
+
+The published-duplicate result records durable `absorbedInto` evidence without
+creating a Git result, squash receipt or publication claim for the duplicate.
+No Git artifact is deleted. A post-admission failure leaves the same lifecycle
+operation in cleanup phase for exact retry; a committed outcome is returned by
+readback instead of replaying closure. Task/Git/publication drift before
+admission is a refusal and requires a fresh preview.
+
 For release-enabled Workspaces, combined closure also binds canonical selected
 composition validation (plan, approved base and tree) into that same preview and
 receipt. Validation precedes source closure and never accepts the survivor or
