@@ -1851,7 +1851,7 @@ test("hub_task_claim defaults to skipping dependencies and forwards explicit ens
   assert.equal(taskClaimCalls.length, 3);
 });
 
-test("claim forwards an explicit user dependency exception and complete forwards its surviving Task", async (t) => {
+test("claim forwards an explicit user dependency exception and complete forwards its absorption contract", async (t) => {
   const { service, token, taskGitPrepareCalls } = await fixture(t);
   const reason = "User requested consolidation before prerequisite release";
   await service.call("hub_task_claim", { context_token: token, request_id: "override-wait",
@@ -1863,9 +1863,21 @@ test("claim forwards an explicit user dependency exception and complete forwards
     return { confirmationRequired: true, task: { id: "task-current" }, cleanupToken: "preview" };
   };
   const result = await service.call("hub_task_complete", { context_token: token, request_id: "absorb-preview",
-    task_id: "task-current", absorbed_into_task_id: "task-survivor" });
+    task_id: "task-current", absorbed_into_task_id: "task-survivor",
+    absorption_mode: "published_duplicate" });
   assert.equal(received.absorbedIntoTaskId, "task-survivor");
+  assert.equal(received.absorptionMode, "published_duplicate");
   assert.equal(result.cleanupToken, "preview");
+  const schema = service.tools().find((tool) => tool.name === "hub_task_complete").inputSchema;
+  assert.deepEqual(schema.properties.absorption_mode.enum, ["published_duplicate"]);
+  const otherToken = service.contextToken({ provider: "codex", threadId: "thread-2" });
+  await assert.rejects(service.call("hub_task_complete", {
+    context_token: otherToken,
+    request_id: "absorb-published-non-manager",
+    task_id: "task-current",
+    absorbed_into_task_id: "task-survivor",
+    absorption_mode: "published_duplicate",
+  }), /requires a Release Manager Stream/u);
 });
 
 test("HubMcpService describes the steering fallback to queued delivery", async (context) => {

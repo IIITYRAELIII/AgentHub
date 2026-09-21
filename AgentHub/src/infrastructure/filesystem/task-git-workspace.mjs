@@ -3911,6 +3911,96 @@ export class TaskGitWorkspaceService {
     return visit(0, lease);
   }
 
+  async withPublishedDuplicateEvidenceOwned({ source, target, lease } = {}, operation) {
+    this.#assertAvailable("withPublishedDuplicateEvidenceOwned");
+    await requiredGuardLease(lease).assertOwned();
+    if ((source.gitReferences ?? []).length || (source.gitAdoptions ?? []).length
+        || source.squashTransfer || source.squashAbsorbedBy) {
+      throw new Error("Published duplicate closure requires a source without independent Git result evidence");
+    }
+    const workspaces = await this.describe(source.id);
+    if (!workspaces.length) throw new Error("Published duplicate closure requires the source Task worktree");
+    if (workspaces.some((workspace) => workspace.dirty)) {
+      throw new Error("Published duplicate closure requires a clean source Task worktree");
+    }
+    if ((target.gitReferences ?? []).length !== workspaces.length) {
+      throw new Error("Published survivor requires one exact result per source repository");
+    }
+    const publication = await this.readPublication();
+    const generation = String(publication?.generation ?? "").trim();
+    if (!generation) throw new Error("Published duplicate closure requires durable publication evidence");
+    const publishedRepositories = publicationStateRepositories(publication);
+    const repositories = [];
+    const visit = async (index, ownedLease) => {
+      if (index === workspaces.length) {
+        return operation({
+          version: 1,
+          mode: "published_duplicate",
+          source: { taskId: source.id, taskRevision: source.revision },
+          survivor: { taskId: target.id, taskRevision: target.revision },
+          publicationGeneration: generation,
+          cleanupPlan: { strategy: "preserve_managed_source", deleting: [] },
+          repositories,
+        }, ownedLease);
+      }
+      const workspace = workspaces[index];
+      const repoRoot = workspace.repositoryRoot;
+      return this.#withDevLock(repoRoot, ownedLease, async (devLease) => {
+        await this.#assertNoProcessTreeGuard(source.id);
+        await this.#assertNoProcessTreeGuard(target.id);
+        await this.#assertRepositoryProcessTreeClear(repoRoot);
+        if (await access(this.#withdrawalFile(repoRoot)).then(() => true, () => false)) {
+          throw new Error("Repository has a pending Task withdrawal");
+        }
+        if (!await this.managedRepositoryRoot(workspace.projectRoot, {
+          taskId: source.id, taskNumber: source.taskNumber,
+        })) throw new Error("Source Task worktree ownership changed");
+        const current = (await this.describe(source.id)).find((item) => (
+          samePath(item.repositoryRoot, repoRoot)
+        ));
+        if (!current || current.dirty || current.headCommit !== workspace.headCommit) {
+          throw new Error("Source Task changed during published duplicate validation");
+        }
+        const published = publishedRepositories.find((item) => samePath(item.root, repoRoot));
+        const publishedRevision = exactCommitId(published?.revision, "published repository revision");
+        const localMain = await localMainCommit(repoRoot);
+        const remoteMain = await gitMaybe([
+          "rev-parse", "--verify", "refs/remotes/origin/main^{commit}",
+        ], { cwd: repoRoot });
+        if (publishedRevision !== localMain || publishedRevision !== remoteMain
+            || publishedRevision !== current.headCommit) {
+          throw new Error("Source Task HEAD must equal exact durable local and origin published main");
+        }
+        const references = (target.gitReferences ?? []).filter((reference) => (
+          samePath(reference.projectRoot, repoRoot)
+        ));
+        if (references.length !== 1) {
+          throw new Error("Published survivor requires one exact result per source repository");
+        }
+        const survivorResult = exactCommitId(references[0].resultCommit, "published survivor result");
+        if (await gitMaybe(["rev-parse", "--verify", `${survivorResult}^{commit}`], { cwd: repoRoot }) !== survivorResult
+            || await gitMaybe(["merge-base", "--is-ancestor", survivorResult, publishedRevision], { cwd: repoRoot }) === null) {
+          throw new Error("Surviving Task exact result is not contained in published main");
+        }
+        const baseCommit = await runGit([
+          "rev-parse", `${taskBaseRef(source.id, workspace.repositoryKey)}^{commit}`,
+        ], { cwd: repoRoot });
+        repositories.push({
+          projectRoot: repoRoot,
+          sourceBranch: current.branch,
+          sourceBaseCommit: baseCommit,
+          sourceHead: current.headCommit,
+          survivorBranch: String(references[0].branch ?? ""),
+          survivorResult,
+          publishedRevision,
+        });
+        return visit(index + 1, devLease);
+      });
+    };
+    workspaces.sort((left, right) => left.repositoryRoot.localeCompare(right.repositoryRoot));
+    return visit(0, lease);
+  }
+
   async cleanupPreview(taskId, { gitReferences = [], squashAbsorbedBy = null } = {}) {
     this.#assertAvailable("cleanupPreview");
     const id = normalizedTaskId(taskId);

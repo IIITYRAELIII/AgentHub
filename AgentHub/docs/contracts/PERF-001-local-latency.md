@@ -412,3 +412,9 @@ read path. Its Git witness work is bounded by the changed paths in the source
 result and survivor replacement delta. It performs one repository-lock phase,
 one expected-old `dev` ref update and one two-Task SQLite commit; it does not scan
 arbitrary Workspace history or add background work to ordinary Task reads.
+
+Published-duplicate absorption is likewise explicit and outside snapshot,
+message and provider critical paths. It inspects only the source Task's bounded
+managed repository set and the survivor's exact stored result references while
+holding existing Await, Task and repository leases. It introduces no startup
+scan, background reconciliation, provider request or second lifecycle owner.

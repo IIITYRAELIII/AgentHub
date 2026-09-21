@@ -2582,6 +2582,7 @@ export class TaskBoardStore {
           }
           const existingTransfer = JSON.parse(existing.evidence_json ?? "{}")?.squashTransfer;
           const existingCutover = JSON.parse(existing.evidence_json ?? "{}")?.squashCutover;
+          const existingAbsorbed = JSON.parse(existing.evidence_json ?? "{}")?.absorbedInto;
           if (Boolean(existingTransfer) !== Boolean(evidence?.squashTransfer)
               || (existingTransfer && normalizedTaskSquashTransfer(existingTransfer).transferHash
                 !== normalizedTaskSquashTransfer(evidence.squashTransfer).transferHash)) {
@@ -2591,6 +2592,9 @@ export class TaskBoardStore {
               || (existingCutover && normalizedTaskSquashCutover(existingCutover).cutoverHash
                 !== normalizedTaskSquashCutover(evidence.squashCutover).cutoverHash)) {
             throw new Error("Task lifecycle operation id was already used for another squash cutover");
+          }
+          if (JSON.stringify(existingAbsorbed ?? null) !== JSON.stringify(evidence?.absorbedInto ?? null)) {
+            throw new Error("Task lifecycle operation id was already used for another absorption");
           }
           database.exec("COMMIT");
           return { task: this.#taskWithRelease(database, current), replayed: true, phase: existing.phase };
@@ -2717,7 +2721,12 @@ export class TaskBoardStore {
           const targetActive = database.prepare(
             "SELECT operation_id FROM hub_task_lifecycle_transitions WHERE task_id = ? AND phase IN ('pending_git', 'cleanup')",
           ).get(absorbed.taskId);
-          if (targetTask.status === "done" || targetTask.workspace_id !== current.workspace_id
+          const publishedDuplicate = absorbed.mode === "published_duplicate";
+          const validTargetState = publishedDuplicate
+            ? targetTask.status === "done" && targetTask.workflow_status === "done"
+            : targetTask.status !== "done";
+          if (!validTargetState || targetTask.workspace_id !== current.workspace_id
+              || Number(current.row_revision) !== Number(absorbed.sourceTaskRevision ?? current.row_revision)
               || Number(targetTask.row_revision) !== absorbed.taskRevision || targetActive) {
             throw new Error("Surviving Task changed or has a pending operation");
           }

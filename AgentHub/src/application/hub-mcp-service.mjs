@@ -777,11 +777,12 @@ export class HubMcpService {
         main_result_commit: { type: "string" },
         confirm_adoption: { type: "boolean", description: "Must be true because this creates release-authority Git references for legacy work." },
       }, ["task_id", "expected_task_revision", "evidence_turn_id", "reported_result_commit", "main_result_commit", "confirm_adoption"]),
-      tool("hub_task_complete", "Preview, then confirm closing a Task. Use absorbed_into_task_id after agent-led consolidation to preserve the source branch and worktree without marking it published.", {
+      tool("hub_task_complete", "Preview, then confirm closing a Task. Use absorbed_into_task_id after agent-led consolidation. Release Managers may explicitly close a verified published zero-delta duplicate without attributing a result to it.", {
         task_id: { type: "string" },
         confirm_cleanup: { type: "boolean" },
         expected_cleanup_token: { type: "string" },
         absorbed_into_task_id: { type: "string", description: "Surviving tested Task that contains the source work. The source must already be returned from Test/Await." },
+        absorption_mode: { type: "string", enum: ["published_duplicate"], description: "Release Manager-only mode for an open zero-own-delta source whose survivor is already Done and exactly published." },
       }, ["task_id"]),
       tool("hub_task_delete", "Preview, then explicitly confirm permanent destructive deletion of a Task and its managed Git artifacts.", {
         task_id: { type: "string" },
@@ -1076,6 +1077,9 @@ export class HubMcpService {
         if (!this.#isReleaseManager(context)) throw new Error("legacy Git adoption requires a Release Manager Stream");
         return this.#adoptLegacyTaskGit(context, args);
       case "hub_task_complete":
+        if (args.absorption_mode === "published_duplicate" && !this.#isReleaseManager(context)) {
+          throw new Error("published duplicate closure requires a Release Manager Stream");
+        }
         return this.#completeTask(context, args);
       case "hub_task_delete": {
         return this.#deleteTask(context, args);
@@ -1623,10 +1627,11 @@ export class HubMcpService {
     task_id: taskId, request_id: operationId, confirm_cleanup: confirmCleanup = false,
     expected_cleanup_token: expectedCleanupToken = null,
     absorbed_into_task_id: absorbedIntoTaskId = null,
+    absorption_mode: absorptionMode = null,
   } = {}) {
     const task = this.#task(context, taskId);
     const result = await this.taskLifecycle.complete({
-      taskId: task.id, operationId, confirmCleanup, expectedCleanupToken, absorbedIntoTaskId,
+      taskId: task.id, operationId, confirmCleanup, expectedCleanupToken, absorbedIntoTaskId, absorptionMode,
     });
     return result?.confirmationRequired
       ? { ...result, task: compactTask(result.task) }

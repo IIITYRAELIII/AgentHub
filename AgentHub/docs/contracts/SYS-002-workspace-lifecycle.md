@@ -129,3 +129,13 @@ the source remains in Test. The pending lifecycle transition does not project a
 synthetic Test state. The survivor becomes Test, and the source returns to
 Progress, only in the same two-row commit after exact cutover and squash Git
 readback. All ordinary public squash calls continue to require two Test Tasks.
+
+## Published duplicate Task cards
+
+A Release Manager may close an open zero-own-delta duplicate into an already
+Done survivor only through the explicit published-duplicate absorption mode.
+The durable source card and history remain available and link to the exact
+survivor; the operation does not assign the survivor's result to the source or
+fabricate a squash outcome. The source branch/worktree is preserved. Ordinary
+absorption still requires an open tested survivor, and ordinary Complete still
+requires workflow Done.
