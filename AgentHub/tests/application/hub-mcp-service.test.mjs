@@ -1813,15 +1813,15 @@ test("claim forwards an explicit user dependency exception and complete forwards
   assert.equal(result.cleanupToken, "preview");
 });
 
-test("HubMcpService describes the steering fallback to queued delivery", async (context) => {
+test("HubMcpService describes exact steering and an explicit fallback decision", async (context) => {
   const { service } = await fixture(context);
   const mode = service.tools()
     .find((tool) => tool.name === "hub_stream_message_send")
     .inputSchema.properties.mode;
 
-  assert.match(mode.description, /steer the active turn/u);
-  assert.match(mode.description, /queue if steering is no longer possible/u);
-  assert.doesNotMatch(mode.description, /explicit retry or queue decision/u);
+  assert.match(mode.description, /exact steering of the current managed run/u);
+  assert.match(mode.description, /explicit retry or queue decision/u);
+  assert.doesNotMatch(mode.description, /queue if steering is no longer possible/u);
 });
 
 test("HubMcpService claims the active turn while an older terminal remains retained", async (context) => {
