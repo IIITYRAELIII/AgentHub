@@ -5,7 +5,7 @@ import { TaskLifecycleService } from "../../src/application/task-lifecycle-servi
 import { taskReleasePlanRevision } from "../../src/domain/task-release-snapshot.mjs";
 import { normalizedTaskSquashTransfer } from "../../src/domain/task-squash-transfer.mjs";
 
-function lifecycleFixture({ synchronousFence = false } = {}) {
+function lifecycleFixture({ synchronousFence = false, stableFence = false } = {}) {
   const task = {
     id: "task-fenced", title: "Fenced", taskNumber: "HUB-159", revision: 1,
     workspaceId: "workspace-1", streamId: "stream-1", workflowStatus: "done",
@@ -15,7 +15,7 @@ function lifecycleFixture({ synchronousFence = false } = {}) {
   const asyncAssertOwned = async () => {
     calls.assertions += 1;
     await Promise.resolve();
-    if (calls.assertions > 1) throw new Error("lease ownership was lost asynchronously");
+    if (!stableFence && calls.assertions > 1) throw new Error("lease ownership was lost asynchronously");
   };
   const lease = {
     signal: new AbortController().signal,
@@ -117,6 +117,41 @@ test("Task lifecycle rejects a synchronous assertOwned contract before mutation"
   }), /assertOwned must be asynchronous/u);
   assert.deepEqual(state.calls, {
     assertions: 1, begin: 0, fail: 0, commit: 0, rollback: 0, cleanup: 0, complete: 0, delete: 0,
+  });
+});
+
+test("Complete and Delete retain squash absorption evidence through cleanup", async (t) => {
+  for (const action of ["complete", "delete"]) await t.test(action, async () => {
+    const { service, calls, task } = lifecycleFixture({ stableFence: true });
+    const reference = {
+      projectRoot: "D:/project", branch: "HUB-224", resultCommit: "a".repeat(40),
+    };
+    const squashAbsorbedBy = { transferHash: "b".repeat(64) };
+    Object.assign(task, { gitReferences: [reference], squashAbsorbedBy });
+    const cleanup = {
+      workspaces: [], gitReferences: [{ ...reference, published: true }],
+      dirty: false, unpublished: [], deleting: [],
+    };
+    service.taskGitWorkspaces.cleanupPreview = async (_taskId, options) => {
+      assert.equal(options.squashAbsorbedBy, squashAbsorbedBy);
+      return cleanup;
+    };
+    service.taskGitWorkspaces.cleanupOwned = async (_taskId, options) => {
+      assert.equal(options.squashAbsorbedBy, squashAbsorbedBy);
+      assert.equal(options.expectedPreview, cleanup);
+      calls.cleanup += 1;
+      return { removed: 0 };
+    };
+
+    const request = { taskId: task.id, operationId: `${action}-absorbed` };
+    const preview = await service[action](request);
+    await service[action]({
+      ...request, confirmCleanup: true, expectedCleanupToken: preview.cleanupToken,
+    });
+
+    assert.equal(calls.cleanup, 1);
+    assert.equal(calls.complete, action === "complete" ? 1 : 0);
+    assert.equal(calls.delete, action === "delete" ? 1 : 0);
   });
 });
 
