@@ -16,7 +16,7 @@ test("Claude compaction prompt stays the exact CLI command", () => {
 test("Claude compaction client identity is recognised only by its own prefix", () => {
   const identity = claudeCompactionClientId();
   assert.equal(isClaudeCompactionClientId(identity), true);
-  assert.equal(isClaudeCompactionClientId("agent-hub-context-probe:1"), false);
+  assert.equal(isClaudeCompactionClientId("ordinary-client-id"), false);
   assert.equal(isClaudeCompactionClientId(""), false);
 });
 

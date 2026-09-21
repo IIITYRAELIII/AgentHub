@@ -2,21 +2,23 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createDesktopApplicationRouter } from "../../../src/interfaces/desktop/desktop-application-router.mjs";
 
-function router(calls, { omit = [] } = {}) {
+function router(calls, { omit = [], overrides = {} } = {}) {
   const handler = async (params) => ({ params });
   const handlers = Object.fromEntries([
     "snapshot", "runtimeHealth", "retryStartup", "taskHistory", "rateLimitHistory", "usageHistory", "search", "workspaceMessageSearch", "markTaskRead",
     "openTask", "openTurn", "workspaceMessageOpen", "sendMessage", "taskDiff", "deferredInput",
     "statusDetails", "speakLastAnswer", "restartServer", "setAutostart",
     "updateServerConfiguration", "readPreTurnInstructions", "updateGlobalPreTurnInstructions",
-    "readRootAgents", "updateRootAgents", "compactContext", "openAttachment", "submitBugReport", "reportDiagnostic",
+    "readRootAgents", "updateRootAgents", "compactContext", "openAttachment", "uploadAttachment", "browseDirectory", "submitBugReport", "reportDiagnostic",
     "trustedDevices", "createDevicePairing", "revokeDevice",
     "messagePinSet", "messagePinsClear",
     "renameWorkspace", "createWorkspaceFromStream", "mergeWorkspaces", "renameStream", "moveStream",
-    "boardTaskCreate", "boardTaskIngest", "boardTaskUpdate", "boardTaskChecklist", "boardTaskChecklistLinkedAction", "boardTaskAttachmentAdd", "boardTaskStatus", "boardTaskMove", "boardTaskComplete", "boardTaskRemove",
+    "boardTaskCreate", "boardTaskIngest", "boardTaskUpdate", "boardTaskDiff", "boardTaskChecklist", "boardTaskChecklistLinkedAction", "boardTaskAttachmentAdd", "boardTaskStatus", "boardTaskMove", "boardTaskComplete", "boardTaskRemove",
     "boardTaskRetryTriage", "boardTaskStart", "boardColumnMove", "boardColumnComment",
-    "boardWorkspaceMove", "usageSync", "usageSyncInvite", "usageSyncEnroll", "usageSyncDeviceLabel",
+    "boardWorkspaceMove",
+    "usageSync", "usageSyncStatus", "usageSyncNow", "usageSyncInvite", "usageSyncEnroll", "usageSyncDeviceLabel",
   ].map((name) => [name, handler]));
+  Object.assign(handlers, overrides);
   for (const name of omit) delete handlers[name];
   return createDesktopApplicationRouter({
     handlers,
@@ -36,6 +38,16 @@ test("Desktop application router requires the Task workflow status handler", () 
     () => router([], { omit: ["boardTaskStatus"] }),
     /boardTaskStatus is required/u,
   );
+});
+
+test("Desktop application router keeps attachment preparation local and outside command dispatch", async () => {
+  const calls = [];
+  const control = router(calls);
+  const request = { action: "attachment-upload", params: { method: "GET", path: "/api/attachment-upload" } };
+  const result = await control.handleDesktopControl({ ...request, context: { source: "desktop-control" } });
+  assert.equal(result.params.path, request.params.path);
+  assert.deepEqual(calls, []);
+  await assert.rejects(control.handleDesktopControl({ ...request, context: { source: "trusted-device" } }), /локаль|local/iu);
 });
 
 test("Desktop application router forwards the exact startup generation for recovery", async () => {
@@ -177,6 +189,16 @@ test("Desktop application router exposes root AGENTS read and serialized update"
   })).params.content, "# Rules");
 });
 
+test("Desktop application router exposes the local directory picker", async () => {
+  const control = router([]);
+  const result = await control.handleDesktopControl({
+    action: "browse-directory",
+    params: { initialPath: "D:\\projects" },
+    context: { source: "local-mini-app" },
+  });
+  assert.equal(result.params.initialPath, "D:\\projects");
+});
+
 test("Desktop application router exposes pre-turn instructions read and Global update", async () => {
   const control = router([]);
   assert.equal((await control.handleDesktopControl({
@@ -244,6 +266,44 @@ test("Desktop application router moves a Workspace with a narrow folder command"
   ]]);
 });
 
+test("Desktop application router exposes Sync to authenticated remote contexts", async () => {
+  const received = [];
+  const actions = [
+    ["usage-sync", "usageSync"],
+    ["usage-sync-status", "usageSyncStatus"],
+    ["usage-sync-now", "usageSyncNow"],
+    ["usage-sync-invite", "usageSyncInvite"],
+    ["usage-sync-enroll", "usageSyncEnroll"],
+    ["usage-sync-device-label", "usageSyncDeviceLabel"],
+  ];
+  const overrides = Object.fromEntries(actions.map(([action, handlerName]) => [
+    handlerName,
+    async (params, context) => {
+      received.push({ action, context, requestToken: params.requestToken });
+      return { action, requestToken: params.requestToken };
+    },
+  ]));
+  const control = router([], { overrides });
+
+  for (const source of ["trusted-device", "telegram-mini-app"]) {
+    for (const [action] of actions) {
+      const context = { source, userId: `${source}-user` };
+      const requestToken = `${source}:${action}`;
+      assert.deepEqual(await control.handleDesktopControl({
+        action,
+        params: { requestToken },
+        context,
+      }), { action, requestToken });
+      assert.equal(received.at(-1).context, context);
+    }
+  }
+
+  assert.deepEqual(received.map(({ action, context }) => [context.source, action]),
+    ["trusted-device", "telegram-mini-app"].flatMap((source) => (
+      actions.map(([action]) => [source, action])
+    )));
+});
+
 test("Desktop application router forwards diagnostic events", async () => {
   const control = router([]);
   const result = await control.handleDesktopControl({
@@ -273,6 +333,16 @@ test("Desktop application router saves Task presentation fields", async () => {
   assert.deepEqual(result.params, {
     id: "board-1", title: "Новый заголовок", description: "Описание", maxResponseBytes: 3_500_000,
   });
+});
+
+test("Desktop Task diff is an addressed read without mutation dispatch", async () => {
+  const calls = [];
+  const control = router(calls);
+  const result = await control.handleDesktopControl({
+    action: "board-task-diff", params: { id: "exact-task" },
+  });
+  assert.equal(result.params.id, "exact-task");
+  assert.deepEqual(calls, []);
 });
 
 test("Desktop application router exposes the checklist mutation boundary", async () => {
@@ -339,12 +409,13 @@ test("Desktop application router accepts a message beside a blocked mutation", a
     "openTask", "openTurn", "workspaceMessageOpen", "sendMessage", "taskDiff", "deferredInput",
     "statusDetails", "speakLastAnswer", "restartServer", "setAutostart",
     "updateServerConfiguration", "readPreTurnInstructions", "updateGlobalPreTurnInstructions",
-    "readRootAgents", "updateRootAgents", "compactContext", "openAttachment", "submitBugReport", "reportDiagnostic",
+    "readRootAgents", "updateRootAgents", "compactContext", "openAttachment", "browseDirectory", "submitBugReport", "reportDiagnostic",
     "trustedDevices", "createDevicePairing", "revokeDevice",
     "messagePinSet", "messagePinsClear",
-    "boardTaskCreate", "boardTaskIngest", "boardTaskUpdate", "boardTaskChecklist", "boardTaskChecklistLinkedAction", "boardTaskAttachmentAdd", "boardTaskStatus", "boardTaskMove", "boardTaskComplete", "boardTaskRemove",
+    "boardTaskCreate", "boardTaskIngest", "boardTaskUpdate", "boardTaskDiff", "boardTaskChecklist", "boardTaskChecklistLinkedAction", "boardTaskAttachmentAdd", "boardTaskStatus", "boardTaskMove", "boardTaskComplete", "boardTaskRemove",
     "boardTaskRetryTriage", "boardTaskStart", "boardColumnMove", "boardColumnComment",
-    "boardWorkspaceMove", "usageSync", "usageSyncInvite", "usageSyncEnroll", "usageSyncDeviceLabel",
+    "boardWorkspaceMove",
+    "usageSync", "usageSyncStatus", "usageSyncNow", "usageSyncInvite", "usageSyncEnroll", "usageSyncDeviceLabel",
   ].map((name) => [name, async () => ({ accepted: true, name })]));
   handlers.restartServer = async () => blocked;
   const control = createDesktopApplicationRouter({
@@ -371,12 +442,13 @@ test("Desktop application router accepts a restart beside a blocked mutation", a
     "openTask", "openTurn", "workspaceMessageOpen", "sendMessage", "taskDiff", "deferredInput",
     "statusDetails", "speakLastAnswer", "restartServer", "setAutostart",
     "updateServerConfiguration", "readPreTurnInstructions", "updateGlobalPreTurnInstructions",
-    "readRootAgents", "updateRootAgents", "compactContext", "openAttachment", "submitBugReport", "reportDiagnostic",
+    "readRootAgents", "updateRootAgents", "compactContext", "openAttachment", "browseDirectory", "submitBugReport", "reportDiagnostic",
     "trustedDevices", "createDevicePairing", "revokeDevice",
     "messagePinSet", "messagePinsClear",
-    "boardTaskCreate", "boardTaskIngest", "boardTaskUpdate", "boardTaskChecklist", "boardTaskChecklistLinkedAction", "boardTaskAttachmentAdd", "boardTaskStatus", "boardTaskMove", "boardTaskComplete", "boardTaskRemove",
+    "boardTaskCreate", "boardTaskIngest", "boardTaskUpdate", "boardTaskDiff", "boardTaskChecklist", "boardTaskChecklistLinkedAction", "boardTaskAttachmentAdd", "boardTaskStatus", "boardTaskMove", "boardTaskComplete", "boardTaskRemove",
     "boardTaskRetryTriage", "boardTaskStart", "boardColumnMove", "boardColumnComment",
-    "boardWorkspaceMove", "usageSync", "usageSyncInvite", "usageSyncEnroll", "usageSyncDeviceLabel",
+    "boardWorkspaceMove",
+    "usageSync", "usageSyncStatus", "usageSyncNow", "usageSyncInvite", "usageSyncEnroll", "usageSyncDeviceLabel",
   ].map((name) => [name, async () => ({ accepted: true, name })]));
   const control = createDesktopApplicationRouter({
     handlers,

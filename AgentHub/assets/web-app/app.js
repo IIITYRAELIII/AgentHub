@@ -46,6 +46,7 @@ const {
 } = window.AgentHubMessageDisclosure;
 const chatSurfacePreference = window.AgentHubChatSurfacePreference;
 const backgroundMotionPreference = window.AgentHubBackgroundMotionPreference;
+const activityRailPreference = window.AgentHubActivityRailPreference;
 const backgroundImageResolver = window.AgentHubBackgroundImageResolver;
 const modalOverlays = window.AgentHubModalOverlays;
 const particleStyle = window.AgentHubParticleStyle;
@@ -120,14 +121,18 @@ const workspaceCardQuickMessagesCount = document.querySelector("[data-workspace-
 const workspaceCardArchive = document.querySelector("[data-workspace-card-archive]");
 const workspaceCardReleaseWorkflow = document.querySelector("[data-workspace-release-workflow]");
 const workspaceCardReleaseWorkflowTooltip = document.querySelector("[data-workspace-release-workflow-tooltip]");
+const workspaceCardAutoReview = document.querySelector("[data-workspace-auto-review]");
 const workspaceCardOrder = document.querySelector("[data-workspace-card-order]");
 const workspaceCardSubmit = document.querySelector("[data-workspace-card-submit]");
 window.AgentHubWorkspaceReleaseWorkflow?.renderTooltip(workspaceCardReleaseWorkflowTooltip);
+window.AgentHubWorkspaceReleaseWorkflow?.renderAutoReviewTooltip(document.querySelector("[data-workspace-auto-review-tooltip]"));
 
 const chatPane = document.querySelector("[data-chat-pane]");
 const streamTabs = document.querySelector("[data-stream-tabs]");
 const streamChatColumns = document.querySelector("[data-stream-chat-columns]");
 const streamChatHeader = document.querySelector("[data-stream-chat-header]");
+const streamHeaderWorkspace = document.querySelector("[data-stream-header-workspace]");
+const streamHeaderName = document.querySelector("[data-stream-header-name]");
 const streamHeaderProviderDot = document.querySelector("[data-stream-header-provider-dot]");
 const streamHeaderProvider = document.querySelector("[data-stream-header-provider]");
 const streamHeaderProviderConnection = document.querySelector("[data-provider-connection-quality]");
@@ -175,13 +180,14 @@ const chatLive = document.querySelector("[data-chat-live]");
 const chatStops = [...document.querySelectorAll("[data-chat-stop]")];
 const dialogSettings = document.querySelector("[data-dialog-settings]");
 const dialogSettingsToggle = document.querySelector("[data-dialog-settings-toggle]");
+const dialogSettingsClose = document.querySelector("[data-dialog-settings-close]");
 const dialogStreamName = document.querySelector("[data-dialog-stream-name]");
 const dialogWorkingDirectory = document.querySelector("[data-dialog-working-directory]");
 const dialogWorkingDirectoryNote = document.querySelector("[data-dialog-working-directory-note]");
 const dialogStreamRules = document.querySelector("[data-dialog-stream-rules]");
 const dialogStreamRulesCount = document.querySelector("[data-dialog-stream-rules-count]");
 const dialogStreamRulesSave = document.querySelector("[data-dialog-stream-rules-save]");
-const dialogStreamArchitect = document.querySelector("[data-dialog-stream-architect]");
+const dialogStreamReleaseManager = document.querySelector("[data-dialog-stream-release-manager]");
 const dialogStreamTeamLead = document.querySelector("[data-dialog-stream-team-lead]");
 const dialogStreamTeamLeadTooltip = document.querySelector("[data-stream-team-lead-tooltip]");
 const dialogStreamQuickMessagesEntry = document.querySelector("[data-dialog-stream-quick-messages-entry]");
@@ -753,6 +759,11 @@ function applyChatSurface(value, { persist = false } = {}) {
   if (persist) chatSurfacePreference.persist(localStorage, selected);
 }
 
+function applyActivityRailVisibility(value, { persist = false } = {}) {
+  const selected = activityRailPreference.apply(root, null, value);
+  if (persist) activityRailPreference.persist(localStorage, selected);
+}
+
 function savedStreamStatusStyle() {
   try {
     const value = localStorage.getItem("agent-hub-stream-status-style")
@@ -960,6 +971,7 @@ telegramFullscreenButton?.addEventListener("click", () => {
 applyBackgroundMotion(backgroundMotionPreference.stored(localStorage));
 applyTheme(savedTheme());
 applyChatSurface(chatSurfacePreference.stored(localStorage));
+applyActivityRailVisibility(activityRailPreference.stored(localStorage));
 applyStreamStatusStyle(savedStreamStatusStyle());
 applyStreamStatusEffect(savedStreamStatusEffect());
 applyActivityStreamDetailedCards(savedActivityStreamDetailedCards());
@@ -1448,6 +1460,23 @@ function emitIntent(type, detail) {
     }
   }
 }
+
+const directoryBrowseAvailable = window.AgentHubResourceInteractions.localWorkspaceFilesAvailable({
+  vscode: vscodeMode,
+  protocol: window.location.protocol,
+  hostname: window.location.hostname,
+});
+function createDirectoryField(input) {
+  return input && window.AgentHubDirectoryField?.create(input, {
+    browseAvailable: directoryBrowseAvailable,
+    browse: ({ initialPath }) => new Promise((resolve, reject) => {
+      emit("directory:browse", { initialPath, resolve, reject });
+    }),
+    onError: (error) => showToast(String(error?.message ?? error)),
+  });
+}
+const workspaceWorkingDirectoryField = createDirectoryField(workspaceCardWorkingDirectory);
+const streamWorkingDirectoryField = createDirectoryField(dialogWorkingDirectory);
 
 document.addEventListener("agenthub:attachment-open", (event) => {
   emit("attachment:open", event.detail ?? {});
@@ -4324,6 +4353,7 @@ function renderStreamTabs() {
     overflowItems.push(el("button", {
       ...attributes,
       class: "stream-overflow-item",
+      draggable: window.AgentHubStreamTabs.streamsAreDraggable(streamOrderMode, surface) ? "true" : null,
       hidden: true,
     }, content()));
     return el("span", {
@@ -5105,10 +5135,11 @@ function openWorkspaceCard(workspaceId) {
   if (workspaceCardFolder) workspaceCardFolder.disabled = workspace.kind === "system";
   populateWorkspaceFolderSelect(workspace.settings?.catalogFolder);
   workspaceCardComment.value = String(workspace.comment ?? "");
-  workspaceCardWorkingDirectory.value = String(workspace.settings?.workingDirectory ?? "");
+  workspaceWorkingDirectoryField?.setValue(String(workspace.settings?.workingDirectory ?? ""));
   workspaceCardTaskPrefix.value = String(workspace.settings?.taskPrefix ?? "");
   workspaceCardRules.value = entityAgentRules(workspace);
   workspaceCardReleaseWorkflow.checked = workspace.settings?.releaseWorkflowEnabled === true;
+  workspaceCardAutoReview.checked = workspace.settings?.autoReviewEnabled === true;
   updateAgentRulesLimit(workspaceCardRules, workspaceCardRulesCount);
   renderWorkspaceCardQuickMessages(workspace.id);
   if (workspaceCardArchive) {
@@ -5141,10 +5172,11 @@ function openNewWorkspaceCard() {
   if (workspaceCardFolder) workspaceCardFolder.disabled = false;
   populateWorkspaceFolderSelect();
   workspaceCardComment.value = "";
-  workspaceCardWorkingDirectory.value = "";
+  workspaceWorkingDirectoryField?.setValue("");
   workspaceCardTaskPrefix.value = "";
   workspaceCardRules.value = "";
   workspaceCardReleaseWorkflow.checked = false;
+  workspaceCardAutoReview.checked = false;
   updateAgentRulesLimit(workspaceCardRules, workspaceCardRulesCount);
   renderWorkspaceCardQuickMessages("");
   if (workspaceCardArchive) workspaceCardArchive.hidden = true;
@@ -5465,7 +5497,10 @@ streamTabs?.addEventListener("drop", (event) => {
   const order = orderedWorkspaceStreams(streams, workspaceId).map((stream) => stream.id)
     .filter((id) => id !== streamId);
   const targetIndex = order.indexOf(targetId);
-  const insertAfter = event.clientX > target.getBoundingClientRect().left + target.clientWidth / 2;
+  const rect = target.getBoundingClientRect();
+  const insertAfter = target.classList.contains("stream-overflow-item")
+    ? event.clientY > rect.top + rect.height / 2
+    : event.clientX > rect.left + rect.width / 2;
   order.splice(Math.max(0, targetIndex + (insertAfter ? 1 : 0)), 0, streamId);
   const beforeStreamId = order[order.indexOf(streamId) + 1] ?? null;
   emit("stream:move", { streamId, workspaceId, beforeStreamId });
@@ -5706,6 +5741,13 @@ function providerConnectionTitle(providerLabel, presentation, measurement) {
 function renderStreamChatHeader(task, now = Date.now()) {
   if (!streamChatHeader) return;
   streamChatHeader.hidden = !task;
+  const workspaceName = task ? String(task.workspaceName || task.title || "Workspace").trim() : "";
+  const streamName = task ? String(task.streamName || task.streamDisplayName || "Stream").trim() : "";
+  if (streamHeaderWorkspace) {
+    streamHeaderWorkspace.textContent = workspaceName;
+    streamHeaderWorkspace.title = workspaceName;
+  }
+  if (streamHeaderName) streamHeaderName.textContent = streamName;
   if (!task) return;
   const provider = String(task.provider ?? "none");
   const providerLabel = task.agentLabel || providerLabels[provider] || "Агент";
@@ -7234,6 +7276,7 @@ function activityItemNode(activity) {
     class: "activity-item",
     "data-type": activity.type ?? "stage",
     "data-status": activity.status ?? "",
+    ...(activity.type === "compaction" ? { title: String(activity.detail ?? "") } : {}),
   }, [
     el("span", { class: "activity-marker", "aria-hidden": "true" }),
     el("span", { class: "activity-time", text: activity.time
@@ -7459,6 +7502,9 @@ function renderMessage(message, { readOnly = false, task = currentTask() } = {})
     "data-message-key": message.messageKey ?? "",
     "data-delivery-state": message.deliveryState ?? "",
     "data-provider": String(task?.provider ?? "none"),
+    ...(maintenance && message.measurementKind === "estimated"
+      ? { title: String(message.maintenanceDetail ?? "Предварительная оценка провайдера после свёртки") }
+      : {}),
     ...(subagent ? { "data-subagent-response": true } : {}),
   });
 
@@ -8620,6 +8666,7 @@ function renderAttachmentStrip(items, { readOnly, taskReferenceList = false }) {
       const status = ({
         new: "New",
         in_progress: "InProg",
+        blocked: "Blocked",
         testing: "Test",
         awaiting_implementation: "Await",
         done: "Done",
@@ -9252,7 +9299,10 @@ function closeResourceContextMenu() {
 
 function openResourceContextMenu(event, resource) {
   pendingResource = resource;
-  const actions = new Set(resourceInteractions.resourceActions(resource));
+  const actions = new Set(resourceInteractions.resourceActions(resource, {
+    localWorkspaceFilesAvailable: directoryBrowseAvailable,
+    vscode: vscodeMode,
+  }));
   for (const button of resourceContextMenu.querySelectorAll("[data-resource-action]")) {
     button.hidden = !actions.has(button.dataset.resourceAction);
   }
@@ -9413,6 +9463,11 @@ function openDialogSettings() {
 function toggleDialogSettings() {
   setDialogSettingsOpen(!dialogSettings.open);
 }
+
+dialogSettingsClose?.addEventListener("click", (event) => {
+  event.stopPropagation();
+  setDialogSettingsOpen(false);
+});
 
 function openPanel() {
   if (settingsPanel.hidden) settingsPanelReturnFocus = document.activeElement;
@@ -9626,6 +9681,7 @@ workspaceCardForm?.addEventListener("submit", (event) => {
       taskPrefix: workspaceCardTaskPrefix.value.trim(),
       rules: workspaceCardRules.value,
       releaseWorkflowEnabled: workspaceCardReleaseWorkflow.checked,
+      autoReviewEnabled: workspaceCardAutoReview.checked,
       beforeColumnId: order[targetIndex] ?? null,
     });
     closeWorkspaceCard();
@@ -9646,6 +9702,7 @@ workspaceCardForm?.addEventListener("submit", (event) => {
     taskPrefix: workspaceCardTaskPrefix.value.trim(),
     rules: workspaceCardRules.value,
     releaseWorkflowEnabled,
+    autoReviewEnabled: workspaceCardAutoReview.checked,
     beforeColumnId: remaining[targetIndex] ?? null,
   });
   closeWorkspaceCard();
@@ -9977,7 +10034,7 @@ function renderDialogSettings() {
   if (dialogWorkingDirectory) {
     const workspaceDirectory = String(task?.workspaceSettings?.workingDirectory ?? "").trim();
     const currentDirectory = String(task?.sessionCwd ?? task?.projectRoot ?? "").trim();
-    dialogWorkingDirectory.value = String(task?.streamSettings?.workingDirectory ?? "").trim();
+    streamWorkingDirectoryField?.setValue(String(task?.streamSettings?.workingDirectory ?? "").trim());
     dialogWorkingDirectory.disabled = !task?.streamId;
     dialogWorkingDirectory.placeholder = workspaceDirectory
       ? `Workspace: ${workspaceDirectory}`
@@ -9987,10 +10044,11 @@ function renderDialogSettings() {
         ? "Будет использована при создании Thread; пустое значение наследуется от Workspace."
         : "Применится при создании следующего Thread; текущий Thread сохраняет свою директорию.";
     }
+    streamWorkingDirectoryField?.refresh();
   }
-  if (dialogStreamArchitect) {
-    dialogStreamArchitect.checked = streamRoleSettings.architectEnabled(task?.streamSettings);
-    dialogStreamArchitect.disabled = !task?.streamId;
+  if (dialogStreamReleaseManager) {
+    dialogStreamReleaseManager.checked = streamRoleSettings.releaseManagerEnabled(task?.streamSettings);
+    dialogStreamReleaseManager.disabled = !task?.streamId;
   }
   if (dialogStreamTeamLead) {
     dialogStreamTeamLead.checked = streamRoleSettings.teamLeadEnabled(task?.streamSettings);
@@ -10090,16 +10148,12 @@ settingsGlobalQuickMessagesEntry?.addEventListener("click", () => {
   openPromptTemplates("global");
 });
 
-settingsPanel?.addEventListener("change", (event) => {
-  const actionMode = event.target.closest("[data-quick-message-action-mode]");
-  if (actionMode) {
-    const value = actionMode.value === "send" ? "send" : "insert";
-    state.selection = { ...state.selection, quickMessageActionMode: value };
-    renderQuickMessageActionModeSetting();
-    renderComposerQuickMessages();
-    emit("selection:set", { key: "quickMessageActionMode", value });
-    return;
-  }
+quickMessageActionModeSelect?.addEventListener("change", () => {
+  const value = quickMessageActionModeSelect.value === "send" ? "send" : "insert";
+  state.selection = { ...state.selection, quickMessageActionMode: value };
+  renderQuickMessageActionModeSetting();
+  renderComposerQuickMessages();
+  emit("selection:set", { key: "quickMessageActionMode", value });
 });
 
 dialogSettings.addEventListener("click", (event) => {
@@ -10182,23 +10236,11 @@ dialogSettings.addEventListener("change", (event) => {
     selectDialogSetting(setting.dataset.dialogOptions, setting.value);
     return;
   }
-  const directory = event.target.closest("[data-dialog-working-directory]");
-  if (directory) {
+  const releaseManager = event.target.closest("[data-dialog-stream-release-manager]");
+  if (releaseManager) {
     const task = currentTask();
     if (!task?.streamId) return;
-    task.streamSettings = {
-      ...(task.streamSettings ?? {}),
-      workingDirectory: directory.value.trim(),
-    };
-    emit("stream:settings-save", { streamId: task.streamId, settings: { ...task.streamSettings } });
-    renderOptions();
-    return;
-  }
-  const architect = event.target.closest("[data-dialog-stream-architect]");
-  if (architect) {
-    const task = currentTask();
-    if (!task?.streamId) return;
-    task.streamSettings = streamRoleSettings.withArchitect(task.streamSettings, architect.checked);
+    task.streamSettings = streamRoleSettings.withReleaseManager(task.streamSettings, releaseManager.checked);
     emit("stream:settings-save", { streamId: task.streamId, settings: { ...task.streamSettings } });
     renderOptions();
     return;
@@ -10225,11 +10267,25 @@ dialogSettings.addEventListener("change", (event) => {
   }
 });
 
+dialogSettings.addEventListener("directorycommit", (event) => {
+  const directory = event.target.closest("[data-dialog-working-directory]");
+  if (!directory) return;
+  const task = currentTask();
+  if (!task?.streamId) return;
+  task.streamSettings = {
+    ...(task.streamSettings ?? {}),
+    workingDirectory: directory.value.trim(),
+  };
+  emit("stream:settings-save", { streamId: task.streamId, settings: { ...task.streamSettings } });
+  renderOptions();
+});
+
 modalOverlays?.installDismissibleOverlay({
   dialog: dialogSettings,
   close: () => setDialogSettingsOpen(false),
 });
 dialogSettings.addEventListener("close", () => {
+  if (dialogSettings.open) return;
   const returnFocus = streamCardReturnFocus;
   streamCardReturnFocus = null;
   dialogSettings.hidden = true;
@@ -10446,6 +10502,7 @@ function renderServerAccounts(accounts) {
     return el("div", { class: "server-component server-account", "data-status": view.status }, [
       el("span", { class: "server-component-name", text: view.label }),
       el("span", { class: "server-component-status", text: view.statusText }),
+      view.loginStatusText ? el("small", { text: view.loginStatusText }) : null,
       view.error ? el("small", { text: view.error }) : null,
       el("div", { class: "server-account-actions" }, [start, open, cancel].filter(Boolean)),
       codeRow,
@@ -11687,6 +11744,8 @@ document.addEventListener("agenthub:stream-view-settings-change", (event) => {
     applyStreamStatusStyle(value, { persist: true });
   } else if (key === "activityStreamDetailedCards") {
     applyActivityStreamDetailedCards(value, { persist: true });
+  } else if (key === "activityRailVisibility") {
+    applyActivityRailVisibility(value, { persist: true });
   }
 });
 

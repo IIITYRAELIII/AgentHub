@@ -6,7 +6,6 @@ import {
   IMAGE_GENERATION_ESTIMATE_CREDITS,
   looksLikeImageGenerationPrompt,
 } from "../domain/codex-usage-estimate.mjs";
-import { isCodexContextProbeClientId, isCodexContextProbeTurn } from "../domain/codex-context-probe.mjs";
 import { isCodexAutoCompactionTurnId } from "../domain/codex-internal-turn.mjs";
 import { isInheritedSubagentTurn } from "../domain/subagent-turn-identity.mjs";
 import { taskDisplayTitle } from "../domain/task-display-title.mjs";
@@ -89,10 +88,6 @@ function effectiveEstimatedCredits(record) {
   return String(record?.estimateKind ?? "").trim() === "imagegen-default"
     ? 0
     : normalizeEstimatedCredits(record?.estimatedCredits);
-}
-
-function isContextProbeRecord(record) {
-  return record?.contextProbe === true || isCodexContextProbeTurn(record);
 }
 
 function normalizedSkillsUsed(value) {
@@ -276,7 +271,6 @@ export function normalizedLedger(value = {}, { defaultProjectRoot = "" } = {}) {
           estimatedCredits,
           estimateKind,
         }),
-        contextProbe: isContextProbeRecord(record),
         model: String(record?.model ?? "").trim().toLowerCase(),
         serviceTier: normalizeServiceTier(record?.serviceTier ?? record?.service_tier),
         pricingMetadataResolved: sourceVersion >= 7
@@ -2164,7 +2158,7 @@ function turnProjectionIndex(turns) {
     recordsByDate.set(date, datedRecords);
     const provider = String(record.provider ?? "").trim().toLowerCase();
     const threadId = taskThreadId(record);
-    if (!provider || !record.threadId || !threadId || isContextProbeRecord(record)) continue;
+    if (!provider || !record.threadId || !threadId) continue;
     const key = `${date}\0${provider}\0${threadId}`;
     const automaticRecords = automaticByIdentity.get(key) ?? [];
     automaticRecords.push(record);
@@ -2353,7 +2347,6 @@ export function searchWorkLogRecords(turns = {}, query, {
   const groups = new Map();
   for (const record of Object.values(turns ?? {})) {
     if (!record || typeof record !== "object") continue;
-    if (isContextProbeRecord(record)) continue;
     if (roots.length && !roots.some((root) => sameProjectRoot(root, record.projectRoot))) continue;
     const fields = [
       ["Поток", record.taskTitle],
@@ -2956,7 +2949,6 @@ export function incomingLedgerRecord({
   estimatedCredits,
   estimateKind,
   imageGenerationCount,
-  contextProbe,
   model,
   serviceTier,
   taskTitle,
@@ -3005,7 +2997,6 @@ export function incomingLedgerRecord({
       estimatedCredits: normalizedEstimatedCredits,
       estimateKind: normalizedEstimateKind,
     }),
-    contextProbe: contextProbe === true,
     model: String(model ?? "").trim().toLowerCase(),
     serviceTier: serviceTier == null ? "" : normalizeServiceTier(serviceTier),
     pricingMetadataResolved: Boolean(String(model ?? "").trim() && serviceTier != null),
@@ -3070,7 +3061,6 @@ export function mergeLedgerRecord(existing, incoming) {
     existing.estimateKind = incoming.estimateKind;
   }
   if (incoming.imageGenerationCount > 0) existing.imageGenerationCount = incoming.imageGenerationCount;
-  if (incoming.contextProbe) existing.contextProbe = true;
   existing.limitSamples = mergeUsageLimitSamples(existing.limitSamples, incoming.limitSamples);
   if (incoming.accountKey) {
     existing.accountKey = incoming.accountKey;
@@ -3089,9 +3079,6 @@ export function mergeLedgerRecord(existing, incoming) {
     existing.clientUserMessageId = incomingClientUserMessageId;
   }
   const effectiveClientUserMessageId = normalizeInterstreamClientUserMessageId(existing.clientUserMessageId);
-  if (effectiveClientUserMessageId && !isCodexContextProbeClientId(effectiveClientUserMessageId)) {
-    existing.contextProbe = false;
-  }
   if (
     incoming.messageOrigin
     && incomingClientUserMessageId

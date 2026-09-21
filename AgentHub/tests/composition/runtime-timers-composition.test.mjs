@@ -87,6 +87,10 @@ test("runtime startup wakes durable lane recovery before fallback queue scheduli
     queuedInputs: new Map([["queued", { id: "queued" }]]),
     scheduleQueuedInput: () => events.push("fallback"),
     scheduleDeliveryOutboxFlush: () => {},
+    turnEndDelivery: {
+      startProjectionRecovery: () => events.push("projection-start"),
+      stopProjectionRecovery: () => events.push("projection-stop"),
+    },
     selectedTaskWatch: { schedule: () => {} },
     scheduleCodexTerminalAudit: (delayMs) => events.push(`terminal-audit:${delayMs}`),
     scheduleBugReportScan: () => {},
@@ -95,5 +99,7 @@ test("runtime startup wakes durable lane recovery before fallback queue scheduli
 
   timers.startRuntimeTimers();
 
-  assert.deepEqual(events, ["maintenance", "wake", "terminal-audit:500"]);
+  assert.deepEqual(events, ["maintenance", "wake", "projection-start", "terminal-audit:500"]);
+  timers.stopRuntimeTimers();
+  assert.ok(events.includes("projection-stop"));
 });

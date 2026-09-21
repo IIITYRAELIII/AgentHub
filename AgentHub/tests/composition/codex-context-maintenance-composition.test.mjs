@@ -4,6 +4,7 @@ import test from "node:test";
 
 import { createCodexContextMaintenanceComposition } from "../../src/composition/codex-context-maintenance-composition.mjs";
 import { createHubStaticSettings } from "../../src/composition/hub-static-settings.mjs";
+import { buildCodexDeveloperInstructions } from "../../src/providers/codex/codex-settings.mjs";
 
 for (const [model, expected] of [
   ["GPT-5.6-Sol", "gpt-5.6-sol"],
@@ -33,6 +34,10 @@ for (const [model, expected] of [
       config,
       normalizeCodexModel,
       transportRunning: () => true,
+    readThread: async (threadId) => {
+      assert.equal(threadId, "rotated-thread");
+      return { thread: { id: threadId, status: { type: "idle" } } };
+    },
       contextCompactions: {
         get: () => ({ id: "compact-source", status: "completed" }),
         waitForRawItem: async () => rawItem,
@@ -70,3 +75,57 @@ for (const [model, expected] of [
     }]);
   });
 }
+
+test("rotation preserves raw replacement history without launching an extra turn", async () => {
+  const projectRoot = path.resolve("probe-rotation-fixture");
+  const calls = [];
+  const ordinaryInstructions = buildCodexDeveloperInstructions({ guide: "Guide" });
+  const replacementHistory = [
+    { role: "developer", content: "old probe-only instruction" },
+    { role: "user", content: "Ответь строго: AGENT_HUB_CONTEXT_PROBE_OK_V1" },
+    { role: "assistant", content: "AGENT_HUB_CONTEXT_PROBE_OK_V1" },
+    { role: "developer", content: ordinaryInstructions },
+    { role: "user", content: "Продолжай рабочую задачу" },
+  ];
+  const rawItem = { type: "compaction", replacement_history: replacementHistory };
+  assert.doesNotMatch(ordinaryInstructions, /AGENT_HUB_CONTEXT_PROBE/u);
+  const service = createCodexContextMaintenanceComposition({
+    config: {
+      codexSandboxMode: "workspace-write",
+      projects: [],
+      projectRoot,
+      dataDir: path.join(projectRoot, "data"),
+    },
+    normalizeCodexModel: (value) => value,
+    transportRunning: () => true,
+    readThread: async (threadId) => {
+      assert.equal(threadId, "rotated-thread");
+      return { thread: { id: threadId, status: { type: "idle" } } };
+    },
+    contextCompactions: {
+      get: () => ({ id: "compact-source", status: "completed" }),
+      waitForRawItem: async () => rawItem,
+      clearRawItem: () => {},
+    },
+    sendRpc: async (method, params) => {
+      calls.push({ method, params });
+      if (method === "thread/start") return { thread: { id: "rotated-thread" } };
+      return {};
+    },
+  });
+
+  await service.rotateCompacted({
+    provider: "codex",
+    threadId: "source-thread",
+    workingDirectory: projectRoot,
+  }, {
+    compactionId: "compact-source",
+    source: { thread: { cwd: projectRoot } },
+  });
+
+  assert.equal(calls.some((call) => call.method === "turn/start"), false);
+  assert.deepEqual(
+    calls.find((call) => call.method === "thread/inject_items")?.params.items,
+    [rawItem],
+  );
+});

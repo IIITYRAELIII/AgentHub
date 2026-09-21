@@ -54,3 +54,21 @@ test("release planner keeps an invalid or missing Git result visible as blocked"
   assert.deepEqual(plan.ready, []);
   assert.equal(plan.blocked[0].reason, "result commit is missing");
 });
+
+test("prospective Await plan predicts only the accepting Task CAS without mutating stored status", async () => {
+  const current = task({ workflowStatus: "testing", revision: 20, releaseRevision: 3 });
+  const service = new TaskReleasePlanService({
+    taskBoard: { releaseTasks: () => [current] },
+    taskGitWorkspaces: { releaseEvidence: async () => ({
+      changedFiles: [{ projectRoot: reference.projectRoot, path: "app.txt", operation: "modified" }],
+    }) },
+  });
+  const prospective = await service.plan("workspace-1", { acceptingTask: { id: current.id, revision: current.revision } });
+  assert.equal(current.workflowStatus, "testing");
+  assert.equal(prospective.ready[0].taskRevision, current.releaseRevision + 1);
+  await assert.rejects(service.plan("workspace-1", { acceptingTask: { id: current.id, revision: current.revision - 1 } }), /Task changed/u);
+  current.workflowStatus = "awaiting_implementation";
+  current.revision += 1;
+  current.releaseRevision += 1;
+  assert.equal((await service.plan("workspace-1")).revision, prospective.revision);
+});

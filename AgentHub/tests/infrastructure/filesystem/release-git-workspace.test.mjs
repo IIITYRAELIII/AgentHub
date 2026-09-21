@@ -63,13 +63,20 @@ async function fixture(context) {
   const canonicalOrigin = canonicalPath(origin);
   const canonicalPrimary = canonicalPath(primary);
   const canonicalDataDir = canonicalPath(dataDir);
+  const service = new ReleaseGitWorkspaceService({ dataDir: canonicalDataDir });
+  const prepare = service.prepareCandidate.bind(service);
+  // These legacy fixtures explicitly publish their synthetic baseline to the
+  // bare repository. Production obtains this authority from publication state.
+  service.prepareCandidate = async (request) => prepare({
+    approvedBaseCommit: await git(canonicalOrigin, "rev-parse", "main"), ...request,
+  });
   return {
     root: canonicalRoot,
     origin: canonicalOrigin,
     primary: canonicalPrimary,
     dataDir: canonicalDataDir,
     baseCommit,
-    service: new ReleaseGitWorkspaceService({ dataDir: canonicalDataDir }),
+    service,
   };
 }
 
@@ -127,6 +134,23 @@ for (const binaryOnly of [false, true]) test(`PreRelease preserves ${binaryOnly 
   const retry = await setup.service.prepareCandidate(request);
   assert.equal(retry.reused, true);
   assert.equal(retry.preReleaseHead, candidate.preReleaseHead);
+});
+
+test("candidate requires a pinned base and excludes newer remote and local main content", async (context) => {
+  const setup = await fixture(context);
+  const service = new ReleaseGitWorkspaceService({ dataDir: setup.dataDir });
+  const request = { planRevision: "pinned-base", projectRoot: setup.primary, frozenTasks: [] };
+  await assert.rejects(service.prepareCandidate(request), /requires an exact published, adopted, or explicitly reviewed base/u);
+  const first = await service.prepareCandidate({ ...request, approvedBaseCommit: setup.baseCommit });
+  await writeFile(path.join(setup.primary, "unreviewed.txt"), "unreviewed\n");
+  const incoming = await commit(setup.primary, "unreviewed local and remote main");
+  await git(setup.primary, "push", "origin", "main");
+  const retry = await service.prepareCandidate({ ...request, approvedBaseCommit: setup.baseCommit });
+  assert.equal(retry.preReleaseHead, first.preReleaseHead);
+  assert.equal(retry.baseCommit, setup.baseCommit);
+  assert.equal(await git(retry.releaseRoot, "rev-parse", "refs/remotes/origin/main"), incoming);
+  await assert.rejects(git(retry.releaseRoot, "show", "PreRelease:unreviewed.txt"));
+  assert.equal(await git(setup.primary, "rev-parse", "main"), incoming);
 });
 
 test("release candidate uses an independent clone and leaves a clean primary attached to main", async (context) => {
@@ -191,6 +215,17 @@ test("frozen candidate readback validates prepared manifest identity and request
     baseCommit: setup.baseCommit,
     resultCommit,
   }]);
+
+  const mergeHeadFile = await git(candidate.releaseRoot, "rev-parse", "--git-path", "MERGE_HEAD");
+  const mergePath = path.resolve(candidate.releaseRoot, mergeHeadFile);
+  await writeFile(mergePath, `${resultCommit}\n`, "utf8");
+  await assert.rejects(() => setup.service.frozenCandidate(setup.primary), /unfinished Git operation: MERGE_HEAD/u);
+  await rm(mergePath);
+  const rebasePath = path.resolve(candidate.releaseRoot, await git(candidate.releaseRoot, "rev-parse", "--git-path", "rebase-merge"));
+  await mkdir(rebasePath);
+  await assert.rejects(() => setup.service.frozenCandidate(setup.primary), /unfinished Git operation: rebase-merge/u);
+  await rm(rebasePath, { recursive: true });
+  assert.equal((await setup.service.frozenCandidate(setup.primary)).preReleaseHead, candidate.preReleaseHead);
 
   const checkpointBefore = JSON.parse(await readFile(readback.checkpointFile, "utf8"));
   await writeFile(readback.checkpointFile, `${JSON.stringify({
@@ -510,6 +545,72 @@ test("candidate validation failure cannot replace the last good PreRelease", asy
   assert.equal(await git(first.releaseRoot, "rev-parse", "refs/heads/PreRelease"), first.preReleaseHead);
   assert.equal(await git(first.releaseRoot, "branch", "--show-current"), "PreRelease");
   assert.equal(await git(first.releaseRoot, "status", "--porcelain=v1"), "");
+});
+
+test("automatic Await preparation preserves frozen evidence after push until finalization", async (context) => {
+  const setup = await fixture(context);
+  const resultCommit = await taskResult(setup, context, { branch: "HUB-frozen-automatic" });
+  const first = await setup.service.prepareCandidate({
+    planRevision: "plan-frozen-automatic", workspaceId: "workspace", projectRoot: setup.primary,
+    frozenTasks: [{ taskId: "task-first", taskRevision: 2, resultCommit }],
+  });
+  await writeFile(path.join(first.releaseRoot, "CHANGELOG.md"), "release\n");
+  const frozen = await setup.service.freezePublicationCandidate({
+    projectRoot: setup.primary, workspaceId: "workspace", expectedPlanRevision: "plan-frozen-automatic",
+    expectedPreparedHead: first.preReleaseHead, changelogContent: Buffer.from("release\n"),
+  });
+  const checkpointFile = path.join(path.dirname(first.releaseRoot), "checkpoint.json");
+  const checkpointBefore = await readFile(checkpointFile, "utf8");
+  const secondResult = await taskResult(setup, context, {
+    branch: "HUB-next-automatic", file: "next.txt", content: "next\n",
+  });
+  const request = {
+    planRevision: "plan-next-automatic", workspaceId: "workspace", projectRoot: setup.primary,
+    frozenTasks: [{ taskId: "task-next", taskRevision: 2, resultCommit: secondResult }],
+    preserveFrozen: true,
+  };
+  await assert.rejects(setup.service.prepareCandidate(request), { code: "RELEASE_CANDIDATE_FROZEN" });
+  assert.equal(await readFile(checkpointFile, "utf8"), checkpointBefore);
+  assert.equal(await git(first.releaseRoot, "branch", "--show-current"), "main");
+  assert.equal((await setup.service.frozenCandidate(setup.primary)).preReleaseHead, frozen.preReleaseHead);
+
+  await git(first.releaseRoot, "push", "origin", "main");
+  await assert.rejects(setup.service.prepareCandidate(request), { code: "RELEASE_CANDIDATE_FROZEN" });
+  assert.equal(await readFile(checkpointFile, "utf8"), checkpointBefore);
+  await setup.service.synchronizePublishedPrimary({
+    projectRoot: setup.primary, publishedRevision: frozen.preReleaseHead,
+    planRevision: "plan-frozen-automatic",
+  });
+  const next = await setup.service.prepareCandidate(request);
+  assert.equal(next.baseCommit, frozen.preReleaseHead);
+  assert.equal(await git(next.releaseRoot, "show", `${next.preReleaseHead}:next.txt`), "next");
+  assert.equal(await git(next.releaseRoot, "show", `${next.preReleaseHead}:feature.txt`), "feature");
+  assert.equal((await setup.service.frozenCandidate(setup.primary)).checkpointPhase, "prepared");
+});
+
+test("failed explicit composition restores the exact frozen checkout and readable checkpoint", async (context) => {
+  const setup = await fixture(context);
+  const resultCommit = await taskResult(setup, context, { branch: "HUB-frozen-restore" });
+  const first = await setup.service.prepareCandidate({
+    planRevision: "plan-frozen-restore", workspaceId: "workspace", projectRoot: setup.primary,
+    frozenTasks: [{ taskId: "task-first", taskRevision: 2, resultCommit }],
+  });
+  await writeFile(path.join(first.releaseRoot, "CHANGELOG.md"), "release\n");
+  const frozen = await setup.service.freezePublicationCandidate({
+    projectRoot: setup.primary, workspaceId: "workspace", expectedPlanRevision: "plan-frozen-restore",
+    expectedPreparedHead: first.preReleaseHead, changelogContent: Buffer.from("release\n"),
+  });
+  const checkpointFile = path.join(path.dirname(first.releaseRoot), "checkpoint.json");
+  const checkpointBefore = await readFile(checkpointFile, "utf8");
+  await assert.rejects(setup.service.prepareCandidate({
+    planRevision: "plan-rejected", workspaceId: "workspace", projectRoot: setup.primary,
+    frozenTasks: [], validateBeforeCommit: () => { throw new Error("membership changed"); },
+  }), /membership changed/u);
+  assert.equal(await readFile(checkpointFile, "utf8"), checkpointBefore);
+  assert.equal(await git(first.releaseRoot, "branch", "--show-current"), "main");
+  assert.equal(await git(first.releaseRoot, "rev-parse", "HEAD"), frozen.preReleaseHead);
+  assert.equal(await git(first.releaseRoot, "status", "--porcelain=v1"), "");
+  assert.equal((await setup.service.frozenCandidate(setup.primary)).checkpointPhase, "frozen");
 });
 
 test("release contour resolves the exact clean main from a real managed clone without a dev checkout", async (context) => {
@@ -1222,6 +1323,71 @@ test("a frozen 13-Task candidate accepts one descendant result delta without for
   await assert.rejects(git(reverted.releaseRoot, "show", `${reverted.preReleaseHead}:AgentHub/selected-owner.txt`));
   assert.equal(await git(reverted.releaseRoot, "show", `${reverted.preReleaseHead}:AgentHub/release-refresh.txt`),
     "reviewed fix");
+});
+
+test("prepared candidate reuses one newly selected correction from its snapshot parent", { timeout: 30000 }, async (context) => {
+  const setup = await fixture(context);
+  const staleResult = await taskResult(setup, context, {
+    branch: "HUB-correction-stale", file: "AgentHub/shared.txt", content: "stale\n",
+  });
+  const staleTask = {
+    taskId: "task-stale", taskRevision: 1, baseCommit: setup.baseCommit, resultCommit: staleResult,
+    integrations: [{ commit: staleResult, parent: setup.baseCommit, order: 1 }],
+  };
+  const accepted = await setup.service.prepareCandidate({
+    planRevision: "plan-correction-old", workspaceId: "workspace", projectRoot: setup.primary,
+    frozenTasks: [staleTask],
+  });
+  const correctionRoot = path.join(setup.root, "task-correction");
+  await git(setup.primary, "worktree", "add", "-b", "HUB-correction", correctionRoot, staleResult);
+  context.after(() => git(setup.primary, "worktree", "remove", "--force", correctionRoot).catch(() => {}));
+  await writeFile(path.join(correctionRoot, "AgentHub", "shared.txt"), "fixed\n");
+  const correctionResult = await commit(correctionRoot, "exact correction");
+  const correctionTask = {
+    taskId: "task-correction", taskRevision: 1, baseCommit: setup.baseCommit, resultCommit: correctionResult,
+    integrations: [{ commit: correctionResult, parent: staleResult, order: 2 }],
+  };
+  const refreshed = await setup.service.prepareCandidate({
+    planRevision: "plan-correction-new", workspaceId: "workspace", projectRoot: setup.primary,
+    frozenTasks: [staleTask, correctionTask],
+  });
+  const manifest = JSON.parse(await readFile(refreshed.manifestFile, "utf8"));
+  assert.equal(manifest.candidateReuse.policy, "selected-correction-addition-v1");
+  assert.equal(manifest.candidateReuse.sourceHead, accepted.preReleaseHead);
+  assert.equal(manifest.candidateReuse.correctionBaseCommit, staleResult);
+  assert.equal(manifest.candidateReuse.resultCommit, correctionResult);
+  assert.equal(await git(refreshed.releaseRoot, "show", `${refreshed.preReleaseHead}:AgentHub/shared.txt`), "fixed");
+  assert.deepEqual((await git(refreshed.releaseRoot, "diff", "--name-only", accepted.preReleaseHead,
+    refreshed.preReleaseHead)).split("\n").filter(Boolean), ["AgentHub/shared.txt"]);
+});
+
+test("prepared candidate rejects correction-owned publication metadata", { timeout: 30000 }, async (context) => {
+  const setup = await fixture(context);
+  const staleResult = await taskResult(setup, context, {
+    branch: "HUB-metadata-stale", file: "AgentHub/shared.txt", content: "stale\n",
+  });
+  const staleTask = {
+    taskId: "task-stale", taskRevision: 1, baseCommit: setup.baseCommit, resultCommit: staleResult,
+    integrations: [{ commit: staleResult, parent: setup.baseCommit, order: 1 }],
+  };
+  const accepted = await setup.service.prepareCandidate({
+    planRevision: "plan-metadata-old", workspaceId: "workspace", projectRoot: setup.primary,
+    frozenTasks: [staleTask],
+  });
+  const correctionRoot = path.join(setup.root, "task-metadata-correction");
+  await git(setup.primary, "worktree", "add", "-b", "HUB-metadata-correction", correctionRoot, staleResult);
+  context.after(() => git(setup.primary, "worktree", "remove", "--force", correctionRoot).catch(() => {}));
+  await writeFile(path.join(correctionRoot, "AgentHub", "package.json"), "{\"version\":\"forbidden\"}\n");
+  const correctionResult = await commit(correctionRoot, "forbidden release metadata correction");
+  const correctionTask = {
+    taskId: "task-correction", taskRevision: 1, baseCommit: setup.baseCommit, resultCommit: correctionResult,
+    integrations: [{ commit: correctionResult, parent: staleResult, order: 2 }],
+  };
+  await assert.rejects(setup.service.prepareCandidate({
+    planRevision: "plan-metadata-new", workspaceId: "workspace", projectRoot: setup.primary,
+    frozenTasks: [staleTask, correctionTask],
+  }), /selected correction cannot change publication metadata: AgentHub\/package\.json/);
+  assert.equal(await git(accepted.releaseRoot, "rev-parse", "PreRelease"), accepted.preReleaseHead);
 });
 
 for (const scenario of ["changed selection", "changed base", "non-descendant result"]) {

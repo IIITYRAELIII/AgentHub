@@ -231,6 +231,7 @@ export function createInteractionShellPhase({
       streamContextMaintenance: provider.streamContextMaintenance,
       streamMaintenance: provider.streamMaintenance,
       usageSyncAuto: provider.usageSyncAuto,
+      usageSyncRemoteConfigStore: infrastructure.workLogUsageRemoteConfigStore,
     },
     provider: {
       agentProviders: provider.agentProviders,
@@ -256,6 +257,7 @@ export function createInteractionShellPhase({
       desktopAttachmentDescriptors: clients.desktopAttachmentDescriptors,
       desktopAttachmentPaths: clients.desktopAttachmentPaths,
       desktopOpenAttachment: clients.desktopOpenAttachment,
+      desktopUploadAttachment: clients.desktopUploadAttachment,
       desktopSubmitBugReport: clients.desktopSubmitBugReport,
       readCachedHistory: api.readCachedHistory,
       refreshHistory: api.refreshHistory,
@@ -331,6 +333,7 @@ export function createInteractionShellPhase({
     },
     admission: {
       config,
+      runtimeStateStore: infrastructure.runtimeStateStore,
       samePath,
       sendRpc: api.sendRpc,
       contextCompactions: provider.contextCompactions,

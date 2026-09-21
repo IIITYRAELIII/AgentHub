@@ -143,7 +143,6 @@ function withoutRepeatedClientMessages(history) {
 function withoutInternalContextTurns(history) {
   return history.filter((turn) => (
     !String(turn?.prompt ?? "").trim().startsWith("<codex_internal_context")
-    && turn?.operationKind !== "probe" && turn?.contextProbe !== true
   ));
 }
 
@@ -177,7 +176,6 @@ function cleanHistory(history, limit, { provider = "" } = {}) {
       return {
         id: cleanText(item?.id, 100),
         ...(item?.operationKind ? { operationKind: cleanText(item.operationKind, 40) } : {}),
-        ...(item?.contextProbe === true ? { contextProbe: true } : {}),
         prompt: cleanText(item?.prompt, 12_000),
         ...(promptAuthor ? { promptAuthor } : {}),
         ...(promptOrigin ? { promptOrigin } : {}),
@@ -1907,7 +1905,6 @@ export class LocalTaskSyncStore {
     for (const turn of turns) {
       if (!turn.id) continue;
       removeTurn.run(provider, threadId, turn.id);
-      if (turn.operationKind === "probe" || turn.contextProbe === true) continue;
       const messages = (Array.isArray(turn?.messages) ? turn.messages : []).flatMap((message) => {
         const role = String(message?.role ?? "").trim() === "assistant"
           ? "agent"

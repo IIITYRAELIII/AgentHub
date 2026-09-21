@@ -24,6 +24,7 @@ test("runtime composition marks readiness before starting background timers", as
     providerIsRunning: () => false,
     backfillProviderMetadata: noOp,
     recoverRuns: noOp,
+    retryTerminalProjections: noOp,
     retryNotifications: noOp,
     restoreBackgroundJobs: noOp,
     startTimers: () => events.push("timers"),
@@ -71,6 +72,7 @@ test("Agent Hub bootstrap starts and stops every boundary without a real process
     providerIsRunning: () => false,
     backfillProviderMetadata: noOp,
     recoverRuns: async () => events.push("runs:recover"),
+    retryTerminalProjections: async () => events.push("projections:retry"),
     retryNotifications: async () => events.push("notifications:retry"),
     restoreBackgroundJobs: async () => events.push("jobs:restore"),
     startRuntimeTimers: () => events.push("timers:start"),
@@ -96,10 +98,70 @@ test("Agent Hub bootstrap starts and stops every boundary without a real process
   assert.equal(events.filter((item) => item === "desktop:start").length, 1);
   assert.equal(events.filter((item) => item === "runtime-command:start").length, 1);
   assert.equal(events.filter((item) => item === "mcp:start").length, 1);
+  assert.equal(events.filter((item) => item === "projections:retry").length, 1);
   assert.equal(await bootstrap.shutdownAgentHub("test"), true);
   assert.equal(await bootstrap.shutdownAgentHub("test"), false);
   assert.equal(events.includes("resources:finalize"), true);
   assert.equal(events.some((item) => Array.isArray(item) && item[0] === "provider:stop"), true);
+});
+
+test("Agent Hub bootstrap retries terminal projections when Telegram is disabled", async () => {
+  const events = [];
+  let signalStarted;
+  const startupReachedTimers = new Promise((resolve) => { signalStarted = resolve; });
+  const noOp = async () => {};
+  const bootstrap = createAgentHubBootstrapComposition({
+    config: { telegramEnabled: false },
+    runtimeCommandRoot: "test-runtime",
+    handleDesktopControl: noOp,
+    runtimeCommandServer: { start: noOp },
+    hubMcpServer: { start: noOp },
+    stopRuntimeTimers() {},
+    taskRuns: { values: () => [] },
+    agentProviders: { call() {} },
+    mediaController: { stop() {} },
+    runtimeResources: {
+      register() {},
+      quiesce: noOp,
+      drain: noOp,
+      close: noOp,
+      releaseLock: noOp,
+      finalize: noOp,
+    },
+    miniAppLifecycle: { start: noOp },
+    sanitizeRollouts: noOp,
+    initializeProvider: noOp,
+    providerIsRunning: () => false,
+    backfillProviderMetadata: noOp,
+    recoverRuns: noOp,
+    retryTerminalProjections: async () => events.push("projections:retry"),
+    retryNotifications: async () => events.push("notifications:retry"),
+    restoreBackgroundJobs: async () => events.push("jobs:restore"),
+    startRuntimeTimers: () => {
+      events.push("timers:start");
+      signalStarted();
+    },
+    registerTelegramCommands: async () => events.push("telegram:commands"),
+    hasPendingRestart: () => false,
+    finalizeRestart: noOp,
+    markReady: async () => events.push("ready"),
+    readyMessage: () => "test ready",
+    pollTelegram: () => events.push("telegram:poll"),
+    warnUser: noOp,
+    beginStopping: () => true,
+    createDesktopControlServer: () => ({ start: noOp }),
+  });
+
+  const started = bootstrap.startAgentHub();
+  await Promise.race([
+    startupReachedTimers,
+    started.then(() => {
+      throw new Error("Telegram-disabled startup unexpectedly settled");
+    }),
+  ]);
+
+  assert.deepEqual(events, ["projections:retry", "ready", "timers:start"]);
+  assert.equal(bootstrap.startAgentHub(), started);
 });
 
 test("runtime lifecycle stops once and settles every named component", async () => {
@@ -248,7 +310,8 @@ test("shutdown aborts optional metadata and drains its current operation before 
       entered();
       return new Promise((resolve) => { release = resolve; });
     },
-    recoverRuns: noOp, retryNotifications: noOp, restoreBackgroundJobs: noOp,
+    recoverRuns: noOp, retryTerminalProjections: noOp, retryNotifications: noOp,
+    restoreBackgroundJobs: noOp,
     startTimers() {}, registerTelegramCommands: noOp, hasPendingRestart: () => false,
     finalizeRestart: noOp, markReady: noOp, readyMessage: () => "ready", pollTelegram: () => "polling",
   });

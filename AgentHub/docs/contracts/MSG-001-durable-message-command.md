@@ -6,6 +6,10 @@
 outermost client boundary through receipt, queue, run, provider prompt and
 history. A retry reuses it. Equal text is never an identity.
 
+Context maintenance never creates a synthetic user turn or reserves a client
+message namespace. Prompt and response text never classify a turn as maintenance
+or hide an ordinary message.
+
 If a provider omits that identity from a user item, the item remains unbound.
 A durable receipt may enrich only a provider item that already carries the same
 exact `clientUserMessageId`; receipt count, text, time, attachment names and
@@ -100,6 +104,23 @@ permission to create a second effect.
 Transitions are monotonic and idempotent. A canonical record atomically replaces
 its optimistic projection by the same identity.
 
+The durable command has a 72-hour lifetime from its original `accepted_at_ms`,
+including migrated active records. Updates, retries and restarts do not renew it.
+The ledger expires overdue commands in one bounded transaction at runtime queue
+startup, once per minute, and before intake capacity and dispatch checks.
+Expiry is an administrative `cancelled` command with `expired=true` and
+`providerEffectOutcome=unknown`; it is neither evidence of provider completion
+nor an instruction to interrupt a provider. Original acceptance and execution
+identity remain retained. An exact active managed run protects its root, explicit
+user-message aliases and exact provider/Thread/run or turn bindings. A queue or
+manual dispatch already claimed by the canonical orchestrator is also protected.
+These protections are re-evaluated; losing them does not renew the deadline.
+Only after durable expiry may queue projections be removed and capacity released.
+Expired commands, including uncertain starts, are never automatically replayed.
+Same-ID retries retain that outcome, including compact tombstones; later exact
+provider terminal evidence may still reconcile it through the existing owner.
+History and attachment files are not deleted by this expiry operation. See ADR-0071.
+
 A provider rejection received before provider acceptance moves that command to
 `attention-required` and releases its FIFO lane only after the rejection is
 durable. A launch with an unknown outcome keeps the lane until exact
@@ -135,10 +156,9 @@ persisted wait reason is not authority: it is recalculated from current exact
 occupancy and self-heals after restart without manual interaction. When terminal
 admission is released, every queued lane head
 preempts polling backoff and is scheduled immediately because repository
-occupancy can couple otherwise independent lanes. A steer whose exact run or
-turn is no longer active becomes attention-required with that identity intact;
-it cannot enter the later-turn FIFO unless the user explicitly chooses the
-ordinary queue action.
+occupancy can couple otherwise independent lanes. A steer that no longer has
+an active turn is downgraded to ordinary intake before the later-turn FIFO
+choice.
 
 An attention-required lane head created by `task-running` or
 `activity-unknown` is rechecked against current exact occupancy. Once the
@@ -215,9 +235,8 @@ For a nonterminal Hub-owned managed run, its exact registered `run.turnId` is
 the primary steer identity. A lagging or temporarily incomplete Thread
 projection must not suppress the `turn/steer` attempt. Thread projection is
 consulted only when no exact managed identity exists or when the provider
-rejects that identity as stale. A real provider rejection moves the durable
-command to visible attention-required state without changing its exact steer
-identity.
+rejects that identity as stale; only a real provider rejection downgrades the
+durable command to queued intake.
 
 Provider `turn/steer` is the authority for whether one exact nonterminal managed
 turn remains steerable. Local response projection, including an observed Codex
@@ -225,21 +244,13 @@ turn remains steerable. Local response projection, including an observed Codex
 the same provider turn may still accept steering after that marker. Admission
 first persists one durable `message-steer` item under its original
 `clientUserMessageId`, exact run ID and exact turn ID, then dispatch attempts the
-provider RPC once. Provider-internal compaction of that same ordinary turn does
-not downgrade admission to generic later-turn intake: the exact steer remains
-durable until the compaction barrier clears, then dispatches against its original
-run and turn. A Hub-owned compaction, rotation or restart reservation remains an
-admission barrier: the exact steer identity remains durable while its dispatcher
-waits. Exact run/turn movement before dispatch and a definite provider
-stale/not-steerable rejection have no provider effect, so the same
-durable item becomes visible attention-required state with its command, origin,
-attachments and exact steer identity intact. The lane is released, but the item
-cannot start a later turn automatically. An explicit `retry` keeps the exact
-steer identity; only the explicit ordinary queue action authorizes conversion to
-later-turn intake. Timeout or an unknown provider outcome enters bounded
-receipt/provider reconciliation, keeps the lane fail-closed and is never blindly
-replayed. Local text, phase, elapsed time and rendered state are observations,
-never steer authority.
+provider RPC once. A provider stale/not-steerable rejection converts that same
+durable item to ordinary queued intake once; it does not create a second command
+or change FIFO identity. Timeout or an unknown provider outcome enters bounded
+receipt/provider reconciliation and is never blindly replayed. Exact run/turn
+movement still fails before the RPC, and stale provider identity still follows
+the existing recovery path. Local text, phase, elapsed time and rendered state
+are observations, never steer authority.
 
 For an inter-Stream command, the envelope `requestId` deterministically restores
 the `mcp:<requestId>` command alias when a provider rollout omits

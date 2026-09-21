@@ -6,56 +6,112 @@
       "packages": ["playwright", "playwright-core"],
       "builtins": ["fs/promises", "vm"],
       "globals": ["globalThis", "process"],
-      "browser": true
+      "browser": true,
+      "execution": {
+        "parallel": true,
+        "isolation": { "filesystem": "per-child-temp", "locks": "per-child-temp", "git": "none", "ports": "per-test-temp", "browserProfile": "per-launch" }
+      }
     },
     "tests/public/card-layout-dom.test.mjs": {
       "inputs": ["assets/web-app", "work-log.css"],
       "packages": ["playwright", "playwright-core"],
       "builtins": ["fs/promises"],
       "globals": ["process"],
-      "browser": true
+      "browser": true,
+      "execution": {
+        "parallel": true,
+        "isolation": { "filesystem": "per-child-temp", "locks": "per-child-temp", "git": "none", "ports": "none", "browserProfile": "per-launch" }
+      }
     },
     "tests/public/long-response-quotes.test.mjs": {
       "inputs": ["assets/web-app", "work-log.css"],
       "packages": ["playwright", "playwright-core"],
       "builtins": ["fs/promises", "vm"],
       "globals": ["globalThis", "process"],
-      "browser": true
+      "browser": true,
+      "execution": {
+        "parallel": true,
+        "isolation": { "filesystem": "per-child-temp", "locks": "per-child-temp", "git": "none", "ports": "none", "browserProfile": "per-launch" }
+      }
     },
     "tests/public/dashboard-layout-dom.test.mjs": {
       "inputs": ["assets/web-app", "work-log.css"],
       "packages": ["playwright", "playwright-core"],
       "builtins": ["fs/promises"],
       "globals": ["process"],
-      "browser": true
+      "browser": true,
+      "execution": {
+        "parallel": true,
+        "isolation": { "filesystem": "per-child-temp", "locks": "per-child-temp", "git": "none", "ports": "none", "browserProfile": "per-launch" }
+      }
     },
     "tests/public/task-checklist-dom.test.mjs": {
       "inputs": ["assets/web-app", "work-log.css"],
       "packages": ["playwright", "playwright-core"],
       "builtins": ["fs/promises"],
       "globals": ["process"],
-      "browser": true
+      "browser": true,
+      "execution": {
+        "parallel": true,
+        "isolation": { "filesystem": "per-child-temp", "locks": "per-child-temp", "git": "none", "ports": "none", "browserProfile": "per-launch" }
+      }
     },
     "tests/public/journal-virtual-ui.test.mjs": {
       "inputs": ["assets/web-app", "work-log.css"],
       "packages": ["playwright", "playwright-core"],
       "builtins": ["fs/promises"],
       "globals": ["process"],
-      "browser": true
+      "browser": true,
+      "execution": {
+        "parallel": true,
+        "isolation": { "filesystem": "per-child-temp", "locks": "per-child-temp", "git": "none", "ports": "none", "browserProfile": "per-launch" }
+      }
     },
     "tests/public/browser-device-auth.test.mjs": {
       "inputs": ["assets/web-app/browser-device-auth.js"],
       "packages": ["playwright"],
       "builtins": ["fs/promises"],
       "globals": ["process"],
-      "browser": true
+      "browser": true,
+      "execution": {
+        "parallel": true,
+        "isolation": { "filesystem": "per-child-temp", "locks": "per-child-temp", "git": "none", "ports": "none", "browserProfile": "per-launch" }
+      }
     },
     "tests/public/journal-account-provider-column.test.mjs": {
       "inputs": ["assets/web-app/styles.css", "assets/web-app/themes"],
       "packages": ["playwright-core"],
       "builtins": ["fs", "fs/promises", "module"],
       "globals": ["process"],
-      "browser": true
+      "browser": true,
+      "execution": {
+        "parallel": true,
+        "isolation": { "filesystem": "per-child-temp", "locks": "per-child-temp", "git": "none", "ports": "none", "browserProfile": "per-launch" }
+      }
+    },
+    "tests/infrastructure/filesystem/task-git-workspace.test.mjs": {
+      "execution": {
+        "parallel": true,
+        "isolation": { "filesystem": "per-child-temp", "git": "per-test-temp", "locks": "per-test-temp", "ports": "none", "browserProfile": "none" }
+      }
+    },
+    "tests/infrastructure/filesystem/release-git-workspace.test.mjs": {
+      "execution": {
+        "parallel": true,
+        "isolation": { "filesystem": "per-child-temp", "git": "per-test-temp", "locks": "per-test-temp", "ports": "none", "browserProfile": "none" }
+      }
+    },
+    "tests/infrastructure/filesystem/release-task-net-projection.test.mjs": {
+      "execution": {
+        "parallel": true,
+        "isolation": { "filesystem": "per-child-temp", "git": "per-test-temp", "locks": "per-test-temp", "ports": "none", "browserProfile": "none" }
+      }
+    },
+    "tests/public/stream-tabs-controller.test.mjs": {
+      "execution": {
+        "parallel": true,
+        "isolation": { "filesystem": "per-child-temp", "locks": "per-child-temp", "git": "none", "ports": "per-test-temp", "browserProfile": "per-launch" }
+      }
     }
   }
 }

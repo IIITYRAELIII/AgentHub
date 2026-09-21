@@ -201,26 +201,14 @@ export class DesktopDeferredInputService {
     if (action === "queue" || action === "retry") {
       if (d.queuedInputs.has(id)) return { accepted: true, id, queued: true, message: "Сообщение уже находится в очереди" };
       if (!d.pendingInputs.has(id)) throw new Error("Сохранённое сообщение уже обработано");
-      const previous = this.#itemState(item);
       d.pendingInputs.delete(id);
-      if (action === "queue" && item.conflictKind === "message-steer") {
-        item.conflictKind = "message-intake";
-      }
       delete item.paused;
       delete item.lastError;
       delete item.lastErrorCode;
       delete item.waitReason;
-      delete item.laneReleased;
       d.queuedInputs.set(id, item);
-      try {
-        await d.saveState();
-      } catch (error) {
-        d.queuedInputs.delete(id);
-        this.#restoreItemState(item, previous);
-        d.pendingInputs.set(id, item);
-        throw error;
-      }
       d.updateReceipt(item, "queued");
+      await d.saveState();
       await d.updateMessage(item, `⏳ Сообщение поставлено в очередь потока «${item.taskTitle}».`);
       d.scheduleQueued(item, 500);
       return { accepted: true, message: "Сообщение поставлено в очередь" };

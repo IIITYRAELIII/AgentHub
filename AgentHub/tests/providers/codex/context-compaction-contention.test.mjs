@@ -42,8 +42,9 @@ async function fixture(t) {
 function events(tracker) {
   const noop = () => {};
   return new CodexEventService({
+    mutateCompaction: (_threadId, operation) => operation(),
     invalidateThreadRead: noop, forEvent: () => null, reindexRun: noop,
-    applyThreadSettings: noop, saveState: noop, trackTokenUsage: noop, completeTurn: noop,
+    applyThreadSettings: noop, saveState: noop, trackTokenUsage: noop,
     taskKey: () => "task", isSelectedRun: () => false, setSelectedDiff: noop,
     appendActivity: noop, noteActivity: noop, scheduleProgress: noop, appendReasoning: noop,
     upsertReasoningBlock: noop, replaceActivityGroups: noop, turnActivityGroups: () => [],

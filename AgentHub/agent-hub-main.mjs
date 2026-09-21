@@ -6,6 +6,10 @@ import {
 } from "./agent-hub-server.mjs";
 
 const handleFatalProcessError = createFatalProcessHandler({ shutdown: shutdownAgentHub });
+const handleFatalStartupError = createFatalProcessHandler({
+  shutdown: shutdownAgentHub,
+  exitAfterShutdown: true,
+});
 
 process.on("SIGINT", () => void shutdownAgentHub("SIGINT"));
 process.on("SIGTERM", () => void shutdownAgentHub("SIGTERM"));
@@ -15,9 +19,5 @@ process.on("uncaughtException", (error) => void handleFatalProcessError("uncaugh
 try {
   await startAgentHub();
 } catch (error) {
-  console.error("Agent Hub startup failed:", error);
-  await shutdownAgentHub("startup-error").catch((shutdownError) => {
-    console.error("Agent Hub startup cleanup failed:", shutdownError);
-  });
-  process.exitCode = 1;
+  await handleFatalStartupError("startup failed", error);
 }

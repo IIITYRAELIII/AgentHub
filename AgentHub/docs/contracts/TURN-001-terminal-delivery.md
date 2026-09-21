@@ -1,15 +1,24 @@
 # TURN-001 — Terminal turn commit and delivery
 
-Audit checkpoints before version 17 retain their live byte cursors but rebuild
-the existing bounded historical queue once to repair failed identity-less context
-probes. Version 17 historical completion is durable across restart; it does not
-authorize periodic full-history scans or resubmission of provider operations.
+Audit byte cursors and completed historical work remain durable across restart.
+Removing context measurements does not authorize a history rewrite, periodic
+full-history scans or resubmission of provider operations.
 
 ## Identity and owner
 
 A provider run is identified by `provider + threadId + turnId`. A terminal
 revision extends that identity. The terminal record is the only durable owner of
 final status and final content.
+
+The minimal `provider_run_terminals` lifecycle ledger is not a second final or
+delivery owner. The managed-run completion boundary records only the immutable
+normalized outcome (`completed`, `failed` or `aborted`) needed by external
+ownership recovery such as a surviving manual Test Contour helper. It contains
+no final content, message command identity or outbox and cannot satisfy or alter
+the terminal projection invariants below. Codex's ordinary terminal record
+remains authoritative for its final status/content and is also valid lifecycle
+evidence; Claude uses the minimal record because it has no Codex delivery
+terminal.
 
 ## Invariants
 
@@ -31,9 +40,8 @@ final status and final content.
   evidence that an already-started provider operation has finished.
 - A Codex `task_complete` event carrying an error is a failed terminal, not a
   successful empty answer. Exact-turn, tail and historical readers retain the
-  same outcome. An identity-less context probe stays internal under UI-001;
-  discovering it during reconciliation may update accounting but must not emit
-  an ordinary completion notification.
+  same outcome. Context maintenance does not generate a user turn, and terminal
+  reconciliation has no special prompt, client-ID or response-text classifier.
 - Optional rollout usage, pricing and tool-metadata reconstruction never delays
   terminal commit or admission release. The terminal audit resumes from its
   durable append-only byte checkpoint and reconciles that metadata afterward.
@@ -70,6 +78,26 @@ final status and final content.
   history and journal data are persisted and the shared projection succeeds.
   Projection failure preserves retryability; a superseding revision retains its
   own delivery identity. Ordinary live completion does not wait for a batch.
+- The durable terminal outbox is the sole retry owner for terminal projection.
+  A projection revision is acknowledged only after canonical readback confirms
+  its exact journal record, matching immutable accounting fields in the
+  deterministic usage fact, and a turn index produced from a journal revision
+  at least as new as that record. The index and its source revision are replaced
+  atomically by the existing journal projection owner.
+  An already-complete projection is acknowledged without rewriting richer
+  display metadata or account attribution. Projection-only recovery never
+  repeats the provider turn, command trace or Telegram delivery.
+- Transient SQLite busy/locked and journal-revision conflicts receive one
+  runtime-scoped, bounded single-flight retry with capped backoff. Conflict
+  recovery re-reads the exact projection before another write. A retry of an
+  already durable terminal cannot infer its historical account from the
+  runtime's current ambient account; independently persisted attribution may
+  still be retained or enriched by its existing evidence owner.
+- Projection recovery reads only projection-pending outbox rows in durable
+  least-recently-attempted order. A bounded page of permanent failures moves to
+  the back without starving later rows. Exhausted fast retries and enumeration
+  failures remain eligible for the existing owner's low-frequency pass; no
+  zero-delay full-page loop is allowed.
 - A later user turn cannot suppress or mutate the previous terminal entity.
 - Projection overlays the exact latest terminal independently of a later active
   turn, so both entities remain visible in provider sequence.

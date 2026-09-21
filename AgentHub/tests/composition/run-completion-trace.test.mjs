@@ -22,6 +22,7 @@ test("real completion composition traces pending startup recovery through durabl
   let release;
   const historyEntered = new Promise((resolve) => { entered = resolve; });
   const historyGate = new Promise((resolve) => { release = resolve; });
+  let projected = false;
   const noop = () => {};
   const composition = createRunCompletionComposition({
     config: { dataDir }, taskRuns: { add: noop, remove: noop, forEvent: () => null },
@@ -35,7 +36,12 @@ test("real completion composition traces pending startup recovery through durabl
     persistManagedRunHistory: async () => { entered(); await historyGate; events.push("history"); },
     runJournal: {
       projectTurn: async () => { events.push("journal"); return { projectionDeferred: true }; },
-      flushTurnProjections: async () => { events.push("flush"); return { projected: true }; },
+      flushTurnProjections: async () => { projected = true; events.push("flush"); return { projected: true }; },
+      ensureTurnUsageFact: async () => {},
+      turnProjectionStatus: async (completion) => projected ? {
+        current: true,
+        record: { ...completion, body: completion.finalAnswer },
+      } : null,
       rememberLastMessage: () => events.push("message"),
     },
     saveState: async () => events.push("save"),
@@ -67,6 +73,10 @@ test("real completion composition traces pending startup recovery through durabl
     "terminal-outbox-ack",
   ]) {
     assert.deepEqual(records.filter((record) => record.stage === stage).map((record) => record.outcome),
-      ["started", "succeeded"], stage);
+      // Recovery lists once before the projection flush and once after it to
+      // acknowledge newly delivered projection channels; neither pass replays.
+      stage === "terminal-outbox-list"
+        ? ["started", "succeeded", "started", "succeeded"]
+        : ["started", "succeeded"], stage);
   }
 });

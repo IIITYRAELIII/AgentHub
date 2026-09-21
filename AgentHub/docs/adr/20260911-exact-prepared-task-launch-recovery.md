@@ -25,7 +25,7 @@ Put the planned destination and request identity in the payload, deduplicate the
 event by Task/request, and await its write before creating the Stream.
 
 Keep startup behavior fail-closed: a prepared launch becomes `unknown` and is
-never a replay lease. Add an Architect-only `hub_task_launch_cancel` operation.
+never a replay lease. Add a Release Manager-only `hub_task_launch_cancel` operation.
 It accepts the original receipt in `pending`, `reconciling` or `unknown` only
 when the caller Workspace, Stream, provider and provider Thread match, the exact
 Task revision still owns that start request, the Task remains `starting`, the
@@ -66,7 +66,7 @@ compete on the same durable row.
 
 An event rejection leaves durable evidence and produces no downstream launch
 effect. Deployment does not launch pending work by itself. After the corrected
-runtime is ready, the originating Architect explicitly cancels the old request,
+runtime is ready, the originating Release Manager explicitly cancels the old request,
 then assigns the same Task through the ordinary existing-Stream path with a new
 request identity. If the process stops after terminalizing the original receipt
 but before Task cleanup, the Task remains blocked for a later cancellation; the

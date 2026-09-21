@@ -10,8 +10,22 @@ export class TaskReleasePlanService {
     this.taskGitWorkspaces = taskGitWorkspaces;
   }
 
-  async plan(workspaceId) {
-    const tasks = this.taskBoard.releaseTasks(workspaceId);
+  async plan(workspaceId, { acceptingTask = null } = {}) {
+    let tasks = this.taskBoard.releaseTasks(workspaceId);
+    if (acceptingTask) {
+      const current = tasks.find((task) => task.id === acceptingTask.id);
+      if (!current || current.revision !== acceptingTask.revision
+          || !["testing", "awaiting_implementation"].includes(current.workflowStatus)
+          || current.status === "done") {
+        throw new Error("Task changed before PreRelease acceptance preparation");
+      }
+      // Project the one future SQLite CAS without exposing Await before Git succeeds.
+      tasks = tasks.map((task) => task.id === current.id ? {
+        ...task, workflowStatus: "awaiting_implementation", revision: task.revision + 1,
+        releaseRevision: (task.releaseRevision ?? task.revision)
+          + (task.workflowStatus === "awaiting_implementation" ? 0 : 1),
+      } : task);
+    }
     const resolved = [];
     for (const task of tasks) {
       const changedFiles = [];

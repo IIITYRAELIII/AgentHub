@@ -127,6 +127,15 @@ export function attachmentDescriptor(file) {
   return attachmentMetadataFromId(id);
 }
 
+// Persisted Task rows hold paths in sourceDetails; public snapshots hold descriptors.
+// Both representations must expose the same attachment membership without paths.
+export function taskAttachmentDescriptors(task) {
+  if (Array.isArray(task?.sourceDetails?.attachments)) {
+    return task.sourceDetails.attachments.map(attachmentDescriptor).filter(Boolean);
+  }
+  return Array.isArray(task?.attachments) ? task.attachments : [];
+}
+
 function promptFileName(value) {
   return cleanDisplayName(value).replace(/[:\r\n]+/gu, " ").trim().slice(0, 180) || "Вложение";
 }

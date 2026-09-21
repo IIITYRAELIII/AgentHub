@@ -87,10 +87,10 @@ test("turn-end registry keeps the raw inter-Stream prompt for durable projection
   const origin = {
     workspaceId: "workspace-1",
     workspaceName: "Agent HUB",
-    streamId: "stream-architect",
-    streamName: "Architect",
+    streamId: "stream-release-manager",
+    streamName: "Release Manager",
     provider: "codex",
-    sourceThreadId: "thread-architect",
+    sourceThreadId: "thread-release-manager",
     requestId: "request-1",
   };
   const rawPrompt = createInterstreamMessage({ ...origin, text: "Review the release." });
@@ -116,8 +116,8 @@ test("turn-end registry preserves an untrusted envelope-shaped literal", () => {
   const literal = createInterstreamMessage({
     workspaceId: "workspace-1",
     workspaceName: "Agent HUB",
-    streamId: "stream-architect",
-    streamName: "Architect",
+    streamId: "stream-release-manager",
+    streamName: "Release Manager",
     provider: "codex",
     requestId: "request-literal",
     text: "Keep this literal.",
@@ -182,10 +182,10 @@ test("turn-end completion preserves canonical interstream origin for journal pro
   const messageOrigin = {
     workspaceId: "workspace-1",
     workspaceName: "Agent HUB",
-    streamId: "stream-architect",
-    streamName: "Architect",
+    streamId: "stream-release-manager",
+    streamName: "Release Manager",
     provider: "codex",
-    sourceThreadId: "thread-architect",
+    sourceThreadId: "thread-release-manager",
     requestId: "completion-origin-1",
   };
   const ready = registry.recordCompletion(completion({
@@ -212,10 +212,10 @@ test("turn-end completion fails closed on intra-record identity conflicts and ov
   const messageOrigin = {
     workspaceId: "workspace-1",
     workspaceName: "Agent HUB",
-    streamId: "stream-architect",
-    streamName: "Architect",
+    streamId: "stream-release-manager",
+    streamName: "Release Manager",
     provider: "codex",
-    sourceThreadId: "thread-architect",
+    sourceThreadId: "thread-release-manager",
     requestId: "completion-origin-1",
   };
   for (const [index, value] of [{
@@ -245,10 +245,10 @@ test("turn-end completion keeps the first exact client and origin on conflicting
   const messageOrigin = {
     workspaceId: "workspace-1",
     workspaceName: "Agent HUB",
-    streamId: "stream-architect",
-    streamName: "Architect",
+    streamId: "stream-release-manager",
+    streamName: "Release Manager",
     provider: "codex",
-    sourceThreadId: "thread-architect",
+    sourceThreadId: "thread-release-manager",
     requestId: "completion-origin-1",
   };
   registry.recordCompletion(completion({

@@ -36,7 +36,18 @@
     };
   }
 
+  function restartFailureNotice(failure) {
+    const operationId = `${failure?.operationId ?? ""}`.trim();
+    if (!operationId) return null;
+    const reason = `${failure?.error ?? ""}`.trim();
+    return Object.freeze({
+      operationId,
+      message: `Перезапуск Agent Hub не выполнен: ${reason || "причина не сохранена"}.`,
+    });
+  }
+
   window.AgentHubConnectionBanner = Object.freeze({
+    restartFailureNotice,
     restartWaitingMessage,
     snapshotConnectionState,
     transientFailureDecision,

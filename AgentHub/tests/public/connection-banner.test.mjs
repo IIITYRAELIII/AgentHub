@@ -57,3 +57,20 @@ test("one transient failure keeps a healthy snapshot online through the grace pe
     elapsedMs: 1_000,
   }), "offline");
 });
+
+test("restart failure notice names the persisted reason for an exact operation", async () => {
+  const { restartFailureNotice } = await connectionBannerApi();
+  assert.equal(restartFailureNotice(null), null);
+  assert.equal(restartFailureNotice({ error: "no identity" }), null);
+  assert.deepEqual({ ...restartFailureNotice({
+    operationId: "restart-1",
+    error: "replacement bot 84 exited before becoming ready",
+  }) }, {
+    operationId: "restart-1",
+    message: "Перезапуск Agent Hub не выполнен: replacement bot 84 exited before becoming ready.",
+  });
+  assert.equal(
+    restartFailureNotice({ operationId: "restart-2", error: null }).message,
+    "Перезапуск Agent Hub не выполнен: причина не сохранена.",
+  );
+});

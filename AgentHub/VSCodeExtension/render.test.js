@@ -66,6 +66,15 @@ function loadJournalView() {
   return window.AgentHubJournalView;
 }
 
+function functionSource(source, name, nextMarker) {
+  let start = source.indexOf(`function ${name}`);
+  if (source.slice(Math.max(0, start - 6), start) === "async ") start -= 6;
+  const end = source.indexOf(nextMarker, start);
+  assert.notEqual(start, -1, `${name} source start`);
+  assert.notEqual(end, -1, `${name} source end`);
+  return source.slice(start, end);
+}
+
 function loadVscodeBootstrap({ animations = [], hidden = false } = {}) {
   const source = fs.readFileSync(path.join(__dirname, "vscode-bootstrap.js"), "utf8");
   const listeners = new Map();
@@ -886,6 +895,89 @@ test("the active Agent Hub tab survives a page reload", () => {
   }
 });
 
+test("VS Code shared WebView applies deferred task history and requests the exact v4 snapshot delta", () => {
+  const clientSource = fs.readFileSync(path.join(WEB_APP_ROOT, "hub-client.js"), "utf8");
+  const transportSource = fs.readFileSync(path.join(WEB_APP_ROOT, "snapshot-transport.js"), "utf8");
+  const applied = [];
+  const snapshotApplications = [];
+  const selected = [];
+  const refreshRequests = [];
+  const lastSnapshot = {
+    version: "snapshot-v7",
+    collectionVersions: {
+      conversations: "conversations-v4",
+      workspaces: "workspaces-v3",
+      boardTasks: "board-v9",
+      messageReceipts: "receipts-v5",
+      messagePins: "pins-v2",
+    },
+    tasks: [{ streamId: "stream-b", provider: "codex", threadId: "thread-b" }],
+  };
+  const window = { requestAnimationFrame: (callback) => callback() };
+  vm.runInNewContext(transportSource, { window });
+  const sandbox = vm.createContext({
+    Map,
+    window,
+    lastSnapshot,
+    selectedTaskId: "stream-b",
+    historyPageByTask: new Map(),
+    historyWindowByTask: new Map(),
+    taskId: (_provider, _threadId, streamId) => streamId,
+    historyMessages: (history) => history.items,
+    setHistoryWindow: (id, items) => applied.push([id, ...items.map((item) => item.id)]),
+    clearDurablyCompletedLiveCard: () => {},
+    setFocusedHistoryWindow: () => {},
+    mergeNewestHistory: (_previous, newest) => newest,
+    rememberSelectedTaskId: (id) => selected.push(`remember:${id}`),
+    refresh: async () => {
+      refreshRequests.push(window.AgentHubSnapshotTransport.requestParams(lastSnapshot));
+    },
+    applySnapshot: (snapshot) => snapshotApplications.push(snapshot),
+    agentHub: { selectTask: (id) => selected.push(`select:${id}`) },
+    syncHistoryPagination: () => {},
+    renderTaskMessages: () => [],
+    renderTaskQueue: () => {},
+    displayedFinalAcknowledgement: () => false,
+    settleOpenedTaskHistory: async () => {},
+    updateHistoryCatchUp: () => {},
+  });
+  vm.runInContext(
+    `${functionSource(clientSource, "applyOpened", "function acknowledgeDisplayedFinal")};`
+      + "globalThis.applyDeferredOpen = applyOpened;",
+    sandbox,
+  );
+
+  sandbox.applyDeferredOpen({
+    snapshot: null,
+    snapshotDeferred: true,
+    history: {
+      streamId: "stream-b",
+      provider: "codex",
+      threadId: "thread-b",
+      start: 0,
+      end: 1,
+      total: 1,
+      messageTotal: 1,
+      version: "history-v1",
+      items: [{ id: "turn-b" }],
+    },
+  });
+
+  assert.deepEqual(applied, [["stream-b", "turn-b"]]);
+  assert.deepEqual(snapshotApplications, [null]);
+  assert.deepEqual(selected, ["remember:stream-b", "select:stream-b"]);
+  assert.deepEqual(JSON.parse(JSON.stringify(refreshRequests)), [{
+    knownVersion: "snapshot-v7",
+    compactSnapshot: true,
+    snapshotProtocol: 4,
+    conversationsVersion: "conversations-v4",
+    workspacesVersion: "workspaces-v3",
+    boardTasksVersion: "board-v9",
+    messageReceiptsVersion: "receipts-v5",
+    messagePinsVersion: "pins-v2",
+  }]);
+});
+
 test("task list keeps active duration live and metadata badges readable", () => {
   const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
   const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
@@ -1698,7 +1790,7 @@ test("message attachments keep timestamps, previews and an explicit open action"
   assert.match(client, /agentHub\.on\("attachment:load"/u);
   assert.match(client, /bridgeCall\("resolve-attachment", \{ id \}\)/u);
   assert.match(extension, /action === "resolve-attachment"/u);
-  assert.match(html, /data-resource-context-menu[\s\S]*data-resource-action="open"[\s\S]*data-resource-action="copy"[\s\S]*data-resource-action="save"/u);
+  assert.match(html, /data-resource-context-menu[\s\S]*data-resource-action="save"[\s\S]*data-resource-action="open"[\s\S]*data-resource-action="copy"/u);
   assert.match(client, /agentHub\.on\("resource:copy"[\s\S]*agentHub\.on\("resource:save"/u);
   assert.match(client, /value\.url = `\/api\/message-attachment\/\$\{encodeURIComponent\(id\)\}`/u);
   assert.doesNotMatch(client, /window\.open\(url, "_blank"/u);
@@ -1721,7 +1813,7 @@ test("background navigation is empty and settings expose the bug report flow", (
   assert.match(client, /control\("submit-bug-report"/u);
   assert.match(app, /if \(bugReportForm\) bugReportForm\.hidden = next\.formHidden/u);
   assert.match(app, /bugReportToggle\?\.setAttribute\("aria-expanded", String\(next\.expanded\)\)/u);
-  assert.match(client, /LONG_CONTROL_ACTIONS = new Set\(\["rotate-stream", "submit-bug-report"\]\)/u);
+  assert.match(client, /LONG_CONTROL_ACTIONS = new Set\(\["rotate-stream", "submit-bug-report", "browse-directory"\]\)/u);
   assert.match(client, /LONG_CONTROL_ACTIONS\.has\(action\) \? LONG_CONTROL_TIMEOUT_MS/u);
 });
 

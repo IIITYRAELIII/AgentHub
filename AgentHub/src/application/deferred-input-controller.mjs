@@ -77,7 +77,6 @@ const DEFERRED_ERROR_MESSAGES = Object.freeze({
   ERR_CODEX_TURN_START_UNCONFIRMED: "Codex не подтвердил запуск; автоматический повтор не выполнялся.",
   ERR_DEFERRED_INPUT_PROCESSING: "Не удалось обработать сохранённое сообщение.",
   ERR_DEFERRED_INPUT_START: "Не удалось запустить сохранённое сообщение.",
-  ERR_PROVIDER_STEER_NOT_DELIVERED: "Уточнение не доставлено в исходный ход; выберите дальнейшее действие.",
   ERR_PROVIDER_STEER_UNCONFIRMED: "Провайдер не подтвердил уточнение; автоматический повтор не выполнялся.",
 });
 
@@ -96,7 +95,6 @@ export class DeferredInputController {
     laneKey = taskRunKey,
     findStarted = async () => null,
     findSteered = async () => null,
-    isSteerDispatchBlocked = async () => false,
     steer = async () => null,
     start,
     persist,
@@ -105,6 +103,8 @@ export class DeferredInputController {
     notifyReturned,
     onStateChange = () => {},
     expire = async () => {},
+    expireCommands = null,
+    onExpiryError = (error) => console.warn("Cannot maintain message command expiry:", error.message),
     isRetryableLaunchError = isRetryableDeferredLaunchError,
     maxAgeMs = 7 * 24 * 60 * 60 * 1000,
     providerReconciliationMaxAgeMs = 5 * 60 * 1000,
@@ -124,7 +124,6 @@ export class DeferredInputController {
     this.laneKey = laneKey;
     this.findStarted = findStarted;
     this.findSteered = findSteered;
-    this.isSteerDispatchBlocked = isSteerDispatchBlocked;
     this.steer = steer;
     this.start = start;
     this.persist = persist;
@@ -133,6 +132,9 @@ export class DeferredInputController {
     this.notifyReturned = notifyReturned;
     this.onStateChange = onStateChange;
     this.expire = expire;
+    this.expireCommands = expireCommands;
+    this.expiryTimer = null;
+    this.onExpiryError = onExpiryError;
     this.isRetryableLaunchError = isRetryableLaunchError;
     this.maxAgeMs = maxAgeMs;
     this.providerReconciliationMaxAgeMs = Math.max(
@@ -220,6 +222,7 @@ export class DeferredInputController {
   }
 
   async process(id) {
+    this.expireCommands?.();
     const queuedItem = this.queuedInputs.get(id);
     const pendingItem = this.pendingInputs.get(id);
     const item = queuedItem ?? (autoReleasablePendingConflict(pendingItem) ? pendingItem : null);
@@ -247,8 +250,9 @@ export class DeferredInputController {
         const occupancy = await this.occupancy(item);
         activeSteer = steerTargetsOccupancy(item, occupancy);
         if (!activeSteer) {
-          await this.requireSteerDecision(item);
-          return;
+          item.conflictKind = "message-intake";
+          this.onStateChange(item, "queued");
+          await this.persist();
         }
       }
       if (!activeSteer) {
@@ -266,7 +270,8 @@ export class DeferredInputController {
       }
       delete item.recheckRequested;
       const createdAt = Date.parse(String(item.createdAt ?? ""));
-      if (Number.isFinite(createdAt) && this.now() - createdAt >= this.maxAgeMs) {
+      if (!(this.expireCommands && item.clientUserMessageId)
+        && Number.isFinite(createdAt) && this.now() - createdAt >= this.maxAgeMs) {
         this.queuedInputs.delete(id);
         await this.expire(item);
         await this.persist();
@@ -482,12 +487,6 @@ export class DeferredInputController {
       return;
     }
 
-    if (await this.isSteerDispatchBlocked(item)) {
-      item.blockedChecks = Number(item.blockedChecks ?? 0) + 1;
-      this.schedule(item, this.retryDelay(item.blockedChecks));
-      return;
-    }
-    delete item.blockedChecks;
     item.dispatchingAt = new Date(this.now()).toISOString();
     this.onStateChange(item, "dispatching");
     await this.persist();
@@ -500,12 +499,12 @@ export class DeferredInputController {
     try {
       const steered = await this.steer(item);
       if (!steered) {
-        dispatchSpan?.finish({
-          outcome: "failed",
-          queueDepth: this.queuedInputs.size,
-          metadata: { errorCode: "ERR_PROVIDER_STEER_NOT_DELIVERED" },
-        });
-        await this.requireSteerDecision(item);
+        dispatchSpan?.finish({ outcome: "queued", queueDepth: this.queuedInputs.size });
+        delete item.dispatchingAt;
+        item.conflictKind = "message-intake";
+        this.onStateChange(item, "queued");
+        await this.persist();
+        this.schedule(item, 0);
         return;
       }
       dispatchSpan?.finish({
@@ -530,40 +529,6 @@ export class DeferredInputController {
       await this.persist();
       this.schedule(item, this.retryDelayMs);
     }
-  }
-
-  async requireSteerDecision(item) {
-    const detail = safeDeferredError({ code: "ERR_PROVIDER_STEER_NOT_DELIVERED" });
-    const previous = Object.getOwnPropertyDescriptors(item);
-    delete item.dispatchingAt;
-    delete item.waitReason;
-    delete item.blockedChecks;
-    delete item.recheckRequested;
-    delete item.providerReconciliationStartedAt;
-    delete item.providerReconciliationChecks;
-    item.lastErrorCode = detail.code;
-    item.lastError = detail.message;
-    item.laneReleased = true;
-    this.queuedInputs.delete(item.id);
-    this.pendingInputs.set(item.id, item);
-    this.onStateChange(item, "pending", detail);
-    try {
-      await this.persist();
-    } catch (error) {
-      this.pendingInputs.delete(item.id);
-      for (const key of Reflect.ownKeys(item)) delete item[key];
-      Object.defineProperties(item, previous);
-      this.queuedInputs.set(item.id, item);
-      this.onStateChange(item, "queued", safeDeferredError(error));
-      throw error;
-    }
-    await this.updateMessage(
-      item,
-      `⚠️ ${item.lastError}\n\nСообщение сохранено. Выберите дальнейшее действие:`,
-      this.pendingKeyboard(item),
-    );
-    await this.notifyReturned(item);
-    this.wakeLane(item);
   }
 
   async finishSteer(item, steered) {
@@ -731,6 +696,7 @@ export class DeferredInputController {
   }
 
   wakeAll() {
+    this.maintainCommandExpiry();
     const lanes = new Map();
     for (const item of [
       ...this.queuedInputs.values(),
@@ -747,7 +713,46 @@ export class DeferredInputController {
   }
 
   stop() {
+    if (this.expiryTimer != null) this.clearTimeoutImpl(this.expiryTimer);
+    this.expiryTimer = null;
     for (const timer of this.timers.values()) this.clearTimeoutImpl(timer);
     this.timers.clear();
+  }
+
+  removeExpiredCommand(record) {
+    for (const collection of [this.pendingInputs, this.queuedInputs]) {
+      for (const item of collection.values()) {
+        if (item.clientUserMessageId !== record.clientUserMessageId) continue;
+        collection.delete(item.id);
+        this.cancelSchedule(item.id);
+      }
+    }
+    if (record.item) {
+      try { this.onStateChange(record.item, "expired", record.result); }
+      catch (error) { this.reportExpiryError(error); }
+    }
+  }
+
+  reportExpiryError(error) {
+    // Diagnostics cannot prevent cleanup or stop unrelated runtime services.
+    try { this.onExpiryError(error); } catch { /* best-effort diagnostic */ }
+  }
+
+  maintainCommandExpiry() {
+    try { this.expireCommands?.(); }
+    catch (error) { this.reportExpiryError(error); }
+  }
+
+  startExpiryMaintenance() {
+    if (!this.expireCommands || this.expiryTimer != null) return;
+    const tick = () => {
+      this.expiryTimer = null;
+      try { this.maintainCommandExpiry(); }
+      finally {
+        this.expiryTimer = this.setTimeoutImpl(tick, 60_000);
+        this.expiryTimer?.unref?.();
+      }
+    };
+    tick();
   }
 }

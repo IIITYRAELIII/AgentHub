@@ -85,19 +85,19 @@ function smokePage({ availableModels = ["gpt-5.3-codex-spark"], selectedModel = 
 
 test("Test Contour smoke selects the requested model before creating a thread", async () => {
   const fixture = smokePage({
-    availableModels: ["gpt-5.3-codex-spark", "gpt-5.6-terra", "fake-codex"],
+    availableModels: ["gpt-5.3-codex-spark", "gpt-5.6-luna", "fake-codex"],
     selectedModel: "fake-codex",
   });
 
-  await selectTestContourModel(fixture.page, "gpt-5.6-terra", 5_000);
+  await selectTestContourModel(fixture.page, "gpt-5.6-luna", 5_000);
 
   assert.deepEqual(fixture.events, [
     ["toggle.waitFor", { state: "visible", timeout: 5_000 }],
     ["toggle.click"],
     ["model.waitFor", { state: "attached", timeout: 5_000 }],
-    ["model.option.waitFor", "gpt-5.6-terra", { state: "attached", timeout: 5_000 }],
+    ["model.option.waitFor", "gpt-5.6-luna", { state: "attached", timeout: 5_000 }],
     ["page.waitForResponse", { timeout: 5_000 }],
-    ["model.selectOption", "gpt-5.6-terra", { force: true }],
+    ["model.selectOption", "gpt-5.6-luna", { force: true }],
     ["close.click"],
   ]);
 });
@@ -177,12 +177,12 @@ test("Test Contour smoke recognizes only the exact model-setting ACK", () => {
 
   assert.equal(isTestContourModelSettingResponse(response({
     action: "update-setting",
-    params: { name: "model", value: "gpt-5.6-terra" },
-  }), "gpt-5.6-terra"), true);
+    params: { name: "model", value: "gpt-5.6-luna" },
+  }), "gpt-5.6-luna"), true);
   assert.equal(isTestContourModelSettingResponse(response({
     action: "update-setting",
-    params: { name: "reasoning", value: "gpt-5.6-terra" },
-  }), "gpt-5.6-terra"), false);
+    params: { name: "reasoning", value: "gpt-5.6-luna" },
+  }), "gpt-5.6-luna"), false);
 });
 
 test("Test Contour smoke ignores old messages containing the expected response", () => {
@@ -197,8 +197,8 @@ test("Test Contour smoke rejects an unavailable requested model", async () => {
   const fixture = smokePage({ availableModels: ["fake-codex"], selectedModel: "fake-codex" });
 
   await assert.rejects(
-    selectTestContourModel(fixture.page, "gpt-5.6-terra", 5_000),
-    /model is not selectable: gpt-5\.6-terra/u,
+    selectTestContourModel(fixture.page, "gpt-5.6-luna", 5_000),
+    /model is not selectable: gpt-5\.6-luna/u,
   );
   assert.equal(fixture.events.some(([event]) => event === "model.selectOption"), false);
 });

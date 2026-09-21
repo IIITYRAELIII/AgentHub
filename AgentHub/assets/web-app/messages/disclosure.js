@@ -159,7 +159,36 @@
     }
   }
 
-  function domRangeOffsets(surface, range) {
+  function domRangeWithinSurface(surface, range) {
+    if (!surface || !range) return null;
+    if (surface.contains(range.startContainer) && surface.contains(range.endContainer)) return range;
+    try {
+      if (!range.intersectsNode(surface)) return null;
+      const contents = surface.ownerDocument.createRange();
+      contents.selectNodeContents(surface);
+      const bounded = range.cloneRange();
+      // Triple-click can include a paragraph separator outside the surface.
+      // Trim that empty boundary, never text belonging to another source/control.
+      if (range.compareBoundaryPoints(0, contents) < 0) {
+        const before = range.cloneRange();
+        before.setEnd(contents.startContainer, contents.startOffset);
+        if (before.toString().trim()) return null;
+        bounded.setStart(contents.startContainer, contents.startOffset);
+      }
+      if (range.compareBoundaryPoints(2, contents) > 0) {
+        const after = range.cloneRange();
+        after.setStart(contents.endContainer, contents.endOffset);
+        if (after.toString().trim()) return null;
+        bounded.setEnd(contents.endContainer, contents.endOffset);
+      }
+      return bounded;
+    } catch {
+      return null;
+    }
+  }
+
+  function domRangeOffsets(surface, selectedRange) {
+    const range = domRangeWithinSurface(surface, selectedRange);
     const start = domTextOffset(surface, range?.startContainer, range?.startOffset);
     const end = domTextOffset(surface, range?.endContainer, range?.endOffset);
     if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || end <= start) return null;

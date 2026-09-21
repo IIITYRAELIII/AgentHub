@@ -6,7 +6,6 @@ import {
   taskExecutionRuntimeLabel,
 } from "../../domain/task-execution-owner.mjs";
 import { taskRunKey } from "../../domain/task-runs.mjs";
-import { isCodexContextProbeTurn } from "../../domain/codex-context-probe.mjs";
 import { normalizeTokenUsage } from "../../domain/token-usage.mjs";
 import { turnEndKey } from "../../application/turn-end-notifications.mjs";
 import { conciseTurnTitle } from "../../application/turn-title.mjs";
@@ -170,17 +169,6 @@ export class CodexLifecycleController {
     const clientUserMessageId = String(run?.clientUserMessageId ?? "").trim()
       || String(payload.clientUserMessageId ?? "").trim()
       || null;
-    if (isCodexContextProbeTurn({
-      contextProbe: run?.contextProbe,
-      prompt: String(payload.prompt ?? "").trim() || turnStart?.prompt || run?.promptPreview,
-      finalAnswer: payload.finalAnswer ?? run?.responseText,
-      clientUserMessageId,
-      userMessages: payload.userMessages ?? run?.userMessages,
-    })) {
-      d.codexTurnStarts.delete(turnEndKey(deliveredIdentity));
-      await d.saveState();
-      return `Ignored internal Codex context probe ${payload.turnId}.`;
-    }
     const alreadyDelivered = d.turnEndNotifications.hasDelivered(deliveredIdentity);
     const taskTitle = await d.taskTitle({ ...identity, run });
     let turnDiff = String(payload.diff ?? "");
@@ -214,7 +202,7 @@ export class CodexLifecycleController {
       turnStart?.executionOwner ?? payload.executionOwner ?? run?.executionOwner,
     );
     const lifecycleOwnsTerminal = !run && executionOwner !== TASK_EXECUTION_OWNERS.HUB;
-    const responseAttachments = lifecycleOwnsTerminal
+    const responseAttachments = lifecycleOwnsTerminal || generatedImageSources.length
       ? await d.resolveTerminalAttachments?.({
         threadId: identity.threadId,
         startedAt: payload.startedAt ?? turnStart?.startedAt,
@@ -241,7 +229,6 @@ export class CodexLifecycleController {
       startedAt: payload.startedAt ?? turnStart?.startedAt ?? run?.startedAt,
       completedAt: payload.completedAt,
       operationKind: "user-turn",
-      contextProbe: false,
       prompt: payload.prompt ?? turnStart?.prompt ?? run?.promptPreview,
       rawPrompt: payload.rawPrompt ?? run?.rawPrompt ?? run?.promptPreview,
       clientUserMessageId,
@@ -257,6 +244,14 @@ export class CodexLifecycleController {
       mcpCalls: payload.mcpCalls ?? run?.mcpCalls ?? [],
       toolMetricsKnown: payload.toolMetricsKnown === true || run?.toolMetricsKnown === true,
     });
+    if (!lifecycleOwnsTerminal && generatedImageSources.length) {
+      await d.repairTurnEndAttachments?.(deliveredIdentity, {
+        expectedCount: generatedImageSources.length,
+        resolveAttachments: async () => responseAttachments.map((attachment) => ({
+          ...attachment,
+        })),
+      });
+    }
     if (!completion && alreadyDelivered) {
       const finalAnswer = String(payload.finalAnswer ?? "").trim();
       await d.projectTurnUsageToWorkLog({
@@ -275,7 +270,6 @@ export class CodexLifecycleController {
         startedAt: payload.startedAt ?? turnStart?.startedAt ?? run?.startedAt,
         completedAt: payload.completedAt,
         operationKind: "user-turn",
-        contextProbe: false,
         prompt: payload.prompt ?? turnStart?.prompt ?? run?.promptPreview,
         rawPrompt: payload.rawPrompt ?? run?.rawPrompt ?? run?.promptPreview,
         clientUserMessageId,
@@ -301,7 +295,6 @@ export class CodexLifecycleController {
           turnId: payload.turnId,
           startedAt: payload.startedAt ?? turnStart?.startedAt ?? run?.startedAt,
           operationKind: "user-turn",
-          contextProbe: false,
           clientUserMessageId,
         }, finalAnswer, { updatedAt: payload.completedAt });
         d.setBoundedMapValue(d.lastSeenTaskTurnIds, taskRunKey({

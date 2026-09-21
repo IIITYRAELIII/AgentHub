@@ -31,6 +31,39 @@ function socketHasOwner(endpoint) {
   });
 }
 
+export function instanceLockEndpoint(dataDir) {
+  return pipeName(dataDir);
+}
+
+export function readInstanceLockOwner(dataDir, { timeoutMs = 2_000 } = {}) {
+  const endpoint = pipeName(dataDir);
+  return new Promise((resolve, reject) => {
+    const socket = connect(endpoint);
+    let token = "";
+    let settled = false;
+    const timeout = setTimeout(() => {
+      finish(reject, new Error("Timed out reading Agent Hub instance identity"));
+    }, timeoutMs);
+    const finish = (operation, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      socket.destroy();
+      operation(value);
+    };
+    socket.setEncoding("utf8");
+    socket.on("data", (chunk) => {
+      token += chunk;
+      if (token.length > 128) finish(reject, new Error("Invalid Agent Hub instance identity"));
+    });
+    socket.once("end", () => finish(resolve, token.trim() || null));
+    socket.once("error", (error) => {
+      if (["ECONNREFUSED", "ENOENT"].includes(error?.code)) finish(resolve, null);
+      else finish(reject, error);
+    });
+  });
+}
+
 function listen(server, endpoint) {
   return new Promise((resolve, reject) => {
     const failed = (error) => {
@@ -95,7 +128,13 @@ export class SingleInstanceGuard {
   async acquire() {
     await mkdir(this.#dataDir, { recursive: true });
     const endpoint = pipeName(this.#dataDir);
-    const server = createServer((socket) => socket.end(this.#token));
+    const server = createServer((socket) => {
+      // The identity reply is best-effort for this one client. A probe that
+      // disconnects early must not turn its socket write error into an owner
+      // process failure or release the single-instance channel.
+      socket.on("error", () => socket.destroy());
+      socket.end(this.#token);
+    });
     try {
       await listen(server, endpoint);
     } catch (error) {

@@ -17,10 +17,6 @@ import {
   userMessageSnapshotAuthority,
 } from "../../domain/canonical-user-messages.mjs";
 import {
-  CODEX_CONTEXT_PROBE_CLIENT_ID_PREFIX,
-  isCodexContextProbeTurn,
-} from "../../domain/codex-context-probe.mjs";
-import {
   CODEX_AUTO_COMPACTION_TURN_ID_PREFIX,
   isCodexAutoCompactionTurnId,
 } from "../../domain/codex-internal-turn.mjs";
@@ -359,8 +355,7 @@ function visibleProviderHistory(provider, history) {
   const values = Array.isArray(history) ? history : [];
   return provider === "codex"
     ? withoutCodexInspectionAttachments(values.filter((turn) => (
-      !isCodexContextProbeTurn(turn)
-      && !isCodexAutoCompactionTurnId(turn?.id)
+      !isCodexAutoCompactionTurnId(turn?.id)
       && !isEmptyTurnCompletionPlaceholder(turn)
     )))
     : values;
@@ -534,7 +529,6 @@ export function createDesktopTaskHistoryFactory({
         limit,
         hiddenProvider: "codex",
         hiddenTurnIdPrefixes: [CODEX_AUTO_COMPACTION_TURN_ID_PREFIX],
-        hiddenClientUserMessageIdPrefixes: [CODEX_CONTEXT_PROBE_CLIENT_ID_PREFIX],
         emptyCompletionText: EMPTY_TURN_COMPLETION_TEXT,
       })
       : null;
@@ -601,12 +595,7 @@ export function createDesktopTaskHistoryFactory({
       && String(indexedRun.threadId ?? "") === String(binding.threadId ?? "")
       ? indexedRun
       : null;
-    const running = binding.provider === "codex" && isCodexContextProbeTurn({
-      prompt: candidateRun?.promptPreview,
-      finalAnswer: candidateRun?.responseText,
-      clientUserMessageId: candidateRun?.clientUserMessageId,
-      userMessages: candidateRun?.userMessages,
-    }) ? null : candidateRun;
+    const running = candidateRun;
     if (running) {
       historyMerger.mergeActive(history, {
         active: true,
@@ -655,14 +644,6 @@ export function createDesktopTaskHistoryFactory({
       )
     ));
     if (completed?.turnId && completed?.text && !(
-      binding.provider === "codex" && isCodexContextProbeTurn({
-        turnId: completed.turnId,
-        finalAnswer: completed.text,
-        operationKind: completed.operationKind,
-        contextProbe: completed.contextProbe,
-        clientUserMessageId: completed.clientUserMessageId,
-      })
-    ) && !(
       binding.provider === "codex" && isEmptyTurnCompletionPlaceholder({
         answer: completed.text,
       })

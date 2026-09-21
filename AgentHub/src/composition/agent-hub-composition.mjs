@@ -568,7 +568,7 @@ const interactionShell = createInteractionShellPhase({
     isCodex,
   },
   infrastructure: {
-    trustedDeviceStore, workLogUsageStore, workspaceCatalogStore, preTurnInstructions, taskBoard, taskVoiceTranscriber,
+    trustedDeviceStore, workLogUsageStore, workLogUsageRemoteConfigStore, workspaceCatalogStore, preTurnInstructions, taskBoard, taskVoiceTranscriber,
     taskReleasePlanner, workspaceReleaseService,
     taskLifecycle,
     attachmentDirectory,

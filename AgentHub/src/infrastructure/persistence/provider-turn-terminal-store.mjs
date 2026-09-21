@@ -179,6 +179,8 @@ function configure(database) {
     ) WITHOUT ROWID;
     CREATE INDEX IF NOT EXISTS provider_turn_terminal_outbox_pending_idx
       ON provider_turn_terminal_outbox(state, created_at, provider, thread_id, turn_id, terminal_revision);
+    CREATE INDEX IF NOT EXISTS provider_turn_terminal_outbox_projection_retry_idx
+      ON provider_turn_terminal_outbox(state, updated_at, created_at, provider, thread_id, turn_id, terminal_revision);
   `);
   const terminalColumns = new Set(database.prepare("PRAGMA table_info(provider_turn_terminals)").all()
     .map((column) => String(column.name)));
@@ -319,37 +321,55 @@ export class ProviderTurnTerminalStore {
     const finalAnswer = String(value.finalAnswer ?? "").trim();
     const usageIdentity = text(value.usageIdentity);
     const lastMessage = value.lastMessage == null ? null : jsonValue(value.lastMessage);
-    const telegramIntent = value.channels?.telegram?.requested === true
+    const requestedTelegramIntent = value.channels?.telegram?.requested === true
       ? jsonValue(value.channels.telegram)
       : null;
-    const hash = contentHash({
-      status,
-      finalAnswer,
-      usageIdentity,
-      lastMessageText: String(lastMessage?.text ?? "").trim(),
-      responseAttachments: basePayload?.completion?.responseAttachments ?? [],
-      telegramIntent,
-      ...([basePayload?.completion, basePayload?.history].some((part) => (
-        part?.contextProbe === true
-        || (text(part?.operationKind) && text(part.operationKind) !== "user-turn")
-      )) ? {
-          classification: [basePayload?.completion, basePayload?.history].map((part) => ({
-            operationKind: text(part?.operationKind) || "user-turn",
-            contextProbe: part?.contextProbe === true,
-          })),
-        } : {}),
-    });
     return this.#enqueue(() => {
       const database = this.#database();
       try {
         database.exec("BEGIN IMMEDIATE");
         const current = selectTerminal(database, key);
+        const currentOutbox = current ? selectOutbox(database, current) : null;
+        const storedTelegramIntent = ["intent", "uncertain"].includes(
+          currentOutbox?.channels?.telegram?.state,
+        ) ? currentOutbox.channels.telegram.intent : null;
+        const inheritedTelegramIntent = storedTelegramIntent
+          ? (({ id: _id, identity: _identity, channel: _channel, ...intent }) => {
+              const previousAnswer = String(current?.finalAnswer ?? "").trim();
+              const previousMessage = String(intent.message ?? "");
+              if (Object.hasOwn(intent, "answer")) intent.answer = finalAnswer;
+              if (Object.hasOwn(intent, "speechText")) intent.speechText = finalAnswer;
+              if (!previousMessage || previousMessage === previousAnswer) intent.message = finalAnswer;
+              else if (previousAnswer && previousMessage.startsWith(previousAnswer)) {
+                intent.message = `${finalAnswer}${previousMessage.slice(previousAnswer.length)}`;
+              }
+              return intent;
+            })(storedTelegramIntent)
+          : null;
+        // A later projection of the same provider turn may be silent, but it
+        // cannot revoke a delivery intent already committed for that turn.
+        const telegramIntent = requestedTelegramIntent ?? inheritedTelegramIntent;
+        const hash = contentHash({
+          status,
+          finalAnswer,
+          usageIdentity,
+          lastMessageText: String(lastMessage?.text ?? "").trim(),
+          responseAttachments: basePayload?.completion?.responseAttachments ?? [],
+          telegramIntent,
+          ...([basePayload?.completion, basePayload?.history].some((part) => (
+            text(part?.operationKind) && text(part.operationKind) !== "user-turn"
+          )) ? {
+              classification: [basePayload?.completion, basePayload?.history].map((part) => ({
+                operationKind: text(part?.operationKind) || "user-turn",
+              })),
+            } : {}),
+        });
         if (expectedTerminalRevision != null
           && current?.terminalRevision !== expectedTerminalRevision) {
           database.exec("COMMIT");
           return {
             terminal: current,
-            outbox: current ? selectOutbox(database, current) : null,
+            outbox: currentOutbox,
             created: false,
             conflict: true,
           };
@@ -366,7 +386,7 @@ export class ProviderTurnTerminalStore {
         }
         if (current?.contentHash === hash) {
           database.exec("COMMIT");
-          return { terminal: current, outbox: selectOutbox(database, current), created: false };
+          return { terminal: current, outbox: currentOutbox, created: false };
         }
         const terminalRevision = (current?.terminalRevision ?? 0) + 1;
         const committedAt = new Date().toISOString();
@@ -486,6 +506,26 @@ export class ProviderTurnTerminalStore {
           FROM provider_turn_terminal_outbox
           WHERE state = 'pending' OR command_state = 'intent' OR telegram_state IN ('intent', 'uncertain')
           ORDER BY created_at, provider, thread_id, turn_id, terminal_revision
+          LIMIT ?
+        `).all(Math.max(1, Math.min(1_000, Number(limit) || 100))).map(outboxRow);
+      } finally {
+        database.close();
+      }
+    });
+  }
+
+  pendingProjections({ limit = 100 } = {}) {
+    return this.#enqueue(() => {
+      const database = this.#database();
+      try {
+        return database.prepare(`
+          SELECT provider, thread_id, turn_id, terminal_revision, state, attempt_count,
+            last_error, payload_json, command_state, command_client_user_message_id,
+            command_last_error, command_updated_at, telegram_state, telegram_intent_json,
+            telegram_delivery_id, telegram_last_error, telegram_updated_at, created_at, updated_at
+          FROM provider_turn_terminal_outbox INDEXED BY provider_turn_terminal_outbox_projection_retry_idx
+          WHERE state = 'pending'
+          ORDER BY updated_at, created_at, provider, thread_id, turn_id, terminal_revision
           LIMIT ?
         `).all(Math.max(1, Math.min(1_000, Number(limit) || 100))).map(outboxRow);
       } finally {

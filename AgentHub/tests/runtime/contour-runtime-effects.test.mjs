@@ -117,7 +117,7 @@ test("runtime restoration expires only owned copies while retaining live queue a
   };
   const common = { provider: "claude", streamId: "stream", threadId: "thread", projectRoot: f.base, input: "literal", conflictKind: "message-intake" };
   const live = { ...common, id: "live", clientUserMessageId: "original-live", createdAt: new Date().toISOString(), temporaryFiles: [] };
-  const expired = { ...common, id: "expired", clientUserMessageId: "original-expired", createdAt: "2000-01-01T00:00:00Z", temporaryFiles: [f.original] };
+  const expired = { ...common, id: "expired", createdAt: "2000-01-01T00:00:00Z", temporaryFiles: [f.original] };
   const active = { ...common, id: "original-run", turnId: "original-turn", status: "running", pid: process.pid, claudeOutputPath: f.original };
   const snapshot = { queuedInputs: [expired, live], activeRuns: [active] };
   const original = structuredClone(snapshot);

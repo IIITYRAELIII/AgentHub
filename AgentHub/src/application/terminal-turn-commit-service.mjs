@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
 
-import { isCodexContextProbeClientId } from "../domain/codex-context-probe.mjs";
 import {
   consistentInterstreamRecordIdentity,
   normalizeInterstreamClientUserMessageId,
@@ -22,21 +21,6 @@ function terminalKey(value) {
   return [value?.provider, value?.threadId, value?.turnId]
     .map((part) => String(part ?? "").trim())
     .join("\0");
-}
-
-function hasOrdinaryClientIdentity(value) {
-  if (!value || typeof value !== "object") return false;
-  return Object.entries(value).some(([key, entry]) => {
-    if (["clientUserMessageId", "clientId", "client_user_message_id"].includes(key)) {
-      return Boolean(String(entry ?? "").trim()) && !isCodexContextProbeClientId(entry);
-    }
-    if (key === "clientUserMessageIds" && Array.isArray(entry)) {
-      return entry.some((clientId) => (
-        Boolean(String(clientId ?? "").trim()) && !isCodexContextProbeClientId(clientId)
-      ));
-    }
-    return hasOrdinaryClientIdentity(entry);
-  });
 }
 
 function responseAttachments(value) {
@@ -118,7 +102,6 @@ function historySnapshot(run, completion) {
     threadId: completion.threadId,
     turnId: completion.turnId,
     operationKind: completion.operationKind ?? source.operationKind,
-    contextProbe: completion.contextProbe ?? source.contextProbe,
     taskTitle: completion.taskTitle,
     promptPreview: String(source.rawPrompt ?? source.promptPreview ?? completion.prompt ?? ""),
     responseText: String(completion.finalAnswer ?? source.responseText ?? ""),
@@ -257,60 +240,6 @@ export class TerminalTurnCommitService {
     return result;
   }
 
-  async reclassifyContextProbe(identity, evidence) {
-    const exactIdentity = ["provider", "threadId", "turnId"].every((field) => (
-      String(identity?.[field] ?? "").trim()
-      && String(identity[field]).trim() === String(evidence?.[field] ?? "").trim()
-    ));
-    const operationKind = String(evidence?.operationKind ?? "").trim();
-    if (!exactIdentity || identity.provider !== "codex"
-      || (operationKind && operationKind !== "probe")
-      || (operationKind !== "probe" && evidence?.contextProbe !== true)
-      || evidence?.contextProbe === false) {
-      return { reclassified: false, terminal: null, outbox: null };
-    }
-    if (hasOrdinaryClientIdentity(evidence)) {
-      return { reclassified: false, terminal: null, outbox: null, rejected: "ordinary-client-identity" };
-    }
-    for (let attempt = 0; attempt < 4; attempt += 1) {
-      const terminal = await this.store.get(identity);
-      if (!terminal) return { reclassified: false, terminal: null, outbox: null };
-      if (hasOrdinaryClientIdentity(terminal.payload)) {
-        return { reclassified: false, terminal, outbox: null, rejected: "ordinary-client-identity" };
-      }
-      const status = ["completed", "failed", "aborted", "cancelled"].includes(evidence.status)
-        ? evidence.status : terminal.status;
-      const result = await this.store.commit({
-        provider: terminal.provider,
-        threadId: terminal.threadId,
-        turnId: terminal.turnId,
-        status,
-        finalAnswer: terminal.finalAnswer,
-        usageIdentity: terminal.usageIdentity,
-        lastMessage: null,
-        payload: {
-          ...structuredClone(terminal.payload),
-          completion: {
-            ...structuredClone(terminal.payload?.completion ?? {}),
-            status,
-            operationKind: "probe",
-            contextProbe: true,
-          },
-          history: {
-            ...structuredClone(terminal.payload?.history ?? {}),
-            operationKind: "probe",
-            contextProbe: true,
-          },
-        },
-        expectedTerminalRevision: terminal.terminalRevision,
-      });
-      if (result.conflict) continue;
-      this.terminals.set(terminalKey(identity), result.terminal);
-      return { ...result, reclassified: result.created === true };
-    }
-    throw new Error(`terminal probe reclassification did not settle for ${terminalKey(identity)}`);
-  }
-
   async enrichResponseAttachments(identity, {
     expectedCount = 1,
     resolveAttachments,
@@ -419,6 +348,10 @@ export class TerminalTurnCommitService {
       });
     }
     return items;
+  }
+
+  pendingProjections(options) {
+    return this.store.pendingProjections(options);
   }
 
   recoverProjecting() {
