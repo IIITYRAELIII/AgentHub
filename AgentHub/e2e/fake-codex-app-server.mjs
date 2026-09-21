@@ -552,6 +552,25 @@ function handleRequest(message) {
     reply(id, { reloaded: true });
     return;
   }
+  if (method === "mcpServerStatus/list") {
+    reply(id, {
+      data: [{
+        name: "cua_repl",
+        pluginId: "unified-computer-use@openai-bundled",
+        runtimeStatus: "connected",
+        tools: {
+          js: { name: "js", description: "Use the browser" },
+          js_reset: { name: "js_reset", description: "Reset browser tool state" },
+          turn_ended: { name: "turn_ended", description: "Clean up a completed browser turn" },
+        },
+        resources: [],
+        resourceTemplates: [],
+        authStatus: "notSupported",
+      }],
+      nextCursor: null,
+    });
+    return;
+  }
   if (method === "initialize") {
     const completeInitialize = () => {
       state.initializeCompletedAt = Date.now();

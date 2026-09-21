@@ -62,6 +62,12 @@
       "paths": ["desktop-control.mjs", "src/infrastructure/process/desktop-control.mjs", "src/interfaces/mcp/hub-mcp-server.mjs", "src/application/hub-mcp-service.mjs", "src/application/task-lifecycle-service.mjs", "src/application/sqlite-mutation-owner.mjs", "src/application/mcp-admission-coordinator.mjs", "src/composition/persistence-mutation-composition.mjs", "src/providers/codex/codex-hub-mcp-bridge-recovery.mjs", "src/providers/codex/codex-event-service.mjs", "src/providers/codex/codex-app-server*", "src/infrastructure/filesystem/task-git-workspace.mjs", "src/infrastructure/persistence/async-sqlite-mutation-queue.mjs", "src/infrastructure/persistence/task-board-store.mjs", "src/infrastructure/persistence/workspace-catalog-store.mjs", "src/application/task-operation-reconciliation-service.mjs"]
     },
     {
+      "id": "MCP-002",
+      "title": "Codex browser tool",
+      "document": "MCP-002-codex-browser-tool.md",
+      "paths": ["AGENT_HUB_GUIDE.md", "README.md", "docs/contracts/MCP-002-codex-browser-tool.md", "src/providers/codex/codex-browser-tool.mjs", "src/providers/codex/codex-browser-fallback-service.mjs", "src/providers/codex/codex-app-server*", "src/application/hub-mcp-service.mjs", "src/interfaces/mcp/hub-mcp-server.mjs", "src/composition/infrastructure-composition.mjs", "src/composition/codex-lifecycle-composition.mjs", "e2e/fake-codex-app-server.mjs", "tests/providers/codex/codex-browser*.test.mjs", "tests/providers/codex/codex-app-server-lifecycle.test.mjs", "tests/application/hub-mcp-service.test.mjs", "tests/interfaces/mcp/hub-mcp-server.test.mjs", "tests/composition/hub-developer-instructions-composition.test.mjs"]
+    },
+    {
       "id": "USG-001",
       "title": "Usage fact transport and account attribution",
       "document": "USG-001-usage-attribution.md",

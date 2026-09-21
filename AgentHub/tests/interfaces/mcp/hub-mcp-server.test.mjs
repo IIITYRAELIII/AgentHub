@@ -56,9 +56,10 @@ test("HubMcpServer configures a client deadline beyond its server deadline", asy
 });
 
 test("HubMcpServer closes active HTTP sockets during a runtime restart", async () => {
+  let serviceClosed = 0;
   const server = new HubMcpServer({
     secret: "server-secret",
-    service: { tools: () => [], call: () => ({}) },
+    service: { tools: () => [], call: () => ({}), close: async () => { serviceClosed += 1; } },
     logger: { log() {}, error() {} },
   });
   await server.start();
@@ -74,6 +75,7 @@ test("HubMcpServer closes active HTTP sockets during a runtime restart", async (
     new Promise((_, reject) => setTimeout(() => reject(new Error("MCP close timed out")), 1_000)),
   ]);
   assert.equal(server.running, false);
+  assert.equal(serviceClosed, 1);
   socket.destroy();
 });
 

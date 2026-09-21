@@ -65,6 +65,7 @@ export class CodexAppServerLifecycle {
 
   async #handleExit({ detail }) {
     const d = this.#d;
+    await d.onTransportExit?.();
     if (d.isStopping()) return;
     d.logger.error(`Codex app-server stopped (${detail}).`);
     if (this.#timeoutRestarting) return;
@@ -170,7 +171,15 @@ export class CodexAppServerLifecycle {
         capabilities: { experimentalApi: true },
       });
       if (initialized.newlyInitialized) this.#startupTimings.initializeMs = Math.round(performance.now() - phaseStartedAt);
-      if (initialized.newlyInitialized) this.notify("initialized");
+      if (initialized.newlyInitialized) {
+        this.notify("initialized");
+        queueMicrotask(() => {
+          void Promise.resolve(this.#d.onInitialized?.({
+            generation: this.transport.generation,
+            request: (method, params, options) => this.transport.request(method, params, options),
+          })).catch(() => {});
+        });
+      }
       if (attachSelectedThread) await this.#d.attachSelectedThread();
       return initialized;
     };
