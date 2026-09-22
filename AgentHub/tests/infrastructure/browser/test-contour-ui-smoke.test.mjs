@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -11,10 +11,12 @@ import {
   observeTestContourSend,
   planTestContourSmokeConversation,
   prepareTestContourSmokeConversation,
+  reconcileTestContourSend,
   requestTestContourControl,
   runTestContourUiSmoke,
   selectTestContourConversation,
   selectTestContourModel,
+  TEST_CONTOUR_PROBE,
 } from "../../../src/infrastructure/browser/test-contour-ui-smoke.mjs";
 
 function smokePage({ availableModels = ["gpt-5.3-codex-spark"], selectedModel = "" } = {}) {
@@ -100,7 +102,7 @@ function stream(id, threads, { name = null } = {}) {
 
 function saved(overrides = {}) {
   return {
-    version: 1,
+    version: 2,
     workspaceId: "workspace-1",
     streamId: "stream-smoke",
     provider: "codex",
@@ -184,6 +186,7 @@ test("Test Contour smoke reuses only its exact live current conversation", () =>
       threadId: "thread-smoke",
     },
   });
+  assert.equal(planTestContourSmokeConversation(current, { ...saved(), version: 1 }, "fake-codex").kind, "reuse");
 });
 
 test("Test Contour smoke replaces a detached or shadowed saved Thread in the same dedicated Stream", () => {
@@ -293,6 +296,12 @@ test("Test Contour smoke persists a fresh public new-task identity and reuses it
   ];
   const page = {
     async evaluate(_callback, request) {
+      if (!request.action) {
+        const durable = JSON.parse(await readFile(path.join(root, "ui-smoke-conversation.json"), "utf8"));
+        assert.equal(durable.operation.phase, "accepted", "local terminal identity precedes receipt retirement");
+        calls.push(["ack", request.commandId]);
+        return { ok: true, status: 200, payload: { ok: true, retired: true } };
+      }
       calls.push([request.action, request.commandId || null]);
       return replies.shift();
     },
@@ -331,6 +340,190 @@ test("Test Contour smoke persists a fresh public new-task identity and reuses it
     assert.equal(second.setupCommandId, null);
     assert.equal(calls.filter(([action]) => action === "new-task").length, 1);
     assert.deepEqual(JSON.parse(await readFile(path.join(root, "ui-smoke-conversation.json"), "utf8")), saved());
+    assert.deepEqual(calls.filter(([action]) => action === "ack"), [["ack", "setup-command"]]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Test Contour smoke reconciles an unknown setup with its original durable command", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-smoke-setup-reconcile-"));
+  const createdSnapshot = snapshot({ streams: [stream("stream-smoke", [thread("thread-smoke")])] });
+  const setupIds = [];
+  let current = { workspaces: [] };
+  let durableResult = null;
+  let effectCount = 0;
+  let loseFirstResponse = true;
+  const page = {
+    async evaluate(_callback, request) {
+      if (!request.action) return { ok: true, status: 200, payload: { ok: true, retired: true } };
+      if (request.action === "snapshot") return browserControlResult(current);
+      assert.equal(request.action, "new-task");
+      setupIds.push(request.commandId);
+      if (!durableResult) {
+        effectCount += 1;
+        current = createdSnapshot;
+        durableResult = {
+          ...createdSnapshot,
+          createdTask: {
+            workspaceId: "workspace-1",
+            streamId: "stream-smoke",
+            provider: "codex",
+            threadId: "thread-smoke",
+          },
+        };
+      }
+      if (loseFirstResponse) {
+        loseFirstResponse = false;
+        return { kind: "unknown", error: "connection closed after durable effect" };
+      }
+      return browserControlResult(durableResult, { receiptId: request.commandId });
+    },
+    async reload() {},
+    locator(selector) {
+      if (selector === "[data-workspace]") return { async waitFor() {} };
+      if (selector.includes("data-workspace-select")) return { async waitFor() {}, async click() {} };
+      return {
+        async waitFor() {},
+        async getAttribute() { return "stream-smoke"; },
+        async click() {},
+      };
+    },
+  };
+  try {
+    await assert.rejects(prepareTestContourSmokeConversation(page, {
+      artifactsDirectory: root,
+      model: "fake-codex",
+      timeoutMs: 5_000,
+      commandIdFactory: () => "setup-original",
+    }), /outcome is unknown; command setup-original was not retried/u);
+
+    const recovered = await prepareTestContourSmokeConversation(page, {
+      artifactsDirectory: root,
+      model: "fake-codex",
+      timeoutMs: 5_000,
+      commandIdFactory: () => "must-not-run",
+    });
+
+    assert.equal(recovered.setup, "reconcile-new-task");
+    assert.deepEqual(setupIds, ["setup-original", "setup-original"]);
+    assert.equal(effectCount, 1, "durable owner returns the original receipt without a second effect");
+    assert.deepEqual(JSON.parse(await readFile(path.join(root, "ui-smoke-conversation.json"), "utf8")), saved());
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Test Contour smoke reconciles an unknown send without a new click or message identity", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-smoke-send-reconcile-"));
+  const stateFile = path.join(root, "ui-smoke-conversation.json");
+  const operation = {
+    action: "send-message",
+    commandId: "send-original",
+    phase: "prepared",
+    params: {
+      text: "Ответь строго: AGENT_HUB_TEST_CONTOUR_SPARK_OK_V1",
+      streamId: "stream-smoke",
+      provider: "codex",
+      threadId: "thread-smoke",
+      clientUserMessageId: "client-original",
+    },
+  };
+  await writeFile(stateFile, `${JSON.stringify({ ...saved(), operation }, null, 2)}\n`, "utf8");
+  let current = snapshot({ streams: [stream("stream-smoke", [thread("thread-smoke")])] });
+  const accepted = {
+    accepted: true,
+    streamId: "stream-smoke",
+    provider: "codex",
+    threadId: "thread-smoke",
+    clientUserMessageId: "client-original",
+    turnId: "turn-original",
+  };
+  let effectCount = 1;
+  let sendReadbacks = 0;
+  const page = {
+    async evaluate(_callback, request) {
+      if (!request.action) return { ok: true, status: 200, payload: { ok: true, retired: true } };
+      if (request.action === "snapshot") return browserControlResult(current);
+      assert.equal(request.action, "send-message");
+      assert.equal(request.commandId, "send-original");
+      sendReadbacks += 1;
+      return browserControlResult(accepted, { receiptId: "send-original" });
+    },
+    locator(selector) {
+      if (selector.includes("data-workspace-select")) return { async waitFor() {}, async click() {} };
+      return {
+        async waitFor() {},
+        async getAttribute() { return "stream-smoke"; },
+        async click() {},
+      };
+    },
+  };
+  try {
+    const conversation = await prepareTestContourSmokeConversation(page, {
+      artifactsDirectory: root,
+      model: "fake-codex",
+      timeoutMs: 5_000,
+      commandIdFactory: () => "must-not-run",
+    });
+    assert.equal(conversation.setup, "reconcile-send");
+    const result = await reconcileTestContourSend(page, {
+      operation: conversation.pendingSend,
+      identity: conversation.identity,
+      stateFile,
+      timeoutMs: 5_000,
+    });
+
+    assert.equal(result.commandId, "send-original");
+    assert.equal(result.turnId, "turn-original");
+    assert.equal(sendReadbacks, 1);
+    assert.equal(effectCount, 1, "reconciliation observes the original effect and never clicks again");
+    assert.deepEqual(JSON.parse(await readFile(stateFile, "utf8")), saved());
+
+    await writeFile(stateFile, `${JSON.stringify({
+      ...saved(),
+      operation: { ...operation, phase: "accepted", accepted: result },
+    }, null, 2)}\n`, "utf8");
+    current = snapshot({ streams: [stream("stream-smoke", [thread("thread-smoke", { detachedAtMs: 123 })])] });
+    const acceptedConversation = await prepareTestContourSmokeConversation(page, {
+      artifactsDirectory: root,
+      model: "fake-codex",
+      timeoutMs: 5_000,
+    });
+    sendReadbacks = 0;
+    await reconcileTestContourSend(page, {
+      operation: acceptedConversation.pendingSend,
+      identity: acceptedConversation.identity,
+      stateFile,
+      timeoutMs: 5_000,
+    });
+    assert.equal(sendReadbacks, 0, "a locally accepted terminal survives later Thread detachment and only finishes acknowledgement");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Test Contour smoke fails closed on a corrupt durable operation before any control request", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-smoke-corrupt-operation-"));
+  await writeFile(path.join(root, "ui-smoke-conversation.json"), `${JSON.stringify({
+    ...saved(),
+    operation: {
+      action: "send-message",
+      commandId: "send-corrupt",
+      phase: "prepared",
+      params: { text: TEST_CONTOUR_PROBE, provider: "codex" },
+    },
+  })}\n`, "utf8");
+  let requests = 0;
+  try {
+    await assert.rejects(prepareTestContourSmokeConversation({
+      async evaluate() { requests += 1; },
+    }, {
+      artifactsDirectory: root,
+      model: "fake-codex",
+      timeoutMs: 5_000,
+    }), /invalid durable operation/u);
+    assert.equal(requests, 0);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -479,6 +672,76 @@ test("Test Contour smoke binds a successful send to exact Stream Thread command 
     turnId: "turn-1",
   });
   assert.equal(clicks, 1);
+});
+
+test("Test Contour smoke persists the UI send intent and terminal before releasing its receipt", async () => {
+  const params = {
+    text: "Ответь строго: AGENT_HUB_TEST_CONTOUR_SPARK_OK_V1",
+    streamId: "stream-smoke",
+    provider: "codex",
+    threadId: "thread-smoke",
+    clientUserMessageId: "client-message-1",
+  };
+  const request = controlRequest({ params, commandId: "send-command-1" });
+  const response = controlResponse(request, {
+    payload: {
+      ok: true,
+      receiptId: "send-command-1",
+      result: {
+        accepted: true,
+        streamId: "stream-smoke",
+        provider: "codex",
+        threadId: "thread-smoke",
+        clientUserMessageId: "client-message-1",
+        turnId: "turn-1",
+      },
+    },
+  });
+  const events = [];
+  let routeHandler = null;
+  let resolveResponse;
+  const page = {
+    async route(pattern, handler) {
+      events.push(["route", pattern]);
+      routeHandler = handler;
+    },
+    async unroute(pattern, handler) {
+      assert.equal(handler, routeHandler);
+      events.push(["unroute", pattern]);
+      routeHandler = null;
+    },
+    async waitForResponse(predicate) {
+      assert.equal(predicate(response), true);
+      return new Promise((resolve) => { resolveResponse = resolve; });
+    },
+  };
+  const click = async () => {
+    const handler = routeHandler;
+    assert.ok(handler);
+    await handler({
+      request: () => request,
+      async continue() {
+        events.push(["effect"]);
+        resolveResponse(response);
+      },
+      async abort() { events.push(["abort"]); },
+    });
+  };
+
+  const result = await observeTestContourSend(page, {
+    identity: saved(),
+    timeoutMs: 5_000,
+    click,
+    async persistPrepared(operation) { events.push(["prepared", operation.commandId]); },
+    async persistAccepted(operation) { events.push(["accepted", operation.accepted.turnId]); },
+    async acknowledgeAccepted(commandId) { events.push(["ack", commandId]); },
+    async persistSettled() { events.push(["settled"]); },
+  });
+
+  assert.equal(result.turnId, "turn-1");
+  assert.deepEqual(events.map(([event]) => event), [
+    "route", "prepared", "effect", "accepted", "unroute", "ack", "settled",
+  ]);
 });
 
 test("Test Contour smoke rejects a send ACK whose receipt or durable identity differs", async () => {

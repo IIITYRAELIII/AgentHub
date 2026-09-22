@@ -6,10 +6,11 @@ import path from "node:path";
 export const TEST_CONTOUR_PROBE = "Ответь строго: AGENT_HUB_TEST_CONTOUR_SPARK_OK_V1";
 export const TEST_CONTOUR_PROBE_RESPONSE = "AGENT_HUB_TEST_CONTOUR_SPARK_OK_V1";
 
-const SMOKE_CONVERSATION_STATE_VERSION = 1;
+const SMOKE_CONVERSATION_STATE_VERSION = 2;
 const SMOKE_CONVERSATION_STATE_FILE = "ui-smoke-conversation.json";
 const SMOKE_WORKSPACE_NAME = "Agent Hub Test Contour Smoke";
 const SMOKE_STREAM_NAME = "Smoke";
+const SMOKE_COMMAND_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9:._-]{0,199}$/u;
 
 function normalizedIdentity(value = {}) {
   return {
@@ -17,6 +18,52 @@ function normalizedIdentity(value = {}) {
     streamId: String(value.streamId ?? "").trim(),
     provider: String(value.provider ?? "").trim().toLowerCase(),
     threadId: String(value.threadId ?? "").trim(),
+  };
+}
+
+function normalizedOperation(value = null) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const action = String(value.action ?? "").trim();
+  const commandId = String(value.commandId ?? "").trim();
+  const phase = String(value.phase ?? "prepared").trim();
+  const params = value.params && typeof value.params === "object" && !Array.isArray(value.params)
+    ? structuredClone(value.params)
+    : null;
+  if (!["new-task", "send-message"].includes(action) || !SMOKE_COMMAND_ID_PATTERN.test(commandId) || !params) return null;
+  if (!["prepared", "accepted"].includes(phase)) return null;
+  if (
+    String(params.provider ?? "").trim().toLowerCase() !== "codex"
+    || (action === "new-task" && String(params.settings?.provider ?? "").trim().toLowerCase() !== "codex")
+    || (action === "send-message" && (
+      params.text !== TEST_CONTOUR_PROBE
+      || !String(params.streamId ?? "").trim()
+      || !String(params.threadId ?? "").trim()
+      || !String(params.clientUserMessageId ?? "").trim()
+    ))
+  ) return null;
+  const accepted = phase === "accepted" && value.accepted && typeof value.accepted === "object"
+    ? structuredClone(value.accepted)
+    : null;
+  if (phase === "accepted" && !accepted) return null;
+  return { action, commandId, phase, params, ...(accepted ? { accepted } : {}) };
+}
+
+function normalizedSmokeState(value = null) {
+  if (!value) {
+    return { identity: normalizedIdentity(), operation: null };
+  }
+  if (![1, SMOKE_CONVERSATION_STATE_VERSION].includes(value.version)) {
+    throw new Error(`Unsupported Test Contour smoke state version: ${value.version ?? "missing"}`);
+  }
+  const operation = value.version === SMOKE_CONVERSATION_STATE_VERSION
+    ? normalizedOperation(value.operation)
+    : null;
+  if (value.version === SMOKE_CONVERSATION_STATE_VERSION && value.operation != null && !operation) {
+    throw new Error("Test Contour smoke state has an invalid durable operation");
+  }
+  return {
+    identity: normalizedIdentity(value),
+    operation,
   };
 }
 
@@ -46,9 +93,7 @@ function orderedWorkspaces(snapshot) {
 }
 
 export function planTestContourSmokeConversation(snapshot, savedState = null, model = "") {
-  const saved = savedState?.version === SMOKE_CONVERSATION_STATE_VERSION
-    ? normalizedIdentity(savedState)
-    : normalizedIdentity();
+  const saved = normalizedSmokeState(savedState).identity;
   const workspaces = orderedWorkspaces(snapshot);
   const savedWorkspace = workspaces.find((workspace) => String(workspace.id) === saved.workspaceId) ?? null;
   const savedStream = (savedWorkspace?.streams ?? [])
@@ -104,6 +149,7 @@ export async function requestTestContourControl(page, {
   params = {},
   commandId = "",
   timeoutMs,
+  acknowledge = true,
 } = {}) {
   const result = await page.evaluate(async (request) => {
     const controller = new AbortController();
@@ -125,7 +171,13 @@ export async function requestTestContourControl(page, {
       let payload = {};
       try { payload = text ? JSON.parse(text) : {}; } catch {}
       let acknowledged = null;
-      if (response.ok && payload?.ok !== false && request.commandId && payload?.receiptId === request.commandId) {
+      if (
+        request.acknowledge
+        && response.ok
+        && payload?.ok !== false
+        && request.commandId
+        && payload?.receiptId === request.commandId
+      ) {
         acknowledged = await fetch("/api/control/ack", {
           method: "POST",
           credentials: "same-origin",
@@ -148,7 +200,7 @@ export async function requestTestContourControl(page, {
     } finally {
       window.clearTimeout(timer);
     }
-  }, { action, params, commandId, timeoutMs });
+  }, { action, params, commandId, timeoutMs, acknowledge });
   if (result.kind === "unknown") {
     throw new Error(
       `Test Contour ${action} outcome is unknown; command ${commandId || "<read>"} was not retried: ${boundedDiagnostic(result.error)}`,
@@ -167,22 +219,96 @@ export async function requestTestContourControl(page, {
   };
 }
 
+async function acknowledgeTestContourControl(page, commandId, timeoutMs) {
+  const result = await page.evaluate(async (request) => {
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort("timeout"), request.timeoutMs);
+    try {
+      const response = await fetch("/api/control/ack", {
+        method: "POST",
+        credentials: "same-origin",
+        cache: "no-store",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ commandId: request.commandId }),
+        signal: controller.signal,
+      });
+      const payload = await response.json().catch(() => ({}));
+      return { ok: response.ok && payload?.ok !== false, status: response.status, payload };
+    } catch (error) {
+      return { ok: false, status: 0, payload: { error: String(error?.message ?? error) } };
+    } finally {
+      window.clearTimeout(timer);
+    }
+  }, { commandId, timeoutMs });
+  if (!result.ok) {
+    throw new Error(
+      `Test Contour command acknowledgement failed: HTTP ${result.status}; command ${commandId}; ${boundedDiagnostic(result.payload?.error)}`,
+    );
+  }
+  return result.payload?.retired === true;
+}
+
 async function readSmokeConversationState(file) {
   try {
     return JSON.parse(await readFile(file, "utf8"));
   } catch (error) {
-    if (error?.code === "ENOENT" || error instanceof SyntaxError) return null;
+    if (error?.code === "ENOENT") return null;
     throw error;
   }
 }
 
-async function writeSmokeConversationState(file, identity) {
+async function writeSmokeConversationState(file, identity, operation = null) {
   const temporary = `${file}.${process.pid}.${randomUUID()}.tmp`;
+  const exactOperation = operation ? normalizedOperation(operation) : null;
+  if (operation && !exactOperation) throw new Error("Refusing to persist an invalid Test Contour smoke operation");
   await writeFile(temporary, `${JSON.stringify({
     version: SMOKE_CONVERSATION_STATE_VERSION,
     ...normalizedIdentity(identity),
+    ...(exactOperation ? { operation: exactOperation } : {}),
   }, null, 2)}\n`, "utf8");
   await rename(temporary, file);
+}
+
+function createdConversationIdentity(result) {
+  const identity = normalizedIdentity({
+    workspaceId: result?.createdTask?.workspaceId,
+    streamId: result?.createdTask?.streamId,
+    provider: result?.createdTask?.provider,
+    threadId: result?.createdTask?.threadId,
+  });
+  if (!identity.workspaceId) {
+    const createdStream = orderedWorkspaces(result)
+      .flatMap((workspace) => (workspace.streams ?? []).map((stream) => ({ workspace, stream })))
+      .find(({ stream }) => String(stream?.id ?? "") === identity.streamId);
+    identity.workspaceId = String(createdStream?.workspace?.id ?? "");
+  }
+  return identity;
+}
+
+function exactAcceptedSend(operation, result, receiptId, expectedIdentity) {
+  const expected = normalizedIdentity(expectedIdentity);
+  const params = operation.params ?? {};
+  const accepted = {
+    commandId: operation.commandId,
+    clientUserMessageId: String(result?.clientUserMessageId ?? params.clientUserMessageId ?? "").trim(),
+    streamId: String(result?.streamId ?? params.streamId ?? "").trim(),
+    provider: String(result?.provider ?? params.provider ?? "").trim().toLowerCase(),
+    threadId: String(result?.threadId ?? params.threadId ?? "").trim(),
+    turnId: String(result?.turnId ?? "").trim(),
+  };
+  if (
+    result?.accepted !== true
+    || String(receiptId ?? "").trim() !== operation.commandId
+    || accepted.streamId !== expected.streamId
+    || accepted.provider !== expected.provider
+    || accepted.threadId !== expected.threadId
+    || accepted.clientUserMessageId !== String(params.clientUserMessageId ?? "").trim()
+    || !accepted.clientUserMessageId
+    || !accepted.turnId
+  ) {
+    throw new Error(`Test Contour send-message returned an invalid acceptance for command ${operation.commandId}`);
+  }
+  return accepted;
 }
 
 function selectorValue(value) {
@@ -219,40 +345,73 @@ export async function prepareTestContourSmokeConversation(page, {
   commandIdFactory = randomUUID,
 } = {}) {
   const stateFile = path.join(artifactsDirectory, SMOKE_CONVERSATION_STATE_FILE);
+  const persisted = normalizedSmokeState(await readSmokeConversationState(stateFile));
   const snapshot = (await requestTestContourControl(page, {
     action: "snapshot",
     timeoutMs,
   })).result;
-  const saved = await readSmokeConversationState(stateFile);
-  const plan = planTestContourSmokeConversation(snapshot, saved, model);
+  const saved = {
+    version: SMOKE_CONVERSATION_STATE_VERSION,
+    ...persisted.identity,
+  };
+  const pending = persisted.operation;
+  if (pending?.action === "send-message") {
+    const workspace = orderedWorkspaces(snapshot)
+      .find((candidate) => String(candidate.id ?? "") === persisted.identity.workspaceId) ?? null;
+    const stream = (workspace?.streams ?? [])
+      .find((candidate) => String(candidate?.id ?? "") === persisted.identity.streamId) ?? null;
+    if (!stream) {
+      throw new Error(
+        `Test Contour cannot reconcile send-message command ${pending.commandId}: its exact Stream is absent`,
+      );
+    }
+    await selectTestContourConversation(page, persisted.identity, timeoutMs);
+    return {
+      identity: persisted.identity,
+      setup: "reconcile-send",
+      setupCommandId: null,
+      setupAcknowledged: null,
+      pendingSend: pending,
+      stateFile,
+    };
+  }
+  const plan = pending?.action === "new-task"
+    ? { kind: "reconcile-new-task", params: pending.params }
+    : planTestContourSmokeConversation(snapshot, saved, model);
   let identity = plan.identity ?? null;
   let setupCommandId = null;
   let setupAcknowledged = null;
   if (!identity) {
-    setupCommandId = commandIdFactory();
-    const created = await requestTestContourControl(page, {
+    const operation = pending ?? {
       action: "new-task",
+      commandId: commandIdFactory(),
+      phase: "prepared",
       params: plan.params,
-      commandId: setupCommandId,
-      timeoutMs,
-    });
-    setupAcknowledged = created.acknowledged;
-    identity = normalizedIdentity({
-      workspaceId: created.result?.createdTask?.workspaceId,
-      streamId: created.result?.createdTask?.streamId,
-      provider: created.result?.createdTask?.provider,
-      threadId: created.result?.createdTask?.threadId,
-    });
-    if (!identity.workspaceId) {
-      const createdStream = orderedWorkspaces(created.result)
-        .flatMap((workspace) => (workspace.streams ?? []).map((stream) => ({ workspace, stream })))
-        .find(({ stream }) => String(stream?.id ?? "") === identity.streamId);
-      identity.workspaceId = String(createdStream?.workspace?.id ?? "");
+    };
+    setupCommandId = operation.commandId;
+    if (!pending) await writeSmokeConversationState(stateFile, persisted.identity, operation);
+    let accepted = operation.phase === "accepted" ? operation.accepted : null;
+    if (!accepted) {
+      const created = await requestTestContourControl(page, {
+        action: operation.action,
+        params: operation.params,
+        commandId: operation.commandId,
+        timeoutMs,
+        acknowledge: false,
+      });
+      identity = createdConversationIdentity(created.result);
+      accepted = { ...identity };
+      await writeSmokeConversationState(stateFile, identity, {
+        ...operation,
+        phase: "accepted",
+        accepted,
+      });
+    } else {
+      identity = normalizedIdentity(accepted);
     }
     if (!identity.workspaceId || !identity.streamId || identity.provider !== "codex" || !identity.threadId) {
       throw new Error(`Test Contour new-task returned an incomplete identity for command ${setupCommandId}`);
     }
-    await writeSmokeConversationState(stateFile, identity);
     await page.reload({ waitUntil: "domcontentloaded", timeout: timeoutMs });
     await page.locator("[data-workspace]").waitFor({ state: "visible", timeout: timeoutMs });
     const reloaded = (await requestTestContourControl(page, {
@@ -266,6 +425,8 @@ export async function prepareTestContourSmokeConversation(page, {
     if (verification.kind !== "reuse") {
       throw new Error(`Test Contour did not persist the created smoke conversation for command ${setupCommandId}`);
     }
+    setupAcknowledged = await acknowledgeTestContourControl(page, setupCommandId, timeoutMs);
+    await writeSmokeConversationState(stateFile, identity);
   }
   await selectTestContourConversation(page, identity, timeoutMs);
   return {
@@ -343,11 +504,13 @@ function testContourSendRequest(request, expected) {
       || params.threadId !== expected.threadId
     ) return null;
     return {
+      action: payload.action,
       commandId: String(payload.commandId ?? "").trim(),
       clientUserMessageId: String(params.clientUserMessageId ?? "").trim(),
       streamId: String(params.streamId ?? "").trim(),
       provider: String(params.provider ?? "").trim(),
       threadId: String(params.threadId ?? "").trim(),
+      params: structuredClone(params),
     };
   } catch {
     return null;
@@ -359,9 +522,69 @@ export async function observeTestContourSend(page, {
   probe = TEST_CONTOUR_PROBE,
   timeoutMs,
   click,
+  persistPrepared = null,
+  persistAccepted = null,
+  acknowledgeAccepted = null,
+  persistSettled = null,
 } = {}) {
   const expected = { ...normalizedIdentity(identity), probe };
-  const requestPending = page.waitForRequest(
+  let routedRequest = null;
+  let releaseRoutedRequest;
+  let rejectRoutedRequest;
+  let routeHandler = null;
+  const routedRequestPending = typeof persistPrepared === "function"
+    ? new Promise((resolve, reject) => {
+      releaseRoutedRequest = resolve;
+      rejectRoutedRequest = reject;
+    }).then((value) => ({ value }), (error) => ({ error }))
+    : null;
+  if (routedRequestPending) {
+    routeHandler = async (route) => {
+      const request = route.request();
+      let body = null;
+      try { body = JSON.parse(request.postData() || "{}"); } catch {}
+      if (
+        body?.action === "send-message"
+        && testContourSendRequest(request, expected)
+      ) {
+        const exact = testContourSendRequest(request, expected);
+        try {
+          if (!routedRequest) {
+            await persistPrepared({
+              action: exact.action,
+              commandId: exact.commandId,
+              phase: "prepared",
+              params: exact.params,
+            });
+            routedRequest = request;
+            releaseRoutedRequest(request);
+          } else if (
+            exact.commandId !== testContourSendRequest(routedRequest, expected)?.commandId
+            || exact.clientUserMessageId !== testContourSendRequest(routedRequest, expected)?.clientUserMessageId
+          ) {
+            throw new Error("Test Contour UI changed send-message identity during one operation");
+          }
+          await route.continue();
+        } catch (error) {
+          rejectRoutedRequest(error);
+          await route.abort("failed").catch(() => {});
+        }
+        return;
+      }
+      if (
+        body?.commandId
+        && routedRequest
+        && request.url().endsWith("/api/control/ack")
+        && body.commandId === testContourSendRequest(routedRequest, expected)?.commandId
+      ) {
+        await route.fulfill({ status: 200, contentType: "application/json", body: '{"ok":true,"retired":false}' });
+        return;
+      }
+      await route.continue();
+    };
+    await page.route("**/api/control*", routeHandler);
+  }
+  const requestPending = routedRequestPending ?? page.waitForRequest(
     (request) => Boolean(testContourSendRequest(request, expected)),
     { timeout: timeoutMs },
   ).then((value) => ({ value }), (error) => ({ error }));
@@ -369,50 +592,78 @@ export async function observeTestContourSend(page, {
     (response) => Boolean(testContourSendRequest(response.request?.(), expected)),
     { timeout: timeoutMs },
   ).then((value) => ({ value }), (error) => ({ error }));
-  await click();
-  const requestOutcome = await requestPending;
-  if (requestOutcome.error) {
-    await responsePending;
-    throw new Error(`Test Contour send-message was not dispatched: ${boundedDiagnostic(requestOutcome.error.message)}`);
+  try {
+    await click();
+    const requestOutcome = await requestPending;
+    if (requestOutcome.error) {
+      await responsePending;
+      throw new Error(`Test Contour send-message was not dispatched: ${boundedDiagnostic(requestOutcome.error.message)}`);
+    }
+    const requestIdentity = testContourSendRequest(requestOutcome.value, expected);
+    if (!requestIdentity?.commandId || !requestIdentity.clientUserMessageId) {
+      throw new Error("Test Contour send-message request has no exact command identity");
+    }
+    const responseOutcome = await responsePending;
+    if (responseOutcome.error) {
+      throw new Error(
+        `Test Contour send-message outcome is unknown; command ${requestIdentity.commandId} was not retried: ${boundedDiagnostic(responseOutcome.error.message)}`,
+      );
+    }
+    const response = responseOutcome.value;
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok() || payload?.ok === false) {
+      throw new Error(
+        `Test Contour send-message failed: HTTP ${response.status()}; command ${requestIdentity.commandId}; ${boundedDiagnostic(payload?.error ?? "request rejected")}`,
+      );
+    }
+    const operation = {
+      action: requestIdentity.action,
+      commandId: requestIdentity.commandId,
+      phase: "prepared",
+      params: requestIdentity.params,
+    };
+    const accepted = exactAcceptedSend(operation, payload?.result ?? {}, payload?.receiptId, expected);
+    await persistAccepted?.({ ...operation, phase: "accepted", accepted });
+    if (routeHandler) await page.unroute("**/api/control*", routeHandler);
+    routeHandler = null;
+    await acknowledgeAccepted?.(accepted.commandId);
+    await persistSettled?.();
+    return accepted;
+  } finally {
+    if (routeHandler) await page.unroute("**/api/control*", routeHandler).catch(() => {});
   }
-  const requestIdentity = testContourSendRequest(requestOutcome.value, expected);
-  if (!requestIdentity?.commandId || !requestIdentity.clientUserMessageId) {
-    throw new Error("Test Contour send-message request has no exact command identity");
+}
+
+export async function reconcileTestContourSend(page, { operation, identity, stateFile, timeoutMs } = {}) {
+  const exactOperation = normalizedOperation(operation);
+  if (!exactOperation || exactOperation.action !== "send-message") {
+    throw new Error("Test Contour has no durable send-message operation to reconcile");
   }
-  const responseOutcome = await responsePending;
-  if (responseOutcome.error) {
-    throw new Error(
-      `Test Contour send-message outcome is unknown; command ${requestIdentity.commandId} was not retried: ${boundedDiagnostic(responseOutcome.error.message)}`,
+  let accepted = exactOperation.phase === "accepted" ? exactOperation.accepted : null;
+  if (!accepted) {
+    const response = await requestTestContourControl(page, {
+      action: exactOperation.action,
+      params: exactOperation.params,
+      commandId: exactOperation.commandId,
+      timeoutMs,
+      acknowledge: false,
+    });
+    accepted = exactAcceptedSend(exactOperation, response.result, response.receiptId, identity);
+    await writeSmokeConversationState(stateFile, identity, {
+      ...exactOperation,
+      phase: "accepted",
+      accepted,
+    });
+  } else {
+    accepted = exactAcceptedSend(
+      exactOperation,
+      { accepted: true, ...accepted },
+      exactOperation.commandId,
+      identity,
     );
   }
-  const response = responseOutcome.value;
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok() || payload?.ok === false) {
-    throw new Error(
-      `Test Contour send-message failed: HTTP ${response.status()}; command ${requestIdentity.commandId}; ${boundedDiagnostic(payload?.error ?? "request rejected")}`,
-    );
-  }
-  const result = payload?.result ?? {};
-  const accepted = {
-    ...requestIdentity,
-    streamId: String(result.streamId ?? requestIdentity.streamId).trim(),
-    provider: String(result.provider ?? requestIdentity.provider).trim(),
-    threadId: String(result.threadId ?? requestIdentity.threadId).trim(),
-    turnId: String(result.turnId ?? "").trim(),
-  };
-  if (
-    result.accepted !== true
-    || String(payload.receiptId ?? "").trim() !== requestIdentity.commandId
-    || accepted.streamId !== expected.streamId
-    || accepted.provider !== expected.provider
-    || accepted.threadId !== expected.threadId
-    || String(result.clientUserMessageId ?? "").trim() !== accepted.clientUserMessageId
-    || !accepted.turnId
-  ) {
-    throw new Error(
-      `Test Contour send-message returned an invalid acceptance for command ${requestIdentity.commandId}`,
-    );
-  }
+  await acknowledgeTestContourControl(page, exactOperation.commandId, timeoutMs);
+  await writeSmokeConversationState(stateFile, identity);
   return accepted;
 }
 
@@ -519,14 +770,35 @@ export async function runTestContourUiSmoke({
         model,
         timeoutMs,
       });
-      const input = page.locator("[data-composer-input]");
-      await input.waitFor({ state: "visible", timeout: timeoutMs });
-      await input.fill(TEST_CONTOUR_PROBE);
-      send = await observeTestContourSend(page, {
-        identity: conversation.identity,
-        timeoutMs,
-        click: () => page.locator("[data-composer-send]").click(),
-      });
+      if (conversation.pendingSend) {
+        send = await reconcileTestContourSend(page, {
+          operation: conversation.pendingSend,
+          identity: conversation.identity,
+          stateFile: conversation.stateFile,
+          timeoutMs,
+        });
+      } else {
+        const input = page.locator("[data-composer-input]");
+        await input.waitFor({ state: "visible", timeout: timeoutMs });
+        await input.fill(TEST_CONTOUR_PROBE);
+        send = await observeTestContourSend(page, {
+          identity: conversation.identity,
+          timeoutMs,
+          click: () => page.locator("[data-composer-send]").click(),
+          persistPrepared: (operation) => writeSmokeConversationState(
+            conversation.stateFile,
+            conversation.identity,
+            operation,
+          ),
+          persistAccepted: (operation) => writeSmokeConversationState(
+            conversation.stateFile,
+            conversation.identity,
+            operation,
+          ),
+          acknowledgeAccepted: (commandId) => acknowledgeTestContourControl(page, commandId, timeoutMs),
+          persistSettled: () => writeSmokeConversationState(conversation.stateFile, conversation.identity),
+        });
+      }
       const response = locateTestContourResponse(page, { ...send, response: probeResponse });
       await response.waitFor({ state: "visible", timeout: timeoutMs });
       const responseText = (await response.innerText()).trim();

@@ -1144,9 +1144,14 @@ owns one exact smoke Workspace/Stream/Thread identity in contour-local artifacts
 reuses it while the public snapshot proves that the same Thread is current and
 attachable, and otherwise prepares a replacement only through the public
 `new-task` lifecycle. Existing copied Streams, their names and display order are
-not conversation authority. A create or send request is issued once with one
-command identity: a known HTTP rejection fails immediately, while an unknown
-outcome is reported without automatic replay. Successful evidence binds the
+not conversation authority. Before a create or UI send can reach the server,
+the smoke artifact durably records its exact public request, command identity
+and client message identity. The local control receipt is retired only after the
+artifact records the accepted terminal identity. A known HTTP rejection fails
+immediately. After an unknown outcome or a crash between effect, response,
+terminal recording and acknowledgement, restart uses only the saved request to
+read or reconcile that same durable receipt; it creates no new identity and
+does not click the composer again. Successful evidence binds the
 exact Stream, provider, Thread, client message, provider turn, rendered response
 and journal record; matching text in another or older conversation is not smoke
 success.
