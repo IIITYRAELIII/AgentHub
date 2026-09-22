@@ -940,7 +940,10 @@ pre-effect prefix, or explicit absence; confirmation and retry recheck the same
 raw presence and bytes without replacing a retained prior checkpoint.
 Completed contour evidence requires its current checkpoint. A retained prior
 checkpoint is admissible only when the contour failed before writing or was
-explicitly reused from that scope-compatible checkpoint.
+explicitly reused from that scope-compatible checkpoint. An existing retained
+checkpoint must contain a non-empty ordered pre-effect prefix with a non-empty
+fingerprint for every completed label; an empty fabricated record is not
+equivalent to explicit file absence.
 Unknown/new stages, unsupported schema, mixed checkpoint identity, missing run
 binding, an active or ambiguous run, or any effect-stage receipt reject before admission. The
 publication lock covers evidence read, admission CAS and local ref recovery;

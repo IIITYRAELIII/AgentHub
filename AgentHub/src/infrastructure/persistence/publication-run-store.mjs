@@ -89,11 +89,15 @@ export function failedFrozenPublicationEvidence(run, checkpoint, {
     }
     const completedLabels = [...(checkpoint.completedLabels ?? [])];
     const fingerprintLabels = Object.keys(checkpoint.completedFingerprints ?? {});
+    const fingerprintValues = completedLabels.map((label) => checkpoint.completedFingerprints?.[label]);
     const orderedPrefix = PUBLICATION_STAGE_LABELS.slice(0, completedLabels.length);
     if (stableText(completedLabels) !== stableText(fingerprintLabels)
         || stableText(completedLabels) !== stableText(orderedPrefix)
         || completedLabels.some((label) => !PRE_EFFECT_STEPS.has(label))) {
       throw new Error("publication freeze recovery publication checkpoint reached an effect stage");
+    }
+    if (fingerprintValues.some((value) => typeof value !== "string" || !value.trim())) {
+      throw new Error("publication freeze recovery publication checkpoint fingerprints are invalid");
     }
     const currentIdentity = stableText(checkpointIdentity) === stableText(run.identity);
     if (currentIdentity) {
@@ -106,6 +110,9 @@ export function failedFrozenPublicationEvidence(run, checkpoint, {
       }
       checkpointObservation = "current-candidate";
     } else {
+      if (completedLabels.length < 1 || completedLabels.length > PRE_EFFECT_STEPS.size) {
+        throw new Error("publication freeze recovery retained checkpoint has no durable pre-effect prefix");
+      }
       if (contourCompleted) {
         throw new Error("publication freeze recovery completed contour requires its current checkpoint");
       }

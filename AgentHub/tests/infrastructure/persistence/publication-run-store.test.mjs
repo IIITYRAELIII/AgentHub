@@ -69,6 +69,23 @@ test("failed-frozen evidence accepts only exact terminal validation vectors", ()
   missingStage.run.identity.labels.pop();
   assert.throws(() => failedFrozenPublicationEvidence(missingStage.run, null, { expectedRunId: "failed-run" }),
     /unknown or incomplete publication stage contract/u);
+  const emptyPrior = failedRunEvidenceFixture(["failed", "pending"]);
+  emptyPrior.checkpoint.identity = structuredClone(emptyPrior.run.identity);
+  Object.assign(emptyPrior.checkpoint.identity, { revision: "d".repeat(40) });
+  Object.assign(emptyPrior.checkpoint.identity.release, {
+    planRevision: "e".repeat(64), manifestHash: "f".repeat(64), preReleaseHead: "d".repeat(40),
+  });
+  emptyPrior.checkpoint.completedLabels = [];
+  emptyPrior.checkpoint.completedFingerprints = {};
+  assert.throws(() => failedFrozenPublicationEvidence(emptyPrior.run, emptyPrior.checkpoint, {
+    expectedRunId: "failed-run",
+  }), /no durable pre-effect prefix/u);
+  const invalidFingerprint = failedRunEvidenceFixture(["failed", "pending"]);
+  invalidFingerprint.checkpoint.identity = structuredClone(emptyPrior.checkpoint.identity);
+  invalidFingerprint.checkpoint.completedFingerprints[invalidFingerprint.checkpoint.completedLabels[0]] = null;
+  assert.throws(() => failedFrozenPublicationEvidence(invalidFingerprint.run, invalidFingerprint.checkpoint, {
+    expectedRunId: "failed-run",
+  }), /checkpoint fingerprints are invalid/u);
 });
 
 test("publication run status and log survive the terminal process", async () => {

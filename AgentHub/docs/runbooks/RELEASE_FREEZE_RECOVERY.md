@@ -40,6 +40,9 @@ writing evidence.
 Completed contour evidence requires a current checkpoint. A retained prior
 checkpoint is accepted only when contour failed before writing it or the
 producer recorded contour as reused from that exact compatible scope.
+An existing prior checkpoint must contain a non-empty ordered pre-effect prefix
+and a non-empty fingerprint for every completed label; use the explicit absence
+flag only when the checkpoint file genuinely does not exist.
 
 Record the returned `proofHash` and effect list. Confirmation repeats every
 guard and uses the same operation ID and all the same arguments, plus:
