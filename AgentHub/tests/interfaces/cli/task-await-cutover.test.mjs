@@ -500,12 +500,12 @@ test("disposable public squash bootstrap reaches real Test then canonical Await 
     request_id: "survivor-await", task_id: survivorCreated.id, status: "awaiting_implementation",
     expected_task_revision: confirmed.task.revision, expected_workflow_status: "testing" });
   assert.equal(awaited.workflowStatus, "awaiting_implementation");
-  assert.equal(awaited.releaseCandidate.status, "invalidated");
+  assert.equal(awaited.releaseCandidate.status, "ready");
   assert.equal(awaited.gitReferences[0].resultCommit, newResult);
-  const rebuilt = await releasePreflight.prepareAwaitSet({ workspaceId: workspace.id });
-  assert.equal(rebuilt.planRevision, `plan-${candidateBuilds}`);
-  assert.deepEqual(rebuilt.taskIds, [survivorCreated.id]);
-  assert.ok(candidateBuilds >= 1);
+  assert.equal(awaited.releaseCandidate.planRevision, "plan-1");
+  assert.deepEqual(awaited.releaseCandidate.taskIds, [survivorCreated.id]);
+  assert.equal(awaited.releaseCandidate.releaseCandidates[0].preReleaseHead, newResult);
+  assert.equal(candidateBuilds, 1);
   assert.equal(await readFile(path.join(survivorWorkspace.projectRoot, "approved-dirty.txt"), "utf8")
     .catch((error) => error.code), "ENOENT");
   assert.equal(await git(repositoryRoot, "rev-parse",
@@ -618,7 +618,9 @@ test("production cutover composer writes the canonical receipt and leaves unrela
     }),
   });
   assert.equal(result.result.workflowStatus, "awaiting_implementation");
-  assert.equal(result.result.releaseCandidate.status, "invalidated");
+  assert.equal(result.result.releaseCandidate.status, "ready");
+  assert.equal(result.result.releaseCandidate.planRevision, "plan-after-cutover");
+  assert.deepEqual(result.result.releaseCandidate.taskIds, [created.id]);
 
   readCatalog = new WorkspaceCatalogStore({ databaseFile });
   await readCatalog.load();
