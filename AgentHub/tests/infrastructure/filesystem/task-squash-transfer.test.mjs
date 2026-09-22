@@ -527,6 +527,7 @@ test("Git-applied squash reconciles its real SQLite transition without an invent
   await git(root, "config", "core.autocrlf", "false");
   await writeFile(path.join(root, "app.txt"), "main\n");
   await commit(root, "main");
+  const publishedRevision = await git(root, "rev-parse", "main");
   const catalog = new WorkspaceCatalogStore({ databaseFile });
   await catalog.load();
   const workspace = await catalog.runMutation(() => catalog.createWorkspace({
@@ -697,10 +698,19 @@ test("Git-applied squash reconciles its real SQLite transition without an invent
       assertAwaitChangesAllowed: async () => {},
       assertPrimaryInvariant: async () => ({ projectRoot: root, headCommit: await git(root, "rev-parse", "main") }),
       inspectMainChanges: async () => ({}),
-      prepareCandidate: async () => { candidateBuilds += 1; throw new Error("Await must not build PreRelease"); },
+      prepareCandidate: async (request) => {
+        candidateBuilds += 1;
+        const prepared = {
+          repositoryRoot: request.projectRoot,
+          preReleaseHead: request.frozenTasks.at(-1).resultCommit,
+          frozenTasks: request.frozenTasks,
+        };
+        if (request.commitPrepared) await request.commitPrepared(prepared);
+        return prepared;
+      },
     },
     resolveReleaseValidationSource: async () => null,
-    readPublicationState: async () => ({ repositories: [] }),
+    readPublicationState: async () => ({ repositories: [{ root, revision: publishedRevision }] }),
   });
   const current = taskBoard.task(survivor.id);
   assert.equal(current.resultReleaseRevision, current.releaseRevision);
@@ -752,7 +762,6 @@ test("Git-applied squash reconciles its real SQLite transition without an invent
   taskBoard.releaseTasks = originalReleaseTasks;
 
   const planBefore = await releasePlanner.plan(workspace.id);
-  const candidateBytes = { head: "preserved-candidate", tree: "preserved-tree" };
   const acceptanceLifecycle = new TaskLifecycleService({
     taskBoard, workspaceCatalog, taskGitWorkspaces: gitService, releasePreflight,
   });
@@ -780,9 +789,14 @@ test("Git-applied squash reconciles its real SQLite transition without an invent
   assert.ok(accepted.task.releaseRevision > testedChild.releaseRevision);
   assert.equal(accepted.task.resultReleaseRevision, current.resultReleaseRevision);
   assert.equal(accepted.releaseIntegration.resultCommit, testedChild.gitReferences[0].resultCommit);
-  assert.equal(accepted.releaseCandidate.status, "invalidated");
+  assert.equal(accepted.releaseCandidate.status, "ready");
   assert.notEqual(planAfter.revision, planBefore.revision);
   assert.equal(accepted.releaseCandidate.planRevision, planAfter.revision);
-  assert.deepEqual(candidateBytes, { head: "preserved-candidate", tree: "preserved-tree" });
-  assert.equal(candidateBuilds, 0);
+  assert.deepEqual(accepted.releaseCandidate.taskIds, [current.id]);
+  assert.equal(accepted.releaseCandidate.releaseCandidates.length, 1);
+  assert.equal(
+    accepted.releaseCandidate.releaseCandidates[0].preReleaseHead,
+    testedChild.gitReferences[0].resultCommit,
+  );
+  assert.equal(candidateBuilds, 1);
 });
