@@ -18,7 +18,15 @@ import { TaskGitWorkspaceService } from "../../../src/infrastructure/filesystem/
 import { taskBranchName, taskRepositoryKey } from "../../../src/domain/task-git-reference.mjs";
 import { createTaskBoardMutationOwner } from "../../../src/application/sqlite-mutation-owner.mjs";
 import { WorkspaceReleaseService } from "../../../src/application/workspace-release-service.mjs";
-import { PUBLICATION_STAGE_CONTRACT } from "../../../src/infrastructure/persistence/publication-run-store.mjs";
+import {
+  PUBLICATION_STAGE_CONTRACT,
+  publicationRunPaths,
+  publicationRunStore,
+} from "../../../src/infrastructure/persistence/publication-run-store.mjs";
+import {
+  publicationCheckpointStore,
+  runPublicationSteps,
+} from "../../../src/infrastructure/persistence/publication-checkpoint.mjs";
 import {
   resolveTestContourSource,
   TEST_CONTOUR_RELEASE_CANDIDATE_SOURCE,
@@ -253,7 +261,12 @@ const stableRecoveryValue = (value) => {
 };
 const recoveryHash = (value) => sha256(`${JSON.stringify(stableRecoveryValue(value))}\n`);
 
-async function failedFrozenFixture(context, { legacyPublicationStages = false, ...serviceOptions } = {}) {
+async function failedFrozenFixture(context, {
+  legacyPublicationStages = false,
+  failedStage = "full-tests",
+  checkpointKind = "current",
+  ...serviceOptions
+} = {}) {
   const setup = await interruptedFreezeFixture(context, serviceOptions);
   const checkpoint = JSON.parse(await readFile(setup.checkpointFile, "utf8"));
   checkpoint.phase = "frozen";
@@ -271,36 +284,88 @@ async function failedFrozenFixture(context, { legacyPublicationStages = false, .
       preReleaseHead: setup.expected.frozenHead, primaryRoot: setup.primary,
     },
   };
-  const logDirectory = path.join(stateRoot, "publication-runs");
-  await mkdir(logDirectory, { recursive: true });
-  const logFile = path.join(logDirectory, `${runId}.log`);
-  const logBytes = Buffer.from("full tests failed before publication effects\n", "utf8");
-  await writeFile(logFile, logBytes);
-  const run = {
-    version: 2, runId, ownerPid: 999999, status: "failed", startedAt: "2026-09-21T00:00:00.000Z",
-    finishedAt: "2026-09-21T00:01:00.000Z", currentStep: null, progress: {}, identity, logFile,
-    steps: PUBLICATION_STAGE_CONTRACT.map((stage, index) => ({
-      label: stage.label, ...(legacyPublicationStages ? {} : { stageId: stage.id }),
-      status: index === 0 ? "completed" : index === 1 ? "failed" : "pending",
-    })),
-    ...(legacyPublicationStages ? {} : { stageContractVersion: 1 }),
-  };
-  const publicationCheckpoint = {
-    version: 1, identity,
-    checkpointScope: { mode: "changed", from: identity.from, runtimeRoot: identity.runtimeRoot, validationMode: "full" },
-    completedLabels: [labels[0]], completedFingerprints: { [labels[0]]: "fixture-contour" },
-  };
-  const runBytes = Buffer.from(`${JSON.stringify(run, null, 2)}\n`, "utf8");
-  const publicationCheckpointBytes = Buffer.from(`${JSON.stringify(publicationCheckpoint, null, 2)}\n`, "utf8");
-  const runFile = path.join(stateRoot, "publication-status.json");
+  const runFile = publicationRunPaths(setup.environment).statusFile;
   const publicationCheckpointFile = path.join(stateRoot, "publication-checkpoint.json");
-  await writeFile(runFile, runBytes);
-  await writeFile(publicationCheckpointFile, publicationCheckpointBytes);
+  const checkpointScope = {
+    mode: "changed", from: identity.from, runtimeRoot: identity.runtimeRoot, validationMode: "full",
+  };
+  if (checkpointKind === "prior") {
+    const priorIdentity = {
+      ...identity,
+      revision: "1".repeat(40),
+      release: {
+        ...identity.release,
+        planRevision: "2".repeat(64), manifestHash: "3".repeat(64), preReleaseHead: "4".repeat(40),
+      },
+    };
+    await publicationCheckpointStore(publicationCheckpointFile).write({
+      identity: priorIdentity,
+      checkpointScope: {
+        mode: "changed", from: priorIdentity.from, runtimeRoot: priorIdentity.runtimeRoot,
+        validationMode: priorIdentity.validationMode,
+      },
+      completedLabels: [labels[0]],
+      completedFingerprints: { [labels[0]]: failedStage === "full-tests" ? "fixture-0" : "prior-contour" },
+    });
+  }
+  let run;
+  if (legacyPublicationStages) {
+    const logDirectory = path.join(stateRoot, "publication-runs");
+    await mkdir(logDirectory, { recursive: true });
+    const logFile = path.join(logDirectory, `${runId}.log`);
+    await writeFile(logFile, "full tests failed before publication effects\n", "utf8");
+    run = {
+      version: 2, runId, ownerPid: 999999, status: "failed", startedAt: "2026-09-21T00:00:00.000Z",
+      finishedAt: "2026-09-21T00:01:00.000Z", currentStep: null, progress: {}, identity, logFile,
+      steps: PUBLICATION_STAGE_CONTRACT.map((stage, index) => ({
+        label: stage.label, status: index === 0 ? "completed" : index === 1 ? "failed" : "pending",
+      })),
+    };
+    await writeFile(runFile, `${JSON.stringify(run, null, 2)}\n`, "utf8");
+    await publicationCheckpointStore(publicationCheckpointFile).write({
+      identity, checkpointScope, completedLabels: [labels[0]],
+      completedFingerprints: { [labels[0]]: "fixture-contour" },
+    });
+  } else {
+    const journal = publicationRunStore({
+      environment: setup.environment,
+      createId: () => runId,
+      ownerPid: () => 999999,
+      now: (() => {
+        let second = 0;
+        return () => new Date(Date.UTC(2026, 8, 22, 0, 0, second++));
+      })(),
+    });
+    const failedLabel = labels[failedStage === "contour" ? 0 : 1];
+    await assert.rejects(runPublicationSteps(PUBLICATION_STAGE_CONTRACT.map((stage, index) => ({
+      label: stage.label, fingerprint: `fixture-${index}`,
+    })), {
+      run: async ({ label }) => {
+        if (label === failedLabel) throw new Error(`${failedStage} failed before publication effects`);
+      },
+      journal,
+      checkpoint: publicationCheckpointStore(publicationCheckpointFile),
+      identity,
+      checkpointScope,
+    }), /failed before publication effects/u);
+    await journal.finish("failed", new Error(`${failedStage} failed before publication effects`));
+    run = JSON.parse(await readFile(runFile, "utf8"));
+  }
+  const runBytes = await readFile(runFile);
+  const publicationCheckpointBytes = await readFile(publicationCheckpointFile).catch((error) => (
+    error?.code === "ENOENT" ? null : Promise.reject(error)
+  ));
+  const publicationCheckpoint = publicationCheckpointBytes
+    ? JSON.parse(publicationCheckpointBytes.toString("utf8")) : null;
+  const logBytes = await readFile(run.logFile);
   return {
     ...setup, checkpoint, run, runFile, publicationCheckpoint, publicationCheckpointFile,
     frozenExpected: {
       ...setup.expected, publicationRunId: runId, publicationRunSha256: sha256(runBytes),
-      publicationCheckpointSha256: sha256(publicationCheckpointBytes), publicationLogSha256: sha256(logBytes),
+      ...(publicationCheckpointBytes
+        ? { publicationCheckpointSha256: sha256(publicationCheckpointBytes) }
+        : { publicationCheckpointAbsent: true }),
+      publicationLogSha256: sha256(logBytes),
     },
   };
 }
@@ -330,6 +395,105 @@ test("failed frozen recovery binds the executable pre-effect stage contract and 
   });
   assert.equal(replay.reused, true);
   assert.equal(replay.proofHash, preview.proofHash);
+});
+
+test("full-test failure preserves a scope-compatible checkpoint that reused contour", async (context) => {
+  const setup = await failedFrozenFixture(context, { failedStage: "full-tests", checkpointKind: "prior" });
+  assert.equal(setup.run.steps[0].status, "reused");
+  const beforeCheckpoint = await readFile(setup.publicationCheckpointFile);
+  const request = failedFrozenRequest(setup, "recover-reused-contour");
+  const preview = await setup.service.recoverFreezingPublicationCandidate(request);
+  assert.equal(preview.identity.publicationStageEvidence.failedStageId, "agent-hub-full-tests");
+  assert.equal(preview.identity.publicationStageEvidence.checkpointObservation, "retained-prior-generation");
+  const completed = await setup.service.recoverFreezingPublicationCandidate({
+    ...request, confirm: true, expectedProofHash: preview.proofHash,
+  });
+  assert.equal(completed.status, "abandoned");
+  assert.deepEqual(await readFile(setup.publicationCheckpointFile), beforeCheckpoint);
+});
+
+for (const checkpointKind of ["absent", "prior"]) {
+  test(`contour-failed frozen recovery binds ${checkpointKind} checkpoint evidence and replays once`, async (context) => {
+    const setup = await failedFrozenFixture(context, { failedStage: "contour", checkpointKind });
+    const request = failedFrozenRequest(setup, `recover-contour-failed-${checkpointKind}`);
+    const beforeCheckpoint = setup.publicationCheckpointFile
+      ? await readFile(setup.publicationCheckpointFile).catch((error) => error?.code === "ENOENT" ? null : Promise.reject(error))
+      : null;
+    if (checkpointKind === "absent") {
+      await assert.rejects(setup.service.recoverFreezingPublicationCandidate({
+        ...request,
+        expected: { ...request.expected, publicationCheckpointSha256: "f".repeat(64) },
+      }), /exactly one checkpoint digest or explicit absence/u);
+    }
+    const preview = await setup.service.recoverFreezingPublicationCandidate(request);
+    assert.equal(preview.identity.publicationStageEvidence.failedStageId, "release-candidate-contour");
+    assert.equal(preview.identity.publicationStageEvidence.checkpointObservation,
+      checkpointKind === "prior" ? "retained-prior-generation" : "absent");
+    const completed = await setup.service.recoverFreezingPublicationCandidate({
+      ...request, confirm: true, expectedProofHash: preview.proofHash,
+    });
+    assert.equal(completed.status, "abandoned");
+    const afterCheckpoint = await readFile(setup.publicationCheckpointFile)
+      .catch((error) => error?.code === "ENOENT" ? null : Promise.reject(error));
+    assert.deepEqual(afterCheckpoint, beforeCheckpoint);
+    const replay = await setup.service.recoverFreezingPublicationCandidate({
+      ...request, confirm: true, expectedProofHash: preview.proofHash,
+    });
+    assert.equal(replay.reused, true);
+  });
+}
+
+test("contour-failed recovery rejects effectful, mixed and changed checkpoint evidence", async (context) => {
+  const effectful = await failedFrozenFixture(context, { failedStage: "contour", checkpointKind: "prior" });
+  effectful.publicationCheckpoint.completedLabels.push(PUBLICATION_STAGE_CONTRACT[2].label);
+  effectful.publicationCheckpoint.completedFingerprints[PUBLICATION_STAGE_CONTRACT[2].label] = "effect";
+  const effectBytes = Buffer.from(`${JSON.stringify(effectful.publicationCheckpoint, null, 2)}\n`);
+  await writeFile(effectful.publicationCheckpointFile, effectBytes);
+  await assert.rejects(effectful.service.recoverFreezingPublicationCandidate({
+    ...failedFrozenRequest(effectful, "effectful-prior-checkpoint"),
+    expected: { ...effectful.frozenExpected, publicationCheckpointSha256: sha256(effectBytes) },
+  }), /checkpoint reached an effect stage/u);
+
+  const mixed = await failedFrozenFixture(context, { failedStage: "contour", checkpointKind: "prior" });
+  mixed.publicationCheckpoint.identity.release.manifestHash = mixed.run.identity.release.manifestHash;
+  const mixedBytes = Buffer.from(`${JSON.stringify(mixed.publicationCheckpoint, null, 2)}\n`);
+  await writeFile(mixed.publicationCheckpointFile, mixedBytes);
+  await assert.rejects(mixed.service.recoverFreezingPublicationCandidate({
+    ...failedFrozenRequest(mixed, "mixed-prior-checkpoint"),
+    expected: { ...mixed.frozenExpected, publicationCheckpointSha256: sha256(mixedBytes) },
+  }), /mixed candidate identity/u);
+
+  const foreignScope = await failedFrozenFixture(context, { failedStage: "contour", checkpointKind: "prior" });
+  foreignScope.publicationCheckpoint.identity.runtimeRoot = path.join(foreignScope.root, "foreign-runtime");
+  foreignScope.publicationCheckpoint.checkpointScope.runtimeRoot = foreignScope.publicationCheckpoint.identity.runtimeRoot;
+  const foreignScopeBytes = Buffer.from(`${JSON.stringify(foreignScope.publicationCheckpoint, null, 2)}\n`);
+  await writeFile(foreignScope.publicationCheckpointFile, foreignScopeBytes);
+  await assert.rejects(foreignScope.service.recoverFreezingPublicationCandidate({
+    ...failedFrozenRequest(foreignScope, "foreign-scope-prior-checkpoint"),
+    expected: { ...foreignScope.frozenExpected, publicationCheckpointSha256: sha256(foreignScopeBytes) },
+  }), /checkpoint schema or scope changed/u);
+
+  let stopAtIntent = true;
+  const changed = await failedFrozenFixture(context, {
+    failedStage: "contour", checkpointKind: "absent",
+    recoveryPhase: async (phase) => {
+      if (phase === "intent" && stopAtIntent) {
+        stopAtIntent = false;
+        throw new Error("stop after absent checkpoint admission");
+      }
+    },
+  });
+  const changedRequest = failedFrozenRequest(changed, "changed-absent-checkpoint");
+  const changedPreview = await changed.service.recoverFreezingPublicationCandidate(changedRequest);
+  await assert.rejects(changed.service.recoverFreezingPublicationCandidate({
+    ...changedRequest, confirm: true, expectedProofHash: changedPreview.proofHash,
+  }), /stop after absent checkpoint admission/u);
+  await writeFile(changed.publicationCheckpointFile, "{}\n", "utf8");
+  await assert.rejects(new ReleaseGitWorkspaceService({
+    dataDir: changed.dataDir, environment: changed.environment,
+  }).recoverFreezingPublicationCandidate({
+    ...changedRequest, confirm: true, expectedProofHash: changedPreview.proofHash,
+  }), /durable external evidence changed after admission/u);
 });
 
 test("admitted failed frozen recovery survives unrelated remote drift but rejects publication of its candidate", async (context) => {

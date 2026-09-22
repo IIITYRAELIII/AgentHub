@@ -925,16 +925,24 @@ not contain the frozen candidate. A completed outcome replays without reading
 mutable publication state. Another operation, an unknown phase, dirty checkout,
 identity drift or evidence that the candidate was published has no effect.
 
-Failed-frozen admission additionally binds the raw publication run, checkpoint
-and log digests, the exact run/candidate identity and the versioned executable
+Failed-frozen admission additionally binds the raw publication run and log plus
+the exact raw presence and bytes of the publication checkpoint (or its explicit
+absence), the exact run/candidate identity and the versioned executable
 publication-stage contract. The allowlist is ordered: contour validation and
 full tests are pre-effect stages; artifact preparation, Git publication,
 runtime installation, worker deployment/verification, runtime activation and
-VS Code extension installation are effect stages. The exact full-test stage
-must be terminal failed, every effect stage must remain pending, progress must
-be empty, and the publication checkpoint may contain only pre-effect receipts.
-Unknown/new stages, unsupported schema, missing run binding, an active or
-ambiguous run, or any effect-stage receipt reject before admission. The
+VS Code extension installation are effect stages. Exactly one validation
+boundary is terminal: either contour failed while full tests remain pending, or
+contour completed/reused and full tests failed. Every effect stage must remain
+pending and progress must be empty. Checkpoint evidence is classified as an
+exact current-candidate pre-effect prefix, an exact retained prior-generation
+pre-effect prefix, or explicit absence; confirmation and retry recheck the same
+raw presence and bytes without replacing a retained prior checkpoint.
+Completed contour evidence requires its current checkpoint. A retained prior
+checkpoint is admissible only when the contour failed before writing or was
+explicitly reused from that scope-compatible checkpoint.
+Unknown/new stages, unsupported schema, mixed checkpoint identity, missing run
+binding, an active or ambiguous run, or any effect-stage receipt reject before admission. The
 publication lock covers evidence read, admission CAS and local ref recovery;
 lock order is publication → Workspace Await → repository, matching the
 publisher's outer publication ownership and avoiding inverse acquisition.

@@ -2,7 +2,8 @@
 
 Use this command only for a reviewed pre-publication freeze attempt whose
 durable checkpoint is still `freezing`, or for an exact `frozen` candidate whose
-terminal publication run failed at full tests before any publication effect.
+terminal publication run failed at contour validation or full tests before any
+publication effect.
 It is a bootstrap tool: run it from an
 independently reviewed clean checkout and bind that checkout by commit and by
 the SHA-256 of `src/infrastructure/filesystem/release-git-workspace.mjs`.
@@ -21,11 +22,24 @@ confirmation:
 --recovery-mode abandon-failed-frozen-candidate-v1 --expected-publication-run-id <run-id> --expected-publication-run-sha256 <status-file-sha256> --expected-publication-checkpoint-sha256 <checkpoint-file-sha256> --expected-publication-log-sha256 <run-log-sha256>
 ```
 
+When no checkpoint file exists, replace
+`--expected-publication-checkpoint-sha256 ...` with the explicit
+`--expected-publication-checkpoint-absent` flag. A retained checkpoint from a
+prior generation is supplied by its exact raw SHA-256; preview classifies and
+binds it without changing its bytes.
+
 The frozen mode accepts only the versioned ordered publisher stage contract.
-The contour stage may be completed/reused, the full-test stage must be failed,
-and every artifact/Git/runtime/worker/activation/extension effect stage must be
-pending with no progress receipt. Unknown stages, missing candidate/run binding,
-unsupported schema or any effect receipt reject without writing evidence.
+Exactly one validation boundary may fail: contour failed with full tests still
+pending, or contour completed/reused and full tests failed. Every
+artifact/Git/runtime/worker/activation/extension effect stage must be pending
+with no progress receipt. Checkpoint evidence must be the exact compatible
+current pre-effect prefix, an exact scope-compatible prior-generation prefix,
+or explicit absence. Unknown stages, mixed/foreign checkpoint scope, missing
+candidate/run binding, unsupported schema or any effect receipt reject without
+writing evidence.
+Completed contour evidence requires a current checkpoint. A retained prior
+checkpoint is accepted only when contour failed before writing it or the
+producer recorded contour as reused from that exact compatible scope.
 
 Record the returned `proofHash` and effect list. Confirmation repeats every
 guard and uses the same operation ID and all the same arguments, plus:

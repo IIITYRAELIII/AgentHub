@@ -29,7 +29,7 @@ export function parseReleaseFreezeRecoveryArguments(argv) {
     const argument = argv[index];
     if (!argument.startsWith("--")) throw new Error(`Unexpected argument: ${argument}`);
     const name = argument.slice(2);
-    if (name === "confirm-recovery") {
+    if (["confirm-recovery", "expected-publication-checkpoint-absent"].includes(name)) {
       values[name] = true;
       continue;
     }
@@ -68,13 +68,17 @@ export function parseReleaseFreezeRecoveryArguments(argv) {
   if (recoveryMode === FAILED_FROZEN_MODE) {
     parsed.expected.publicationRunId = required(values, "expected-publication-run-id");
     parsed.expected.publicationRunSha256 = required(values, "expected-publication-run-sha256").toLowerCase();
-    parsed.expected.publicationCheckpointSha256 = required(
-      values, "expected-publication-checkpoint-sha256",
-    ).toLowerCase();
+    const checkpointSha256 = String(values["expected-publication-checkpoint-sha256"] ?? "").trim().toLowerCase();
+    const checkpointAbsent = values["expected-publication-checkpoint-absent"] === true;
+    if (Boolean(checkpointSha256) === checkpointAbsent) {
+      throw new Error("failed-frozen recovery requires exactly one checkpoint digest or explicit absence");
+    }
+    if (checkpointSha256) parsed.expected.publicationCheckpointSha256 = checkpointSha256;
+    if (checkpointAbsent) parsed.expected.publicationCheckpointAbsent = true;
     parsed.expected.publicationLogSha256 = required(values, "expected-publication-log-sha256").toLowerCase();
   }
   for (const [name, value] of Object.entries(parsed.expected)) {
-    if (name === "publicationRunId") continue;
+    if (["publicationRunId", "publicationCheckpointAbsent"].includes(name)) continue;
     const pattern = ["planRevision", "manifestHash", "publicationRunSha256", "publicationCheckpointSha256",
       "publicationLogSha256"].includes(name) ? digestPattern : commitPattern;
     if (!pattern.test(value)) throw new Error(`invalid exact recovery identity: ${name}`);

@@ -84,3 +84,23 @@ test("release freeze recovery CLI rejects incomplete failed-frozen identity", ()
     "--recovery-mode", "unknown-recovery-mode",
   )), /recovery-mode is unsupported/u);
 });
+
+test("release freeze recovery CLI binds explicit checkpoint absence", () => {
+  const input = parseReleaseFreezeRecoveryArguments(argumentsFor(
+    "--recovery-mode", "abandon-failed-frozen-candidate-v1",
+    "--expected-publication-run-id", "failed-run",
+    "--expected-publication-run-sha256", digest,
+    "--expected-publication-checkpoint-absent",
+    "--expected-publication-log-sha256", digest,
+  ));
+  assert.equal(input.expected.publicationCheckpointAbsent, true);
+  assert.equal(input.expected.publicationCheckpointSha256, undefined);
+  assert.throws(() => parseReleaseFreezeRecoveryArguments(argumentsFor(
+    "--recovery-mode", "abandon-failed-frozen-candidate-v1",
+    "--expected-publication-run-id", "failed-run",
+    "--expected-publication-run-sha256", digest,
+    "--expected-publication-checkpoint-absent",
+    "--expected-publication-checkpoint-sha256", digest,
+    "--expected-publication-log-sha256", digest,
+  )), /exactly one checkpoint digest or explicit absence/u);
+});
