@@ -1151,10 +1151,12 @@ artifact records the accepted terminal identity. A known HTTP rejection fails
 immediately. After an unknown outcome or a crash between effect, response,
 terminal recording and acknowledgement, restart uses only the saved request to
 read or reconcile that same durable receipt; it creates no new identity and
-does not click the composer again. Successful evidence binds the
-exact Stream, provider, Thread, client message, provider turn, rendered response
-and journal record; matching text in another or older conversation is not smoke
-success.
+does not click the composer again. Successful setup evidence requires the exact
+returned control receipt and a created target compatible with the requested
+scope. Successful send evidence uses the canonical message owner result rather
+than request fallbacks and binds the exact returned control receipt, Stream,
+provider, Thread, client message, provider turn, rendered response and journal
+record; matching text in another or older conversation is not smoke success.
 
 Every refresh is one persisted maintenance operation, not a provider turn. Its
 identity binds the exact contour root, contour marker, port, model, source `dev`

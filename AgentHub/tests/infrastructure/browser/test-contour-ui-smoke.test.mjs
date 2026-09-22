@@ -346,6 +346,120 @@ test("Test Contour smoke persists a fresh public new-task identity and reuses it
   }
 });
 
+test("Test Contour smoke keeps setup intent when direct or recovered receipts are not exact", async () => {
+  for (const scenario of [
+    { name: "direct wrong receipt", persisted: false, receiptId: "wrong-command" },
+    { name: "recovered missing receipt", persisted: true, receiptId: null },
+  ]) {
+    const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-smoke-setup-receipt-"));
+    const stateFile = path.join(root, "ui-smoke-conversation.json");
+    const operation = {
+      action: "new-task",
+      commandId: "setup-original",
+      phase: "prepared",
+      params: {
+        workspaceName: "Agent Hub Test Contour Smoke",
+        streamName: "Smoke",
+        provider: "codex",
+        settings: { provider: "codex", model: "fake-codex" },
+      },
+    };
+    if (scenario.persisted) {
+      await writeFile(stateFile, `${JSON.stringify({ version: 2, operation })}\n`, "utf8");
+    }
+    let acknowledgements = 0;
+    const page = {
+      async evaluate(_callback, request) {
+        if (!request.action) {
+          acknowledgements += 1;
+          return { ok: true, status: 200, payload: { ok: true, retired: true } };
+        }
+        if (request.action === "snapshot") return browserControlResult({ workspaces: [] });
+        assert.equal(request.commandId, "setup-original", scenario.name);
+        return browserControlResult({
+          ...snapshot({ streams: [stream("stream-smoke", [thread("thread-smoke")])] }),
+          createdTask: {
+            workspaceId: "workspace-1",
+            streamId: "stream-smoke",
+            provider: "codex",
+            threadId: "thread-smoke",
+          },
+        }, { receiptId: scenario.receiptId });
+      },
+    };
+    try {
+      await assert.rejects(prepareTestContourSmokeConversation(page, {
+        artifactsDirectory: root,
+        model: "fake-codex",
+        timeoutMs: 5_000,
+        commandIdFactory: () => scenario.persisted ? assert.fail("must reuse persisted command") : "setup-original",
+      }), /invalid receipt/u, scenario.name);
+      assert.equal(acknowledgements, 0, scenario.name);
+      const durable = JSON.parse(await readFile(stateFile, "utf8"));
+      assert.equal(durable.operation.commandId, "setup-original", scenario.name);
+      assert.equal(durable.operation.phase, "prepared", scenario.name);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test("Test Contour smoke rejects created targets outside the requested thread or Stream scope", async () => {
+  const scenarios = [
+    {
+      name: "create-thread changed Stream",
+      persisted: saved(),
+      current: snapshot({ streams: [stream("stream-smoke", [thread("thread-old", { detachedAtMs: 1 })])] }),
+      createdTask: {
+        workspaceId: "workspace-1", streamId: "stream-other", provider: "codex", threadId: "thread-new",
+      },
+    },
+    {
+      name: "create-stream changed Workspace",
+      persisted: saved(),
+      current: snapshot({ streams: [] }),
+      createdTask: {
+        workspaceId: "workspace-other", streamId: "stream-new", provider: "codex", threadId: "thread-new",
+      },
+    },
+  ];
+  for (const scenario of scenarios) {
+    const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-smoke-setup-target-"));
+    const stateFile = path.join(root, "ui-smoke-conversation.json");
+    await writeFile(stateFile, `${JSON.stringify(scenario.persisted)}\n`, "utf8");
+    let acknowledgements = 0;
+    const page = {
+      async evaluate(_callback, request) {
+        if (!request.action) {
+          acknowledgements += 1;
+          return { ok: true, status: 200, payload: { ok: true, retired: true } };
+        }
+        if (request.action === "snapshot") return browserControlResult(scenario.current);
+        return browserControlResult({
+          ...snapshot({
+            workspaceId: scenario.createdTask.workspaceId,
+            streams: [stream(scenario.createdTask.streamId, [thread(scenario.createdTask.threadId)])],
+          }),
+          createdTask: scenario.createdTask,
+        }, { receiptId: "setup-scope" });
+      },
+    };
+    try {
+      await assert.rejects(prepareTestContourSmokeConversation(page, {
+        artifactsDirectory: root,
+        model: "fake-codex",
+        timeoutMs: 5_000,
+        commandIdFactory: () => "setup-scope",
+      }), /invalid target/u, scenario.name);
+      assert.equal(acknowledgements, 0, scenario.name);
+      const durable = JSON.parse(await readFile(stateFile, "utf8"));
+      assert.equal(durable.operation.phase, "prepared", scenario.name);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+});
+
 test("Test Contour smoke reconciles an unknown setup with its original durable command", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-smoke-setup-reconcile-"));
   const createdSnapshot = snapshot({ streams: [stream("stream-smoke", [thread("thread-smoke")])] });
@@ -744,7 +858,7 @@ test("Test Contour smoke persists the UI send intent and terminal before releasi
   ]);
 });
 
-test("Test Contour smoke rejects a send ACK whose receipt or durable identity differs", async () => {
+test("Test Contour smoke rejects missing or mismatched authoritative send evidence", async () => {
   const params = {
     text: "Ответь строго: AGENT_HUB_TEST_CONTOUR_SPARK_OK_V1",
     streamId: "stream-smoke",
@@ -752,26 +866,41 @@ test("Test Contour smoke rejects a send ACK whose receipt or durable identity di
     threadId: "thread-smoke",
     clientUserMessageId: "client-message-1",
   };
-  for (const resultPatch of [
-    { receiptId: "other-command" },
-    { clientUserMessageId: "other-client" },
-    { threadId: "other-thread" },
+  for (const scenario of [
+    { name: "wrong receipt", receiptId: "other-command" },
+    { name: "missing client message", remove: "clientUserMessageId" },
+    { name: "wrong client message", clientUserMessageId: "other-client" },
+    { name: "missing Stream", remove: "streamId" },
+    { name: "wrong Stream", streamId: "other-stream" },
+    { name: "missing provider", remove: "provider" },
+    { name: "wrong provider", provider: "claude" },
+    { name: "missing Thread", remove: "threadId" },
+    { name: "wrong Thread", threadId: "other-thread" },
+    { name: "missing turn", remove: "turnId" },
   ]) {
+    const result = {
+      accepted: true,
+      streamId: "stream-smoke",
+      provider: "codex",
+      threadId: "thread-smoke",
+      clientUserMessageId: "client-message-1",
+      turnId: "turn-1",
+    };
+    if (scenario.remove) delete result[scenario.remove];
+    for (const key of ["streamId", "provider", "threadId", "clientUserMessageId"]) {
+      if (scenario[key]) result[key] = scenario[key];
+    }
     const request = controlRequest({ params, commandId: "send-command-1" });
     const response = controlResponse(request, {
       payload: {
         ok: true,
-        receiptId: resultPatch.receiptId ?? "send-command-1",
-        result: {
-          accepted: true,
-          streamId: "stream-smoke",
-          provider: "codex",
-          threadId: resultPatch.threadId ?? "thread-smoke",
-          clientUserMessageId: resultPatch.clientUserMessageId ?? "client-message-1",
-          turnId: "turn-1",
-        },
+        receiptId: scenario.receiptId ?? "send-command-1",
+        result,
       },
     });
+    let acceptedWrites = 0;
+    let acknowledgements = 0;
+    let settledWrites = 0;
     const page = {
       async waitForRequest(predicate) { assert.equal(predicate(request), true); return request; },
       async waitForResponse(predicate) { assert.equal(predicate(response), true); return response; },
@@ -780,7 +909,76 @@ test("Test Contour smoke rejects a send ACK whose receipt or durable identity di
       identity: saved(),
       timeoutMs: 5_000,
       click: async () => {},
-    }), /invalid acceptance/u);
+      async persistAccepted() { acceptedWrites += 1; },
+      async acknowledgeAccepted() { acknowledgements += 1; },
+      async persistSettled() { settledWrites += 1; },
+    }), /invalid acceptance/u, scenario.name);
+    assert.deepEqual([acceptedWrites, acknowledgements, settledWrites], [0, 0, 0], scenario.name);
+  }
+});
+
+test("Test Contour smoke recovery preserves prepared send intent when authoritative evidence is incomplete", async () => {
+  const invalidResults = [
+    ["missing client message", "clientUserMessageId", null],
+    ["wrong client message", "clientUserMessageId", "other-client"],
+    ["missing Stream", "streamId", null],
+    ["wrong Stream", "streamId", "other-stream"],
+    ["missing provider", "provider", null],
+    ["wrong provider", "provider", "claude"],
+    ["missing Thread", "threadId", null],
+    ["wrong Thread", "threadId", "other-thread"],
+    ["missing turn", "turnId", null],
+  ];
+  for (const [name, field, value] of invalidResults) {
+    const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-smoke-send-evidence-"));
+    const stateFile = path.join(root, "ui-smoke-conversation.json");
+    const operation = {
+      action: "send-message",
+      commandId: "send-original",
+      phase: "prepared",
+      params: {
+        text: TEST_CONTOUR_PROBE,
+        streamId: "stream-smoke",
+        provider: "codex",
+        threadId: "thread-smoke",
+        clientUserMessageId: "client-original",
+      },
+    };
+    await writeFile(stateFile, `${JSON.stringify({ ...saved(), operation })}\n`, "utf8");
+    const result = {
+      accepted: true,
+      streamId: "stream-smoke",
+      provider: "codex",
+      threadId: "thread-smoke",
+      clientUserMessageId: "client-original",
+      turnId: "turn-original",
+    };
+    if (value == null) delete result[field];
+    else result[field] = value;
+    let acknowledgements = 0;
+    const page = {
+      async evaluate(_callback, request) {
+        if (!request.action) {
+          acknowledgements += 1;
+          return { ok: true, status: 200, payload: { ok: true, retired: true } };
+        }
+        assert.equal(request.action, "send-message", name);
+        assert.equal(request.commandId, "send-original", name);
+        return browserControlResult(result, { receiptId: "send-original" });
+      },
+    };
+    try {
+      await assert.rejects(reconcileTestContourSend(page, {
+        operation,
+        identity: saved(),
+        stateFile,
+        timeoutMs: 5_000,
+      }), /invalid acceptance/u, name);
+      assert.equal(acknowledgements, 0, name);
+      assert.deepEqual(JSON.parse(await readFile(stateFile, "utf8")), { ...saved(), operation }, name);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   }
 });
 

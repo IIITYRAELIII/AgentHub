@@ -285,15 +285,34 @@ function createdConversationIdentity(result) {
   return identity;
 }
 
+function exactCreatedConversation(operation, result, receiptId) {
+  if (String(receiptId ?? "").trim() !== operation.commandId) {
+    throw new Error(`Test Contour new-task returned an invalid receipt for command ${operation.commandId}`);
+  }
+  const identity = createdConversationIdentity(result);
+  const params = operation.params ?? {};
+  if (
+    !identity.workspaceId
+    || !identity.streamId
+    || identity.provider !== "codex"
+    || !identity.threadId
+    || (params.streamId && identity.streamId !== String(params.streamId).trim())
+    || (params.workspaceId && identity.workspaceId !== String(params.workspaceId).trim())
+  ) {
+    throw new Error(`Test Contour new-task returned an invalid target for command ${operation.commandId}`);
+  }
+  return identity;
+}
+
 function exactAcceptedSend(operation, result, receiptId, expectedIdentity) {
   const expected = normalizedIdentity(expectedIdentity);
   const params = operation.params ?? {};
   const accepted = {
     commandId: operation.commandId,
-    clientUserMessageId: String(result?.clientUserMessageId ?? params.clientUserMessageId ?? "").trim(),
-    streamId: String(result?.streamId ?? params.streamId ?? "").trim(),
-    provider: String(result?.provider ?? params.provider ?? "").trim().toLowerCase(),
-    threadId: String(result?.threadId ?? params.threadId ?? "").trim(),
+    clientUserMessageId: String(result?.clientUserMessageId ?? "").trim(),
+    streamId: String(result?.streamId ?? "").trim(),
+    provider: String(result?.provider ?? "").trim().toLowerCase(),
+    threadId: String(result?.threadId ?? "").trim(),
     turnId: String(result?.turnId ?? "").trim(),
   };
   if (
@@ -399,7 +418,7 @@ export async function prepareTestContourSmokeConversation(page, {
         timeoutMs,
         acknowledge: false,
       });
-      identity = createdConversationIdentity(created.result);
+      identity = exactCreatedConversation(operation, created.result, created.receiptId);
       accepted = { ...identity };
       await writeSmokeConversationState(stateFile, identity, {
         ...operation,
