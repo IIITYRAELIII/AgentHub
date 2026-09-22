@@ -13,13 +13,17 @@ async function placementView() {
   return window.AgentHubThemedSelectPlacement;
 }
 
-test("themed select keeps modal options inside their owning dialog", async () => {
+test("themed select keeps modal options inside their owning dialog top layer", async () => {
   const { resolve } = await placementView();
   const dialog = { kind: "dialog" };
   const menu = { showPopover() {} };
 
   assert.deepEqual(
     { ...resolve({ closest: () => dialog }, menu) },
+    { host: dialog, usePopover: true },
+  );
+  assert.deepEqual(
+    { ...resolve({ closest: () => dialog }, {}) },
     { host: dialog, usePopover: false },
   );
   assert.deepEqual(
