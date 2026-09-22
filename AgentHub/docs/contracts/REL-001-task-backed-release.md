@@ -1134,6 +1134,23 @@ not deploy a contour per Task branch. The contour status records the exact
 runtime is stopped, so a Git or build preparation failure leaves the previous
 working contour available.
 
+An ordinary start, refresh or verify deploys code and reuses that contour's
+runtime/data root. It does not clone production data. Production-data cloning is
+the separate explicit `clone-data` operation and is never inferred from a new
+candidate identity.
+
+The agent UI smoke runs only against the verified isolated fake provider. It
+owns one exact smoke Workspace/Stream/Thread identity in contour-local artifacts,
+reuses it while the public snapshot proves that the same Thread is current and
+attachable, and otherwise prepares a replacement only through the public
+`new-task` lifecycle. Existing copied Streams, their names and display order are
+not conversation authority. A create or send request is issued once with one
+command identity: a known HTTP rejection fails immediately, while an unknown
+outcome is reported without automatic replay. Successful evidence binds the
+exact Stream, provider, Thread, client message, provider turn, rendered response
+and journal record; matching text in another or older conversation is not smoke
+success.
+
 Every refresh is one persisted maintenance operation, not a provider turn. Its
 identity binds the exact contour root, contour marker, port, model, source `dev`
 head, candidate release and owner process. Contour refresh and verify use
