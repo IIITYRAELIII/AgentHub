@@ -22,6 +22,7 @@ export const PUBLICATION_STAGE_CONTRACT = Object.freeze([
 const PUBLICATION_STAGE_BY_LABEL = new Map(PUBLICATION_STAGE_CONTRACT.map((stage) => [stage.label, stage]));
 const PRE_EFFECT_STEPS = new Set(PUBLICATION_STAGE_CONTRACT.filter((stage) => !stage.effect)
   .map((stage) => stage.label));
+const PUBLICATION_STAGE_LABELS = PUBLICATION_STAGE_CONTRACT.map((stage) => stage.label);
 
 function stageRecord(label) {
   const stage = PUBLICATION_STAGE_BY_LABEL.get(label);
@@ -38,7 +39,7 @@ export function failedFrozenPublicationEvidence(run, checkpoint, {
   const steps = Array.isArray(run.steps) ? run.steps : [];
   const labels = steps.map((step) => step.label);
   if (stableText(run.identity?.labels ?? []) !== stableText(labels)
-      || stableText(labels) !== stableText(PUBLICATION_STAGE_CONTRACT.map((stage) => stage.label))) {
+      || stableText(labels) !== stableText(PUBLICATION_STAGE_LABELS)) {
     throw new Error("publication freeze recovery found an unknown or incomplete publication stage contract");
   }
   const legacy = run.stageContractVersion == null;
@@ -52,32 +53,96 @@ export function failedFrozenPublicationEvidence(run, checkpoint, {
     const expectedStage = PUBLICATION_STAGE_CONTRACT[index];
     const step = steps[index];
     if ((!legacy && step.stageId !== expectedStage.id)
-        || (expectedStage.effect && step.status !== "pending")
-        || (!expectedStage.effect && !["completed", "failed", "reused"].includes(step.status))) {
+        || (expectedStage.effect && step.status !== "pending")) {
       throw new Error("publication freeze recovery found publication effect or ambiguous stage evidence");
     }
   }
-  if (!["completed", "reused"].includes(steps[0].status) || steps[1].status !== "failed") {
-    throw new Error("publication freeze recovery requires the exact failed full-test boundary");
+  const contourFailed = steps[0].status === "failed" && steps[1].status === "pending";
+  const contourCompleted = steps[0].status === "completed" && steps[1].status === "failed";
+  const contourReused = steps[0].status === "reused" && steps[1].status === "failed";
+  const fullTestsFailed = contourCompleted || contourReused;
+  if (!contourFailed && !fullTestsFailed) {
+    throw new Error("publication freeze recovery requires an exact terminal pre-effect validation failure");
   }
-  if (!checkpoint || stableText(checkpoint.identity) !== stableText(run.identity)
-      || stableText(checkpoint.checkpointScope) !== stableText({
-        mode: "changed", from: run.identity.from, runtimeRoot: run.identity.runtimeRoot,
-        validationMode: run.identity.validationMode,
-      })) {
-    throw new Error("publication freeze recovery publication checkpoint identity changed");
+  const failedStageIndex = contourFailed ? 0 : 1;
+  let checkpointObservation = "absent";
+  if (!checkpoint && !contourFailed) {
+    throw new Error("publication freeze recovery full-test failure requires its current checkpoint");
   }
-  const completedLabels = [...(checkpoint.completedLabels ?? [])];
-  const fingerprintLabels = Object.keys(checkpoint.completedFingerprints ?? {});
-  if (stableText(completedLabels) !== stableText(fingerprintLabels)
-      || stableText(completedLabels) !== stableText([steps[0].label])
-      || [...completedLabels, ...fingerprintLabels].some((label) => !PRE_EFFECT_STEPS.has(label))) {
-    throw new Error("publication freeze recovery publication checkpoint reached an effect stage");
+  if (checkpoint) {
+    const checkpointIdentity = checkpoint.identity;
+    const expectedScope = {
+      mode: "changed", from: run.identity?.from, runtimeRoot: run.identity?.runtimeRoot,
+      validationMode: run.identity?.validationMode,
+    };
+    if (stableText(checkpointIdentity?.labels ?? []) !== stableText(PUBLICATION_STAGE_LABELS)
+        || stableText(checkpoint.checkpointScope) !== stableText(expectedScope)
+        || checkpointIdentity?.mode !== run.identity?.mode
+        || checkpointIdentity?.from !== run.identity?.from
+        || checkpointIdentity?.runtimeRoot !== run.identity?.runtimeRoot
+        || checkpointIdentity?.worktreeRoot !== run.identity?.worktreeRoot
+        || checkpointIdentity?.validationMode !== run.identity?.validationMode
+        || checkpointIdentity?.artifactProtocol !== run.identity?.artifactProtocol
+        || checkpointIdentity?.release?.workspaceId !== run.identity?.release?.workspaceId
+        || checkpointIdentity?.release?.primaryRoot !== run.identity?.release?.primaryRoot) {
+      throw new Error("publication freeze recovery publication checkpoint schema or scope changed");
+    }
+    const completedLabels = [...(checkpoint.completedLabels ?? [])];
+    const fingerprintLabels = Object.keys(checkpoint.completedFingerprints ?? {});
+    const fingerprintValues = completedLabels.map((label) => checkpoint.completedFingerprints?.[label]);
+    const orderedPrefix = PUBLICATION_STAGE_LABELS.slice(0, completedLabels.length);
+    if (stableText(completedLabels) !== stableText(fingerprintLabels)
+        || stableText(completedLabels) !== stableText(orderedPrefix)
+        || completedLabels.some((label) => !PRE_EFFECT_STEPS.has(label))) {
+      throw new Error("publication freeze recovery publication checkpoint reached an effect stage");
+    }
+    if (fingerprintValues.some((value) => typeof value !== "string" || !value.trim())) {
+      throw new Error("publication freeze recovery publication checkpoint fingerprints are invalid");
+    }
+    const currentIdentity = stableText(checkpointIdentity) === stableText(run.identity);
+    if (currentIdentity) {
+      if (contourFailed) {
+        throw new Error("publication freeze recovery contour failure cannot own a current checkpoint");
+      }
+      const expectedCompleted = PUBLICATION_STAGE_LABELS.slice(0, failedStageIndex);
+      if (stableText(completedLabels) !== stableText(expectedCompleted)) {
+        throw new Error("publication freeze recovery current publication checkpoint contradicts the failed stage");
+      }
+      checkpointObservation = "current-candidate";
+    } else {
+      if (completedLabels.length < 1 || completedLabels.length > PRE_EFFECT_STEPS.size) {
+        throw new Error("publication freeze recovery retained checkpoint has no durable pre-effect prefix");
+      }
+      if (contourCompleted) {
+        throw new Error("publication freeze recovery completed contour requires its current checkpoint");
+      }
+      if (contourReused && completedLabels[0] !== PUBLICATION_STAGE_LABELS[0]) {
+        throw new Error("publication freeze recovery reused contour lacks retained checkpoint evidence");
+      }
+      const checkpointGeneration = [
+        checkpointIdentity?.revision,
+        checkpointIdentity?.release?.planRevision,
+        checkpointIdentity?.release?.manifestHash,
+        checkpointIdentity?.release?.preReleaseHead,
+      ];
+      const runGeneration = [
+        run.identity?.revision,
+        run.identity?.release?.planRevision,
+        run.identity?.release?.manifestHash,
+        run.identity?.release?.preReleaseHead,
+      ];
+      if (checkpointGeneration.some((value) => value == null)
+          || checkpointGeneration.some((value, index) => value === runGeneration[index])) {
+        throw new Error("publication freeze recovery publication checkpoint has mixed candidate identity");
+      }
+      checkpointObservation = "retained-prior-generation";
+    }
   }
   return {
     stageContractVersion: legacy ? "legacy-hash-bound-v1" : PUBLICATION_STAGE_CONTRACT_VERSION,
     stageIds: PUBLICATION_STAGE_CONTRACT.map((stage) => stage.id),
-    failedStageId: PUBLICATION_STAGE_CONTRACT[1].id,
+    failedStageId: PUBLICATION_STAGE_CONTRACT[failedStageIndex].id,
+    checkpointObservation,
   };
 }
 

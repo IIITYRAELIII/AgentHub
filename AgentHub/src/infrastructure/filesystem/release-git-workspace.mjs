@@ -1487,15 +1487,24 @@ export class ReleaseGitWorkspaceService {
     };
     let publicationLogBytes = null;
     if (recoveryMode === FAILED_FROZEN_RECOVERY_MODE) {
-      if (!publicationRunBytes || !publicationStepBytes) {
-        throw new Error("publication freeze recovery requires terminal publication run and checkpoint evidence");
+      if (!publicationRunBytes) {
+        throw new Error("publication freeze recovery requires terminal publication run evidence");
       }
       const publicationRunSha256 = assertRecoveryDigest(
         publicationRunBytes, expected.publicationRunSha256, "publication run digest",
       );
-      const publicationCheckpointSha256 = assertRecoveryDigest(
-        publicationStepBytes, expected.publicationCheckpointSha256, "publication checkpoint digest",
-      );
+      const expectsCheckpointAbsence = expected.publicationCheckpointAbsent === true;
+      const expectsCheckpointDigest = /^[a-f0-9]{64}$/u.test(String(expected.publicationCheckpointSha256 ?? ""));
+      if (expectsCheckpointAbsence === expectsCheckpointDigest) {
+        throw new Error("publication freeze recovery requires exactly one checkpoint digest or explicit absence");
+      }
+      if (Boolean(publicationStepBytes) === expectsCheckpointAbsence) {
+        throw new Error("publication freeze recovery checkpoint presence changed");
+      }
+      const publicationCheckpointSha256 = publicationStepBytes
+        ? assertRecoveryDigest(publicationStepBytes, expected.publicationCheckpointSha256,
+          "publication checkpoint digest")
+        : null;
       const stageEvidence = failedFrozenPublicationEvidence(publicationRun, publicationStep, {
         expectedRunId: expected.publicationRunId,
         allowLegacyHashBound: true,
@@ -1526,6 +1535,7 @@ export class ReleaseGitWorkspaceService {
         publicationRunId: publicationRun.runId,
         publicationRunSha256,
         publicationCheckpointSha256,
+        publicationCheckpointAbsent: publicationStepBytes === null,
         publicationLogSha256,
         publicationStageEvidence: stageEvidence,
       };
@@ -1605,6 +1615,11 @@ export class ReleaseGitWorkspaceService {
           || (recoveryMode === FAILED_FROZEN_RECOVERY_MODE
             && sha256(Buffer.from(parsedEvidence.publicationLogBytesBase64 ?? "", "base64"))
               !== recoveryIdentity.publicationLogSha256)
+          || (recoveryMode === FAILED_FROZEN_RECOVERY_MODE
+            && (recoveryIdentity.publicationCheckpointSha256
+              ? sha256(Buffer.from(parsedEvidence.publicationCheckpointBytesBase64 ?? "", "base64"))
+                !== recoveryIdentity.publicationCheckpointSha256
+              : parsedEvidence.publicationCheckpointBytesBase64 != null))
           || Object.entries(recoveryIdentity).some(([key, value]) => (
             JSON.stringify(parsedEvidence[key]) !== JSON.stringify(value)
           ))) {
@@ -1616,6 +1631,8 @@ export class ReleaseGitWorkspaceService {
         sourceCheckpointBytesBase64: checkpointBytes.toString("base64"),
         sourceManifestBytesBase64: manifestBytes.toString("base64"),
         ...(publicationLogBytes ? { publicationLogBytesBase64: publicationLogBytes.toString("base64") } : {}),
+        ...(publicationStepBytes
+          ? { publicationCheckpointBytesBase64: publicationStepBytes.toString("base64") } : {}),
         sourceCheckpoint: checkpoint, sourceManifest: manifest,
         publicationState, publicationRun, publicationCheckpoint: publicationStep };
       const evidenceText = stableManifest(evidence);
@@ -1651,12 +1668,14 @@ export class ReleaseGitWorkspaceService {
     if (recoveryMode === FAILED_FROZEN_RECOVERY_MODE) {
       const [runReadback, checkpointReadback, logReadback, remoteReadback] = await Promise.all([
         readFile(publicationRunPath),
-        readFile(publicationStepPath),
+        readFile(publicationStepPath).catch((error) => error?.code === "ENOENT" ? null : Promise.reject(error)),
         readFile(publicationRun.logFile),
         runGit(["ls-remote", "origin", "refs/heads/main"], { cwd: layout.releaseRoot, timeoutMs: 300_000 }),
       ]);
       if (sha256(runReadback) !== recoveryIdentity.publicationRunSha256
-          || sha256(checkpointReadback) !== recoveryIdentity.publicationCheckpointSha256
+          || (recoveryIdentity.publicationCheckpointSha256
+            ? !checkpointReadback || sha256(checkpointReadback) !== recoveryIdentity.publicationCheckpointSha256
+            : checkpointReadback !== null)
           || sha256(logReadback) !== recoveryIdentity.publicationLogSha256
           || remoteReadback.split(/\s+/u)[0] !== recoveryIdentity.originMain) {
         throw new Error("publication freeze recovery external evidence changed before admission");
@@ -1785,10 +1804,12 @@ export class ReleaseGitWorkspaceService {
       for (const [actual, requested, label] of [
         [identity.publicationRunId, expected.publicationRunId, "publication run ID"],
         [identity.publicationRunSha256, expected.publicationRunSha256, "publication run digest"],
-        [identity.publicationCheckpointSha256, expected.publicationCheckpointSha256,
-          "publication checkpoint digest"],
         [identity.publicationLogSha256, expected.publicationLogSha256, "publication log digest"],
       ]) assertExactRecoveryExpectation(actual, requested, label);
+      if (identity.publicationCheckpointAbsent !== (expected.publicationCheckpointAbsent === true)
+          || (identity.publicationCheckpointSha256 ?? null) !== (expected.publicationCheckpointSha256 ?? null)) {
+        throw new Error("publication freeze recovery publication checkpoint expectation changed");
+      }
     }
     const evidenceFile = String(recovery.evidenceFile ?? "");
     if (!pathInside(layout.evidenceRoot, evidenceFile)) {
@@ -1814,7 +1835,12 @@ export class ReleaseGitWorkspaceService {
           !== identity.sourceManifestSha256
         || (recoveryMode === FAILED_FROZEN_RECOVERY_MODE
           && sha256(Buffer.from(evidence.publicationLogBytesBase64 ?? "", "base64"))
-            !== identity.publicationLogSha256)) {
+            !== identity.publicationLogSha256)
+        || (recoveryMode === FAILED_FROZEN_RECOVERY_MODE
+          && (identity.publicationCheckpointSha256
+            ? sha256(Buffer.from(evidence.publicationCheckpointBytesBase64 ?? "", "base64"))
+              !== identity.publicationCheckpointSha256
+            : evidence.publicationCheckpointBytesBase64 != null))) {
       throw new Error("publication freeze recovery evidence identity changed");
     }
     if (!confirm) {
@@ -1838,14 +1864,18 @@ export class ReleaseGitWorkspaceService {
     const [stateBytes, runBytes, stepBytes, logBytes, originUrl, remoteLine] = await Promise.all([
       readFile(publicationStatePath),
       recoveryMode === FAILED_FROZEN_RECOVERY_MODE ? readFile(publicationRunPath) : Promise.resolve(null),
-      recoveryMode === FAILED_FROZEN_RECOVERY_MODE ? readFile(publicationStepPath) : Promise.resolve(null),
+      recoveryMode === FAILED_FROZEN_RECOVERY_MODE
+        ? readFile(publicationStepPath).catch((error) => error?.code === "ENOENT" ? null : Promise.reject(error))
+        : Promise.resolve(null),
       recoveryMode === FAILED_FROZEN_RECOVERY_MODE ? readFile(admittedLogFile) : Promise.resolve(null),
       runGit(["remote", "get-url", "origin"], { cwd: layout.releaseRoot }),
       runGit(["ls-remote", "origin", "refs/heads/main"], { cwd: layout.releaseRoot, timeoutMs: 300_000 }),
     ]);
     if (sha256(stateBytes) !== identity.publicationStateSha256 || sha256(originUrl) !== identity.originUrlSha256
         || (runBytes && sha256(runBytes) !== identity.publicationRunSha256)
-        || (stepBytes && sha256(stepBytes) !== identity.publicationCheckpointSha256)
+        || (identity.publicationCheckpointSha256
+          ? !stepBytes || sha256(stepBytes) !== identity.publicationCheckpointSha256
+          : stepBytes !== null)
         || (logBytes && sha256(logBytes) !== identity.publicationLogSha256)) {
       throw new Error("publication freeze recovery durable external evidence changed after admission");
     }
