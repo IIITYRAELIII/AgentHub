@@ -3530,6 +3530,86 @@ export class TaskBoardStore {
     });
   }
 
+  completeReleaseOperation(workspaceId, {
+    operationId, generation, selectedResults = [], publicationEffects = {},
+  } = {}) {
+    const releaseOperationId = String(operationId ?? "").trim();
+    const generationNumber = Number(generation);
+    if (!releaseOperationId || !Number.isSafeInteger(generationNumber) || generationNumber < 1) {
+      throw new Error("release operation finalization requires exact operation and generation");
+    }
+    if (!Array.isArray(selectedResults) || !selectedResults.length) {
+      throw new Error("release operation finalization requires selected results");
+    }
+    const key = `release_operation_finalized:${releaseOperationId}:${generationNumber}`;
+    return this.#withDatabase((database) => {
+      database.exec("BEGIN IMMEDIATE");
+      try {
+        const existing = database.prepare("SELECT value FROM hub_board_settings WHERE key = ?").get(key)?.value;
+        if (existing) {
+          database.exec("ROLLBACK");
+          return { ...JSON.parse(existing), alreadyFinalized: true };
+        }
+        const timestamp = this.now();
+        const deliveries = [];
+        for (const selected of selectedResults) {
+          const taskId = String(selected?.taskId ?? "").trim();
+          const resultCommit = String(selected?.resultCommit ?? "").trim();
+          const task = database.prepare(`
+            SELECT workspace_id, row_revision, release_revision, workflow_status, status
+            FROM hub_board_tasks WHERE id = ?
+          `).get(taskId);
+          if (!task || String(task.workspace_id ?? "") !== String(workspaceId)) {
+            throw new Error(`release operation Task is missing from its Workspace: ${taskId}`);
+          }
+          const references = database.prepare(`
+            SELECT project_root AS projectRoot, branch, result_commit AS resultCommit
+            FROM hub_task_git_references WHERE task_id = ? ORDER BY project_root
+          `).all(taskId);
+          const currentResult = references.some((reference) => reference.resultCommit === resultCommit);
+          const closesCurrent = currentResult
+            && task.workflow_status === "awaiting_implementation"
+            && task.status !== "done";
+          if (closesCurrent) {
+            const updated = database.prepare(`
+              UPDATE hub_board_tasks SET workflow_status = 'done', status = 'done',
+                completed_at_ms = ?, updated_at_ms = ?
+              WHERE id = ? AND row_revision = ? AND workflow_status = 'awaiting_implementation'
+            `).run(timestamp, timestamp, taskId, Number(task.row_revision));
+            if (Number(updated.changes) !== 1) throw new Error(`release operation Task CAS changed: ${taskId}`);
+          }
+          deliveries.push({
+            taskId,
+            resultCommit,
+            delivered: true,
+            closedCurrentTask: closesCurrent,
+            currentWorkflowStatus: closesCurrent ? "done" : task.workflow_status,
+            currentResult,
+            taskRevision: Number(task.row_revision),
+            releaseRevision: Number(task.release_revision),
+          });
+        }
+        const result = {
+          schemaVersion: 1,
+          workspaceId: String(workspaceId),
+          operationId: releaseOperationId,
+          generation: generationNumber,
+          deliveries,
+          publicationEffects: structuredClone(publicationEffects),
+          completedAtMs: timestamp,
+        };
+        database.prepare(`
+          INSERT INTO hub_board_settings (key, value, updated_at_ms) VALUES (?, ?, ?)
+        `).run(key, JSON.stringify(result), timestamp);
+        database.exec("COMMIT");
+        return result;
+      } catch (error) {
+        try { database.exec("ROLLBACK"); } catch {}
+        throw error;
+      }
+    });
+  }
+
   remove(id) {
     return this.#withDatabase((database) => {
       const taskId = String(id);

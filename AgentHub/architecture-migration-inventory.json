@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "baseline": {
-    "rootProductionModules": 30,
+    "rootProductionModules": 31,
     "rootTestModules": 0
   },
   "publicRootModules": [
@@ -17,6 +17,7 @@
     "publish-all.mjs",
     "publish-changed.mjs",
     "rate-limit-backfill.mjs",
+    "release-operation-publication-runner.mjs",
     "release-version.mjs",
     "request-safe-restart.mjs",
     "runtime-manager.mjs",

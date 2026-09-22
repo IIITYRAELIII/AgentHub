@@ -281,12 +281,7 @@ export class WorkspaceReleasePreflightService {
   }
 
   withAwaitTransition(workspaceId, operation, { changesAwait = null } = {}) {
-    return this.releaseGitWorkspaces.withAwaitTransition(workspaceId, async () => {
-      if (changesAwait && await changesAwait()) {
-        await this.releaseGitWorkspaces.assertAwaitChangesAllowed(workspaceId);
-      }
-      return operation();
-    });
+    return this.releaseGitWorkspaces.withAwaitTransition(workspaceId, operation);
   }
 
   async validateAwaitAcceptance({ workspaceId, acceptingTask, projectRoot, lease = null } = {}) {
@@ -327,24 +322,97 @@ export class WorkspaceReleasePreflightService {
     }));
   }
 
+  async prepareOperationGeneration({
+    workspaceId, operationId, generation, taskIds, approvedRepositories = [],
+  } = {}) {
+    if (typeof this.releaseGitWorkspaces.prepareGeneration !== "function") {
+      throw new Error("immutable release generation preparation is unavailable");
+    }
+    return this.#prepareAwaitSet({
+      workspaceId,
+      selectedTaskIds: taskIds,
+      generationIdentity: { operationId, generation },
+      ...(approvedRepositories.length ? { reviewedMainApprovals: { approvedRepositories } } : {}),
+    });
+  }
+
+  async validateOperationGeneration({ workspaceId, generation } = {}) {
+    if (!generation?.candidates?.length) throw new Error("release operation generation has no candidates");
+    const planRevision = String(generation.candidates[0].planRevision ?? "").trim();
+    if (!planRevision || generation.candidates.some((candidate) => candidate.planRevision !== planRevision)) {
+      throw new Error("release operation generation has no single exact plan revision");
+    }
+    const repositories = generation.candidates.map((candidate) => {
+      const frozenTasks = Array.isArray(candidate.frozenTasks) ? candidate.frozenTasks : [];
+      return {
+        projectRoot: candidate.repositoryRoot,
+        worktreeRoot: candidate.releaseRoot,
+        branch: "PreRelease",
+        headCommit: candidate.commit,
+        resultCommits: frozenTasks.map((task) => task.resultCommit),
+        taskIds: frozenTasks.map((task) => task.taskId),
+        frozenTasks,
+        frozenCandidate: {
+          repositoryRoot: candidate.repositoryRoot,
+          releaseRoot: candidate.releaseRoot,
+          preReleaseHead: candidate.commit,
+          tree: candidate.tree,
+          manifestHash: candidate.manifestHash,
+          baseCommit: candidate.baseCommit,
+          planRevision,
+          manifest: candidate.manifest,
+        },
+      };
+    });
+    const source = await this.resolveReleaseValidationSource(repositories);
+    const pipelineRoot = source?.kind === "workspace-release-pipeline"
+      ? canonicalRoot(source.projectRoot)
+      : null;
+    const externalRepositories = pipelineRoot
+      ? repositories.filter((repository) => canonicalRoot(repository.projectRoot) !== pipelineRoot)
+      : repositories;
+    const external = externalRepositories.length
+      ? assertExactProductionValidation({
+          workspaceId,
+          planRevision,
+          repositories: externalRepositories,
+          validation: await this.validateProductionCandidate({
+            workspaceId, planRevision, source, repositories: externalRepositories,
+          }),
+        })
+      : null;
+    return {
+      status: "ready",
+      workspaceId: String(workspaceId),
+      planRevision,
+      source,
+      repositories,
+      ...(external ? { productionValidation: external } : {}),
+      pipelineValidationRequired: source?.kind === "workspace-release-pipeline",
+    };
+  }
+
   async #prepareAwaitSet({ workspaceId, expectedPlanRevision = null, fallbackProjectRoots = [], preserveFrozen = false,
     acceptingTask = null, commitPrepared = null, lease = null, validateOnly = false,
-    reviewedMainApprovals = null,
+    reviewedMainApprovals = null, selectedTaskIds = null, generationIdentity = null,
   } = {}) {
     if (validateOnly && commitPrepared) throw new Error("Composition validation cannot commit Task acceptance");
     if (validateOnly) requiredMethod(this.releaseGitWorkspaces, "validateCandidate");
     if (acceptingTask && !validateOnly && typeof commitPrepared !== "function") {
       throw new Error("Prospective Await preparation requires its lifecycle commit");
     }
-    const baseline = await this.releasePlanner.plan(workspaceId);
-    const plan = acceptingTask ? await this.releasePlanner.plan(workspaceId, { acceptingTask }) : baseline;
+    const planOptions = selectedTaskIds ? { selectedTaskIds } : {};
+    const baseline = await this.releasePlanner.plan(workspaceId, planOptions);
+    const plan = acceptingTask
+      ? await this.releasePlanner.plan(workspaceId, { ...planOptions, acceptingTask })
+      : baseline;
     const validatePlan = async () => {
-      const current = await this.releasePlanner.plan(workspaceId);
+      const current = await this.releasePlanner.plan(workspaceId, planOptions);
       if (current.revision !== baseline.revision) {
         throw new Error("release plan revision changed during PreRelease rebuild");
       }
       if (acceptingTask) {
-        const prospective = await this.releasePlanner.plan(workspaceId, { acceptingTask });
+        const prospective = await this.releasePlanner.plan(workspaceId, { ...planOptions, acceptingTask });
         if (prospective.revision !== plan.revision) throw new Error("Task changed during PreRelease acceptance preparation");
       }
     };
@@ -476,7 +544,10 @@ export class WorkspaceReleasePreflightService {
         await prepare(index + 1);
         return;
       }
-      const candidate = await this.releaseGitWorkspaces.prepareCandidate({
+      const prepareCandidate = generationIdentity
+        ? this.releaseGitWorkspaces.prepareGeneration.bind(this.releaseGitWorkspaces)
+        : this.releaseGitWorkspaces.prepareCandidate.bind(this.releaseGitWorkspaces);
+      const candidate = await prepareCandidate({
         planRevision: plan.revision,
         workspaceId,
         projectRoot: repository.projectRoot,
@@ -484,6 +555,7 @@ export class WorkspaceReleasePreflightService {
         approvedBaseCommit,
         ...(reviewed ? { baseProvenance: reviewed.provenance } : {}),
         preserveFrozen,
+        ...(generationIdentity ?? {}),
         validateBeforeCommit: async () => { await validatePlan(); await validateBases(); },
         ...(acceptingTask ? { commitPrepared: async (prepared) => {
           releaseCandidates.push(prepared);

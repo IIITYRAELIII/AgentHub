@@ -115,7 +115,7 @@ test("editorial Task changes reuse prepared and frozen candidate identities", { 
   assert.equal(f.store.task(task.id).workflowStatus, "done");
 });
 
-test("Await requests stay in Test throughout freeze and unfinished finalization", { timeout: 90000 }, async (t) => {
+test("Task work continues while an immutable frozen generation is unfinished", { timeout: 90000 }, async (t) => {
   const f = await fixture(t);
   const accepted = await f.testedTask("Release", "release.txt", "release\n");
   const { response, prepared, candidate } = await acceptAndPrepare(f, accepted, "accept-release");
@@ -125,56 +125,22 @@ test("Await requests stay in Test throughout freeze and unfinished finalization"
     expectedPlanRevision: prepared.planRevision,
     expectedPreparedHead: candidate.preReleaseHead, changelogContent: Buffer.from("release\n"),
   });
-  const next = await f.testedTask("Next", "next.txt", "next\n");
   const checkpointFile = path.join(path.dirname(candidate.releaseRoot), "checkpoint.json");
   const checkpointBefore = await readFile(checkpointFile, "utf8");
-  for (const afterPush of [false, true]) {
-    if (afterPush) await git(candidate.releaseRoot, "push", "origin", "main");
-    await assert.rejects(f.lifecycle.updateWorkflowStatus({
-      taskId: next.id, status: "awaiting_implementation", operationId: `accept-next-${afterPush}`,
-    }), { code: "RELEASE_CANDIDATE_FROZEN" });
-    await assert.rejects(f.lifecycle.updateWorkflowStatus({
-      taskId: accepted.id, status: "in_progress", operationId: `return-frozen-${afterPush}`,
-    }), { code: "RELEASE_CANDIDATE_FROZEN" });
-    assert.equal(f.taskBoard.task(next.id).workflowStatus, "testing");
-    assert.equal(f.taskBoard.task(accepted.id).workflowStatus, "awaiting_implementation");
-    assert.equal(f.taskBoard.lifecycleTransition(`accept-next-${afterPush}`), null);
-    assert.equal(await readFile(checkpointFile, "utf8"), checkpointBefore);
-    assert.equal(await git(candidate.releaseRoot, "rev-parse", "PreRelease"), frozen.preReleaseHead);
-  }
-  const plan = await f.releasePlanner.plan(f.workspace.id);
-  const repositories = [{ projectRoot: f.primary, publishedRevision: frozen.preReleaseHead }];
-  await f.store.completeRelease(f.workspace.id, {
-    expectedPlanRevision: plan.revision, plan,
-    verificationEvidence: { publication: { repositories: [{ root: f.primary, revision: frozen.preReleaseHead }] } },
-    awaitRebuild: { version: 2, planRevision: plan.revision, fallbackProjectRoots: [f.primary], repositories },
+  const next = await f.testedTask("Next", "next.txt", "next\n");
+  const acceptedNext = await f.lifecycle.updateWorkflowStatus({
+    taskId: next.id, status: "awaiting_implementation", operationId: "accept-next",
   });
-  const primaryResult = await f.releaseGitWorkspaces.synchronizePublishedPrimary({
-    projectRoot: f.primary, publishedRevision: frozen.preReleaseHead,
-    planRevision: prepared.planRevision,
+  assert.equal(acceptedNext.task.workflowStatus, "awaiting_implementation");
+  await git(candidate.releaseRoot, "push", "origin", "main");
+  const returned = await f.lifecycle.updateWorkflowStatus({
+    taskId: accepted.id, status: "in_progress", operationId: "return-frozen",
   });
-  await assert.rejects(f.lifecycle.updateWorkflowStatus({
-    taskId: next.id, status: "awaiting_implementation", operationId: "accept-during-finalization",
-  }), { code: "RELEASE_CANDIDATE_FROZEN" });
-  assert.equal(f.taskBoard.task(next.id).workflowStatus, "testing");
-  const devResult = await f.taskGitWorkspaces.synchronizeMainIntoDev({
-    projectRoot: f.primary, publishedRevision: frozen.preReleaseHead,
-  });
-  assert.equal(devResult.integrated, true);
-  for (const [stage, result] of [["primary", primaryResult], ["dev", devResult], ["await", { status: "invalidated" }]]) {
-    await f.store.recordReleaseFinalizationStage(f.workspace.id, {
-      planRevision: plan.revision, projectRoot: f.primary, stage, receipt: { completed: true, result },
-    });
-  }
-  await f.store.clearAwaitRebuildPending(f.workspace.id, plan.revision);
-  f.publication.repositories[0].revision = frozen.preReleaseHead;
-  const resumed = await f.lifecycle.updateWorkflowStatus({
-    taskId: next.id, status: "awaiting_implementation", operationId: "accept-after-release",
-  });
-  assert.equal(resumed.task.workflowStatus, "awaiting_implementation");
-  assert.equal(resumed.releaseCandidate.status, "invalidated", JSON.stringify(resumed.releaseCandidate));
-  const resumedPrepared = await f.releasePreflight.prepareAwaitSet({ workspaceId: f.workspace.id });
-  assert.ok(resumedPrepared.releaseCandidates.length > 0, JSON.stringify(resumedPrepared));
+  assert.equal(returned.task.workflowStatus, "in_progress");
+  assert.equal(returned.acceptedResultPreserved, true);
+  assert.equal(returned.releaseCandidate.status, "preserved");
+  assert.equal(await readFile(checkpointFile, "utf8"), checkpointBefore);
+  assert.equal(await git(candidate.releaseRoot, "rev-parse", "PreRelease"), frozen.preReleaseHead);
 });
 
 test("Await membership invalidates the candidate and explicit preparation detects conflicts", { timeout: 90000 }, async (t) => {
@@ -196,13 +162,13 @@ test("Await membership invalidates the candidate and explicit preparation detect
     taskId: accepted.id, status: "in_progress", operationId: "return-accepted",
   });
   assert.equal(returned.task.workflowStatus, "in_progress");
-  assert.equal(returned.gitWithdrawal.outcome, "withdrawn");
-  assert.equal(returned.releaseCandidate.status, "invalidated");
+  assert.equal(returned.acceptedResultPreserved, true);
+  assert.equal(returned.releaseCandidate.status, "preserved");
   prepared = await lifecycle.releasePreflight.prepareAwaitSet({ workspaceId: returned.task.workspaceId });
   assert.deepEqual(prepared.taskIds, []);
   assert.deepEqual(prepared.releaseCandidates, []);
   const dev = await taskGitWorkspaces.prepareDev(primary);
-  await assert.rejects(git(dev.projectRoot, "show", "HEAD:accepted.txt"));
+  assert.equal(await git(dev.projectRoot, "show", "HEAD:accepted.txt"), "accepted");
   assert.equal(await git(dev.projectRoot, "show", "HEAD:unaccepted.txt"), "not accepted");
   await lifecycle.updateWorkflowStatus({ taskId: accepted.id, status: "testing", operationId: "test-returned" });
   const acceptedAgain = await lifecycle.updateWorkflowStatus({
@@ -267,7 +233,7 @@ test("Await and withdrawal retain the published base despite unreviewed origin m
   const returned = await f.lifecycle.updateWorkflowStatus({
     taskId: first.id, status: "in_progress", operationId: "return-first-pinned-base",
   });
-  assert.equal(returned.releaseCandidate.status, "invalidated", returned.releaseCandidate.reason);
+  assert.equal(returned.releaseCandidate.status, "preserved", returned.releaseCandidate.reason);
   const candidate = (await f.releasePreflight.prepareAwaitSet({ workspaceId: f.workspace.id })).releaseCandidates[0];
   assert.equal(candidate.baseCommit, published);
   assert.equal(await git(candidate.releaseRoot, "show", "PreRelease:second.txt"), "second");

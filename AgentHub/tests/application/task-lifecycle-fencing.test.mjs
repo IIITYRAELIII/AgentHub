@@ -253,6 +253,7 @@ test("Await validates the exact Test result, commits acceptance and only invalid
       },
     },
   });
+  service.setReleaseOperationWake((taskId) => calls.push(`wake:${taskId}`));
 
   const result = await service.updateWorkflowStatus({
     taskId: task.id,
@@ -275,9 +276,9 @@ test("Await validates the exact Test result, commits acceptance and only invalid
   });
 
   assert.deepEqual(calls, [
-    "lock:workspace-1", "begin", "repo", "validate", "commit",
+    "lock:workspace-1", "begin", "repo", "validate", "commit", "wake:task-await",
     "lock:workspace-1", "begin", "repo", "validate", "fail",
-    "lock:workspace-1", "begin", "repo", "validate", "commit",
+    "lock:workspace-1", "begin", "repo", "validate", "commit", "wake:task-await",
   ]);
   assert.equal(task.workflowStatus, "awaiting_implementation");
   assert.equal(result.releaseCandidate.status, "invalidated");

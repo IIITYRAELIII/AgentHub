@@ -56,6 +56,11 @@ async function fixture() {
   );
   await writeFile(path.join(sourceRoot, "agent-hub-server.mjs"), "export const ready = true;\n", "utf8");
   await writeFile(path.join(sourceRoot, "helper.mjs"), "export const value = 1;\n", "utf8");
+  await writeFile(
+    path.join(sourceRoot, "release-operation-publication-runner.mjs"),
+    "export const durableReleaseRunner = true;\n",
+    "utf8",
+  );
   await writeFile(path.join(sourceRoot, "helper.cjs"), "module.exports = { value: 1 };\n", "utf8");
   await writeFile(path.join(sourceRoot, "helper.test.mjs"), "throw new Error('not runtime');\n", "utf8");
   await writeFile(
@@ -100,6 +105,10 @@ test("deployRuntime publishes an atomic release without tests or local config", 
   assert.equal(firstManifest.releaseVersion, "2026.8.23.1");
   assert.match(await readFile(path.join(first.releaseRoot, "agent-hub-server.mjs"), "utf8"), /ready/);
   assert.match(await readFile(path.join(first.releaseRoot, "helper.cjs"), "utf8"), /module\.exports/u);
+  assert.match(
+    await readFile(path.join(first.releaseRoot, "release-operation-publication-runner.mjs"), "utf8"),
+    /durableReleaseRunner/u,
+  );
   assert.match(
     await readFile(path.join(first.releaseRoot, "src", "application", "service.mjs"), "utf8"),
     /layered/u,

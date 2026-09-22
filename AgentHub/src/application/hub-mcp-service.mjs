@@ -43,7 +43,7 @@ const MUTATING_TOOLS = new Set([
   "hub_task_attachment_add", "hub_workspace_rules_update", "hub_stream_rules_update",
   "hub_stream_message_send",
   "hub_task_operation_reconcile",
-  "hub_release_preflight", "hub_release_complete",
+  "hub_release_run", "hub_release_continue",
 ]);
 
 // Only the synchronous input boundary below can produce this proof of no effects.
@@ -465,6 +465,7 @@ export class HubMcpService {
 
   constructor({
     workspaceCatalog, taskBoard, workLog, attachmentDirectory, secret, releasePlanner, releasePreflight, releaseCompleter,
+    releaseOperations = null,
     taskGitWorkspaces = null, taskLifecycle = null,
     taskOperationReconciliation = null,
     reconcilePendingOnStartup = true,
@@ -496,6 +497,7 @@ export class HubMcpService {
     this.releasePreflight = releasePreflight;
     this.releaseCompleter = releaseCompleter;
     this.releasePlanner = releasePlanner;
+    this.releaseOperations = releaseOperations;
     this.taskGitWorkspaces = taskGitWorkspaces;
     this.taskLifecycle = taskLifecycle ?? new TaskLifecycleService({
       taskBoard, workspaceCatalog: this.workspaceCatalog, taskGitWorkspaces, releasePreflight,
@@ -591,6 +593,21 @@ export class HubMcpService {
   setStreamMessenger(value) {
     if (typeof value !== "function") throw new TypeError("Stream messenger is required");
     this.#streamMessenger = value;
+    this.releaseOperations?.setEventDelivery?.((event) => value({
+      streamId: event.streamId,
+      text: `<agent-hub-release-event>\n${JSON.stringify({
+        operationId: event.operationId,
+        revision: event.revision,
+        eventKind: event.eventKind,
+        ...event.payload,
+      })}\n</agent-hub-release-event>`,
+      clientUserMessageId: `release:${event.operationId}:${event.revision}:${event.eventKind}`,
+      followUpMode: "queue",
+    }, {
+      source: "release-operation",
+      clientId: `release:${event.operationId}`,
+      messageOrigin: { kind: "release-operation", sourceThreadId: event.threadId },
+    }));
   }
 
   tools() {
@@ -783,60 +800,34 @@ export class HubMcpService {
       tool("hub_release_plan_get", "Read the complete release plan and exact integrated dev heads for any existing Workspace.", {
         workspace_id: { type: "string", description: "Defaults to the caller Workspace." },
       }),
-      tool("hub_release_preflight", "Audit reviewed main and the exact already prepared PreRelease without rebuilding it or refreshing the rolling Test Contour.", {
+      tool("hub_release_run", "Persist one authorized release operation and return its operation id immediately. The durable owner continues compose, validation, publication and finalization without holding this MCP request open.", {
         workspace_id: { type: "string", description: "Defaults to the caller Workspace." },
-        expected_plan_revision: { type: "string", description: "Exact revision returned by hub_release_plan_get." },
-        conflicts_resolved: { type: "boolean", description: "True only after the Release Manager explicitly resolves every reported overlap." },
-        approved_repositories: {
+        task_ids: { type: "array", minItems: 1, items: { type: "string" } },
+        validation_mode: { type: "string", enum: ["focused", "full"] },
+        approved_targets: {
           type: "array",
-          description: "Repository-scoped approved main commits returned by the previous preflight audit.",
+          minItems: 1,
           items: {
             type: "object",
             additionalProperties: false,
             properties: {
-              projectRoot: { type: "string" },
+              targetId: { type: "string" },
+              kind: { type: "string" },
+              repositoryRoot: { type: "string" },
+              environment: { type: "string" },
               approvedLocalMainCommit: { type: "string" },
               approvedOriginMainCommit: { type: "string" },
             },
-            required: ["projectRoot", "approvedLocalMainCommit", "approvedOriginMainCommit"],
+            required: ["targetId", "kind"],
           },
         },
-      }, ["expected_plan_revision"]),
-      tool("hub_release_preflight_reconcile", "Read back an interrupted release preflight from exact frozen candidate evidence without replaying effects.", {
-        workspace_id: { type: "string", description: "Defaults to the caller Workspace." },
-        original_request_id: { type: "string" },
-        original_preflight_arguments: {
-          type: "object",
-          description: "Exact original hub_release_preflight arguments except context_token. request_id may be omitted and is filled from original_request_id.",
-        },
-        error_class: { type: "string", description: "For example: serialization_error." },
-        expected_plan_revision: { type: "string" },
-        expected_repositories: {
-          type: "array",
-          items: {
-            type: "object",
-            additionalProperties: false,
-            properties: { projectRoot: { type: "string" }, revision: { type: "string" } },
-            required: ["projectRoot", "revision"],
-          },
-        },
-      }, ["original_request_id", "original_preflight_arguments", "expected_plan_revision", "expected_repositories"]),
-      tool("hub_release_complete", "Complete a release only after clean main revisions and explicit deployment verification.", {
-        workspace_id: { type: "string", description: "Defaults to the caller Workspace." },
-        expected_repositories: {
-          type: "array",
-          description: "Exact published revision for every frozen repository.",
-          items: {
-            type: "object",
-            properties: { projectRoot: { type: "string" }, revision: { type: "string" } },
-            required: ["projectRoot", "revision"],
-          },
-        },
-        expected_plan_revision: { type: "string", description: "Exact revision returned by hub_release_plan_get." },
-        deployment_verified: { type: "boolean" },
-        verification_summary: { type: "string" },
-        conflicts_resolved: { type: "boolean", description: "True only after the Release Manager explicitly resolves every reported overlap." },
-      }, ["expected_plan_revision", "expected_repositories", "deployment_verified", "verification_summary"]),
+      }, ["task_ids", "validation_mode", "approved_targets"]),
+      tool("hub_release_get", "Read one durable release operation, immutable candidate generations, step receipts and delivery events.", {
+        operation_id: { type: "string" },
+      }, ["operation_id"]),
+      tool("hub_release_continue", "Wake an existing waiting release operation without changing its original authorization or creating a new operation.", {
+        operation_id: { type: "string" },
+      }, ["operation_id"]),
       tool("hub_events_list", "Read bounded persistent Workspace events after a cursor; this never holds a long poll.", {
         workspace_id: { type: "string", description: "Defaults to the caller Workspace." },
         after_sequence: { type: "integer", minimum: 0, default: 0 },
@@ -1062,15 +1053,14 @@ export class HubMcpService {
         return this.#addAttachment(context, args);
       case "hub_release_plan_get":
         return this.#releasePlan(context, args);
-      case "hub_release_preflight":
-        if (!this.#isReleaseManager(context)) throw new Error("release preflight requires a Release Manager Stream");
-        return this.#preflightRelease(context, args);
-      case "hub_release_preflight_reconcile":
-        if (!this.#isReleaseManager(context)) throw new Error("release preflight reconciliation requires a Release Manager Stream");
-        return this.#reconcileReleasePreflight(context, args);
-      case "hub_release_complete":
-        if (!this.#isReleaseManager(context)) throw new Error("release completion requires a Release Manager Stream");
-        return this.#completeRelease(context, args);
+      case "hub_release_run":
+        if (!this.#isReleaseManager(context)) throw new Error("release execution requires a Release Manager Stream");
+        return this.#runReleaseOperation(context, args);
+      case "hub_release_get":
+        return this.#getReleaseOperation(context, args);
+      case "hub_release_continue":
+        if (!this.#isReleaseManager(context)) throw new Error("release continuation requires a Release Manager Stream");
+        return this.#continueReleaseOperation(context, args);
       case "hub_events_list":
         return this.#events(context, args);
       case "hub_mcp_operations_list":
@@ -1730,30 +1720,39 @@ export class HubMcpService {
     return { ...plan, devIntegration: { branch: "dev", repositories } };
   }
 
-  async #completeRelease(context, args) {
-    const workspaceId = this.#workspace(context, args.workspace_id).id;
-    const result = await this.releaseCompleter.completeRelease({
-      workspaceId,
-      expectedRepositories: Array.isArray(args.expected_repositories) ? args.expected_repositories : [],
-      expectedPlanRevision: optionalText(args.expected_plan_revision, 128),
-      deploymentVerified: args.deployment_verified === true,
-      verificationSummary: optionalText(args.verification_summary, 2_000) ?? "",
-      conflictsResolved: args.conflicts_resolved === true,
-    });
-    const cleanupErrors = [];
-    for (const task of result.released ?? []) {
-      try {
-        await this.taskGitWorkspaces?.cleanup?.(task.id, {
-          allowDirty: false,
-          requirePublished: true,
-          gitReferences: task.gitReferences ?? [],
-        });
-      } catch (error) {
-        cleanupErrors.push({ taskId: task.id, error: error.message });
-      }
-    }
-    return { ...result, cleanupErrors };
+  #releaseOperation() {
+    if (!this.releaseOperations) throw new Error("durable release operation owner is unavailable");
+    return this.releaseOperations;
   }
+
+  #runReleaseOperation(context, args) {
+    const workspaceId = this.#workspace(context, args.workspace_id).id;
+    return this.#releaseOperation().start({
+      requestId: requiredText(args.request_id, "request id", 200),
+      workspaceId,
+      streamId: context.streamId,
+      threadId: context.auditThreadId,
+      authorization: {
+        taskIds: Array.isArray(args.task_ids) ? args.task_ids : [],
+        validationMode: requiredText(args.validation_mode, "validation mode", 32),
+        approvedTargets: Array.isArray(args.approved_targets) ? args.approved_targets : [],
+      },
+    });
+  }
+
+  #getReleaseOperation(context, args) {
+    const snapshot = this.#releaseOperation().get(requiredText(args.operation_id, "operation id", 200));
+    this.#workspace(context, snapshot.operation.workspaceId);
+    return snapshot;
+  }
+
+  #continueReleaseOperation(context, args) {
+    const operationId = requiredText(args.operation_id, "operation id", 200);
+    const snapshot = this.#releaseOperation().get(operationId);
+    this.#workspace(context, snapshot.operation.workspaceId);
+    return this.#releaseOperation().continue(operationId);
+  }
+
 
   async #startTask(context, {
     task_id: taskId, stream_id: streamId = null, new_stream_name: newStreamName = null,
@@ -2363,64 +2362,4 @@ export class HubMcpService {
     }
   }
 
-  async #preflightRelease(context, args) {
-    const workspaceId = this.#workspace(context, args.workspace_id).id;
-    return this.releasePreflight.preflight({
-      workspaceId,
-      expectedPlanRevision: optionalText(args.expected_plan_revision, 128),
-      conflictsResolved: args.conflicts_resolved === true,
-      approvedRepositories: Array.isArray(args.approved_repositories) ? args.approved_repositories : [],
-      requestId: requiredText(args.request_id, "request id", 200),
-    });
-  }
-
-  async #reconcileReleasePreflight(context, args) {
-    const workspaceId = this.#workspace(context, args.workspace_id).id;
-    if (typeof this.releasePreflight.reconcilePreflight !== "function") {
-      throw new Error("release preflight reconciliation is unavailable");
-    }
-    const originalRequestId = optionalText(args.original_request_id, 200);
-    const originalReceipt = this.workspaceCatalog.mcpOperation?.(originalRequestId);
-    if (!originalReceipt) throw new Error("original release preflight MCP receipt was not found");
-    if (originalReceipt.toolName !== "hub_release_preflight") {
-      throw new Error("original MCP receipt is not a release preflight");
-    }
-    const exactCaller = originalReceipt.workspaceId === workspaceId
-      && originalReceipt.streamId === context.streamId
-      && originalReceipt.provider === context.provider
-      && originalReceipt.threadId === context.auditThreadId;
-    if (!exactCaller) throw new Error("original release preflight MCP receipt belongs to another caller");
-    const originalArguments = args.original_preflight_arguments;
-    if (!originalArguments || typeof originalArguments !== "object" || Array.isArray(originalArguments)) {
-      throw new Error("release preflight reconciliation requires exact original preflight arguments");
-    }
-    if (originalArguments.request_id != null && String(originalArguments.request_id) !== originalRequestId) {
-      throw new Error("original preflight arguments request_id does not match the receipt");
-    }
-    const originalWorkspaceId = originalArguments.workspace_id == null
-      ? workspaceId
-      : this.#workspace(context, originalArguments.workspace_id).id;
-    if (originalWorkspaceId !== workspaceId) {
-      throw new Error("original preflight arguments target another Workspace");
-    }
-    if (String(originalArguments.expected_plan_revision ?? "") !== String(args.expected_plan_revision ?? "")) {
-      throw new Error("original preflight arguments plan revision does not match");
-    }
-    const expectedArgumentsHash = argumentsHash({
-      ...originalArguments,
-      request_id: originalRequestId,
-      context_token: args.context_token,
-    });
-    if (originalReceipt.argumentsHash !== expectedArgumentsHash) {
-      throw new Error("original release preflight MCP receipt arguments do not match");
-    }
-    return this.releasePreflight.reconcilePreflight({
-      workspaceId,
-      expectedPlanRevision: optionalText(args.expected_plan_revision, 128),
-      expectedRepositories: Array.isArray(args.expected_repositories) ? args.expected_repositories : [],
-      originalRequestId,
-      errorClass: optionalText(args.error_class, 100),
-      originalReceipt: { ...originalReceipt, expectedArgumentsHash },
-    });
-  }
 }

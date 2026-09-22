@@ -108,6 +108,36 @@ async function registeredTaskBranch(setup, context, { taskId, startCommit, baseC
   return { branch, taskRoot };
 }
 
+test("one operation generation isolates source bundles per repository", { timeout: 30000 }, async (context) => {
+  const first = await fixture(context);
+  const second = await fixture(context);
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "rg-"));
+  context.after(() => rm(dataDir, { recursive: true, force: true }));
+  const service = new ReleaseGitWorkspaceService({ dataDir });
+  const common = {
+    operationId: "operation-multi-repository",
+    generation: 1,
+    planRevision: "plan-multi-repository",
+    workspaceId: "workspace",
+    frozenTasks: [],
+  };
+  const firstCandidate = await service.prepareGeneration({
+    ...common,
+    projectRoot: first.primary,
+    approvedBaseCommit: first.baseCommit,
+  });
+  const secondCandidate = await service.prepareGeneration({
+    ...common,
+    projectRoot: second.primary,
+    approvedBaseCommit: second.baseCommit,
+  });
+  assert.notEqual(firstCandidate.generationRoot, secondCandidate.generationRoot);
+  assert.equal(canonicalPath(firstCandidate.repositoryRoot), canonicalPath(first.primary));
+  assert.equal(canonicalPath(secondCandidate.repositoryRoot), canonicalPath(second.primary));
+  assert.equal(await git(firstCandidate.releaseRoot, "rev-parse", "HEAD"), firstCandidate.preReleaseHead);
+  assert.equal(await git(secondCandidate.releaseRoot, "rev-parse", "HEAD"), secondCandidate.preReleaseHead);
+});
+
 for (const binaryOnly of [false, true]) test(`PreRelease preserves ${binaryOnly ? "terminal binary patch delimiters" : "binary patch bytes and a trailing blank context line"}`, { timeout: 20000 }, async (context) => {
   const setup = await fixture(context);
   await writeFile(path.join(setup.primary, "z-final.txt"), "before\nunchanged\n\n", "utf8");

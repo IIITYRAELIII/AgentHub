@@ -81,42 +81,29 @@ function fixture({ unknown = false } = {}) {
   return { service, tasks, transitions, calls, root };
 }
 
-test("returning A reports B without beginning a cascade or changing either Task", async () => {
+test("returning A preserves its accepted integration without cascading into B", async () => {
   const { service, tasks, transitions, calls, root } = fixture();
-  const before = structuredClone([...tasks]);
-  await assert.rejects(service.updateWorkflowStatus({ taskId: "a", status: "in_progress", operationId: "return-a", projectRoot: root }), {
-    code: "TASK_WITHDRAWAL_DEPENDENCY",
-  });
-  assert.deepEqual([...tasks], before);
-  assert.equal(transitions.get("return-a").phase, "failed");
-  assert.deepEqual(calls, ["begin:a", "withdraw:a", "fail"]);
+  const result = await service.updateWorkflowStatus({ taskId: "a", status: "in_progress", operationId: "return-a", projectRoot: root });
+  assert.equal(result.task.workflowStatus, "in_progress");
+  assert.equal(result.acceptedResultPreserved, true);
+  assert.equal(tasks.get("b").workflowStatus, "awaiting_implementation");
+  assert.equal(transitions.has("return-a"), false);
+  assert.deepEqual(calls, ["begin:a", "commit:a"]);
 });
 
-test("ambiguous dev withdrawal preserves the pending lifecycle owner and previous status", async () => {
+test("return does not enter the legacy ambiguous withdrawal path", async () => {
   const { service, tasks, transitions, calls, root } = fixture({ unknown: true });
-  await assert.rejects(service.updateWorkflowStatus({ taskId: "a", status: "in_progress", operationId: "return-a", projectRoot: root }), {
-    code: "TASK_WITHDRAWAL_UNKNOWN",
-  });
-  assert.equal(tasks.get("a").workflowStatus, "testing");
-  assert.equal(transitions.has("return-a"), true);
-  assert.equal(calls.includes("fail"), false);
+  const result = await service.updateWorkflowStatus({ taskId: "a", status: "in_progress", operationId: "return-a", projectRoot: root });
+  assert.equal(result.task.workflowStatus, "in_progress");
+  assert.equal(tasks.get("a").workflowStatus, "in_progress");
+  assert.equal(transitions.has("return-a"), false);
+  assert.deepEqual(calls, ["begin:a", "commit:a"]);
 });
 
-test("finalizing a committed withdrawal without pending Git intent neither replays status nor recovers an old guard", async () => {
+test("ordinary correction returns leave no withdrawal intent to reconcile", async () => {
   const { service, calls, root } = fixture();
-  await service.updateWorkflowStatus({ taskId: "b", status: "in_progress", operationId: "return-b", projectRoot: root });
-  await service.updateWorkflowStatus({ taskId: "a", status: "in_progress", operationId: "return-a", projectRoot: root });
-  const before = [...calls];
-  service.taskGitWorkspaces.pendingWithdrawal = async (request) => {
-    assert.equal(request.operationId, "return-a");
-    return false;
-  };
-  service.taskGitWorkspaces.recoverProcessTreeGuard = async () => assert.fail("already completed guard must not be recovered again");
-  const result = await service.reconcileUnknownWorkflowStatusOwned({
-    taskId: "a", operationId: "return-a", projectRoot: root, guardId: "already-cleared",
-    finalizeCommittedWithdrawal: true, lease: { async assertOwned() {} },
-  });
-  assert.equal(result.result.task.workflowStatus, "in_progress");
-  assert.equal(result.recovery, null);
-  assert.deepEqual(calls, before);
+  const result = await service.updateWorkflowStatus({ taskId: "a", status: "in_progress", operationId: "return-a", projectRoot: root });
+  assert.equal(result.task.workflowStatus, "in_progress");
+  assert.equal(result.acceptedResultPreserved, true);
+  assert.deepEqual(calls, ["begin:a", "commit:a"]);
 });

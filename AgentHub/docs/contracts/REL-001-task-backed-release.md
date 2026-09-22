@@ -1,5 +1,48 @@
 # REL-001 — Task-backed Workspace release
 
+## Durable release operation (HUB-260, 2026-09-22)
+
+One authorized release is one durable `ReleaseOperation` owned by the application
+service. Its immutable `CandidateGeneration`, per-stage `StepReceipt`, exact
+accepted results and per-target publication effects are stored in SQLite. The
+working state is `compose → validate → publish → finalize → done`; `waiting`
+names a concrete resume state and condition. `hub_release_run` persists the
+authorization and returns the operation ID before tests, Git, deployment or
+finalization. `hub_release_get` is read-only. `hub_release_continue` wakes the
+same operation and never creates a replacement identity.
+
+Await is the current live PreRelease integration, not membership in every active
+release. A ready generation remains immutable while Task work continues. A
+failed validation permits a reviewed correction of the same selected Task; the
+owner composes generation N+1 from each repository's published base and exact
+Task-owned net projections. It does not merge rolling dev into the candidate.
+If publication has begun, generation N finishes by its exact identity and the
+correction belongs to a later generation or release.
+
+Returning Test/Await work to implementation preserves its accepted result and
+historical dev integration. A correction is a descendant or explicit correcting
+result; withdrawal/revert is a separate requested operation. Finalization writes
+delivery evidence for the exact published result and marks Done only when the
+Task still names that result. A newer result or workflow transition is never
+overwritten by an older generation.
+
+No prepared, freezing, frozen, failed or awaiting-finalization snapshot blocks
+Task edits or Await acceptance. Workspace/Task/repository locks protect only
+short identity CAS and durable writes; tests, network, Git publication and
+deployment execute outside those locks. A timeout or process death with a
+possible external effect is reconciled by exact readback before retry. Partial
+multi-target publication preserves its effect vector and continues only missing
+targets. External unavailability is a visible condition with durable backoff,
+not a request for generic manual resume.
+
+At cutover, old checkpoint and publication-status files are imported once as
+immutable evidence. Only a status whose revision and owned release root match an
+exact checkpoint activates recovery; a checkpoint without matching publication
+authority remains evidence-only. Legacy writers and public preflight/reconcile/
+complete routes do not remain independent authorities. The stable current
+runner owns recovery and reads N−1 operations; candidate code supplies bytes and
+declarations, not a replacement transition engine. See ADR-0073.
+
 ## Explicit reviewed-main composition base (2026-09-17)
 
 Ordinary and automatic PreRelease preparation derives its base only from exact
@@ -516,45 +559,38 @@ silently included. The accepted policy is that dependent Task B waits until its
 prerequisite A is published when they remain separate; explicit user-authorized
 consolidation follows the conflict workflow above.
 
-Returning an unpublished Test/Await result to New/In Progress rebuilds managed
-dev from accepted local main and attributable remaining Task merge sides, omitting
-the returned Task. Its branch and dirty worktree are preserved. Unknown ownership,
-unattributable dev commits or unseparable manual resolutions are not discarded.
-An identified dependency is reported without an automatic cascade. The agent
-returns the dependent Task first through the same lifecycle. A Git-owned wait ref,
-when explicitly recorded, gates claim/start preparation and Test until the
-prerequisite is contained in the durable published revision and that revision
-remains an ancestor of origin/main. A direct user exception may clear the wait
-through hub_task_claim dependency_override_reason; the exact instruction is
-retained in the MCP operation arguments. The agent resumes status explicitly. Already published code remains
-in main/dev; reopening that Task is work on a subsequent result.
+Returning a Test/Await result to New/In Progress preserves the accepted result,
+managed dev history, Task branch and dirty worktree. The Task lifecycle records
+that the prior result remains accepted while the correction is prepared. It does
+not rebuild dev, remove a historical merge side or create a withdrawal intent.
+Unknown historical ownership therefore cannot block ordinary correction work.
+An identified dependency is still reported without an automatic cascade. A
+Git-owned wait ref, when explicitly recorded, gates claim/start preparation and
+Test until the prerequisite is contained in the durable published revision and
+that revision remains an ancestor of origin/main. A direct user exception may
+clear the wait through `hub_task_claim dependency_override_reason`; the exact
+instruction is retained in the MCP operation arguments. Already published code
+remains in main/dev; reopening that Task is work on a subsequent result.
 
-Withdrawal persists its exact operation, old/new dev revisions and wait-ref
-change before an atomic Git ref transaction. Status commits through the existing
-Task lifecycle owner afterward. A proven SQLite rejection restores the old dev;
-an ambiguous result keeps the intent and blocks dev until the same operation is
-reconciled. Known committed outcomes clean the matching intent without repeating
-the status mutation. The canonical MCP reconciliation validates both withdrawal
-evidence and the original receipt before settlement. Its pending withdrawal path
-may resume without a process guard only when the exact prior Test/Await state is
-unchanged; any existing process guard still requires its ordinary recovery proof.
+Withdrawal/revert is a separate explicit operation, not an implicit workflow
+status transition. Legacy withdrawal intents remain readable and recoverable by
+their original exact operation for N−1 compatibility, but they are not created by
+the cutover lifecycle. Their old reconciliation path cannot authorize a new
+release operation or freeze unrelated Task work.
 
-Automatic preparation passes `preserveFrozen=true`: a freezing or frozen
-publication candidate is not changed, even after push. Await-changing requests
-are checked under the Workspace Await lock before Task mutations and return
-`RELEASE_CANDIDATE_FROZEN`; new work remains in Test until acceptance is retried
-after confirmed completion. A pending finalization still holds the freeze after
-primary synchronization. Failed
-composition restores the exact previous HEAD, checkout branch and checkpoint.
-The current plan revision must still match before publication; an old candidate
-is never evidence that the changed Await set is ready. Repository identities are
-canonicalized before combining remaining Await with the returned Task's project;
-an empty remaining set prepares an empty candidate on main.
+Automatic Await preparation advances live PreRelease without modifying any
+immutable generation. A running publication never returns a frozen-policy
+refusal. Failed composition restores the exact previous live PreRelease HEAD,
+checkout branch and checkpoint and leaves the Task in Test. The current accepted
+result set must still match before the Await CAS; an old generation is never
+evidence that the changed live set is ready. Returning a Task for correction
+preserves its prior accepted result and dev history until a new exact result is
+accepted. Repository identities are canonicalized for every new composition.
 
-Withdrawal error classification reads the intent while holding the repository
-lock. Only the exact current operation/task intent can prove an unknown current
-effect. A foreign intent gives TASK_WITHDRAWAL_BUSY and leaves both its recovery
-evidence and this Task's status unchanged.
+Legacy withdrawal error classification reads the original intent while holding
+the repository lock. Only the exact current operation/task intent can prove its
+unknown historical effect. A foreign legacy intent leaves both its recovery
+evidence and the current Task status unchanged.
 
 ## Task Git reference and CAS
 
@@ -887,16 +923,17 @@ and any contribution outside the selected delta remain excluded; changed
 selection/base or a non-descendant result uses ordinary selected-delta
 composition instead of this optimization.
 
-Freeze binds the consolidated root CHANGELOG and exact package metadata to the
+Legacy freeze evidence binds the consolidated root CHANGELOG and exact package metadata to the
 prepared aggregate and plan using the same release repository owner and lock.
 It records durable freeze intent before promoting the clone's main reference
 and resumes the identical target after interruption. Source edits or mismatched
 plan/head/content fail closed. The registered primary is never the promotion
-target. The frozen candidate remains immutable. Any change of plan revision,
+target. The imported candidate generation remains immutable. Any change of plan revision,
 Task acceptance revision, Git reference or approved `main` invalidates its use by later
-freeze, publication and completion CAS. During publication freeze and unfinished
-finalization, Await membership cannot change. New work stays in Test; acceptance
-is retried after completion. A push alone does not release the freeze.
+composition, publication and completion CAS. Await membership and Task work are
+not frozen by that generation; a newly accepted result creates a later generation
+when the operation is still before external publication. A push alone proves only
+that target's effect and does not authorize finalization.
 
 Candidate readback is phase-specific. A `prepared` checkpoint requires the
 standalone clone to be an exact clean `PreRelease` checkout. A `frozen`
@@ -1274,16 +1311,13 @@ The role policy requires one service Task `Релиз [версия]` at release
 reused across retries. It holds the whole prepared PreRelease composition in a
 native linked checklist and retains Task titles and summaries. The publication
 mechanism owns the version; a pending-version title is updated on that same Task
-when the version is frozen. The release manager stops included executors,
-checks clean source worktrees and accepted branch heads, and treats included
-Task cards, branches and worktrees as frozen until release completion. Agents
-must not resume or modify them. This instruction does not establish an OS write
-lock against external editors. The agent verifies the canonical frozen
-composition rather than keeping a second manual identity register. Before an
-unpublished release is declared cancelled and its policy freeze lifted, its
-attempt must be explicitly abandoned and reconciled; unknown publication
-effects are not cancellation evidence. No new cancellation engine or Task
-mutation lock is introduced by these rules. After verified publication, canonical completion
+when the version is selected. The release manager checks clean accepted results
+and records one immutable generation without stopping included executors or
+freezing Task cards, branches or worktrees. The agent verifies that generation
+rather than keeping a second manual identity register. A failed generation
+remains historical evidence and does not require abandon or policy-unfreeze
+before a correction. Unknown publication effects still require exact readback
+and are never cancellation evidence. After verified publication, canonical completion
 marks included Tasks Done and closes them; confirmed cleanup removes only their
 branches/worktrees. Original Task cards and the release Task remain as history.
 Checklist completion follows verified publication and cleanup. Failed local

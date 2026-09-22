@@ -572,20 +572,6 @@ export class ReleaseGitWorkspaceService {
     return withInterprocessLocks([lock], operation);
   }
 
-  async assertAwaitChangesAllowed(workspaceId) {
-    this.#assertAvailable("assertAwaitChangesAllowed");
-    const entries = await readdir(this.releaseRepositoriesRoot, { withFileTypes: true }).catch((error) => {
-      if (error.code === "ENOENT") return [];
-      throw error;
-    });
-    for (const entry of entries.filter((item) => item.isDirectory())) {
-      const checkpoint = await readJson(path.join(this.releaseRepositoriesRoot, entry.name, "checkpoint.json"));
-      if (!["freezing", "frozen"].includes(checkpoint?.phase)) continue;
-      const manifest = checkpoint.manifestFile ? await readJson(checkpoint.manifestFile) : null;
-      if (manifest?.workspaceId === workspaceId) throw new ReleaseCandidateFrozenError();
-    }
-  }
-
   async inspectMainChanges({
     projectRoot, publishedRevision, approvedLocalMainCommit = null, approvedOriginMainCommit = null,
   } = {}) {
@@ -781,6 +767,71 @@ export class ReleaseGitWorkspaceService {
       // Only the exact freshly allocated directory is owned by this invocation.
       await rm(temporaryRoot, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
     }
+  }
+
+  async prepareGeneration({
+    operationId, generation, planRevision, projectRoot, workspaceId = null,
+    frozenTasks = [], approvedBaseCommit = null, baseProvenance = null,
+    validateBeforeCommit = null,
+  } = {}) {
+    this.#assertAvailable("prepareGeneration");
+    const operation = String(operationId ?? "").trim();
+    const generationNumber = Number(generation);
+    if (!operation || !Number.isSafeInteger(generationNumber) || generationNumber < 1) {
+      throw new Error("release generation requires an operation id and positive generation");
+    }
+    const sourceRoot = await repositoryRoot(projectRoot);
+    const generationIdentitySha256 = sha256(`${operation}:${generationNumber}:${sourceRoot}`);
+    const generationKey = generationIdentitySha256.slice(0, 24);
+    const generationDataDir = path.join(this.dataDir, "release-gens", generationKey);
+    const lock = path.join(this.dataDir, "locks", `release-generation-${generationKey}`);
+    return withInterprocessLocks([lock], async () => {
+      await mkdir(generationDataDir, { recursive: true });
+      const identityFile = path.join(generationDataDir, "identity.json");
+      const identity = {
+        schemaVersion: 1,
+        operationId: operation,
+        generation: generationNumber,
+        repositoryRoot: sourceRoot,
+        identitySha256: generationIdentitySha256,
+      };
+      const existingIdentity = await readJson(identityFile);
+      if (existingIdentity && JSON.stringify(existingIdentity) !== JSON.stringify(identity)) {
+        throw new Error("release generation directory identity collision");
+      }
+      if (!existingIdentity) await writeJsonAtomic(identityFile, identity);
+      const bundle = path.join(generationDataDir, "source.bundle");
+      if (!await fileExists(bundle)) {
+        const temporaryBundle = `${bundle}.${process.pid}.${randomUUID()}.tmp`;
+        try {
+          await runGit(["bundle", "create", temporaryBundle, "--all"], {
+            cwd: sourceRoot, timeoutMs: 300_000,
+          });
+          await rename(temporaryBundle, bundle);
+        } finally {
+          await rm(temporaryBundle, { force: true });
+        }
+      }
+      const isolated = new ReleaseGitWorkspaceService({
+        dataDir: generationDataDir,
+        contourExternalEffects: this.#contourExternalEffects,
+      });
+      isolated.#validationBundle = bundle;
+      const candidate = await isolated.prepareCandidate({
+        planRevision, projectRoot, workspaceId, frozenTasks, approvedBaseCommit,
+        baseProvenance, validateBeforeCommit, preserveFrozen: false,
+      });
+      const tree = await runGit(["rev-parse", `${candidate.preReleaseHead}^{tree}`], {
+        cwd: candidate.releaseRoot,
+      });
+      return {
+        ...candidate,
+        tree,
+        operationId: operation,
+        generation: generationNumber,
+        generationRoot: generationDataDir,
+      };
+    });
   }
 
   async prepareCandidate({
@@ -1212,8 +1263,11 @@ export class ReleaseGitWorkspaceService {
         branch: RELEASE_BRANCH,
         baseCommit,
         preReleaseHead,
+        tree: await runGit(["rev-parse", `${preReleaseHead}^{tree}`], { cwd: clone.releaseRoot }),
         manifestHash,
         manifestFile,
+        planRevision: revision,
+        manifest,
         frozenTasks: tasks,
         netProjectedTaskIds,
         reused,

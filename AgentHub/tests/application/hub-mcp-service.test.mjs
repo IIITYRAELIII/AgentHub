@@ -45,6 +45,7 @@ async function fixture(context, {
   releaseWorkflowEnabled = false,
   taskGitWorkspacesFactory = null,
   taskOperationReconciliation = null,
+  releaseOperations = null,
 } = {}) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-mcp-"));
   context.after(() => rm(directory, { recursive: true, force: true }));
@@ -416,7 +417,7 @@ async function fixture(context, {
     : defaultTaskGitWorkspaces;
   const service = new HubMcpService({
     workspaceCatalog, taskBoard, workLog, attachmentDirectory, secret: "secret",
-    taskGitWorkspaces, taskOperationReconciliation,
+    taskGitWorkspaces, taskOperationReconciliation, releaseOperations,
     releasePlanner: {
       plan: async (workspaceId) => {
         releasePlanWorkspaceIds.push(workspaceId);
@@ -1517,115 +1518,54 @@ test("HubMcpService sends attributed messages to another current-Workspace Strea
   assert.equal(result.source.model, "Sol");
 });
 
-test("HubMcpService exposes cursor events and publication-gated release completion", async (context) => {
-  const { service, token, operations, preflightCalls, releaseCalls } = await fixture(context);
+test("HubMcpService exposes cursor events and one durable release operation owner", async (context) => {
+  const calls = [];
+  const snapshots = new Map();
+  const releaseOperations = {
+    start: (input) => {
+      calls.push(["start", input]);
+      const operationId = "release-operation-1";
+      snapshots.set(operationId, { operation: { operationId, workspaceId: input.workspaceId, state: "compose", revision: 1 } });
+      return { accepted: true, created: true, operationId, state: "compose", revision: 1 };
+    },
+    get: (operationId) => snapshots.get(operationId),
+    continue: (operationId) => {
+      calls.push(["continue", operationId]);
+      return { accepted: true, operationId, state: "publish", revision: 2 };
+    },
+    setEventDelivery() {},
+  };
+  const { service, token } = await fixture(context, { releaseOperations });
   const events = await service.call("hub_events_list", { context_token: token, after_sequence: 4 });
   assert.equal(events.events[0].sequence, 5);
   assert.equal(events.nextSequence, 5);
-  const preflight = await service.call("hub_release_preflight", {
-    context_token: token, request_id: "preflight-1", expected_plan_revision: "plan-1",
-    approved_repositories: [{
-      projectRoot: "D:/repo",
-      approvedLocalMainCommit: "local-main",
-      approvedOriginMainCommit: "origin-main",
-    }],
-  });
-  assert.equal(preflight.releaseCandidates[0].preReleaseHead, "prepared-head");
-  assert.equal(preflight.testContour, undefined);
-  assert.deepEqual(preflightCalls[0], {
-    workspaceId: "workspace-1", expectedPlanRevision: "plan-1", conflictsResolved: false,
-    approvedRepositories: [{
-      projectRoot: "D:/repo",
-      approvedLocalMainCommit: "local-main",
-      approvedOriginMainCommit: "origin-main",
-    }],
-    requestId: "preflight-1",
-  });
-  await service.call("hub_release_preflight", {
+  const ack = await service.call("hub_release_run", {
     context_token: token,
-    request_id: "releaseManager-bwm12-release-preflight-20260912-v1",
-    expected_plan_revision: "plan-1",
+    request_id: "release-1",
+    task_ids: ["task-current"],
+    validation_mode: "full",
+    approved_targets: [{ targetId: "production", kind: "agent-hub-publication", repositoryRoot: "D:/repo" }],
   });
-  Object.assign(operations.get("releaseManager-bwm12-release-preflight-20260912-v1"), {
-    status: "unknown",
-    result: null,
-    error: "serialization error",
+  assert.equal(ack.operationId, "release-operation-1");
+  assert.equal(calls[0][1].authorization.validationMode, "full");
+  const snapshot = await service.call("hub_release_get", {
+    context_token: token, operation_id: ack.operationId,
   });
-  const reconciled = await service.call("hub_release_preflight_reconcile", {
-    context_token: token,
-    original_request_id: "releaseManager-bwm12-release-preflight-20260912-v1",
-    original_preflight_arguments: {
-      request_id: "releaseManager-bwm12-release-preflight-20260912-v1",
-      expected_plan_revision: "plan-1",
-    },
-    error_class: "serialization_error",
-    expected_plan_revision: "plan-1",
-    expected_repositories: [{ projectRoot: "D:/repo", revision: "pre-release-head" }],
+  assert.equal(snapshot.operation.state, "compose");
+  const continued = await service.call("hub_release_continue", {
+    context_token: token, request_id: "release-continue-1", operation_id: ack.operationId,
   });
-  assert.equal(reconciled.status, "candidate_snapshot_only");
-  assert.equal(reconciled.originalOutcome, "unknown");
-  assert.equal(reconciled.replayed, false);
-  assert.equal(reconciled.originalRequestId, "releaseManager-bwm12-release-preflight-20260912-v1");
-  const release = await service.call("hub_release_complete", {
-    context_token: token, request_id: "release-1",
-    expected_repositories: [{ projectRoot: "D:/repo", revision: "abc" }], expected_plan_revision: "plan-1",
-    deployment_verified: true, verification_summary: "Published and smoke-tested", conflicts_resolved: true,
-  });
-  assert.equal(release.workspaceId, "workspace-1");
-  assert.equal(release.expectedRepositories[0].revision, "abc");
-  assert.equal(releaseCalls[0].conflictsResolved, true);
+  assert.equal(continued.state, "publish");
+  assert.deepEqual(calls[1], ["continue", ack.operationId]);
+  const tools = service.tools().map((tool) => tool.name);
+  assert.equal(tools.includes("hub_release_preflight"), false);
+  assert.equal(tools.includes("hub_release_complete"), false);
 });
 
-test("HubMcpService rejects release preflight reconcile without exact original receipt binding", async (context) => {
-  const { service, token, operations } = await fixture(context);
-  await service.call("hub_release_preflight", {
-    context_token: token,
-    request_id: "preflight-binding-1",
-    expected_plan_revision: "plan-1",
-  });
-  const original = operations.get("preflight-binding-1");
-  Object.assign(original, { status: "unknown", result: null, error: "serialization error" });
-  const request = {
-    context_token: token,
-    original_request_id: "preflight-binding-1",
-    original_preflight_arguments: {
-      request_id: "preflight-binding-1",
-      expected_plan_revision: "plan-1",
-    },
-    error_class: "serialization_error",
-    expected_plan_revision: "plan-1",
-    expected_repositories: [{ projectRoot: "D:/repo", revision: "pre-release-head" }],
-  };
-
-  await assert.rejects(
-    () => service.call("hub_release_preflight_reconcile", { ...request, original_request_id: "missing-preflight" }),
-    /receipt was not found/u,
-  );
-  Object.assign(original, { toolName: "hub_task_claim" });
-  await assert.rejects(
-    () => service.call("hub_release_preflight_reconcile", request),
-    /not a release preflight/u,
-  );
-  Object.assign(original, { toolName: "hub_release_preflight", streamId: "stream-2" });
-  await assert.rejects(
-    () => service.call("hub_release_preflight_reconcile", request),
-    /another caller/u,
-  );
-  Object.assign(original, { streamId: "stream-1" });
-  await assert.rejects(
-    () => service.call("hub_release_preflight_reconcile", {
-      ...request,
-      original_preflight_arguments: {
-        request_id: "preflight-binding-1",
-        expected_plan_revision: "plan-stale",
-      },
-    }),
-    /plan revision does not match/u,
-  );
-});
-
-test("HubMcpService restricts release preflight to Release Manager Streams", async (context) => {
-  const { service, token, workspaceCatalog } = await fixture(context);
+test("HubMcpService restricts release execution to Release Manager Streams", async (context) => {
+  const { service, token, workspaceCatalog } = await fixture(context, { releaseOperations: {
+    start: () => assert.fail("unauthorized caller must not start"), get() {}, continue() {}, setEventDelivery() {},
+  } });
   const hierarchy = workspaceCatalog.hierarchy;
   workspaceCatalog.hierarchy = () => hierarchy().map((workspace) => ({
     ...workspace,
@@ -1634,11 +1574,12 @@ test("HubMcpService restricts release preflight to Release Manager Streams", asy
       settings: { ...stream.settings, releaseManager: false },
     })),
   }));
-  await assert.rejects(() => service.call("hub_release_preflight", {
+  await assert.rejects(() => service.call("hub_release_run", {
     context_token: token,
-    request_id: "preflight-forbidden",
-    expected_plan_revision: "plan-1",
-  }), /requires a Release Manager Stream/u);
+    request_id: "release-forbidden",
+    task_ids: ["task-current"], validation_mode: "full",
+    approved_targets: [{ targetId: "production", kind: "agent-hub-publication" }],
+  }), /requires a Release Manager Stream|release execution requires/u);
 });
 
 test("Release Manager reconciliation forwards one exact unknown operation and requires confirmation", async (context) => {
@@ -1774,7 +1715,8 @@ test("HubMcpService binds the current turn to its dedicated Task worktree", asyn
 
   const tools = service.tools();
   assert.equal(tools.some((tool) => tool.name === "hub_task_release_freeze"), false);
-  assert.equal(tools.some((tool) => tool.name === "hub_release_preflight"), true);
+  assert.equal(tools.some((tool) => tool.name === "hub_release_run"), true);
+  assert.equal(tools.some((tool) => tool.name === "hub_release_preflight"), false);
 });
 
 test("hub_task_claim defaults to skipping dependencies and forwards explicit ensure or verify", async (context) => {
@@ -2141,16 +2083,6 @@ test("HubMcpService performs standard reads and writes across Workspace boundari
   const plan = await service.call("hub_release_plan_get", {
     context_token: token, workspace_id: "workspace-2",
   });
-  await service.call("hub_release_preflight", {
-    context_token: token, request_id: "foreign-preflight", workspace_id: "workspace-2",
-    expected_plan_revision: "plan-1",
-  });
-  await service.call("hub_release_complete", {
-    context_token: token, request_id: "foreign-release-complete", workspace_id: "workspace-2",
-    expected_repositories: [{ projectRoot: "D:/repo", revision: "abc" }],
-    expected_plan_revision: "plan-1", deployment_verified: true,
-    verification_summary: "Foreign Workspace published",
-  });
   const events = await service.call("hub_events_list", {
     context_token: token, workspace_id: "workspace-2", after_sequence: 2,
   });
@@ -2165,8 +2097,6 @@ test("HubMcpService performs standard reads and writes across Workspace boundari
   assert.equal(sentMessages.at(-1).params.streamId, "stream-3");
   assert.equal(plan.workspaceId, "workspace-2");
   assert.equal(releasePlanWorkspaceIds.at(-1), "workspace-2");
-  assert.equal(preflightCalls.at(-1).workspaceId, "workspace-2");
-  assert.equal(releaseCalls.at(-1).workspaceId, "workspace-2");
   assert.equal(events.workspaceId, "workspace-2");
   assert.equal(operations.get("foreign-workspace-rules").workspaceId, "workspace-1");
   assert.equal(operations.get("foreign-workspace-rules").streamId, "stream-1");

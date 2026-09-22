@@ -86,11 +86,19 @@ unbounded worker memory and event-loop GC pressure.
 
 Provider turn start and completion do not snapshot Git repositories. Test owns
 the Task Git snapshot and `dev` integration outside provider admission and
-terminal-delivery latency. Outside publication freeze, Await prepares PreRelease before committing acceptance
+terminal-delivery latency. Await prepares PreRelease before committing acceptance
 under the existing Workspace Await and Task ownership boundaries. A failed
-preparation leaves the Task in Test (ADR-0055). It does
-not run release tests, builds or deployment. During freeze, new work stays in
-Test and acceptance is retried after confirmed release completion.
+preparation leaves the Task in Test (ADR-0055). It does not run release tests,
+builds or deployment. Active release generations never delay later Task work or
+Await acceptance.
+
+`hub_release_run` measures and persists only bounded admission before returning
+its ACK. Candidate composition, validation, Git/network publication, deployment
+and finalization run after the response under the durable operation owner. Short
+SQLite and identity CAS sections do not enclose tests, child processes, network
+requests or repository publication. Queue/lease time, stage duration, retries,
+waiting reason and per-target effect are separate measurements; transport timeout
+is not operation latency and cannot create a second operation.
 
 Release validation may run at most two test-file processes concurrently, and
 only when the host reports at least four logical CPUs and 4 GiB of free memory.
