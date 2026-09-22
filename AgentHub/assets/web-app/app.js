@@ -1179,8 +1179,14 @@ function enhanceThemedSelect(select) {
   });
   menu.addEventListener("keydown", (event) => {
     const current = Number(document.activeElement?.dataset?.optionIndex ?? select.selectedIndex);
-    if (event.key === "Escape" || event.key === "Tab") {
-      close({ restoreFocus: event.key === "Escape" });
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      close({ restoreFocus: true });
+      return;
+    }
+    if (event.key === "Tab") {
+      close();
       return;
     }
     if (event.key === "Enter" || event.key === " ") {
