@@ -941,8 +941,10 @@ checkpoint requires an exact clean `main` checkout while both `main` and
 any branch, ref, tree, index or worktree drift fail closed. Freeze remains the
 only owner that promotes and attaches the standalone clone to `main`.
 
-A failed pre-publication freeze may be explicitly abandoned only through the
-Release Git Workspace recovery owner. Preview takes the canonical publication,
+A failed pre-publication freeze, or an exact `frozen` candidate whose full
+publication run failed before the first publication-effect stage, may be
+explicitly abandoned only through the Release Git Workspace recovery owner.
+Preview takes the canonical publication,
 Workspace Await and repository leases and binds the exact checkpoint and
 manifest bytes, plan, prepared/freeze commits and tree, clean clone, both local
 refs, durable published revision, reviewed incoming `origin/main`, publication
@@ -951,8 +953,29 @@ first preserves the original checkpoint, manifest and publication observations
 as content-addressed evidence. It then CAS-restores only local `main` and
 `PreRelease` to the exact values recorded by the freeze intent, restores the
 clean prepared checkout and records an idempotent `abandoned` outcome. A retry
-of the same operation resumes its durable phases; another operation, any drift,
-or publication evidence for the candidate has no effect. Recovery never pushes,
+of the same operation resumes its durable phases before fresh-admission guards
+are evaluated: it validates the immutable persisted recovery identity and only
+the enumerated clean frozen, prepared-detached and completed ref states. A newer
+remote main may be observed after admission only when Git proves that it does
+not contain the frozen candidate. A completed outcome replays without reading
+mutable publication state. Another operation, an unknown phase, dirty checkout,
+identity drift or evidence that the candidate was published has no effect.
+
+Failed-frozen admission additionally binds the raw publication run, checkpoint
+and log digests, the exact run/candidate identity and the versioned executable
+publication-stage contract. The allowlist is ordered: contour validation and
+full tests are pre-effect stages; artifact preparation, Git publication,
+runtime installation, worker deployment/verification, runtime activation and
+VS Code extension installation are effect stages. The exact full-test stage
+must be terminal failed, every effect stage must remain pending, progress must
+be empty, and the publication checkpoint may contain only pre-effect receipts.
+Unknown/new stages, unsupported schema, missing run binding, an active or
+ambiguous run, or any effect-stage receipt reject before admission. The
+publication lock covers evidence read, admission CAS and local ref recovery;
+lock order is publication → Workspace Await → repository, matching the
+publisher's outer publication ownership and avoiding inverse acquisition.
+
+Recovery never pushes,
 deploys, mutates Tasks, deletes candidate objects/evidence, invents a result or
 silently starts rebuilding. A later candidate is built through ordinary
 reviewed Await preparation, so an approved incoming base remains distinct from
