@@ -11,6 +11,7 @@ import {
   claudeRunOutputPath,
   cleanupOrphanedClaudeRunOutputs,
   openClaudeRunOutput,
+  ownedProcessTreeFromSnapshot,
   processFingerprintMatches,
   processIsAlive,
   readProcessFingerprint,
@@ -189,6 +190,39 @@ test("Windows process-tree stop falls back to the root when taskkill fails", asy
   });
   assert.equal(await stopped, true);
   assert.deepEqual(signals, [[4322, 0], [4322, "SIGTERM"]]);
+});
+
+test("Windows process-tree stop bounds a taskkill helper which never settles", async () => {
+  const killer = new EventEmitter();
+  let killed = 0;
+  killer.kill = () => { killed += 1; };
+  const started = Date.now();
+  assert.equal(await stopProcessTree(4328, {
+    platform: "win32",
+    spawnImpl: () => killer,
+    timeoutMs: 20,
+  }), false);
+  assert.ok(Date.now() - started < 500);
+  assert.equal(killed, 1);
+});
+
+test("owned process-tree discovery survives root exit and rejects a reused root PID", () => {
+  const root = { pid: 100, creationTime: "root-one", executablePath: "claude", commandLine: "claude" };
+  const descendant = { pid: 102, parentPid: 100, creationTime: "child-one", executablePath: "node", commandLine: "worker" };
+  assert.deepEqual(ownedProcessTreeFromSnapshot(root, [root], [descendant], { platform: "win32" }), [descendant]);
+  assert.equal(ownedProcessTreeFromSnapshot(root, [root], [
+    { ...root, parentPid: 1, creationTime: "root-two" },
+    descendant,
+  ], { platform: "win32" }), null);
+  assert.deepEqual(ownedProcessTreeFromSnapshot(
+    { ...root, creationTime: "2026-01-01T00:00:00.000Z" },
+    [],
+    [
+      { ...root, parentPid: 1, creationTime: "2026-01-01T00:00:02.000Z" },
+      { ...descendant, creationTime: "2026-01-01T00:00:01.000Z" },
+    ],
+    { platform: "win32", rootExited: true },
+  ), [{ ...descendant, creationTime: "2026-01-01T00:00:01.000Z" }]);
 });
 
 test("processIsAlive recognizes the current process and rejects invalid ids", () => {

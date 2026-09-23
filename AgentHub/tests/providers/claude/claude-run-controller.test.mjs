@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -162,6 +162,7 @@ test("ClaudeRunController drops the input channel when reattaching after a resta
       onComplete: () => {},
       processAlive: () => processAlive,
       processFingerprintLookup: async () => ({ ...run.claudeProcessFingerprint }),
+      processTreeLookup: async () => (processAlive ? [{ ...run.claudeProcessFingerprint, parentPid: 1 }] : []),
       stopProcess: async (pid) => {
         assert.equal(pid, process.pid);
         processAlive = false;
@@ -206,6 +207,7 @@ test("ClaudeRunController reattaches from a saved offset and finalizes a result"
       onComplete: (_run, value) => { completion = value; },
       processAlive: () => processAlive,
       processFingerprintLookup: async () => ({ ...run.claudeProcessFingerprint }),
+      processTreeLookup: async () => (processAlive ? [{ ...run.claudeProcessFingerprint, parentPid: 1 }] : []),
       stopProcess: async (pid) => {
         assert.equal(pid, process.pid);
         processAlive = false;
@@ -356,6 +358,84 @@ test("ClaudeRunController retains exact ownership when terminal tree cleanup fai
   });
 });
 
+test("ClaudeRunController bounds one unknown stop and resumes only after that attempt settles", async () => {
+  await withTempDir(async (directory) => {
+    const fingerprint = { pid: 4330, creationTime: "owned" };
+    const run = {
+      turnId: "turn-pending-stop",
+      threadId: "session-pending-stop",
+      pid: fingerprint.pid,
+      process: { pid: fingerprint.pid, exitCode: null, signalCode: null },
+      claudeProcessFingerprint: fingerprint,
+      claudeOwnedProcessTree: [fingerprint],
+      claudeResult: { type: "result", result: "done", session_id: "session-pending-stop" },
+    };
+    let alive = true;
+    let stopCalls = 0;
+    let releaseStop;
+    const stop = new Promise((resolve) => { releaseStop = resolve; });
+    let completed = 0;
+    const controller = new ClaudeRunController({
+      dataDir: directory,
+      completionExitGraceMs: 0,
+      completionStopTimeoutMs: 20,
+      processAlive: () => alive,
+      processFingerprintLookup: async () => ({ ...fingerprint }),
+      processTreeLookup: async () => (alive ? [{ ...fingerprint, parentPid: 1 }] : []),
+      stopProcess: async () => { stopCalls += 1; return stop; },
+      onComplete: async () => { completed += 1; },
+    });
+    const started = Date.now();
+    await controller.complete(run);
+    assert.ok(Date.now() - started < 500, "completion is bounded around the stop call itself");
+    assert.equal(run.claudeCleanupPending, true);
+    assert.equal(run.claudeStopUnknown, true);
+    assert.equal(run.claudeSettled, false);
+    assert.equal(stopCalls, 1);
+    await controller.complete(run);
+    assert.equal(stopCalls, 1, "an unknown stop outcome cannot start a second killer");
+    alive = false;
+    releaseStop(true);
+    for (let attempt = 0; attempt < 50 && completed === 0; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.equal(completed, 1);
+    assert.equal(stopCalls, 1);
+    assert.equal(run.claudeSettled, true);
+    assert.equal(run.claudeStopUnknown, false);
+  });
+});
+
+test("ClaudeRunController gives a naturally exiting provider a bounded graceful window", async () => {
+  await withTempDir(async (directory) => {
+    const marker = path.join(directory, "provider-finalized.txt");
+    const run = { turnId: "turn-graceful", threadId: "session-graceful" };
+    let stops = 0;
+    let resolveCompletion;
+    const completed = new Promise((resolve) => { resolveCompletion = resolve; });
+    const controller = new ClaudeRunController({
+      dataDir: directory,
+      pollIntervalMs: 5,
+      completionExitGraceMs: 1_500,
+      stopProcess: async () => { stops += 1; return true; },
+      onComplete: (_run, value) => resolveCompletion(value),
+    });
+    const payload = JSON.stringify({ type: "result", result: "done", session_id: run.threadId });
+    await controller.start(run, {
+      command: process.execPath,
+      args: ["-e", [
+        `process.stdout.write(${JSON.stringify(`${payload}\n`)});`,
+        `setTimeout(()=>require("node:fs").writeFileSync(${JSON.stringify(marker)},"done"),300);`,
+      ].join("")],
+      cwd: directory,
+      env: process.env,
+    });
+    await completed;
+    assert.equal(await readFile(marker, "utf8"), "done");
+    assert.equal(stops, 0);
+  });
+});
+
 test("ClaudeRunController retries a transient fingerprint gap when reattaching", async () => {
   await withTempDir(async (directory) => {
     const fingerprint = { pid: 4325, creationTime: "known-start" };
@@ -403,6 +483,7 @@ test("ClaudeRunController cancels only a process with the saved fingerprint", as
       dataDir: directory,
       processAlive: () => true,
       processFingerprintLookup: async () => ({ ...fingerprint }),
+      processTreeFingerprintLookup: async () => ({ ...fingerprint }),
       stopProcess: async (pid) => {
         stopped.push(pid);
         return true;

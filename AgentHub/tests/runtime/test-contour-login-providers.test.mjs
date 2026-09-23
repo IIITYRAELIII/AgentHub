@@ -120,7 +120,7 @@ if (process.env.STUB_PID_LOG) {
     cwd: process.cwd(),
     stdio: "ignore",
     windowsHide: true,
-    detached: true,
+    detached: process.platform === "win32",
   });
   descendant.unref();
   appendFileSync(process.env.STUB_PID_LOG, JSON.stringify({ backend, childPid: process.pid, descendantPid: descendant.pid }) + "\\n");

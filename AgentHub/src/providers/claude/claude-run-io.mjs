@@ -182,9 +182,23 @@ export function processFingerprintMatches(expected, actual, { platform = process
   return true;
 }
 
+function normalizedProcessRecord(value) {
+  const pid = Number(value?.pid);
+  const parentPid = Number(value?.parentPid);
+  if (!Number.isInteger(pid) || pid <= 0 || !Number.isInteger(parentPid) || parentPid < 0) return null;
+  return {
+    pid,
+    parentPid,
+    creationTime: normalizedFingerprintText(value?.creationTime),
+    executablePath: normalizedFingerprintText(value?.executablePath),
+    commandLine: normalizedFingerprintText(value?.commandLine),
+  };
+}
+
 function captureCommand(command, args, {
   spawnImpl = spawn,
   timeoutMs = 3_000,
+  maximumOutputBytes = 1_000_000,
 } = {}) {
   return new Promise((resolve) => {
     let child;
@@ -213,7 +227,7 @@ function captureCommand(command, args, {
     child.stdout?.setEncoding("utf8");
     child.stdout?.on("data", (chunk) => {
       output += chunk;
-      if (output.length > 1_000_000) {
+      if (output.length > maximumOutputBytes) {
         child.kill?.();
         finish(null);
       }
@@ -221,6 +235,159 @@ function captureCommand(command, args, {
     child.once("error", () => finish(null));
     child.once("exit", (code) => finish(code === 0 ? output : null));
   });
+}
+
+async function readWindowsProcessTable(options) {
+  const script = [
+    "$ErrorActionPreference='Stop'",
+    "[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false)",
+    "$items=@(Get-CimInstance -Query 'SELECT ProcessId,ParentProcessId,CreationDate,ExecutablePath,CommandLine FROM Win32_Process' | ForEach-Object {$created=if($null -eq $_.CreationDate){''}else{$_.CreationDate.ToUniversalTime().ToString('O')};[pscustomobject]@{pid=[int]$_.ProcessId;parentPid=[int]$_.ParentProcessId;creationTime=$created;executablePath=[string]$_.ExecutablePath;commandLine=[string]$_.CommandLine}})",
+    "$items|ConvertTo-Json -Compress",
+  ].join(";");
+  const output = await (options.captureCommandImpl ?? captureCommand)(
+    "powershell.exe",
+    ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
+    { maximumOutputBytes: 16_000_000, ...options },
+  );
+  if (!output) return null;
+  try {
+    const value = JSON.parse(output);
+    return (Array.isArray(value) ? value : [value]).map(normalizedProcessRecord).filter(Boolean);
+  } catch {
+    return null;
+  }
+}
+
+async function readLinuxProcessTable({
+  readDirectoryImpl = readdir,
+  readFileImpl = readFile,
+  readlinkImpl = readlink,
+} = {}) {
+  let entries;
+  let bootId;
+  try {
+    [entries, bootId] = await Promise.all([
+      readDirectoryImpl("/proc", { withFileTypes: true }),
+      readFileImpl("/proc/sys/kernel/random/boot_id", "utf8"),
+    ]);
+  } catch {
+    return null;
+  }
+  const records = await Promise.all(entries
+    .filter((entry) => entry.isDirectory() && /^\d+$/u.test(entry.name))
+    .map(async (entry) => {
+      const pid = Number(entry.name);
+      try {
+        const statText = await readFileImpl(`/proc/${pid}/stat`, "utf8");
+        const closingParenthesis = statText.lastIndexOf(")");
+        if (closingParenthesis < 0) return null;
+        const fields = statText.slice(closingParenthesis + 1).trim().split(/\s+/u);
+        const parentPid = Number(fields[1]);
+        const startTicks = normalizedFingerprintText(fields[19]);
+        const [executablePath, commandLine] = await Promise.all([
+          readlinkImpl(`/proc/${pid}/exe`).catch(() => ""),
+          readFileImpl(`/proc/${pid}/cmdline`, "utf8").catch(() => ""),
+        ]);
+        return normalizedProcessRecord({
+          pid,
+          parentPid,
+          creationTime: `linux:${normalizedFingerprintText(bootId)}:${startTicks}`,
+          executablePath,
+          commandLine,
+        });
+      } catch {
+        return null;
+      }
+    }));
+  return records.filter(Boolean);
+}
+
+async function readDarwinProcessTable(options) {
+  const output = await (options.captureCommandImpl ?? captureCommand)(
+    "ps",
+    ["-axo", "pid=,ppid=,lstart=,comm=,command="],
+    options,
+  );
+  if (!output) return null;
+  return output.split(/\r?\n/u).map((line) => {
+    const match = line.match(/^\s*(\d+)\s+(\d+)\s+(.{24})\s+(\S+)\s*(.*)$/u);
+    if (!match) return null;
+    return normalizedProcessRecord({
+      pid: match[1],
+      parentPid: match[2],
+      creationTime: match[3],
+      executablePath: match[4],
+      commandLine: match[5],
+    });
+  }).filter(Boolean);
+}
+
+export async function readProcessTable({ platform = process.platform, ...options } = {}) {
+  if (platform === "win32") return readWindowsProcessTable(options);
+  if (platform === "linux") return readLinuxProcessTable(options);
+  if (platform === "darwin") return readDarwinProcessTable(options);
+  return null;
+}
+
+export function ownedProcessTreeFromSnapshot(rootFingerprint, knownFingerprints = [], snapshot = [], {
+  platform = process.platform,
+  rootExited = false,
+  rootHandleOwned = false,
+} = {}) {
+  const rootPid = Number(rootFingerprint?.pid);
+  if (!Number.isInteger(rootPid) || rootPid <= 0) return null;
+  const byId = new Map(snapshot.map(normalizedProcessRecord).filter(Boolean).map((item) => [item.pid, item]));
+  const expectedById = new Map([rootFingerprint, ...knownFingerprints]
+    .filter(Boolean)
+    .map((item) => [Number(item.pid), item]));
+  const currentRoot = byId.get(rootPid);
+  const hasExactRoot = Boolean(normalizedFingerprintText(rootFingerprint?.creationTime));
+  if (!hasExactRoot && !rootHandleOwned && !rootExited) return null;
+  const rootReused = hasExactRoot && currentRoot
+    && !processFingerprintMatches(rootFingerprint, currentRoot, { platform });
+  if (rootReused && !rootExited) return null;
+  const reusedAtMs = rootReused ? Date.parse(currentRoot.creationTime) : Number.NaN;
+
+  const ownedIds = new Set([rootPid]);
+  const result = [];
+  for (const [pid, expected] of expectedById) {
+    const current = byId.get(pid);
+    if (!current) continue;
+    if (!processFingerprintMatches(expected, current, { platform })) continue;
+    ownedIds.add(pid);
+    result.push(current);
+  }
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const current of byId.values()) {
+      if (ownedIds.has(current.pid) || !ownedIds.has(current.parentPid)) continue;
+      if (rootReused && current.parentPid === rootPid) {
+        const childAtMs = Date.parse(current.creationTime);
+        if (!Number.isFinite(reusedAtMs) || !Number.isFinite(childAtMs) || childAtMs >= reusedAtMs) continue;
+      }
+      if (!hasExactRoot && current.parentPid === rootPid) {
+        const childAtMs = Date.parse(current.creationTime);
+        const startedAtMs = Number(rootFingerprint?.startedAtMs);
+        const exitedAtMs = Number(rootFingerprint?.exitedAtMs);
+        if (!Number.isFinite(childAtMs)
+          || (Number.isFinite(startedAtMs) && childAtMs < startedAtMs - 1_000)
+          || (rootExited && Number.isFinite(exitedAtMs) && childAtMs > exitedAtMs)) continue;
+      }
+      const expected = expectedById.get(current.pid);
+      if (expected && !processFingerprintMatches(expected, current, { platform })) continue;
+      ownedIds.add(current.pid);
+      result.push(current);
+      changed = true;
+    }
+  }
+  return [...new Map(result.map((item) => [item.pid, item])).values()];
+}
+
+export async function readOwnedProcessTree(rootFingerprint, knownFingerprints = [], options = {}) {
+  const snapshot = await (options.processTableLookup ?? readProcessTable)(options);
+  if (!snapshot) return null;
+  return ownedProcessTreeFromSnapshot(rootFingerprint, knownFingerprints, snapshot, options);
 }
 
 async function readWindowsProcessFingerprint(pid, options) {
@@ -305,4 +472,3 @@ export async function readProcessFingerprint(pid, {
   if (platform === "darwin") return readDarwinProcessFingerprint(value, options);
   return null;
 }
-

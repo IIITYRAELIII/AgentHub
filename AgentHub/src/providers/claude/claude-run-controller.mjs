@@ -14,6 +14,7 @@ import {
   openClaudeRunOutput,
   processFingerprintMatches,
   processIsAlive,
+  readOwnedProcessTree,
   readProcessFingerprint,
   removeClaudeRunOutput,
   spawnClaudeWorker,
@@ -36,8 +37,10 @@ export class ClaudeRunController {
     onReadError = (run, error) => console.error(`Cannot read Claude output for task ${run.threadId}:`, error.message),
     processAlive = processIsAlive,
     processFingerprintLookup = readProcessFingerprint,
+    processTreeLookup = readOwnedProcessTree,
+    processTreeFingerprintLookup = null,
     stopProcess = stopProcessTree,
-    completionExitGraceMs = 0,
+    completionExitGraceMs = 750,
     completionStopTimeoutMs = 3_000,
   }) {
     this.dataDir = dataDir;
@@ -54,6 +57,9 @@ export class ClaudeRunController {
     this.onReadError = onReadError;
     this.processAlive = processAlive;
     this.processFingerprintLookup = processFingerprintLookup;
+    this.processTreeLookup = processTreeLookup;
+    this.processTreeFingerprintLookup = processTreeFingerprintLookup
+      ?? (processTreeLookup === readOwnedProcessTree ? readProcessFingerprint : processFingerprintLookup);
     this.stopProcess = stopProcess;
     this.completionExitGraceMs = completionExitGraceMs;
     this.completionStopTimeoutMs = completionStopTimeoutMs;
@@ -80,6 +86,7 @@ export class ClaudeRunController {
     let callbacksEnabled = false;
     let spawnError = null;
     try {
+      run.claudeProcessStartedAtMs = Date.now();
       worker = spawnClaudeWorker({
         command,
         args,
@@ -95,9 +102,17 @@ export class ClaudeRunController {
         onExit: (code) => {
           run.claudeExitCode = code;
           run.claudeExited = true;
+          run.claudeProcessExitedAtMs = Date.now();
           if (callbacksEnabled) void this.drain(run);
         },
       });
+      run.process = worker;
+      run.pid = worker.pid ?? null;
+      // Capture the root identity before releasing the output handles. A very
+      // short provider can write its result and exit in the next turn; after
+      // that point only this fingerprint can bind its surviving descendants.
+      run.claudeProcessFingerprint = await this.#lookupFingerprintWithRetry(run.pid);
+      run.claudeOwnedProcessTree = run.claudeProcessFingerprint ? [run.claudeProcessFingerprint] : [];
     } finally {
       await Promise.all([
         output.outputHandle.close().catch(() => {}),
@@ -108,8 +123,6 @@ export class ClaudeRunController {
       await this.complete(run, { spawnError });
       return;
     }
-    run.process = worker;
-    run.pid = worker.pid ?? null;
     if (input != null && worker.stdin) {
       // Разрыв канала не является ошибкой хода: процесс дочитает текущий ход
       // и завершится, а его результат придёт через файл вывода как обычно.
@@ -120,7 +133,6 @@ export class ClaudeRunController {
     // Win32_Process may not expose a just-created child on its first WMI
     // query. Capture the fingerprint before persisting the run so a later
     // Hub restart can safely reattach it instead of treating it as unknown.
-    run.claudeProcessFingerprint = await this.#lookupFingerprintWithRetry(run.pid);
     await this.onPersist(run);
     callbacksEnabled = true;
     if (spawnError) {
@@ -263,8 +275,8 @@ export class ClaudeRunController {
       // cancellation/shutdown can retry the bounded stop safely.
       run.claudeSettled = false;
       run.claudeCleanupPending = true;
+      await this.onPersist(run).catch(() => {});
       this.onReadError(run, error);
-      this.schedule(run);
       return;
     }
     try {
@@ -281,57 +293,182 @@ export class ClaudeRunController {
       run.claudeCleanupPending = false;
       return;
     }
-    if (await this.#waitForProcessExit(run, pid, this.completionExitGraceMs)) {
+    const gracefulExitMs = this.isStopping() ? 0 : this.completionExitGraceMs;
+    if (await this.#waitForOwnedTreeExit(run, gracefulExitMs)) {
       run.process = null;
       run.claudeCleanupPending = false;
       return;
     }
-    if (!this.#ownsCurrentChild(run, pid) && !await this.#ownsProcess(run, pid)) {
-      throw new Error(`Cannot release Claude process ${pid}: exact ownership is unavailable`);
+    const deadline = Date.now() + Math.max(1, Number(this.completionStopTimeoutMs) || 1);
+    const stopped = await this.#stopOwnedTree(run, deadline);
+    if (stopped !== true) {
+      throw new Error(stopped === null
+        ? `Completed Claude process tree ${pid} stop outcome is still unknown`
+        : `Cannot stop completed Claude process tree ${pid}`);
     }
-    if (await this.stopProcess(pid) !== true) {
-      throw new Error(`Cannot stop completed Claude process tree ${pid}`);
+    if (!await this.#waitForOwnedTreeExit(run, Math.max(0, deadline - Date.now()))) {
+      run.claudeStopAttempt = null;
+      const remaining = await this.#currentOwnedTree(run);
+      const identities = Array.isArray(remaining) ? remaining.map((item) => Number(item.pid)).join(",") : "unknown";
+      throw new Error(
+        `Completed Claude process tree ${pid} did not terminate; remaining=${identities}; stop=${run.claudeStopDiagnostic ?? "accepted"}`,
+      );
     }
-    if (!await this.#waitForProcessExit(run, pid, this.completionStopTimeoutMs)) {
-      throw new Error(`Completed Claude process tree ${pid} did not terminate`);
-    }
+    run.claudeStopAttempt = null;
+    run.claudeStopUnknown = false;
     run.process = null;
     run.claudeCleanupPending = false;
   }
 
-  async #waitForProcessExit(run, pid, timeoutMs) {
-    if (run.claudeExited === true || !this.processAlive(pid)) {
-      run.claudeExited = true;
-      return true;
-    }
+  async #waitForOwnedTreeExit(run, timeoutMs) {
     const durationMs = Math.max(0, Number(timeoutMs) || 0);
-    if (durationMs === 0) return false;
     const deadline = Date.now() + durationMs;
+    const rootPid = Number(run?.pid ?? run?.process?.pid);
+    if (durationMs === 0 && this.#ownsCurrentChild(run, rootPid) && this.processAlive(rootPid)) return false;
     do {
-      await new Promise((resolve) => setTimeout(resolve, 20));
-      if (run.claudeExited === true || !this.processAlive(pid)) {
+      const owned = await this.#currentOwnedTree(run);
+      if (owned == null) throw new Error(
+        `Cannot verify Claude process tree ${run.pid}: ${run.claudeOwnershipDiagnostic ?? "ownership probe failed"}`,
+      );
+      if (owned.length === 0) {
         run.claudeExited = true;
         return true;
       }
+      if (Date.now() >= deadline) return false;
+      await new Promise((resolve) => setTimeout(resolve, Math.min(20, Math.max(1, deadline - Date.now()))));
     } while (Date.now() < deadline);
     return false;
+  }
+
+  async #currentOwnedTree(run) {
+    const pid = Number(run?.pid ?? run?.process?.pid);
+    const root = run?.claudeProcessFingerprint ?? (Number.isInteger(pid) && pid > 0 ? {
+      pid,
+      startedAtMs: Number(run?.claudeProcessStartedAtMs) || null,
+      exitedAtMs: Number(run?.claudeProcessExitedAtMs) || null,
+    } : null);
+    if (!root) {
+      if (this.#ownsCurrentChild(run, pid) && this.processAlive(pid)) return [{ pid, currentChild: true }];
+      run.claudeOwnershipDiagnostic = "root-fingerprint-unavailable";
+      return null;
+    }
+    let current;
+    try {
+      current = await this.processTreeLookup(root, run.claudeOwnedProcessTree ?? [], {
+        rootExited: run.claudeExited === true || run.process?.exitCode != null || run.process?.signalCode != null,
+        rootHandleOwned: this.#ownsCurrentChild(run, pid),
+      });
+    } catch (error) {
+      run.claudeOwnershipDiagnostic = `tree-probe-error:${error?.message ?? error}`;
+      return null;
+    }
+    if (!Array.isArray(current)) {
+      run.claudeOwnershipDiagnostic = "tree-probe-unavailable";
+      return null;
+    }
+    if (!current.some((item) => Number(item.pid) === pid) && this.processAlive(pid)) {
+      if (this.#ownsCurrentChild(run, pid)) current.push({ ...root, currentChild: true });
+      else if (run.claudeExited === true || run.process?.exitCode != null || run.process?.signalCode != null) {
+        // The exact child handle is terminal. A live numeric root PID may now
+        // belong to another process; descendants were already bounded by the
+        // captured start/exit interval and the reused root itself is ignored.
+        const exactRoot = await this.#lookupFingerprint(pid);
+        run.claudeRootPidReused = !exactRoot || !processFingerprintMatches(root, exactRoot);
+      }
+      else {
+        const exactRoot = await this.#lookupFingerprint(pid);
+        if (exactRoot && processFingerprintMatches(root, exactRoot)) current.push(exactRoot);
+        else {
+          run.claudeOwnershipDiagnostic = "root-identity-mismatch";
+          return null;
+        }
+      }
+    }
+    const known = new Map((run.claudeOwnedProcessTree ?? []).map((item) => [Number(item.pid), item]));
+    for (const item of current) known.set(Number(item.pid), item);
+    const next = [...known.values()].filter((item) => Number.isInteger(Number(item?.pid)) && Number(item.pid) > 0);
+    if (next.length !== (run.claudeOwnedProcessTree ?? []).length) {
+      run.claudeOwnedProcessTree = next;
+      await this.onPersist(run).catch(() => {});
+    }
+    return current;
+  }
+
+  async #stopOwnedTree(run, deadline) {
+    let attempt = run.claudeStopAttempt;
+    if (!attempt && run.claudeStopUnknown === true) return null;
+    if (!attempt) {
+      const rootPid = Number(run?.pid ?? run?.process?.pid);
+      const owned = this.#ownsCurrentChild(run, rootPid) && this.processAlive(rootPid)
+        ? [{ pid: rootPid, currentChild: true }]
+        : await this.#currentOwnedTree(run);
+      if (owned == null) return false;
+      if (owned.length === 0) return run.claudeRootPidReused === true ? false : true;
+      const targets = [...owned].sort((left, right) => Number(right.pid) - Number(left.pid));
+      attempt = { state: "pending", targets: targets.map((item) => ({ ...item })) };
+      attempt.promise = (async () => {
+        for (const target of targets) {
+          const pid = Number(target.pid);
+          if (!target.currentChild) {
+            const current = await this.#lookupTreeFingerprint(pid);
+            if (!current) {
+              if (this.processAlive(pid)) {
+                run.claudeStopDiagnostic = `fingerprint-unavailable:${pid}`;
+                return false;
+              }
+              continue;
+            }
+            if (!processFingerprintMatches(target, current)) {
+              const normalized = (value) => String(value ?? "").replace(/\0/gu, " ").replace(/\s+/gu, " ").trim();
+              run.claudeStopDiagnostic = `fingerprint-mismatch:${pid}:creation=${normalized(target.creationTime) === normalized(current.creationTime)}:executable=${normalized(target.executablePath).toLowerCase() === normalized(current.executablePath).toLowerCase()}:command=${normalized(target.commandLine) === normalized(current.commandLine)}`;
+              continue;
+            }
+          } else if (!this.#ownsCurrentChild(run, pid)) {
+            continue;
+          }
+          if (await this.stopProcess(pid) !== true) return false;
+        }
+        return true;
+      })();
+      run.claudeStopAttempt = attempt;
+      attempt.promise.then((value) => {
+        attempt.state = "settled";
+        attempt.value = value === true;
+        run.claudeStopUnknown = false;
+        if (run.claudeCleanupPending) void this.complete(run);
+      }, (error) => {
+        attempt.state = "settled";
+        attempt.error = error;
+        run.claudeStopUnknown = false;
+        if (run.claudeCleanupPending) void this.complete(run);
+      });
+    }
+    if (attempt.state === "settled") {
+      if (attempt.error) throw attempt.error;
+      return attempt.value === true;
+    }
+    const remainingMs = Math.max(0, deadline - Date.now());
+    if (remainingMs === 0) return null;
+    const timeout = Symbol("stop-timeout");
+    const outcome = await Promise.race([
+      attempt.promise,
+      new Promise((resolve) => {
+        const timer = setTimeout(() => resolve(timeout), remainingMs);
+        timer.unref?.();
+      }),
+    ]);
+    if (outcome === timeout) {
+      run.claudeStopUnknown = true;
+      return null;
+    }
+    return outcome === true;
   }
 
   async stop(run) {
     if (!run) return false;
     if (this.processAuthority && !this.processAuthority.owns(run)) return false;
-    const pid = Number(run.pid ?? run.process?.pid);
-    if (!this.processAlive(pid)) {
-      run.claudeExited = true;
-      void this.drain(run);
-      return true;
-    }
-    // Before a Hub restart, the ChildProcess handle is stronger evidence than
-    // a transient WMI lookup: it is the exact child this controller spawned.
-    // After a restart no handle exists, so the persisted fingerprint remains
-    // mandatory and a reused PID can never be stopped by mistake.
-    if (!this.#ownsCurrentChild(run, pid) && !await this.#ownsProcess(run, pid)) return false;
-    return this.stopProcess(pid);
+    const deadline = Date.now() + Math.max(1, Number(this.completionStopTimeoutMs) || 1);
+    return (await this.#stopOwnedTree(run, deadline)) === true;
   }
 
   async attachAfterRestart(run) {
@@ -369,6 +506,14 @@ export class ClaudeRunController {
   async #lookupFingerprint(pid) {
     try {
       return await this.processFingerprintLookup(pid);
+    } catch {
+      return null;
+    }
+  }
+
+  async #lookupTreeFingerprint(pid) {
+    try {
+      return await this.processTreeFingerprintLookup(pid);
     } catch {
       return null;
     }

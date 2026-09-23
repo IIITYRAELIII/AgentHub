@@ -78,7 +78,15 @@ test("recording Claude provenance survives serialization and allows exact owned 
   const authority = createContourClaudeAuthority(f);
   const run = { id: "run", turnId: "turn", threadId: "thread" };
   authority.started(run);
-  Object.assign(run, { pid: 12345, claudeProcessFingerprint: { pid: 12345, creationTime: "owned" } });
+  Object.assign(run, {
+    pid: 12345,
+    claudeProcessFingerprint: { pid: 12345, creationTime: "owned" },
+    claudeOwnedProcessTree: [
+      { pid: 12345, creationTime: "owned" },
+      { pid: 12346, parentPid: 12345, creationTime: "owned-child" },
+    ],
+    claudeStopAttempt: { state: "pending", promise: Promise.resolve(true) },
+  });
   const directory = path.join(f.dataDir, "claude-runs");
   await mkdir(directory);
   run.claudeOutputPath = path.join(directory, "turn.jsonl");
@@ -86,9 +94,14 @@ test("recording Claude provenance survives serialization and allows exact owned 
   await writeFile(run.claudeOutputPath, "");
   await writeFile(run.claudeErrorPath, "");
   const restored = JSON.parse(JSON.stringify(serializableTaskRun(run)));
+  assert.deepEqual(restored.claudeOwnedProcessTree, run.claudeOwnedProcessTree);
+  assert.equal(serializableTaskRun({ ...run, claudeStopUnknown: true }).claudeStopUnknown, true);
+  assert.equal(restored.claudeStopAttempt, undefined, "an in-process stop promise is never persisted as a replayable killer");
   const stopped = [];
   const controller = new ClaudeRunController({ dataDir: f.dataDir, processAuthority: createContourClaudeAuthority(f), processAlive: () => true,
-    processFingerprintLookup: async () => restored.claudeProcessFingerprint, stopProcess: async (pid) => { stopped.push(pid); return true; }, pollIntervalMs: 60_000 });
+    processFingerprintLookup: async () => restored.claudeProcessFingerprint,
+    processTreeFingerprintLookup: async (pid) => restored.claudeOwnedProcessTree.find((item) => item.pid === pid) ?? null,
+    stopProcess: async (pid) => { stopped.push(pid); return true; }, pollIntervalMs: 60_000 });
   t.after(() => controller.pause(restored));
   assert.equal(await controller.attachAfterRestart(restored), true);
   assert.equal(await controller.stop(restored), true);
@@ -146,31 +159,43 @@ test("recording diff excludes Git execution and preserves historical diff semant
   assert.equal(createContourAwareDiffCapture({}, realCapture), realCapture);
 });
 
-test("owned real child records provenance and completes through the guarded output reader", { timeout: 5000 }, async (t) => {
+test("owned real child records provenance and completes through the guarded output reader", { timeout: 15000 }, async (t) => {
   const f = await fixture(t);
   const run = { id: "owned-run", turnId: "owned-turn", threadId: "owned-thread" };
   let ownedPid = null;
+  let descendantPid = null;
+  const descendantFile = path.join(f.dataDir, "owned-descendant.json");
   let complete;
   const completed = new Promise((resolve) => { complete = resolve; });
   const controller = new ClaudeRunController({ dataDir: f.dataDir, processAuthority: createContourClaudeAuthority(f), pollIntervalMs: 5,
-    processFingerprintLookup: async (pid) => ({ pid, creationTime: "test-owned-child" }),
     onComplete: (_run, value) => complete(value) });
   t.after(async () => {
     controller.pause(run);
+    if (descendantPid && processIsAlive(descendantPid)) await stopProcessTree(descendantPid);
     if (ownedPid && processIsAlive(ownedPid)) await stopProcessTree(ownedPid);
   });
   const payload = JSON.stringify({ type: "result", result: "owned result", session_id: run.threadId });
+  const childCode = [
+    "const {spawn}=require('node:child_process');",
+    "const {writeFileSync}=require('node:fs');",
+    "const child=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{cwd:process.cwd(),stdio:'ignore',detached:true,windowsHide:true});",
+    `writeFileSync(${JSON.stringify(descendantFile)},JSON.stringify({pid:child.pid}));`,
+    "child.unref();",
+    `process.stdout.write(${JSON.stringify(`${payload}\n`)});`,
+  ].join("");
   await controller.start(run, {
     command: process.execPath,
-    args: ["-e", `process.stdout.write(${JSON.stringify(payload + "\n")});setInterval(() => {}, 1000)`],
+    args: ["-e", childCode],
     cwd: f.dataDir,
-    env: { SystemRoot: process.env.SystemRoot },
+    env: process.env,
   });
   ownedPid = run.pid;
   assert.equal((await completed).result.result, "owned result");
+  descendantPid = JSON.parse(await readFile(descendantFile, "utf8")).pid;
   assert.equal(run.contourProcessRoot, f.root);
   assert.equal(run.claudeSettled, true);
-  assert.equal(processIsAlive(ownedPid), false, "completion owns the live provider tree until it is terminal");
+  assert.equal(processIsAlive(ownedPid), false, "the provider root exited naturally");
+  assert.equal(processIsAlive(descendantPid), false, "completion retains exact tree ownership after root exit");
   assert.equal(await readFile(f.original, "utf8"), "production");
 });
 
