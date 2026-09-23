@@ -220,6 +220,16 @@ test("Windows process-tree stop bounds a taskkill helper which never settles", a
   assert.equal(killed, 1);
 });
 
+test("POSIX process stop can target one exact non-group-leader PID", async () => {
+  const signals = [];
+  assert.equal(await stopProcessTree(4329, {
+    platform: "linux",
+    processGroup: false,
+    killImpl: (pid, signal) => { signals.push([pid, signal]); },
+  }), true);
+  assert.deepEqual(signals, [[4329, "SIGTERM"]]);
+});
+
 test("owned process-tree discovery survives root exit and rejects a reused root PID", () => {
   const root = { pid: 100, creationTime: "root-one", executablePath: "claude", commandLine: "claude" };
   const descendant = { pid: 102, parentPid: 100, creationTime: "child-one", executablePath: "node", commandLine: "worker" };

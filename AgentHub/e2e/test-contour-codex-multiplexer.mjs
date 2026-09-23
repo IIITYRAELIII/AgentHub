@@ -451,7 +451,13 @@ async function stopOwnedChild(child) {
     const exact = await readProcessFingerprint(targetPid);
     if (!exact || !processFingerprintMatches(target, exact)) continue;
     const remainingMs = Math.max(1, deadline - Date.now());
-    if (await stopProcessTree(targetPid, { timeoutMs: remainingMs }) !== true) {
+    // POSIX children deliberately remain in the multiplexer process group so
+    // an external owner can clean them after a crash. They are therefore not
+    // group leaders: stop the exact fingerprint-verified PIDs one by one.
+    if (await stopProcessTree(targetPid, {
+      timeoutMs: remainingMs,
+      processGroup: process.platform === "win32",
+    }) !== true) {
       throw new Error(`Cannot stop owned Codex child tree ${targetPid}`);
     }
   }

@@ -7,13 +7,14 @@ export async function stopProcessTree(pid, {
   platform = process.platform,
   spawnImpl = spawn,
   killImpl = process.kill,
+  processGroup = true,
   timeoutMs = 5_000,
 } = {}) {
   const value = Number(pid);
   if (!Number.isInteger(value) || value <= 0) return false;
   if (platform !== "win32") {
     try {
-      killImpl(-value, "SIGTERM");
+      killImpl(processGroup ? -value : value, "SIGTERM");
       return true;
     } catch (error) {
       return error?.code === "ESRCH";
