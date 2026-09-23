@@ -76,10 +76,15 @@ terminal.
   identity is retried until one durable save succeeds, so a restart cannot
   lose it. An entry without an exact fingerprint is only a historical ancestry
   anchor for descendants created inside its closed lifetime, and only while
-  its PID is absent. Its recorded exit is taken after the real exit, so any
-  current holder of that PID makes the anchor ambiguous: neither the holder
-  nor unknown descendants reached through it are owned. Descendants captured
-  earlier with their own exact fingerprint remain owned.
+  its PID is absent. Recorded exit times follow the real exit, so a current
+  holder of a root or provider PID that is not the saved exact identity makes
+  that anchor ambiguous: the holder is never owned, an unknown child created
+  at or after the holder's creation is the holder's own and is excluded, and
+  any earlier unknown child, or any child when the holder creation time is
+  unknown, leaves the tree unresolved. An unresolved tree is not terminal:
+  completion keeps cleanup pending and never reports success. Descendants
+  captured with their own exact fingerprint remain actionable, but stopping
+  them never proves that an unresolved tree has ended.
 - Terminal is absorbing: late running, progress, snapshot or reconnect events
   cannot revive it.
 - A bounded restart or opened-history-page reprojection may replace a corrupted terminal user

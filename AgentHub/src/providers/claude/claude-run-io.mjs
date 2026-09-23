@@ -397,7 +397,6 @@ export function ownedProcessTreeFromSnapshot(rootFingerprint, knownFingerprints 
   const rootReused = hasExactRoot && currentRoot
     && !processFingerprintMatches(rootFingerprint, currentRoot, { platform });
   if (rootReused && !rootExited) return null;
-  const reusedAtMs = rootReused ? Date.parse(currentRoot.creationTime) : Number.NaN;
   const rootStartedAtMs = Number(rootFingerprint?.startedAtMs);
   const rootExitedAtMs = Number(rootFingerprint?.exitedAtMs);
   const hasBoundedRootLifetime = Number.isFinite(rootStartedAtMs) && rootStartedAtMs > 0
@@ -414,6 +413,9 @@ export function ownedProcessTreeFromSnapshot(rootFingerprint, knownFingerprints 
 
   const ownedIds = new Set();
   const historicalAnchors = new Map();
+  // PIDs that would anchor ancestry but cannot prove it now. Unknown processes
+  // below them make the tree unresolved (null), never an empty terminal tree.
+  const ambiguousAnchorPids = new Set();
   const result = [];
   if (currentRoot && !rootReused) {
     if (hasExactRoot && !processFingerprintMatches(rootFingerprint, currentRoot, { platform })) return null;
@@ -421,15 +423,10 @@ export function ownedProcessTreeFromSnapshot(rootFingerprint, knownFingerprints 
     ownedIds.add(rootPid);
     result.push(currentRoot);
   } else if (rootReused) {
-    const historicalExitMs = Number.isFinite(rootExitedAtMs)
-      ? Math.min(rootExitedAtMs, reusedAtMs)
-      : reusedAtMs;
-    if (!Number.isFinite(historicalExitMs)) return null;
-    ownedIds.add(rootPid);
-    historicalAnchors.set(rootPid, {
-      ...rootFingerprint,
-      exitedAtMs: historicalExitMs,
-    });
+    // A current holder proves the root PID was reused. Exit times are recorded
+    // after the real exit, so an earlier holder may have left children inside
+    // any time window: unknown children of this PID have no provable ancestry.
+    ambiguousAnchorPids.add(rootPid);
   } else if (rootExited && hasBoundedRootLifetime) {
     ownedIds.add(rootPid);
     historicalAnchors.set(rootPid, rootFingerprint);
@@ -438,6 +435,8 @@ export function ownedProcessTreeFromSnapshot(rootFingerprint, knownFingerprints 
     // PID reuse may already have happened and no later child can be attributed
     // to the original launch from its parentPid alone.
     return null;
+  } else {
+    ambiguousAnchorPids.add(rootPid);
   }
   for (const [pid, expected] of expectedById) {
     if (pid === rootPid) continue;
@@ -447,21 +446,22 @@ export function ownedProcessTreeFromSnapshot(rootFingerprint, knownFingerprints 
       result.push(current);
       continue;
     }
-    // Only an exact fingerprint admits a live process. An entry known only by
-    // its PID is a historical ancestry anchor solely while that PID is absent:
-    // the recorded exit time is taken after the real exit, so a current holder
-    // proves the PID was reused and an earlier holder may already have left
+    // Only an exact fingerprint admits a live process. A closed lifetime is a
+    // historical ancestry anchor solely while its PID is absent: a current
+    // holder proves reuse, and an earlier holder may already have left
     // children inside the recorded interval. Such an anchor is ambiguous and
     // is not traversed; exact captured descendants still match on their own.
-    if (current) continue;
     const boundedHistoricalIdentity = Number.isFinite(Number(expected?.startedAtMs))
       && Number(expected?.startedAtMs) > 0
       && Number.isFinite(Number(expected?.exitedAtMs))
       && Number(expected?.exitedAtMs) > 0;
-    if (boundedHistoricalIdentity) {
-      ownedIds.add(pid);
-      historicalAnchors.set(pid, expected);
+    if (!boundedHistoricalIdentity) continue;
+    if (current) {
+      ambiguousAnchorPids.add(pid);
+      continue;
     }
+    ownedIds.add(pid);
+    historicalAnchors.set(pid, expected);
   }
   let changed = true;
   while (changed) {
@@ -470,10 +470,6 @@ export function ownedProcessTreeFromSnapshot(rootFingerprint, knownFingerprints 
       if (ownedIds.has(current.pid) || !ownedIds.has(current.parentPid)) continue;
       const historicalParent = historicalAnchors.get(current.parentPid);
       if (historicalParent && !withinOwnerWindow(historicalParent, current)) continue;
-      if (rootReused && current.parentPid === rootPid) {
-        const childAtMs = Date.parse(current.creationTime);
-        if (!Number.isFinite(reusedAtMs) || !Number.isFinite(childAtMs) || childAtMs >= reusedAtMs) continue;
-      }
       if (!hasExactRoot && current.parentPid === rootPid) {
         const childAtMs = Date.parse(current.creationTime);
         const startedAtMs = Number(rootFingerprint?.startedAtMs);
@@ -489,7 +485,26 @@ export function ownedProcessTreeFromSnapshot(rootFingerprint, knownFingerprints 
       changed = true;
     }
   }
-  return [...new Map(result.map((item) => [item.pid, item])).values()];
+  const owned = [...new Map(result.map((item) => [item.pid, item])).values()];
+  const admitted = new Set(owned.map((item) => item.pid));
+  let unresolved = false;
+  for (const item of byId.values()) {
+    if (admitted.has(item.pid) || ambiguousAnchorPids.has(item.pid)) continue;
+    if (!ambiguousAnchorPids.has(item.parentPid)) continue;
+    // A child created at or after the current holder's creation was spawned by
+    // that holder: it is proven foreign. Any earlier child may belong to the
+    // original process or to an earlier holder, so the tree stays unresolved.
+    const holderCreatedAtMs = Date.parse(byId.get(item.parentPid)?.creationTime);
+    const childCreatedAtMs = Date.parse(item.creationTime);
+    if (Number.isFinite(holderCreatedAtMs) && Number.isFinite(childCreatedAtMs)
+      && childCreatedAtMs >= holderCreatedAtMs) continue;
+    unresolved = true;
+  }
+  if (!unresolved) return owned;
+  // Exact targets stay actionable, but they never prove the whole tree ended.
+  if (!owned.length) return null;
+  Object.defineProperty(owned, "unresolved", { value: true });
+  return owned;
 }
 
 export async function readOwnedProcessTree(rootFingerprint, knownFingerprints = [], options = {}) {

@@ -244,12 +244,12 @@ test("owned process-tree discovery survives root exit and rejects a reused root 
     platform: "win32",
     rootExited: true,
   }), [descendant]);
-  assert.deepEqual(ownedProcessTreeFromSnapshot(
+  assert.equal(ownedProcessTreeFromSnapshot(
     { ...root, startedAtMs: undefined, exitedAtMs: undefined },
     [],
     [{ ...descendant, creationTime: "2026-01-01T01:00:00.000Z" }],
     { platform: "win32", rootExited: true },
-  ), [], "a disappeared historical root without a lifetime cannot authorize a reused PID's child");
+  ), null, "a disappeared root without a lifetime leaves its unknown child unresolved, not an empty tree");
   assert.deepEqual(ownedProcessTreeFromSnapshot(root, [], [{
     ...descendant,
     creationTime: "2026-01-01T00:00:04.000Z",
@@ -258,15 +258,25 @@ test("owned process-tree discovery survives root exit and rejects a reused root 
     { ...root, parentPid: 1, creationTime: "root-two" },
     descendant,
   ], { platform: "win32" }), null);
-  assert.deepEqual(ownedProcessTreeFromSnapshot(
-    root,
-    [],
-    [
-      { ...root, parentPid: 1, creationTime: "2026-01-01T00:00:02.000Z" },
-      { ...descendant, creationTime: "2026-01-01T00:00:01.000Z" },
-    ],
-    { platform: "win32", rootExited: true },
-  ), [{ ...descendant, creationTime: "2026-01-01T00:00:01.000Z" }]);
+  // The root PID is held again: a child created before the current holder may
+  // still belong to an earlier foreign holder, so ancestry through the root is
+  // unresolved rather than owned or an empty terminal tree.
+  const reusedRootHolder = { ...root, parentPid: 1, creationTime: "2026-01-01T00:00:02.000Z" };
+  assert.equal(ownedProcessTreeFromSnapshot(root, [], [reusedRootHolder, descendant], {
+    platform: "win32",
+    rootExited: true,
+  }), null);
+  // A child created at or after the current holder was spawned by that holder:
+  // it is proven foreign, so the tree is truthfully empty.
+  assert.deepEqual(ownedProcessTreeFromSnapshot(root, [], [reusedRootHolder, {
+    ...descendant,
+    creationTime: "2026-01-01T00:00:02.500Z",
+  }], { platform: "win32", rootExited: true }), []);
+  // A descendant captured earlier with its exact fingerprint is still owned.
+  assert.deepEqual(ownedProcessTreeFromSnapshot(root, [descendant], [reusedRootHolder, descendant], {
+    platform: "win32",
+    rootExited: true,
+  }), [descendant]);
 });
 
 test("owned process-tree discovery crosses one exited verified provider anchor", () => {
@@ -289,7 +299,7 @@ test("owned process-tree discovery crosses one exited verified provider anchor",
   assert.equal(claudeRunOwnerPath("data", "turn"), path.join("data", "claude-runs", "turn.owner.json"));
 });
 
-test("an uncaptured provider anchor is traversed only while its PID is absent", () => {
+test("an occupied uncaptured provider anchor decides each unknown child against the current holder", () => {
   const root = { pid: 100, creationTime: "root-one", executablePath: "node", commandLine: "wrapper" };
   // Recorded window 2.000..4.000 s; the exit time is written after the real exit.
   const provider = { pid: 101, startedAtMs: Date.parse("2026-01-01T00:00:02.000Z"), exitedAtMs: Date.parse("2026-01-01T00:00:04.000Z") };
@@ -298,15 +308,25 @@ test("an uncaptured provider anchor is traversed only while its PID is absent", 
   const holderChild = { pid: 102, parentPid: 101, creationTime: "2026-01-01T00:00:03.999Z", executablePath: "foreign.exe", commandLine: "holder child" };
   // An earlier foreign holder reused PID 101, spawned this child and exited before the current holder appeared.
   const priorHolderChild = { pid: 103, parentPid: 101, creationTime: "2026-01-01T00:00:03.000Z", executablePath: "foreign.exe", commandLine: "prior child" };
+
   assert.deepEqual(ownedProcessTreeFromSnapshot(root, [root, provider], [currentHolder, holderChild], options), [],
-    "a current holder and its child inside the recorded interval are not owned");
-  assert.deepEqual(ownedProcessTreeFromSnapshot(root, [root, provider], [currentHolder, priorHolderChild], options), [],
-    "a child created before the current holder still has no proof of provider ancestry");
+    "A: a child created after the current holder is that holder's child and is proven foreign");
+  assert.equal(ownedProcessTreeFromSnapshot(root, [root, provider], [currentHolder, priorHolderChild], options), null,
+    "B: a child created before the current holder has no provable ancestry and leaves the tree unresolved");
+  assert.equal(ownedProcessTreeFromSnapshot(root, [root, provider], [{ ...currentHolder, creationTime: "" }, holderChild], options), null,
+    "without the holder creation time a reachable unknown child is unresolved");
 
   // A descendant captured earlier with its exact fingerprint is owned on its own identity.
   const capturedDescendant = { pid: 104, parentPid: 101, creationTime: "2026-01-01T00:00:02.500Z", executablePath: "node", commandLine: "worker" };
-  assert.deepEqual(ownedProcessTreeFromSnapshot(root, [root, provider, capturedDescendant], [currentHolder, holderChild, capturedDescendant], options),
-    [capturedDescendant]);
+  const exactOnly = ownedProcessTreeFromSnapshot(root, [root, provider, capturedDescendant], [currentHolder, holderChild, capturedDescendant], options);
+  assert.deepEqual(exactOnly, [capturedDescendant]);
+  assert.notEqual(exactOnly.unresolved, true);
+  // Mixed exact and ambiguous children: only the exact target is actionable and the tree stays unresolved.
+  const mixed = ownedProcessTreeFromSnapshot(root, [root, provider, capturedDescendant], [currentHolder, priorHolderChild, capturedDescendant], options);
+  assert.deepEqual(mixed, [capturedDescendant]);
+  assert.equal(mixed.unresolved, true);
+  assert.equal(ownedProcessTreeFromSnapshot(root, [root, provider, capturedDescendant], [currentHolder, priorHolderChild], options), null,
+    "after the exact target is gone the ambiguity remains unresolved");
 
   // With the PID absent the closed lifetime still anchors descendants created inside it.
   const descendant = { pid: 105, parentPid: 101, creationTime: "2026-01-01T00:00:03.000Z", executablePath: "node", commandLine: "worker" };

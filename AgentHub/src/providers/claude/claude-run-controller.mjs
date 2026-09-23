@@ -360,7 +360,7 @@ export class ClaudeRunController {
       if (owned == null) throw new Error(
         `Cannot verify Claude process tree ${run.pid}: ${run.claudeOwnershipDiagnostic ?? "ownership probe failed"}`,
       );
-      if (owned.length === 0) {
+      if (owned.length === 0 && owned.unresolved !== true) {
         run.claudeExited = true;
         return true;
       }

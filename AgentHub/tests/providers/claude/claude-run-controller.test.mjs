@@ -935,6 +935,97 @@ test("ClaudeRunController never stops a prior PID holder's child through an unca
   });
 });
 
+// Completion through complete(): the classifier decides each unknown child against
+// the current holder of a reused anchor PID (root or uncaptured provider).
+async function completeWithSnapshot(directory, { known, snapshot }) {
+  const at = (seconds) => Date.parse(`2026-09-23T10:00:0${seconds}Z`);
+  const root = { pid: 100, parentPid: 1, creationTime: "2026-09-23T10:00:01.000Z", executablePath: "node.exe", commandLine: "wrapper" };
+  const run = {
+    turnId: "turn-anchor-complete",
+    threadId: "session-anchor-complete",
+    pid: root.pid,
+    process: { pid: root.pid, exitCode: 0, signalCode: null },
+    claudeExited: true,
+    claudeProcessStartedAtMs: at("1.000"),
+    claudeProcessExitedAtMs: at("4.000"),
+    claudeProcessFingerprint: root,
+    claudeOwnedProcessTree: [root, ...known],
+    claudeResult: { type: "result", result: "done", session_id: "session-anchor-complete" },
+  };
+  let rows = [...snapshot];
+  const stopped = [];
+  let completed = 0;
+  const find = (pid) => rows.find((item) => item.pid === pid) ?? null;
+  const controller = new ClaudeRunController({
+    dataDir: directory,
+    pollIntervalMs: 60_000,
+    completionExitGraceMs: 0,
+    completionStopTimeoutMs: 50,
+    isCurrentRun: () => false,
+    processAlive: (pid) => Boolean(find(pid)),
+    processFingerprintLookup: async (pid) => find(pid),
+    processTreeFingerprintLookup: async (pid) => find(pid),
+    processTreeLookup: async (rootFingerprint, knownFingerprints, options) => ownedProcessTreeFromSnapshot(
+      rootFingerprint, knownFingerprints, rows, { ...options, platform: "win32" },
+    ),
+    stopProcess: async (pid) => { stopped.push(pid); rows = rows.filter((item) => item.pid !== pid); return true; },
+    onComplete: async () => { completed += 1; },
+    onReadError: () => {},
+  });
+  await controller.complete(run);
+  return { run, stopped, completed };
+}
+
+const reusedRootHolder = { pid: 100, parentPid: 999, creationTime: "2026-09-23T10:00:03.995Z", executablePath: "foreign.exe", commandLine: "holder" };
+
+test("ClaudeRunController completion keeps a reused root with an earlier child unresolved", async () => {
+  await withTempDir(async (directory) => {
+    const priorChild = { pid: 103, parentPid: 100, creationTime: "2026-09-23T10:00:03.000Z", executablePath: "foreign.exe", commandLine: "prior child" };
+    const { run, stopped, completed } = await completeWithSnapshot(directory, { known: [], snapshot: [reusedRootHolder, priorChild] });
+    assert.deepEqual(stopped, []);
+    assert.equal(completed, 0);
+    assert.equal(run.claudeSettled, false);
+    assert.equal(run.claudeCleanupPending, true);
+  });
+});
+
+test("ClaudeRunController completion settles a reused root whose child is the holder's own", async () => {
+  await withTempDir(async (directory) => {
+    const holderChild = { pid: 103, parentPid: 100, creationTime: "2026-09-23T10:00:03.999Z", executablePath: "foreign.exe", commandLine: "holder child" };
+    const { stopped, completed } = await completeWithSnapshot(directory, { known: [], snapshot: [reusedRootHolder, holderChild] });
+    assert.deepEqual(stopped, []);
+    assert.equal(completed, 1, "a proven-foreign child does not hold completion");
+  });
+});
+
+test("ClaudeRunController completion stops only an exact captured orphan under a reused root", async () => {
+  await withTempDir(async (directory) => {
+    const exactOrphan = { pid: 104, parentPid: 100, creationTime: "2026-09-23T10:00:02.500Z", executablePath: "node.exe", commandLine: "worker" };
+    const clean = await completeWithSnapshot(directory, { known: [exactOrphan], snapshot: [reusedRootHolder, exactOrphan] });
+    assert.deepEqual(clean.stopped, [exactOrphan.pid]);
+    assert.equal(clean.completed, 1);
+
+    const priorChild = { pid: 103, parentPid: 100, creationTime: "2026-09-23T10:00:03.000Z", executablePath: "foreign.exe", commandLine: "prior child" };
+    const mixed = await completeWithSnapshot(directory, { known: [exactOrphan], snapshot: [reusedRootHolder, exactOrphan, priorChild] });
+    assert.deepEqual(mixed.stopped, [exactOrphan.pid], "only the exact target is stopped");
+    assert.equal(mixed.completed, 0, "the remaining ambiguity is not a terminal success");
+    assert.equal(mixed.run.claudeCleanupPending, true);
+  });
+});
+
+test("ClaudeRunController completion keeps an occupied uncaptured provider anchor with an earlier child unresolved", async () => {
+  await withTempDir(async (directory) => {
+    const provider = { pid: 101, startedAtMs: Date.parse("2026-09-23T10:00:02.000Z"), exitedAtMs: Date.parse("2026-09-23T10:00:04.000Z") };
+    const providerHolder = { pid: 101, parentPid: 999, creationTime: "2026-09-23T10:00:03.995Z", executablePath: "foreign.exe", commandLine: "holder" };
+    const priorChild = { pid: 103, parentPid: 101, creationTime: "2026-09-23T10:00:03.000Z", executablePath: "foreign.exe", commandLine: "prior child" };
+    const { run, stopped, completed } = await completeWithSnapshot(directory, { known: [provider], snapshot: [providerHolder, priorChild] });
+    assert.deepEqual(stopped, []);
+    assert.equal(completed, 0);
+    assert.equal(run.claudeSettled, false);
+    assert.equal(run.claudeCleanupPending, true);
+  });
+});
+
 test("ClaudeRunController gives a naturally exiting provider a bounded graceful window", async () => {
   await withTempDir(async (directory) => {
     const marker = path.join(directory, "provider-finalized.txt");
