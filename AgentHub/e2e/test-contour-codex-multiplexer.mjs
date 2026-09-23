@@ -128,7 +128,11 @@ const childOwners = new Map(await Promise.all(Object.values(children).map(async 
   },
 ])));
 for (const owner of childOwners.values()) {
-  if (owner.root) owner.known = [owner.root];
+  if (owner.root) {
+    const createdAtMs = Date.parse(owner.root.creationTime);
+    owner.root.startedAtMs = Number.isFinite(createdAtMs) ? createdAtMs : Date.now();
+    owner.known = [owner.root];
+  }
 }
 
 let childRequestSequence = 1;
@@ -213,7 +217,11 @@ function handleChildMessage(backend, message) {
 }
 
 for (const [backend, child] of Object.entries(children)) {
-  child.once("close", () => closedChildren.add(child));
+  child.once("close", () => {
+    const owner = childOwners.get(child);
+    if (owner?.root) owner.root.exitedAtMs = Date.now();
+    closedChildren.add(child);
+  });
   createInterface({ input: child.stdout }).on("line", (line) => {
     try {
       handleChildMessage(backend, JSON.parse(line));

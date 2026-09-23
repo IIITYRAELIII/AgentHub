@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { ClaudeRunController } from "../../../src/providers/claude/claude-run-controller.mjs";
+import { ownedProcessTreeFromSnapshot } from "../../../src/providers/claude/claude-run-io.mjs";
 
 async function withTempDir(run) {
   const directory = await mkdtemp(path.join(tmpdir(), "claude-controller-"));
@@ -414,6 +415,144 @@ test("ClaudeRunController bounds one unknown stop and resumes only after that at
     assert.equal(stopCalls, 1);
     assert.equal(run.claudeSettled, true);
     assert.equal(run.claudeStopUnknown, false);
+  });
+});
+
+test("ClaudeRunController retries only a proven pre-effect stop-intent persistence failure", async () => {
+  await withTempDir(async (directory) => {
+    const fingerprint = { pid: 4331, creationTime: "owned" };
+    const run = {
+      turnId: "turn-stop-intent-retry",
+      threadId: "session-stop-intent-retry",
+      pid: fingerprint.pid,
+      process: { pid: fingerprint.pid, exitCode: null, signalCode: null },
+      claudeProcessFingerprint: fingerprint,
+      claudeOwnedProcessTree: [fingerprint],
+      claudeResult: { type: "result", result: "done", session_id: "session-stop-intent-retry" },
+    };
+    let alive = true;
+    let persists = 0;
+    let stops = 0;
+    let completed = 0;
+    const controller = new ClaudeRunController({
+      dataDir: directory,
+      completionExitGraceMs: 0,
+      completionStopTimeoutMs: 100,
+      processAlive: () => alive,
+      processFingerprintLookup: async () => ({ ...fingerprint }),
+      processTreeLookup: async () => (alive ? [{ ...fingerprint, parentPid: 1 }] : []),
+      onPersist: async () => {
+        persists += 1;
+        if (persists === 1) throw new Error("injected pre-effect persistence failure");
+      },
+      stopProcess: async () => {
+        stops += 1;
+        alive = false;
+        return true;
+      },
+      onComplete: async () => { completed += 1; },
+    });
+
+    await controller.complete(run);
+    assert.equal(stops, 0, "no stop effect may precede durable intent");
+    assert.equal(run.claudeStopUnknown, false);
+    assert.equal(run.claudeStopAttempt, null);
+    assert.equal(run.claudeCleanupPending, true);
+    await controller.complete(run);
+    assert.equal(stops, 1);
+    assert.equal(completed, 1);
+    assert.equal(run.claudeStopUnknown, false);
+  });
+});
+
+test("ClaudeRunController does not promote a sidecar PID without a closed lifetime or live ancestry", async () => {
+  await withTempDir(async (directory) => {
+    const ownerPath = path.join(directory, "turn.owner.json");
+    await writeFile(ownerPath, JSON.stringify({
+      token: "token",
+      pid: 17,
+      startedAtMs: Date.parse("2026-09-23T10:00:00.000Z"),
+    }), "utf8");
+    const foreign = {
+      pid: 17,
+      parentPid: 999,
+      creationTime: "2026-09-23T11:00:00.000Z",
+      executablePath: "foreign.exe",
+      commandLine: "foreign",
+    };
+    const root = { pid: 10, parentPid: 1, creationTime: "2026-09-23T09:59:59.000Z" };
+    const run = {
+      pid: root.pid,
+      claudeExited: false,
+      claudeProcessFingerprint: root,
+      claudeProcessOwnerPath: ownerPath,
+      claudeProcessOwnerToken: "token",
+      claudeOwnedProcessTree: [],
+    };
+    const stopped = [];
+    const controller = new ClaudeRunController({
+      dataDir: directory,
+      processAlive: (pid) => pid === foreign.pid,
+      processFingerprintLookup: async () => null,
+      processTreeFingerprintLookup: async (pid) => (pid === foreign.pid ? foreign : null),
+      processTreeLookup: async (rootFingerprint, known, options) => ownedProcessTreeFromSnapshot(
+        rootFingerprint,
+        known,
+        [foreign],
+        { ...options, platform: "win32" },
+      ),
+      stopProcess: async (pid) => { stopped.push(pid); return true; },
+    });
+
+    assert.equal(await controller.stop(run), false);
+    assert.deepEqual(stopped, []);
+    assert.equal(run.claudeOwnedProcessTree.some((item) => item.creationTime === foreign.creationTime), false);
+  });
+});
+
+test("ClaudeRunController retains a live sidecar provider created inside the durable root lifetime", async () => {
+  await withTempDir(async (directory) => {
+    const ownerPath = path.join(directory, "turn.owner.json");
+    await writeFile(ownerPath, JSON.stringify({
+      token: "token",
+      pid: 18,
+      startedAtMs: Date.parse("2026-09-23T10:00:00.000Z"),
+    }), "utf8");
+    const provider = {
+      pid: 18,
+      parentPid: 999,
+      creationTime: "2026-09-23T10:00:00.500Z",
+      executablePath: "claude.exe",
+      commandLine: "claude",
+    };
+    const root = { pid: 11, parentPid: 1, creationTime: "2026-09-23T09:59:59.000Z" };
+    const run = {
+      pid: root.pid,
+      claudeExited: true,
+      claudeProcessStartedAtMs: Date.parse("2026-09-23T09:59:59.000Z"),
+      claudeProcessExitedAtMs: Date.parse("2026-09-23T10:05:00.000Z"),
+      claudeProcessFingerprint: root,
+      claudeProcessOwnerPath: ownerPath,
+      claudeProcessOwnerToken: "token",
+      claudeOwnedProcessTree: [],
+    };
+    const stopped = [];
+    const controller = new ClaudeRunController({
+      dataDir: directory,
+      processAlive: (pid) => pid === provider.pid,
+      processFingerprintLookup: async () => null,
+      processTreeFingerprintLookup: async (pid) => (pid === provider.pid ? provider : null),
+      processTreeLookup: async (rootFingerprint, known, options) => ownedProcessTreeFromSnapshot(
+        rootFingerprint,
+        known,
+        [provider],
+        { ...options, platform: "win32" },
+      ),
+      stopProcess: async (pid) => { stopped.push(pid); return true; },
+    });
+
+    assert.equal(await controller.stop(run), true);
+    assert.deepEqual(stopped, [provider.pid]);
   });
 });
 

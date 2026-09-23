@@ -398,6 +398,10 @@ export function ownedProcessTreeFromSnapshot(rootFingerprint, knownFingerprints 
     && !processFingerprintMatches(rootFingerprint, currentRoot, { platform });
   if (rootReused && !rootExited) return null;
   const reusedAtMs = rootReused ? Date.parse(currentRoot.creationTime) : Number.NaN;
+  const rootStartedAtMs = Number(rootFingerprint?.startedAtMs);
+  const rootExitedAtMs = Number(rootFingerprint?.exitedAtMs);
+  const hasBoundedRootLifetime = Number.isFinite(rootStartedAtMs) && rootStartedAtMs > 0
+    && Number.isFinite(rootExitedAtMs) && rootExitedAtMs > 0;
 
   const withinOwnerWindow = (owner, item) => {
     const createdAtMs = Date.parse(item?.creationTime);
@@ -408,10 +412,35 @@ export function ownedProcessTreeFromSnapshot(rootFingerprint, knownFingerprints 
       && (!Number.isFinite(exitedAtMs) || createdAtMs <= exitedAtMs);
   };
 
-  const ownedIds = new Set([rootPid]);
+  const ownedIds = new Set();
   const historicalAnchors = new Map();
   const result = [];
+  if (currentRoot && !rootReused) {
+    if (hasExactRoot && !processFingerprintMatches(rootFingerprint, currentRoot, { platform })) return null;
+    if (!hasExactRoot && !rootHandleOwned) return null;
+    ownedIds.add(rootPid);
+    result.push(currentRoot);
+  } else if (rootReused) {
+    const historicalExitMs = Number.isFinite(rootExitedAtMs)
+      ? Math.min(rootExitedAtMs, reusedAtMs)
+      : reusedAtMs;
+    if (!Number.isFinite(historicalExitMs)) return null;
+    ownedIds.add(rootPid);
+    historicalAnchors.set(rootPid, {
+      ...rootFingerprint,
+      exitedAtMs: historicalExitMs,
+    });
+  } else if (rootExited && hasBoundedRootLifetime) {
+    ownedIds.add(rootPid);
+    historicalAnchors.set(rootPid, rootFingerprint);
+  } else if (!rootExited) {
+    // A disappeared numeric root without a terminal lifetime is ambiguous:
+    // PID reuse may already have happened and no later child can be attributed
+    // to the original launch from its parentPid alone.
+    return null;
+  }
   for (const [pid, expected] of expectedById) {
+    if (pid === rootPid) continue;
     const current = byId.get(pid);
     if (current) {
       const exact = processFingerprintMatches(expected, current, { platform });
@@ -424,11 +453,11 @@ export function ownedProcessTreeFromSnapshot(rootFingerprint, knownFingerprints 
       result.push(current);
       continue;
     }
-    const exactHistoricalIdentity = normalizedFingerprintText(expected?.creationTime);
     const boundedHistoricalIdentity = Number.isFinite(Number(expected?.startedAtMs))
-      && Number.isFinite(Number(expected?.exitedAtMs));
-    if ((rootExited || Number.isFinite(Number(expected?.exitedAtMs)))
-      && (exactHistoricalIdentity || boundedHistoricalIdentity)) {
+      && Number(expected?.startedAtMs) > 0
+      && Number.isFinite(Number(expected?.exitedAtMs))
+      && Number(expected?.exitedAtMs) > 0;
+    if (boundedHistoricalIdentity) {
       ownedIds.add(pid);
       historicalAnchors.set(pid, expected);
     }

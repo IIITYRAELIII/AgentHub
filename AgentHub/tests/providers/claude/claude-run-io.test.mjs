@@ -231,15 +231,35 @@ test("POSIX process stop can target one exact non-group-leader PID", async () =>
 });
 
 test("owned process-tree discovery survives root exit and rejects a reused root PID", () => {
-  const root = { pid: 100, creationTime: "root-one", executablePath: "claude", commandLine: "claude" };
-  const descendant = { pid: 102, parentPid: 100, creationTime: "child-one", executablePath: "node", commandLine: "worker" };
-  assert.deepEqual(ownedProcessTreeFromSnapshot(root, [root], [descendant], { platform: "win32" }), [descendant]);
+  const root = {
+    pid: 100,
+    creationTime: "2026-01-01T00:00:00.000Z",
+    executablePath: "claude",
+    commandLine: "claude",
+    startedAtMs: Date.parse("2026-01-01T00:00:00.000Z"),
+    exitedAtMs: Date.parse("2026-01-01T00:00:03.000Z"),
+  };
+  const descendant = { pid: 102, parentPid: 100, creationTime: "2026-01-01T00:00:01.000Z", executablePath: "node", commandLine: "worker" };
+  assert.deepEqual(ownedProcessTreeFromSnapshot(root, [root], [descendant], {
+    platform: "win32",
+    rootExited: true,
+  }), [descendant]);
+  assert.deepEqual(ownedProcessTreeFromSnapshot(
+    { ...root, startedAtMs: undefined, exitedAtMs: undefined },
+    [],
+    [{ ...descendant, creationTime: "2026-01-01T01:00:00.000Z" }],
+    { platform: "win32", rootExited: true },
+  ), [], "a disappeared historical root without a lifetime cannot authorize a reused PID's child");
+  assert.deepEqual(ownedProcessTreeFromSnapshot(root, [], [{
+    ...descendant,
+    creationTime: "2026-01-01T00:00:04.000Z",
+  }], { platform: "win32", rootExited: true }), [], "a child created after the root exit is foreign");
   assert.equal(ownedProcessTreeFromSnapshot(root, [root], [
     { ...root, parentPid: 1, creationTime: "root-two" },
     descendant,
   ], { platform: "win32" }), null);
   assert.deepEqual(ownedProcessTreeFromSnapshot(
-    { ...root, creationTime: "2026-01-01T00:00:00.000Z" },
+    root,
     [],
     [
       { ...root, parentPid: 1, creationTime: "2026-01-01T00:00:02.000Z" },

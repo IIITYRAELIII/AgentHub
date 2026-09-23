@@ -360,11 +360,16 @@ export class ClaudeRunController {
   async #currentOwnedTree(run) {
     await this.#refreshProviderOwner(run);
     const pid = Number(run?.pid ?? run?.process?.pid);
-    const root = run?.claudeProcessFingerprint ?? (Number.isInteger(pid) && pid > 0 ? {
+    const storedRoot = run?.claudeProcessFingerprint ?? (Number.isInteger(pid) && pid > 0 ? {
       pid,
-      startedAtMs: Number(run?.claudeProcessStartedAtMs) || null,
-      exitedAtMs: Number(run?.claudeProcessExitedAtMs) || null,
     } : null);
+    const startedAtMs = Number(run?.claudeProcessStartedAtMs);
+    const exitedAtMs = Number(run?.claudeProcessExitedAtMs);
+    const root = storedRoot ? {
+      ...storedRoot,
+      startedAtMs: Number.isFinite(startedAtMs) && startedAtMs > 0 ? startedAtMs : storedRoot.startedAtMs,
+      exitedAtMs: Number.isFinite(exitedAtMs) && exitedAtMs > 0 ? exitedAtMs : storedRoot.exitedAtMs,
+    } : null;
     if (!root) {
       if (this.#ownsCurrentChild(run, pid) && this.processAlive(pid)) return [{ pid, currentChild: true }];
       run.claudeOwnershipDiagnostic = "root-fingerprint-unavailable";
@@ -381,8 +386,16 @@ export class ClaudeRunController {
       return null;
     }
     if (!Array.isArray(current)) {
-      run.claudeOwnershipDiagnostic = "tree-probe-unavailable";
-      return null;
+      if (this.#ownsCurrentChild(run, pid) && this.processAlive(pid)) {
+        current = [{ ...root, currentChild: true }];
+      } else {
+        const exactRoot = this.processAlive(pid) ? await this.#lookupFingerprint(pid) : null;
+        if (exactRoot && processFingerprintMatches(root, exactRoot)) current = [exactRoot];
+        else {
+          run.claudeOwnershipDiagnostic = "tree-probe-unavailable";
+          return null;
+        }
+      }
     }
     if (!current.some((item) => Number(item.pid) === pid) && this.processAlive(pid)) {
       if (this.#ownsCurrentChild(run, pid)) current.push({ ...root, currentChild: true });
@@ -425,18 +438,20 @@ export class ClaudeRunController {
     const existing = (run.claudeOwnedProcessTree ?? []).find((item) => Number(item?.pid) === pid);
     const startedAtMs = Number(value.startedAtMs);
     const exitedAtMs = Number(value.exitedAtMs);
-    const rootTerminal = run.claudeExited === true
-      || run.process?.exitCode != null
-      || run.process?.signalCode != null;
+    const rootExitedAtMs = Number(run.claudeProcessExitedAtMs);
+    const ownershipUpperBoundMs = Number.isFinite(exitedAtMs) && exitedAtMs > 0
+      ? exitedAtMs
+      : rootExitedAtMs;
     let owner = existing;
     if (!owner?.creationTime) {
       const exact = await this.#lookupTreeFingerprint(pid);
       const exactCreatedAtMs = Date.parse(exact?.creationTime);
       const exactBelongsToLifetime = exact
         && Number.isFinite(exactCreatedAtMs)
+        && Number.isFinite(ownershipUpperBoundMs)
+        && ownershipUpperBoundMs > 0
         && (!Number.isFinite(startedAtMs) || exactCreatedAtMs >= startedAtMs - 1_000)
-        && (!Number.isFinite(exitedAtMs) || exactCreatedAtMs <= exitedAtMs)
-        && (!rootTerminal || Number.isFinite(exitedAtMs));
+        && exactCreatedAtMs <= ownershipUpperBoundMs;
       owner = exactBelongsToLifetime ? exact : {
         pid,
         startedAtMs: startedAtMs || null,
@@ -461,7 +476,7 @@ export class ClaudeRunController {
       if (owned == null) return false;
       if (owned.length === 0) return run.claudeRootPidReused === true ? false : true;
       const targets = [...owned].sort((left, right) => Number(right.pid) - Number(left.pid));
-      attempt = { state: "pending", targets: targets.map((item) => ({ ...item })) };
+      attempt = { state: "pending", dispatched: false, targets: targets.map((item) => ({ ...item })) };
       run.claudeStopAttempt = attempt;
       run.claudeStopUnknown = true;
       run.claudeStopTargets = attempt.targets.map((item) => ({ ...item }));
@@ -470,6 +485,7 @@ export class ClaudeRunController {
         // the first external stop effect. A restart may verify terminal state,
         // but cannot dispatch a second killer for this intent.
         await this.onPersist(run);
+        attempt.dispatched = true;
         for (const target of targets) {
           const pid = Number(target.pid);
           if (!target.currentChild) {
@@ -500,7 +516,16 @@ export class ClaudeRunController {
       }, (error) => {
         attempt.state = "settled";
         attempt.error = error;
-        if (run.claudeCleanupPending) void this.complete(run);
+        const preDispatchFailure = attempt.dispatched !== true;
+        if (preDispatchFailure && run.claudeStopAttempt === attempt) {
+          // Persistence failed before any process effect was dispatched. This
+          // is a known rejection, not an unknown stop outcome, so a later
+          // completion may persist a fresh intent after storage recovers.
+          run.claudeStopAttempt = null;
+          run.claudeStopUnknown = false;
+          run.claudeStopTargets = null;
+        }
+        if (!preDispatchFailure && run.claudeCleanupPending) void this.complete(run);
       });
     }
     if (attempt.state === "settled") {
