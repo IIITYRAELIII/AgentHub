@@ -3,6 +3,8 @@ import { readFile } from "node:fs/promises";
 
 const EOL = String.fromCharCode(10);
 const PROVIDER_CAPTURE_INTERVAL_MS = 2_000;
+// Each capture attempt reads the process table; stop polling after about a minute.
+const PROVIDER_CAPTURE_MAX_ATTEMPTS = 30;
 const STOP_INTENT_RETRY_MAX_MS = 30_000;
 
 import {
@@ -27,7 +29,7 @@ import {
 export class ClaudeRunController {
   #preDispatchStopFailures = new WeakSet();
   #stopIntentRetryCounts = new WeakMap();
-  #providerCaptureNextAtMs = new WeakMap();
+  #providerCaptureSchedule = new WeakMap();
 
   constructor({
     dataDir,
@@ -521,8 +523,12 @@ export class ClaudeRunController {
     if (!run?.claudeProcessOwnerPath || !run?.claudeProcessOwnerToken) return;
     if (this.#providerLineageVerified(run)) return;
     const now = Date.now();
-    if (now < (this.#providerCaptureNextAtMs.get(run) ?? 0)) return;
-    this.#providerCaptureNextAtMs.set(run, now + PROVIDER_CAPTURE_INTERVAL_MS);
+    const schedule = this.#providerCaptureSchedule.get(run) ?? { nextAtMs: 0, attempts: 0 };
+    if (now < schedule.nextAtMs || schedule.attempts >= PROVIDER_CAPTURE_MAX_ATTEMPTS) return;
+    this.#providerCaptureSchedule.set(run, {
+      nextAtMs: now + PROVIDER_CAPTURE_INTERVAL_MS,
+      attempts: schedule.attempts + 1,
+    });
     let verified = false;
     try {
       verified = await this.#refreshProviderOwner(run);
