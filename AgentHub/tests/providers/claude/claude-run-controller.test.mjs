@@ -339,12 +339,13 @@ test("ClaudeRunController retains exact ownership when terminal tree cleanup fai
     };
     const errors = [];
     let completed = 0;
+    let stopCalls = 0;
     const controller = new ClaudeRunController({
       dataDir: directory,
       pollIntervalMs: 60_000,
       processAlive: () => true,
       processFingerprintLookup: async () => null,
-      stopProcess: async () => false,
+      stopProcess: async () => { stopCalls += 1; return false; },
       onReadError: (_run, error) => errors.push(error.message),
       onComplete: async () => { completed += 1; },
     });
@@ -353,6 +354,9 @@ test("ClaudeRunController retains exact ownership when terminal tree cleanup fai
     assert.equal(run.claudeSettled, false);
     assert.equal(run.claudeCleanupPending, true);
     assert.equal(run.process, processHandle);
+    assert.equal(run.claudeStopUnknown, true);
+    await controller.complete(run);
+    assert.equal(stopCalls, 1, "a failed effect with unknown boundary cannot dispatch a second killer");
     assert.equal(completed, 0);
     assert.match(errors[0], /Cannot stop completed Claude process tree 4326/u);
   });

@@ -308,6 +308,9 @@ export class ClaudeRunController {
     }
     const gracefulExitMs = this.isStopping() ? 0 : this.completionExitGraceMs;
     if (await this.#waitForOwnedTreeExit(run, gracefulExitMs)) {
+      run.claudeStopAttempt = null;
+      run.claudeStopUnknown = false;
+      run.claudeStopTargets = null;
       run.process = null;
       run.claudeCleanupPending = false;
       return;
@@ -493,12 +496,10 @@ export class ClaudeRunController {
       attempt.promise.then((value) => {
         attempt.state = "settled";
         attempt.value = value === true;
-        run.claudeStopUnknown = false;
         if (run.claudeCleanupPending) void this.complete(run);
       }, (error) => {
         attempt.state = "settled";
         attempt.error = error;
-        run.claudeStopUnknown = false;
         if (run.claudeCleanupPending) void this.complete(run);
       });
     }
