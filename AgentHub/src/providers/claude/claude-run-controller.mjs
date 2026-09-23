@@ -31,6 +31,8 @@ export class ClaudeRunController {
   #stopIntentRetryCounts = new WeakMap();
   #providerCaptureSchedule = new WeakMap();
   #lineagePersistence = new WeakMap();
+  #unresolvedOwnership = new WeakSet();
+  #ownershipRecheckCounts = new WeakMap();
 
   constructor({
     dataDir,
@@ -303,8 +305,10 @@ export class ClaudeRunController {
       await this.onPersist(run).catch(() => {});
       this.onReadError(run, error);
       if (this.#preDispatchStopFailures.delete(run)) this.#scheduleStopIntentRetry(run);
+      else if (this.#unresolvedOwnership.has(run)) this.#scheduleOwnershipRecheck(run);
       return;
     }
+    this.#ownershipRecheckCounts.delete(run);
     try {
       await this.onComplete(run, { spawnError, result, errorText, exitCode, outputPaths });
     } finally {
@@ -360,6 +364,8 @@ export class ClaudeRunController {
       if (owned == null) throw new Error(
         `Cannot verify Claude process tree ${run.pid}: ${run.claudeOwnershipDiagnostic ?? "ownership probe failed"}`,
       );
+      // Defensive: the classifier reports an unresolved tree without exact
+      // targets as null; an injected lookup must not turn it into success.
       if (owned.length === 0 && owned.unresolved !== true) {
         run.claudeExited = true;
         return true;
@@ -380,10 +386,13 @@ export class ClaudeRunController {
       return null;
     }
     let current;
+    const diagnostics = { unresolved: null };
+    this.#unresolvedOwnership.delete(run);
     try {
       current = await this.processTreeLookup(root, run.claudeOwnedProcessTree ?? [], {
         rootExited: run.claudeExited === true || run.process?.exitCode != null || run.process?.signalCode != null,
         rootHandleOwned: this.#ownsCurrentChild(run, pid),
+        diagnostics,
       });
     } catch (error) {
       run.claudeOwnershipDiagnostic = `tree-probe-error:${error?.message ?? error}`;
@@ -395,7 +404,12 @@ export class ClaudeRunController {
       } else {
         const exactRoot = this.processAlive(pid) ? await this.#lookupFingerprint(pid) : null;
         if (exactRoot && processFingerprintMatches(root, exactRoot)) current = [exactRoot];
-        else {
+        else if (diagnostics.unresolved) {
+          // An authoritative snapshot proved ancestry ambiguous; it did not fail.
+          run.claudeOwnershipDiagnostic = `ownership-unresolved:${diagnostics.unresolved}`;
+          this.#unresolvedOwnership.add(run);
+          return null;
+        } else {
           run.claudeOwnershipDiagnostic = "tree-probe-unavailable";
           return null;
         }
@@ -405,8 +419,8 @@ export class ClaudeRunController {
       if (this.#ownsCurrentChild(run, pid)) current.push({ ...root, currentChild: true });
       else if (run.claudeExited === true || run.process?.exitCode != null || run.process?.signalCode != null) {
         // The exact child handle is terminal. A live numeric root PID may now
-        // belong to another process; descendants were already bounded by the
-        // captured start/exit interval and the reused root itself is ignored.
+        // belong to another process; the classifier never owns that holder and
+        // resolves its children by the recorded lifetime and holder creation.
         const exactRoot = await this.#lookupFingerprint(pid);
         run.claudeRootPidReused = !exactRoot || !processFingerprintMatches(root, exactRoot);
       }
@@ -565,6 +579,16 @@ export class ClaudeRunController {
   #scheduleStopIntentRetry(run) {
     const retry = (this.#stopIntentRetryCounts.get(run) ?? 0) + 1;
     this.#stopIntentRetryCounts.set(run, retry);
+    this.schedule(run, this.#stopIntentRetryDelayMs(retry));
+  }
+
+  // Authoritative ownership ambiguity can only clear through a later snapshot.
+  // Re-run the canonical completion with bounded backoff on the single drain
+  // timer; it re-reads the tree and reuses the settled stop attempt and its
+  // unknown-outcome fence, so it never dispatches a second killer.
+  #scheduleOwnershipRecheck(run) {
+    const retry = (this.#ownershipRecheckCounts.get(run) ?? 0) + 1;
+    this.#ownershipRecheckCounts.set(run, retry);
     this.schedule(run, this.#stopIntentRetryDelayMs(retry));
   }
 

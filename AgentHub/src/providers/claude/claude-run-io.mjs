@@ -384,6 +384,7 @@ export function ownedProcessTreeFromSnapshot(rootFingerprint, knownFingerprints 
   platform = process.platform,
   rootExited = false,
   rootHandleOwned = false,
+  diagnostics = null,
 } = {}) {
   const rootPid = Number(rootFingerprint?.pid);
   if (!Number.isInteger(rootPid) || rootPid <= 0) return null;
@@ -413,9 +414,10 @@ export function ownedProcessTreeFromSnapshot(rootFingerprint, knownFingerprints 
 
   const ownedIds = new Set();
   const historicalAnchors = new Map();
-  // PIDs that would anchor ancestry but cannot prove it now. Unknown processes
-  // below them make the tree unresolved (null), never an empty terminal tree.
-  const ambiguousAnchorPids = new Set();
+  // PIDs that would anchor ancestry but cannot prove it now, with their bounded
+  // historical identity (null when no closed lifetime was recorded). Unknown
+  // processes below them may leave the tree unresolved, never an empty terminal tree.
+  const ambiguousAnchors = new Map();
   const result = [];
   if (currentRoot && !rootReused) {
     if (hasExactRoot && !processFingerprintMatches(rootFingerprint, currentRoot, { platform })) return null;
@@ -425,8 +427,8 @@ export function ownedProcessTreeFromSnapshot(rootFingerprint, knownFingerprints 
   } else if (rootReused) {
     // A current holder proves the root PID was reused. Exit times are recorded
     // after the real exit, so an earlier holder may have left children inside
-    // any time window: unknown children of this PID have no provable ancestry.
-    ambiguousAnchorPids.add(rootPid);
+    // the recorded window: unknown children there have no provable ancestry.
+    ambiguousAnchors.set(rootPid, hasBoundedRootLifetime ? rootFingerprint : null);
   } else if (rootExited && hasBoundedRootLifetime) {
     ownedIds.add(rootPid);
     historicalAnchors.set(rootPid, rootFingerprint);
@@ -436,7 +438,8 @@ export function ownedProcessTreeFromSnapshot(rootFingerprint, knownFingerprints 
     // to the original launch from its parentPid alone.
     return null;
   } else {
-    ambiguousAnchorPids.add(rootPid);
+    // No durable lifetime was recorded for this exited root: fail closed.
+    ambiguousAnchors.set(rootPid, null);
   }
   for (const [pid, expected] of expectedById) {
     if (pid === rootPid) continue;
@@ -457,7 +460,7 @@ export function ownedProcessTreeFromSnapshot(rootFingerprint, knownFingerprints 
       && Number(expected?.exitedAtMs) > 0;
     if (!boundedHistoricalIdentity) continue;
     if (current) {
-      ambiguousAnchorPids.add(pid);
+      ambiguousAnchors.set(pid, expected);
       continue;
     }
     ownedIds.add(pid);
@@ -487,19 +490,26 @@ export function ownedProcessTreeFromSnapshot(rootFingerprint, knownFingerprints 
   }
   const owned = [...new Map(result.map((item) => [item.pid, item])).values()];
   const admitted = new Set(owned.map((item) => item.pid));
-  let unresolved = false;
+  let unresolved = null;
   for (const item of byId.values()) {
-    if (admitted.has(item.pid) || ambiguousAnchorPids.has(item.pid)) continue;
-    if (!ambiguousAnchorPids.has(item.parentPid)) continue;
-    // A child created at or after the current holder's creation was spawned by
-    // that holder: it is proven foreign. Any earlier child may belong to the
-    // original process or to an earlier holder, so the tree stays unresolved.
-    const holderCreatedAtMs = Date.parse(byId.get(item.parentPid)?.creationTime);
+    if (admitted.has(item.pid) || ambiguousAnchors.has(item.pid)) continue;
+    if (!ambiguousAnchors.has(item.parentPid)) continue;
+    const anchor = ambiguousAnchors.get(item.parentPid);
     const childCreatedAtMs = Date.parse(item.creationTime);
+    // A known creation time outside the anchor's closed lifetime cannot belong
+    // to the original process: the recorded exit follows the real exit.
+    if (anchor && Number.isFinite(childCreatedAtMs) && !withinOwnerWindow(anchor, item)) continue;
+    // Inside the lifetime, a child created at or after the current holder's
+    // creation was spawned by that holder and is proven foreign. Any earlier
+    // child may belong to the original process or to an earlier holder.
+    const holderCreatedAtMs = Date.parse(byId.get(item.parentPid)?.creationTime);
     if (Number.isFinite(holderCreatedAtMs) && Number.isFinite(childCreatedAtMs)
       && childCreatedAtMs >= holderCreatedAtMs) continue;
-    unresolved = true;
+    unresolved ??= anchor
+      ? `ambiguous-anchor:${item.parentPid}:child=${item.pid}`
+      : `anchor-lifetime-missing:${item.parentPid}:child=${item.pid}`;
   }
+  if (diagnostics) diagnostics.unresolved = unresolved;
   if (!unresolved) return owned;
   // Exact targets stay actionable, but they never prove the whole tree ended.
   if (!owned.length) return null;

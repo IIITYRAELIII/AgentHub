@@ -78,11 +78,18 @@ terminal.
   anchor for descendants created inside its closed lifetime, and only while
   its PID is absent. Recorded exit times follow the real exit, so a current
   holder of a root or provider PID that is not the saved exact identity makes
-  that anchor ambiguous: the holder is never owned, an unknown child created
-  at or after the holder's creation is the holder's own and is excluded, and
-  any earlier unknown child, or any child when the holder creation time is
-  unknown, leaves the tree unresolved. An unresolved tree is not terminal:
-  completion keeps cleanup pending and never reports success. Descendants
+  that anchor ambiguous: the holder is never owned, and an unknown child whose
+  known creation time lies outside the anchor's recorded lifetime (including
+  the start tolerance) is foreign and excluded. Inside that lifetime an
+  unknown child created at or after the holder's creation is the holder's own
+  and is excluded; an earlier unknown child inside the bounded historical
+  lifetime, a child without a valid creation time, or any child when the
+  holder creation time is unknown leaves the tree unresolved. An exited root
+  without a recorded lifetime fails closed the same way, with an explicit
+  missing-lifetime diagnostic. An unresolved tree is not terminal: completion
+  keeps cleanup pending, never reports success, and re-checks ownership with
+  bounded backoff on the single owner timer until a later authoritative
+  snapshot resolves it; a re-check never dispatches a second stop. Descendants
   captured with their own exact fingerprint remain actionable, but stopping
   them never proves that an unresolved tree has ended.
 - Terminal is absorbing: late running, progress, snapshot or reconnect events

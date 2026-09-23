@@ -333,6 +333,58 @@ test("an occupied uncaptured provider anchor decides each unknown child against 
   assert.deepEqual(ownedProcessTreeFromSnapshot(root, [root, provider], [descendant], options), [descendant]);
 });
 
+test("an occupied anchor resolves unknown children by its recorded lifetime first", () => {
+  const base = Date.parse("2026-01-01T00:00:00.000Z");
+  const at = (ms) => new Date(base + ms).toISOString();
+  const child = (pid, parentPid, ms) => ({
+    pid,
+    parentPid,
+    creationTime: ms === null ? "not-a-time" : at(ms),
+    executablePath: "foreign.exe",
+    commandLine: "child",
+  });
+  const options = { platform: "win32", rootExited: true };
+  // Root lifetime 1.000..4.000 s, provider 2.000..4.000 s; each PID is held by a holder created at 6.000 s.
+  const root = { pid: 100, creationTime: at(1000), executablePath: "node", commandLine: "wrapper", startedAtMs: base + 1000, exitedAtMs: base + 4000 };
+  const provider = { pid: 101, startedAtMs: base + 2000, exitedAtMs: base + 4000 };
+  const rootHolder = { pid: 100, parentPid: 999, creationTime: at(6000), executablePath: "foreign.exe", commandLine: "holder" };
+  const providerRoot = { ...root, exitedAtMs: base + 8000 };
+  const providerHolder = { ...rootHolder, pid: 101 };
+  const cases = [
+    { name: "root", anchorRoot: root, known: [root], holder: rootHolder, anchorPid: 100, startedAt: 1000 },
+    { name: "provider", anchorRoot: providerRoot, known: [providerRoot, provider], holder: providerHolder, anchorPid: 101, startedAt: 2000 },
+  ];
+  for (const { name, anchorRoot, known, holder, anchorPid, startedAt } of cases) {
+    const classify = (ms, holderRow = holder) => ownedProcessTreeFromSnapshot(
+      anchorRoot, known, [holderRow, child(102, anchorPid, ms)], options,
+    );
+    assert.equal(classify(startedAt - 1000), null, `${name}: the start tolerance edge is inside the lifetime`);
+    assert.deepEqual(classify(startedAt - 1001), [], `${name}: before the start tolerance is proven foreign`);
+    assert.equal(classify(4000), null, `${name}: the recorded exit edge is inside the lifetime`);
+    assert.deepEqual(classify(4001), [], `${name}: after the recorded exit is proven foreign`);
+    assert.equal(classify(null), null, `${name}: a malformed child time is unresolved, not outside`);
+    assert.equal(classify(3000, { ...holder, creationTime: "" }), null, `${name}: an unknown holder time leaves an inside child unresolved`);
+    const diagnostics = {};
+    ownedProcessTreeFromSnapshot(anchorRoot, known, [holder, child(102, anchorPid, 3000)], { ...options, diagnostics });
+    assert.equal(diagnostics.unresolved, `ambiguous-anchor:${anchorPid}:child=102`);
+  }
+  const exact = { pid: 104, parentPid: 101, creationTime: at(2500), executablePath: "node", commandLine: "worker" };
+  const withOutside = ownedProcessTreeFromSnapshot(providerRoot, [providerRoot, provider, exact], [providerHolder, exact, child(102, 101, 4001)], options);
+  assert.deepEqual(withOutside, [exact]);
+  assert.notEqual(withOutside.unresolved, true, "an outside child adds no ambiguity to an exact target");
+  const withInside = ownedProcessTreeFromSnapshot(providerRoot, [providerRoot, provider, exact], [providerHolder, exact, child(102, 101, 3000)], options);
+  assert.deepEqual(withInside, [exact]);
+  assert.equal(withInside.unresolved, true);
+
+  // An exited root without a recorded lifetime fails closed with an explicit reason.
+  const diagnostics = {};
+  assert.equal(ownedProcessTreeFromSnapshot({ ...root, startedAtMs: undefined, exitedAtMs: undefined }, [], [child(102, 100, 9000)], {
+    ...options,
+    diagnostics,
+  }), null);
+  assert.equal(diagnostics.unresolved, "anchor-lifetime-missing:100:child=102");
+});
+
 test("processIsAlive recognizes the current process and rejects invalid ids", () => {
   assert.equal(processIsAlive(process.pid), true);
   assert.equal(processIsAlive(null), false);
