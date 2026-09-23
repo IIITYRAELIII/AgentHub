@@ -372,6 +372,7 @@ test("ClaudeRunController bounds one unknown stop and resumes only after that at
     };
     let alive = true;
     let stopCalls = 0;
+    let persistedUnknownAtStop = false;
     let releaseStop;
     const stop = new Promise((resolve) => { releaseStop = resolve; });
     let completed = 0;
@@ -382,7 +383,12 @@ test("ClaudeRunController bounds one unknown stop and resumes only after that at
       processAlive: () => alive,
       processFingerprintLookup: async () => ({ ...fingerprint }),
       processTreeLookup: async () => (alive ? [{ ...fingerprint, parentPid: 1 }] : []),
-      stopProcess: async () => { stopCalls += 1; return stop; },
+      onPersist: async (value) => { persistedUnknownAtStop ||= value.claudeStopUnknown === true; },
+      stopProcess: async () => {
+        assert.equal(run.claudeStopUnknown, true, "the durable unknown fence precedes the stop effect");
+        stopCalls += 1;
+        return stop;
+      },
       onComplete: async () => { completed += 1; },
     });
     const started = Date.now();
@@ -392,6 +398,7 @@ test("ClaudeRunController bounds one unknown stop and resumes only after that at
     assert.equal(run.claudeStopUnknown, true);
     assert.equal(run.claudeSettled, false);
     assert.equal(stopCalls, 1);
+    assert.equal(persistedUnknownAtStop, true);
     await controller.complete(run);
     assert.equal(stopCalls, 1, "an unknown stop outcome cannot start a second killer");
     alive = false;

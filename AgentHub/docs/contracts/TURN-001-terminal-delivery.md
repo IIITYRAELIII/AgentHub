@@ -60,9 +60,10 @@ terminal.
   bounded nonzero graceful-exit window, and verifies the exact root and
   descendant identities even when the root has already exited. A remaining
   live tree receives one owner-verified, deadline-bounded stop before terminal
-  delivery. An unconfirmed stop retains the run, descendant identities and the
-  same in-flight stop attempt; it cannot authorize another killer by numeric
-  PID alone.
+  delivery. Exact stop targets and an unknown-outcome fence are durable before
+  the first external stop effect. An unconfirmed stop retains the run,
+  descendant identities and the same in-flight stop attempt; it cannot
+  authorize another killer by numeric PID alone or after restart.
 - Terminal is absorbing: late running, progress, snapshot or reconnect events
   cannot revive it.
 - A bounded restart or opened-history-page reprojection may replace a corrupted terminal user
