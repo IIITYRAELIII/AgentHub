@@ -41,12 +41,32 @@ replacement and the Task CAS run under the Workspace Await lock. A concurrent
 winner makes the loser compose a new generation; it never promotes a stale
 prospective tree. An ambiguous Task CAS preserves the promoted candidate until
 authoritative lifecycle reconciliation proves whether acceptance committed.
+Prospective acceptance clones borrow immutable objects from the registered
+repository while retaining their own index and worktree. A conclusively accepted,
+rejected or stale attempt removes its exact prospective generation root; an
+ambiguous outcome preserves that root as recovery evidence.
+Immutable operation generations remain available while their operation is active,
+waiting or has an unknown external effect. After a terminal outcome, the durable
+operation, receipts and generation identity remain in SQLite while their owned
+filesystem generation roots are removed.
+
+When a selected Task replaces a result already captured by the operation, the
+new result must descend from the prior result. An unrelated result raises the
+typed `RELEASE_RESULT_LINEAGE_MISMATCH`, returns that same selected Task to its
+executor through the canonical lifecycle owner, and leaves the release operation
+waiting for a reviewed descendant correction. The corrected net projection
+replaces obsolete bytes from the prior result while preserving neighboring
+selected Task projections.
 
 The public release command names the initiating Stream and Thread explicitly.
 It also binds the exact prepared `CHANGELOG.md` bytes and both raw and LF-normalized
 digests into the immutable authorization fingerprint. Generation composition
 replays those bytes before freeze; it never substitutes publication metadata
 from the stable runner checkout or an older repository snapshot.
+The durable metadata envelope carries a bounded source path, byte length and raw
+plus canonical digests rather than base64-expanding the document through the
+control transport. Composition re-reads and verifies the complete supported
+repository release notes up to 8 MiB; callers do not truncate or summarize them.
 
 At cutover, old checkpoint and publication-status files are imported once as
 immutable evidence. Only a status whose revision and owned release root match an
@@ -1183,6 +1203,27 @@ not deploy a contour per Task branch. The contour status records the exact
 `dev` head it displays. Candidate preparation completes before the current
 runtime is stopped, so a Git or build preparation failure leaves the previous
 working contour available.
+
+The agent UI smoke runs only against the verified isolated fake provider. It
+owns one exact smoke Workspace/Stream/Thread identity in contour-local artifacts,
+reuses it while the public snapshot proves that the same Thread is current and
+attachable, and otherwise prepares a replacement only through the public
+`new-task` lifecycle. Existing copied Streams, their names and display order are
+not conversation authority. Before a create or UI send can reach the server,
+the smoke artifact durably records its exact public request, command identity
+and client message identity. A known HTTP rejection fails immediately.
+
+A queued/deferred send receipt with no provider turn is only an admission ACK,
+not successful smoke evidence. The smoke validates its command, client,
+Stream/Thread and durable item identity, then reads the canonical public snapshot
+until that same message receipt names the exact accepted provider turn; it does
+not submit the message again or synthesize the turn from request fields. After
+an unknown outcome or a crash between effect, response, terminal recording and
+acknowledgement, recovery reads that original durable identity and creates no new
+submission or provider effect. Successful evidence binds the exact returned
+control receipt, Stream, provider, Thread, client message, provider turn,
+rendered response and journal record. Matching text in another or older
+conversation is not smoke success.
 
 Every refresh is one persisted maintenance operation, not a provider turn. Its
 identity binds the exact contour root, contour marker, port, model, source `dev`

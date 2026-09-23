@@ -321,6 +321,17 @@ function normalizedFrozenTasks(tasks = []) {
   ));
 }
 
+function resultLineageMismatchError({ taskId, priorResultCommit, resultCommit }) {
+  const error = new Error(
+    `Selected result ${resultCommit} for Task ${taskId} is not a correction descendant of ${priorResultCommit}`,
+  );
+  error.code = "RELEASE_RESULT_LINEAGE_MISMATCH";
+  error.taskId = taskId;
+  error.priorResultCommit = priorResultCommit;
+  error.resultCommit = resultCommit;
+  return error;
+}
+
 async function selectedResultSuccessorReuse({ checkpoint, clone, tasks, baseCommit, workspaceId }) {
   const checkpointPhase = String(checkpoint?.phase ?? "");
   if (!["prepared", "frozen"].includes(checkpointPhase)
@@ -542,6 +553,7 @@ export async function assertReleaseCandidateContourSource({ sourceRoot: requeste
 export class ReleaseGitWorkspaceService {
   #contourExternalEffects;
   #validationBundle = null;
+  #validationReferenceRoot = null;
 
   constructor({ dataDir, contourExternalEffects = null } = {}) {
     this.#contourExternalEffects = assertContourExternalEffects(contourExternalEffects);
@@ -680,7 +692,8 @@ export class ReleaseGitWorkspaceService {
       await runGit([
         "-c", "core.longpaths=true", "clone", "--single-branch", "--branch", "main",
         "--no-local", "--no-hardlinks", "--no-checkout",
-        this.#validationBundle ?? primary.root, layout.releaseRoot,
+        ...(this.#validationReferenceRoot ? ["--reference-if-able", this.#validationReferenceRoot] : []),
+        this.#validationBundle ?? this.#validationReferenceRoot ?? primary.root, layout.releaseRoot,
       ], {
         cwd: layout.root,
         timeoutMs: 300_000,
@@ -773,6 +786,7 @@ export class ReleaseGitWorkspaceService {
     operationId, generation, planRevision, projectRoot, workspaceId = null,
     frozenTasks = [], approvedBaseCommit = null, baseProvenance = null,
     validateBeforeCommit = null, changelogContent = undefined, freezePublication = true,
+    ephemeral = false,
   } = {}) {
     this.#assertAvailable("prepareGeneration");
     const operation = String(operationId ?? "").trim();
@@ -786,84 +800,127 @@ export class ReleaseGitWorkspaceService {
     const generationDataDir = path.join(this.dataDir, "release-gens", generationKey);
     const lock = path.join(this.dataDir, "locks", `release-generation-${generationKey}`);
     return withInterprocessLocks([lock], async () => {
-      await mkdir(generationDataDir, { recursive: true });
-      const identityFile = path.join(generationDataDir, "identity.json");
-      const identity = {
-        schemaVersion: 1,
-        operationId: operation,
-        generation: generationNumber,
-        repositoryRoot: sourceRoot,
-        identitySha256: generationIdentitySha256,
-      };
-      const existingIdentity = await readJson(identityFile);
-      if (existingIdentity && JSON.stringify(existingIdentity) !== JSON.stringify(identity)) {
-        throw new Error("release generation directory identity collision");
-      }
-      if (!existingIdentity) await writeJsonAtomic(identityFile, identity);
-      const bundle = path.join(generationDataDir, "source.bundle");
-      if (!await fileExists(bundle)) {
-        const temporaryBundle = `${bundle}.${process.pid}.${randomUUID()}.tmp`;
-        try {
-          await runGit(["bundle", "create", temporaryBundle, "--all"], {
-            cwd: sourceRoot, timeoutMs: 300_000,
-          });
-          await rename(temporaryBundle, bundle);
-        } finally {
-          await rm(temporaryBundle, { force: true });
+      try {
+        await mkdir(generationDataDir, { recursive: true });
+        const identityFile = path.join(generationDataDir, "identity.json");
+        const identity = {
+          schemaVersion: 1,
+          operationId: operation,
+          generation: generationNumber,
+          repositoryRoot: sourceRoot,
+          identitySha256: generationIdentitySha256,
+        };
+        const existingIdentity = await readJson(identityFile);
+        if (existingIdentity && JSON.stringify(existingIdentity) !== JSON.stringify(identity)) {
+          throw new Error("release generation directory identity collision");
         }
-      }
-      const isolated = new ReleaseGitWorkspaceService({
-        dataDir: generationDataDir,
-        contourExternalEffects: this.#contourExternalEffects,
-      });
-      isolated.#validationBundle = bundle;
-      const candidate = await isolated.prepareCandidate({
-        planRevision, projectRoot, workspaceId, frozenTasks, approvedBaseCommit,
-        baseProvenance, validateBeforeCommit, preserveFrozen: false,
-      });
-      if (!freezePublication) {
+        if (!existingIdentity) await writeJsonAtomic(identityFile, identity);
+        const bundle = path.join(generationDataDir, "source.bundle");
+        if (!ephemeral && !await fileExists(bundle)) {
+          const temporaryBundle = `${bundle}.${process.pid}.${randomUUID()}.tmp`;
+          try {
+            await runGit(["bundle", "create", temporaryBundle, "--all"], {
+              cwd: sourceRoot, timeoutMs: 300_000,
+            });
+            await rename(temporaryBundle, bundle);
+          } finally {
+            await rm(temporaryBundle, { force: true });
+          }
+        }
+        const isolated = new ReleaseGitWorkspaceService({
+          dataDir: generationDataDir,
+          contourExternalEffects: this.#contourExternalEffects,
+        });
+        if (ephemeral) isolated.#validationReferenceRoot = sourceRoot;
+        else isolated.#validationBundle = bundle;
+        const candidate = await isolated.prepareCandidate({
+          planRevision, projectRoot, workspaceId, frozenTasks, approvedBaseCommit,
+          baseProvenance, validateBeforeCommit, preserveFrozen: false,
+        });
+        if (!freezePublication) {
+          return {
+            ...candidate,
+            tree: await runGit(["rev-parse", `${candidate.preReleaseHead}^{tree}`], { cwd: candidate.releaseRoot }),
+            operationId: operation,
+            generation: generationNumber,
+            generationRoot: generationDataDir,
+          };
+        }
+        const frozenChangelog = changelogContent === undefined
+          ? await readFile(path.join(candidate.releaseRoot, "CHANGELOG.md")).catch((error) => {
+            if (error.code === "ENOENT") return null;
+            throw error;
+          })
+          : changelogContent;
+        if (changelogContent !== undefined) {
+          const changelogFile = path.join(candidate.releaseRoot, "CHANGELOG.md");
+          if (frozenChangelog === null) await rm(changelogFile, { force: true });
+          else await writeFile(changelogFile, Buffer.from(frozenChangelog));
+        }
+        await isolated.freezePublicationCandidate({
+          projectRoot: sourceRoot,
+          workspaceId,
+          expectedPlanRevision: planRevision,
+          expectedPreparedHead: candidate.preReleaseHead,
+          changelogContent: frozenChangelog,
+          validateBeforeCommit: validateBeforeCommit ?? (async () => {}),
+        });
+        const frozen = await isolated.frozenCandidate(sourceRoot);
+        const tree = await runGit(["rev-parse", `${frozen.preReleaseHead}^{tree}`], {
+          cwd: frozen.releaseRoot,
+        });
         return {
           ...candidate,
-          tree: await runGit(["rev-parse", `${candidate.preReleaseHead}^{tree}`], { cwd: candidate.releaseRoot }),
+          ...frozen,
+          frozenTasks: candidate.frozenTasks,
+          netProjectedTaskIds: candidate.netProjectedTaskIds,
+          tree,
           operationId: operation,
           generation: generationNumber,
           generationRoot: generationDataDir,
         };
-      }
-      const frozenChangelog = changelogContent === undefined
-        ? await readFile(path.join(candidate.releaseRoot, "CHANGELOG.md")).catch((error) => {
-        if (error.code === "ENOENT") return null;
+      } catch (error) {
+        if (ephemeral) {
+          await rm(generationDataDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 })
+            .catch((cleanupError) => { error.cleanupError = cleanupError; });
+        }
         throw error;
-          })
-        : changelogContent;
-      if (changelogContent !== undefined) {
-        const changelogFile = path.join(candidate.releaseRoot, "CHANGELOG.md");
-        if (frozenChangelog === null) await rm(changelogFile, { force: true });
-        else await writeFile(changelogFile, Buffer.from(frozenChangelog));
       }
-      await isolated.freezePublicationCandidate({
-        projectRoot: sourceRoot,
-        workspaceId,
-        expectedPlanRevision: planRevision,
-        expectedPreparedHead: candidate.preReleaseHead,
-        changelogContent: frozenChangelog,
-        validateBeforeCommit: validateBeforeCommit ?? (async () => {}),
-      });
-      const frozen = await isolated.frozenCandidate(sourceRoot);
-      const tree = await runGit(["rev-parse", `${frozen.preReleaseHead}^{tree}`], {
-        cwd: frozen.releaseRoot,
-      });
-      return {
-        ...candidate,
-        ...frozen,
-        frozenTasks: candidate.frozenTasks,
-        netProjectedTaskIds: candidate.netProjectedTaskIds,
-        tree,
-        operationId: operation,
-        generation: generationNumber,
-        generationRoot: generationDataDir,
-      };
     });
+  }
+
+  async discardGenerationCandidate(candidate) {
+    this.#assertAvailable("discardGenerationCandidate");
+    const releaseGenerationsRoot = path.join(this.dataDir, "release-gens");
+    const generationRoot = canonicalPath(String(candidate?.generationRoot ?? ""));
+    if (!generationRoot || samePath(generationRoot, releaseGenerationsRoot)
+        || !pathInside(releaseGenerationsRoot, generationRoot)) {
+      throw new Error("release generation cleanup requires an exact Agent Hub-owned generation root");
+    }
+    const identity = await readJson(path.join(generationRoot, "identity.json"));
+    if (!identity
+        || identity.operationId !== String(candidate?.operationId ?? "")
+        || identity.generation !== Number(candidate?.generation)
+        || identity.identitySha256 !== sha256(`${identity.operationId}:${identity.generation}:${identity.repositoryRoot}`)) {
+      throw new Error("release generation cleanup identity changed");
+    }
+    await rm(generationRoot, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+  }
+
+  async assertSelectedResultLineage({ candidate, previousSelectedResults = [] } = {}) {
+    this.#assertAvailable("assertSelectedResultLineage");
+    const previous = new Map((Array.isArray(previousSelectedResults) ? previousSelectedResults : [])
+      .map((item) => [String(item?.taskId ?? ""), String(item?.resultCommit ?? "")]));
+    for (const task of candidate?.frozenTasks ?? []) {
+      const priorResultCommit = previous.get(String(task.taskId));
+      if (!priorResultCommit || priorResultCommit === task.resultCommit) continue;
+      const related = await gitMaybe(["merge-base", "--is-ancestor", priorResultCommit, task.resultCommit], {
+        cwd: candidate.releaseRoot,
+      });
+      if (related === null) {
+        throw resultLineageMismatchError({ taskId: task.taskId, priorResultCommit, resultCommit: task.resultCommit });
+      }
+    }
   }
 
   async promoteGenerationCandidate({ projectRoot, candidate, validateBeforeCommit = null, commitPrepared = null } = {}) {

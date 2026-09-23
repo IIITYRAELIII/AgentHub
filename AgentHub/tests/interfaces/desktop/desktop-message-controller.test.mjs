@@ -501,6 +501,17 @@ test("desktop message acknowledgement does not wait for a full snapshot", async 
   });
 
   assert.equal(result.accepted, true);
+  assert.deepEqual({
+    streamId: result.streamId,
+    provider: result.provider,
+    threadId: result.threadId,
+    clientUserMessageId: result.clientUserMessageId,
+  }, {
+    streamId: "stream-1",
+    provider: "codex",
+    threadId: "thread-1",
+    clientUserMessageId: "message-fast-ack",
+  });
   assert.equal(snapshotCalls, 0);
   assert.equal("snapshot" in result, false);
 });

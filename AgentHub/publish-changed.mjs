@@ -584,7 +584,8 @@ export async function runReleaseOperationCli(args = process.argv.slice(2), {
   const changelogBytes = await read(path.join(root, "CHANGELOG.md"));
   const changelogBuffer = Buffer.isBuffer(changelogBytes) ? changelogBytes : Buffer.from(changelogBytes);
   const releaseMetadata = {
-    bytesBase64: changelogBuffer.toString("base64"),
+    sourcePath: path.join(root, "CHANGELOG.md"),
+    byteLength: changelogBuffer.length,
     rawSha256: createHash("sha256").update(changelogBuffer).digest("hex"),
     canonicalSha256: createHash("sha256").update(changelogBuffer.toString("utf8").replace(/\r\n/gu, "\n")).digest("hex"),
   };

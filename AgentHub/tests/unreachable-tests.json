@@ -16,6 +16,13 @@
       "reason": "Поднимает настоящий Hub с изолированной SQLite и блокировкой writer. Повторный замер S3 2026-09-11 на 99240e5e после исправления harness: PASS, файл 52.09 с, кейс 48.15 с; thread/read timeout, health check и recycling — 0. Ранее: 113 с и FAIL. Один прогон на загруженной машине; разница не является серией benchmark и не доказывает аддитивный вклад таймаутов. Остаётся в явном reliability-профиле: добавление примерно 52 с в обязательный набор отдельно не согласовано.",
       "owner": "runtime/persistence",
       "openQuestion": false
+    },
+    {
+      "file": "tests/e2e/test-contour-scenario6.e2e.test.mjs",
+      "profile": "acceptance",
+      "reason": "Приёмка HUB-260 §13 сценарий 6: настоящий Hub с Web App, fake Codex, headless Edge и production runTestContourUiSmoke на исторических именованных, живых безымянных Threads и пустом каталоге, плюс ранний отказ и unknown без повторной отправки. Запуск: node --test --test-concurrency=1 tests/e2e/test-contour-scenario6.e2e.test.mjs",
+      "owner": "HUB-260 / Test Contour smoke",
+      "openQuestion": false
     }
   ],
   "unreachable": [

@@ -1,16 +1,154 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { promisify } from "node:util";
 
+import { releaseOperationPublicationArguments } from "../../../release-operation-publication-runner.mjs";
+import { ReleaseGitWorkspaceService } from "../../../src/infrastructure/filesystem/release-git-workspace.mjs";
+import { agentHubCalendarVersion } from "../../../src/infrastructure/filesystem/release-version.mjs";
+import { ReleaseOperationStore } from "../../../src/infrastructure/persistence/release-operation-store.mjs";
 import { ReleaseOperationPublication } from "../../../src/infrastructure/process/release-operation-publication.mjs";
+
+const execute = promisify(execFile);
+
+async function git(cwd, ...args) {
+  return (await execute("git", args, { cwd, encoding: "utf8", windowsHide: true })).stdout.trim();
+}
 
 function identity(value) {
   return createHash("sha256").update(String(value)).digest("hex");
 }
+
+test("stable publication runner preserves the initiating Stream and Thread for start and resume", () => {
+  const operation = {
+    workspaceId: "workspace-1",
+    streamId: "stream-initiator",
+    threadId: "thread-initiator",
+    authorization: { validationMode: "full" },
+  };
+  const candidate = { baseCommit: "base-commit" };
+  assert.deepEqual(releaseOperationPublicationArguments({ operation, candidate, saved: null }), [
+    "--workspace", "workspace-1",
+    "--stream", "stream-initiator",
+    "--thread", "thread-initiator",
+    "--from", "base-commit",
+    "--full-tests",
+  ]);
+  assert.deepEqual(releaseOperationPublicationArguments({
+    operation: { ...operation, authorization: { validationMode: "focused" } },
+    candidate,
+    saved: { status: "failed" },
+  }), [
+    "--resume",
+    "--workspace", "workspace-1",
+    "--stream", "stream-initiator",
+    "--thread", "thread-initiator",
+    "--from", "base-commit",
+    "--validation=focused",
+  ]);
+});
+
+test("stable runner process publishes the exact SQLite generation to an isolated Git endpoint", { timeout: 60000 }, async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "release-operation-runner-process-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const remote = path.join(root, "origin.git");
+  const primary = path.join(root, "primary");
+  const taskRoot = path.join(root, "task");
+  await git(root, "init", "--bare", "--initial-branch=main", remote);
+  await git(root, "clone", remote, primary);
+  await git(primary, "config", "user.name", "Agent Hub Test");
+  await git(primary, "config", "user.email", "agent-hub@example.invalid");
+  await mkdir(path.join(primary, "AgentHub"), { recursive: true });
+  const releaseVersion = agentHubCalendarVersion();
+  await writeFile(path.join(primary, "AgentHub", "package.json"), `${JSON.stringify({
+    name: "agent-hub", version: releaseVersion, private: true,
+    scripts: { check: "node -e \"process.exit(0)\"" },
+  }, null, 2)}\n`, "utf8");
+  await writeFile(path.join(primary, "AgentHub", "package-lock.json"), `${JSON.stringify({
+    name: "agent-hub",
+    version: releaseVersion,
+    lockfileVersion: 3,
+    requires: true,
+    packages: { "": { name: "agent-hub", version: releaseVersion } },
+  }, null, 2)}\n`, "utf8");
+  await writeFile(path.join(primary, "CHANGELOG.md"), "base notes\n", "utf8");
+  await git(primary, "add", ".");
+  await git(primary, "commit", "-m", "base");
+  await git(primary, "push", "-u", "origin", "main");
+  const baseCommit = await git(primary, "rev-parse", "HEAD");
+  await git(primary, "worktree", "add", "-b", "HUB-runner-process", taskRoot, "main");
+  await writeFile(path.join(taskRoot, "CHANGELOG.md"), "task notes\n", "utf8");
+  await git(taskRoot, "add", "CHANGELOG.md");
+  await git(taskRoot, "commit", "-m", "task result");
+  const resultCommit = await git(taskRoot, "rev-parse", "HEAD");
+  const generationWorkspaces = new ReleaseGitWorkspaceService({ dataDir: path.join(root, "generation-data") });
+  const candidate = await generationWorkspaces.prepareGeneration({
+    operationId: "operation-process",
+    generation: 1,
+    planRevision: "plan-process",
+    projectRoot: primary,
+    workspaceId: "workspace-process",
+    approvedBaseCommit: baseCommit,
+    frozenTasks: [{
+      taskId: "task-process",
+      taskRevision: 3,
+      baseCommit,
+      resultCommit,
+      integrations: [{ commit: resultCommit, parent: baseCommit, order: 1 }],
+    }],
+  });
+  const dataDir = path.join(root, "operation-data");
+  await mkdir(dataDir, { recursive: true });
+  const store = new ReleaseOperationStore({ dataDir, idFactory: () => "operation-process" });
+  const target = { targetId: "production", kind: "agent-hub-publication", repositoryRoot: primary };
+  const operation = store.create({
+    requestId: "runner-process-request",
+    workspaceId: "workspace-process",
+    streamId: "stream-process",
+    threadId: "thread-process",
+    authorization: { taskIds: ["task-process"], approvedTargets: [target], validationMode: "focused" },
+    runnerVersion: "runner-process",
+  }).operation;
+  const generation = store.putGeneration({
+    operationId: operation.operationId,
+    generation: 1,
+    repositoryBases: [{ repositoryRoot: primary, baseCommit }],
+    selectedResults: [{
+      taskId: "task-process", resultCommit, tree: await git(taskRoot, "rev-parse", `${resultCommit}^{tree}`),
+      acceptanceRevision: 3,
+    }],
+    candidates: [{
+      repositoryRoot: primary,
+      releaseRoot: candidate.releaseRoot,
+      generationRoot: candidate.generationRoot,
+      commit: candidate.preReleaseHead,
+      tree: candidate.tree,
+      manifestHash: candidate.manifestHash,
+      planRevision: candidate.planRevision,
+      baseCommit: candidate.baseCommit,
+      frozenTasks: candidate.frozenTasks,
+      manifest: candidate.manifest,
+    }],
+    sourceFingerprint: "runner-process-source",
+    runnerVersion: "runner-process",
+    createdAt: "2026-09-23T00:00:00.000Z",
+  }).generation;
+  const publication = new ReleaseOperationPublication({
+    dataDir,
+    runtimeRoot: path.join(root, "runtime"),
+    environment: { ...process.env, LOCALAPPDATA: path.join(root, "local-app-data") },
+    runnerFile: path.resolve("release-operation-publication-runner.mjs"),
+  });
+  const effect = await publication.publish({ operation, generation, target });
+  assert.equal(effect.status, "applied");
+  assert.equal(effect.revision, candidate.preReleaseHead);
+  assert.equal(await git(remote, "rev-parse", "refs/heads/main"), candidate.preReleaseHead);
+});
 
 test("publication launches the stable owner runner and reads its exact generation effect", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "release-operation-publication-"));

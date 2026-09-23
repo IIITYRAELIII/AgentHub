@@ -321,9 +321,12 @@ export class WorkspaceReleasePreflightService {
         prospectiveOnly: true,
         generationIdentity: { operationId: `await-${operation}`, generation: attempt },
         freezeGeneration: false,
+        ephemeralGeneration: true,
       });
+      let accepted;
+      let acceptanceError = null;
       try {
-        return await this.withAwaitTransition(workspaceId, async () => {
+        accepted = await this.withAwaitTransition(workspaceId, async () => {
       const current = await this.releasePlanner.plan(workspaceId, { acceptingTask });
       if (current.revision !== prospective.planRevision) {
         const error = new Error("Task changed during PreRelease acceptance preparation");
@@ -363,8 +366,26 @@ export class WorkspaceReleasePreflightService {
       return committed;
         });
       } catch (error) {
-        if (error?.code !== "AWAIT_ACCEPTANCE_STALE" || attempt === 4) throw error;
+        acceptanceError = error;
       }
+      const cleanupErrors = [];
+      const retainsUnknownEvidence = ["AWAIT_ACCEPTANCE_UNKNOWN", "AWAIT_PREPARATION_UNKNOWN"]
+        .includes(acceptanceError?.code);
+      if (!retainsUnknownEvidence) {
+        for (const candidate of prospective.releaseCandidates) {
+          try {
+            await this.releaseGitWorkspaces.discardGenerationCandidate(candidate);
+          } catch (error) {
+            cleanupErrors.push(error);
+          }
+        }
+      }
+      if (acceptanceError) {
+        if (cleanupErrors.length) acceptanceError.cleanupErrors = cleanupErrors;
+        if (acceptanceError.code !== "AWAIT_ACCEPTANCE_STALE" || attempt === 4) throw acceptanceError;
+        continue;
+      }
+      return cleanupErrors.length ? { ...accepted, cleanupWarnings: cleanupErrors } : accepted;
     }
     throw new Error("Await acceptance could not stabilize its prospective generation");
   }
@@ -387,6 +408,7 @@ export class WorkspaceReleasePreflightService {
 
   async prepareOperationGeneration({
     workspaceId, operationId, generation, taskIds, approvedRepositories = [], changelogContent = undefined,
+    previousSelectedResults = [],
   } = {}) {
     if (typeof this.releaseGitWorkspaces.prepareGeneration !== "function") {
       throw new Error("immutable release generation preparation is unavailable");
@@ -395,9 +417,28 @@ export class WorkspaceReleasePreflightService {
       workspaceId,
       selectedTaskIds: taskIds,
       generationIdentity: { operationId, generation },
+      previousSelectedResults,
       ...(changelogContent === undefined ? {} : { changelogContent }),
       ...(approvedRepositories.length ? { reviewedMainApprovals: { approvedRepositories } } : {}),
     });
+  }
+
+  async discardOperationGeneration(generation) {
+    requiredMethod(this.releaseGitWorkspaces, "discardGenerationCandidate");
+    const cleanupWarnings = [];
+    for (const candidate of generation?.candidates ?? []) {
+      if (!candidate.generationRoot) continue;
+      try {
+        await this.releaseGitWorkspaces.discardGenerationCandidate({
+          ...candidate,
+          operationId: generation.operationId,
+          generation: generation.generation,
+        });
+      } catch (error) {
+        cleanupWarnings.push(error);
+      }
+    }
+    return cleanupWarnings;
   }
 
   async operationSelection({ workspaceId, taskIds } = {}) {
@@ -470,7 +511,8 @@ export class WorkspaceReleasePreflightService {
   async #prepareAwaitSet({ workspaceId, expectedPlanRevision = null, fallbackProjectRoots = [], preserveFrozen = false,
     acceptingTask = null, commitPrepared = null, lease = null, validateOnly = false,
     reviewedMainApprovals = null, selectedTaskIds = null, generationIdentity = null, changelogContent = undefined,
-    prospectiveOnly = false, freezeGeneration = true,
+    prospectiveOnly = false, freezeGeneration = true, ephemeralGeneration = false,
+    previousSelectedResults = [],
   } = {}) {
     if (validateOnly && commitPrepared) throw new Error("Composition validation cannot commit Task acceptance");
     if (validateOnly) requiredMethod(this.releaseGitWorkspaces, "validateCandidate");
@@ -634,6 +676,7 @@ export class WorkspaceReleasePreflightService {
         preserveFrozen,
         ...(generationIdentity ?? {}),
         ...(generationIdentity ? { freezePublication: freezeGeneration } : {}),
+        ...(generationIdentity ? { ephemeral: ephemeralGeneration } : {}),
         ...(generationIdentity ? { changelogContent } : {}),
         validateBeforeCommit: async () => { await validatePlan(); await validateBases(); },
         ...(acceptingTask && !prospectiveOnly ? { commitPrepared: async (prepared) => {
@@ -647,6 +690,12 @@ export class WorkspaceReleasePreflightService {
       }
     };
     await prepare(0);
+    if (previousSelectedResults.length) {
+      requiredMethod(this.releaseGitWorkspaces, "assertSelectedResultLineage");
+      for (const candidate of releaseCandidates) {
+        await this.releaseGitWorkspaces.assertSelectedResultLineage({ candidate, previousSelectedResults });
+      }
+    }
     return commitPrepared ? committedResult : result();
   }
 

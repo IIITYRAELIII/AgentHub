@@ -654,6 +654,7 @@ test("desktop snapshot exposes bounded delivery receipts for client reconciliati
     fingerprint: "private-fingerprint",
     result: {
       accepted: true,
+      streamId: "stream-1",
       runId: "run-2",
       turnId: "turn-2",
       clientProjectionIntent: "conversation",
@@ -666,6 +667,7 @@ test("desktop snapshot exposes bounded delivery receipts for client reconciliati
     provider: "codex",
     threadId: "thread-1",
     clientUserMessageId: "client-lost-result",
+    streamId: "stream-1",
     clientProjectionIntent: "conversation",
     createdAt: "2026-07-30T10:01:30.000Z",
     accepted: true,

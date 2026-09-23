@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -248,6 +248,13 @@ test("Await and withdrawal retain the published base despite unreviewed origin m
 
 test("Await leaves PreRelease unchanged after SQLite rejection and rebuilds it after a lost committed reply", { timeout: 90000 }, async (t) => {
   const f = await fixture(t);
+  const prospectiveRoots = [];
+  const originalPrepare = f.releaseGitWorkspaces.prepareGeneration.bind(f.releaseGitWorkspaces);
+  f.releaseGitWorkspaces.prepareGeneration = async (options) => {
+    const candidate = await originalPrepare(options);
+    prospectiveRoots.push(candidate.generationRoot);
+    return candidate;
+  };
   const first = await f.testedTask("First", "first.txt", "first\n");
   const { candidate } = await acceptAndPrepare(f, first, "first");
   const checkpoint = path.join(path.dirname(candidate.releaseRoot), "checkpoint.json");
@@ -272,6 +279,10 @@ test("Await leaves PreRelease unchanged after SQLite rejection and rebuilds it a
   assert.equal(recovered.releaseCandidate.status, "prepared");
   assert.equal(recovered.releaseCandidate.planRevision, (await f.releasePlanner.plan(f.workspace.id)).revision);
   assert.equal(await git(candidate.releaseRoot, "show", "PreRelease:next.txt"), "next");
+  for (const generationRoot of prospectiveRoots) await assert.rejects(access(generationRoot), { code: "ENOENT" });
+  assert.deepEqual(await readdir(path.join(f.root, "data", "release-gens")).catch((error) => (
+    error.code === "ENOENT" ? [] : Promise.reject(error)
+  )), []);
 });
 
 test("concurrent Await acceptances compose in independent generations and serialize only promotion", { timeout: 120000 }, async (t) => {
@@ -280,9 +291,13 @@ test("concurrent Await acceptances compose in independent generations and serial
   const second = await f.testedTask("Concurrent second", "second.txt", "second\n");
   const original = f.releaseGitWorkspaces.prepareGeneration.bind(f.releaseGitWorkspaces);
   const roots = [];
+  const usedAlternates = [];
   f.releaseGitWorkspaces.prepareGeneration = async (options) => {
     const candidate = await original(options);
     roots.push(candidate.generationRoot);
+    usedAlternates.push((await readFile(path.join(candidate.releaseGitCommonDir, "objects", "info", "alternates"), "utf8"))
+      .trim().replaceAll("\\", "/").endsWith("/.git/objects"));
+    await assert.rejects(access(path.join(candidate.generationRoot, "source.bundle")), { code: "ENOENT" });
     return candidate;
   };
   const [firstResult, secondResult] = await Promise.all([
@@ -292,6 +307,11 @@ test("concurrent Await acceptances compose in independent generations and serial
   assert.equal(firstResult.task.workflowStatus, "awaiting_implementation");
   assert.equal(secondResult.task.workflowStatus, "awaiting_implementation");
   assert.ok(new Set(roots).size >= 2);
+  assert.ok(usedAlternates.every(Boolean));
+  for (const generationRoot of roots) await assert.rejects(access(generationRoot), { code: "ENOENT" });
+  assert.deepEqual(await readdir(path.join(f.root, "data", "release-gens")).catch((error) => (
+    error.code === "ENOENT" ? [] : Promise.reject(error)
+  )), []);
   const prepared = await f.releasePreflight.prepareAwaitSet({ workspaceId: f.workspace.id });
   assert.equal(await git(prepared.releaseCandidates[0].releaseRoot, "show", "PreRelease:first.txt"), "first");
   assert.equal(await git(prepared.releaseCandidates[0].releaseRoot, "show", "PreRelease:second.txt"), "second");

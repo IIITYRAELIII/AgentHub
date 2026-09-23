@@ -142,6 +142,10 @@ test("one operation generation isolates source bundles per repository", { timeou
   assert.equal(await git(firstCandidate.releaseRoot, "symbolic-ref", "--short", "HEAD"), "main");
   assert.equal(await git(secondCandidate.releaseRoot, "symbolic-ref", "--short", "HEAD"), "main");
   assert.equal(await git(firstCandidate.releaseRoot, "show", `${firstCandidate.preReleaseHead}:CHANGELOG.md`), "prepared release notes");
+  await service.discardGenerationCandidate(firstCandidate);
+  await service.discardGenerationCandidate(secondCandidate);
+  await assert.rejects(stat(firstCandidate.generationRoot), { code: "ENOENT" });
+  await assert.rejects(stat(secondCandidate.generationRoot), { code: "ENOENT" });
 });
 
 for (const binaryOnly of [false, true]) test(`PreRelease preserves ${binaryOnly ? "terminal binary patch delimiters" : "binary patch bytes and a trailing blank context line"}`, { timeout: 20000 }, async (context) => {
@@ -1395,6 +1399,70 @@ test("prepared candidate reuses one newly selected correction from its snapshot 
   assert.equal(await git(refreshed.releaseRoot, "show", `${refreshed.preReleaseHead}:AgentHub/shared.txt`), "fixed");
   assert.deepEqual((await git(refreshed.releaseRoot, "diff", "--name-only", accepted.preReleaseHead,
     refreshed.preReleaseHead)).split("\n").filter(Boolean), ["AgentHub/shared.txt"]);
+});
+
+test("operation lineage rejects an unrelated result and accepts a descendant net correction", { timeout: 30000 }, async (context) => {
+  const setup = await fixture(context);
+  const neighborResult = await taskResult(setup, context, {
+    branch: "HUB-lineage-neighbor", file: "AgentHub/neighbor.txt", content: "neighbor\n",
+  });
+  const oldResult = await taskResult(setup, context, {
+    branch: "HUB-lineage-old", file: "AgentHub/selected.txt", content: "obsolete-r1\n",
+  });
+  const unrelatedResult = await taskResult(setup, context, {
+    branch: "HUB-lineage-unrelated", file: "AgentHub/selected.txt", content: "unrelated-r2\n",
+  });
+  const neighborTask = {
+    taskId: "task-neighbor", taskRevision: 1, baseCommit: setup.baseCommit, resultCommit: neighborResult,
+    integrations: [{ commit: neighborResult, parent: setup.baseCommit, order: 1 }],
+  };
+  const unrelatedTask = {
+    taskId: "task-owner", taskRevision: 2, baseCommit: setup.baseCommit, resultCommit: unrelatedResult,
+    integrations: [{ commit: unrelatedResult, parent: setup.baseCommit, order: 2 }],
+  };
+  const unrelatedCandidate = await setup.service.prepareCandidate({
+    planRevision: "plan-lineage-unrelated", workspaceId: "workspace", projectRoot: setup.primary,
+    frozenTasks: [neighborTask, unrelatedTask],
+  });
+  await assert.rejects(setup.service.assertSelectedResultLineage({
+    candidate: unrelatedCandidate,
+    previousSelectedResults: [{ taskId: "task-owner", resultCommit: oldResult }],
+  }), (error) => {
+    assert.equal(error.code, "RELEASE_RESULT_LINEAGE_MISMATCH");
+    assert.equal(error.taskId, "task-owner");
+    assert.equal(error.priorResultCommit, oldResult);
+    assert.equal(error.resultCommit, unrelatedResult);
+    return true;
+  });
+
+  const correctionRoot = path.join(setup.root, "task-lineage-correction");
+  await git(setup.primary, "worktree", "add", "-b", "HUB-lineage-correction", correctionRoot, oldResult);
+  context.after(() => git(setup.primary, "worktree", "remove", "--force", correctionRoot).catch(() => {}));
+  await writeFile(path.join(correctionRoot, "AgentHub", "selected.txt"), "corrected-r2\n", "utf8");
+  const correctionResult = await commit(correctionRoot, "descendant correction");
+  const correctionTask = {
+    taskId: "task-owner", taskRevision: 3, baseCommit: setup.baseCommit, resultCommit: correctionResult,
+    integrations: [
+      { commit: oldResult, parent: setup.baseCommit, order: 1 },
+      { commit: correctionResult, parent: oldResult, order: 2 },
+    ],
+  };
+  const correctedCandidate = await setup.service.prepareCandidate({
+    planRevision: "plan-lineage-corrected", workspaceId: "workspace", projectRoot: setup.primary,
+    frozenTasks: [neighborTask, correctionTask],
+  });
+  await assert.doesNotReject(setup.service.assertSelectedResultLineage({
+    candidate: correctedCandidate,
+    previousSelectedResults: [{ taskId: "task-owner", resultCommit: oldResult }],
+  }));
+  const corrected = await git(
+    correctedCandidate.releaseRoot, "show", `${correctedCandidate.preReleaseHead}:AgentHub/selected.txt`,
+  );
+  assert.equal(corrected, "corrected-r2");
+  assert.equal(corrected.includes("obsolete-r1"), false);
+  assert.equal(await git(
+    correctedCandidate.releaseRoot, "show", `${correctedCandidate.preReleaseHead}:AgentHub/neighbor.txt`,
+  ), "neighbor");
 });
 
 test("prepared candidate rejects correction-owned publication metadata", { timeout: 30000 }, async (context) => {

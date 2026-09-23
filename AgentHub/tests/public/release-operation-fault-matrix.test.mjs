@@ -217,6 +217,8 @@ function start(harness, requestId = "release-request") {
   const result = harness.commands.start({
     requestId,
     workspaceId: "workspace",
+    streamId: "release-manager",
+    threadId: "thread",
     taskIds: ["task-a", "task-b"],
     validationMode: "full",
     approvedTargets: authorization(harness.repository.source).approvedTargets,
@@ -238,6 +240,8 @@ async function crashAfterAppliedCompose(harness) {
     request: {
       requestId: "crash-after-compose",
       workspaceId: "workspace",
+      streamId: "release-manager",
+      threadId: "thread",
       taskIds: ["task-a", "task-b"],
       validationMode: "full",
       approvedTargets: authorization(harness.repository.source).approvedTargets,
@@ -469,5 +473,31 @@ test("public release operation fault and migration matrix", async (t) => {
       { id: "028b-freezing", commit: "028b43bae2ccb107fc0f4ae9187e4f9995a093ba", externalEffectsStarted: false },
       { id: "0e7272-frozen-failed", commit: "0e7272f3421bb64a32b51b67992e57557ebf12d8", externalEffectsStarted: false },
     ]);
+    const effectsBeforeHistoricalImport = {
+      publication: harness.publishCalls.length,
+      deploy: harness.deploy.calls.length,
+    };
+    const importedHistorical = historical.incidents.map((incident) => harness.store.importLegacy({
+      workspaceId: "workspace", streamId: "stream", threadId: "thread",
+      sourceKind: "retained-release-artifact", sourceIdentity: incident.id,
+      evidence: incident, evidenceOnly: true,
+      authorization: authorization(harness.repository.source), runnerVersion: "runner-n-1",
+    }));
+    for (const imported of importedHistorical) {
+      assert.equal(imported.operation.state, "waiting");
+      assert.equal(imported.operation.waitReason.code, "legacy_snapshot_evidence");
+      assert.equal(imported.operation.migration.evidenceOnly, true);
+    }
+    harness.service.recover();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    for (const imported of importedHistorical) {
+      const retained = harness.service.get(imported.operation.operationId).operation;
+      assert.equal(retained.state, "waiting");
+      assert.equal(retained.waitReason.code, "legacy_snapshot_evidence");
+    }
+    assert.deepEqual({
+      publication: harness.publishCalls.length,
+      deploy: harness.deploy.calls.length,
+    }, effectsBeforeHistoricalImport);
   });
 });

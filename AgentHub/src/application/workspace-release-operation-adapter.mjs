@@ -1,5 +1,22 @@
+import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
+
 function requiredMethod(value, name) {
   if (typeof value?.[name] !== "function") throw new TypeError(`${name} is required`);
+}
+
+async function releaseMetadataBytes(metadata) {
+  if (!metadata) return undefined;
+  const bytes = await readFile(metadata.sourcePath);
+  const rawSha256 = createHash("sha256").update(bytes).digest("hex");
+  const canonicalSha256 = createHash("sha256")
+    .update(bytes.toString("utf8").replace(/\r\n/gu, "\n")).digest("hex");
+  if (bytes.length !== metadata.byteLength
+      || rawSha256 !== metadata.rawSha256
+      || canonicalSha256 !== metadata.canonicalSha256) {
+    throw new Error("release metadata artifact identity changed");
+  }
+  return bytes;
 }
 function approvedRepositories(operation) {
   return operation.authorization.approvedTargets.flatMap((target) => (
@@ -36,15 +53,15 @@ export class WorkspaceReleaseOperationAdapter {
   }
 
   async compose({ operation, generation }) {
+    const changelogContent = await releaseMetadataBytes(operation.authorization.releaseMetadata);
     const prepared = await this.releasePreflight.prepareOperationGeneration({
       workspaceId: operation.workspaceId,
       operationId: operation.operationId,
       generation,
       taskIds: operation.authorization.taskIds,
+      previousSelectedResults: operation.selectedResults,
       approvedRepositories: approvedRepositories(operation),
-      ...(operation.authorization.releaseMetadata ? {
-        changelogContent: Buffer.from(operation.authorization.releaseMetadata.bytesBase64, "base64"),
-      } : {}),
+      ...(changelogContent ? { changelogContent } : {}),
     });
     const selectedResults = prepared.releaseCandidates.flatMap((candidate) => (
       candidate.frozenTasks.map((task) => ({
@@ -65,6 +82,7 @@ export class WorkspaceReleaseOperationAdapter {
         commit: candidate.preReleaseHead,
         tree: candidate.tree,
         manifestHash: candidate.manifestHash,
+        generationRoot: candidate.generationRoot,
         planRevision: candidate.planRevision,
         baseCommit: candidate.baseCommit,
         frozenTasks: candidate.frozenTasks,
@@ -99,6 +117,10 @@ export class WorkspaceReleaseOperationAdapter {
 
   readTarget(input) {
     return this.publication.readback(input);
+  }
+
+  cleanupGeneration({ generation }) {
+    return this.releasePreflight.discardOperationGeneration(generation);
   }
 
   finalize(input) {

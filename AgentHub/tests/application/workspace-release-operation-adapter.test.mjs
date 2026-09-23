@@ -1,4 +1,8 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 
 import { WorkspaceReleaseOperationAdapter } from "../../src/application/workspace-release-operation-adapter.mjs";
@@ -8,6 +12,7 @@ function fixture(selection) {
   const adapter = new WorkspaceReleaseOperationAdapter({
     releasePreflight: {
       prepareOperationGeneration: async () => ({ releaseCandidates: [], planRevision: "plan" }),
+      discardOperationGeneration: async (generation) => { calls.push(["cleanup", generation]); return []; },
       validateOperationGeneration: async () => ({ status: "ready" }),
       operationSelection: async (input) => { calls.push(["selection", input]); return selection; },
       withAwaitTransition: async (workspaceId, operation) => {
@@ -45,6 +50,13 @@ test("publication reservation uses the Workspace Await boundary for the exact ge
   ]);
 });
 
+test("terminal operation cleanup delegates only the persisted immutable generation", async () => {
+  const f = fixture([]);
+  const generation = { operationId: "operation-1", generation: 2, candidates: [] };
+  assert.deepEqual(await f.adapter.cleanupGeneration({ generation }), []);
+  assert.deepEqual(f.calls, [["cleanup", generation]]);
+});
+
 test("publication reservation recomposes when accepted result identity changed", async () => {
   const f = fixture([{ taskId: "task-a", resultCommit: "result-2", acceptanceRevision: 3 }]);
   const effects = [];
@@ -57,4 +69,44 @@ test("publication reservation recomposes when accepted result identity changed",
     recompose: () => { effects.push("recompose"); return { applied: true }; },
   });
   assert.deepEqual(effects, ["recompose"]);
+});
+
+test("composition replays exact referenced release metadata and rejects changed bytes", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "release-operation-metadata-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const sourcePath = path.join(root, "CHANGELOG.md");
+  const bytes = Buffer.from("release notes\r\n", "utf8");
+  await writeFile(sourcePath, bytes);
+  const releaseMetadata = {
+    sourcePath,
+    byteLength: bytes.length,
+    rawSha256: createHash("sha256").update(bytes).digest("hex"),
+    canonicalSha256: createHash("sha256").update("release notes\n").digest("hex"),
+  };
+  const calls = [];
+  const adapter = new WorkspaceReleaseOperationAdapter({
+    releasePreflight: {
+      prepareOperationGeneration: async (input) => {
+        calls.push(input);
+        return { releaseCandidates: [], planRevision: "plan" };
+      },
+      validateOperationGeneration: async () => ({ status: "ready" }),
+      operationSelection: async () => [],
+      withAwaitTransition: async (_workspaceId, operation) => operation(),
+    },
+    publication: { publish: async () => null, readback: async () => null },
+    finalization: { finalize: async () => null },
+  });
+  const operation = {
+    operationId: "operation-metadata",
+    workspaceId: "workspace",
+    selectedResults: [],
+    authorization: {
+      taskIds: ["task-a"], approvedTargets: [], fingerprint: "fingerprint", releaseMetadata,
+    },
+  };
+  await adapter.compose({ operation, generation: 1 });
+  assert.deepEqual(calls[0].changelogContent, bytes);
+  await writeFile(sourcePath, "changed\n", "utf8");
+  await assert.rejects(adapter.compose({ operation, generation: 2 }), /metadata artifact identity changed/u);
 });

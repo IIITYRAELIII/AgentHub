@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
 
 import {
   createCandidateGeneration,
   createReleaseOperation,
+  MAX_RELEASE_METADATA_BYTES,
   RELEASE_OPERATION_STATES,
   restoreReleaseOperation,
   transitionReleaseOperation,
@@ -49,6 +51,28 @@ test("release operation keeps authorization immutable and uses explicit waiting 
   assert.throws(() => transitionReleaseOperation(resumed.operation, {
     authorization: { ...resumed.operation.authorization, taskIds: ["task-3"] },
   }), /authorization is immutable/u);
+});
+
+test("release operation preserves repository-scale release metadata bytes and exact digests", () => {
+  const bytes = Buffer.alloc(1_981_700, 0x61);
+  const rawSha256 = createHash("sha256").update(bytes).digest("hex");
+  const created = operation({
+    authorization: {
+      taskIds: ["task-1"],
+      approvedTargets: [{ id: "production", kind: "git-runtime" }],
+      validationMode: "full",
+      releaseMetadata: {
+        sourcePath: "C:/owned/release/CHANGELOG.md",
+        byteLength: bytes.length,
+        rawSha256,
+        canonicalSha256: rawSha256,
+      },
+    },
+  });
+  assert.equal(created.authorization.releaseMetadata.byteLength, bytes.length);
+  assert.equal(created.authorization.releaseMetadata.sourcePath, "C:/owned/release/CHANGELOG.md");
+  assert.equal(created.authorization.releaseMetadata.rawSha256, rawSha256);
+  assert.ok(bytes.length < MAX_RELEASE_METADATA_BYTES);
 });
 
 test("release operation rejects invalid regressions and terminal replay", () => {

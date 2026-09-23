@@ -26,6 +26,12 @@ function releaseError(error) {
   return {
     message: String(error?.message ?? error ?? "release operation failed"),
     ...(String(error?.code ?? "").trim() ? { code: String(error.code).trim() } : {}),
+    ...(String(error?.taskId ?? "").trim() ? { taskId: String(error.taskId).trim() } : {}),
+    ...(String(error?.priorResultCommit ?? "").trim()
+      ? { priorResultCommit: String(error.priorResultCommit).trim() } : {}),
+    ...(String(error?.resultCommit ?? "").trim() ? { resultCommit: String(error.resultCommit).trim() } : {}),
+    ...(String(error?.correctionOperationId ?? "").trim()
+      ? { correctionOperationId: String(error.correctionOperationId).trim() } : {}),
   };
 }
 
@@ -129,6 +135,8 @@ export class ReleaseOperationService {
     processAlive = processIsAlive,
     processId = process.pid,
     deliveryRetryMs = 1_000,
+    requestCorrection = null,
+    cleanupGeneration = null,
   } = {}) {
     for (const name of [
       "create", "get", "snapshot", "transition", "acquire", "heartbeat", "release",
@@ -143,6 +151,12 @@ export class ReleaseOperationService {
     }
     if (deliverEvent != null && typeof deliverEvent !== "function") throw new TypeError("deliverEvent must be a function");
     if (typeof reservePublication !== "function") throw new TypeError("reservePublication must be a function");
+    if (requestCorrection != null && typeof requestCorrection !== "function") {
+      throw new TypeError("requestCorrection must be a function");
+    }
+    if (cleanupGeneration != null && typeof cleanupGeneration !== "function") {
+      throw new TypeError("cleanupGeneration must be a function");
+    }
     if (typeof schedule !== "function") throw new TypeError("schedule is required");
     this.store = store;
     this.compose = compose;
@@ -161,6 +175,8 @@ export class ReleaseOperationService {
     this.processAlive = processAlive;
     this.processId = processId;
     this.deliveryRetryMs = Math.max(100, Number(deliveryRetryMs) || 1_000);
+    this.requestCorrection = requestCorrection;
+    this.cleanupGeneration = cleanupGeneration;
   }
 
   start({ requestId, workspaceId, streamId, threadId, authorization } = {}) {
@@ -389,6 +405,19 @@ export class ReleaseOperationService {
         } catch (error) {
           const latest = this.store.get(operationId) ?? operation;
           if (!ownsRelease(latest, owner)) break;
+          if (error?.code === "RELEASE_RESULT_LINEAGE_MISMATCH" && this.requestCorrection) {
+            try {
+              const correction = await this.requestCorrection({ operation: latest, error });
+              error.correctionOperationId = correction?.operationId ?? null;
+            } catch (correctionError) {
+              const unavailable = new Error(`Automatic correction request failed: ${correctionError.message}`, {
+                cause: correctionError,
+              });
+              unavailable.code = "RELEASE_EXTERNAL_CONDITION";
+              unavailable.retryAfterMs = this.retryDelayMs;
+              error = unavailable;
+            }
+          }
           const patch = classifiedFailure(error, latest.state, this.now, this.retryDelayMs);
           const failed = this.store.transition(operationId, patch, {
             expectedRevision: latest.revision,
@@ -403,6 +432,10 @@ export class ReleaseOperationService {
       if (owned) this.store.release(operationId, owner);
       this.#running.delete(operationId);
       const current = this.store.get(operationId);
+      if (current && releaseOperationIsTerminal(current) && current.currentGeneration > 0) {
+        const generation = this.store.generation(current.operationId, current.currentGeneration);
+        if (generation) await this.cleanupGeneration?.({ operation: current, generation }).catch(() => {});
+      }
       if (current?.state === "waiting") this.#scheduleRetry(current);
       else if (current && !releaseOperationIsTerminal(current)) this.#schedule(operationId);
       await this.deliverPendingEvents().catch(() => {});

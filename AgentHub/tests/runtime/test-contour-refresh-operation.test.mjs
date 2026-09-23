@@ -20,8 +20,10 @@ import {
   readTestContourStatus,
   readyTestContourHealth,
   startTestContour,
+  TEST_CONTOUR_FAKE_MODEL,
   TEST_CONTOUR_SPARK_MODEL,
   testContourSmokeAgentPolicy,
+  testContourSmokeJournalMatches,
   testContourPaths,
   verifyTestContour,
 } from "../../src/runtime/test-contour-manager.mjs";
@@ -720,12 +722,78 @@ test("verify preserves the requested root and custom port through refresh and sm
     assert.equal(calls[0].options.port, port);
     assert.equal(calls[0].options.sourceKind, "dev");
     assert.equal(calls[1].options.url, `http://127.0.0.1:${port}/`);
+    assert.equal(calls[1].options.isolatedFakeProvider, false);
   } finally {
     await Promise.all([
       rm(root, { recursive: true, force: true }),
       rm(`${root}-operation.lock`, { recursive: true, force: true }),
       rm(sourceRoot, { recursive: true, force: true }),
     ]);
+  }
+});
+
+test("verify marks only the isolated fake provider as eligible for an agent smoke", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-contour-fake-smoke-root-"));
+  const sourceRoot = await mkdtemp(path.join(os.tmpdir(), "agent-hub-contour-fake-smoke-source-"));
+  let smokeOptions = null;
+  try {
+    await verifyTestContour({
+      root,
+      sourceRoot,
+      withAgent: false,
+      model: TEST_CONTOUR_FAKE_MODEL,
+      startContour: async () => ({
+        url: "http://127.0.0.1:18882/",
+        model: TEST_CONTOUR_FAKE_MODEL,
+        startedAt: new Date().toISOString(),
+      }),
+      smokeRunner: async (options) => {
+        smokeOptions = options;
+        return { ok: true, withAgent: false };
+      },
+    });
+
+    assert.equal(smokeOptions.isolatedFakeProvider, true);
+  } finally {
+    await Promise.all([
+      rm(root, { recursive: true, force: true }),
+      rm(`${root}-operation.lock`, { recursive: true, force: true }),
+      rm(sourceRoot, { recursive: true, force: true }),
+    ]);
+  }
+});
+
+test("verify journal evidence belongs to the exact accepted smoke send", () => {
+  const options = {
+    model: TEST_CONTOUR_FAKE_MODEL,
+    probe: "probe",
+    probeResponse: "accepted",
+    startedAt: "2026-09-21T12:00:00.000Z",
+    smoke: {
+      threadId: "thread-smoke",
+      turnId: "turn-smoke",
+      clientUserMessageId: "client-smoke",
+    },
+  };
+  const record = {
+    provider: "codex",
+    model: TEST_CONTOUR_FAKE_MODEL,
+    prompt: "probe",
+    body: "accepted",
+    threadId: "thread-smoke",
+    turnId: "turn-smoke",
+    clientUserMessageId: "client-smoke",
+    completedAt: "2026-09-21T12:00:01.000Z",
+  };
+
+  assert.equal(testContourSmokeJournalMatches(record, options), true);
+  for (const patch of [
+    { threadId: "historical-thread" },
+    { turnId: "old-turn" },
+    { clientUserMessageId: "other-command" },
+    { completedAt: "2026-09-21T11:59:59.000Z" },
+  ]) {
+    assert.equal(testContourSmokeJournalMatches({ ...record, ...patch }, options), false);
   }
 });
 

@@ -1,5 +1,6 @@
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { publishChanged } from "./publish-changed.mjs";
 import { runStep } from "./publish-all.mjs";
@@ -15,6 +16,17 @@ function requiredEnvironment(name) {
   const value = String(process.env[name] ?? "").trim();
   if (!value) throw new Error(`${name} is required`);
   return value;
+}
+
+export function releaseOperationPublicationArguments({ operation, candidate, saved } = {}) {
+  return [
+    ...(saved && !["published", "succeeded"].includes(saved.status) ? ["--resume"] : []),
+    "--workspace", operation.workspaceId,
+    "--stream", operation.streamId,
+    "--thread", operation.threadId,
+    "--from", candidate.baseCommit,
+    operation.authorization.validationMode === "full" ? "--full-tests" : "--validation=focused",
+  ];
 }
 
 async function run() {
@@ -66,12 +78,7 @@ async function run() {
     verifyRuntimeImpl: verifyInstalledRuntime,
   });
   const saved = await journal.read();
-  const args = [
-    ...(saved && !["published", "succeeded"].includes(saved.status) ? ["--resume"] : []),
-    "--workspace", operation.workspaceId,
-    "--from", candidate.baseCommit,
-    operation.authorization.validationMode === "full" ? "--full-tests" : "--validation=focused",
-  ];
+  const args = releaseOperationPublicationArguments({ operation, candidate, saved });
   const result = await publishChanged(args, {
     runtimeRoot,
     checkpoint,
@@ -100,7 +107,9 @@ async function run() {
   if (effect.status !== "applied") throw new Error(`publication stopped in ${result.status}`);
 }
 
-run().catch((error) => {
-  console.error(error?.stack ?? error?.message ?? String(error));
-  process.exitCode = 1;
-});
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  run().catch((error) => {
+    console.error(error?.stack ?? error?.message ?? String(error));
+    process.exitCode = 1;
+  });
+}

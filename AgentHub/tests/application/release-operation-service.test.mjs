@@ -73,7 +73,13 @@ async function waitUntil(predicate, { timeoutMs = 2_000 } = {}) {
 
 test("release operation acknowledges before work and finishes one exact generation", async (t) => {
   const scheduled = [];
-  const f = await fixture(t, { schedule: (operation) => scheduled.push(operation) });
+  const cleaned = [];
+  const f = await fixture(t, {
+    schedule: (operation) => scheduled.push(operation),
+    cleanupGeneration: async ({ operation, generation: value }) => cleaned.push([
+      operation.state, value.generation, value.identitySha256,
+    ]),
+  });
   const ack = start(f.service);
   assert.deepEqual(ack, { accepted: true, created: true, operationId: "operation-1", state: "compose", revision: 1 });
   assert.deepEqual(f.calls, []);
@@ -83,6 +89,7 @@ test("release operation acknowledges before work and finishes one exact generati
   assert.equal(snapshot.generations.length, 1);
   assert.deepEqual(f.calls, [["compose", 1], ["validate", 1], ["publish", "git"], ["publish", "runtime"], ["finalize", 1]]);
   assert.deepEqual(Object.keys(snapshot.operation.publicationEffects.targets), ["git", "runtime"]);
+  assert.deepEqual(cleaned, [["done", 1, snapshot.generations[0].identitySha256]]);
 });
 
 test("validation failure waits for a correction and continues as generation two", async (t) => {
@@ -110,6 +117,38 @@ test("validation failure waits for a correction and continues as generation two"
   assert.equal(snapshot.operation.currentGeneration, 2);
   assert.equal(snapshot.generations[0].selectedResults[0].resultCommit, "task-a-r1");
   assert.equal(snapshot.generations[1].selectedResults[0].resultCommit, "task-a-r2");
+});
+
+test("lineage mismatch creates one automatic correction request and waits on the same operation", async (t) => {
+  const correctionRequests = [];
+  let corrected = false;
+  const f = await fixture(t, {
+    compose: async () => {
+      if (corrected) return generation();
+      const error = new Error("selected result is unrelated");
+      error.code = "RELEASE_RESULT_LINEAGE_MISMATCH";
+      error.taskId = "task-a";
+      error.priorResultCommit = "task-a-r1";
+      error.resultCommit = "task-a-unrelated";
+      throw error;
+    },
+    requestCorrection: async ({ operation, error }) => {
+      correctionRequests.push({ operationId: operation.operationId, taskId: error.taskId });
+      return { operationId: "correction-task-a" };
+    },
+  });
+  const ack = start(f.service);
+  let snapshot = await f.service.drain(ack.operationId);
+  assert.equal(snapshot.operation.state, "waiting");
+  assert.equal(snapshot.operation.waitReason.code, "correction_required");
+  assert.equal(snapshot.operation.waitReason.details.taskId, "task-a");
+  assert.equal(snapshot.operation.waitReason.details.correctionOperationId, "correction-task-a");
+  assert.deepEqual(correctionRequests, [{ operationId: ack.operationId, taskId: "task-a" }]);
+  corrected = true;
+  assert.deepEqual(f.service.wakeForTask("task-a"), [ack.operationId]);
+  snapshot = await f.service.drain(ack.operationId);
+  assert.equal(snapshot.operation.state, "done");
+  assert.equal(correctionRequests.length, 1);
 });
 
 test("unknown publish effect is read back after recovery and never blindly repeated", async (t) => {

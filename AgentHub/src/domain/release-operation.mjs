@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
 
+export const MAX_RELEASE_METADATA_BYTES = 8 * 1024 * 1024;
+
 export const RELEASE_OPERATION_STATES = Object.freeze({
   COMPOSE: "compose",
   VALIDATE: "validate",
@@ -90,18 +92,17 @@ function normalizedTargets(value) {
 function normalizedReleaseMetadata(value) {
   if (value == null) return null;
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("releaseMetadata must be an object");
-  const bytesBase64 = requiredText(value.bytesBase64, "release metadata bytes");
-  const bytes = Buffer.from(bytesBase64, "base64");
-  if (!bytes.length || bytes.length > 256 * 1024 || bytes.toString("base64") !== bytesBase64) {
-    throw new TypeError("release metadata bytes are invalid or too large");
+  const sourcePath = requiredText(value.sourcePath, "release metadata source path");
+  const byteLength = Number(value.byteLength);
+  if (!Number.isSafeInteger(byteLength) || byteLength < 1 || byteLength > MAX_RELEASE_METADATA_BYTES) {
+    throw new TypeError("release metadata size is invalid or too large");
   }
-  const rawSha256 = createHash("sha256").update(bytes).digest("hex");
-  const canonicalSha256 = createHash("sha256").update(bytes.toString("utf8").replace(/\r\n/gu, "\n")).digest("hex");
-  if (rawSha256 !== requiredText(value.rawSha256, "release metadata raw digest")
-      || canonicalSha256 !== requiredText(value.canonicalSha256, "release metadata canonical digest")) {
-    throw new TypeError("release metadata digest does not match its bytes");
+  const rawSha256 = requiredText(value.rawSha256, "release metadata raw digest");
+  const canonicalSha256 = requiredText(value.canonicalSha256, "release metadata canonical digest");
+  if (!/^[a-f0-9]{64}$/u.test(rawSha256) || !/^[a-f0-9]{64}$/u.test(canonicalSha256)) {
+    throw new TypeError("release metadata digest is invalid");
   }
-  return { bytesBase64, rawSha256, canonicalSha256 };
+  return { sourcePath, byteLength, rawSha256, canonicalSha256 };
 }
 
 function normalizedAuthorization(value = {}) {
@@ -310,6 +311,7 @@ function normalizedCandidate(value) {
     commit: requiredText(value?.commit ?? value?.preReleaseHead, "candidate commit"),
     tree: requiredText(value?.tree, "candidate tree"),
     manifestHash: requiredText(value?.manifestHash, "candidate manifest hash"),
+    ...(optionalText(value?.generationRoot) ? { generationRoot: optionalText(value.generationRoot) } : {}),
     ...(optionalText(value?.planRevision) ? { planRevision: optionalText(value.planRevision) } : {}),
     ...(optionalText(value?.baseCommit) ? { baseCommit: optionalText(value.baseCommit) } : {}),
     ...(Array.isArray(value?.frozenTasks) ? { frozenTasks: structuredClone(value.frozenTasks) } : {}),

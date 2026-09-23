@@ -249,6 +249,9 @@ export function createDesktopSnapshotFactory({
         provider,
         threadId,
         clientUserMessageId,
+        ...(String(result.streamId ?? "").trim()
+          ? { streamId: String(result.streamId).trim() }
+          : {}),
         ...(String(result.clientProjectionIntent ?? "").trim()
           ? { clientProjectionIntent: String(result.clientProjectionIntent).trim() }
           : {}),

@@ -110,6 +110,41 @@ function testContourRuntimeIdentity(environment = process.env) {
   return identity;
 }
 
+export function createReleaseCorrectionRequester({ taskBoard, taskLifecycle } = {}) {
+  if (typeof taskBoard?.task !== "function") throw new TypeError("taskBoard.task is required");
+  if (typeof taskLifecycle?.updateWorkflowStatus !== "function") {
+    throw new TypeError("taskLifecycle.updateWorkflowStatus is required");
+  }
+  return async ({ operation, error }) => {
+    const taskId = String(error?.taskId ?? "").trim();
+    if (!taskId || !operation.authorization.taskIds.includes(taskId)) {
+      throw new Error("release correction does not identify an authorized selected Task");
+    }
+    const operationId = `release-${operation.operationId}-correction-${taskId}-${String(error.resultCommit).slice(0, 12)}`;
+    const task = taskBoard.task(taskId);
+    if (!task) throw new Error("selected correction Task no longer exists");
+    if (task.workflowStatus === "in_progress") return { operationId, task };
+    if (task.workflowStatus !== "awaiting_implementation") {
+      throw new Error("selected correction Task is no longer awaiting its accepted result");
+    }
+    const result = await taskLifecycle.updateWorkflowStatus({
+      taskId,
+      status: "in_progress",
+      operationId,
+      expectedRevision: task.revision,
+      expectedWorkflowStatus: task.workflowStatus,
+      operationEvidence: {
+        releaseCorrection: {
+          releaseOperationId: operation.operationId,
+          priorResultCommit: error.priorResultCommit,
+          rejectedResultCommit: error.resultCommit,
+        },
+      },
+    });
+    return { operationId, task: result.task };
+  };
+}
+
 export async function recoverTaskBoardStartup(taskBoard) {
   try {
     return await taskBoard.recoverPendingTriage();
@@ -466,6 +501,8 @@ export async function createHubInfrastructure({
     readTarget: (input) => releaseOperationAdapter.readTarget(input),
     finalize: (input) => releaseOperationAdapter.finalize(input),
     reservePublication: (input) => releaseOperationAdapter.reservePublication(input),
+    requestCorrection: createReleaseCorrectionRequester({ taskBoard, taskLifecycle }),
+    cleanupGeneration: (input) => releaseOperationAdapter.cleanupGeneration(input),
     runnerVersion: AGENT_HUB_VERSION,
   });
   const releaseOperationCommands = new ReleaseOperationCommandService({
