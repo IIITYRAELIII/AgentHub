@@ -275,6 +275,8 @@ export function parseChangedArguments(args) {
   let quick = false;
   let resume = false;
   let workspaceId = "";
+  let streamId = "";
+  let threadId = "";
   for (let index = 0; index < args.length; index += 1) {
     if (args[index] === "--skip-restart") skipRestart = true;
     else if (args[index] === "--full-tests") fullTests = true;
@@ -284,6 +286,8 @@ export function parseChangedArguments(args) {
     else if (args[index] === "--validation=focused") { /* default validation */ }
     else if (args[index] === "--resume") resume = true;
     else if (args[index] === "--workspace" && args[index + 1]) workspaceId = args[++index];
+    else if (args[index] === "--stream" && args[index + 1]) streamId = args[++index];
+    else if (args[index] === "--thread" && args[index + 1]) threadId = args[++index];
     else if (args[index] === "--bootstrap-mcp-context") {
       throw new Error("--bootstrap-mcp-context is obsolete; publication reads the release plan from the candidate runtime");
     }
@@ -291,7 +295,7 @@ export function parseChangedArguments(args) {
     else throw new Error(`Неизвестный аргумент: ${args[index]}`);
   }
   if (quick && fullTests) throw new Error("Choose either quick or full validation");
-  return { from, skipRestart, fullTests, testContour, quick, resume, workspaceId };
+  return { from, skipRestart, fullTests, testContour, quick, resume, workspaceId, streamId, threadId };
 }
 
 export async function publishChanged(args = process.argv.slice(2), {
@@ -422,6 +426,8 @@ export async function publishChanged(args = process.argv.slice(2), {
       quick: options.quick,
       visualTests: needsVisualPublicationTests(files),
     }), files, publicationRoot);
+    const candidateRoot = path.join(publicationRoot, "AgentHub");
+    steps = steps.map((step) => ({ ...step, cwd: step.cwd ?? candidateRoot }));
     const identity = {
       mode: "changed", from, revision: head, worktreeRoot: publicationRoot, runtimeRoot, files,
       validationMode: plan.fullTests ? "full" : options.quick ? "quick" : "focused",
@@ -556,6 +562,9 @@ export async function runReleaseOperationCli(args = process.argv.slice(2), {
   ));
   const workspaceId = String(options.workspaceId || manifest.workspaceId || "").trim();
   if (!workspaceId) throw new Error("release operation requires its Workspace");
+  const streamId = String(options.streamId || "").trim();
+  const threadId = String(options.threadId || "").trim();
+  if (!streamId || !threadId) throw new Error("release operation requires --stream and --thread initiator identity");
   if (options.from && options.from !== manifest.baseCommit) {
     throw new Error("release operation source revision differs from the prepared candidate");
   }
@@ -572,16 +581,24 @@ export async function runReleaseOperationCli(args = process.argv.slice(2), {
       ? { approvedOriginMainCommit: manifest.baseProvenance.approvedOriginMainCommit } : {}),
   };
   const validationMode = options.fullTests ? "full" : options.quick ? "quick" : "focused";
+  const changelogBytes = await read(path.join(root, "CHANGELOG.md"));
+  const changelogBuffer = Buffer.isBuffer(changelogBytes) ? changelogBytes : Buffer.from(changelogBytes);
+  const releaseMetadata = {
+    bytesBase64: changelogBuffer.toString("base64"),
+    rawSha256: createHash("sha256").update(changelogBuffer).digest("hex"),
+    canonicalSha256: createHash("sha256").update(changelogBuffer.toString("utf8").replace(/\r\n/gu, "\n")).digest("hex"),
+  };
   const requestIdentity = {
-    workspaceId,
+    workspaceId, streamId, threadId,
     planRevision: manifest.planRevision,
     taskIds,
     target,
     validationMode,
+    releaseMetadata,
   };
   const requestId = `release-cli-${createHash("sha256").update(JSON.stringify(requestIdentity)).digest("hex")}`;
   const acknowledgement = await control("release-operation-run", {
-    requestId, workspaceId, taskIds, approvedTargets: [target], validationMode,
+    requestId, workspaceId, streamId, threadId, taskIds, approvedTargets: [target], validationMode, releaseMetadata,
   }, { runtimeRoot, commandId: requestId });
   const operationId = String(acknowledgement?.operationId ?? "").trim();
   if (!operationId) throw new Error("release operation acknowledgement has no operation id");

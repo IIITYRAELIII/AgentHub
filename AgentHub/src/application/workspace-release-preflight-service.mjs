@@ -307,24 +307,66 @@ export class WorkspaceReleasePreflightService {
   }
 
   async prepareAwaitAcceptance({
-    workspaceId, acceptingTask, projectRoot, lease = null, commitPrepared,
+    workspaceId, acceptingTask, projectRoot, lease = null, operationId, commitPrepared,
   } = {}) {
     if (typeof commitPrepared !== "function") throw new TypeError("commitPrepared is required");
     const root = path.resolve(String(projectRoot ?? "").trim());
-    return this.#prepareAwaitSet({
-      workspaceId,
-      acceptingTask,
-      lease,
-      commitPrepared: async (prepared) => {
+    const operation = String(operationId ?? "").trim();
+    if (!operation) throw new TypeError("operationId is required");
+    for (let attempt = 1; attempt <= 4; attempt += 1) {
+      const prospective = await this.#prepareAwaitSet({
+        workspaceId,
+        acceptingTask,
+        lease,
+        prospectiveOnly: true,
+        generationIdentity: { operationId: `await-${operation}`, generation: attempt },
+        freezeGeneration: false,
+      });
+      try {
+        return await this.withAwaitTransition(workspaceId, async () => {
+      const current = await this.releasePlanner.plan(workspaceId, { acceptingTask });
+      if (current.revision !== prospective.planRevision) {
+        const error = new Error("Task changed during PreRelease acceptance preparation");
+        error.code = "AWAIT_ACCEPTANCE_STALE";
+        throw error;
+      }
+      let committed;
+      const promote = async (index) => {
+        if (index === prospective.releaseCandidates.length) return;
+        const source = prospective.releaseCandidates[index];
+        await this.releaseGitWorkspaces.promoteGenerationCandidate({
+          projectRoot: source.repositoryRoot,
+          candidate: source,
+          validateBeforeCommit: async () => {
+            const latest = await this.releasePlanner.plan(workspaceId, { acceptingTask });
+            if (latest.revision !== prospective.planRevision) {
+              const error = new Error("Task changed during PreRelease acceptance promotion");
+              error.code = "AWAIT_ACCEPTANCE_STALE";
+              throw error;
+            }
+          },
+          commitPrepared: async (preparedCandidate) => {
+            prospective.releaseCandidates[index] = preparedCandidate;
+            if (index + 1 < prospective.releaseCandidates.length) return promote(index + 1);
+            const prepared = prospective;
         const matches = prepared.releaseCandidates.flatMap((candidate) => (
           canonicalRoot(candidate.repositoryRoot) === canonicalRoot(root)
             ? candidate.frozenTasks.filter((task) => task.taskId === String(acceptingTask?.id ?? ""))
             : []
         ));
         if (matches.length !== 1) throw new Error("Task has no unique prepared Await result to accept");
-        return commitPrepared({ ...prepared, task: matches[0] });
-      },
-    });
+            committed = await commitPrepared({ ...prepared, task: matches[0] });
+          },
+        });
+      };
+      await promote(0);
+      return committed;
+        });
+      } catch (error) {
+        if (error?.code !== "AWAIT_ACCEPTANCE_STALE" || attempt === 4) throw error;
+      }
+    }
+    throw new Error("Await acceptance could not stabilize its prospective generation");
   }
 
   async prepareAwaitSet(options = {}) {
@@ -344,7 +386,7 @@ export class WorkspaceReleasePreflightService {
   }
 
   async prepareOperationGeneration({
-    workspaceId, operationId, generation, taskIds, approvedRepositories = [],
+    workspaceId, operationId, generation, taskIds, approvedRepositories = [], changelogContent = undefined,
   } = {}) {
     if (typeof this.releaseGitWorkspaces.prepareGeneration !== "function") {
       throw new Error("immutable release generation preparation is unavailable");
@@ -353,6 +395,7 @@ export class WorkspaceReleasePreflightService {
       workspaceId,
       selectedTaskIds: taskIds,
       generationIdentity: { operationId, generation },
+      ...(changelogContent === undefined ? {} : { changelogContent }),
       ...(approvedRepositories.length ? { reviewedMainApprovals: { approvedRepositories } } : {}),
     });
   }
@@ -426,11 +469,12 @@ export class WorkspaceReleasePreflightService {
 
   async #prepareAwaitSet({ workspaceId, expectedPlanRevision = null, fallbackProjectRoots = [], preserveFrozen = false,
     acceptingTask = null, commitPrepared = null, lease = null, validateOnly = false,
-    reviewedMainApprovals = null, selectedTaskIds = null, generationIdentity = null,
+    reviewedMainApprovals = null, selectedTaskIds = null, generationIdentity = null, changelogContent = undefined,
+    prospectiveOnly = false, freezeGeneration = true,
   } = {}) {
     if (validateOnly && commitPrepared) throw new Error("Composition validation cannot commit Task acceptance");
     if (validateOnly) requiredMethod(this.releaseGitWorkspaces, "validateCandidate");
-    if (acceptingTask && !validateOnly && typeof commitPrepared !== "function") {
+    if (acceptingTask && !validateOnly && !prospectiveOnly && typeof commitPrepared !== "function") {
       throw new Error("Prospective Await preparation requires its lifecycle commit");
     }
     const planOptions = selectedTaskIds ? { selectedTaskIds } : {};
@@ -589,13 +633,15 @@ export class WorkspaceReleasePreflightService {
         ...(reviewed ? { baseProvenance: reviewed.provenance } : {}),
         preserveFrozen,
         ...(generationIdentity ?? {}),
+        ...(generationIdentity ? { freezePublication: freezeGeneration } : {}),
+        ...(generationIdentity ? { changelogContent } : {}),
         validateBeforeCommit: async () => { await validatePlan(); await validateBases(); },
-        ...(acceptingTask ? { commitPrepared: async (prepared) => {
+        ...(acceptingTask && !prospectiveOnly ? { commitPrepared: async (prepared) => {
           releaseCandidates.push(prepared);
           await prepare(index + 1);
         } } : {}),
       });
-      if (!acceptingTask) {
+      if (!acceptingTask || prospectiveOnly) {
         releaseCandidates.push(candidate);
         await prepare(index + 1);
       }

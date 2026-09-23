@@ -35,6 +35,19 @@ multi-target publication preserves its effect vector and continues only missing
 targets. External unavailability is a visible condition with durable backoff,
 not a request for generic manual resume.
 
+Await composition runs in an operation-scoped independent generation clone.
+Only exact generation import, current-plan verification, live PreRelease pointer
+replacement and the Task CAS run under the Workspace Await lock. A concurrent
+winner makes the loser compose a new generation; it never promotes a stale
+prospective tree. An ambiguous Task CAS preserves the promoted candidate until
+authoritative lifecycle reconciliation proves whether acceptance committed.
+
+The public release command names the initiating Stream and Thread explicitly.
+It also binds the exact prepared `CHANGELOG.md` bytes and both raw and LF-normalized
+digests into the immutable authorization fingerprint. Generation composition
+replays those bytes before freeze; it never substitutes publication metadata
+from the stable runner checkout or an older repository snapshot.
+
 At cutover, old checkpoint and publication-status files are imported once as
 immutable evidence. Only a status whose revision and owned release root match an
 exact checkpoint activates recovery; a checkpoint without matching publication

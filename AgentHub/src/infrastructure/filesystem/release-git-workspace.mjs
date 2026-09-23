@@ -772,7 +772,7 @@ export class ReleaseGitWorkspaceService {
   async prepareGeneration({
     operationId, generation, planRevision, projectRoot, workspaceId = null,
     frozenTasks = [], approvedBaseCommit = null, baseProvenance = null,
-    validateBeforeCommit = null,
+    validateBeforeCommit = null, changelogContent = undefined, freezePublication = true,
   } = {}) {
     this.#assertAvailable("prepareGeneration");
     const operation = String(operationId ?? "").trim();
@@ -821,16 +821,32 @@ export class ReleaseGitWorkspaceService {
         planRevision, projectRoot, workspaceId, frozenTasks, approvedBaseCommit,
         baseProvenance, validateBeforeCommit, preserveFrozen: false,
       });
-      const changelogContent = await readFile(path.join(candidate.releaseRoot, "CHANGELOG.md")).catch((error) => {
+      if (!freezePublication) {
+        return {
+          ...candidate,
+          tree: await runGit(["rev-parse", `${candidate.preReleaseHead}^{tree}`], { cwd: candidate.releaseRoot }),
+          operationId: operation,
+          generation: generationNumber,
+          generationRoot: generationDataDir,
+        };
+      }
+      const frozenChangelog = changelogContent === undefined
+        ? await readFile(path.join(candidate.releaseRoot, "CHANGELOG.md")).catch((error) => {
         if (error.code === "ENOENT") return null;
         throw error;
-      });
+          })
+        : changelogContent;
+      if (changelogContent !== undefined) {
+        const changelogFile = path.join(candidate.releaseRoot, "CHANGELOG.md");
+        if (frozenChangelog === null) await rm(changelogFile, { force: true });
+        else await writeFile(changelogFile, Buffer.from(frozenChangelog));
+      }
       await isolated.freezePublicationCandidate({
         projectRoot: sourceRoot,
         workspaceId,
         expectedPlanRevision: planRevision,
         expectedPreparedHead: candidate.preReleaseHead,
-        changelogContent,
+        changelogContent: frozenChangelog,
         validateBeforeCommit: validateBeforeCommit ?? (async () => {}),
       });
       const frozen = await isolated.frozenCandidate(sourceRoot);
@@ -847,6 +863,108 @@ export class ReleaseGitWorkspaceService {
         generation: generationNumber,
         generationRoot: generationDataDir,
       };
+    });
+  }
+
+  async promoteGenerationCandidate({ projectRoot, candidate, validateBeforeCommit = null, commitPrepared = null } = {}) {
+    this.#assertAvailable("promoteGenerationCandidate");
+    if (!candidate?.releaseRoot || !candidate?.preReleaseHead || !candidate?.manifest) {
+      throw new Error("prospective release generation is incomplete");
+    }
+    const initial = await primarySnapshot(projectRoot);
+    const primaryFailure = primaryInvariantFailure(initial, "Await generation promotion");
+    if (primaryFailure) throw new Error(primaryFailure);
+    const layout = this.#layout(initial.root);
+    const lock = path.join(this.dataDir, "locks", `release-git-${layout.repositoryKey}`);
+    return withInterprocessLocks([lock], async () => {
+      const clone = await this.#ensureClone(initial).catch((error) => {
+        throw new Error(`Await promotion could not open the managed release clone: ${error.message}`, { cause: error });
+      });
+      const dirty = await runGit(["status", "--porcelain=v1", "--untracked-files=all"], { cwd: clone.releaseRoot });
+      if (dirty) throw new Error(`Agent Hub-owned release clone is dirty: ${clone.releaseRoot}: ${dirty}`);
+      const branchRef = `refs/heads/${RELEASE_BRANCH}`;
+      const before = {
+        head: await runGit(["rev-parse", "HEAD^{commit}"], { cwd: clone.releaseRoot }),
+        checkout: await gitMaybe(["symbolic-ref", "-q", "HEAD"], { cwd: clone.releaseRoot }),
+        branch: await gitMaybe(["rev-parse", `${branchRef}^{commit}`], { cwd: clone.releaseRoot }),
+        checkpoint: await readJson(clone.checkpointFile),
+      };
+      await runGit(["fetch", "--no-tags", candidate.releaseRoot, candidate.preReleaseHead], {
+        cwd: clone.releaseRoot, timeoutMs: 300_000,
+      }).catch((error) => {
+        throw new Error(`Await promotion could not import ${candidate.releaseRoot}@${candidate.preReleaseHead}: ${error.message}`, { cause: error });
+      });
+      const imported = await runGit(["rev-parse", "FETCH_HEAD^{commit}"], { cwd: clone.releaseRoot });
+      if (imported !== candidate.preReleaseHead) throw new Error("prospective release generation identity changed during import");
+      const importedTree = await runGit(["rev-parse", `${imported}^{tree}`], { cwd: clone.releaseRoot });
+      if (candidate.tree && importedTree !== candidate.tree) throw new Error("prospective release generation tree changed during import");
+      if (typeof validateBeforeCommit === "function") await validateBeforeCommit();
+      const manifest = {
+        ...candidate.manifest,
+        primaryRoot: initial.root,
+        primaryGitCommonDir: initial.commonDir,
+        releaseRoot: clone.releaseRoot,
+        releaseGitCommonDir: clone.releaseGitCommonDir,
+      };
+      const manifestText = stableManifest(manifest);
+      const manifestHash = sha256(manifestText);
+      const manifestFile = path.join(clone.evidenceRoot, `${manifestHash}.json`);
+      const previousRef = before.branch || "0".repeat(40);
+      let promoted = false;
+      try {
+        await mkdir(clone.evidenceRoot, { recursive: true });
+        if (!await fileExists(manifestFile)) await writeFile(manifestFile, manifestText, "utf8");
+        await runGit(["update-ref", branchRef, imported, previousRef], { cwd: clone.releaseRoot });
+        promoted = true;
+        await writeJsonAtomic(clone.checkpointFile, {
+          schemaVersion: 2,
+          phase: "prepared",
+          netProjectedTaskIds: candidate.netProjectedTaskIds ?? [],
+          planRevision: candidate.planRevision,
+          manifestHash,
+          manifestFile,
+          baseCommit: candidate.baseCommit,
+          ...(candidate.baseProvenance ? { baseProvenance: candidate.baseProvenance } : {}),
+          preReleaseHead: imported,
+          updatedAt: new Date().toISOString(),
+        });
+        await runGit(["symbolic-ref", "HEAD", branchRef], { cwd: clone.releaseRoot });
+        await runGit(["reset", "--hard", imported], { cwd: clone.releaseRoot });
+        const result = {
+          ...candidate,
+          repositoryRoot: initial.root,
+          releaseRoot: clone.releaseRoot,
+          releaseGitCommonDir: clone.releaseGitCommonDir,
+          primaryGitCommonDir: initial.commonDir,
+          manifest,
+          manifestHash,
+          manifestFile,
+          preReleaseHead: imported,
+          tree: importedTree,
+          branch: RELEASE_BRANCH,
+          primaryPreserved: true,
+        };
+        if (commitPrepared) await commitPrepared(result);
+        return result;
+      } catch (error) {
+        if (["AWAIT_PREPARATION_UNKNOWN", "AWAIT_ACCEPTANCE_UNKNOWN"].includes(error?.code)) throw error;
+        try {
+          if (promoted) {
+            if (before.branch) await runGit(["update-ref", branchRef, before.branch, imported], { cwd: clone.releaseRoot });
+            else await runGit(["update-ref", "-d", branchRef, imported], { cwd: clone.releaseRoot });
+          }
+          if (before.checkpoint) await writeJsonAtomic(clone.checkpointFile, before.checkpoint);
+          else await rm(clone.checkpointFile, { force: true });
+          if (before.checkout) {
+            await runGit(["symbolic-ref", "HEAD", before.checkout], { cwd: clone.releaseRoot });
+            await runGit(["reset", "--hard", before.head], { cwd: clone.releaseRoot });
+          } else await runGit(["checkout", "--detach", "--force", before.head], { cwd: clone.releaseRoot });
+        } catch (rollbackError) {
+          rollbackError.code = "AWAIT_PREPARATION_UNKNOWN";
+          throw rollbackError;
+        }
+        throw error;
+      }
     });
   }
 
@@ -1298,7 +1416,7 @@ export class ReleaseGitWorkspaceService {
           await verifyPrimary();
           await commitPrepared(result);
         } catch (error) {
-          if (error?.code === "AWAIT_PREPARATION_UNKNOWN") throw error;
+          if (["AWAIT_PREPARATION_UNKNOWN", "AWAIT_ACCEPTANCE_UNKNOWN"].includes(error?.code)) throw error;
           try {
             const branchRef = `refs/heads/${RELEASE_BRANCH}`;
             await runGit(["checkout", "--detach", "--force", acceptanceBefore.head], { cwd: clone.releaseRoot });

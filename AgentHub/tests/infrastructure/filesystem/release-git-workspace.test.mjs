@@ -125,6 +125,7 @@ test("one operation generation isolates source bundles per repository", { timeou
     ...common,
     projectRoot: first.primary,
     approvedBaseCommit: first.baseCommit,
+    changelogContent: Buffer.from("prepared release notes\n", "utf8"),
   });
   const secondCandidate = await service.prepareGeneration({
     ...common,
@@ -140,6 +141,7 @@ test("one operation generation isolates source bundles per repository", { timeou
   assert.equal(await git(secondCandidate.releaseRoot, "rev-parse", "HEAD"), secondCandidate.preReleaseHead);
   assert.equal(await git(firstCandidate.releaseRoot, "symbolic-ref", "--short", "HEAD"), "main");
   assert.equal(await git(secondCandidate.releaseRoot, "symbolic-ref", "--short", "HEAD"), "main");
+  assert.equal(await git(firstCandidate.releaseRoot, "show", `${firstCandidate.preReleaseHead}:CHANGELOG.md`), "prepared release notes");
 });
 
 for (const binaryOnly of [false, true]) test(`PreRelease preserves ${binaryOnly ? "terminal binary patch delimiters" : "binary patch bytes and a trailing blank context line"}`, { timeout: 20000 }, async (context) => {

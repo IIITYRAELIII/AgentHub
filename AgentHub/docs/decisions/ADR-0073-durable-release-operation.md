@@ -31,8 +31,11 @@ same cutover. Legacy JSON is imported once as immutable evidence; only an exact
 matching nonterminal publication status activates recovery.
 
 The release runner is stable current-owner code, not executable code loaded from
-the candidate. It reads N−1 operation schema. Long tests, Git, deployment and
-network work execute outside Workspace and Task CAS locks.
+the candidate. Every command receives the candidate `AgentHub` directory as its
+explicit working directory, including artifact build/effect callbacks. The
+runner reads N−1 operation schema. Long composition, tests, Git, deployment and
+network work execute outside Workspace and Task CAS locks; Await promotion keeps
+only exact identity checks, pointer writes and the Task CAS inside the lock.
 
 ## Consequences
 

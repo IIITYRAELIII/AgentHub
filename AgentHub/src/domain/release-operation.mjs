@@ -87,11 +87,29 @@ function normalizedTargets(value) {
   return targets;
 }
 
+function normalizedReleaseMetadata(value) {
+  if (value == null) return null;
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("releaseMetadata must be an object");
+  const bytesBase64 = requiredText(value.bytesBase64, "release metadata bytes");
+  const bytes = Buffer.from(bytesBase64, "base64");
+  if (!bytes.length || bytes.length > 256 * 1024 || bytes.toString("base64") !== bytesBase64) {
+    throw new TypeError("release metadata bytes are invalid or too large");
+  }
+  const rawSha256 = createHash("sha256").update(bytes).digest("hex");
+  const canonicalSha256 = createHash("sha256").update(bytes.toString("utf8").replace(/\r\n/gu, "\n")).digest("hex");
+  if (rawSha256 !== requiredText(value.rawSha256, "release metadata raw digest")
+      || canonicalSha256 !== requiredText(value.canonicalSha256, "release metadata canonical digest")) {
+    throw new TypeError("release metadata digest does not match its bytes");
+  }
+  return { bytesBase64, rawSha256, canonicalSha256 };
+}
+
 function normalizedAuthorization(value = {}) {
   const authorization = {
     taskIds: uniqueTextList(value.taskIds, "authorization taskIds"),
     approvedTargets: normalizedTargets(value.approvedTargets),
     validationMode: requiredText(value.validationMode, "validationMode"),
+    ...(value.releaseMetadata ? { releaseMetadata: normalizedReleaseMetadata(value.releaseMetadata) } : {}),
   };
   return { ...authorization, fingerprint: releaseIdentitySha256(authorization) };
 }

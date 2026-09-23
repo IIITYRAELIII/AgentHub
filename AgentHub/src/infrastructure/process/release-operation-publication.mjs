@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { mkdir, open, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
+import { processIsAlive } from "./process-liveness.mjs";
 import { readPublicationState } from "../persistence/publication-state.mjs";
 import { publicationRunStore } from "../persistence/publication-run-store.mjs";
 
@@ -15,11 +16,6 @@ async function readJson(file) {
     if (error?.code === "ENOENT") return null;
     throw error;
   }
-}
-
-function processAlive(pid) {
-  if (!Number.isInteger(Number(pid)) || Number(pid) < 1) return false;
-  try { process.kill(Number(pid), 0); return true; } catch { return false; }
 }
 
 function candidateFor(generation, target) {
@@ -74,7 +70,7 @@ export class ReleaseOperationPublication {
     spawnImpl = spawn,
     readPublicationStateImpl = readPublicationState,
     publicationRunStoreFactory = publicationRunStore,
-    processAliveImpl = processAlive,
+    processAliveImpl = processIsAlive,
     gitRemoteHeadImpl = gitRemoteHead,
     runnerFile = path.join(import.meta.dirname, "../../../release-operation-publication-runner.mjs"),
     now = () => new Date().toISOString(),
@@ -158,16 +154,26 @@ export class ReleaseOperationPublication {
         AGENT_HUB_RELEASE_CANDIDATE_IDENTITY: generation.identitySha256,
       },
     });
+    const completion = new Promise((resolve) => {
+      child.once("error", (error) => resolve({ error }));
+      child.once("exit", (code) => resolve({ exitCode: Number.isInteger(code) ? code : 1 }));
+    });
     await writeFile(layout.stateFile, `${JSON.stringify({
       ...runnerIdentity,
       pid: child.pid,
       status: "running",
     }, null, 2)}\n`, "utf8");
     try {
-      const exitCode = await new Promise((resolve, reject) => {
-        child.once("error", reject);
-        child.once("exit", (code) => resolve(Number.isInteger(code) ? code : 1));
-      });
+      const outcome = await completion;
+      await writeFile(layout.stateFile, `${JSON.stringify({
+        ...runnerIdentity,
+        pid: child.pid ?? null,
+        status: outcome.error ? "launch_failed" : "exited",
+        ...(outcome.error ? { error: outcome.error.message } : { exitCode: outcome.exitCode }),
+        completedAt: this.now(),
+      }, null, 2)}\n`, "utf8");
+      if (outcome.error) throw outcome.error;
+      const exitCode = outcome.exitCode;
       const readback = await this.readback({ operation, generation, target });
       if (["applied", "already_applied"].includes(readback.status)) return readback;
       if (readback.status === "partial") {
@@ -215,9 +221,7 @@ export class ReleaseOperationPublication {
     if (runner?.candidate === generation.identitySha256 && this.processAlive(runner.pid)) {
       return { status: "unknown", cursor: { pid: runner.pid, stateFile: layout.stateFile } };
     }
-    if (runner?.candidate === generation.identitySha256
-        && runner?.status === "launching"
-        && Date.parse(this.now()) - Date.parse(String(runner.startedAt ?? "")) < this.launchGraceMs) {
+    if (runner?.candidate === generation.identitySha256 && runner?.status === "launching") {
       return { status: "unknown", cursor: { phase: "launching", stateFile: layout.stateFile } };
     }
     const journal = this.publicationRunStore({ runtimeRoot: layout.root, environment: this.environment });

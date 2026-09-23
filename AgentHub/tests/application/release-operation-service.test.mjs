@@ -203,6 +203,38 @@ test("outbox delivery is at-least-once with a stable operation revision key", as
   assert.equal(f.store.pendingEvents().length, 0);
 });
 
+test("outbox drains an event written while delivery is already running", async (t) => {
+  let releaseFirst;
+  const firstBlocked = new Promise((resolve) => { releaseFirst = resolve; });
+  let entered;
+  const firstEntered = new Promise((resolve) => { entered = resolve; });
+  const delivered = [];
+  const f = await fixture(t, {
+    schedule: () => {},
+    deliverEvent: async (event) => {
+      delivered.push(`${event.revision}:${event.eventKind}`);
+      if (delivered.length === 1) {
+        entered();
+        await firstBlocked;
+      }
+    },
+  });
+  const ack = start(f.service);
+  const draining = f.service.deliverPendingEvents();
+  await firstEntered;
+  const current = f.store.get(ack.operationId);
+  const transitioned = f.store.transition(ack.operationId, { nextAction: "second event" }, {
+    expectedRevision: current.revision,
+    eventKind: "operation.test-second-event",
+  });
+  assert.equal(transitioned.applied, true);
+  assert.equal((await f.service.deliverPendingEvents()).skipped, true);
+  releaseFirst();
+  await draining;
+  assert.equal(f.store.pendingEvents().length, 0);
+  assert.ok(delivered.some((entry) => entry.endsWith(":operation.test-second-event")));
+});
+
 test("external condition retries automatically at its durable retry time", async (t) => {
   let available = false;
   const f = await fixture(t, {

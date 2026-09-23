@@ -40,7 +40,9 @@ function fixture() {
       runtimeRoot: path.resolve("C:/runtime"),
       control,
       assertClone: async () => ({ primaryRoot }),
-      read: async (file) => JSON.stringify(file.endsWith("checkpoint.json") ? checkpoint : manifest),
+      read: async (file) => file.endsWith("CHANGELOG.md")
+        ? Buffer.from("release notes\r\n", "utf8")
+        : JSON.stringify(file.endsWith("checkpoint.json") ? checkpoint : manifest),
       wait: async () => {},
       pollMs: 1,
     },
@@ -50,7 +52,8 @@ function fixture() {
 test("publish:changed delegates one deterministic full release to ReleaseOperation", async () => {
   const f = fixture();
   const first = await runReleaseOperationCli([
-    "--from", f.manifest.baseCommit, "--workspace", f.manifest.workspaceId, "--full-tests",
+    "--from", f.manifest.baseCommit, "--workspace", f.manifest.workspaceId,
+    "--stream", "stream-1", "--thread", "thread-1", "--full-tests",
   ], f.options);
   assert.equal(first.operation.state, "done");
   assert.deepEqual(f.calls.map((call) => call.action), [
@@ -59,6 +62,10 @@ test("publish:changed delegates one deterministic full release to ReleaseOperati
   const admission = f.calls[0];
   assert.deepEqual(admission.params.taskIds, ["task-a", "task-b"]);
   assert.equal(admission.params.validationMode, "full");
+  assert.equal(admission.params.streamId, "stream-1");
+  assert.equal(admission.params.threadId, "thread-1");
+  assert.equal(Buffer.from(admission.params.releaseMetadata.bytesBase64, "base64").toString("utf8"), "release notes\r\n");
+  assert.notEqual(admission.params.releaseMetadata.rawSha256, admission.params.releaseMetadata.canonicalSha256);
   assert.equal(admission.params.approvedTargets[0].repositoryRoot, f.primaryRoot);
   assert.equal(admission.params.approvedTargets[0].approvedLocalMainCommit,
     f.manifest.baseProvenance.approvedLocalMainCommit);
@@ -66,7 +73,8 @@ test("publish:changed delegates one deterministic full release to ReleaseOperati
 
   const requestId = admission.params.requestId;
   f.calls.length = 0;
-  await runReleaseOperationCli(["--resume", "--from", f.manifest.baseCommit, "--workspace", f.manifest.workspaceId, "--full-tests"], f.options);
+  await runReleaseOperationCli(["--resume", "--from", f.manifest.baseCommit, "--workspace", f.manifest.workspaceId,
+    "--stream", "stream-1", "--thread", "thread-1", "--full-tests"], f.options);
   assert.equal(f.calls[0].params.requestId, requestId);
   assert.equal(f.calls[0].options.commandId, requestId);
 });

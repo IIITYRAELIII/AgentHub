@@ -274,6 +274,29 @@ test("Await leaves PreRelease unchanged after SQLite rejection and rebuilds it a
   assert.equal(await git(candidate.releaseRoot, "show", "PreRelease:next.txt"), "next");
 });
 
+test("concurrent Await acceptances compose in independent generations and serialize only promotion", { timeout: 120000 }, async (t) => {
+  const f = await fixture(t);
+  const first = await f.testedTask("Concurrent first", "first.txt", "first\n");
+  const second = await f.testedTask("Concurrent second", "second.txt", "second\n");
+  const original = f.releaseGitWorkspaces.prepareGeneration.bind(f.releaseGitWorkspaces);
+  const roots = [];
+  f.releaseGitWorkspaces.prepareGeneration = async (options) => {
+    const candidate = await original(options);
+    roots.push(candidate.generationRoot);
+    return candidate;
+  };
+  const [firstResult, secondResult] = await Promise.all([
+    f.lifecycle.updateWorkflowStatus({ taskId: first.id, status: "awaiting_implementation", operationId: "concurrent-first" }),
+    f.lifecycle.updateWorkflowStatus({ taskId: second.id, status: "awaiting_implementation", operationId: "concurrent-second" }),
+  ]);
+  assert.equal(firstResult.task.workflowStatus, "awaiting_implementation");
+  assert.equal(secondResult.task.workflowStatus, "awaiting_implementation");
+  assert.ok(new Set(roots).size >= 2);
+  const prepared = await f.releasePreflight.prepareAwaitSet({ workspaceId: f.workspace.id });
+  assert.equal(await git(prepared.releaseCandidates[0].releaseRoot, "show", "PreRelease:first.txt"), "first");
+  assert.equal(await git(prepared.releaseCandidates[0].releaseRoot, "show", "PreRelease:second.txt"), "second");
+});
+
 test("ambiguous Await preserves its pending operation and rebuilds the candidate during recovery", { timeout: 90000 }, async (t) => {
   const f = await fixture(t);
   const task = await f.testedTask("Recover", "recover.txt", "recover\n");
@@ -285,7 +308,9 @@ test("ambiguous Await preserves its pending operation and rebuilds the candidate
     { code: "AWAIT_ACCEPTANCE_UNKNOWN" });
   assert.equal(f.taskBoard.task(task.id).workflowStatus, "testing");
   assert.equal(f.taskBoard.lifecycleTransition("ambiguous").phase, "pending_git");
-  await assert.rejects(f.releaseGitWorkspaces.frozenCandidate(f.primary), /checkpoint is incomplete/u);
+  const preserved = await f.releaseGitWorkspaces.frozenCandidate(f.primary);
+  assert.equal(preserved.checkpointPhase, "prepared");
+  assert.equal(await git(preserved.releaseRoot, "show", "PreRelease:recover.txt"), "recover");
   f.taskBoard.commitWorkflowTransition = commitStatus;
   f.taskBoard.lifecycleOutcome = readOutcome;
   // Guard proof itself has separate process-owner tests. Exercise the real Task

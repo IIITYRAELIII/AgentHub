@@ -167,10 +167,12 @@ export class TaskLifecycleService {
     if (!this.releasePreflight) {
       throw new Error("Release preflight is unavailable; workflow status was not changed");
     }
-    const result = await this.releasePreflight.withAwaitTransition(
-      workspace.id,
-      async () => this.#updateWorkflowStatusLocked(options, { releaseWorkflow: true }),
-    );
+    const result = options.status === "awaiting_implementation"
+      ? await this.#updateWorkflowStatusLocked(options, { releaseWorkflow: true })
+      : await this.releasePreflight.withAwaitTransition(
+        workspace.id,
+        async () => this.#updateWorkflowStatusLocked(options, { releaseWorkflow: true }),
+      );
     if (result?.task?.workflowStatus === "awaiting_implementation") this.#releaseOperationWake?.(result.task.id);
     return result;
   }
@@ -661,6 +663,7 @@ export class TaskLifecycleService {
                   acceptingTask: { id: task.id, revision: task.revision },
                   projectRoot: selectedProjectRoot,
                   lease: repositoryLease,
+                  operationId,
                   commitPrepared: async (prepared) => {
                     if (prepared.task.resultCommit !== acceptedReference.resultCommit) {
                       throw new Error("Task prospective Await result changed before acceptance");
@@ -849,7 +852,7 @@ export class TaskLifecycleService {
       }
   }
 
-  withUnknownWorkflowReconciliationLock({ taskId, sourceTaskId = null, projectRoot } = {}, operation) {
+  withUnknownWorkflowReconciliationLock({ taskId, sourceTaskId = null, projectRoot, operationId } = {}, operation) {
     const task = this.#task(taskId);
     const workspace = task.workspaceId ? this.workspaceCatalog.workspace(task.workspaceId) : null;
     if (workspace?.settings?.releaseWorkflowEnabled !== true || !this.releasePreflight) {
@@ -858,8 +861,7 @@ export class TaskLifecycleService {
     requiredMethod(this.taskGitWorkspaces, "withTaskRecoveryLock");
     if (sourceTaskId) requiredMethod(this.taskGitWorkspaces, "withTaskRecoveryLocks");
     requiredMethod(this.taskGitWorkspaces, "withTaskRepositoryRecoveryLock");
-    return this.releasePreflight.withAwaitTransition(workspace.id, () => (
-      (sourceTaskId
+    const locked = () => (sourceTaskId
         ? this.taskGitWorkspaces.withTaskRecoveryLocks(
           [task.id, sourceTaskId],
           (taskLease) => this.taskGitWorkspaces.withTaskRepositoryRecoveryLock(
@@ -871,8 +873,11 @@ export class TaskLifecycleService {
         this.taskGitWorkspaces.withTaskRepositoryRecoveryLock(
           task.id, projectRoot, taskLease, operation,
         )
-        )))
-    ));
+        )));
+    const transition = this.taskBoard.lifecycleTransition?.(operationId);
+    return transition?.targetWorkflowStatus === "awaiting_implementation"
+      ? locked()
+      : this.releasePreflight.withAwaitTransition(workspace.id, locked);
   }
 
   async reconcileUnknownWorkflowStatusOwned({

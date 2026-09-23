@@ -99,7 +99,7 @@ test("publication readback stays unknown while the exact runner is alive", async
   });
 });
 
-test("publication readback waits through the spawn-to-pid crash window", async (t) => {
+test("publication readback keeps an unsettled spawn-to-pid window unknown without a time cutoff", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "release-operation-publication-launching-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const candidateRoot = path.join(root, "candidate");
@@ -122,7 +122,7 @@ test("publication readback waits through the spawn-to-pid crash window", async (
   const publication = new ReleaseOperationPublication({
     dataDir: path.join(root, "data"),
     runtimeRoot: path.join(root, "runtime"),
-    now: () => "2026-09-22T00:00:05.000Z",
+    now: () => "2026-09-22T01:00:05.000Z",
     launchGraceMs: 30_000,
     readPublicationStateImpl: async () => null,
     gitRemoteHeadImpl: async () => "base",
@@ -134,6 +134,40 @@ test("publication readback waits through the spawn-to-pid crash window", async (
     cursor: { phase: "launching", stateFile: path.join(executionRoot, "runner.json") },
   });
 });
+
+for (const [event, value] of [["exit", 1], ["error", new Error("spawn failed immediately")]]) {
+  test(`publication observes an immediate runner ${event} before persisting its pid`, async (t) => {
+    const root = await mkdtemp(path.join(os.tmpdir(), `release-operation-publication-early-${event}-`));
+    t.after(() => rm(root, { recursive: true, force: true }));
+    const candidateRoot = path.join(root, "candidate");
+    await mkdir(path.join(candidateRoot, "AgentHub"), { recursive: true });
+    const operation = { operationId: `operation-early-${event}` };
+    const generation = {
+      generation: 1,
+      identitySha256: `candidate-early-${event}`,
+      candidates: [{ repositoryRoot: candidateRoot, releaseRoot: candidateRoot, commit: "next", baseCommit: "base" }],
+    };
+    const target = { targetId: "production", kind: "agent-hub-publication", repositoryRoot: candidateRoot };
+    const publication = new ReleaseOperationPublication({
+      dataDir: path.join(root, "data"), runtimeRoot: path.join(root, "runtime"),
+      runnerFile: path.join(root, "runner.mjs"),
+      readPublicationStateImpl: async () => null,
+      gitRemoteHeadImpl: async () => "base",
+      processAliveImpl: () => false,
+      publicationRunStoreFactory: () => ({ read: async () => null }),
+      spawnImpl: () => {
+        const child = new EventEmitter();
+        child.pid = 4321;
+        child.unref = () => {};
+        queueMicrotask(() => child.emit(event, value));
+        return child;
+      },
+    });
+    await assert.rejects(publication.publish({ operation, generation, target }), event === "error"
+      ? /spawn failed immediately/u
+      : /runner exited 1/u);
+  });
+}
 
 test("publication classifies a failed pre-effect pipeline step as validation failure", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "release-operation-publication-validation-"));

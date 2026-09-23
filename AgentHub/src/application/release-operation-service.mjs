@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
 
+import { processIsAlive } from "../infrastructure/process/process-liveness.mjs";
+
 import {
   createCandidateGeneration,
   RELEASE_OPERATION_STATES,
@@ -107,6 +109,7 @@ export class ReleaseOperationService {
   #retryTimers = new Map();
   #deliveryTimer = null;
   #deliveryRunning = false;
+  #deliveryRerun = false;
 
   constructor({
     store,
@@ -123,9 +126,7 @@ export class ReleaseOperationService {
     now = () => new Date().toISOString(),
     leaseMs = DEFAULT_LEASE_MS,
     retryDelayMs = DEFAULT_RETRY_MS,
-    processAlive = (pid) => {
-      try { process.kill(pid, 0); return true; } catch { return false; }
-    },
+    processAlive = processIsAlive,
     processId = process.pid,
     deliveryRetryMs = 1_000,
   } = {}) {
@@ -289,26 +290,32 @@ export class ReleaseOperationService {
 
   async deliverPendingEvents({ limit = 100 } = {}) {
     if (!this.deliverEvent) return { delivered: 0, failed: 0, skipped: true };
-    if (this.#deliveryRunning) return { delivered: 0, failed: 0, skipped: true };
+    if (this.#deliveryRunning) {
+      this.#deliveryRerun = true;
+      return { delivered: 0, failed: 0, skipped: true };
+    }
     this.#deliveryRunning = true;
     let delivered = 0;
     let failed = 0;
     let read = 0;
     let retryAttempt = 0;
     try {
-      const events = this.store.pendingEvents({ limit });
-      read = events.length;
-      for (const event of events) {
-        try {
-          await this.deliverEvent(event);
-          this.store.settleEvent(event, { delivered: true });
-          delivered += 1;
-        } catch (error) {
-          this.store.settleEvent(event, { delivered: false, error });
-          failed += 1;
-          retryAttempt = Math.max(retryAttempt, Number(event.attempts) + 1);
+      do {
+        this.#deliveryRerun = false;
+        const events = this.store.pendingEvents({ limit });
+        read = Math.max(read, events.length);
+        for (const event of events) {
+          try {
+            await this.deliverEvent(event);
+            this.store.settleEvent(event, { delivered: true });
+            delivered += 1;
+          } catch (error) {
+            this.store.settleEvent(event, { delivered: false, error });
+            failed += 1;
+            retryAttempt = Math.max(retryAttempt, Number(event.attempts) + 1);
+          }
         }
-      }
+      } while (this.#deliveryRerun);
     } finally {
       this.#deliveryRunning = false;
     }

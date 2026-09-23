@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { EventEmitter } from "node:events";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
 import { publishChanged, parseChangedArguments, RELEASE_CANDIDATE_CONTOUR_LABEL, needsVisualPublicationTests } from "../../publish-changed.mjs";
+import { runStep } from "../../publish-all.mjs";
 import { publicationCheckpointStore } from "../../src/infrastructure/persistence/publication-checkpoint.mjs";
 import { publicationRunStore } from "../../src/infrastructure/persistence/publication-run-store.mjs";
 
@@ -15,6 +17,7 @@ async function fixture(t) {
   const journal = () => publicationRunStore({ environment });
   const checkpoint = publicationCheckpointStore(path.join(root, "checkpoint.json"));
   return {
+    root,
     journal,
     options: {
       checkpoint, journal: journal(), runtimeRoot: root,
@@ -28,6 +31,28 @@ async function fixture(t) {
     },
   };
 }
+
+test("stable executor runs every candidate command from the candidate AgentHub root", async (t) => {
+  const { root, options } = await fixture(t);
+  const candidateRoot = path.join(root, "candidate");
+  const candidateAgentHub = path.join(candidateRoot, "AgentHub");
+  await mkdir(candidateAgentHub, { recursive: true });
+  const workingDirectories = [];
+  const spawnImpl = (_command, _args, spawnOptions) => {
+    workingDirectories.push(spawnOptions.cwd);
+    const child = new EventEmitter();
+    child.pid = 1234;
+    queueMicrotask(() => child.emit("exit", 0, null));
+    return child;
+  };
+  await publishChanged(["--full-tests"], {
+    ...options,
+    repositoryRoot: candidateRoot,
+    run: (step) => runStep(step, { spawnImpl }),
+  });
+  assert.ok(workingDirectories.length > 0);
+  assert.deepEqual(new Set(workingDirectories), new Set([candidateAgentHub]));
+});
 
 test("explicit quick selection and Workspace survive a failed stage and a new executor process", async (t) => {
   const { options, journal } = await fixture(t);

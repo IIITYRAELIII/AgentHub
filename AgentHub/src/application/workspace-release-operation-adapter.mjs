@@ -42,6 +42,9 @@ export class WorkspaceReleaseOperationAdapter {
       generation,
       taskIds: operation.authorization.taskIds,
       approvedRepositories: approvedRepositories(operation),
+      ...(operation.authorization.releaseMetadata ? {
+        changelogContent: Buffer.from(operation.authorization.releaseMetadata.bytesBase64, "base64"),
+      } : {}),
     });
     const selectedResults = prepared.releaseCandidates.flatMap((candidate) => (
       candidate.frozenTasks.map((task) => ({
@@ -67,7 +70,7 @@ export class WorkspaceReleaseOperationAdapter {
         frozenTasks: candidate.frozenTasks,
         manifest: candidate.manifest,
       })),
-      sourceFingerprint: prepared.planRevision,
+      sourceFingerprint: `${prepared.planRevision}:${operation.authorization.fingerprint}`,
     };
   }
 
