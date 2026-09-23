@@ -1911,6 +1911,12 @@ export class ReleaseGitWorkspaceService {
         throw new Error("publication freeze recovery publication checkpoint expectation changed");
       }
     }
+    const expectedReviewedOriginAdvance = normalizedReviewedOriginAdvance(expected);
+    if (JSON.stringify(identity.reviewedOriginAdvance ?? null)
+        !== JSON.stringify(expectedReviewedOriginAdvance
+          ? { ...expectedReviewedOriginAdvance, objectProof: "isolated-remote-objects-v1" } : null)) {
+      throw new Error("publication freeze recovery reviewed origin advance identity changed");
+    }
     const evidenceFile = String(recovery.evidenceFile ?? "");
     if (!pathInside(layout.evidenceRoot, evidenceFile)) {
       throw new Error("publication freeze recovery evidence path changed");

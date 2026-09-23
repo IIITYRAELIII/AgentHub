@@ -629,6 +629,28 @@ test("failed frozen recovery binds one reviewed upstream advance without moving 
   const evidence = JSON.parse(await readFile(admitted.recovery.evidenceFile, "utf8"));
   assert.deepEqual(evidence.reviewedOriginAdvance, preview.identity.reviewedOriginAdvance);
 
+  await assert.rejects(new ReleaseGitWorkspaceService({
+    dataDir: setup.dataDir, environment: setup.environment,
+  }).recoverFreezingPublicationCandidate({
+    ...baseRequest, confirm: true, expectedProofHash: preview.proofHash,
+  }), /reviewed origin advance identity changed/u);
+  await assert.rejects(new ReleaseGitWorkspaceService({
+    dataDir: setup.dataDir, environment: setup.environment,
+  }).recoverFreezingPublicationCandidate({
+    ...request,
+    expected: { ...request.expected, reviewedOriginDiffSha256: "f".repeat(64) },
+    confirm: true,
+    expectedProofHash: preview.proofHash,
+  }), /reviewed origin advance identity changed/u);
+  await assert.rejects(new ReleaseGitWorkspaceService({
+    dataDir: setup.dataDir, environment: setup.environment,
+  }).recoverFreezingPublicationCandidate({
+    ...baseRequest,
+    expected: { ...baseRequest.expected, reviewedOriginMain: advance.reviewedOriginMain },
+    confirm: true,
+    expectedProofHash: preview.proofHash,
+  }), /reviewed origin advance identity is incomplete/u);
+
   const completed = await new ReleaseGitWorkspaceService({
     dataDir: setup.dataDir, environment: setup.environment,
   }).recoverFreezingPublicationCandidate({
@@ -638,6 +660,35 @@ test("failed frozen recovery binds one reviewed upstream advance without moving 
   assert.equal(await git(setup.origin, "rev-parse", "main"), advance.reviewedOriginMain);
   assert.equal(await git(setup.candidate.releaseRoot,
     "rev-parse", "refs/remotes/origin/main"), setup.baseCommit);
+});
+
+test("reviewed origin recovery rejects remote movement after durable admission", async (context) => {
+  const setup = await failedFrozenFixture(context, {
+    recoveryPhase: async (phase) => {
+      if (phase === "intent") throw new Error("stop after reviewed origin admission");
+    },
+  });
+  const advance = await pushReviewedOriginAdvance(setup, context);
+  const baseRequest = failedFrozenRequest(setup, "recover-reviewed-origin-moved-after-admission");
+  const request = { ...baseRequest, expected: { ...baseRequest.expected, ...advance } };
+  const preview = await setup.service.recoverFreezingPublicationCandidate(request);
+  await assert.rejects(setup.service.recoverFreezingPublicationCandidate({
+    ...request, confirm: true, expectedProofHash: preview.proofHash,
+  }), /stop after reviewed origin admission/u);
+  const refsBefore = await git(setup.candidate.releaseRoot, "for-each-ref",
+    "--format=%(refname):%(objectname)");
+  const checkpointBefore = await readFile(setup.checkpointFile);
+
+  await pushReviewedOriginAdvance(setup, context, { content: "unreviewed post-admission tip\n" });
+  const resumedService = new ReleaseGitWorkspaceService({
+    dataDir: setup.dataDir, environment: setup.environment,
+  });
+  await assert.rejects(resumedService.recoverFreezingPublicationCandidate({
+    ...request, confirm: true, expectedProofHash: preview.proofHash,
+  }), /reviewed origin changed after admission/u);
+  assert.deepEqual(await readFile(setup.checkpointFile), checkpointBefore);
+  assert.equal(await git(setup.candidate.releaseRoot, "for-each-ref",
+    "--format=%(refname):%(objectname)"), refsBefore);
 });
 
 test("reviewed origin recovery rejects unreviewed bytes and movement after preview", async (context) => {
