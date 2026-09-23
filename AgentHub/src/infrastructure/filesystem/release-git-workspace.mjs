@@ -240,6 +240,81 @@ function assertRecoveryDigest(bytes, expected, label) {
   return digest;
 }
 
+function normalizedReviewedOriginAdvance(expected = {}) {
+  const advance = {
+    reviewedOriginMain: String(expected.reviewedOriginMain ?? "").trim().toLowerCase(),
+    reviewedOriginParent: String(expected.reviewedOriginParent ?? "").trim().toLowerCase(),
+    reviewedOriginTree: String(expected.reviewedOriginTree ?? "").trim().toLowerCase(),
+    reviewedOriginDiffSha256: String(expected.reviewedOriginDiffSha256 ?? "").trim().toLowerCase(),
+    reviewedOriginDiffHashObject: String(expected.reviewedOriginDiffHashObject ?? "").trim().toLowerCase(),
+    reviewedOriginPatchId: String(expected.reviewedOriginPatchId ?? "").trim().toLowerCase(),
+    releaseTrackingOriginMain: String(expected.releaseTrackingOriginMain ?? "").trim().toLowerCase(),
+    originUrlSha256: String(expected.originUrlSha256 ?? "").trim().toLowerCase(),
+  };
+  if (Object.values(advance).every((value) => !value)) return null;
+  if (![advance.reviewedOriginMain, advance.reviewedOriginParent, advance.reviewedOriginTree,
+    advance.reviewedOriginDiffHashObject, advance.reviewedOriginPatchId,
+    advance.releaseTrackingOriginMain].every((value) => /^[a-f0-9]{40}$/u.test(value))
+      || ![advance.reviewedOriginDiffSha256, advance.originUrlSha256]
+        .every((value) => /^[a-f0-9]{64}$/u.test(value))) {
+    throw new Error("publication freeze recovery reviewed origin advance identity is incomplete");
+  }
+  return advance;
+}
+
+async function inspectRemoteObjectsInIsolation({
+  originUrl, remoteMain, frozenHead, releaseRoot, approvedOriginMain = null, expectedAdvance = null,
+}) {
+  const objectRoot = await mkdtemp(path.join(os.tmpdir(), "agent-hub-reviewed-origin-"));
+  try {
+    await runGit(["init", "--bare", "."], { cwd: objectRoot });
+    await runGit(["fetch", "--no-tags", "--force", originUrl,
+      "refs/heads/main:refs/heads/review-origin"], { cwd: objectRoot, timeoutMs: 300_000 });
+    const fetchedMain = await runGit(["rev-parse", "refs/heads/review-origin^{commit}"], { cwd: objectRoot });
+    if (fetchedMain !== remoteMain) {
+      throw new Error("publication freeze recovery reviewed origin changed during isolated verification");
+    }
+    await runGit(["fetch", "--no-tags", "--force", releaseRoot,
+      `${frozenHead}:refs/heads/review-frozen`], { cwd: objectRoot, timeoutMs: 300_000 });
+    if (await gitMaybe(["merge-base", "--is-ancestor", frozenHead, remoteMain], { cwd: objectRoot }) !== null) {
+      throw new Error("publication freeze recovery candidate acquired a foreign publication effect");
+    }
+    if (!expectedAdvance) return null;
+    if (await gitMaybe(["merge-base", "--is-ancestor", approvedOriginMain, remoteMain], {
+      cwd: objectRoot,
+    }) === null) {
+      throw new Error("publication freeze recovery reviewed origin is not an approved descendant");
+    }
+    const parents = String(await runGit(["show", "-s", "--format=%P", remoteMain], { cwd: objectRoot }))
+      .split(/\s+/u).filter(Boolean);
+    const tree = await runGit(["rev-parse", `${remoteMain}^{tree}`], { cwd: objectRoot });
+    const diff = await runGit(["diff", "--binary", approvedOriginMain, remoteMain], {
+      cwd: objectRoot, rawOutput: true,
+    });
+    const patchId = String(await runGitWithInput(["patch-id", "--stable"], diff, { cwd: objectRoot }))
+      .split(/\s+/u)[0];
+    const diffHashObject = String(await runGitWithInput(["hash-object", "--stdin"], diff, { cwd: objectRoot }));
+    const observed = {
+      reviewedOriginMain: remoteMain,
+      reviewedOriginParent: parents.length === 1 ? parents[0] : null,
+      reviewedOriginTree: tree,
+      reviewedOriginDiffSha256: sha256(diff),
+      reviewedOriginDiffHashObject: diffHashObject,
+      reviewedOriginPatchId: patchId,
+      releaseTrackingOriginMain: expectedAdvance.releaseTrackingOriginMain,
+      originUrlSha256: sha256(originUrl),
+      objectProof: "isolated-remote-objects-v1",
+    };
+    if (parents.length !== 1 || parents[0] !== approvedOriginMain
+        || Object.entries(expectedAdvance).some(([key, value]) => observed[key] !== value)) {
+      throw new Error("publication freeze recovery reviewed origin advance proof changed");
+    }
+    return observed;
+  } finally {
+    await rm(objectRoot, { recursive: true, force: true });
+  }
+}
+
 function normalizedBaseProvenance(value, expectedBaseCommit = null) {
   if (value == null) return null;
   const normalized = {
@@ -1432,6 +1507,7 @@ export class ReleaseGitWorkspaceService {
     assertExactRecoveryExpectation(frozenTree, expected.frozenTree, "frozen tree");
     assertExactRecoveryExpectation(intent.oldMain, expected.publishedRevision, "published revision");
     assertExactRecoveryExpectation(baseProvenance?.approvedOriginMainCommit, expected.approvedOriginMain, "approved origin main");
+    const expectedReviewedOriginAdvance = normalizedReviewedOriginAdvance(expected);
     const [head, headRef, main, preRelease, dirty, unmerged, remoteLine, trackingOriginMain, originUrl] = await Promise.all([
       runGit(["rev-parse", "HEAD^{commit}"], { cwd: layout.releaseRoot }),
       gitMaybe(["symbolic-ref", "-q", "HEAD"], { cwd: layout.releaseRoot }),
@@ -1445,9 +1521,30 @@ export class ReleaseGitWorkspaceService {
     ]);
     if (dirty || unmerged) throw new Error("publication freeze recovery requires a clean unconflicted clone");
     const originMain = remoteLine.split(/\s+/u)[0];
-    if (originMain !== baseProvenance.approvedOriginMainCommit
-        || trackingOriginMain !== baseProvenance.approvedOriginMainCommit) {
-      throw new Error("publication freeze recovery approved origin main changed");
+    if (!/^[a-f0-9]{40}$/u.test(originMain)) {
+      throw new Error("publication freeze recovery origin main is unreadable");
+    }
+    let reviewedOriginAdvance = null;
+    if (originMain === baseProvenance.approvedOriginMainCommit) {
+      if (expectedReviewedOriginAdvance) {
+        throw new Error("publication freeze recovery reviewed origin advance is not present");
+      }
+      if (trackingOriginMain !== baseProvenance.approvedOriginMainCommit) {
+        throw new Error("publication freeze recovery approved origin main changed");
+      }
+    } else {
+      if (recoveryMode !== FAILED_FROZEN_RECOVERY_MODE || !expectedReviewedOriginAdvance
+          || originMain !== expectedReviewedOriginAdvance.reviewedOriginMain
+          || trackingOriginMain !== expectedReviewedOriginAdvance.releaseTrackingOriginMain
+          || trackingOriginMain !== baseProvenance.approvedOriginMainCommit
+          || sha256(originUrl) !== expectedReviewedOriginAdvance.originUrlSha256) {
+        throw new Error("publication freeze recovery approved origin main changed");
+      }
+      reviewedOriginAdvance = await inspectRemoteObjectsInIsolation({
+        originUrl, remoteMain: originMain, frozenHead, releaseRoot: layout.releaseRoot,
+        approvedOriginMain: baseProvenance.approvedOriginMainCommit,
+        expectedAdvance: expectedReviewedOriginAdvance,
+      });
     }
     const acceptedFreshHeadRefs = recoveryMode === FAILED_FROZEN_RECOVERY_MODE
       ? ["refs/heads/main"] : ["refs/heads/main", null];
@@ -1570,6 +1667,7 @@ export class ReleaseGitWorkspaceService {
       originMain,
       trackingOriginMain,
       originUrlSha256: sha256(originUrl),
+      reviewedOriginAdvance,
       publicationStateSha256: sha256(publicationStateBytes),
       ...publicationEvidence,
       effects: [
@@ -1657,18 +1755,23 @@ export class ReleaseGitWorkspaceService {
     }
     await this.#recoveryPhase("evidence");
     if (recoveryMode === FAILED_FROZEN_RECOVERY_MODE) {
-      const [runReadback, checkpointReadback, logReadback, remoteReadback] = await Promise.all([
+      const [runReadback, checkpointReadback, logReadback, remoteReadback,
+        trackingReadback, originUrlReadback] = await Promise.all([
         readFile(publicationRunPath),
         readFile(publicationStepPath).catch((error) => error?.code === "ENOENT" ? null : Promise.reject(error)),
         readFile(publicationRun.logFile),
         runGit(["ls-remote", "origin", "refs/heads/main"], { cwd: layout.releaseRoot, timeoutMs: 300_000 }),
+        runGit(["rev-parse", "refs/remotes/origin/main^{commit}"], { cwd: layout.releaseRoot }),
+        runGit(["remote", "get-url", "origin"], { cwd: layout.releaseRoot }),
       ]);
       if (sha256(runReadback) !== recoveryIdentity.publicationRunSha256
           || (recoveryIdentity.publicationCheckpointSha256
             ? !checkpointReadback || sha256(checkpointReadback) !== recoveryIdentity.publicationCheckpointSha256
             : checkpointReadback !== null)
           || sha256(logReadback) !== recoveryIdentity.publicationLogSha256
-          || remoteReadback.split(/\s+/u)[0] !== recoveryIdentity.originMain) {
+          || remoteReadback.split(/\s+/u)[0] !== recoveryIdentity.originMain
+          || trackingReadback !== recoveryIdentity.trackingOriginMain
+          || sha256(originUrlReadback) !== recoveryIdentity.originUrlSha256) {
         throw new Error("publication freeze recovery external evidence changed before admission");
       }
     }
@@ -1724,6 +1827,12 @@ export class ReleaseGitWorkspaceService {
       [identity.oldMain, expected.publishedRevision, "published revision"],
       [identity.baseProvenance?.approvedOriginMainCommit, expected.approvedOriginMain, "approved origin main"],
     ]) assertExactRecoveryExpectation(actual, requested, label);
+    const expectedReviewedOriginAdvance = normalizedReviewedOriginAdvance(expected);
+    if (JSON.stringify(identity.reviewedOriginAdvance ?? null)
+        !== JSON.stringify(expectedReviewedOriginAdvance
+          ? { ...expectedReviewedOriginAdvance, objectProof: "isolated-remote-objects-v1" } : null)) {
+      throw new Error("publication freeze recovery reviewed origin advance identity changed");
+    }
     if (!confirm) return { status: checkpoint.phase, proofHash, identity, effects: identity.effects, reused: true };
     if (checkpoint.phase === "abandoned") {
       return { status: "abandoned", reused: true, proofHash, recovery };
@@ -1852,7 +1961,7 @@ export class ReleaseGitWorkspaceService {
     if (admittedLogFile && !pathInside(publicationRunPaths(this.#environment).logDirectory, admittedLogFile)) {
       throw new Error("publication freeze recovery publication log identity changed after admission");
     }
-    const [stateBytes, runBytes, stepBytes, logBytes, originUrl, remoteLine] = await Promise.all([
+    const [stateBytes, runBytes, stepBytes, logBytes, originUrl, remoteLine, trackingOriginMain] = await Promise.all([
       readFile(publicationStatePath),
       recoveryMode === FAILED_FROZEN_RECOVERY_MODE ? readFile(publicationRunPath) : Promise.resolve(null),
       recoveryMode === FAILED_FROZEN_RECOVERY_MODE
@@ -1861,6 +1970,7 @@ export class ReleaseGitWorkspaceService {
       recoveryMode === FAILED_FROZEN_RECOVERY_MODE ? readFile(admittedLogFile) : Promise.resolve(null),
       runGit(["remote", "get-url", "origin"], { cwd: layout.releaseRoot }),
       runGit(["ls-remote", "origin", "refs/heads/main"], { cwd: layout.releaseRoot, timeoutMs: 300_000 }),
+      runGit(["rev-parse", "refs/remotes/origin/main^{commit}"], { cwd: layout.releaseRoot }),
     ]);
     if (sha256(stateBytes) !== identity.publicationStateSha256 || sha256(originUrl) !== identity.originUrlSha256
         || (runBytes && sha256(runBytes) !== identity.publicationRunSha256)
@@ -1874,15 +1984,14 @@ export class ReleaseGitWorkspaceService {
     if (!/^[a-f0-9]{40}$/u.test(remoteMain)) {
       throw new Error("publication freeze recovery origin main is unreadable");
     }
-    if (remoteMain !== identity.originMain) {
-      await runGit(["fetch", "--no-write-fetch-head", "origin", remoteMain], {
-        cwd: layout.releaseRoot, timeoutMs: 300_000,
-      });
-      if (await gitMaybe(["merge-base", "--is-ancestor", identity.frozenHead, remoteMain], {
-        cwd: layout.releaseRoot,
-      }) !== null) {
-        throw new Error("publication freeze recovery candidate acquired a foreign publication effect");
+    if (identity.reviewedOriginAdvance) {
+      if (remoteMain !== identity.originMain || trackingOriginMain !== identity.trackingOriginMain) {
+        throw new Error("publication freeze recovery reviewed origin changed after admission");
       }
+    } else if (remoteMain !== identity.originMain) {
+      await inspectRemoteObjectsInIsolation({
+        originUrl, remoteMain, frozenHead: identity.frozenHead, releaseRoot: layout.releaseRoot,
+      });
     }
     return this.#finalizePublicationRecoveryOwned({ layout, checkpoint, recoveryIdentity: identity, reused: true });
   }

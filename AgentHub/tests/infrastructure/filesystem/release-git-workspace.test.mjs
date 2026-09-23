@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
-import { createHash } from "node:crypto";
+import { execFile, spawn } from "node:child_process";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -37,6 +37,22 @@ const RECOVERY_SOURCE = { commit: "c".repeat(40), ownerSha256: "d".repeat(64) };
 
 async function git(cwd, ...args) {
   return String((await execFileAsync("git", args, { cwd, windowsHide: true })).stdout).trim();
+}
+
+function gitWithInput(cwd, args, input) {
+  return new Promise((resolve, reject) => {
+    const child = spawn("git", args, { cwd, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
+    const stdout = [];
+    const stderr = [];
+    child.stdout.on("data", (chunk) => stdout.push(chunk));
+    child.stderr.on("data", (chunk) => stderr.push(chunk));
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code === 0) resolve(Buffer.concat(stdout));
+      else reject(new Error(Buffer.concat(stderr).toString("utf8").trim() || `git ${args[0]} exited with ${code}`));
+    });
+    child.stdin.end(input);
+  });
 }
 
 async function commit(cwd, message) {
@@ -370,6 +386,39 @@ async function failedFrozenFixture(context, {
   };
 }
 
+async function pushReviewedOriginAdvance(setup, context, {
+  content = "reviewed upstream release note\n", parent = null,
+} = {}) {
+  const writer = path.join(setup.root, `reviewed-origin-${randomUUID()}`);
+  await git(setup.root, "clone", setup.origin, writer);
+  context.after(() => rm(writer, { recursive: true, force: true }));
+  if (parent) await git(writer, "checkout", "--detach", parent);
+  await writeFile(path.join(writer, "CHANGELOG.md"), content, "utf8");
+  const reviewedOriginMain = await commit(writer, "reviewed upstream advance");
+  await git(writer, "push", "--force", "origin", `${reviewedOriginMain}:refs/heads/main`);
+  const reviewedOriginParent = (await git(writer, "show", "-s", "--format=%P", reviewedOriginMain))
+    .split(/\s+/u).filter(Boolean);
+  const reviewedOriginTree = await git(writer, "rev-parse", `${reviewedOriginMain}^{tree}`);
+  const diff = (await execFileAsync("git", ["diff", "--binary", setup.baseCommit, reviewedOriginMain], {
+    cwd: writer, windowsHide: true, encoding: null,
+  })).stdout;
+  const reviewedOriginPatchId = String(await gitWithInput(writer, ["patch-id", "--stable"], diff))
+    .trim().split(/\s+/u)[0];
+  const reviewedOriginDiffHashObject = String(await gitWithInput(writer, ["hash-object", "--stdin"], diff)).trim();
+  const originUrl = await git(setup.candidate.releaseRoot, "remote", "get-url", "origin");
+  return {
+    reviewedOriginMain,
+    reviewedOriginParent: reviewedOriginParent.length === 1 ? reviewedOriginParent[0] : "0".repeat(40),
+    reviewedOriginTree,
+    reviewedOriginDiffSha256: sha256(diff),
+    reviewedOriginDiffHashObject,
+    reviewedOriginPatchId,
+    releaseTrackingOriginMain: await git(setup.candidate.releaseRoot,
+      "rev-parse", "refs/remotes/origin/main^{commit}"),
+    originUrlSha256: sha256(originUrl),
+  };
+}
+
 const failedFrozenRequest = (setup, requestId = "recover-failed-frozen") => ({
   projectRoot: setup.primary, workspaceId: "workspace-recovery", requestId,
   sourceIdentity: RECOVERY_SOURCE, recoveryMode: "abandon-failed-frozen-candidate-v1",
@@ -538,6 +587,150 @@ test("admitted failed frozen recovery survives unrelated remote drift but reject
   await assert.rejects(resumedService.recoverFreezingPublicationCandidate({
     ...publishedRequest, confirm: true, expectedProofHash: publishedPreview.proofHash,
   }), /foreign publication effect/u);
+});
+
+test("failed frozen recovery binds one reviewed upstream advance without moving release tracking", async (context) => {
+  let stopAtIntent = true;
+  const setup = await failedFrozenFixture(context, {
+    recoveryPhase: async (phase) => {
+      if (phase === "intent" && stopAtIntent) {
+        stopAtIntent = false;
+        throw new Error("stop after reviewed origin admission");
+      }
+    },
+  });
+  const advance = await pushReviewedOriginAdvance(setup, context);
+  const unchangedRefs = {
+    main: await git(setup.candidate.releaseRoot, "rev-parse", "main"),
+    preRelease: await git(setup.candidate.releaseRoot, "rev-parse", "PreRelease"),
+    tracking: await git(setup.candidate.releaseRoot, "rev-parse", "refs/remotes/origin/main"),
+  };
+  const baseRequest = failedFrozenRequest(setup, "recover-reviewed-origin");
+  await assert.rejects(setup.service.recoverFreezingPublicationCandidate(baseRequest),
+    /approved origin main changed/u);
+  assert.deepEqual({
+    main: await git(setup.candidate.releaseRoot, "rev-parse", "main"),
+    preRelease: await git(setup.candidate.releaseRoot, "rev-parse", "PreRelease"),
+    tracking: await git(setup.candidate.releaseRoot, "rev-parse", "refs/remotes/origin/main"),
+  }, unchangedRefs);
+
+  const request = { ...baseRequest, expected: { ...baseRequest.expected, ...advance } };
+  const preview = await setup.service.recoverFreezingPublicationCandidate(request);
+  assert.equal(preview.identity.baseProvenance.approvedOriginMainCommit, setup.baseCommit);
+  assert.equal(preview.identity.originMain, advance.reviewedOriginMain);
+  assert.equal(preview.identity.trackingOriginMain, setup.baseCommit);
+  assert.deepEqual(preview.identity.reviewedOriginAdvance, {
+    ...advance, objectProof: "isolated-remote-objects-v1",
+  });
+  await assert.rejects(setup.service.recoverFreezingPublicationCandidate({
+    ...request, confirm: true, expectedProofHash: preview.proofHash,
+  }), /stop after reviewed origin admission/u);
+  const admitted = JSON.parse(await readFile(setup.checkpointFile, "utf8"));
+  const evidence = JSON.parse(await readFile(admitted.recovery.evidenceFile, "utf8"));
+  assert.deepEqual(evidence.reviewedOriginAdvance, preview.identity.reviewedOriginAdvance);
+
+  const completed = await new ReleaseGitWorkspaceService({
+    dataDir: setup.dataDir, environment: setup.environment,
+  }).recoverFreezingPublicationCandidate({
+    ...request, confirm: true, expectedProofHash: preview.proofHash,
+  });
+  assert.equal(completed.status, "abandoned");
+  assert.equal(await git(setup.origin, "rev-parse", "main"), advance.reviewedOriginMain);
+  assert.equal(await git(setup.candidate.releaseRoot,
+    "rev-parse", "refs/remotes/origin/main"), setup.baseCommit);
+});
+
+test("reviewed origin recovery rejects unreviewed bytes and movement after preview", async (context) => {
+  const wrongBytes = await failedFrozenFixture(context);
+  const wrongAdvance = await pushReviewedOriginAdvance(wrongBytes, context);
+  const wrongRequest = failedFrozenRequest(wrongBytes, "recover-wrong-reviewed-origin");
+  await assert.rejects(wrongBytes.service.recoverFreezingPublicationCandidate({
+    ...wrongRequest,
+    expected: { ...wrongRequest.expected, ...wrongAdvance, reviewedOriginDiffSha256: "f".repeat(64) },
+  }), /reviewed origin advance proof changed/u);
+
+  const moved = await failedFrozenFixture(context);
+  const firstAdvance = await pushReviewedOriginAdvance(moved, context, { content: "reviewed first tip\n" });
+  const movedRequest = failedFrozenRequest(moved, "recover-moving-reviewed-origin");
+  const exactRequest = { ...movedRequest, expected: { ...movedRequest.expected, ...firstAdvance } };
+  const preview = await moved.service.recoverFreezingPublicationCandidate(exactRequest);
+  await pushReviewedOriginAdvance(moved, context, { content: "unreviewed second tip\n" });
+  await assert.rejects(moved.service.recoverFreezingPublicationCandidate({
+    ...exactRequest, confirm: true, expectedProofHash: preview.proofHash,
+  }), /approved origin main changed/u);
+  const checkpoint = JSON.parse(await readFile(moved.checkpointFile, "utf8"));
+  assert.equal(checkpoint.phase, "frozen");
+  assert.equal(checkpoint.recovery, undefined);
+});
+
+test("reviewed origin recovery rejects divergence and release tracking movement", async (context) => {
+  const tracking = await failedFrozenFixture(context);
+  const trackedAdvance = await pushReviewedOriginAdvance(tracking, context);
+  await git(tracking.candidate.releaseRoot, "fetch", "--no-write-fetch-head", "origin",
+    trackedAdvance.reviewedOriginMain);
+  await git(tracking.candidate.releaseRoot, "update-ref", "refs/remotes/origin/main", trackedAdvance.reviewedOriginMain);
+  const trackingRequest = failedFrozenRequest(tracking, "recover-moved-tracking-origin");
+  await assert.rejects(tracking.service.recoverFreezingPublicationCandidate({
+    ...trackingRequest, expected: { ...trackingRequest.expected, ...trackedAdvance },
+  }), /approved origin main changed/u);
+
+  const divergent = await failedFrozenFixture(context);
+  const writer = path.join(divergent.root, `divergent-origin-${randomUUID()}`);
+  await git(divergent.root, "clone", divergent.origin, writer);
+  context.after(() => rm(writer, { recursive: true, force: true }));
+  await git(writer, "checkout", "--orphan", "divergent-main");
+  await git(writer, "rm", "-r", "--cached", ".");
+  await writeFile(path.join(writer, "divergent.txt"), "unrelated history\n", "utf8");
+  const divergentTip = await commit(writer, "divergent upstream");
+  await git(writer, "push", "--force", "origin", `${divergentTip}:refs/heads/main`);
+  const divergentDiff = (await execFileAsync("git", ["diff", "--binary", divergent.baseCommit, divergentTip], {
+    cwd: writer, windowsHide: true, encoding: null,
+  })).stdout;
+  const divergentPatchId = String(await gitWithInput(writer, ["patch-id", "--stable"], divergentDiff))
+    .trim().split(/\s+/u)[0];
+  const divergentRequest = failedFrozenRequest(divergent, "recover-divergent-reviewed-origin");
+  await assert.rejects(divergent.service.recoverFreezingPublicationCandidate({
+    ...divergentRequest,
+    expected: { ...divergentRequest.expected,
+      reviewedOriginMain: divergentTip,
+      reviewedOriginParent: "0".repeat(40),
+      reviewedOriginTree: await git(writer, "rev-parse", `${divergentTip}^{tree}`),
+      reviewedOriginDiffSha256: sha256(divergentDiff),
+      reviewedOriginDiffHashObject: String(await gitWithInput(writer,
+        ["hash-object", "--stdin"], divergentDiff)).trim(),
+      reviewedOriginPatchId: divergentPatchId,
+      releaseTrackingOriginMain: divergent.baseCommit,
+      originUrlSha256: sha256(await git(divergent.candidate.releaseRoot, "remote", "get-url", "origin")),
+    },
+  }), /not an approved descendant/u);
+
+  const published = await failedFrozenFixture(context);
+  await git(published.candidate.releaseRoot, "push", "--force", "origin",
+    `${published.expected.frozenHead}:refs/heads/main`);
+  await git(published.candidate.releaseRoot, "update-ref", "refs/remotes/origin/main", published.baseCommit);
+  const candidateDiff = (await execFileAsync("git", ["diff", "--binary",
+    published.baseCommit, published.expected.frozenHead], {
+    cwd: published.candidate.releaseRoot, windowsHide: true, encoding: null,
+  })).stdout;
+  const candidatePatchId = String(await gitWithInput(published.candidate.releaseRoot,
+    ["patch-id", "--stable"], candidateDiff)).trim().split(/\s+/u)[0];
+  const candidateParents = (await git(published.candidate.releaseRoot, "show", "-s", "--format=%P",
+    published.expected.frozenHead)).split(/\s+/u).filter(Boolean);
+  const publishedRequest = failedFrozenRequest(published, "recover-published-reviewed-origin");
+  await assert.rejects(published.service.recoverFreezingPublicationCandidate({
+    ...publishedRequest,
+    expected: { ...publishedRequest.expected,
+      reviewedOriginMain: published.expected.frozenHead,
+      reviewedOriginParent: candidateParents[0],
+      reviewedOriginTree: published.expected.frozenTree,
+      reviewedOriginDiffSha256: sha256(candidateDiff),
+      reviewedOriginDiffHashObject: String(await gitWithInput(published.candidate.releaseRoot,
+        ["hash-object", "--stdin"], candidateDiff)).trim(),
+      reviewedOriginPatchId: candidatePatchId,
+      releaseTrackingOriginMain: published.baseCommit,
+      originUrlSha256: sha256(await git(published.candidate.releaseRoot, "remote", "get-url", "origin")),
+    },
+  }), /candidate acquired a foreign publication effect/u);
 });
 
 test("fresh failed frozen admission rejects unknown stages and reached effect stages", async (context) => {

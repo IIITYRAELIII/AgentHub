@@ -104,3 +104,51 @@ test("release freeze recovery CLI binds explicit checkpoint absence", () => {
     "--expected-publication-log-sha256", digest,
   )), /exactly one checkpoint digest or explicit absence/u);
 });
+
+test("failed-frozen CLI binds a separately reviewed upstream advance", () => {
+  const reviewed = "c".repeat(40);
+  const parent = "d".repeat(40);
+  const tree = "e".repeat(40);
+  const patchId = "f".repeat(40);
+  const input = parseReleaseFreezeRecoveryArguments(argumentsFor(
+    "--recovery-mode", "abandon-failed-frozen-candidate-v1",
+    "--expected-publication-run-id", "failed-run",
+    "--expected-publication-run-sha256", digest,
+    "--expected-publication-checkpoint-sha256", digest,
+    "--expected-publication-log-sha256", digest,
+    "--expected-reviewed-origin-main", reviewed,
+    "--expected-reviewed-origin-parent", parent,
+    "--expected-reviewed-origin-tree", tree,
+    "--expected-reviewed-origin-diff-sha256", digest,
+    "--expected-reviewed-origin-diff-hash-object", patchId,
+    "--expected-reviewed-origin-patch-id", patchId,
+    "--expected-release-tracking-origin-main", commit,
+    "--expected-origin-url-sha256", digest,
+  ));
+  assert.deepEqual({
+    reviewedOriginMain: input.expected.reviewedOriginMain,
+    reviewedOriginParent: input.expected.reviewedOriginParent,
+    reviewedOriginTree: input.expected.reviewedOriginTree,
+    reviewedOriginDiffSha256: input.expected.reviewedOriginDiffSha256,
+    reviewedOriginDiffHashObject: input.expected.reviewedOriginDiffHashObject,
+    reviewedOriginPatchId: input.expected.reviewedOriginPatchId,
+    releaseTrackingOriginMain: input.expected.releaseTrackingOriginMain,
+    originUrlSha256: input.expected.originUrlSha256,
+  }, {
+    reviewedOriginMain: reviewed, reviewedOriginParent: parent, reviewedOriginTree: tree,
+    reviewedOriginDiffSha256: digest, reviewedOriginDiffHashObject: patchId,
+    reviewedOriginPatchId: patchId,
+    releaseTrackingOriginMain: commit, originUrlSha256: digest,
+  });
+  assert.throws(() => parseReleaseFreezeRecoveryArguments(argumentsFor(
+    "--recovery-mode", "abandon-failed-frozen-candidate-v1",
+    "--expected-publication-run-id", "failed-run",
+    "--expected-publication-run-sha256", digest,
+    "--expected-publication-checkpoint-sha256", digest,
+    "--expected-publication-log-sha256", digest,
+    "--expected-reviewed-origin-main", reviewed,
+  )), /reviewed origin advance identity is incomplete/u);
+  assert.throws(() => parseReleaseFreezeRecoveryArguments(argumentsFor(
+    "--expected-reviewed-origin-main", reviewed,
+  )), /only to failed-frozen recovery/u);
+});

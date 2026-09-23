@@ -28,6 +28,26 @@ When no checkpoint file exists, replace
 prior generation is supplied by its exact raw SHA-256; preview classifies and
 binds it without changing its bytes.
 
+If `origin/main` advanced after the candidate was frozen, failed-frozen recovery
+does not rewrite the immutable `--expected-origin-main`. That value remains the
+candidate's approved origin base. A separately reviewed, single-commit
+fast-forward may be supplied only with the complete additional identity:
+
+```text
+--expected-reviewed-origin-main <commit> --expected-reviewed-origin-parent <approved-origin-commit> --expected-reviewed-origin-tree <tree> --expected-reviewed-origin-diff-sha256 <sha256> --expected-reviewed-origin-diff-hash-object <git-object-id> --expected-reviewed-origin-patch-id <patch-id> --expected-release-tracking-origin-main <commit> --expected-origin-url-sha256 <sha256>
+```
+
+The owner imports the live remote tip and frozen candidate into a disposable
+bare object store. It proves the exact parent, tree, binary-diff SHA-256 and
+  Git object ID and stable patch ID, proves the frozen candidate is not contained
+  in the remote tip, and deletes the store afterward. It never fetches into or moves the release
+clone's refs. The live remote, unchanged release tracking ref and origin URL are
+bound into preview/evidence and must remain exact through confirmation and every
+retry. Divergence, force-push, unreviewed bytes or later movement fails closed.
+This observation neither changes the durable published baseline nor adopts the
+reviewed upstream bytes; an ordinary future candidate rebuild retains them
+through the normal reviewed-main path.
+
 The frozen mode accepts only the versioned ordered publisher stage contract.
 Exactly one validation boundary may fail: contour failed with full tests still
 pending, or contour completed/reused and full tests failed. Every

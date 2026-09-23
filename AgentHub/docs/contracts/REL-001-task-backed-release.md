@@ -925,6 +925,23 @@ not contain the frozen candidate. A completed outcome replays without reading
 mutable publication state. Another operation, an unknown phase, dirty checkout,
 identity drift or evidence that the candidate was published has no effect.
 
+The frozen candidate's approved origin commit remains immutable recovery
+provenance. If the live remote advances before a failed-frozen recovery, the
+owner may additionally accept one separately reviewed direct child of that
+approved commit. The caller supplies its exact commit, sole parent, tree,
+  binary-diff SHA-256 and Git object ID, stable patch ID, the unchanged release
+  tracking commit and the canonical origin URL SHA-256. The owner imports the
+  remote tip and frozen
+candidate only into a disposable bare object store, proves those objects and
+that the remote does not contain the failed candidate, then removes the store.
+It never fetches into or updates the release clone. The approved base, reviewed
+observed tip and durable published revision remain separate proof fields. All
+are persisted in recovery evidence and rechecked before admission and on retry;
+divergence, force-push, unreviewed bytes or later remote/tracking movement fails
+closed. Recovery remains local-only, so reviewed upstream bytes are preserved
+for an ordinary future reviewed-main candidate rebuild rather than being
+silently adopted or substituted as the published baseline.
+
 Failed-frozen admission additionally binds the raw publication run and log plus
 the exact raw presence and bytes of the publication checkpoint (or its explicit
 absence), the exact run/candidate identity and the versioned executable
