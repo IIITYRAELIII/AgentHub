@@ -111,9 +111,10 @@ export function testContourPaths(root = defaultTestContourRoot()) {
     detachedGitDirectory: path.join(resolved, "detached-git"),
     projectRoot: path.join(resolved, "project"),
     codexHome: path.join(resolved, "codex-home"),
-    fakeCodexExecutable: path.join(resolved, "providers", "fake-codex-app-server.mjs"),
-    codexMultiplexerExecutable: path.join(resolved, "providers", "test-contour-codex-multiplexer.mjs"),
-    fakeClaudeExecutable: path.join(resolved, "providers", "test-contour-claude-cli.mjs"),
+    providersDirectory: path.join(resolved, "providers"),
+    fakeCodexExecutable: path.join(resolved, "providers", "e2e", "fake-codex-app-server.mjs"),
+    codexMultiplexerExecutable: path.join(resolved, "providers", "e2e", "test-contour-codex-multiplexer.mjs"),
+    fakeClaudeExecutable: path.join(resolved, "providers", "e2e", "test-contour-claude-cli.mjs"),
     fakeCodexStateFile: path.join(resolved, "data", "fake-codex-state.json"),
     fakeClaudeStateFile: path.join(resolved, "data", "fake-claude-auth-state.json"),
     codexMultiplexerStateFile: path.join(resolved, "data", "codex-multiplexer-state.json"),
@@ -713,6 +714,44 @@ export function testContourEnvironment({
   };
 }
 
+const TEST_CONTOUR_PROVIDER_ENTRIES = [
+  path.join("e2e", "fake-codex-app-server.mjs"),
+  path.join("e2e", "test-contour-codex-multiplexer.mjs"),
+  path.join("e2e", "test-contour-claude-cli.mjs"),
+];
+const STATIC_MODULE_SPECIFIER = /\b(?:import|export)\s+(?:[^'";]*?\s+from\s+)?["']([^"']+)["']|\bimport\s*\(\s*["']([^"']+)["']\s*\)/gu;
+const DYNAMIC_MODULE_EXPRESSION = /\bimport\s*\(\s*(?!["'])/u;
+
+// Source-relative paths of the entries and every module they import
+// transitively. Only node: builtins may stay outside the installed tree.
+export async function providerModuleClosure(sourceRoot, entries) {
+  const root = path.resolve(sourceRoot);
+  const pending = entries.map((entry) => path.resolve(root, entry));
+  const closure = new Set();
+  while (pending.length) {
+    const file = pending.pop();
+    const relative = path.relative(root, file);
+    if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {
+      throw new Error(`Test Contour provider module is outside the candidate source: ${file}`);
+    }
+    if (closure.has(relative)) continue;
+    closure.add(relative);
+    const text = await readFile(file, "utf8");
+    if (DYNAMIC_MODULE_EXPRESSION.test(text)) {
+      throw new Error(`Test Contour provider module has a non-literal dynamic import: ${relative}`);
+    }
+    for (const match of text.matchAll(STATIC_MODULE_SPECIFIER)) {
+      const specifier = match[1] ?? match[2];
+      if (specifier.startsWith("node:")) continue;
+      if (!specifier.startsWith(".")) {
+        throw new Error(`Test Contour provider module ${relative} imports a non-installable module: ${specifier}`);
+      }
+      pending.push(path.resolve(path.dirname(file), specifier));
+    }
+  }
+  return [...closure].sort();
+}
+
 export async function prepareTestContourCodexProviders({
   root = defaultTestContourRoot(),
   sourceRoot = path.resolve(import.meta.dirname, "..", ".."),
@@ -720,15 +759,16 @@ export async function prepareTestContourCodexProviders({
   const isolatedRoot = assertIsolatedTestContourRoot(root, { sourceRoot });
   await requireMarker(isolatedRoot);
   const paths = testContourPaths(isolatedRoot);
-  const sources = [
-    [path.join(sourceRoot, "e2e", "fake-codex-app-server.mjs"), paths.fakeCodexExecutable],
-    [path.join(sourceRoot, "e2e", "test-contour-codex-multiplexer.mjs"), paths.codexMultiplexerExecutable],
-    [path.join(sourceRoot, "e2e", "test-contour-claude-cli.mjs"), paths.fakeClaudeExecutable],
-  ];
-  await mkdir(path.dirname(paths.fakeCodexExecutable), { recursive: true });
-  await Promise.all(sources.map(async ([sourceFile, targetFile]) => {
-    await writeTextAtomic(targetFile, await readFile(sourceFile, "utf8"));
-  }));
+  // Provider scripts run from the installed tree, so their relative imports
+  // must resolve there: install the exact transitive closure from the candidate
+  // source with its layout. Nothing is deleted: the still-running contour may
+  // restart providers from paths in its own config until it is replaced.
+  const files = await providerModuleClosure(sourceRoot, TEST_CONTOUR_PROVIDER_ENTRIES);
+  for (const file of files) {
+    const targetFile = path.join(paths.providersDirectory, file);
+    await mkdir(path.dirname(targetFile), { recursive: true });
+    await writeTextAtomic(targetFile, await readFile(path.join(sourceRoot, file), "utf8"));
+  }
   return {
     fakeCodexExecutable: paths.fakeCodexExecutable,
     codexMultiplexerExecutable: paths.codexMultiplexerExecutable,

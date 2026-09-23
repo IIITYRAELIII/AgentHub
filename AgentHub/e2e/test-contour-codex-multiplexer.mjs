@@ -470,11 +470,14 @@ async function stopOwnedChild(child) {
     }
   }
   while (Date.now() < deadline) {
+    // A stopped child can leave the process table before its close event
+    // records the exit; until then ownership is unresolved, not failed.
     current = await readOwnedProcessTree(owner.root, owner.known, { rootExited: closedChildren.has(child) });
-    if (!Array.isArray(current)) throw new Error(`Cannot inspect owned Codex child tree ${pid}`);
-    if (current.length === 0 && (closedChildren.has(child) || await waitForChildClose(child, 20))) return;
+    if (Array.isArray(current) && current.length === 0
+      && (closedChildren.has(child) || await waitForChildClose(child, 20))) return;
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
+  if (!Array.isArray(current)) throw new Error(`Cannot inspect owned Codex child tree ${pid}`);
   if (!closedChildren.has(child) || current.length > 0) {
     throw new Error(`Owned Codex child tree ${pid} did not terminate`);
   }
