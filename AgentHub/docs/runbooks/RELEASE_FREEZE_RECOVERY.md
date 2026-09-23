@@ -70,14 +70,22 @@ base provenance and a preflight request ID cannot satisfy
 `missing-provenance-recovery-v1` input never repairs that candidate:
 
 ```text
---missing-provenance-recovery missing-provenance-recovery-v1 --preflight-request-id <original-preflight-request-id> --preflight-arguments-file <exact-original-arguments-json> --expected-preflight-arguments-hash <receipt-arguments-sha256> --expected-preflight-result-sha256 <canonical-result-sha256> --expected-preflight-stream <stream-id> --expected-preflight-provider <provider> --expected-preflight-thread <thread-id> --expected-adoption-task <task-id> --expected-adoption-ref <refs/agent-hub/upstream-adoptions/...> --expected-adoption-blob <blob-id>
+--missing-provenance-recovery missing-provenance-recovery-v1 --preflight-request-id <original-preflight-request-id> --preflight-arguments-file <exact-original-arguments-json> --expected-preflight-arguments-hash <receipt-arguments-sha256> --expected-preflight-result-sha256 <persisted-result-json-sha256> --expected-preflight-stream <stream-id> --expected-preflight-provider <provider> --expected-preflight-thread <thread-id> --expected-adoption-task <task-id> --expected-adoption-ref <refs/agent-hub/upstream-adoptions/...> --expected-adoption-blob <blob-id>
 ```
 
 The arguments file holds the exact original `hub_release_preflight` arguments
 without `context_token`; it is accepted only when the shared MCP canonical hash
 reproduces the durable receipt's own `argumentsHash`. The owner re-reads the
-terminal succeeded, non-compacted receipt from `WorkspaceCatalogStore` and the
-selected Task adoption through `TaskGitWorkspaceService.releaseBaseEvidence`.
+terminal succeeded, non-compacted receipt from `WorkspaceCatalogStore`; the
+result digest is the SHA-256 of the exact persisted `result_json` bytes. The
+selected Task adoption is verified by the Task Git owner's
+`historicalUpstreamAdoptionEvidence`, callable only for this recovery kind: the
+exact adoption ref and blob of the frozen Task snapshot, the canonical record
+bytes and every historical field (Task base, accepted local main, adopted
+commit, snapshot/proof commit, proof parents and trees) re-derived from
+immutable objects. Current primary `main`, Task base and Task branch refs are
+not authority for it, and it is not current admission or publication
+readiness; ordinary `releaseBaseEvidence` keeps rejecting a stale local main.
 The ready result must describe exactly this repository, plan, Task set and the
 prepared source of the frozen manifest; the approved published/local/origin
 tuple is derived from those authorities, never from `baseCommit`, current refs
@@ -87,6 +95,18 @@ the recovery proof and evidence; the old candidate is not relabelled as
 `explicit-reviewed-main-v1` and its bytes are unchanged. Preview, confirmation,
 resume and completed replay re-read both authorities before any return or ref
 effect; omitted or changed supplemental input on an admitted operation rejects.
+
+The same proof separately binds a current observation: the registered primary
+root, common directory, attached branch, HEAD, `main`, index and dirty
+(including untracked) fingerprints, `ls-remote origin/main`, the release clone
+tracking `refs/remotes/origin/main` and the origin URL (redacted form and
+SHA-256). This observation never authorizes the base or the adoption. Confirm,
+resume and completed replay re-read it exactly for this supplemental recovery
+only; any drift after preview rejects before a ref effect. If `origin/main`
+has advanced beyond the historical approved origin, the separate complete
+`--expected-reviewed-origin-*` identity for that exact tip is still required;
+the release clone tracking must remain the historical approved origin, and
+ancestry alone or an earlier review of another tip is rejected.
 
 Record the returned `proofHash` and effect list. Confirmation repeats every
 guard and uses the same operation ID and all the same arguments, plus:

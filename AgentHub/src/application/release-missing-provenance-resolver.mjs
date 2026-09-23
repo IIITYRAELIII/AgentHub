@@ -1,15 +1,17 @@
-import { createHash } from "node:crypto";
 import path from "node:path";
 
-import { canonicalMcpValue, mcpArgumentsHash } from "../domain/mcp-arguments-hash.mjs";
+import { mcpArgumentsHash } from "../domain/mcp-arguments-hash.mjs";
 
 // Supplemental authority for one legacy failed-frozen candidate whose
 // immutable manifest and checkpoint lack base provenance. It never repairs
 // that candidate. It re-reads the original terminal hub_release_preflight
-// receipt and the immutable selected Task upstream adoption from their owners
-// and derives the approved published/local/origin/base tuple from them alone.
+// receipt bytes and the historical immutable selected Task upstream adoption
+// from their owners and derives the approved published/local/origin/base tuple
+// from them alone. The adoption proof is historical: it is not current
+// admission or publication readiness.
 export const MISSING_PROVENANCE_RECOVERY_KIND = "missing-provenance-recovery-v1";
 export const SUPPLEMENTAL_PROVENANCE_KIND = "supplemental-reviewed-adoption-v1";
+export const HISTORICAL_ADOPTION_VALIDATION = "historical-immutable-v1";
 
 const COMMIT = /^[0-9a-f]{40}$/u;
 const DIGEST = /^[0-9a-f]{64}$/u;
@@ -36,10 +38,6 @@ function plainObject(value) {
 function canonicalRoot(value) {
   const resolved = path.resolve(text(value));
   return process.platform === "win32" ? resolved.toLowerCase() : resolved;
-}
-
-export function preflightResultSha256(result) {
-  return createHash("sha256").update(JSON.stringify(canonicalMcpValue(result)), "utf8").digest("hex");
 }
 
 function sortedTasks(tasks = []) {
@@ -135,20 +133,24 @@ function exactReceipt(receipt, request, candidate, argumentsHash) {
   }
   if (receipt.status !== "succeeded" || receipt.operationStatus !== "succeeded"
       || receipt.receiptState !== "succeeded" || receipt.error !== ""
-      || !Number.isSafeInteger(receipt.completedAtMs)) {
+      || !Number.isSafeInteger(receipt.createdAtMs) || !Number.isSafeInteger(receipt.completedAtMs)) {
     throw reject("original preflight receipt is not an exact terminal success");
   }
   if (receipt.argumentsHash !== argumentsHash) {
     throw reject("original preflight receipt arguments do not match");
   }
+  // The digest covers the exact persisted result_json bytes, never a caller
+  // or parser reconstruction; a parse failure or compaction has no result.
   const result = receipt.result;
-  if (!plainObject(result) || result.receiptCompacted === true
+  if (typeof receipt.resultJson !== "string" || !DIGEST.test(String(receipt.resultJsonSha256 ?? ""))
+      || !plainObject(result) || result.receiptCompacted === true
       || Object.hasOwn(result, "operatorReconciliation")) {
     throw reject("original preflight receipt has no full original result");
   }
-  const resultSha256 = preflightResultSha256(result);
-  if (resultSha256 !== request.expectedResultSha256) throw reject("original preflight result digest changed");
-  return { result, resultSha256 };
+  if (receipt.resultJsonSha256 !== request.expectedResultSha256) {
+    throw reject("original preflight result digest changed");
+  }
+  return { result, resultJson: receipt.resultJson, resultSha256: receipt.resultJsonSha256 };
 }
 
 function exactReadyResult(result, candidate, approvedLocalMainCommit) {
@@ -202,22 +204,26 @@ function exactReadyResult(result, candidate, approvedLocalMainCommit) {
 }
 
 async function exactAdoption(taskGitWorkspaces, request, candidate, approvedLocalMainCommit) {
-  const base = await taskGitWorkspaces.releaseBaseEvidence({
+  const historical = await taskGitWorkspaces.historicalUpstreamAdoptionEvidence({
     projectRoot: candidate.projectRoot,
     publishedBaseCommit: candidate.publishedBaseCommit,
     tasks: candidate.frozenTasks.map((task) => ({ taskId: task.taskId, resultCommit: task.resultCommit })),
+    expected: request.expectedAdoption,
+    recoveryKind: MISSING_PROVENANCE_RECOVERY_KIND,
+  }).catch((error) => {
+    throw reject(`historical selected Task adoption is not exact: ${error.message}`);
   });
-  const adoptions = Array.isArray(base?.adoptions) ? base.adoptions : [];
-  if (base?.publishedBaseCommit !== candidate.publishedBaseCommit || base.baseCommit !== candidate.baseCommit) {
-    throw reject("immutable selected Task adoption does not derive the candidate base");
-  }
-  if (adoptions.length !== 1) throw reject("candidate base requires exactly one selected Task adoption");
-  const [adoption] = adoptions;
+  const adoption = historical?.adoption;
   const expected = request.expectedAdoption;
-  const task = candidate.frozenTasks.find((item) => item.taskId === adoption.taskId);
+  const task = candidate.frozenTasks.find((item) => item.taskId === adoption?.taskId);
+  if (historical?.validation !== HISTORICAL_ADOPTION_VALIDATION
+      || historical.publishedBaseCommit !== candidate.publishedBaseCommit
+      || historical.adoptedBaseCommit !== candidate.baseCommit) {
+    throw reject("historical selected Task adoption does not derive the candidate base");
+  }
   if (adoption.taskId !== expected.taskId || adoption.recordRef !== expected.recordRef
       || adoption.recordHash !== expected.recordHash) {
-    throw reject("immutable selected Task adoption ref or blob changed");
+    throw reject("historical selected Task adoption ref or blob changed");
   }
   if (!task || adoption.resultCommit !== task.resultCommit) {
     throw reject("adoption Task result is not an exact frozen member");
@@ -226,27 +232,21 @@ async function exactAdoption(taskGitWorkspaces, request, candidate, approvedLoca
       || adoption.acceptedLocalMainCommit !== approvedLocalMainCommit) {
     throw reject("adoption does not bind the approved local main and candidate base");
   }
-  return {
-    taskId: adoption.taskId,
-    taskRevision: task.taskRevision,
-    resultCommit: adoption.resultCommit,
-    recordRef: adoption.recordRef,
-    recordHash: adoption.recordHash,
-    adoptedCommit: adoption.adoptedCommit,
-    acceptedLocalMainCommit: adoption.acceptedLocalMainCommit,
-  };
+  return { validation: historical.validation, taskRevision: task.taskRevision, ...adoption };
 }
 
 export function createMissingProvenanceResolver({ workspaceCatalog, taskGitWorkspaces } = {}) {
-  if (typeof workspaceCatalog?.mcpOperation !== "function") throw new TypeError("workspaceCatalog.mcpOperation is required");
-  if (typeof taskGitWorkspaces?.releaseBaseEvidence !== "function") {
-    throw new TypeError("taskGitWorkspaces.releaseBaseEvidence is required");
+  if (typeof workspaceCatalog?.mcpOperationResultEvidence !== "function") {
+    throw new TypeError("workspaceCatalog.mcpOperationResultEvidence is required");
+  }
+  if (typeof taskGitWorkspaces?.historicalUpstreamAdoptionEvidence !== "function") {
+    throw new TypeError("taskGitWorkspaces.historicalUpstreamAdoptionEvidence is required");
   }
   return async function resolveMissingProvenance({ request: rawRequest, candidate }) {
     const request = normalizedMissingProvenanceRequest(rawRequest);
     const { argumentsHash, approvedLocalMainCommit } = exactArguments(request, candidate);
-    const receipt = workspaceCatalog.mcpOperation(request.preflightRequestId);
-    const { result, resultSha256 } = exactReceipt(receipt, request, candidate, argumentsHash);
+    const receipt = workspaceCatalog.mcpOperationResultEvidence(request.preflightRequestId);
+    const { result, resultJson, resultSha256 } = exactReceipt(receipt, request, candidate, argumentsHash);
     exactReadyResult(result, candidate, approvedLocalMainCommit);
     const adoption = await exactAdoption(taskGitWorkspaces, request, candidate, approvedLocalMainCommit);
     return {
@@ -282,7 +282,7 @@ export function createMissingProvenanceResolver({ workspaceCatalog, taskGitWorks
           taskIds: candidate.frozenTasks.map((task) => task.taskId).sort(),
         },
       },
-      receiptResult: result,
+      receiptResultJson: resultJson,
     };
   };
 }

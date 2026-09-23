@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -1051,6 +1051,21 @@ export class WorkspaceCatalogStore {
     return mcpOperationFromRow(this.#database.prepare(
       "SELECT * FROM hub_mcp_operations WHERE request_id = ?",
     ).get(id));
+  }
+
+  // Exact persisted receipt for release recovery evidence: the parsed
+  // operation plus the raw stored result_json and its SHA-256 over those UTF-8
+  // bytes. Callers must not hash a reconstruction of the parsed result.
+  mcpOperationResultEvidence(requestId) {
+    const id = safeIdentifier(requestId, "MCP request id");
+    const row = this.#database.prepare("SELECT * FROM hub_mcp_operations WHERE request_id = ?").get(id);
+    if (!row) return null;
+    const resultJson = row.result_json == null ? null : String(row.result_json);
+    return {
+      ...mcpOperationFromRow(row),
+      resultJson,
+      resultJsonSha256: resultJson == null ? null : createHash("sha256").update(resultJson, "utf8").digest("hex"),
+    };
   }
 
   pendingMcpOperations() {

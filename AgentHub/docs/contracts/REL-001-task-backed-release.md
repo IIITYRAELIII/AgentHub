@@ -955,9 +955,14 @@ A legacy failed-frozen candidate whose manifest and checkpoint both lack
 provenance and request binding may instead supply the explicit
 `missing-provenance-recovery-v1` input. Its approved base is derived only from
 the original terminal ready `hub_release_preflight` receipt (exact caller,
-canonical arguments hash and full result digest) and the immutable selected Task
-adoption; the resulting supplemental authority is content-addressed in the
-proof and rechecked on every retry and completed replay. All
+canonical arguments hash and SHA-256 of the persisted result bytes) and the
+historical immutable selected Task adoption, re-derived from its exact ref,
+blob and objects independently of the current primary `main`; the resulting
+supplemental authority is content-addressed in the proof and rechecked on every
+retry and completed replay. A separately bound current observation of the
+primary, remote, release tracking and origin URL must stay exact after preview;
+a newer remote tip still needs its own reviewed-origin-advance identity while
+release tracking stays at the historical approved origin. All
 are persisted in recovery evidence and rechecked before admission and on retry;
 divergence, force-push, unreviewed bytes or later remote/tracking movement fails
 closed. Recovery remains local-only, so reviewed upstream bytes are preserved

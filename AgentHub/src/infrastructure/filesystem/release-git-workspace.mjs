@@ -8,7 +8,6 @@ import process from "node:process";
 import { assertContourExternalEffects, assertContourGitAvailable } from "../../ports/contour-external-effects.mjs";
 
 import { taskRepositoryKey } from "../../domain/task-git-reference.mjs";
-import { canonicalMcpValue } from "../../domain/mcp-arguments-hash.mjs";
 import {
   assertReleaseBaseProvenance,
   EXPLICIT_REVIEWED_MAIN_PROVENANCE,
@@ -678,6 +677,19 @@ export async function assertReleaseCandidateContourSource({ sourceRoot: requeste
 const SUPPLEMENTAL_PROVENANCE_KIND = "supplemental-reviewed-adoption-v1";
 const MISSING_PROVENANCE_RECOVERY_KIND = "missing-provenance-recovery-v1";
 
+function redactedOriginUrl(value) {
+  const text = String(value ?? "").trim();
+  if (!/^[a-z][a-z0-9+.-]*:\/\//iu.test(text)) return text;
+  try {
+    const url = new URL(text);
+    url.username = "";
+    url.password = "";
+    return url.toString();
+  } catch {
+    return "<unparseable-origin-url>";
+  }
+}
+
 function missingProvenanceResolverResult(missingProvenance, candidate) {
   return missingProvenance.resolver({ request: missingProvenance.request, candidate });
 }
@@ -686,8 +698,8 @@ function supplementalEvidenceMatches(evidence, identity) {
   if (!evidence || typeof evidence !== "object") return false;
   const manifestBytes = Buffer.from(String(evidence.preparedManifestBytesBase64 ?? ""), "base64");
   return sha256(manifestBytes) === identity?.sourceManifest?.preparedManifestHash
-    && evidence.preflightResult != null && typeof evidence.preflightResult === "object"
-    && sha256(JSON.stringify(canonicalMcpValue(evidence.preflightResult))) === identity?.authority?.receipt?.resultSha256
+    && typeof evidence.preflightResultJson === "string"
+    && sha256(Buffer.from(evidence.preflightResultJson, "utf8")) === identity?.authority?.receipt?.resultSha256
     && evidence.preflightResultSha256 === identity?.authority?.receipt?.resultSha256;
 }
 
@@ -710,6 +722,12 @@ function assertMissingProvenanceAuthority(authority, { request, candidate }) {
       || receipt.streamId !== String(request?.expectedCaller?.streamId ?? "")
       || receipt.provider !== String(request?.expectedCaller?.provider ?? "")
       || receipt.threadId !== String(request?.expectedCaller?.threadId ?? "")
+      || adoption?.validation !== "historical-immutable-v1"
+      || !Array.isArray(adoption.proofParents) || adoption.proofParents.length !== 2
+      || adoption.proofParents[1] !== adoption.adoptedCommit
+      || !/^[a-f0-9]{40}$/u.test(String(adoption.proofCommit ?? ""))
+      || !/^[a-f0-9]{40}$/u.test(String(adoption.proofTree ?? ""))
+      || !/^[a-f0-9]{40}$/u.test(String(adoption.snapshotTree ?? ""))
       || adoption?.taskId !== String(request?.expectedAdoption?.taskId ?? "")
       || adoption.recordRef !== String(request?.expectedAdoption?.recordRef ?? "")
       || adoption.recordHash !== String(request?.expectedAdoption?.recordHash ?? "").toLowerCase()
@@ -1881,6 +1899,9 @@ export class ReleaseGitWorkspaceService {
         throw new Error("publication freeze recovery external evidence changed before admission");
       }
     }
+    if (recoveryIdentity.supplementalProvenance) {
+      await this.#assertMissingProvenanceCurrentObservation({ layout, marker, identity: recoveryIdentity });
+    }
     checkpoint = { ...checkpoint, phase: "abandoning", recovery: {
       schemaVersion: 2, operationId, proofHash, evidenceFile, evidenceSha256, sourceIdentity,
       identity: recoveryIdentity,
@@ -1948,18 +1969,56 @@ export class ReleaseGitWorkspaceService {
       recheckCandidate: candidate,
       authority: resolved.authority,
       authoritySha256: recoveryDigest(resolved.authority),
+      currentObservation: await this.#missingProvenanceCurrentObservation({ layout, marker }),
     };
     return {
       identity,
       evidence: {
         preparedManifestBytesBase64: preparedManifestBytes.toString("base64"),
-        preflightResult: resolved.receiptResult,
+        preflightResultJson: resolved.receiptResultJson,
         preflightResultSha256: resolved.authority.receipt.resultSha256,
       },
     };
   }
 
-  async #recheckMissingProvenanceAuthority({ missingProvenance, identity, marker, workspaceId }) {
+  // Current state, observed separately from the historical tuple. It never
+  // authorizes the candidate base or adoption; it only fences drift after
+  // preview for this supplemental recovery.
+  async #missingProvenanceCurrentObservation({ layout, marker }) {
+    const primary = await this.assertPrimaryInvariant(marker.primaryRoot, {
+      phase: "missing-provenance current observation",
+    });
+    const [remoteLine, releaseTracking, originUrl] = await Promise.all([
+      runGit(["ls-remote", "origin", "refs/heads/main"], { cwd: layout.releaseRoot, timeoutMs: 300_000 }),
+      runGit(["rev-parse", "refs/remotes/origin/main^{commit}"], { cwd: layout.releaseRoot }),
+      runGit(["remote", "get-url", "origin"], { cwd: layout.releaseRoot }),
+    ]);
+    return {
+      primary: {
+        projectRoot: primary.projectRoot,
+        gitCommonDir: primary.gitCommonDir,
+        branch: primary.branch,
+        headCommit: primary.headCommit,
+        mainCommit: primary.mainCommit,
+        indexFingerprint: primary.indexFingerprint,
+        dirtyFingerprint: primary.dirtyFingerprint,
+      },
+      remoteOriginMain: remoteLine.split(/\s+/u)[0],
+      releaseTrackingOriginMain: releaseTracking,
+      originUrl: redactedOriginUrl(originUrl),
+      originUrlSha256: sha256(originUrl),
+    };
+  }
+
+  async #assertMissingProvenanceCurrentObservation({ layout, marker, identity }) {
+    const admitted = identity.supplementalProvenance?.currentObservation;
+    const current = await this.#missingProvenanceCurrentObservation({ layout, marker });
+    if (!admitted || recoveryDigest(current) !== recoveryDigest(admitted)) {
+      throw new Error("publication freeze recovery current primary, remote, tracking or URL changed after preview");
+    }
+  }
+
+  async #recheckMissingProvenanceAuthority({ missingProvenance, identity, layout, marker, workspaceId }) {
     const supplemental = identity.supplementalProvenance;
     const candidate = supplemental?.recheckCandidate;
     if (!missingProvenance || typeof missingProvenance.resolver !== "function" || !candidate
@@ -1974,6 +2033,7 @@ export class ReleaseGitWorkspaceService {
     if (recoveryDigest(resolved.authority) !== supplemental.authoritySha256) {
       throw new Error("publication freeze recovery missing-provenance authority changed after admission");
     }
+    await this.#assertMissingProvenanceCurrentObservation({ layout, marker, identity });
   }
 
   async #resumeLegacyPublicationRecoveryOwned({
@@ -2152,7 +2212,7 @@ export class ReleaseGitWorkspaceService {
     if (identity.supplementalProvenance) {
       // Preview, confirmation, resume and completed replay all re-read the
       // exact receipt and adoption owners before any return or ref effect.
-      await this.#recheckMissingProvenanceAuthority({ missingProvenance, identity, marker, workspaceId });
+      await this.#recheckMissingProvenanceAuthority({ missingProvenance, identity, layout, marker, workspaceId });
     }
     if (!confirm) {
       return { status: checkpoint.phase, proofHash, identity, effects: identity.effects, reused: true };

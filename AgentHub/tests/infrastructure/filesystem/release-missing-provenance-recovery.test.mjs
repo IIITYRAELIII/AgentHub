@@ -1,16 +1,14 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
-import {
-  createMissingProvenanceResolver,
-  preflightResultSha256,
-} from "../../../src/application/release-missing-provenance-resolver.mjs";
+import { createMissingProvenanceResolver } from "../../../src/application/release-missing-provenance-resolver.mjs";
 import { mcpArgumentsHash } from "../../../src/domain/mcp-arguments-hash.mjs";
 import { taskRepositoryKey } from "../../../src/domain/task-git-reference.mjs";
 import { canonicalPath } from "../../../src/infrastructure/filesystem/config.mjs";
@@ -29,16 +27,35 @@ import { WorkspaceCatalogStore } from "../../../src/infrastructure/persistence/w
 
 // Real isolated Git + SQLite + public recovery composition for the release11
 // shape: a legacy frozen candidate on an adopted upstream base whose manifest
-// and checkpoint both lack base provenance, a later approved preflight receipt,
-// and an immutable selected Task adoption record.
+// and checkpoint both lack base provenance, the later approved preflight
+// receipt, and the historical immutable selected Task adoption record. The
+// real-shape variant then advances the primary and remote to a reviewed child
+// while the release clone tracking stays at the historical approved base.
 
 const execFileAsync = promisify(execFile);
 const RECOVERY_SOURCE = { commit: "c".repeat(40), ownerSha256: "d".repeat(64) };
 const TASK_ID = "57575757-5757-4757-8757-575757575757";
+const RECOVERY_KIND = "missing-provenance-recovery-v1";
 const sha256 = (value) => createHash("sha256").update(value).digest("hex");
 
 async function git(cwd, ...args) {
   return String((await execFileAsync("git", args, { cwd, windowsHide: true })).stdout).trim();
+}
+
+function gitWithInput(cwd, args, input) {
+  return new Promise((resolve, reject) => {
+    const child = spawn("git", args, { cwd, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
+    const stdout = [];
+    const stderr = [];
+    child.stdout.on("data", (chunk) => stdout.push(chunk));
+    child.stderr.on("data", (chunk) => stderr.push(chunk));
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code === 0) resolve(Buffer.concat(stdout));
+      else reject(new Error(Buffer.concat(stderr).toString("utf8").trim() || `git ${args[0]} exited with ${code}`));
+    });
+    child.stdin.end(input);
+  });
 }
 
 async function commit(cwd, message) {
@@ -57,11 +74,30 @@ async function releaseFiles(root) {
   return files;
 }
 
-async function legacyFrozenFixture(context) {
+// Exact reviewed-origin-advance identity of `tip` over `approved`, as a
+// reviewer computes it from objects; tracking is the release clone's.
+async function reviewedAdvance(f, repository, approved, tip) {
+  const diff = (await execFileAsync("git", ["diff", "--binary", approved, tip], {
+    cwd: repository, windowsHide: true, encoding: null, maxBuffer: 16 * 1024 * 1024,
+  })).stdout;
+  const parents = (await git(repository, "show", "-s", "--format=%P", tip)).split(/\s+/u).filter(Boolean);
+  return {
+    reviewedOriginMain: tip,
+    reviewedOriginParent: parents.length === 1 ? parents[0] : "0".repeat(40),
+    reviewedOriginTree: await git(repository, "rev-parse", `${tip}^{tree}`),
+    reviewedOriginDiffSha256: sha256(diff),
+    reviewedOriginDiffHashObject: String(await gitWithInput(repository, ["hash-object", "--stdin"], diff)).trim(),
+    reviewedOriginPatchId: String(await gitWithInput(repository, ["patch-id", "--stable"], diff)).trim().split(/\s+/u)[0],
+    releaseTrackingOriginMain: await git(f.releaseRoot, "rev-parse", "refs/remotes/origin/main^{commit}"),
+    originUrlSha256: sha256(await git(f.releaseRoot, "remote", "get-url", "origin")),
+  };
+}
+
+async function legacyFrozenFixture(context, { advancePrimary = false } = {}) {
   const root = canonicalPath(await mkdtemp(path.join(os.tmpdir(), "ah-missing-provenance-")));
-  let catalog = null;
+  const state = { catalog: null, tasks: null, resolver: null };
   context.after(async () => {
-    catalog?.close();
+    state.catalog?.close();
     await rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
   });
   const origin = path.join(root, "origin.git");
@@ -84,21 +120,22 @@ async function legacyFrozenFixture(context) {
   const primaryRoot = canonicalPath(primary);
   const releaseData = path.join(root, "release-data");
   const taskData = path.join(root, "task-data");
+  const databaseFile = path.join(root, "journal.sqlite");
   const emptyState = { ...process.env, LOCALAPPDATA: path.join(root, "no-state") };
   const stateEnvironment = { ...process.env, LOCALAPPDATA: path.join(root, "state") };
   // Legacy owner: the pre-correction shape had no durable baseline guard.
   const legacy = new ReleaseGitWorkspaceService({ dataDir: releaseData, environment: emptyState });
   const planRevision = "9".repeat(64);
-  catalog = await new WorkspaceCatalogStore({ databaseFile: path.join(root, "journal.sqlite") }).load();
-  const { workspace, stream } = catalog.createWorkspaceWithStream({ name: "Release", streamName: "RM" });
+  state.catalog = await new WorkspaceCatalogStore({ databaseFile }).load();
+  const { workspace, stream } = state.catalog.createWorkspaceWithStream({ name: "Release", streamName: "RM" });
   const workspaceId = workspace.id;
   // The managed release clone exists before upstream advances, as in release11.
   await legacy.prepareCandidate({
     planRevision: "0".repeat(64), projectRoot: primaryRoot, workspaceId, approvedBaseCommit: published, frozenTasks: [],
   });
 
-  const tasks = new TaskGitWorkspaceService({ dataDir: taskData });
-  const taskWorkspace = await tasks.prepare({ taskId: TASK_ID, projectRoot: primaryRoot });
+  state.tasks = new TaskGitWorkspaceService({ dataDir: taskData });
+  const taskWorkspace = await state.tasks.prepare({ taskId: TASK_ID, projectRoot: primaryRoot });
   await writeFile(path.join(taskWorkspace.projectRoot, "task.txt"), "task\n", "utf8");
   const taskCommit = await commit(taskWorkspace.projectRoot, "task result");
   const writer = path.join(root, "upstream-writer");
@@ -111,7 +148,7 @@ async function legacyFrozenFixture(context) {
   await git(taskWorkspace.projectRoot, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
     "merge", "--no-ff", "--no-edit", upstream);
   const resultCommit = await git(taskWorkspace.projectRoot, "rev-parse", "HEAD");
-  const adoption = await tasks.recordExplicitUpstreamAdoption({
+  const adoption = await state.tasks.recordExplicitUpstreamAdoption({
     taskId: TASK_ID,
     projectRoot: primaryRoot,
     branch: taskWorkspace.branch,
@@ -226,20 +263,20 @@ async function legacyFrozenFixture(context) {
   });
   const caller = { streamId: stream.id, provider: "codex", threadId: "thread-release-manager" };
   const receipt = (requestId, args, result, { tool = "hub_release_preflight", workspace = workspaceId } = {}) => {
-    catalog.beginMcpOperation({
+    state.catalog.beginMcpOperation({
       requestId, workspaceId: workspace, streamId: caller.streamId, provider: caller.provider,
       threadId: caller.threadId, toolName: tool, argumentsHash: mcpArgumentsHash(args),
     });
-    if (result !== undefined) catalog.completeMcpOperation(requestId, result);
-    return catalog.mcpOperation(requestId);
+    if (result !== undefined) state.catalog.completeMcpOperation(requestId, result);
+    return state.catalog.mcpOperationResultEvidence(requestId);
   };
   const original = receipt(preflightRequestId, preflightArguments, readyResult());
   const missingProvenanceRecovery = {
-    kind: "missing-provenance-recovery-v1",
+    kind: RECOVERY_KIND,
     preflightRequestId,
     preflightArguments: { ...preflightArguments },
     expectedArgumentsHash: original.argumentsHash,
-    expectedResultSha256: preflightResultSha256(original.result),
+    expectedResultSha256: original.resultJsonSha256,
     expectedCaller: caller,
     expectedAdoption: { taskId: TASK_ID, recordRef: adoption.recordRef, recordHash: adoption.recordHash },
   };
@@ -258,21 +295,52 @@ async function legacyFrozenFixture(context) {
       : { publicationCheckpointAbsent: true }),
     publicationLogSha256: sha256(await readFile(run.logFile)),
   };
-  const resolver = createMissingProvenanceResolver({ workspaceCatalog: catalog, taskGitWorkspaces: tasks });
-  const service = (options = {}) => new ReleaseGitWorkspaceService({
-    dataDir: releaseData, environment: stateEnvironment, ...options,
-  });
-  const request = (overrides = {}) => ({
-    projectRoot: primaryRoot, workspaceId, requestId: "recover-missing-provenance",
-    sourceIdentity: RECOVERY_SOURCE, recoveryMode: "abandon-failed-frozen-candidate-v1",
-    expected, missingProvenanceRecovery, missingProvenanceResolver: resolver, ...overrides,
-  });
-  return {
-    root, origin, primaryRoot, published, upstream, resultCommit, adoption, planRevision, workspaceId,
-    catalog, caller, receipt, readyResult, preflightArguments, missingProvenanceRecovery, expected,
-    checkpointFile, layoutRoot, releaseRoot: prepared.releaseRoot, preparedReadback, legacy, tasks,
-    stateEnvironment, emptyState, releaseData, resolver, service, request, frozenTasks,
+  const reopen = async () => {
+    // Durability boundary: a new process sees only persisted SQLite and Git.
+    state.catalog.close();
+    state.catalog = await new WorkspaceCatalogStore({ databaseFile }).load();
+    state.tasks = new TaskGitWorkspaceService({ dataDir: taskData });
+    state.resolver = createMissingProvenanceResolver({ workspaceCatalog: state.catalog, taskGitWorkspaces: state.tasks });
   };
+  state.resolver = createMissingProvenanceResolver({ workspaceCatalog: state.catalog, taskGitWorkspaces: state.tasks });
+  const f = {
+    root, origin, writer, primaryRoot, published, upstream, resultCommit, taskCommit, adoption, planRevision,
+    workspaceId, caller, receipt, readyResult, preflightArguments, missingProvenanceRecovery, expected,
+    checkpointFile, layoutRoot, releaseRoot: prepared.releaseRoot, preparedReadback, legacy,
+    stateEnvironment, emptyState, releaseData, frozenTasks, state, reopen,
+    originalCheckpointSha256: sha256(await readFile(checkpointFile)),
+    get catalog() { return state.catalog; },
+    get tasks() { return state.tasks; },
+    get resolver() { return state.resolver; },
+    service: (options = {}) => new ReleaseGitWorkspaceService({
+      dataDir: releaseData, environment: stateEnvironment, ...options,
+    }),
+    request: (overrides = {}) => ({
+      projectRoot: primaryRoot, workspaceId, requestId: "recover-missing-provenance",
+      sourceIdentity: RECOVERY_SOURCE, recoveryMode: "abandon-failed-frozen-candidate-v1",
+      expected: f.expected, missingProvenanceRecovery, missingProvenanceResolver: state.resolver, ...overrides,
+    }),
+  };
+  if (advancePrimary) {
+    // Live release11 shape after 8c67: a reviewed child of the historical
+    // approved origin, touching CHANGELOG and TyraelFormat1C_EXPORT, reaches
+    // origin and the registered primary (main and its tracking). The release
+    // clone is not fetched, so its tracking stays at the approved base.
+    await mkdir(path.join(writer, "TyraelFormat1C_EXPORT", "tests"), { recursive: true });
+    await writeFile(path.join(writer, "CHANGELOG.md"), "# Changelog\n\nreviewed upstream entry\n\nnext entry\n", "utf8");
+    await writeFile(path.join(writer, "TyraelFormat1C_EXPORT", "README.md"), "reserved identifiers\n", "utf8");
+    await writeFile(path.join(writer, "TyraelFormat1C_EXPORT", "format.py"), "RESERVED = {'if'}\n", "utf8");
+    await writeFile(path.join(writer, "TyraelFormat1C_EXPORT", "tests", "test_reserved.py"), "def test(): pass\n", "utf8");
+    f.advanced = await commit(writer, "reviewed diagnostics advance");
+    await git(writer, "push", "origin", "main");
+    await git(primary, "fetch", "--no-tags", "origin", "+refs/heads/main:refs/remotes/origin/main");
+    await git(primary, "merge", "--ff-only", "refs/remotes/origin/main");
+    assert.equal(await git(primary, "rev-parse", "refs/heads/main"), f.advanced);
+    assert.equal(await git(prepared.releaseRoot, "rev-parse", "refs/remotes/origin/main"), upstream);
+    f.reviewed = await reviewedAdvance(f, writer, upstream, f.advanced);
+    f.expected = { ...expected, ...f.reviewed };
+  }
+  return f;
 }
 
 async function candidateState(f) {
@@ -282,7 +350,48 @@ async function candidateState(f) {
     main: await git(f.releaseRoot, "rev-parse", "refs/heads/main"),
     preRelease: await git(f.releaseRoot, "rev-parse", "refs/heads/PreRelease"),
     head: await git(f.releaseRoot, "rev-parse", "HEAD"),
+    tracking: await git(f.releaseRoot, "rev-parse", "refs/remotes/origin/main"),
   };
+}
+
+// Objects only (no ref) are imported so the tracking ref can point at them.
+async function moveReleaseTracking(f, commitId) {
+  await git(f.releaseRoot, "fetch", "--no-tags", "--no-write-fetch-head", f.origin, commitId);
+  await git(f.releaseRoot, "update-ref", "refs/remotes/origin/main", commitId);
+}
+
+// Named current-state drifts with exact restoration.
+function currentDrifts(f) {
+  const primary = f.primaryRoot;
+  const origin = f.origin;
+  const alternateUrl = origin.includes("\\") ? origin.replaceAll("\\", "/") : `${origin}/`;
+  return [
+    ["primary untracked", async () => writeFile(path.join(primary, "untracked-drift.txt"), "drift\n"),
+      async () => rm(path.join(primary, "untracked-drift.txt"))],
+    ["primary index", async () => {
+      await writeFile(path.join(primary, "app.txt"), "staged drift\n");
+      await git(primary, "add", "app.txt");
+    }, async () => {
+      await git(primary, "reset", "-q", "HEAD", "--", "app.txt");
+      await git(primary, "checkout", "--", "app.txt");
+    }],
+    ["primary main", async () => git(primary, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+      "commit", "--allow-empty", "-m", "drift"), async () => git(primary, "reset", "-q", "--hard", "HEAD~1")],
+    ["primary branch", async () => git(primary, "checkout", "-q", "--detach"),
+      async () => git(primary, "checkout", "-q", "main")],
+    ["remote", async () => {
+      await git(f.writer, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+        "commit", "--allow-empty", "-m", "remote drift");
+      await git(f.writer, "push", "origin", "main");
+    }, async () => {
+      await git(f.writer, "reset", "-q", "--hard", "HEAD~1");
+      await git(f.writer, "push", "--force", "origin", "main");
+    }],
+    ["release tracking", async () => moveReleaseTracking(f, f.advanced ?? f.published),
+      async () => git(f.releaseRoot, "update-ref", "refs/remotes/origin/main", f.upstream)],
+    ["origin URL", async () => git(f.releaseRoot, "remote", "set-url", "origin", alternateUrl),
+      async () => git(f.releaseRoot, "remote", "set-url", "origin", origin)],
+  ];
 }
 
 test("accepted recovery alone cannot recover the legacy missing-provenance candidate", { timeout: 120000 }, async (context) => {
@@ -293,7 +402,7 @@ test("accepted recovery alone cannot recover the legacy missing-provenance candi
   assert.deepEqual(await candidateState(f), before);
 });
 
-test("missing-provenance recovery binds receipt, adoption and old bytes through preview, confirm and replay", { timeout: 120000 }, async (context) => {
+test("missing-provenance recovery binds receipt bytes, historical adoption and old bytes through preview, confirm and replay", { timeout: 180000 }, async (context) => {
   const f = await legacyFrozenFixture(context);
   const before = await candidateState(f);
   const preview = await f.service().recoverFreezingPublicationCandidate(f.request());
@@ -308,6 +417,8 @@ test("missing-provenance recovery binds receipt, adoption and old bytes through 
     approvedOriginMainCommit: f.upstream,
     baseCommit: f.upstream,
   });
+  const stored = f.catalog.mcpOperationResultEvidence("rm-release-preflight-approved");
+  assert.equal(stored.resultJsonSha256, sha256(Buffer.from(stored.resultJson, "utf8")));
   assert.deepEqual(supplemental.authority.receipt, {
     requestId: "rm-release-preflight-approved",
     workspaceId: f.workspaceId,
@@ -315,15 +426,31 @@ test("missing-provenance recovery binds receipt, adoption and old bytes through 
     toolName: "hub_release_preflight",
     argumentsHash: f.missingProvenanceRecovery.expectedArgumentsHash,
     status: "succeeded",
-    createdAtMs: supplemental.authority.receipt.createdAtMs,
-    completedAtMs: supplemental.authority.receipt.completedAtMs,
-    resultSha256: f.missingProvenanceRecovery.expectedResultSha256,
+    createdAtMs: stored.createdAtMs,
+    completedAtMs: stored.completedAtMs,
+    resultSha256: stored.resultJsonSha256,
   });
+  const record = JSON.parse(await git(f.primaryRoot, "cat-file", "-p", f.adoption.recordHash));
   assert.deepEqual(supplemental.authority.adoption, {
-    taskId: TASK_ID, taskRevision: 4, resultCommit: f.resultCommit,
-    recordRef: f.adoption.recordRef, recordHash: f.adoption.recordHash,
-    adoptedCommit: f.upstream, acceptedLocalMainCommit: f.published,
+    validation: "historical-immutable-v1",
+    taskRevision: 4,
+    taskId: TASK_ID,
+    resultCommit: f.resultCommit,
+    recordRef: f.adoption.recordRef,
+    recordHash: f.adoption.recordHash,
+    requestId: "adopt-upstream-request",
+    branch: record.branch,
+    taskBaseCommit: f.published,
+    acceptedLocalMainCommit: f.published,
+    adoptedCommit: f.upstream,
+    snapshotTree: record.snapshotTree,
+    proofCommit: f.resultCommit,
+    proofParents: [f.taskCommit, f.upstream],
+    proofTree: record.proofTree,
   });
+  assert.equal(supplemental.currentObservation.primary.mainCommit, f.published);
+  assert.equal(supplemental.currentObservation.remoteOriginMain, f.upstream);
+  assert.equal(supplemental.currentObservation.releaseTrackingOriginMain, f.upstream);
   assert.equal(supplemental.sourceManifest.preparedManifestHash, f.preparedReadback.manifestHash);
   assert.equal(supplemental.authority.candidate.preparedTree, f.preparedReadback.tree);
 
@@ -336,16 +463,18 @@ test("missing-provenance recovery binds receipt, adoption and old bytes through 
     confirm: true, expectedProofHash: preview.proofHash,
   }));
   assert.equal(completed.status, "abandoned");
+  const after = await releaseFiles(path.join(f.layoutRoot, "evidence"));
   for (const [file, digest] of Object.entries(before.evidence)) {
-    assert.equal((await releaseFiles(path.join(f.layoutRoot, "evidence")))[file], digest, `old evidence ${file} preserved`);
+    assert.equal(after[file], digest, `prepared/frozen evidence ${file} stays byte-identical`);
   }
   assert.equal(await git(f.releaseRoot, "rev-parse", "refs/heads/main"), f.published);
   const evidence = JSON.parse(await readFile(completed.evidenceFile, "utf8"));
+  assert.equal(sha256(Buffer.from(evidence.sourceCheckpointBytesBase64, "base64")), f.originalCheckpointSha256);
   assert.equal(sha256(Buffer.from(evidence.supplementalEvidence.preparedManifestBytesBase64, "base64")),
     f.preparedReadback.manifestHash);
-  assert.equal(preflightResultSha256(evidence.supplementalEvidence.preflightResult),
-    f.missingProvenanceRecovery.expectedResultSha256);
+  assert.equal(evidence.supplementalEvidence.preflightResultJson, stored.resultJson);
 
+  await f.reopen();
   const replay = await f.service().recoverFreezingPublicationCandidate(f.request({
     confirm: true, expectedProofHash: preview.proofHash,
   }));
@@ -353,6 +482,8 @@ test("missing-provenance recovery binds receipt, adoption and old bytes through 
   assert.equal(replay.proofHash, preview.proofHash);
   const readback = await f.service().recoverFreezingPublicationCandidate(f.request());
   assert.equal(readback.proofHash, preview.proofHash);
+  const finalEvidence = await releaseFiles(path.join(f.layoutRoot, "evidence"));
+  for (const [file, digest] of Object.entries(before.evidence)) assert.equal(finalEvidence[file], digest);
 
   // Completed replay still re-reads the exact authorities before returning.
   await assert.rejects(f.service().recoverFreezingPublicationCandidate(f.request({
@@ -364,10 +495,149 @@ test("missing-provenance recovery binds receipt, adoption and old bytes through 
   });
   await assert.rejects(f.service().recoverFreezingPublicationCandidate(omitted),
     /missing-provenance request changed after admission|approved origin main changed/u);
+  await assert.rejects(f.service().recoverFreezingPublicationCandidate(f.request({
+    requestId: "foreign-operation", confirm: true, expectedProofHash: preview.proofHash,
+  })), /another exact operation/u);
   await git(f.primaryRoot, "update-ref", "-d", f.adoption.recordRef);
   await assert.rejects(f.service().recoverFreezingPublicationCandidate(f.request({
     confirm: true, expectedProofHash: preview.proofHash,
-  })), /adoption|missing-provenance/u);
+  })), /historical selected Task adoption is not exact/u);
+});
+
+test("historical adoption survives the real advanced primary while current admission stays stale", { timeout: 240000 }, async (context) => {
+  const f = await legacyFrozenFixture(context, { advancePrimary: true });
+  const before = await candidateState(f);
+  // Ordinary current admission keeps its stale-local fence unchanged.
+  await assert.rejects(f.tasks.releaseBaseEvidence({
+    projectRoot: f.primaryRoot, publishedBaseCommit: f.published,
+    tasks: f.frozenTasks.map(({ taskId, resultCommit }) => ({ taskId, resultCommit })),
+  }), new RegExp(`accepted local main changed from ${f.published} to ${f.advanced}`, "u"));
+  const historical = await f.tasks.historicalUpstreamAdoptionEvidence({
+    projectRoot: f.primaryRoot, publishedBaseCommit: f.published,
+    tasks: f.frozenTasks, expected: f.missingProvenanceRecovery.expectedAdoption, recoveryKind: RECOVERY_KIND,
+  });
+  assert.equal(historical.validation, "historical-immutable-v1");
+  assert.equal(historical.adoption.acceptedLocalMainCommit, f.published, "historical field, not current main");
+  await assert.rejects(f.tasks.historicalUpstreamAdoptionEvidence({
+    projectRoot: f.primaryRoot, publishedBaseCommit: f.published,
+    tasks: f.frozenTasks, expected: f.missingProvenanceRecovery.expectedAdoption,
+  }), /limited to missing-provenance recovery/u);
+
+  // The newer remote tip is not authorized by old evidence or by ancestry.
+  const { reviewedOriginMain: _a, reviewedOriginParent: _b, reviewedOriginTree: _c, reviewedOriginDiffSha256: _d,
+    reviewedOriginDiffHashObject: _e, reviewedOriginPatchId: _g, releaseTrackingOriginMain: _h, originUrlSha256: _i,
+    ...withoutAdvance } = f.expected;
+  await assert.rejects(f.service().recoverFreezingPublicationCandidate(f.request({ expected: withoutAdvance })),
+    /approved origin main changed/u);
+  await git(f.writer, "checkout", "-q", "-b", "changelog-only", f.upstream);
+  await writeFile(path.join(f.writer, "CHANGELOG.md"), "# Changelog\n\nreviewed upstream entry\n\nnext entry\n", "utf8");
+  const changelogOnly = await commit(f.writer, "earlier changelog-only review");
+  const earlier = await reviewedAdvance(f, f.writer, f.upstream, changelogOnly);
+  await git(f.writer, "checkout", "-q", "main");
+  await assert.rejects(f.service().recoverFreezingPublicationCandidate(f.request({
+    expected: { ...withoutAdvance, ...earlier },
+  })), /approved origin main changed/u);
+  await assert.rejects(f.service().recoverFreezingPublicationCandidate(f.request({
+    expected: { ...f.expected, reviewedOriginDiffSha256: earlier.reviewedOriginDiffSha256 },
+  })), /reviewed origin advance proof changed/u);
+  await assert.rejects(f.service().recoverFreezingPublicationCandidate(f.request({
+    expected: { ...f.expected, reviewedOriginTree: earlier.reviewedOriginTree },
+  })), /reviewed origin advance proof changed/u);
+  await git(f.writer, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+    "commit", "--allow-empty", "-m", "ancestry only");
+  await git(f.writer, "push", "origin", "main");
+  await assert.rejects(f.service().recoverFreezingPublicationCandidate(f.request()),
+    /approved origin main changed/u, "a descendant of the reviewed tip is not accepted by ancestry");
+  await git(f.writer, "reset", "-q", "--hard", "HEAD~1");
+  await git(f.writer, "push", "--force", "origin", "main");
+  // Release clone tracking may not advance to the reviewed tip.
+  await moveReleaseTracking(f, f.advanced);
+  for (const releaseTrackingOriginMain of [f.upstream, f.advanced]) {
+    await assert.rejects(f.service().recoverFreezingPublicationCandidate(f.request({
+      expected: { ...f.expected, releaseTrackingOriginMain },
+    })), /approved origin main changed/u);
+  }
+  await git(f.releaseRoot, "update-ref", "refs/remotes/origin/main", f.upstream);
+  assert.deepEqual(await candidateState(f), before);
+
+  // Exact combination: historical 95/8355 authority, reviewed remote tip,
+  // current primary observation, lagging release tracking.
+  const preview = await f.service().recoverFreezingPublicationCandidate(f.request());
+  const observation = preview.identity.supplementalProvenance.currentObservation;
+  assert.equal(observation.primary.mainCommit, f.advanced);
+  assert.equal(observation.primary.headCommit, f.advanced);
+  assert.equal(observation.remoteOriginMain, f.advanced);
+  assert.equal(observation.releaseTrackingOriginMain, f.upstream);
+  assert.equal(preview.identity.reviewedOriginAdvance.reviewedOriginMain, f.advanced);
+  assert.deepEqual(preview.identity.supplementalProvenance.authority.derived, {
+    publishedBaseCommit: f.published, approvedLocalMainCommit: f.published,
+    approvedOriginMainCommit: f.upstream, baseCommit: f.upstream,
+  });
+  const crashing = f.service({ recoveryPhase: async (name) => { if (name === "intent") throw new Error("crash at intent"); } });
+  await assert.rejects(crashing.recoverFreezingPublicationCandidate(f.request({
+    confirm: true, expectedProofHash: preview.proofHash,
+  })), /crash at intent/u);
+  await f.reopen();
+  const resumed = await f.service().recoverFreezingPublicationCandidate(f.request({
+    confirm: true, expectedProofHash: preview.proofHash,
+  }));
+  assert.equal(resumed.status, "abandoned");
+  assert.equal(await git(f.releaseRoot, "rev-parse", "refs/heads/main"), f.published);
+  assert.equal(await git(f.releaseRoot, "rev-parse", "refs/remotes/origin/main"), f.upstream);
+  assert.equal(await git(f.primaryRoot, "rev-parse", "refs/heads/main"), f.advanced);
+  await f.reopen();
+  const replay = await f.service().recoverFreezingPublicationCandidate(f.request({
+    confirm: true, expectedProofHash: preview.proofHash,
+  }));
+  assert.equal(replay.reused, true);
+  assert.equal(replay.proofHash, preview.proofHash);
+});
+
+test("current primary, remote, tracking and URL drift rejects at confirm, resume and completed replay", { timeout: 360000 }, async (context) => {
+  const f = await legacyFrozenFixture(context, { advancePrimary: true });
+  const before = await candidateState(f);
+  const preview = await f.service().recoverFreezingPublicationCandidate(f.request());
+  const confirm = () => f.service().recoverFreezingPublicationCandidate(f.request({
+    confirm: true, expectedProofHash: preview.proofHash,
+  }));
+  // Fresh confirmation re-observes: a drifted observation changes the proof;
+  // remote/tracking/URL also fail the reviewed-advance fence; a detached
+  // primary fails the primary invariant.
+  const confirmDrift = /confirmation proof changed|approved origin main changed|HEAD must remain attached/u;
+  // After admission the persisted observation is re-read exactly.
+  const admittedDrift = /current primary, remote, tracking or URL changed after preview|HEAD must remain attached/u;
+  for (const [name, drift, restore] of currentDrifts(f)) {
+    await drift();
+    await assert.rejects(confirm(), confirmDrift, `confirm rejects ${name} drift`);
+    await restore();
+    assert.deepEqual(await candidateState(f), before, `no effect after ${name} drift at confirm`);
+  }
+
+  const crashing = f.service({ recoveryPhase: async (name) => { if (name === "intent") throw new Error("crash at intent"); } });
+  await assert.rejects(crashing.recoverFreezingPublicationCandidate(f.request({
+    confirm: true, expectedProofHash: preview.proofHash,
+  })), /crash at intent/u);
+  const admitted = await candidateState(f);
+  assert.equal(JSON.parse(await readFile(f.checkpointFile, "utf8")).phase, "abandoning");
+  for (const [name, drift, restore] of currentDrifts(f)) {
+    await drift();
+    await f.reopen();
+    await assert.rejects(confirm(), admittedDrift, `resume rejects ${name} drift`);
+    await restore();
+    assert.deepEqual(await candidateState(f), admitted, `no ref or checkpoint outcome after ${name} drift at resume`);
+  }
+  const completed = await confirm();
+  assert.equal(completed.status, "abandoned");
+
+  for (const [name, drift, restore] of currentDrifts(f)) {
+    await drift();
+    await f.reopen();
+    await assert.rejects(confirm(), admittedDrift, `completed replay rejects ${name} drift`);
+    await restore();
+  }
+  const replay = await confirm();
+  assert.equal(replay.reused, true);
+  assert.equal(replay.proofHash, preview.proofHash);
 });
 
 for (const phase of ["evidence", "intent", "detached", "main", "refs", "checkout"]) {
@@ -380,6 +650,7 @@ for (const phase of ["evidence", "intent", "detached", "main", "refs", "checkout
     await assert.rejects(crashing.recoverFreezingPublicationCandidate(f.request({
       confirm: true, expectedProofHash: preview.proofHash,
     })), new RegExp(`crash at ${phase}`, "u"));
+    await f.reopen();
     await assert.rejects(f.service().recoverFreezingPublicationCandidate(f.request({
       confirm: true, expectedProofHash: preview.proofHash,
       missingProvenanceRecovery: { ...f.missingProvenanceRecovery, expectedAdoption: {
@@ -395,7 +666,7 @@ for (const phase of ["evidence", "intent", "detached", "main", "refs", "checkout
   });
 }
 
-test("missing-provenance recovery rejects every receipt, result and adoption drift before effects", { timeout: 180000 }, async (context) => {
+test("missing-provenance recovery rejects every receipt, result and adoption drift before effects", { timeout: 240000 }, async (context) => {
   const f = await legacyFrozenFixture(context);
   const before = await candidateState(f);
   const attempt = async (override, pattern) => {
@@ -411,12 +682,12 @@ test("missing-provenance recovery rejects every receipt, result and adoption dri
     const exactArgs = { ...(args ?? f.preflightArguments), request_id: requestId };
     const stored = f.receipt(requestId, exactArgs, pending ? undefined : result, { tool, workspace });
     mutate?.(requestId);
-    const current = f.catalog.mcpOperation(requestId);
+    const current = f.catalog.mcpOperationResultEvidence(requestId);
     return {
       preflightRequestId: requestId,
       preflightArguments: exactArgs,
       expectedArgumentsHash: stored.argumentsHash,
-      expectedResultSha256: current.result ? preflightResultSha256(current.result) : "3".repeat(64),
+      expectedResultSha256: current.resultJsonSha256 ?? "3".repeat(64),
     };
   };
   const ready = f.readyResult();
@@ -454,6 +725,10 @@ test("missing-provenance recovery rejects every receipt, result and adoption dri
     ...f.preflightArguments.approved_repositories[0], approvedOriginMainCommit: f.published,
   }] } }, /approval does not bind/u);
   await attempt({ expectedResultSha256: "5".repeat(64) }, /result digest changed/u);
+  // The digest is over persisted bytes, not a canonical re-serialization.
+  const stored = f.catalog.mcpOperationResultEvidence("rm-release-preflight-approved");
+  await attempt({ expectedResultSha256: sha256(JSON.stringify(JSON.parse(stored.resultJson), null, 2)) },
+    /result digest changed/u);
 
   const resultCases = [
     ["not-ready", { status: "main_review_required" }, /not ready/u],
@@ -482,9 +757,9 @@ test("missing-provenance recovery rejects every receipt, result and adoption dri
   }
 
   await attempt({ expectedAdoption: { ...f.missingProvenanceRecovery.expectedAdoption, recordHash: "8".repeat(40) } },
-    /adoption ref or blob changed|does not bind/u);
+    /historical selected Task adoption is not exact/u);
   await attempt({ expectedAdoption: { ...f.missingProvenanceRecovery.expectedAdoption, taskId: "another-task" } },
-    /adoption ref or blob changed|does not bind/u);
+    /historical selected Task adoption is not exact/u);
   await assert.rejects(f.service().recoverFreezingPublicationCandidate(f.request({
     missingProvenanceResolver: null,
   })), /owner resolver/u);
@@ -499,19 +774,78 @@ test("missing-provenance recovery rejects every receipt, result and adoption dri
       } } };
     },
   })), /does not bind this candidate/u);
+  await assert.rejects(f.service().recoverFreezingPublicationCandidate(f.request({
+    missingProvenanceResolver: async (input) => {
+      const resolved = await f.resolver(input);
+      return { ...resolved, authority: { ...resolved.authority, adoption: {
+        ...resolved.authority.adoption, validation: "current-admission",
+      } } };
+    },
+  })), /does not bind this candidate/u);
   assert.deepEqual(await candidateState(f), before);
 
-  // A changed adoption blob behind the same ref is rejected by the owner.
-  const blob = String((await execFileAsync("git", ["cat-file", "-p", f.adoption.recordHash], {
-    cwd: f.primaryRoot, windowsHide: true,
-  })).stdout).replace("adopt-upstream-request", "forged-request");
-  const forgedFile = path.join(f.root, "forged-adoption.json");
-  await writeFile(forgedFile, blob, "utf8");
-  const forgedHash = await git(f.primaryRoot, "hash-object", "-w", forgedFile);
-  await git(f.primaryRoot, "update-ref", f.adoption.recordRef, forgedHash, f.adoption.recordHash);
-  await attempt({}, /adoption|receipt/u);
+  // Canonical but forged records behind the exact ref are rejected.
+  const record = JSON.parse(await git(f.primaryRoot, "cat-file", "-p", f.adoption.recordHash));
+  const forge = async (changes) => {
+    const file = path.join(f.root, `forged-${Object.keys(changes).join("-")}.json`);
+    await writeFile(file, `${JSON.stringify({ ...record, ...changes })}\n`, "utf8");
+    return git(f.primaryRoot, "hash-object", "-w", file);
+  };
+  for (const [changes, pattern] of [
+    [{ requestId: "forged-request" }, /does not match the expected exact ref and blob/u],
+    [{ acceptedLocalMainCommit: f.upstream }, /no explicit upstream adoption proof|does not match its immutable object proof/u],
+    [{ snapshotTree: f.upstream }, /does not match its immutable object proof/u],
+    [{ proofParents: [f.published, f.upstream] }, /does not match its immutable object proof/u],
+    // Internally consistent with objects, but not the exact pinned blob.
+    [{ taskBaseCommit: f.upstream }, /does not match the expected exact ref and blob|no explicit upstream adoption proof/u],
+  ]) {
+    const forgedHash = await forge(changes);
+    await git(f.primaryRoot, "update-ref", f.adoption.recordRef, forgedHash, f.adoption.recordHash);
+    await attempt({}, pattern);
+    await git(f.primaryRoot, "update-ref", f.adoption.recordRef, f.adoption.recordHash, forgedHash);
+  }
+  const sibling = `${f.adoption.recordRef.slice(0, f.adoption.recordRef.lastIndexOf("/"))}/${f.published}`;
+  await git(f.primaryRoot, "update-ref", sibling, f.adoption.recordHash);
+  await attempt({}, /ambiguous historical adoption receipts/u);
+  await git(f.primaryRoot, "update-ref", "-d", sibling);
   await git(f.primaryRoot, "update-ref", "-d", f.adoption.recordRef);
-  await attempt({}, /exactly one selected Task adoption|derive the candidate base/u);
+  await attempt({}, /no outstanding historical adoption/u);
+});
+
+test("historical adoption accepts only a two-parent proof commit", { timeout: 120000 }, async (context) => {
+  const f = await legacyFrozenFixture(context);
+  // An octopus snapshot: the adopted upstream is the second of three parents.
+  await writeFile(path.join(f.writer, "extra.txt"), "extra\n", "utf8");
+  const extra = await commit(f.writer, "third parent");
+  const tree = await git(f.primaryRoot, "rev-parse", `${f.resultCommit}^{tree}`);
+  await git(f.primaryRoot, "fetch", "--no-tags", f.writer, extra);
+  const octopus = await git(f.primaryRoot, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+    "commit-tree", tree, "-p", f.taskCommit, "-p", f.upstream, "-p", extra, "-m", "octopus adoption");
+  const record = JSON.parse(await git(f.primaryRoot, "cat-file", "-p", f.adoption.recordHash));
+  const octopusRecord = { ...record, snapshotCommit: octopus, proofCommit: octopus,
+    snapshotTree: tree, proofTree: tree, proofParents: [f.taskCommit, f.upstream] };
+  const file = path.join(f.root, "octopus-adoption.json");
+  await writeFile(file, `${JSON.stringify(octopusRecord)}\n`, "utf8");
+  const recordHash = await git(f.primaryRoot, "hash-object", "-w", file);
+  const recordRef = `${f.adoption.recordRef.split("/").slice(0, -2).join("/")}/${octopus}/${f.upstream}`;
+  await git(f.primaryRoot, "update-ref", recordRef, recordHash);
+  await assert.rejects(f.tasks.historicalUpstreamAdoptionEvidence({
+    projectRoot: f.primaryRoot, publishedBaseCommit: f.published,
+    tasks: [{ taskId: TASK_ID, resultCommit: octopus }],
+    expected: { taskId: TASK_ID, recordRef, recordHash }, recoveryKind: RECOVERY_KIND,
+  }), /invalid explicit upstream adoption/u);
+});
+
+test("the historical adoption method has exactly one supplemental recovery call site", async () => {
+  const sourceRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../src");
+  const callers = [];
+  for (const entry of await readdir(sourceRoot, { recursive: true, withFileTypes: true })) {
+    if (!entry.isFile() || !entry.name.endsWith(".mjs")) continue;
+    const file = path.join(entry.parentPath ?? entry.path, entry.name);
+    const text = await readFile(file, "utf8");
+    if (text.includes(".historicalUpstreamAdoptionEvidence(")) callers.push(path.relative(sourceRoot, file).replaceAll("\\", "/"));
+  }
+  assert.deepEqual(callers, ["application/release-missing-provenance-resolver.mjs"]);
 });
 
 test("missing-provenance recovery refuses changed, one-sided or already provenanced candidates", { timeout: 120000 }, async (context) => {
@@ -659,7 +993,8 @@ test("published-base candidates keep working without provenance under the durabl
 });
 
 test("missing-provenance resolver requires its authoritative owners", () => {
-  assert.throws(() => createMissingProvenanceResolver({}), /mcpOperation/u);
-  assert.throws(() => createMissingProvenanceResolver({ workspaceCatalog: { mcpOperation() {} } }),
-    /releaseBaseEvidence/u);
+  assert.throws(() => createMissingProvenanceResolver({}), /mcpOperationResultEvidence/u);
+  assert.throws(() => createMissingProvenanceResolver({
+    workspaceCatalog: { mcpOperationResultEvidence() {} }, taskGitWorkspaces: { releaseBaseEvidence() {} },
+  }), /historicalUpstreamAdoptionEvidence/u);
 });
