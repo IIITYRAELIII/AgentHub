@@ -83,6 +83,7 @@ function confirmation(task, action, preview) {
 
 export class TaskLifecycleService {
   #releaseOperationWake = null;
+  #releaseOperationPrepare = null;
 
   constructor({ taskBoard, workspaceCatalog, taskGitWorkspaces = null, releasePreflight = null } = {}) {
     for (const name of [
@@ -108,6 +109,11 @@ export class TaskLifecycleService {
   setReleaseOperationWake(wake) {
     if (wake != null && typeof wake !== "function") throw new TypeError("release operation wake must be a function");
     this.#releaseOperationWake = wake;
+  }
+
+  setReleaseOperationPrepare(prepare) {
+    if (prepare != null && typeof prepare !== "function") throw new TypeError("release operation prepare must be a function");
+    this.#releaseOperationPrepare = prepare;
   }
 
   #task(taskId) {
@@ -644,64 +650,69 @@ export class TaskLifecycleService {
         if (!snapshotsResult) {
           if (releaseWorkflow && workflowStatus === "awaiting_implementation") {
             requiredMethod(this.taskGitWorkspaces, "withTaskRepositoryRecoveryLock");
-            requiredMethod(this.releasePreflight, "validateAwaitAcceptance");
+            requiredMethod(this.releasePreflight, "prepareAwaitAcceptance");
             return await this.taskGitWorkspaces.withTaskRepositoryRecoveryLock(
               task.id,
               selectedProjectRoot,
               lease,
               async (repositoryLease) => {
-                const validation = await this.releasePreflight.validateAwaitAcceptance({
+                return this.releasePreflight.prepareAwaitAcceptance({
                   workspaceId: task.workspaceId,
                   acceptingTask: { id: task.id, revision: task.revision },
                   projectRoot: selectedProjectRoot,
                   lease: repositoryLease,
-                });
-                if (validation.task.resultCommit !== acceptedReference.resultCommit) {
-                  throw new Error("Task prospective Await result changed before acceptance");
-                }
-                await this.#assertOwned(repositoryLease);
-                let current;
-                try {
-                  current = await this.#mutation(() => this.taskBoard.commitWorkflowTransition({
-                    operationId, gitReferences: [], replaceGitReferences: false, ...binding,
-                    evidence: {
-                      ...(operationEvidence ?? {}), outcome: "accepted_existing_result",
-                      resultCommit: acceptedReference.resultCommit,
-                      releaseIntegration: validation.task,
-                      response: { releaseCandidate: {
-                        status: "invalidated", reason: "Await membership changed",
-                        planRevision: validation.planRevision,
-                      } },
-                    },
-                  }), operationId);
-                } catch (error) {
-                  try {
-                    const outcome = this.taskBoard.lifecycleOutcome(operationId);
-                    if (outcome?.taskId === task.id
-                        && outcome.result?.task?.workflowStatus === "awaiting_implementation"
-                        && outcome.result?.task?.revision === task.revision + 1
-                        && outcome.result?.evidence?.resultCommit === acceptedReference.resultCommit) {
-                      current = outcome.result.task;
-                    } else {
-                      const transition = this.taskBoard.lifecycleTransition(operationId);
-                      if (!outcome && transition?.taskId === task.id && transition.phase === "pending_git") throw error;
-                      throw new Error("Await acceptance durable outcome does not match its exact result");
+                  commitPrepared: async (prepared) => {
+                    if (prepared.task.resultCommit !== acceptedReference.resultCommit) {
+                      throw new Error("Task prospective Await result changed before acceptance");
                     }
-                  } catch (readError) {
-                    if (readError === error) throw error;
-                    const unknown = new Error(`Await acceptance outcome is unknown: ${readError.message}`);
-                    unknown.code = "AWAIT_ACCEPTANCE_UNKNOWN";
-                    throw unknown;
-                  }
-                }
-                return {
-                  task: current,
-                  releaseIntegration: validation.task,
-                  releaseCandidate: {
-                    status: "invalidated", reason: "Await membership changed",
-                    planRevision: validation.planRevision,
+                    await this.#assertOwned(repositoryLease);
+                    let current;
+                    try {
+                      current = await this.#mutation(() => this.taskBoard.commitWorkflowTransition({
+                        operationId, gitReferences: [], replaceGitReferences: false, ...binding,
+                        evidence: {
+                          ...(operationEvidence ?? {}), outcome: "accepted_existing_result",
+                          resultCommit: acceptedReference.resultCommit,
+                          releaseIntegration: prepared.task,
+                          response: { releaseCandidate: {
+                            status: "prepared", reason: "LiveIntegration includes the accepted result",
+                            planRevision: prepared.planRevision,
+                          } },
+                        },
+                      }), operationId);
+                    } catch (error) {
+                      try {
+                        const outcome = this.taskBoard.lifecycleOutcome(operationId);
+                        if (outcome?.taskId === task.id
+                            && outcome.result?.task?.workflowStatus === "awaiting_implementation"
+                            && outcome.result?.task?.revision === task.revision + 1
+                            && outcome.result?.evidence?.resultCommit === acceptedReference.resultCommit) {
+                          current = outcome.result.task;
+                        } else {
+                          const transition = this.taskBoard.lifecycleTransition(operationId);
+                          if (!outcome && transition?.taskId === task.id && transition.phase === "pending_git") throw error;
+                          throw new Error("Await acceptance durable outcome does not match its exact result");
+                        }
+                      } catch (readError) {
+                        if (readError === error) throw error;
+                        const unknown = new Error(`Await acceptance outcome is unknown: ${readError.message}`);
+                        unknown.code = "AWAIT_ACCEPTANCE_UNKNOWN";
+                        throw unknown;
+                      }
+                    }
+                    try {
+                      this.#releaseOperationPrepare?.(task.id);
+                    } catch {}
+                    return {
+                      task: current,
+                      releaseIntegration: prepared.task,
+                      releaseCandidate: {
+                        status: "prepared", reason: "LiveIntegration includes the accepted result",
+                        planRevision: prepared.planRevision,
+                      },
+                    };
                   },
-                };
+                });
               },
             );
           }

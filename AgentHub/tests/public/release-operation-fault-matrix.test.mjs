@@ -1,18 +1,20 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import http from "node:http";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
 
+import { ReleaseOperationCommandService } from "../../src/application/release-operation-command-service.mjs";
 import { ReleaseOperationService } from "../../src/application/release-operation-service.mjs";
 import { createCandidateGeneration } from "../../src/domain/release-operation.mjs";
 import { ReleaseOperationStore } from "../../src/infrastructure/persistence/release-operation-store.mjs";
 
 const execute = promisify(execFile);
+const acceptanceMetrics = { ackMs: [], humanInterventions: 0 };
 
 async function git(cwd, ...args) {
   return (await execute("git", args, { cwd, encoding: "utf8", windowsHide: true })).stdout.trim();
@@ -126,6 +128,7 @@ async function operationHarness(t, { validationFailures = 0, publicationFailure 
   const store = new ReleaseOperationStore({ dataDir });
   const publishCalls = [];
   const finalized = [];
+  let composeCalls = 0;
   const readTarget = async ({ generation, target }) => {
     if (target.targetId === "git") {
       const remote = (await execute("git", ["ls-remote", repository.remote, "refs/heads/main"], {
@@ -141,6 +144,7 @@ async function operationHarness(t, { validationFailures = 0, publicationFailure 
     store,
     retryDelayMs: 20,
     compose: async ({ operation, generation }) => {
+      composeCalls += 1;
       const tree = await git(repository.source, "rev-parse", `${selectedCommit}^{tree}`);
       return {
         repositoryBases: [{ repositoryRoot: repository.source, baseCommit: repository.base }],
@@ -187,20 +191,84 @@ async function operationHarness(t, { validationFailures = 0, publicationFailure 
       return { status: "completed" };
     },
   });
+  const commands = new ReleaseOperationCommandService({
+    releaseOperations: service,
+    workspaceCatalog: {
+      workspace: () => ({ id: "workspace" }),
+      hierarchy: () => [{
+        id: "workspace",
+        streams: [{ id: "release-manager", threads: [{ threadId: "thread" }] }],
+      }],
+      activeThread: () => ({ threadId: "thread" }),
+    },
+    taskBoard: {
+      task: (taskId) => ({ id: taskId, workspaceId: "workspace", streamId: "release-manager" }),
+    },
+  });
   return {
-    root, repository, deploy, store, service, publishCalls, finalized,
+    root, repository, deploy, store, service, commands, publishCalls, finalized,
+    composeCalls: () => composeCalls,
     select(commit) { selectedCommit = commit; },
   };
 }
 
 function start(harness, requestId = "release-request") {
-  return harness.service.start({
+  const startedAt = performance.now();
+  const result = harness.commands.start({
     requestId,
+    workspaceId: "workspace",
+    taskIds: ["task-a", "task-b"],
+    validationMode: "full",
+    approvedTargets: authorization(harness.repository.source).approvedTargets,
+  });
+  acceptanceMetrics.ackMs.push(performance.now() - startedAt);
+  return result;
+}
+
+async function crashAfterAppliedCompose(harness) {
+  const ackFile = path.join(harness.root, "crash-ack.json");
+  const inputFile = path.join(harness.root, "crash-input.json");
+  const tree = await git(harness.repository.source, "rev-parse", `${harness.repository.resultR1}^{tree}`);
+  await writeFile(inputFile, `${JSON.stringify({
+    dataDir: path.join(harness.root, "data"),
+    ackFile,
     workspaceId: "workspace",
     streamId: "release-manager",
     threadId: "thread",
-    authorization: authorization(harness.repository.source),
+    request: {
+      requestId: "crash-after-compose",
+      workspaceId: "workspace",
+      taskIds: ["task-a", "task-b"],
+      validationMode: "full",
+      approvedTargets: authorization(harness.repository.source).approvedTargets,
+    },
+    generation: {
+      repositoryBases: [{ repositoryRoot: harness.repository.source, baseCommit: harness.repository.base }],
+      selectedResults: ["task-a", "task-b"].map((taskId) => ({
+        taskId, resultCommit: harness.repository.resultR1, tree, acceptanceRevision: 1,
+      })),
+      candidates: [{
+        repositoryRoot: harness.repository.source,
+        releaseRoot: harness.repository.source,
+        commit: harness.repository.resultR1,
+        tree,
+        manifestHash: createHash("sha256").update(`${harness.repository.resultR1}:${tree}`).digest("hex"),
+      }],
+      sourceFingerprint: harness.repository.resultR1,
+    },
+  }, null, 2)}\n`, "utf8");
+  const worker = spawn(process.execPath, [
+    path.join(import.meta.dirname, "../fixtures/release-operation-crash-worker.mjs"), inputFile,
+  ], { windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+  let stderr = "";
+  worker.stderr.setEncoding("utf8");
+  worker.stderr.on("data", (chunk) => { stderr += chunk; });
+  const exitCode = await new Promise((resolve, reject) => {
+    worker.once("error", reject);
+    worker.once("exit", resolve);
   });
+  assert.equal(exitCode, 86, stderr);
+  return JSON.parse(await readFile(ackFile, "utf8"));
 }
 
 async function waitForState(service, operationId, expected, { timeoutMs = 5_000 } = {}) {
@@ -216,6 +284,16 @@ async function waitForState(service, operationId, expected, { timeoutMs = 5_000 
 }
 
 test("public release operation fault and migration matrix", async (t) => {
+  t.after(() => {
+    const ordered = acceptanceMetrics.ackMs.toSorted((left, right) => left - right);
+    const percentile = (fraction) => ordered[Math.min(ordered.length - 1, Math.ceil(ordered.length * fraction) - 1)];
+    const p50 = percentile(0.5);
+    const p95 = percentile(0.95);
+    t.diagnostic(`release ACK p50=${p50.toFixed(2)}ms p95=${p95.toFixed(2)}ms samples=${ordered.length}`);
+    assert.ok(Number.isFinite(p50) && p50 < 1_000, `release ACK p50 was ${p50}ms`);
+    assert.ok(Number.isFinite(p95) && p95 < 1_000, `release ACK p95 was ${p95}ms`);
+    assert.equal(acceptanceMetrics.humanInterventions, 0);
+  });
   await t.test("1 exact accepted composition is immutable and conflict does not replace it", async (scenario) => {
     const harness = await operationHarness(scenario);
     const ack = start(harness);
@@ -248,13 +326,18 @@ test("public release operation fault and migration matrix", async (t) => {
     assert.equal(snapshot.operation.state, "done");
   });
 
-  await t.test("4 request replay keeps one SQLite operation identity", async (scenario) => {
+  await t.test("4 process death after applied compose receipt resumes the same SQLite operation", async (scenario) => {
     const harness = await operationHarness(scenario);
-    const first = start(harness, "same-request");
-    const second = start(harness, "same-request");
-    assert.equal(first.operationId, second.operationId);
-    assert.equal(second.created, false);
-    await harness.service.drain(first.operationId);
+    const first = await crashAfterAppliedCompose(harness);
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    harness.service.recover();
+    const resumed = await waitForState(harness.service, first.operationId, "done");
+    const replay = start(harness, "crash-after-compose");
+    assert.equal(replay.operationId, first.operationId);
+    assert.equal(replay.created, false);
+    assert.equal(harness.composeCalls(), 0);
+    assert.equal(resumed.generations.length, 1);
+    assert.equal(resumed.receipts.filter((receipt) => receipt.stepId === "compose").length, 1);
   });
 
   await t.test("5 lost push reply is read back and missing deploy runs once", async (scenario) => {
@@ -375,5 +458,16 @@ test("public release operation fault and migration matrix", async (t) => {
     assert.equal(terminal.length, 5);
     assert.deepEqual(harness.publishCalls.toSorted(), ["deploy", "git"]);
     assert.equal(harness.deploy.calls.length, 1);
+    const historical = JSON.parse(await readFile(path.join(
+      import.meta.dirname, "../fixtures/release-operation-historical-evidence.json",
+    ), "utf8"));
+    assert.deepEqual(historical.incidents.map((incident) => ({
+      id: incident.id,
+      commit: incident.candidateCommit,
+      externalEffectsStarted: incident.externalEffectsStarted,
+    })), [
+      { id: "028b-freezing", commit: "028b43bae2ccb107fc0f4ae9187e4f9995a093ba", externalEffectsStarted: false },
+      { id: "0e7272-frozen-failed", commit: "0e7272f3421bb64a32b51b67992e57557ebf12d8", externalEffectsStarted: false },
+    ]);
   });
 });

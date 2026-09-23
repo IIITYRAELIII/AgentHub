@@ -821,11 +821,27 @@ export class ReleaseGitWorkspaceService {
         planRevision, projectRoot, workspaceId, frozenTasks, approvedBaseCommit,
         baseProvenance, validateBeforeCommit, preserveFrozen: false,
       });
-      const tree = await runGit(["rev-parse", `${candidate.preReleaseHead}^{tree}`], {
-        cwd: candidate.releaseRoot,
+      const changelogContent = await readFile(path.join(candidate.releaseRoot, "CHANGELOG.md")).catch((error) => {
+        if (error.code === "ENOENT") return null;
+        throw error;
+      });
+      await isolated.freezePublicationCandidate({
+        projectRoot: sourceRoot,
+        workspaceId,
+        expectedPlanRevision: planRevision,
+        expectedPreparedHead: candidate.preReleaseHead,
+        changelogContent,
+        validateBeforeCommit: validateBeforeCommit ?? (async () => {}),
+      });
+      const frozen = await isolated.frozenCandidate(sourceRoot);
+      const tree = await runGit(["rev-parse", `${frozen.preReleaseHead}^{tree}`], {
+        cwd: frozen.releaseRoot,
       });
       return {
         ...candidate,
+        ...frozen,
+        frozenTasks: candidate.frozenTasks,
+        netProjectedTaskIds: candidate.netProjectedTaskIds,
         tree,
         operationId: operation,
         generation: generationNumber,

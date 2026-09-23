@@ -973,9 +973,9 @@ outcome, never starts fresh Task closure. Legacy Await-only markers cannot prove
 primary/dev synchronization: recovery explicitly reports unavailable legacy
 evidence and resumes only their original synchronization scope.
 
-The canonical Agent Hub `publish:changed` CLI prepares selected runtime, Worker,
-Android and extension artifacts after validation and before Git publication
-(ADR-0062). Preparation leaves current runtime pointers, stable launchers and
+The canonical Agent Hub `publish:changed` CLI delegates to the durable operation;
+its stable runner prepares selected runtime, Worker, Android and extension
+artifacts after validation and before Git publication (ADR-0062). Preparation leaves current runtime pointers, stable launchers and
 installed extensions unchanged. Application consumes the prepared bytes; Worker
 deployment uses the prepared Wrangler bundle without rebuilding. Component
 artifact digests are pinned in the existing run journal, which also records
@@ -1672,11 +1672,13 @@ integrations or a changed witness fail closed. Other selected Tasks keep their
 original integration order relative to these continuation deltas.
 
 Await validates the exact Test-owned result and its dev integration under the
-Workspace Await, Task and repository leases, then commits only the lifecycle CAS.
-It does not build, rebuild or mutate `PreRelease`. The new accepted-plan revision
-makes every prior candidate stale; the existing candidate reuse and publication
-verification gates reject that old plan while its bytes remain unchanged. Explicit
-release preparation remains the sole candidate builder.
+Workspace Await, Task and repository leases, composes the prospective accepted
+set into live `PreRelease`, and only then commits the lifecycle CAS. A failed
+composition restores the prior live candidate and leaves the Task in Test. This
+live integration is not an immutable operation generation: each ReleaseOperation
+composes and freezes its own isolated generation, and publication reserves that
+generation against the current accepted selection immediately before its first
+external effect.
 
 After the survivor is durably published, the same transfer evidence may prove
 the source result and branch/worktree published-by-transfer for cleanup. Exact

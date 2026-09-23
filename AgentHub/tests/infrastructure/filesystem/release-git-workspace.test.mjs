@@ -134,8 +134,12 @@ test("one operation generation isolates source bundles per repository", { timeou
   assert.notEqual(firstCandidate.generationRoot, secondCandidate.generationRoot);
   assert.equal(canonicalPath(firstCandidate.repositoryRoot), canonicalPath(first.primary));
   assert.equal(canonicalPath(secondCandidate.repositoryRoot), canonicalPath(second.primary));
+  assert.equal(firstCandidate.checkpointPhase, "frozen");
+  assert.equal(secondCandidate.checkpointPhase, "frozen");
   assert.equal(await git(firstCandidate.releaseRoot, "rev-parse", "HEAD"), firstCandidate.preReleaseHead);
   assert.equal(await git(secondCandidate.releaseRoot, "rev-parse", "HEAD"), secondCandidate.preReleaseHead);
+  assert.equal(await git(firstCandidate.releaseRoot, "symbolic-ref", "--short", "HEAD"), "main");
+  assert.equal(await git(secondCandidate.releaseRoot, "symbolic-ref", "--short", "HEAD"), "main");
 });
 
 for (const binaryOnly of [false, true]) test(`PreRelease preserves ${binaryOnly ? "terminal binary patch delimiters" : "binary patch bytes and a trailing blank context line"}`, { timeout: 20000 }, async (context) => {

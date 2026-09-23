@@ -306,6 +306,27 @@ export class WorkspaceReleasePreflightService {
     return { planRevision: plan.revision, task: evidence.tasks[0] };
   }
 
+  async prepareAwaitAcceptance({
+    workspaceId, acceptingTask, projectRoot, lease = null, commitPrepared,
+  } = {}) {
+    if (typeof commitPrepared !== "function") throw new TypeError("commitPrepared is required");
+    const root = path.resolve(String(projectRoot ?? "").trim());
+    return this.#prepareAwaitSet({
+      workspaceId,
+      acceptingTask,
+      lease,
+      commitPrepared: async (prepared) => {
+        const matches = prepared.releaseCandidates.flatMap((candidate) => (
+          canonicalRoot(candidate.repositoryRoot) === canonicalRoot(root)
+            ? candidate.frozenTasks.filter((task) => task.taskId === String(acceptingTask?.id ?? ""))
+            : []
+        ));
+        if (matches.length !== 1) throw new Error("Task has no unique prepared Await result to accept");
+        return commitPrepared({ ...prepared, task: matches[0] });
+      },
+    });
+  }
+
   async prepareAwaitSet(options = {}) {
     return this.#prepareAwaitSet(options);
   }
@@ -334,6 +355,17 @@ export class WorkspaceReleasePreflightService {
       generationIdentity: { operationId, generation },
       ...(approvedRepositories.length ? { reviewedMainApprovals: { approvedRepositories } } : {}),
     });
+  }
+
+  async operationSelection({ workspaceId, taskIds } = {}) {
+    const plan = await this.releasePlanner.plan(workspaceId, { selectedTaskIds: taskIds });
+    return readyRepositories(plan.ready).flatMap((repository) => (
+      repository.frozenTasks.map((task) => ({
+        taskId: task.taskId,
+        resultCommit: task.resultCommit,
+        acceptanceRevision: task.resultReleaseRevision ?? task.taskRevision,
+      }))
+    )).sort((left, right) => left.taskId.localeCompare(right.taskId));
   }
 
   async validateOperationGeneration({ workspaceId, generation } = {}) {
@@ -480,13 +512,14 @@ export class WorkspaceReleasePreflightService {
       taskIds: [...new Set(plan.ready.map((entry) => String(entry.taskId)))].sort(),
       overlaps: plan.conflicts, releaseCandidates,
     });
+    let committedResult;
     // Retain each repository's rollback boundary until every candidate and the
     // one Task status CAS succeed. All callers hold the Workspace Await lock.
     const prepare = async (index) => {
       if (index === selectedRepositories.length) {
         await validatePlan();
         await validateBases();
-        if (commitPrepared) await commitPrepared(result());
+        if (commitPrepared) committedResult = await commitPrepared(result());
         return;
       }
       const repository = selectedRepositories[index];
@@ -568,7 +601,7 @@ export class WorkspaceReleasePreflightService {
       }
     };
     await prepare(0);
-    return result();
+    return commitPrepared ? committedResult : result();
   }
 
   async preflight({

@@ -426,6 +426,17 @@ async function fixture(context, {
     },
     releasePreflight: {
       withAwaitTransition: async (_workspaceId, operation) => operation(),
+      prepareAwaitAcceptance: async ({ acceptingTask, commitPrepared }) => {
+        const task = taskBoard.task(acceptingTask.id);
+        return commitPrepared({
+          planRevision: `plan-${task.revision}`,
+          task: {
+            taskId: task.id,
+            resultCommit: task.gitReferences[0].resultCommit,
+            taskRevision: task.revision,
+          },
+        });
+      },
       validateAwaitAcceptance: async ({ acceptingTask }) => {
         const task = taskBoard.task(acceptingTask.id);
         return {

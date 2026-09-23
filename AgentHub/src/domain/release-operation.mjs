@@ -24,7 +24,7 @@ const TERMINAL_STATES = new Set([
 const STATE_TRANSITIONS = new Map([
   [RELEASE_OPERATION_STATES.COMPOSE, new Set(["validate", "waiting", "failed"])],
   [RELEASE_OPERATION_STATES.VALIDATE, new Set(["compose", "publish", "waiting", "failed"])],
-  [RELEASE_OPERATION_STATES.PUBLISH, new Set(["finalize", "waiting", "failed"])],
+  [RELEASE_OPERATION_STATES.PUBLISH, new Set(["compose", "finalize", "waiting", "failed"])],
   [RELEASE_OPERATION_STATES.FINALIZE, new Set(["done", "waiting", "failed"])],
   [RELEASE_OPERATION_STATES.WAITING, new Set(["compose", "validate", "publish", "finalize", "failed"])],
 ]);
@@ -142,6 +142,8 @@ function normalizedOwner(value) {
   return {
     ownerId: requiredText(value.ownerId, "owner id"),
     epoch: Number.isSafeInteger(Number(value.epoch)) && Number(value.epoch) > 0 ? Number(value.epoch) : 1,
+    processId: Number.isSafeInteger(Number(value.processId)) && Number(value.processId) > 0
+      ? Number(value.processId) : null,
     heartbeatAt: timestamp(value.heartbeatAt),
     leaseExpiresAt: timestamp(value.leaseExpiresAt),
   };

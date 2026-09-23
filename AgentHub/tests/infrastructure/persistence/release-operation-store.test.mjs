@@ -91,3 +91,31 @@ test("legacy states import once into finite operation outcomes without becoming 
   assert.equal(store.importLegacy({ ...common, sourceIdentity: "unknown-1", evidence: { status: "unknown" } }).created, false);
   assert.throws(() => store.importLegacy({ ...common, sourceIdentity: "unknown-1", evidence: { status: "published" } }), /evidence changed|identity conflict/u);
 });
+
+test("a stale lease epoch cannot transition receipts or release a replacement owner", async (context) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-release-fencing-"));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  let clock = Date.parse("2026-09-22T00:00:00.000Z");
+  const store = new ReleaseOperationStore({
+    dataDir: directory,
+    now: () => new Date(clock).toISOString(),
+  });
+  store.create(input());
+  const ownerA = store.acquire("release-1", "worker-a", {
+    leaseMs: 1_000, processId: 101,
+  }).operation.owner;
+  clock += 2_000;
+  const ownerB = store.acquire("release-1", "worker-b", {
+    leaseMs: 1_000, processId: 202, takeoverAllowed: true,
+  }).operation.owner;
+  assert.equal(ownerB.epoch, ownerA.epoch + 1);
+  assert.equal(store.transition("release-1", { state: "validate" }, {
+    expectedRevision: store.get("release-1").revision,
+    expectedOwner: ownerA,
+  }).reason, "owner-fenced");
+  assert.throws(() => store.beginStep({
+    operationId: "release-1", generation: 1, stepId: "compose", input: {}, expectedOwner: ownerA,
+  }), { code: "RELEASE_OWNER_FENCED" });
+  store.release("release-1", ownerA);
+  assert.deepEqual(store.get("release-1").owner, ownerB);
+});

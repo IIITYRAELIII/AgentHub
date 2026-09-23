@@ -17,6 +17,7 @@ import { TaskBoardService } from "../application/task-board-service.mjs";
 import { TaskReleasePlanService } from "../application/task-release-plan-service.mjs";
 import { WorkspaceReleasePreflightService } from "../application/workspace-release-preflight-service.mjs";
 import { ReleaseOperationService } from "../application/release-operation-service.mjs";
+import { ReleaseOperationCommandService } from "../application/release-operation-command-service.mjs";
 import { ReleaseOperationFinalization } from "../application/release-operation-finalization.mjs";
 import { importLegacyReleaseOperations } from "../infrastructure/persistence/release-operation-legacy-import.mjs";
 import { WorkspaceReleaseOperationAdapter } from "../application/workspace-release-operation-adapter.mjs";
@@ -464,9 +465,16 @@ export async function createHubInfrastructure({
     publishTarget: (input) => releaseOperationAdapter.publishTarget(input),
     readTarget: (input) => releaseOperationAdapter.readTarget(input),
     finalize: (input) => releaseOperationAdapter.finalize(input),
+    reservePublication: (input) => releaseOperationAdapter.reservePublication(input),
     runnerVersion: AGENT_HUB_VERSION,
   });
+  const releaseOperationCommands = new ReleaseOperationCommandService({
+    releaseOperations,
+    workspaceCatalog: workspaceCatalogStore,
+    taskBoard,
+  });
   taskLifecycle.setReleaseOperationWake((taskId) => releaseOperations.wakeForTask(taskId));
+  taskLifecycle.setReleaseOperationPrepare((taskId) => releaseOperations.prepareForTaskAcceptance(taskId));
   releaseOperations.recover();
   const hubMcpService = new HubMcpService({
     workspaceCatalog: workspaceCatalogStore,
@@ -621,6 +629,7 @@ export async function createHubInfrastructure({
     workspaceReleasePreflight,
     workspaceReleaseService,
     releaseOperations,
+    releaseOperationCommands,
     streamHandoff,
     preTurnInstructions,
     taskBoard,

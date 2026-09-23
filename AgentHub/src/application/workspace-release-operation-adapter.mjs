@@ -13,10 +13,20 @@ function approvedRepositories(operation) {
   ));
 }
 
+function selectionIdentity(value) {
+  return JSON.stringify((Array.isArray(value) ? value : []).map((item) => ({
+    taskId: String(item.taskId),
+    resultCommit: String(item.resultCommit),
+    acceptanceRevision: Number(item.acceptanceRevision),
+  })).sort((left, right) => left.taskId.localeCompare(right.taskId)));
+}
+
 export class WorkspaceReleaseOperationAdapter {
   constructor({ releasePreflight, publication, finalization } = {}) {
     requiredMethod(releasePreflight, "prepareOperationGeneration");
     requiredMethod(releasePreflight, "validateOperationGeneration");
+    requiredMethod(releasePreflight, "operationSelection");
+    requiredMethod(releasePreflight, "withAwaitTransition");
     requiredMethod(publication, "publish");
     requiredMethod(publication, "readback");
     requiredMethod(finalization, "finalize");
@@ -65,6 +75,18 @@ export class WorkspaceReleaseOperationAdapter {
     return this.releasePreflight.validateOperationGeneration({
       workspaceId: operation.workspaceId,
       generation,
+    });
+  }
+
+  reservePublication({ operation, generation, reserve, recompose }) {
+    return this.releasePreflight.withAwaitTransition(operation.workspaceId, async () => {
+      const current = await this.releasePreflight.operationSelection({
+        workspaceId: operation.workspaceId,
+        taskIds: operation.authorization.taskIds,
+      });
+      return selectionIdentity(current) === selectionIdentity(generation.selectedResults)
+        ? reserve()
+        : recompose();
     });
   }
 

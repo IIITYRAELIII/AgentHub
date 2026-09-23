@@ -29,6 +29,20 @@ export function createDesktopRouterComposition({
           return { resolved: false, terminal: false, error: error.message };
         }
       }
+      if (action === "release-operation-run") {
+        try {
+          return { resolved: true, result: await handlers.releaseOperationRun(params) };
+        } catch (error) {
+          return { resolved: false, terminal: false, error: error.message };
+        }
+      }
+      if (action === "release-operation-continue") {
+        try {
+          return { resolved: true, result: await handlers.releaseOperationContinue(params) };
+        } catch (error) {
+          return { resolved: false, terminal: false, error: error.message };
+        }
+      }
       return { resolved: false, terminal: true,
         error: `Outcome of interrupted ${action} command is unknown; it was not repeated` };
     },

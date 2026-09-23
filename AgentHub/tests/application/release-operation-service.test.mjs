@@ -62,6 +62,15 @@ function start(service, requestId = "request-1") {
   });
 }
 
+async function waitUntil(predicate, { timeoutMs = 2_000 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.fail("timed out waiting for release operation test condition");
+}
+
 test("release operation acknowledges before work and finishes one exact generation", async (t) => {
   const scheduled = [];
   const f = await fixture(t, { schedule: (operation) => scheduled.push(operation) });
@@ -178,6 +187,7 @@ test("outbox delivery is at-least-once with a stable operation revision key", as
   const delivered = [];
   let fail = true;
   const f = await fixture(t, {
+    deliveryRetryMs: 100,
     deliverEvent: async (event) => {
       delivered.push(`${event.operationId}:${event.revision}:${event.eventKind}`);
       if (fail) throw new Error("stream unavailable");
@@ -188,9 +198,7 @@ test("outbox delivery is at-least-once with a stable operation revision key", as
   const pending = f.store.pendingEvents();
   assert.ok(pending.length > 0);
   fail = false;
-  const result = await f.service.deliverPendingEvents();
-  assert.equal(result.failed, 0);
-  assert.equal(result.delivered, pending.length);
+  await waitUntil(() => f.store.pendingEvents().length === 0);
   assert.equal(new Set(delivered).size, pending.length);
   assert.equal(f.store.pendingEvents().length, 0);
 });
@@ -287,6 +295,176 @@ test("recovery adopts a durable generation written before its compose receipt", 
   assert.equal(snapshot.operation.state, "done");
   assert.equal(snapshot.generations[0].identitySha256, durable.identitySha256);
   assert.equal(snapshot.receipts.find((item) => item.stepId === "compose").status, "applied");
+});
+
+test("recovery reuses an applied compose receipt without composing a second generation", async (t) => {
+  const scheduled = [];
+  const f = await fixture(t, {
+    schedule: (operation) => scheduled.push(operation),
+    compose: async () => assert.fail("applied composition must not repeat"),
+  });
+  const ack = start(f.service);
+  const operation = f.store.get(ack.operationId);
+  const receipt = f.store.beginStep({
+    operationId: operation.operationId,
+    generation: 1,
+    stepId: "compose",
+    input: { authorization: operation.authorization, priorGeneration: 0 },
+  }).receipt;
+  const durable = createCandidateGeneration({
+    ...generation(),
+    operationId: operation.operationId,
+    generation: 1,
+    runnerVersion: operation.runnerVersion,
+    createdAt: receipt.createdAt,
+  });
+  f.store.putGeneration(durable);
+  f.store.finishStep(receipt, {
+    status: "applied",
+    effect: { identitySha256: durable.identitySha256 },
+  });
+  scheduled.shift()();
+  const snapshot = await f.service.drain(ack.operationId);
+  assert.equal(snapshot.operation.state, "done");
+  assert.equal(snapshot.generations.length, 1);
+  assert.equal(snapshot.generations[0].identitySha256, durable.identitySha256);
+  assert.equal(snapshot.receipts.filter((item) => item.stepId === "compose").length, 1);
+});
+
+test("N-1 applied compose receipt recovers its exact stored generation without an identity field", async (t) => {
+  const scheduled = [];
+  let composeCalls = 0;
+  const f = await fixture(t, {
+    schedule: (operation) => scheduled.push(operation),
+    compose: async () => { composeCalls += 1; return generation(); },
+  });
+  const ack = start(f.service, "n-1-compose-receipt");
+  const receipt = f.store.beginStep({
+    operationId: ack.operationId,
+    generation: 1,
+    stepId: "compose",
+    input: { authorization: f.store.get(ack.operationId).authorization, priorGeneration: 0 },
+  }).receipt;
+  const durable = createCandidateGeneration({
+    ...generation(), operationId: ack.operationId, generation: 1,
+    supersedesGeneration: null, runnerVersion: "release-operation-v1", createdAt: receipt.createdAt,
+  });
+  f.store.putGeneration(durable);
+  f.store.finishStep(receipt, { status: "applied", effect: {} });
+  scheduled.shift()();
+  const snapshot = await f.service.drain(ack.operationId);
+  assert.equal(snapshot.operation.state, "done");
+  assert.equal(composeCalls, 0);
+  assert.equal(snapshot.generations[0].identitySha256, durable.identitySha256);
+  assert.equal(snapshot.receipts.filter((item) => item.stepId === "compose").length, 1);
+});
+
+test("a correction accepted during validation fences G1 and publishes G2", async (t) => {
+  let resultVersion = 1;
+  let validationCalls = 0;
+  let releaseValidation;
+  const firstValidation = new Promise((resolve) => { releaseValidation = resolve; });
+  const published = [];
+  const f = await fixture(t, {
+    now: () => new Date().toISOString(),
+    compose: async () => generation(taskIds.map((taskId) => ({
+      taskId,
+      resultCommit: `${taskId}-r${resultVersion}`,
+      tree: `${taskId}-tree-${resultVersion}`,
+      acceptanceRevision: resultVersion + 1,
+    }))),
+    validate: async () => {
+      validationCalls += 1;
+      if (validationCalls === 1) await firstValidation;
+      return { status: "passed" };
+    },
+    publishTarget: async ({ generation: value, target }) => {
+      published.push({ generation: value.generation, targetId: target.targetId });
+      return { status: "applied", revision: `${target.targetId}-g${value.generation}` };
+    },
+  });
+  const ack = start(f.service);
+  await waitUntil(() => validationCalls === 1);
+  resultVersion = 2;
+  assert.deepEqual(f.service.prepareForTaskAcceptance("task-a"), [{
+    operationId: ack.operationId, generation: 2, recomposed: true,
+  }]);
+  releaseValidation();
+  const snapshot = await f.service.drain(ack.operationId);
+  assert.equal(snapshot.operation.state, "done");
+  assert.equal(snapshot.operation.currentGeneration, 2);
+  assert.equal(snapshot.generations.length, 2);
+  assert.equal(snapshot.generations[1].selectedResults[0].resultCommit, "task-a-r2");
+  assert.deepEqual(new Set(published.map((item) => item.generation)), new Set([2]));
+});
+
+test("post-acceptance wake fences an active generation before its first publication effect", async (t) => {
+  const f = await fixture(t);
+  let releaseValidation;
+  const validationGate = new Promise((resolve) => { releaseValidation = resolve; });
+  let validationStarted;
+  const started = new Promise((resolve) => { validationStarted = resolve; });
+  const published = [];
+  const originalCompose = f.service.compose;
+  let selectedResult = "result-1";
+  f.service.compose = async (input) => {
+    const generation = await originalCompose(input);
+    return {
+      ...generation,
+      selectedResults: generation.selectedResults.map((item) => ({ ...item, resultCommit: selectedResult })),
+    };
+  };
+  f.service.validate = async () => {
+    validationStarted();
+    await validationGate;
+    return { status: "passed" };
+  };
+  f.service.publishTarget = async ({ generation }) => {
+    published.push(generation.selectedResults[0].resultCommit);
+    return { status: "applied", revision: generation.candidates[0].commit };
+  };
+  const ack = start(f.service);
+  await started;
+  selectedResult = "result-2";
+  f.service.wakeForTask("task-a");
+  releaseValidation({ status: "passed" });
+  const result = await f.service.drain(ack.operationId);
+  assert.equal(result.operation.state, "done");
+  assert.deepEqual(published, ["result-2", "result-2"]);
+  assert.equal(result.generations.length, 2);
+});
+
+test("publish-start reservation preserves G1 and leaves a later result for another release", async (t) => {
+  let resultVersion = 1;
+  let publishCalls = 0;
+  let releasePublish;
+  const publication = new Promise((resolve) => { releasePublish = resolve; });
+  const f = await fixture(t, {
+    now: () => new Date().toISOString(),
+    compose: async () => generation(taskIds.map((taskId) => ({
+      taskId,
+      resultCommit: `${taskId}-r${resultVersion}`,
+      tree: `${taskId}-tree-${resultVersion}`,
+      acceptanceRevision: resultVersion + 1,
+    }))),
+    publishTarget: async ({ target }) => {
+      publishCalls += 1;
+      if (publishCalls === 1) await publication;
+      return { status: "applied", revision: `${target.targetId}-g1` };
+    },
+  });
+  const ack = start(f.service);
+  await waitUntil(() => publishCalls === 1);
+  resultVersion = 2;
+  assert.deepEqual(f.service.prepareForTaskAcceptance("task-a"), [{
+    operationId: ack.operationId, generation: 1, preserved: true,
+  }]);
+  releasePublish();
+  const snapshot = await f.service.drain(ack.operationId);
+  assert.equal(snapshot.operation.state, "done");
+  assert.equal(snapshot.operation.currentGeneration, 1);
+  assert.equal(snapshot.generations.length, 1);
+  assert.equal(snapshot.generations[0].selectedResults[0].resultCommit, "task-a-r1");
 });
 
 test("evidence-only legacy operation rejects manual continuation without scheduling work", async (t) => {

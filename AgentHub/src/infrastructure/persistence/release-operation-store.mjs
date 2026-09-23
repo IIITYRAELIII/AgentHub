@@ -103,6 +103,36 @@ function readJson(value) {
   try { return JSON.parse(value); } catch { return null; }
 }
 
+function owns(operation, expectedOwner) {
+  if (!expectedOwner) return true;
+  return operation?.owner?.ownerId === expectedOwner.ownerId
+    && operation.owner.epoch === expectedOwner.epoch;
+}
+
+function assertDatabaseOwner(database, operationId, expectedOwner) {
+  if (!expectedOwner) return;
+  const operation = operationFromRow(database.prepare(
+    "SELECT operation_json FROM release_operations WHERE operation_id = ?",
+  ).get(String(operationId)));
+  if (!owns(operation, expectedOwner)) {
+    const error = new Error("release operation owner epoch changed");
+    error.code = "RELEASE_OWNER_FENCED";
+    throw error;
+  }
+}
+
+function immediateTransaction(database, operation) {
+  database.exec("BEGIN IMMEDIATE");
+  try {
+    const result = operation();
+    database.exec("COMMIT");
+    return result;
+  } catch (error) {
+    try { database.exec("ROLLBACK"); } catch {}
+    throw error;
+  }
+}
+
 function writeOperation(database, operation) {
   database.prepare(`
     INSERT INTO release_operations
@@ -282,6 +312,7 @@ export class ReleaseOperationStore {
 
   transition(operationId, patch = {}, {
     expectedRevision,
+    expectedOwner = null,
     eventKind = "operation.progress",
     event = null,
     emitEvent = true,
@@ -297,6 +328,10 @@ export class ReleaseOperationStore {
         if (!current) {
           database.exec("ROLLBACK");
           return { operation: null, applied: false, reason: "not-found" };
+        }
+        if (!owns(current, expectedOwner)) {
+          database.exec("ROLLBACK");
+          return { operation: current, applied: false, reason: "owner-fenced" };
         }
         const result = transitionReleaseOperation(current, patch, {
           expectedRevision: expectedRevision ?? current.revision,
@@ -332,46 +367,57 @@ export class ReleaseOperationStore {
     });
   }
 
-  acquire(operationId, ownerId, { leaseMs = 30_000 } = {}) {
+  acquire(operationId, ownerId, { leaseMs = 30_000, processId = null, takeoverAllowed = false } = {}) {
     const current = this.get(operationId);
     if (!current || releaseOperationIsTerminal(current)) return { operation: current, acquired: false, reason: current ? "terminal" : "not-found" };
     const now = this.now();
     const active = current.owner && Date.parse(current.owner.leaseExpiresAt) > Date.parse(now)
       && current.owner.ownerId !== String(ownerId);
     if (active) return { operation: current, acquired: false, reason: "owned" };
+    if (current.owner && current.owner.ownerId !== String(ownerId) && !takeoverAllowed) {
+      return { operation: current, acquired: false, reason: "owner-unverified" };
+    }
     const epoch = current.owner?.ownerId === String(ownerId)
       ? current.owner.epoch
       : Math.max(0, Number(current.owner?.epoch) || 0) + 1;
     const result = this.transition(operationId, {
       owner: {
-        ownerId: String(ownerId), epoch, heartbeatAt: now,
+        ownerId: String(ownerId), epoch, processId, heartbeatAt: now,
         leaseExpiresAt: new Date(Date.parse(now) + leaseMs).toISOString(),
       },
     }, { expectedRevision: current.revision, emitEvent: false });
     return { operation: result.operation, acquired: result.applied, reason: result.reason };
   }
 
-  heartbeat(operationId, ownerId, { leaseMs = 30_000 } = {}) {
+  heartbeat(operationId, ownerId, { leaseMs = 30_000, epoch = null } = {}) {
     const current = this.get(operationId);
-    if (!current?.owner || current.owner.ownerId !== String(ownerId)) return { operation: current, applied: false, reason: "not-owner" };
+    if (!current?.owner || current.owner.ownerId !== String(ownerId)
+        || (epoch != null && current.owner.epoch !== Number(epoch))) {
+      return { operation: current, applied: false, reason: "not-owner" };
+    }
     const now = this.now();
     return this.transition(operationId, {
       owner: { ...current.owner, heartbeatAt: now, leaseExpiresAt: new Date(Date.parse(now) + leaseMs).toISOString() },
-    }, { expectedRevision: current.revision, emitEvent: false });
+    }, { expectedRevision: current.revision, expectedOwner: current.owner, emitEvent: false });
   }
 
-  release(operationId, ownerId) {
+  release(operationId, owner) {
     const current = this.get(operationId);
-    if (!current?.owner || current.owner.ownerId !== String(ownerId)) return current;
+    const expectedOwner = owner && typeof owner === "object"
+      ? owner
+      : current?.owner?.ownerId === String(owner) ? current.owner : null;
+    if (!current?.owner || !expectedOwner || !owns(current, expectedOwner)) return current;
     return this.transition(operationId, { owner: null }, {
       expectedRevision: current.revision,
+      expectedOwner,
       emitEvent: false,
     }).operation;
   }
 
-  putGeneration(input) {
+  putGeneration(input, { expectedOwner = null } = {}) {
     const generation = createCandidateGeneration(input);
-    return this.#withDatabase((database) => {
+    return this.#withDatabase((database) => immediateTransaction(database, () => {
+      assertDatabaseOwner(database, generation.operationId, expectedOwner);
       const existing = database.prepare(`
         SELECT generation_json FROM release_candidate_generations WHERE operation_id = ? AND generation = ?
       `).get(generation.operationId, generation.generation);
@@ -389,7 +435,7 @@ export class ReleaseOperationStore {
         json(generation), generation.createdAt,
       );
       return { generation, created: true };
-    });
+    }));
   }
 
   generation(operationId, generation) {
@@ -398,18 +444,19 @@ export class ReleaseOperationStore {
     `).get(String(operationId), Number(generation))?.generation_json));
   }
 
-  beginStep({ operationId, generation, stepId, input, createdAt = this.now() } = {}) {
+  beginStep({ operationId, generation, stepId, input, createdAt = this.now(), expectedOwner = null } = {}) {
     const id = String(operationId ?? "").trim();
     const step = String(stepId ?? "").trim();
     if (!id || !step) throw new TypeError("step receipt requires operationId and stepId");
     const inputSha256 = releaseIdentitySha256(input ?? {});
-    return this.#withDatabase((database) => {
+    return this.#withDatabase((database) => immediateTransaction(database, () => {
+      assertDatabaseOwner(database, id, expectedOwner);
       const latest = database.prepare(`
         SELECT receipt_json FROM release_step_receipts
         WHERE operation_id = ? AND generation = ? AND step_id = ? ORDER BY attempt DESC LIMIT 1
       `).get(id, Number(generation), step);
       const restored = readJson(latest?.receipt_json);
-      if (restored && ["intent", "unknown"].includes(restored.status) && restored.inputSha256 === inputSha256) {
+      if (restored && ["intent", "unknown", "applied"].includes(restored.status) && restored.inputSha256 === inputSha256) {
         return { receipt: restored, created: false };
       }
       const attempt = Number(restored?.attempt ?? 0) + 1;
@@ -426,13 +473,14 @@ export class ReleaseOperationStore {
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(id, Number(generation), step, attempt, receipt.status, inputSha256, json(receipt), createdAt, createdAt);
       return { receipt, created: true };
-    });
+    }));
   }
 
-  finishStep(receipt, { status, effect = null, error = null, reconcileCursor = null } = {}) {
+  finishStep(receipt, { status, effect = null, error = null, reconcileCursor = null, expectedOwner = null } = {}) {
     const allowed = new Set(["applied", "not_applied", "partial", "failed", "unknown"]);
     if (!allowed.has(status)) throw new TypeError(`unsupported step receipt status: ${status}`);
-    return this.#withDatabase((database) => {
+    return this.#withDatabase((database) => immediateTransaction(database, () => {
+      assertDatabaseOwner(database, receipt.operationId, expectedOwner);
       const row = database.prepare(`
         SELECT receipt_json FROM release_step_receipts
         WHERE operation_id = ? AND generation = ? AND step_id = ? AND attempt = ?
@@ -454,7 +502,7 @@ export class ReleaseOperationStore {
         WHERE operation_id = ? AND generation = ? AND step_id = ? AND attempt = ?
       `).run(status, json(updated), updated.updatedAt, current.operationId, current.generation, current.stepId, current.attempt);
       return updated;
-    });
+    }));
   }
 
   latestStep(operationId, generation, stepId) {

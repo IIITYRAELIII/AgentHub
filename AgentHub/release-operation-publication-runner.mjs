@@ -1,10 +1,9 @@
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
 
-import { publishChanged, freezePreparedPublication } from "./publish-changed.mjs";
+import { publishChanged } from "./publish-changed.mjs";
 import { runStep } from "./publish-all.mjs";
 import { defaultRuntimeRoot } from "./src/infrastructure/filesystem/runtime-layout.mjs";
-import { prepareCommittedAgentHubReleaseVersion } from "./src/infrastructure/filesystem/release-version.mjs";
 import { installPreparedRuntime, prepareRuntime, verifyInstalledRuntime } from "./src/runtime/runtime-manager.mjs";
 import { createFrozenReleasePublication } from "./src/infrastructure/process/frozen-release-publication.mjs";
 import { createPublicationArtifactSteps } from "./src/infrastructure/process/publication-artifacts.mjs";
@@ -66,7 +65,6 @@ async function run() {
     installRuntimeImpl: installPreparedRuntime,
     verifyRuntimeImpl: verifyInstalledRuntime,
   });
-  let releaseVersion = "";
   const saved = await journal.read();
   const args = [
     ...(saved && !["published", "succeeded"].includes(saved.status) ? ["--resume"] : []),
@@ -83,14 +81,7 @@ async function run() {
     finalizePublication: async () => ({ status: "completed", delegated: true }),
     prepareArtifactSteps: artifacts.steps,
     verifyArtifacts: artifacts.verify,
-    before: async () => {
-      releaseVersion = await freezePreparedPublication({
-        workspaceId: operation.workspaceId,
-        repositoryRoot,
-        readPlan,
-      });
-    },
-    prepareVersion: () => prepareCommittedAgentHubReleaseVersion({ expectedVersion: releaseVersion }),
+    repositoryRoot,
   });
   const publication = await journal.read();
   const effect = {

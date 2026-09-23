@@ -41,6 +41,11 @@ function publishedTarget(effect) {
   return effect?.status === "applied" || effect?.status === "already_applied";
 }
 
+function ownsRelease(operation, owner) {
+  return operation?.owner?.ownerId === owner?.ownerId
+    && operation?.owner?.epoch === owner?.epoch;
+}
+
 function normalizeReadback(value) {
   const status = String(value?.status ?? "unknown").trim();
   if (!["applied", "already_applied", "partial", "not_applied", "unknown"].includes(status)) {
@@ -100,6 +105,8 @@ export class ReleaseOperationService {
   #scheduled = new Set();
   #running = new Set();
   #retryTimers = new Map();
+  #deliveryTimer = null;
+  #deliveryRunning = false;
 
   constructor({
     store,
@@ -108,6 +115,7 @@ export class ReleaseOperationService {
     publishTarget,
     readTarget,
     finalize,
+    reservePublication = ({ reserve }) => reserve(),
     deliverEvent = null,
     schedule = (operation) => setImmediate(operation),
     ownerId = `release-worker-${process.pid}-${randomUUID()}`,
@@ -115,6 +123,11 @@ export class ReleaseOperationService {
     now = () => new Date().toISOString(),
     leaseMs = DEFAULT_LEASE_MS,
     retryDelayMs = DEFAULT_RETRY_MS,
+    processAlive = (pid) => {
+      try { process.kill(pid, 0); return true; } catch { return false; }
+    },
+    processId = process.pid,
+    deliveryRetryMs = 1_000,
   } = {}) {
     for (const name of [
       "create", "get", "snapshot", "transition", "acquire", "heartbeat", "release",
@@ -128,6 +141,7 @@ export class ReleaseOperationService {
       if (typeof value !== "function") throw new TypeError(`${name} is required`);
     }
     if (deliverEvent != null && typeof deliverEvent !== "function") throw new TypeError("deliverEvent must be a function");
+    if (typeof reservePublication !== "function") throw new TypeError("reservePublication must be a function");
     if (typeof schedule !== "function") throw new TypeError("schedule is required");
     this.store = store;
     this.compose = compose;
@@ -135,6 +149,7 @@ export class ReleaseOperationService {
     this.publishTarget = publishTarget;
     this.readTarget = readTarget;
     this.finalize = finalize;
+    this.reservePublication = reservePublication;
     this.deliverEvent = deliverEvent;
     this.scheduleTask = schedule;
     this.ownerId = requiredText(ownerId, "ownerId");
@@ -142,6 +157,9 @@ export class ReleaseOperationService {
     this.now = now;
     this.leaseMs = Math.max(100, Number(leaseMs) || DEFAULT_LEASE_MS);
     this.retryDelayMs = Math.max(1_000, Number(retryDelayMs) || DEFAULT_RETRY_MS);
+    this.processAlive = processAlive;
+    this.processId = processId;
+    this.deliveryRetryMs = Math.max(100, Number(deliveryRetryMs) || 1_000);
   }
 
   start({ requestId, workspaceId, streamId, threadId, authorization } = {}) {
@@ -162,7 +180,7 @@ export class ReleaseOperationService {
   setEventDelivery(deliverEvent) {
     if (typeof deliverEvent !== "function") throw new TypeError("deliverEvent is required");
     this.deliverEvent = deliverEvent;
-    void this.deliverPendingEvents().catch(() => {});
+    this.#scheduleDelivery(0);
   }
 
   get(operationId) {
@@ -200,16 +218,63 @@ export class ReleaseOperationService {
   }
 
   wakeForTask(taskId) {
-    const operations = this.store.forTask(requiredText(taskId, "taskId"));
-    const accepted = [];
+    const selectedTaskId = requiredText(taskId, "taskId");
+    const accepted = this.prepareForTaskAcceptance(selectedTaskId).map((item) => item.operationId);
+    const operations = this.store.forTask(selectedTaskId);
     for (const operation of operations) {
       if (releaseOperationIsTerminal(operation)) continue;
       if (operation.state === "waiting" && ["validation_failed", "correction_required"].includes(operation.waitReason?.code)) {
         const resumed = this.continue(operation.operationId);
-        if (resumed.accepted) accepted.push(operation.operationId);
+        if (resumed.accepted && !accepted.includes(operation.operationId)) accepted.push(operation.operationId);
       }
     }
     return accepted;
+  }
+
+  prepareForTaskAcceptance(taskId) {
+    const operations = this.store.forTask(requiredText(taskId, "taskId"));
+    const prepared = [];
+    for (const operation of operations) {
+      if (releaseOperationIsTerminal(operation)) continue;
+      let current = operation;
+      for (;;) {
+        if (current.publicationEffects?.publishStarted) {
+          prepared.push({ operationId: current.operationId, generation: current.currentGeneration, preserved: true });
+          break;
+        }
+        if (!["validate", "publish", "waiting", "compose"].includes(current.state)) break;
+        if (current.state === "waiting"
+            && !["validation_failed", "correction_required"].includes(current.waitReason?.code)) break;
+        const revokedOwner = current.owner ? {
+          ...current.owner,
+          epoch: current.owner.epoch + 1,
+          heartbeatAt: this.now(),
+          leaseExpiresAt: this.now(),
+        } : null;
+        const transitioned = this.store.transition(current.operationId, {
+          state: "compose",
+          currentStep: "compose",
+          owner: revokedOwner,
+          nextAction: "compose corrected accepted results before publication",
+          lastError: null,
+        }, {
+          expectedRevision: current.revision,
+          eventKind: "operation.selection-changed",
+          event: { operationId: current.operationId, taskId: String(taskId), priorGeneration: current.currentGeneration },
+        });
+        if (transitioned.applied) {
+          this.#schedule(current.operationId);
+          prepared.push({ operationId: current.operationId, generation: current.currentGeneration + 1, recomposed: true });
+          break;
+        }
+        if (transitioned.reason !== "stale-revision") {
+          throw new Error(`release selection CAS failed: ${transitioned.reason}`);
+        }
+        current = this.store.get(current.operationId);
+        if (!current || releaseOperationIsTerminal(current)) break;
+      }
+    }
+    return prepared;
   }
 
   recover() {
@@ -218,24 +283,51 @@ export class ReleaseOperationService {
       if (operation.state === "waiting") this.#scheduleRetry(operation);
       else this.#schedule(operation.operationId);
     }
+    this.#scheduleDelivery(0);
     return { scheduled: operations.map((operation) => operation.operationId) };
   }
 
   async deliverPendingEvents({ limit = 100 } = {}) {
     if (!this.deliverEvent) return { delivered: 0, failed: 0, skipped: true };
+    if (this.#deliveryRunning) return { delivered: 0, failed: 0, skipped: true };
+    this.#deliveryRunning = true;
     let delivered = 0;
     let failed = 0;
-    for (const event of this.store.pendingEvents({ limit })) {
-      try {
-        await this.deliverEvent(event);
-        this.store.settleEvent(event, { delivered: true });
-        delivered += 1;
-      } catch (error) {
-        this.store.settleEvent(event, { delivered: false, error });
-        failed += 1;
+    let read = 0;
+    let retryAttempt = 0;
+    try {
+      const events = this.store.pendingEvents({ limit });
+      read = events.length;
+      for (const event of events) {
+        try {
+          await this.deliverEvent(event);
+          this.store.settleEvent(event, { delivered: true });
+          delivered += 1;
+        } catch (error) {
+          this.store.settleEvent(event, { delivered: false, error });
+          failed += 1;
+          retryAttempt = Math.max(retryAttempt, Number(event.attempts) + 1);
+        }
       }
+    } finally {
+      this.#deliveryRunning = false;
+    }
+    if (failed || read >= limit) {
+      const delay = failed
+        ? Math.min(60_000, this.deliveryRetryMs * (2 ** Math.min(Math.max(0, retryAttempt - 1), 6)))
+        : 0;
+      this.#scheduleDelivery(delay);
     }
     return { delivered, failed };
+  }
+
+  #scheduleDelivery(delayMs) {
+    if (!this.deliverEvent || this.#deliveryTimer) return;
+    this.#deliveryTimer = setTimeout(() => {
+      this.#deliveryTimer = null;
+      void this.deliverPendingEvents().catch(() => this.#scheduleDelivery(this.deliveryRetryMs));
+    }, Math.max(0, delayMs));
+    this.#deliveryTimer.unref?.();
   }
 
   async drain(operationId) {
@@ -262,29 +354,38 @@ export class ReleaseOperationService {
     if (this.#running.has(operationId)) return;
     this.#running.add(operationId);
     let owned = false;
+    let owner = null;
     let heartbeat = null;
     try {
-      const acquired = this.store.acquire(operationId, this.ownerId, { leaseMs: this.leaseMs });
+      const prior = this.store.get(operationId);
+      const takeoverAllowed = Boolean(prior?.owner?.processId && !this.processAlive(prior.owner.processId));
+      const acquired = this.store.acquire(operationId, this.ownerId, {
+        leaseMs: this.leaseMs, processId: this.processId, takeoverAllowed,
+      });
       if (!acquired.acquired) return;
       owned = true;
+      owner = acquired.operation.owner;
       heartbeat = setInterval(() => {
-        try { this.store.heartbeat(operationId, this.ownerId, { leaseMs: this.leaseMs }); } catch {}
+        try { this.store.heartbeat(operationId, this.ownerId, { leaseMs: this.leaseMs, epoch: owner.epoch }); } catch {}
       }, Math.max(50, Math.floor(this.leaseMs / 3)));
       heartbeat.unref?.();
       let operation = acquired.operation;
       while (operation && !releaseOperationIsTerminal(operation) && operation.state !== "waiting") {
-        this.store.heartbeat(operationId, this.ownerId, { leaseMs: this.leaseMs });
+        const beat = this.store.heartbeat(operationId, this.ownerId, { leaseMs: this.leaseMs, epoch: owner.epoch });
+        if (!beat.applied) break;
         try {
-          if (operation.state === "compose") operation = await this.#compose(operation);
-          else if (operation.state === "validate") operation = await this.#validate(operation);
-          else if (operation.state === "publish") operation = await this.#publish(operation);
-          else if (operation.state === "finalize") operation = await this.#finalize(operation);
+          if (operation.state === "compose") operation = await this.#compose(operation, owner);
+          else if (operation.state === "validate") operation = await this.#validate(operation, owner);
+          else if (operation.state === "publish") operation = await this.#publish(operation, owner);
+          else if (operation.state === "finalize") operation = await this.#finalize(operation, owner);
           else throw new Error(`unsupported release operation state: ${operation.state}`);
         } catch (error) {
           const latest = this.store.get(operationId) ?? operation;
+          if (!ownsRelease(latest, owner)) break;
           const patch = classifiedFailure(error, latest.state, this.now, this.retryDelayMs);
           const failed = this.store.transition(operationId, patch, {
             expectedRevision: latest.revision,
+            expectedOwner: owner,
             eventKind: patch.state === "waiting" ? "operation.waiting" : "operation.failed",
           });
           operation = failed.operation;
@@ -292,10 +393,11 @@ export class ReleaseOperationService {
       }
     } finally {
       if (heartbeat) clearInterval(heartbeat);
-      if (owned) this.store.release(operationId, this.ownerId);
+      if (owned) this.store.release(operationId, owner);
       this.#running.delete(operationId);
       const current = this.store.get(operationId);
       if (current?.state === "waiting") this.#scheduleRetry(current);
+      else if (current && !releaseOperationIsTerminal(current)) this.#schedule(operationId);
       await this.deliverPendingEvents().catch(() => {});
     }
   }
@@ -316,7 +418,7 @@ export class ReleaseOperationService {
     this.#retryTimers.set(operation.operationId, timer);
   }
 
-  async #compose(operation) {
+  async #compose(operation, owner) {
     const generationNumber = operation.currentGeneration + 1;
     const input = {
       authorization: operation.authorization,
@@ -327,18 +429,20 @@ export class ReleaseOperationService {
       generation: generationNumber,
       stepId: "compose",
       input,
+      expectedOwner: owner,
     });
     const existingGeneration = this.store.generation(operation.operationId, generationNumber);
     if (!started.created && ["intent", "unknown"].includes(started.receipt.status) && existingGeneration) {
       this.store.finishStep(started.receipt, {
         status: "applied",
         effect: { identitySha256: existingGeneration.identitySha256 },
+        expectedOwner: owner,
       });
       return this.#advance(operation.operationId, "validate", {
         currentGeneration: generationNumber,
         selectedResults: existingGeneration.selectedResults,
         nextAction: "validate immutable candidate generation",
-      });
+      }, owner);
     }
     if (!started.created && started.receipt.status === "unknown") {
       const error = new Error("composition intent has no authoritative local outcome");
@@ -347,14 +451,15 @@ export class ReleaseOperationService {
     }
     if (!started.created && started.receipt.status === "applied") {
       const generation = this.store.generation(operation.operationId, generationNumber);
-      if (!generation || generation.identitySha256 !== started.receipt.effect?.identitySha256) {
+      const recordedIdentity = String(started.receipt.effect?.identitySha256 ?? "").trim();
+      if (!generation || (recordedIdentity && generation.identitySha256 !== recordedIdentity)) {
         throw new Error("composed generation receipt does not match immutable candidate evidence");
       }
       return this.#advance(operation.operationId, "validate", {
         currentGeneration: generationNumber,
         selectedResults: generation.selectedResults,
         nextAction: "validate immutable candidate generation",
-      });
+      }, owner);
     }
     try {
       const composed = await this.compose({ operation, generation: generationNumber });
@@ -366,48 +471,85 @@ export class ReleaseOperationService {
         runnerVersion: operation.runnerVersion,
         createdAt: started.receipt.createdAt,
       });
-      this.store.putGeneration(generation);
+      this.store.putGeneration(generation, { expectedOwner: owner });
       this.store.finishStep(started.receipt, {
         status: "applied",
-        effect: { identitySha256: generation.identitySha256 },
+        effect: { identitySha256: generation.identitySha256 }, expectedOwner: owner,
       });
       return this.#advance(operation.operationId, "validate", {
         currentGeneration: generationNumber,
         selectedResults: generation.selectedResults,
         nextAction: "validate immutable candidate generation",
-      });
+      }, owner);
     } catch (error) {
-      this.store.finishStep(started.receipt, { status: "failed", error });
+      this.store.finishStep(started.receipt, { status: "failed", error, expectedOwner: owner });
       throw error;
     }
   }
 
-  async #validate(operation) {
+  async #validate(operation, owner) {
     const generation = this.#generation(operation);
     const started = this.store.beginStep({
       operationId: operation.operationId,
       generation: generation.generation,
       stepId: "validate",
       input: { candidate: generation.identitySha256, mode: operation.authorization.validationMode },
+      expectedOwner: owner,
     });
     if (!started.created && started.receipt.status === "applied") {
-      return this.#advance(operation.operationId, "publish", { nextAction: "publish authorized targets" });
+      return this.#advance(operation.operationId, "publish", { nextAction: "publish authorized targets" }, owner);
     }
     try {
       const evidence = await this.validate({ operation, generation });
-      this.store.finishStep(started.receipt, { status: "applied", effect: evidence ?? { status: "passed" } });
-      return this.#advance(operation.operationId, "publish", { nextAction: "publish authorized targets" });
+      this.#assertOwner(operation.operationId, owner);
+      this.store.finishStep(started.receipt, { status: "applied", effect: evidence ?? { status: "passed" }, expectedOwner: owner });
+      return this.#advance(operation.operationId, "publish", { nextAction: "publish authorized targets" }, owner);
     } catch (cause) {
-      this.store.finishStep(started.receipt, { status: "failed", error: cause });
+      this.store.finishStep(started.receipt, { status: "failed", error: cause, expectedOwner: owner });
       const error = cause instanceof Error ? cause : new Error(String(cause));
       if (!error.code) error.code = "RELEASE_VALIDATION_FAILED";
       throw error;
     }
   }
 
-  async #publish(operation) {
+  async #publish(operation, owner) {
     const generation = this.#generation(operation);
     let latest = this.store.get(operation.operationId);
+    if (!latest.publicationEffects?.publishStarted) {
+      const boundary = await this.reservePublication({
+        operation: latest,
+        generation,
+        reserve: () => this.store.transition(latest.operationId, {
+          publicationEffects: {
+            ...latest.publicationEffects,
+            generation: generation.generation,
+            publishStarted: {
+              generation: generation.generation,
+              candidate: generation.identitySha256,
+              at: this.now(),
+            },
+          },
+          nextAction: "publish exact reserved generation",
+        }, {
+          expectedRevision: latest.revision,
+          expectedOwner: owner,
+          emitEvent: false,
+        }),
+        recompose: () => this.store.transition(latest.operationId, {
+          state: "compose",
+          currentStep: "compose",
+          nextAction: "compose the accepted selection before publication",
+          lastError: null,
+        }, {
+          expectedRevision: latest.revision,
+          expectedOwner: owner,
+          eventKind: "operation.selection-changed",
+        }),
+      });
+      if (!boundary.applied) throw new Error(`release publication reservation failed: ${boundary.reason}`);
+      latest = boundary.operation;
+      if (latest.state === "compose") return latest;
+    }
     let effects = targetEffects(latest);
     for (const target of latest.authorization.approvedTargets) {
       if (publishedTarget(effects[target.targetId])) continue;
@@ -418,15 +560,17 @@ export class ReleaseOperationService {
         generation: generation.generation,
         stepId,
         input,
+        expectedOwner: owner,
       });
       let effect = null;
+      if (!started.created && started.receipt.status === "applied") effect = started.receipt.effect;
       if (!started.created && ["intent", "unknown"].includes(started.receipt.status)) {
         const readback = normalizeReadback(await this.readTarget({
           operation: latest, generation, target, receipt: started.receipt,
         }));
         if (publishedTarget(readback)) effect = readback;
         else if (readback.status === "unknown") {
-          this.store.finishStep(started.receipt, { status: "unknown", effect: readback, reconcileCursor: readback.cursor ?? null });
+          this.store.finishStep(started.receipt, { status: "unknown", effect: readback, reconcileCursor: readback.cursor ?? null, expectedOwner: owner });
           const error = new Error(`publication effect for ${target.targetId} is unknown`);
           error.code = "RELEASE_EXTERNAL_EFFECT_UNKNOWN";
           throw error;
@@ -434,6 +578,7 @@ export class ReleaseOperationService {
       }
       if (!effect) {
         try {
+          this.#assertOwner(operation.operationId, owner);
           effect = normalizeReadback(await this.publishTarget({
             operation: latest, generation, target, receipt: started.receipt,
           }));
@@ -448,6 +593,7 @@ export class ReleaseOperationService {
               effect: readback,
               error: cause,
               reconcileCursor: readback.cursor ?? null,
+              expectedOwner: owner,
             });
             if (readback.status === "not_applied") throw cause;
             if (readback.status === "partial") {
@@ -469,10 +615,12 @@ export class ReleaseOperationService {
         this.store.finishStep(started.receipt, {
           status: ["not_applied", "partial"].includes(effect.status) ? "failed" : "unknown",
           effect,
+          expectedOwner: owner,
         });
         throw error;
       }
-      this.store.finishStep(started.receipt, { status: "applied", effect });
+      this.#assertOwner(operation.operationId, owner);
+      this.store.finishStep(started.receipt, { status: "applied", effect, expectedOwner: owner });
       effects = { ...effects, [target.targetId]: effect };
       const beforeSave = this.store.get(latest.operationId);
       const saved = this.store.transition(beforeSave.operationId, {
@@ -480,16 +628,17 @@ export class ReleaseOperationService {
         nextAction: "publish remaining authorized targets",
       }, {
         expectedRevision: beforeSave.revision,
+        expectedOwner: owner,
         eventKind: "operation.target-published",
         event: { operationId: beforeSave.operationId, generation: generation.generation, targetId: target.targetId, effect },
       });
       if (!saved.applied) throw new Error("release operation changed while recording target publication");
       latest = saved.operation;
     }
-    return this.#advance(operation.operationId, "finalize", { nextAction: "finalize exact published results" });
+    return this.#advance(operation.operationId, "finalize", { nextAction: "finalize exact published results" }, owner);
   }
 
-  async #finalize(operation) {
+  async #finalize(operation, owner) {
     const generation = this.#generation(operation);
     const started = this.store.beginStep({
       operationId: operation.operationId,
@@ -500,16 +649,18 @@ export class ReleaseOperationService {
         effects: operation.publicationEffects,
         selectedResults: generation.selectedResults,
       },
+      expectedOwner: owner,
     });
     if (!started.created && started.receipt.status === "applied") {
-      return this.#advance(operation.operationId, "done", { lastError: null });
+      return this.#advance(operation.operationId, "done", { lastError: null }, owner);
     }
     try {
       const effect = await this.finalize({ operation, generation });
-      this.store.finishStep(started.receipt, { status: "applied", effect: effect ?? { status: "completed" } });
-      return this.#advance(operation.operationId, "done", { lastError: null });
+      this.#assertOwner(operation.operationId, owner);
+      this.store.finishStep(started.receipt, { status: "applied", effect: effect ?? { status: "completed" }, expectedOwner: owner });
+      return this.#advance(operation.operationId, "done", { lastError: null }, owner);
     } catch (error) {
-      this.store.finishStep(started.receipt, { status: "failed", error });
+      this.store.finishStep(started.receipt, { status: "failed", error, expectedOwner: owner });
       const wrapped = error instanceof Error ? error : new Error(String(error));
       if (!wrapped.code) wrapped.code = "RELEASE_EXTERNAL_CONDITION";
       throw wrapped;
@@ -522,7 +673,15 @@ export class ReleaseOperationService {
     return generation;
   }
 
-  #advance(operationId, state, patch = {}) {
+  #assertOwner(operationId, owner) {
+    if (!ownsRelease(this.store.get(operationId), owner)) {
+      const error = new Error("release operation owner epoch changed");
+      error.code = "RELEASE_OWNER_FENCED";
+      throw error;
+    }
+  }
+
+  #advance(operationId, state, patch = {}, owner = null) {
     const current = this.store.get(operationId);
     const result = this.store.transition(operationId, {
       ...patch,
@@ -532,6 +691,7 @@ export class ReleaseOperationService {
       lastError: patch.lastError === undefined ? null : patch.lastError,
     }, {
       expectedRevision: current.revision,
+      expectedOwner: owner,
       eventKind: state === "done" ? "operation.completed" : "operation.progress",
     });
     if (!result.applied) throw new Error(`release operation could not advance: ${result.reason}`);
