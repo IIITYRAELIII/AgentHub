@@ -75,8 +75,11 @@ terminal.
   a reused PID with a different creation time is never stopped. A captured
   identity is retried until one durable save succeeds, so a restart cannot
   lose it. An entry without an exact fingerprint is only a historical ancestry
-  anchor for descendants created inside its closed lifetime; it never admits
-  the live process currently holding that PID.
+  anchor for descendants created inside its closed lifetime, and only while
+  its PID is absent. Its recorded exit is taken after the real exit, so any
+  current holder of that PID makes the anchor ambiguous: neither the holder
+  nor unknown descendants reached through it are owned. Descendants captured
+  earlier with their own exact fingerprint remain owned.
 - Terminal is absorbing: late running, progress, snapshot or reconnect events
   cannot revive it.
 - A bounded restart or opened-history-page reprojection may replace a corrupted terminal user

@@ -448,14 +448,16 @@ export function ownedProcessTreeFromSnapshot(rootFingerprint, knownFingerprints 
       continue;
     }
     // Only an exact fingerprint admits a live process. An entry known only by
-    // its PID and a closed lifetime is a historical ancestry anchor: a process
-    // now holding that PID is never admitted, but descendants created inside
-    // the recorded lifetime still are.
+    // its PID is a historical ancestry anchor solely while that PID is absent:
+    // the recorded exit time is taken after the real exit, so a current holder
+    // proves the PID was reused and an earlier holder may already have left
+    // children inside the recorded interval. Such an anchor is ambiguous and
+    // is not traversed; exact captured descendants still match on their own.
+    if (current) continue;
     const boundedHistoricalIdentity = Number.isFinite(Number(expected?.startedAtMs))
       && Number(expected?.startedAtMs) > 0
       && Number.isFinite(Number(expected?.exitedAtMs))
       && Number(expected?.exitedAtMs) > 0;
-    if (current && normalizedFingerprintText(expected?.creationTime)) continue;
     if (boundedHistoricalIdentity) {
       ownedIds.add(pid);
       historicalAnchors.set(pid, expected);

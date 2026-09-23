@@ -892,6 +892,49 @@ test("ClaudeRunController never stops a live PID named only by an uncaptured sid
   });
 });
 
+test("ClaudeRunController never stops a prior PID holder's child through an uncaptured provider anchor", async () => {
+  await withTempDir(async (directory) => {
+    const ownerPath = path.join(directory, "turn.owner.json");
+    await writeFile(ownerPath, JSON.stringify({
+      token: "token",
+      pid: 101,
+      startedAtMs: Date.parse("2026-09-23T10:00:02.000Z"),
+      exitedAtMs: Date.parse("2026-09-23T10:00:04.000Z"),
+    }), "utf8");
+    // Provider identity was never captured. PID 101 is held now; an earlier holder left a child inside the window.
+    const currentHolder = { pid: 101, parentPid: 999, creationTime: "2026-09-23T10:00:03.995Z", executablePath: "foreign.exe", commandLine: "holder" };
+    const priorHolderChild = { pid: 103, parentPid: 101, creationTime: "2026-09-23T10:00:03.000Z", executablePath: "foreign.exe", commandLine: "prior child" };
+    const root = { pid: 12, parentPid: 1, creationTime: "2026-09-23T10:00:01.000Z" };
+    const run = {
+      pid: root.pid,
+      claudeExited: true,
+      process: { pid: root.pid, exitCode: 0, signalCode: null },
+      claudeProcessStartedAtMs: Date.parse("2026-09-23T10:00:01.000Z"),
+      claudeProcessExitedAtMs: Date.parse("2026-09-23T10:00:05.000Z"),
+      claudeProcessFingerprint: root,
+      claudeProcessOwnerPath: ownerPath,
+      claudeProcessOwnerToken: "token",
+      claudeOwnedProcessTree: [root],
+    };
+    const snapshot = [currentHolder, priorHolderChild];
+    const byPid = new Map(snapshot.map((item) => [item.pid, item]));
+    const stopped = [];
+    const controller = new ClaudeRunController({
+      dataDir: directory,
+      processAlive: (pid) => byPid.has(pid),
+      processFingerprintLookup: async (pid) => byPid.get(pid) ?? null,
+      processTreeFingerprintLookup: async (pid) => byPid.get(pid) ?? null,
+      processTreeLookup: async (rootFingerprint, known, options) => ownedProcessTreeFromSnapshot(
+        rootFingerprint, known, snapshot, { ...options, platform: "win32" },
+      ),
+      stopProcess: async (pid) => { stopped.push(pid); return true; },
+      onReadError: () => {},
+    });
+    await controller.stop(run);
+    assert.deepEqual(stopped, [], "neither the current holder nor a prior holder's child is stopped");
+  });
+});
+
 test("ClaudeRunController gives a naturally exiting provider a bounded graceful window", async () => {
   await withTempDir(async (directory) => {
     const marker = path.join(directory, "provider-finalized.txt");

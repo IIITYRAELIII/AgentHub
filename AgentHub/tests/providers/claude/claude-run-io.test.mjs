@@ -289,17 +289,28 @@ test("owned process-tree discovery crosses one exited verified provider anchor",
   assert.equal(claudeRunOwnerPath("data", "turn"), path.join("data", "claude-runs", "turn.owner.json"));
 });
 
-test("an uncaptured provider entry anchors descendants but never admits the live holder of its PID", () => {
+test("an uncaptured provider anchor is traversed only while its PID is absent", () => {
   const root = { pid: 100, creationTime: "root-one", executablePath: "node", commandLine: "wrapper" };
-  const provider = { pid: 101, startedAtMs: Date.parse("2026-01-01T00:00:01.000Z"), exitedAtMs: Date.parse("2026-01-01T00:00:03.000Z") };
-  // PID 101 was reused inside the recorded window; its own child starts after the provider exit.
-  const reuse = { pid: 101, parentPid: 999, creationTime: "2026-01-01T00:00:02.995Z", executablePath: "foreign.exe", commandLine: "foreign" };
-  const foreignChild = { pid: 103, parentPid: 101, creationTime: "2026-01-01T00:00:05.000Z", executablePath: "foreign.exe", commandLine: "child" };
-  const descendant = { pid: 102, parentPid: 101, creationTime: "2026-01-01T00:00:02.000Z", executablePath: "node", commandLine: "worker" };
-  assert.deepEqual(ownedProcessTreeFromSnapshot(root, [root, provider], [reuse, foreignChild, descendant], {
-    platform: "win32",
-    rootExited: true,
-  }), [descendant]);
+  // Recorded window 2.000..4.000 s; the exit time is written after the real exit.
+  const provider = { pid: 101, startedAtMs: Date.parse("2026-01-01T00:00:02.000Z"), exitedAtMs: Date.parse("2026-01-01T00:00:04.000Z") };
+  const options = { platform: "win32", rootExited: true };
+  const currentHolder = { pid: 101, parentPid: 999, creationTime: "2026-01-01T00:00:03.995Z", executablePath: "foreign.exe", commandLine: "holder" };
+  const holderChild = { pid: 102, parentPid: 101, creationTime: "2026-01-01T00:00:03.999Z", executablePath: "foreign.exe", commandLine: "holder child" };
+  // An earlier foreign holder reused PID 101, spawned this child and exited before the current holder appeared.
+  const priorHolderChild = { pid: 103, parentPid: 101, creationTime: "2026-01-01T00:00:03.000Z", executablePath: "foreign.exe", commandLine: "prior child" };
+  assert.deepEqual(ownedProcessTreeFromSnapshot(root, [root, provider], [currentHolder, holderChild], options), [],
+    "a current holder and its child inside the recorded interval are not owned");
+  assert.deepEqual(ownedProcessTreeFromSnapshot(root, [root, provider], [currentHolder, priorHolderChild], options), [],
+    "a child created before the current holder still has no proof of provider ancestry");
+
+  // A descendant captured earlier with its exact fingerprint is owned on its own identity.
+  const capturedDescendant = { pid: 104, parentPid: 101, creationTime: "2026-01-01T00:00:02.500Z", executablePath: "node", commandLine: "worker" };
+  assert.deepEqual(ownedProcessTreeFromSnapshot(root, [root, provider, capturedDescendant], [currentHolder, holderChild, capturedDescendant], options),
+    [capturedDescendant]);
+
+  // With the PID absent the closed lifetime still anchors descendants created inside it.
+  const descendant = { pid: 105, parentPid: 101, creationTime: "2026-01-01T00:00:03.000Z", executablePath: "node", commandLine: "worker" };
+  assert.deepEqual(ownedProcessTreeFromSnapshot(root, [root, provider], [descendant], options), [descendant]);
 });
 
 test("processIsAlive recognizes the current process and rejects invalid ids", () => {
