@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import { processIsAlive, stopProcessTree } from "../src/providers/claude/claude-run-io.mjs";
@@ -20,13 +20,65 @@ export function childProcessTerminal(child) {
     || child?.signalCode !== null && child?.signalCode !== undefined;
 }
 
-function diagnosticTail(value, maxLength = 32_768) {
+export function diagnosticTail(value, maxLength = 32_768) {
   const text = String(value ?? "")
+    .replace(/(\/bot)\d{5,}:[A-Za-z0-9_-]{20,}\b/gu, "$1[redacted-token]")
     .replace(/\b\d{5,}:[A-Za-z0-9_-]{20,}\b/gu, "[redacted-token]")
     .replace(/\b(bearer)(\s+)\S+/giu, "$1$2[redacted]")
+    .replace(/("(?:authorization|cookie|token|secret|password|api[-_ ]?key)"\s*:\s*")([^"]*)"/giu,
+      "$1[redacted]\"")
     .replace(/(authorization|cookie|token|secret|password|api[-_ ]?key)(\s*[:=]\s*)\S+/giu,
       "$1$2[redacted]");
   return text.length <= maxLength ? text : text.slice(-maxLength);
+}
+
+function diagnosticValue(value) {
+  const serialized = typeof value === "string" ? value : JSON.stringify(value ?? null);
+  return diagnosticTail(serialized);
+}
+
+export async function captureE2eFailure({
+  owner,
+  error,
+  evidenceDirectory,
+  stage = "unknown",
+  stdout = "",
+  summary = {},
+  evidence = {},
+} = {}) {
+  if (!(owner instanceof E2eChildProcessOwner)) throw new TypeError("E2E process owner is required");
+  const requestedDirectory = String(evidenceDirectory ?? "").trim();
+  if (!requestedDirectory) throw new TypeError("E2E failure evidence directory is required");
+  const directory = path.resolve(requestedDirectory);
+  const sections = Object.fromEntries(Object.entries(evidence).map(([name, value]) => (
+    [String(name), diagnosticValue(value)]
+  )));
+  const evidencePath = path.join(directory, "diagnostics.json");
+  const boundedSummary = Object.fromEntries(Object.entries(summary).map(([name, value]) => (
+    [String(name), diagnosticValue(value)]
+  )));
+  let evidenceWriteError = null;
+  try {
+    await mkdir(directory, { recursive: true });
+    await writeFile(evidencePath, `${JSON.stringify({
+      schemaVersion: 1,
+      stage: String(stage ?? "unknown"),
+      sections,
+    }, null, 2)}\n`, "utf8");
+  } catch (writeError) {
+    evidenceWriteError = diagnosticTail(writeError?.message ?? writeError);
+  }
+  return owner.failure(error, {
+    stage: String(stage ?? "unknown"),
+    evidencePath,
+    evidenceWriteError,
+    stdout: diagnosticTail(stdout),
+    ...boundedSummary,
+  });
+}
+
+export async function cleanupE2eTemporaryRoot(temporaryRoot) {
+  await rm(temporaryRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 }
 
 export class E2eChildProcessOwner {

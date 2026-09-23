@@ -37,6 +37,8 @@ export class ClaudeRunController {
     processAlive = processIsAlive,
     processFingerprintLookup = readProcessFingerprint,
     stopProcess = stopProcessTree,
+    completionExitGraceMs = 0,
+    completionStopTimeoutMs = 3_000,
   }) {
     this.dataDir = dataDir;
     this.processAuthority = processAuthority;
@@ -53,6 +55,8 @@ export class ClaudeRunController {
     this.processAlive = processAlive;
     this.processFingerprintLookup = processFingerprintLookup;
     this.stopProcess = stopProcess;
+    this.completionExitGraceMs = completionExitGraceMs;
+    this.completionStopTimeoutMs = completionStopTimeoutMs;
   }
 
   async start(run, { command, args, cwd, env, input = null }) {
@@ -245,7 +249,6 @@ export class ClaudeRunController {
     this.#closeInput(run);
     run.claudeInput = null;
     run.claudeSteer = null;
-    run.process = null;
     const outputPaths = { outputPath: run.claudeOutputPath, errorPath: run.claudeErrorPath };
     const exitCode = Number.isInteger(run.claudeExitCode) ? run.claudeExitCode : null;
     const result = spawnError ? null : await this.#readResult(run);
@@ -253,10 +256,65 @@ export class ClaudeRunController {
     // diagnostic only to stderr. Keep both channels until completion handling.
     const errorText = await this.#readError(run);
     try {
+      await this.#settleOwnedProcess(run);
+    } catch (error) {
+      // A terminal provider result does not release ownership of a process
+      // tree which still holds the run directory. Keep the exact run alive so
+      // cancellation/shutdown can retry the bounded stop safely.
+      run.claudeSettled = false;
+      run.claudeCleanupPending = true;
+      this.onReadError(run, error);
+      this.schedule(run);
+      return;
+    }
+    try {
       await this.onComplete(run, { spawnError, result, errorText, exitCode, outputPaths });
     } finally {
       await removeClaudeRunOutput(outputPaths);
     }
+  }
+
+  async #settleOwnedProcess(run) {
+    const pid = Number(run.pid ?? run.process?.pid);
+    if (!Number.isInteger(pid) || pid <= 0) {
+      run.process = null;
+      run.claudeCleanupPending = false;
+      return;
+    }
+    if (await this.#waitForProcessExit(run, pid, this.completionExitGraceMs)) {
+      run.process = null;
+      run.claudeCleanupPending = false;
+      return;
+    }
+    if (!this.#ownsCurrentChild(run, pid) && !await this.#ownsProcess(run, pid)) {
+      throw new Error(`Cannot release Claude process ${pid}: exact ownership is unavailable`);
+    }
+    if (await this.stopProcess(pid) !== true) {
+      throw new Error(`Cannot stop completed Claude process tree ${pid}`);
+    }
+    if (!await this.#waitForProcessExit(run, pid, this.completionStopTimeoutMs)) {
+      throw new Error(`Completed Claude process tree ${pid} did not terminate`);
+    }
+    run.process = null;
+    run.claudeCleanupPending = false;
+  }
+
+  async #waitForProcessExit(run, pid, timeoutMs) {
+    if (run.claudeExited === true || !this.processAlive(pid)) {
+      run.claudeExited = true;
+      return true;
+    }
+    const durationMs = Math.max(0, Number(timeoutMs) || 0);
+    if (durationMs === 0) return false;
+    const deadline = Date.now() + durationMs;
+    do {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      if (run.claudeExited === true || !this.processAlive(pid)) {
+        run.claudeExited = true;
+        return true;
+      }
+    } while (Date.now() < deadline);
+    return false;
   }
 
   async stop(run) {
@@ -338,7 +396,10 @@ export class ClaudeRunController {
 
   #ownsCurrentChild(run, pid) {
     const child = run?.process;
-    return Number(child?.pid) === pid && child?.exitCode == null;
+    return run?.claudeExited !== true
+      && Number(child?.pid) === pid
+      && child?.exitCode == null
+      && child?.signalCode == null;
   }
 
   pause(run) {

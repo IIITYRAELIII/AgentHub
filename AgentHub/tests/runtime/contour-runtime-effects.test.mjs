@@ -7,6 +7,7 @@ import { createContourClaudeAuthority, createContourAwareDiffCapture, createRunt
 import { createContourOperationalPaths } from "../../src/domain/test-contour-operational-paths.mjs";
 import { createRunAdmissionComposition } from "../../src/composition/run-admission-composition.mjs";
 import { ClaudeRunController } from "../../src/providers/claude/claude-run-controller.mjs";
+import { processIsAlive, stopProcessTree } from "../../src/providers/claude/claude-run-io.mjs";
 import { serializableTaskRun } from "../../src/domain/task-runs.mjs";
 import { createRuntimeStateRestorationComposition } from "../../src/composition/runtime-state-restoration-composition.mjs";
 import { TaskSelectionStore } from "../../src/application/task-selection-store.mjs";
@@ -148,17 +149,28 @@ test("recording diff excludes Git execution and preserves historical diff semant
 test("owned real child records provenance and completes through the guarded output reader", { timeout: 5000 }, async (t) => {
   const f = await fixture(t);
   const run = { id: "owned-run", turnId: "owned-turn", threadId: "owned-thread" };
+  let ownedPid = null;
   let complete;
   const completed = new Promise((resolve) => { complete = resolve; });
   const controller = new ClaudeRunController({ dataDir: f.dataDir, processAuthority: createContourClaudeAuthority(f), pollIntervalMs: 5,
     processFingerprintLookup: async (pid) => ({ pid, creationTime: "test-owned-child" }),
     onComplete: (_run, value) => complete(value) });
-  t.after(async () => { controller.pause(run); if (run.process?.exitCode == null && run.process) await controller.stop(run); });
+  t.after(async () => {
+    controller.pause(run);
+    if (ownedPid && processIsAlive(ownedPid)) await stopProcessTree(ownedPid);
+  });
   const payload = JSON.stringify({ type: "result", result: "owned result", session_id: run.threadId });
-  await controller.start(run, { command: process.execPath, args: ["-e", `process.stdout.write(${JSON.stringify(payload + "\n")})`], cwd: f.dataDir, env: { SystemRoot: process.env.SystemRoot } });
+  await controller.start(run, {
+    command: process.execPath,
+    args: ["-e", `process.stdout.write(${JSON.stringify(payload + "\n")});setInterval(() => {}, 1000)`],
+    cwd: f.dataDir,
+    env: { SystemRoot: process.env.SystemRoot },
+  });
+  ownedPid = run.pid;
   assert.equal((await completed).result.result, "owned result");
   assert.equal(run.contourProcessRoot, f.root);
   assert.equal(run.claudeSettled, true);
+  assert.equal(processIsAlive(ownedPid), false, "completion owns the live provider tree until it is terminal");
   assert.equal(await readFile(f.original, "utf8"), "production");
 });
 

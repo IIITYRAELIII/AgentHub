@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -8,6 +9,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { ProviderLoginService } from "../../src/application/provider-login-service.mjs";
+import { processIsAlive, stopProcessTree } from "../../src/providers/claude/claude-run-io.mjs";
 
 const AGENT_HUB_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const FAKE_CLAUDE = path.join(AGENT_HUB_ROOT, "e2e", "test-contour-claude-cli.mjs");
@@ -85,7 +87,7 @@ test("the Test Contour Claude CLI completes the real sign-in service only with a
     assert.equal((await service.cancel("claude")).status, "cancelled");
   } finally {
     service.dispose();
-    await rm(runtimeRoot, { recursive: true, force: true });
+    await rm(runtimeRoot, { recursive: true, force: true, maxRetries: 100, retryDelay: 50 });
   }
 });
 
@@ -109,9 +111,20 @@ test("the Test Contour Claude CLI refuses to run outside its owned contour runti
 
 const STUB_CHILD = `
 import { appendFileSync } from "node:fs";
+import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 const log = process.env.STUB_LOG;
 const backend = process.argv.includes("--require-test-contour") ? "fake" : "real";
+if (process.env.STUB_PID_LOG) {
+  const descendant = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+    cwd: process.cwd(),
+    stdio: "ignore",
+    windowsHide: true,
+    detached: true,
+  });
+  descendant.unref();
+  appendFileSync(process.env.STUB_PID_LOG, JSON.stringify({ backend, childPid: process.pid, descendantPid: descendant.pid }) + "\\n");
+}
 createInterface({ input: process.stdin }).on("line", (line) => {
   const message = JSON.parse(line);
   appendFileSync(log, backend + " " + message.method + "\\n");
@@ -123,8 +136,10 @@ test("the Test Contour Codex multiplexer answers account sign-in itself and neve
   const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "agent-hub-contour-multiplexer-"));
   const stub = path.join(runtimeRoot, "providers-stub.mjs");
   const log = path.join(runtimeRoot, "stub.log");
+  const pidLog = path.join(runtimeRoot, "owned-processes.jsonl");
   await writeFile(stub, STUB_CHILD, "utf8");
   await writeFile(log, "", "utf8");
+  await writeFile(pidLog, "", "utf8");
   const multiplexer = spawn(process.execPath, [
     MULTIPLEXER,
     "--real-executable", process.execPath,
@@ -132,7 +147,7 @@ test("the Test Contour Codex multiplexer answers account sign-in itself and neve
     "--fake-state", path.join(runtimeRoot, "fake-state.json"),
     "--routing-state", path.join(runtimeRoot, "routing-state.json"),
     stub,
-  ], { cwd: runtimeRoot, env: { ...contourEnvironment(runtimeRoot), STUB_LOG: log }, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
+  ], { cwd: runtimeRoot, env: { ...contourEnvironment(runtimeRoot), STUB_LOG: log, STUB_PID_LOG: pidLog }, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
   const responses = new Map();
   createInterface({ input: multiplexer.stdout }).on("line", (line) => {
     const message = JSON.parse(line);
@@ -144,6 +159,13 @@ test("the Test Contour Codex multiplexer answers account sign-in itself and neve
     return responses.get(id);
   };
   try {
+    await waitFor(() => {
+      try {
+        return readFileSync(pidLog, "utf8").trim().split(/\r?\n/u).filter(Boolean).length === 2;
+      } catch {
+        return false;
+      }
+    });
     const started = await call(1, "account/login/start", { type: "chatgpt" });
     assert.equal(started.result.type, "chatgpt");
     assert.match(started.result.loginId, /^test-contour-login-/u);
@@ -155,8 +177,14 @@ test("the Test Contour Codex multiplexer answers account sign-in itself and neve
     const forwarded = (await readFile(log, "utf8")).trim().split(/\r?\n/u).filter(Boolean);
     assert.deepEqual(forwarded, ["real account/read"], "no sign-in request reached either child");
   } finally {
-    multiplexer.kill();
+    multiplexer.stdin.end();
     await new Promise((resolve) => multiplexer.once("close", resolve));
+    const owned = (await readFile(pidLog, "utf8")).trim().split(/\r?\n/u).filter(Boolean).map(JSON.parse);
+    const aliveAfterParentClose = owned.flatMap(({ childPid, descendantPid }) => [childPid, descendantPid])
+      .filter((pid) => processIsAlive(pid));
+    await Promise.all(aliveAfterParentClose.map((pid) => stopProcessTree(pid)));
+    await waitFor(() => aliveAfterParentClose.every((pid) => !processIsAlive(pid)));
     await rm(runtimeRoot, { recursive: true, force: true });
+    assert.deepEqual(aliveAfterParentClose, [], "multiplexer close waits for every owned child and descendant");
   }
 });

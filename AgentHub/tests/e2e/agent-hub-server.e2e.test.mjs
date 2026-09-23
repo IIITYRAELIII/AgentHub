@@ -6,10 +6,16 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import { JournalDatabase } from "../../src/infrastructure/persistence/journal-database.mjs";
-import { runtimeDatabasePath } from "../../src/infrastructure/persistence/runtime-state-store.mjs";
+import {
+  readRuntimeState,
+  runtimeDatabasePath,
+} from "../../src/infrastructure/persistence/runtime-state-store.mjs";
 import {
   CHAT_ID,
+  captureE2eFailure,
+  cleanupE2eTemporaryRoot,
   delay,
+  diagnosticTail,
   E2eChildProcessOwner,
   e2eTimeoutMs,
   FakeTelegramApi,
@@ -19,6 +25,7 @@ import {
   USER_ID,
   waitFor,
 } from "../../e2e/telegram-harness.mjs";
+import { readMessageBindings } from "../../src/infrastructure/persistence/message-bindings.mjs";
 
 const AGENT_HUB_ROOT = path.resolve(import.meta.dirname, "..", "..");
 const BOT_FILE = path.join(AGENT_HUB_ROOT, "agent-hub-main.mjs");
@@ -88,6 +95,8 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   let stderr = "";
   let currentStdout = "";
   let currentStderr = "";
+  let diagnosticStage = "initialization";
+  let diagnosticTelegramMark = 0;
   const botOwner = new E2eChildProcessOwner({ label: "Telegram Agent Hub" });
 
   async function startBot() {
@@ -108,8 +117,14 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
     }));
     bot.stdout.setEncoding("utf8");
     bot.stderr.setEncoding("utf8");
-    bot.stdout.on("data", (chunk) => { stdout += chunk; currentStdout += chunk; });
-    bot.stderr.on("data", (chunk) => { stderr += chunk; currentStderr += chunk; });
+    bot.stdout.on("data", (chunk) => {
+      stdout += chunk;
+      currentStdout = diagnosticTail(`${currentStdout}${chunk}`);
+    });
+    bot.stderr.on("data", (chunk) => {
+      stderr += chunk;
+      currentStderr = diagnosticTail(`${currentStderr}${chunk}`);
+    });
     await waitForRestartPolling(pollingMark, "process startup");
     return bot;
   }
@@ -159,9 +174,10 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
     journalDatabase.close();
     await telegram.stop();
     await delay(200);
-    await rm(temporaryRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    await cleanupE2eTemporaryRoot(temporaryRoot);
   });
 
+  try {
   await writeFile(configPath, `${JSON.stringify({
     components: { telegram: true, miniApp: false, androidApp: false },
     telegramBotToken: "123:test-token",
@@ -358,6 +374,8 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   }, "forward bundle restore after restart");
 
   const bundleEditMark = telegram.calls.length;
+  diagnosticStage = "forward bundle third-message edit after restart";
+  diagnosticTelegramMark = bundleEditMark;
   telegram.pushMessage("Вторая реплика клиента", {
     forward_origin: {
       type: "hidden_user",
@@ -371,6 +389,7 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
     (call) => String(call.body.text).includes("Сообщений: 3 · переслано: 2 · ваших: 1"),
     { after: bundleEditMark },
   );
+  diagnosticStage = "after forward bundle third-message edit";
   savedBundleState = await readJson(statePath);
   assert.equal(savedBundleState.forwardBundles[0].items.length, 3);
 
@@ -1302,4 +1321,42 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
 
   assert.equal(stderr.includes("Unhandled asynchronous error"), false, stderr);
   assert.equal(stdout.includes("Agent Hub ready"), true, stdout);
+  } catch (error) {
+    const evidenceDirectory = `${temporaryRoot}-failure-evidence`;
+    const [state, bindings, botLock, journalLock, journalSnapshot, journalLedger] = await Promise.all([
+      readRuntimeState(dataDir, { legacyFile: statePath })
+        .catch((readError) => ({ error: readError.message })),
+      readMessageBindings(dataDir).catch((readError) => ({ error: readError.message })),
+      readFile(lockPath, "utf8").catch((readError) => readError.message),
+      readInterprocessLockOwner(`${journalDatabaseFile}.lock`).catch((readError) => readError.message),
+      journalDatabase.snapshot().catch((readError) => ({ error: readError.message })),
+      journalDatabase.loadLedger().catch((readError) => ({ error: readError.message })),
+    ]);
+    throw await captureE2eFailure({
+      owner: botOwner,
+      error,
+      evidenceDirectory,
+      stage: diagnosticStage,
+      stdout: currentStdout,
+      summary: {
+        botLock,
+        journalLock,
+        recentTelegramCalls: telegram.recentCalls(diagnosticTelegramMark, 24),
+      },
+      evidence: {
+        state,
+        messageBindings: bindings,
+        botLock,
+        journalLock,
+        journalSnapshot,
+        journalLedger,
+        telegramFixture: {
+          nextUpdateId: telegram.nextUpdateId,
+          pendingUpdates: telegram.updates.slice(-24),
+          recentCalls: telegram.recentCalls(diagnosticTelegramMark, 24),
+        },
+        stdout: currentStdout,
+      },
+    });
+  }
 });

@@ -155,11 +155,18 @@ test("ClaudeRunController drops the input channel when reattaching after a resta
       claudeErrorPath: path.join(directory, "reattach.err.log"),
       claudeInput: { write() {}, end() {} },
     };
+    let processAlive = true;
     const controller = new ClaudeRunController({
       dataDir: directory,
       isCurrentRun: (candidate) => candidate === run,
       onComplete: () => {},
+      processAlive: () => processAlive,
       processFingerprintLookup: async () => ({ ...run.claudeProcessFingerprint }),
+      stopProcess: async (pid) => {
+        assert.equal(pid, process.pid);
+        processAlive = false;
+        return true;
+      },
     });
     await controller.attachAfterRestart(run);
     assert.equal(run.claudeInput, null);
@@ -192,11 +199,18 @@ test("ClaudeRunController reattaches from a saved offset and finalizes a result"
       claudeOutputPath: outputPath,
       claudeErrorPath: errorPath,
     };
+    let processAlive = true;
     const controller = new ClaudeRunController({
       dataDir: directory,
       isCurrentRun: (candidate) => candidate === run,
       onComplete: (_run, value) => { completion = value; },
+      processAlive: () => processAlive,
       processFingerprintLookup: async () => ({ ...run.claudeProcessFingerprint }),
+      stopProcess: async (pid) => {
+        assert.equal(pid, process.pid);
+        processAlive = false;
+        return true;
+      },
     });
     const alive = await controller.attachAfterRestart(run);
     assert.equal(alive, true);
@@ -287,6 +301,58 @@ test("ClaudeRunController stops its own live child when WMI fingerprint is tempo
     });
     assert.equal(await controller.stop(run), true);
     assert.deepEqual(stopped, [4324]);
+  });
+});
+
+test("ClaudeRunController does not treat an exited child handle as current PID ownership", async () => {
+  await withTempDir(async (directory) => {
+    const run = {
+      turnId: "turn-exited-child",
+      threadId: "session-exited-child",
+      pid: 4327,
+      process: { pid: 4327, exitCode: null, signalCode: "SIGTERM" },
+      claudeProcessFingerprint: { pid: 4327, creationTime: "original" },
+    };
+    let stopCalls = 0;
+    const controller = new ClaudeRunController({
+      dataDir: directory,
+      processAlive: () => true,
+      processFingerprintLookup: async () => ({ pid: 4327, creationTime: "reused" }),
+      stopProcess: async () => { stopCalls += 1; return true; },
+    });
+    assert.equal(await controller.stop(run), false);
+    assert.equal(stopCalls, 0);
+  });
+});
+
+test("ClaudeRunController retains exact ownership when terminal tree cleanup fails", async () => {
+  await withTempDir(async (directory) => {
+    const processHandle = { pid: 4326, exitCode: null };
+    const run = {
+      turnId: "turn-cleanup-failure",
+      threadId: "session-cleanup-failure",
+      pid: processHandle.pid,
+      process: processHandle,
+      claudeResult: { type: "result", result: "done", session_id: "session-cleanup-failure" },
+    };
+    const errors = [];
+    let completed = 0;
+    const controller = new ClaudeRunController({
+      dataDir: directory,
+      pollIntervalMs: 60_000,
+      processAlive: () => true,
+      processFingerprintLookup: async () => null,
+      stopProcess: async () => false,
+      onReadError: (_run, error) => errors.push(error.message),
+      onComplete: async () => { completed += 1; },
+    });
+    await controller.complete(run);
+    controller.pause(run);
+    assert.equal(run.claudeSettled, false);
+    assert.equal(run.claudeCleanupPending, true);
+    assert.equal(run.process, processHandle);
+    assert.equal(completed, 0);
+    assert.match(errors[0], /Cannot stop completed Claude process tree 4326/u);
   });
 });
 

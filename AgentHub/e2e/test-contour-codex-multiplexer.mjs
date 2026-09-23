@@ -3,6 +3,8 @@ import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import { createInterface } from "node:readline";
+import { processIsAlive } from "../src/infrastructure/process/process-liveness.mjs";
+import { stopProcessTree } from "../src/infrastructure/process/process-tree.mjs";
 
 const FAKE_MODEL = "fake-codex";
 const OWN_ARGUMENTS = new Set([
@@ -12,6 +14,7 @@ const OWN_ARGUMENTS = new Set([
   "--routing-state",
 ]);
 const CHILD_RPC_TIMEOUT_MS = 180_000;
+const CHILD_SHUTDOWN_TIMEOUT_MS = 5_000;
 
 function parsedArguments(argv) {
   const own = new Map();
@@ -81,6 +84,9 @@ function startChild(command, args, environment = process.env) {
     stdio: ["pipe", "pipe", "pipe"],
     windowsHide: true,
     shell: false,
+    // POSIX tree shutdown addresses the child's process group. Windows uses
+    // taskkill /T and keeps the native parent/child tree intact.
+    detached: process.platform !== "win32",
   });
 }
 
@@ -104,7 +110,9 @@ let childRequestSequence = 1;
 let serverRequestSequence = 1_000_000;
 const pendingChildRequests = new Map();
 const pendingServerRequests = new Map();
+const closedChildren = new WeakSet();
 let shuttingDown = false;
+let shutdownPromise = null;
 
 function sendClient(message) {
   process.stdout.write(`${JSON.stringify(message)}\n`);
@@ -180,6 +188,7 @@ function handleChildMessage(backend, message) {
 }
 
 for (const [backend, child] of Object.entries(children)) {
+  child.once("close", () => closedChildren.add(child));
   createInterface({ input: child.stdout }).on("line", (line) => {
     try {
       handleChildMessage(backend, JSON.parse(line));
@@ -202,12 +211,8 @@ for (const [backend, child] of Object.entries(children)) {
       }));
     }
     if (shuttingDown) return;
-    shuttingDown = true;
     process.stderr.write(`[${backend}] exited: ${signal ?? code}\n`);
-    for (const sibling of Object.values(children)) {
-      if (sibling !== child && !sibling.killed) sibling.kill();
-    }
-    setTimeout(() => process.exit(Number.isInteger(code) && code !== 0 ? code : 1), 25);
+    void shutdown(Number.isInteger(code) && code !== 0 ? code : 1);
   });
 }
 
@@ -363,7 +368,8 @@ async function handleRequest(message) {
   }
 }
 
-createInterface({ input: process.stdin }).on("line", (line) => {
+const clientInput = createInterface({ input: process.stdin });
+clientInput.on("line", (line) => {
   try {
     const message = JSON.parse(line);
     if (message?.method && message.id !== undefined) {
@@ -385,13 +391,46 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     process.stderr.write(`Invalid client message: ${error.message}\n`);
   }
 });
+clientInput.once("close", () => { void shutdown(); });
 
-function shutdown() {
-  shuttingDown = true;
-  for (const child of Object.values(children)) {
-    if (!child.killed) child.kill();
+function waitForChildClose(child, timeoutMs = CHILD_SHUTDOWN_TIMEOUT_MS) {
+  if (closedChildren.has(child)) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      child.off("close", closed);
+      resolve(false);
+    }, timeoutMs);
+    timer.unref?.();
+    const closed = () => {
+      clearTimeout(timer);
+      resolve(true);
+    };
+    child.once("close", closed);
+  });
+}
+
+async function stopOwnedChild(child) {
+  const pid = Number(child?.pid);
+  if (!Number.isInteger(pid) || pid <= 0) return;
+  if (processIsAlive(pid) && await stopProcessTree(pid) !== true) {
+    throw new Error(`Cannot stop owned Codex child tree ${pid}`);
+  }
+  if (!await waitForChildClose(child) || processIsAlive(pid)) {
+    throw new Error(`Owned Codex child tree ${pid} did not terminate`);
   }
 }
 
-process.once("SIGINT", shutdown);
-process.once("SIGTERM", shutdown);
+function shutdown(exitCode = 0) {
+  if (shutdownPromise) return shutdownPromise;
+  shuttingDown = true;
+  shutdownPromise = (async () => {
+    const outcomes = await Promise.allSettled(Object.values(children).map(stopOwnedChild));
+    const failures = outcomes.filter((outcome) => outcome.status === "rejected");
+    for (const failure of failures) process.stderr.write(`Codex child shutdown failed: ${failure.reason?.message ?? failure.reason}\n`);
+    process.exit(failures.length ? 1 : exitCode);
+  })();
+  return shutdownPromise;
+}
+
+process.once("SIGINT", () => { void shutdown(); });
+process.once("SIGTERM", () => { void shutdown(); });

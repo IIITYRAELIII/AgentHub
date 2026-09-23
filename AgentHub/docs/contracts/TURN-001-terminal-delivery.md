@@ -55,6 +55,11 @@ terminal.
 - A provider completion event is not sufficient evidence to persist a known
   prefix while the authoritative final is still materializing. Terminal commit
   uses the exact reconciled provider final after a bounded settle window.
+- A managed Claude result does not release its exact process owner while the
+  provider tree is still live. Completion closes input and verifies bounded
+  process settlement; a live tree receives one owner-verified stop before
+  terminal delivery. An unconfirmed stop retains the run and process identity
+  for retry, cancellation or shutdown.
 - Terminal is absorbing: late running, progress, snapshot or reconnect events
   cannot revive it.
 - A bounded restart or opened-history-page reprojection may replace a corrupted terminal user
