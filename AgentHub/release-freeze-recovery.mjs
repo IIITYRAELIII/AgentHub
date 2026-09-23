@@ -16,6 +16,11 @@ const commitPattern = /^[a-f0-9]{40}$/u;
 const digestPattern = /^[a-f0-9]{64}$/u;
 const FREEZING_MODE = "abandon-freezing-candidate-v1";
 const FAILED_FROZEN_MODE = "abandon-failed-frozen-candidate-v1";
+const reviewedOriginNames = [
+  "reviewed-origin-main", "reviewed-origin-parent", "reviewed-origin-tree",
+  "reviewed-origin-diff-sha256", "reviewed-origin-diff-hash-object", "reviewed-origin-patch-id",
+  "release-tracking-origin-main", "origin-url-sha256",
+];
 
 function required(values, name) {
   const value = String(values[name] ?? "").trim();
@@ -65,6 +70,11 @@ export function parseReleaseFreezeRecoveryArguments(argv) {
   if (![FREEZING_MODE, FAILED_FROZEN_MODE].includes(recoveryMode)) {
     throw new Error("--recovery-mode is unsupported");
   }
+  const reviewedOriginValues = reviewedOriginNames
+    .map((name) => String(values[`expected-${name}`] ?? "").trim());
+  if (recoveryMode !== FAILED_FROZEN_MODE && reviewedOriginValues.some(Boolean)) {
+    throw new Error("reviewed origin advance applies only to failed-frozen recovery");
+  }
   if (recoveryMode === FAILED_FROZEN_MODE) {
     parsed.expected.publicationRunId = required(values, "expected-publication-run-id");
     parsed.expected.publicationRunSha256 = required(values, "expected-publication-run-sha256").toLowerCase();
@@ -76,11 +86,30 @@ export function parseReleaseFreezeRecoveryArguments(argv) {
     if (checkpointSha256) parsed.expected.publicationCheckpointSha256 = checkpointSha256;
     if (checkpointAbsent) parsed.expected.publicationCheckpointAbsent = true;
     parsed.expected.publicationLogSha256 = required(values, "expected-publication-log-sha256").toLowerCase();
+    if (reviewedOriginValues.some(Boolean)) {
+      if (!reviewedOriginValues.every(Boolean)) {
+        throw new Error("failed-frozen recovery reviewed origin advance identity is incomplete");
+      }
+      const [reviewedOriginMain, reviewedOriginParent, reviewedOriginTree, reviewedOriginDiffSha256,
+        reviewedOriginDiffHashObject, reviewedOriginPatchId, releaseTrackingOriginMain,
+        originUrlSha256] = reviewedOriginValues;
+      Object.assign(parsed.expected, {
+        reviewedOriginMain: reviewedOriginMain.toLowerCase(),
+        reviewedOriginParent: reviewedOriginParent.toLowerCase(),
+        reviewedOriginTree: reviewedOriginTree.toLowerCase(),
+        reviewedOriginDiffSha256: reviewedOriginDiffSha256.toLowerCase(),
+        reviewedOriginDiffHashObject: reviewedOriginDiffHashObject.toLowerCase(),
+        reviewedOriginPatchId: reviewedOriginPatchId.toLowerCase(),
+        releaseTrackingOriginMain: releaseTrackingOriginMain.toLowerCase(),
+        originUrlSha256: originUrlSha256.toLowerCase(),
+      });
+    }
   }
   for (const [name, value] of Object.entries(parsed.expected)) {
     if (["publicationRunId", "publicationCheckpointAbsent"].includes(name)) continue;
     const pattern = ["planRevision", "manifestHash", "publicationRunSha256", "publicationCheckpointSha256",
-      "publicationLogSha256"].includes(name) ? digestPattern : commitPattern;
+      "publicationLogSha256", "reviewedOriginDiffSha256", "originUrlSha256"].includes(name)
+      ? digestPattern : commitPattern;
     if (!pattern.test(value)) throw new Error(`invalid exact recovery identity: ${name}`);
   }
   if (parsed.confirm !== Boolean(parsed.expectedProofHash)) {
