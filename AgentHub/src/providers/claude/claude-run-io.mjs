@@ -405,7 +405,7 @@ export function ownedProcessTreeFromSnapshot(rootFingerprint, knownFingerprints 
     const exitedAtMs = Number(owner?.exitedAtMs);
     return Number.isFinite(createdAtMs)
       && (!Number.isFinite(startedAtMs) || createdAtMs >= startedAtMs - 1_000)
-      && (!Number.isFinite(exitedAtMs) || createdAtMs <= exitedAtMs + 1_000);
+      && (!Number.isFinite(exitedAtMs) || createdAtMs <= exitedAtMs);
   };
 
   const ownedIds = new Set([rootPid]);
@@ -415,14 +415,20 @@ export function ownedProcessTreeFromSnapshot(rootFingerprint, knownFingerprints 
     const current = byId.get(pid);
     if (current) {
       const exact = processFingerprintMatches(expected, current, { platform });
-      const bounded = !normalizedFingerprintText(expected?.creationTime) && withinOwnerWindow(expected, current);
+      const bounded = !normalizedFingerprintText(expected?.creationTime)
+        && Number.isFinite(Number(expected?.startedAtMs))
+        && Number.isFinite(Number(expected?.exitedAtMs))
+        && withinOwnerWindow(expected, current);
       if (!exact && !bounded) continue;
       ownedIds.add(pid);
       result.push(current);
       continue;
     }
+    const exactHistoricalIdentity = normalizedFingerprintText(expected?.creationTime);
+    const boundedHistoricalIdentity = Number.isFinite(Number(expected?.startedAtMs))
+      && Number.isFinite(Number(expected?.exitedAtMs));
     if ((rootExited || Number.isFinite(Number(expected?.exitedAtMs)))
-      && (normalizedFingerprintText(expected?.creationTime) || Number.isFinite(Number(expected?.startedAtMs)))) {
+      && (exactHistoricalIdentity || boundedHistoricalIdentity)) {
       ownedIds.add(pid);
       historicalAnchors.set(pid, expected);
     }

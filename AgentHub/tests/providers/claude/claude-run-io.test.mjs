@@ -251,6 +251,11 @@ test("owned process-tree discovery crosses one exited verified provider anchor",
     ...descendant,
     creationTime: "2026-01-01T00:00:08.000Z",
   }], { platform: "win32", rootExited: true }), []);
+  assert.deepEqual(ownedProcessTreeFromSnapshot(root, [root, {
+    pid: 101,
+    startedAtMs: provider.startedAtMs,
+  }], [descendant], { platform: "win32", rootExited: true }), [],
+  "a missing exit bound cannot authorize a historical PID anchor");
   assert.equal(claudeRunOwnerPath("data", "turn"), path.join("data", "claude-runs", "turn.owner.json"));
 });
 
