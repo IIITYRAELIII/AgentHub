@@ -383,6 +383,7 @@ test("ClaudeRunController bounds one unknown stop and resumes only after that at
     let completed = 0;
     const controller = new ClaudeRunController({
       dataDir: directory,
+      pollIntervalMs: 5,
       completionExitGraceMs: 0,
       completionStopTimeoutMs: 20,
       processAlive: () => alive,
@@ -458,7 +459,9 @@ test("ClaudeRunController retries only a proven pre-effect stop-intent persisten
     assert.equal(run.claudeStopUnknown, false);
     assert.equal(run.claudeStopAttempt, null);
     assert.equal(run.claudeCleanupPending, true);
-    await controller.complete(run);
+    for (let attempt = 0; attempt < 50 && completed === 0; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
     assert.equal(stops, 1);
     assert.equal(completed, 1);
     assert.equal(run.claudeStopUnknown, false);
@@ -510,7 +513,7 @@ test("ClaudeRunController does not promote a sidecar PID without a closed lifeti
   });
 });
 
-test("ClaudeRunController retains a live sidecar provider created inside the durable root lifetime", async () => {
+test("ClaudeRunController retains a launch-verified sidecar provider inside the durable root lifetime", async () => {
   await withTempDir(async (directory) => {
     const ownerPath = path.join(directory, "turn.owner.json");
     await writeFile(ownerPath, JSON.stringify({
@@ -534,7 +537,7 @@ test("ClaudeRunController retains a live sidecar provider created inside the dur
       claudeProcessFingerprint: root,
       claudeProcessOwnerPath: ownerPath,
       claudeProcessOwnerToken: "token",
-      claudeOwnedProcessTree: [],
+      claudeOwnedProcessTree: [{ ...provider, launchLineageVerified: true }],
     };
     const stopped = [];
     const controller = new ClaudeRunController({
