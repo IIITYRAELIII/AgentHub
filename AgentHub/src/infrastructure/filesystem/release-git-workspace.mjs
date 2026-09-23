@@ -8,6 +8,13 @@ import process from "node:process";
 import { assertContourExternalEffects, assertContourGitAvailable } from "../../ports/contour-external-effects.mjs";
 
 import { taskRepositoryKey } from "../../domain/task-git-reference.mjs";
+import { canonicalMcpValue } from "../../domain/mcp-arguments-hash.mjs";
+import {
+  assertReleaseBaseProvenance,
+  EXPLICIT_REVIEWED_MAIN_PROVENANCE,
+  normalizedReleaseBaseProvenance,
+  releaseBaseProvenanceApprovedBase,
+} from "../../domain/release-base-provenance.mjs";
 import { normalizedTaskSquashTransfer } from "../../domain/task-squash-transfer.mjs";
 import { canonicalPath } from "./config.mjs";
 import { withInterprocessLocks } from "../process/interprocess-lock.mjs";
@@ -315,24 +322,33 @@ async function inspectRemoteObjectsInIsolation({
   }
 }
 
-function normalizedBaseProvenance(value, expectedBaseCommit = null) {
-  if (value == null) return null;
-  const normalized = {
-    schemaVersion: Number(value?.schemaVersion),
-    kind: String(value?.kind ?? "").trim(),
-    publishedBaseCommit: String(value?.publishedBaseCommit ?? "").trim(),
-    approvedLocalMainCommit: String(value?.approvedLocalMainCommit ?? "").trim(),
-    approvedOriginMainCommit: String(value?.approvedOriginMainCommit ?? "").trim(),
-  };
-  if (normalized.schemaVersion !== 1 || normalized.kind !== "explicit-reviewed-main-v1"
-      || ![normalized.publishedBaseCommit, normalized.approvedLocalMainCommit,
-        normalized.approvedOriginMainCommit].every((commit) => /^[0-9a-f]{40}$/u.test(commit))) {
-    throw new Error("release candidate has invalid explicit reviewed-main provenance");
+const normalizedBaseProvenance = normalizedReleaseBaseProvenance;
+
+// Independent freeze defense, checked under the release and repository locks
+// before any freeze effect: an advanced base is frozen only with the same
+// immutable provenance in its manifest and checkpoint. A later preflight
+// receipt cannot retroactively repair a candidate that lacks it.
+async function assertFreezeBaseProvenance(layout, publishedBaseCommit) {
+  const checkpoint = JSON.parse(await readFile(layout.checkpointFile, "utf8"));
+  if (!/^[a-f0-9]{64}$/u.test(String(checkpoint?.manifestHash ?? ""))) throw new Error("invalid prepared manifest hash");
+  const manifestBytes = await readFile(path.join(layout.evidenceRoot, `${checkpoint.manifestHash}.json`));
+  if (sha256(manifestBytes) !== checkpoint.manifestHash) throw new Error("prepared release manifest digest changed");
+  const manifest = JSON.parse(manifestBytes.toString("utf8"));
+  const manifestProvenance = normalizedBaseProvenance(manifest.baseProvenance, manifest.baseCommit);
+  const checkpointProvenance = normalizedBaseProvenance(checkpoint.baseProvenance, checkpoint.baseCommit);
+  if (stableManifest(manifestProvenance) !== stableManifest(checkpointProvenance)
+      || manifest.baseCommit !== checkpoint.baseCommit) {
+    throw new Error("publication freeze base provenance disagrees with its immutable manifest");
   }
-  if (expectedBaseCommit && normalized.approvedOriginMainCommit !== expectedBaseCommit) {
-    throw new Error("release candidate reviewed-main provenance does not match its approved base");
-  }
-  return normalized;
+  assertReleaseBaseProvenance({
+    publishedBaseCommit, baseCommit: manifest.baseCommit, provenance: manifestProvenance, phase: "publication freeze",
+  });
+}
+
+async function durablePublishedRevision(environment, primaryRoot) {
+  const state = await readPublicationState(publicationStateFile(environment));
+  const entry = publicationStateRepositories(state ?? {}).find((item) => samePath(item.root, primaryRoot));
+  return entry?.revision ?? null;
 }
 
 function githubLoginFromEmail(value) {
@@ -659,6 +675,61 @@ export async function assertReleaseCandidateContourSource({ sourceRoot: requeste
   };
 }
 
+const SUPPLEMENTAL_PROVENANCE_KIND = "supplemental-reviewed-adoption-v1";
+const MISSING_PROVENANCE_RECOVERY_KIND = "missing-provenance-recovery-v1";
+
+function missingProvenanceResolverResult(missingProvenance, candidate) {
+  return missingProvenance.resolver({ request: missingProvenance.request, candidate });
+}
+
+function supplementalEvidenceMatches(evidence, identity) {
+  if (!evidence || typeof evidence !== "object") return false;
+  const manifestBytes = Buffer.from(String(evidence.preparedManifestBytesBase64 ?? ""), "base64");
+  return sha256(manifestBytes) === identity?.sourceManifest?.preparedManifestHash
+    && evidence.preflightResult != null && typeof evidence.preflightResult === "object"
+    && sha256(JSON.stringify(canonicalMcpValue(evidence.preflightResult))) === identity?.authority?.receipt?.resultSha256
+    && evidence.preflightResultSha256 === identity?.authority?.receipt?.resultSha256;
+}
+
+// The owner does not trust its resolver blindly: every returned field must bind
+// the exact candidate facts this owner read from immutable files and Git.
+function assertMissingProvenanceAuthority(authority, { request, candidate }) {
+  const receipt = authority?.receipt;
+  const adoption = authority?.adoption;
+  const derived = authority?.derived;
+  const bound = authority?.candidate;
+  const frozenTask = candidate.frozenTasks.find((task) => task.taskId === adoption?.taskId);
+  if (authority?.schemaVersion !== 1 || authority.kind !== SUPPLEMENTAL_PROVENANCE_KIND
+      || authority.recoveryKind !== MISSING_PROVENANCE_RECOVERY_KIND
+      || String(request?.kind ?? "") !== MISSING_PROVENANCE_RECOVERY_KIND
+      || receipt?.requestId !== String(request?.preflightRequestId ?? "")
+      || receipt.toolName !== "hub_release_preflight" || receipt.status !== "succeeded"
+      || receipt.workspaceId !== candidate.workspaceId
+      || receipt.argumentsHash !== String(request?.expectedArgumentsHash ?? "").toLowerCase()
+      || receipt.resultSha256 !== String(request?.expectedResultSha256 ?? "").toLowerCase()
+      || receipt.streamId !== String(request?.expectedCaller?.streamId ?? "")
+      || receipt.provider !== String(request?.expectedCaller?.provider ?? "")
+      || receipt.threadId !== String(request?.expectedCaller?.threadId ?? "")
+      || adoption?.taskId !== String(request?.expectedAdoption?.taskId ?? "")
+      || adoption.recordRef !== String(request?.expectedAdoption?.recordRef ?? "")
+      || adoption.recordHash !== String(request?.expectedAdoption?.recordHash ?? "").toLowerCase()
+      || !frozenTask || adoption.resultCommit !== frozenTask.resultCommit
+      || adoption.taskRevision !== frozenTask.taskRevision
+      || adoption.adoptedCommit !== candidate.baseCommit
+      || derived?.publishedBaseCommit !== candidate.publishedBaseCommit
+      || derived.baseCommit !== candidate.baseCommit
+      || derived.approvedOriginMainCommit !== candidate.baseCommit
+      || !/^[a-f0-9]{40}$/u.test(String(derived.approvedLocalMainCommit ?? ""))
+      || derived.approvedLocalMainCommit !== adoption.acceptedLocalMainCommit
+      || bound?.planRevision !== candidate.planRevision
+      || bound.preparedHead !== candidate.preparedHead
+      || bound.preparedTree !== candidate.preparedTree
+      || bound.preparedManifestHash !== candidate.preparedManifestHash
+      || JSON.stringify(bound.taskIds) !== JSON.stringify(candidate.frozenTasks.map((task) => task.taskId).sort())) {
+    throw new Error("publication freeze recovery missing-provenance authority does not bind this candidate");
+  }
+}
+
 export class ReleaseGitWorkspaceService {
   #contourExternalEffects;
   #environment;
@@ -877,7 +948,7 @@ export class ReleaseGitWorkspaceService {
   // The application owner holds Await/Task/dev leases and revalidates identities.
   async validateCandidate({
     planRevision, projectRoot, workspaceId = null, frozenTasks = [],
-    approvedBaseCommit = null, validateBeforeCommit = null, commitPrepared = null,
+    approvedBaseCommit = null, baseProvenance = null, validateBeforeCommit = null, commitPrepared = null,
   } = {}) {
     this.#assertAvailable("validateCandidate");
     if (commitPrepared != null) throw new Error("Composition validation cannot commit Task acceptance");
@@ -885,6 +956,7 @@ export class ReleaseGitWorkspaceService {
     try {
       const isolated = new ReleaseGitWorkspaceService({
         dataDir: temporaryRoot, contourExternalEffects: this.#contourExternalEffects,
+        environment: this.#environment,
       });
       // Copy Git objects/refs only, never local repository configuration or
       // hooks. Git's clone protection remains enabled for the bundle transport.
@@ -895,7 +967,8 @@ export class ReleaseGitWorkspaceService {
       });
       isolated.#validationBundle = bundle;
       const candidate = await isolated.prepareCandidate({
-        planRevision, projectRoot, workspaceId, frozenTasks, approvedBaseCommit, validateBeforeCommit,
+        planRevision, projectRoot, workspaceId, frozenTasks, approvedBaseCommit, baseProvenance,
+        validateBeforeCommit,
       });
       const tree = await runGit(["rev-parse", `${candidate.preReleaseHead}^{tree}`], { cwd: candidate.releaseRoot });
       // Recheck after the final read as well; callers must not close a Task from
@@ -929,6 +1002,12 @@ export class ReleaseGitWorkspaceService {
     const tasks = normalizedFrozenTasks(frozenTasks);
     const initial = await primarySnapshot(projectRoot);
     await this.assertPrimaryInvariant(initial.root, { phase: "release preflight" });
+    assertReleaseBaseProvenance({
+      publishedBaseCommit: await durablePublishedRevision(this.#environment, initial.root),
+      baseCommit: acceptedBase,
+      provenance: normalizedProvenance,
+      phase: "release candidate preparation",
+    });
     const layout = this.#layout(initial.root);
     const lock = path.join(this.dataDir, "locks", `release-git-${layout.repositoryKey}`);
     return withInterprocessLocks([lock], async () => {
@@ -985,7 +1064,7 @@ export class ReleaseGitWorkspaceService {
       }
       const baseCommit = await runGit(["rev-parse", `${acceptedBase}^{commit}`], { cwd: clone.releaseRoot });
       const validateReviewedMain = async () => {
-        if (!normalizedProvenance) return;
+        if (normalizedProvenance?.kind !== EXPLICIT_REVIEWED_MAIN_PROVENANCE) return;
         const currentPrimary = await primarySnapshot(initial.root);
         await this.assertPrimaryInvariant(currentPrimary.root, { phase: "explicit reviewed-main preparation" });
         if (currentPrimary.headCommit !== normalizedProvenance.approvedLocalMainCommit
@@ -1395,6 +1474,8 @@ export class ReleaseGitWorkspaceService {
       return withInterprocessLocks([lock], async () => {
         const marker = await assertReleaseCloneForPublication({ repositoryRoot: layout.releaseRoot });
         if (!samePath(marker.primaryRoot, initial.projectRoot)) throw new Error("publication freeze clone belongs to another primary");
+        await assertFreezeBaseProvenance(layout,
+          await durablePublishedRevision(this.#environment, marker.primaryRoot));
         const result = await freezePreparedPublicationCandidate({ ...options, layout, marker, workspaceId });
         const final = await this.assertPrimaryInvariant(projectRoot, { phase: "publication freeze completion" });
         if (initial.headCommit !== final.headCommit || initial.indexFingerprint !== final.indexFingerprint
@@ -1406,7 +1487,7 @@ export class ReleaseGitWorkspaceService {
 
   async recoverFreezingPublicationCandidate({
     projectRoot, workspaceId, requestId, sourceIdentity, expected = {}, confirm = false, expectedProofHash = null,
-    recoveryMode = FREEZING_RECOVERY_MODE,
+    recoveryMode = FREEZING_RECOVERY_MODE, missingProvenanceRecovery = null, missingProvenanceResolver = null,
   } = {}) {
     this.#assertAvailable("recoverFreezingPublicationCandidate");
     const operationId = String(requestId ?? "").trim();
@@ -1423,6 +1504,13 @@ export class ReleaseGitWorkspaceService {
     if (![FREEZING_RECOVERY_MODE, FAILED_FROZEN_RECOVERY_MODE].includes(recoveryMode)) {
       throw new Error("publication freeze recovery mode is unsupported");
     }
+    const missingProvenance = missingProvenanceRecovery == null ? null : {
+      request: missingProvenanceRecovery, resolver: missingProvenanceResolver,
+    };
+    if (missingProvenance && (recoveryMode !== FAILED_FROZEN_RECOVERY_MODE
+        || typeof missingProvenanceResolver !== "function")) {
+      throw new Error("missing-provenance recovery applies only to failed-frozen recovery with its owner resolver");
+    }
     return withPublicationLock(async () => this.withAwaitTransition(workspaceId, async () => {
       const initial = await this.assertPrimaryInvariant(projectRoot, { phase: "publication freeze recovery" });
       const layout = this.#layout(initial.projectRoot);
@@ -1435,6 +1523,7 @@ export class ReleaseGitWorkspaceService {
         const result = await this.#recoverFreezingPublicationCandidateOwned({
           layout, marker, workspaceId: String(workspaceId), operationId, sourceIdentity: verifiedSource, expected,
           confirm, expectedProofHash: String(expectedProofHash ?? "").trim().toLowerCase() || null, recoveryMode,
+          missingProvenance,
         });
         const final = await this.assertPrimaryInvariant(projectRoot, { phase: "publication freeze recovery completion" });
         if (initial.headCommit !== final.headCommit || initial.indexFingerprint !== final.indexFingerprint
@@ -1448,11 +1537,13 @@ export class ReleaseGitWorkspaceService {
 
   async #recoverFreezingPublicationCandidateOwned({
     layout, marker, workspaceId, operationId, sourceIdentity, expected, confirm, expectedProofHash, recoveryMode,
+    missingProvenance = null,
   }) {
     const checkpointBytes = await readFile(layout.checkpointFile);
     let checkpoint = JSON.parse(checkpointBytes.toString("utf8"));
     if (["abandoning", "abandoned"].includes(checkpoint?.phase)) {
       if (checkpoint.recovery?.schemaVersion !== 2) {
+        if (missingProvenance) throw new Error("legacy freezing recovery cannot carry missing-provenance recovery");
         return this.#resumeLegacyPublicationRecoveryOwned({
           layout, workspaceId, operationId, sourceIdentity, expected, confirm, expectedProofHash,
           recoveryMode, checkpoint,
@@ -1460,7 +1551,7 @@ export class ReleaseGitWorkspaceService {
       }
       return this.#resumePublicationRecoveryOwned({
         layout, marker, workspaceId, operationId, sourceIdentity, expected, confirm, expectedProofHash,
-        recoveryMode, checkpoint,
+        recoveryMode, checkpoint, missingProvenance,
       });
     }
     const requiredPhase = recoveryMode === FAILED_FROZEN_RECOVERY_MODE ? "frozen" : "freezing";
@@ -1500,13 +1591,24 @@ export class ReleaseGitWorkspaceService {
     const frozenTree = await runGit(["rev-parse", `${frozenHead}^{tree}`], { cwd: layout.releaseRoot });
     const intent = checkpoint.publicationFreeze;
     const baseProvenance = normalizedBaseProvenance(checkpoint.baseProvenance, checkpoint.baseCommit);
+    if (stableManifest(baseProvenance) !== stableManifest(
+      normalizedBaseProvenance(manifest.baseProvenance, manifest.baseCommit),
+    ) || manifest.baseCommit !== checkpoint.baseCommit) {
+      throw new Error("publication freeze recovery base provenance disagrees with its immutable manifest");
+    }
+    const supplemental = missingProvenance ? await this.#missingProvenanceAuthority({
+      missingProvenance, layout, workspaceId, marker, checkpoint, manifest, intent,
+    }) : null;
+    const approvedBase = baseProvenance
+      ? releaseBaseProvenanceApprovedBase(baseProvenance)
+      : supplemental?.identity.authority.derived.approvedOriginMainCommit ?? null;
     assertExactRecoveryExpectation(checkpoint.planRevision, expected.planRevision, "plan revision");
     assertExactRecoveryExpectation(checkpoint.manifestHash, expected.manifestHash, "manifest hash");
     assertExactRecoveryExpectation(intent.preparedHead, expected.preparedHead, "prepared head");
     assertExactRecoveryExpectation(frozenHead, expected.frozenHead, "frozen head");
     assertExactRecoveryExpectation(frozenTree, expected.frozenTree, "frozen tree");
     assertExactRecoveryExpectation(intent.oldMain, expected.publishedRevision, "published revision");
-    assertExactRecoveryExpectation(baseProvenance?.approvedOriginMainCommit, expected.approvedOriginMain, "approved origin main");
+    assertExactRecoveryExpectation(approvedBase, expected.approvedOriginMain, "approved origin main");
     const expectedReviewedOriginAdvance = normalizedReviewedOriginAdvance(expected);
     const [head, headRef, main, preRelease, dirty, unmerged, remoteLine, trackingOriginMain, originUrl] = await Promise.all([
       runGit(["rev-parse", "HEAD^{commit}"], { cwd: layout.releaseRoot }),
@@ -1525,24 +1627,24 @@ export class ReleaseGitWorkspaceService {
       throw new Error("publication freeze recovery origin main is unreadable");
     }
     let reviewedOriginAdvance = null;
-    if (originMain === baseProvenance.approvedOriginMainCommit) {
+    if (originMain === approvedBase) {
       if (expectedReviewedOriginAdvance) {
         throw new Error("publication freeze recovery reviewed origin advance is not present");
       }
-      if (trackingOriginMain !== baseProvenance.approvedOriginMainCommit) {
+      if (trackingOriginMain !== approvedBase) {
         throw new Error("publication freeze recovery approved origin main changed");
       }
     } else {
       if (recoveryMode !== FAILED_FROZEN_RECOVERY_MODE || !expectedReviewedOriginAdvance
           || originMain !== expectedReviewedOriginAdvance.reviewedOriginMain
           || trackingOriginMain !== expectedReviewedOriginAdvance.releaseTrackingOriginMain
-          || trackingOriginMain !== baseProvenance.approvedOriginMainCommit
+          || trackingOriginMain !== approvedBase
           || sha256(originUrl) !== expectedReviewedOriginAdvance.originUrlSha256) {
         throw new Error("publication freeze recovery approved origin main changed");
       }
       reviewedOriginAdvance = await inspectRemoteObjectsInIsolation({
         originUrl, remoteMain: originMain, frozenHead, releaseRoot: layout.releaseRoot,
-        approvedOriginMain: baseProvenance.approvedOriginMainCommit,
+        approvedOriginMain: approvedBase,
         expectedAdvance: expectedReviewedOriginAdvance,
       });
     }
@@ -1658,6 +1760,7 @@ export class ReleaseGitWorkspaceService {
       oldPreRelease: intent.oldPreRelease,
       baseCommit: checkpoint.baseCommit,
       baseProvenance,
+      ...(supplemental ? { supplementalProvenance: supplemental.identity } : {}),
       frozenTasks: (manifest.tasks ?? []).map((task) => ({
         taskId: task.taskId,
         taskRevision: task.taskRevision,
@@ -1711,7 +1814,9 @@ export class ReleaseGitWorkspaceService {
               : parsedEvidence.publicationCheckpointBytesBase64 != null))
           || Object.entries(recoveryIdentity).some(([key, value]) => (
             JSON.stringify(parsedEvidence[key]) !== JSON.stringify(value)
-          ))) {
+          ))
+          || (supplemental
+            && !supplementalEvidenceMatches(parsedEvidence.supplementalEvidence, supplemental.identity))) {
         throw new Error("publication freeze recovery evidence conflicts with the exact operation");
       }
       evidenceSha256 = sha256(existingEvidence);
@@ -1723,6 +1828,7 @@ export class ReleaseGitWorkspaceService {
         ...(publicationStepBytes
           ? { publicationCheckpointBytesBase64: publicationStepBytes.toString("base64") } : {}),
         sourceCheckpoint: checkpoint, sourceManifest: manifest,
+        ...(supplemental ? { supplementalEvidence: supplemental.evidence } : {}),
         publicationState, publicationRun, publicationCheckpoint: publicationStep };
       const evidenceText = stableManifest(evidence);
       const temporary = path.join(layout.evidenceRoot,
@@ -1784,6 +1890,92 @@ export class ReleaseGitWorkspaceService {
     return this.#finalizePublicationRecoveryOwned({ layout, checkpoint, recoveryIdentity, reused: false });
   }
 
+  // Supplemental authority for a legacy frozen candidate whose immutable
+  // manifest and checkpoint both lack provenance. The old candidate bytes are
+  // only read; its prepared manifest must be the exact freeze source.
+  async #missingProvenanceAuthority({
+    missingProvenance, layout, workspaceId, marker, checkpoint, manifest, intent,
+  }) {
+    const { request, resolver } = missingProvenance;
+    if (typeof resolver !== "function") throw new Error("missing-provenance recovery requires its owner resolver");
+    for (const [label, value] of [["checkpoint", checkpoint], ["manifest", manifest]]) {
+      if (Object.hasOwn(value, "baseProvenance")) {
+        throw new Error(`missing-provenance recovery refuses a ${label} that already carries base provenance`);
+      }
+      if (Object.hasOwn(value, "preflightRequestId")) {
+        throw new Error(`missing-provenance recovery refuses a ${label} bound to a preflight request`);
+      }
+    }
+    const preparedManifestHash = String(manifest.publication?.sourceManifestHash ?? "");
+    if (!/^[a-f0-9]{64}$/u.test(preparedManifestHash)) {
+      throw new Error("missing-provenance recovery requires the exact prepared source manifest");
+    }
+    const preparedManifestBytes = await readFile(path.join(layout.evidenceRoot, `${preparedManifestHash}.json`));
+    if (sha256(preparedManifestBytes) !== preparedManifestHash) {
+      throw new Error("missing-provenance recovery prepared manifest digest changed");
+    }
+    const preparedManifest = parseRecoveryJson(preparedManifestBytes, "prepared manifest");
+    const frozenManifestText = stableManifest({
+      ...preparedManifest, workspaceId: manifest.workspaceId, publication: manifest.publication,
+    });
+    if (Object.hasOwn(preparedManifest, "baseProvenance") || Object.hasOwn(preparedManifest, "preflightRequestId")
+        || sha256(frozenManifestText) !== checkpoint.manifestHash
+        || manifest.publication?.preparedHead !== intent.preparedHead
+        || preparedManifest.workspaceId !== workspaceId
+        || preparedManifest.baseCommit !== checkpoint.baseCommit
+        || preparedManifest.planRevision !== checkpoint.planRevision) {
+      throw new Error("missing-provenance recovery prepared manifest is not the exact frozen source");
+    }
+    const candidate = {
+      workspaceId,
+      projectRoot: marker.primaryRoot,
+      planRevision: checkpoint.planRevision,
+      publishedBaseCommit: intent.oldMain,
+      baseCommit: checkpoint.baseCommit,
+      preparedHead: intent.preparedHead,
+      preparedTree: await runGit(["rev-parse", `${intent.preparedHead}^{tree}`], { cwd: layout.releaseRoot }),
+      preparedManifestHash,
+      frozenTasks: normalizedFrozenTasks(manifest.tasks ?? []).map((task) => ({
+        taskId: task.taskId, taskRevision: task.taskRevision, resultCommit: task.resultCommit,
+      })),
+    };
+    const resolved = await resolver({ request, candidate });
+    assertMissingProvenanceAuthority(resolved?.authority, { request, candidate });
+    const identity = {
+      schemaVersion: 1,
+      kind: SUPPLEMENTAL_PROVENANCE_KIND,
+      sourceManifest: { preparedManifestHash, frozenManifestHash: checkpoint.manifestHash },
+      recheckCandidate: candidate,
+      authority: resolved.authority,
+      authoritySha256: recoveryDigest(resolved.authority),
+    };
+    return {
+      identity,
+      evidence: {
+        preparedManifestBytesBase64: preparedManifestBytes.toString("base64"),
+        preflightResult: resolved.receiptResult,
+        preflightResultSha256: resolved.authority.receipt.resultSha256,
+      },
+    };
+  }
+
+  async #recheckMissingProvenanceAuthority({ missingProvenance, identity, marker, workspaceId }) {
+    const supplemental = identity.supplementalProvenance;
+    const candidate = supplemental?.recheckCandidate;
+    if (!missingProvenance || typeof missingProvenance.resolver !== "function" || !candidate
+        || candidate.workspaceId !== workspaceId || !samePath(candidate.projectRoot, marker.primaryRoot)
+        || candidate.planRevision !== identity.planRevision || candidate.preparedHead !== identity.preparedHead
+        || candidate.baseCommit !== identity.baseCommit || candidate.publishedBaseCommit !== identity.oldMain
+        || supplemental.authoritySha256 !== recoveryDigest(supplemental.authority)) {
+      throw new Error("publication freeze recovery missing-provenance identity changed after admission");
+    }
+    const resolved = await missingProvenanceResolverResult(missingProvenance, candidate);
+    assertMissingProvenanceAuthority(resolved?.authority, { request: missingProvenance.request, candidate });
+    if (recoveryDigest(resolved.authority) !== supplemental.authoritySha256) {
+      throw new Error("publication freeze recovery missing-provenance authority changed after admission");
+    }
+  }
+
   async #resumeLegacyPublicationRecoveryOwned({
     layout, workspaceId, operationId, sourceIdentity, expected, confirm, expectedProofHash,
     recoveryMode, checkpoint,
@@ -1825,7 +2017,7 @@ export class ReleaseGitWorkspaceService {
       [identity.frozenHead, expected.frozenHead, "frozen head"],
       [identity.frozenTree, expected.frozenTree, "frozen tree"],
       [identity.oldMain, expected.publishedRevision, "published revision"],
-      [identity.baseProvenance?.approvedOriginMainCommit, expected.approvedOriginMain, "approved origin main"],
+      [releaseBaseProvenanceApprovedBase(identity.baseProvenance), expected.approvedOriginMain, "approved origin main"],
     ]) assertExactRecoveryExpectation(actual, requested, label);
     const expectedReviewedOriginAdvance = normalizedReviewedOriginAdvance(expected);
     if (JSON.stringify(identity.reviewedOriginAdvance ?? null)
@@ -1874,8 +2066,8 @@ export class ReleaseGitWorkspaceService {
   }
 
   async #resumePublicationRecoveryOwned({
-    layout, workspaceId, operationId, sourceIdentity, expected, confirm, expectedProofHash,
-    recoveryMode, checkpoint,
+    layout, marker, workspaceId, operationId, sourceIdentity, expected, confirm, expectedProofHash,
+    recoveryMode, checkpoint, missingProvenance = null,
   }) {
     const recovery = checkpoint?.recovery;
     const identity = recovery?.identity;
@@ -1898,8 +2090,14 @@ export class ReleaseGitWorkspaceService {
       [identity.frozenHead, expected.frozenHead, "frozen head"],
       [identity.frozenTree, expected.frozenTree, "frozen tree"],
       [identity.oldMain, expected.publishedRevision, "published revision"],
-      [identity.baseProvenance?.approvedOriginMainCommit, expected.approvedOriginMain, "approved origin main"],
+      [identity.baseProvenance
+        ? releaseBaseProvenanceApprovedBase(identity.baseProvenance)
+        : identity.supplementalProvenance?.authority?.derived?.approvedOriginMainCommit,
+      expected.approvedOriginMain, "approved origin main"],
     ]) assertExactRecoveryExpectation(actual, requested, label);
+    if (Boolean(identity.supplementalProvenance) !== Boolean(missingProvenance)) {
+      throw new Error("publication freeze recovery missing-provenance request changed after admission");
+    }
     if (recoveryMode === FAILED_FROZEN_RECOVERY_MODE) {
       for (const [actual, requested, label] of [
         [identity.publicationRunId, expected.publicationRunId, "publication run ID"],
@@ -1946,8 +2144,15 @@ export class ReleaseGitWorkspaceService {
           && (identity.publicationCheckpointSha256
             ? sha256(Buffer.from(evidence.publicationCheckpointBytesBase64 ?? "", "base64"))
               !== identity.publicationCheckpointSha256
-            : evidence.publicationCheckpointBytesBase64 != null))) {
+            : evidence.publicationCheckpointBytesBase64 != null))
+        || (identity.supplementalProvenance
+          && !supplementalEvidenceMatches(evidence.supplementalEvidence, identity.supplementalProvenance))) {
       throw new Error("publication freeze recovery evidence identity changed");
+    }
+    if (identity.supplementalProvenance) {
+      // Preview, confirmation, resume and completed replay all re-read the
+      // exact receipt and adoption owners before any return or ref effect.
+      await this.#recheckMissingProvenanceAuthority({ missingProvenance, identity, marker, workspaceId });
     }
     if (!confirm) {
       return { status: checkpoint.phase, proofHash, identity, effects: identity.effects, reused: true };

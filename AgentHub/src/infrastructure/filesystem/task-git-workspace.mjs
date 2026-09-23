@@ -2775,7 +2775,8 @@ export class TaskGitWorkspaceService {
         if (await ancestor(baseCommit, adopted)) baseCommit = adopted;
         else if (!await ancestor(adopted, baseCommit)) throw new Error("selected Task release bases diverge");
         adoptions.push({ taskId: task.taskId, resultCommit: task.resultCommit,
-          recordRef: receipt.recordRef, recordHash: receipt.recordHash });
+          recordRef: receipt.recordRef, recordHash: receipt.recordHash,
+          adoptedCommit: adopted, acceptedLocalMainCommit: receipt.record.acceptedLocalMainCommit });
       }
       return { publishedBaseCommit: published, baseCommit, adoptions };
     });

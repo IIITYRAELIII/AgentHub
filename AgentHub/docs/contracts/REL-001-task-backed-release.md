@@ -22,6 +22,21 @@ it does not declare the reviewed commit published, rewrite publication state, or
 create an upstream-adoption receipt. Release preflight continues to require the
 prepared base to equal the currently reviewed origin main.
 
+Ordinary Await preparation may still advance its base through a selected Task
+upstream adoption. Any candidate whose base differs from the durable published
+baseline persists one immutable discriminated envelope in both manifest and
+checkpoint: `explicit-reviewed-main-v1`, or `selected-task-adoption-v1` with the
+published baseline, adopted base and each exact selected Task result, adoption
+ref, blob, adopted commit and accepted local main from
+`releaseBaseEvidence`. Candidate preparation and validation reject a missing or
+foreign-baseline envelope before any clone, ref or checkpoint effect; freeze
+independently rejects it and any manifest/checkpoint disagreement before its
+effects; preflight rejects a missing envelope and re-reads selected adoption
+authority for the adoption kind. A later approved preflight never retroactively
+supplies missing candidate authority. Without a durable baseline for the
+repository no advancement can be established and only envelope shape is
+checked. A published-base candidate needs no envelope.
+
 After a candidate is prepared or frozen, explicit preparation may add exactly
 one newly selected correction Task while every previously selected Task result,
 base and squash proof remains identical. The correction snapshot has exactly one
@@ -935,7 +950,14 @@ approved commit. The caller supplies its exact commit, sole parent, tree,
 candidate only into a disposable bare object store, proves those objects and
 that the remote does not contain the failed candidate, then removes the store.
 It never fetches into or updates the release clone. The approved base, reviewed
-observed tip and durable published revision remain separate proof fields. All
+observed tip and durable published revision remain separate proof fields.
+A legacy failed-frozen candidate whose manifest and checkpoint both lack
+provenance and request binding may instead supply the explicit
+`missing-provenance-recovery-v1` input. Its approved base is derived only from
+the original terminal ready `hub_release_preflight` receipt (exact caller,
+canonical arguments hash and full result digest) and the immutable selected Task
+adoption; the resulting supplemental authority is content-addressed in the
+proof and rechecked on every retry and completed replay. All
 are persisted in recovery evidence and rechecked before admission and on retry;
 divergence, force-push, unreviewed bytes or later remote/tracking movement fails
 closed. Recovery remains local-only, so reviewed upstream bytes are preserved

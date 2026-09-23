@@ -152,3 +152,88 @@ test("failed-frozen CLI binds a separately reviewed upstream advance", () => {
     "--expected-reviewed-origin-main", reviewed,
   )), /only to failed-frozen recovery/u);
 });
+
+const failedFrozen = [
+  "--recovery-mode", "abandon-failed-frozen-candidate-v1",
+  "--expected-publication-run-id", "failed-run",
+  "--expected-publication-run-sha256", digest,
+  "--expected-publication-checkpoint-sha256", digest,
+  "--expected-publication-log-sha256", digest,
+];
+const missingProvenance = [
+  "--missing-provenance-recovery", "missing-provenance-recovery-v1",
+  "--preflight-request-id", "rm-preflight",
+  "--preflight-arguments-file", "original-arguments.json",
+  "--expected-preflight-arguments-hash", digest,
+  "--expected-preflight-result-sha256", digest,
+  "--expected-preflight-stream", "stream-rm",
+  "--expected-preflight-provider", "codex",
+  "--expected-preflight-thread", "thread-rm",
+  "--expected-adoption-task", "task-1",
+  "--expected-adoption-ref", "refs/agent-hub/upstream-adoptions/task-1/key/result/base",
+  "--expected-adoption-blob", commit,
+];
+
+test("failed-frozen CLI composes the missing-provenance resolver from exact original arguments", async () => {
+  const input = parseReleaseFreezeRecoveryArguments(argumentsFor(...failedFrozen, ...missingProvenance));
+  assert.equal(input.missingProvenanceRecovery.kind, "missing-provenance-recovery-v1");
+  assert.deepEqual(input.missingProvenanceRecovery.expectedCaller,
+    { streamId: "stream-rm", provider: "codex", threadId: "thread-rm" });
+  const originalArguments = { request_id: "rm-preflight", conflicts_resolved: true };
+  let observed = null;
+  let closed = false;
+  const resolver = async () => ({});
+  const result = await executeReleaseFreezeRecovery(input, {
+    inspectSource: async () => ({ head: commit, ownerSha256: digest }),
+    load: async () => ({ dataDir: "fixture" }),
+    read: async (file) => {
+      assert.equal(file, input.missingProvenanceRecovery.preflightArgumentsFile);
+      return Buffer.from(JSON.stringify(originalArguments));
+    },
+    createResolver: async () => ({ resolver, close: () => { closed = true; } }),
+    createService: () => ({
+      recoverFreezingPublicationCandidate: async (request) => {
+        observed = request;
+        return { status: "preview", proofHash: digest, effects: [] };
+      },
+    }),
+  });
+  assert.equal(result.result.status, "preview");
+  assert.equal(observed.missingProvenanceResolver, resolver);
+  assert.deepEqual(observed.missingProvenanceRecovery.preflightArguments, originalArguments);
+  assert.equal("preflightArgumentsFile" in observed.missingProvenanceRecovery, false);
+  assert.equal(closed, true);
+});
+
+test("missing-provenance CLI input is complete, failed-frozen only and never inferred", async () => {
+  assert.throws(() => parseReleaseFreezeRecoveryArguments(argumentsFor(...missingProvenance)),
+    /only to failed-frozen recovery/u);
+  assert.throws(() => parseReleaseFreezeRecoveryArguments(argumentsFor(
+    ...failedFrozen, ...missingProvenance.slice(0, -2),
+  )), /identity is incomplete/u);
+  assert.throws(() => parseReleaseFreezeRecoveryArguments(argumentsFor(
+    ...failedFrozen, ...missingProvenance.map((value) => (value === "missing-provenance-recovery-v1" ? "other-v1" : value)),
+  )), /identity is incomplete/u);
+  const plain = parseReleaseFreezeRecoveryArguments(argumentsFor(...failedFrozen));
+  assert.equal(plain.missingProvenanceRecovery, undefined);
+  let resolverCreated = false;
+  await executeReleaseFreezeRecovery(plain, {
+    inspectSource: async () => ({ head: commit, ownerSha256: digest }),
+    load: async () => ({ dataDir: "fixture" }),
+    createResolver: async () => { resolverCreated = true; },
+    createService: () => ({
+      recoverFreezingPublicationCandidate: async (request) => {
+        assert.equal("missingProvenanceRecovery" in request, false);
+        return { status: "preview" };
+      },
+    }),
+  });
+  assert.equal(resolverCreated, false);
+  const unreadable = parseReleaseFreezeRecoveryArguments(argumentsFor(...failedFrozen, ...missingProvenance));
+  await assert.rejects(executeReleaseFreezeRecovery(unreadable, {
+    inspectSource: async () => ({ head: commit, ownerSha256: digest }),
+    load: async () => ({ dataDir: "fixture" }),
+    read: async () => Buffer.from("{not json"),
+    createResolver: async () => assert.fail("resolver must not open before exact arguments parse"),
+  }), /cannot read exact preflight arguments/u);
+});

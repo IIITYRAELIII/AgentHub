@@ -1453,6 +1453,8 @@ test("release adoption requires a selected Task result and stays pinned when ori
   const acceptedBase = await fixture.service.releaseBaseEvidence(baseRequest);
   assert.equal(acceptedBase.baseCommit, fixture.mainCommit);
   assert.equal(acceptedBase.adoptions[0].recordHash, recorded.recordHash);
+  assert.equal(acceptedBase.adoptions[0].adoptedCommit, fixture.mainCommit);
+  assert.equal(acceptedBase.adoptions[0].acceptedLocalMainCommit, localMain);
   assert.equal((await fixture.service.releaseBaseEvidence({ ...baseRequest, tasks: [] })).baseCommit, localMain);
 
   const origin = await git(fixture.root, "remote", "get-url", "origin");

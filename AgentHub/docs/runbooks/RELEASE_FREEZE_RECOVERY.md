@@ -64,6 +64,30 @@ An existing prior checkpoint must contain a non-empty ordered pre-effect prefix
 and a non-empty fingerprint for every completed label; use the explicit absence
 flag only when the checkpoint file genuinely does not exist.
 
+A failed-frozen candidate whose immutable manifest and checkpoint both lack
+base provenance and a preflight request ID cannot satisfy
+`--expected-origin-main` from its own evidence. The explicit supplemental
+`missing-provenance-recovery-v1` input never repairs that candidate:
+
+```text
+--missing-provenance-recovery missing-provenance-recovery-v1 --preflight-request-id <original-preflight-request-id> --preflight-arguments-file <exact-original-arguments-json> --expected-preflight-arguments-hash <receipt-arguments-sha256> --expected-preflight-result-sha256 <canonical-result-sha256> --expected-preflight-stream <stream-id> --expected-preflight-provider <provider> --expected-preflight-thread <thread-id> --expected-adoption-task <task-id> --expected-adoption-ref <refs/agent-hub/upstream-adoptions/...> --expected-adoption-blob <blob-id>
+```
+
+The arguments file holds the exact original `hub_release_preflight` arguments
+without `context_token`; it is accepted only when the shared MCP canonical hash
+reproduces the durable receipt's own `argumentsHash`. The owner re-reads the
+terminal succeeded, non-compacted receipt from `WorkspaceCatalogStore` and the
+selected Task adoption through `TaskGitWorkspaceService.releaseBaseEvidence`.
+The ready result must describe exactly this repository, plan, Task set and the
+prepared source of the frozen manifest; the approved published/local/origin
+tuple is derived from those authorities, never from `baseCommit`, current refs
+or Task state. The resulting `supplemental-reviewed-adoption-v1` authority,
+the prepared manifest bytes and the full receipt result are content-addressed in
+the recovery proof and evidence; the old candidate is not relabelled as
+`explicit-reviewed-main-v1` and its bytes are unchanged. Preview, confirmation,
+resume and completed replay re-read both authorities before any return or ref
+effect; omitted or changed supplemental input on an admitted operation rejects.
+
 Record the returned `proofHash` and effect list. Confirmation repeats every
 guard and uses the same operation ID and all the same arguments, plus:
 

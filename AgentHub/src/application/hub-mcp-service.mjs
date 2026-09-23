@@ -16,6 +16,7 @@ import {
   interstreamAuditContentHash,
   interstreamDisplayText,
 } from "../domain/interstream-message.mjs";
+import { canonicalMcpValue, mcpArgumentsHash } from "../domain/mcp-arguments-hash.mjs";
 import { taskProjectRoot } from "../domain/task-project-root.mjs";
 import {
   normalizedTaskDescription,
@@ -100,17 +101,8 @@ function optionalText(value, maximumLength = 10_000) {
   return text;
 }
 
-function canonicalValue(value) {
-  if (Array.isArray(value)) return value.map(canonicalValue);
-  if (!value || typeof value !== "object") return value;
-  return Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonicalValue(value[key])]));
-}
-
-function argumentsHash(args) {
-  const value = { ...args };
-  delete value.context_token;
-  return createHash("sha256").update(JSON.stringify(canonicalValue(value)), "utf8").digest("hex");
-}
+const canonicalValue = canonicalMcpValue;
+const argumentsHash = mcpArgumentsHash;
 
 function inside(root, candidate) {
   const relative = path.relative(path.resolve(root), path.resolve(candidate));

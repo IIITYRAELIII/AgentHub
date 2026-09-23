@@ -5,8 +5,14 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
+import {
+  createMissingProvenanceResolver,
+  MISSING_PROVENANCE_RECOVERY_KIND,
+} from "./src/application/release-missing-provenance-resolver.mjs";
 import { loadConfig } from "./src/infrastructure/filesystem/config.mjs";
 import { ReleaseGitWorkspaceService } from "./src/infrastructure/filesystem/release-git-workspace.mjs";
+import { TaskGitWorkspaceService } from "./src/infrastructure/filesystem/task-git-workspace.mjs";
+import { WorkspaceCatalogStore } from "./src/infrastructure/persistence/workspace-catalog-store.mjs";
 
 const execute = promisify(execFile);
 const moduleFile = fileURLToPath(import.meta.url);
@@ -20,6 +26,11 @@ const reviewedOriginNames = [
   "reviewed-origin-main", "reviewed-origin-parent", "reviewed-origin-tree",
   "reviewed-origin-diff-sha256", "reviewed-origin-diff-hash-object", "reviewed-origin-patch-id",
   "release-tracking-origin-main", "origin-url-sha256",
+];
+const missingProvenanceNames = [
+  "preflight-request-id", "preflight-arguments-file", "expected-preflight-arguments-hash",
+  "expected-preflight-result-sha256", "expected-preflight-stream", "expected-preflight-provider",
+  "expected-preflight-thread", "expected-adoption-task", "expected-adoption-ref", "expected-adoption-blob",
 ];
 
 function required(values, name) {
@@ -105,6 +116,32 @@ export function parseReleaseFreezeRecoveryArguments(argv) {
       });
     }
   }
+  const missingProvenanceKind = String(values["missing-provenance-recovery"] ?? "").trim();
+  const missingProvenanceValues = missingProvenanceNames.map((name) => String(values[name] ?? "").trim());
+  if (missingProvenanceKind || missingProvenanceValues.some(Boolean)) {
+    if (recoveryMode !== FAILED_FROZEN_MODE) {
+      throw new Error("missing-provenance recovery applies only to failed-frozen recovery");
+    }
+    if (missingProvenanceKind !== MISSING_PROVENANCE_RECOVERY_KIND || !missingProvenanceValues.every(Boolean)) {
+      throw new Error("missing-provenance recovery identity is incomplete");
+    }
+    const [preflightRequestId, argumentsFile, argumentsHash, resultSha256, stream, provider, thread,
+      adoptionTask, adoptionRef, adoptionBlob] = missingProvenanceValues;
+    parsed.missingProvenanceRecovery = {
+      kind: missingProvenanceKind,
+      preflightRequestId,
+      preflightArgumentsFile: path.resolve(argumentsFile),
+      expectedArgumentsHash: argumentsHash.toLowerCase(),
+      expectedResultSha256: resultSha256.toLowerCase(),
+      expectedCaller: { streamId: stream, provider, threadId: thread },
+      expectedAdoption: { taskId: adoptionTask, recordRef: adoptionRef, recordHash: adoptionBlob.toLowerCase() },
+    };
+    if (!digestPattern.test(parsed.missingProvenanceRecovery.expectedArgumentsHash)
+        || !digestPattern.test(parsed.missingProvenanceRecovery.expectedResultSha256)
+        || !commitPattern.test(parsed.missingProvenanceRecovery.expectedAdoption.recordHash)) {
+      throw new Error("invalid exact missing-provenance recovery identity");
+    }
+  }
   for (const [name, value] of Object.entries(parsed.expected)) {
     if (["publicationRunId", "publicationCheckpointAbsent"].includes(name)) continue;
     const pattern = ["planRevision", "manifestHash", "publicationRunSha256", "publicationCheckpointSha256",
@@ -140,18 +177,55 @@ export async function inspectReleaseFreezeRecoverySource(input, {
   return { sourceRoot, head, ownerFile, ownerSha256 };
 }
 
+// Exact original arguments are hash input only: the owner accepts them solely
+// when they reproduce the durable receipt's own argumentsHash.
+export async function readMissingProvenanceRequest(request, { read = readFile } = {}) {
+  if (!request) return null;
+  const { preflightArgumentsFile, ...rest } = request;
+  let preflightArguments;
+  try {
+    preflightArguments = JSON.parse((await read(preflightArgumentsFile)).toString("utf8"));
+  } catch (error) {
+    throw new Error(`missing-provenance recovery cannot read exact preflight arguments: ${error.message}`);
+  }
+  return { ...rest, preflightArguments };
+}
+
+export async function createReleaseMissingProvenanceResolver(config) {
+  const workspaceCatalog = await new WorkspaceCatalogStore({
+    databaseFile: path.join(config.dataDir, "journal.sqlite"), readOnly: true,
+  }).load();
+  return {
+    resolver: createMissingProvenanceResolver({
+      workspaceCatalog,
+      taskGitWorkspaces: new TaskGitWorkspaceService({ dataDir: config.dataDir }),
+    }),
+    close: () => workspaceCatalog.close(),
+  };
+}
+
 export async function executeReleaseFreezeRecovery(input, {
   inspectSource = inspectReleaseFreezeRecoverySource,
   load = loadConfig,
   createService = (config) => new ReleaseGitWorkspaceService({ dataDir: config.dataDir }),
+  createResolver = createReleaseMissingProvenanceResolver,
+  read = readFile,
 } = {}) {
   const source = await inspectSource(input);
   const config = await load();
-  const result = await createService(config).recoverFreezingPublicationCandidate({
-    ...input,
-    sourceIdentity: { commit: source.head, ownerSha256: source.ownerSha256 },
-  });
-  return { source, result };
+  const { missingProvenanceRecovery: requested, ...recovery } = input;
+  const missingProvenanceRecovery = await readMissingProvenanceRequest(requested, { read });
+  const owned = missingProvenanceRecovery ? await createResolver(config) : null;
+  try {
+    const result = await createService(config).recoverFreezingPublicationCandidate({
+      ...recovery,
+      sourceIdentity: { commit: source.head, ownerSha256: source.ownerSha256 },
+      ...(owned ? { missingProvenanceRecovery, missingProvenanceResolver: owned.resolver } : {}),
+    });
+    return { source, result };
+  } finally {
+    owned?.close?.();
+  }
 }
 
 if (path.resolve(process.argv[1] ?? "") === path.resolve(moduleFile)) {
