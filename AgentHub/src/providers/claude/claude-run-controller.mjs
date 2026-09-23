@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 
 const EOL = String.fromCharCode(10);
+const PROVIDER_CAPTURE_INTERVAL_MS = 2_000;
+const STOP_INTENT_RETRY_MAX_MS = 30_000;
 
 import {
   claudeInterruptRequest,
@@ -24,7 +26,8 @@ import {
 
 export class ClaudeRunController {
   #preDispatchStopFailures = new WeakSet();
-  #stopIntentAutoRetries = new WeakSet();
+  #stopIntentRetryCounts = new WeakMap();
+  #providerCaptureNextAtMs = new WeakMap();
 
   constructor({
     dataDir,
@@ -219,6 +222,8 @@ export class ClaudeRunController {
       await this.complete(run);
       return;
     }
+    await this.#captureProviderOwnerWhileLive(run);
+    if (run.claudeSettled || !this.isCurrentRun(run)) return;
     this.schedule(run);
   }
 
@@ -294,12 +299,13 @@ export class ClaudeRunController {
       run.claudeCleanupPending = true;
       await this.onPersist(run).catch(() => {});
       this.onReadError(run, error);
-      if (this.#preDispatchStopFailures.delete(run) && !this.#stopIntentAutoRetries.has(run)) {
-        this.#stopIntentAutoRetries.add(run);
-        // The rejected persistence attempt is conclusively pre-effect. Keep
-        // one bounded canonical poll so transient storage recovery does not
-        // require cancellation, shutdown or a Hub restart to finish cleanup.
-        this.schedule(run, Math.max(1, Math.min(this.pollIntervalMs, 250)));
+      if (this.#preDispatchStopFailures.delete(run)) {
+        // The rejected persistence attempt is conclusively pre-effect. Keep a
+        // canonical poll with bounded backoff so storage that recovers later
+        // still finishes cleanup without cancellation, shutdown or a restart.
+        const retry = (this.#stopIntentRetryCounts.get(run) ?? 0) + 1;
+        this.#stopIntentRetryCounts.set(run, retry);
+        this.schedule(run, this.#stopIntentRetryDelayMs(retry));
       }
       return;
     }
@@ -502,6 +508,35 @@ export class ClaudeRunController {
     return false;
   }
 
+  #providerLineageVerified(run) {
+    return (run?.claudeOwnedProcessTree ?? [])
+      .some((item) => item?.launchLineageVerified === true && item?.creationTime);
+  }
+
+  // The launch window may close before the wrapper writes its sidecar. While the
+  // exact root is still alive, keep retrying the same live-ancestry capture from
+  // the ordinary poll, rate-limited because each attempt reads the process table.
+  async #captureProviderOwnerWhileLive(run) {
+    if (process.platform !== "win32") return;
+    if (!run?.claudeProcessOwnerPath || !run?.claudeProcessOwnerToken) return;
+    if (this.#providerLineageVerified(run)) return;
+    const now = Date.now();
+    if (now < (this.#providerCaptureNextAtMs.get(run) ?? 0)) return;
+    this.#providerCaptureNextAtMs.set(run, now + PROVIDER_CAPTURE_INTERVAL_MS);
+    let verified = false;
+    try {
+      verified = await this.#refreshProviderOwner(run);
+    } catch {
+      return;
+    }
+    if (verified) await this.onPersist(run).catch(() => {});
+  }
+
+  #stopIntentRetryDelayMs(retry) {
+    const base = Math.max(1, Math.min(Number(this.pollIntervalMs) || 250, 250));
+    return Math.min(STOP_INTENT_RETRY_MAX_MS, base * (2 ** Math.min(Math.max(0, retry - 1), 16)));
+  }
+
   #runRootFingerprint(run) {
     const pid = Number(run?.pid ?? run?.process?.pid);
     const storedRoot = run?.claudeProcessFingerprint ?? (Number.isInteger(pid) && pid > 0 ? { pid } : null);
@@ -534,7 +569,7 @@ export class ClaudeRunController {
         // the first external stop effect. A restart may verify terminal state,
         // but cannot dispatch a second killer for this intent.
         await this.onPersist(run);
-        this.#stopIntentAutoRetries.delete(run);
+        this.#stopIntentRetryCounts.delete(run);
         attempt.dispatched = true;
         for (const target of targets) {
           const pid = Number(target.pid);

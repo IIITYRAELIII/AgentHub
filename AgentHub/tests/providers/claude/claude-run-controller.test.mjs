@@ -559,6 +559,209 @@ test("ClaudeRunController retains a launch-verified sidecar provider inside the 
   });
 });
 
+async function waitUntil(predicate, timeoutMs = 2_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return true;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  return predicate();
+}
+
+function persistenceRetryFixture() {
+  const fingerprint = { pid: 4341, creationTime: "owned" };
+  const run = {
+    turnId: "turn-stop-intent-backoff",
+    threadId: "session-stop-intent-backoff",
+    pid: fingerprint.pid,
+    process: { pid: fingerprint.pid, exitCode: null, signalCode: null },
+    claudeProcessFingerprint: fingerprint,
+    claudeOwnedProcessTree: [fingerprint],
+    claudeResult: { type: "result", result: "done", session_id: "session-stop-intent-backoff" },
+  };
+  const state = { alive: true, persists: 0, stops: 0, completed: 0, current: true };
+  return { fingerprint, run, state };
+}
+
+test("ClaudeRunController keeps retrying repeated pre-effect intent failures until storage recovers", async () => {
+  await withTempDir(async (directory) => {
+    const { fingerprint, run, state } = persistenceRetryFixture();
+    const controller = new ClaudeRunController({
+      dataDir: directory,
+      pollIntervalMs: 5,
+      completionExitGraceMs: 0,
+      completionStopTimeoutMs: 100,
+      isCurrentRun: () => state.current,
+      processAlive: () => state.alive,
+      processFingerprintLookup: async () => ({ ...fingerprint }),
+      processTreeLookup: async () => (state.alive ? [{ ...fingerprint, parentPid: 1 }] : []),
+      onPersist: async () => {
+        state.persists += 1;
+        if (state.persists <= 3) throw new Error("injected transient pre-effect persistence failure");
+      },
+      stopProcess: async () => {
+        state.stops += 1;
+        state.alive = false;
+        return true;
+      },
+      onComplete: async () => { state.completed += 1; },
+      onReadError: () => {},
+    });
+
+    await controller.complete(run);
+    assert.equal(state.stops, 0, "no stop effect may precede durable intent");
+    // No manual second completion: recovery must come from the controller's own retry.
+    assert.equal(await waitUntil(() => state.completed === 1), true, "storage recovery must finish cleanup autonomously");
+    state.current = false;
+    controller.pause(run);
+    assert.equal(state.stops, 1);
+    assert.equal(run.claudeStopUnknown, false);
+    assert.equal(run.claudeCleanupPending, false);
+  });
+});
+
+test("ClaudeRunController keeps a permanent pre-effect intent failure fail-closed without any stop", async () => {
+  await withTempDir(async (directory) => {
+    const { fingerprint, run, state } = persistenceRetryFixture();
+    const controller = new ClaudeRunController({
+      dataDir: directory,
+      pollIntervalMs: 5,
+      completionExitGraceMs: 0,
+      completionStopTimeoutMs: 100,
+      isCurrentRun: () => state.current,
+      processAlive: () => state.alive,
+      processFingerprintLookup: async () => ({ ...fingerprint }),
+      processTreeLookup: async () => (state.alive ? [{ ...fingerprint, parentPid: 1 }] : []),
+      onPersist: async () => {
+        state.persists += 1;
+        throw new Error("injected permanent persistence failure");
+      },
+      stopProcess: async () => { state.stops += 1; return true; },
+      onComplete: async () => { state.completed += 1; },
+      onReadError: () => {},
+    });
+
+    await controller.complete(run);
+    assert.equal(await waitUntil(() => state.persists >= 6, 1_500), true, "retries continue past the first attempt");
+    state.current = false;
+    controller.pause(run);
+    assert.equal(state.stops, 0);
+    assert.equal(state.completed, 0);
+    assert.equal(run.claudeCleanupPending, true);
+    assert.equal(run.claudeStopUnknown, false);
+  });
+});
+
+async function liveCaptureFixture(directory) {
+  const ownerPath = path.join(directory, "turn.owner.json");
+  const outputPath = path.join(directory, "turn.jsonl");
+  await writeFile(outputPath, "", "utf8");
+  await writeFile(ownerPath, JSON.stringify({
+    token: "token",
+    pid: 19,
+    startedAtMs: Date.parse("2026-09-23T10:00:00.000Z"),
+  }), "utf8");
+  const root = {
+    pid: 12,
+    parentPid: 1,
+    creationTime: "2026-09-23T09:59:59.000Z",
+    executablePath: "node.exe",
+    commandLine: "wrapper",
+  };
+  const provider = {
+    pid: 19,
+    parentPid: root.pid,
+    creationTime: "2026-09-23T10:00:00.500Z",
+    executablePath: "claude.exe",
+    commandLine: "claude",
+  };
+  const run = {
+    turnId: "turn-live-capture",
+    threadId: "session-live-capture",
+    pid: root.pid,
+    process: { pid: root.pid, exitCode: null, signalCode: null },
+    claudeExited: false,
+    claudeOutputPath: outputPath,
+    claudeReadOffset: 0,
+    claudeProcessStartedAtMs: Date.parse("2026-09-23T09:59:59.000Z"),
+    claudeProcessFingerprint: root,
+    claudeProcessOwnerPath: ownerPath,
+    claudeProcessOwnerToken: "token",
+    claudeOwnedProcessTree: [root],
+  };
+  const world = { snapshot: [root, provider], stopped: [], persisted: 0 };
+  const byPid = () => new Map(world.snapshot.map((item) => [item.pid, item]));
+  const controller = new ClaudeRunController({
+    dataDir: directory,
+    pollIntervalMs: 60_000,
+    processAlive: (pid) => byPid().has(pid),
+    processFingerprintLookup: async (pid) => byPid().get(pid) ?? null,
+    processTreeFingerprintLookup: async (pid) => byPid().get(pid) ?? null,
+    processTreeLookup: async (rootFingerprint, known, options) => ownedProcessTreeFromSnapshot(
+      rootFingerprint,
+      known,
+      world.snapshot,
+      { ...options, platform: "win32" },
+    ),
+    stopProcess: async (pid) => {
+      world.stopped.push(pid);
+      world.snapshot = world.snapshot.filter((item) => item.pid !== pid);
+      return true;
+    },
+    onPersist: async () => { world.persisted += 1; },
+    onReadError: () => {},
+  });
+  // Root and wrapper exited later: only the orphaned provider remains visible.
+  const orphan = () => {
+    run.claudeExited = true;
+    run.process = { pid: root.pid, exitCode: 0, signalCode: null };
+    run.claudeProcessExitedAtMs = Date.parse("2026-09-23T10:05:00.000Z");
+  };
+  return { run, root, provider, world, controller, orphan };
+}
+
+test("ClaudeRunController captures provider lineage from a live poll and stops the later orphan", {
+  skip: process.platform !== "win32",
+}, async () => {
+  await withTempDir(async (directory) => {
+    const { run, provider, world, controller, orphan } = await liveCaptureFixture(directory);
+    await controller.drain(run);
+    controller.pause(run);
+    const captured = run.claudeOwnedProcessTree.find((item) => item.pid === provider.pid);
+    assert.equal(captured?.launchLineageVerified, true, "the ordinary poll captures live provider ancestry");
+    assert.equal(captured?.creationTime, provider.creationTime);
+    assert.ok(world.persisted >= 1, "captured lineage is persisted for restart recovery");
+
+    orphan();
+    world.snapshot = [provider];
+    assert.equal(await controller.stop(run), true);
+    assert.deepEqual(world.stopped, [provider.pid]);
+  });
+});
+
+test("ClaudeRunController never stops a foreign PID reusing a captured provider inside the root lifetime", {
+  skip: process.platform !== "win32",
+}, async () => {
+  await withTempDir(async (directory) => {
+    const { run, provider, world, controller, orphan } = await liveCaptureFixture(directory);
+    await controller.drain(run);
+    controller.pause(run);
+    assert.equal(run.claudeOwnedProcessTree.some((item) => item.launchLineageVerified === true), true);
+
+    orphan();
+    const foreign = {
+      pid: provider.pid,
+      parentPid: 999,
+      creationTime: "2026-09-23T10:02:00.000Z",
+      executablePath: "foreign.exe",
+      commandLine: "foreign",
+    };
+    world.snapshot = [foreign];
+    await controller.stop(run);
+    assert.deepEqual(world.stopped, [], "a PID reused inside the lifetime window is not the captured provider");
+  });
+});
+
 test("ClaudeRunController gives a naturally exiting provider a bounded graceful window", async () => {
   await withTempDir(async (directory) => {
     const marker = path.join(directory, "provider-finalized.txt");

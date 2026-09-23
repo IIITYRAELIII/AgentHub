@@ -63,7 +63,15 @@ terminal.
   delivery. Exact stop targets and an unknown-outcome fence are durable before
   the first external stop effect. An unconfirmed stop retains the run,
   descendant identities and the same in-flight stop attempt; it cannot
-  authorize another killer by numeric PID alone or after restart.
+  authorize another killer by numeric PID alone or after restart. A stop
+  intent whose durable write is rejected before any effect is a known
+  non-effect: the owner retries canonical completion with bounded backoff
+  until storage recovers, without cancellation or restart.
+- A provider named by the launch sidecar is owned only through the exact
+  fingerprint captured while its ancestry to the exact live root is
+  observable, at launch or during ordinary polling. The sidecar token and a
+  creation time inside the run lifetime never authorize a stop by themselves;
+  a reused PID with a different creation time is never stopped.
 - Terminal is absorbing: late running, progress, snapshot or reconnect events
   cannot revive it.
 - A bounded restart or opened-history-page reprojection may replace a corrupted terminal user
