@@ -32,6 +32,7 @@ export class ClaudeRunController {
   #providerCaptureSchedule = new WeakMap();
   #lineagePersistence = new WeakMap();
   #unresolvedOwnership = new WeakSet();
+  #transientOwnershipProbe = new WeakSet();
   #ownershipRecheckCounts = new WeakMap();
 
   constructor({
@@ -211,6 +212,15 @@ export class ClaudeRunController {
     if (run.claudeSettled || !this.isCurrentRun(run)) return;
     const processGone = run.claudeExited === true
       || (run.pid ? !this.processAlive(run.pid) : !run.process);
+    if (processGone && run.claudeExited !== true && Number.isInteger(Number(run.pid))) {
+      // A restored run has no ChildProcess exit callback. Once the exact PID is
+      // authoritatively absent, persist the observation as the upper bound of
+      // its lifetime so ownership classification can prove an empty tree. A
+      // live reused PID never reaches this branch and remains fail-closed.
+      run.claudeExited = true;
+      run.claudeProcessExitedAtMs = Date.now();
+      await this.onPersist(run).catch(() => {});
+    }
     if (run.claudeResult) {
       await this.complete(run);
       return;
@@ -305,7 +315,9 @@ export class ClaudeRunController {
       await this.onPersist(run).catch(() => {});
       this.onReadError(run, error);
       if (this.#preDispatchStopFailures.delete(run)) this.#scheduleStopIntentRetry(run);
-      else if (this.#unresolvedOwnership.has(run)) this.#scheduleOwnershipRecheck(run);
+      else if (this.#unresolvedOwnership.has(run) || this.#transientOwnershipProbe.has(run)) {
+        this.#scheduleOwnershipRecheck(run);
+      }
       return;
     }
     this.#ownershipRecheckCounts.delete(run);
@@ -388,6 +400,7 @@ export class ClaudeRunController {
     let current;
     const diagnostics = { unresolved: null };
     this.#unresolvedOwnership.delete(run);
+    this.#transientOwnershipProbe.delete(run);
     try {
       current = await this.processTreeLookup(root, run.claudeOwnedProcessTree ?? [], {
         rootExited: run.claudeExited === true || run.process?.exitCode != null || run.process?.signalCode != null,
@@ -396,6 +409,7 @@ export class ClaudeRunController {
       });
     } catch (error) {
       run.claudeOwnershipDiagnostic = `tree-probe-error:${error?.message ?? error}`;
+      this.#transientOwnershipProbe.add(run);
       return null;
     }
     if (!Array.isArray(current)) {
@@ -411,6 +425,7 @@ export class ClaudeRunController {
           return null;
         } else {
           run.claudeOwnershipDiagnostic = "tree-probe-unavailable";
+          this.#transientOwnershipProbe.add(run);
           return null;
         }
       }

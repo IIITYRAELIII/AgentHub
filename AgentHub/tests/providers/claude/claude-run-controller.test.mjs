@@ -222,6 +222,64 @@ test("ClaudeRunController reattaches from a saved offset and finalizes a result"
   });
 });
 
+test("ClaudeRunController records an observed restored-process exit before finalizing", async () => {
+  await withTempDir(async (directory) => {
+    const outputPath = path.join(directory, "restored-exit.jsonl");
+    const errorPath = path.join(directory, "restored-exit.err.log");
+    await writeFile(outputPath, "", "utf8");
+    await writeFile(errorPath, "", "utf8");
+    const fingerprint = {
+      pid: 4328,
+      creationTime: "2026-07-30T10:00:00.000Z",
+      executablePath: process.execPath,
+      commandLine: "node restored-worker",
+    };
+    const run = {
+      turnId: "turn-restored-exit",
+      threadId: "session-restored-exit",
+      pid: fingerprint.pid,
+      claudeProcessFingerprint: fingerprint,
+      claudeProcessStartedAtMs: Date.parse(fingerprint.creationTime),
+      claudeOwnedProcessTree: [fingerprint],
+      claudeOutputPath: outputPath,
+      claudeErrorPath: errorPath,
+    };
+    const state = { alive: true, completed: 0, persisted: 0 };
+    const controller = new ClaudeRunController({
+      dataDir: directory,
+      pollIntervalMs: 60_000,
+      completionExitGraceMs: 0,
+      isCurrentRun: (candidate) => candidate === run,
+      processAlive: () => state.alive,
+      processFingerprintLookup: async () => (state.alive ? { ...fingerprint } : null),
+      processTreeLookup: async (_root, _known, { rootExited }) => {
+        if (state.alive) return [{ ...fingerprint, parentPid: 1 }];
+        return rootExited ? [] : null;
+      },
+      onPersist: async () => { state.persisted += 1; },
+      onComplete: async () => { state.completed += 1; },
+      onReadError: () => {},
+    });
+
+    assert.equal(await controller.attachAfterRestart(run), true);
+    controller.pause(run);
+    await writeFile(outputPath, `${JSON.stringify({
+      type: "result",
+      result: "после наблюдённого выхода",
+      session_id: run.threadId,
+      usage: {},
+    })}\n`, "utf8");
+    state.alive = false;
+    await controller.drain(run);
+
+    assert.equal(state.completed, 1);
+    assert.equal(run.claudeSettled, true);
+    assert.equal(run.claudeExited, true);
+    assert.equal(Number.isFinite(run.claudeProcessExitedAtMs), true);
+    assert.ok(state.persisted >= 2, "attach and observed exit are both persisted");
+  });
+});
+
 test("ClaudeRunController rejects a reused PID on reattach and cancel", async () => {
   await withTempDir(async (directory) => {
     const run = {
@@ -1102,6 +1160,91 @@ test("ClaudeRunController keeps permanent ambiguity pending with bounded re-chec
     assert.equal(state.completed, 0);
     assert.equal(run.claudeSettled, false);
     assert.equal(run.claudeCleanupPending, true);
+    state.current = false;
+    controller.pause(run);
+  });
+});
+
+test("ClaudeRunController re-checks a transient unavailable tree probe and completes once it recovers", async () => {
+  await withTempDir(async (directory) => {
+    const root = { pid: 100, creationTime: "2026-09-23T10:00:01.000Z" };
+    const run = {
+      turnId: "turn-transient-tree-probe",
+      threadId: "session-transient-tree-probe",
+      pid: root.pid,
+      process: { pid: root.pid, exitCode: 0, signalCode: null },
+      claudeExited: true,
+      claudeOutputPath: path.join(directory, "absent-output.jsonl"),
+      claudeProcessFingerprint: root,
+      claudeOwnedProcessTree: [root],
+      claudeResult: { type: "result", result: "done", session_id: "session-transient-tree-probe" },
+    };
+    const state = { available: false, completed: 0, reads: 0, current: true };
+    const controller = new ClaudeRunController({
+      dataDir: directory,
+      pollIntervalMs: 5,
+      completionExitGraceMs: 0,
+      isCurrentRun: () => state.current,
+      processAlive: () => false,
+      processFingerprintLookup: async () => null,
+      processTreeLookup: async () => {
+        state.reads += 1;
+        return state.available ? [] : null;
+      },
+      onComplete: async () => { state.completed += 1; },
+      onReadError: () => {},
+    });
+
+    await controller.complete(run);
+    assert.equal(state.completed, 0);
+    assert.equal(run.claudeCleanupPending, true);
+    assert.equal(run.claudeOwnershipDiagnostic, "tree-probe-unavailable");
+    assert.ok(run.claudeDrainTimer, "a transient probe failure keeps one owner re-check scheduled");
+
+    state.available = true;
+    assert.equal(await waitUntil(() => state.completed === 1), true);
+    assert.equal(state.reads, 2);
+    assert.equal(run.claudeCleanupPending, false);
+    assert.equal(run.claudeDrainTimer, null);
+  });
+});
+
+test("ClaudeRunController keeps a persistent tree probe error on bounded re-checks", async () => {
+  await withTempDir(async (directory) => {
+    const root = { pid: 100, creationTime: "2026-09-23T10:00:01.000Z" };
+    const run = {
+      turnId: "turn-persistent-tree-probe",
+      threadId: "session-persistent-tree-probe",
+      pid: root.pid,
+      process: { pid: root.pid, exitCode: 0, signalCode: null },
+      claudeExited: true,
+      claudeOutputPath: path.join(directory, "absent-output.jsonl"),
+      claudeProcessFingerprint: root,
+      claudeOwnedProcessTree: [root],
+      claudeResult: { type: "result", result: "done", session_id: "session-persistent-tree-probe" },
+    };
+    const state = { completed: 0, reads: 0, current: true };
+    const controller = new ClaudeRunController({
+      dataDir: directory,
+      pollIntervalMs: 5,
+      completionExitGraceMs: 0,
+      isCurrentRun: () => state.current,
+      processAlive: () => false,
+      processTreeLookup: async () => {
+        state.reads += 1;
+        throw new Error("injected process table failure");
+      },
+      onComplete: async () => { state.completed += 1; },
+      onReadError: () => {},
+    });
+
+    await controller.complete(run);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    assert.ok(state.reads >= 3 && state.reads <= 12, `bounded re-checks, got ${state.reads} reads`);
+    assert.equal(state.completed, 0);
+    assert.equal(run.claudeSettled, false);
+    assert.equal(run.claudeCleanupPending, true);
+    assert.match(run.claudeOwnershipDiagnostic, /^tree-probe-error:/);
     state.current = false;
     controller.pause(run);
   });

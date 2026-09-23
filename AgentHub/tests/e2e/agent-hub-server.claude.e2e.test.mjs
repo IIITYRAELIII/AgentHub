@@ -475,7 +475,52 @@ test("claude runs parallel tasks, survives a bot restart and ignores stale trans
 
   mark = telegram.calls.length;
   await releaseHold("beta");
-  await telegram.waitForText(`Claude готово: ${secondPrompt}`, { after: mark, timeoutMs: 25_000 });
+  try {
+    await telegram.waitForText(`Claude готово: ${secondPrompt}`, { after: mark, timeoutMs: 25_000 });
+  } catch (error) {
+    const state = await runtimeState().catch(() => null);
+    const runs = (state?.activeRuns ?? []).map((run) => ({
+      id: run.id,
+      pid: run.pid,
+      pidAlive: processIsAlive(run.pid),
+      claudeExited: run.claudeExited,
+      claudeSettled: run.claudeSettled,
+      claudeCleanupPending: run.claudeCleanupPending,
+      claudeOwnershipDiagnostic: run.claudeOwnershipDiagnostic,
+      claudeProcessStartedAtMs: run.claudeProcessStartedAtMs,
+      claudeProcessExitedAtMs: run.claudeProcessExitedAtMs,
+      claudeOwnedProcessTree: (run.claudeOwnedProcessTree ?? []).map((item) => ({
+        pid: item.pid,
+        parentPid: item.parentPid,
+        creationTime: item.creationTime,
+        startedAtMs: item.startedAtMs,
+        exitedAtMs: item.exitedAtMs,
+        launchLineageVerified: item.launchLineageVerified,
+      })),
+      claudeStopAttempt: run.claudeStopAttempt,
+      claudeStopUnknown: run.claudeStopUnknown,
+      claudeStopTargets: run.claudeStopTargets,
+      result: run.claudeResult,
+    }));
+    const runFiles = await Promise.all((state?.activeRuns ?? []).map(async (run) => ({
+      threadId: run.threadId,
+      output: run.claudeOutputPath
+        ? await readFile(run.claudeOutputPath, "utf8").catch((readError) => `unavailable: ${readError.message}`)
+        : "missing path",
+      error: run.claudeErrorPath
+        ? await readFile(run.claudeErrorPath, "utf8").catch((readError) => `unavailable: ${readError.message}`)
+        : "missing path",
+      owner: run.claudeProcessOwnerPath
+        ? await readFile(run.claudeProcessOwnerPath, "utf8").catch((readError) => `unavailable: ${readError.message}`)
+        : "missing path",
+    })));
+    throw new Error(
+      `${error.message}\nruns:\n${JSON.stringify(runs, null, 2)}`
+      + `\nrun files:\n${JSON.stringify(runFiles, null, 2)}`
+      + `\nstdout:\n${stdout}\nstderr:\n${stderr}`,
+      { cause: error },
+    );
+  }
   await waitFor(async () => (await activeRuns()).length === 0,
     "reattached Claude turn delivered its final answer", 20_000);
   const journalTurn = await waitFor(async () => {
