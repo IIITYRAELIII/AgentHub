@@ -77,6 +77,14 @@ child.once("exit", (code) => {
 });
 `;
 
+export function providerOwnershipLaunch({ command, args = [], ownerPath, ownerToken }) {
+  if (process.platform !== "win32" || !ownerPath || !ownerToken) return { command, args };
+  return {
+    command: process.execPath,
+    args: ["-e", WINDOWS_PROVIDER_OWNER_WRAPPER, JSON.stringify({ command, args, ownerPath, ownerToken })],
+  };
+}
+
 // Обработчики подписываются в том же тике, что и spawn. Ошибка запуска (нет CLI,
 // нет прав) приходит следующим тиком, поэтому любой await между запуском и
 // подпиской превращает её в uncaughtException и роняет весь бот.
@@ -85,19 +93,12 @@ export function spawnClaudeWorker({
   args = [],
   cwd,
   env,
-  ownerPath = null,
-  ownerToken = null,
   stdin = "ignore",
   stdout = "ignore",
   stderr = "ignore",
   onError = () => {},
   onExit = () => {},
 }) {
-  if (process.platform === "win32" && ownerPath && ownerToken) {
-    const provider = { command, args, ownerPath, ownerToken };
-    command = process.execPath;
-    args = ["-e", WINDOWS_PROVIDER_OWNER_WRAPPER, JSON.stringify(provider)];
-  }
   const worker = spawn(command, args, {
     cwd,
     env,

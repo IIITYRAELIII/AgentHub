@@ -14,6 +14,7 @@ import {
   openClaudeRunOutput,
   processFingerprintMatches,
   processIsAlive,
+  providerOwnershipLaunch,
   readOwnedProcessTree,
   readProcessFingerprint,
   removeClaudeRunOutput,
@@ -89,16 +90,20 @@ export class ClaudeRunController {
     let spawnError = null;
     try {
       run.claudeProcessStartedAtMs = Date.now();
-      worker = spawnClaudeWorker({
+      const launch = providerOwnershipLaunch({
         command,
         args,
+        ownerPath: run.claudeProcessOwnerPath,
+        ownerToken: run.claudeProcessOwnerToken,
+      });
+      worker = spawnClaudeWorker({
+        command: launch.command,
+        args: launch.args,
         cwd,
         stdin: input == null ? "ignore" : "pipe",
         stdout: output.outputHandle.fd,
         stderr: output.errorHandle.fd,
         env,
-        ownerPath: run.claudeProcessOwnerPath,
-        ownerToken: run.claudeProcessOwnerToken,
         onError: (error) => {
           spawnError = error;
           if (callbacksEnabled) void this.complete(run, { spawnError: error });
