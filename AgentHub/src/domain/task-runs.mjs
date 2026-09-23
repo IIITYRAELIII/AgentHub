@@ -741,6 +741,7 @@ export function serializableTaskRun(run) {
     claudeDrainTimer: _claudeDrainTimer,
     claudeDrainInFlight: _claudeDrainInFlight,
     claudeDrainPending: _claudeDrainPending,
+    claudeStopAttempt: _claudeStopAttempt,
     latestDiff: _latestDiff,
     liveItems: _liveItems,
     responseItems: _responseItems,

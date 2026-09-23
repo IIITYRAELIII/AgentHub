@@ -1,9 +1,15 @@
 import assert from "node:assert/strict";
-import { EventEmitter } from "node:events";
+import { spawn } from "node:child_process";
+import { EventEmitter, once } from "node:events";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 
 import {
+  captureE2eFailure,
   childProcessTerminal,
+  cleanupE2eTemporaryRoot,
   E2eChildProcessOwner,
   e2eTimeoutMs,
 } from "../../e2e/telegram-harness.mjs";
@@ -123,4 +129,99 @@ test("E2E process owner keeps bounded startup-failure diagnostics", async () => 
   assert.equal(diagnostics.stage, "startup");
   await owner.stop();
   assert.equal(owner.child, null);
+});
+
+test("E2E failure diagnostics distinguish a live stall from a terminated child", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-e2e-failure-owner-"));
+  const liveEvidence = `${root}-live-evidence`;
+  const exitedEvidence = `${root}-exited-evidence`;
+  const artifacts = [root, liveEvidence, exitedEvidence];
+  t.after(async () => {
+    await Promise.all(artifacts.map((entry) => rm(entry, { recursive: true, force: true })));
+  });
+  const original = new Error("Timeout waiting for editMessageText call after 24000 ms\nRecent Telegram calls:\n[]");
+  const liveOwner = new E2eChildProcessOwner({ label: "Telegram Agent Hub", timeoutMs: 2_000 });
+  const live = liveOwner.start(() => spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+    stdio: ["ignore", "pipe", "pipe"],
+    windowsHide: true,
+  }));
+  let liveFailure;
+  try {
+    liveFailure = await captureE2eFailure({
+      owner: liveOwner,
+      error: original,
+      evidenceDirectory: liveEvidence,
+      stage: "forward bundle third-message edit after restart",
+      evidence: { state: { activeRuns: [] }, botLock: { pid: live.pid } },
+    });
+    assert.equal(liveFailure.cause, original);
+    assert.match(liveFailure.message, /Recent Telegram calls/u);
+    assert.match(liveFailure.message, /"exitCode": null/u);
+    assert.match(liveFailure.message, /"exit": null/u);
+    assert.match(liveFailure.message, new RegExp(`"pid": ${live.pid}`, "u"));
+  } finally {
+    await liveOwner.stop();
+  }
+
+  const exitedOwner = new E2eChildProcessOwner({ label: "Telegram Agent Hub", timeoutMs: 2_000 });
+  const syntheticUrlToken = "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcd";
+  const syntheticTelegramUrl = `https://api.telegram.org/bot${syntheticUrlToken}/getUpdates`;
+  const script = [
+    `process.stdout.write('x'.repeat(40000) + ' ${syntheticTelegramUrl} Bearer SYNTHETIC_SECRET token=SYNTHETIC STDOUT_END')`,
+    "process.stderr.write('y'.repeat(40000) + ' 123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ secret=SYNTHETIC STDERR_END')",
+    "process.exitCode = 7",
+  ].join(";");
+  let exitedStdout = "";
+  const exited = exitedOwner.start(() => spawn(process.execPath, ["-e", script], {
+    stdio: ["ignore", "pipe", "pipe"],
+    windowsHide: true,
+  }));
+  exited.stdout.setEncoding("utf8");
+  exited.stdout.on("data", (chunk) => { exitedStdout += chunk; });
+  await once(exited, "close");
+  const exitedFailure = await captureE2eFailure({
+    owner: exitedOwner,
+    error: original,
+    evidenceDirectory: exitedEvidence,
+    stage: "forward bundle third-message edit after restart",
+    stdout: exitedStdout,
+    summary: { botLock: { pid: exited.pid }, journalLock: { token: "SYNTHETIC" } },
+    evidence: {
+      state: { activeRuns: [], token: "SYNTHETIC", endpointUrl: syntheticTelegramUrl },
+      messageBindings: [{ chatId: 84, messageId: 1 }],
+      botLock: { pid: exited.pid },
+      journalLock: { token: "SYNTHETIC" },
+      stdout: exitedStdout,
+    },
+  });
+  assert.equal(exitedFailure.cause, original);
+  assert.match(exitedFailure.message, /Recent Telegram calls/u);
+  assert.match(exitedFailure.message, /"code": 7/u);
+  assert.match(exitedFailure.message, /STDERR_END/u);
+  assert.match(exitedFailure.message, /STDOUT_END/u);
+  assert.doesNotMatch(exitedFailure.message, /SYNTHETIC_SECRET|123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ|token=SYNTHETIC|secret=SYNTHETIC/u);
+  assert.doesNotMatch(exitedFailure.message, new RegExp(syntheticUrlToken, "u"));
+  assert.match(exitedFailure.message, /\/bot\[redacted-token\]\/getUpdates/u);
+  assert.equal(liveFailure.cause.message, exitedFailure.cause.message,
+    "without process diagnostics the two failures have the same raw timeout");
+  assert.notEqual(liveFailure.message, exitedFailure.message,
+    "process diagnostics make the live stall and terminated child attributable");
+  assert.notEqual(liveOwner.diagnostics().exit?.code, exitedOwner.diagnostics().exit?.code,
+    "the same raw timeout becomes attributable only through process-owner diagnostics");
+  assert.ok(exitedOwner.diagnostics().stderr.length <= 32_768);
+  const evidence = JSON.parse(await readFile(path.join(exitedEvidence, "diagnostics.json"), "utf8"));
+  assert.equal(evidence.sections.state.includes("SYNTHETIC"), false);
+  assert.equal(evidence.sections.state.includes(syntheticUrlToken), false);
+  assert.match(evidence.sections.state, /\/bot\[redacted-token\]\/getUpdates/u);
+  assert.equal(evidence.sections.botLock.includes(String(exited.pid)), true);
+  assert.ok(Object.values(evidence.sections).every((value) => value.length <= 32_768));
+  assert.match(evidence.sections.stdout, /STDOUT_END/u);
+
+  const successRoot = await mkdtemp(path.join(os.tmpdir(), "agent-hub-e2e-success-cleanup-"));
+  artifacts.push(successRoot);
+  await writeFile(path.join(successRoot, "state.json"), "{}", "utf8");
+  await cleanupE2eTemporaryRoot(successRoot);
+  await assert.rejects(stat(successRoot), (error) => error.code === "ENOENT");
+  await assert.doesNotReject(stat(path.join(exitedEvidence, "diagnostics.json")),
+    "failure evidence remains after the ordinary temporary root is cleaned");
 });
