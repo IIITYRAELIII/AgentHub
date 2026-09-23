@@ -289,6 +289,19 @@ test("owned process-tree discovery crosses one exited verified provider anchor",
   assert.equal(claudeRunOwnerPath("data", "turn"), path.join("data", "claude-runs", "turn.owner.json"));
 });
 
+test("an uncaptured provider entry anchors descendants but never admits the live holder of its PID", () => {
+  const root = { pid: 100, creationTime: "root-one", executablePath: "node", commandLine: "wrapper" };
+  const provider = { pid: 101, startedAtMs: Date.parse("2026-01-01T00:00:01.000Z"), exitedAtMs: Date.parse("2026-01-01T00:00:03.000Z") };
+  // PID 101 was reused inside the recorded window; its own child starts after the provider exit.
+  const reuse = { pid: 101, parentPid: 999, creationTime: "2026-01-01T00:00:02.995Z", executablePath: "foreign.exe", commandLine: "foreign" };
+  const foreignChild = { pid: 103, parentPid: 101, creationTime: "2026-01-01T00:00:05.000Z", executablePath: "foreign.exe", commandLine: "child" };
+  const descendant = { pid: 102, parentPid: 101, creationTime: "2026-01-01T00:00:02.000Z", executablePath: "node", commandLine: "worker" };
+  assert.deepEqual(ownedProcessTreeFromSnapshot(root, [root, provider], [reuse, foreignChild, descendant], {
+    platform: "win32",
+    rootExited: true,
+  }), [descendant]);
+});
+
 test("processIsAlive recognizes the current process and rejects invalid ids", () => {
   assert.equal(processIsAlive(process.pid), true);
   assert.equal(processIsAlive(null), false);

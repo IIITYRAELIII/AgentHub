@@ -813,6 +813,85 @@ test("ClaudeRunController keeps a never-saved provider lineage fail-closed after
   });
 });
 
+test("ClaudeRunController retries a pre-effect intent rejection that lands after the stop deadline", async () => {
+  await withTempDir(async (directory) => {
+    const { fingerprint, run, state } = persistenceRetryFixture();
+    const controller = new ClaudeRunController({
+      dataDir: directory,
+      pollIntervalMs: 5,
+      completionExitGraceMs: 0,
+      completionStopTimeoutMs: 20,
+      isCurrentRun: () => state.current,
+      processAlive: () => state.alive,
+      processFingerprintLookup: async () => ({ ...fingerprint }),
+      processTreeLookup: async () => (state.alive ? [{ ...fingerprint, parentPid: 1 }] : []),
+      onPersist: async () => {
+        state.persists += 1;
+        if (state.persists === 1) {
+          // Rejects well after completionStopTimeoutMs, when complete() already returned.
+          await new Promise((resolve) => setTimeout(resolve, 80));
+          throw new Error("injected late pre-effect persistence failure");
+        }
+      },
+      stopProcess: async () => {
+        state.stops += 1;
+        state.alive = false;
+        return true;
+      },
+      onComplete: async () => { state.completed += 1; },
+      onReadError: () => {},
+    });
+
+    await controller.complete(run);
+    assert.equal(state.stops, 0);
+    assert.equal(await waitUntil(() => state.completed === 1), true, "a late pre-effect rejection must not strand cleanup");
+    state.current = false;
+    controller.pause(run);
+    assert.equal(state.stops, 1);
+    assert.equal(run.claudeCleanupPending, false);
+  });
+});
+
+test("ClaudeRunController never stops a live PID named only by an uncaptured sidecar lifetime", async () => {
+  await withTempDir(async (directory) => {
+    const ownerPath = path.join(directory, "turn.owner.json");
+    await writeFile(ownerPath, JSON.stringify({
+      token: "token",
+      pid: 19,
+      startedAtMs: Date.parse("2026-09-23T10:00:00.000Z"),
+      exitedAtMs: Date.parse("2026-09-23T10:03:00.000Z"),
+    }), "utf8");
+    // Capture never happened; PID 19 now belongs to a foreign process created inside the window.
+    const foreign = { pid: 19, parentPid: 999, creationTime: "2026-09-23T10:02:59.995Z", executablePath: "foreign.exe", commandLine: "foreign" };
+    const root = { pid: 12, parentPid: 1, creationTime: "2026-09-23T09:59:59.000Z" };
+    const run = {
+      pid: root.pid,
+      claudeExited: true,
+      process: { pid: root.pid, exitCode: 0, signalCode: null },
+      claudeProcessStartedAtMs: Date.parse("2026-09-23T09:59:59.000Z"),
+      claudeProcessExitedAtMs: Date.parse("2026-09-23T10:05:00.000Z"),
+      claudeProcessFingerprint: root,
+      claudeProcessOwnerPath: ownerPath,
+      claudeProcessOwnerToken: "token",
+      claudeOwnedProcessTree: [root],
+    };
+    const stopped = [];
+    const controller = new ClaudeRunController({
+      dataDir: directory,
+      processAlive: (pid) => pid === foreign.pid,
+      processFingerprintLookup: async (pid) => (pid === foreign.pid ? foreign : null),
+      processTreeFingerprintLookup: async (pid) => (pid === foreign.pid ? foreign : null),
+      processTreeLookup: async (rootFingerprint, known, options) => ownedProcessTreeFromSnapshot(
+        rootFingerprint, known, [foreign], { ...options, platform: "win32" },
+      ),
+      stopProcess: async (pid) => { stopped.push(pid); return true; },
+      onReadError: () => {},
+    });
+    await controller.stop(run);
+    assert.deepEqual(stopped, [], "a token and a creation time inside the lifetime never authorize a stop");
+  });
+});
+
 test("ClaudeRunController gives a naturally exiting provider a bounded graceful window", async () => {
   await withTempDir(async (directory) => {
     const marker = path.join(directory, "provider-finalized.txt");

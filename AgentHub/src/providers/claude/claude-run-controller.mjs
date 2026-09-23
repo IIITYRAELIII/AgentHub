@@ -302,14 +302,7 @@ export class ClaudeRunController {
       run.claudeCleanupPending = true;
       await this.onPersist(run).catch(() => {});
       this.onReadError(run, error);
-      if (this.#preDispatchStopFailures.delete(run)) {
-        // The rejected persistence attempt is conclusively pre-effect. Keep a
-        // canonical poll with bounded backoff so storage that recovers later
-        // still finishes cleanup without cancellation, shutdown or a restart.
-        const retry = (this.#stopIntentRetryCounts.get(run) ?? 0) + 1;
-        this.#stopIntentRetryCounts.set(run, retry);
-        this.schedule(run, this.#stopIntentRetryDelayMs(retry));
-      }
+      if (this.#preDispatchStopFailures.delete(run)) this.#scheduleStopIntentRetry(run);
       return;
     }
     try {
@@ -566,6 +559,15 @@ export class ClaudeRunController {
     }
   }
 
+  // The rejected stop-intent persistence is conclusively pre-effect. Keep a
+  // canonical poll with bounded backoff so storage that recovers later still
+  // finishes cleanup without cancellation, shutdown or a restart.
+  #scheduleStopIntentRetry(run) {
+    const retry = (this.#stopIntentRetryCounts.get(run) ?? 0) + 1;
+    this.#stopIntentRetryCounts.set(run, retry);
+    this.schedule(run, this.#stopIntentRetryDelayMs(retry));
+  }
+
   #stopIntentRetryDelayMs(retry) {
     const base = Math.max(1, Math.min(Number(this.pollIntervalMs) || 250, 250));
     return Math.min(STOP_INTENT_RETRY_MAX_MS, base * (2 ** Math.min(Math.max(0, retry - 1), 16)));
@@ -644,6 +646,13 @@ export class ClaudeRunController {
           run.claudeStopAttempt = null;
           run.claudeStopUnknown = false;
           run.claudeStopTargets = null;
+        }
+        // A rejection that lands after the stop deadline arrives when complete()
+        // has already returned: it must drive the same backoff retry itself.
+        // While complete() is still settling, its catch consumes the flag.
+        if (preDispatchFailure && !run.claudeSettled && run.claudeCleanupPending) {
+          this.#preDispatchStopFailures.delete(run);
+          this.#scheduleStopIntentRetry(run);
         }
         if (!preDispatchFailure && run.claudeCleanupPending) void this.complete(run);
       });
