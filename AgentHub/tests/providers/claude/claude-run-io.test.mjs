@@ -8,6 +8,7 @@ import {
   ClaudeOutputReader,
   claudeRunDirectory,
   claudeRunErrorPath,
+  claudeRunOwnerPath,
   claudeRunOutputPath,
   cleanupOrphanedClaudeRunOutputs,
   openClaudeRunOutput,
@@ -136,18 +137,31 @@ test("startup cleanup removes only files not owned by restored Claude runs", asy
     await mkdir(runs, { recursive: true });
     const active = claudeRunOutputPath(directory, "active");
     const activeError = claudeRunErrorPath(directory, "active");
+    const activeOwner = claudeRunOwnerPath(directory, "active");
     const orphan = claudeRunOutputPath(directory, "orphan");
     const orphanError = claudeRunErrorPath(directory, "orphan");
+    const orphanOwner = claudeRunOwnerPath(directory, "orphan");
     await Promise.all([
       writeFile(active, "active", "utf8"),
       writeFile(activeError, "active error", "utf8"),
+      writeFile(activeOwner, "active owner", "utf8"),
       writeFile(orphan, "orphan", "utf8"),
       writeFile(orphanError, "orphan error", "utf8"),
+      writeFile(orphanOwner, "orphan owner", "utf8"),
       writeFile(path.join(runs, "keep.txt"), "unrelated", "utf8"),
     ]);
-    const removed = await cleanupOrphanedClaudeRunOutputs(directory, [active, activeError]);
-    assert.deepEqual(removed.map((file) => path.basename(file)).sort(), ["orphan.err.log", "orphan.jsonl"]);
-    assert.deepEqual((await readdir(runs)).sort(), ["active.err.log", "active.jsonl", "keep.txt"]);
+    const removed = await cleanupOrphanedClaudeRunOutputs(directory, [active, activeError, activeOwner]);
+    assert.deepEqual(removed.map((file) => path.basename(file)).sort(), [
+      "orphan.err.log",
+      "orphan.jsonl",
+      "orphan.owner.json",
+    ]);
+    assert.deepEqual((await readdir(runs)).sort(), [
+      "active.err.log",
+      "active.jsonl",
+      "active.owner.json",
+      "keep.txt",
+    ]);
   });
 });
 
@@ -223,6 +237,21 @@ test("owned process-tree discovery survives root exit and rejects a reused root 
     ],
     { platform: "win32", rootExited: true },
   ), [{ ...descendant, creationTime: "2026-01-01T00:00:01.000Z" }]);
+});
+
+test("owned process-tree discovery crosses one exited verified provider anchor", () => {
+  const root = { pid: 100, creationTime: "root-one", executablePath: "node", commandLine: "wrapper" };
+  const provider = { pid: 101, startedAtMs: Date.parse("2026-01-01T00:00:01.000Z"), exitedAtMs: Date.parse("2026-01-01T00:00:03.000Z") };
+  const descendant = { pid: 102, parentPid: 101, creationTime: "2026-01-01T00:00:02.000Z", executablePath: "node", commandLine: "worker" };
+  assert.deepEqual(ownedProcessTreeFromSnapshot(root, [root, provider], [descendant], {
+    platform: "win32",
+    rootExited: true,
+  }), [descendant]);
+  assert.deepEqual(ownedProcessTreeFromSnapshot(root, [root, provider], [{
+    ...descendant,
+    creationTime: "2026-01-01T00:00:08.000Z",
+  }], { platform: "win32", rootExited: true }), []);
+  assert.equal(claudeRunOwnerPath("data", "turn"), path.join("data", "claude-runs", "turn.owner.json"));
 });
 
 test("processIsAlive recognizes the current process and rejects invalid ids", () => {

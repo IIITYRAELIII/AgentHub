@@ -71,6 +71,8 @@ export class ClaudeRunController {
     Object.assign(run, {
       claudeOutputPath: output.outputPath,
       claudeErrorPath: output.errorPath,
+      claudeProcessOwnerPath: output.ownerPath,
+      claudeProcessOwnerToken: randomUUID(),
       claudeReadOffset: 0,
       claudeThinkingPeak: 0,
       claudeFailureText: "",
@@ -95,6 +97,8 @@ export class ClaudeRunController {
         stdout: output.outputHandle.fd,
         stderr: output.errorHandle.fd,
         env,
+        ownerPath: run.claudeProcessOwnerPath,
+        ownerToken: run.claudeProcessOwnerToken,
         onError: (error) => {
           spawnError = error;
           if (callbacksEnabled) void this.complete(run, { spawnError: error });
@@ -261,7 +265,11 @@ export class ClaudeRunController {
     this.#closeInput(run);
     run.claudeInput = null;
     run.claudeSteer = null;
-    const outputPaths = { outputPath: run.claudeOutputPath, errorPath: run.claudeErrorPath };
+    const outputPaths = {
+      outputPath: run.claudeOutputPath,
+      errorPath: run.claudeErrorPath,
+      ownerPath: run.claudeProcessOwnerPath,
+    };
     const exitCode = Number.isInteger(run.claudeExitCode) ? run.claudeExitCode : null;
     const result = spawnError ? null : await this.#readResult(run);
     // Claude may return an is_error JSON result while writing the useful
@@ -341,6 +349,7 @@ export class ClaudeRunController {
   }
 
   async #currentOwnedTree(run) {
+    await this.#refreshProviderOwner(run);
     const pid = Number(run?.pid ?? run?.process?.pid);
     const root = run?.claudeProcessFingerprint ?? (Number.isInteger(pid) && pid > 0 ? {
       pid,
@@ -392,6 +401,33 @@ export class ClaudeRunController {
       await this.onPersist(run).catch(() => {});
     }
     return current;
+  }
+
+  async #refreshProviderOwner(run) {
+    if (!run?.claudeProcessOwnerPath || !run?.claudeProcessOwnerToken) return;
+    let value;
+    try {
+      value = JSON.parse(await readFile(run.claudeProcessOwnerPath, "utf8"));
+    } catch {
+      return;
+    }
+    const pid = Number(value?.pid);
+    if (value?.token !== run.claudeProcessOwnerToken || !Number.isInteger(pid) || pid <= 0) return;
+    const existing = (run.claudeOwnedProcessTree ?? []).find((item) => Number(item?.pid) === pid);
+    let owner = existing;
+    if (!owner?.creationTime) {
+      const exact = await this.#lookupTreeFingerprint(pid);
+      owner = exact ?? {
+        pid,
+        startedAtMs: Number(value.startedAtMs) || null,
+        exitedAtMs: Number(value.exitedAtMs) || null,
+      };
+    }
+    if (Number(value.startedAtMs) > 0) owner.startedAtMs = Number(value.startedAtMs);
+    if (Number(value.exitedAtMs) > 0) owner.exitedAtMs = Number(value.exitedAtMs);
+    const known = new Map((run.claudeOwnedProcessTree ?? []).map((item) => [Number(item.pid), item]));
+    known.set(pid, owner);
+    run.claudeOwnedProcessTree = [...known.values()];
   }
 
   async #stopOwnedTree(run, deadline) {

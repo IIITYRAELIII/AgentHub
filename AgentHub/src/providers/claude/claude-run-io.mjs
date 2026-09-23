@@ -25,16 +25,57 @@ export function claudeRunErrorPath(dataDir, turnId) {
   return path.join(claudeRunDirectory(dataDir), `${turnId}.err.log`);
 }
 
+export function claudeRunOwnerPath(dataDir, turnId) {
+  return path.join(claudeRunDirectory(dataDir), `${turnId}.owner.json`);
+}
+
 export async function openClaudeRunOutput(dataDir, turnId) {
   const outputPath = claudeRunOutputPath(dataDir, turnId);
   const errorPath = claudeRunErrorPath(dataDir, turnId);
+  const ownerPath = claudeRunOwnerPath(dataDir, turnId);
   await mkdir(claudeRunDirectory(dataDir), { recursive: true });
   const [outputHandle, errorHandle] = await Promise.all([
     open(outputPath, "w"),
     open(errorPath, "w"),
   ]);
-  return { outputPath, errorPath, outputHandle, errorHandle };
+  return { outputPath, errorPath, ownerPath, outputHandle, errorHandle };
 }
+
+const WINDOWS_PROVIDER_OWNER_WRAPPER = String.raw`
+const { spawn } = require("node:child_process");
+const { writeFileSync } = require("node:fs");
+const spec = JSON.parse(process.argv[1]);
+const startedAtMs = Date.now();
+let child;
+const persist = (extra = {}) => {
+  writeFileSync(spec.ownerPath, JSON.stringify({
+    token: spec.ownerToken,
+    pid: child?.pid ?? null,
+    startedAtMs,
+    ...extra,
+  }), "utf8");
+};
+try {
+  child = spawn(spec.command, spec.args, {
+    cwd: process.cwd(),
+    env: process.env,
+    stdio: "inherit",
+    windowsHide: true,
+  });
+  persist();
+} catch (error) {
+  persist({ exitedAtMs: Date.now(), spawnError: String(error?.message ?? error) });
+  process.exit(127);
+}
+child.once("error", (error) => {
+  persist({ exitedAtMs: Date.now(), spawnError: String(error?.message ?? error) });
+  process.exit(127);
+});
+child.once("exit", (code) => {
+  persist({ exitedAtMs: Date.now(), exitCode: Number.isInteger(code) ? code : 1 });
+  process.exit(Number.isInteger(code) ? code : 1);
+});
+`;
 
 // Обработчики подписываются в том же тике, что и spawn. Ошибка запуска (нет CLI,
 // нет прав) приходит следующим тиком, поэтому любой await между запуском и
@@ -44,12 +85,19 @@ export function spawnClaudeWorker({
   args = [],
   cwd,
   env,
+  ownerPath = null,
+  ownerToken = null,
   stdin = "ignore",
   stdout = "ignore",
   stderr = "ignore",
   onError = () => {},
   onExit = () => {},
 }) {
+  if (process.platform === "win32" && ownerPath && ownerToken) {
+    const provider = { command, args, ownerPath, ownerToken };
+    command = process.execPath;
+    args = ["-e", WINDOWS_PROVIDER_OWNER_WRAPPER, JSON.stringify(provider)];
+  }
   const worker = spawn(command, args, {
     cwd,
     env,
@@ -63,8 +111,8 @@ export function spawnClaudeWorker({
   return worker;
 }
 
-export async function removeClaudeRunOutput({ outputPath, errorPath } = {}) {
-  await Promise.all([outputPath, errorPath]
+export async function removeClaudeRunOutput({ outputPath, errorPath, ownerPath } = {}) {
+  await Promise.all([outputPath, errorPath, ownerPath]
     .filter(Boolean)
     .map((file) => unlink(file).catch(() => {})));
 }
@@ -87,7 +135,9 @@ export async function cleanupOrphanedClaudeRunOutputs(dataDir, activePaths = [])
   }
   const removed = [];
   for (const entry of entries) {
-    if (!entry.isFile() || (!entry.name.endsWith(".jsonl") && !entry.name.endsWith(".err.log"))) continue;
+    if (!entry.isFile() || (!entry.name.endsWith(".jsonl")
+      && !entry.name.endsWith(".err.log")
+      && !entry.name.endsWith(".owner.json"))) continue;
     const file = path.join(directory, entry.name);
     if (normalizedActivePaths.has(normalize(file))) continue;
     try {
@@ -348,20 +398,41 @@ export function ownedProcessTreeFromSnapshot(rootFingerprint, knownFingerprints 
   if (rootReused && !rootExited) return null;
   const reusedAtMs = rootReused ? Date.parse(currentRoot.creationTime) : Number.NaN;
 
+  const withinOwnerWindow = (owner, item) => {
+    const createdAtMs = Date.parse(item?.creationTime);
+    const startedAtMs = Number(owner?.startedAtMs);
+    const exitedAtMs = Number(owner?.exitedAtMs);
+    return Number.isFinite(createdAtMs)
+      && (!Number.isFinite(startedAtMs) || createdAtMs >= startedAtMs - 1_000)
+      && (!Number.isFinite(exitedAtMs) || createdAtMs <= exitedAtMs + 1_000);
+  };
+
   const ownedIds = new Set([rootPid]);
+  const historicalAnchors = new Map();
   const result = [];
   for (const [pid, expected] of expectedById) {
     const current = byId.get(pid);
-    if (!current) continue;
-    if (!processFingerprintMatches(expected, current, { platform })) continue;
-    ownedIds.add(pid);
-    result.push(current);
+    if (current) {
+      const exact = processFingerprintMatches(expected, current, { platform });
+      const bounded = !normalizedFingerprintText(expected?.creationTime) && withinOwnerWindow(expected, current);
+      if (!exact && !bounded) continue;
+      ownedIds.add(pid);
+      result.push(current);
+      continue;
+    }
+    if ((rootExited || Number.isFinite(Number(expected?.exitedAtMs)))
+      && (normalizedFingerprintText(expected?.creationTime) || Number.isFinite(Number(expected?.startedAtMs)))) {
+      ownedIds.add(pid);
+      historicalAnchors.set(pid, expected);
+    }
   }
   let changed = true;
   while (changed) {
     changed = false;
     for (const current of byId.values()) {
       if (ownedIds.has(current.pid) || !ownedIds.has(current.parentPid)) continue;
+      const historicalParent = historicalAnchors.get(current.parentPid);
+      if (historicalParent && !withinOwnerWindow(historicalParent, current)) continue;
       if (rootReused && current.parentPid === rootPid) {
         const childAtMs = Date.parse(current.creationTime);
         if (!Number.isFinite(reusedAtMs) || !Number.isFinite(childAtMs) || childAtMs >= reusedAtMs) continue;
