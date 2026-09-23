@@ -1935,6 +1935,27 @@ export function testContourSmokeAgentPolicy({ withAgent = true, recording = null
   return { withAgent: Boolean(withAgent), agentProbeSkipped: null };
 }
 
+export function testContourSmokeJournalMatches(record, {
+  model,
+  probe,
+  probeResponse,
+  startedAt,
+  smoke,
+} = {}) {
+  const exactThreadId = String(smoke?.threadId ?? "").trim();
+  const exactTurnId = String(smoke?.turnId ?? "").trim();
+  const exactClientUserMessageId = String(smoke?.clientUserMessageId ?? "").trim();
+  if (!exactThreadId || !exactTurnId || !exactClientUserMessageId) return false;
+  return record?.provider === "codex"
+    && record.model === model
+    && record.prompt === probe
+    && record.body === probeResponse
+    && String(record.threadId ?? "").trim() === exactThreadId
+    && String(record.turnId ?? "").trim() === exactTurnId
+    && String(record.clientUserMessageId ?? "").trim() === exactClientUserMessageId
+    && Date.parse(record.completedAt) >= Date.parse(startedAt);
+}
+
 async function verifyTestContourUnlocked({
   root = defaultTestContourRoot(),
   entryFile,
@@ -1975,6 +1996,7 @@ async function verifyTestContourUnlocked({
     withAgent: smokePolicy.withAgent,
     model: state.model,
     probeResponse,
+    isolatedFakeProvider: !recording && state.model === TEST_CONTOUR_FAKE_MODEL,
 
   });
   let journal = null;
@@ -1983,17 +2005,19 @@ async function verifyTestContourUnlocked({
       const database = new JournalDatabase(path.join(paths.dataDir, "journal.sqlite"));
       try {
         const ledger = await database.loadLedger();
-        const record = Object.values(ledger.turns).find((item) => (
-          item.provider === "codex"
-          && item.model === state.model
-          && item.prompt === TEST_CONTOUR_PROBE
-          && item.body === probeResponse
-          && Date.parse(item.completedAt) >= Date.parse(state.startedAt)
-        ));
+        const record = Object.values(ledger.turns).find((item) => testContourSmokeJournalMatches(item, {
+          model: state.model,
+          probe: TEST_CONTOUR_PROBE,
+          probeResponse,
+          startedAt: state.startedAt,
+          smoke,
+        }));
         return record ? {
           provider: record.provider,
+          threadId: record.threadId,
           model: record.model,
           turnId: record.turnId,
+          clientUserMessageId: record.clientUserMessageId,
           completedAt: record.completedAt,
         } : null;
       } finally {
