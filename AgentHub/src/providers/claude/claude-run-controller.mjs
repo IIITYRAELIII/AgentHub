@@ -30,6 +30,7 @@ export class ClaudeRunController {
   #preDispatchStopFailures = new WeakSet();
   #stopIntentRetryCounts = new WeakMap();
   #providerCaptureSchedule = new WeakMap();
+  #lineagePersistence = new WeakMap();
 
   constructor({
     dataDir,
@@ -521,7 +522,12 @@ export class ClaudeRunController {
   async #captureProviderOwnerWhileLive(run) {
     if (process.platform !== "win32") return;
     if (!run?.claudeProcessOwnerPath || !run?.claudeProcessOwnerToken) return;
-    if (this.#providerLineageVerified(run)) return;
+    if (this.#providerLineageVerified(run)) {
+      // Captured in memory is not durable: keep saving the same exact identity
+      // until one write succeeds, so a Hub restart cannot lose the only proof.
+      await this.#persistCapturedLineage(run);
+      return;
+    }
     const now = Date.now();
     const schedule = this.#providerCaptureSchedule.get(run) ?? { nextAtMs: 0, attempts: 0 };
     if (now < schedule.nextAtMs || schedule.attempts >= PROVIDER_CAPTURE_MAX_ATTEMPTS) return;
@@ -535,7 +541,29 @@ export class ClaudeRunController {
     } catch {
       return;
     }
-    if (verified) await this.onPersist(run).catch(() => {});
+    if (verified) {
+      this.#lineagePersistence.set(run, { nextAtMs: 0, attempts: 0 });
+      await this.#persistCapturedLineage(run);
+    }
+  }
+
+  // Durable-save retry for an already captured exact provider identity. It never
+  // captures a new identity and never dispatches any process effect.
+  async #persistCapturedLineage(run) {
+    const pending = this.#lineagePersistence.get(run);
+    if (!pending) return;
+    const now = Date.now();
+    if (now < pending.nextAtMs) return;
+    try {
+      await this.onPersist(run);
+      this.#lineagePersistence.delete(run);
+    } catch {
+      const attempts = pending.attempts + 1;
+      this.#lineagePersistence.set(run, {
+        attempts,
+        nextAtMs: now + this.#stopIntentRetryDelayMs(attempts),
+      });
+    }
   }
 
   #stopIntentRetryDelayMs(retry) {

@@ -652,7 +652,7 @@ test("ClaudeRunController keeps a permanent pre-effect intent failure fail-close
   });
 });
 
-async function liveCaptureFixture(directory) {
+async function liveCaptureFixture(directory, { saveFailures = 0, permanentSaveFailure = false } = {}) {
   const ownerPath = path.join(directory, "turn.owner.json");
   const outputPath = path.join(directory, "turn.jsonl");
   await writeFile(outputPath, "", "utf8");
@@ -689,9 +689,11 @@ async function liveCaptureFixture(directory) {
     claudeProcessOwnerToken: "token",
     claudeOwnedProcessTree: [root],
   };
-  const world = { snapshot: [root, provider], stopped: [], persisted: 0 };
+  const serialize = (value) => JSON.stringify(value, (key, item) => (key === "process" ? undefined : item));
+  // `saved` is the last durably persisted run, as a restarted Hub would restore it.
+  const world = { snapshot: [root, provider], stopped: [], persisted: 0, persistCalls: 0, saved: serialize(run) };
   const byPid = () => new Map(world.snapshot.map((item) => [item.pid, item]));
-  const controller = new ClaudeRunController({
+  const makeController = () => new ClaudeRunController({
     dataDir: directory,
     pollIntervalMs: 60_000,
     processAlive: (pid) => byPid().has(pid),
@@ -708,16 +710,24 @@ async function liveCaptureFixture(directory) {
       world.snapshot = world.snapshot.filter((item) => item.pid !== pid);
       return true;
     },
-    onPersist: async () => { world.persisted += 1; },
+    onPersist: async (value) => {
+      world.persistCalls += 1;
+      if (permanentSaveFailure || world.persistCalls <= saveFailures) throw new Error("injected run persistence failure");
+      world.persisted += 1;
+      world.saved = serialize(value);
+    },
     onReadError: () => {},
   });
+  const controller = makeController();
   // Root and wrapper exited later: only the orphaned provider remains visible.
-  const orphan = () => {
-    run.claudeExited = true;
-    run.process = { pid: root.pid, exitCode: 0, signalCode: null };
-    run.claudeProcessExitedAtMs = Date.parse("2026-09-23T10:05:00.000Z");
+  const orphan = (target = run) => {
+    target.claudeExited = true;
+    target.process = { pid: root.pid, exitCode: 0, signalCode: null };
+    target.claudeProcessExitedAtMs = Date.parse("2026-09-23T10:05:00.000Z");
+    return target;
   };
-  return { run, root, provider, world, controller, orphan };
+  const restartedRun = () => orphan(JSON.parse(world.saved));
+  return { run, root, provider, world, controller, makeController, orphan, restartedRun };
 }
 
 test("ClaudeRunController captures provider lineage from a live poll and stops the later orphan", {
@@ -759,6 +769,47 @@ test("ClaudeRunController never stops a foreign PID reusing a captured provider 
     world.snapshot = [foreign];
     await controller.stop(run);
     assert.deepEqual(world.stopped, [], "a PID reused inside the lifetime window is not the captured provider");
+  });
+});
+
+test("ClaudeRunController keeps saving a captured provider lineage until it is durable across restart", {
+  skip: process.platform !== "win32",
+}, async () => {
+  await withTempDir(async (directory) => {
+    const { run, provider, world, makeController, controller, restartedRun } = await liveCaptureFixture(directory, { saveFailures: 1 });
+    await controller.drain(run);
+    controller.pause(run);
+    assert.equal(run.claudeOwnedProcessTree.some((item) => item.launchLineageVerified === true), true);
+    assert.equal(world.persisted, 0, "the first durable save of the captured lineage failed");
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    await controller.drain(run);
+    controller.pause(run);
+    assert.equal(world.persisted, 1, "a later ordinary poll saves the same captured identity");
+
+    const restarted = restartedRun();
+    world.snapshot = [provider];
+    assert.equal(await makeController().stop(restarted), true);
+    assert.deepEqual(world.stopped, [provider.pid], "the restarted run owns the exact orphan provider");
+  });
+});
+
+test("ClaudeRunController keeps a never-saved provider lineage fail-closed after restart", {
+  skip: process.platform !== "win32",
+}, async () => {
+  await withTempDir(async (directory) => {
+    const { run, provider, world, makeController, controller, restartedRun } = await liveCaptureFixture(directory, { permanentSaveFailure: true });
+    await controller.drain(run);
+    controller.pause(run);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    await controller.drain(run);
+    controller.pause(run);
+    assert.ok(world.persistCalls >= 2, "saving the captured lineage is retried");
+    assert.equal(world.persisted, 0);
+
+    const foreign = { pid: provider.pid, parentPid: 999, creationTime: "2026-09-23T10:02:00.000Z", executablePath: "foreign.exe", commandLine: "foreign" };
+    world.snapshot = [foreign];
+    await makeController().stop(restartedRun());
+    assert.deepEqual(world.stopped, [], "without durable identity a reused PID is never stopped");
   });
 });
 
