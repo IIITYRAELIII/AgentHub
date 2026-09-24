@@ -10,9 +10,8 @@ import { callDesktopControl } from "../../desktop-control.mjs";
 import { readRuntimeState } from "../../src/infrastructure/persistence/runtime-state-store.mjs";
 import {
   CHAT_ID,
-  delay,
+  E2eChildProcessOwner,
   FakeTelegramApi,
-  stopPid,
   USER_ID,
   waitFor,
 } from "../../e2e/telegram-harness.mjs";
@@ -75,8 +74,9 @@ test("terminal SQLite contention preserves rapid FIFO intake and resumes one dra
 
   let stderr = "";
   let bot = null;
+  const botOwner = new E2eChildProcessOwner({ label: "terminal-contention Agent Hub" });
   const startBot = () => {
-    bot = spawn(process.execPath, [BOT_FILE], {
+    bot = botOwner.start(() => spawn(process.execPath, [BOT_FILE], {
       cwd: ROOT,
       env: {
         ...process.env,
@@ -87,21 +87,14 @@ test("terminal SQLite contention preserves rapid FIFO intake and resumes one dra
       },
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
-    });
+    }));
     bot.stderr.setEncoding("utf8");
     bot.stderr.on("data", (chunk) => { stderr += chunk; });
   };
   const stopBot = async () => {
     const current = bot;
     if (!current) return;
-    if (current.exitCode == null) {
-      current.kill("SIGTERM");
-      await Promise.race([new Promise((resolve) => current.once("exit", resolve)), delay(2_000)]);
-    }
-    if (current.exitCode == null) {
-      await stopPid(current.pid);
-      await Promise.race([new Promise((resolve) => current.once("exit", resolve)), delay(2_000)]);
-    }
+    await botOwner.stop();
     if (bot === current) bot = null;
   };
   startBot();

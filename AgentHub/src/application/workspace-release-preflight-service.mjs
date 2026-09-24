@@ -1,3 +1,9 @@
+import {
+  assertReleaseBaseProvenance,
+  EXPLICIT_REVIEWED_MAIN_PROVENANCE,
+  normalizedReleaseBaseProvenance,
+  SELECTED_TASK_ADOPTION_PROVENANCE,
+} from "../domain/release-base-provenance.mjs";
 import { realpathSync } from "node:fs";
 import path from "node:path";
 
@@ -198,6 +204,22 @@ function reviewedBaseProvenance({ repository, publishedRevision, approval }) {
 
 function sameReviewedBaseProvenance(actual, expected) {
   return JSON.stringify(actual ?? null) === JSON.stringify(expected ?? null);
+}
+
+// Ordinary Await preparation may advance its base only through immutable
+// selected Task adoption receipts. The owner's exact evidence becomes the
+// candidate's discriminated provenance envelope.
+function selectedTaskAdoptionProvenance(base) {
+  // The owner advances a base only through receipts. Anything else carries no
+  // envelope here and is rejected by the candidate owner's own guard.
+  if (base.baseCommit === base.publishedBaseCommit || !base.adoptions?.length) return null;
+  return normalizedReleaseBaseProvenance({
+    schemaVersion: 1,
+    kind: SELECTED_TASK_ADOPTION_PROVENANCE,
+    publishedBaseCommit: base.publishedBaseCommit,
+    adoptedBaseCommit: base.baseCommit,
+    adoptions: base.adoptions,
+  }, base.baseCommit);
 }
 
 function assertExactProductionValidation({
@@ -654,10 +676,12 @@ export class WorkspaceReleasePreflightService {
       }
       baseChecks.push({ repository, base, reviewed });
       const approvedBaseCommit = reviewed?.provenance.approvedOriginMainCommit ?? base.baseCommit;
+      const baseProvenance = reviewed?.provenance ?? selectedTaskAdoptionProvenance(base);
       if (validateOnly) {
         releaseCandidates.push(await this.releaseGitWorkspaces.validateCandidate({
           planRevision: plan.revision, workspaceId, projectRoot: repository.projectRoot,
           frozenTasks: evidence.tasks, approvedBaseCommit,
+          ...(baseProvenance ? { baseProvenance } : {}),
           validateBeforeCommit: async () => { await validatePlan(); await validateBases(); },
         }));
         await prepare(index + 1);
@@ -672,7 +696,7 @@ export class WorkspaceReleasePreflightService {
         projectRoot: repository.projectRoot,
         frozenTasks: evidence.tasks,
         approvedBaseCommit,
-        ...(reviewed ? { baseProvenance: reviewed.provenance } : {}),
+        ...(baseProvenance ? { baseProvenance } : {}),
         preserveFrozen,
         ...(generationIdentity ?? {}),
         ...(generationIdentity ? { freezePublication: freezeGeneration } : {}),
@@ -871,26 +895,53 @@ export class WorkspaceReleasePreflightService {
       if (candidate.baseCommit !== audit.originMain || candidate.manifest?.baseCommit !== candidate.baseCommit) {
         throw new Error(`prepared PreRelease base does not match reviewed main for ${repository.projectRoot}; integrate the reviewed changes through a Task`);
       }
-      const actualProvenance = candidate.manifest?.baseProvenance ?? null;
+      const actualProvenance = normalizedReleaseBaseProvenance(
+        candidate.manifest?.baseProvenance ?? null, candidate.baseCommit,
+      );
+      // Independent gate: an advanced base needs its own immutable envelope;
+      // this later audit cannot retroactively supply the missing authority.
+      try {
+        assertReleaseBaseProvenance({
+          publishedBaseCommit: baseline.publishedRevision,
+          baseCommit: candidate.baseCommit,
+          provenance: actualProvenance,
+          phase: "prepared PreRelease",
+        });
+      } catch (error) {
+        throw new Error(`${error.message} for ${repository.projectRoot}`, { cause: error });
+      }
       const explicitApprovalSupplied = Boolean(
         approval.approvedLocalMainCommit && approval.approvedOriginMainCommit,
       );
       let provenanceRequired = false;
-      if ((actualProvenance || explicitApprovalSupplied)
-          && baseline.publishedRevision !== audit.originMain && audit.localMain === audit.originMain) {
+      let releaseBase = null;
+      const currentReleaseBase = async () => {
         requiredMethod(this.taskGitWorkspaces, "releaseBaseEvidence");
-        const releaseBase = await this.taskGitWorkspaces.releaseBaseEvidence({
+        releaseBase ??= await this.taskGitWorkspaces.releaseBaseEvidence({
           projectRoot: repository.projectRoot,
           publishedBaseCommit: baseline.publishedRevision,
           tasks: repository.frozenTasks,
         });
-        provenanceRequired = explicitApprovalSupplied && releaseBase.baseCommit !== audit.originMain;
+        return releaseBase;
+      };
+      if ((actualProvenance?.kind === EXPLICIT_REVIEWED_MAIN_PROVENANCE || explicitApprovalSupplied)
+          && baseline.publishedRevision !== audit.originMain && audit.localMain === audit.originMain) {
+        provenanceRequired = explicitApprovalSupplied
+          && (await currentReleaseBase()).baseCommit !== audit.originMain;
       }
-      const expectedProvenance = actualProvenance || provenanceRequired
+      if (actualProvenance?.kind === SELECTED_TASK_ADOPTION_PROVENANCE) {
+        const current = selectedTaskAdoptionProvenance(await currentReleaseBase());
+        if (!sameReviewedBaseProvenance(actualProvenance, current)) {
+          throw new Error(`prepared PreRelease selected Task adoption authority is stale for ${repository.projectRoot}`);
+        }
+      }
+      const explicitProvenance = actualProvenance?.kind === EXPLICIT_REVIEWED_MAIN_PROVENANCE
+        ? actualProvenance : null;
+      const expectedProvenance = explicitProvenance || provenanceRequired
         ? reviewedBaseProvenance({ repository, publishedRevision: baseline.publishedRevision, approval })
         : null;
-      if ((provenanceRequired && !sameReviewedBaseProvenance(actualProvenance, expectedProvenance))
-          || (actualProvenance && !sameReviewedBaseProvenance(actualProvenance, expectedProvenance))) {
+      if ((provenanceRequired && !sameReviewedBaseProvenance(explicitProvenance, expectedProvenance))
+          || (explicitProvenance && !sameReviewedBaseProvenance(explicitProvenance, expectedProvenance))) {
         throw new Error(`prepared PreRelease reviewed-main authority is stale for ${repository.projectRoot}`);
       }
       if (!["prepared", "frozen"].includes(candidate.checkpointPhase)) {

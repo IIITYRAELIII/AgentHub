@@ -78,6 +78,8 @@ async function fixture(t) {
   return { root, primary, origin, store, taskBoard, taskGitWorkspaces, releaseGitWorkspaces, releasePlanner, releasePreflight, lifecycle, testedTask, workspace, publication };
 }
 
+// A successful Await already carries its prepared candidate: the accepted
+// result is composed into PreRelease before the lifecycle CAS.
 async function acceptAndPrepare(fixture, task, operationId) {
   const response = await fixture.lifecycle.updateWorkflowStatus({
     taskId: task.id, status: "awaiting_implementation", operationId,
@@ -170,7 +172,6 @@ test("Await membership prepares the candidate and rejects conflicts before accep
   assert.equal(returned.releaseCandidate.status, "preserved");
   prepared = await lifecycle.releasePreflight.prepareAwaitSet({ workspaceId: returned.task.workspaceId });
   assert.deepEqual(prepared.taskIds, []);
-  assert.deepEqual(prepared.releaseCandidates, []);
   const dev = await taskGitWorkspaces.prepareDev(primary);
   assert.equal(await git(dev.projectRoot, "show", "HEAD:accepted.txt"), "accepted");
   assert.equal(await git(dev.projectRoot, "show", "HEAD:unaccepted.txt"), "not accepted");
@@ -269,6 +270,7 @@ test("Await leaves PreRelease unchanged after SQLite rejection and rebuilds it a
   assert.equal(await git(candidate.releaseRoot, "rev-parse", "PreRelease"), candidate.preReleaseHead);
   assert.equal(await git(candidate.releaseRoot, "symbolic-ref", "--short", "HEAD"), "PreRelease");
   f.taskBoard.commitWorkflowTransition = async (args) => {
+    // The accepted result is already composed when the CAS runs.
     assert.equal(f.taskBoard.task(next.id).workflowStatus, "testing");
     assert.equal(await git(candidate.releaseRoot, "show", "PreRelease:next.txt"), "next");
     await original(args);
@@ -322,7 +324,25 @@ test("ambiguous Await preserves its pending operation and rebuilds the candidate
   const task = await f.testedTask("Recover", "recover.txt", "recover\n");
   const commitStatus = f.taskBoard.commitWorkflowTransition.bind(f.taskBoard);
   const readOutcome = f.taskBoard.lifecycleOutcome.bind(f.taskBoard);
-  f.taskBoard.commitWorkflowTransition = () => { throw new Error("unknown SQLite transport result"); };
+  // Capture the exact composed bytes at the moment the CAS outcome becomes
+  // unknown, so the assertions below prove they were not rolled back.
+  let composed = null;
+  f.taskBoard.commitWorkflowTransition = async () => {
+    // Captured before the failure so the assertions below cannot pass by timing.
+    composed = await composedState();
+    throw new Error("unknown SQLite transport result");
+  };
+  async function composedState() {
+    const releaseRoot = path.join(f.root, "data", "release-repositories");
+    const [entry] = await readdir(releaseRoot);
+    const repository = path.join(releaseRoot, entry, "repository");
+    return {
+      repository,
+      head: await git(repository, "rev-parse", "refs/heads/PreRelease"),
+      recover: await git(repository, "show", "PreRelease:recover.txt"),
+      checkpoint: await readFile(path.join(releaseRoot, entry, "checkpoint.json"), "utf8"),
+    };
+  }
   f.taskBoard.lifecycleOutcome = () => { throw new Error("readback unavailable"); };
   await assert.rejects(f.lifecycle.updateWorkflowStatus({ taskId: task.id, status: "awaiting_implementation", operationId: "ambiguous" }),
     { code: "AWAIT_ACCEPTANCE_UNKNOWN" });
@@ -331,6 +351,10 @@ test("ambiguous Await preserves its pending operation and rebuilds the candidate
   const preserved = await f.releaseGitWorkspaces.frozenCandidate(f.primary);
   assert.equal(preserved.checkpointPhase, "prepared");
   assert.equal(await git(preserved.releaseRoot, "show", "PreRelease:recover.txt"), "recover");
+  assert.ok(composed, "the composed candidate state was captured");
+  const afterUnknown = await composedState();
+  assert.equal(afterUnknown.head, composed.head);
+  assert.equal(afterUnknown.checkpoint, composed.checkpoint);
   f.taskBoard.commitWorkflowTransition = commitStatus;
   f.taskBoard.lifecycleOutcome = readOutcome;
   // Guard proof itself has separate process-owner tests. Exercise the real Task
@@ -345,4 +369,62 @@ test("ambiguous Await preserves its pending operation and rebuilds the candidate
   assert.equal(f.taskBoard.lifecycleOutcome("ambiguous").result.evidence.response.releaseCandidate.status, "prepared");
   const candidate = await f.releasePreflight.prepareAwaitSet({ workspaceId: f.workspace.id });
   assert.equal(await git(candidate.releaseCandidates[0].releaseRoot, "show", "PreRelease:recover.txt"), "recover");
+});
+
+test("a stale accepted set is repaired by an explicit same-status Await", { timeout: 90000 }, async (t) => {
+  const f = await fixture(t);
+  const accepted = await f.testedTask("Accepted", "accepted.txt", "accepted\n");
+  const { candidate } = await acceptAndPrepare(f, accepted, "accept-stale");
+  const acceptedTask = f.taskBoard.task(accepted.id);
+  const acceptanceIdentity = acceptedTask.releaseRevision;
+  assert.equal(acceptedTask.workflowStatus, "awaiting_implementation");
+
+  // Reproduce the acceptance-only defect shape: the Task is accepted while the
+  // candidate does not contain its result.
+  await git(candidate.releaseRoot, "update-ref", "refs/heads/PreRelease", candidate.baseCommit);
+  await git(candidate.releaseRoot, "reset", "--hard", candidate.baseCommit);
+  await assert.rejects(git(candidate.releaseRoot, "show", "PreRelease:accepted.txt"));
+
+  f.taskGitWorkspaces.snapshotAndMergeOwned = async () => {
+    throw new Error("repair must not ingest a new result");
+  };
+  const repaired = await f.lifecycle.updateWorkflowStatus({
+    taskId: accepted.id, status: "awaiting_implementation", operationId: "repair-stale-await",
+  });
+
+  assert.equal(repaired.task.workflowStatus, "awaiting_implementation");
+  assert.equal(repaired.releaseCandidate.status, "ready", JSON.stringify(repaired.releaseCandidate));
+  assert.deepEqual(repaired.releaseCandidate.taskIds, [accepted.id]);
+  const repairedCandidate = repaired.releaseCandidate.releaseCandidates[0];
+  assert.equal(await git(repairedCandidate.releaseRoot, "show", "PreRelease:accepted.txt"), "accepted");
+  // The acceptance identity is stable: only the row revision moves.
+  assert.equal(f.taskBoard.task(accepted.id).releaseRevision, acceptanceIdentity);
+  assert.equal(repaired.releaseIntegration.resultCommit, acceptedTask.gitReferences[0].resultCommit);
+});
+
+test("a frozen candidate keeps its identity through a refused same-id Await retry", { timeout: 90000 }, async (t) => {
+  const f = await fixture(t);
+  const accepted = await f.testedTask("Accepted", "accepted.txt", "accepted\n");
+  const { prepared, candidate } = await acceptAndPrepare(f, accepted, "accept-freeze-retry");
+  await writeFile(path.join(candidate.releaseRoot, "CHANGELOG.md"), "release\n");
+  const frozen = await f.releaseGitWorkspaces.freezePublicationCandidate({
+    projectRoot: f.primary, workspaceId: f.workspace.id,
+    expectedPlanRevision: prepared.planRevision,
+    expectedPreparedHead: candidate.preReleaseHead, changelogContent: Buffer.from("release\n"),
+  });
+  const next = await f.testedTask("Next", "next.txt", "next\n");
+  const checkpointFile = path.join(path.dirname(candidate.releaseRoot), "checkpoint.json");
+  const checkpointBefore = await readFile(checkpointFile, "utf8");
+
+  for (const attempt of [1, 2]) {
+    await assert.rejects(f.lifecycle.updateWorkflowStatus({
+      taskId: next.id, status: "awaiting_implementation", operationId: "accept-into-frozen",
+    }), { code: "RELEASE_CANDIDATE_FROZEN" }, `attempt ${attempt}`);
+    assert.equal(f.taskBoard.task(next.id).workflowStatus, "testing");
+    assert.equal(await readFile(checkpointFile, "utf8"), checkpointBefore);
+    const readback = await f.releaseGitWorkspaces.frozenCandidate(f.primary);
+    assert.equal(readback.preReleaseHead, frozen.preReleaseHead);
+    assert.equal(readback.manifestHash, frozen.manifestHash);
+    await assert.rejects(git(candidate.releaseRoot, "show", "PreRelease:next.txt"));
+  }
 });

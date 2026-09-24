@@ -3,6 +3,12 @@ import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import { createInterface } from "node:readline";
+import { stopProcessTree } from "../src/infrastructure/process/process-tree.mjs";
+import {
+  processFingerprintMatches,
+  readOwnedProcessTree,
+  readProcessFingerprint,
+} from "../src/providers/claude/claude-run-io.mjs";
 
 const FAKE_MODEL = "fake-codex";
 const OWN_ARGUMENTS = new Set([
@@ -12,6 +18,7 @@ const OWN_ARGUMENTS = new Set([
   "--routing-state",
 ]);
 const CHILD_RPC_TIMEOUT_MS = 180_000;
+const CHILD_SHUTDOWN_TIMEOUT_MS = 5_000;
 
 function parsedArguments(argv) {
   const own = new Map();
@@ -81,6 +88,10 @@ function startChild(command, args, environment = process.env) {
     stdio: ["pipe", "pipe", "pipe"],
     windowsHide: true,
     shell: false,
+    // Keep POSIX children in the multiplexer group so an external owner can
+    // still terminate the whole contour if this process crashes. Normal
+    // shutdown additionally verifies each exact child/descendant fingerprint.
+    detached: false,
   });
 }
 
@@ -100,11 +111,37 @@ const children = {
   }),
 };
 
+async function readFingerprintWithRetry(pid) {
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const fingerprint = await readProcessFingerprint(pid);
+    if (fingerprint) return fingerprint;
+    if (attempt < 3) await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  return null;
+}
+
+const childOwners = new Map(await Promise.all(Object.values(children).map(async (child) => [
+  child,
+  {
+    root: await readFingerprintWithRetry(child.pid),
+    known: [],
+  },
+])));
+for (const owner of childOwners.values()) {
+  if (owner.root) {
+    const createdAtMs = Date.parse(owner.root.creationTime);
+    owner.root.startedAtMs = Number.isFinite(createdAtMs) ? createdAtMs : Date.now();
+    owner.known = [owner.root];
+  }
+}
+
 let childRequestSequence = 1;
 let serverRequestSequence = 1_000_000;
 const pendingChildRequests = new Map();
 const pendingServerRequests = new Map();
+const closedChildren = new WeakSet();
 let shuttingDown = false;
+let shutdownPromise = null;
 
 function sendClient(message) {
   process.stdout.write(`${JSON.stringify(message)}\n`);
@@ -180,6 +217,11 @@ function handleChildMessage(backend, message) {
 }
 
 for (const [backend, child] of Object.entries(children)) {
+  child.once("close", () => {
+    const owner = childOwners.get(child);
+    if (owner?.root) owner.root.exitedAtMs = Date.now();
+    closedChildren.add(child);
+  });
   createInterface({ input: child.stdout }).on("line", (line) => {
     try {
       handleChildMessage(backend, JSON.parse(line));
@@ -202,12 +244,8 @@ for (const [backend, child] of Object.entries(children)) {
       }));
     }
     if (shuttingDown) return;
-    shuttingDown = true;
     process.stderr.write(`[${backend}] exited: ${signal ?? code}\n`);
-    for (const sibling of Object.values(children)) {
-      if (sibling !== child && !sibling.killed) sibling.kill();
-    }
-    setTimeout(() => process.exit(Number.isInteger(code) && code !== 0 ? code : 1), 25);
+    void shutdown(Number.isInteger(code) && code !== 0 ? code : 1);
   });
 }
 
@@ -363,7 +401,8 @@ async function handleRequest(message) {
   }
 }
 
-createInterface({ input: process.stdin }).on("line", (line) => {
+const clientInput = createInterface({ input: process.stdin });
+clientInput.on("line", (line) => {
   try {
     const message = JSON.parse(line);
     if (message?.method && message.id !== undefined) {
@@ -385,13 +424,84 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     process.stderr.write(`Invalid client message: ${error.message}\n`);
   }
 });
+clientInput.once("close", () => { void shutdown(); });
 
-function shutdown() {
-  shuttingDown = true;
-  for (const child of Object.values(children)) {
-    if (!child.killed) child.kill();
+function waitForChildClose(child, timeoutMs = CHILD_SHUTDOWN_TIMEOUT_MS) {
+  if (closedChildren.has(child)) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      child.off("close", closed);
+      resolve(false);
+    }, timeoutMs);
+    timer.unref?.();
+    const closed = () => {
+      clearTimeout(timer);
+      resolve(true);
+    };
+    child.once("close", closed);
+  });
+}
+
+async function stopOwnedChild(child) {
+  const pid = Number(child?.pid);
+  if (!Number.isInteger(pid) || pid <= 0) return;
+  const owner = childOwners.get(child);
+  if (!owner?.root) throw new Error(`Cannot verify owned Codex child tree ${pid}`);
+  const deadline = Date.now() + CHILD_SHUTDOWN_TIMEOUT_MS;
+  let current = await readOwnedProcessTree(owner.root, owner.known, { rootExited: closedChildren.has(child) });
+  if (!Array.isArray(current)) throw new Error(`Cannot inspect owned Codex child tree ${pid}`);
+  for (const item of current) {
+    if (!owner.known.some((known) => Number(known.pid) === Number(item.pid))) owner.known.push(item);
+  }
+  for (const target of [...current].sort((left, right) => Number(right.pid) - Number(left.pid))) {
+    const targetPid = Number(target.pid);
+    if (targetPid === pid && closedChildren.has(child)) continue;
+    const exact = await readProcessFingerprint(targetPid);
+    if (!exact || !processFingerprintMatches(target, exact)) continue;
+    const remainingMs = Math.max(1, deadline - Date.now());
+    // POSIX children deliberately remain in the multiplexer process group so
+    // an external owner can clean them after a crash. They are therefore not
+    // group leaders: stop the exact fingerprint-verified PIDs one by one.
+    if (await stopProcessTree(targetPid, {
+      timeoutMs: remainingMs,
+      processGroup: process.platform === "win32",
+    }) !== true) {
+      throw new Error(`Cannot stop owned Codex child tree ${targetPid}`);
+    }
+  }
+  while (Date.now() < deadline) {
+    // A stopped child can leave the process table before its close event
+    // records the exit; until then ownership is unresolved, not failed.
+    current = await readOwnedProcessTree(owner.root, owner.known, { rootExited: closedChildren.has(child) });
+    if (Array.isArray(current) && current.length === 0
+      && (closedChildren.has(child) || await waitForChildClose(child, 20))) return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  if (!Array.isArray(current)) throw new Error(`Cannot inspect owned Codex child tree ${pid}`);
+  if (!closedChildren.has(child) || current.length > 0) {
+    throw new Error(`Owned Codex child tree ${pid} did not terminate`);
   }
 }
 
-process.once("SIGINT", shutdown);
-process.once("SIGTERM", shutdown);
+function shutdown(exitCode = 0) {
+  if (shutdownPromise) return shutdownPromise;
+  shuttingDown = true;
+  shutdownPromise = (async () => {
+    const outcomes = await Promise.allSettled(Object.values(children).map(stopOwnedChild));
+    const failures = outcomes.filter((outcome) => outcome.status === "rejected");
+    for (const failure of failures) process.stderr.write(`Codex child shutdown failed: ${failure.reason?.message ?? failure.reason}\n`);
+    if (failures.length) {
+      // Do not make a parent close look like proof that an unconfirmed child
+      // tree is gone. Exact children retain this process until their owner can
+      // observe or terminate them.
+      process.exitCode = 1;
+      return false;
+    }
+    process.exit(exitCode);
+    return true;
+  })();
+  return shutdownPromise;
+}
+
+process.once("SIGINT", () => { void shutdown(); });
+process.once("SIGTERM", () => { void shutdown(); });

@@ -513,15 +513,18 @@ export async function freezePreparedPublication({
   ));
   const selectedWorkspace = String(workspaceId || manifest.workspaceId || "").trim();
   if (!selectedWorkspace) throw new Error("publication freeze requires its Workspace");
-  const changelogContent = await read(path.join(repositoryRoot, "CHANGELOG.md")).catch((error) => {
-    if (error.code === "ENOENT") return null;
-    throw error;
-  });
+  const reusePersistedChangelog = ["freezing", "frozen"].includes(checkpoint.phase);
+  const changelogContent = reusePersistedChangelog
+    ? undefined
+    : await read(path.join(repositoryRoot, "CHANGELOG.md")).catch((error) => {
+      if (error.code === "ENOENT") return null;
+      throw error;
+    });
   const releaseWorkspace = createReleaseWorkspace({ dataDir: path.dirname(marker.managedRoot) });
   const frozen = await releaseWorkspace.freezePublicationCandidate({
     projectRoot: marker.primaryRoot, workspaceId: selectedWorkspace,
     expectedPlanRevision: checkpoint.planRevision, expectedPreparedHead: checkpoint.preReleaseHead,
-    changelogContent,
+    changelogContent, reusePersistedChangelog,
     validateBeforeCommit: async () => {
       const plan = await readPlan(selectedWorkspace);
       if (plan.revision !== checkpoint.planRevision) {

@@ -18,6 +18,7 @@
     "publish-changed.mjs",
     "rate-limit-backfill.mjs",
     "release-operation-publication-runner.mjs",
+    "release-freeze-recovery.mjs",
     "release-version.mjs",
     "request-safe-restart.mjs",
     "runtime-manager.mjs",

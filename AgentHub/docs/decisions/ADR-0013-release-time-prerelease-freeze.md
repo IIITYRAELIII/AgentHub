@@ -2,13 +2,19 @@
 
 ## Status
 
-Accepted. Supersedes the Await-to-`PreRelease` portions of ADR-0010.
+Partially superseded. Its freeze identity and immutability rules below remain
+operative. Its Await ordering — that acceptance never builds `PreRelease` — is
+superseded by ADR-0045 and then ADR-0055: an ordinary Await transition composes
+the candidate before it commits, and only a composition failure leaves the Task
+in Test. Supersedes the Await-to-`PreRelease` portions of ADR-0010.
 
 ## Decision
 
 Moving a Task to `awaiting_implementation` records its exact accepted result for
-a future release. This transition does not build, rebuild or mutate
-`PreRelease`.
+a future release. Under ADR-0055 that transition also composes the accepted
+result into the current `PreRelease` before the acceptance commits; the original
+wording below, which forbade any candidate change at acceptance, is retained as
+history and is not the operative rule.
 
 Only an explicit user release command starts candidate assembly. Release Manager
 selects the exact ready Await set, updates current `main` from `origin/main`,

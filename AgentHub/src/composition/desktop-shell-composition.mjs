@@ -556,6 +556,7 @@ export function createDesktopShellComposition({
       describeAttachments: desktopAttachmentDescriptors,
       hasDeferredBacklog: (target) => deferredInputs.hasBacklog(target),
       isMaintenanceActive: (target) => streamContextMaintenance.isActive(target),
+      isManagedMaintenanceActive: (target) => streamContextMaintenance.isManagedActive(target),
       isRestartPending: () => Boolean(hostState.restartRequest),
       scheduleDeferred: scheduleQueuedInput,
       setProgressStage: (...args) => taskProgress.setStage(...args),

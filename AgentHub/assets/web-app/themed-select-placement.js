@@ -4,8 +4,11 @@
   function resolve(select, menu, { documentRoot = document } = {}) {
     const dialog = select?.closest?.("dialog") ?? null;
     return Object.freeze({
+      // Keep modal menus inside the dialog's non-inert subtree, but promote
+      // them to the top layer so themed filters cannot become their fixed
+      // containing block or clip them at the dialog boundary.
       host: dialog ?? documentRoot.body,
-      usePopover: !dialog && typeof menu?.showPopover === "function",
+      usePopover: typeof menu?.showPopover === "function",
     });
   }
 

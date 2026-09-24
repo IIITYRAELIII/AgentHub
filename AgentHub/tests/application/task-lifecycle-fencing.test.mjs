@@ -5,7 +5,7 @@ import { TaskLifecycleService } from "../../src/application/task-lifecycle-servi
 import { taskReleasePlanRevision } from "../../src/domain/task-release-snapshot.mjs";
 import { normalizedTaskSquashTransfer } from "../../src/domain/task-squash-transfer.mjs";
 
-function lifecycleFixture({ synchronousFence = false } = {}) {
+function lifecycleFixture({ synchronousFence = false, stableFence = false } = {}) {
   const task = {
     id: "task-fenced", title: "Fenced", taskNumber: "HUB-159", revision: 1,
     workspaceId: "workspace-1", streamId: "stream-1", workflowStatus: "done",
@@ -15,7 +15,7 @@ function lifecycleFixture({ synchronousFence = false } = {}) {
   const asyncAssertOwned = async () => {
     calls.assertions += 1;
     await Promise.resolve();
-    if (calls.assertions > 1) throw new Error("lease ownership was lost asynchronously");
+    if (!stableFence && calls.assertions > 1) throw new Error("lease ownership was lost asynchronously");
   };
   const lease = {
     signal: new AbortController().signal,
@@ -120,6 +120,41 @@ test("Task lifecycle rejects a synchronous assertOwned contract before mutation"
   });
 });
 
+test("Complete and Delete retain squash absorption evidence through cleanup", async (t) => {
+  for (const action of ["complete", "delete"]) await t.test(action, async () => {
+    const { service, calls, task } = lifecycleFixture({ stableFence: true });
+    const reference = {
+      projectRoot: "D:/project", branch: "HUB-224", resultCommit: "a".repeat(40),
+    };
+    const squashAbsorbedBy = { transferHash: "b".repeat(64) };
+    Object.assign(task, { gitReferences: [reference], squashAbsorbedBy });
+    const cleanup = {
+      workspaces: [], gitReferences: [{ ...reference, published: true }],
+      dirty: false, unpublished: [], deleting: [],
+    };
+    service.taskGitWorkspaces.cleanupPreview = async (_taskId, options) => {
+      assert.equal(options.squashAbsorbedBy, squashAbsorbedBy);
+      return cleanup;
+    };
+    service.taskGitWorkspaces.cleanupOwned = async (_taskId, options) => {
+      assert.equal(options.squashAbsorbedBy, squashAbsorbedBy);
+      assert.equal(options.expectedPreview, cleanup);
+      calls.cleanup += 1;
+      return { removed: 0 };
+    };
+
+    const request = { taskId: task.id, operationId: `${action}-absorbed` };
+    const preview = await service[action](request);
+    await service[action]({
+      ...request, confirmCleanup: true, expectedCleanupToken: preview.cleanupToken,
+    });
+
+    assert.equal(calls.cleanup, 1);
+    assert.equal(calls.complete, action === "complete" ? 1 : 0);
+    assert.equal(calls.delete, action === "delete" ? 1 : 0);
+  });
+});
+
 test("absorption validates under Await then Task and dev ownership and binds confirmation to composition", async () => {
   const { service, calls, task } = lifecycleFixture();
   Object.assign(task, { workflowStatus: "in_progress", status: "open" });
@@ -175,7 +210,130 @@ test("absorption validates under Await then Task and dev ownership and binds con
     expectedCleanupToken: currentPreview.cleanupToken }), (error) => error === uncertain);
 });
 
-test("Await validates the exact Test result, commits acceptance and only invalidates the prior candidate", async () => {
+test("published duplicate closure binds Done publication proof, preserves Git and retries finalization", async () => {
+  const source = {
+    id: "published-duplicate", taskNumber: "HUB-241", revision: 6, status: "started",
+    workspaceId: "workspace-1", streamId: "stream-1", workflowStatus: "in_progress",
+    gitReferences: [], gitAdoptions: [],
+  };
+  const survivor = {
+    ...source, id: "published-survivor", taskNumber: "HUB-217", revision: 93,
+    status: "done", workflowStatus: "done",
+    gitReferences: [{ projectRoot: "D:/project", branch: "HUB-217", resultCommit: "a".repeat(40) }],
+  };
+  const lease = { async assertOwned() {} };
+  let generation = "release-1";
+  let finalizeAttempts = 0;
+  let transition = null;
+  let outcome = null;
+  let publicationDrift = false;
+  const calls = [];
+  const taskBoard = {
+    task: (id) => structuredClone(id === survivor.id ? survivor : source),
+    lifecycleTransition: (operationId) => transition?.operationId === operationId ? transition : null,
+    lifecycleOutcome: (operationId) => outcome?.operationId === operationId ? outcome : null,
+    beginLifecycleTransition: (options) => {
+      calls.push(["begin", options.evidence.absorbedInto]);
+      if (transition) return { replayed: true, phase: transition.phase };
+      transition = {
+        operationId: options.operationId,
+        taskId: source.id,
+        kind: "complete",
+        phase: "cleanup",
+        expectedRevision: source.revision,
+        priorTask: structuredClone(source),
+        evidence: options.evidence,
+      };
+      return { replayed: false, phase: "cleanup" };
+    },
+    commitWorkflowTransition() {},
+    rollbackWorkflowOutcome() {},
+    failLifecycleTransition() { throw new Error("published duplicate retry must retain cleanup transition"); },
+    finalizeCleanupTransition: (_operationId, options) => {
+      finalizeAttempts += 1;
+      calls.push(["finalize", options.receiptEvidence]);
+      if (finalizeAttempts === 1) throw new Error("database reply unavailable before commit");
+      const result = { ...source, status: "done" };
+      outcome = {
+        operationId: _operationId,
+        taskId: source.id,
+        kind: "complete",
+        result: { result, evidence: options.receiptEvidence },
+      };
+      transition = null;
+      return result;
+    },
+  };
+  const evidence = () => ({
+    version: 1, mode: "published_duplicate",
+    source: { taskId: source.id, taskRevision: source.revision },
+    survivor: { taskId: survivor.id, taskRevision: survivor.revision },
+    publicationGeneration: generation,
+    cleanupPlan: { strategy: "preserve_managed_source", deleting: [] },
+    repositories: [{
+      projectRoot: "D:/project", sourceBranch: "HUB-241", sourceBaseCommit: "b".repeat(40),
+      sourceHead: "c".repeat(40), survivorBranch: "HUB-217",
+      survivorResult: "a".repeat(40), publishedRevision: "c".repeat(40),
+    }],
+  });
+  const taskGitWorkspaces = {
+    withTaskLock: (_id, operation) => operation(lease),
+    withTaskLocks: (_ids, operation) => operation(lease),
+    withPublishedDuplicateEvidenceOwned: (_options, operation) => {
+      if (publicationDrift) throw new Error("current publication advanced beyond preserved source");
+      return operation(evidence(), lease);
+    },
+    prepareOwned() {}, snapshotAndMergeOwned() {}, cleanupOwned() {},
+    cleanupPreview: async () => ({ workspaces: [], gitReferences: [], dirty: false, unpublished: [], deleting: [] }),
+  };
+  const service = new TaskLifecycleService({
+    taskBoard,
+    taskGitWorkspaces,
+    workspaceCatalog: {
+      workspace: () => ({ id: "workspace-1", settings: { releaseWorkflowEnabled: true } }),
+      stream: () => ({ id: "stream-1", workspaceId: "workspace-1", settings: {} }),
+    },
+    releasePreflight: { withAwaitTransition: (_id, operation) => operation() },
+  });
+  const request = {
+    taskId: source.id, absorbedIntoTaskId: survivor.id, absorptionMode: "published_duplicate",
+    operationId: "published-duplicate-close",
+  };
+  const preview = await service.complete(request);
+  assert.deepEqual(preview.preview.deleting, []);
+  assert.deepEqual(preview.preview.preserving, [{
+    kind: "managed_source", projectRoot: "D:/project", branch: "HUB-241", headCommit: "c".repeat(40),
+  }]);
+  generation = "release-2";
+  await assert.rejects(service.complete({ ...request, confirmCleanup: true,
+    expectedCleanupToken: preview.cleanupToken }), /confirmation is stale/u);
+  assert.equal(transition, null);
+  const current = await service.complete(request);
+  await assert.rejects(service.complete({ ...request, confirmCleanup: true,
+    expectedCleanupToken: current.cleanupToken }), /database reply unavailable/u);
+  assert.equal(transition.phase, "cleanup");
+  generation = "release-3";
+  publicationDrift = true;
+  await assert.rejects(service.complete({ ...request, operationId: "different-operation" }),
+    /current publication advanced/u);
+  await assert.rejects(service.complete({ ...request, absorbedIntoTaskId: "different-survivor",
+    confirmCleanup: true, expectedCleanupToken: current.cleanupToken }), /does not match this published duplicate closure/u);
+  const completed = await service.complete({ ...request, confirmCleanup: true,
+    expectedCleanupToken: current.cleanupToken });
+  assert.equal(completed.status, "done");
+  assert.equal(finalizeAttempts, 2);
+  assert.equal(calls.filter(([name]) => name === "begin").length, 1);
+  assert.equal(calls.some(([, value]) => value?.cleanupPlan?.strategy === "preserve_managed_source"), true);
+  assert.equal((await service.complete({ ...request, confirmCleanup: true,
+    expectedCleanupToken: current.cleanupToken })).status, "done");
+  assert.equal(finalizeAttempts, 2);
+
+  survivor.workspaceId = "workspace-2";
+  outcome = null;
+  await assert.rejects(service.complete({ ...request, operationId: "wrong-workspace" }), /same Workspace/u);
+});
+
+test("Await composes PreRelease before it commits acceptance and keeps the prior candidate on refusal", async () => {
   const previousReference = {
     projectRoot: "D:/project", branch: "HUB-159", resultCommit: "a".repeat(40),
   };
@@ -239,7 +397,23 @@ test("Await validates the exact Test result, commits acceptance and only invalid
         calls.push(`lock:${workspaceId}`);
         return operation();
       },
-      prepareAwaitSet: async () => { throw new Error("Await must not build or mutate PreRelease"); },
+      prepareAwaitSet: async (options) => {
+        calls.push("prepare");
+        assert.equal(task.workflowStatus, "testing", "composition precedes the acceptance CAS");
+        assert.deepEqual(options.acceptingTask, { id: task.id, revision: task.revision });
+        assert.equal(options.preserveFrozen, true);
+        assert.equal(options.lease, lease);
+        const prepared = {
+          workspaceId: "workspace-1",
+          planRevision: "prospective-plan",
+          taskIds: [task.id],
+          releaseCandidates: [{ preReleaseHead: "new-candidate", manifestHash: "new-manifest" }],
+        };
+        await options.commitPrepared(prepared);
+        candidateBytes.head = "new-candidate";
+        candidateBytes.tree = "new-tree";
+        return prepared;
+      },
       validateAwaitAcceptance: async (options) => {
         calls.push("validate");
         assert.equal(task.workflowStatus, "testing");
@@ -281,10 +455,12 @@ test("Await validates the exact Test result, commits acceptance and only invalid
     "lock:workspace-1", "begin", "repo", "validate", "commit", "wake:task-await",
   ]);
   assert.equal(task.workflowStatus, "awaiting_implementation");
-  assert.equal(result.releaseCandidate.status, "invalidated");
-  assert.equal(retry.releaseCandidate.status, "invalidated");
+  assert.equal(result.releaseCandidate.status, "ready");
+  assert.equal(result.releaseCandidate.releaseCandidates[0].preReleaseHead, "new-candidate");
+  assert.equal(retry.releaseCandidate.status, "ready");
   assert.equal(result.releaseIntegration.resultCommit, previousReference.resultCommit);
-  assert.deepEqual(candidateBytes, { head: "old-candidate", tree: "old-tree" });
+  // The refused attempt never composed, so its candidate bytes stayed put.
+  assert.deepEqual(candidateBytes, { head: "new-candidate", tree: "new-tree" });
   assert.notEqual(
     taskReleasePlanRevision("workspace-1", [existingAwait, task]),
     oldCandidatePlanRevision,
@@ -564,5 +740,9 @@ test("unknown workflow recovery retains the repository lease through Git continu
     proof: { kind: "system-restart-after-guard", confirmed: true, summary: "boot proof" },
   });
   assert.equal(result.result.task.workflowStatus, "awaiting_implementation");
-  assert.deepEqual(calls, ["repository-lock", "recover", "begin", "repository-lock-reused", "validate", "commit"]);
+  // Recovery reuses the held repository lease and still composes PreRelease
+  // before the recovered acceptance commits.
+  assert.deepEqual(calls, [
+    "repository-lock", "recover", "begin", "repository-lock-reused", "validate", "rebuild", "commit",
+  ]);
 });

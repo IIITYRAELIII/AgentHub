@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { DeferredInputController } from "../../src/application/deferred-input-controller.mjs";
+import { deferredPendingInputSnapshot } from "../../src/interfaces/desktop/desktop-snapshot.mjs";
 import {
   task,
   snapshot,
@@ -257,6 +259,107 @@ test("production queue corrects stale idle placement and survives receipt evicti
     await page.locator(".msg-body").filter({ hasText: text }).waitFor({ state: "visible" });
     assert.equal(await page.locator(".msg-body").filter({ hasText: text }).count(), 1);
     assert.deepEqual(diagnostics, []);
+  } finally {
+    await browser.close();
+  }
+});
+
+test("attention-required exact steer exposes explicit retry and queue decisions", {
+  timeout: 90_000,
+}, async () => {
+  const pendingInputs = new Map();
+  const queuedInputs = new Map();
+  const item = {
+    id: "exact-steer-decision",
+    provider: "codex",
+    threadId: "thread-a",
+    streamId: "stream-a",
+    taskTitle: "Agent HUB - Sirius",
+    clientUserMessageId: "exact-steer-client",
+    clientProjectionIntent: "conversation",
+    input: "Exact steer retained",
+    conflictKind: "message-steer",
+    steerTargetRunId: "run-a",
+    steerTargetTurnId: "turn-a",
+    createdAt: "2026-09-13T22:00:00.000Z",
+  };
+  queuedInputs.set(item.id, item);
+  let providerCalls = 0;
+  const controller = new DeferredInputController({
+    pendingInputs,
+    queuedInputs,
+    isBlocked: async () => false,
+    occupancy: async () => ({ occupied: false, run: null }),
+    steer: async () => { providerCalls += 1; return null; },
+    start: async () => {},
+    persist: async () => {},
+    updateMessage: async () => {},
+    pendingKeyboard: () => ({ inline_keyboard: [] }),
+    notifyReturned: async () => {},
+    now: () => Date.parse("2026-09-13T22:00:01.000Z"),
+  });
+  await controller.process(item.id);
+  assert.equal(providerCalls, 0);
+  const deferred = deferredPendingInputSnapshot(pendingInputs.get(item.id), {
+    editableText: (input) => input,
+    inputPreview: (input) => input,
+    responseAnnotations: () => [],
+    describeAttachments: () => [],
+  }, { forMessage: () => null });
+  assert.equal(deferred.queueAfterTurnAvailable, true);
+  assert.equal(deferred.attentionRequired, true);
+
+  for (const [selector, expectedAction] of [
+    ["queue-retry", "retry"],
+    ["queue-accept", "queue"],
+  ]) {
+    const browser = await launchBrowser();
+    const page = await browser.newPage();
+    try {
+      const fixtureSnapshot = snapshot();
+      fixtureSnapshot.version = `exact-steer-${expectedAction}`;
+      fixtureSnapshot.deferredInputs = [deferred];
+      await openFixture(page, { fixtureSnapshot });
+      await page.reload();
+      const row = page.locator(".queue-item[data-queue-id='exact-steer-decision']");
+      await row.waitFor({ state: "visible" });
+      assert.equal(await row.locator("[data-action='queue-retry']").count(), 1);
+      assert.equal(await row.locator("[data-action='queue-accept']").count(), 1);
+      assert.equal(await row.locator("[data-action='queue-steer']").count(), 0);
+      assert.equal((await bridgeCalls(page, "deferred-input")).length, 0);
+      await row.locator(`[data-action='${selector}']`).click();
+      await page.waitForFunction((action) => {
+        const log = JSON.parse(localStorage.getItem("fixture:bridge-log") ?? "[]");
+        return log.some((entry) => entry.action === "deferred-input"
+          && entry.params.id === "exact-steer-decision"
+          && entry.params.action === action);
+      }, expectedAction);
+      const calls = await bridgeCalls(page, "deferred-input");
+      assert.equal(calls.length, 1);
+      assert.equal(calls[0].params.id, "exact-steer-decision");
+      assert.equal(calls[0].params.action, expectedAction);
+    } finally {
+      await browser.close();
+    }
+  }
+
+  const browser = await launchBrowser();
+  const page = await browser.newPage();
+  try {
+    const fixtureSnapshot = snapshot();
+    fixtureSnapshot.version = "exact-steer-unknown";
+    fixtureSnapshot.deferredInputs = [{
+      ...deferred,
+      queueAfterTurnAvailable: false,
+      lastError: "Провайдер не подтвердил уточнение; автоматический повтор не выполнялся.",
+    }];
+    await openFixture(page, { fixtureSnapshot });
+    const row = page.locator(".queue-item[data-queue-id='exact-steer-decision']");
+    await row.waitFor({ state: "visible" });
+    assert.equal(await row.locator("[data-action='queue-retry']").count(), 1);
+    assert.equal(await row.locator("[data-action='queue-accept']").count(), 0);
+    assert.equal(await row.locator("[data-action='queue-steer']").count(), 0);
+    assert.equal((await bridgeCalls(page, "deferred-input")).length, 0);
   } finally {
     await browser.close();
   }

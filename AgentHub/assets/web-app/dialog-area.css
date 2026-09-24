@@ -56,12 +56,12 @@ html[data-view="chat"][data-surface][data-theme] {
   border-bottom: 1px solid var(--dialog-hairline) !important;
   border-radius: 0 !important;
   display: flex;
-  flex: 0 0 var(--dialog-stream-tabs-height);
+  flex: 0 0 calc(var(--dialog-stream-tabs-height) + var(--dialog-stream-tabs-inset-top, 0px));
   gap: 0 !important;
-  height: var(--dialog-stream-tabs-height);
-  min-height: var(--dialog-stream-tabs-height) !important;
+  height: calc(var(--dialog-stream-tabs-height) + var(--dialog-stream-tabs-inset-top, 0px));
+  min-height: calc(var(--dialog-stream-tabs-height) + var(--dialog-stream-tabs-inset-top, 0px)) !important;
   overflow: visible;
-  padding: 0 !important;
+  padding: var(--dialog-stream-tabs-inset-top, 0px) var(--dialog-stream-tabs-inset-inline, 0px) 0 !important;
   position: relative;
   scrollbar-width: none;
   z-index: 50;

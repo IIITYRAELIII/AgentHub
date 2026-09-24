@@ -101,6 +101,12 @@
         "isolation": { "filesystem": "per-child-temp", "git": "per-test-temp", "locks": "per-test-temp", "ports": "none", "browserProfile": "none" }
       }
     },
+    "tests/infrastructure/filesystem/release-missing-provenance-recovery.test.mjs": {
+      "execution": {
+        "parallel": true,
+        "isolation": { "filesystem": "per-child-temp", "git": "per-test-temp", "locks": "per-test-temp", "ports": "none", "browserProfile": "none" }
+      }
+    },
     "tests/infrastructure/filesystem/release-task-net-projection.test.mjs": {
       "execution": {
         "parallel": true,
