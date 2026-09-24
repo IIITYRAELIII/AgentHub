@@ -1167,7 +1167,16 @@ test("Astra uses its compact label only in Stream pills and the active Stream he
         streamOrdinal: 5,
         modelLabel: "Custom Astra Preview",
         selected: false,
-      }]);
+      }, ...["gpt-6-sol", "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-luna"].map((modelLabel, index) => ({
+        ...astraTask,
+        id: `task-versioned-${index}`,
+        threadId: `thread-versioned-${index}`,
+        streamId: `stream-versioned-${index}`,
+        streamName: `S${index + 6}`,
+        streamOrdinal: index + 6,
+        modelLabel,
+        selected: false,
+      }))]);
       return {
         header: document.querySelector("[data-stream-header-model]")?.textContent,
         headerTitle: document.querySelector("[data-stream-header-model]")?.title,
@@ -1183,6 +1192,8 @@ test("Astra uses its compact label only in Stream pills and the active Stream he
         customPillTitle: document.querySelector(
           '[data-activity-task-id="task-custom-astra"] .task-model',
         )?.title,
+        versionedPills: [...document.querySelectorAll('[data-activity-task-id^="task-versioned-"] .task-model')]
+          .map((element) => ({ label: element.textContent, title: element.title })),
       };
     });
 
@@ -1192,6 +1203,12 @@ test("Astra uses its compact label only in Stream pills and the active Stream he
     assert.equal(result.astraPillTitle, "GPT-6 Astra");
     assert.equal(result.customPill, "Custom Astra Preview");
     assert.equal(result.customPillTitle, "Custom Astra Preview");
+    assert.deepEqual(result.versionedPills, [
+      { label: "6 Sol", title: "gpt-6-sol" },
+      { label: "6 Luna", title: "gpt-6-luna" },
+      { label: "5.6 Sol", title: "gpt-5.6-sol" },
+      { label: "5.6 Luna", title: "gpt-5.6-luna" },
+    ]);
   } finally {
     await browser.close();
   }

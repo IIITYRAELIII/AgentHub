@@ -281,6 +281,8 @@ test("Await leaves PreRelease unchanged after SQLite rejection and rebuilds it a
   assert.equal(recovered.releaseCandidate.status, "prepared");
   assert.equal(recovered.releaseCandidate.planRevision, (await f.releasePlanner.plan(f.workspace.id)).revision);
   assert.equal(await git(candidate.releaseRoot, "show", "PreRelease:next.txt"), "next");
+  assert.equal(recovered.cleanupWarnings?.length ?? 0, 0,
+    recovered.cleanupWarnings?.map((error) => error.message).join("; "));
   for (const generationRoot of prospectiveRoots) await assert.rejects(access(generationRoot), { code: "ENOENT" });
   assert.deepEqual(await readdir(path.join(f.root, "data", "release-gens")).catch((error) => (
     error.code === "ENOENT" ? [] : Promise.reject(error)
@@ -308,6 +310,10 @@ test("concurrent Await acceptances compose in independent generations and serial
   ]);
   assert.equal(firstResult.task.workflowStatus, "awaiting_implementation");
   assert.equal(secondResult.task.workflowStatus, "awaiting_implementation");
+  assert.equal(firstResult.cleanupWarnings?.length ?? 0, 0,
+    firstResult.cleanupWarnings?.map((error) => error.message).join("; "));
+  assert.equal(secondResult.cleanupWarnings?.length ?? 0, 0,
+    secondResult.cleanupWarnings?.map((error) => error.message).join("; "));
   assert.ok(new Set(roots).size >= 2);
   assert.ok(usedAlternates.every(Boolean));
   for (const generationRoot of roots) await assert.rejects(access(generationRoot), { code: "ENOENT" });
@@ -393,16 +399,17 @@ test("a stale accepted set is repaired by an explicit same-status Await", { time
   });
 
   assert.equal(repaired.task.workflowStatus, "awaiting_implementation");
-  assert.equal(repaired.releaseCandidate.status, "ready", JSON.stringify(repaired.releaseCandidate));
-  assert.deepEqual(repaired.releaseCandidate.taskIds, [accepted.id]);
-  const repairedCandidate = repaired.releaseCandidate.releaseCandidates[0];
+  assert.equal(repaired.releaseCandidate.status, "prepared", JSON.stringify(repaired.releaseCandidate));
+  const refreshed = await f.releasePreflight.prepareAwaitSet({ workspaceId: f.workspace.id });
+  assert.deepEqual(refreshed.taskIds, [accepted.id]);
+  const repairedCandidate = refreshed.releaseCandidates[0];
   assert.equal(await git(repairedCandidate.releaseRoot, "show", "PreRelease:accepted.txt"), "accepted");
   // The acceptance identity is stable: only the row revision moves.
   assert.equal(f.taskBoard.task(accepted.id).releaseRevision, acceptanceIdentity);
   assert.equal(repaired.releaseIntegration.resultCommit, acceptedTask.gitReferences[0].resultCommit);
 });
 
-test("a frozen candidate keeps its identity through a refused same-id Await retry", { timeout: 90000 }, async (t) => {
+test("a frozen candidate keeps its identity while a later Await enters the next generation", { timeout: 90000 }, async (t) => {
   const f = await fixture(t);
   const accepted = await f.testedTask("Accepted", "accepted.txt", "accepted\n");
   const { prepared, candidate } = await acceptAndPrepare(f, accepted, "accept-freeze-retry");
@@ -414,17 +421,18 @@ test("a frozen candidate keeps its identity through a refused same-id Await retr
   });
   const next = await f.testedTask("Next", "next.txt", "next\n");
   const checkpointFile = path.join(path.dirname(candidate.releaseRoot), "checkpoint.json");
-  const checkpointBefore = await readFile(checkpointFile, "utf8");
+  const checkpointBefore = JSON.parse(await readFile(checkpointFile, "utf8"));
+  const frozenManifestFile = path.join(path.dirname(candidate.releaseRoot), "evidence", `${checkpointBefore.manifestHash}.json`);
+  const frozenManifestBefore = await readFile(frozenManifestFile, "utf8");
 
-  for (const attempt of [1, 2]) {
-    await assert.rejects(f.lifecycle.updateWorkflowStatus({
-      taskId: next.id, status: "awaiting_implementation", operationId: "accept-into-frozen",
-    }), { code: "RELEASE_CANDIDATE_FROZEN" }, `attempt ${attempt}`);
-    assert.equal(f.taskBoard.task(next.id).workflowStatus, "testing");
-    assert.equal(await readFile(checkpointFile, "utf8"), checkpointBefore);
-    const readback = await f.releaseGitWorkspaces.frozenCandidate(f.primary);
-    assert.equal(readback.preReleaseHead, frozen.preReleaseHead);
-    assert.equal(readback.manifestHash, frozen.manifestHash);
-    await assert.rejects(git(candidate.releaseRoot, "show", "PreRelease:next.txt"));
-  }
+  const acceptedNext = await f.lifecycle.updateWorkflowStatus({
+    taskId: next.id, status: "awaiting_implementation", operationId: "accept-into-frozen",
+  });
+  assert.equal(acceptedNext.task.workflowStatus, "awaiting_implementation");
+  assert.equal(acceptedNext.releaseCandidate.status, "prepared");
+  const checkpointAfter = JSON.parse(await readFile(checkpointFile, "utf8"));
+  assert.equal(checkpointAfter.phase, "prepared");
+  assert.notEqual(checkpointAfter.manifestHash, frozen.manifestHash);
+  assert.equal(await readFile(frozenManifestFile, "utf8"), frozenManifestBefore);
+  assert.equal(await git(candidate.releaseRoot, "show", "PreRelease:next.txt"), "next");
 });

@@ -95,7 +95,9 @@ test("release operation acknowledges before work and finishes one exact generati
 test("validation failure waits for a correction and continues as generation two", async (t) => {
   let validation = 0;
   let resultVersion = 1;
+  const cleaned = [];
   const f = await fixture(t, {
+    cleanupGeneration: async ({ generation: value }) => { cleaned.push(value.generation); },
     compose: async () => generation(taskIds.map((taskId) => ({
       taskId, resultCommit: `${taskId}-r${resultVersion}`, tree: `${taskId}-tree-${resultVersion}`, acceptanceRevision: resultVersion + 1,
     }))),
@@ -117,6 +119,7 @@ test("validation failure waits for a correction and continues as generation two"
   assert.equal(snapshot.operation.currentGeneration, 2);
   assert.equal(snapshot.generations[0].selectedResults[0].resultCommit, "task-a-r1");
   assert.equal(snapshot.generations[1].selectedResults[0].resultCommit, "task-a-r2");
+  assert.deepEqual(cleaned, [1, 2]);
 });
 
 test("lineage mismatch creates one automatic correction request and waits on the same operation", async (t) => {

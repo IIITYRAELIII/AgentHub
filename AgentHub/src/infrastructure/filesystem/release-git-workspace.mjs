@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { link, lstat, mkdir, mkdtemp, open, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import { copyFile, link, lstat, mkdir, mkdtemp, open, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { ReleaseCandidateFrozenError } from "../../domain/task-board-task.mjs";
@@ -1130,6 +1130,52 @@ export class ReleaseGitWorkspaceService {
         || identity.generation !== Number(candidate?.generation)
         || identity.identitySha256 !== sha256(`${identity.operationId}:${identity.generation}:${identity.repositoryRoot}`)) {
       throw new Error("release generation cleanup identity changed");
+    }
+    // Promotion may replace candidate.releaseRoot with the live release clone.
+    // Archive only the immutable generation's own repository evidence.
+    const evidenceSource = path.join(generationRoot, "release-repositories",
+      taskRepositoryKey(identity.repositoryRoot));
+    const archiveRoot = path.join(this.dataDir, "release-generation-evidence", path.basename(generationRoot));
+    await mkdir(archiveRoot, { recursive: true });
+    const preserve = async (source, destination) => {
+      const bytes = await readFile(source);
+      const existing = await readFile(destination).catch((error) => {
+        if (error?.code === "ENOENT") return null;
+        throw error;
+      });
+      if (existing) {
+        if (!existing.equals(bytes)) throw new Error("release generation archive evidence changed");
+        return;
+      }
+      const temporary = `${destination}.${process.pid}.${randomUUID()}.tmp`;
+      try {
+        await copyFile(source, temporary);
+        await rename(temporary, destination);
+      } finally {
+        await rm(temporary, { force: true });
+      }
+    };
+    const archiveIdentity = await readJson(path.join(archiveRoot, "identity.json"));
+    if (archiveIdentity && JSON.stringify(archiveIdentity) !== JSON.stringify(identity)) {
+      throw new Error("release generation evidence archive identity changed");
+    }
+    await preserve(path.join(generationRoot, "identity.json"), path.join(archiveRoot, "identity.json"));
+    const entries = await readdir(evidenceSource, { withFileTypes: true }).catch((error) => {
+      if (error?.code === "ENOENT") return [];
+      throw error;
+    });
+    for (const entry of entries) {
+      if (entry.isFile() && /^(checkpoint|publication-run-status|publication-run-log)\.(json|log)$/u.test(entry.name)) {
+        await preserve(path.join(evidenceSource, entry.name), path.join(archiveRoot, entry.name));
+      } else if (entry.isDirectory() && entry.name === "evidence") {
+        const archivedEvidence = path.join(archiveRoot, "evidence");
+        await mkdir(archivedEvidence, { recursive: true });
+        for (const item of await readdir(path.join(evidenceSource, entry.name), { withFileTypes: true })) {
+          if (item.isFile() && /\.(json|bin)$/u.test(item.name)) {
+            await preserve(path.join(evidenceSource, entry.name, item.name), path.join(archivedEvidence, item.name));
+          }
+        }
+      }
     }
     await rm(generationRoot, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
   }

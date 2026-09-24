@@ -25,7 +25,8 @@ export function releaseOperationPublicationArguments({ operation, candidate, sav
     "--stream", operation.streamId,
     "--thread", operation.threadId,
     "--from", candidate.baseCommit,
-    operation.authorization.validationMode === "full" ? "--full-tests" : "--validation=focused",
+    operation.authorization.validationMode === "full" ? "--full-tests"
+      : operation.authorization.validationMode === "quick" ? "--quick" : "--validation=focused",
   ];
 }
 

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { access, mkdir, mkdtemp, readFile, readdir, rm, unlink, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -224,6 +225,59 @@ test("Task Git preview includes committed, staged and untracked work without cha
   const large = await service.reviewDiff({ taskId, taskNumber });
   assert.equal(large.truncated, true);
   assert.ok(Buffer.byteLength(large.repositories[0].text) <= 64 * 1024);
+});
+
+test("release service closure proves exact published manifest and Done result without deleting its worktree", { timeout: 90_000 }, async (context) => {
+  const { root } = await repositoryWithOrigin(context);
+  const dataDir = path.join(root, "..", `${path.basename(root)}-release-service-data`);
+  context.after(() => rm(dataDir, { recursive: true, force: true }));
+  let publication = null;
+  const service = new TaskGitWorkspaceService({ dataDir, readPublication: async () => publication });
+  const source = await service.prepare({
+    taskId: "11111111-1111-4111-8111-111111111111", taskNumber: "HUB-252", projectRoot: root,
+  });
+  const selectedWorkspace = await service.prepare({
+    taskId: "22222222-2222-4222-8222-222222222222", taskNumber: "HUB-245", projectRoot: root,
+  });
+  await writeFile(path.join(selectedWorkspace.projectRoot, "release.txt"), "published\n", "utf8");
+  const selectedResult = await service.snapshotAndMerge({ taskId: selectedWorkspace.taskId,
+    taskNumber: "HUB-245", projectRoot: selectedWorkspace.projectRoot });
+  await git(root, "merge", "--ff-only", selectedResult.snapshot.headCommit);
+  await git(root, "push", "origin", "main");
+  await git(root, "update-ref", "refs/remotes/origin/main", selectedResult.snapshot.headCommit);
+  const repositoryKey = taskRepositoryKey(root);
+  const manifest = { workspaceId: "workspace-1", planRevision: "plan-1", tasks: [{
+    taskId: selectedWorkspace.taskId, resultCommit: selectedResult.snapshot.headCommit,
+  }] };
+  const manifestBytes = Buffer.from(`${JSON.stringify(manifest)}\n`);
+  const manifestHash = createHash("sha256").update(manifestBytes).digest("hex");
+  const evidenceRoot = path.join(dataDir, "release-repositories", repositoryKey, "evidence");
+  await mkdir(evidenceRoot, { recursive: true });
+  await writeFile(path.join(evidenceRoot, `${manifestHash}.json`), manifestBytes);
+  publication = { generation: "published-generation", repositories: [{ root,
+    revision: selectedResult.snapshot.headCommit, planRevision: "plan-1", manifestHash }] };
+  const sourceTask = { id: source.taskId, taskNumber: "HUB-252", revision: 4,
+    workspaceId: "workspace-1", gitReferences: [] };
+  const selectedTask = { id: selectedWorkspace.taskId, revision: 5, workspaceId: "workspace-1",
+    status: "done", workflowStatus: "done", gitReferences: [{ projectRoot: root,
+      resultCommit: selectedResult.snapshot.headCommit }] };
+  const proof = await service.withTaskLock(source.taskId, (lease) => (
+    service.publishedReleaseServiceEvidenceOwned({ source: sourceTask, selectedTasks: [selectedTask], lease })
+  ));
+  assert.equal(proof.publishedRevision, selectedResult.snapshot.headCommit);
+  assert.equal(proof.manifestHash, manifestHash);
+  assert.deepEqual(proof.cleanupPlan.deleting, []);
+  assert.equal((await service.describe(source.taskId)).length, 1);
+
+  await assert.rejects(service.withTaskLock(source.taskId, (lease) => (
+    service.publishedReleaseServiceEvidenceOwned({ source: sourceTask,
+      selectedTasks: [{ ...selectedTask, gitReferences: [{ projectRoot: root,
+        resultCommit: "f".repeat(40) }] }], lease })
+  )), /does not match exact published Done results/u);
+  await writeFile(path.join(source.projectRoot, "valuable.txt"), "preserve\n", "utf8");
+  await assert.rejects(service.withTaskLock(source.taskId, (lease) => (
+    service.publishedReleaseServiceEvidenceOwned({ source: sourceTask, selectedTasks: [selectedTask], lease })
+  )), /clean managed worktree/u);
 });
 
 test("published duplicate proof requires exact clean published main and survivor lineage", { timeout: 90_000 }, async (context) => {

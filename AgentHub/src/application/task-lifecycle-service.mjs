@@ -67,6 +67,7 @@ function confirmation(task, action, preview) {
     })),
     gitReferences: preview.gitReferences ?? [],
     absorbedInto: preview.absorbedInto ?? null,
+    releaseService: preview.releaseService ?? null,
     deleting: preview.deleting ?? [],
   })).digest("hex");
   return {
@@ -1279,10 +1280,86 @@ export class TaskLifecycleService {
       : complete();
   }
 
+  async #completePublishedReleaseService({ taskId, operationId, confirmCleanup, expectedCleanupToken }) {
+    requiredMethod(this.taskGitWorkspaces, "publishedReleaseServiceEvidenceOwned");
+    const priorOutcome = this.taskBoard.lifecycleOutcome?.(operationId);
+    if (priorOutcome?.taskId === taskId && priorOutcome.kind === "complete"
+        && priorOutcome.result?.evidence?.releaseService?.mode === "published_release_service") {
+      return priorOutcome.result.result;
+    }
+    return this.#withLock(taskId, async (lease) => {
+      const task = this.#task(taskId);
+      if (task.status === "done" || !["new", "in_progress", "blocked"].includes(task.workflowStatus)) {
+        throw new Error("Published release service Task must remain open outside Test/Await");
+      }
+      const checklist = task.checklist ?? [];
+      const taskIds = checklist.map((item) => {
+        if (!item.completed) throw new Error("Published release service checklist is incomplete");
+        const links = [...String(item.text ?? "").matchAll(/agent-hub:\/\/task\/([0-9a-f-]{36})/gu)];
+        const linked = String(item.linkedTaskId ?? links[0]?.[1] ?? "").trim();
+        if (!linked || links.length > 1 || (links.length && links[0][1] !== linked)) {
+          throw new Error("Published release service checklist has no unique Task identity");
+        }
+        return linked;
+      });
+      if (!taskIds.length || new Set(taskIds).size !== taskIds.length) {
+        throw new Error("Published release service checklist must select distinct Tasks");
+      }
+      const selectedTasks = taskIds.map((id) => {
+        const selected = this.#task(id);
+        if (selected.workspaceId !== task.workspaceId || selected.status !== "done"
+            || selected.workflowStatus !== "done") {
+          throw new Error("Published release service checklist contains an unfinished Task");
+        }
+        return selected;
+      });
+      const releaseService = await this.taskGitWorkspaces.publishedReleaseServiceEvidenceOwned({
+        source: task, selectedTasks, lease,
+      });
+      const cleanup = { taskId: task.id, workspaces: [], gitReferences: [], dirty: false,
+        unpublished: [], deleting: [], preserving: releaseService.preserving, releaseService };
+      const preview = confirmation(task, "complete", cleanup);
+      preview.warning = "Close only the verified published release service Task; preserve its managed worktree and history.";
+      if (confirmCleanup !== true) return preview;
+      if (String(expectedCleanupToken ?? "") !== preview.cleanupToken) {
+        throw new Error("Published release service confirmation is stale");
+      }
+      const resumed = this.taskBoard.lifecycleTransition?.(operationId);
+      if (resumed) {
+        if (resumed.taskId !== task.id || resumed.kind !== "complete" || resumed.phase !== "cleanup"
+            || Number(resumed.expectedRevision) !== Number(task.revision)
+            || JSON.stringify(resumed.evidence?.releaseService) !== JSON.stringify(releaseService)
+            || JSON.stringify(resumed.evidence?.cleanup) !== JSON.stringify(cleanup)) {
+          throw new Error("Task lifecycle operation id does not match this release service closure");
+        }
+      } else {
+        await this.#assertOwned(lease);
+        const begun = await this.#mutation(() => this.taskBoard.beginLifecycleTransition({
+          id: task.id, operationId, kind: "complete", expectedRevision: task.revision,
+          evidence: { releaseService, cleanup },
+        }), operationId);
+        if (begun?.phase !== "cleanup") throw new Error("Published release service lifecycle is not ready for finalization");
+      }
+      await this.#assertOwned(lease);
+      return this.#mutation(() => this.taskBoard.finalizeCleanupTransition(operationId, {
+        receiptEvidence: { releaseService, cleanup },
+      }), operationId);
+    });
+  }
+
   async complete({
     taskId, operationId, confirmCleanup = false, expectedCleanupToken = null,
-    absorbedIntoTaskId = null, absorptionMode = null,
+    absorbedIntoTaskId = null, absorptionMode = null, completionMode = null,
   } = {}) {
+    if (completionMode != null && completionMode !== "published_release_service") {
+      throw new Error("Unsupported Task completion mode");
+    }
+    if (completionMode && (absorptionMode || absorbedIntoTaskId)) {
+      throw new Error("Release service completion cannot absorb another Task");
+    }
+    if (completionMode === "published_release_service") return this.#completePublishedReleaseService({
+      taskId, operationId, confirmCleanup, expectedCleanupToken,
+    });
     if (absorptionMode != null && absorptionMode !== "published_duplicate") {
       throw new Error("Unsupported Task absorption mode");
     }

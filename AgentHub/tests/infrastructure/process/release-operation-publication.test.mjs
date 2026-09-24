@@ -51,6 +51,16 @@ test("stable publication runner preserves the initiating Stream and Thread for s
     "--from", "base-commit",
     "--validation=focused",
   ]);
+  assert.deepEqual(releaseOperationPublicationArguments({
+    operation: { ...operation, authorization: { validationMode: "quick" } },
+    candidate,
+  }), [
+    "--workspace", "workspace-1",
+    "--stream", "stream-initiator",
+    "--thread", "thread-initiator",
+    "--from", "base-commit",
+    "--quick",
+  ]);
 });
 
 test("stable runner process publishes the exact SQLite generation to an isolated Git endpoint", { timeout: 60000 }, async (t) => {

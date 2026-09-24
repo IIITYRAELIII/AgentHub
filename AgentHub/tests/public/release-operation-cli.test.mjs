@@ -28,7 +28,11 @@ function fixture() {
     if (action === "release-operation-run") {
       return { accepted: true, operationId: "operation-1", state: "compose", revision: 1 };
     }
-    return { operation: { operationId: "operation-1", state: "done", revision: 8 } };
+    if (action === "release-operation-continue") return { accepted: true, operationId: "operation-1" };
+    return { operation: { operationId: "operation-1", state: "done", revision: 8,
+      workspaceId: manifest.workspaceId, streamId: "stream-1", threadId: "thread-1",
+      authorization: { approvedTargets: [{ kind: "agent-hub-publication", repositoryRoot: primaryRoot }] },
+    } };
   };
   return {
     repositoryRoot,
@@ -74,12 +78,53 @@ test("publish:changed delegates one deterministic full release to ReleaseOperati
     f.manifest.baseProvenance.approvedLocalMainCommit);
   assert.equal(admission.options.commandId, admission.params.requestId);
 
-  const requestId = admission.params.requestId;
   f.calls.length = 0;
-  await runReleaseOperationCli(["--resume", "--from", f.manifest.baseCommit, "--workspace", f.manifest.workspaceId,
-    "--stream", "stream-1", "--thread", "thread-1", "--full-tests"], f.options);
-  assert.equal(f.calls[0].params.requestId, requestId);
-  assert.equal(f.calls[0].options.commandId, requestId);
+  await runReleaseOperationCli(["--resume", "--operation", "operation-1", "--workspace", f.manifest.workspaceId], f.options);
+  assert.deepEqual(f.calls.map((call) => call.action), ["release-operation-get"]);
+  assert.equal(f.calls[0].params.operationId, "operation-1");
+  f.calls.length = 0;
+  await assert.rejects(runReleaseOperationCli(["--resume", "--full-tests"], f.options),
+    /require the original --operation id/u);
+  assert.equal(f.calls.length, 0);
+});
+
+test("resume addresses the original operation even when validation flags or Thread have changed", async () => {
+  const f = fixture();
+  let reads = 0;
+  f.options.control = async (action, params) => {
+    f.calls.push({ action, params });
+    if (action === "release-operation-get") {
+      reads += 1;
+      return { operation: {
+        operationId: "operation-1", state: reads === 1 ? "waiting" : "done", revision: reads,
+        workspaceId: f.manifest.workspaceId, streamId: "stream-1", threadId: "old-thread",
+        authorization: { approvedTargets: [{ kind: "agent-hub-publication", repositoryRoot: f.primaryRoot }] },
+      } };
+    }
+    if (action === "release-operation-continue") return { accepted: true, operationId: "operation-1" };
+    throw new Error(`unexpected ${action}`);
+  };
+  const resumed = await runReleaseOperationCli(["--resume", "--operation", "operation-1"], f.options);
+  assert.equal(resumed.operation.state, "done");
+  assert.deepEqual(f.calls.map((call) => call.action), [
+    "release-operation-get", "release-operation-continue", "release-operation-get",
+  ]);
+});
+
+test("status reads the exact original operation without continuing or reading candidate files", async () => {
+  const f = fixture();
+  f.options.control = async (action, params) => {
+    f.calls.push({ action, params });
+    assert.equal(action, "release-operation-get");
+    return { operation: { operationId: params.operationId, state: "waiting", revision: 4,
+      workspaceId: f.manifest.workspaceId, streamId: "stream-1", threadId: "thread-1",
+      authorization: { approvedTargets: [{ kind: "agent-hub-publication", repositoryRoot: f.primaryRoot }] },
+    } };
+  };
+  f.options.read = async () => assert.fail("status must not read current candidate evidence");
+  const status = await runReleaseOperationCli(["--status", "--operation", "operation-1"], f.options);
+  assert.equal(status.operation.state, "waiting");
+  assert.deepEqual(f.calls.map((call) => call.action), ["release-operation-get"]);
 });
 
 test("public CLI admits repository-scale release metadata through the command owner and domain", async () => {

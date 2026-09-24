@@ -174,6 +174,11 @@ test("one operation generation isolates source bundles per repository", { timeou
   await service.discardGenerationCandidate(secondCandidate);
   await assert.rejects(stat(firstCandidate.generationRoot), { code: "ENOENT" });
   await assert.rejects(stat(secondCandidate.generationRoot), { code: "ENOENT" });
+  const firstArchive = path.join(dataDir, "release-generation-evidence", path.basename(firstCandidate.generationRoot));
+  const secondArchive = path.join(dataDir, "release-generation-evidence", path.basename(secondCandidate.generationRoot));
+  assert.equal((await readFile(path.join(firstArchive, "identity.json"), "utf8")).includes(common.operationId), true);
+  assert.equal((await readFile(path.join(firstArchive, "evidence", `${firstCandidate.manifestHash}.json`))).length > 0, true);
+  assert.equal((await readFile(path.join(secondArchive, "evidence", `${secondCandidate.manifestHash}.json`))).length > 0, true);
 });
 
 for (const binaryOnly of [false, true]) test(`PreRelease preserves ${binaryOnly ? "terminal binary patch delimiters" : "binary patch bytes and a trailing blank context line"}`, { timeout: 20000 }, async (context) => {

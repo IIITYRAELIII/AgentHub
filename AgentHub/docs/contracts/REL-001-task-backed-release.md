@@ -253,6 +253,17 @@ exact Test result per source repository, and that result must be an ancestor of
 the same published revision. Clean or ancestral state without these identities
 is insufficient.
 
+A release service Task with no implementation result uses the distinct Release
+Manager-only `completion_mode=published_release_service`. It may close only
+after every checklist Task is Done and its exact result matches the immutable
+manifest named by repository-scoped durable publication evidence. The owner
+hashes the manifest bytes, verifies its Workspace and plan, and proves the
+published commit remains in local and tracked main. Preview binds the
+publication generation, manifest, selected result revisions and preserve-only
+cleanup plan; confirmation rechecks them. No result is fabricated and its clean
+managed worktree is retained. Publication, Task closure and cleanup remain
+separate facts.
+
 Preview binds both Task revisions, every source base/branch/HEAD, every survivor
 result, repository-scoped published revisions, publication generation, explicit
 mode and a preserve-only cleanup plan. Confirmation repeats the Git proof under

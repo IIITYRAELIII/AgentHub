@@ -1768,6 +1768,11 @@ test("claim forwards an explicit user dependency exception and complete forwards
   assert.equal(result.cleanupToken, "preview");
   const schema = service.tools().find((tool) => tool.name === "hub_task_complete").inputSchema;
   assert.deepEqual(schema.properties.absorption_mode.enum, ["published_duplicate"]);
+  assert.deepEqual(schema.properties.completion_mode.enum, ["published_release_service"]);
+  await service.call("hub_task_complete", { context_token: token,
+    request_id: "release-service-preview", task_id: "task-current",
+    completion_mode: "published_release_service" });
+  assert.equal(received.completionMode, "published_release_service");
   const otherToken = service.contextToken({ provider: "codex", threadId: "thread-2" });
   await assert.rejects(service.call("hub_task_complete", {
     context_token: otherToken,
@@ -1775,6 +1780,10 @@ test("claim forwards an explicit user dependency exception and complete forwards
     task_id: "task-current",
     absorbed_into_task_id: "task-survivor",
     absorption_mode: "published_duplicate",
+  }), /requires a Release Manager Stream/u);
+  await assert.rejects(service.call("hub_task_complete", {
+    context_token: otherToken, request_id: "release-service-non-manager",
+    task_id: "task-current", completion_mode: "published_release_service",
   }), /requires a Release Manager Stream/u);
 });
 

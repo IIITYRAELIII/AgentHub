@@ -274,6 +274,8 @@ export function parseChangedArguments(args) {
   let testContour = false;
   let quick = false;
   let resume = false;
+  let status = false;
+  let operationId = "";
   let workspaceId = "";
   let streamId = "";
   let threadId = "";
@@ -285,6 +287,8 @@ export function parseChangedArguments(args) {
     else if (args[index] === "--validation=full") fullTests = true;
     else if (args[index] === "--validation=focused") { /* default validation */ }
     else if (args[index] === "--resume") resume = true;
+    else if (args[index] === "--status") status = true;
+    else if (args[index] === "--operation" && args[index + 1]) operationId = args[++index];
     else if (args[index] === "--workspace" && args[index + 1]) workspaceId = args[++index];
     else if (args[index] === "--stream" && args[index + 1]) streamId = args[++index];
     else if (args[index] === "--thread" && args[index + 1]) threadId = args[++index];
@@ -295,7 +299,11 @@ export function parseChangedArguments(args) {
     else throw new Error(`Неизвестный аргумент: ${args[index]}`);
   }
   if (quick && fullTests) throw new Error("Choose either quick or full validation");
-  return { from, skipRestart, fullTests, testContour, quick, resume, workspaceId, streamId, threadId };
+  if (resume && status) throw new Error("Choose either --resume or --status");
+  if ((resume || status) && !operationId) throw new Error("--resume and --status require the original --operation id");
+  if (operationId && !resume && !status) throw new Error("--operation requires --resume or --status");
+  return { from, skipRestart, fullTests, testContour, quick, resume, status, operationId,
+    workspaceId, streamId, threadId };
 }
 
 export async function publishChanged(args = process.argv.slice(2), {
@@ -555,6 +563,48 @@ export async function runReleaseOperationCli(args = process.argv.slice(2), {
   }
   const root = path.resolve(repositoryRoot);
   const marker = await assertClone({ repositoryRoot: root });
+  if (options.resume || options.status) {
+    const snapshot = await control("release-operation-get", { operationId: options.operationId }, { runtimeRoot });
+    const operation = snapshot?.operation;
+    if (!operation || operation.operationId !== options.operationId) {
+      throw new Error("release operation readback identity changed");
+    }
+    const publicationTarget = operation.authorization?.approvedTargets?.find((target) => (
+      target.kind === "agent-hub-publication"
+      && path.resolve(String(target.repositoryRoot ?? "")) === path.resolve(marker.primaryRoot)
+    ));
+    if (!publicationTarget || (options.workspaceId && operation.workspaceId !== options.workspaceId)
+      || (options.streamId && operation.streamId !== options.streamId)
+      || (options.threadId && operation.threadId !== options.threadId)) {
+      throw new Error("release operation does not belong to this release clone or initiator");
+    }
+    if (options.status || operation.state === "done") return snapshot;
+    if (operation.state === "failed") {
+      const error = new Error(operation.lastError?.message ?? "release operation failed");
+      error.code = operation.lastError?.code ?? "RELEASE_OPERATION_FAILED";
+      throw error;
+    }
+    await control("release-operation-continue", { operationId: options.operationId }, { runtimeRoot });
+    let lastRevision = -1;
+    for (;;) {
+      const current = await control("release-operation-get", { operationId: options.operationId }, { runtimeRoot });
+      const value = current?.operation;
+      if (!value || value.operationId !== options.operationId) {
+        throw new Error("release operation readback identity changed");
+      }
+      if (value.revision !== lastRevision) {
+        console.log(`Release operation ${options.operationId}: ${value.state}${value.currentStep ? `/${value.currentStep}` : ""}`);
+        lastRevision = value.revision;
+      }
+      if (value.state === "done") return current;
+      if (value.state === "failed") {
+        const error = new Error(value.lastError?.message ?? "release operation failed");
+        error.code = value.lastError?.code ?? "RELEASE_OPERATION_FAILED";
+        throw error;
+      }
+      await wait(Math.max(100, Number(pollMs) || 1_000));
+    }
+  }
   const checkpoint = JSON.parse(await read(path.join(root, "..", "checkpoint.json"), "utf8"));
   if (!/^[a-f0-9]{64}$/u.test(String(checkpoint.manifestHash ?? ""))) {
     throw new Error("prepared release manifest is missing");

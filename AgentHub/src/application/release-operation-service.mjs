@@ -458,6 +458,21 @@ export class ReleaseOperationService {
     this.#retryTimers.set(operation.operationId, timer);
   }
 
+  async #discardSupersededFailedValidation(operation) {
+    if (!this.cleanupGeneration || operation.currentGeneration < 1
+        || operation.publicationEffects?.publishStarted) return;
+    try {
+      const receipt = this.store.latestStep(operation.operationId, operation.currentGeneration, "validate");
+      if (receipt?.status !== "failed") return;
+      const prior = this.store.generation(operation.operationId, operation.currentGeneration);
+      if (!prior) return;
+      const warnings = await this.cleanupGeneration({ operation, generation: prior });
+      if (warnings?.length) console.warn("Release generation cleanup retained evidence after error", warnings);
+    } catch (error) {
+      console.warn("Release generation cleanup retained the prior candidate", error);
+    }
+  }
+
   async #compose(operation, owner) {
     const generationNumber = operation.currentGeneration + 1;
     const input = {
@@ -478,11 +493,13 @@ export class ReleaseOperationService {
         effect: { identitySha256: existingGeneration.identitySha256 },
         expectedOwner: owner,
       });
-      return this.#advance(operation.operationId, "validate", {
+      const advanced = this.#advance(operation.operationId, "validate", {
         currentGeneration: generationNumber,
         selectedResults: existingGeneration.selectedResults,
         nextAction: "validate immutable candidate generation",
       }, owner);
+      await this.#discardSupersededFailedValidation(operation);
+      return advanced;
     }
     if (!started.created && started.receipt.status === "unknown") {
       const error = new Error("composition intent has no authoritative local outcome");
@@ -495,11 +512,13 @@ export class ReleaseOperationService {
       if (!generation || (recordedIdentity && generation.identitySha256 !== recordedIdentity)) {
         throw new Error("composed generation receipt does not match immutable candidate evidence");
       }
-      return this.#advance(operation.operationId, "validate", {
+      const advanced = this.#advance(operation.operationId, "validate", {
         currentGeneration: generationNumber,
         selectedResults: generation.selectedResults,
         nextAction: "validate immutable candidate generation",
       }, owner);
+      await this.#discardSupersededFailedValidation(operation);
+      return advanced;
     }
     try {
       const composed = await this.compose({ operation, generation: generationNumber });
@@ -516,11 +535,13 @@ export class ReleaseOperationService {
         status: "applied",
         effect: { identitySha256: generation.identitySha256 }, expectedOwner: owner,
       });
-      return this.#advance(operation.operationId, "validate", {
+      const advanced = this.#advance(operation.operationId, "validate", {
         currentGeneration: generationNumber,
         selectedResults: generation.selectedResults,
         nextAction: "validate immutable candidate generation",
       }, owner);
+      await this.#discardSupersededFailedValidation(operation);
+      return advanced;
     } catch (error) {
       this.store.finishStep(started.receipt, { status: "failed", error, expectedOwner: owner });
       throw error;

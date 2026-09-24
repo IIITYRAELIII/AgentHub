@@ -769,12 +769,13 @@ export class HubMcpService {
         main_result_commit: { type: "string" },
         confirm_adoption: { type: "boolean", description: "Must be true because this creates release-authority Git references for legacy work." },
       }, ["task_id", "expected_task_revision", "evidence_turn_id", "reported_result_commit", "main_result_commit", "confirm_adoption"]),
-      tool("hub_task_complete", "Preview, then confirm closing a Task. Use absorbed_into_task_id after agent-led consolidation. Release Managers may explicitly close a verified published zero-delta duplicate without attributing a result to it.", {
+      tool("hub_task_complete", "Preview, then confirm closing a Task. Use absorbed_into_task_id after agent-led consolidation. Release Managers may close a verified published zero-delta duplicate or published release service Task without fabricating a result or deleting its worktree.", {
         task_id: { type: "string" },
         confirm_cleanup: { type: "boolean" },
         expected_cleanup_token: { type: "string" },
         absorbed_into_task_id: { type: "string", description: "Surviving tested Task that contains the source work. The source must already be returned from Test/Await." },
         absorption_mode: { type: "string", enum: ["published_duplicate"], description: "Release Manager-only mode for an open zero-own-delta source whose survivor is already Done and exactly published." },
+        completion_mode: { type: "string", enum: ["published_release_service"], description: "Release Manager-only closure for a published service release Task with exact manifest/checklist linkage; preserves its managed worktree." },
       }, ["task_id"]),
       tool("hub_task_delete", "Preview, then explicitly confirm permanent destructive deletion of a Task and its managed Git artifacts.", {
         task_id: { type: "string" },
@@ -1038,6 +1039,9 @@ export class HubMcpService {
       case "hub_task_complete":
         if (args.absorption_mode === "published_duplicate" && !this.#isReleaseManager(context)) {
           throw new Error("published duplicate closure requires a Release Manager Stream");
+        }
+        if (args.completion_mode === "published_release_service" && !this.#isReleaseManager(context)) {
+          throw new Error("published release service closure requires a Release Manager Stream");
         }
         return this.#completeTask(context, args);
       case "hub_task_delete": {
@@ -1586,10 +1590,12 @@ export class HubMcpService {
     expected_cleanup_token: expectedCleanupToken = null,
     absorbed_into_task_id: absorbedIntoTaskId = null,
     absorption_mode: absorptionMode = null,
+    completion_mode: completionMode = null,
   } = {}) {
     const task = this.#task(context, taskId);
     const result = await this.taskLifecycle.complete({
-      taskId: task.id, operationId, confirmCleanup, expectedCleanupToken, absorbedIntoTaskId, absorptionMode,
+      taskId: task.id, operationId, confirmCleanup, expectedCleanupToken, absorbedIntoTaskId,
+      absorptionMode, completionMode,
     });
     return result?.confirmationRequired
       ? { ...result, task: compactTask(result.task) }

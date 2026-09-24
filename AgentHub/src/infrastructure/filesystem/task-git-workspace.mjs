@@ -4063,6 +4063,67 @@ export class TaskGitWorkspaceService {
     return visit(0, lease);
   }
 
+  async publishedReleaseServiceEvidenceOwned({ source, selectedTasks, lease } = {}) {
+    this.#assertAvailable("publishedReleaseServiceEvidenceOwned");
+    await requiredGuardLease(lease).assertOwned();
+    if ((source.gitReferences ?? []).length || (source.gitAdoptions ?? []).length
+        || source.squashTransfer || source.squashAbsorbedBy) {
+      throw new Error("Release service Task must not claim an implementation result");
+    }
+    const workspaces = await this.describe(source.id);
+    if (workspaces.length !== 1 || workspaces[0].dirty) {
+      throw new Error("Release service Task requires one clean managed worktree to preserve");
+    }
+    const repositoryRoot = workspaces[0].repositoryRoot;
+    const publication = await this.readPublication();
+    const published = publicationStateRepositories(publication ?? {}).find((item) => samePath(item.root, repositoryRoot));
+    const generation = String(publication?.generation ?? "").trim();
+    const publishedRevision = exactCommitId(published?.revision, "published repository revision");
+    const manifestHash = String(published?.manifestHash ?? "").trim();
+    if (!generation || !/^[a-f0-9]{64}$/u.test(manifestHash) || !published?.planRevision) {
+      throw new Error("Release service Task requires exact durable publication and manifest evidence");
+    }
+    const manifestFile = path.join(this.dataDir, "release-repositories", taskRepositoryKey(repositoryRoot),
+      "evidence", `${manifestHash}.json`);
+    const manifestBytes = await readFile(manifestFile);
+    if (createHash("sha256").update(manifestBytes).digest("hex") !== manifestHash) {
+      throw new Error("Published release manifest bytes changed");
+    }
+    const manifest = JSON.parse(manifestBytes.toString("utf8"));
+    if (manifest.workspaceId !== source.workspaceId || manifest.planRevision !== published.planRevision
+        || !Array.isArray(manifest.tasks)) {
+      throw new Error("Published release manifest does not bind the service Task Workspace and plan");
+    }
+    const selected = [...(selectedTasks ?? [])].sort((left, right) => left.id.localeCompare(right.id));
+    const manifestTasks = [...manifest.tasks].sort((left, right) => String(left.taskId).localeCompare(String(right.taskId)));
+    if (!selected.length || selected.length !== manifestTasks.length
+        || selected.some((task, index) => task.id !== manifestTasks[index].taskId
+          || task.status !== "done" || task.workflowStatus !== "done"
+          || (task.gitReferences ?? []).filter((ref) => samePath(ref.projectRoot, repositoryRoot)
+            && ref.resultCommit === manifestTasks[index].resultCommit).length !== 1)) {
+      throw new Error("Release service checklist does not match exact published Done results");
+    }
+    const localMain = await localMainCommit(repositoryRoot);
+    const remoteMain = await gitMaybe(["rev-parse", "--verify", "refs/remotes/origin/main^{commit}"], { cwd: repositoryRoot });
+    if (await gitMaybe(["merge-base", "--is-ancestor", publishedRevision, localMain], { cwd: repositoryRoot }) === null
+        || !remoteMain || await gitMaybe(["merge-base", "--is-ancestor", publishedRevision, remoteMain],
+          { cwd: repositoryRoot }) === null) {
+      throw new Error("Durable published revision is not contained in local and tracked main");
+    }
+    await lease.assertOwned();
+    return {
+      version: 1, mode: "published_release_service",
+      source: { taskId: source.id, taskRevision: source.revision },
+      publicationGeneration: generation, publishedRevision,
+      planRevision: published.planRevision, manifestHash,
+      selectedResults: selected.map((task, index) => ({ taskId: task.id, revision: task.revision,
+        resultCommit: manifestTasks[index].resultCommit })),
+      cleanupPlan: { strategy: "preserve_managed_source", deleting: [] },
+      preserving: [{ kind: "managed_source", projectRoot: repositoryRoot,
+        branch: workspaces[0].branch, headCommit: workspaces[0].headCommit }],
+    };
+  }
+
   async withPublishedDuplicateEvidenceOwned({ source, target, lease } = {}, operation) {
     this.#assertAvailable("withPublishedDuplicateEvidenceOwned");
     await requiredGuardLease(lease).assertOwned();

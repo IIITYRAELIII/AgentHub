@@ -3745,6 +3745,8 @@ function shortModelLabel(value) {
   const source = String(value ?? "").trim();
   if (!source) return "";
   const normalized = source.toLowerCase();
+  const versionedVariant = normalized.match(/^(?:gpt[- ]?)?(5\.6|6)[- ](sol|luna)$/u);
+  if (versionedVariant) return `${versionedVariant[1]} ${versionedVariant[2] === "sol" ? "Sol" : "Luna"}`;
   if (normalized === "gpt-6-astra" || normalized === "gpt-6 astra") return "Astra";
   if (normalized.includes("astra")) return source;
   const named = [

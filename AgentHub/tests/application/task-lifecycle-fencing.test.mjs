@@ -397,33 +397,27 @@ test("Await composes PreRelease before it commits acceptance and keeps the prior
         calls.push(`lock:${workspaceId}`);
         return operation();
       },
-      prepareAwaitSet: async (options) => {
+      prepareAwaitAcceptance: async (options) => {
+        calls.push("validate");
+        if (calls.filter((name) => name === "validate").length === 2) {
+          throw new Error("exact dev integration changed");
+        }
         calls.push("prepare");
         assert.equal(task.workflowStatus, "testing", "composition precedes the acceptance CAS");
         assert.deepEqual(options.acceptingTask, { id: task.id, revision: task.revision });
-        assert.equal(options.preserveFrozen, true);
+        assert.equal(options.operationId === "await-transition" || options.operationId === "retry-await-transition", true);
         assert.equal(options.lease, lease);
         const prepared = {
           workspaceId: "workspace-1",
           planRevision: "prospective-plan",
           taskIds: [task.id],
+          task: { taskId: task.id, resultCommit: previousReference.resultCommit },
           releaseCandidates: [{ preReleaseHead: "new-candidate", manifestHash: "new-manifest" }],
         };
-        await options.commitPrepared(prepared);
+        const committed = await options.commitPrepared(prepared);
         candidateBytes.head = "new-candidate";
         candidateBytes.tree = "new-tree";
-        return prepared;
-      },
-      validateAwaitAcceptance: async (options) => {
-        calls.push("validate");
-        assert.equal(task.workflowStatus, "testing");
-        assert.deepEqual(options.acceptingTask, { id: task.id, revision: task.revision });
-        assert.equal(options.projectRoot, "D:/project");
-        if (calls.filter((name) => name === "validate").length === 2) throw new Error("exact dev integration changed");
-        return {
-          planRevision: "prospective-plan",
-          task: { taskId: task.id, taskRevision: 5, resultCommit: previousReference.resultCommit },
-        };
+        return committed;
       },
     },
   });
@@ -450,14 +444,14 @@ test("Await composes PreRelease before it commits acceptance and keeps the prior
   });
 
   assert.deepEqual(calls, [
-    "lock:workspace-1", "begin", "repo", "validate", "commit", "wake:task-await",
-    "lock:workspace-1", "begin", "repo", "validate", "fail",
-    "lock:workspace-1", "begin", "repo", "validate", "commit", "wake:task-await",
+    "begin", "repo", "validate", "prepare", "commit", "wake:task-await",
+    "begin", "repo", "validate", "fail",
+    "begin", "repo", "validate", "prepare", "commit", "wake:task-await",
   ]);
   assert.equal(task.workflowStatus, "awaiting_implementation");
-  assert.equal(result.releaseCandidate.status, "ready");
-  assert.equal(result.releaseCandidate.releaseCandidates[0].preReleaseHead, "new-candidate");
-  assert.equal(retry.releaseCandidate.status, "ready");
+  assert.equal(result.releaseCandidate.status, "prepared");
+  assert.equal(result.releaseCandidate.planRevision, "prospective-plan");
+  assert.equal(retry.releaseCandidate.status, "prepared");
   assert.equal(result.releaseIntegration.resultCommit, previousReference.resultCommit);
   // The refused attempt never composed, so its candidate bytes stayed put.
   assert.deepEqual(candidateBytes, { head: "new-candidate", tree: "new-tree" });
@@ -635,6 +629,69 @@ test("cross-Task cutover rejects missing, mismatched or ambiguous source authori
   });
 });
 
+test("published release service closure binds the selected Done set and preserves its worktree", async () => {
+  const selectedId = "11111111-1111-4111-8111-111111111111";
+  const source = {
+    id: "service-release", revision: 7, status: "started", workflowStatus: "in_progress",
+    workspaceId: "workspace-1", streamId: "stream-1", gitReferences: [],
+    checklist: [{ text: `[Selected](agent-hub://task/${selectedId})`, completed: true,
+      linkedTaskId: selectedId }],
+  };
+  const selected = { id: selectedId, revision: 3, status: "done", workflowStatus: "done",
+    workspaceId: source.workspaceId, gitReferences: [{ projectRoot: "D:/project", resultCommit: "a".repeat(40) }] };
+  let generation = "generation-1";
+  let transition = null;
+  let outcome = null;
+  let cleanupCalls = 0;
+  const evidence = () => ({ version: 1, mode: "published_release_service",
+    publicationGeneration: generation, selectedResults: [{ taskId: selectedId, resultCommit: "a".repeat(40) }],
+    preserving: [{ kind: "managed_source", headCommit: "b".repeat(40) }] });
+  const service = new TaskLifecycleService({
+    taskBoard: {
+      task: (id) => id === source.id ? source : id === selectedId ? selected : null,
+      lifecycleOutcome: () => outcome,
+      lifecycleTransition: () => transition,
+      beginLifecycleTransition: (input) => { transition = { ...input, taskId: source.id, phase: "cleanup" }; return transition; },
+      finalizeCleanupTransition: (_id, input) => {
+        source.status = "done"; source.workflowStatus = "done";
+        outcome = { taskId: source.id, kind: "complete", result: { result: source,
+          evidence: input.receiptEvidence } };
+        return source;
+      },
+      commitWorkflowTransition: () => {}, failLifecycleTransition: () => {}, rollbackWorkflowOutcome: () => {},
+    },
+    workspaceCatalog: {
+      workspace: () => ({ id: source.workspaceId }), stream: () => ({ id: source.streamId }),
+    },
+    taskGitWorkspaces: {
+      withTaskLock: (_id, operation) => operation({ async assertOwned() {} }),
+      publishedReleaseServiceEvidenceOwned: async ({ source: observed, selectedTasks }) => {
+        assert.equal(observed, source); assert.deepEqual(selectedTasks, [selected]); return evidence();
+      },
+      prepareOwned: async () => {}, snapshotAndMergeOwned: async () => {},
+      cleanupOwned: async () => { cleanupCalls += 1; }, cleanupPreview: async () => ({}),
+    },
+  });
+  const request = { taskId: source.id, operationId: "service-close", completionMode: "published_release_service" };
+  source.checklist[0].text = `[Selected](agent-hub://task/${selectedId}) [Other](agent-hub://task/22222222-2222-4222-8222-222222222222)`;
+  await assert.rejects(service.complete(request), /no unique Task identity/u);
+  source.checklist[0].text = `[Selected](agent-hub://task/${selectedId})`;
+  const preview = await service.complete(request);
+  assert.equal(preview.confirmationRequired, true);
+  assert.equal(preview.preview.deleting.length, 0);
+  generation = "generation-2";
+  await assert.rejects(service.complete({ ...request, confirmCleanup: true,
+    expectedCleanupToken: preview.cleanupToken }), /confirmation is stale/u);
+  assert.equal(source.status, "started");
+  const refreshed = await service.complete(request);
+  const completed = await service.complete({ ...request, confirmCleanup: true,
+    expectedCleanupToken: refreshed.cleanupToken });
+  assert.equal(completed.status, "done");
+  assert.equal(cleanupCalls, 0);
+  assert.equal((await service.complete({ ...request, confirmCleanup: true,
+    expectedCleanupToken: refreshed.cleanupToken })).status, "done");
+});
+
 test("unknown workflow recovery retains the repository lease through Git continuation", async () => {
   const projectRoot = "D:/project";
   const task = {
@@ -723,11 +780,12 @@ test("unknown workflow recovery retains the repository lease through Git continu
           task: { taskId: task.id, resultCommit: task.gitReferences[0].resultCommit },
         };
       },
-      prepareAwaitSet: async (options) => {
+      prepareAwaitAcceptance: async (options) => {
         calls.push("rebuild");
-        const result = { headCommit: "c".repeat(40) };
-        await options.commitPrepared(result);
-        return result;
+        const prepared = { planRevision: "recovered-plan", task: {
+          taskId: task.id, resultCommit: task.gitReferences[0].resultCommit,
+        } };
+        return options.commitPrepared(prepared);
       },
     },
   });
@@ -743,6 +801,6 @@ test("unknown workflow recovery retains the repository lease through Git continu
   // Recovery reuses the held repository lease and still composes PreRelease
   // before the recovered acceptance commits.
   assert.deepEqual(calls, [
-    "repository-lock", "recover", "begin", "repository-lock-reused", "validate", "rebuild", "commit",
+    "repository-lock", "recover", "begin", "repository-lock-reused", "rebuild", "commit",
   ]);
 });
