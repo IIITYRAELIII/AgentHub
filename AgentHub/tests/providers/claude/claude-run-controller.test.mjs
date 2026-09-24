@@ -1209,6 +1209,58 @@ test("ClaudeRunController re-checks a transient unavailable tree probe and compl
   });
 });
 
+test("ClaudeRunController settles a finished run without stopping a pre-existing captured broker", async () => {
+  await withTempDir(async (directory) => {
+    const root = {
+      pid: 100,
+      creationTime: "2026-09-24T18:00:00.000Z",
+      startedAtMs: Date.parse("2026-09-24T18:00:00.000Z"),
+      exitedAtMs: Date.parse("2026-09-24T18:00:10.000Z"),
+    };
+    const broker = {
+      pid: 200,
+      parentPid: 150,
+      creationTime: "2026-09-24T08:00:00.000Z",
+      executablePath: "node.exe",
+      commandLine: "shared broker",
+    };
+    const run = {
+      turnId: "turn-stale-parent",
+      threadId: "session-stale-parent",
+      pid: root.pid,
+      process: { pid: root.pid, exitCode: 1, signalCode: null },
+      claudeExited: true,
+      claudeProcessFingerprint: root,
+      claudeProcessStartedAtMs: root.startedAtMs,
+      claudeProcessExitedAtMs: root.exitedAtMs,
+      claudeOwnedProcessTree: [root, broker],
+      claudeStopUnknown: true,
+      claudeStopTargets: [{ pid: root.pid, currentChild: true }],
+      claudeCleanupPending: true,
+    };
+    const stopped = [];
+    let completed = 0;
+    const controller = new ClaudeRunController({
+      dataDir: directory,
+      completionExitGraceMs: 0,
+      isCurrentRun: (candidate) => candidate === run,
+      processAlive: () => false,
+      processTreeLookup: async (fingerprint, known, options) => ownedProcessTreeFromSnapshot(
+        fingerprint, known, [broker], { ...options, platform: "win32" },
+      ),
+      stopProcess: async (pid) => { stopped.push(pid); return true; },
+      onPersist: async () => {},
+      onComplete: async () => { completed += 1; },
+      onReadError: () => {},
+    });
+    await controller.complete(run);
+    assert.deepEqual(stopped, [], "no new stop is dispatched after the unknown original attempt");
+    assert.equal(completed, 1);
+    assert.equal(run.claudeCleanupPending, false);
+    assert.equal(run.claudeStopUnknown, false);
+  });
+});
+
 test("ClaudeRunController keeps a persistent tree probe error on bounded re-checks", async () => {
   await withTempDir(async (directory) => {
     const root = { pid: 100, creationTime: "2026-09-23T10:00:01.000Z" };

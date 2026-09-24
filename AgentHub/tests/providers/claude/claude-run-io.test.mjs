@@ -423,6 +423,37 @@ test("owned process-tree discovery survives root exit and rejects a reused root 
   }), [descendant]);
 });
 
+test("an exact fingerprint captured through a reused parent PID cannot predate the run", () => {
+  const root = {
+    pid: 100,
+    creationTime: "2026-09-24T18:00:00.000Z",
+    startedAtMs: Date.parse("2026-09-24T18:00:00.000Z"),
+    exitedAtMs: Date.parse("2026-09-24T18:00:10.000Z"),
+  };
+  const foreign = {
+    pid: 200,
+    parentPid: 150,
+    creationTime: "2026-09-24T08:00:00.000Z",
+    executablePath: "node.exe",
+    commandLine: "shared broker",
+  };
+  const foreignChild = {
+    pid: 201,
+    parentPid: 200,
+    creationTime: "2026-09-24T08:00:01.000Z",
+    executablePath: "conhost.exe",
+    commandLine: "console host",
+  };
+  assert.deepEqual(ownedProcessTreeFromSnapshot(root, [root, foreign, foreignChild], [foreign, foreignChild], {
+    platform: "win32",
+    rootExited: true,
+  }), [], "exact capture cannot turn a pre-existing shared process into this run's descendant");
+  assert.deepEqual(ownedProcessTreeFromSnapshot(root, [], [
+    { ...foreign, parentPid: root.pid }, foreignChild,
+  ], { platform: "win32", rootExited: true }), [],
+  "a stale numeric parent PID cannot discover a process born before the run");
+});
+
 test("owned process-tree discovery crosses one exited verified provider anchor", () => {
   const root = { pid: 100, creationTime: "root-one", executablePath: "node", commandLine: "wrapper" };
   const provider = { pid: 101, startedAtMs: Date.parse("2026-01-01T00:00:01.000Z"), exitedAtMs: Date.parse("2026-01-01T00:00:03.000Z") };

@@ -411,6 +411,16 @@ export function ownedProcessTreeFromSnapshot(rootFingerprint, knownFingerprints 
   if (rootReused && !rootExited) return null;
   const rootStartedAtMs = Number(rootFingerprint?.startedAtMs);
   const rootExitedAtMs = Number(rootFingerprint?.exitedAtMs);
+  const rootCreatedAtMs = Date.parse(rootFingerprint?.creationTime);
+  const earliestRootAtMs = Number.isFinite(rootCreatedAtMs) ? rootCreatedAtMs : rootStartedAtMs;
+  // A process born before this run cannot become its descendant merely because
+  // Windows retained a numeric parent PID which a later process reused. This
+  // also fences exact fingerprints captured from an earlier, foreign tree.
+  const predatesRun = (item) => {
+    const createdAtMs = Date.parse(item?.creationTime);
+    return Number.isFinite(earliestRootAtMs) && earliestRootAtMs > 0
+      && Number.isFinite(createdAtMs) && createdAtMs < earliestRootAtMs - 1_000;
+  };
   const hasBoundedRootLifetime = Number.isFinite(rootStartedAtMs) && rootStartedAtMs > 0
     && Number.isFinite(rootExitedAtMs) && rootExitedAtMs > 0;
 
@@ -455,6 +465,7 @@ export function ownedProcessTreeFromSnapshot(rootFingerprint, knownFingerprints 
   for (const [pid, expected] of expectedById) {
     if (pid === rootPid) continue;
     const current = byId.get(pid);
+    if (current && predatesRun(current)) continue;
     if (current && processFingerprintMatches(expected, current, { platform })) {
       ownedIds.add(pid);
       result.push(current);
@@ -482,6 +493,7 @@ export function ownedProcessTreeFromSnapshot(rootFingerprint, knownFingerprints 
     changed = false;
     for (const current of byId.values()) {
       if (ownedIds.has(current.pid) || !ownedIds.has(current.parentPid)) continue;
+      if (predatesRun(current)) continue;
       const historicalParent = historicalAnchors.get(current.parentPid);
       if (historicalParent && !withinOwnerWindow(historicalParent, current)) continue;
       if (!hasExactRoot && current.parentPid === rootPid) {
