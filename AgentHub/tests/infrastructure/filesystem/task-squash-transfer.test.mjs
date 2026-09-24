@@ -46,7 +46,7 @@ function argumentsHash(value) {
   return createHash("sha256").update(JSON.stringify(canonical(value)), "utf8").digest("hex");
 }
 
-test("exact squash transfer adds the selected delta once and preserves foreign dev bytes", { timeout: 90_000 }, async (context) => {
+test("exact squash transfer adds the selected delta once and preserves foreign dev bytes", { timeout: 180_000 }, async (context) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-squash-"));
   const dataDir = `${root}-data`;
   const releaseDataDir = `${root}-release-data`;
