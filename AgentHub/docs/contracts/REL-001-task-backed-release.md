@@ -22,6 +22,21 @@ it does not declare the reviewed commit published, rewrite publication state, or
 create an upstream-adoption receipt. Release preflight continues to require the
 prepared base to equal the currently reviewed origin main.
 
+Ordinary Await preparation may still advance its base through a selected Task
+upstream adoption. Any candidate whose base differs from the durable published
+baseline persists one immutable discriminated envelope in both manifest and
+checkpoint: `explicit-reviewed-main-v1`, or `selected-task-adoption-v1` with the
+published baseline, adopted base and each exact selected Task result, adoption
+ref, blob, adopted commit and accepted local main from
+`releaseBaseEvidence`. Candidate preparation and validation reject a missing or
+foreign-baseline envelope before any clone, ref or checkpoint effect; freeze
+independently rejects it and any manifest/checkpoint disagreement before its
+effects; preflight rejects a missing envelope and re-reads selected adoption
+authority for the adoption kind. A later approved preflight never retroactively
+supplies missing candidate authority. Without a durable baseline for the
+repository no advancement can be established and only envelope shape is
+checked. A published-base candidate needs no envelope.
+
 After a candidate is prepared or frozen, explicit preparation may add exactly
 one newly selected correction Task while every previously selected Task result,
 base and squash proof remains identical. The correction snapshot has exactly one
@@ -150,6 +165,29 @@ fast-forward inheritance. Every source repository must be represented. The
 confirmation token binds both Tasks and Git evidence; the durable completion
 receipt records the surviving Task. Closed sources are excluded from the release
 set. Ordinary claim cannot reopen them.
+
+An already-published zero-own-delta duplicate uses the same lifecycle owner but
+requires the explicit `absorption_mode=published_duplicate` Release Manager
+request. It does not relax ordinary absorption's open/tested-survivor guard.
+The source must remain open in the same Workspace, have a Hub-owned clean
+worktree with no untracked paths, Git result, legacy adoption or squash evidence,
+and its exact HEAD must equal repository-scoped durable publication, local main
+and origin/main. The survivor must already be workflow/status Done, retain one
+exact Test result per source repository, and that result must be an ancestor of
+the same published revision. Clean or ancestral state without these identities
+is insufficient.
+
+Preview binds both Task revisions, every source base/branch/HEAD, every survivor
+result, repository-scoped published revisions, publication generation, explicit
+mode and a preserve-only cleanup plan. Confirmation repeats the Git proof under
+the existing Await -> Task -> repository lease order before lifecycle admission.
+It closes only the duplicate Task row, records durable `absorbedInto` evidence,
+attributes no result commit to the duplicate, and preserves its managed branch
+and worktree. Therefore a failure after admission has no partial Git deletion;
+retry of the same operation resumes the existing cleanup-phase transition, and
+does so from its stored admission evidence before reading a newer publication.
+A lost successful reply is recovered from the exact lifecycle outcome. Source
+history or valuable artifacts are never deleted by this mode.
 
 A sibling Task merge is not upstream adoption. The Git owner recognizes managed
 Task heads and inspects their merge ancestry; an unknown upstream/dev merge
@@ -898,12 +936,105 @@ freeze, publication and completion CAS. During publication freeze and unfinished
 finalization, Await membership cannot change. New work stays in Test; acceptance
 is retried after completion. A push alone does not release the freeze.
 
+Freeze keeps the exact raw identity of the supplied CHANGELOG payload separate
+from the canonical Git blob that owns its materialized checkout. Before durable
+intent, the checkout bytes must equal the supplied payload byte for byte. Once
+intent exists, the release owner retains the exact raw payload as immutable,
+content-addressed evidence and binds its file identity and SHA-256 into both the
+manifest and checkpoint. A direct retry must still present the same raw payload;
+the public publication retry reads that evidence instead of deriving caller
+identity from a checkout that Git may already have rewritten. Missing, linked or
+digest-mismatched evidence fails closed. The checkout may differ only through
+Git attributes or clean/smudge conversion and must still resolve through
+`hash-object --path` to the stored blob. This split does not relax source,
+manifest, plan, version, ref, dirty-path, regular-file or Workspace fences.
+
 Candidate readback is phase-specific. A `prepared` checkpoint requires the
 standalone clone to be an exact clean `PreRelease` checkout. A `frozen`
 checkpoint requires an exact clean `main` checkout while both `main` and
 `PreRelease` still equal the checkpointed `preReleaseHead`. Other phases and
 any branch, ref, tree, index or worktree drift fail closed. Freeze remains the
 only owner that promotes and attaches the standalone clone to `main`.
+
+A failed pre-publication freeze, or an exact `frozen` candidate whose full
+publication run failed before the first publication-effect stage, may be
+explicitly abandoned only through the Release Git Workspace recovery owner.
+Preview takes the canonical publication,
+Workspace Await and repository leases and binds the exact checkpoint and
+manifest bytes, plan, prepared/freeze commits and tree, clean clone, both local
+refs, durable published revision, reviewed incoming `origin/main`, publication
+run/checkpoint state and caller operation. Confirmation repeats that proof and
+first preserves the original checkpoint, manifest and publication observations
+as content-addressed evidence. It then CAS-restores only local `main` and
+`PreRelease` to the exact values recorded by the freeze intent, restores the
+clean prepared checkout and records an idempotent `abandoned` outcome. A retry
+of the same operation resumes its durable phases before fresh-admission guards
+are evaluated: it validates the immutable persisted recovery identity and only
+the enumerated clean frozen, prepared-detached and completed ref states. A newer
+remote main may be observed after admission only when Git proves that it does
+not contain the frozen candidate. A completed outcome replays without reading
+mutable publication state. Another operation, an unknown phase, dirty checkout,
+identity drift or evidence that the candidate was published has no effect.
+
+The frozen candidate's approved origin commit remains immutable recovery
+provenance. If the live remote advances before a failed-frozen recovery, the
+owner may additionally accept one separately reviewed direct child of that
+approved commit. The caller supplies its exact commit, sole parent, tree,
+  binary-diff SHA-256 and Git object ID, stable patch ID, the unchanged release
+  tracking commit and the canonical origin URL SHA-256. The owner imports the
+  remote tip and frozen
+candidate only into a disposable bare object store, proves those objects and
+that the remote does not contain the failed candidate, then removes the store.
+It never fetches into or updates the release clone. The approved base, reviewed
+observed tip and durable published revision remain separate proof fields.
+A legacy failed-frozen candidate whose manifest and checkpoint both lack
+provenance and request binding may instead supply the explicit
+`missing-provenance-recovery-v1` input. Its approved base is derived only from
+the original terminal ready `hub_release_preflight` receipt (exact caller,
+canonical arguments hash and SHA-256 of the persisted result bytes) and the
+historical immutable selected Task adoption, re-derived from its exact ref,
+blob and objects independently of the current primary `main`; the resulting
+supplemental authority is content-addressed in the proof and rechecked on every
+retry and completed replay. A separately bound current observation of the
+primary, remote, release tracking and origin URL must stay exact after preview;
+a newer remote tip still needs its own reviewed-origin-advance identity while
+release tracking stays at the historical approved origin. All
+are persisted in recovery evidence and rechecked before admission and on retry;
+divergence, force-push, unreviewed bytes or later remote/tracking movement fails
+closed. Recovery remains local-only, so reviewed upstream bytes are preserved
+for an ordinary future reviewed-main candidate rebuild rather than being
+silently adopted or substituted as the published baseline.
+
+Failed-frozen admission additionally binds the raw publication run and log plus
+the exact raw presence and bytes of the publication checkpoint (or its explicit
+absence), the exact run/candidate identity and the versioned executable
+publication-stage contract. The allowlist is ordered: contour validation and
+full tests are pre-effect stages; artifact preparation, Git publication,
+runtime installation, worker deployment/verification, runtime activation and
+VS Code extension installation are effect stages. Exactly one validation
+boundary is terminal: either contour failed while full tests remain pending, or
+contour completed/reused and full tests failed. Every effect stage must remain
+pending and progress must be empty. Checkpoint evidence is classified as an
+exact current-candidate pre-effect prefix, an exact retained prior-generation
+pre-effect prefix, or explicit absence; confirmation and retry recheck the same
+raw presence and bytes without replacing a retained prior checkpoint.
+Completed contour evidence requires its current checkpoint. A retained prior
+checkpoint is admissible only when the contour failed before writing or was
+explicitly reused from that scope-compatible checkpoint. An existing retained
+checkpoint must contain a non-empty ordered pre-effect prefix with a non-empty
+fingerprint for every completed label; an empty fabricated record is not
+equivalent to explicit file absence.
+Unknown/new stages, unsupported schema, mixed checkpoint identity, missing run
+binding, an active or ambiguous run, or any effect-stage receipt reject before admission. The
+publication lock covers evidence read, admission CAS and local ref recovery;
+lock order is publication → Workspace Await → repository, matching the
+publisher's outer publication ownership and avoiding inverse acquisition.
+
+Recovery never pushes,
+deploys, mutates Tasks, deletes candidate objects/evidence, invents a result or
+silently starts rebuilding. A later candidate is built through ordinary
+reviewed Await preparation, so an approved incoming base remains distinct from
+the last locally published revision.
 
 Completion performs one transaction that checks every accepted Task identity
 and the plan hash, CAS-writes each current row, then changes only those Tasks to `done` and persists a
@@ -921,9 +1052,12 @@ publication revision/generation readback immediately before the Task closure
 transaction. Once verified, only included Tasks are completed
 and their managed branches and worktrees may be removed. Published `main` is
 incorporated into `dev` without discarding later Test work. Remaining Await
-Tasks stay accepted and the previous candidate is durably invalidated; their
-next `PreRelease` is prepared promptly after confirmed completion, as a separate
-preparation step without another publication pipeline. This post-completion
+Tasks stay accepted and the previous candidate is durably invalidated. No
+candidate is rebuilt automatically after completion and there is no separate
+public prepare operation: the next acceptance into Await composes the next
+candidate, and an accepted Task whose candidate is stale is repaired by
+repeating its Await transition with the same status. Release preflight stays
+read-only and fails closed on a stale candidate. This post-completion
 orchestration remains HUB-235 checklist item 15. A repeated
 completion request resumes only unfinished synchronization stages, never Task
 closure or candidate preparation. Each successful stage
@@ -1097,6 +1231,9 @@ each branch ref with its observed old commit as a compare-and-swap. A late file
 edit prevents worktree removal; a late branch move preserves the changed ref.
 Publication remains recorded if cleanup needs repair. Task records and history
 are retained after release; destructive Task deletion is not release cleanup.
+The explicit published-duplicate absorption above is the only exception to the
+ordinary source workflow-Done prerequisite. It is not ordinary Complete and it
+does not use cleanup publication as a substitute for survivor ownership.
 
 ## Test Contour
 
@@ -1638,11 +1775,16 @@ integrations or a changed witness fail closed. Other selected Tasks keep their
 original integration order relative to these continuation deltas.
 
 Await validates the exact Test-owned result and its dev integration under the
-Workspace Await, Task and repository leases, then commits only the lifecycle CAS.
-It does not build, rebuild or mutate `PreRelease`. The new accepted-plan revision
-makes every prior candidate stale; the existing candidate reuse and publication
-verification gates reject that old plan while its bytes remain unchanged. Explicit
-release preparation remains the sole candidate builder.
+Workspace Await, Task and repository leases, composes that result into the
+prospective `PreRelease` while the Task is still in Test, and commits the
+lifecycle CAS only after every selected repository candidate succeeded. A
+composition conflict or preparation error leaves the Task in Test and keeps the
+last good candidate, including its refs, checkpoint and checkout. The acceptance
+is therefore proof of membership in the current candidate, not permission to
+publish. The 2026-09-17 acceptance-only Await identity, which committed the CAS
+without composing and reported the candidate as `invalidated`, is superseded by
+this rule (HUB-251, 2026-09-21); its lease ordering, exact-result validation and
+unknown-outcome handling remain in force.
 
 After the survivor is durably published, the same transfer evidence may prove
 the source result and branch/worktree published-by-transfer for cleanup. Exact

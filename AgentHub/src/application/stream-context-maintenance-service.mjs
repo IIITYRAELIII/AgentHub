@@ -71,8 +71,12 @@ export class StreamContextMaintenanceService {
     return this.providers[normalized(target?.provider).toLowerCase()] ?? null;
   }
 
+  isManagedActive(target) {
+    return this.registry.isActive(target);
+  }
+
   isActive(target) {
-    if (this.registry.isActive(target)) return true;
+    if (this.isManagedActive(target)) return true;
     const provider = this.maintenanceProvider(target);
     return provider?.compactions?.isRunning?.(normalized(target?.threadId)) === true;
   }

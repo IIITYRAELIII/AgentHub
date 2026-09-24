@@ -14,6 +14,7 @@ import { readRuntimeState } from "../../src/infrastructure/persistence/runtime-s
 import {
   CHAT_ID,
   delay,
+  E2eChildProcessOwner,
   FakeTelegramApi,
   stopPid,
   USER_ID,
@@ -120,8 +121,10 @@ test("local control client survives App Server exit during delayed startup and s
 
   let stderr = "";
   let bot = null;
+  let testCompleted = false;
+  const botOwner = new E2eChildProcessOwner({ label: "local-control Agent Hub" });
   const startBot = () => {
-    bot = spawn(process.execPath, [BOT_FILE], {
+    bot = botOwner.start(() => spawn(process.execPath, [BOT_FILE], {
       cwd: ROOT,
       env: {
         ...process.env,
@@ -132,7 +135,7 @@ test("local control client survives App Server exit during delayed startup and s
       },
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
-    });
+    }));
     bot.stderr.setEncoding("utf8");
     bot.stderr.on("data", (chunk) => { stderr += chunk; });
     return bot;
@@ -140,28 +143,44 @@ test("local control client survives App Server exit during delayed startup and s
   const stopBot = async () => {
     const current = bot;
     if (!current) return;
-    if (current.exitCode == null) {
-      current.kill("SIGTERM");
-      await Promise.race([new Promise((resolve) => current.once("exit", resolve)), delay(2_000)]);
-    }
-    if (current.exitCode == null) {
-      await stopPid(current.pid);
-      await Promise.race([new Promise((resolve) => current.once("exit", resolve)), delay(2_000)]);
-    }
+    await botOwner.stop();
     if (bot === current) bot = null;
+  };
+  const waitForControl = async (label) => {
+    try {
+      const snapshot = await waitFor(
+        () => callDesktopControl("snapshot", {}, { runtimeRoot }).catch(() => null),
+        label,
+        8_000,
+      );
+      botOwner.recordEndpointOwner(snapshot.server?.process ?? null);
+      return snapshot;
+    } catch (error) {
+      throw botOwner.failure(error, { stage: label });
+    }
   };
   startBot();
   t.after(async () => {
-    await stopBot();
-    journalDatabase.close();
-    await telegram.stop();
-    await rm(runtimeRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    let cleanupError = null;
+    try {
+      await stopBot();
+    } catch (error) {
+      cleanupError = error;
+    } finally {
+      journalDatabase.close();
+      await telegram.stop();
+    }
+    if (testCompleted) {
+      await rm(runtimeRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    } else {
+      const diagnosticPath = path.join(runtimeRoot, "e2e-process-diagnostics.json");
+      await writeFile(diagnosticPath, `${JSON.stringify(botOwner.diagnostics(), null, 2)}\n`, "utf8");
+      t.diagnostic(`Preserved local-control failure diagnostics: ${diagnosticPath}`);
+    }
+    if (cleanupError) throw cleanupError;
   });
 
-  const initial = await waitFor(
-    () => callDesktopControl("snapshot", {}, { runtimeRoot }).catch(() => null),
-    "desktop control startup",
-  );
+  const initial = await waitForControl("desktop control startup");
   assert.equal(initial.apiVersion, 3);
   const initialCodexState = await readFile(codexStatePath, "utf8").then(JSON.parse);
   assert.equal(initialCodexState.initializeCompletedAt ?? null, null,
@@ -803,11 +822,7 @@ test("local control client survives App Server exit during delayed startup and s
   assert.deepEqual(durableBeforeRestart.map((row) => row.client_user_message_id || row.source_occurrence_id), appendedExternalOccurrenceIds, "restart fixture must first commit exact canonical occurrence order");
   await stopBot();
   startBot();
-  await waitFor(
-    () => callDesktopControl("snapshot", {}, { runtimeRoot }).catch(() => null),
-    "incremental observer restart",
-    8_000,
-  );
+  await waitForControl("incremental observer restart");
   let restartOccurrenceIds = [];
   const restoredOccurrenceIds = await waitFor(async () => {
       const ids = await readExternalOccurrenceIds();
@@ -925,11 +940,7 @@ test("local control client survives App Server exit during delayed startup and s
   await assertPairedProjection();
   await stopBot();
   startBot();
-  await waitFor(
-    () => callDesktopControl("snapshot", {}, { runtimeRoot }).catch(() => null),
-    "paired rollout restart",
-    8_000,
-  );
+  await waitForControl("paired rollout restart");
   await assertPairedProjection();
 
   const recoveryThreadId = "e2e-corrupted-terminal-thread";
@@ -972,11 +983,7 @@ test("local control client survives App Server exit during delayed startup and s
   };
   const startAndWaitForControl = async (label) => {
     startBot();
-    return waitFor(
-      () => callDesktopControl("snapshot", {}, { runtimeRoot }).catch(() => null),
-      label,
-      8_000,
-    );
+    return waitForControl(label);
   };
 
   await stopBot();
@@ -1542,4 +1549,5 @@ test("local control client survives App Server exit during delayed startup and s
   }, { runtimeRoot });
   assert.notEqual(archived.selected.threadId, firstThreadId);
   assert.doesNotMatch(stderr, /Unhandled asynchronous error|Cannot start desktop control/i);
+  testCompleted = true;
 });

@@ -38,6 +38,8 @@ const TASK_LEGACY_ADOPTION_REF_PREFIX = "refs/agent-hub/legacy-adoptions/";
 const TASK_RESULT_REF_PREFIX = "refs/agent-hub/task-results/";
 const TASK_UPSTREAM_ADOPTION_REF_PREFIX = "refs/agent-hub/upstream-adoptions/";
 const MAX_UPSTREAM_ADOPTION_PROOFS = 512;
+const HISTORICAL_ADOPTION_RECOVERY_KIND = "missing-provenance-recovery-v1";
+const HISTORICAL_ADOPTION_VALIDATION = "historical-immutable-v1";
 const LEGACY_CLAIM_REPOSITORY_GUARD_NO_EFFECT_VERSION = "task-git-repository-guard-before-dev-lock-v1";
 const CLAIM_REPOSITORY_GUARD_NO_EFFECT_VERSION = "task-git-repository-guard-under-dev-lock-v2";
 const CLAIM_REPOSITORY_GUARD_ERROR_PREFIX = "Task Git repository blocked: unresolved process-tree guard requires operator proof";
@@ -1556,6 +1558,20 @@ export class TaskGitWorkspaceService {
     }
     if (observedBase !== exactBase) throw new Error("explicit upstream adoption Task base changed");
     if (observedSnapshot !== exactSnapshot) throw new Error("explicit upstream adoption Task snapshot changed");
+    return this.#upstreamAdoptionProofFromObjects({
+      id, repoKey, repoRoot, expectedBranch, branchRef, exactBase, exactSnapshot, acceptedLocalMain,
+      expectedAdopted, devCommit, lease,
+    });
+  }
+
+  // Object-only part of an adoption proof. It reads immutable commits and
+  // trees only; callers own every ref fence. `rev-list --parents` prints the
+  // commit followed by its parents, so a proof commit has exactly three tokens:
+  // itself, the first parent and the adopted commit as the second parent.
+  async #upstreamAdoptionProofFromObjects({
+    id, repoKey, repoRoot, expectedBranch, branchRef, exactBase, exactSnapshot, acceptedLocalMain,
+    expectedAdopted, devCommit, lease,
+  }) {
     const history = String(await this.#runOwned([
       "rev-list", "--first-parent", "--merges",
       `--max-count=${MAX_UPSTREAM_ADOPTION_PROOFS + 1}`, exactSnapshot, `^${exactBase}`,
@@ -1617,6 +1633,141 @@ export class TaskGitWorkspaceService {
       proofCommit: proof.commit,
       proofParents: [proof.firstParent, proof.candidate],
       proofTree,
+    };
+  }
+
+  // Historical verification used only by supplemental missing-provenance
+  // recovery of a legacy frozen candidate. It proves that an immutable adoption
+  // record existed for the exact frozen Task snapshot, deriving every historical
+  // field from the verified record and immutable objects. Current main, Task
+  // base and Task branch refs are never authority here, and the result is not
+  // admission or publication readiness: ordinary callers use releaseBaseEvidence.
+  async historicalUpstreamAdoptionEvidence({
+    projectRoot, publishedBaseCommit, tasks = [], expected = {}, recoveryKind = null,
+  } = {}) {
+    this.#assertAvailable("historicalUpstreamAdoptionEvidence");
+    if (recoveryKind !== HISTORICAL_ADOPTION_RECOVERY_KIND) {
+      throw new Error("historical upstream adoption evidence is limited to missing-provenance recovery");
+    }
+    const repoRoot = await repositoryRoot(projectRoot);
+    const repoKey = taskRepositoryKey(repoRoot);
+    const published = exactCommitId(publishedBaseCommit, "published release base");
+    const expectedTaskId = normalizedTaskId(expected?.taskId);
+    const expectedRef = String(expected?.recordRef ?? "").trim();
+    const expectedHash = exactCommitId(expected?.recordHash, "expected adoption record blob");
+    const frozen = [...tasks].map((task) => ({
+      taskId: normalizedTaskId(task?.taskId),
+      resultCommit: exactCommitId(task?.resultCommit, "frozen Task result commit"),
+    })).sort((left, right) => left.taskId.localeCompare(right.taskId));
+    if (!frozen.length || new Set(frozen.map((task) => task.taskId)).size !== frozen.length) {
+      throw new Error("historical upstream adoption evidence requires the exact frozen Task set");
+    }
+    return this.#withClearDevLock(repoRoot, null, async (lease) => {
+      const ancestor = async (left, right) => await gitMaybe([
+        "merge-base", "--is-ancestor", left, right,
+      ], { cwd: repoRoot }) !== null;
+      await this.#runOwned(["cat-file", "-e", `${published}^{commit}`], { cwd: repoRoot, lease });
+      const outstanding = [];
+      for (const task of frozen) {
+        const prefix = `${taskUpstreamAdoptionPrefix(task.taskId, repoKey)}${task.resultCommit}/`;
+        const refs = String(await this.#runOwned([
+          "for-each-ref", "--format=%(refname)%00%(objectname)", prefix,
+        ], { cwd: repoRoot, lease })).split(/\r?\n/u).filter(Boolean);
+        if (refs.length > 1) throw new Error("frozen Task snapshot has ambiguous historical adoption receipts");
+        if (!refs.length) continue;
+        const [recordRef, recordHash] = refs[0].split("\0");
+        const verified = await this.#historicalAdoptionRecord({
+          repoRoot, repoKey, task, recordRef, recordHash, published, lease, ancestor,
+        });
+        // A published-contained receipt is ignored only after full validation.
+        if (!verified.outstanding) continue;
+        outstanding.push(verified);
+      }
+      if (outstanding.length !== 1) {
+        throw new Error(outstanding.length
+          ? "frozen Tasks carry multiple outstanding historical adoptions"
+          : "frozen Tasks carry no outstanding historical adoption");
+      }
+      const [adoption] = outstanding;
+      if (adoption.taskId !== expectedTaskId || adoption.recordRef !== expectedRef
+          || adoption.recordHash !== expectedHash) {
+        throw new Error("historical upstream adoption does not match the expected exact ref and blob");
+      }
+      return {
+        validation: HISTORICAL_ADOPTION_VALIDATION,
+        publishedBaseCommit: published,
+        adoptedBaseCommit: adoption.adoptedCommit,
+        adoption: {
+          taskId: adoption.taskId,
+          resultCommit: adoption.resultCommit,
+          recordRef: adoption.recordRef,
+          recordHash: adoption.recordHash,
+          requestId: adoption.requestId,
+          branch: adoption.branch,
+          taskBaseCommit: adoption.taskBaseCommit,
+          acceptedLocalMainCommit: adoption.acceptedLocalMainCommit,
+          adoptedCommit: adoption.adoptedCommit,
+          snapshotTree: adoption.snapshotTree,
+          proofCommit: adoption.proofCommit,
+          proofParents: adoption.proofParents,
+          proofTree: adoption.proofTree,
+        },
+      };
+    });
+  }
+
+  async #historicalAdoptionRecord({ repoRoot, repoKey, task, recordRef, recordHash, published, lease, ancestor }) {
+    const hash = exactCommitId(recordHash, "historical adoption record blob");
+    const type = await this.#runOwned(["cat-file", "-t", hash], { cwd: repoRoot, lease });
+    if (type !== "blob") throw new Error("historical adoption receipt is not a Git blob");
+    let record;
+    try {
+      record = JSON.parse(await this.#runOwned(["cat-file", "-p", hash], { cwd: repoRoot, lease }));
+    } catch {
+      throw new Error("historical adoption receipt is invalid JSON");
+    }
+    const verifiedHash = await this.#runOwned(["hash-object", "--stdin"], {
+      cwd: repoRoot, input: `${JSON.stringify(record)}\n`, lease,
+    });
+    if (verifiedHash !== hash) throw new Error("historical adoption receipt bytes are not canonical");
+    if (record?.version !== 1 || record.kind !== "task-upstream-adoption"
+        || record.taskId !== task.taskId || record.repositoryKey !== repoKey
+        || !samePath(record.repositoryRoot, repoRoot) || record.snapshotCommit !== task.resultCommit) {
+      throw new Error("historical adoption receipt does not describe the exact frozen Task snapshot");
+    }
+    const adopted = exactCommitId(record.adoptedCommit, "historical adopted commit");
+    const acceptedLocalMain = exactCommitId(record.acceptedLocalMainCommit, "historical accepted local main");
+    const exactBase = exactCommitId(record.taskBaseCommit, "historical Task base");
+    if (recordRef !== taskUpstreamAdoptionRef(task.taskId, repoKey, task.resultCommit, adopted)) {
+      throw new Error("historical adoption receipt ref does not derive from its record");
+    }
+    const branch = String(record.branch ?? "").trim();
+    if (!branch) throw new Error("historical adoption receipt has no Task branch");
+    const proof = await this.#upstreamAdoptionProofFromObjects({
+      id: task.taskId, repoKey, repoRoot, expectedBranch: branch, branchRef: `refs/heads/${branch}`,
+      exactBase, exactSnapshot: task.resultCommit, acceptedLocalMain, expectedAdopted: adopted,
+      devCommit: null, lease,
+    });
+    if (JSON.stringify(this.#upstreamAdoptionRecord(proof, record.requestId)) !== JSON.stringify(record)) {
+      throw new Error("historical adoption receipt does not match its immutable object proof");
+    }
+    const actualParents = String(await this.#runOwned([
+      "rev-list", "--parents", "-n", "1", proof.proofCommit,
+    ], { cwd: repoRoot, lease })).split(/\s+/u).filter(Boolean);
+    if (actualParents.length !== 3 || actualParents[0] !== proof.proofCommit
+        || JSON.stringify(actualParents.slice(1)) !== JSON.stringify(record.proofParents)
+        || record.proofParents[1] !== adopted) {
+      throw new Error("historical adoption proof commit parents changed");
+    }
+    const outstanding = !await ancestor(adopted, published);
+    if (outstanding && (!await ancestor(published, acceptedLocalMain) || !await ancestor(published, adopted))) {
+      throw new Error("historical adoption does not extend the published release base");
+    }
+    return {
+      taskId: task.taskId, resultCommit: task.resultCommit, recordRef, recordHash: hash, outstanding,
+      requestId: record.requestId, branch, taskBaseCommit: exactBase, acceptedLocalMainCommit: acceptedLocalMain,
+      adoptedCommit: adopted, snapshotTree: proof.snapshotTree, proofCommit: proof.proofCommit,
+      proofParents: proof.proofParents, proofTree: proof.proofTree,
     };
   }
 
@@ -2775,7 +2926,8 @@ export class TaskGitWorkspaceService {
         if (await ancestor(baseCommit, adopted)) baseCommit = adopted;
         else if (!await ancestor(adopted, baseCommit)) throw new Error("selected Task release bases diverge");
         adoptions.push({ taskId: task.taskId, resultCommit: task.resultCommit,
-          recordRef: receipt.recordRef, recordHash: receipt.recordHash });
+          recordRef: receipt.recordRef, recordHash: receipt.recordHash,
+          adoptedCommit: adopted, acceptedLocalMainCommit: receipt.record.acceptedLocalMainCommit });
       }
       return { publishedBaseCommit: published, baseCommit, adoptions };
     });
@@ -3908,6 +4060,96 @@ export class TaskGitWorkspaceService {
       });
     };
     workspaces.sort((a, b) => a.repositoryRoot.localeCompare(b.repositoryRoot));
+    return visit(0, lease);
+  }
+
+  async withPublishedDuplicateEvidenceOwned({ source, target, lease } = {}, operation) {
+    this.#assertAvailable("withPublishedDuplicateEvidenceOwned");
+    await requiredGuardLease(lease).assertOwned();
+    if ((source.gitReferences ?? []).length || (source.gitAdoptions ?? []).length
+        || source.squashTransfer || source.squashAbsorbedBy) {
+      throw new Error("Published duplicate closure requires a source without independent Git result evidence");
+    }
+    const workspaces = await this.describe(source.id);
+    if (!workspaces.length) throw new Error("Published duplicate closure requires the source Task worktree");
+    if (workspaces.some((workspace) => workspace.dirty)) {
+      throw new Error("Published duplicate closure requires a clean source Task worktree");
+    }
+    if ((target.gitReferences ?? []).length !== workspaces.length) {
+      throw new Error("Published survivor requires one exact result per source repository");
+    }
+    const publication = await this.readPublication();
+    const generation = String(publication?.generation ?? "").trim();
+    if (!generation) throw new Error("Published duplicate closure requires durable publication evidence");
+    const publishedRepositories = publicationStateRepositories(publication);
+    const repositories = [];
+    const visit = async (index, ownedLease) => {
+      if (index === workspaces.length) {
+        return operation({
+          version: 1,
+          mode: "published_duplicate",
+          source: { taskId: source.id, taskRevision: source.revision },
+          survivor: { taskId: target.id, taskRevision: target.revision },
+          publicationGeneration: generation,
+          cleanupPlan: { strategy: "preserve_managed_source", deleting: [] },
+          repositories,
+        }, ownedLease);
+      }
+      const workspace = workspaces[index];
+      const repoRoot = workspace.repositoryRoot;
+      return this.#withDevLock(repoRoot, ownedLease, async (devLease) => {
+        await this.#assertNoProcessTreeGuard(source.id);
+        await this.#assertNoProcessTreeGuard(target.id);
+        await this.#assertRepositoryProcessTreeClear(repoRoot);
+        if (await access(this.#withdrawalFile(repoRoot)).then(() => true, () => false)) {
+          throw new Error("Repository has a pending Task withdrawal");
+        }
+        if (!await this.managedRepositoryRoot(workspace.projectRoot, {
+          taskId: source.id, taskNumber: source.taskNumber,
+        })) throw new Error("Source Task worktree ownership changed");
+        const current = (await this.describe(source.id)).find((item) => (
+          samePath(item.repositoryRoot, repoRoot)
+        ));
+        if (!current || current.dirty || current.headCommit !== workspace.headCommit) {
+          throw new Error("Source Task changed during published duplicate validation");
+        }
+        const published = publishedRepositories.find((item) => samePath(item.root, repoRoot));
+        const publishedRevision = exactCommitId(published?.revision, "published repository revision");
+        const localMain = await localMainCommit(repoRoot);
+        const remoteMain = await gitMaybe([
+          "rev-parse", "--verify", "refs/remotes/origin/main^{commit}",
+        ], { cwd: repoRoot });
+        if (publishedRevision !== localMain || publishedRevision !== remoteMain
+            || publishedRevision !== current.headCommit) {
+          throw new Error("Source Task HEAD must equal exact durable local and origin published main");
+        }
+        const references = (target.gitReferences ?? []).filter((reference) => (
+          samePath(reference.projectRoot, repoRoot)
+        ));
+        if (references.length !== 1) {
+          throw new Error("Published survivor requires one exact result per source repository");
+        }
+        const survivorResult = exactCommitId(references[0].resultCommit, "published survivor result");
+        if (await gitMaybe(["rev-parse", "--verify", `${survivorResult}^{commit}`], { cwd: repoRoot }) !== survivorResult
+            || await gitMaybe(["merge-base", "--is-ancestor", survivorResult, publishedRevision], { cwd: repoRoot }) === null) {
+          throw new Error("Surviving Task exact result is not contained in published main");
+        }
+        const baseCommit = await runGit([
+          "rev-parse", `${taskBaseRef(source.id, workspace.repositoryKey)}^{commit}`,
+        ], { cwd: repoRoot });
+        repositories.push({
+          projectRoot: repoRoot,
+          sourceBranch: current.branch,
+          sourceBaseCommit: baseCommit,
+          sourceHead: current.headCommit,
+          survivorBranch: String(references[0].branch ?? ""),
+          survivorResult,
+          publishedRevision,
+        });
+        return visit(index + 1, devLease);
+      });
+    };
+    workspaces.sort((left, right) => left.repositoryRoot.localeCompare(right.repositoryRoot));
     return visit(0, lease);
   }
 

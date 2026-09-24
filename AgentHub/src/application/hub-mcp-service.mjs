@@ -16,6 +16,7 @@ import {
   interstreamAuditContentHash,
   interstreamDisplayText,
 } from "../domain/interstream-message.mjs";
+import { canonicalMcpValue, mcpArgumentsHash } from "../domain/mcp-arguments-hash.mjs";
 import { taskProjectRoot } from "../domain/task-project-root.mjs";
 import {
   normalizedTaskDescription,
@@ -100,17 +101,8 @@ function optionalText(value, maximumLength = 10_000) {
   return text;
 }
 
-function canonicalValue(value) {
-  if (Array.isArray(value)) return value.map(canonicalValue);
-  if (!value || typeof value !== "object") return value;
-  return Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonicalValue(value[key])]));
-}
-
-function argumentsHash(args) {
-  const value = { ...args };
-  delete value.context_token;
-  return createHash("sha256").update(JSON.stringify(canonicalValue(value)), "utf8").digest("hex");
-}
+const canonicalValue = canonicalMcpValue;
+const argumentsHash = mcpArgumentsHash;
 
 function inside(root, candidate) {
   const relative = path.relative(path.resolve(root), path.resolve(candidate));
@@ -623,7 +615,7 @@ export class HubMcpService {
           type: "string",
           enum: ["queue", "steer"],
           default: "queue",
-          description: "Queue after the active turn, or steer the active turn and queue if steering is no longer possible.",
+          description: "Queue after the active turn, or request exact steering of the current managed run. An undeliverable exact steer requires an explicit retry or queue decision.",
         },
         confirm_send: { type: "boolean", description: "Must be true because this starts, queues or steers another agent turn." },
       }, ["stream_id", "text", "confirm_send"]),
@@ -706,7 +698,7 @@ export class HubMcpService {
         dependency_mode: { type: "string", enum: ["skip", "ensure", "verify"], description: "Default skip: prepare only Git. Before running dependency-dependent tests/builds use ensure; use verify for suspected dependency damage. Existing matching dependencies are reused." },
         dependency_override_reason: { type: "string", maxLength: 2000, description: "Only for an explicit user instruction to bypass a prerequisite release wait, e.g. Task consolidation. Persist that instruction here; ordinary start is not an override." },
       }, ["task_id"]),
-      tool("hub_task_status_update", "Change workflow status only after exact Git result evidence is integrated. Test/Await/Done fail closed when no result or integration fails.", {
+      tool("hub_task_status_update", "Change workflow status only after exact Git result evidence is integrated. Test/Await/Done fail closed when no result or integration fails. Await also composes the accepted result into PreRelease before it commits: a composition conflict leaves the Task in Test with the last good candidate.", {
         task_id: { type: "string" },
         status: { type: "string", enum: ["new", "in_progress", "blocked", "testing", "awaiting_implementation", "done"] },
         expected_task_revision: { type: "integer", minimum: 1, description: "Optional exact current Task revision CAS." },
@@ -760,11 +752,12 @@ export class HubMcpService {
         main_result_commit: { type: "string" },
         confirm_adoption: { type: "boolean", description: "Must be true because this creates release-authority Git references for legacy work." },
       }, ["task_id", "expected_task_revision", "evidence_turn_id", "reported_result_commit", "main_result_commit", "confirm_adoption"]),
-      tool("hub_task_complete", "Preview, then confirm closing a Task. Use absorbed_into_task_id after agent-led consolidation to preserve the source branch and worktree without marking it published.", {
+      tool("hub_task_complete", "Preview, then confirm closing a Task. Use absorbed_into_task_id after agent-led consolidation. Release Managers may explicitly close a verified published zero-delta duplicate without attributing a result to it.", {
         task_id: { type: "string" },
         confirm_cleanup: { type: "boolean" },
         expected_cleanup_token: { type: "string" },
         absorbed_into_task_id: { type: "string", description: "Surviving tested Task that contains the source work. The source must already be returned from Test/Await." },
+        absorption_mode: { type: "string", enum: ["published_duplicate"], description: "Release Manager-only mode for an open zero-own-delta source whose survivor is already Done and exactly published." },
       }, ["task_id"]),
       tool("hub_task_delete", "Preview, then explicitly confirm permanent destructive deletion of a Task and its managed Git artifacts.", {
         task_id: { type: "string" },
@@ -1052,6 +1045,9 @@ export class HubMcpService {
         if (!this.#isReleaseManager(context)) throw new Error("legacy Git adoption requires a Release Manager Stream");
         return this.#adoptLegacyTaskGit(context, args);
       case "hub_task_complete":
+        if (args.absorption_mode === "published_duplicate" && !this.#isReleaseManager(context)) {
+          throw new Error("published duplicate closure requires a Release Manager Stream");
+        }
         return this.#completeTask(context, args);
       case "hub_task_delete": {
         return this.#deleteTask(context, args);
@@ -1599,10 +1595,11 @@ export class HubMcpService {
     task_id: taskId, request_id: operationId, confirm_cleanup: confirmCleanup = false,
     expected_cleanup_token: expectedCleanupToken = null,
     absorbed_into_task_id: absorbedIntoTaskId = null,
+    absorption_mode: absorptionMode = null,
   } = {}) {
     const task = this.#task(context, taskId);
     const result = await this.taskLifecycle.complete({
-      taskId: task.id, operationId, confirmCleanup, expectedCleanupToken, absorbedIntoTaskId,
+      taskId: task.id, operationId, confirmCleanup, expectedCleanupToken, absorbedIntoTaskId, absorptionMode,
     });
     return result?.confirmationRequired
       ? { ...result, task: compactTask(result.task) }

@@ -46,6 +46,25 @@ an explicit, audited user exception to a prerequisite release wait, never an
 automatic consequence of starting a turn. Claim/launch preserve Test/Await/Blocked
 workflow status.
 
+`hub_task_complete` additionally accepts the exact enum
+`absorption_mode=published_duplicate` only with `absorbed_into_task_id` and only
+from a Release Manager Stream. This mode is for an open Task whose own managed
+checkout is exactly current durable published main while the named survivor is
+already Done with an exact published result. It does not infer delivery from an
+ancestor relation, a clean checkout, response text or manual history. The
+preview/confirmation token binds source and survivor revisions, repository Git
+identities, publication generation and a preserve-only cleanup plan. Ordinary
+callers cannot select the mode, unknown modes are rejected, and omission retains
+the existing open/tested-survivor contract.
+
+The published-duplicate result records durable `absorbedInto` evidence without
+creating a Git result, squash receipt or publication claim for the duplicate.
+No Git artifact is deleted. A post-admission failure leaves the same lifecycle
+operation in cleanup phase for exact retry from its stored admission evidence;
+a later publication does not strand that admitted operation. A committed
+outcome is returned by readback instead of replaying closure. Task/Git/publication drift before
+admission is a refusal and requires a fresh preview.
+
 For release-enabled Workspaces, combined closure also binds canonical selected
 composition validation (plan, approved base and tree) into that same preview and
 receipt. Validation precedes source closure and never accepts the survivor or
@@ -125,9 +144,17 @@ identity are fenced atomically by the transition transaction. A later pending re
 preserves the transition's immutable source evidence in its outcome; terminal
 reconciliation reproduces those durable arguments and does not consult a newer
 source Task state or replay the target lifecycle. The transition records the
-accepted result and invalidates older release-plan identity; it does not compose
-`PreRelease`. Candidate assembly is owned only by the later explicit release
-prepare operation.
+accepted result. An ordinary Await transition composes that result into the
+prospective `PreRelease` first and commits only after the composition succeeded;
+a conflict leaves the Task in Test with the last good candidate intact. There is
+no separate public prepare tool: an accepted set whose candidate is stale is
+repaired by repeating `hub_task_status_update` for that exact Task with the same
+`awaiting_implementation` status, which recomposes while its acceptance identity
+stays stable and ingests no new result. Returning an accepted Task recomposes the
+remaining membership under its own withdrawal owner, and after a published
+release the next acceptance prepares the next candidate. Release selection and
+freeze stay with the explicit release command; `hub_release_preflight` only
+reads.
 `hub_release_preflight` audits reviewed main and reads the existing exact prepared
 PreRelease. It does not refresh the rolling contour or rebuild missing/stale
 candidates. Its ready response pins candidate head/tree/manifest and retains

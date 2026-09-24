@@ -16,7 +16,7 @@ export async function runStartupMaintenance({
     } else {
       const activeClaudeRunPaths = taskRuns.values()
         .filter((run) => run.provider === "claude" && !run.observer)
-        .flatMap((run) => [run.claudeOutputPath, run.claudeErrorPath])
+        .flatMap((run) => [run.claudeOutputPath, run.claudeErrorPath, run.claudeProcessOwnerPath])
         .filter(Boolean);
       const removed = await cleanupOrphanedClaudeRunOutputs(config.dataDir, activeClaudeRunPaths);
       if (removed.length) logger.log(`Removed ${removed.length} orphaned Claude run file(s).`);

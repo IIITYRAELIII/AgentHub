@@ -1481,6 +1481,37 @@ test("desktopSnapshot exposes a durable automatic steer as steering", async () =
   assert.equal(snapshot.deferredInputs[0].state, "steering");
 });
 
+test("desktopSnapshot permits queue conversion only after a definite no-effect steer failure", async () => {
+  const { desktopSnapshot } = fixture({
+    pending: [
+      {
+        id: "definite-steer",
+        provider: "codex",
+        threadId: "thread-1",
+        taskTitle: "Задача",
+        input: "Уточнение",
+        conflictKind: "message-steer",
+        lastErrorCode: "ERR_PROVIDER_STEER_NOT_DELIVERED",
+        lastError: "Уточнение не доставлено",
+      },
+      {
+        id: "unknown-steer",
+        provider: "codex",
+        threadId: "thread-1",
+        taskTitle: "Задача",
+        input: "Уточнение",
+        conflictKind: "message-steer",
+        lastErrorCode: "ERR_PROVIDER_STEER_UNCONFIRMED",
+        lastError: "Результат уточнения неизвестен",
+      },
+    ],
+  });
+
+  const snapshot = await desktopSnapshot();
+  assert.equal(snapshot.deferredInputs.find((item) => item.id === "definite-steer").queueAfterTurnAvailable, true);
+  assert.equal("queueAfterTurnAvailable" in snapshot.deferredInputs.find((item) => item.id === "unknown-steer"), false);
+});
+
 test("desktopSnapshot exposes an inter-Stream queue message without its service envelope", async () => {
   const messageOrigin = {
     workspaceId: "workspace-1",
