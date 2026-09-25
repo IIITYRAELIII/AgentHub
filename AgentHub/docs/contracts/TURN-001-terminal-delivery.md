@@ -97,6 +97,10 @@ terminal.
   snapshot resolves it; a re-check never dispatches a second stop. Descendants
   captured with their own exact fingerprint remain actionable, but stopping
   them never proves that an unresolved tree has ended.
+  On Windows, discovery through a currently live parent PID requires a child
+  creation time no earlier than that live parent's creation time. A child born
+  before its current parent is foreign even when both were born during the run;
+  missing chronology cannot authorize a new numeric-parent descendant.
 - Terminal is absorbing: late running, progress, snapshot or reconnect events
   cannot revive it.
 - A bounded restart or opened-history-page reprojection may replace a corrupted terminal user

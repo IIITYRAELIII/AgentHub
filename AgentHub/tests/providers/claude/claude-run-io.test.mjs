@@ -454,6 +454,22 @@ test("an exact fingerprint captured through a reused parent PID cannot predate t
   "a stale numeric parent PID cannot discover a process born before the run");
 });
 
+test("live ancestry rejects a child older than its reused in-run parent PID", () => {
+  const at = (second) => `2026-09-25T10:00:${String(second).padStart(2, "0")}.000Z`;
+  const root = { pid: 600, parentPid: 1, creationTime: at(0), executablePath: "node.exe", commandLine: "wrapper" };
+  const child = { pid: 700, parentPid: 600, creationTime: at(10), executablePath: "claude.exe", commandLine: "claude" };
+  const foreign = { pid: 800, parentPid: 700, creationTime: at(5), executablePath: "foreign.exe", commandLine: "unrelated" };
+  const ownedGrandchild = { pid: 900, parentPid: 700, creationTime: at(11), executablePath: "node.exe", commandLine: "worker" };
+  assert.deepEqual(ownedProcessTreeFromSnapshot(root, [], [root, child, foreign, ownedGrandchild], {
+    platform: "win32", rootHandleOwned: true,
+  }), [root, child, ownedGrandchild]);
+  const unknownTime = ownedProcessTreeFromSnapshot(root, [], [root, child, {
+    ...foreign, creationTime: "",
+  }], { platform: "win32", rootHandleOwned: true });
+  assert.deepEqual(unknownTime, [root, child]);
+  assert.equal(unknownTime.unresolved, true, "missing chronology cannot authorize a new child or settle the tree");
+});
+
 test("owned process-tree discovery crosses one exited verified provider anchor", () => {
   const root = { pid: 100, creationTime: "root-one", executablePath: "node", commandLine: "wrapper" };
   const provider = { pid: 101, startedAtMs: Date.parse("2026-01-01T00:00:01.000Z"), exitedAtMs: Date.parse("2026-01-01T00:00:03.000Z") };

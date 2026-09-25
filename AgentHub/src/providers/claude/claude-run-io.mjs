@@ -421,6 +421,18 @@ export function ownedProcessTreeFromSnapshot(rootFingerprint, knownFingerprints 
     return Number.isFinite(earliestRootAtMs) && earliestRootAtMs > 0
       && Number.isFinite(createdAtMs) && createdAtMs < earliestRootAtMs - 1_000;
   };
+  const liveParentChronology = (item) => {
+    // Windows may retain a numeric parent PID after its original holder exits.
+    // A live child created before the current parent cannot be its descendant,
+    // even if both processes were created during this run.
+    if (platform !== "win32") return "valid";
+    const parent = byId.get(item.parentPid);
+    if (!parent) return "valid";
+    const childAtMs = Date.parse(item.creationTime);
+    const parentAtMs = Date.parse(parent.creationTime);
+    if (!Number.isFinite(childAtMs) || !Number.isFinite(parentAtMs)) return "unknown";
+    return childAtMs < parentAtMs ? "foreign" : "valid";
+  };
   const hasBoundedRootLifetime = Number.isFinite(rootStartedAtMs) && rootStartedAtMs > 0
     && Number.isFinite(rootExitedAtMs) && rootExitedAtMs > 0;
 
@@ -488,12 +500,19 @@ export function ownedProcessTreeFromSnapshot(rootFingerprint, knownFingerprints 
     ownedIds.add(pid);
     historicalAnchors.set(pid, expected);
   }
+  let chronologyUnresolved = null;
   let changed = true;
   while (changed) {
     changed = false;
     for (const current of byId.values()) {
       if (ownedIds.has(current.pid) || !ownedIds.has(current.parentPid)) continue;
       if (predatesRun(current)) continue;
+      const chronology = liveParentChronology(current);
+      if (chronology === "foreign") continue;
+      if (chronology === "unknown") {
+        chronologyUnresolved ??= `parent-chronology-unavailable:${current.parentPid}:child=${current.pid}`;
+        continue;
+      }
       const historicalParent = historicalAnchors.get(current.parentPid);
       if (historicalParent && !withinOwnerWindow(historicalParent, current)) continue;
       if (!hasExactRoot && current.parentPid === rootPid) {
@@ -513,7 +532,7 @@ export function ownedProcessTreeFromSnapshot(rootFingerprint, knownFingerprints 
   }
   const owned = [...new Map(result.map((item) => [item.pid, item])).values()];
   const admitted = new Set(owned.map((item) => item.pid));
-  let unresolved = null;
+  let unresolved = chronologyUnresolved;
   for (const item of byId.values()) {
     if (admitted.has(item.pid) || ambiguousAnchors.has(item.pid)) continue;
     if (!ambiguousAnchors.has(item.parentPid)) continue;

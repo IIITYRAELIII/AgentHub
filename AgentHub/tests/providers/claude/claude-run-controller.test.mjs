@@ -1261,6 +1261,36 @@ test("ClaudeRunController settles a finished run without stopping a pre-existing
   });
 });
 
+test("ClaudeRunController does not stop a foreign child older than its reused in-run parent PID", async () => {
+  await withTempDir(async (directory) => {
+    const at = (second) => `2026-09-25T10:00:${String(second).padStart(2, "0")}.000Z`;
+    const root = { pid: 600, parentPid: 1, creationTime: at(0), executablePath: "node.exe", commandLine: "wrapper" };
+    const child = { pid: 700, parentPid: 600, creationTime: at(10), executablePath: "claude.exe", commandLine: "claude" };
+    const foreign = { pid: 800, parentPid: 700, creationTime: at(5), executablePath: "foreign.exe", commandLine: "unrelated" };
+    const rows = [root, child, foreign];
+    const stopped = [];
+    const run = {
+      turnId: "turn-in-run-reuse", threadId: "session-in-run-reuse", pid: root.pid,
+      process: null, claudeExited: false, claudeProcessFingerprint: root,
+      claudeOwnedProcessTree: [root],
+    };
+    const controller = new ClaudeRunController({
+      dataDir: directory,
+      completionStopTimeoutMs: 200,
+      processAlive: (pid) => rows.some((item) => item.pid === pid),
+      processFingerprintLookup: async (pid) => rows.find((item) => item.pid === pid) ?? null,
+      processTreeFingerprintLookup: async (pid) => rows.find((item) => item.pid === pid) ?? null,
+      processTreeLookup: async (fingerprint, known, options) => ownedProcessTreeFromSnapshot(
+        fingerprint, known, rows, { ...options, platform: "win32" },
+      ),
+      stopProcess: async (pid) => { stopped.push(pid); return true; },
+      onReadError: () => {},
+    });
+    await controller.stop(run);
+    assert.deepEqual(stopped, [child.pid, root.pid]);
+  });
+});
+
 test("ClaudeRunController keeps a persistent tree probe error on bounded re-checks", async () => {
   await withTempDir(async (directory) => {
     const root = { pid: 100, creationTime: "2026-09-23T10:00:01.000Z" };
