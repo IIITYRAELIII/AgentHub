@@ -57,6 +57,13 @@ and its exact manifest are verified. The existing composer revision, recovery
 epoch and complete-payload fingerprint still gate restoration and same-message
 retry. Failed storage remains explicitly non-durable and cannot permit a managed
 reload to discard the only usable composition. See UI-001 and ADR-0037.
+Local database open, write and committed-record read share a five-second storage
+budget. Concurrent opens share one request; late handles are closed after timeout.
+The committed Blob and manifest are read back and verified before granting
+durability. A failed save retains the original in memory for sending and shows a
+persistent draft warning distinguishing blocked/unavailable storage, quota,
+store capacity, timeout and verification failure. It never recommends clearing
+site data containing other drafts. This warning does not claim upload acceptance.
 The browser Blob store is bounded to 512 MiB and 128 records, with a seven-day
 retention limit. Expired bytes cannot assert durable recovery. Memory references
 are retained only for staged selections, drafts and unresolved submissions.

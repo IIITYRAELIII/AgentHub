@@ -833,6 +833,17 @@ test("production attachment recovery blocks managed reload when the attachment s
     // since the chunked upload change. Here the attachment database fails to
     // open, and the product treats that as a non-durable attachment.
     await openFixture(page, { attachmentStorageOpenFailure: true });
+    await page.locator("[data-file-input]").setInputFiles({
+      name: "screenshot.png", mimeType: "image/png", buffer: Buffer.from("screenshot-bytes"),
+    });
+    const storageWarning = page.locator("[data-attachment-storage-warning]");
+    await storageWarning.waitFor();
+    assert.match(await storageWarning.textContent(), /его можно отправить/u);
+    assert.match(await storageWarning.textContent(), /Копия черновика не сохранена/u);
+    assert.match(await storageWarning.textContent(), /Не обновляй и не закрывай страницу/u);
+    assert.equal(await page.evaluate(() => window.AgentHub.prepareForRuntimeReload()), false);
+    // Remove this draft before exercising the existing rejected-send recovery.
+    await page.locator("[data-attachments] .attachment-remove").click();
     await submit(page, {
       text: "large attachment",
       attachment: {

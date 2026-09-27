@@ -16,6 +16,10 @@ state and invalidate changed collection delta baselines. Clients without the
 opt-in retain the full snapshot response during rolling deployment.
 Pending feedback is not mutation success and cannot move a card authoritatively.
 Local Task-reference drops and clipboard preparation do not await remote reads.
+Native Task drag preparation and Task-reference drops into chat/composer record
+content-free interaction spans; the drop also measures the next paint. The
+composer accepts the same Task reference transfer as the chat history pane,
+without initiating a send or changing the command identity.
 
 The root trace identity is the command ID. Required stages are client submit,
 transport start, Hub HTTP callback or Desktop IPC accept, authenticated control

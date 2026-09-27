@@ -1967,8 +1967,10 @@
         openTaskCard(task, { modal: boardRow && event.shiftKey });
       },
       ondragstart: attachable ? (event) => {
-        TaskReferences.beginDrag(event.dataTransfer, task);
-        setTaskDragImage(event, card);
+        window.AgentHubCommandTrace.measure("ui-interaction", "task-drag-start", () => {
+          TaskReferences.beginDrag(event.dataTransfer, task);
+          setTaskDragImage(event, card);
+        });
       } : null,
       ondragend: attachable ? () => TaskReferences.endDrag() : null,
     });
