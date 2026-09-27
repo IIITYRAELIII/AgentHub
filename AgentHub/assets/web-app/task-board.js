@@ -1163,6 +1163,26 @@
   }
 
   const pendingBoardMoves = new Map();
+
+  function boardTaskPending(taskId) {
+    return pendingBoardMoves.has(taskId) || state.savingStatusTaskId === taskId;
+  }
+
+  function showBoardTaskPending(taskId) {
+    // Keep the authoritative position until the mutation response arrives. A
+    // pending command must still be visible immediately, even when its reply
+    // is delayed; dropping again cannot create another move of the same Task.
+    for (const card of document.querySelectorAll("[data-board-task-id]")) {
+      if (card.dataset.boardTaskId !== taskId) continue;
+      card.setAttribute("aria-busy", "true");
+      card.setAttribute("draggable", "false");
+      card.removeAttribute("data-board-task-movable");
+      if (!card.querySelector("[data-board-task-pending]")) card.append(node("span", {
+        class: "board-task-meta", "data-board-task-pending": "", role: "status",
+        text: "Сохраняется…",
+      }));
+    }
+  }
   let boardMovePromptOpen = false;
 
   function chooseMoveDestination(task, destination, status) {
@@ -1247,6 +1267,7 @@
     if (destination === destinationValue(task) && status && taskWorkflowStatus(task) !== status) {
       state.savingStatusTaskId = task.id;
       renderTaskCardSaving(task.id);
+      showBoardTaskPending(task.id);
       emit("status", { id: task.id, status });
       return;
     }
@@ -1257,6 +1278,7 @@
     const requestId = `board-move:${task.id}:${window.crypto?.randomUUID?.()
       || `${Date.now()}-${Math.random().toString(36).slice(2)}`}`;
     pendingBoardMoves.set(task.id, { requestId, destination, status, phase: "move" });
+    showBoardTaskPending(task.id);
     emit("move", { id: task.id, ...params, beforeId, requestId });
   }
 
@@ -1920,8 +1942,9 @@
 
   function taskCard(task, { compact = false, linked = false, movable = !compact, boardRow = false } = {}) {
     const completed = task.status === "done";
-    const movableCard = movable && !completed;
-    const attachable = !linked && !completed;
+    const pending = boardTaskPending(task.id);
+    const movableCard = movable && !completed && !pending;
+    const attachable = !linked && !completed && !pending;
     const card = node("article", {
       class: `board-task-card${task.status === "started" ? " is-started" : ""}${completed ? " is-completed" : ""}${compact ? " is-compact" : ""}`,
       draggable: attachable ? "true" : null,
@@ -1930,6 +1953,7 @@
       "aria-label": `Открыть задачу ${task.title || task.text}`,
       "data-board-task-id": task.id,
       "data-board-task-movable": movableCard ? "true" : null,
+      "aria-busy": pending ? "true" : null,
       onclick: (event) => {
         event?.stopPropagation?.();
         if (boardRow && event.detail === 1) firstBoardClick = {
@@ -1948,6 +1972,10 @@
       } : null,
       ondragend: attachable ? () => TaskReferences.endDrag() : null,
     });
+    if (pending) card.append(node("span", {
+      class: "board-task-meta", "data-board-task-pending": "", role: "status",
+      text: "Сохраняется…",
+    }));
     if (movableCard) {
       card.addEventListener("dragover", (event) => {
         if (hasColumnDrag(event.dataTransfer)) return;
@@ -2753,6 +2781,8 @@
         if (type === "status" && !succeeded) {
           window.AgentHub?.toast("Задача перенесена, но изменить статус не удалось. Текущий статус сохранён.");
         }
+        renderBoard();
+        renderWorkspacePanel();
       }
       if (type === "update" && state.savingTaskId === id) {
         state.savingTaskId = null;
@@ -2772,6 +2802,8 @@
       }
       if (type === "status" && state.savingStatusTaskId === id) {
         state.savingStatusTaskId = null;
+        renderBoard();
+        renderWorkspacePanel();
         renderOpenTaskCard();
         return;
       }

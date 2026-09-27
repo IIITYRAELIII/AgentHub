@@ -8,6 +8,15 @@ for previews. Task journal projection joins exact bindings to indexed journal
 identities and reads summary scalars, not full prompts, bodies or stored diffs.
 The journal revision participates in Task-board cache invalidation (ADR-0051).
 
+The shared UI requests a board-only response for Dashboard move/status mutations.
+The owner still awaits durable mutation/lifecycle completion, then returns the
+authoritative board tasks, workspaces and layout without waiting for conversation,
+telemetry or server-health snapshots. Clients preserve unrelated chat/receipt
+state and invalidate changed collection delta baselines. Clients without the
+opt-in retain the full snapshot response during rolling deployment.
+Pending feedback is not mutation success and cannot move a card authoritatively.
+Local Task-reference drops and clipboard preparation do not await remote reads.
+
 The root trace identity is the command ID. Required stages are client submit,
 transport start, Hub HTTP callback or Desktop IPC accept, authenticated control
 handler enter, receipt lock wait, durable intake enqueue/start/commit, response

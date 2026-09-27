@@ -9,6 +9,39 @@ import { TaskBoardStore } from "../../../src/infrastructure/persistence/task-boa
 import { WorkspaceCatalogStore } from "../../../src/infrastructure/persistence/workspace-catalog-store.mjs";
 import { DesktopTaskBoardController } from "../../../src/interfaces/desktop/desktop-task-board-controller.mjs";
 
+test("board move and status acknowledge committed state without unrelated snapshot reads", async () => {
+  let releaseMove;
+  let committed = false;
+  let fullReads = 0;
+  const gate = new Promise((resolve) => { releaseMove = resolve; });
+  const boardTasks = [{ id: "task-1", revision: 2, bucket: "notes" }];
+  const controller = new DesktopTaskBoardController({
+    taskLauncher: {},
+    taskBoard: {
+      move: async () => { await gate; committed = true; },
+      snapshot: () => { assert.equal(committed, true); return boardTasks; },
+      workspaces: () => [],
+      layout: () => ({ columnOrder: ["notes"] }),
+    },
+    taskLifecycle: { updateWorkflowStatus: async () => ({ status: "done" }) },
+    snapshot: () => { fullReads += 1; return new Promise(() => {}); },
+  });
+  let acknowledged = false;
+  const pending = controller.move({ id: "task-1", responseView: "task-board" })
+    .then((value) => { acknowledged = true; return value; });
+  await Promise.resolve();
+  assert.equal(acknowledged, false, "no ACK before the durable mutation");
+  releaseMove();
+  const result = await pending;
+  assert.equal(result.view, "task-board");
+  assert.deepEqual(result.boardTasks, boardTasks);
+  const status = await controller.status({ id: "task-1", status: "done", responseView: "task-board" });
+  assert.deepEqual(status.lifecycleResult, { status: "done" });
+  assert.equal(fullReads, 0);
+  controller.taskBoard.move = async () => { throw new Error("definite refusal"); };
+  await assert.rejects(controller.move({ responseView: "task-board" }), /definite refusal/);
+});
+
 function fixture({ activeThread = null, sourceDetails = undefined, voiceTranscriber = null, attachmentDirectory = null } = {}) {
   const calls = [];
   const task = {

@@ -345,6 +345,28 @@ async function streamTabsApi() {
   return window.AgentHubStreamTabs;
 }
 
+test("Stream model label follows saved settings while idle and exact turn while active", async () => {
+  const { streamModelLabel } = await streamTabsApi();
+  const task = { provider: "codex", threadId: "old-thread", model: "GPT-5.6 Sol", running: false };
+  const stream = { settings: { provider: "codex", model: "gpt-6-sol" } };
+  const settings = { modelOptionsByProvider: { codex: [
+    { value: "gpt-6-sol", label: "GPT-6 Sol" },
+    { value: "gpt-6-luna", label: "GPT-6 Luna" },
+  ] } };
+  assert.equal(streamModelLabel(task, stream, settings), "GPT-6 Sol");
+  stream.settings.model = "gpt-6-luna";
+  assert.equal(streamModelLabel(task, stream, settings), "GPT-6 Luna");
+  task.running = true;
+  task.run = { turnId: "turn", operationKind: "user-turn", projectionState: "active", model: "GPT-5.6 Sol" };
+  assert.equal(streamModelLabel(task, stream, settings), "GPT-5.6 Sol");
+  task.latestFinal = { provider: "codex", threadId: "old-thread", turnId: "turn" };
+  assert.equal(streamModelLabel(task, stream, settings), "GPT-6 Luna");
+  task.running = false;
+  stream.settings.provider = "claude";
+  assert.equal(streamModelLabel(task, stream, settings), "GPT-5.6 Sol");
+  assert.equal(streamModelLabel(task, null, settings), "GPT-5.6 Sol");
+});
+
 const stream = (id, ordinal, lastActivity) => ({
   id,
   ordinal,

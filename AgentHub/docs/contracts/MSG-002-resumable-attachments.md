@@ -44,6 +44,13 @@ visibly and is never silently substituted.
 
 ## Memory, storage and recovery
 
+Clipboard/file selection prepares the local draft without network negotiation.
+Its local bounds are eight files, 256 MiB per file and 512 MiB per draft. Before
+the first upload, the send path checks every file and the aggregate draft against
+negotiated capabilities, including the legacy 20 MiB aggregate limit. A rejected
+batch restores the same unsent draft through the existing preparation-cancellation
+owner; local preparation never claims upload or message acceptance (ADR-0074).
+
 The browser stores file Blobs and bounded hash/reference metadata rather than
 whole-file base64 copies. Durable recovery is granted only after Blob storage
 and its exact manifest are verified. The existing composer revision, recovery

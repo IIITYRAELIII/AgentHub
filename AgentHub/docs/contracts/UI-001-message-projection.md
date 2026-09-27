@@ -2,6 +2,11 @@
 
 ## Invariants
 
+- An idle Stream header shows its saved model setting for the matching provider;
+  an exact active user turn shows that turn's model. Legacy Threads without
+  matching Stream settings retain their observed model. Header labels never
+  rewrite historical messages, usage attribution or provider configuration.
+
 - Optimistic, queued, active and historical forms of one command are one entity
   keyed by `clientUserMessageId`, not separately appendable cards.
 - Provider entities use `provider + threadId + turnId`; items additionally use
@@ -302,13 +307,21 @@ still equals the submitted payload; truncation, normalization, count or storage
 bounds may not silently weaken this check. Every committed composer mutation
 (text, attachment, Task reference, response annotation or programmatic edit)
 advances an irreversible Task-scoped edit revision and invalidates the old
-identity. Eligible attachment reads fence their exact Task before yielding;
-attachment and annotation callbacks commit only to the captured live Task,
-generation and revision. Refused/no-op file selections, duplicate annotations
+identity. Eligible attachment reads fence their exact Task before yielding.
+Attachment preparation is additive: callbacks append to the latest draft under
+the captured live Task identity, generation and destructive-operation fence,
+so typing or another paste cannot silently discard selected files or resurrect
+old text. Send, clear, attachment removal, draft replacement and Task rebinding
+invalidate pending additions. Annotation callbacks retain the exact captured
+revision rule. Refused/no-op file selections, duplicate annotations
 and hash failures do not advance the revision. Later accepted or rejected
 evidence from an older revision cannot clear or replace the edited composition,
 and receipt evidence without one exact current provider/Thread/Stream identity
 cannot complete any composer send.
+Local file preparation does not await upload capabilities. The draft retains at
+most eight files, 256 MiB per file and 512 MiB total; the negotiated server limits
+are checked before upload/send (MSG-002). Pending preparation blocks managed
+reload until its bytes are committed or discarded. See ADR-0074.
 An explicit retry of the unchanged restored payload reuses the original request
 identity and uploads recovered attachments again. If browser privacy or quota
 policy, serialization normalization or a configured bound prevents exact atomic

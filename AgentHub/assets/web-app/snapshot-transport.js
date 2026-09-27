@@ -47,6 +47,24 @@
 
   function materialize(previous, payload) {
     if (!payload || payload.notModified === true) return payload;
+    if (payload.view === "task-board") {
+      if (!previous || !Array.isArray(payload.boardTasks) || !Array.isArray(payload.workspaces)
+        || !payload.boardLayout) throw baselineError("Board mutation has no valid snapshot baseline");
+      return {
+        ...previous,
+        boardTasks: payload.boardTasks,
+        workspaces: payload.workspaces,
+        boardLayout: payload.boardLayout,
+        // These collections changed outside a versioned delta. Request fresh
+        // resets next time; never apply a delta against the old collection hash.
+        version: "",
+        collectionVersions: {
+          ...(previous.collectionVersions ?? {}),
+          boardTasks: "",
+          workspaces: "",
+        },
+      };
+    }
     const deltas = payload.collectionDeltas;
     if (Number(payload.apiVersion) < 4 || !deltas) return payload;
     const result = { ...payload };

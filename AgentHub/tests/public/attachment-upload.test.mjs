@@ -18,6 +18,23 @@ async function fixture(size = 2 * CHUNK + 3) {
 }
 const response = (value, status = 200) => new Response(JSON.stringify(value), { status });
 
+test("cancel stops capability negotiation before any attachment upload", async () => {
+  const { context } = await fixture(1);
+  const controller = new AbortController();
+  const calls = [];
+  const uploader = context.AgentHubAttachmentUpload.create({ request: (path, { method, signal }) => {
+    calls.push(method);
+    assert.equal(path, "/api/attachment-upload");
+    return new Promise((resolve, reject) => {
+      signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+    });
+  } });
+  const pending = uploader.validateBatch([{ size: 1 }], { signal: controller.signal });
+  controller.abort(new Error("cancel preparation"));
+  await assert.rejects(pending, /cancel preparation/);
+  assert.deepEqual(calls, ["GET"]);
+});
+
 test("chunk uploader resumes a lost acknowledgement under the same upload ID without whole-file encoding", { timeout: 25_000 }, async () => {
   const { context, file } = await fixture(21 * CHUNK + 5);
   assert.equal(context.AgentHubComposerFiles.durable(file), false);
@@ -76,6 +93,33 @@ test("upload capabilities accept a total quota below the nominal file quota", as
     protocol, chunkBytes: CHUNK, maxBytes: 128 * CHUNK, maxTotalBytes: 64 * CHUNK,
   }) });
   assert.equal((await uploader.capabilities()).maxBytes, 64 * CHUNK);
+});
+
+test("draft attachment batch checks negotiated aggregate quota before any upload", async () => {
+  const { context } = await fixture(3);
+  const calls = [];
+  const uploader = context.AgentHubAttachmentUpload.create({ request: async (path, init) => {
+    calls.push([path, init.method]);
+    return response({ protocol, chunkBytes: CHUNK, maxBytes: 8, maxTotalBytes: 10 });
+  } });
+  await assert.rejects(uploader.validateBatch([{ size: 6 }, { size: 5 }]),
+    (error) => error.attachmentUploadTerminal === true);
+  await uploader.validateBatch([{ size: 6 }, { size: 4 }]);
+  await assert.rejects(uploader.validateBatch([{ size: 9 }]), /лимит/u);
+  assert.deepEqual(calls, [["/api/attachment-upload", "GET"]]);
+});
+
+test("legacy aggregate quota remains 20 MiB and empty text sends do not negotiate", async () => {
+  const { context } = await fixture(3);
+  let calls = 0;
+  const uploader = context.AgentHubAttachmentUpload.create({ request: async () => {
+    calls += 1;
+    return response({}, 404);
+  } });
+  await uploader.validateBatch([]);
+  assert.equal(calls, 0);
+  await assert.rejects(uploader.validateBatch([{ size: 11 * CHUNK }, { size: 10 * CHUNK }]), /лимит/u);
+  assert.equal(calls, 1);
 });
 
 test("Blob durability expires and memory pruning preserves staged and explicitly owned files", async () => {

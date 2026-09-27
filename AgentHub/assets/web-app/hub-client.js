@@ -1765,7 +1765,8 @@ function modelTask(task, snapshot, effectiveSelectedId, serverSelectedId) {
     projectRoot: task.projectRoot ?? null,
     sessionCwd: task.sessionCwd ?? null,
     agentLabel: task.provider === "claude" ? "Claude" : "Codex",
-    modelLabel: task.run?.model ?? task.model ?? (serverSelected ? snapshot.selected?.model : ""),
+    modelLabel: window.AgentHubStreamTabs.streamModelLabel(task, catalogStream, snapshot.settings)
+      || (serverSelected ? snapshot.selected?.model : ""),
     reasoningLabel: serverSelected ? snapshot.selected?.reasoning : task.run?.reasoning ?? "",
     modeLabel: serverSelected ? snapshot.selected?.mode : "",
     runtimeLabel: runtimeShortLabels[executionOwner] ?? (runtimeTitle ? "EXT" : ""),
@@ -3236,6 +3237,12 @@ function sendUserMessage(request, frozenParams = null) {
         };
         attachmentSendSessions.set(request.requestId, session);
         try {
+          // Draft preparation is local; negotiate server limits once here,
+          // before the first upload or provider command can have an effect.
+          if (requestAttachments.length) project("uploading", "Проверка лимитов вложений…");
+          await attachmentUploader.validateBatch(requestAttachments, { signal: session.controller.signal });
+          session.controller.signal.throwIfAborted();
+          assertCurrentSendTaskOperation(sendTaskOperation);
           for (const attachment of requestAttachments) {
             let path;
             while (!path) {
@@ -3685,6 +3692,7 @@ document.addEventListener("agenthub:board-action", (event) => {
     const action = actions[detail.type];
     if (!action) return;
     const { type: _type, ...params } = detail;
+    if (lastSnapshot && ["move", "status"].includes(detail.type)) params.responseView = "task-board";
     let result = await control(action, params);
     if (["complete", "remove"].includes(detail.type) && result.lifecycleResult?.confirmationRequired) {
       const decision = await window.AgentHubTaskCleanupConfirmation.confirm({

@@ -1875,13 +1875,13 @@ function captureComposerTaskOperation(taskId = state.selectedId) {
   };
 }
 
-function composerTaskOperationCurrent(operation) {
+function composerTaskOperationCurrent(operation, { allowDraftEdits = false } = {}) {
   if (!operation) return false;
   const task = state.tasks.find((candidate) => candidate.id === operation.taskId);
   return Boolean(task)
     && composerTaskIdentity(task) === operation.taskIdentity
     && (composerTaskGenerations.get(operation.taskId) ?? 0) === operation.taskGeneration
-    && composerDraftReconciliation.revision(operation.taskId) === operation.editRevision;
+    && (allowDraftEdits || composerDraftReconciliation.revision(operation.taskId) === operation.editRevision);
 }
 
 function advanceComposerAsyncOperationFence(taskId) {
@@ -8588,6 +8588,7 @@ function normalizedRecoveryAttachments(value) {
 let attachments = [];
 let taskReferences = [];
 const attachmentOperationSequences = new Map();
+let pendingAttachmentPreparations = 0;
 
 function currentAttachments() {
   return attachments;
@@ -8790,6 +8791,7 @@ attachmentsBox.addEventListener("click", (event) => {
   const remove = event.target.closest("[data-attachment-index]");
   if (!remove) return;
   const index = Number(remove.dataset.attachmentIndex);
+  advanceComposerAsyncOperationFence(state.selectedId);
   setAttachments(attachments.filter((_, i) => i !== index));
   saveDraft({ userEdited: true });
 });
@@ -8802,13 +8804,10 @@ async function readAttachmentFiles(files) {
     file && Number.isSafeInteger(file.size) && file.size > 0
   ));
   if (selected.length === 0) return;
-  const operationSequence = (attachmentOperationSequences.get(operation.taskId) ?? 0) + 1;
-  attachmentOperationSequences.set(operation.taskId, operationSequence);
-  let policy;
-  try { policy = await window.AgentHubAttachmentCapabilities(); }
-  catch (error) { showToast(error.message); return; }
-  if (!composerTaskOperationCurrent(operation)
-    || attachmentOperationSequences.get(operation.taskId) !== operationSequence) return;
+  // Selection prepares a local draft, not an upload. Network negotiation belongs
+  // to sending; it must not make clipboard bytes wait for the server.
+  const operationSequence = attachmentOperationSequences.get(operation.taskId) ?? 0;
+  const policy = { maxBytes: DRAFT_ATTACHMENT_MAX_BYTES, maxTotalBytes: DRAFT_ATTACHMENT_MAX_TOTAL_BYTES };
   const limit = 8;
   const room = Math.max(0, limit - initialDraft.attachments.length);
   const existingBytes = initialDraft.attachments.reduce((sum, item) => sum + (Number(item?.size) || 0), 0);
@@ -8839,11 +8838,17 @@ async function readAttachmentFiles(files) {
     else if (oversized) showToast(`Общий лимит вложений: ${Math.floor(policy.maxTotalBytes / 1024 / 1024)} МБ.`);
     return;
   }
-  const settled = await Promise.allSettled(accepted.map((file) => window.AgentHubComposerFiles.prepare(file, {
+  pendingAttachmentPreparations += 1;
+  let settled;
+  try {
+    settled = await Promise.allSettled(accepted.map((file) => window.AgentHubComposerFiles.prepare(file, {
       name: file.name,
       type: file.type || "application/octet-stream",
       size: file.size,
     })));
+  } finally {
+    pendingAttachmentPreparations -= 1;
+  }
   const failed = settled.find((result) => result.status === "rejected");
   if (failed) {
     window.AgentHubComposerFiles.settle(settled.filter((result) => result.status === "fulfilled").map((result) => result.value));
@@ -8863,13 +8868,27 @@ async function readAttachmentFiles(files) {
     showToast("Вложение не прошло проверку целостности.");
     return;
   }
-  if (attachmentOperationSequences.get(operation.taskId) === operationSequence
-    && composerTaskOperationCurrent(operation)) {
-    composerDraftReconciliation.save(operation.taskId, {
-      ...initialDraft,
-      attachments: [...initialDraft.attachments, ...canonical].slice(0, limit),
-    }, { userEdited: true });
-    if (state.selectedId === operation.taskId) restoreDraft();
+  if ((attachmentOperationSequences.get(operation.taskId) ?? 0) === operationSequence
+    && composerTaskOperationCurrent(operation, { allowDraftEdits: true })) {
+    // Independent pastes append to the current composition. Never replay the
+    // pre-read text/attachments over edits or another completed paste.
+    const current = composerDraftSnapshot(operation.taskId);
+    let bytes = current.attachments.reduce((sum, item) => sum + (Number(item?.size) || 0), 0);
+    const additions = [];
+    for (const item of canonical) {
+      if (current.attachments.length + additions.length >= limit) break;
+      if (bytes + item.size > policy.maxTotalBytes) { oversized += 1; continue; }
+      additions.push(item);
+      bytes += item.size;
+    }
+    if (additions.length > 0) {
+      composerDraftReconciliation.save(operation.taskId, {
+        ...current,
+        attachments: [...current.attachments, ...additions],
+      }, { userEdited: true });
+      if (state.selectedId === operation.taskId) restoreDraft();
+    }
+    if (additions.length < canonical.length && !oversized) showToast(`Можно приложить не больше ${limit} файлов.`);
   }
   window.AgentHubComposerFiles.settle(loaded);
   pruneComposerFiles();
@@ -9381,9 +9400,14 @@ function composerDraftSnapshot(taskId) {
 
 function saveDraft({ userEdited = false } = {}) {
   if (!state.selectedId) return;
+  const draft = composerDraftSnapshot(state.selectedId);
+  if (userEdited && !window.AgentHubComposerDraftReconciliation.hasDraftContent(draft)
+    && window.AgentHubComposerDraftReconciliation.hasDraftContent(drafts.get(state.selectedId))) {
+    advanceComposerAsyncOperationFence(state.selectedId);
+  }
   composerDraftReconciliation.save(
     state.selectedId,
-    composerDraftSnapshot(state.selectedId),
+    draft,
     { userEdited },
   );
 }
@@ -9393,6 +9417,7 @@ function composerDraftState(taskId) {
 }
 
 function writeComposerDraft(taskId, draft) {
+  advanceComposerAsyncOperationFence(taskId);
   const next = composerDraftReconciliation.save(
     taskId,
     draft,
@@ -9413,7 +9438,7 @@ function prepareForRuntimeReload() {
     draftsPersisted,
     drafts: drafts.values(),
     modalOpen,
-    requestPending: Boolean(pendingComposerRequest),
+    requestPending: Boolean(pendingComposerRequest) || pendingAttachmentPreparations > 0,
     bugReportAttachments,
     bugReportSending,
   })) return false;
