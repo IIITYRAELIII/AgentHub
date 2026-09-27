@@ -1848,6 +1848,7 @@ function updateComposerTaskGenerations(previousTasks, nextTasks) {
   for (const id of new Set([...previous.keys(), ...next.keys()])) {
     if (previous.get(id) === next.get(id)) continue;
     composerTaskGenerations.set(id, (composerTaskGenerations.get(id) ?? 0) + 1);
+    discardAttachmentPreviews(id);
   }
 }
 
@@ -1859,6 +1860,7 @@ function removeComposerTask(taskId) {
     pendingComposerRequest = null;
   }
   composerDraftReconciliation.remove(id);
+  discardAttachmentPreviews(id);
   attachmentOperationSequences.delete(id);
   annotationOperationSequences.delete(id);
 }
@@ -1889,6 +1891,7 @@ function advanceComposerAsyncOperationFence(taskId) {
   if (!id) return;
   attachmentOperationSequences.set(id, (attachmentOperationSequences.get(id) ?? 0) + 1);
   annotationOperationSequences.set(id, (annotationOperationSequences.get(id) ?? 0) + 1);
+  discardAttachmentPreviews(id);
 }
 
 function taskNavigationData(task) {
@@ -8383,9 +8386,10 @@ function updateSendState() {
     || currentAttachments().length > 0
     || currentTaskReferences().length > 0
     || currentAnnotations().length > 0;
-  composerSend.disabled = !draftFilled || !state.selectedId || Boolean(pendingComposerRequest);
+  const preparing = currentAttachmentPreviews().length > 0;
+  composerSend.disabled = !draftFilled || !state.selectedId || Boolean(pendingComposerRequest) || preparing;
   composerQuickMessages?.querySelectorAll("button").forEach((button) => {
-    button.disabled = !state.selectedId || Boolean(pendingComposerRequest);
+    button.disabled = !state.selectedId || Boolean(pendingComposerRequest) || preparing;
   });
 }
 
@@ -8456,6 +8460,10 @@ function sendComposerRequest({
   restoreOnReject = false,
 } = {}) {
   if (!state.selectedId || pendingComposerRequest) return;
+  if (currentAttachmentPreviews().length) {
+    showToast("Вложения ещё готовятся. Дождись подготовки или удали их перед отправкой.");
+    return;
+  }
   const submittedAtMs = Date.now();
   const submittedMonotonicMs = performance.now();
   const task = currentTask();
@@ -8600,6 +8608,28 @@ let attachments = [];
 let taskReferences = [];
 const attachmentOperationSequences = new Map();
 let pendingAttachmentPreparations = 0;
+// Transient selection projection only: never persisted or used as send payload.
+const attachmentPreparationPreviews = new Set();
+
+function currentAttachmentPreviews(taskId = state.selectedId) {
+  return [...attachmentPreparationPreviews].filter((entry) => entry.operation.taskId === taskId)
+    .flatMap((entry) => entry.items);
+}
+
+function disposeAttachmentPreview(entry) {
+  if (!attachmentPreparationPreviews.delete(entry)) return;
+  for (const item of entry.items) if (item.url) URL.revokeObjectURL(item.url);
+}
+
+function discardAttachmentPreviews(taskId) {
+  for (const entry of attachmentPreparationPreviews) {
+    if (entry.operation.taskId === taskId) disposeAttachmentPreview(entry);
+  }
+  if (state.selectedId === taskId) {
+    renderAttachments();
+    updateSendState();
+  }
+}
 
 function currentAttachments() {
   return attachments;
@@ -8638,7 +8668,8 @@ function setTaskReferences(next) {
 
 function renderAttachments() {
   attachmentsBox.replaceChildren();
-  attachmentsBox.hidden = attachments.length === 0 && taskReferences.length === 0;
+  const previews = currentAttachmentPreviews();
+  attachmentsBox.hidden = attachments.length === 0 && taskReferences.length === 0 && previews.length === 0;
   if (taskReferences.length) {
     attachmentsBox.append(renderAttachmentStrip(taskReferences, {
       readOnly: false,
@@ -8646,6 +8677,24 @@ function renderAttachments() {
     }));
   }
   if (attachments.length) attachmentsBox.append(renderAttachmentStrip(attachments, { readOnly: false }));
+  if (previews.length) {
+    const strip = el("div", { class: "attachment-strip" });
+    for (const item of previews) {
+      strip.append(el("div", {
+        class: `attachment attachment-preparing${item.url ? " attachment-image" : " attachment-file"}`,
+        "data-attachment-preparing": "", "aria-busy": "true", title: item.name,
+      }, [
+        item.url ? el("img", { src: item.url, alt: item.name })
+          : el("span", { class: "attachment-file-card", text: item.name }),
+        el("span", { class: "attachment-preparing-label", role: "status", text: "Подготовка…" }),
+        el("button", {
+          type: "button", class: "attachment-remove", "data-attachment-preparation-remove": "",
+          title: "Отменить подготовку вложений", "aria-label": "Отменить подготовку вложений", text: "×",
+        }),
+      ]));
+    }
+    attachmentsBox.append(strip);
+  }
   const storageWarning = attachmentStorageWarning(attachments);
   if (storageWarning) attachmentsBox.append(el("p", {
     class: "attachment-storage-warning", role: "status",
@@ -8810,6 +8859,10 @@ function formatAttachmentSize(value) {
 }
 
 attachmentsBox.addEventListener("click", (event) => {
+  if (event.target.closest("[data-attachment-preparation-remove]")) {
+    advanceComposerAsyncOperationFence(state.selectedId);
+    return;
+  }
   const taskReferenceRemove = event.target.closest("[data-task-reference-index]");
   if (taskReferenceRemove) {
     const index = Number(taskReferenceRemove.dataset.taskReferenceIndex);
@@ -8838,8 +8891,9 @@ async function readAttachmentFiles(files) {
   const operationSequence = attachmentOperationSequences.get(operation.taskId) ?? 0;
   const policy = { maxBytes: DRAFT_ATTACHMENT_MAX_BYTES, maxTotalBytes: DRAFT_ATTACHMENT_MAX_TOTAL_BYTES };
   const limit = 8;
-  const room = Math.max(0, limit - initialDraft.attachments.length);
-  const existingBytes = initialDraft.attachments.reduce((sum, item) => sum + (Number(item?.size) || 0), 0);
+  const reserved = [...initialDraft.attachments, ...currentAttachmentPreviews(operation.taskId)];
+  const room = Math.max(0, limit - reserved.length);
+  const existingBytes = reserved.reduce((sum, item) => sum + (Number(item?.size) || 0), 0);
   let remainingBytes = Math.max(0, policy.maxTotalBytes - existingBytes);
   let oversized = 0;
   let unsafe = 0;
@@ -8868,6 +8922,16 @@ async function readAttachmentFiles(files) {
     return;
   }
   pendingAttachmentPreparations += 1;
+  const preview = { operation, items: accepted.map((file) => {
+    let url = "";
+    if (file.type.startsWith("image/")) {
+      try { url = URL.createObjectURL(file); } catch { /* Preparation still owns file validation. */ }
+    }
+    return { name: file.name, size: file.size, url };
+  }) };
+  attachmentPreparationPreviews.add(preview);
+  renderAttachments();
+  updateSendState();
   let settled;
   try {
     settled = await Promise.allSettled(accepted.map((file) => window.AgentHubComposerFiles.prepare(file, {
@@ -8877,6 +8941,9 @@ async function readAttachmentFiles(files) {
     })));
   } finally {
     pendingAttachmentPreparations -= 1;
+    disposeAttachmentPreview(preview);
+    renderAttachments();
+    updateSendState();
   }
   const failed = settled.find((result) => result.status === "rejected");
   if (failed) {

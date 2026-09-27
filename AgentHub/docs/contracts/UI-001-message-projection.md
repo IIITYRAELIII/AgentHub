@@ -322,6 +322,11 @@ Local file preparation does not await upload capabilities. The draft retains at
 most eight files, 256 MiB per file and 512 MiB total; the negotiated server limits
 are checked before upload/send (MSG-002). Pending preparation blocks managed
 reload until its bytes are committed or discarded. See ADR-0074.
+The selected draft shows bounded temporary file previews while preparation is
+pending. These previews are labelled as preparation, are cancellable, and are
+excluded from serialized/sendable attachments. Send waits for that draft's
+pending preparation or explicit cancellation; another Stream's preparation
+cannot block it. Settling or invalidating the operation releases its preview URL.
 An explicit retry of the unchanged restored payload reuses the original request
 identity and uploads recovered attachments again. If browser privacy or quota
 policy, serialization normalization or a configured bound prevents exact atomic

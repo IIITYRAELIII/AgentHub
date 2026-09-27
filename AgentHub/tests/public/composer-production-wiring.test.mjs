@@ -957,7 +957,7 @@ test("production receipt without streamId completes only one exact provider Thre
   }
 });
 
-test("production accepted send invalidates a held Blob preparation draft operation", {
+test("production send waits for a held Blob preparation without losing the selected file", {
   timeout: 120_000,
 }, async () => {
   const browser = await launchBrowser();
@@ -982,16 +982,18 @@ test("production accepted send invalidates a held Blob preparation draft operati
     });
     await page.waitForFunction(() => Boolean(window.__heldSendRead));
     await page.locator("[data-composer]").evaluate((form) => form.requestSubmit());
-    await page.waitForFunction(() => {
-      const log = JSON.parse(localStorage.getItem("fixture:bridge-log") ?? "[]");
-      return log.some((entry) => entry.action === "send-message")
-        && document.querySelector("[data-composer-input]")?.value === "";
-    });
+    assert.equal((await bridgeCalls(page, "send-message")).length, 0);
+    assert.equal(await page.locator("[data-composer-input]").inputValue(), "accepted while file read is pending");
     await page.evaluate(() => window.__releaseSendRead());
-    await page.waitForTimeout(100);
+    await page.waitForFunction(() => document.querySelectorAll("[data-attachment-index]").length === 1);
+    assert.equal((await bridgeCalls(page, "send-message")).length, 0);
+    await page.locator("[data-composer]").evaluate((form) => form.requestSubmit());
+    await page.waitForFunction(() => JSON.parse(localStorage.getItem("fixture:bridge-log") ?? "[]")
+      .some((entry) => entry.action === "send-message"));
     assert.equal(await page.locator("[data-composer-input]").inputValue(), "");
     assert.equal(await page.locator("[data-attachment-index]").count(), 0);
     assert.equal((await bridgeCalls(page, "send-message")).at(-1).params.text, "accepted while file read is pending");
+    assert.equal((await bridgeCalls(page, "send-message")).at(-1).params.attachments.length, 1);
   } finally {
     await browser.close();
   }
@@ -1222,7 +1224,7 @@ test("production concurrent pastes enforce the final count and preserve explicit
       };
       window.__pasteScreenshots(9);
     });
-    await page.waitForFunction(() => window.__pasteReads.length === 9);
+    await page.waitForFunction(() => window.__pasteReads.length === 8);
     assert.equal(await page.evaluate(() => window.AgentHub.prepareForRuntimeReload()), false);
     await page.evaluate(() => window.__releasePastes());
     await page.waitForFunction(() => document.querySelectorAll("[data-attachment-index]").length === 8);

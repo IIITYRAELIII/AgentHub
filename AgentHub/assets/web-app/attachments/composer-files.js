@@ -15,6 +15,11 @@
   let database;
   let openingDatabase;
 
+  function measurePreparation(action, operation) {
+    const trace = globalThis.AgentHubCommandTrace;
+    return trace ? trace.measure("ui-interaction", action, operation) : operation();
+  }
+
   const storageFailures = Object.freeze({
     unavailable: ["локальное хранилище недоступно в этом браузере", "Проверь разрешение на хранение данных для этого сайта."],
     blocked: ["другая вкладка блокирует локальное хранилище", "Закрой другие вкладки Agent Hub и добавь файл повторно."],
@@ -194,10 +199,11 @@
     try {
       const uploadId = crypto.randomUUID();
       const record = { ...metadata, uploadId, blobId: uploadId, chunkBytes: CHUNK_BYTES,
-        chunkHashes: await hashesFor(file), blob: file, storedAt: Date.now() };
+        chunkHashes: await measurePreparation("attachment-hash", () => hashesFor(file)), blob: file, storedAt: Date.now() };
       let durable = true;
       let failure = null;
-      try { await storeFile(record); } catch (error) { durable = false; failure = storageFailureFrom(error); }
+      try { await measurePreparation("attachment-local-save", () => storeFile(record)); }
+      catch (error) { durable = false; failure = storageFailureFrom(error); }
       staged.add(uploadId);
       return remember(record, durable, failure);
     } finally { preparingBytes -= file.size; preparingFiles -= 1; }

@@ -25,6 +25,14 @@ other. Each committed append still advances the canonical edit revision and
 invalidates an old retry identity. Annotation and queue-transfer revision fences
 remain unchanged. Pending preparation blocks managed reload.
 
+The browser displays a bounded, operation-scoped object-URL preview immediately
+after accepting a File, labelled as preparation. It is presentation only and is
+never serialized as an attachment or granted durable recovery. The selected
+draft cannot be sent while its visible files are still preparing; explicit
+cancellation releases the preview and permits sending the remaining draft.
+Other Streams are not blocked. Settling, clear and rebinding remove obsolete
+previews without allowing a late callback to reintroduce the file.
+
 Before upload, validate the complete batch against negotiated server capabilities.
 The legacy aggregate limit remains 20 MiB. A failure before dispatch preserves
 the unsent draft through the existing preparation-cancellation path. No message,

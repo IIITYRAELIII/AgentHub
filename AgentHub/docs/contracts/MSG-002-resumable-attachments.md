@@ -45,6 +45,12 @@ visibly and is never silently substituted.
 ## Memory, storage and recovery
 
 Clipboard/file selection prepares the local draft without network negotiation.
+Accepted local files show a temporary thumbnail with a preparation label before
+hashing and database persistence finish. That preview is not an upload, a durable
+draft or a sendable attachment. It follows the same Task and cancellation fence
+as preparation; finishing a cancelled operation cannot restore its preview or
+attachment. Send and managed reload cannot silently discard a selected file
+still being prepared. Hashing and local-save timings contain no file contents.
 Its local bounds are eight files, 256 MiB per file and 512 MiB per draft. Before
 the first upload, the send path checks every file and the aggregate draft against
 negotiated capabilities, including the legacy 20 MiB aggregate limit. A rejected
