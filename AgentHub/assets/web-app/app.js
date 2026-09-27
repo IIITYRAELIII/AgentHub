@@ -3675,12 +3675,14 @@ function setViewContent(view, { persist = true, activate = true } = {}) {
   syncMobileNav();
   if (activate) activateView(next);
   if (persist) persistNavigationTab();
+  if (next === "chat") scheduleUnderfilledHistoryLoad();
 }
 
 function setPane(pane, { persist = true } = {}) {
   root.dataset.pane = pane === "chat" ? "chat" : "tasks";
   syncMobileNav();
   if (persist) persistNavigationTab();
+  if (root.dataset.pane === "chat") scheduleUnderfilledHistoryLoad();
 }
 
 function syncMobileNav() {
@@ -6821,7 +6823,15 @@ function resetHistoryPull() {
   renderHistoryLoader();
 }
 
+function chatHistoryViewportVisible() {
+  return root.dataset.view === "chat" && !document.hidden && !chatPane.hidden
+    && chatScroll.clientHeight > 0 && chatScroll.clientWidth > 0;
+}
+
 function requestOlderHistory() {
+  // Resize/scroll callbacks can still arrive after navigation hides this pane.
+  // Zero-sized hidden history is not an empty viewport asking for more pages.
+  if (!chatHistoryViewportVisible()) return;
   const pagination = currentHistoryPagination();
   if (!state.selectedId || pagination.loading) return;
   const tail = messageTailPagination();
@@ -6837,9 +6847,10 @@ function requestOlderHistory() {
 let historyUnderfillFrame = 0;
 
 function scheduleUnderfilledHistoryLoad() {
-  if (historyUnderfillFrame) return;
+  if (historyUnderfillFrame || root.dataset.view !== "chat" || document.hidden) return;
   historyUnderfillFrame = window.requestAnimationFrame(() => {
     historyUnderfillFrame = 0;
+    if (!chatHistoryViewportVisible()) return;
     const pagination = currentHistoryPagination();
     if (shouldLoadOlderPage(chatScroll, {
       ...pagination,
@@ -17672,6 +17683,7 @@ window.addEventListener("pagehide", () => {
 }, { once: true });
 window.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "hidden") saveDraft();
+  else scheduleUnderfilledHistoryLoad();
 });
 renderTasks();
 renderChat();

@@ -181,6 +181,11 @@ text-prefix guessing nor command replay is a migration path.
 
 ## Canonical reducer
 
+Hidden or zero-sized chat panes do not automatically expand cached history or
+request older pages. Queued frame and scroll callbacks recheck current visibility;
+returning to a visible short chat resumes viewport filling, and explicit older-page
+navigation retains the same canonical history and pagination identities.
+
 Opening a chat and refreshing its newest history both include the authoritative
 active-turn overlay. A paged durable history response alone cannot replace that
 combined projection after its exact optimistic user entity has been retired.

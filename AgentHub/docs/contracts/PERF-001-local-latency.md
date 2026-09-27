@@ -429,6 +429,10 @@ so a busy transition does not serialize unrelated Thread processing.
 
 ## Navigation responsiveness
 
+Leaving Chat for Dashboard must not expand the hidden conversation's DOM. A
+zero-sized history viewport is not underfilled; automatic paging rechecks the
+currently visible owner before each page and resumes when Chat becomes visible.
+
 Message reconciliation identifies legacy turn-root candidates in one pass over
 the retained history. It does not copy and rescan every earlier message for each
 user item. The temporary identity fallback retains UI-001's exact provider,

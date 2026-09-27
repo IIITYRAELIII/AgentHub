@@ -231,3 +231,89 @@ for (const destination of ["board", "stream", "composer", "dashboard-composer"])
     } finally { await browser.close(); }
   });
 }
+
+
+async function nextFrames(page, count = 6) {
+  await page.evaluate((frames) => new Promise(resolve => {
+    const step = () => --frames <= 0 ? resolve() : requestAnimationFrame(step);
+    requestAnimationFrame(step);
+  }), count);
+}
+
+test("Hidden Dashboard does not expand cached chat history or admit a queued older-page callback", { timeout: 30_000 }, async () => {
+  const browser = await launchBrowser();
+  try {
+    const page = await browser.newPage();
+    await openFixture(page);
+    const before = await page.evaluate(() => {
+      const send = window.__agentHubVscode.postMessage;
+      window.__olderRequests = [];
+      window.__agentHubVscode.postMessage = message => {
+        if (["open-task", "task-history"].includes(message.action)) { window.__olderRequests.push(message); return; }
+        send(message);
+      };
+      const messages = Array.from({ length: 5149 }, (_, index) => ({
+        id: `hidden-${index}`, role: index % 2 ? "agent" : "user",
+        text: `Message ${index}. Verification and constraints. `.repeat(30),
+      }));
+      // Queue an underfill frame while visible, then hide before it can run.
+      window.AgentHub.setMessages("stream-a", messages);
+      document.querySelector('[data-view-button="dashboard"]').click();
+      return document.querySelector('[data-chat-log]').children.length;
+    });
+    assert.equal(before, 40);
+    await nextFrames(page);
+    assert.equal(await page.locator('[data-chat-log] > *').count(), 40);
+    await page.evaluate(() => {
+      const scroll = document.querySelector('[data-chat-scroll]');
+      scroll.dispatchEvent(new Event("scroll"));
+      window.dispatchEvent(new Event("resize"));
+    });
+    await nextFrames(page);
+    assert.equal(await page.locator('[data-chat-log] > *').count(), 40);
+    assert.equal(await page.evaluate(() => window.__olderRequests.length), 0);
+    await page.locator('[data-view-button="chat"]').click();
+    await nextFrames(page);
+    assert.equal(await page.locator('[data-chat-log] > *').count(), 40);
+    // Explicit older-history requests still expand the retained conversation.
+    await page.locator('[data-history-load]').evaluate(button => button.click());
+    await page.waitForFunction(() => document.querySelector('[data-chat-log]').children.length === 80);
+  } finally { await browser.close(); }
+});
+
+for (const hiddenSurface of ["dashboard", "browser-tab"]) {
+test(`Returning from ${hiddenSurface} to a visible short chat resumes automatic viewport filling`, { timeout: 30_000 }, async () => {
+  const browser = await launchBrowser();
+  try {
+    const page = await browser.newPage();
+    await openFixture(page);
+    await page.addStyleTag({ content: '[data-chat-log] { gap: 0 !important; } [data-chat-log] > * { height: 2px !important; min-height: 0 !important; max-height: 2px !important; margin: 0 !important; padding: 0 !important; overflow: hidden !important; }' });
+    await page.evaluate((surface) => {
+      if (surface === "dashboard") document.querySelector('[data-view-button="dashboard"]').click();
+      else {
+        Object.defineProperty(document, "hidden", { configurable: true, value: true });
+        Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
+      }
+      window.AgentHub.setMessages("stream-a", Array.from({ length: 100 }, (_, index) => ({
+        id: `short-${index}`, role: "agent", text: "Short",
+      })));
+    }, hiddenSurface);
+    await nextFrames(page);
+    assert.equal(await page.locator('[data-chat-log] > *').count(), 40);
+    if (hiddenSurface === "dashboard") await page.locator('[data-view-button="chat"]').click();
+    else await page.evaluate(() => {
+      delete document.hidden;
+      delete document.visibilityState;
+      window.dispatchEvent(new Event("visibilitychange"));
+    });
+    await nextFrames(page);
+    const filled = await page.evaluate(() => ({
+      count: document.querySelector('[data-chat-log]').children.length,
+      height: document.querySelector('[data-chat-scroll]').clientHeight,
+      scrollHeight: document.querySelector('[data-chat-scroll]').scrollHeight,
+    }));
+    assert.equal(filled.count, 100, JSON.stringify(filled));
+  } finally { await browser.close(); }
+});
+
+}
