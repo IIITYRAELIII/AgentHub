@@ -51,6 +51,31 @@ test("production Stream header follows saved model while idle and keeps active t
   } finally { await browser.close(); }
 });
 
+test("successful message admission renders the receipt without an acceptance toast", { timeout: 30_000 }, async () => {
+  const browser = await launchBrowser();
+  try {
+    const page = await browser.newPage();
+    await openFixture(page);
+    await page.evaluate(() => {
+      localStorage.setItem("fixture:send-mode", "accept");
+      window.__toastHistory.length = 0;
+      const run = window.AgentHubMessageSendTransaction.run;
+      window.AgentHubMessageSendTransaction.run = async (options) => {
+        const result = await run(options);
+        window.__finishedSendReceipt = result;
+        return result;
+      };
+    });
+    await submit(page, { text: "quiet acceptance" });
+    await page.waitForFunction(() => window.__finishedSendReceipt?.accepted === true);
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    assert.equal((await bridgeCalls(page, "send-message")).length, 1);
+    assert.equal(await page.locator("[data-composer-input]").inputValue(), "");
+    assert.match(await page.locator("[data-chat-pane]").textContent(), /quiet acceptance/u);
+    assert.deepEqual(await page.evaluate(() => window.__toastHistory), []);
+  } finally { await browser.close(); }
+});
+
 test("cold unbound snapshot cancels before transport and restores the exact submitted draft", {
   timeout: 30_000,
 }, async () => {
@@ -836,11 +861,11 @@ test("production attachment recovery blocks managed reload when the attachment s
     await page.locator("[data-file-input]").setInputFiles({
       name: "screenshot.png", mimeType: "image/png", buffer: Buffer.from("screenshot-bytes"),
     });
-    const storageWarning = page.locator("[data-attachment-storage-warning]");
-    await storageWarning.waitFor();
-    assert.match(await storageWarning.textContent(), /его можно отправить/u);
-    assert.match(await storageWarning.textContent(), /Копия черновика не сохранена/u);
-    assert.match(await storageWarning.textContent(), /Не обновляй и не закрывай страницу/u);
+    await page.locator("[data-attachment-index]").waitFor();
+    assert.equal(await page.locator("[data-attachment-storage-warning]").count(), 0);
+    assert.equal(await page.evaluate(() => window.__toastHistory.some((message) => (
+      /Вложение добавлено|Копия черновика не сохранена|локальное хранилище/iu.test(message)
+    ))), false);
     assert.equal(await page.evaluate(() => window.AgentHub.prepareForRuntimeReload()), false);
     // Remove this draft before exercising the existing rejected-send recovery.
     await page.locator("[data-attachments] .attachment-remove").click();

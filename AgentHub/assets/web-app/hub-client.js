@@ -3384,7 +3384,6 @@ function sendUserMessage(request, frozenParams = null) {
       renderTaskMessages(request.taskId);
       renderTaskQueue(request.taskId, result?.snapshot ?? lastSnapshot);
       renderTaskMessages(request.taskId);
-      agentHub.toast(result?.message ?? (result?.accepted ? "Сообщение принято" : "Сообщение сохранено"));
     },
     reject: (error) => {
       if (outgoingMessages(request.taskId).get(request.requestId)?.projectionAuthority === "canonical") return;
@@ -3429,7 +3428,6 @@ function sendUserMessage(request, frozenParams = null) {
     },
     synchronizationFailed: (error) => {
       console.error("Agent Hub accepted a message but could not refresh its card", error);
-      agentHub.toast("Сообщение принято. Отображение обновится по квитанции.");
     },
   }));
 }

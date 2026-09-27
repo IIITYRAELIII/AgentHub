@@ -65,11 +65,18 @@ retry. Failed storage remains explicitly non-durable and cannot permit a managed
 reload to discard the only usable composition. See UI-001 and ADR-0037.
 Local database open, write and committed-record read share a five-second storage
 budget. Concurrent opens share one request; late handles are closed after timeout.
+Transaction timeout retires only that connection; a later selection opens a new
+one without clearing the store or replaying the failed save. Exact committed
+readback and successful byte verification establish durability even if the
+verification itself finishes after the I/O deadline. Elapsed time alone cannot
+reclassify that proven save as failed. Diagnostics distinguish open, scan/write,
+committed read and byte verification without file contents.
 The committed Blob and manifest are read back and verified before granting
-durability. A failed save retains the original in memory for sending and shows a
-persistent draft warning distinguishing blocked/unavailable storage, quota,
-store capacity, timeout and verification failure. It never recommends clearing
-site data containing other drafts. This warning does not claim upload acceptance.
+durability. A failed save retains the original in memory for sending and keeps
+its structured failure category for diagnostics. It does not add a storage
+warning to the composer or a toast. The existing non-durable reload guard remains
+in force; silence is not evidence that recovery survived. It never recommends
+clearing site data containing other drafts.
 The browser Blob store is bounded to 512 MiB and 128 records, with a seven-day
 retention limit. Expired bytes cannot assert durable recovery. Memory references
 are retained only for staged selections, drafts and unresolved submissions.

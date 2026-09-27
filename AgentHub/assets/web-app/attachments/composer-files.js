@@ -32,6 +32,7 @@
 
   function storageError(code, cause) {
     const error = new Error(storageFailures[code][0]);
+    if (code === "timeout") error.name = "TimeoutError";
     error.attachmentStorageCode = code;
     if (cause) error.cause = cause;
     return error;
@@ -120,8 +121,16 @@
         if (error) reject(error); else resolve(result);
       };
       const abort = (error) => {
+        if (finished) return;
         failure = error;
         try { transaction?.abort(); } catch { /* It may already have committed. */ }
+        if (error?.attachmentStorageCode === "timeout") {
+          // Do not keep returning a handle whose transaction never completed.
+          // A later explicit save opens a fresh connection to the same database;
+          // it does not retry this write or clear any persisted records.
+          try { db.close(); } catch { /* The connection may already be closed. */ }
+          if (database === db) database = null;
+        }
         finish(error);
       };
       const timer = setTimeout(() => abort(storageError("timeout")), remaining);
@@ -155,8 +164,8 @@
 
   async function storeFile(record) {
     const deadline = Date.now() + STORAGE_TIMEOUT_MS;
-    const db = await openDatabase();
-    await storageTransaction(db, "readwrite", (store, _setResult, abort) => {
+    const db = await measurePreparation("attachment-storage-open", () => openDatabase());
+    await measurePreparation("attachment-storage-write", () => storageTransaction(db, "readwrite", (store, _setResult, abort) => {
       const cursor = store.openCursor();
       let retainedBytes = 0;
       let retainedFiles = 0;
@@ -177,12 +186,16 @@
         } catch (error) { abort(error); }
       };
       cursor.onerror = () => abort(cursor.error ?? storageError("failed"));
-    }, deadline);
-    const stored = await readStoredRecord(db, record.blobId, deadline);
-    if (!await verifiedRecord(stored, descriptor(record)) || Boolean(stored.uploadStarted) !== Boolean(record.uploadStarted)) {
-      throw storageError("verification");
-    }
-    if (Date.now() >= deadline) throw storageError("timeout");
+    }, deadline));
+    const stored = await measurePreparation("attachment-storage-read", () => readStoredRecord(db, record.blobId, deadline));
+    await measurePreparation("attachment-storage-verify", async () => {
+      if (!await verifiedRecord(stored, descriptor(record)) || Boolean(stored.uploadStarted) !== Boolean(record.uploadStarted)) {
+        throw storageError("verification");
+      }
+    });
+    // The committed read has already finished inside its storage deadline.
+    // Hashing the returned Blob may be delayed by a suspended/busy page; elapsed
+    // wall time cannot invalidate the now verified durable bytes.
   }
 
   function remember(record, durable, storageFailure = null) {

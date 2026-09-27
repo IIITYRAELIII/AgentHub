@@ -30,6 +30,10 @@
   occurrence when `clientUserMessageId` arrives later; this same-source evidence
   replaces the earlier unkeyed entity and preserves Hub payload/origin.
 - `unknown` is displayed as unknown and never inferred as running.
+- Successful message intake updates the existing message or queue projection
+  without a separate acceptance toast. A refresh failure after acceptance cannot
+  duplicate the send or produce an acceptance toast; errors remain diagnostic
+  and the canonical receipt remains authoritative.
 - Legacy rollout projections that misclassified a subagent report as a user
   may be corrected only by one matching internally generated source occurrence
   in the same turn. A Hub client identity, origin, missing source identity or

@@ -40,6 +40,18 @@ upload, retry identity or durable acceptance is inferred from a local preview.
 
 ## Evidence and limits
 
+At the user's explicit presentation correction, local attachment save failures
+remain structured diagnostic/non-durable state without a composer paragraph or
+toast. Managed reload still cannot discard an unpersisted draft. Successful
+message admission is shown by its canonical message/queue projection, without a
+second acceptance notification. This removes redundant notices, not recovery or
+receipt authority.
+
+Storage I/O has bounded open/write/read deadlines, but elapsed time after
+successful exact committed-byte verification is not evidence of a failed save.
+Retire a connection on transaction timeout so a later selection does not inherit
+that stalled connection. Do not clear stored drafts or silently replay an upload.
+
 Disposable production-browser fixtures cover five clipboard pastes while
 capability negotiation is unavailable, concurrent text edits and file preparation,
 reload persistence, count limits, send/clear/removal/rebinding fences and late

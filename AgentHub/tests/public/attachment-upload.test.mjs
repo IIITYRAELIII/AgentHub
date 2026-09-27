@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { readFile, mkdtemp, writeFile, rm } from "node:fs/promises";
 import { webcrypto, createHash } from "node:crypto";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import vm from "node:vm";
 import test from "node:test";
+import { launchBrowser, openFixture } from "./composer-production.fixture.mjs";
 
 const sources = await Promise.all(["composer-files.js", "upload.js"].map((name) =>
   readFile(new URL(`../../assets/web-app/attachments/${name}`, import.meta.url), "utf8")));
@@ -23,9 +26,11 @@ function storageFixture({ mode = "ready", seed = [] } = {}) {
   const timers = new Map();
   const connections = [];
   const opens = [];
+  const traces = [];
   let timerId = 0;
   let aborts = 0;
   let digests = 0;
+  let clock = Date.now();
   const finishOpen = (request) => {
     const db = {
       closed: false,
@@ -49,7 +54,7 @@ function storageFixture({ mode = "ready", seed = [] } = {}) {
               request.result = entry ? { value: entry[1], continue: step, delete: () => records.delete(entry[0]) } : null;
               request.onsuccess?.();
             });
-            if (mode !== "write-hang") step();
+            if (mode !== "write-hang" && !(mode === "first-write-hang" && connections[0] === db)) step();
             return request;
           },
           put(value) {
@@ -86,8 +91,17 @@ function storageFixture({ mode = "ready", seed = [] } = {}) {
   };
   const context = vm.createContext({ Blob, URL, crypto: {
     randomUUID: () => webcrypto.randomUUID(),
-    subtle: { async digest(...args) { const result = await webcrypto.subtle.digest(...args); digests += 1; return result; } },
-  }, Uint8Array, console,
+    subtle: { async digest(...args) {
+      const result = await webcrypto.subtle.digest(...args); digests += 1;
+      if (mode === "slow-verify" && digests === 2) clock += 6_000;
+      return result;
+    } },
+  }, Uint8Array, console, Date: class extends Date { static now() { return clock; } },
+    AgentHubCommandTrace: { async measure(_stage, action, operation) {
+      const trace = { action, outcome: "started" }; traces.push(trace);
+      try { const result = await operation(); trace.outcome = "succeeded"; return result; }
+      catch (error) { trace.outcome = "failed"; trace.errorName = error.name; throw error; }
+    } },
     setTimeout: (callback) => { const id = ++timerId; timers.set(id, callback); return id; },
     clearTimeout: (id) => timers.delete(id),
     indexedDB: { open() {
@@ -101,7 +115,7 @@ function storageFixture({ mode = "ready", seed = [] } = {}) {
   context.window = context;
   vm.runInContext(sources[0], context);
   return {
-    api: context.AgentHubComposerFiles, records, connections, opens, timers,
+    api: context.AgentHubComposerFiles, records, connections, opens, timers, traces,
     aborts: () => aborts,
     digests: () => digests,
     finishOpen: () => finishOpen(opens.at(-1)),
@@ -194,6 +208,85 @@ test("version change closes its captured connection and the next paste opens a f
   assert.equal(first.closed, true);
   first.onversionchange();
   assert.equal(second.closed, false, "a stale version event cannot close the new handle");
+});
+
+test("timed out connection is retired and the next explicit paste preserves stored files", async () => {
+  const seed = { blobId: "existing", storedAt: Date.now(), size: 3 };
+  const value = storageFixture({ mode: "first-write-hang", seed: [seed] });
+  const pending = prepareSmall(value.api);
+  await waitUntil(() => value.connections.length === 1 && value.timers.size === 1);
+  value.expire();
+  const first = await pending;
+  assert.equal(value.api.storageFailure(first).code, "timeout");
+  assert.equal(value.connections[0].closed, true);
+  assert.equal(value.opens.length, 1, "timing out does not automatically repeat the write");
+  assert.equal(value.records.get("0"), seed, "existing stored files are retained");
+  const second = await prepareSmall(value.api);
+  assert.equal(value.opens.length, 2);
+  assert.equal(value.api.durable(second), true);
+  assert.equal(value.api.resolve(first).blob.size, 3, "the original unsaved attachment remains sendable");
+  assert.equal(value.traces.find((trace) => trace.action === "attachment-storage-write").errorName, "TimeoutError");
+  assert.deepEqual(value.traces.filter((trace) => trace.action.startsWith("attachment-storage-")).slice(-4)
+    .map(({ action, outcome }) => [action, outcome]), [
+    ["attachment-storage-open", "succeeded"], ["attachment-storage-write", "succeeded"],
+    ["attachment-storage-read", "succeeded"], ["attachment-storage-verify", "succeeded"],
+  ]);
+});
+
+test("delayed hash verification does not revoke an exact committed Blob read", async () => {
+  const value = storageFixture({ mode: "slow-verify" });
+  const file = await prepareSmall(value.api);
+  assert.equal(value.api.durable(file), true);
+  assert.equal(value.api.storageFailure(file), null);
+  assert.equal(value.records.get(file.blobId).blob.size, file.size);
+  assert.equal(value.timers.size, 0);
+  assert.equal(value.traces.find((trace) => trace.action === "attachment-storage-verify").outcome, "succeeded");
+});
+
+test("real browser File remains durable after delayed verification and reload", { timeout: 25_000 }, async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "hub264-storage-file-"));
+  const filePath = path.join(directory, "screen.png");
+  await writeFile(filePath, Buffer.alloc(4096, 37));
+  const browser = await launchBrowser();
+  try {
+    const page = await browser.newPage();
+    await openFixture(page);
+    await page.evaluate(() => {
+      const input = document.createElement("input"); input.type = "file"; input.id = "storage-fixture-file";
+      document.body.append(input);
+    });
+    await page.locator("#storage-fixture-file").setInputFiles(filePath);
+    const saved = await page.evaluate(async () => {
+      const file = document.querySelector("#storage-fixture-file").files[0];
+      const digest = crypto.subtle.digest.bind(crypto.subtle);
+      let calls = 0;
+      crypto.subtle.digest = async (...args) => {
+        const result = await digest(...args);
+        if (++calls === 2) await new Promise((resolve) => setTimeout(resolve, 5_250));
+        return result;
+      };
+      try {
+        const attachment = await AgentHubComposerFiles.prepare(file, { name: file.name, type: file.type, size: file.size });
+        return { manifest: AgentHubComposerFiles.serialized(attachment), durable: AgentHubComposerFiles.durable(attachment),
+          failure: AgentHubComposerFiles.storageFailure(attachment) };
+      } finally { crypto.subtle.digest = digest; }
+    });
+    assert.equal(saved.durable, true);
+    assert.equal(saved.failure, null);
+    await page.reload({ waitUntil: "load" });
+    const restored = await page.evaluate(async (manifest) => {
+      await AgentHubComposerFiles.hydrate([manifest]);
+      const record = AgentHubComposerFiles.resolve(manifest);
+      return { durable: AgentHubComposerFiles.durable(manifest),
+        bytes: record ? [...new Uint8Array(await record.blob.arrayBuffer())] : null };
+    }, saved.manifest);
+    assert.equal(restored.durable, true);
+    assert.deepEqual(restored.bytes, Array(4096).fill(37));
+  } finally {
+    await browser.close();
+    assert.equal(path.dirname(path.resolve(directory)), path.resolve(tmpdir()));
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("cancel stops capability negotiation before any attachment upload", async () => {

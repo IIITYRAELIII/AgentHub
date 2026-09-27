@@ -9433,14 +9433,6 @@ html[data-surface="mobile"] .chat-history-loader[data-armed] .chat-history-load 
   flex-wrap: wrap;
 }
 
-.attachment-storage-warning {
-  flex-basis: 100%;
-  margin: 0.35rem 0 0;
-  color: var(--text-muted);
-  font-size: 0.8rem;
-  line-height: 1.4;
-}
-
 .attachment-strip {
   display: flex;
   flex-wrap: wrap;

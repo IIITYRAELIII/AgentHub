@@ -8645,19 +8645,6 @@ function currentTaskReferences() {
   return taskReferences;
 }
 
-function attachmentStorageWarning(items) {
-  const volatile = items.filter((item) => item.blobId && !window.AgentHubComposerFiles.durable(item));
-  if (!volatile.length) return "";
-  const failure = window.AgentHubComposerFiles.storageFailure?.(volatile[0]);
-  return [
-    "Вложение добавлено — его можно отправить.",
-    "Копия черновика не сохранена:",
-    failure?.reason || "браузер не подтвердил сохранение файла.",
-    failure?.action || "",
-    "Не обновляй и не закрывай страницу до отправки: иначе файл придётся вставить снова.",
-  ].filter(Boolean).join(" ");
-}
-
 function setTaskReferences(next) {
   taskReferences = (Array.isArray(next) ? next : [])
     .map((reference) => TaskReferences.normalize(reference))
@@ -8695,11 +8682,6 @@ function renderAttachments() {
     }
     attachmentsBox.append(strip);
   }
-  const storageWarning = attachmentStorageWarning(attachments);
-  if (storageWarning) attachmentsBox.append(el("p", {
-    class: "attachment-storage-warning", role: "status",
-    "data-attachment-storage-warning": "", text: storageWarning,
-  }));
 }
 
 const attachmentThumbnailObserver = typeof window.IntersectionObserver === "function"
@@ -8991,11 +8973,6 @@ async function readAttachmentFiles(files) {
   if (selected.length > room) showToast(`Можно приложить не больше ${limit} файлов.`);
   else if (unsafe) showToast("Часть файлов отклонена: небезопасное имя или тип.");
   else if (oversized) showToast(`Общий лимит вложений: ${Math.floor(policy.maxTotalBytes / 1024 / 1024)} МБ.`);
-  // Warn only about files that actually remain in this composition, not a
-  // discarded callback after send/removal or an unrelated Stream's draft.
-  const storageWarning = state.selectedId === operation.taskId
-    ? attachmentStorageWarning(currentAttachments()) : "";
-  if (storageWarning) showToast(storageWarning);
 }
 
 document.querySelector("[data-action='attach']").addEventListener("click", () => fileInput.click());
