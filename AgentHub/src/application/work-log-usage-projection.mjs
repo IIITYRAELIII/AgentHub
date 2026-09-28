@@ -830,6 +830,7 @@ function syncedUsageRecords(values) {
 }
 
 export function buildWorkLogAccountUsageSummary(turns = {}, {
+  normalized = false,
   accountCatalog = [],
   syncedUsageEvents = [],
   localDeviceId = "",
@@ -838,7 +839,7 @@ export function buildWorkLogAccountUsageSummary(turns = {}, {
   ranges = ACCOUNT_USAGE_RANGES.map((range) => range.id),
 } = {}) {
   const catalog = accountCatalogByKey(accountCatalog);
-  const normalizedTurns = normalizedLedger({ version: 9, turns }).ledger.turns;
+  const normalizedTurns = normalized ? turns : normalizedLedger({ version: 9, turns }).ledger.turns;
   const normalizedLocalDeviceId = String(localDeviceId ?? "").trim();
   const normalizedLocalDeviceLabel = String(localDeviceLabel ?? "").trim();
   const normalizedSyncedTurns = syncedUsageRecords(syncedUsageEvents)
@@ -2778,6 +2779,8 @@ function projectDaySection(
 }
 
 export function projectWorkLogUsage(workLogText, turns = {}, {
+  includeAccountPanel = true,
+  preferredOpenDate = null,
   includeClaudeUsage = true,
   workspaceResolver = null,
   accountCatalog = [],
@@ -2788,13 +2791,13 @@ export function projectWorkLogUsage(workLogText, turns = {}, {
 } = {}) {
   let text = removeAccountUsagePanel(String(workLogText ?? ""));
   const normalizedTurns = normalizedLedger({ version: 8, turns }).ledger.turns;
-  const accountPanel = formatAccountUsagePanel(buildWorkLogAccountUsageSummary(normalizedTurns, {
+  const accountPanel = includeAccountPanel ? formatAccountUsagePanel(buildWorkLogAccountUsageSummary(normalizedTurns, {
     accountCatalog,
     syncedUsageEvents,
     localDeviceId,
     localDeviceLabel,
     now,
-  }));
+  })) : "";
   const records = ledgerByWorkLogId(normalizedTurns);
   const turnIndex = turnProjectionIndex(normalizedTurns);
   const existingDates = new Set(daySectionRanges(text).map((range) => range.date));
@@ -2815,9 +2818,9 @@ export function projectWorkLogUsage(workLogText, turns = {}, {
     /<details\b[^>]*>\s*<summary[^>]*><strong>(\d{2}\.\d{2}\.\d{4})<\/strong>[\s\S]*?<\/summary>/gi,
   )];
   const currentDate = formatLocalDate(new Date());
-  const defaultOpenDate = dayStarts.some((match) => match[1] === currentDate)
+  const defaultOpenDate = preferredOpenDate ?? (dayStarts.some((match) => match[1] === currentDate)
     ? currentDate
-    : dayStarts[0]?.[1];
+    : dayStarts[0]?.[1]);
   const projected = [text.slice(0, dayStarts[0]?.index ?? text.length)];
   for (let index = 0; index < dayStarts.length; index += 1) {
     const start = dayStarts[index].index;
@@ -2838,16 +2841,18 @@ export function projectWorkLogUsage(workLogText, turns = {}, {
 }
 
 export function projectWorkLogAccountUsage(workLogText, turns = {}, {
+  normalized = false,
   accountCatalog = [],
   syncedUsageEvents = [],
   localDeviceId = "",
   localDeviceLabel = "",
   now = Date.now(),
 } = {}) {
-  const normalizedTurns = normalizedLedger({ version: 9, turns }).ledger.turns;
+  const normalizedTurns = normalized ? turns : normalizedLedger({ version: 9, turns }).ledger.turns;
   return insertAccountUsagePanel(
     String(workLogText ?? ""),
     formatAccountUsagePanel(buildWorkLogAccountUsageSummary(normalizedTurns, {
+      normalized,
       accountCatalog,
       syncedUsageEvents,
       localDeviceId,

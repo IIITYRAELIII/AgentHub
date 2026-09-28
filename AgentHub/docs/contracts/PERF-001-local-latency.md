@@ -182,15 +182,28 @@ Incomplete passes that make progress continue after one second; idle or failed
 passes retain the 30-second interval. Durable fair continuation prevents a slow
 thread or a long discovery prefix from permanently starving later threads.
 Automatic terminal writes use point reads/upserts, not a reload of the complete
-ledger. Production full journal projection reads, normalizes, renders and writes
-the retained ledger in the existing usage worker. Only bounded workspace identity
+ledger. Ordinary journal projection renders and replaces only dirty local-calendar
+days in the existing usage worker (ADR-0076). Durable SQLite triggers mark both
+old and new completion timestamps for record insert/update/delete. The successful
+revision-fenced projection transaction replaces those days, virtual rows, lazy
+turn bodies and summary buckets, then clears the dirty set. Conflicts and failures
+retain the dirty set. Deleted/moved records leave no stale body or totals.
+Initial migration, semantic-scope changes and existing Thread rebindings retain
+one canonical full rebuild. A worker's compact accounting cache reads indexed
+identities/revisions, loads only changed source records and removes deleted
+identities. It normalizes the full source before omitting content; legacy empty
+compaction filtering and image estimates cannot be inferred from stripped input.
+Restart reconstructs this disposable cache from authoritative records once.
+Rolling account totals still use the canonical full scalar/fact calculation;
+this change does not promise constant-time account aggregation.
+Only bounded workspace identity
 batches cross back to the runtime; full journal bodies do not. Projection commits
 are revision-fenced, and a failed or stale batch cannot clear pending audit work.
 Terminal-outbox recovery likewise stages bounded batches before requesting a
 shared journal projection. It must not rebuild the entire retained journal for
 each recovered completion. Exact revisions are acknowledged only after the
 shared projection succeeds; live completion adds no batching delay.
-Concurrent full-projection requests share work only forward and only within one
+Concurrent projection requests share work only forward and only within one
 exact scope: the ordered project roots and Claude-usage inclusion. A projection
 answers requests made before it started; every request arriving while it runs
 joins a single trailing projection that starts after it settles. An in-flight

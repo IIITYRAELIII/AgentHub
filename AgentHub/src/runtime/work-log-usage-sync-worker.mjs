@@ -11,6 +11,7 @@ import {
   WORK_LOG_ACCOUNT_USAGE_PROJECTION_VERSION,
 } from "../application/work-log-usage-projection.mjs";
 import { buildLazyJournalPayload } from "../application/journal-projection-data.mjs";
+import { incrementalJournalProjection, accountingRecord } from "../application/incremental-journal-projection.mjs";
 import { JournalDatabase } from "../infrastructure/persistence/journal-database.mjs";
 import { AsyncSqliteMutationQueue } from "../infrastructure/persistence/async-sqlite-mutation-queue.mjs";
 import { WorkLogUsageSyncStore } from "../infrastructure/persistence/work-log-usage-sync-store.mjs";
@@ -85,32 +86,27 @@ async function projectJournal(payload, id) {
     try { return await operation(); }
     finally { phases[name] = performance.now() - start; }
   };
-  const observedRevision = await measure("revisionReadMs", () => journalOperations.run(() => journal.currentRevision()));
-  const expectedRevision = payload.expectedRevision ?? observedRevision;
-  const current = await measure("projectionReadMs", () => journal.payload());
-  const persisted = await measure("ledgerReadMs", () => journal.loadLedger());
-  const normalized = await measure("normalizeMs", () => normalizePersistedWorkLog(persisted, {
-    defaultProjectRoot: payload.defaultProjectRoot,
-  }));
-  const invalidRecordReasonCounts = {};
-  for (const invalid of normalized.invalidRecords) {
-    const reason = invalid.error === "inherited parent turn was copied into a subagent rollout"
-      ? "inherited-parent-turn"
-      : invalid.error === "work-log id must be a UUID" ? "invalid-work-log-id" : "normalization-error";
-    invalidRecordReasonCounts[reason] = (invalidRecordReasonCounts[reason] ?? 0) + 1;
-  }
   const roots = (payload.projectRoots ?? []).map((root) => normalizeProjectRoot(root));
-  const turns = Object.fromEntries(Object.entries(normalized.ledger.turns).filter(([, record]) => (
-    !roots.some(Boolean) || roots.some((root) => sameProjectRoot(record.projectRoot, root))
+  const scope = JSON.stringify([roots, payload.includeClaudeUsage, Boolean(payload.resolveWorkspaces),
+    payload.defaultProjectRoot, Intl.DateTimeFormat().resolvedOptions().timeZone]);
+  const selectRecord = record => !roots.some(Boolean) || roots.some(root =>
+    sameProjectRoot(normalizeProjectRoot(record.projectRoot, payload.defaultProjectRoot), root));
+  const accountingProjector = record => accountingRecord(record, payload.defaultProjectRoot);
+  let input = await measure("ledgerReadMs", () => journalOperations.run(() => journal.projectionInput({ scope, selectRecord, accountingProjector })));
+  const previousSource = input.source;
+  const current = input.current;
+  let full = input.full;
+  const expectedRevision = payload.expectedRevision ?? input.revision;
+  const select = turns => Object.fromEntries(Object.entries(turns).filter(([, record]) => (
+    !roots.some(Boolean) || roots.some(root => sameProjectRoot(record.projectRoot, root))
   )));
+  const accounting = select(input.accounting);
   const bindings = new Map();
-  const bindingKey = (reference) => `${reference.provider}\0${reference.threadId}`;
+  const bindingKey = reference => `${reference.provider}\0${reference.threadId}`;
   const workspaceStartedAt = performance.now();
   if (payload.resolveWorkspaces) {
-    const references = [...new Map(Object.values(turns).map((record) => {
-      const reference = {
-        provider: record.provider, threadId: taskThreadId(record), projectRoot: record.projectRoot,
-      };
+    const references = [...new Map(Object.values(accounting).map(record => {
+      const reference = { provider: record.provider, threadId: taskThreadId(record), projectRoot: record.projectRoot };
       return [bindingKey(reference), reference];
     })).values()];
     for (let offset = 0; offset < references.length; offset += 128) {
@@ -123,12 +119,34 @@ async function projectJournal(payload, id) {
     }
   }
   phases.workspaceResolveMs = performance.now() - workspaceStartedAt;
+  // Rebinding existing Threads can affect historical days without a ledger edit.
+  // New Threads only affect their dirty dates. Scope/version changes use one rebuild.
+  if (!full && (previousSource.bindings ?? []).some(([key, value]) => bindings.has(key)
+    && JSON.stringify(bindings.get(key)) !== JSON.stringify(value))) {
+    full = true;
+    input = await measure("ledgerReadMs", () => journal.projectionInput({ full: true, scope, selectRecord, accountingProjector }));
+  }
+  const persisted = { version: 9, turns: input.turns };
+  const normalized = await measure("normalizeMs", () => normalizePersistedWorkLog(persisted, {
+    defaultProjectRoot: payload.defaultProjectRoot,
+  }));
+  const invalidRecordReasonCounts = {};
+  for (const invalid of normalized.invalidRecords) {
+    const reason = invalid.error === "inherited parent turn was copied into a subagent rollout"
+      ? "inherited-parent-turn"
+      : invalid.error === "work-log id must be a UUID" ? "invalid-work-log-id" : "normalization-error";
+    invalidRecordReasonCounts[reason] = (invalidRecordReasonCounts[reason] ?? 0) + 1;
+  }
+  const turns = Object.fromEntries(Object.entries(normalized.ledger.turns).filter(([, record]) => (
+    !roots.some(Boolean) || roots.some((root) => sameProjectRoot(record.projectRoot, root))
+  )));
   const rateLimits = String(current?.html ?? "").match(
     /<div\b[^>]*data-work-log-rate-limits\b[^>]*>[\s\S]*?<\/div>/iu,
   )?.[0] ?? "";
   const syncedUsageFacts = await measure("factsReadMs", () => store.facts());
   const accountCatalog = await measure("accountCatalogReadMs", () => journal.accountCatalog());
-  const updated = await measure("renderMs", () => projectWorkLogUsage(`# Глобальный журнал работ\n${rateLimits ? `${rateLimits}\n` : ""}`, turns, {
+  const options = {
+    preferredOpenDate: input.openDate,
     includeClaudeUsage: payload.includeClaudeUsage,
     workspaceResolver: payload.resolveWorkspaces ? (reference) => bindings.get(bindingKey(reference)) : null,
     accountCatalog,
@@ -136,19 +154,25 @@ async function projectJournal(payload, id) {
     localDeviceId: payload.localDeviceId,
     localDeviceLabel: payload.localDeviceLabel,
     now: payload.now,
-  }));
-  const version = `sha256:${crypto.createHash("sha256").update(updated, "utf8").digest("hex")}`;
+  };
+  const lazyPayload = await measure("renderMs", () => full
+    ? buildLazyJournalPayload(projectWorkLogUsage(`# Глобальный журнал работ\n${rateLimits ? `${rateLimits}\n` : ""}`, turns, options))
+    : incrementalJournalProjection(current?.html ?? '', turns, accounting, input.dirtyDates, options));
+  // Include changed lazy bodies and the source revision, not only the compact
+  // index: an answer correction can leave every day heading unchanged.
+  const version = `sha256:${crypto.createHash("sha256")
+    .update(JSON.stringify([expectedRevision, lazyPayload]), "utf8").digest("hex")}`;
   let result;
-  const projectionSource = { revision: expectedRevision, projectRoots: roots };
-  const previousSource = await journal.projectionSource();
-  if (current?.version === version && await journal.currentRevision() === expectedRevision
+  const projectionSource = { revision: expectedRevision, projectRoots: roots,
+    incrementalVersion: 1, scope, bindings: [...bindings], openDate: input.openDate };
+  if (!full && input.dirtyDates.length === 0 && current?.html === lazyPayload.html && await journal.currentRevision() === expectedRevision
     && previousSource?.revision + 1 >= expectedRevision
     && JSON.stringify(previousSource.projectRoots) === JSON.stringify(roots)) {
-    result = { projected: false, reason: "unchanged", version, revision: expectedRevision };
+    result = { projected: false, reason: "unchanged", version: current.version, revision: expectedRevision };
   } else {
-    const lazyPayload = await measure("lazyBuildMs", () => buildLazyJournalPayload(updated));
     result = await measure("commitMs", () => journalOperations.run(() => journal.replaceProjection(lazyPayload, {
       expectedRevision, version, projectionSource,
+      incrementalSource: true,
       accountUsageProjectionVersion: WORK_LOG_ACCOUNT_USAGE_PROJECTION_VERSION,
     })));
   }
@@ -156,6 +180,9 @@ async function projectJournal(payload, id) {
     ...result,
     ...(result.conflict ? { projectionDeferred: true, reason: "stale-journal-revision" } : {}),
     recordCount: Object.keys(turns).length,
+    accountingRecordsRead: input.accountingRecordsRead,
+    projectionMode: full ? "full" : "days",
+    changedDayCount: input.dirtyDates.length,
     invalidRecordCount: normalized.invalidRecords.length,
     invalidRecordReasonCounts,
     eventCount: syncedUsageFacts.length,
