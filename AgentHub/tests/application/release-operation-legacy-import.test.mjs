@@ -61,16 +61,20 @@ test("startup migration activates only a matching publication and preserves exac
     readStatus: async () => status,
     resolveTree: async () => "e".repeat(40),
   });
+  const originalSnapshot = store.snapshot(first.imported[0].operationId);
   const replay = await importLegacyReleaseOperations({
     store,
     dataDir: setup.dataDir,
-    runnerVersion: "runner-n",
+    runnerVersion: "runner-n-plus-one",
     readStatus: async () => status,
     resolveTree: async () => "e".repeat(40),
   });
   assert.equal(first.imported[0].created, true);
   assert.equal(replay.imported[0].created, false);
   const snapshot = store.snapshot(first.imported[0].operationId);
+  assert.deepEqual(snapshot, originalSnapshot, "a newer runtime does not rewrite imported operation or generation identity");
+  assert.equal(snapshot.operation.runnerVersion, "runner-n");
+  assert.equal(snapshot.generations[0].runnerVersion, "runner-n");
   assert.equal(snapshot.operation.state, "finalize");
   assert.equal(snapshot.operation.currentGeneration, 1);
   assert.deepEqual(snapshot.generations[0].selectedResults.map((item) => item.taskId), ["task-a", "task-b"]);

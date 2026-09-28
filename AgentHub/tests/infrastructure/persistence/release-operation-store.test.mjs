@@ -119,3 +119,39 @@ test("a stale lease epoch cannot transition receipts or release a replacement ow
   store.release("release-1", ownerA);
   assert.deepEqual(store.get("release-1").owner, ownerB);
 });
+
+test("legacy replay preserves its first runner while rejecting changed migration authority", async (context) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-release-import-upgrade-"));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  const store = new ReleaseOperationStore({ dataDir: directory });
+  const original = {
+    ...input(), sourceKind: "release-checkpoint-v2", sourceIdentity: "checkpoint-1",
+    evidence: { phase: "frozen", manifestHash: "f".repeat(64) }, evidenceOnly: true,
+    candidateGeneration: {
+      createdAt: "2026-09-25T00:00:00.000Z",
+      repositoryBases: [{ repositoryRoot: "C:/repo", baseCommit: "a".repeat(40) }],
+      selectedResults: [{ taskId: "task-1", resultCommit: "b".repeat(40), acceptanceRevision: 2 }],
+      candidates: [{ repositoryRoot: "C:/repo", releaseRoot: "C:/release/g1", commit: "d".repeat(40), tree: "e".repeat(40), manifestHash: "f".repeat(64) }],
+      sourceFingerprint: "f".repeat(64),
+    },
+  };
+  const first = store.importLegacy(original);
+  const snapshot = store.snapshot(first.operation.operationId);
+  const events = store.pendingEvents();
+  const upgraded = { ...original, runnerVersion: "runner-2" };
+  assert.equal(store.importLegacy(upgraded).created, false);
+  assert.deepEqual(store.snapshot(first.operation.operationId), snapshot);
+  assert.deepEqual(store.pendingEvents(), events);
+  for (const changed of [
+    { workspaceId: "workspace-2" },
+    { streamId: "stream-2" },
+    { threadId: "thread-2" },
+    { authorization: { ...original.authorization, validationMode: "quick" } },
+    { evidence: { ...original.evidence, phase: "published" } },
+    { evidenceOnly: false },
+    { candidateGeneration: { ...original.candidateGeneration, sourceFingerprint: "0".repeat(64) } },
+  ]) {
+    assert.throws(() => store.importLegacy({ ...upgraded, ...changed }), /identity conflict|evidence changed|immutable|UNIQUE constraint/u);
+    assert.deepEqual(store.snapshot(first.operation.operationId), snapshot);
+  }
+});

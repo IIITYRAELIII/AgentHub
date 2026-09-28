@@ -577,17 +577,28 @@ export class ReleaseOperationStore {
     const evidenceSha256 = releaseIdentitySha256(evidence ?? {});
     const evidenceId = `${LEGACY_MIGRATION_PREFIX}${releaseIdentitySha256({ sourceKind, identity })}`;
     const operationId = `legacy-${releaseIdentitySha256({ sourceKind, identity }).slice(0, 32)}`;
+    const imported = this.get(operationId);
+    if (imported && (imported.migration?.sourceKind !== String(sourceKind)
+        || imported.migration?.sourceIdentity !== identity
+        || imported.migration?.evidenceSha256 !== evidenceSha256
+        || imported.migration?.evidenceOnly !== Boolean(evidenceOnly))) {
+      throw new Error("legacy release evidence changed after import");
+    }
+    // Re-observing immutable legacy evidence after a runtime upgrade is not a
+    // new release request. Keep the first import's runner on both identities;
+    // create() and putGeneration() still reject every other identity change.
+    const importRunnerVersion = imported?.runnerVersion ?? runnerVersion;
     const generation = candidateGeneration ? createCandidateGeneration({
       ...candidateGeneration,
       operationId,
       generation: 1,
-      runnerVersion,
+      runnerVersion: importRunnerVersion,
     }) : null;
     const mapped = legacyState(evidence, { importedAt, evidenceOnly });
     const created = this.create({
       operationId,
       requestId: evidenceId,
-      workspaceId, streamId, threadId, authorization, runnerVersion,
+      workspaceId, streamId, threadId, authorization, runnerVersion: importRunnerVersion,
       ...(generation ? { currentGeneration: 1, selectedResults: generation.selectedResults } : {}),
       ...mapped,
       migration: { sourceKind: String(sourceKind), sourceIdentity: identity, evidenceSha256, evidenceOnly: Boolean(evidenceOnly) },
