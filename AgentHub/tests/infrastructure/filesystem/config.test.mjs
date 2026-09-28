@@ -97,9 +97,11 @@ test("core-only components need neither Telegram credentials nor Web App", async
       maxFilesPerPass: 8,
     });
     assert.equal(config.codexSandboxMode, "workspace-write");
-    assert.deepEqual(config.codexModels.slice(0, 3), [
+    assert.deepEqual(config.codexModels.slice(0, 5), [
       { value: "gpt-5.5", label: "GPT-5.5" },
       { value: "gpt-6-astra", label: "GPT-6 Astra" },
+      { value: "gpt-6-sol", label: "GPT-6 Sol" },
+      { value: "gpt-6-luna", label: "GPT-6 Luna" },
       { value: "gpt-5.6-sol", label: "GPT-5.6-Sol" },
     ]);
     assert.equal(config.whisperModel, "large-v3-turbo");
@@ -189,7 +191,7 @@ test("release validation policy is explicit and disabled by default", async () =
   }
 });
 
-test("shipped and legacy default Codex catalogs include Astra without changing custom allowlists", async () => {
+test("shipped and both legacy Codex catalogs include GPT-6 Sol and Luna without changing custom allowlists", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-codex-model-catalog-"));
   const configFile = path.join(root, "config.json");
   const previous = process.env.AGENT_HUB_CONFIG;
@@ -203,6 +205,10 @@ test("shipped and legacy default Codex catalogs include Astra without changing c
     { value: "gpt-5.3-codex-spark", label: "GPT-5.3-Codex-Spark" },
   ];
   const astraModel = { value: "gpt-6-astra", label: "GPT-6 Astra" };
+  const additions = [
+    { value: "gpt-6-sol", label: "GPT-6 Sol" },
+    { value: "gpt-6-luna", label: "GPT-6 Luna" },
+  ];
   try {
     process.env.AGENT_HUB_CONFIG = configFile;
     const baseConfig = {
@@ -216,8 +222,17 @@ test("shipped and legacy default Codex catalogs include Astra without changing c
     assert.deepEqual((await loadConfig()).codexModels, [
       legacyShippedModels[0],
       astraModel,
+      ...additions,
       ...legacyShippedModels.slice(1),
     ]);
+
+    await writeFile(configFile, JSON.stringify({
+      ...baseConfig, codexModels: [legacyShippedModels[0], astraModel, ...legacyShippedModels.slice(1)],
+    }), "utf8");
+    const migrated = (await loadConfig()).codexModels;
+    assert.deepEqual(migrated, [legacyShippedModels[0], astraModel, ...additions, ...legacyShippedModels.slice(1)]);
+    await writeFile(configFile, JSON.stringify({ ...baseConfig, codexModels: migrated }), "utf8");
+    assert.deepEqual((await loadConfig()).codexModels, migrated);
 
     const customModels = legacyShippedModels.map((model, index) => (
       index === 0 ? { ...model, label: "Team Default" } : model
@@ -229,9 +244,10 @@ test("shipped and legacy default Codex catalogs include Astra without changing c
       new URL("../../../config.example.json", import.meta.url),
       "utf8",
     ));
-    assert.deepEqual(example.codexModels.slice(0, 3), [
+    assert.deepEqual(example.codexModels.slice(0, 5), [
       legacyShippedModels[0],
       astraModel,
+      ...additions,
       legacyShippedModels[1],
     ]);
   } finally {

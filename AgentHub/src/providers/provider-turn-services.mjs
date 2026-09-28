@@ -171,6 +171,7 @@ export class CodexTurnService {
         threadId: run.threadId,
         streamId: run.streamId,
       });
+      const applicationContext = buildCodexApplicationContext(developerInstructions, run.id);
       markProviderTurnRequested(run, { provider: "codex" });
       await d.saveState();
       rpcSpan = d.commandTrace?.startBestEffortSpan?.({
@@ -189,7 +190,7 @@ export class CodexTurnService {
             clientUserMessageId: run.clientUserMessageId ?? undefined,
             model: run.modelId,
             effort: run.reasoningId,
-            additionalContext: buildCodexApplicationContext(developerInstructions),
+            additionalContext: applicationContext,
             collaborationMode: buildCodexCollaborationMode({
               mode: run.collaborationMode,
               model: run.modelId,

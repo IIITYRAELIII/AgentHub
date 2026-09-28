@@ -626,7 +626,7 @@ test("Codex turn service updates application instructions without changing user 
   await service.launch(run, "Second");
 
   assert.deepEqual(starts.map((call) => (
-    call.additionalContext["agent-hub"].value
+    call.additionalContext["agent-hub"].value.split("\n\n").slice(1).join("\n\n")
   )), ["Workspace rules", "Updated rules"]);
   assert.deepEqual(starts.map((call) => call.additionalContext["agent-hub"].kind), ["application", "application"]);
   assert.deepEqual(starts.map((call) => call.collaborationMode.settings.developer_instructions), [null, null]);

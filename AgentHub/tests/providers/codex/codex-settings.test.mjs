@@ -62,17 +62,40 @@ test("developer instructions preserve the four configured rule layers", () => {
 
 test("application context carries exact rules independently of model catalog modes", () => {
   const rules = "<agent_hub_context>\nSynthetic context\n</agent_hub_context>";
-  assert.deepEqual(buildCodexApplicationContext(rules), {
-    "agent-hub": { kind: "application", value: rules },
-  });
-  assert.deepEqual(buildCodexApplicationContext(null), {
-    "agent-hub": { kind: "application", value: "" },
-  });
+  const context = buildCodexApplicationContext(rules, "run-1");
+  assert.equal(context["agent-hub"].kind, "application");
+  assert.equal(context["agent-hub"].value.split("\n\n").slice(1).join("\n\n"), rules);
+  assert.equal(buildCodexApplicationContext(null, "run-1")["agent-hub"].value.split("\n\n")[1], "");
   for (const mode of CODEX_COLLABORATION_MODES) {
     assert.equal(buildCodexCollaborationMode({
       mode, model: "gpt-6-astra", reasoningEffort: "high",
     }).settings.developer_instructions, null);
   }
+});
+
+test("long multilingual rules survive bounded entries and every launch refreshes the complete snapshot", () => {
+  const rules = buildCodexDeveloperInstructions({
+    guide: "Guide\n".repeat(1200),
+    global: "Запрет субагентов 🛑\n".repeat(200),
+    workspace: "Workspace\n".repeat(1600),
+    stream: "Stream\n".repeat(1600),
+    context: "<agent_hub_context>synthetic</agent_hub_context>",
+  });
+  const entries = Object.entries(buildCodexApplicationContext(rules, "launch-1"));
+  assert.ok(entries.length > 10);
+  assert.deepEqual(entries.map(([key]) => key), entries.map(([key]) => key).sort());
+  assert.equal(entries.map(([, entry]) => {
+    assert.equal(entry.kind, "application");
+    assert.ok(Buffer.byteLength(entry.value, "utf8") < 3000);
+    assert.ok(!entry.value.includes("\ufffd"));
+    return entry.value.slice(entry.value.indexOf("\n\n") + 2);
+  }).join(""), rules);
+  const next = buildCodexApplicationContext(rules, "launch-2");
+  for (const [key, entry] of entries) assert.notEqual(next[key].value, entry.value);
+  assert.deepEqual(buildCodexApplicationContext(rules, "launch-1"), Object.fromEntries(entries));
+  const shortened = buildCodexApplicationContext("Guide only", "launch-3");
+  assert.equal(Object.keys(shortened).length, 1);
+  assert.match(shortened["agent-hub"].value, /part 1\/1/u);
 });
 
 test("Codex selectors expose supported values", () => {

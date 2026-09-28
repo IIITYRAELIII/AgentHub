@@ -605,7 +605,13 @@ function loadCodexModels(raw) {
     { value: "gpt-5.3-codex-spark", label: "GPT-5.3-Codex-Spark" },
   ];
   const astraModel = { value: "gpt-6-astra", label: "GPT-6 Astra" };
-  const defaultModels = [legacyShippedModels[0], astraModel, ...legacyShippedModels.slice(1)];
+  const astraShippedModels = [legacyShippedModels[0], astraModel, ...legacyShippedModels.slice(1)];
+  const defaultModels = [
+    legacyShippedModels[0], astraModel,
+    { value: "gpt-6-sol", label: "GPT-6 Sol" },
+    { value: "gpt-6-luna", label: "GPT-6 Luna" },
+    ...legacyShippedModels.slice(1),
+  ];
   const source = raw.codexModels ?? defaultModels;
   if (!Array.isArray(source) || source.length === 0) {
     throw new Error("codexModels must be a non-empty array");
@@ -627,13 +633,14 @@ function loadCodexModels(raw) {
   });
 
   const isLegacyShippedCatalog = raw.codexModels != null
-    && normalizedModels.length === legacyShippedModels.length
-    && normalizedModels.every((model, index) => (
-      model.value === legacyShippedModels[index].value
-      && model.label === legacyShippedModels[index].label
+    && [legacyShippedModels, astraShippedModels].some((catalog) => (
+      normalizedModels.length === catalog.length
+      && normalizedModels.every((model, index) => (
+        model.value === catalog[index].value && model.label === catalog[index].label
+      ))
     ));
   const models = isLegacyShippedCatalog
-    ? [normalizedModels[0], astraModel, ...normalizedModels.slice(1)]
+    ? defaultModels
     : normalizedModels;
 
   for (let index = 0; index < models.length; index += 1) {
