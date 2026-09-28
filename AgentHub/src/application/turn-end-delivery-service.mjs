@@ -263,6 +263,16 @@ export class TurnEndDeliveryService {
                 throw new Error(`history projection failed: ${historyProjection.error || "unknown error"}`);
               }
             });
+            // The exact final is already durable and readable by task-history.
+            // Publish its existing last-message projection before accounting or
+            // the global journal index can stall. This is not an outbox ACK:
+            // all projection checks below still own acknowledgement/recovery.
+            if (typeof this.terminalCommits.get === "function") {
+              const latest = await this.#measure("terminal-revision-read", claimed,
+                () => this.terminalCommits.get(claimed));
+              if (latest?.terminalRevision !== terminalRevision) return false;
+            }
+            this.rememberCompletion(completion, notificationBody);
             const matchingRecord = existingProjectionRecordMatches(projection, completion, notificationBody);
             const projectedCompletion = claimed.attempts > 1
               ? { ...completion, resolveAccount: false }

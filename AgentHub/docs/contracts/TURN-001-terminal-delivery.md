@@ -109,6 +109,11 @@ terminal.
   Hub command identity. Missing, duplicate or conflicting proof fails closed;
   successful reprojection preserves terminal state and never dispatches again.
 - Live, focused, history and badge views derive from the same terminal revision.
+- Once exact terminal history is persisted, the existing last-message projection
+  advances before optional accounting and global journal-index work. A slow or
+  failed journal rebuild cannot hold a readable final until another user turn.
+  The current terminal revision is checked before this publication; outbox ACK
+  still requires all canonical projection readbacks below.
 - Terminal completion and history payloads retain the raw root prompt separately
   from body-only live user projections. Their `clientUserMessageId` is nonempty
   and at most 200 characters; invalid or conflicting provider identity and its

@@ -2,6 +2,10 @@
 
 ## Invariants
 
+- Technical identifier presentation preserves complete Markdown links, including
+  commit/runtime labels and punctuation inside their targets. Link-bearing lines
+  remain in the message body rather than being split into technical rows.
+
 - An idle Stream header shows its saved model setting for the matching provider;
   an exact active user turn shows that turn's model. Legacy Threads without
   matching Stream settings retain their observed model. Header labels never

@@ -358,11 +358,21 @@
   }
 
   function extractTechnicalTails(value) {
+    const source = String(value ?? "");
+    // Preserve complete link-bearing lines before sentence splitting: a URL's
+    // dots are not prose boundaries, and its label may itself contain a hash.
+    const linkLines = new Set(source.split("\n").filter((line) =>
+      inlineMarkdownTokens(line).some(({ token }) => token.startsWith("["))));
     const tokenPattern = /(runtime|коммит)\s*(?:[:—–-]\s*)?(?:`([^`\r\n]+)`|(\d{12,}-[\p{L}\p{N}_-]+|[0-9a-f]{7,40}))/giu;
     const rows = [];
     const kept = [];
-    const segments = String(value ?? "").match(/[^.!?\n]+[.!?]*|[.!?]+|\n/gu) ?? [];
+    const segments = source.split(/(\n)/u).flatMap((line) => linkLines.has(line)
+      ? [line] : line.match(/[^.!?\n]+[.!?]*|[.!?]+|\n/gu) ?? []);
     for (const segment of segments) {
+      if (linkLines.has(segment)) {
+        kept.push(segment);
+        continue;
+      }
       const matches = Array.from(segment.matchAll(tokenPattern));
       if (!matches.length) {
         kept.push(segment);
