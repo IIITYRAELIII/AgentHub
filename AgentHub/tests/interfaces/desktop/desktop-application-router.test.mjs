@@ -72,6 +72,30 @@ test("Desktop application router addresses mutations explicitly", async () => {
   assert.equal(calls[0][3].target.streamId, "stream-1");
 });
 
+test("Desktop application router delegates release commands without a second workflow", async () => {
+  const actions = [];
+  const control = router([], { overrides: {
+    releaseOperationRun: async (params) => { actions.push(["run", params]); return { operationId: "operation-1" }; },
+    releaseOperationGet: async (params) => { actions.push(["get", params]); return { operation: { state: "done" } }; },
+    releaseOperationContinue: async (params) => { actions.push(["continue", params]); return { accepted: true }; },
+  } });
+  assert.equal((await control.handleDesktopControl({
+    action: "release-operation-run",
+    params: { requestId: "request-1" },
+    context: { source: "desktop-control", commandId: "request-1" },
+  })).operationId, "operation-1");
+  assert.equal((await control.handleDesktopControl({
+    action: "release-operation-get", params: { operationId: "operation-1" },
+    context: { source: "desktop-control" },
+  })).operation.state, "done");
+  assert.equal((await control.handleDesktopControl({
+    action: "release-operation-continue",
+    params: { operationId: "operation-1" },
+    context: { source: "desktop-control", commandId: "continue-1" },
+  })).accepted, true);
+  assert.deepEqual(actions.map(([action]) => action), ["run", "get", "continue"]);
+});
+
 test("Desktop application router exposes durable message pin mutations", async () => {
   const control = router([]);
   const pinned = await control.handleDesktopControl({

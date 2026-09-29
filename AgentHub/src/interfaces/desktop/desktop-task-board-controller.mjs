@@ -27,6 +27,19 @@ export class DesktopTaskBoardController {
     return this.snapshot({ refresh: true });
   }
 
+  #boardMutationSnapshot(params) {
+    // Opt-in response for the shared UI. Older clients retain the full snapshot.
+    // The durable mutation has finished; unrelated conversation/server reads
+    // must not delay acknowledgement of the new Dashboard state.
+    if (params.responseView !== "task-board") return this.snapshot({ refresh: true });
+    return {
+      view: "task-board",
+      boardTasks: this.taskBoard.snapshot(),
+      workspaces: this.taskBoard.workspaces(),
+      boardLayout: this.taskBoard.layout(),
+    };
+  }
+
   async diff({ id } = {}) {
     const task = this.taskBoard.task(id);
     if (!this.taskGitWorkspaces) throw new Error("Просмотр Git diff недоступен");
@@ -119,8 +132,9 @@ export class DesktopTaskBoardController {
     return { text: combined, failures };
   }
 
-  move(params) {
-    return this.#mutate(() => this.taskBoard.move(params));
+  async move(params) {
+    await this.taskBoard.move(params);
+    return this.#boardMutationSnapshot(params);
   }
 
   update(params) {
@@ -161,7 +175,7 @@ export class DesktopTaskBoardController {
       status: params.status,
       operationId: String(params.operationId ?? context.commandId ?? "").trim(),
     });
-    return { ...await this.snapshot({ refresh: true }), lifecycleResult: result };
+    return { ...await this.#boardMutationSnapshot(params), lifecycleResult: result };
   }
 
   moveColumn(params) {

@@ -232,6 +232,15 @@ field yields **no observation at all**. A partial or synthesized key is never
 emitted, and a device with an unreadable auth store publishes nothing rather
 than a placeholder.
 
+Automatic terminal journal records resolve the current account separately per
+provider before entering the journal mutation lane. Only overlapping reads for
+the same provider share one in-flight result. The result is not retained after
+settlement: a later terminal observes an account switch, and a failed or timed
+out read leaves that record unattributed while the next terminal retries a fresh
+read. Replacing the account resolver invalidates in-flight sharing for subsequent
+terminals without rewriting already observed records. This local journal metadata
+does not add account fields to synchronized `turn` facts.
+
 `api-key` and `amazon-bedrock`, as used by the current
 `codexAccountDimension`, are **not** account keys — they name a credential
 class, and two unrelated API keys or Bedrock profiles collapse into one billing

@@ -23,10 +23,9 @@ A rejected lifecycle begin is terminal only after its transaction rolls back;
 an existing foreign transition remains untouched.
 
 TASK_WITHDRAWAL_BUSY is terminal only after the lifecycle reads back its own
-failed transition; the foreign withdrawal is untouched. RELEASE_CANDIDATE_FROZEN
-is a terminal pre-mutation refusal: new work stays in Test until the caller
-repeats acceptance after release completion. Exact retries return the same
-refusal and never silently resume an acceptance.
+failed transition; the foreign withdrawal is untouched. Release generations do
+not produce RELEASE_CANDIDATE_FROZEN admission refusals. Their immutable bytes
+coexist with later Task work and Await acceptance.
 
 TASK_AWAIT_INTEGRATION_FAILED is a terminal refusal only after the existing
 lifecycle owner reads back its own failed transition. PreRelease composition
@@ -45,6 +44,25 @@ publish or run an automatic merge. hub_task_claim dependency_override_reason is
 an explicit, audited user exception to a prerequisite release wait, never an
 automatic consequence of starting a turn. Claim/launch preserve Test/Await/Blocked
 workflow status.
+
+`hub_task_complete` additionally accepts the exact enum
+`absorption_mode=published_duplicate` only with `absorbed_into_task_id` and only
+from a Release Manager Stream. This mode is for an open Task whose own managed
+checkout is exactly current durable published main while the named survivor is
+already Done with an exact published result. It does not infer delivery from an
+ancestor relation, a clean checkout, response text or manual history. The
+preview/confirmation token binds source and survivor revisions, repository Git
+identities, publication generation and a preserve-only cleanup plan. Ordinary
+callers cannot select the mode, unknown modes are rejected, and omission retains
+the existing open/tested-survivor contract.
+
+The published-duplicate result records durable `absorbedInto` evidence without
+creating a Git result, squash receipt or publication claim for the duplicate.
+No Git artifact is deleted. A post-admission failure leaves the same lifecycle
+operation in cleanup phase for exact retry from its stored admission evidence;
+a later publication does not strand that admitted operation. A committed
+outcome is returned by readback instead of replaying closure. Task/Git/publication drift before
+admission is a refusal and requires a fresh preview.
 
 For release-enabled Workspaces, combined closure also binds canonical selected
 composition validation (plan, approved base and tree) into that same preview and
@@ -125,29 +143,29 @@ identity are fenced atomically by the transition transaction. A later pending re
 preserves the transition's immutable source evidence in its outcome; terminal
 reconciliation reproduces those durable arguments and does not consult a newer
 source Task state or replay the target lifecycle. The transition records the
-accepted result and invalidates older release-plan identity; it does not compose
-`PreRelease`. Candidate assembly is owned only by the later explicit release
-prepare operation.
-`hub_release_preflight` audits reviewed main and reads the existing exact prepared
-PreRelease. It does not refresh the rolling contour or rebuild missing/stale
-candidates. Its ready response pins candidate head/tree/manifest and retains
-configured repository-owned validation. Publication freeze remains a separate
-existing operation. Request identity and unknown-outcome handling are unchanged.
+accepted result. An ordinary Await transition composes that result into the
+prospective `PreRelease` first and commits only after the composition succeeded;
+a conflict leaves the Task in Test with the last good candidate intact. There is
+no separate public prepare tool. Active release generations retain their own
+exact membership. A corrected result creates a later generation without removing
+historical dev integration. `hub_release_preflight` reads and audits a prepared
+candidate; it does not refresh the rolling contour or silently rebuild one.
 
-`hub_release_preflight_reconcile` is a read-only release-specific readback path,
-not a replay of `hub_release_preflight`. It requires the original request id plus
-the exact original preflight arguments, expected plan and repository revisions.
-It must find the original `hub_release_preflight` receipt and bind tool,
-Workspace, caller Stream/provider/thread and immutable arguments hash before any
-release checkpoint readback. It may only report existing frozen candidate
-checkpoint evidence owned by the release Git boundary. A prepared checkpoint is
-at most a candidate snapshot, whether or not it is causally bound to the original
-request; it is not a reconciled original outcome without separate authoritative
-final-phase evidence. Contradictory checkpoint/manifest request identity, wrong
-Workspace, stale Task acceptance revision/result evidence or failed primary/release
-invariant readback keep the original outcome unknown. The tool cannot create a
-candidate, repeat validation, finalize an unknown MCP receipt, or infer success
-from transport text.
+`hub_release_run` is the only public release mutation entrypoint. It requires a
+stable request ID, exact Task IDs, validation mode and approved publication
+targets. It commits the durable operation and returns `{accepted, operationId,
+state, revision}` before long work. Same-ID replay with identical authorization
+returns the same operation; changed identity fails closed. `hub_release_get`
+returns the operation, immutable generations, receipts and target effects without
+writing. `hub_release_continue` only wakes the same waiting operation; automatic
+Task acceptance and durable retry timers normally perform that wakeup.
+
+The former public `hub_release_preflight`, `hub_release_preflight_reconcile` and
+`hub_release_complete` writers are removed at cutover rather than retained as a
+second state machine. Legacy checkpoint/status decoding is startup migration
+evidence owned by the new operation store. A matching legacy nonterminal run is
+continued by the same operation owner; unmatched snapshots stay read-only.
+Transport timeout never authorizes a new request ID or an external replay.
 
 Receipt creation is atomic `INSERT OR IGNORE` under the exact identity. Success
 stores a bounded structural result projection rather than arbitrary response
@@ -201,16 +219,11 @@ single-flight durable outbox drain invokes delivery outside SQL retry and queues
 only quarantine/acknowledgment writes with the original event ID. A busy
 acknowledgment cannot replay that invocation. An interrupted drain remains
 recoverable through the existing idempotent event identity.
-Release completion uses the same
-Task owner. Desktop `complete-workspace-release` has action-specific interrupted
-effect reconciliation: under its existing command identity it can only resume
-the exact pending finalization or return the canonical completed outcome.
-It cannot begin fresh closure without that evidence. The Task store retains the
-last 16 completed exact plans/repositories in its existing finalization setting,
-so transport ACK retirement cannot erase release completion. A definitive
-`retry_required` response permits a new finalization attempt against the same
-pending plan; an ambiguous response retains its original command ID. Other
-interrupted Desktop mutations remain unknown and are not replayed.
+Release finalization uses the same Task owner and the operation's exact generation
+receipt. It retries only finalize after publication is confirmed, records delivery
+for the published result and closes only a Task still naming that result. The
+retired Desktop completion adapter rejects new writes with
+`RELEASE_OPERATION_REQUIRED`; it is not a recovery owner.
 `hub_task_claim` enters Git through public Task admission. Repository admission
 first holds the shared dev lease and then checks foreign process-tree guards;
 the guarded child runs before that lease is released. A concurrent live owner

@@ -24,6 +24,11 @@ terminal.
 
 - Terminal status, final content, usage identity and last-message identity are
   committed before admission or queue ownership is released.
+- Ordinary Claude turns remain background work on Windows: starting a turn or
+  any console descendant must not expose a console window or steal foreground
+  focus. The durable worker survives an Agent Hub restart, retains redirected
+  file output and stream input, and cancellation still owns its complete process
+  tree.
 - The post-turn reservation is acquired before admission release. Once the
   terminal is durable, admission completion starts reserved post-turn
   maintenance independently of outbox delivery. A stalled delivery cannot hold
@@ -55,6 +60,47 @@ terminal.
 - A provider completion event is not sufficient evidence to persist a known
   prefix while the authoritative final is still materializing. Terminal commit
   uses the exact reconciled provider final after a bounded settle window.
+- A managed Claude result does not release its exact process owner while the
+  provider tree is still live. Completion closes input, gives the provider a
+  bounded nonzero graceful-exit window, and verifies the exact root and
+  descendant identities even when the root has already exited. A remaining
+  live tree receives one owner-verified, deadline-bounded stop before terminal
+  delivery. Exact stop targets and an unknown-outcome fence are durable before
+  the first external stop effect. An unconfirmed stop retains the run,
+  descendant identities and the same in-flight stop attempt; it cannot
+  authorize another killer by numeric PID alone or after restart. A stop
+  intent whose durable write is rejected before any effect is a known
+  non-effect: the owner retries canonical completion with bounded backoff
+  until storage recovers, without cancellation or restart, including when the
+  rejection lands after the stop deadline.
+- A provider named by the launch sidecar is owned only through the exact
+  fingerprint captured while its ancestry to the exact live root is
+  observable, at launch or during ordinary polling. The sidecar token and a
+  creation time inside the run lifetime never authorize a stop by themselves;
+  a reused PID with a different creation time is never stopped. A captured
+  identity is retried until one durable save succeeds, so a restart cannot
+  lose it. An entry without an exact fingerprint is only a historical ancestry
+  anchor for descendants created inside its closed lifetime, and only while
+  its PID is absent. Recorded exit times follow the real exit, so a current
+  holder of a root or provider PID that is not the saved exact identity makes
+  that anchor ambiguous: the holder is never owned, and an unknown child whose
+  known creation time lies outside the anchor's recorded lifetime (including
+  the start tolerance) is foreign and excluded. Inside that lifetime an
+  unknown child created at or after the holder's creation is the holder's own
+  and is excluded; an earlier unknown child inside the bounded historical
+  lifetime, a child without a valid creation time, or any child when the
+  holder creation time is unknown leaves the tree unresolved. An exited root
+  without a recorded lifetime fails closed the same way, with an explicit
+  missing-lifetime diagnostic. An unresolved tree is not terminal: completion
+  keeps cleanup pending, never reports success, and re-checks ownership with
+  bounded backoff on the single owner timer until a later authoritative
+  snapshot resolves it; a re-check never dispatches a second stop. Descendants
+  captured with their own exact fingerprint remain actionable, but stopping
+  them never proves that an unresolved tree has ended.
+  On Windows, discovery through a currently live parent PID requires a child
+  creation time no earlier than that live parent's creation time. A child born
+  before its current parent is foreign even when both were born during the run;
+  missing chronology cannot authorize a new numeric-parent descendant.
 - Terminal is absorbing: late running, progress, snapshot or reconnect events
   cannot revive it.
 - A bounded restart or opened-history-page reprojection may replace a corrupted terminal user
@@ -63,6 +109,11 @@ terminal.
   Hub command identity. Missing, duplicate or conflicting proof fails closed;
   successful reprojection preserves terminal state and never dispatches again.
 - Live, focused, history and badge views derive from the same terminal revision.
+- Once exact terminal history is persisted, the existing last-message projection
+  advances before optional accounting and global journal-index work. A slow or
+  failed journal rebuild cannot hold a readable final until another user turn.
+  The current terminal revision is checked before this publication; outbox ACK
+  still requires all canonical projection readbacks below.
 - Terminal completion and history payloads retain the raw root prompt separately
   from body-only live user projections. Their `clientUserMessageId` is nonempty
   and at most 200 characters; invalid or conflicting provider identity and its

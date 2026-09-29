@@ -1,6 +1,39 @@
 # UI-001 — Canonical message projection
 
+## Explicit Codex trace details
+
+A shortened rollout preview exposes “All stages” only on explicit expansion.
+Detail pages do not replace canonical messages or turn identity. For new trace
+quotes, the existing version-1 source locator may carry an exact traceGroupId;
+its canonical content hash binds that group's complete reasoning and the
+unchanged provider/Thread/turn/item identity. Other preview groups entering or
+leaving do not invalidate the quote. The existing surface and selection hashes
+and exact UTF-16 ranges remain mandatory. Missing or ambiguous source groups
+fail closed; no text matching supplies identity. An evicted group is read only
+on explicit source navigation. Equal DOM copies in the preview and detail page
+may share one source only after their rendered content agrees and all hashes
+validate. Existing locators without traceGroupId retain their previous content
+hash semantics; they are not retroactively rewritten (ADR-0077).
+
+Persisted trace previews may shorten individual reasoning blocks. A visible
+group is trusted for source navigation only after its canonical content hash
+matches; a mismatch uses the same exact-group source read as an omitted group.
+New Codex group citations read the full source before binding content and surface
+hashes. The selected preview must render as an exact prefix of that source, with
+the same selected text at the same UTF-16 offsets; otherwise creation fails
+visibly rather than guessing offsets. All three hashes remain mandatory on
+navigation. Legacy citations already bound to shortened content are not rewritten.
+
 ## Invariants
+
+- Technical identifier presentation preserves complete Markdown links, including
+  commit/runtime labels and punctuation inside their targets. Link-bearing lines
+  remain in the message body rather than being split into technical rows.
+
+- An idle Stream header shows its saved model setting for the matching provider;
+  an exact active user turn shows that turn's model. Legacy Threads without
+  matching Stream settings retain their observed model. Header labels never
+  rewrite historical messages, usage attribution or provider configuration.
 
 - Optimistic, queued, active and historical forms of one command are one entity
   keyed by `clientUserMessageId`, not separately appendable cards.
@@ -25,6 +58,10 @@
   occurrence when `clientUserMessageId` arrives later; this same-source evidence
   replaces the earlier unkeyed entity and preserves Hub payload/origin.
 - `unknown` is displayed as unknown and never inferred as running.
+- Successful message intake updates the existing message or queue projection
+  without a separate acceptance toast. A refresh failure after acceptance cannot
+  duplicate the send or produce an acceptance toast; errors remain diagnostic
+  and the canonical receipt remains authoritative.
 - Legacy rollout projections that misclassified a subagent report as a user
   may be corrected only by one matching internally generated source occurrence
   in the same turn. A Hub client identity, origin, missing source identity or
@@ -172,6 +209,11 @@ text-prefix guessing nor command replay is a migration path.
 
 ## Canonical reducer
 
+Hidden or zero-sized chat panes do not automatically expand cached history or
+request older pages. Queued frame and scroll callbacks recheck current visibility;
+returning to a visible short chat resumes viewport filling, and explicit older-page
+navigation retains the same canonical history and pagination identities.
+
 Opening a chat and refreshing its newest history both include the authoritative
 active-turn overlay. A paged durable history response alone cannot replace that
 combined projection after its exact optimistic user entity has been retired.
@@ -231,6 +273,12 @@ A busy-origin command
 with `clientProjectionIntent=queue` remains queue-only if admission later finds
 the Stream idle. Attention-required and ambiguous commands remain queue-owned.
 Reconciliation never renders both forms and never loses the logical entity.
+After an exact steer is authoritatively known to have had no provider effect,
+its attention-required row exposes both exact retry and explicit after-turn
+queue actions; neither action runs before its own click. The generic current-turn
+action is absent from both definite and unknown exact-steer decisions, and the
+server rejects a forged generic retarget action. An unknown provider effect
+remains fail-closed and does not expose the after-turn conversion.
 Every canonical queue row exposes an explicit cancellation action. The action
 removes a waiting or attention-required command only after durable commit; if
 dispatch already owns it, the UI reports that cancellation was not confirmed.
@@ -296,13 +344,26 @@ still equals the submitted payload; truncation, normalization, count or storage
 bounds may not silently weaken this check. Every committed composer mutation
 (text, attachment, Task reference, response annotation or programmatic edit)
 advances an irreversible Task-scoped edit revision and invalidates the old
-identity. Eligible attachment reads fence their exact Task before yielding;
-attachment and annotation callbacks commit only to the captured live Task,
-generation and revision. Refused/no-op file selections, duplicate annotations
+identity. Eligible attachment reads fence their exact Task before yielding.
+Attachment preparation is additive: callbacks append to the latest draft under
+the captured live Task identity, generation and destructive-operation fence,
+so typing or another paste cannot silently discard selected files or resurrect
+old text. Send, clear, attachment removal, draft replacement and Task rebinding
+invalidate pending additions. Annotation callbacks retain the exact captured
+revision rule. Refused/no-op file selections, duplicate annotations
 and hash failures do not advance the revision. Later accepted or rejected
 evidence from an older revision cannot clear or replace the edited composition,
 and receipt evidence without one exact current provider/Thread/Stream identity
 cannot complete any composer send.
+Local file preparation does not await upload capabilities. The draft retains at
+most eight files, 256 MiB per file and 512 MiB total; the negotiated server limits
+are checked before upload/send (MSG-002). Pending preparation blocks managed
+reload until its bytes are committed or discarded. See ADR-0074.
+The selected draft shows bounded temporary file previews while preparation is
+pending. These previews are labelled as preparation, are cancellable, and are
+excluded from serialized/sendable attachments. Send waits for that draft's
+pending preparation or explicit cancellation; another Stream's preparation
+cannot block it. Settling or invalidating the operation releases its preview URL.
 An explicit retry of the unchanged restored payload reuses the original request
 identity and uploads recovered attachments again. If browser privacy or quota
 policy, serialization normalization or a configured bound prevents exact atomic

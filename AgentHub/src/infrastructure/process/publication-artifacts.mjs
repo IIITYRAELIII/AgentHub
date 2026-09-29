@@ -92,7 +92,7 @@ export function createPublicationArtifactSteps({
     return artifact;
   };
   const wrangler = path.join(sourceRoot, "wrangler-runner.mjs");
-  const execute = (step) => run({ ...step, logFile: journal?.logFile ?? "" });
+  const execute = (step) => run({ ...step, cwd: step.cwd ?? sourceRoot, logFile: journal?.logFile ?? "" });
   const wranglerRun = (args, label) => execute({ label, command: process.execPath, args: [wrangler, ...args], cwd: sourceRoot });
 
   async function workerConfig(identity) {

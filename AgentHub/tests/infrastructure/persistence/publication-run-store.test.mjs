@@ -5,12 +5,88 @@ import path from "node:path";
 import test from "node:test";
 
 import {
+  failedFrozenPublicationEvidence,
+  PUBLICATION_STAGE_CONTRACT,
   publicationRunPaths,
   publicationRunStore,
   readPublicationRunStatus,
 } from "../../../src/infrastructure/persistence/publication-run-store.mjs";
 import { publicationCheckpointStore } from "../../../src/infrastructure/persistence/publication-checkpoint.mjs";
 import { withPublicationLock } from "../../../src/infrastructure/process/publication-lock.mjs";
+
+function failedRunEvidenceFixture(statuses) {
+  const labels = PUBLICATION_STAGE_CONTRACT.map((stage) => stage.label);
+  const identity = {
+    mode: "changed", from: "main", revision: "a".repeat(40), runtimeRoot: "runtime",
+    worktreeRoot: "release", validationMode: "full", artifactProtocol: 1, labels,
+    release: {
+      workspaceId: "workspace", planRevision: "b".repeat(64), manifestHash: "c".repeat(64),
+      preReleaseHead: "a".repeat(40), primaryRoot: "primary",
+    },
+  };
+  return {
+    run: {
+      version: 2, stageContractVersion: 1, runId: "failed-run", status: "failed",
+      finishedAt: "2026-09-22T00:00:00.000Z", currentStep: null, progress: {}, identity,
+      steps: PUBLICATION_STAGE_CONTRACT.map((stage, index) => ({
+        label: stage.label, stageId: stage.id, status: statuses[index] ?? "pending",
+      })),
+    },
+    checkpoint: {
+      identity,
+      checkpointScope: { mode: "changed", from: "main", runtimeRoot: "runtime", validationMode: "full" },
+      completedLabels: [labels[0]], completedFingerprints: { [labels[0]]: "contour" },
+    },
+  };
+}
+
+test("failed-frozen evidence accepts only exact terminal validation vectors", () => {
+  const contour = failedRunEvidenceFixture(["failed", "pending"]);
+  assert.equal(failedFrozenPublicationEvidence(contour.run, null, { expectedRunId: "failed-run" }).failedStageId,
+    "release-candidate-contour");
+  const tests = failedRunEvidenceFixture(["completed", "failed"]);
+  assert.equal(failedFrozenPublicationEvidence(tests.run, tests.checkpoint, { expectedRunId: "failed-run" }).failedStageId,
+    "agent-hub-full-tests");
+  for (const statuses of [
+    ["pending", "pending"], ["completed", "pending"], ["completed", "completed"],
+    ["failed", "failed"], ["reused", "pending"],
+  ]) {
+    const fixture = failedRunEvidenceFixture(statuses);
+    assert.throws(() => failedFrozenPublicationEvidence(fixture.run, fixture.checkpoint, {
+      expectedRunId: "failed-run",
+    }), /terminal pre-effect validation failure/u);
+  }
+  const active = failedRunEvidenceFixture(["failed", "pending"]);
+  active.run.status = "running";
+  assert.throws(() => failedFrozenPublicationEvidence(active.run, null, { expectedRunId: "failed-run" }),
+    /terminal failed publication run/u);
+  const progressed = failedRunEvidenceFixture(["failed", "pending"]);
+  progressed.run.progress = { publicationState: true };
+  assert.throws(() => failedFrozenPublicationEvidence(progressed.run, null, { expectedRunId: "failed-run" }),
+    /terminal failed publication run/u);
+  const missingStage = failedRunEvidenceFixture(["failed", "pending"]);
+  missingStage.run.steps.pop();
+  missingStage.run.identity.labels.pop();
+  assert.throws(() => failedFrozenPublicationEvidence(missingStage.run, null, { expectedRunId: "failed-run" }),
+    /unknown or incomplete publication stage contract/u);
+  const emptyPrior = failedRunEvidenceFixture(["failed", "pending"]);
+  emptyPrior.checkpoint.identity = structuredClone(emptyPrior.run.identity);
+  Object.assign(emptyPrior.checkpoint.identity, { revision: "d".repeat(40) });
+  Object.assign(emptyPrior.checkpoint.identity.release, {
+    planRevision: "e".repeat(64), manifestHash: "f".repeat(64), preReleaseHead: "d".repeat(40),
+  });
+  emptyPrior.checkpoint.completedLabels = [];
+  emptyPrior.checkpoint.completedFingerprints = {};
+  assert.throws(() => failedFrozenPublicationEvidence(emptyPrior.run, emptyPrior.checkpoint, {
+    expectedRunId: "failed-run",
+  }), /no durable pre-effect prefix/u);
+  const invalidFingerprint = failedRunEvidenceFixture(["failed", "pending"]);
+  invalidFingerprint.checkpoint.identity = structuredClone(emptyPrior.checkpoint.identity);
+  invalidFingerprint.checkpoint.completedFingerprints[invalidFingerprint.checkpoint.completedLabels[0]] = null;
+  assert.throws(() => failedFrozenPublicationEvidence(invalidFingerprint.run, invalidFingerprint.checkpoint, {
+    expectedRunId: "failed-run",
+  }), /checkpoint fingerprints are invalid/u);
+});
 
 test("publication run status and log survive the terminal process", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-publication-run-"));

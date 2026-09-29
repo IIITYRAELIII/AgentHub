@@ -10,8 +10,18 @@ export class TaskReleasePlanService {
     this.taskGitWorkspaces = taskGitWorkspaces;
   }
 
-  async plan(workspaceId, { acceptingTask = null } = {}) {
+  async plan(workspaceId, { acceptingTask = null, selectedTaskIds = null } = {}) {
     let tasks = this.taskBoard.releaseTasks(workspaceId);
+    if (selectedTaskIds != null) {
+      const selected = [...new Set((Array.isArray(selectedTaskIds) ? selectedTaskIds : [])
+        .map((taskId) => String(taskId ?? "").trim()).filter(Boolean))];
+      if (!selected.length) throw new Error("release operation requires at least one selected Task");
+      const available = new Set(tasks.map((task) => task.id));
+      const missing = selected.filter((taskId) => !available.has(taskId));
+      if (missing.length) throw new Error(`selected release Tasks were not found: ${missing.join(", ")}`);
+      const selectedSet = new Set(selected);
+      tasks = tasks.filter((task) => selectedSet.has(task.id));
+    }
     if (acceptingTask) {
       const current = tasks.find((task) => task.id === acceptingTask.id);
       if (!current || current.revision !== acceptingTask.revision

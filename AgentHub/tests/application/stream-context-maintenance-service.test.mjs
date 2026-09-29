@@ -154,6 +154,12 @@ function fixture({
   return { clientSelections, deferredInputs, events, registry, service, source, tracker };
 }
 
+test("provider-internal compaction is active without becoming a Hub-owned reservation", () => {
+  const { service, source } = fixture({ externalCompacting: true });
+  assert.equal(service.isActive(source), true);
+  assert.equal(service.isManagedActive(source), false);
+});
+
 test("hung post-turn rollout read releases maintenance and wakes the original queued input", async () => {
   const state = fixture({ beforePercent: 90 });
   const queued = { id: "queued-after-terminal", streamId: state.source.streamId,

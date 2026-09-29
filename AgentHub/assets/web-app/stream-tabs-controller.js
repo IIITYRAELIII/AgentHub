@@ -633,6 +633,20 @@
     return exact;
   }
 
+  function streamModelLabel(task, stream, settings = {}) {
+    // A running turn keeps its captured model. Idle Stream controls describe
+    // the next turn, not the model cached when its Thread was first discovered.
+    const active = isExactActiveUserTurn(task);
+    const provider = String(task?.provider ?? "");
+    const configured = !active && stream?.settings?.provider === provider
+      ? String(stream.settings.model ?? "").trim() : "";
+    const model = active
+      ? String(task.run?.model ?? task.model ?? "").trim()
+      : configured || String(task?.model ?? "").trim();
+    const options = settings.modelOptionsByProvider?.[provider] ?? [];
+    return options.find((option) => option.value === model)?.label ?? model;
+  }
+
   function workspaceGroupLastActivity(group) {
     return Math.max(0, ...(group?.tasks ?? []).map((task) => (
       Date.parse(task?.lastActivity || 0) || 0
@@ -1639,6 +1653,7 @@
     workspaceArchivePresentation,
     normalizeWorkspaceFolderName,
     resolveTaskHierarchy,
+    streamModelLabel,
     STREAM_CARD_MAX_WIDTH,
     STREAM_CARD_MIN_WIDTH,
     STREAM_CARD_SETTINGS_CHANGE_EVENT,

@@ -245,7 +245,14 @@ export function createDesktopMessageController({
         await persistReceipts();
         throw error;
       }
-      const { snapshot: _snapshot, ...storedResult } = result;
+      const { snapshot: _snapshot, ...admissionResult } = result;
+      const storedResult = {
+        ...admissionResult,
+        streamId: target.streamId,
+        provider: target.provider,
+        threadId: target.threadId,
+        clientUserMessageId,
+      };
       storedResult.pending = false;
       if (clientProjectionIntent) storedResult.clientProjectionIntent = clientProjectionIntent;
       if (messageAttachments.length) storedResult.attachments = messageAttachments;

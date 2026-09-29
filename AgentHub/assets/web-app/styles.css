@@ -9430,6 +9430,7 @@ html[data-surface="mobile"] .chat-history-loader[data-armed] .chat-history-load 
 
 .attachments {
   display: flex;
+  flex-wrap: wrap;
 }
 
 .attachment-strip {
@@ -9449,6 +9450,18 @@ html[data-surface="mobile"] .chat-history-loader[data-armed] .chat-history-load 
 
 .attachment-open {
   cursor: zoom-in;
+}
+
+.attachment-preparing-label {
+  background: rgba(0, 0, 0, 0.75);
+  bottom: 0;
+  color: #fff;
+  font-size: 0.65rem;
+  left: 0;
+  padding: 0.15rem 0.25rem;
+  position: absolute;
+  right: 0;
+  text-align: center;
 }
 
 .attachment-file.attachment-open {
@@ -10150,6 +10163,16 @@ html[data-surface="mobile"] .chat-history-loader[data-armed] .chat-history-load 
   display: grid;
   gap: 0.42rem;
   min-width: 0;
+}
+
+.turn-trace-omission {
+  color: var(--text-faint);
+  font-size: 0.75rem;
+}
+
+.turn-trace-archive-content {
+  max-height: 60vh;
+  overflow: auto;
 }
 
 .turn-trace-reasoning {

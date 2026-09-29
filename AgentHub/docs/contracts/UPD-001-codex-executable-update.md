@@ -51,6 +51,15 @@ publisher`. A path or a version alone is not an executable identity.
   the canary answers only a safely auto-answerable request bound to its exact
   isolated `agent_hub` server, Thread, and MCP turn. Every other inbound request
   fails the canary closed.
+  The MCP capability is carried in the middle of a long application context,
+  not a short token-only entry. Hub transmits a complete ordered instruction
+  snapshot in UTF-8-bounded entries (less than 3000 bytes each), refreshed for
+  each launch and reused unchanged by retries. The snapshot supersedes prior
+  Hub instructions, including sections removed from the current configuration.
+  This protects each turn start, including the next turn after compaction.
+  Provider-internal compaction during an active turn can still remove application
+  context before the following turn; this is a known provider boundary, not
+  evidence that the rules remain present throughout that active turn.
   Cancellation is sent only after the accepted turn emits its exact
   `turn/started` lifecycle event; RPC acceptance alone is not evidence that a
   turn is active.

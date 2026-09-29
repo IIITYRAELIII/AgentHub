@@ -1,6 +1,9 @@
 # ADR-0048: Prepare accepted Tasks before release
 
-Status: Accepted for HUB-235; installed with its eventual release.
+Status: Accepted for HUB-235; installed with its eventual release. Its ordering
+of acceptance before composition is superseded by ADR-0055, which commits Await
+only after a successful PreRelease composition. The rest of this decision, and
+the history below, remain as recorded.
 
 ## Decision
 

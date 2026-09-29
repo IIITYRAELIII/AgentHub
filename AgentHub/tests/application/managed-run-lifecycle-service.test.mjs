@@ -141,7 +141,9 @@ test("failed pre-turn admission cannot leave a recoverable active run", async ()
   let rejectedRun;
   const deferredInput = { clientUserMessageId: "queued-after-compaction" };
   const { service, taskRuns, events } = harness({
-    commandTrace: { startBestEffortSpan: () => ({ finish: (result) => traceResults.push(result) }) },
+    commandTrace: { startBestEffortSpan: ({ stage }) => ({
+      finish: (result) => traceResults.push({ stage, ...result }),
+    }) },
     prepareAdmission: async () => ({ commit: (run) => { rejectedRun = run; } }),
     revokeAdmission: (run) => assert.equal(run, rejectedRun),
     saveState: async () => {
@@ -163,10 +165,41 @@ test("failed pre-turn admission cannot leave a recoverable active run", async ()
   assert.equal(events.includes("progress"), false);
   assert.equal(events.includes("before"), false);
   assert.equal(saves, 2);
-  assert.deepEqual(traceResults, [{
+  assert.deepEqual(traceResults.filter((result) => result.stage === "admission-state-save"), [{
+    stage: "admission-state-save",
+    outcome: "failed",
+    metadata: { errorCode: "ERR_SQLITE_ERROR", sqliteErrorCode: 5 },
+  }]);
+  assert.deepEqual(traceResults.filter((result) => result.stage === "admission"), [{
+    stage: "admission",
     outcome: "failed",
     metadata: { operation: "save-state", errorCode: "ERR_SQLITE_ERROR", sqliteErrorCode: 5, runId: rejectedRun.id },
   }]);
+});
+
+test("admission traces content-free owning stages without awaiting detached task sync", async () => {
+  const traced = [];
+  let releaseSync;
+  const syncPending = new Promise((resolve) => { releaseSync = resolve; });
+  const { service } = harness({
+    commandTrace: { startBestEffortSpan: ({ stage, commandId, transport }) => ({
+      finish: (result) => traced.push({ stage, commandId, transport, ...result }),
+    }) },
+    syncRun: () => syncPending,
+  });
+
+  await service.begin("hello", { clientUserMessageId: "command-stage", clientSource: "trusted-device" });
+  releaseSync();
+
+  assert.deepEqual(traced.map(({ stage, outcome }) => [stage, outcome]), [
+    ["admission-prepare", "succeeded"],
+    ["admission-task-diff", "succeeded"],
+    ["admission-sync-run-enqueue", "succeeded"],
+    ["admission-state-save", "succeeded"],
+    ["admission", "succeeded"],
+  ]);
+  assert.ok(traced.every((record) => record.commandId === "command-stage"));
+  assert.ok(traced.every((record) => record.transport === "trusted-device"));
 });
 
 test("failed admission rollback keeps the original error and removes only its own run", async () => {

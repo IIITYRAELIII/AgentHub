@@ -64,7 +64,10 @@ function originalReceipt(overrides = {}) {
   };
 }
 
-function fixture({ planRevision = "plan-1", contourHead = "dev-head", rejectDev = null, rejectPrimary = null } = {}) {
+function fixture({
+  planRevision = "plan-1", contourHead = "dev-head", rejectDev = null, rejectPrimary = null,
+  publishedRevision = "published-head",
+} = {}) {
   const calls = [];
   const locks = [];
   const projectRoot = path.resolve("D:/repo");
@@ -137,7 +140,7 @@ function fixture({ planRevision = "plan-1", contourHead = "dev-head", rejectDev 
         calls.push(["inspect-main", request]);
         return {
           projectRoot,
-          publishedRevision: "published-head",
+          publishedRevision,
           localMain: "main-head",
           originMain: "main-head",
           commits: [],
@@ -159,7 +162,7 @@ function fixture({ planRevision = "plan-1", contourHead = "dev-head", rejectDev 
       },
     },
     readPublicationState: async () => ({
-      repositories: [{ root: projectRoot, revision: "published-head" }],
+      repositories: [{ root: projectRoot, revision: publishedRevision }],
     }),
     resolveReleaseValidationSource: async (repositories) => {
       calls.push(["resolve-contour", repositories]);
@@ -211,7 +214,7 @@ test("release preflight preserves the Test-owned squash result revision for inte
 });
 
 test("release preflight reuses prepared PreRelease without dev preparation or contour refresh", async () => {
-  const { calls, locks, service } = fixture();
+  const { calls, locks, service } = fixture({ publishedRevision: "main-head" });
   const result = await service.preflight({ workspaceId: "workspace-1", expectedPlanRevision: "plan-1" });
   assert.deepEqual(calls.map(([name]) => name), [
     "plan", "inspect-main", "verify-upstream-adoption", "guard-primary", "read-candidate",
@@ -310,7 +313,7 @@ test("release preflight reads a repository baseline appended from a local publis
     revision: "legacy-unscoped-head",
     repositories: [{
       root: projectRoot,
-      revision: "published-head",
+      revision: "main-head",
       adoptedFrom: "local-publisher-receipt",
       publisher: { kind: "agent-hub-publication-receipt", runId: "publisher-run-1" },
     }],
@@ -322,31 +325,47 @@ test("release preflight reads a repository baseline appended from a local publis
   });
 
   assert.equal(result.status, "ready");
-  assert.equal(calls.find(([name]) => name === "inspect-main")[1].publishedRevision, "published-head");
+  assert.equal(calls.find(([name]) => name === "inspect-main")[1].publishedRevision, "main-head");
 });
 
 test("release preflight binds approved main commits to the selected repository", async () => {
-  const { calls, projectRoot, service } = fixture();
-  service.releaseGitWorkspaces.assertPrimaryInvariant = async () => ({ projectRoot, headCommit: "local-main" });
+  const LOCAL = "1".repeat(40);
+  const ORIGIN = "2".repeat(40);
+  const RESULT = "3".repeat(40);
+  const RECORD = "4".repeat(40);
+  const { calls, projectRoot, service } = fixture({ publishedRevision: LOCAL });
+  const adoption = {
+    taskId: "task-1", resultCommit: RESULT,
+    recordRef: `refs/agent-hub/upstream-adoptions/task-1/repo-key/${RESULT}/${ORIGIN}`,
+    recordHash: RECORD, adoptedCommit: ORIGIN, acceptedLocalMainCommit: LOCAL,
+  };
+  let provenance = null;
+  let currentAdoption = adoption;
+  service.taskGitWorkspaces.releaseBaseEvidence = async ({ publishedBaseCommit }) => ({
+    publishedBaseCommit, baseCommit: ORIGIN, adoptions: [currentAdoption],
+  });
+  service.releaseGitWorkspaces.assertPrimaryInvariant = async () => ({ projectRoot, headCommit: LOCAL });
   const readCandidate = service.releaseGitWorkspaces.frozenCandidate;
   service.releaseGitWorkspaces.frozenCandidate = async (root) => {
     const candidate = await readCandidate(root);
-    return { ...candidate, baseCommit: "origin-main", manifest: { ...candidate.manifest, baseCommit: "origin-main" } };
+    return { ...candidate, baseCommit: ORIGIN, manifest: {
+      ...candidate.manifest, baseCommit: ORIGIN, ...(provenance ? { baseProvenance: provenance } : {}),
+    } };
   };
   service.releaseGitWorkspaces.inspectMainChanges = async (request) => {
     calls.push(["inspect-main", request]);
     return {
       projectRoot: request.projectRoot,
       publishedRevision: request.publishedRevision,
-      localMain: "local-main",
-      originMain: "origin-main",
-      commits: [{ commit: "external-commit", subject: "external" }],
+      localMain: LOCAL,
+      originMain: ORIGIN,
+      commits: [{ commit: ORIGIN, subject: "external" }],
       changed: true,
       diverged: true,
-      approved: request.approvedLocalMainCommit === "local-main"
-        && request.approvedOriginMainCommit === "origin-main",
-      approvalRequired: request.approvedLocalMainCommit !== "local-main"
-        || request.approvedOriginMainCommit !== "origin-main",
+      approved: request.approvedLocalMainCommit === LOCAL
+        && request.approvedOriginMainCommit === ORIGIN,
+      approvalRequired: request.approvedLocalMainCommit !== LOCAL
+        || request.approvedOriginMainCommit !== ORIGIN,
     };
   };
 
@@ -355,8 +374,8 @@ test("release preflight binds approved main commits to the selected repository",
     expectedPlanRevision: "plan-1",
     approvedRepositories: [{
       projectRoot,
-      approvedLocalMainCommit: "old-local",
-      approvedOriginMainCommit: "origin-main",
+      approvedLocalMainCommit: "5".repeat(40),
+      approvedOriginMainCommit: ORIGIN,
     }],
   });
   assert.equal(stale.status, "main_review_required");
@@ -368,29 +387,48 @@ test("release preflight binds approved main commits to the selected repository",
       expectedPlanRevision: "plan-1",
       approvedRepositories: [{
         projectRoot: path.resolve("D:/other-repo"),
-        approvedLocalMainCommit: "local-main",
-        approvedOriginMainCommit: "origin-main",
+        approvedLocalMainCommit: LOCAL,
+        approvedOriginMainCommit: ORIGIN,
       }],
     }),
     /unrelated repository/u,
   );
 
-  const approved = await service.preflight({
+  const approval = {
     workspaceId: "workspace-1",
     expectedPlanRevision: "plan-1",
     approvedRepositories: [{
       projectRoot,
-      approvedLocalMainCommit: "local-main",
-      approvedOriginMainCommit: "origin-main",
+      approvedLocalMainCommit: LOCAL,
+      approvedOriginMainCommit: ORIGIN,
     }],
-  });
+  };
+  // A later approved preflight cannot retroactively supply missing authority.
+  await assert.rejects(() => service.preflight(approval), /without immutable provenance/u);
+
+  provenance = {
+    schemaVersion: 1, kind: "selected-task-adoption-v1",
+    publishedBaseCommit: LOCAL, adoptedBaseCommit: ORIGIN, adoptions: [adoption],
+  };
+  const approved = await service.preflight(approval);
   assert.equal(approved.status, "ready");
   assert.equal(approved.mainAudits[0].approved, true);
+
+  currentAdoption = { ...adoption, recordHash: "6".repeat(40) };
+  await assert.rejects(() => service.preflight(approval), /selected Task adoption authority is stale/u);
+  currentAdoption = adoption;
+  provenance = { ...provenance, publishedBaseCommit: "7".repeat(40) };
+  await assert.rejects(() => service.preflight(approval), /belongs to published/u);
 });
 
 test("release preflight requires repository-scoped top-level approvals for multi-repository plans", async () => {
   const repoA = path.resolve("D:/repo-a");
   const repoB = path.resolve("D:/repo-b");
+  const commits = {
+    "repo-a": { published: "a".repeat(40), local: "b".repeat(40), origin: "c".repeat(40) },
+    "repo-b": { published: "d".repeat(40), local: "e".repeat(40), origin: "f".repeat(40) },
+  };
+  const ids = (projectRoot) => commits[path.basename(projectRoot)];
   const plan = {
     revision: "plan-1",
     ready: [
@@ -424,12 +462,12 @@ test("release preflight requires repository-scoped top-level approvals for multi
     },
     releaseGitWorkspaces: {
       withAwaitTransition: async (_workspaceId, operation) => operation(),
-      assertPrimaryInvariant: async (projectRoot) => ({ projectRoot, branch: "refs/heads/main", headCommit: `local-${path.basename(projectRoot)}` }),
+      assertPrimaryInvariant: async (projectRoot) => ({ projectRoot, branch: "refs/heads/main", headCommit: ids(projectRoot).local }),
       inspectMainChanges: async (request) => ({
         projectRoot: request.projectRoot,
         publishedRevision: request.publishedRevision,
-        localMain: `local-${path.basename(request.projectRoot)}`,
-        originMain: `origin-${path.basename(request.projectRoot)}`,
+        localMain: ids(request.projectRoot).local,
+        originMain: ids(request.projectRoot).origin,
         commits: [{ commit: `commit-${path.basename(request.projectRoot)}` }],
         approvalRequired: false,
       }),
@@ -443,14 +481,21 @@ test("release preflight requires repository-scoped top-level approvals for multi
         releaseRoot: path.join(projectRoot, "release"),
         checkpointPhase: "prepared",
         planRevision: "plan-1",
-        baseCommit: `origin-${path.basename(projectRoot)}`,
+        baseCommit: ids(projectRoot).origin,
         preReleaseHead: `pre-${path.basename(projectRoot)}`,
         tree: `tree-${path.basename(projectRoot)}`,
         manifestHash: `manifest-${path.basename(projectRoot)}`,
         manifest: {
           workspaceId: "workspace-1",
           planRevision: "plan-1",
-          baseCommit: `origin-${path.basename(projectRoot)}`,
+          baseCommit: ids(projectRoot).origin,
+          baseProvenance: {
+            schemaVersion: 1,
+            kind: "explicit-reviewed-main-v1",
+            publishedBaseCommit: ids(projectRoot).published,
+            approvedLocalMainCommit: ids(projectRoot).local,
+            approvedOriginMainCommit: ids(projectRoot).origin,
+          },
           tasks: plan.ready
             .filter((task) => path.resolve(task.projectRoot) === path.resolve(projectRoot))
             .map((task) => ({
@@ -463,8 +508,8 @@ test("release preflight requires repository-scoped top-level approvals for multi
     },
     readPublicationState: async () => ({
       repositories: [
-        { root: repoA, revision: "published-a" },
-        { root: repoB, revision: "published-b" },
+        { root: repoA, revision: commits["repo-a"].published },
+        { root: repoB, revision: commits["repo-b"].published },
       ],
     }),
     resolveReleaseValidationSource: async () => ({
@@ -483,8 +528,8 @@ test("release preflight requires repository-scoped top-level approvals for multi
     () => service.preflight({
       workspaceId: "workspace-1",
       expectedPlanRevision: "plan-1",
-      approvedLocalMainCommit: "local-repo-a",
-      approvedOriginMainCommit: "origin-repo-a",
+      approvedLocalMainCommit: commits["repo-a"].local,
+      approvedOriginMainCommit: commits["repo-a"].origin,
     }),
     /top-level approved release main commits/u,
   );
@@ -493,13 +538,14 @@ test("release preflight requires repository-scoped top-level approvals for multi
     workspaceId: "workspace-1",
     expectedPlanRevision: "plan-1",
     approvedRepositories: [
-      { projectRoot: repoA, approvedLocalMainCommit: "local-repo-a", approvedOriginMainCommit: "origin-repo-a" },
-      { projectRoot: repoB, approvedLocalMainCommit: "local-repo-b", approvedOriginMainCommit: "origin-repo-b" },
+      { projectRoot: repoA, approvedLocalMainCommit: commits["repo-a"].local, approvedOriginMainCommit: commits["repo-a"].origin },
+      { projectRoot: repoB, approvedLocalMainCommit: commits["repo-b"].local, approvedOriginMainCommit: commits["repo-b"].origin },
     ],
   });
   assert.equal(result.status, "ready");
   assert.equal(result.productionValidation.kind, "external");
-  assert.deepEqual(result.mainAudits.map((audit) => audit.publishedRevision), ["published-a", "published-b"]);
+  assert.deepEqual(result.mainAudits.map((audit) => audit.publishedRevision),
+    [commits["repo-a"].published, commits["repo-b"].published]);
   assert.equal(result.releaseCandidates.length, 2);
 });
 
@@ -547,7 +593,7 @@ test("release preflight rejects stale external production validation evidence", 
         },
       }),
     },
-    readPublicationState: async () => ({ repositories: [{ root: repo, revision: "published" }] }),
+    readPublicationState: async () => ({ repositories: [{ root: repo, revision: "main" }] }),
     resolveReleaseValidationSource: async () => ({ kind: "external-validation-required", repositories: [{ projectRoot: repo }] }),
     refreshTestContour: async () => assert.fail("external validation must not refresh AgentHub contour"),
     readTestContourStatus: async () => assert.fail("external validation must not read AgentHub contour"),
@@ -947,7 +993,7 @@ test("release preflight requires external validation for repositories not covere
       }),
     },
     readPublicationState: async () => ({
-      repositories: [{ root: repoHub, revision: "published-hub" }, { root: repoAndroid, revision: "published-android" }],
+      repositories: [{ root: repoHub, revision: "main" }, { root: repoAndroid, revision: "main" }],
     }),
     resolveReleaseValidationSource: async (prepared) => ({ kind: "workspace-release-pipeline", ...prepared[0], sourceRoot: path.join(prepared[0].worktreeRoot, "AgentHub") }),
     refreshTestContour: async () => ({
@@ -996,7 +1042,9 @@ test("release preflight requires external validation for repositories not covere
 });
 
 test("unrelated dev or contour state does not gate the prepared release", async () => {
-  const { calls, service } = fixture({ contourHead: "stale-head", rejectDev: new Error("unrelated dev work") });
+  const { calls, service } = fixture({
+    contourHead: "stale-head", rejectDev: new Error("unrelated dev work"), publishedRevision: "main-head",
+  });
   service.taskGitWorkspaces.prepareDev = () => assert.fail("must not prepare dev");
   service.refreshTestContour = () => assert.fail("must not refresh contour");
   assert.equal((await service.preflight({ workspaceId: "workspace-1", expectedPlanRevision: "plan-1" })).status, "ready");
@@ -1126,7 +1174,7 @@ test("preflight rejects an approved reviewed-main base without its immutable pro
       approvedLocalMainCommit: "main-head",
       approvedOriginMainCommit: "main-head",
     }),
-    /reviewed-main authority is stale/u,
+    /advances base main-head beyond published published-head without immutable provenance/u,
   );
 });
 
@@ -1289,7 +1337,7 @@ test("Await rebuild rejects a stale plan before publishing its candidate", async
 });
 
 test("release preflight holds the Await lock and rejects a plan changed during readback", async () => {
-  const { locks, projectRoot, service } = fixture();
+  const { locks, projectRoot, service } = fixture({ publishedRevision: "main-head" });
   let reads = 0;
   service.releasePlanner.plan = async () => ({
     revision: reads++ === 0 ? "plan-1" : "plan-2",
@@ -1487,4 +1535,44 @@ test("release preflight reconciliation rejects plan movement during readback", a
     originalRequestId: "releaseManager-bwm12-release-preflight-20260912-v1",
     originalReceipt: originalReceipt(),
   }), /plan revision changed during preflight readback/u);
+});
+
+test("ordinary Await preparation persists selected Task adoption provenance for an adopted base", async () => {
+  const PUBLISHED = "1".repeat(40);
+  const ADOPTED = "2".repeat(40);
+  const RESULT = "3".repeat(40);
+  const { calls, projectRoot, service } = fixture({ publishedRevision: PUBLISHED });
+  const adoption = {
+    taskId: "task-1", resultCommit: RESULT,
+    recordRef: `refs/agent-hub/upstream-adoptions/task-1/repo-key/${RESULT}/${ADOPTED}`,
+    recordHash: "4".repeat(40), adoptedCommit: ADOPTED, acceptedLocalMainCommit: PUBLISHED,
+  };
+  service.taskGitWorkspaces.releaseBaseEvidence = async ({ publishedBaseCommit }) => ({
+    publishedBaseCommit, baseCommit: ADOPTED, adoptions: [adoption],
+  });
+  const envelope = {
+    schemaVersion: 1, kind: "selected-task-adoption-v1",
+    publishedBaseCommit: PUBLISHED, adoptedBaseCommit: ADOPTED, adoptions: [adoption],
+  };
+  await service.prepareAwaitSet({ workspaceId: "workspace-1" });
+  const prepared = calls.find(([name]) => name === "prepare-candidate")[1];
+  assert.equal(prepared.approvedBaseCommit, ADOPTED);
+  assert.deepEqual(prepared.baseProvenance, envelope);
+
+  let validated = null;
+  service.releaseGitWorkspaces.validateCandidate = async (options) => {
+    validated = options;
+    return { status: "validated", tree: "tree", baseCommit: options.approvedBaseCommit };
+  };
+  await service.prepareAwaitSet({ workspaceId: "workspace-1", validateOnly: true });
+  assert.deepEqual(validated.baseProvenance, envelope);
+
+  // A published base carries no envelope and keeps the unchanged ordinary path.
+  service.taskGitWorkspaces.releaseBaseEvidence = async ({ publishedBaseCommit }) => ({
+    publishedBaseCommit, baseCommit: publishedBaseCommit, adoptions: [],
+  });
+  calls.length = 0;
+  await service.prepareAwaitSet({ workspaceId: "workspace-1" });
+  assert.equal("baseProvenance" in calls.find(([name]) => name === "prepare-candidate")[1], false);
+  assert.equal(projectRoot, path.resolve("D:/repo"));
 });

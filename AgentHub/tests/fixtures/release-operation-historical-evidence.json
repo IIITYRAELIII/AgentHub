@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "incidents": [
+    {
+      "id": "028b-freezing",
+      "candidateCommit": "028b43bae2ccb107fc0f4ae9187e4f9995a093ba",
+      "manifestHash": "2c58e97183e3dda70c8c6e59b91d468559e4ac8052b3db70defbbedfdc85b731",
+      "phase": "freezing",
+      "externalEffectsStarted": false,
+      "evidence": "freeze failed before tests, push, deploy or activation"
+    },
+    {
+      "id": "0e7272-frozen-failed",
+      "candidateCommit": "0e7272f3421bb64a32b51b67992e57557ebf12d8",
+      "manifestHash": "2eb57593046e37238627652856d1516b5c1c35ea6d44fd8f9d4972bc9e2cb9e1",
+      "phase": "frozen",
+      "publicationRunId": "6a627741-f545-4e7a-95c5-e19b673e7332",
+      "publicationRunSha256": "6999bbda760c6e754d1339069418566b0f36aef57905f13bf3b8d727c5f203fc",
+      "publicationCheckpointSha256": "e8b15e0583e0fd94d264ef4c62f871c4d19b562c7d5930a53b849e1d65cca53f",
+      "publicationLogSha256": "ef9ec4708685507dea3a0816d607ca3947d5e619baec9baf5579501217b99ba0",
+      "failedStage": "agent-hub-full-tests",
+      "externalEffectsStarted": false,
+      "evidence": "full validation failed before push, deploy or activation"
+    }
+  ]
+}

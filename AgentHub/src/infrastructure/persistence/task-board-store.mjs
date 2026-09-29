@@ -2582,6 +2582,7 @@ export class TaskBoardStore {
           }
           const existingTransfer = JSON.parse(existing.evidence_json ?? "{}")?.squashTransfer;
           const existingCutover = JSON.parse(existing.evidence_json ?? "{}")?.squashCutover;
+          const existingAbsorbed = JSON.parse(existing.evidence_json ?? "{}")?.absorbedInto;
           if (Boolean(existingTransfer) !== Boolean(evidence?.squashTransfer)
               || (existingTransfer && normalizedTaskSquashTransfer(existingTransfer).transferHash
                 !== normalizedTaskSquashTransfer(evidence.squashTransfer).transferHash)) {
@@ -2591,6 +2592,9 @@ export class TaskBoardStore {
               || (existingCutover && normalizedTaskSquashCutover(existingCutover).cutoverHash
                 !== normalizedTaskSquashCutover(evidence.squashCutover).cutoverHash)) {
             throw new Error("Task lifecycle operation id was already used for another squash cutover");
+          }
+          if (JSON.stringify(existingAbsorbed ?? null) !== JSON.stringify(evidence?.absorbedInto ?? null)) {
+            throw new Error("Task lifecycle operation id was already used for another absorption");
           }
           database.exec("COMMIT");
           return { task: this.#taskWithRelease(database, current), replayed: true, phase: existing.phase };
@@ -2717,7 +2721,12 @@ export class TaskBoardStore {
           const targetActive = database.prepare(
             "SELECT operation_id FROM hub_task_lifecycle_transitions WHERE task_id = ? AND phase IN ('pending_git', 'cleanup')",
           ).get(absorbed.taskId);
-          if (targetTask.status === "done" || targetTask.workspace_id !== current.workspace_id
+          const publishedDuplicate = absorbed.mode === "published_duplicate";
+          const validTargetState = publishedDuplicate
+            ? targetTask.status === "done" && targetTask.workflow_status === "done"
+            : targetTask.status !== "done";
+          if (!validTargetState || targetTask.workspace_id !== current.workspace_id
+              || Number(current.row_revision) !== Number(absorbed.sourceTaskRevision ?? current.row_revision)
               || Number(targetTask.row_revision) !== absorbed.taskRevision || targetActive) {
             throw new Error("Surviving Task changed or has a pending operation");
           }
@@ -3525,6 +3534,86 @@ export class TaskBoardStore {
       return result;
       } catch (error) {
         database.exec("ROLLBACK");
+        throw error;
+      }
+    });
+  }
+
+  completeReleaseOperation(workspaceId, {
+    operationId, generation, selectedResults = [], publicationEffects = {},
+  } = {}) {
+    const releaseOperationId = String(operationId ?? "").trim();
+    const generationNumber = Number(generation);
+    if (!releaseOperationId || !Number.isSafeInteger(generationNumber) || generationNumber < 1) {
+      throw new Error("release operation finalization requires exact operation and generation");
+    }
+    if (!Array.isArray(selectedResults) || !selectedResults.length) {
+      throw new Error("release operation finalization requires selected results");
+    }
+    const key = `release_operation_finalized:${releaseOperationId}:${generationNumber}`;
+    return this.#withDatabase((database) => {
+      database.exec("BEGIN IMMEDIATE");
+      try {
+        const existing = database.prepare("SELECT value FROM hub_board_settings WHERE key = ?").get(key)?.value;
+        if (existing) {
+          database.exec("ROLLBACK");
+          return { ...JSON.parse(existing), alreadyFinalized: true };
+        }
+        const timestamp = this.now();
+        const deliveries = [];
+        for (const selected of selectedResults) {
+          const taskId = String(selected?.taskId ?? "").trim();
+          const resultCommit = String(selected?.resultCommit ?? "").trim();
+          const task = database.prepare(`
+            SELECT workspace_id, row_revision, release_revision, workflow_status, status
+            FROM hub_board_tasks WHERE id = ?
+          `).get(taskId);
+          if (!task || String(task.workspace_id ?? "") !== String(workspaceId)) {
+            throw new Error(`release operation Task is missing from its Workspace: ${taskId}`);
+          }
+          const references = database.prepare(`
+            SELECT project_root AS projectRoot, branch, result_commit AS resultCommit
+            FROM hub_task_git_references WHERE task_id = ? ORDER BY project_root
+          `).all(taskId);
+          const currentResult = references.some((reference) => reference.resultCommit === resultCommit);
+          const closesCurrent = currentResult
+            && task.workflow_status === "awaiting_implementation"
+            && task.status !== "done";
+          if (closesCurrent) {
+            const updated = database.prepare(`
+              UPDATE hub_board_tasks SET workflow_status = 'done', status = 'done',
+                completed_at_ms = ?, updated_at_ms = ?
+              WHERE id = ? AND row_revision = ? AND workflow_status = 'awaiting_implementation'
+            `).run(timestamp, timestamp, taskId, Number(task.row_revision));
+            if (Number(updated.changes) !== 1) throw new Error(`release operation Task CAS changed: ${taskId}`);
+          }
+          deliveries.push({
+            taskId,
+            resultCommit,
+            delivered: true,
+            closedCurrentTask: closesCurrent,
+            currentWorkflowStatus: closesCurrent ? "done" : task.workflow_status,
+            currentResult,
+            taskRevision: Number(task.row_revision),
+            releaseRevision: Number(task.release_revision),
+          });
+        }
+        const result = {
+          schemaVersion: 1,
+          workspaceId: String(workspaceId),
+          operationId: releaseOperationId,
+          generation: generationNumber,
+          deliveries,
+          publicationEffects: structuredClone(publicationEffects),
+          completedAtMs: timestamp,
+        };
+        database.prepare(`
+          INSERT INTO hub_board_settings (key, value, updated_at_ms) VALUES (?, ?, ?)
+        `).run(key, JSON.stringify(result), timestamp);
+        database.exec("COMMIT");
+        return result;
+      } catch (error) {
+        try { database.exec("ROLLBACK"); } catch {}
         throw error;
       }
     });

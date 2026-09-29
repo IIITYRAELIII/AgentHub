@@ -1,7 +1,10 @@
 # ADR-0055 — Await follows successful PreRelease integration
 
 Date: 2026-09-16
-Status: Accepted
+Status: Accepted and operative. The 2026-09-17 acceptance-only Await identity
+departed from this decision in code and contract text; HUB-251 (2026-09-21)
+restored it while keeping that change's lease ordering, exact-result validation
+and unknown-outcome handling.
 Contracts: REL-001, MCP-001, UI-001
 
 ## Decision

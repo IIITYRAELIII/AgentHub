@@ -17,6 +17,34 @@ function plain(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
+test("board mutation response preserves chat state and invalidates only changed delta baselines", async () => {
+  const api = await transport();
+  const previous = {
+    apiVersion: 4, version: "old",
+    tasks: [{ threadId: "live", running: true }],
+    settings: { model: "gpt-6-sol" },
+    messageReceipts: [{ id: "accepted" }],
+    boardTasks: [{ id: "task", bucket: "backlog" }],
+    collectionVersions: { conversations: "c1", boardTasks: "b1", workspaces: "w1", messageReceipts: "r1" },
+  };
+  const next = api.materialize(previous, {
+    view: "task-board",
+    boardTasks: [{ id: "task", bucket: "notes" }],
+    workspaces: [{ id: "workspace" }],
+    boardLayout: { columnOrder: ["notes"] },
+  });
+  assert.equal(next.tasks, previous.tasks);
+  assert.equal(next.settings, previous.settings);
+  assert.equal(next.messageReceipts, previous.messageReceipts);
+  assert.equal(next.boardTasks[0].bucket, "notes");
+  assert.equal(previous.boardTasks[0].bucket, "backlog");
+  assert.equal(next.version, "");
+  assert.deepEqual(plain(next.collectionVersions), {
+    conversations: "c1", boardTasks: "", workspaces: "", messageReceipts: "r1",
+  });
+  assert.throws(() => api.materialize(null, { view: "task-board" }), /baseline/);
+});
+
 test("snapshot transport materializes bootstrap resets and conversation naming", async () => {
   const api = await transport();
   const snapshot = api.materialize(null, {

@@ -294,7 +294,9 @@ test("task title synchronization selects and writes in the worker without loadin
     });
     assert.equal(projections, 1);
     assert.equal(await journal.currentRevision(), revision);
-    assert.deepEqual(await journal.projectionSource(), { revision: revision - 1, projectRoots: [root] });
+    const projectedSource = await journal.projectionSource();
+    assert.equal(projectedSource.revision, revision - 1);
+    assert.deepEqual(projectedSource.projectRoots, [root]);
     assert.deepEqual(await store.synchronizeTaskTitlesAndProject({ titles: [] }), {
       updated: 0, projected: false, reason: "unchanged",
     });

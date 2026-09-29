@@ -249,6 +249,25 @@ function fixture(overrides = {}) {
   return { desktopTaskHistory, state, calls };
 }
 
+test("explicit trace page uses the exact local binding without reading or merging conversation history", async () => {
+  const request = { turnId: "turn-old", offset: 50, sourceHash: "prefix-hash" };
+  const page = { turnId: request.turnId, groups: [], nextOffset: null };
+  const { desktopTaskHistory, calls } = fixture({
+    refresh: async (binding, options) => {
+      assert.equal(binding.threadId, "thread-1");
+      assert.deepEqual(options, { tracePage: request });
+      return page;
+    },
+  });
+  assert.deepEqual(await desktopTaskHistory({ provider: "codex", threadId: "thread-1", tracePage: request }),
+    { provider: "codex", threadId: "thread-1", tracePage: page });
+  assert.equal(calls.refreshes, 1);
+  assert.equal(calls.binding, null);
+  assert.equal(calls.merged, null);
+  await assert.rejects(desktopTaskHistory({ provider: "codex", threadId: "foreign", tracePage: request }), /каталоге/u);
+  assert.equal(calls.refreshes, 1);
+});
+
 test("durable history merges equivalent synthetic final-answer copies", () => {
   const history = mergeDurableTaskHistory([{
     id: "turn-1",

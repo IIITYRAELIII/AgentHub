@@ -345,6 +345,28 @@ async function streamTabsApi() {
   return window.AgentHubStreamTabs;
 }
 
+test("Stream model label follows saved settings while idle and exact turn while active", async () => {
+  const { streamModelLabel } = await streamTabsApi();
+  const task = { provider: "codex", threadId: "old-thread", model: "GPT-5.6 Sol", running: false };
+  const stream = { settings: { provider: "codex", model: "gpt-6-sol" } };
+  const settings = { modelOptionsByProvider: { codex: [
+    { value: "gpt-6-sol", label: "GPT-6 Sol" },
+    { value: "gpt-6-luna", label: "GPT-6 Luna" },
+  ] } };
+  assert.equal(streamModelLabel(task, stream, settings), "GPT-6 Sol");
+  stream.settings.model = "gpt-6-luna";
+  assert.equal(streamModelLabel(task, stream, settings), "GPT-6 Luna");
+  task.running = true;
+  task.run = { turnId: "turn", operationKind: "user-turn", projectionState: "active", model: "GPT-5.6 Sol" };
+  assert.equal(streamModelLabel(task, stream, settings), "GPT-5.6 Sol");
+  task.latestFinal = { provider: "codex", threadId: "old-thread", turnId: "turn" };
+  assert.equal(streamModelLabel(task, stream, settings), "GPT-6 Luna");
+  task.running = false;
+  stream.settings.provider = "claude";
+  assert.equal(streamModelLabel(task, stream, settings), "GPT-5.6 Sol");
+  assert.equal(streamModelLabel(task, null, settings), "GPT-5.6 Sol");
+});
+
 const stream = (id, ordinal, lastActivity) => ({
   id,
   ordinal,
@@ -1167,7 +1189,16 @@ test("Astra uses its compact label only in Stream pills and the active Stream he
         streamOrdinal: 5,
         modelLabel: "Custom Astra Preview",
         selected: false,
-      }]);
+      }, ...["gpt-6-sol", "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-luna"].map((modelLabel, index) => ({
+        ...astraTask,
+        id: `task-versioned-${index}`,
+        threadId: `thread-versioned-${index}`,
+        streamId: `stream-versioned-${index}`,
+        streamName: `S${index + 6}`,
+        streamOrdinal: index + 6,
+        modelLabel,
+        selected: false,
+      }))]);
       return {
         header: document.querySelector("[data-stream-header-model]")?.textContent,
         headerTitle: document.querySelector("[data-stream-header-model]")?.title,
@@ -1183,6 +1214,8 @@ test("Astra uses its compact label only in Stream pills and the active Stream he
         customPillTitle: document.querySelector(
           '[data-activity-task-id="task-custom-astra"] .task-model',
         )?.title,
+        versionedPills: [...document.querySelectorAll('[data-activity-task-id^="task-versioned-"] .task-model')]
+          .map((element) => ({ label: element.textContent, title: element.title })),
       };
     });
 
@@ -1192,6 +1225,12 @@ test("Astra uses its compact label only in Stream pills and the active Stream he
     assert.equal(result.astraPillTitle, "GPT-6 Astra");
     assert.equal(result.customPill, "Custom Astra Preview");
     assert.equal(result.customPillTitle, "Custom Astra Preview");
+    assert.deepEqual(result.versionedPills, [
+      { label: "6 Sol", title: "gpt-6-sol" },
+      { label: "6 Luna", title: "gpt-6-luna" },
+      { label: "5.6 Sol", title: "gpt-5.6-sol" },
+      { label: "5.6 Luna", title: "gpt-5.6-luna" },
+    ]);
   } finally {
     await browser.close();
   }
@@ -3133,6 +3172,144 @@ test("Stream card opens on 20 repeated native dblclicks per viewport without con
       assert.deepEqual(problems, []);
       await page.close();
     }
+  } finally {
+    await browser.close();
+  }
+});
+
+test("themed selects remain visible and interactive across modal and inline geometry", async () => {
+  const { chromium } = await import("playwright");
+  const browser = await launchDomBrowser(chromium);
+  const page = await browser.newPage({ viewport: { width: 1166, height: 758 } });
+  const menuGeometry = async (label) => page.evaluate((accessibleName) => {
+    const button = [...document.querySelectorAll(".themed-select-button")]
+      .find((node) => node.getAttribute("aria-label") === accessibleName);
+    const menu = button ? document.getElementById(button.getAttribute("aria-controls")) : null;
+    const menuRect = menu?.getBoundingClientRect();
+    const buttonRect = button?.getBoundingClientRect();
+    const x = Math.max(0, Math.min(innerWidth - 1, (menuRect?.left ?? 0) + 8));
+    const y = Math.max(0, Math.min(innerHeight - 1, (menuRect?.top ?? 0) + 8));
+    const hit = document.elementFromPoint(x, y);
+    return {
+      button: buttonRect && {
+        top: buttonRect.top, right: buttonRect.right, bottom: buttonRect.bottom, left: buttonRect.left,
+      },
+      menu: menuRect && {
+        top: menuRect.top, right: menuRect.right, bottom: menuRect.bottom, left: menuRect.left,
+        width: menuRect.width, height: menuRect.height,
+      },
+      expanded: button?.getAttribute("aria-expanded"),
+      parent: menu?.parentElement?.tagName ?? "",
+      popoverOpen: menu?.matches?.(":popover-open") ?? false,
+      hitInside: menu?.contains(hit) ?? false,
+      insideViewport: Boolean(menuRect
+        && menuRect.left >= 0 && menuRect.top >= 0
+        && menuRect.right <= innerWidth && menuRect.bottom <= innerHeight),
+    };
+  }, label);
+  const assertOpenMenu = async (label, parent = "DIALOG") => {
+    await page.waitForFunction((accessibleName) => {
+      const button = [...document.querySelectorAll(".themed-select-button")]
+        .find((node) => node.getAttribute("aria-label") === accessibleName);
+      const menu = button ? document.getElementById(button.getAttribute("aria-controls")) : null;
+      return button?.getAttribute("aria-expanded") === "true" && menu?.matches?.(":popover-open");
+    }, label);
+    const geometry = await menuGeometry(label);
+    assert.equal(geometry.parent, parent, `${label}: ${JSON.stringify(geometry)}`);
+    assert.equal(geometry.popoverOpen, true, `${label}: ${JSON.stringify(geometry)}`);
+    assert.equal(geometry.hitInside, true, `${label}: ${JSON.stringify(geometry)}`);
+    assert.equal(geometry.insideViewport, true, `${label}: ${JSON.stringify(geometry)}`);
+    return geometry;
+  };
+  try {
+    await openStreamTabsDomFixture(page);
+    await page.addStyleTag({
+      path: fileURLToPath(new URL("../../assets/web-app/themes/malachor-v/theme.css", import.meta.url)),
+    });
+    await page.evaluate(() => {
+      window.AgentHub.setOptions({
+        provider: ["codex", "claude"],
+        model: ["fake-codex", "sonnet"],
+        modelOptionsByProvider: { claude: ["fake-codex", "sonnet"] },
+        reasoning: ["Low", "Medium", "High"],
+        reasoningOptionsByProvider: { claude: ["Low", "Medium", "High"] },
+        mode: ["Work", "Plan"],
+      });
+      window.AgentHub.setSelection({
+        provider: "claude", model: "fake-codex", reasoning: "Medium", mode: "Work",
+      });
+      window.AgentHub.setWorkspaces([{ id: "workspace", name: "Agent HUB", settings: {} }]);
+      window.AgentHub.setTasks([{
+        id: "task", threadId: "thread", workspaceId: "workspace", workspaceName: "Agent HUB",
+        streamId: "stream", streamName: "Stream 21", streamOrdinal: 21, provider: "claude",
+        agentLabel: "Claude", status: "ready", statusLabel: "Готов",
+        lastActivity: new Date().toISOString(), running: false, unread: false, selected: true,
+        streamSettings: { model: "fake-codex", reasoning: "Medium", mode: "Work" },
+      }]);
+    });
+    await page.locator("[data-dialog-settings-toggle]").click();
+    await page.waitForFunction(() => document.querySelector("[data-dialog-settings]")?.open === true);
+
+    const cases = [
+      ["Модель", "sonnet", "fake-codex"],
+      ["Reasoning", "High", "Low"],
+      ["Режим", "Plan", "Work"],
+    ];
+    for (const [theme, targetIndex] of [["orbit", 1], ["malachor-v", 2]]) {
+      await page.evaluate((value) => { document.documentElement.dataset.theme = value; }, theme);
+      for (const [label, firstValue, secondValue] of cases) {
+        const target = targetIndex === 1 ? firstValue : secondValue;
+        const button = page.getByRole("button", { name: label, exact: true });
+        await button.click();
+        await assertOpenMenu(label);
+        await page.locator(`.themed-select-menu:popover-open .themed-select-option[data-value="${target}"]`).click();
+        assert.equal(await page.locator(`select[aria-label="${label}"]`).inputValue(), target, `${theme}:${label}`);
+
+        await button.press("ArrowDown");
+        await page.waitForFunction(() => document.activeElement?.matches?.(".themed-select-option"));
+        await page.keyboard.press("Escape");
+        assert.equal(await page.locator("[data-dialog-settings]").evaluate((node) => node.open), true, `${theme}:${label}`);
+        assert.equal(await button.getAttribute("aria-expanded"), "false", `${theme}:${label}`);
+        assert.equal(await button.evaluate((node) => document.activeElement === node), true, `${theme}:${label}`);
+      }
+    }
+
+    await page.setViewportSize({ width: 900, height: 430 });
+    const reasoning = page.getByRole("button", { name: "Reasoning", exact: true });
+    await reasoning.scrollIntoViewIfNeeded();
+    await reasoning.click();
+    const compact = await assertOpenMenu("Reasoning");
+    assert.ok(compact.menu.bottom <= compact.button.top || compact.menu.top >= compact.button.bottom);
+    await page.locator(".dialog-settings-body").evaluate((node) => { node.scrollTop += 24; });
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    await assertOpenMenu("Reasoning");
+    await page.setViewportSize({ width: 980, height: 520 });
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    await assertOpenMenu("Reasoning");
+    await page.keyboard.press("Escape");
+    await page.keyboard.press("Escape");
+    assert.equal(await page.locator("[data-dialog-settings]").evaluate((node) => node.open), false);
+
+    await page.evaluate(() => {
+      const host = document.createElement("div");
+      host.style.cssText = "position:fixed;right:8px;bottom:4px;width:180px;z-index:5";
+      const select = document.createElement("select");
+      select.setAttribute("aria-label", "Inline select");
+      for (const value of ["First", "Second"]) {
+        const option = document.createElement("option");
+        option.value = value;
+        option.textContent = value;
+        select.append(option);
+      }
+      host.append(select);
+      document.body.append(host);
+    });
+    const inline = page.getByRole("button", { name: "Inline select", exact: true });
+    await inline.click();
+    const inlineGeometry = await assertOpenMenu("Inline select", "BODY");
+    assert.ok(inlineGeometry.menu.bottom <= inlineGeometry.button.top, JSON.stringify(inlineGeometry));
+    await page.locator('.themed-select-menu:popover-open .themed-select-option[data-value="Second"]').click();
+    assert.equal(await page.locator('select[aria-label="Inline select"]').inputValue(), "Second");
   } finally {
     await browser.close();
   }

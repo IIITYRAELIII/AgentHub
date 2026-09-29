@@ -6,13 +6,16 @@
 
   function create({ request }) {
     let limits;
-    async function capabilities() {
+    async function capabilities({ signal } = {}) {
+      signal?.throwIfAborted();
       if (limits) return limits;
-      const response = await request("/api/attachment-upload", { method: "GET" });
+      const response = await request("/api/attachment-upload", { method: "GET", signal });
+      signal?.throwIfAborted();
       if ([404, 405, 501].includes(response.status)) {
         return (limits = { protocol: "legacy", maxBytes: LEGACY_BYTES, maxTotalBytes: LEGACY_BYTES });
       }
       const value = await response.json();
+      signal?.throwIfAborted();
       if (!response.ok || value.protocol !== PROTOCOL || value.chunkBytes !== CHUNK_BYTES
         || !Number.isSafeInteger(value.maxBytes) || value.maxBytes < 1
         || !Number.isSafeInteger(value.maxTotalBytes) || value.maxTotalBytes < 1) {
@@ -34,8 +37,28 @@
       return value;
     }
 
+    async function validateBatch(attachments, { signal } = {}) {
+      if (!attachments?.length) return;
+      const policy = await capabilities({ signal });
+      let total = 0;
+      for (const attachment of attachments) {
+        const size = Number(attachment?.size);
+        if (!Number.isSafeInteger(size) || size <= 0 || size > policy.maxBytes) {
+          const error = new Error("Файл превышает лимит текущего Agent Hub или имеет неверный размер");
+          error.attachmentUploadTerminal = true;
+          throw error;
+        }
+        total += size;
+      }
+      if (!Number.isSafeInteger(total) || total > policy.maxTotalBytes) {
+        const error = new Error(`Общий лимит вложений текущего Agent Hub: ${Math.floor(policy.maxTotalBytes / 1024 / 1024)} МБ.`);
+        error.attachmentUploadTerminal = true;
+        throw error;
+      }
+    }
+
     async function upload(attachment, { signal, progress = () => {} } = {}) {
-      const policy = await capabilities();
+      const policy = await capabilities({ signal });
       const file = globalThis.AgentHubComposerFiles.resolve(attachment);
       if (!file || file.size > policy.maxBytes) {
         const error = new Error(!file ? "Исходный файл недоступен. Выбери его снова." : "Файл превышает лимит текущего Agent Hub");
@@ -91,7 +114,7 @@
       if (!attachment?.uploadId || limits?.protocol !== PROTOCOL) return;
       await json(`/api/attachment-upload?id=${encodeURIComponent(attachment.uploadId)}`, { method: "DELETE" });
     }
-    return Object.freeze({ capabilities, upload, cancel });
+    return Object.freeze({ capabilities, validateBatch, upload, cancel });
   }
   globalThis.AgentHubAttachmentUpload = Object.freeze({ create });
 })();

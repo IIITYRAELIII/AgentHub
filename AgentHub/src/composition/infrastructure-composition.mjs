@@ -16,7 +16,11 @@ import { createWorkLogUsageStore } from "../application/work-log-usage-store.mjs
 import { TaskBoardService } from "../application/task-board-service.mjs";
 import { TaskReleasePlanService } from "../application/task-release-plan-service.mjs";
 import { WorkspaceReleasePreflightService } from "../application/workspace-release-preflight-service.mjs";
-import { WorkspaceReleaseService } from "../application/workspace-release-service.mjs";
+import { ReleaseOperationService } from "../application/release-operation-service.mjs";
+import { ReleaseOperationCommandService } from "../application/release-operation-command-service.mjs";
+import { ReleaseOperationFinalization } from "../application/release-operation-finalization.mjs";
+import { importLegacyReleaseOperations } from "../infrastructure/persistence/release-operation-legacy-import.mjs";
+import { WorkspaceReleaseOperationAdapter } from "../application/workspace-release-operation-adapter.mjs";
 import { StreamHandoffService } from "../application/stream-handoff-service.mjs";
 import { AGENT_HUB_VERSION } from "../infrastructure/filesystem/agent-hub-package.mjs";
 import { samePath } from "../infrastructure/filesystem/config.mjs";
@@ -28,6 +32,7 @@ import { UsdRubRateStore } from "../infrastructure/network/exchange-rate.mjs";
 import { migrateMessageBindings } from "../infrastructure/persistence/message-bindings.mjs";
 import { RateLimitHistoryStore } from "../infrastructure/persistence/rate-limit-history.mjs";
 import { ProviderTurnTelemetryStore } from "../infrastructure/persistence/provider-turn-telemetry-store.mjs";
+import { ReleaseOperationStore } from "../infrastructure/persistence/release-operation-store.mjs";
 import { PreTurnInstructionStore } from "../infrastructure/persistence/pre-turn-instruction-store.mjs";
 import { installRotatingConsole } from "../infrastructure/persistence/rotating-log.mjs";
 import { RuntimeStateStore } from "../infrastructure/persistence/runtime-state-store.mjs";
@@ -41,11 +46,11 @@ import { WorkLogUsageSyncWorkerStore } from "../runtime/work-log-usage-sync-work
 import { UsageSyncIdentityStore } from "../infrastructure/persistence/usage-sync-identity-store.mjs";
 import { UsageSyncRemoteConfigStore } from "../infrastructure/persistence/usage-sync-remote-config-store.mjs";
 import { defaultUsageSyncServerUrl } from "../domain/default-usage-sync-server.mjs";
-import { verifyWorkspaceReleasePublication } from "../infrastructure/persistence/release-publication-verifier.mjs";
 import { SingleInstanceGuard } from "../infrastructure/process/instance-lock.mjs";
 import { captureProcess } from "../infrastructure/process/process-capture.mjs";
 import { RuntimeCommandServer } from "../infrastructure/process/runtime-command.mjs";
 import { createRepositoryProductionValidationAdapter } from "../infrastructure/process/repository-production-validation.mjs";
+import { ReleaseOperationPublication } from "../infrastructure/process/release-operation-publication.mjs";
 import {
   copyWindowsFileObject,
   revealWindowsFile,
@@ -103,6 +108,41 @@ function testContourRuntimeIdentity(environment = process.env) {
     throw new Error("Test Contour runtime identity environment is incomplete");
   }
   return identity;
+}
+
+export function createReleaseCorrectionRequester({ taskBoard, taskLifecycle } = {}) {
+  if (typeof taskBoard?.task !== "function") throw new TypeError("taskBoard.task is required");
+  if (typeof taskLifecycle?.updateWorkflowStatus !== "function") {
+    throw new TypeError("taskLifecycle.updateWorkflowStatus is required");
+  }
+  return async ({ operation, error }) => {
+    const taskId = String(error?.taskId ?? "").trim();
+    if (!taskId || !operation.authorization.taskIds.includes(taskId)) {
+      throw new Error("release correction does not identify an authorized selected Task");
+    }
+    const operationId = `release-${operation.operationId}-correction-${taskId}-${String(error.resultCommit).slice(0, 12)}`;
+    const task = taskBoard.task(taskId);
+    if (!task) throw new Error("selected correction Task no longer exists");
+    if (task.workflowStatus === "in_progress") return { operationId, task };
+    if (task.workflowStatus !== "awaiting_implementation") {
+      throw new Error("selected correction Task is no longer awaiting its accepted result");
+    }
+    const result = await taskLifecycle.updateWorkflowStatus({
+      taskId,
+      status: "in_progress",
+      operationId,
+      expectedRevision: task.revision,
+      expectedWorkflowStatus: task.workflowStatus,
+      operationEvidence: {
+        releaseCorrection: {
+          releaseOperationId: operation.operationId,
+          priorResultCommit: error.priorResultCommit,
+          rejectedResultCommit: error.resultCommit,
+        },
+      },
+    });
+    return { operationId, task: result.task };
+  };
 }
 
 export async function recoverTaskBoardStartup(taskBoard) {
@@ -426,14 +466,53 @@ export async function createHubInfrastructure({
     taskGitWorkspaces,
     releasePreflight: workspaceReleasePreflight,
   });
-  const workspaceReleaseService = new WorkspaceReleaseService({
-    store: taskBoardStore,
-    releasePlanner: taskReleasePlanner,
+  const workspaceReleaseService = {
+    completeRelease() {
+      const error = new Error("legacy release completion was removed; use the durable ReleaseOperation owner");
+      error.code = "RELEASE_OPERATION_REQUIRED";
+      throw error;
+    },
+  };
+  const releaseOperationStore = new ReleaseOperationStore({ dataDir: config.dataDir });
+  await startupStep("release-operation-legacy-import", () => importLegacyReleaseOperations({
+    store: releaseOperationStore,
+    dataDir: config.dataDir,
+    runnerVersion: AGENT_HUB_VERSION,
+  }));
+  const releaseOperationPublication = new ReleaseOperationPublication({
+    dataDir: config.dataDir,
+    runtimeRoot: runtimeCommandRoot,
+  });
+  const releaseOperationFinalization = new ReleaseOperationFinalization({
+    taskBoard,
     releaseGitWorkspaces,
     taskGitWorkspaces,
-    releasePreflight: workspaceReleasePreflight,
-    verifyPublication: verifyWorkspaceReleasePublication,
   });
+  const releaseOperationAdapter = new WorkspaceReleaseOperationAdapter({
+    releasePreflight: workspaceReleasePreflight,
+    publication: releaseOperationPublication,
+    finalization: releaseOperationFinalization,
+  });
+  const releaseOperations = new ReleaseOperationService({
+    store: releaseOperationStore,
+    compose: (input) => releaseOperationAdapter.compose(input),
+    validate: (input) => releaseOperationAdapter.validate(input),
+    publishTarget: (input) => releaseOperationAdapter.publishTarget(input),
+    readTarget: (input) => releaseOperationAdapter.readTarget(input),
+    finalize: (input) => releaseOperationAdapter.finalize(input),
+    reservePublication: (input) => releaseOperationAdapter.reservePublication(input),
+    requestCorrection: createReleaseCorrectionRequester({ taskBoard, taskLifecycle }),
+    cleanupGeneration: (input) => releaseOperationAdapter.cleanupGeneration(input),
+    runnerVersion: AGENT_HUB_VERSION,
+  });
+  const releaseOperationCommands = new ReleaseOperationCommandService({
+    releaseOperations,
+    workspaceCatalog: workspaceCatalogStore,
+    taskBoard,
+  });
+  taskLifecycle.setReleaseOperationWake((taskId) => releaseOperations.wakeForTask(taskId));
+  taskLifecycle.setReleaseOperationPrepare((taskId) => releaseOperations.prepareForTaskAcceptance(taskId));
+  releaseOperations.recover();
   const hubMcpService = new HubMcpService({
     workspaceCatalog: workspaceCatalogStore,
     taskBoard,
@@ -444,6 +523,7 @@ export async function createHubInfrastructure({
     releasePlanner: taskReleasePlanner,
     releasePreflight: workspaceReleasePreflight,
     releaseCompleter: workspaceReleaseService,
+    releaseOperations,
     taskGitWorkspaces,
     releaseGitWorkspaces,
   });
@@ -585,6 +665,8 @@ export async function createHubInfrastructure({
     taskReleasePlanner,
     workspaceReleasePreflight,
     workspaceReleaseService,
+    releaseOperations,
+    releaseOperationCommands,
     streamHandoff,
     preTurnInstructions,
     taskBoard,

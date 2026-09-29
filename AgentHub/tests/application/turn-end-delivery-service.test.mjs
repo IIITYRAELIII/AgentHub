@@ -52,6 +52,79 @@ function exactProjection(completion) {
   };
 }
 
+for (const blockedPort of ["projectTurn", "ensureTurnUsageFact", "flushTurnProjections"]) {
+  test(`durable final becomes visible before stalled ${blockedPort}, without premature ACK`, async () => {
+    const completion = {
+      provider: "codex", threadId: "thread-visible", turnId: "turn-visible",
+      status: "completed", finalAnswer: "Я здесь\n\nЧто случилось?",
+      completedAt: "2026-09-28T13:49:31.950Z",
+    };
+    const item = { ...completion, terminalRevision: 1, state: "pending",
+      payload: { completion, history: { ...completion } } };
+    let release;
+    let entered;
+    const atBoundary = new Promise(resolve => { entered = resolve; });
+    const gate = new Promise(resolve => { release = resolve; });
+    let remembered = null;
+    let historyAnswer = null;
+    let indexed = false;
+    let acknowledged = false;
+    let projectFailure = false;
+    const block = async () => { entered(); await gate; };
+    const service = new TurnEndDeliveryService({
+      notifications: {}, taskRuns: {},
+      terminalCommits: {
+        claim: async () => item, get: async () => ({ terminalRevision: 1 }),
+        acknowledge: async () => { acknowledged = true; return true; },
+        retry: async () => { projectFailure = true; },
+      },
+      persistHistory: async (_history, { answer }) => { historyAnswer = answer; },
+      projectTurn: async () => { if (blockedPort === "projectTurn") await block(); return {}; },
+      ensureTurnUsageFact: async () => { if (blockedPort === "ensureTurnUsageFact") await block(); },
+      flushTurnProjections: async () => {
+        if (blockedPort === "flushTurnProjections") await block();
+        indexed = true;
+        return { projected: true };
+      },
+      readTurnProjection: async () => indexed ? exactProjection(completion) : null,
+      rememberLastMessage: (identity, body, revision) => { remembered = { ...identity, body, ...revision }; },
+      rememberSeenTurn() {}, saveState: async () => {},
+    });
+    const pending = service.deliverOutbox(item, { projectionOnly: true });
+    try {
+      await atBoundary;
+      assert.equal(historyAnswer, completion.finalAnswer);
+      assert.equal(remembered?.body, completion.finalAnswer);
+      assert.equal(remembered?.turnId, completion.turnId);
+      assert.equal(remembered?.terminalRevision, 1);
+      assert.equal(acknowledged, false);
+    } finally { release(); await pending; }
+    assert.equal(acknowledged, true);
+    assert.equal(projectFailure, false);
+  });
+}
+
+for (const scenario of ["failed-history", "superseded"]) {
+  test(`early last-message publication excludes ${scenario}`, async () => {
+    const completion = { provider: "codex", threadId: "thread", turnId: "turn", finalAnswer: "old" };
+    const item = { ...completion, terminalRevision: 1, state: "pending", payload: { completion, history: {} } };
+    let remembered = 0;
+    let acknowledged = 0;
+    const service = new TurnEndDeliveryService({
+      notifications: {}, taskRuns: {},
+      terminalCommits: { claim: async () => item, get: async () => ({ terminalRevision: 2 }),
+        acknowledge: async () => { acknowledged++; }, retry: async () => {} },
+      persistHistory: async () => scenario === "failed-history" ? { failed: true, error: "disk failure" } : {},
+      projectTurn: async () => { throw new Error("must not project a superseded final"); },
+      rememberLastMessage: () => { remembered++; }, rememberSeenTurn() {}, saveState: async () => {},
+    });
+    if (scenario === "failed-history") await assert.rejects(service.deliverOutbox(item), /disk failure/u);
+    else assert.equal(await service.deliverOutbox(item), false);
+    assert.equal(remembered, 0);
+    assert.equal(acknowledged, 0);
+  });
+}
+
 test("fallbackTurnEndMessage uses canonical terminal wording", () => {
   assert.equal(fallbackTurnEndMessage("completed"), "Ход завершён.");
   assert.equal(fallbackTurnEndMessage("failed"), "Ход завершился с ошибкой.");

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -368,6 +368,139 @@ test("Codex test providers are copied only into the marker-owned Test Contour ro
       rm(root, { recursive: true, force: true }),
       rm(sourceRoot, { recursive: true, force: true }),
     ]);
+  }
+});
+
+const AGENT_HUB_SOURCE_ROOT = path.resolve(import.meta.dirname, "..", "..");
+const REAL_CODEX_STUB = `
+import { appendFileSync } from "node:fs";
+import { createInterface } from "node:readline";
+appendFileSync(process.env.STUB_PID_LOG, process.pid + "\\n");
+createInterface({ input: process.stdin }).on("line", (line) => {
+  const message = JSON.parse(line);
+  if (message.id !== undefined) process.stdout.write(JSON.stringify({ id: message.id, result: { backend: "real-stub" } }) + "\\n");
+});
+`;
+
+async function installedFiles(directory, prefix = "") {
+  const entries = await readdir(directory, { withFileTypes: true });
+  const nested = await Promise.all(entries.map((entry) => (entry.isDirectory()
+    ? installedFiles(path.join(directory, entry.name), path.join(prefix, entry.name))
+    : [path.join(prefix, entry.name)])));
+  return nested.flat().sort();
+}
+
+// Runs the installed multiplexer exactly as the contour config does, with the
+// installed Fake Codex and a stub only in place of the real Codex executable.
+async function runInstalledProviders(root) {
+  const paths = testContourPaths(root);
+  const stub = path.join(root, "temp", "real-codex-stub.mjs");
+  const pidLog = path.join(root, "temp", "real-codex-stub.pids");
+  await mkdir(path.dirname(stub), { recursive: true });
+  await mkdir(paths.dataDir, { recursive: true });
+  await writeFile(stub, REAL_CODEX_STUB, "utf8");
+  await writeFile(pidLog, "", "utf8");
+  const environment = { ...process.env, AGENT_HUB_TEST_CONTOUR: "1", AGENT_HUB_RUNTIME_ROOT: root, STUB_PID_LOG: pidLog };
+  const multiplexer = spawn(process.execPath, [
+    paths.codexMultiplexerExecutable,
+    "--real-executable", process.execPath,
+    "--fake-executable", paths.fakeCodexExecutable,
+    "--fake-state", paths.fakeCodexStateFile,
+    "--routing-state", paths.codexMultiplexerStateFile,
+    stub,
+  ], { cwd: root, env: environment, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
+  let stderr = "";
+  let stdout = "";
+  multiplexer.stderr.setEncoding("utf8").on("data", (chunk) => { stderr += chunk; });
+  multiplexer.stdout.setEncoding("utf8").on("data", (chunk) => { stdout += chunk; });
+  const closed = new Promise((resolve) => multiplexer.once("close", (code) => resolve(code)));
+  multiplexer.stdin.write(`${JSON.stringify({ id: 1, method: "initialize", params: { clientInfo: { name: "contour-test", version: "1" } } })}\n`);
+  const deadline = Date.now() + 20_000;
+  while (!stdout.includes("\"id\":1") && multiplexer.exitCode === null && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  const initialized = stdout.split(/\r?\n/u).filter(Boolean).map((line) => JSON.parse(line)).find((message) => message.id === 1);
+  multiplexer.stdin.end();
+  const exitCode = await closed;
+  const stubPids = (await readFile(pidLog, "utf8")).trim().split(/\r?\n/u).filter(Boolean).map(Number);
+  const claude = await promisify(execFile)(process.execPath, [paths.fakeClaudeExecutable, "--state", paths.fakeClaudeStateFile, "auth", "status", "--json"], {
+    cwd: root,
+    env: environment,
+    windowsHide: true,
+  }).then(({ stdout: output }) => ({ code: 0, output }), (error) => ({ code: error.code, output: String(error.stderr ?? error.message) }));
+  return { initialized, exitCode, stderr, stubPids, claude };
+}
+
+test("installed Test Contour providers run with their full module closure outside the source tree", async () => {
+  const sourceRoot = await mkdtemp(path.join(os.tmpdir(), "agent-hub-test-contour-candidate-"));
+  const freshRoot = await mkdtemp(path.join(os.tmpdir(), "agent-hub-test-contour-providers-"));
+  const upgradedRoot = await mkdtemp(path.join(os.tmpdir(), "agent-hub-test-contour-providers-old-"));
+  try {
+    // A candidate source snapshot that is deleted before the installed copies run.
+    await cp(path.join(AGENT_HUB_SOURCE_ROOT, "e2e"), path.join(sourceRoot, "e2e"), { recursive: true });
+    await cp(path.join(AGENT_HUB_SOURCE_ROOT, "src"), path.join(sourceRoot, "src"), { recursive: true });
+    const expected = [
+      path.join("e2e", "fake-codex-app-server.mjs"),
+      path.join("e2e", "test-contour-claude-cli.mjs"),
+      path.join("e2e", "test-contour-codex-multiplexer.mjs"),
+      path.join("src", "infrastructure", "process", "process-liveness.mjs"),
+      path.join("src", "infrastructure", "process", "process-tree.mjs"),
+      path.join("src", "providers", "claude", "claude-run-io.mjs"),
+    ];
+    await installTestContour({ root: freshRoot, run: async () => null });
+    await installTestContour({ root: upgradedRoot, run: async () => null });
+    // An earlier release installed only the three entry scripts directly under
+    // providers/; its still-running runtime restarts providers from those paths.
+    const oldProviders = path.join(upgradedRoot, "providers");
+    const legacyEntries = ["fake-codex-app-server.mjs", "test-contour-claude-cli.mjs", "test-contour-codex-multiplexer.mjs"];
+    await mkdir(path.join(oldProviders, "e2e"), { recursive: true });
+    for (const entry of legacyEntries) await writeFile(path.join(oldProviders, entry), `// legacy ${entry}\n`, "utf8");
+    // A stale copy from an earlier installation in the current layout is replaced.
+    await writeFile(path.join(oldProviders, "e2e", "test-contour-codex-multiplexer.mjs"), "// stale multiplexer\n", "utf8");
+    const outsideProviders = async (root) => Promise.all((await installedFiles(root))
+      .filter((file) => !file.startsWith(`providers${path.sep}`))
+      .map(async (file) => [file, await readFile(path.join(root, file), "utf8")]));
+
+    for (const root of [freshRoot, upgradedRoot]) {
+      const before = await outsideProviders(root);
+      const copied = await prepareTestContourCodexProviders({ root, sourceRoot });
+      assert.equal(copied.codexMultiplexerExecutable, testContourPaths(root).codexMultiplexerExecutable);
+      assert.deepEqual(await outsideProviders(root), before, "preparation changes nothing outside providers/");
+    }
+    await rm(sourceRoot, { recursive: true, force: true });
+
+    for (const root of [freshRoot, upgradedRoot]) {
+      const run = await runInstalledProviders(root);
+      assert.doesNotMatch(run.stderr, /ERR_MODULE_NOT_FOUND/u);
+      assert.deepEqual(run.initialized?.result, { backend: "real-stub" }, `initialize answered: ${run.stderr}`);
+      assert.equal(run.exitCode, 0, `the multiplexer confirmed every owned child tree stopped: ${run.stderr}`);
+      assert.equal(run.stubPids.length, 1);
+      assert.equal(run.stubPids.some((pid) => processIsAlive(pid)), false);
+      assert.equal(run.claude.code, 0, run.claude.output);
+      assert.equal(JSON.parse(run.claude.output).loggedIn, false);
+
+      const providers = path.join(root, "providers");
+      assert.deepEqual(await installedFiles(providers), root === freshRoot ? expected : [...legacyEntries, ...expected].sort(),
+        "the closure is installed and only the legacy entry scripts remain beside it");
+      for (const file of expected) {
+        assert.equal(
+          await readFile(path.join(providers, file), "utf8"),
+          await readFile(path.join(AGENT_HUB_SOURCE_ROOT, file), "utf8"),
+          `${file} is installed byte-for-byte from the candidate`,
+        );
+      }
+    }
+    for (const entry of legacyEntries) {
+      assert.equal(await readFile(path.join(oldProviders, entry), "utf8"), `// legacy ${entry}\n`,
+        "paths in the running contour's config keep resolving until it is replaced");
+    }
+  } finally {
+    await Promise.all([sourceRoot, freshRoot, upgradedRoot].map((directory) => rm(directory, {
+      recursive: true,
+      force: true,
+      maxRetries: 100,
+      retryDelay: 50,
+    })));
   }
 });
 

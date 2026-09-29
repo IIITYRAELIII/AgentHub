@@ -158,6 +158,9 @@ test("chat history requests another page only while older messages can fill the 
   assert.equal(shouldLoadOlderPage(shortHistory, { hasOlder: true, loading: false }), true);
   assert.equal(shouldLoadOlderPage(shortHistory, { hasOlder: true, loading: true }), false);
   assert.equal(shouldLoadOlderPage(shortHistory, { hasOlder: false, loading: false }), false);
+  assert.equal(shouldLoadOlderPage({ scrollHeight: 0, clientHeight: 0 }, {
+    hasOlder: true, loading: false,
+  }), false);
   assert.equal(shouldLoadOlderPage({ scrollHeight: 400, clientHeight: 240 }, {
     hasOlder: true,
     loading: false,

@@ -24,6 +24,7 @@ import { mergeUsageLimitSamples } from "../../domain/usage-facts.mjs";
 
 const SQLITE_BUSY_TIMEOUT_MS = 3_935;
 const UPSERT_CHUNK = 400;
+const PROJECTION_FACT_CACHE_BYTE_LIMIT = 32 * 1024 * 1024;
 
 function configureUsageSyncDatabase(database) {
   database.exec(`
@@ -108,14 +109,27 @@ function configureUsageSyncDatabase(database) {
     if (!columns.has(name)) database.exec(`ALTER TABLE usage_sync_events ADD COLUMN ${name} ${definition}`);
   }
   database.exec(`
+    INSERT OR IGNORE INTO usage_sync_meta (key, value) VALUES ('facts_revision', '0');
+  `);
+  for (const table of ["usage_sync_events", "usage_auth_observations", "usage_limit_observations"]) {
+    for (const operation of ["INSERT", "UPDATE", "DELETE"]) {
+      database.exec(`CREATE TRIGGER IF NOT EXISTS ${table}_facts_${operation.toLowerCase()}
+        AFTER ${operation} ON ${table} BEGIN
+          UPDATE usage_sync_meta SET value = CAST(value AS INTEGER) + 1 WHERE key = 'facts_revision';
+        END`);
+    }
+  }
+  database.exec(`
     UPDATE usage_sync_events
     SET account_key = '',
         account_label = '',
         account_type = '',
         account_plan = '',
         account_attribution = 'inferred'
-    WHERE lower(trim(account_attribution)) <> 'exact'
-       OR trim(account_key) = ''
+    WHERE (lower(trim(account_attribution)) <> 'exact'
+       OR trim(account_key) = '')
+      AND (account_key <> '' OR account_label <> '' OR account_type <> ''
+        OR account_plan <> '' OR account_attribution <> 'inferred')
   `);
   const generation = database.prepare(`
     SELECT value FROM usage_sync_meta WHERE key = 'local_store_generation'
@@ -258,6 +272,7 @@ export class WorkLogUsageSyncStore {
   #deviceId;
   #defaultRuntimeHomeIds;
   #database = null;
+  #projectionFactsCache = null;
   #closed = false;
   #tail = Promise.resolve();
   #mutations = new AsyncSqliteMutationQueue();
@@ -673,6 +688,38 @@ export class WorkLogUsageSyncStore {
       ...this.#readAuthObservations(database),
       ...this.#readLimitObservations(database),
     ]);
+  }
+
+  // Disposable read model for repeated journal projections. The revision is
+  // maintained by SQLite triggers, so writes from another connection are
+  // observed without rereading every fact after an unrelated journal edit.
+  projectionFacts() {
+    return this.#enqueue((database) => {
+      database.exec("BEGIN");
+      try {
+        const revision = String(database.prepare(`
+          SELECT value FROM usage_sync_meta WHERE key = 'facts_revision'
+        `).get()?.value ?? "");
+        if (revision && this.#projectionFactsCache?.revision === revision) {
+          database.exec("COMMIT");
+          return { facts: this.#projectionFactsCache.facts, sourceRead: false,
+            cacheBytes: this.#projectionFactsCache.cacheBytes, cacheRetained: true };
+        }
+        const facts = [
+          ...this.#readAll(database),
+          ...this.#readAuthObservations(database),
+          ...this.#readLimitObservations(database),
+        ];
+        const cacheBytes = Buffer.byteLength(JSON.stringify(facts));
+        const cacheRetained = cacheBytes <= PROJECTION_FACT_CACHE_BYTE_LIMIT;
+        database.exec("COMMIT");
+        this.#projectionFactsCache = cacheRetained ? { revision, facts, cacheBytes } : null;
+        return { facts, sourceRead: true, cacheBytes, cacheRetained };
+      } catch (error) {
+        if (database.isTransaction) database.exec("ROLLBACK");
+        throw error;
+      }
+    });
   }
 
   usageSyncState() {

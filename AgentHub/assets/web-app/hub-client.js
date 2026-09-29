@@ -1765,7 +1765,8 @@ function modelTask(task, snapshot, effectiveSelectedId, serverSelectedId) {
     projectRoot: task.projectRoot ?? null,
     sessionCwd: task.sessionCwd ?? null,
     agentLabel: task.provider === "claude" ? "Claude" : "Codex",
-    modelLabel: task.run?.model ?? task.model ?? (serverSelected ? snapshot.selected?.model : ""),
+    modelLabel: window.AgentHubStreamTabs.streamModelLabel(task, catalogStream, snapshot.settings)
+      || (serverSelected ? snapshot.selected?.model : ""),
     reasoningLabel: serverSelected ? snapshot.selected?.reasoning : task.run?.reasoning ?? "",
     modeLabel: serverSelected ? snapshot.selected?.mode : "",
     runtimeLabel: runtimeShortLabels[executionOwner] ?? (runtimeTitle ? "EXT" : ""),
@@ -3064,6 +3065,17 @@ agentHub.on("bug-report:submit", ({ text, attachments, reportId }) => void (asyn
   }
 })());
 
+agentHub.on("history:trace-page", ({ identity, tracePage, resolve, reject }) => {
+  void control("task-history", {
+    provider: identity.provider, threadId: identity.threadId,
+    ...(identity.streamId ? { streamId: identity.streamId } : {}), tracePage,
+  }).then((result) => {
+    if (result.provider !== identity.provider || result.threadId !== identity.threadId
+      || result.tracePage?.turnId !== tracePage.turnId) throw new Error("Trace identity mismatch");
+    resolve(result.tracePage);
+  }).catch(reject);
+});
+
 agentHub.on("history:load-older", ({ taskId: id }) => runAction(async () => {
   const identity = taskIdentity(id);
   const page = historyPageByTask.get(id);
@@ -3236,6 +3248,12 @@ function sendUserMessage(request, frozenParams = null) {
         };
         attachmentSendSessions.set(request.requestId, session);
         try {
+          // Draft preparation is local; negotiate server limits once here,
+          // before the first upload or provider command can have an effect.
+          if (requestAttachments.length) project("uploading", "Проверка лимитов вложений…");
+          await attachmentUploader.validateBatch(requestAttachments, { signal: session.controller.signal });
+          session.controller.signal.throwIfAborted();
+          assertCurrentSendTaskOperation(sendTaskOperation);
           for (const attachment of requestAttachments) {
             let path;
             while (!path) {
@@ -3377,7 +3395,6 @@ function sendUserMessage(request, frozenParams = null) {
       renderTaskMessages(request.taskId);
       renderTaskQueue(request.taskId, result?.snapshot ?? lastSnapshot);
       renderTaskMessages(request.taskId);
-      agentHub.toast(result?.message ?? (result?.accepted ? "Сообщение принято" : "Сообщение сохранено"));
     },
     reject: (error) => {
       if (outgoingMessages(request.taskId).get(request.requestId)?.projectionAuthority === "canonical") return;
@@ -3422,7 +3439,6 @@ function sendUserMessage(request, frozenParams = null) {
     },
     synchronizationFailed: (error) => {
       console.error("Agent Hub accepted a message but could not refresh its card", error);
-      agentHub.toast("Сообщение принято. Отображение обновится по квитанции.");
     },
   }));
 }
@@ -3685,6 +3701,7 @@ document.addEventListener("agenthub:board-action", (event) => {
     const action = actions[detail.type];
     if (!action) return;
     const { type: _type, ...params } = detail;
+    if (lastSnapshot && ["move", "status"].includes(detail.type)) params.responseView = "task-board";
     let result = await control(action, params);
     if (["complete", "remove"].includes(detail.type) && result.lifecycleResult?.confirmationRequired) {
       const decision = await window.AgentHubTaskCleanupConfirmation.confirm({

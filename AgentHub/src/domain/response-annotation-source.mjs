@@ -37,6 +37,8 @@ export function normalizedResponseAnnotationSource(value) {
   const clientUserMessageId = cleanIdentity(value.clientUserMessageId);
   if (value.clientUserMessageId && (!clientUserMessageId || role !== "user" || turnId || itemId)) return null;
   const surfaceKind = String(value.surfaceKind ?? "").trim();
+  const traceGroupId = cleanIdentity(value.traceGroupId);
+  if (value.traceGroupId && (!traceGroupId || surfaceKind !== "trace-reasoning" || role !== "agent")) return null;
   const surfaceIndex = Number(value.surfaceIndex);
   const start = Number(value.start);
   const end = Number(value.end);
@@ -61,6 +63,7 @@ export function normalizedResponseAnnotationSource(value) {
     messageKey,
     ...(clientUserMessageId ? { clientUserMessageId } : {}),
     surfaceKind,
+    ...(traceGroupId ? { traceGroupId } : {}),
     surfaceIndex,
     start,
     end,

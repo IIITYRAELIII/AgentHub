@@ -138,6 +138,22 @@ function configure(database) {
         ON journal_records(changed_revision, provider, thread_id, turn_id);
     `);
     if (virtualProjectionMigration) migrateStoredVirtualProjection(database);
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS journal_projection_dirty (
+        completed_at_ms INTEGER PRIMARY KEY
+      );
+      CREATE INDEX IF NOT EXISTS journal_records_completed_idx ON journal_records(completed_at_ms);
+      CREATE TRIGGER IF NOT EXISTS journal_projection_insert AFTER INSERT ON journal_records BEGIN
+        INSERT INTO journal_projection_dirty VALUES (COALESCE(NEW.completed_at_ms, -9007199254740991)) ON CONFLICT DO NOTHING;
+      END;
+      CREATE TRIGGER IF NOT EXISTS journal_projection_update AFTER UPDATE ON journal_records BEGIN
+        INSERT INTO journal_projection_dirty VALUES (COALESCE(OLD.completed_at_ms, -9007199254740991)) ON CONFLICT DO NOTHING;
+        INSERT INTO journal_projection_dirty VALUES (COALESCE(NEW.completed_at_ms, -9007199254740991)) ON CONFLICT DO NOTHING;
+      END;
+      CREATE TRIGGER IF NOT EXISTS journal_projection_delete AFTER DELETE ON journal_records BEGIN
+        INSERT INTO journal_projection_dirty VALUES (COALESCE(OLD.completed_at_ms, -9007199254740991)) ON CONFLICT DO NOTHING;
+      END;
+    `);
     database.exec("COMMIT");
   } catch (error) {
     try {
@@ -401,7 +417,7 @@ function writeProjection(database, payload, {
       buckets: [
         ...currentSummary.buckets.filter((bucket) => !replacedDates.has(String(bucket?.date ?? ""))),
         ...(Array.isArray(summary.buckets) ? summary.buckets : []),
-      ],
+      ].sort((left, right) => right.dayMs - left.dayMs),
     };
   }
   /* Ленивая оболочка не несёт содержимого: фрагмент дня уже лежит в базе.
@@ -424,6 +440,11 @@ function writeProjection(database, payload, {
     database.exec("DELETE FROM journal_turn_index;");
   } else if (virtualDates.length) {
     const placeholders = virtualDates.map(() => "?").join(", ");
+    // Removed or moved turns must not retain stale lazy bodies after a partial
+    // day replacement. Other dates' bodies remain byte-for-byte unchanged.
+    database.prepare(`DELETE FROM journal_turns WHERE id IN (
+      SELECT turn_ref FROM journal_turn_index WHERE date IN (${placeholders}))`)
+      .run(...virtualDates);
     database.prepare(`DELETE FROM journal_turn_index WHERE date IN (${placeholders})`)
       .run(...virtualDates);
   }
@@ -531,6 +552,8 @@ async function readStableLegacyLedger(target) {
 
 export class JournalDatabase {
   #database = null;
+  #projectionAccounting = new Map();
+  #projectionAccountingScope = null;
   #file;
   #opening = null;
   #listeners = new Set();
@@ -669,6 +692,93 @@ export class JournalDatabase {
       "SELECT value FROM journal_store_meta WHERE key = 'ledger_version'",
     ).get()?.value ?? LEDGER_VERSION) || LEDGER_VERSION;
     return { version, turns };
+  }
+
+  // Snapshot the dirty dates and scalar accounting input together. Retained
+  // content is read for dirty dates and accounting cache misses, never on each
+  // warm projection for all retained records.
+  async projectionInput({
+    full = false, scope = null, selectRecord = () => true,
+    accountingProjector = record => record,
+  } = {}) {
+    const database = await this.#open();
+    database.exec("BEGIN");
+    try {
+      const revision = revisionOf(database);
+      const source = JSON.parse(storeMetadataValue(database, "journal_projection_source") || "null");
+      const current = publicIndex(database.prepare("SELECT * FROM journal_meta WHERE id = 1").get(), revision);
+      full ||= scope !== null && (source?.incrementalVersion !== 1 || source?.scope !== scope);
+      const dirtyDates = new Set();
+      for (const row of database.prepare("SELECT completed_at_ms FROM journal_projection_dirty").all()) {
+        const date = new Date(row.completed_at_ms);
+        if (Number.isFinite(date.getTime())) dirtyDates.add(date.toLocaleDateString("ru-RU"));
+      }
+      const turns = {};
+      const insert = (row, target) => {
+        try {
+          const record = normalizedRecord(JSON.parse(row.record_json), ledgerKey({
+            provider: row.provider, threadId: row.thread_id, turnId: row.turn_id,
+          }));
+          if (record) target[ledgerKey(record)] = record;
+        } catch { /* Invalid source bytes remain available for repair. */ }
+      };
+      const accounting = {};
+      if (this.#projectionAccountingScope !== scope) {
+        this.#projectionAccounting.clear();
+        this.#projectionAccountingScope = scope;
+      }
+      const retained = new Set();
+      const readRecord = database.prepare(`SELECT record_json FROM journal_records
+        WHERE provider = ? AND thread_id = ? AND turn_id = ?`);
+      let accountingRecordsRead = 0;
+      // Scan identities/revisions only. A cold worker reads each source once;
+      // later calls read changed payloads. The identity set observes deletions
+      // even if another projector already cleared the durable dirty dates.
+      for (const row of database.prepare(`SELECT provider, thread_id, turn_id, changed_revision
+        FROM journal_records INDEXED BY journal_records_changed_idx
+        ORDER BY provider, thread_id, turn_id`).iterate()) {
+        const key = ledgerKey({ provider: row.provider, threadId: row.thread_id, turnId: row.turn_id });
+        retained.add(key);
+        let cached = this.#projectionAccounting.get(key);
+        if (!cached || cached.revision !== row.changed_revision) {
+          const parsed = {};
+          insert({ ...row, ...readRecord.get(row.provider, row.thread_id, row.turn_id) }, parsed);
+          cached = { revision: row.changed_revision, record: parsed[key] ? accountingProjector(parsed[key]) : null };
+          this.#projectionAccounting.set(key, cached);
+          accountingRecordsRead += 1;
+        }
+        if (cached.record) accounting[key] = cached.record;
+      }
+      for (const key of this.#projectionAccounting.keys()) if (!retained.has(key)) this.#projectionAccounting.delete(key);
+      const dates = [...new Set(Object.values(accounting).filter(selectRecord).map(record => {
+        const value = new Date(String(record.completedAt ?? ''));
+        return Number.isFinite(value.getTime()) ? value.toLocaleDateString("ru-RU") : null;
+      }).filter(Boolean))].sort((a, b) => {
+        const time = date => { const [d, m, y] = date.split('.').map(Number); return Date.UTC(y,m-1,d); };
+        return time(b)-time(a);
+      });
+      const today = new Date().toLocaleDateString("ru-RU");
+      const openDate = dates.includes(today) ? today : dates[0] ?? '';
+      if (source?.openDate !== openDate) {
+        if (source?.openDate) dirtyDates.add(source.openDate);
+        if (openDate) dirtyDates.add(openDate);
+      }
+      if (full) {
+        for (const row of database.prepare("SELECT * FROM journal_records ORDER BY provider, thread_id, turn_id").iterate()) insert(row, turns);
+      } else {
+        const readDay = database.prepare(`SELECT * FROM journal_records
+          WHERE completed_at_ms >= ? AND completed_at_ms < ? ORDER BY provider, thread_id, turn_id`);
+        for (const date of dirtyDates) {
+          const [day, month, year] = date.split(".").map(Number);
+          for (const row of readDay.iterate(new Date(year, month - 1, day).getTime(), new Date(year, month - 1, day + 1).getTime())) insert(row, turns);
+        }
+      }
+      database.exec("COMMIT");
+      return { revision, dirtyDates: [...dirtyDates], turns, accounting, accountingRecordsRead, source, current, full, openDate };
+    } catch (error) {
+      database.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   async getRecord({ provider = "codex", threadId, turnId } = {}) {
@@ -1134,6 +1244,9 @@ export class JournalDatabase {
         };
       }
       version = writeProjection(database, normalized, options);
+      if (options.incrementalSource) {
+        database.exec("DELETE FROM journal_projection_dirty");
+      }
       writeStoreMetadataValue(database, "journal_projection_source", options.projectionSource
         ? JSON.stringify(options.projectionSource) : "");
       if (options.pricingProjectionVersion != null) {
@@ -1449,5 +1562,7 @@ export class JournalDatabase {
     this.#subscribers.clear();
     this.#database?.close();
     this.#database = null;
+    this.#projectionAccounting.clear();
+    this.#projectionAccountingScope = null;
   }
 }

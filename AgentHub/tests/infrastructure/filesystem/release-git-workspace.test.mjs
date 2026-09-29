@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { execFile, spawn } from "node:child_process";
+import { createHash, randomUUID } from "node:crypto";
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 
 import {
@@ -17,14 +19,40 @@ import { taskBranchName, taskRepositoryKey } from "../../../src/domain/task-git-
 import { createTaskBoardMutationOwner } from "../../../src/application/sqlite-mutation-owner.mjs";
 import { WorkspaceReleaseService } from "../../../src/application/workspace-release-service.mjs";
 import {
+  PUBLICATION_STAGE_CONTRACT,
+  publicationRunPaths,
+  publicationRunStore,
+} from "../../../src/infrastructure/persistence/publication-run-store.mjs";
+import {
+  publicationCheckpointStore,
+  runPublicationSteps,
+} from "../../../src/infrastructure/persistence/publication-checkpoint.mjs";
+import {
   resolveTestContourSource,
   TEST_CONTOUR_RELEASE_CANDIDATE_SOURCE,
 } from "../../../src/runtime/test-contour-manager.mjs";
 
 const execFileAsync = promisify(execFile);
+const RECOVERY_SOURCE = { commit: "c".repeat(40), ownerSha256: "d".repeat(64) };
 
 async function git(cwd, ...args) {
   return String((await execFileAsync("git", args, { cwd, windowsHide: true })).stdout).trim();
+}
+
+function gitWithInput(cwd, args, input) {
+  return new Promise((resolve, reject) => {
+    const child = spawn("git", args, { cwd, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
+    const stdout = [];
+    const stderr = [];
+    child.stdout.on("data", (chunk) => stdout.push(chunk));
+    child.stderr.on("data", (chunk) => stderr.push(chunk));
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code === 0) resolve(Buffer.concat(stdout));
+      else reject(new Error(Buffer.concat(stderr).toString("utf8").trim() || `git ${args[0]} exited with ${code}`));
+    });
+    child.stdin.end(input);
+  });
 }
 
 async function commit(cwd, message) {
@@ -108,6 +136,51 @@ async function registeredTaskBranch(setup, context, { taskId, startCommit, baseC
   return { branch, taskRoot };
 }
 
+test("one operation generation isolates source bundles per repository", { timeout: 30000 }, async (context) => {
+  const first = await fixture(context);
+  const second = await fixture(context);
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "rg-"));
+  context.after(() => rm(dataDir, { recursive: true, force: true }));
+  const service = new ReleaseGitWorkspaceService({ dataDir });
+  const common = {
+    operationId: "operation-multi-repository",
+    generation: 1,
+    planRevision: "plan-multi-repository",
+    workspaceId: "workspace",
+    frozenTasks: [],
+  };
+  const firstCandidate = await service.prepareGeneration({
+    ...common,
+    projectRoot: first.primary,
+    approvedBaseCommit: first.baseCommit,
+    changelogContent: Buffer.from("prepared release notes\n", "utf8"),
+  });
+  const secondCandidate = await service.prepareGeneration({
+    ...common,
+    projectRoot: second.primary,
+    approvedBaseCommit: second.baseCommit,
+  });
+  assert.notEqual(firstCandidate.generationRoot, secondCandidate.generationRoot);
+  assert.equal(canonicalPath(firstCandidate.repositoryRoot), canonicalPath(first.primary));
+  assert.equal(canonicalPath(secondCandidate.repositoryRoot), canonicalPath(second.primary));
+  assert.equal(firstCandidate.checkpointPhase, "frozen");
+  assert.equal(secondCandidate.checkpointPhase, "frozen");
+  assert.equal(await git(firstCandidate.releaseRoot, "rev-parse", "HEAD"), firstCandidate.preReleaseHead);
+  assert.equal(await git(secondCandidate.releaseRoot, "rev-parse", "HEAD"), secondCandidate.preReleaseHead);
+  assert.equal(await git(firstCandidate.releaseRoot, "symbolic-ref", "--short", "HEAD"), "main");
+  assert.equal(await git(secondCandidate.releaseRoot, "symbolic-ref", "--short", "HEAD"), "main");
+  assert.equal(await git(firstCandidate.releaseRoot, "show", `${firstCandidate.preReleaseHead}:CHANGELOG.md`), "prepared release notes");
+  await service.discardGenerationCandidate(firstCandidate);
+  await service.discardGenerationCandidate(secondCandidate);
+  await assert.rejects(stat(firstCandidate.generationRoot), { code: "ENOENT" });
+  await assert.rejects(stat(secondCandidate.generationRoot), { code: "ENOENT" });
+  const firstArchive = path.join(dataDir, "release-generation-evidence", path.basename(firstCandidate.generationRoot));
+  const secondArchive = path.join(dataDir, "release-generation-evidence", path.basename(secondCandidate.generationRoot));
+  assert.equal((await readFile(path.join(firstArchive, "identity.json"), "utf8")).includes(common.operationId), true);
+  assert.equal((await readFile(path.join(firstArchive, "evidence", `${firstCandidate.manifestHash}.json`))).length > 0, true);
+  assert.equal((await readFile(path.join(secondArchive, "evidence", `${secondCandidate.manifestHash}.json`))).length > 0, true);
+});
+
 for (const binaryOnly of [false, true]) test(`PreRelease preserves ${binaryOnly ? "terminal binary patch delimiters" : "binary patch bytes and a trailing blank context line"}`, { timeout: 20000 }, async (context) => {
   const setup = await fixture(context);
   await writeFile(path.join(setup.primary, "z-final.txt"), "before\nunchanged\n\n", "utf8");
@@ -185,6 +258,931 @@ test("release candidate uses an independent clone and leaves a clean primary att
     assertReleaseCloneForPublication({ repositoryRoot: setup.primary }),
     /requires an Agent Hub-owned independent release clone/u,
   );
+});
+
+async function interruptedFreezeFixture(context, {
+  recoveryEvidenceWrite = (handle, value) => handle.writeFile(value, "utf8"),
+  recoveryPhase = async () => {},
+} = {}) {
+  const setup = await fixture(context);
+  const environment = { ...process.env, LOCALAPPDATA: path.join(setup.root, "state") };
+  const resultCommit = await taskResult(setup, context, { branch: "HUB-recovery" });
+  const planRevision = "7".repeat(64);
+  const baseProvenance = {
+    schemaVersion: 1,
+    kind: "explicit-reviewed-main-v1",
+    publishedBaseCommit: setup.baseCommit,
+    approvedLocalMainCommit: setup.baseCommit,
+    approvedOriginMainCommit: setup.baseCommit,
+  };
+  const candidate = await setup.service.prepareCandidate({
+    planRevision, projectRoot: setup.primary, workspaceId: "workspace-recovery",
+    approvedBaseCommit: setup.baseCommit, baseProvenance,
+    frozenTasks: [{ taskId: "task-recovery", taskRevision: 2, resultCommit }],
+  });
+  const changelog = Buffer.from("# release\n\nrecovery fixture\n", "utf8");
+  await writeFile(path.join(candidate.releaseRoot, "CHANGELOG.md"), changelog);
+  const frozen = await setup.service.freezePublicationCandidate({
+    projectRoot: setup.primary, workspaceId: "workspace-recovery",
+    expectedPlanRevision: planRevision, expectedPreparedHead: candidate.preReleaseHead,
+    changelogContent: changelog, releaseDate: new Date("2026-09-21T00:00:00Z"),
+  });
+  const checkpointFile = path.join(setup.dataDir, "release-repositories", taskRepositoryKey(setup.primary), "checkpoint.json");
+  const checkpoint = JSON.parse(await readFile(checkpointFile, "utf8"));
+  checkpoint.phase = "freezing";
+  await writeFile(checkpointFile, `${JSON.stringify(checkpoint, null, 2)}\n`, "utf8");
+  const publicationStateFile = path.join(environment.LOCALAPPDATA, "AgentHub", "publication-state.json");
+  await mkdir(path.dirname(publicationStateFile), { recursive: true });
+  await writeFile(publicationStateFile, `${JSON.stringify({ repositories: [{
+    root: setup.primary, revision: setup.baseCommit,
+  }] }, null, 2)}\n`, "utf8");
+  const expected = {
+    planRevision,
+    manifestHash: checkpoint.manifestHash,
+    preparedHead: checkpoint.publicationFreeze.preparedHead,
+    frozenHead: checkpoint.preReleaseHead,
+    frozenTree: await git(candidate.releaseRoot, "rev-parse", `${checkpoint.preReleaseHead}^{tree}`),
+    publishedRevision: setup.baseCommit,
+    approvedOriginMain: setup.baseCommit,
+  };
+  return {
+    ...setup, candidate, checkpointFile, expected, environment,
+    service: new ReleaseGitWorkspaceService({
+      dataDir: setup.dataDir, environment, recoveryEvidenceWrite, recoveryPhase,
+    }),
+  };
+}
+
+const sha256 = (value) => createHash("sha256").update(value).digest("hex");
+const stableRecoveryValue = (value) => {
+  if (Array.isArray(value)) return value.map(stableRecoveryValue);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.entries(value).sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, item]) => [key, stableRecoveryValue(item)]));
+};
+const recoveryHash = (value) => sha256(`${JSON.stringify(stableRecoveryValue(value))}\n`);
+
+async function failedFrozenFixture(context, {
+  legacyPublicationStages = false,
+  failedStage = "full-tests",
+  checkpointKind = "current",
+  ...serviceOptions
+} = {}) {
+  const setup = await interruptedFreezeFixture(context, serviceOptions);
+  const checkpoint = JSON.parse(await readFile(setup.checkpointFile, "utf8"));
+  checkpoint.phase = "frozen";
+  await writeFile(setup.checkpointFile, `${JSON.stringify(checkpoint, null, 2)}\n`, "utf8");
+  const stateRoot = path.join(setup.environment.LOCALAPPDATA, "AgentHub");
+  const runId = "failed-frozen-run";
+  const labels = PUBLICATION_STAGE_CONTRACT.map((stage) => stage.label);
+  const identity = {
+    mode: "changed", from: "test", revision: setup.expected.frozenHead,
+    runtimeRoot: path.join(setup.root, "runtime"), worktreeRoot: setup.candidate.releaseRoot,
+    validationMode: "full", artifactProtocol: 1, labels,
+    release: {
+      workspaceId: "workspace-recovery", planRevision: setup.expected.planRevision,
+      manifestHash: setup.expected.manifestHash, baseCommit: checkpoint.baseCommit,
+      preReleaseHead: setup.expected.frozenHead, primaryRoot: setup.primary,
+    },
+  };
+  const runFile = publicationRunPaths(setup.environment).statusFile;
+  const publicationCheckpointFile = path.join(stateRoot, "publication-checkpoint.json");
+  const checkpointScope = {
+    mode: "changed", from: identity.from, runtimeRoot: identity.runtimeRoot, validationMode: "full",
+  };
+  if (checkpointKind === "prior") {
+    const priorIdentity = {
+      ...identity,
+      revision: "1".repeat(40),
+      release: {
+        ...identity.release,
+        planRevision: "2".repeat(64), manifestHash: "3".repeat(64), preReleaseHead: "4".repeat(40),
+      },
+    };
+    await publicationCheckpointStore(publicationCheckpointFile).write({
+      identity: priorIdentity,
+      checkpointScope: {
+        mode: "changed", from: priorIdentity.from, runtimeRoot: priorIdentity.runtimeRoot,
+        validationMode: priorIdentity.validationMode,
+      },
+      completedLabels: [labels[0]],
+      completedFingerprints: { [labels[0]]: failedStage === "full-tests" ? "fixture-0" : "prior-contour" },
+    });
+  }
+  let run;
+  if (legacyPublicationStages) {
+    const logDirectory = path.join(stateRoot, "publication-runs");
+    await mkdir(logDirectory, { recursive: true });
+    const logFile = path.join(logDirectory, `${runId}.log`);
+    await writeFile(logFile, "full tests failed before publication effects\n", "utf8");
+    run = {
+      version: 2, runId, ownerPid: 999999, status: "failed", startedAt: "2026-09-21T00:00:00.000Z",
+      finishedAt: "2026-09-21T00:01:00.000Z", currentStep: null, progress: {}, identity, logFile,
+      steps: PUBLICATION_STAGE_CONTRACT.map((stage, index) => ({
+        label: stage.label, status: index === 0 ? "completed" : index === 1 ? "failed" : "pending",
+      })),
+    };
+    await writeFile(runFile, `${JSON.stringify(run, null, 2)}\n`, "utf8");
+    await publicationCheckpointStore(publicationCheckpointFile).write({
+      identity, checkpointScope, completedLabels: [labels[0]],
+      completedFingerprints: { [labels[0]]: "fixture-contour" },
+    });
+  } else {
+    const journal = publicationRunStore({
+      environment: setup.environment,
+      createId: () => runId,
+      ownerPid: () => 999999,
+      now: (() => {
+        let second = 0;
+        return () => new Date(Date.UTC(2026, 8, 22, 0, 0, second++));
+      })(),
+    });
+    const failedLabel = labels[failedStage === "contour" ? 0 : 1];
+    await assert.rejects(runPublicationSteps(PUBLICATION_STAGE_CONTRACT.map((stage, index) => ({
+      label: stage.label, fingerprint: `fixture-${index}`,
+    })), {
+      run: async ({ label }) => {
+        if (label === failedLabel) throw new Error(`${failedStage} failed before publication effects`);
+      },
+      journal,
+      checkpoint: publicationCheckpointStore(publicationCheckpointFile),
+      identity,
+      checkpointScope,
+    }), /failed before publication effects/u);
+    await journal.finish("failed", new Error(`${failedStage} failed before publication effects`));
+    run = JSON.parse(await readFile(runFile, "utf8"));
+  }
+  const runBytes = await readFile(runFile);
+  const publicationCheckpointBytes = await readFile(publicationCheckpointFile).catch((error) => (
+    error?.code === "ENOENT" ? null : Promise.reject(error)
+  ));
+  const publicationCheckpoint = publicationCheckpointBytes
+    ? JSON.parse(publicationCheckpointBytes.toString("utf8")) : null;
+  const logBytes = await readFile(run.logFile);
+  return {
+    ...setup, checkpoint, run, runFile, publicationCheckpoint, publicationCheckpointFile,
+    frozenExpected: {
+      ...setup.expected, publicationRunId: runId, publicationRunSha256: sha256(runBytes),
+      ...(publicationCheckpointBytes
+        ? { publicationCheckpointSha256: sha256(publicationCheckpointBytes) }
+        : { publicationCheckpointAbsent: true }),
+      publicationLogSha256: sha256(logBytes),
+    },
+  };
+}
+
+async function pushReviewedOriginAdvance(setup, context, {
+  content = "reviewed upstream release note\n", parent = null,
+} = {}) {
+  const writer = path.join(setup.root, `reviewed-origin-${randomUUID()}`);
+  await git(setup.root, "clone", setup.origin, writer);
+  context.after(() => rm(writer, { recursive: true, force: true }));
+  if (parent) await git(writer, "checkout", "--detach", parent);
+  await writeFile(path.join(writer, "CHANGELOG.md"), content, "utf8");
+  const reviewedOriginMain = await commit(writer, "reviewed upstream advance");
+  await git(writer, "push", "--force", "origin", `${reviewedOriginMain}:refs/heads/main`);
+  const reviewedOriginParent = (await git(writer, "show", "-s", "--format=%P", reviewedOriginMain))
+    .split(/\s+/u).filter(Boolean);
+  const reviewedOriginTree = await git(writer, "rev-parse", `${reviewedOriginMain}^{tree}`);
+  const diff = (await execFileAsync("git", ["diff", "--binary", setup.baseCommit, reviewedOriginMain], {
+    cwd: writer, windowsHide: true, encoding: null,
+  })).stdout;
+  const reviewedOriginPatchId = String(await gitWithInput(writer, ["patch-id", "--stable"], diff))
+    .trim().split(/\s+/u)[0];
+  const reviewedOriginDiffHashObject = String(await gitWithInput(writer, ["hash-object", "--stdin"], diff)).trim();
+  const originUrl = await git(setup.candidate.releaseRoot, "remote", "get-url", "origin");
+  return {
+    reviewedOriginMain,
+    reviewedOriginParent: reviewedOriginParent.length === 1 ? reviewedOriginParent[0] : "0".repeat(40),
+    reviewedOriginTree,
+    reviewedOriginDiffSha256: sha256(diff),
+    reviewedOriginDiffHashObject,
+    reviewedOriginPatchId,
+    releaseTrackingOriginMain: await git(setup.candidate.releaseRoot,
+      "rev-parse", "refs/remotes/origin/main^{commit}"),
+    originUrlSha256: sha256(originUrl),
+  };
+}
+
+const failedFrozenRequest = (setup, requestId = "recover-failed-frozen") => ({
+  projectRoot: setup.primary, workspaceId: "workspace-recovery", requestId,
+  sourceIdentity: RECOVERY_SOURCE, recoveryMode: "abandon-failed-frozen-candidate-v1",
+  expected: setup.frozenExpected,
+});
+
+test("failed frozen recovery binds the executable pre-effect stage contract and preserves terminal records", async (context) => {
+  const setup = await failedFrozenFixture(context, { legacyPublicationStages: true });
+  const request = failedFrozenRequest(setup);
+  const preview = await setup.service.recoverFreezingPublicationCandidate(request);
+  assert.equal(preview.identity.publicationStageEvidence.failedStageId, "agent-hub-full-tests");
+  assert.equal(preview.identity.publicationStageEvidence.stageContractVersion, "legacy-hash-bound-v1");
+  const completed = await setup.service.recoverFreezingPublicationCandidate({
+    ...request, confirm: true, expectedProofHash: preview.proofHash,
+  });
+  assert.equal(completed.status, "abandoned");
+  assert.equal(sha256(await readFile(setup.runFile)), setup.frozenExpected.publicationRunSha256);
+  assert.equal(sha256(await readFile(setup.publicationCheckpointFile)),
+    setup.frozenExpected.publicationCheckpointSha256);
+  await writeFile(setup.runFile, "foreign terminal bytes\n", "utf8");
+  const replay = await setup.service.recoverFreezingPublicationCandidate({
+    ...request, confirm: true, expectedProofHash: preview.proofHash,
+  });
+  assert.equal(replay.reused, true);
+  assert.equal(replay.proofHash, preview.proofHash);
+});
+
+test("full-test failure preserves a scope-compatible checkpoint that reused contour", async (context) => {
+  const setup = await failedFrozenFixture(context, { failedStage: "full-tests", checkpointKind: "prior" });
+  assert.equal(setup.run.steps[0].status, "reused");
+  const beforeCheckpoint = await readFile(setup.publicationCheckpointFile);
+  const request = failedFrozenRequest(setup, "recover-reused-contour");
+  const preview = await setup.service.recoverFreezingPublicationCandidate(request);
+  assert.equal(preview.identity.publicationStageEvidence.failedStageId, "agent-hub-full-tests");
+  assert.equal(preview.identity.publicationStageEvidence.checkpointObservation, "retained-prior-generation");
+  const completed = await setup.service.recoverFreezingPublicationCandidate({
+    ...request, confirm: true, expectedProofHash: preview.proofHash,
+  });
+  assert.equal(completed.status, "abandoned");
+  assert.deepEqual(await readFile(setup.publicationCheckpointFile), beforeCheckpoint);
+});
+
+for (const checkpointKind of ["absent", "prior"]) {
+  test(`contour-failed frozen recovery binds ${checkpointKind} checkpoint evidence and replays once`, async (context) => {
+    const setup = await failedFrozenFixture(context, { failedStage: "contour", checkpointKind });
+    const request = failedFrozenRequest(setup, `recover-contour-failed-${checkpointKind}`);
+    const beforeCheckpoint = setup.publicationCheckpointFile
+      ? await readFile(setup.publicationCheckpointFile).catch((error) => error?.code === "ENOENT" ? null : Promise.reject(error))
+      : null;
+    if (checkpointKind === "absent") {
+      await assert.rejects(setup.service.recoverFreezingPublicationCandidate({
+        ...request,
+        expected: { ...request.expected, publicationCheckpointSha256: "f".repeat(64) },
+      }), /exactly one checkpoint digest or explicit absence/u);
+    }
+    const preview = await setup.service.recoverFreezingPublicationCandidate(request);
+    assert.equal(preview.identity.publicationStageEvidence.failedStageId, "release-candidate-contour");
+    assert.equal(preview.identity.publicationStageEvidence.checkpointObservation,
+      checkpointKind === "prior" ? "retained-prior-generation" : "absent");
+    const completed = await setup.service.recoverFreezingPublicationCandidate({
+      ...request, confirm: true, expectedProofHash: preview.proofHash,
+    });
+    assert.equal(completed.status, "abandoned");
+    const afterCheckpoint = await readFile(setup.publicationCheckpointFile)
+      .catch((error) => error?.code === "ENOENT" ? null : Promise.reject(error));
+    assert.deepEqual(afterCheckpoint, beforeCheckpoint);
+    const replay = await setup.service.recoverFreezingPublicationCandidate({
+      ...request, confirm: true, expectedProofHash: preview.proofHash,
+    });
+    assert.equal(replay.reused, true);
+  });
+}
+
+test("contour-failed recovery rejects effectful, mixed and changed checkpoint evidence", async (context) => {
+  const effectful = await failedFrozenFixture(context, { failedStage: "contour", checkpointKind: "prior" });
+  effectful.publicationCheckpoint.completedLabels.push(PUBLICATION_STAGE_CONTRACT[2].label);
+  effectful.publicationCheckpoint.completedFingerprints[PUBLICATION_STAGE_CONTRACT[2].label] = "effect";
+  const effectBytes = Buffer.from(`${JSON.stringify(effectful.publicationCheckpoint, null, 2)}\n`);
+  await writeFile(effectful.publicationCheckpointFile, effectBytes);
+  await assert.rejects(effectful.service.recoverFreezingPublicationCandidate({
+    ...failedFrozenRequest(effectful, "effectful-prior-checkpoint"),
+    expected: { ...effectful.frozenExpected, publicationCheckpointSha256: sha256(effectBytes) },
+  }), /checkpoint reached an effect stage/u);
+
+  const mixed = await failedFrozenFixture(context, { failedStage: "contour", checkpointKind: "prior" });
+  mixed.publicationCheckpoint.identity.release.manifestHash = mixed.run.identity.release.manifestHash;
+  const mixedBytes = Buffer.from(`${JSON.stringify(mixed.publicationCheckpoint, null, 2)}\n`);
+  await writeFile(mixed.publicationCheckpointFile, mixedBytes);
+  await assert.rejects(mixed.service.recoverFreezingPublicationCandidate({
+    ...failedFrozenRequest(mixed, "mixed-prior-checkpoint"),
+    expected: { ...mixed.frozenExpected, publicationCheckpointSha256: sha256(mixedBytes) },
+  }), /mixed candidate identity/u);
+
+  const foreignScope = await failedFrozenFixture(context, { failedStage: "contour", checkpointKind: "prior" });
+  foreignScope.publicationCheckpoint.identity.runtimeRoot = path.join(foreignScope.root, "foreign-runtime");
+  foreignScope.publicationCheckpoint.checkpointScope.runtimeRoot = foreignScope.publicationCheckpoint.identity.runtimeRoot;
+  const foreignScopeBytes = Buffer.from(`${JSON.stringify(foreignScope.publicationCheckpoint, null, 2)}\n`);
+  await writeFile(foreignScope.publicationCheckpointFile, foreignScopeBytes);
+  await assert.rejects(foreignScope.service.recoverFreezingPublicationCandidate({
+    ...failedFrozenRequest(foreignScope, "foreign-scope-prior-checkpoint"),
+    expected: { ...foreignScope.frozenExpected, publicationCheckpointSha256: sha256(foreignScopeBytes) },
+  }), /checkpoint schema or scope changed/u);
+
+  let stopAtIntent = true;
+  const changed = await failedFrozenFixture(context, {
+    failedStage: "contour", checkpointKind: "absent",
+    recoveryPhase: async (phase) => {
+      if (phase === "intent" && stopAtIntent) {
+        stopAtIntent = false;
+        throw new Error("stop after absent checkpoint admission");
+      }
+    },
+  });
+  const changedRequest = failedFrozenRequest(changed, "changed-absent-checkpoint");
+  const changedPreview = await changed.service.recoverFreezingPublicationCandidate(changedRequest);
+  await assert.rejects(changed.service.recoverFreezingPublicationCandidate({
+    ...changedRequest, confirm: true, expectedProofHash: changedPreview.proofHash,
+  }), /stop after absent checkpoint admission/u);
+  await writeFile(changed.publicationCheckpointFile, "{}\n", "utf8");
+  await assert.rejects(new ReleaseGitWorkspaceService({
+    dataDir: changed.dataDir, environment: changed.environment,
+  }).recoverFreezingPublicationCandidate({
+    ...changedRequest, confirm: true, expectedProofHash: changedPreview.proofHash,
+  }), /durable external evidence changed after admission/u);
+});
+
+test("admitted failed frozen recovery survives unrelated remote drift but rejects publication of its candidate", async (context) => {
+  let stopAtIntent = true;
+  const setup = await failedFrozenFixture(context, {
+    recoveryPhase: async (phase) => {
+      if (phase === "intent" && stopAtIntent) {
+        stopAtIntent = false;
+        throw new Error("stop after frozen recovery admission");
+      }
+    },
+  });
+  const request = failedFrozenRequest(setup, "recover-failed-frozen-drift");
+  const preview = await setup.service.recoverFreezingPublicationCandidate(request);
+  await assert.rejects(setup.service.recoverFreezingPublicationCandidate({
+    ...request, confirm: true, expectedProofHash: preview.proofHash,
+  }), /stop after frozen recovery admission/u);
+  const remoteWriter = path.join(setup.root, "remote-writer");
+  await git(setup.root, "clone", setup.origin, remoteWriter);
+  await writeFile(path.join(remoteWriter, "unrelated.txt"), "unrelated remote drift\n");
+  const unrelated = await commit(remoteWriter, "unrelated remote drift");
+  await git(remoteWriter, "push", "origin", "main");
+  const resumed = await setup.service.recoverFreezingPublicationCandidate({
+    ...request, confirm: true, expectedProofHash: preview.proofHash,
+  });
+  assert.equal(resumed.status, "abandoned");
+  assert.equal(await git(setup.origin, "rev-parse", "main"), unrelated);
+
+  const published = await failedFrozenFixture(context, {
+    recoveryPhase: async (phase) => {
+      if (phase === "intent") throw new Error("stop candidate publication fixture");
+    },
+  });
+  const publishedRequest = failedFrozenRequest(published, "recover-failed-frozen-published");
+  const publishedPreview = await published.service.recoverFreezingPublicationCandidate(publishedRequest);
+  await assert.rejects(published.service.recoverFreezingPublicationCandidate({
+    ...publishedRequest, confirm: true, expectedProofHash: publishedPreview.proofHash,
+  }), /stop candidate publication fixture/u);
+  await git(published.candidate.releaseRoot, "push", "origin",
+    `${published.expected.frozenHead}:refs/heads/main`);
+  const resumedService = new ReleaseGitWorkspaceService({ dataDir: published.dataDir, environment: published.environment });
+  await assert.rejects(resumedService.recoverFreezingPublicationCandidate({
+    ...publishedRequest, confirm: true, expectedProofHash: publishedPreview.proofHash,
+  }), /foreign publication effect/u);
+});
+
+test("failed frozen recovery binds one reviewed upstream advance without moving release tracking", async (context) => {
+  let stopAtIntent = true;
+  const setup = await failedFrozenFixture(context, {
+    recoveryPhase: async (phase) => {
+      if (phase === "intent" && stopAtIntent) {
+        stopAtIntent = false;
+        throw new Error("stop after reviewed origin admission");
+      }
+    },
+  });
+  const advance = await pushReviewedOriginAdvance(setup, context);
+  const unchangedRefs = {
+    main: await git(setup.candidate.releaseRoot, "rev-parse", "main"),
+    preRelease: await git(setup.candidate.releaseRoot, "rev-parse", "PreRelease"),
+    tracking: await git(setup.candidate.releaseRoot, "rev-parse", "refs/remotes/origin/main"),
+  };
+  const baseRequest = failedFrozenRequest(setup, "recover-reviewed-origin");
+  await assert.rejects(setup.service.recoverFreezingPublicationCandidate(baseRequest),
+    /approved origin main changed/u);
+  assert.deepEqual({
+    main: await git(setup.candidate.releaseRoot, "rev-parse", "main"),
+    preRelease: await git(setup.candidate.releaseRoot, "rev-parse", "PreRelease"),
+    tracking: await git(setup.candidate.releaseRoot, "rev-parse", "refs/remotes/origin/main"),
+  }, unchangedRefs);
+
+  const request = { ...baseRequest, expected: { ...baseRequest.expected, ...advance } };
+  const preview = await setup.service.recoverFreezingPublicationCandidate(request);
+  assert.equal(preview.identity.baseProvenance.approvedOriginMainCommit, setup.baseCommit);
+  assert.equal(preview.identity.originMain, advance.reviewedOriginMain);
+  assert.equal(preview.identity.trackingOriginMain, setup.baseCommit);
+  assert.deepEqual(preview.identity.reviewedOriginAdvance, {
+    ...advance, objectProof: "isolated-remote-objects-v1",
+  });
+  await assert.rejects(setup.service.recoverFreezingPublicationCandidate({
+    ...request, confirm: true, expectedProofHash: preview.proofHash,
+  }), /stop after reviewed origin admission/u);
+  const admitted = JSON.parse(await readFile(setup.checkpointFile, "utf8"));
+  const evidence = JSON.parse(await readFile(admitted.recovery.evidenceFile, "utf8"));
+  assert.deepEqual(evidence.reviewedOriginAdvance, preview.identity.reviewedOriginAdvance);
+
+  await assert.rejects(new ReleaseGitWorkspaceService({
+    dataDir: setup.dataDir, environment: setup.environment,
+  }).recoverFreezingPublicationCandidate({
+    ...baseRequest, confirm: true, expectedProofHash: preview.proofHash,
+  }), /reviewed origin advance identity changed/u);
+  await assert.rejects(new ReleaseGitWorkspaceService({
+    dataDir: setup.dataDir, environment: setup.environment,
+  }).recoverFreezingPublicationCandidate({
+    ...request,
+    expected: { ...request.expected, reviewedOriginDiffSha256: "f".repeat(64) },
+    confirm: true,
+    expectedProofHash: preview.proofHash,
+  }), /reviewed origin advance identity changed/u);
+  await assert.rejects(new ReleaseGitWorkspaceService({
+    dataDir: setup.dataDir, environment: setup.environment,
+  }).recoverFreezingPublicationCandidate({
+    ...baseRequest,
+    expected: { ...baseRequest.expected, reviewedOriginMain: advance.reviewedOriginMain },
+    confirm: true,
+    expectedProofHash: preview.proofHash,
+  }), /reviewed origin advance identity is incomplete/u);
+
+  const completed = await new ReleaseGitWorkspaceService({
+    dataDir: setup.dataDir, environment: setup.environment,
+  }).recoverFreezingPublicationCandidate({
+    ...request, confirm: true, expectedProofHash: preview.proofHash,
+  });
+  assert.equal(completed.status, "abandoned");
+  assert.equal(await git(setup.origin, "rev-parse", "main"), advance.reviewedOriginMain);
+  assert.equal(await git(setup.candidate.releaseRoot,
+    "rev-parse", "refs/remotes/origin/main"), setup.baseCommit);
+});
+
+test("reviewed origin recovery rejects remote movement after durable admission", async (context) => {
+  const setup = await failedFrozenFixture(context, {
+    recoveryPhase: async (phase) => {
+      if (phase === "intent") throw new Error("stop after reviewed origin admission");
+    },
+  });
+  const advance = await pushReviewedOriginAdvance(setup, context);
+  const baseRequest = failedFrozenRequest(setup, "recover-reviewed-origin-moved-after-admission");
+  const request = { ...baseRequest, expected: { ...baseRequest.expected, ...advance } };
+  const preview = await setup.service.recoverFreezingPublicationCandidate(request);
+  await assert.rejects(setup.service.recoverFreezingPublicationCandidate({
+    ...request, confirm: true, expectedProofHash: preview.proofHash,
+  }), /stop after reviewed origin admission/u);
+  const refsBefore = await git(setup.candidate.releaseRoot, "for-each-ref",
+    "--format=%(refname):%(objectname)");
+  const checkpointBefore = await readFile(setup.checkpointFile);
+
+  await pushReviewedOriginAdvance(setup, context, { content: "unreviewed post-admission tip\n" });
+  const resumedService = new ReleaseGitWorkspaceService({
+    dataDir: setup.dataDir, environment: setup.environment,
+  });
+  await assert.rejects(resumedService.recoverFreezingPublicationCandidate({
+    ...request, confirm: true, expectedProofHash: preview.proofHash,
+  }), /reviewed origin changed after admission/u);
+  assert.deepEqual(await readFile(setup.checkpointFile), checkpointBefore);
+  assert.equal(await git(setup.candidate.releaseRoot, "for-each-ref",
+    "--format=%(refname):%(objectname)"), refsBefore);
+});
+
+test("reviewed origin recovery rejects unreviewed bytes and movement after preview", async (context) => {
+  const wrongBytes = await failedFrozenFixture(context);
+  const wrongAdvance = await pushReviewedOriginAdvance(wrongBytes, context);
+  const wrongRequest = failedFrozenRequest(wrongBytes, "recover-wrong-reviewed-origin");
+  await assert.rejects(wrongBytes.service.recoverFreezingPublicationCandidate({
+    ...wrongRequest,
+    expected: { ...wrongRequest.expected, ...wrongAdvance, reviewedOriginDiffSha256: "f".repeat(64) },
+  }), /reviewed origin advance proof changed/u);
+
+  const moved = await failedFrozenFixture(context);
+  const firstAdvance = await pushReviewedOriginAdvance(moved, context, { content: "reviewed first tip\n" });
+  const movedRequest = failedFrozenRequest(moved, "recover-moving-reviewed-origin");
+  const exactRequest = { ...movedRequest, expected: { ...movedRequest.expected, ...firstAdvance } };
+  const preview = await moved.service.recoverFreezingPublicationCandidate(exactRequest);
+  await pushReviewedOriginAdvance(moved, context, { content: "unreviewed second tip\n" });
+  await assert.rejects(moved.service.recoverFreezingPublicationCandidate({
+    ...exactRequest, confirm: true, expectedProofHash: preview.proofHash,
+  }), /approved origin main changed/u);
+  const checkpoint = JSON.parse(await readFile(moved.checkpointFile, "utf8"));
+  assert.equal(checkpoint.phase, "frozen");
+  assert.equal(checkpoint.recovery, undefined);
+});
+
+test("reviewed origin recovery rejects divergence and release tracking movement", async (context) => {
+  const tracking = await failedFrozenFixture(context);
+  const trackedAdvance = await pushReviewedOriginAdvance(tracking, context);
+  await git(tracking.candidate.releaseRoot, "fetch", "--no-write-fetch-head", "origin",
+    trackedAdvance.reviewedOriginMain);
+  await git(tracking.candidate.releaseRoot, "update-ref", "refs/remotes/origin/main", trackedAdvance.reviewedOriginMain);
+  const trackingRequest = failedFrozenRequest(tracking, "recover-moved-tracking-origin");
+  await assert.rejects(tracking.service.recoverFreezingPublicationCandidate({
+    ...trackingRequest, expected: { ...trackingRequest.expected, ...trackedAdvance },
+  }), /approved origin main changed/u);
+
+  const divergent = await failedFrozenFixture(context);
+  const writer = path.join(divergent.root, `divergent-origin-${randomUUID()}`);
+  await git(divergent.root, "clone", divergent.origin, writer);
+  context.after(() => rm(writer, { recursive: true, force: true }));
+  await git(writer, "checkout", "--orphan", "divergent-main");
+  await git(writer, "rm", "-r", "--cached", ".");
+  await writeFile(path.join(writer, "divergent.txt"), "unrelated history\n", "utf8");
+  const divergentTip = await commit(writer, "divergent upstream");
+  await git(writer, "push", "--force", "origin", `${divergentTip}:refs/heads/main`);
+  const divergentDiff = (await execFileAsync("git", ["diff", "--binary", divergent.baseCommit, divergentTip], {
+    cwd: writer, windowsHide: true, encoding: null,
+  })).stdout;
+  const divergentPatchId = String(await gitWithInput(writer, ["patch-id", "--stable"], divergentDiff))
+    .trim().split(/\s+/u)[0];
+  const divergentRequest = failedFrozenRequest(divergent, "recover-divergent-reviewed-origin");
+  await assert.rejects(divergent.service.recoverFreezingPublicationCandidate({
+    ...divergentRequest,
+    expected: { ...divergentRequest.expected,
+      reviewedOriginMain: divergentTip,
+      reviewedOriginParent: "0".repeat(40),
+      reviewedOriginTree: await git(writer, "rev-parse", `${divergentTip}^{tree}`),
+      reviewedOriginDiffSha256: sha256(divergentDiff),
+      reviewedOriginDiffHashObject: String(await gitWithInput(writer,
+        ["hash-object", "--stdin"], divergentDiff)).trim(),
+      reviewedOriginPatchId: divergentPatchId,
+      releaseTrackingOriginMain: divergent.baseCommit,
+      originUrlSha256: sha256(await git(divergent.candidate.releaseRoot, "remote", "get-url", "origin")),
+    },
+  }), /not an approved descendant/u);
+
+  const published = await failedFrozenFixture(context);
+  await git(published.candidate.releaseRoot, "push", "--force", "origin",
+    `${published.expected.frozenHead}:refs/heads/main`);
+  await git(published.candidate.releaseRoot, "update-ref", "refs/remotes/origin/main", published.baseCommit);
+  const candidateDiff = (await execFileAsync("git", ["diff", "--binary",
+    published.baseCommit, published.expected.frozenHead], {
+    cwd: published.candidate.releaseRoot, windowsHide: true, encoding: null,
+  })).stdout;
+  const candidatePatchId = String(await gitWithInput(published.candidate.releaseRoot,
+    ["patch-id", "--stable"], candidateDiff)).trim().split(/\s+/u)[0];
+  const candidateParents = (await git(published.candidate.releaseRoot, "show", "-s", "--format=%P",
+    published.expected.frozenHead)).split(/\s+/u).filter(Boolean);
+  const publishedRequest = failedFrozenRequest(published, "recover-published-reviewed-origin");
+  await assert.rejects(published.service.recoverFreezingPublicationCandidate({
+    ...publishedRequest,
+    expected: { ...publishedRequest.expected,
+      reviewedOriginMain: published.expected.frozenHead,
+      reviewedOriginParent: candidateParents[0],
+      reviewedOriginTree: published.expected.frozenTree,
+      reviewedOriginDiffSha256: sha256(candidateDiff),
+      reviewedOriginDiffHashObject: String(await gitWithInput(published.candidate.releaseRoot,
+        ["hash-object", "--stdin"], candidateDiff)).trim(),
+      reviewedOriginPatchId: candidatePatchId,
+      releaseTrackingOriginMain: published.baseCommit,
+      originUrlSha256: sha256(await git(published.candidate.releaseRoot, "remote", "get-url", "origin")),
+    },
+  }), /candidate acquired a foreign publication effect/u);
+});
+
+test("fresh failed frozen admission rejects unknown stages and reached effect stages", async (context) => {
+  const unknown = await failedFrozenFixture(context);
+  unknown.run.steps.push({ label: "Unknown future publisher stage", status: "pending" });
+  unknown.run.identity.labels.push("Unknown future publisher stage");
+  const unknownBytes = Buffer.from(`${JSON.stringify(unknown.run, null, 2)}\n`, "utf8");
+  await writeFile(unknown.runFile, unknownBytes);
+  await assert.rejects(unknown.service.recoverFreezingPublicationCandidate({
+    ...failedFrozenRequest(unknown, "unknown-stage"),
+    expected: { ...unknown.frozenExpected, publicationRunSha256: sha256(unknownBytes) },
+  }), /unknown or incomplete publication stage contract/u);
+
+  const effect = await failedFrozenFixture(context);
+  effect.run.steps[2].status = "completed";
+  const effectBytes = Buffer.from(`${JSON.stringify(effect.run, null, 2)}\n`, "utf8");
+  await writeFile(effect.runFile, effectBytes);
+  await assert.rejects(effect.service.recoverFreezingPublicationCandidate({
+    ...failedFrozenRequest(effect, "reached-effect-stage"),
+    expected: { ...effect.frozenExpected, publicationRunSha256: sha256(effectBytes) },
+  }), /publication effect or ambiguous stage evidence/u);
+});
+
+test("fresh failed frozen admission requires the canonical attached main checkout", async (context) => {
+  const setup = await failedFrozenFixture(context);
+  await git(setup.candidate.releaseRoot, "checkout", "--detach", setup.expected.frozenHead);
+  await assert.rejects(setup.service.recoverFreezingPublicationCandidate(
+    failedFrozenRequest(setup, "detached-fresh-frozen"),
+  ), /refs or checkout changed/u);
+  const checkpoint = JSON.parse(await readFile(setup.checkpointFile, "utf8"));
+  assert.equal(checkpoint.phase, "frozen");
+  assert.equal(checkpoint.recovery, undefined);
+});
+
+test("admitted failed frozen recovery preserves and rechecks the exact publication log", async (context) => {
+  let stopAtIntent = true;
+  const setup = await failedFrozenFixture(context, {
+    recoveryPhase: async (phase) => {
+      if (phase === "intent" && stopAtIntent) {
+        stopAtIntent = false;
+        throw new Error("stop before publication log drift");
+      }
+    },
+  });
+  const request = failedFrozenRequest(setup, "recover-failed-frozen-log-drift");
+  const preview = await setup.service.recoverFreezingPublicationCandidate(request);
+  await assert.rejects(setup.service.recoverFreezingPublicationCandidate({
+    ...request, confirm: true, expectedProofHash: preview.proofHash,
+  }), /stop before publication log drift/u);
+  const admitted = JSON.parse(await readFile(setup.checkpointFile, "utf8"));
+  const evidence = JSON.parse(await readFile(admitted.recovery.evidenceFile, "utf8"));
+  assert.equal(sha256(Buffer.from(evidence.publicationLogBytesBase64, "base64")),
+    setup.frozenExpected.publicationLogSha256);
+  await writeFile(setup.run.logFile, "tampered terminal publication log\n", "utf8");
+  await assert.rejects(new ReleaseGitWorkspaceService({
+    dataDir: setup.dataDir, environment: setup.environment,
+  }).recoverFreezingPublicationCandidate({
+    ...request, confirm: true, expectedProofHash: preview.proofHash,
+  }), /durable external evidence changed after admission/u);
+  assert.equal(await git(setup.candidate.releaseRoot, "rev-parse", "main"), setup.expected.frozenHead);
+});
+
+for (const crashPhase of ["detached", "main", "refs", "checkout", "completed"]) {
+  test(`admitted failed frozen recovery resumes after exact Git boundary ${crashPhase}`, async (context) => {
+    let interrupt = true;
+    const setup = await failedFrozenFixture(context, {
+      recoveryPhase: async (phase) => {
+        if (phase === crashPhase && interrupt) {
+          interrupt = false;
+          throw new Error(`simulated failed-frozen ${crashPhase} interruption`);
+        }
+      },
+    });
+    const request = failedFrozenRequest(setup, `recover-failed-frozen-${crashPhase}`);
+    const preview = await setup.service.recoverFreezingPublicationCandidate(request);
+    await assert.rejects(setup.service.recoverFreezingPublicationCandidate({
+      ...request, confirm: true, expectedProofHash: preview.proofHash,
+    }), new RegExp(`simulated failed-frozen ${crashPhase} interruption`, "u"));
+    const resumed = await new ReleaseGitWorkspaceService({
+      dataDir: setup.dataDir, environment: setup.environment,
+    }).recoverFreezingPublicationCandidate({
+      ...request, confirm: true, expectedProofHash: preview.proofHash,
+    });
+    assert.equal(resumed.status, "abandoned");
+    assert.equal(await git(setup.candidate.releaseRoot, "rev-parse", "main"), setup.baseCommit);
+    assert.equal(await git(setup.candidate.releaseRoot, "rev-parse", "PreRelease"), setup.expected.preparedHead);
+  });
+}
+
+test("new owner resumes and replays an admitted legacy freezing recovery", async (context) => {
+  let stopAtIntent = true;
+  const setup = await interruptedFreezeFixture(context, {
+    recoveryPhase: async (phase) => {
+      if (phase === "intent" && stopAtIntent) {
+        stopAtIntent = false;
+        throw new Error("convert admitted operation to legacy schema");
+      }
+    },
+  });
+  const request = {
+    projectRoot: setup.primary, workspaceId: "workspace-recovery", requestId: "recover-legacy-admitted",
+    sourceIdentity: RECOVERY_SOURCE, expected: setup.expected,
+  };
+  const preview = await setup.service.recoverFreezingPublicationCandidate(request);
+  await assert.rejects(setup.service.recoverFreezingPublicationCandidate({
+    ...request, confirm: true, expectedProofHash: preview.proofHash,
+  }), /convert admitted operation to legacy schema/u);
+  const checkpoint = JSON.parse(await readFile(setup.checkpointFile, "utf8"));
+  const evidence = JSON.parse(await readFile(checkpoint.recovery.evidenceFile, "utf8"));
+  const {
+    proofHash: ignoredProof, sourceCheckpointBytesBase64, sourceManifestBytesBase64,
+    sourceCheckpoint, sourceManifest, publicationState, publicationRun, publicationCheckpoint,
+    ...identity
+  } = evidence;
+  identity.schemaVersion = 1;
+  delete identity.trackingOriginMain;
+  delete identity.originUrlSha256;
+  identity.publicationStateSha256 = recoveryHash(publicationState.repositories[0]);
+  const legacyProof = recoveryHash(identity);
+  const legacyEvidence = {
+    ...identity, proofHash: legacyProof, sourceCheckpointBytesBase64, sourceManifestBytesBase64,
+    sourceCheckpoint, sourceManifest, publicationState, publicationRun, publicationCheckpoint,
+  };
+  const legacyEvidenceBytes = Buffer.from(`${JSON.stringify(legacyEvidence, null, 2)}\n`, "utf8");
+  await writeFile(checkpoint.recovery.evidenceFile, legacyEvidenceBytes);
+  checkpoint.recovery = {
+    operationId: request.requestId, proofHash: legacyProof,
+    evidenceFile: checkpoint.recovery.evidenceFile, evidenceSha256: sha256(legacyEvidenceBytes),
+    sourceIdentity: RECOVERY_SOURCE, sourceCheckpointSha256: identity.sourceCheckpointSha256,
+    sourceManifestSha256: identity.sourceManifestSha256, oldMain: identity.oldMain,
+    oldPreRelease: identity.oldPreRelease, frozenHead: identity.frozenHead, frozenTree: identity.frozenTree,
+  };
+  await writeFile(setup.checkpointFile, `${JSON.stringify(checkpoint, null, 2)}\n`, "utf8");
+  const service = new ReleaseGitWorkspaceService({ dataDir: setup.dataDir, environment: setup.environment });
+  const completed = await service.recoverFreezingPublicationCandidate({
+    ...request, confirm: true, expectedProofHash: legacyProof,
+  });
+  assert.equal(completed.status, "abandoned");
+  const repeated = await service.recoverFreezingPublicationCandidate({
+    ...request, confirm: true, expectedProofHash: legacyProof,
+  });
+  assert.equal(repeated.status, "abandoned");
+  assert.equal(repeated.reused, true);
+});
+
+test("freezing recovery previews exact proof and abandons with preserved evidence", async (context) => {
+  const setup = await interruptedFreezeFixture(context);
+  const request = {
+    projectRoot: setup.primary, workspaceId: "workspace-recovery", requestId: "recover-one",
+    sourceIdentity: RECOVERY_SOURCE, expected: setup.expected,
+  };
+  const preview = await setup.service.recoverFreezingPublicationCandidate(request);
+  assert.equal(preview.status, "preview");
+  assert.deepEqual(preview.effects, [
+    `refs/heads/main:${setup.expected.frozenHead}->${setup.baseCommit}`,
+    `refs/heads/PreRelease:${setup.expected.frozenHead}->${setup.expected.preparedHead}`,
+    `checkout:refs/heads/PreRelease@${setup.expected.preparedHead}`,
+  ]);
+  assert.equal(await git(setup.candidate.releaseRoot, "rev-parse", "main"), setup.expected.frozenHead);
+  await assert.rejects(setup.service.recoverFreezingPublicationCandidate({
+    ...request,
+    sourceIdentity: { commit: "e".repeat(40), ownerSha256: "f".repeat(64) },
+    confirm: true,
+    expectedProofHash: preview.proofHash,
+  }), /confirmation proof changed/u);
+  const completed = await setup.service.recoverFreezingPublicationCandidate({
+    ...request, confirm: true, expectedProofHash: preview.proofHash,
+  });
+  assert.equal(completed.status, "abandoned");
+  assert.equal(await git(setup.candidate.releaseRoot, "rev-parse", "main"), setup.baseCommit);
+  assert.equal(await git(setup.candidate.releaseRoot, "rev-parse", "PreRelease"), setup.expected.preparedHead);
+  assert.equal(await git(setup.candidate.releaseRoot, "symbolic-ref", "HEAD"), "refs/heads/PreRelease");
+  assert.equal(await git(setup.candidate.releaseRoot, "status", "--porcelain=v1"), "");
+  const finalCheckpoint = JSON.parse(await readFile(setup.checkpointFile, "utf8"));
+  assert.equal(finalCheckpoint.phase, "abandoned");
+  assert.equal(finalCheckpoint.recovery.proofHash, preview.proofHash);
+  assert.equal((await stat(finalCheckpoint.recovery.evidenceFile)).isFile(), true);
+  assert.equal((await stat(path.join(setup.dataDir, "release-repositories", taskRepositoryKey(setup.primary),
+    "evidence", `${setup.expected.manifestHash}.json`))).isFile(), true);
+  assert.equal(await git(setup.candidate.releaseRoot, "cat-file", "-t", setup.expected.frozenHead), "commit");
+  const stateRoot = path.join(setup.environment.LOCALAPPDATA, "AgentHub");
+  await writeFile(path.join(stateRoot, "publication-state.json"), `${JSON.stringify({ repositories: [{
+    root: setup.primary, revision: "f".repeat(40),
+  }] }, null, 2)}\n`);
+  await writeFile(path.join(stateRoot, "publication-status.json"), `${JSON.stringify({
+    version: 2, status: "running", identity: { planRevision: setup.expected.planRevision },
+  }, null, 2)}\n`);
+  const reused = await setup.service.recoverFreezingPublicationCandidate({
+    ...request, confirm: true, expectedProofHash: preview.proofHash,
+  });
+  assert.equal(reused.reused, true);
+  await assert.rejects(setup.service.recoverFreezingPublicationCandidate({
+    ...request, requestId: "recover-other",
+  }), /belongs to another exact operation/u);
+});
+
+for (const crashPhase of [
+  "evidence-temporary", "evidence", "intent", "detached", "main", "refs", "prepared-detached", "checkout", "completed",
+]) {
+  test(`freezing recovery resumes the same operation after ${crashPhase}`, async (context) => {
+    let interrupt = true;
+    const setup = await interruptedFreezeFixture(context, {
+      recoveryPhase: async (phase) => {
+        if (phase === crashPhase && interrupt) {
+          interrupt = false;
+          throw new Error(`simulated ${crashPhase} interruption`);
+        }
+      },
+    });
+    const request = {
+      projectRoot: setup.primary, workspaceId: "workspace-recovery", requestId: `recover-${crashPhase}`,
+      sourceIdentity: RECOVERY_SOURCE, expected: setup.expected,
+    };
+    const preview = await setup.service.recoverFreezingPublicationCandidate(request);
+    await assert.rejects(setup.service.recoverFreezingPublicationCandidate({
+      ...request, confirm: true, expectedProofHash: preview.proofHash,
+    }), new RegExp(`simulated ${crashPhase} interruption`, "u"));
+    if (crashPhase === "evidence") {
+      const foreignRequest = { ...request, requestId: "recover-foreign-after-evidence" };
+      const foreignPreview = await setup.service.recoverFreezingPublicationCandidate(foreignRequest);
+      await assert.rejects(setup.service.recoverFreezingPublicationCandidate({
+        ...foreignRequest, confirm: true, expectedProofHash: foreignPreview.proofHash,
+      }), /evidence conflicts with the exact operation/u);
+    }
+    const resumedService = new ReleaseGitWorkspaceService({ dataDir: setup.dataDir, environment: setup.environment });
+    const resumed = await resumedService.recoverFreezingPublicationCandidate({
+      ...request, confirm: true, expectedProofHash: preview.proofHash,
+    });
+    assert.equal(resumed.status, "abandoned");
+    assert.equal(await git(setup.candidate.releaseRoot, "rev-parse", "main"), setup.baseCommit);
+    assert.equal(await git(setup.candidate.releaseRoot, "rev-parse", "PreRelease"), setup.expected.preparedHead);
+  });
+}
+
+test("freezing recovery removes a partial temporary evidence write and retries exactly", async (context) => {
+  let interruptWrite = true;
+  const setup = await interruptedFreezeFixture(context, {
+    recoveryEvidenceWrite: async (handle, value) => {
+      if (interruptWrite) {
+        interruptWrite = false;
+        await handle.writeFile(value.slice(0, Math.floor(value.length / 2)), "utf8");
+        await handle.sync();
+        throw new Error("simulated partial evidence write");
+      }
+      await handle.writeFile(value, "utf8");
+    },
+  });
+  const request = {
+    projectRoot: setup.primary, workspaceId: "workspace-recovery", requestId: "recover-partial-evidence",
+    sourceIdentity: RECOVERY_SOURCE, expected: setup.expected,
+  };
+  const preview = await setup.service.recoverFreezingPublicationCandidate(request);
+  await assert.rejects(setup.service.recoverFreezingPublicationCandidate({
+    ...request, confirm: true, expectedProofHash: preview.proofHash,
+  }), /simulated partial evidence write/u);
+  const evidenceRoot = path.join(setup.dataDir, "release-repositories", taskRepositoryKey(setup.primary), "evidence");
+  assert.equal((await readdir(evidenceRoot)).some((file) => file.startsWith(".freeze-recovery-")), false);
+  assert.equal((await readdir(evidenceRoot)).some((file) => file.startsWith("freeze-recovery-")), false);
+  const completed = await setup.service.recoverFreezingPublicationCandidate({
+    ...request, confirm: true, expectedProofHash: preview.proofHash,
+  });
+  assert.equal(completed.status, "abandoned");
+});
+
+test("freezing recovery rejects drift and publication evidence before effects", async (context) => {
+  const setup = await interruptedFreezeFixture(context);
+  const request = {
+    projectRoot: setup.primary, workspaceId: "workspace-recovery", requestId: "recover-drift",
+    sourceIdentity: RECOVERY_SOURCE, expected: setup.expected,
+  };
+  await assert.rejects(setup.service.recoverFreezingPublicationCandidate({
+    ...request, expected: { ...setup.expected, approvedOriginMain: "a".repeat(40) },
+  }), /approved origin main changed/u);
+  const statusFile = path.join(setup.environment.LOCALAPPDATA, "AgentHub", "publication-status.json");
+  await writeFile(statusFile, `${JSON.stringify({ version: 2, status: "running", identity: {} }, null, 2)}\n`);
+  await assert.rejects(setup.service.recoverFreezingPublicationCandidate(request), /active or ambiguous publication run/u);
+  assert.equal(await git(setup.candidate.releaseRoot, "rev-parse", "main"), setup.expected.frozenHead);
+});
+
+test("abandoned freeze rebuild preserves reviewed incoming base and composes the fixed publisher Task", async (context) => {
+  const setup = await fixture(context);
+  const environment = { ...process.env, LOCALAPPDATA: path.join(setup.root, "state") };
+  await setup.service.prepareCandidate({
+    planRevision: "1".repeat(64), projectRoot: setup.primary, workspaceId: "workspace-rebuild",
+    approvedBaseCommit: setup.baseCommit, frozenTasks: [],
+  });
+  const incomingRoot = path.join(setup.root, "incoming");
+  await git(setup.root, "clone", setup.origin, incomingRoot);
+  await git(incomingRoot, "config", "core.autocrlf", "false");
+  await writeFile(path.join(incomingRoot, "incoming.txt"), "approved incoming\n");
+  const incomingCommit = await commit(incomingRoot, "approved incoming main");
+  await git(incomingRoot, "push", "origin", "main");
+  await git(setup.primary, "fetch", "origin", "main");
+  const initialPlan = "2".repeat(64);
+  const provenance = {
+    schemaVersion: 1, kind: "explicit-reviewed-main-v1",
+    publishedBaseCommit: setup.baseCommit,
+    approvedLocalMainCommit: setup.baseCommit,
+    approvedOriginMainCommit: incomingCommit,
+  };
+  const prepared = await setup.service.prepareCandidate({
+    planRevision: initialPlan, projectRoot: setup.primary, workspaceId: "workspace-rebuild",
+    approvedBaseCommit: incomingCommit, baseProvenance: provenance, frozenTasks: [],
+  });
+  const changelog = Buffer.from("# incoming release\n", "utf8");
+  await writeFile(path.join(prepared.releaseRoot, "CHANGELOG.md"), changelog);
+  await setup.service.freezePublicationCandidate({
+    projectRoot: setup.primary, workspaceId: "workspace-rebuild", expectedPlanRevision: initialPlan,
+    expectedPreparedHead: prepared.preReleaseHead, changelogContent: changelog,
+    releaseDate: new Date("2026-09-21T00:00:00Z"),
+  });
+  const checkpointFile = path.join(setup.dataDir, "release-repositories", taskRepositoryKey(setup.primary), "checkpoint.json");
+  const checkpoint = JSON.parse(await readFile(checkpointFile, "utf8"));
+  checkpoint.phase = "freezing";
+  await writeFile(checkpointFile, `${JSON.stringify(checkpoint, null, 2)}\n`);
+  const stateFile = path.join(environment.LOCALAPPDATA, "AgentHub", "publication-state.json");
+  await mkdir(path.dirname(stateFile), { recursive: true });
+  await writeFile(stateFile, `${JSON.stringify({ repositories: [{ root: setup.primary, revision: setup.baseCommit }] }, null, 2)}\n`);
+  const recovery = new ReleaseGitWorkspaceService({ dataDir: setup.dataDir, environment });
+  const request = {
+    projectRoot: setup.primary, workspaceId: "workspace-rebuild", requestId: "recover-before-rebuild",
+    sourceIdentity: RECOVERY_SOURCE,
+    expected: {
+      planRevision: initialPlan, manifestHash: checkpoint.manifestHash,
+      preparedHead: checkpoint.publicationFreeze.preparedHead, frozenHead: checkpoint.preReleaseHead,
+      frozenTree: await git(prepared.releaseRoot, "rev-parse", `${checkpoint.preReleaseHead}^{tree}`),
+      publishedRevision: setup.baseCommit, approvedOriginMain: incomingCommit,
+    },
+  };
+  const preview = await recovery.recoverFreezingPublicationCandidate(request);
+  await recovery.recoverFreezingPublicationCandidate({ ...request, confirm: true, expectedProofHash: preview.proofHash });
+
+  const taskRoot = path.join(setup.root, "task-HUB-256");
+  await git(setup.primary, "worktree", "add", "-b", "HUB-256-rebuild", taskRoot, incomingCommit);
+  context.after(() => git(setup.primary, "worktree", "remove", "--force", taskRoot).catch(() => {}));
+  const helperFile = path.join(taskRoot, "AgentHub", "src", "infrastructure", "filesystem", "freeze-publication-candidate.mjs");
+  const publisherFile = path.join(taskRoot, "AgentHub", "publish-changed.mjs");
+  await mkdir(path.dirname(helperFile), { recursive: true });
+  await writeFile(helperFile, "export const persistedPayloadOwner = 'HUB-256';\n");
+  await writeFile(publisherFile,
+    "import { persistedPayloadOwner } from './src/infrastructure/filesystem/freeze-publication-candidate.mjs';\n"
+    + "export const freezeOwnerReadback = () => persistedPayloadOwner;\n");
+  const hub256Result = await commit(taskRoot, "HUB-256 fixed public publisher");
+  const rebuilt = await recovery.prepareCandidate({
+    planRevision: "3".repeat(64), projectRoot: setup.primary, workspaceId: "workspace-rebuild",
+    approvedBaseCommit: incomingCommit, baseProvenance: provenance,
+    frozenTasks: [{ taskId: "HUB-256", taskRevision: 6, resultCommit: hub256Result }],
+  });
+  const rebuiltManifest = JSON.parse(await readFile(rebuilt.manifestFile, "utf8"));
+  assert.deepEqual(rebuiltManifest.tasks.map((task) => task.taskId), ["HUB-256"]);
+  assert.equal(await git(rebuilt.releaseRoot, "show", `${rebuilt.preReleaseHead}:incoming.txt`), "approved incoming");
+  const rebuiltPublisherFile = path.join(rebuilt.releaseRoot, "AgentHub", "publish-changed.mjs");
+  const publisher = await import(`${pathToFileURL(rebuiltPublisherFile).href}?fixture=${Date.now()}`);
+  assert.equal(publisher.freezeOwnerReadback(), "HUB-256");
+  assert.equal(await git(rebuilt.releaseRoot, "rev-parse", "main"), setup.baseCommit);
+  assert.equal(await git(setup.origin, "rev-parse", "main"), incomingCommit);
 });
 
 test("frozen candidate readback validates prepared manifest identity and request binding", async (context) => {
@@ -1359,6 +2357,70 @@ test("prepared candidate reuses one newly selected correction from its snapshot 
   assert.equal(await git(refreshed.releaseRoot, "show", `${refreshed.preReleaseHead}:AgentHub/shared.txt`), "fixed");
   assert.deepEqual((await git(refreshed.releaseRoot, "diff", "--name-only", accepted.preReleaseHead,
     refreshed.preReleaseHead)).split("\n").filter(Boolean), ["AgentHub/shared.txt"]);
+});
+
+test("operation lineage rejects an unrelated result and accepts a descendant net correction", { timeout: 30000 }, async (context) => {
+  const setup = await fixture(context);
+  const neighborResult = await taskResult(setup, context, {
+    branch: "HUB-lineage-neighbor", file: "AgentHub/neighbor.txt", content: "neighbor\n",
+  });
+  const oldResult = await taskResult(setup, context, {
+    branch: "HUB-lineage-old", file: "AgentHub/selected.txt", content: "obsolete-r1\n",
+  });
+  const unrelatedResult = await taskResult(setup, context, {
+    branch: "HUB-lineage-unrelated", file: "AgentHub/selected.txt", content: "unrelated-r2\n",
+  });
+  const neighborTask = {
+    taskId: "task-neighbor", taskRevision: 1, baseCommit: setup.baseCommit, resultCommit: neighborResult,
+    integrations: [{ commit: neighborResult, parent: setup.baseCommit, order: 1 }],
+  };
+  const unrelatedTask = {
+    taskId: "task-owner", taskRevision: 2, baseCommit: setup.baseCommit, resultCommit: unrelatedResult,
+    integrations: [{ commit: unrelatedResult, parent: setup.baseCommit, order: 2 }],
+  };
+  const unrelatedCandidate = await setup.service.prepareCandidate({
+    planRevision: "plan-lineage-unrelated", workspaceId: "workspace", projectRoot: setup.primary,
+    frozenTasks: [neighborTask, unrelatedTask],
+  });
+  await assert.rejects(setup.service.assertSelectedResultLineage({
+    candidate: unrelatedCandidate,
+    previousSelectedResults: [{ taskId: "task-owner", resultCommit: oldResult }],
+  }), (error) => {
+    assert.equal(error.code, "RELEASE_RESULT_LINEAGE_MISMATCH");
+    assert.equal(error.taskId, "task-owner");
+    assert.equal(error.priorResultCommit, oldResult);
+    assert.equal(error.resultCommit, unrelatedResult);
+    return true;
+  });
+
+  const correctionRoot = path.join(setup.root, "task-lineage-correction");
+  await git(setup.primary, "worktree", "add", "-b", "HUB-lineage-correction", correctionRoot, oldResult);
+  context.after(() => git(setup.primary, "worktree", "remove", "--force", correctionRoot).catch(() => {}));
+  await writeFile(path.join(correctionRoot, "AgentHub", "selected.txt"), "corrected-r2\n", "utf8");
+  const correctionResult = await commit(correctionRoot, "descendant correction");
+  const correctionTask = {
+    taskId: "task-owner", taskRevision: 3, baseCommit: setup.baseCommit, resultCommit: correctionResult,
+    integrations: [
+      { commit: oldResult, parent: setup.baseCommit, order: 1 },
+      { commit: correctionResult, parent: oldResult, order: 2 },
+    ],
+  };
+  const correctedCandidate = await setup.service.prepareCandidate({
+    planRevision: "plan-lineage-corrected", workspaceId: "workspace", projectRoot: setup.primary,
+    frozenTasks: [neighborTask, correctionTask],
+  });
+  await assert.doesNotReject(setup.service.assertSelectedResultLineage({
+    candidate: correctedCandidate,
+    previousSelectedResults: [{ taskId: "task-owner", resultCommit: oldResult }],
+  }));
+  const corrected = await git(
+    correctedCandidate.releaseRoot, "show", `${correctedCandidate.preReleaseHead}:AgentHub/selected.txt`,
+  );
+  assert.equal(corrected, "corrected-r2");
+  assert.equal(corrected.includes("obsolete-r1"), false);
+  assert.equal(await git(
+    correctedCandidate.releaseRoot, "show", `${correctedCandidate.preReleaseHead}:AgentHub/neighbor.txt`,
+  ), "neighbor");
 });
 
 test("prepared candidate rejects correction-owned publication metadata", { timeout: 30000 }, async (context) => {

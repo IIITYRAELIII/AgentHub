@@ -442,6 +442,11 @@ export class TaskBoardService {
     return this.store.completeRelease(workspaceId, payload);
   }
 
+  completeReleaseOperation(workspaceId, payload = {}) {
+    requiredMethod(this.store, "completeReleaseOperation");
+    return this.store.completeReleaseOperation(workspaceId, payload);
+  }
+
   get snapshotRevision() {
     const boardRevision = this.store.snapshotRevision ?? this.store.revision;
     const workspaceRevision = this.workspaceCatalog.snapshotRevision ?? this.workspaceCatalog.revision;

@@ -1,3 +1,9 @@
+import {
+  assertReleaseBaseProvenance,
+  EXPLICIT_REVIEWED_MAIN_PROVENANCE,
+  normalizedReleaseBaseProvenance,
+  SELECTED_TASK_ADOPTION_PROVENANCE,
+} from "../domain/release-base-provenance.mjs";
 import { realpathSync } from "node:fs";
 import path from "node:path";
 
@@ -200,6 +206,22 @@ function sameReviewedBaseProvenance(actual, expected) {
   return JSON.stringify(actual ?? null) === JSON.stringify(expected ?? null);
 }
 
+// Ordinary Await preparation may advance its base only through immutable
+// selected Task adoption receipts. The owner's exact evidence becomes the
+// candidate's discriminated provenance envelope.
+function selectedTaskAdoptionProvenance(base) {
+  // The owner advances a base only through receipts. Anything else carries no
+  // envelope here and is rejected by the candidate owner's own guard.
+  if (base.baseCommit === base.publishedBaseCommit || !base.adoptions?.length) return null;
+  return normalizedReleaseBaseProvenance({
+    schemaVersion: 1,
+    kind: SELECTED_TASK_ADOPTION_PROVENANCE,
+    publishedBaseCommit: base.publishedBaseCommit,
+    adoptedBaseCommit: base.baseCommit,
+    adoptions: base.adoptions,
+  }, base.baseCommit);
+}
+
 function assertExactProductionValidation({
   validation, workspaceId, planRevision, repositories,
 }) {
@@ -281,12 +303,7 @@ export class WorkspaceReleasePreflightService {
   }
 
   withAwaitTransition(workspaceId, operation, { changesAwait = null } = {}) {
-    return this.releaseGitWorkspaces.withAwaitTransition(workspaceId, async () => {
-      if (changesAwait && await changesAwait()) {
-        await this.releaseGitWorkspaces.assertAwaitChangesAllowed(workspaceId);
-      }
-      return operation();
-    });
+    return this.releaseGitWorkspaces.withAwaitTransition(workspaceId, operation);
   }
 
   async validateAwaitAcceptance({ workspaceId, acceptingTask, projectRoot, lease = null } = {}) {
@@ -311,6 +328,90 @@ export class WorkspaceReleasePreflightService {
     return { planRevision: plan.revision, task: evidence.tasks[0] };
   }
 
+  async prepareAwaitAcceptance({
+    workspaceId, acceptingTask, projectRoot, lease = null, operationId, commitPrepared,
+  } = {}) {
+    if (typeof commitPrepared !== "function") throw new TypeError("commitPrepared is required");
+    const root = path.resolve(String(projectRoot ?? "").trim());
+    const operation = String(operationId ?? "").trim();
+    if (!operation) throw new TypeError("operationId is required");
+    for (let attempt = 1; attempt <= 4; attempt += 1) {
+      const prospective = await this.#prepareAwaitSet({
+        workspaceId,
+        acceptingTask,
+        lease,
+        prospectiveOnly: true,
+        generationIdentity: { operationId: `await-${operation}`, generation: attempt },
+        freezeGeneration: false,
+        ephemeralGeneration: true,
+      });
+      let accepted;
+      let acceptanceError = null;
+      try {
+        accepted = await this.withAwaitTransition(workspaceId, async () => {
+      const current = await this.releasePlanner.plan(workspaceId, { acceptingTask });
+      if (current.revision !== prospective.planRevision) {
+        const error = new Error("Task changed during PreRelease acceptance preparation");
+        error.code = "AWAIT_ACCEPTANCE_STALE";
+        throw error;
+      }
+      let committed;
+      const promote = async (index) => {
+        if (index === prospective.releaseCandidates.length) return;
+        const source = prospective.releaseCandidates[index];
+        await this.releaseGitWorkspaces.promoteGenerationCandidate({
+          projectRoot: source.repositoryRoot,
+          candidate: source,
+          validateBeforeCommit: async () => {
+            const latest = await this.releasePlanner.plan(workspaceId, { acceptingTask });
+            if (latest.revision !== prospective.planRevision) {
+              const error = new Error("Task changed during PreRelease acceptance promotion");
+              error.code = "AWAIT_ACCEPTANCE_STALE";
+              throw error;
+            }
+          },
+          commitPrepared: async (preparedCandidate) => {
+            prospective.releaseCandidates[index] = preparedCandidate;
+            if (index + 1 < prospective.releaseCandidates.length) return promote(index + 1);
+            const prepared = prospective;
+        const matches = prepared.releaseCandidates.flatMap((candidate) => (
+          canonicalRoot(candidate.repositoryRoot) === canonicalRoot(root)
+            ? candidate.frozenTasks.filter((task) => task.taskId === String(acceptingTask?.id ?? ""))
+            : []
+        ));
+        if (matches.length !== 1) throw new Error("Task has no unique prepared Await result to accept");
+            committed = await commitPrepared({ ...prepared, task: matches[0] });
+          },
+        });
+      };
+      await promote(0);
+      return committed;
+        });
+      } catch (error) {
+        acceptanceError = error;
+      }
+      const cleanupErrors = [];
+      const retainsUnknownEvidence = ["AWAIT_ACCEPTANCE_UNKNOWN", "AWAIT_PREPARATION_UNKNOWN"]
+        .includes(acceptanceError?.code);
+      if (!retainsUnknownEvidence) {
+        for (const candidate of prospective.releaseCandidates) {
+          try {
+            await this.releaseGitWorkspaces.discardGenerationCandidate(candidate);
+          } catch (error) {
+            cleanupErrors.push(error);
+          }
+        }
+      }
+      if (acceptanceError) {
+        if (cleanupErrors.length) acceptanceError.cleanupErrors = cleanupErrors;
+        if (acceptanceError.code !== "AWAIT_ACCEPTANCE_STALE" || attempt === 4) throw acceptanceError;
+        continue;
+      }
+      return cleanupErrors.length ? { ...accepted, cleanupWarnings: cleanupErrors } : accepted;
+    }
+    throw new Error("Await acceptance could not stabilize its prospective generation");
+  }
+
   async prepareAwaitSet(options = {}) {
     return this.#prepareAwaitSet(options);
   }
@@ -327,24 +428,131 @@ export class WorkspaceReleasePreflightService {
     }));
   }
 
+  async prepareOperationGeneration({
+    workspaceId, operationId, generation, taskIds, approvedRepositories = [], changelogContent = undefined,
+    previousSelectedResults = [],
+  } = {}) {
+    if (typeof this.releaseGitWorkspaces.prepareGeneration !== "function") {
+      throw new Error("immutable release generation preparation is unavailable");
+    }
+    return this.#prepareAwaitSet({
+      workspaceId,
+      selectedTaskIds: taskIds,
+      generationIdentity: { operationId, generation },
+      previousSelectedResults,
+      ...(changelogContent === undefined ? {} : { changelogContent }),
+      ...(approvedRepositories.length ? { reviewedMainApprovals: { approvedRepositories } } : {}),
+    });
+  }
+
+  async discardOperationGeneration(generation) {
+    requiredMethod(this.releaseGitWorkspaces, "discardGenerationCandidate");
+    const cleanupWarnings = [];
+    for (const candidate of generation?.candidates ?? []) {
+      if (!candidate.generationRoot) continue;
+      try {
+        await this.releaseGitWorkspaces.discardGenerationCandidate({
+          ...candidate,
+          operationId: generation.operationId,
+          generation: generation.generation,
+        });
+      } catch (error) {
+        cleanupWarnings.push(error);
+      }
+    }
+    return cleanupWarnings;
+  }
+
+  async operationSelection({ workspaceId, taskIds } = {}) {
+    const plan = await this.releasePlanner.plan(workspaceId, { selectedTaskIds: taskIds });
+    return readyRepositories(plan.ready).flatMap((repository) => (
+      repository.frozenTasks.map((task) => ({
+        taskId: task.taskId,
+        resultCommit: task.resultCommit,
+        acceptanceRevision: task.resultReleaseRevision ?? task.taskRevision,
+      }))
+    )).sort((left, right) => left.taskId.localeCompare(right.taskId));
+  }
+
+  async validateOperationGeneration({ workspaceId, generation } = {}) {
+    if (!generation?.candidates?.length) throw new Error("release operation generation has no candidates");
+    const planRevision = String(generation.candidates[0].planRevision ?? "").trim();
+    if (!planRevision || generation.candidates.some((candidate) => candidate.planRevision !== planRevision)) {
+      throw new Error("release operation generation has no single exact plan revision");
+    }
+    const repositories = generation.candidates.map((candidate) => {
+      const frozenTasks = Array.isArray(candidate.frozenTasks) ? candidate.frozenTasks : [];
+      return {
+        projectRoot: candidate.repositoryRoot,
+        worktreeRoot: candidate.releaseRoot,
+        branch: "PreRelease",
+        headCommit: candidate.commit,
+        resultCommits: frozenTasks.map((task) => task.resultCommit),
+        taskIds: frozenTasks.map((task) => task.taskId),
+        frozenTasks,
+        frozenCandidate: {
+          repositoryRoot: candidate.repositoryRoot,
+          releaseRoot: candidate.releaseRoot,
+          preReleaseHead: candidate.commit,
+          tree: candidate.tree,
+          manifestHash: candidate.manifestHash,
+          baseCommit: candidate.baseCommit,
+          planRevision,
+          manifest: candidate.manifest,
+        },
+      };
+    });
+    const source = await this.resolveReleaseValidationSource(repositories);
+    const pipelineRoot = source?.kind === "workspace-release-pipeline"
+      ? canonicalRoot(source.projectRoot)
+      : null;
+    const externalRepositories = pipelineRoot
+      ? repositories.filter((repository) => canonicalRoot(repository.projectRoot) !== pipelineRoot)
+      : repositories;
+    const external = externalRepositories.length
+      ? assertExactProductionValidation({
+          workspaceId,
+          planRevision,
+          repositories: externalRepositories,
+          validation: await this.validateProductionCandidate({
+            workspaceId, planRevision, source, repositories: externalRepositories,
+          }),
+        })
+      : null;
+    return {
+      status: "ready",
+      workspaceId: String(workspaceId),
+      planRevision,
+      source,
+      repositories,
+      ...(external ? { productionValidation: external } : {}),
+      pipelineValidationRequired: source?.kind === "workspace-release-pipeline",
+    };
+  }
+
   async #prepareAwaitSet({ workspaceId, expectedPlanRevision = null, fallbackProjectRoots = [], preserveFrozen = false,
     acceptingTask = null, commitPrepared = null, lease = null, validateOnly = false,
-    reviewedMainApprovals = null,
+    reviewedMainApprovals = null, selectedTaskIds = null, generationIdentity = null, changelogContent = undefined,
+    prospectiveOnly = false, freezeGeneration = true, ephemeralGeneration = false,
+    previousSelectedResults = [],
   } = {}) {
     if (validateOnly && commitPrepared) throw new Error("Composition validation cannot commit Task acceptance");
     if (validateOnly) requiredMethod(this.releaseGitWorkspaces, "validateCandidate");
-    if (acceptingTask && !validateOnly && typeof commitPrepared !== "function") {
+    if (acceptingTask && !validateOnly && !prospectiveOnly && typeof commitPrepared !== "function") {
       throw new Error("Prospective Await preparation requires its lifecycle commit");
     }
-    const baseline = await this.releasePlanner.plan(workspaceId);
-    const plan = acceptingTask ? await this.releasePlanner.plan(workspaceId, { acceptingTask }) : baseline;
+    const planOptions = selectedTaskIds ? { selectedTaskIds } : {};
+    const baseline = await this.releasePlanner.plan(workspaceId, planOptions);
+    const plan = acceptingTask
+      ? await this.releasePlanner.plan(workspaceId, { ...planOptions, acceptingTask })
+      : baseline;
     const validatePlan = async () => {
-      const current = await this.releasePlanner.plan(workspaceId);
+      const current = await this.releasePlanner.plan(workspaceId, planOptions);
       if (current.revision !== baseline.revision) {
         throw new Error("release plan revision changed during PreRelease rebuild");
       }
       if (acceptingTask) {
-        const prospective = await this.releasePlanner.plan(workspaceId, { acceptingTask });
+        const prospective = await this.releasePlanner.plan(workspaceId, { ...planOptions, acceptingTask });
         if (prospective.revision !== plan.revision) throw new Error("Task changed during PreRelease acceptance preparation");
       }
     };
@@ -412,13 +620,14 @@ export class WorkspaceReleasePreflightService {
       taskIds: [...new Set(plan.ready.map((entry) => String(entry.taskId)))].sort(),
       overlaps: plan.conflicts, releaseCandidates,
     });
+    let committedResult;
     // Retain each repository's rollback boundary until every candidate and the
     // one Task status CAS succeed. All callers hold the Workspace Await lock.
     const prepare = async (index) => {
       if (index === selectedRepositories.length) {
         await validatePlan();
         await validateBases();
-        if (commitPrepared) await commitPrepared(result());
+        if (commitPrepared) committedResult = await commitPrepared(result());
         return;
       }
       const repository = selectedRepositories[index];
@@ -467,36 +676,51 @@ export class WorkspaceReleasePreflightService {
       }
       baseChecks.push({ repository, base, reviewed });
       const approvedBaseCommit = reviewed?.provenance.approvedOriginMainCommit ?? base.baseCommit;
+      const baseProvenance = reviewed?.provenance ?? selectedTaskAdoptionProvenance(base);
       if (validateOnly) {
         releaseCandidates.push(await this.releaseGitWorkspaces.validateCandidate({
           planRevision: plan.revision, workspaceId, projectRoot: repository.projectRoot,
           frozenTasks: evidence.tasks, approvedBaseCommit,
+          ...(baseProvenance ? { baseProvenance } : {}),
           validateBeforeCommit: async () => { await validatePlan(); await validateBases(); },
         }));
         await prepare(index + 1);
         return;
       }
-      const candidate = await this.releaseGitWorkspaces.prepareCandidate({
+      const prepareCandidate = generationIdentity
+        ? this.releaseGitWorkspaces.prepareGeneration.bind(this.releaseGitWorkspaces)
+        : this.releaseGitWorkspaces.prepareCandidate.bind(this.releaseGitWorkspaces);
+      const candidate = await prepareCandidate({
         planRevision: plan.revision,
         workspaceId,
         projectRoot: repository.projectRoot,
         frozenTasks: evidence.tasks,
         approvedBaseCommit,
-        ...(reviewed ? { baseProvenance: reviewed.provenance } : {}),
+        ...(baseProvenance ? { baseProvenance } : {}),
         preserveFrozen,
+        ...(generationIdentity ?? {}),
+        ...(generationIdentity ? { freezePublication: freezeGeneration } : {}),
+        ...(generationIdentity ? { ephemeral: ephemeralGeneration } : {}),
+        ...(generationIdentity ? { changelogContent } : {}),
         validateBeforeCommit: async () => { await validatePlan(); await validateBases(); },
-        ...(acceptingTask ? { commitPrepared: async (prepared) => {
+        ...(acceptingTask && !prospectiveOnly ? { commitPrepared: async (prepared) => {
           releaseCandidates.push(prepared);
           await prepare(index + 1);
         } } : {}),
       });
-      if (!acceptingTask) {
+      if (!acceptingTask || prospectiveOnly) {
         releaseCandidates.push(candidate);
         await prepare(index + 1);
       }
     };
     await prepare(0);
-    return result();
+    if (previousSelectedResults.length) {
+      requiredMethod(this.releaseGitWorkspaces, "assertSelectedResultLineage");
+      for (const candidate of releaseCandidates) {
+        await this.releaseGitWorkspaces.assertSelectedResultLineage({ candidate, previousSelectedResults });
+      }
+    }
+    return commitPrepared ? committedResult : result();
   }
 
   async preflight({
@@ -671,26 +895,53 @@ export class WorkspaceReleasePreflightService {
       if (candidate.baseCommit !== audit.originMain || candidate.manifest?.baseCommit !== candidate.baseCommit) {
         throw new Error(`prepared PreRelease base does not match reviewed main for ${repository.projectRoot}; integrate the reviewed changes through a Task`);
       }
-      const actualProvenance = candidate.manifest?.baseProvenance ?? null;
+      const actualProvenance = normalizedReleaseBaseProvenance(
+        candidate.manifest?.baseProvenance ?? null, candidate.baseCommit,
+      );
+      // Independent gate: an advanced base needs its own immutable envelope;
+      // this later audit cannot retroactively supply the missing authority.
+      try {
+        assertReleaseBaseProvenance({
+          publishedBaseCommit: baseline.publishedRevision,
+          baseCommit: candidate.baseCommit,
+          provenance: actualProvenance,
+          phase: "prepared PreRelease",
+        });
+      } catch (error) {
+        throw new Error(`${error.message} for ${repository.projectRoot}`, { cause: error });
+      }
       const explicitApprovalSupplied = Boolean(
         approval.approvedLocalMainCommit && approval.approvedOriginMainCommit,
       );
       let provenanceRequired = false;
-      if ((actualProvenance || explicitApprovalSupplied)
-          && baseline.publishedRevision !== audit.originMain && audit.localMain === audit.originMain) {
+      let releaseBase = null;
+      const currentReleaseBase = async () => {
         requiredMethod(this.taskGitWorkspaces, "releaseBaseEvidence");
-        const releaseBase = await this.taskGitWorkspaces.releaseBaseEvidence({
+        releaseBase ??= await this.taskGitWorkspaces.releaseBaseEvidence({
           projectRoot: repository.projectRoot,
           publishedBaseCommit: baseline.publishedRevision,
           tasks: repository.frozenTasks,
         });
-        provenanceRequired = explicitApprovalSupplied && releaseBase.baseCommit !== audit.originMain;
+        return releaseBase;
+      };
+      if ((actualProvenance?.kind === EXPLICIT_REVIEWED_MAIN_PROVENANCE || explicitApprovalSupplied)
+          && baseline.publishedRevision !== audit.originMain && audit.localMain === audit.originMain) {
+        provenanceRequired = explicitApprovalSupplied
+          && (await currentReleaseBase()).baseCommit !== audit.originMain;
       }
-      const expectedProvenance = actualProvenance || provenanceRequired
+      if (actualProvenance?.kind === SELECTED_TASK_ADOPTION_PROVENANCE) {
+        const current = selectedTaskAdoptionProvenance(await currentReleaseBase());
+        if (!sameReviewedBaseProvenance(actualProvenance, current)) {
+          throw new Error(`prepared PreRelease selected Task adoption authority is stale for ${repository.projectRoot}`);
+        }
+      }
+      const explicitProvenance = actualProvenance?.kind === EXPLICIT_REVIEWED_MAIN_PROVENANCE
+        ? actualProvenance : null;
+      const expectedProvenance = explicitProvenance || provenanceRequired
         ? reviewedBaseProvenance({ repository, publishedRevision: baseline.publishedRevision, approval })
         : null;
-      if ((provenanceRequired && !sameReviewedBaseProvenance(actualProvenance, expectedProvenance))
-          || (actualProvenance && !sameReviewedBaseProvenance(actualProvenance, expectedProvenance))) {
+      if ((provenanceRequired && !sameReviewedBaseProvenance(explicitProvenance, expectedProvenance))
+          || (explicitProvenance && !sameReviewedBaseProvenance(explicitProvenance, expectedProvenance))) {
         throw new Error(`prepared PreRelease reviewed-main authority is stale for ${repository.projectRoot}`);
       }
       if (!["prepared", "frozen"].includes(candidate.checkpointPhase)) {

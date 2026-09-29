@@ -105,6 +105,10 @@ function cleanActivityGroups(groups) {
       id: cleanText(group?.id, 200) || `group:${index}`,
       reasoning,
       activities,
+      ...(Number(group?.omittedGroupsBefore) > 0
+        ? { omittedGroupsBefore: Math.min(1_000_000, Math.floor(Number(group.omittedGroupsBefore))) } : {}),
+      ...(Number(group?.omittedActivities) > 0
+        ? { omittedActivities: Math.min(1_000_000, Math.floor(Number(group.omittedActivities))) } : {}),
     }];
   });
 }

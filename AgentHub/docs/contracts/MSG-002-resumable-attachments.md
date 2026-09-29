@@ -44,12 +44,39 @@ visibly and is never silently substituted.
 
 ## Memory, storage and recovery
 
+Clipboard/file selection prepares the local draft without network negotiation.
+Accepted local files show a temporary thumbnail with a preparation label before
+hashing and database persistence finish. That preview is not an upload, a durable
+draft or a sendable attachment. It follows the same Task and cancellation fence
+as preparation; finishing a cancelled operation cannot restore its preview or
+attachment. Send and managed reload cannot silently discard a selected file
+still being prepared. Hashing and local-save timings contain no file contents.
+Its local bounds are eight files, 256 MiB per file and 512 MiB per draft. Before
+the first upload, the send path checks every file and the aggregate draft against
+negotiated capabilities, including the legacy 20 MiB aggregate limit. A rejected
+batch restores the same unsent draft through the existing preparation-cancellation
+owner; local preparation never claims upload or message acceptance (ADR-0074).
+
 The browser stores file Blobs and bounded hash/reference metadata rather than
 whole-file base64 copies. Durable recovery is granted only after Blob storage
 and its exact manifest are verified. The existing composer revision, recovery
 epoch and complete-payload fingerprint still gate restoration and same-message
 retry. Failed storage remains explicitly non-durable and cannot permit a managed
 reload to discard the only usable composition. See UI-001 and ADR-0037.
+Local database open, write and committed-record read share a five-second storage
+budget. Concurrent opens share one request; late handles are closed after timeout.
+Transaction timeout retires only that connection; a later selection opens a new
+one without clearing the store or replaying the failed save. Exact committed
+readback and successful byte verification establish durability even if the
+verification itself finishes after the I/O deadline. Elapsed time alone cannot
+reclassify that proven save as failed. Diagnostics distinguish open, scan/write,
+committed read and byte verification without file contents.
+The committed Blob and manifest are read back and verified before granting
+durability. A failed save retains the original in memory for sending and keeps
+its structured failure category for diagnostics. It does not add a storage
+warning to the composer or a toast. The existing non-durable reload guard remains
+in force; silence is not evidence that recovery survived. It never recommends
+clearing site data containing other drafts.
 The browser Blob store is bounded to 512 MiB and 128 records, with a seven-day
 retention limit. Expired bytes cannot assert durable recovery. Memory references
 are retained only for staged selections, drafts and unresolved submissions.

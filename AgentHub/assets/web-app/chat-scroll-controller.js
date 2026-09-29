@@ -12,6 +12,7 @@
   function shouldLoadOlderPage(scroll, pagination) {
     return pagination?.hasOlder === true
       && pagination?.loading !== true
+      && Number(scroll?.clientHeight) > 0
       && Number(scroll?.scrollHeight) <= Number(scroll?.clientHeight) + 1;
   }
 

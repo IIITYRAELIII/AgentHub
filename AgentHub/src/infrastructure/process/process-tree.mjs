@@ -7,12 +7,14 @@ export async function stopProcessTree(pid, {
   platform = process.platform,
   spawnImpl = spawn,
   killImpl = process.kill,
+  processGroup = true,
+  timeoutMs = 5_000,
 } = {}) {
   const value = Number(pid);
   if (!Number.isInteger(value) || value <= 0) return false;
   if (platform !== "win32") {
     try {
-      killImpl(-value, "SIGTERM");
+      killImpl(processGroup ? -value : value, "SIGTERM");
       return true;
     } catch (error) {
       return error?.code === "ESRCH";
@@ -20,11 +22,18 @@ export async function stopProcessTree(pid, {
   }
   return new Promise((resolve) => {
     let settled = false;
+    let killer;
     const finish = (valueToReturn) => {
       if (settled) return;
       settled = true;
+      clearTimeout(timer);
       resolve(valueToReturn);
     };
+    const timer = setTimeout(() => {
+      killer?.kill?.();
+      finish(false);
+    }, Math.max(1, Number(timeoutMs) || 5_000));
+    timer.unref?.();
     const fallback = () => {
       try {
         killImpl(value, "SIGTERM");
@@ -33,7 +42,6 @@ export async function stopProcessTree(pid, {
         finish(error?.code === "ESRCH");
       }
     };
-    let killer;
     try {
       killer = spawnImpl("taskkill.exe", ["/PID", String(value), "/T", "/F"], {
         windowsHide: true,

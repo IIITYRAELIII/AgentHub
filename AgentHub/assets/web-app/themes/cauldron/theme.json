@@ -1,0 +1,37 @@
+{
+  "id": "cauldron",
+  "name": "Котёл",
+  "color": "#f56a15",
+  "order": 122,
+  "styles": "theme.css",
+  "assets": {
+    "message-frame": "message-frame.svg",
+    "composer-frame": "composer-frame.svg",
+    "panel-frame": "panel-frame.svg",
+    "tile-frame": "tile-frame.svg"
+  },
+  "backgrounds": [
+    {
+      "id": "cauldron",
+      "name": "Обшивка",
+      "asset": "plating.png",
+      "preload": true
+    },
+    {
+      "id": "cauldron-assembly",
+      "name": "Сборочная камера",
+      "asset": "assembly.png",
+      "preload": true
+    },
+    {
+      "id": "cauldron-core",
+      "name": "Ядро",
+      "asset": "core.png",
+      "preload": true
+    },
+    {
+      "id": "cauldron-metal",
+      "name": "Чёрный металл"
+    }
+  ]
+}

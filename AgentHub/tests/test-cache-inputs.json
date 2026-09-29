@@ -1,6 +1,28 @@
 {
   "version": 2,
   "files": {
+    "tests/public/composer-immediate-preview.test.mjs": {
+      "inputs": ["assets/web-app", "work-log.css"],
+      "packages": ["playwright", "playwright-core"],
+      "builtins": ["fs/promises", "vm"],
+      "globals": ["globalThis", "process"],
+      "browser": true,
+      "execution": {
+        "parallel": true,
+        "isolation": { "filesystem": "per-child-temp", "locks": "per-child-temp", "git": "none", "ports": "none", "browserProfile": "per-launch" }
+      }
+    },
+    "tests/public/task-drag-responsiveness.test.mjs": {
+      "inputs": ["assets/web-app", "work-log.css"],
+      "packages": ["playwright", "playwright-core"],
+      "builtins": ["fs/promises", "vm"],
+      "globals": ["globalThis", "process"],
+      "browser": true,
+      "execution": {
+        "parallel": true,
+        "isolation": { "filesystem": "per-child-temp", "locks": "per-child-temp", "git": "none", "ports": "none", "browserProfile": "per-launch" }
+      }
+    },
     "tests/public/composer-production-wiring.test.mjs": {
       "inputs": ["assets/web-app", "work-log.css"],
       "packages": ["playwright", "playwright-core"],
@@ -96,6 +118,12 @@
       }
     },
     "tests/infrastructure/filesystem/release-git-workspace.test.mjs": {
+      "execution": {
+        "parallel": true,
+        "isolation": { "filesystem": "per-child-temp", "git": "per-test-temp", "locks": "per-test-temp", "ports": "none", "browserProfile": "none" }
+      }
+    },
+    "tests/infrastructure/filesystem/release-missing-provenance-recovery.test.mjs": {
       "execution": {
         "parallel": true,
         "isolation": { "filesystem": "per-child-temp", "git": "per-test-temp", "locks": "per-test-temp", "ports": "none", "browserProfile": "none" }

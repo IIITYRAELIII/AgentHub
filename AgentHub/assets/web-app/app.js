@@ -1179,8 +1179,14 @@ function enhanceThemedSelect(select) {
   });
   menu.addEventListener("keydown", (event) => {
     const current = Number(document.activeElement?.dataset?.optionIndex ?? select.selectedIndex);
-    if (event.key === "Escape" || event.key === "Tab") {
-      close({ restoreFocus: event.key === "Escape" });
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      close({ restoreFocus: true });
+      return;
+    }
+    if (event.key === "Tab") {
+      close();
       return;
     }
     if (event.key === "Enter" || event.key === " ") {
@@ -1842,6 +1848,7 @@ function updateComposerTaskGenerations(previousTasks, nextTasks) {
   for (const id of new Set([...previous.keys(), ...next.keys()])) {
     if (previous.get(id) === next.get(id)) continue;
     composerTaskGenerations.set(id, (composerTaskGenerations.get(id) ?? 0) + 1);
+    discardAttachmentPreviews(id);
   }
 }
 
@@ -1853,6 +1860,7 @@ function removeComposerTask(taskId) {
     pendingComposerRequest = null;
   }
   composerDraftReconciliation.remove(id);
+  discardAttachmentPreviews(id);
   attachmentOperationSequences.delete(id);
   annotationOperationSequences.delete(id);
 }
@@ -1869,13 +1877,13 @@ function captureComposerTaskOperation(taskId = state.selectedId) {
   };
 }
 
-function composerTaskOperationCurrent(operation) {
+function composerTaskOperationCurrent(operation, { allowDraftEdits = false } = {}) {
   if (!operation) return false;
   const task = state.tasks.find((candidate) => candidate.id === operation.taskId);
   return Boolean(task)
     && composerTaskIdentity(task) === operation.taskIdentity
     && (composerTaskGenerations.get(operation.taskId) ?? 0) === operation.taskGeneration
-    && composerDraftReconciliation.revision(operation.taskId) === operation.editRevision;
+    && (allowDraftEdits || composerDraftReconciliation.revision(operation.taskId) === operation.editRevision);
 }
 
 function advanceComposerAsyncOperationFence(taskId) {
@@ -1883,6 +1891,7 @@ function advanceComposerAsyncOperationFence(taskId) {
   if (!id) return;
   attachmentOperationSequences.set(id, (attachmentOperationSequences.get(id) ?? 0) + 1);
   annotationOperationSequences.set(id, (annotationOperationSequences.get(id) ?? 0) + 1);
+  discardAttachmentPreviews(id);
 }
 
 function taskNavigationData(task) {
@@ -3666,12 +3675,14 @@ function setViewContent(view, { persist = true, activate = true } = {}) {
   syncMobileNav();
   if (activate) activateView(next);
   if (persist) persistNavigationTab();
+  if (next === "chat") scheduleUnderfilledHistoryLoad();
 }
 
 function setPane(pane, { persist = true } = {}) {
   root.dataset.pane = pane === "chat" ? "chat" : "tasks";
   syncMobileNav();
   if (persist) persistNavigationTab();
+  if (root.dataset.pane === "chat") scheduleUnderfilledHistoryLoad();
 }
 
 function syncMobileNav() {
@@ -3739,6 +3750,8 @@ function shortModelLabel(value) {
   const source = String(value ?? "").trim();
   if (!source) return "";
   const normalized = source.toLowerCase();
+  const versionedVariant = normalized.match(/^(?:gpt[- ]?)?(5\.6|6)[- ](sol|luna)$/u);
+  if (versionedVariant) return `${versionedVariant[1]} ${versionedVariant[2] === "sol" ? "Sol" : "Luna"}`;
   if (normalized === "gpt-6-astra" || normalized === "gpt-6 astra") return "Astra";
   if (normalized.includes("astra")) return source;
   const named = [
@@ -5016,7 +5029,14 @@ function bindTaskReferenceDrop(container, {
     const reference = TaskReferences.fromTransfer(event.dataTransfer, { intent: "context" });
     target?.classList.remove("is-task-drop-target");
     if (!targetTaskId || !reference) return;
-    attachTaskReferenceToComposer(targetTaskId, reference);
+    const trace = window.AgentHubCommandTrace;
+    const started = trace?.now();
+    const commandId = trace?.newId();
+    const attach = () => attachTaskReferenceToComposer(targetTaskId, reference);
+    if (trace) {
+      trace.measure("ui-interaction", "task-drop", attach, commandId);
+      trace.afterPaint("ui-render", "task-drop", started, commandId, { trigger: "next-paint" });
+    } else attach();
   });
 }
 
@@ -5025,6 +5045,10 @@ bindTaskReferenceDrop(activityStreamList);
 bindTaskReferenceDrop(activityRecentList);
 bindTaskReferenceDrop(chatPane, {
   targetFromEvent: () => chatPane,
+  conversationTaskId: () => String(state.selectedId ?? "").trim(),
+});
+bindTaskReferenceDrop(composer, {
+  targetFromEvent: () => composer,
   conversationTaskId: () => String(state.selectedId ?? "").trim(),
 });
 
@@ -6799,7 +6823,15 @@ function resetHistoryPull() {
   renderHistoryLoader();
 }
 
+function chatHistoryViewportVisible() {
+  return root.dataset.view === "chat" && !document.hidden && !chatPane.hidden
+    && chatScroll.clientHeight > 0 && chatScroll.clientWidth > 0;
+}
+
 function requestOlderHistory() {
+  // Resize/scroll callbacks can still arrive after navigation hides this pane.
+  // Zero-sized hidden history is not an empty viewport asking for more pages.
+  if (!chatHistoryViewportVisible()) return;
   const pagination = currentHistoryPagination();
   if (!state.selectedId || pagination.loading) return;
   const tail = messageTailPagination();
@@ -6815,9 +6847,10 @@ function requestOlderHistory() {
 let historyUnderfillFrame = 0;
 
 function scheduleUnderfilledHistoryLoad() {
-  if (historyUnderfillFrame) return;
+  if (historyUnderfillFrame || root.dataset.view !== "chat" || document.hidden) return;
   historyUnderfillFrame = window.requestAnimationFrame(() => {
     historyUnderfillFrame = 0;
+    if (!chatHistoryViewportVisible()) return;
     const pagination = currentHistoryPagination();
     if (shouldLoadOlderPage(chatScroll, {
       ...pagination,
@@ -7322,15 +7355,83 @@ function visibleTurnTraceGroups(groups) {
   ));
 }
 
-function turnTraceGroupsNode(values, { liveStage = "", openGroupIds = [] } = {}) {
+const traceDetailSources = new WeakMap();
+
+function traceReasoningNode(group) {
+  const node = el("div", { class: "turn-trace-reasoning", "data-trace-group-id": group.id });
+  renderMarkdown(node, group.reasoning);
+  traceDetailSources.set(node, group);
+  return node;
+}
+
+function requestTracePage(identity, tracePage) {
+  const boundIdentity = { ...identity, streamId: identity.streamId || currentTask()?.streamId };
+  return new Promise((resolve, reject) => emit("history:trace-page", { identity: boundIdentity, tracePage, resolve, reject }));
+}
+
+function traceArchiveNode(identity) {
+  const content = el("div", { class: "turn-trace-archive-content" });
+  const previous = el("button", { type: "button", text: "Назад", disabled: true });
+  const next = el("button", { type: "button", text: "Далее", disabled: true });
+  const status = el("span", { role: "status" });
+  const details = el("details", { class: "turn-trace-archive" }, [
+    el("summary", { text: "Все этапы" }), content, previous, next, status,
+  ]);
+  let page = null;
+  let pending = false;
+  const offsets = [];
+  async function load(offset, direction = "initial") {
+    if (pending) return;
+    pending = true;
+    previous.disabled = next.disabled = true;
+    status.textContent = "Загрузка…";
+    try {
+      const result = await requestTracePage(identity, {
+        turnId: identity.turnId, offset,
+        ...(page ? { generation: page.generation, sourceSize: page.sourceSize, sourceHash: page.sourceHash } : {}),
+      });
+      if (!details.isConnected) return;
+      if (direction === "next") offsets.push(page.offset);
+      if (direction === "previous") offsets.pop();
+      page = result;
+      content.replaceChildren(...page.groups.map((group) => el("section", {}, [
+        ...(group.reasoning ? [traceReasoningNode(group)] : []),
+        ...group.activities.map(activityItemNode),
+      ])));
+      status.textContent = "";
+    } catch (error) {
+      if (details.isConnected) status.textContent = error.message || "Не удалось прочитать этапы";
+    } finally {
+      pending = false;
+      previous.disabled = !offsets.length;
+      next.disabled = page?.nextOffset == null;
+    }
+  }
+  details.addEventListener("toggle", () => { if (details.open && !page) void load(0); });
+  previous.addEventListener("click", () => void load(offsets.at(-1), "previous"));
+  next.addEventListener("click", () => void load(page.nextOffset, "next"));
+  return details;
+}
+
+function traceOmissionNode(groups, identity = null) {
+  const earlierGroups = Number(groups[0]?.omittedGroupsBefore) || 0;
+  const earlierActivities = groups.reduce(
+    (count, group) => count + (Number(group?.omittedActivities) || 0), 0,
+  );
+  if (!earlierGroups && !earlierActivities) return null;
+  return identity?.provider === "codex" && identity.threadId && identity.turnId
+    ? traceArchiveNode(identity)
+    : el("div", { class: "turn-trace-omission", text: "Показаны последние этапы" });
+}
+
+function turnTraceGroupsNode(values, { liveStage = "", openGroupIds = [], identity = null } = {}) {
   const content = turnTraceContent(values);
   const blocks = content.reasoningBlocks.map((reasoning, index) => {
     const section = el("section", {
       class: "turn-trace-block",
       "data-trace-index": String(index),
     });
-    const reasoningNode = el("div", { class: "turn-trace-reasoning" });
-    renderMarkdown(reasoningNode, reasoning);
+    const reasoningNode = traceReasoningNode(values.filter((group) => String(group.reasoning ?? "").trim())[index]);
     section.append(reasoningNode);
     return section;
   });
@@ -7354,10 +7455,11 @@ function turnTraceGroupsNode(values, { liveStage = "", openGroupIds = [] } = {})
       target.replaceChildren(...content.activities.map(activityItemNode));
     }));
   }
-  return el("div", { class: "turn-trace-groups" }, blocks);
+  const omission = traceOmissionNode(values, identity);
+  return el("div", { class: "turn-trace-groups" }, omission ? [omission, ...blocks] : blocks);
 }
 
-function turnTraceNode(groups) {
+function turnTraceNode(groups, identity = null) {
   const values = visibleTurnTraceGroups(groups);
   if (!values.length) return null;
   const activityCount = values.reduce((total, group) => total + (group.activities?.length ?? 0), 0);
@@ -7366,6 +7468,7 @@ function turnTraceNode(groups) {
     reasoningCount: content.reasoningBlocks.length,
     activityCount,
   });
+  if (traceOmissionNode(values)) summary.label += " · последние";
   const expanded = el("div", {
     class: "turn-trace-groups",
     "data-deferred-disclosure-content": "",
@@ -7375,9 +7478,10 @@ function turnTraceNode(groups) {
     expanded,
   ]);
   return configureDeferredDisclosure(details, expanded, (target) => {
+    const omission = traceOmissionNode(values, identity);
+    if (omission) target.append(omission);
     content.reasoningBlocks.forEach((reasoning, index) => {
-      const reasoningNode = el("div", { class: "turn-trace-reasoning" });
-      renderMarkdown(reasoningNode, reasoning);
+      const reasoningNode = traceReasoningNode(values.filter((group) => String(group.reasoning ?? "").trim())[index]);
       target.append(el("section", {
         class: "turn-trace-block",
         "data-trace-index": String(index),
@@ -7576,7 +7680,7 @@ function renderMessage(message, { readOnly = false, task = currentTask() } = {})
 
   if (maintenance) article.append(body);
   else { article.append(head); if (!readOnly) syncMessageUploadActions(head, message); }
-  const trace = turnTraceNode(message.activityGroups);
+  const trace = turnTraceNode(message.activityGroups, message);
   const activity = trace ? null : activityFeedNode(message.activities);
   if (trace) article.append(trace);
   else if (activity) article.append(activity);
@@ -7798,7 +7902,7 @@ async function focusResponseCitationSource(button) {
   const target = responseCitationSources.get(button);
   const source = normalizedResponseAnnotationSource(target?.source);
   if (!source) return false;
-  const projection = sourceMessageProjection(source);
+  let projection = sourceMessageProjection(source);
   if (!projection) return false;
   const renderedKey = MessageView.messageKey(projection.message, projection.index);
   const rootNode = renderedResponseAnnotationSourceRoot(renderedKey);
@@ -7812,7 +7916,30 @@ async function focusResponseCitationSource(button) {
       syncDeferredDisclosure(details);
     }
   }
-  const surface = responseAnnotationSourceSurface(article, source);
+  let recoveredTraceSurface = null;
+  if (source.traceGroupId && article) {
+    let surface = responseAnnotationSourceSurface(article, source);
+    let group = surface && traceDetailSources.get(surface);
+    const previewContent = group && responseAnnotationSourceContent(
+      { ...projection.message, activityGroups: [group] }, source,
+    );
+    if (!previewContent || await responseAnnotationSha256(previewContent) !== source.contentHash) {
+      try {
+        const page = await requestTracePage(projection.message, { turnId: source.turnId, groupId: source.traceGroupId });
+        if (!article.isConnected) return false;
+        if (page.groups?.length !== 1 || page.groups[0].id !== source.traceGroupId) return false;
+        group = page.groups[0];
+        const candidate = { ...projection.message, activityGroups: [group] };
+        if (await responseAnnotationSha256(responseAnnotationSourceContent(candidate, source)) !== source.contentHash) return false;
+        article.querySelector("[data-citation-trace]")?.remove();
+        recoveredTraceSurface = traceReasoningNode(group);
+        const target = el("section", { "data-citation-trace": "" }, [recoveredTraceSurface]);
+        article.append(target);
+      } catch { return false; }
+    }
+    projection = { ...projection, message: { ...projection.message, activityGroups: [group] } };
+  }
+  const surface = recoveredTraceSurface || responseAnnotationSourceSurface(article, source);
   if (!article || !surface) return false;
   const range = domRangeFromOffsets(surface, source.start, source.end);
   if (!range) return false;
@@ -7935,6 +8062,7 @@ function populateLiveCard(node, live, fallbackAuthor = "Агент", task = curr
     liveTrace.replaceChildren(...(groups.length ? [turnTraceGroupsNode(groups, {
       liveStage: liveStage.detail,
       openGroupIds,
+      identity: liveMessage,
     })] : []));
   });
   liveCardRenderController.reconcile(node, "trace-summary", renderParts.traceSummary, () => {
@@ -8146,19 +8274,24 @@ function renderQueueForTask(taskId, container) {
       }
     } else {
       const steerAvailable = Boolean(task?.running && ["codex", "claude"].includes(String(task?.provider ?? "")));
-      actions.push(el("button", {
-        type: "button",
-        class: "queue-steer",
-        "data-action": "queue-steer",
-        "data-queue-id": entry.id,
-        title: steerAvailable
-          ? (task.provider === "claude"
-            ? "Прервать текущий ход и продолжить его этим сообщением"
-            : "Добавить это сообщение в текущий ход")
-          : "Доступно, пока эта задача выполняет ход",
-        disabled: !steerAvailable,
-        text: "В текущий ход",
-      }));
+      const exactSteerDecision = entry.state === "pending"
+        && entry.attentionRequired === true
+        && entry.conflictKind === "message-steer";
+      if (!exactSteerDecision) {
+        actions.push(el("button", {
+          type: "button",
+          class: "queue-steer",
+          "data-action": "queue-steer",
+          "data-queue-id": entry.id,
+          title: steerAvailable
+            ? (task.provider === "claude"
+              ? "Прервать текущий ход и продолжить его этим сообщением"
+              : "Добавить это сообщение в текущий ход")
+            : "Доступно, пока эта задача выполняет ход",
+          disabled: !steerAvailable,
+          text: "В текущий ход",
+        }));
+      }
       actions.push(el("button", {
         type: "button",
         class: "queue-edit",
@@ -8212,14 +8345,26 @@ function renderQueueForTask(taskId, container) {
         }));
       }
       if (entry.state === "pending") {
-        actions.push(el("button", {
-          type: "button",
-          class: "queue-accept",
-          "data-action": entry.lastError ? "queue-retry" : "queue-accept",
-          "data-queue-id": entry.id,
-          title: "Отправить после завершения текущего хода",
-          text: entry.lastError ? "Повторить" : "После хода",
-        }));
+        if (entry.lastError) {
+          actions.push(el("button", {
+            type: "button",
+            class: "queue-accept",
+            "data-action": "queue-retry",
+            "data-queue-id": entry.id,
+            title: "Повторить доставку в исходный ход с тем же идентификатором",
+            text: "Повторить",
+          }));
+        }
+        if (!entry.lastError || entry.queueAfterTurnAvailable === true) {
+          actions.push(el("button", {
+            type: "button",
+            class: "queue-accept",
+            "data-action": "queue-accept",
+            "data-queue-id": entry.id,
+            title: "Явно разрешить отправку после завершения текущего хода",
+            text: "После хода",
+          }));
+        }
       }
       actions.push(el("button", {
         type: "button", class: "queue-remove", "data-action": "queue-remove", "data-queue-id": entry.id,
@@ -8347,9 +8492,10 @@ function updateSendState() {
     || currentAttachments().length > 0
     || currentTaskReferences().length > 0
     || currentAnnotations().length > 0;
-  composerSend.disabled = !draftFilled || !state.selectedId || Boolean(pendingComposerRequest);
+  const preparing = currentAttachmentPreviews().length > 0;
+  composerSend.disabled = !draftFilled || !state.selectedId || Boolean(pendingComposerRequest) || preparing;
   composerQuickMessages?.querySelectorAll("button").forEach((button) => {
-    button.disabled = !state.selectedId || Boolean(pendingComposerRequest);
+    button.disabled = !state.selectedId || Boolean(pendingComposerRequest) || preparing;
   });
 }
 
@@ -8420,6 +8566,10 @@ function sendComposerRequest({
   restoreOnReject = false,
 } = {}) {
   if (!state.selectedId || pendingComposerRequest) return;
+  if (currentAttachmentPreviews().length) {
+    showToast("Вложения ещё готовятся. Дождись подготовки или удали их перед отправкой.");
+    return;
+  }
   const submittedAtMs = Date.now();
   const submittedMonotonicMs = performance.now();
   const task = currentTask();
@@ -8563,6 +8713,29 @@ function normalizedRecoveryAttachments(value) {
 let attachments = [];
 let taskReferences = [];
 const attachmentOperationSequences = new Map();
+let pendingAttachmentPreparations = 0;
+// Transient selection projection only: never persisted or used as send payload.
+const attachmentPreparationPreviews = new Set();
+
+function currentAttachmentPreviews(taskId = state.selectedId) {
+  return [...attachmentPreparationPreviews].filter((entry) => entry.operation.taskId === taskId)
+    .flatMap((entry) => entry.items);
+}
+
+function disposeAttachmentPreview(entry) {
+  if (!attachmentPreparationPreviews.delete(entry)) return;
+  for (const item of entry.items) if (item.url) URL.revokeObjectURL(item.url);
+}
+
+function discardAttachmentPreviews(taskId) {
+  for (const entry of attachmentPreparationPreviews) {
+    if (entry.operation.taskId === taskId) disposeAttachmentPreview(entry);
+  }
+  if (state.selectedId === taskId) {
+    renderAttachments();
+    updateSendState();
+  }
+}
 
 function currentAttachments() {
   return attachments;
@@ -8588,7 +8761,8 @@ function setTaskReferences(next) {
 
 function renderAttachments() {
   attachmentsBox.replaceChildren();
-  attachmentsBox.hidden = attachments.length === 0 && taskReferences.length === 0;
+  const previews = currentAttachmentPreviews();
+  attachmentsBox.hidden = attachments.length === 0 && taskReferences.length === 0 && previews.length === 0;
   if (taskReferences.length) {
     attachmentsBox.append(renderAttachmentStrip(taskReferences, {
       readOnly: false,
@@ -8596,6 +8770,24 @@ function renderAttachments() {
     }));
   }
   if (attachments.length) attachmentsBox.append(renderAttachmentStrip(attachments, { readOnly: false }));
+  if (previews.length) {
+    const strip = el("div", { class: "attachment-strip" });
+    for (const item of previews) {
+      strip.append(el("div", {
+        class: `attachment attachment-preparing${item.url ? " attachment-image" : " attachment-file"}`,
+        "data-attachment-preparing": "", "aria-busy": "true", title: item.name,
+      }, [
+        item.url ? el("img", { src: item.url, alt: item.name })
+          : el("span", { class: "attachment-file-card", text: item.name }),
+        el("span", { class: "attachment-preparing-label", role: "status", text: "Подготовка…" }),
+        el("button", {
+          type: "button", class: "attachment-remove", "data-attachment-preparation-remove": "",
+          title: "Отменить подготовку вложений", "aria-label": "Отменить подготовку вложений", text: "×",
+        }),
+      ]));
+    }
+    attachmentsBox.append(strip);
+  }
 }
 
 const attachmentThumbnailObserver = typeof window.IntersectionObserver === "function"
@@ -8755,6 +8947,10 @@ function formatAttachmentSize(value) {
 }
 
 attachmentsBox.addEventListener("click", (event) => {
+  if (event.target.closest("[data-attachment-preparation-remove]")) {
+    advanceComposerAsyncOperationFence(state.selectedId);
+    return;
+  }
   const taskReferenceRemove = event.target.closest("[data-task-reference-index]");
   if (taskReferenceRemove) {
     const index = Number(taskReferenceRemove.dataset.taskReferenceIndex);
@@ -8765,6 +8961,7 @@ attachmentsBox.addEventListener("click", (event) => {
   const remove = event.target.closest("[data-attachment-index]");
   if (!remove) return;
   const index = Number(remove.dataset.attachmentIndex);
+  advanceComposerAsyncOperationFence(state.selectedId);
   setAttachments(attachments.filter((_, i) => i !== index));
   saveDraft({ userEdited: true });
 });
@@ -8777,16 +8974,14 @@ async function readAttachmentFiles(files) {
     file && Number.isSafeInteger(file.size) && file.size > 0
   ));
   if (selected.length === 0) return;
-  const operationSequence = (attachmentOperationSequences.get(operation.taskId) ?? 0) + 1;
-  attachmentOperationSequences.set(operation.taskId, operationSequence);
-  let policy;
-  try { policy = await window.AgentHubAttachmentCapabilities(); }
-  catch (error) { showToast(error.message); return; }
-  if (!composerTaskOperationCurrent(operation)
-    || attachmentOperationSequences.get(operation.taskId) !== operationSequence) return;
+  // Selection prepares a local draft, not an upload. Network negotiation belongs
+  // to sending; it must not make clipboard bytes wait for the server.
+  const operationSequence = attachmentOperationSequences.get(operation.taskId) ?? 0;
+  const policy = { maxBytes: DRAFT_ATTACHMENT_MAX_BYTES, maxTotalBytes: DRAFT_ATTACHMENT_MAX_TOTAL_BYTES };
   const limit = 8;
-  const room = Math.max(0, limit - initialDraft.attachments.length);
-  const existingBytes = initialDraft.attachments.reduce((sum, item) => sum + (Number(item?.size) || 0), 0);
+  const reserved = [...initialDraft.attachments, ...currentAttachmentPreviews(operation.taskId)];
+  const room = Math.max(0, limit - reserved.length);
+  const existingBytes = reserved.reduce((sum, item) => sum + (Number(item?.size) || 0), 0);
   let remainingBytes = Math.max(0, policy.maxTotalBytes - existingBytes);
   let oversized = 0;
   let unsafe = 0;
@@ -8814,11 +9009,30 @@ async function readAttachmentFiles(files) {
     else if (oversized) showToast(`Общий лимит вложений: ${Math.floor(policy.maxTotalBytes / 1024 / 1024)} МБ.`);
     return;
   }
-  const settled = await Promise.allSettled(accepted.map((file) => window.AgentHubComposerFiles.prepare(file, {
+  pendingAttachmentPreparations += 1;
+  const preview = { operation, items: accepted.map((file) => {
+    let url = "";
+    if (file.type.startsWith("image/")) {
+      try { url = URL.createObjectURL(file); } catch { /* Preparation still owns file validation. */ }
+    }
+    return { name: file.name, size: file.size, url };
+  }) };
+  attachmentPreparationPreviews.add(preview);
+  renderAttachments();
+  updateSendState();
+  let settled;
+  try {
+    settled = await Promise.allSettled(accepted.map((file) => window.AgentHubComposerFiles.prepare(file, {
       name: file.name,
       type: file.type || "application/octet-stream",
       size: file.size,
     })));
+  } finally {
+    pendingAttachmentPreparations -= 1;
+    disposeAttachmentPreview(preview);
+    renderAttachments();
+    updateSendState();
+  }
   const failed = settled.find((result) => result.status === "rejected");
   if (failed) {
     window.AgentHubComposerFiles.settle(settled.filter((result) => result.status === "fulfilled").map((result) => result.value));
@@ -8838,22 +9052,33 @@ async function readAttachmentFiles(files) {
     showToast("Вложение не прошло проверку целостности.");
     return;
   }
-  if (attachmentOperationSequences.get(operation.taskId) === operationSequence
-    && composerTaskOperationCurrent(operation)) {
-    composerDraftReconciliation.save(operation.taskId, {
-      ...initialDraft,
-      attachments: [...initialDraft.attachments, ...canonical].slice(0, limit),
-    }, { userEdited: true });
-    if (state.selectedId === operation.taskId) restoreDraft();
+  if ((attachmentOperationSequences.get(operation.taskId) ?? 0) === operationSequence
+    && composerTaskOperationCurrent(operation, { allowDraftEdits: true })) {
+    // Independent pastes append to the current composition. Never replay the
+    // pre-read text/attachments over edits or another completed paste.
+    const current = composerDraftSnapshot(operation.taskId);
+    let bytes = current.attachments.reduce((sum, item) => sum + (Number(item?.size) || 0), 0);
+    const additions = [];
+    for (const item of canonical) {
+      if (current.attachments.length + additions.length >= limit) break;
+      if (bytes + item.size > policy.maxTotalBytes) { oversized += 1; continue; }
+      additions.push(item);
+      bytes += item.size;
+    }
+    if (additions.length > 0) {
+      composerDraftReconciliation.save(operation.taskId, {
+        ...current,
+        attachments: [...current.attachments, ...additions],
+      }, { userEdited: true });
+      if (state.selectedId === operation.taskId) restoreDraft();
+    }
+    if (additions.length < canonical.length && !oversized) showToast(`Можно приложить не больше ${limit} файлов.`);
   }
   window.AgentHubComposerFiles.settle(loaded);
   pruneComposerFiles();
   if (selected.length > room) showToast(`Можно приложить не больше ${limit} файлов.`);
   else if (unsafe) showToast("Часть файлов отклонена: небезопасное имя или тип.");
   else if (oversized) showToast(`Общий лимит вложений: ${Math.floor(policy.maxTotalBytes / 1024 / 1024)} МБ.`);
-  if (loaded.some((file) => !window.AgentHubComposerFiles.durable(file))) {
-    showToast("Файл доступен до закрытия страницы. Локальное хранилище недоступно; после перезагрузки выбери файл снова.");
-  }
 }
 
 document.querySelector("[data-action='attach']").addEventListener("click", () => fileInput.click());
@@ -9124,7 +9349,9 @@ function sourceMessageForSelection(selection) {
   const index = messages.findIndex((message, messageIndex) => (
     MessageView.messageKey(message, messageIndex) === renderedKey
   ));
-  return index >= 0 ? { message: messages[index], root: renderedRoot } : null;
+  if (index < 0) return null;
+  const group = traceDetailSources.get(selection.surface);
+  return { message: group ? { ...messages[index], activityGroups: [group] } : messages[index], root: renderedRoot };
 }
 
 async function responseAnnotationFromSelection(selection) {
@@ -9136,9 +9363,23 @@ async function responseAnnotationFromSelection(selection) {
   const end = Number(selection?.offsets?.end);
   if (!quote || !projection || !identity || !locator
     || !Number.isSafeInteger(start) || !Number.isSafeInteger(end)) return null;
+  let sourceMessage = projection.message;
+  let sourceSurface = selection.surface;
+  if (locator.traceGroupId && identity.provider === "codex") {
+    // Durable history is a bounded preview, including legacy rows with no
+    // truncation marker. Bind new exact-group quotes to the source, not that copy.
+    const page = await requestTracePage(sourceMessage, { turnId: identity.turnId, groupId: locator.traceGroupId });
+    if (!selection.surface.isConnected || !projection.root.isConnected
+      || page.groups?.length !== 1 || page.groups[0].id !== locator.traceGroupId) return null;
+    sourceMessage = { ...sourceMessage, activityGroups: page.groups };
+    sourceSurface = traceReasoningNode(page.groups[0]);
+    // A cut Markdown construct may render differently. Do not guess a new range.
+    if (!sourceSurface.textContent.startsWith(selection.surface.textContent.trimEnd())
+      || domRangeFromOffsets(sourceSurface, start, end)?.toString().trim() !== quote) return null;
+  }
   const [contentHash, surfaceHash, selectionHash] = await Promise.all([
-    responseAnnotationSha256(responseAnnotationSourceContent(projection.message)),
-    responseAnnotationSha256(selection.surface.textContent),
+    responseAnnotationSha256(responseAnnotationSourceContent(sourceMessage, locator)),
+    responseAnnotationSha256(sourceSurface.textContent),
     responseAnnotationSha256(quote),
   ]);
   const source = normalizedResponseAnnotationSource({
@@ -9356,9 +9597,14 @@ function composerDraftSnapshot(taskId) {
 
 function saveDraft({ userEdited = false } = {}) {
   if (!state.selectedId) return;
+  const draft = composerDraftSnapshot(state.selectedId);
+  if (userEdited && !window.AgentHubComposerDraftReconciliation.hasDraftContent(draft)
+    && window.AgentHubComposerDraftReconciliation.hasDraftContent(drafts.get(state.selectedId))) {
+    advanceComposerAsyncOperationFence(state.selectedId);
+  }
   composerDraftReconciliation.save(
     state.selectedId,
-    composerDraftSnapshot(state.selectedId),
+    draft,
     { userEdited },
   );
 }
@@ -9368,6 +9614,7 @@ function composerDraftState(taskId) {
 }
 
 function writeComposerDraft(taskId, draft) {
+  advanceComposerAsyncOperationFence(taskId);
   const next = composerDraftReconciliation.save(
     taskId,
     draft,
@@ -9388,7 +9635,7 @@ function prepareForRuntimeReload() {
     draftsPersisted,
     drafts: drafts.values(),
     modalOpen,
-    requestPending: Boolean(pendingComposerRequest),
+    requestPending: Boolean(pendingComposerRequest) || pendingAttachmentPreparations > 0,
     bugReportAttachments,
     bugReportSending,
   })) return false;
@@ -17691,6 +17938,7 @@ window.addEventListener("pagehide", () => {
 }, { once: true });
 window.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "hidden") saveDraft();
+  else scheduleUnderfilledHistoryLoad();
 });
 renderTasks();
 renderChat();

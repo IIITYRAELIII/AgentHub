@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { access, mkdir, mkdtemp, readFile, readdir, rm, unlink, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -21,6 +22,68 @@ import { canonicalPath } from "../../../src/infrastructure/filesystem/config.mjs
 import { taskRepositoryKey } from "../../../src/domain/task-git-reference.mjs";
 
 const execFileAsync = promisify(execFile);
+
+test("combined Tasks accept proven published history with stale primary main and reject unproven ancestry", { timeout: 90_000 }, async (context) => {
+  const root = await repository(context);
+  const originalMain = await git(root, "rev-parse", "main");
+  const dataDir = path.join(root, "..", `${path.basename(root)}-published-history`);
+  context.after(() => rm(dataDir, { recursive: true, force: true }));
+  let publication = null;
+  const service = new TaskGitWorkspaceService({ dataDir, readPublication: async () => publication });
+  const a = await service.prepare({ taskId: "14141414-1414-4414-8414-141414141414", projectRoot: root });
+  const b = await service.prepare({ taskId: "15151515-1515-4515-8515-151515151515", projectRoot: root });
+  const commit = async (cwd, message) => {
+    await git(cwd, "add", ".");
+    await git(cwd, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", message);
+  };
+  await git(root, "checkout", "-b", "published-feature");
+  await writeFile(path.join(root, "published.txt"), "already published\n");
+  await commit(root, "published feature");
+  await git(root, "checkout", "-b", "publication", "main");
+  await git(root, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+    "merge", "--no-ff", "published-feature", "-m", "publication");
+  const published = await git(root, "rev-parse", "HEAD");
+  await git(root, "checkout", "main");
+  await git(root, "update-ref", "refs/remotes/origin/main", published);
+  for (const workspace of [a, b]) await git(workspace.projectRoot, "merge", "--ff-only", published);
+  await writeFile(path.join(a.projectRoot, "a.txt"), "A\n");
+  await commit(a.projectRoot, "A result");
+  await writeFile(path.join(b.projectRoot, "b.txt"), "B\n");
+  await commit(b.projectRoot, "B result");
+  await git(b.projectRoot, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+    "merge", "--no-ff", a.branch, "-m", "combine A");
+  const snapshot = await service.snapshot({ taskId: b.taskId, projectRoot: b.projectRoot });
+  const devBefore = (await service.prepareDev(root)).headCommit;
+  for (const invalid of [null, { revision: published },
+    { generation: "g", repositories: [{ root: path.join(root, "foreign"), revision: published }] },
+    { generation: "g", repositories: [{ root, revision: originalMain }] }]) {
+    publication = invalid;
+    await assert.rejects(service.mergeIntoDev(snapshot), /upstream|adoption/iu);
+    assert.equal(await git(root, "rev-parse", "dev"), devBefore);
+  }
+  publication = { generation: "published-generation", repositories: [{ root, revision: published }] };
+  await git(root, "update-ref", "refs/remotes/origin/main", originalMain);
+  await assert.rejects(service.mergeIntoDev(snapshot), /upstream|adoption/iu);
+  assert.equal(await git(root, "rev-parse", "dev"), devBefore);
+  await git(root, "update-ref", "refs/remotes/origin/main", published);
+  const result = await service.mergeIntoDev(snapshot);
+  assert.equal(result.integrated, true);
+  assert.equal(await git(root, "rev-parse", "main"), originalMain);
+  assert.equal(await git(root, "status", "--porcelain"), "");
+  assert.equal(await readFile(path.join(result.dev.projectRoot, "a.txt"), "utf8"), "A\n");
+  assert.equal(await readFile(path.join(result.dev.projectRoot, "b.txt"), "utf8"), "B\n");
+  const acceptedDev = await git(root, "rev-parse", "dev");
+  await git(root, "checkout", "-b", "unpublished-foreign", published);
+  await writeFile(path.join(root, "foreign.txt"), "not published\n");
+  await commit(root, "unpublished foreign change");
+  await git(root, "checkout", "main");
+  await git(b.projectRoot, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+    "merge", "--no-ff", "unpublished-foreign", "-m", "unapproved adoption");
+  const changed = await service.snapshot({ taskId: b.taskId, projectRoot: b.projectRoot });
+  await assert.rejects(service.mergeIntoDev(changed), /upstream|adoption/iu);
+  assert.equal(await git(root, "rev-parse", "dev"), acceptedDev);
+  assert.equal(await git(root, "rev-parse", "main"), originalMain);
+});
 
 async function withdrawalFixture(context, { dependent = false } = {}) {
   const root = await repository(context);
@@ -224,6 +287,126 @@ test("Task Git preview includes committed, staged and untracked work without cha
   const large = await service.reviewDiff({ taskId, taskNumber });
   assert.equal(large.truncated, true);
   assert.ok(Buffer.byteLength(large.repositories[0].text) <= 64 * 1024);
+});
+
+test("release service closure proves exact published manifest and Done result without deleting its worktree", { timeout: 90_000 }, async (context) => {
+  const { root } = await repositoryWithOrigin(context);
+  const dataDir = path.join(root, "..", `${path.basename(root)}-release-service-data`);
+  context.after(() => rm(dataDir, { recursive: true, force: true }));
+  let publication = null;
+  const service = new TaskGitWorkspaceService({ dataDir, readPublication: async () => publication });
+  const source = await service.prepare({
+    taskId: "11111111-1111-4111-8111-111111111111", taskNumber: "HUB-252", projectRoot: root,
+  });
+  const selectedWorkspace = await service.prepare({
+    taskId: "22222222-2222-4222-8222-222222222222", taskNumber: "HUB-245", projectRoot: root,
+  });
+  await writeFile(path.join(selectedWorkspace.projectRoot, "release.txt"), "published\n", "utf8");
+  const selectedResult = await service.snapshotAndMerge({ taskId: selectedWorkspace.taskId,
+    taskNumber: "HUB-245", projectRoot: selectedWorkspace.projectRoot });
+  await git(root, "merge", "--ff-only", selectedResult.snapshot.headCommit);
+  await git(root, "push", "origin", "main");
+  await git(root, "update-ref", "refs/remotes/origin/main", selectedResult.snapshot.headCommit);
+  const repositoryKey = taskRepositoryKey(root);
+  const manifest = { workspaceId: "workspace-1", planRevision: "plan-1", tasks: [{
+    taskId: selectedWorkspace.taskId, resultCommit: selectedResult.snapshot.headCommit,
+  }] };
+  const manifestBytes = Buffer.from(`${JSON.stringify(manifest)}\n`);
+  const manifestHash = createHash("sha256").update(manifestBytes).digest("hex");
+  const evidenceRoot = path.join(dataDir, "release-repositories", repositoryKey, "evidence");
+  await mkdir(evidenceRoot, { recursive: true });
+  await writeFile(path.join(evidenceRoot, `${manifestHash}.json`), manifestBytes);
+  publication = { generation: "published-generation", repositories: [{ root,
+    revision: selectedResult.snapshot.headCommit, planRevision: "plan-1", manifestHash }] };
+  const sourceTask = { id: source.taskId, taskNumber: "HUB-252", revision: 4,
+    workspaceId: "workspace-1", gitReferences: [] };
+  const selectedTask = { id: selectedWorkspace.taskId, revision: 5, workspaceId: "workspace-1",
+    status: "done", workflowStatus: "done", gitReferences: [{ projectRoot: root,
+      resultCommit: selectedResult.snapshot.headCommit }] };
+  const proof = await service.withTaskLock(source.taskId, (lease) => (
+    service.publishedReleaseServiceEvidenceOwned({ source: sourceTask, selectedTasks: [selectedTask], lease })
+  ));
+  assert.equal(proof.publishedRevision, selectedResult.snapshot.headCommit);
+  assert.equal(proof.manifestHash, manifestHash);
+  assert.deepEqual(proof.cleanupPlan.deleting, []);
+  assert.equal((await service.describe(source.taskId)).length, 1);
+
+  await assert.rejects(service.withTaskLock(source.taskId, (lease) => (
+    service.publishedReleaseServiceEvidenceOwned({ source: sourceTask,
+      selectedTasks: [{ ...selectedTask, gitReferences: [{ projectRoot: root,
+        resultCommit: "f".repeat(40) }] }], lease })
+  )), /does not match exact published Done results/u);
+  await writeFile(path.join(source.projectRoot, "valuable.txt"), "preserve\n", "utf8");
+  await assert.rejects(service.withTaskLock(source.taskId, (lease) => (
+    service.publishedReleaseServiceEvidenceOwned({ source: sourceTask, selectedTasks: [selectedTask], lease })
+  )), /clean managed worktree/u);
+});
+
+test("published duplicate proof requires exact clean published main and survivor lineage", { timeout: 90_000 }, async (context) => {
+  const { root } = await repositoryWithOrigin(context);
+  const dataDir = path.join(root, "..", `${path.basename(root)}-published-duplicate-data`);
+  context.after(() => rm(dataDir, { recursive: true, force: true }));
+  let publication = null;
+  const service = new TaskGitWorkspaceService({ dataDir, readPublication: async () => publication });
+  const source = await service.prepare({
+    taskId: "11111111-1111-4111-8111-111111111111", taskNumber: "HUB-241", projectRoot: root,
+  });
+  const survivorWorkspace = await service.prepare({
+    taskId: "22222222-2222-4222-8222-222222222222", taskNumber: "HUB-217", projectRoot: root,
+  });
+  await writeFile(path.join(survivorWorkspace.projectRoot, "published.txt"), "published fix\n", "utf8");
+  const tested = await service.snapshotAndMerge({
+    taskId: survivorWorkspace.taskId, taskNumber: "HUB-217", projectRoot: survivorWorkspace.projectRoot,
+  });
+  await git(root, "merge", "--ff-only", tested.snapshot.headCommit);
+  await git(root, "push", "origin", "main");
+  await git(root, "update-ref", "refs/remotes/origin/main", tested.snapshot.headCommit);
+  await git(source.projectRoot, "merge", "--ff-only", tested.snapshot.headCommit);
+  publication = {
+    generation: "release-published-duplicate",
+    repositories: [{ root, revision: tested.snapshot.headCommit }],
+  };
+  const sourceTask = {
+    id: source.taskId, taskNumber: "HUB-241", revision: 6,
+    gitReferences: [], gitAdoptions: [],
+  };
+  const targetTask = {
+    id: survivorWorkspace.taskId, taskNumber: "HUB-217", revision: 93,
+    gitReferences: [{
+      projectRoot: root,
+      branch: survivorWorkspace.branch,
+      resultCommit: tested.snapshot.headCommit,
+    }],
+  };
+  const proof = await service.withTaskLocks([source.taskId, survivorWorkspace.taskId], (lease) => (
+    service.withPublishedDuplicateEvidenceOwned({ source: sourceTask, target: targetTask, lease },
+      async (evidence) => evidence)
+  ));
+  assert.equal(proof.mode, "published_duplicate");
+  assert.equal(proof.repositories[0].sourceHead, tested.snapshot.headCommit);
+  assert.equal(proof.repositories[0].survivorResult, tested.snapshot.headCommit);
+  assert.deepEqual(proof.cleanupPlan, { strategy: "preserve_managed_source", deleting: [] });
+
+  await writeFile(path.join(source.projectRoot, "valuable-untracked.txt"), "preserve\n", "utf8");
+  await assert.rejects(service.withTaskLocks([source.taskId, survivorWorkspace.taskId], (lease) => (
+    service.withPublishedDuplicateEvidenceOwned({ source: sourceTask, target: targetTask, lease }, async () => null)
+  )), /clean source Task worktree/u);
+  await rm(path.join(source.projectRoot, "valuable-untracked.txt"));
+
+  const unpublishedTarget = { ...targetTask, gitReferences: [{
+    ...targetTask.gitReferences[0], resultCommit: "f".repeat(40),
+  }] };
+  await assert.rejects(service.withTaskLocks([source.taskId, survivorWorkspace.taskId], (lease) => (
+    service.withPublishedDuplicateEvidenceOwned({ source: sourceTask, target: unpublishedTarget, lease }, async () => null)
+  )), /not contained in published main/u);
+
+  await writeFile(path.join(source.projectRoot, "unique.txt"), "unique\n", "utf8");
+  await git(source.projectRoot, "add", "unique.txt");
+  await git(source.projectRoot, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+    "commit", "-m", "unique source work");
+  await assert.rejects(service.withTaskLocks([source.taskId, survivorWorkspace.taskId], (lease) => (
+    service.withPublishedDuplicateEvidenceOwned({ source: sourceTask, target: targetTask, lease }, async () => null)
+  )), /HEAD must equal exact durable local and origin published main/u);
 });
 
 async function advanceOriginMain(context, origin, files) {
@@ -1453,6 +1636,8 @@ test("release adoption requires a selected Task result and stays pinned when ori
   const acceptedBase = await fixture.service.releaseBaseEvidence(baseRequest);
   assert.equal(acceptedBase.baseCommit, fixture.mainCommit);
   assert.equal(acceptedBase.adoptions[0].recordHash, recorded.recordHash);
+  assert.equal(acceptedBase.adoptions[0].adoptedCommit, fixture.mainCommit);
+  assert.equal(acceptedBase.adoptions[0].acceptedLocalMainCommit, localMain);
   assert.equal((await fixture.service.releaseBaseEvidence({ ...baseRequest, tasks: [] })).baseCommit, localMain);
 
   const origin = await git(fixture.root, "remote", "get-url", "origin");
