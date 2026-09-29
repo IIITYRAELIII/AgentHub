@@ -138,6 +138,103 @@ test("combined Task rejects unpublished remote fast-forward inside its first-par
   await assert.rejects(access(path.join((await service.prepareDev(root)).projectRoot, "remote-only.txt")));
 });
 
+test("unrelated adoption receipt cannot authorize unpublished remote fast-forward", { timeout: 90_000 }, async (context) => {
+  const root = await repository(context);
+  const originalMain = await git(root, "rev-parse", "main");
+  const dataDir = path.join(root, "..", `${path.basename(root)}-unrelated-receipt`);
+  context.after(() => rm(dataDir, { recursive: true, force: true }));
+  let publication = null;
+  const service = new TaskGitWorkspaceService({ dataDir, readPublication: async () => publication });
+  const b = await service.prepare({ taskId: "15151515-1515-4515-8515-151515151515", projectRoot: root });
+  const commit = async (cwd, message) => {
+    await git(cwd, "add", ".");
+    await git(cwd, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", message);
+  };
+  await git(root, "checkout", "-b", "unrelated-side", "main");
+  await writeFile(path.join(root, "side.txt"), "approved side\n");
+  await commit(root, "approved side");
+  const adopted = await git(root, "rev-parse", "HEAD");
+  await git(root, "checkout", "-b", "published-feature", "main");
+  await writeFile(path.join(root, "published.txt"), "published\n");
+  await commit(root, "published feature");
+  await git(root, "checkout", "-b", "publication", "main");
+  await git(root, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+    "merge", "--no-ff", "published-feature", "-m", "publication");
+  const published = await git(root, "rev-parse", "HEAD");
+  await git(root, "checkout", "-b", "remote-advance", published);
+  await writeFile(path.join(root, "remote-only.txt"), "unpublished remote\n");
+  await commit(root, "remote advance");
+  const remote = await git(root, "rev-parse", "HEAD");
+  await git(root, "update-ref", "refs/remotes/origin/main", remote);
+  await git(root, "checkout", "main");
+  await git(b.projectRoot, "merge", "--ff-only", remote);
+  await writeFile(path.join(b.projectRoot, "b.txt"), "B\n");
+  await commit(b.projectRoot, "B result");
+  await git(b.projectRoot, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+    "merge", "--no-ff", adopted, "-m", "adopt unrelated side");
+  const snapshot = await service.snapshot({ taskId: b.taskId, projectRoot: b.projectRoot });
+  publication = { generation: "published-generation", repositories: [{ root, revision: published }] };
+  const input = {
+    taskId: b.taskId, projectRoot: root, branch: snapshot.branch,
+    taskBaseCommit: snapshot.baseCommit, acceptedLocalMainCommit: originalMain,
+    adoptedCommit: adopted, snapshotCommit: snapshot.headCommit, requestId: "review-unrelated-adoption",
+  };
+  await assert.rejects(service.recordExplicitUpstreamAdoption(input), /unpublished tracked remote history/u);
+  await git(root, "update-ref", "refs/remotes/origin/main", published);
+  const receipt = await service.recordExplicitUpstreamAdoption(input);
+  assert.equal(receipt.record.adoptedCommit, adopted);
+  await git(root, "update-ref", "refs/remotes/origin/main", remote);
+  const devBefore = (await service.prepareDev(root)).headCommit;
+  await assert.rejects(service.mergeIntoDev(snapshot), /unpublished tracked remote history/u);
+  assert.equal(await git(root, "rev-parse", "dev"), devBefore);
+  assert.equal(await git(root, "rev-parse", "main"), originalMain);
+  await assert.rejects(access(path.join((await service.prepareDev(root)).projectRoot, "remote-only.txt")));
+});
+
+test("matching adoption receipt authorizes the tracked remote advance", { timeout: 90_000 }, async (context) => {
+  const root = await repository(context);
+  const originalMain = await git(root, "rev-parse", "main");
+  const dataDir = path.join(root, "..", `${path.basename(root)}-matching-receipt`);
+  context.after(() => rm(dataDir, { recursive: true, force: true }));
+  let publication = null;
+  const service = new TaskGitWorkspaceService({ dataDir, readPublication: async () => publication });
+  const b = await service.prepare({ taskId: "15151515-1515-4515-8515-151515151515", projectRoot: root });
+  const commit = async (cwd, message) => {
+    await git(cwd, "add", ".");
+    await git(cwd, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", message);
+  };
+  await git(root, "checkout", "-b", "published-feature");
+  await writeFile(path.join(root, "published.txt"), "published\n");
+  await commit(root, "published feature");
+  await git(root, "checkout", "-b", "publication", "main");
+  await git(root, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+    "merge", "--no-ff", "published-feature", "-m", "publication");
+  const published = await git(root, "rev-parse", "HEAD");
+  await git(root, "checkout", "-b", "remote-advance", published);
+  await writeFile(path.join(root, "remote-only.txt"), "explicitly adopted remote\n");
+  await commit(root, "remote advance");
+  const remote = await git(root, "rev-parse", "HEAD");
+  await git(root, "update-ref", "refs/remotes/origin/main", remote);
+  await git(root, "checkout", "main");
+  await git(b.projectRoot, "merge", "--ff-only", published);
+  await writeFile(path.join(b.projectRoot, "b.txt"), "B\n");
+  await commit(b.projectRoot, "B result");
+  await git(b.projectRoot, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+    "merge", "--no-ff", remote, "-m", "adopt tracked remote");
+  const snapshot = await service.snapshot({ taskId: b.taskId, projectRoot: b.projectRoot });
+  publication = { generation: "published-generation", repositories: [{ root, revision: published }] };
+  const receipt = await service.recordExplicitUpstreamAdoption({
+    taskId: b.taskId, projectRoot: root, branch: snapshot.branch,
+    taskBaseCommit: snapshot.baseCommit, acceptedLocalMainCommit: originalMain,
+    adoptedCommit: remote, snapshotCommit: snapshot.headCommit, requestId: "review-matching-adoption",
+  });
+  assert.equal(receipt.record.adoptedCommit, remote);
+  const result = await service.mergeIntoDev(snapshot);
+  assert.equal(result.integrated, true);
+  assert.equal(await readFile(path.join(result.dev.projectRoot, "remote-only.txt"), "utf8"), "explicitly adopted remote\n");
+  assert.equal(await git(root, "rev-parse", "main"), originalMain);
+});
+
 async function withdrawalFixture(context, { dependent = false } = {}) {
   const root = await repository(context);
   const dataDir = path.join(root, "..", `${path.basename(root)}-withdrawal-data`);

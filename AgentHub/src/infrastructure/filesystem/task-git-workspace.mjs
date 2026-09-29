@@ -1602,16 +1602,19 @@ export class TaskGitWorkspaceService {
     }
     if (observedBase !== exactBase) throw new Error("explicit upstream adoption Task base changed");
     if (observedSnapshot !== exactSnapshot) throw new Error("explicit upstream adoption Task snapshot changed");
-    const publishedHistory = expectedAdopted
-      ? null
-      : await this.#publishedTaskHistoryBase(repoRoot, acceptedLocalMain);
-    if ((await this.#unpublishedTrackedBases(repoRoot, exactSnapshot, publishedHistory, lease)).length) {
-      throw new Error("Task snapshot contains unpublished tracked remote history");
+    const publishedHistory = await this.#publishedTaskHistoryBase(repoRoot, acceptedLocalMain);
+    const unpublished = await this.#unpublishedTrackedBases(repoRoot, exactSnapshot, publishedHistory, lease);
+    for (const base of unpublished) {
+      if (!expectedAdopted || await gitMaybe([
+        "merge-base", "--is-ancestor", base, expectedAdopted,
+      ], { cwd: repoRoot }) === null) {
+        throw new Error("Task snapshot contains unpublished tracked remote history without matching adoption");
+      }
     }
     return this.#upstreamAdoptionProofFromObjects({
       id, repoKey, repoRoot, expectedBranch, branchRef, exactBase, exactSnapshot, acceptedLocalMain,
       expectedAdopted, devCommit, lease,
-      publishedHistoryBase: publishedHistory?.published ?? null,
+      publishedHistoryBase: expectedAdopted ? null : (publishedHistory?.published ?? null),
     });
   }
 

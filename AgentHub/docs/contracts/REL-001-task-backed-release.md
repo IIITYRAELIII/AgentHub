@@ -5,7 +5,8 @@ when the canonical publication generation names that exact repository revision,
 the repository's origin/main tracking ref contains it, and accepted local main is
 its ancestor. A later remote commit does not revoke that historical proof and
 is not thereby adopted. A Task snapshot sharing later tracked remote history
-must have explicit adoption evidence for that history. Missing evidence, a
+must have explicit adoption evidence that contains every later shared remote
+ancestor. Missing evidence, a
 remote rewind or divergence fails closed. This permits consolidation on
 published code while the registered primary checkout deliberately remains
 behind. It does not advance primary main,
@@ -298,7 +299,8 @@ its generation, provided accepted local main is its ancestor and the published
 revision remains an ancestor of tracked origin/main. A later remote commit does
 not revoke that historical proof and is not thereby adopted. Shared remote
 history beyond the published revision requires an exact upstream adoption
-receipt. Missing evidence, a remote rewind or divergence fails closed. Primary
+receipt whose adopted commit contains every later shared remote ancestor.
+Missing evidence, a remote rewind or divergence fails closed. Primary
 main and archived Task
 adoption records are unchanged.
 
