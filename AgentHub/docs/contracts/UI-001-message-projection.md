@@ -15,6 +15,15 @@ may share one source only after their rendered content agrees and all hashes
 validate. Existing locators without traceGroupId retain their previous content
 hash semantics; they are not retroactively rewritten (ADR-0077).
 
+Persisted trace previews may shorten individual reasoning blocks. A visible
+group is trusted for source navigation only after its canonical content hash
+matches; a mismatch uses the same exact-group source read as an omitted group.
+New Codex group citations read the full source before binding content and surface
+hashes. The selected preview must render as an exact prefix of that source, with
+the same selected text at the same UTF-16 offsets; otherwise creation fails
+visibly rather than guessing offsets. All three hashes remain mandatory on
+navigation. Legacy citations already bound to shortened content are not rewritten.
+
 ## Invariants
 
 - Technical identifier presentation preserves complete Markdown links, including

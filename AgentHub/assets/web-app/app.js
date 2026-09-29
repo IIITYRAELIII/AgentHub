@@ -7916,24 +7916,30 @@ async function focusResponseCitationSource(button) {
       syncDeferredDisclosure(details);
     }
   }
+  let recoveredTraceSurface = null;
   if (source.traceGroupId && article) {
     let surface = responseAnnotationSourceSurface(article, source);
     let group = surface && traceDetailSources.get(surface);
-    if (!group) {
+    const previewContent = group && responseAnnotationSourceContent(
+      { ...projection.message, activityGroups: [group] }, source,
+    );
+    if (!previewContent || await responseAnnotationSha256(previewContent) !== source.contentHash) {
       try {
         const page = await requestTracePage(projection.message, { turnId: source.turnId, groupId: source.traceGroupId });
         if (!article.isConnected) return false;
+        if (page.groups?.length !== 1 || page.groups[0].id !== source.traceGroupId) return false;
         group = page.groups[0];
         const candidate = { ...projection.message, activityGroups: [group] };
         if (await responseAnnotationSha256(responseAnnotationSourceContent(candidate, source)) !== source.contentHash) return false;
         article.querySelector("[data-citation-trace]")?.remove();
-        const target = el("section", { "data-citation-trace": "" }, [traceReasoningNode(group)]);
+        recoveredTraceSurface = traceReasoningNode(group);
+        const target = el("section", { "data-citation-trace": "" }, [recoveredTraceSurface]);
         article.append(target);
       } catch { return false; }
     }
     projection = { ...projection, message: { ...projection.message, activityGroups: [group] } };
   }
-  const surface = responseAnnotationSourceSurface(article, source);
+  const surface = recoveredTraceSurface || responseAnnotationSourceSurface(article, source);
   if (!article || !surface) return false;
   const range = domRangeFromOffsets(surface, source.start, source.end);
   if (!range) return false;
@@ -9357,9 +9363,23 @@ async function responseAnnotationFromSelection(selection) {
   const end = Number(selection?.offsets?.end);
   if (!quote || !projection || !identity || !locator
     || !Number.isSafeInteger(start) || !Number.isSafeInteger(end)) return null;
+  let sourceMessage = projection.message;
+  let sourceSurface = selection.surface;
+  if (locator.traceGroupId && identity.provider === "codex") {
+    // Durable history is a bounded preview, including legacy rows with no
+    // truncation marker. Bind new exact-group quotes to the source, not that copy.
+    const page = await requestTracePage(sourceMessage, { turnId: identity.turnId, groupId: locator.traceGroupId });
+    if (!selection.surface.isConnected || !projection.root.isConnected
+      || page.groups?.length !== 1 || page.groups[0].id !== locator.traceGroupId) return null;
+    sourceMessage = { ...sourceMessage, activityGroups: page.groups };
+    sourceSurface = traceReasoningNode(page.groups[0]);
+    // A cut Markdown construct may render differently. Do not guess a new range.
+    if (!sourceSurface.textContent.startsWith(selection.surface.textContent.trimEnd())
+      || domRangeFromOffsets(sourceSurface, start, end)?.toString().trim() !== quote) return null;
+  }
   const [contentHash, surfaceHash, selectionHash] = await Promise.all([
-    responseAnnotationSha256(responseAnnotationSourceContent(projection.message, locator)),
-    responseAnnotationSha256(selection.surface.textContent),
+    responseAnnotationSha256(responseAnnotationSourceContent(sourceMessage, locator)),
+    responseAnnotationSha256(sourceSurface.textContent),
     responseAnnotationSha256(quote),
   ]);
   const source = normalizedResponseAnnotationSource({
