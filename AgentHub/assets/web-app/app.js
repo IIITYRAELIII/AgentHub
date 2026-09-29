@@ -13674,15 +13674,17 @@ function renderUsageHistoryContent() {
           `${device.label} — ${formatUsageValue(device.credits)}`
         )).join("; ")}.`);
       }
-      if (unpriced) notes.push(`Без тарифа и вне суммы: ${unpriced}.`);
+      if (unpriced) notes.push(usageUnit === "qu"
+        ? `Без модели или API-тарифа для токенного QU: ${unpriced}.`
+        : `Без тарифа и вне суммы: ${unpriced}.`);
       if (rate && usageState.rateBasis === "task" && untimed) {
         notes.push(`Без длительности и вне скорости по времени задач: ${untimed}.`);
       }
       if (usageUnit === "qu") {
         const incomplete = Math.max(0, Number(payload.uncalibratedCount) || 0);
-        notes.push(`Калибровка preliminary-2026-09-21; без подтверждённого QU-коэффициента: ${incomplete} ход(ов).`);
+        notes.push(`Калибровка ${payload.quotaCalibrationVersion || "предварительная"}; без подтверждённого QU-коэффициента: ${incomplete} ход(ов).`);
         if (payload.totalApiEstimateCredits > 0) {
-          notes.push(`Для GPT-6 Sol/Luna учтена предварительная API-оценка по ставке Standard короткого контекста, 1 cr = 1 QU без подписочного коэффициента: ${formatUsageValue(payload.totalApiEstimateCredits, "cr")}.`);
+          notes.push(`Для моделей без эмпирической QU-ставки учтена предварительная API-оценка 1 cr = 1 QU без подписочного коэффициента: ${formatUsageValue(payload.totalApiEstimateCredits, "cr")}.`);
         }
       }
       usageNote.textContent = `${scopeNote} ${notes.join(" ") || "Все показанные ходы тарифицированы и имеют длительность."}`;

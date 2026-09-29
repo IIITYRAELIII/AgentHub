@@ -8,7 +8,7 @@ import {
 } from "../domain/codex-usage-estimate.mjs";
 import { isCodexAutoCompactionTurnId } from "../domain/codex-internal-turn.mjs";
 import { isInheritedSubagentTurn } from "../domain/subagent-turn-identity.mjs";
-import { formatQuotaUnits, turnQuotaBreakdown } from "../domain/quota-units.mjs";
+import { formatQuotaUnits, QUOTA_CALIBRATION_VERSION, turnQuotaBreakdown } from "../domain/quota-units.mjs";
 import { taskDisplayTitle } from "../domain/task-display-title.mjs";
 import {
   normalizeInterstreamClientUserMessageId,
@@ -1553,6 +1553,9 @@ function formatTurnEntry(
 ) {
   const breakdown = recordCreditBreakdown(record);
   const quota = recordQuotaBreakdown(record);
+  const quotaQualifier = !quota.uncalibrated ? ""
+    : record?.usageReported === false || quota.basis === "unknown"
+      ? " · неполное покрытие" : " · предварительная оценка";
   const recordTotal = breakdown.total;
   const displayedTotal = Number.isFinite(treeCredits) ? Math.max(0, treeCredits) : recordTotal;
   const elapsedSeconds = durationSeconds(record?.startedAt, record?.completedAt);
@@ -1588,7 +1591,7 @@ function formatTurnEntry(
       + `<div data-work-log-turn-context><strong>Длит.:</strong> ${
         formatDuration(record?.startedAt, record?.completedAt)
       }</div>`
-      + `<div data-work-log-turn-quota><strong>Quota Units:</strong> ${formatQuotaUnits(quota.total)}${quota.uncalibrated ? " · предварительно/неполное покрытие" : ""}${quota.apiEstimateCredits > 0 ? ` · API-оценка 1 cr = 1 QU: ${formatCredits(quota.apiEstimateCredits)}` : ""}</div>`
+      + `<div data-work-log-turn-quota><strong>Quota Units:</strong> ${formatQuotaUnits(quota.total)}${quotaQualifier}${quota.apiEstimateCredits > 0 ? ` · API-оценка 1 cr = 1 QU: ${formatCredits(quota.apiEstimateCredits)}` : ""}</div>`
       + (descendantCount > 0
         ? `<div data-work-log-turn-own-usage><strong>Свой расход:</strong> ${ownCredits}</div>`
         : "")
@@ -3649,6 +3652,7 @@ export function buildWorkLogUsageHistory(turns = {}, {
     ...(requestedStreamId ? { streamId: requestedStreamId } : {}),
     totalCredits,
     totalQuotaUnits,
+    quotaCalibrationVersion: QUOTA_CALIBRATION_VERSION,
     totalTimedQuotaUnits,
     totalApiEstimateCredits,
     uncalibratedCount,
