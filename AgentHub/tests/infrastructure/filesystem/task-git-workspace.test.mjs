@@ -23,7 +23,7 @@ import { taskRepositoryKey } from "../../../src/domain/task-git-reference.mjs";
 
 const execFileAsync = promisify(execFile);
 
-test("combined Tasks accept proven published history with stale primary main and reject unproven ancestry", { timeout: 90_000 }, async (context) => {
+for (const advancedRemote of [false, true]) test(`combined Tasks accept proven published history with advanced remote=${advancedRemote} and reject unproven ancestry`, { timeout: 90_000 }, async (context) => {
   const root = await repository(context);
   const originalMain = await git(root, "rev-parse", "main");
   const dataDir = path.join(root, "..", `${path.basename(root)}-published-history`);
@@ -66,12 +66,20 @@ test("combined Tasks accept proven published history with stale primary main and
   await assert.rejects(service.mergeIntoDev(snapshot), /upstream|adoption/iu);
   assert.equal(await git(root, "rev-parse", "dev"), devBefore);
   await git(root, "update-ref", "refs/remotes/origin/main", published);
+  if (advancedRemote) {
+    await git(root, "checkout", "-b", "remote-advance", published);
+    await writeFile(path.join(root, "remote-only.txt"), "unapproved newer remote\n");
+    await commit(root, "remote advanced after publication");
+    await git(root, "update-ref", "refs/remotes/origin/main", "HEAD");
+    await git(root, "checkout", "main");
+  }
   const result = await service.mergeIntoDev(snapshot);
   assert.equal(result.integrated, true);
   assert.equal(await git(root, "rev-parse", "main"), originalMain);
   assert.equal(await git(root, "status", "--porcelain"), "");
   assert.equal(await readFile(path.join(result.dev.projectRoot, "a.txt"), "utf8"), "A\n");
   assert.equal(await readFile(path.join(result.dev.projectRoot, "b.txt"), "utf8"), "B\n");
+  await assert.rejects(access(path.join(result.dev.projectRoot, "remote-only.txt")));
   const acceptedDev = await git(root, "rev-parse", "dev");
   await git(root, "checkout", "-b", "unpublished-foreign", published);
   await writeFile(path.join(root, "foreign.txt"), "not published\n");
@@ -79,6 +87,7 @@ test("combined Tasks accept proven published history with stale primary main and
   await git(root, "checkout", "main");
   await git(b.projectRoot, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
     "merge", "--no-ff", "unpublished-foreign", "-m", "unapproved adoption");
+  await git(root, "update-ref", "refs/remotes/origin/main", "unpublished-foreign");
   const changed = await service.snapshot({ taskId: b.taskId, projectRoot: b.projectRoot });
   await assert.rejects(service.mergeIntoDev(changed), /upstream|adoption/iu);
   assert.equal(await git(root, "rev-parse", "dev"), acceptedDev);

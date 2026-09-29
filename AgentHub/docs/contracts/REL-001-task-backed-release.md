@@ -2,8 +2,10 @@
 
 Task merge-adoption analysis excludes an already published ancestor range only
 when the canonical publication generation names that exact repository revision,
-the repository's origin/main tracking ref equals it, and accepted local main is
-its ancestor. This permits consolidation on published code while the registered
+the repository's origin/main tracking ref contains it, and accepted local main is
+its ancestor. A later remote commit does not revoke that historical proof and
+is not thereby adopted. Missing evidence, a remote rewind or divergence fails
+closed. This permits consolidation on published code while the registered
 primary checkout deliberately remains behind. It does not advance primary main,
 create an upstream adoption receipt or authorize unpublished sibling merges.
 Exact Task result, managed dev integration and composition checks still apply.
@@ -288,7 +290,13 @@ history or valuable artifacts are never deleted by this mode.
 
 A sibling Task merge is not upstream adoption. The Git owner recognizes managed
 Task heads and inspects their merge ancestry; an unknown upstream/dev merge
-inside the sibling still requires its existing adoption evidence.
+inside the sibling still requires its existing adoption evidence. Already
+published ancestry is excluded using repository-scoped durable publication with
+its generation, provided accepted local main is its ancestor and the published
+revision remains an ancestor of tracked origin/main. A later remote commit does
+not revoke that historical proof and is not thereby adopted. Missing evidence,
+a remote rewind or divergence fails closed. Primary main and archived Task
+adoption records are unchanged.
 
 Publication evidence remains scoped to the repository: the prerequisite result
 must be in the confirmed published revision, and that revision must be contained

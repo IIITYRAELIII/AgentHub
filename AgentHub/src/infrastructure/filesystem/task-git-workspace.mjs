@@ -1498,7 +1498,9 @@ export class TaskGitWorkspaceService {
       .find((entry) => samePath(entry.root, repoRoot))?.revision;
     if (!publication?.generation || !/^[a-f0-9]{40}$/u.test(String(published ?? ""))) return null;
     const remote = await gitMaybe(["rev-parse", "--verify", "refs/remotes/origin/main^{commit}"], { cwd: repoRoot });
-    if (remote !== published || await gitMaybe([
+    if (!remote || await gitMaybe([
+      "merge-base", "--is-ancestor", published, remote,
+    ], { cwd: repoRoot }) === null || await gitMaybe([
       "merge-base", "--is-ancestor", localMain, published,
     ], { cwd: repoRoot }) === null) return null;
     // Exclude published ancestry only; do not adopt new upstream or move main.
