@@ -1492,6 +1492,21 @@ export class TaskGitWorkspaceService {
     };
   }
 
+  async #publishedTaskHistoryBase(repoRoot, localMain) {
+    const publication = await this.readPublication();
+    const published = publicationStateRepositories(publication ?? {})
+      .find((entry) => samePath(entry.root, repoRoot))?.revision;
+    if (!publication?.generation || !/^[a-f0-9]{40}$/u.test(String(published ?? ""))) return null;
+    const remote = await gitMaybe(["rev-parse", "--verify", "refs/remotes/origin/main^{commit}"], { cwd: repoRoot });
+    if (!remote || await gitMaybe([
+      "merge-base", "--is-ancestor", published, remote,
+    ], { cwd: repoRoot }) === null || await gitMaybe([
+      "merge-base", "--is-ancestor", localMain, published,
+    ], { cwd: repoRoot }) === null) return null;
+    // Exclude published ancestry only; do not adopt new upstream or move main.
+    return published;
+  }
+
   async #isOtherTaskHead(taskId, repoRoot, commit, localMain, lease, visiting = new Set()) {
     if (visiting.has(commit)) return false;
     visiting = new Set([...visiting, commit]);
@@ -1507,9 +1522,11 @@ export class TaskGitWorkspaceService {
       if (!base || !await this.managedRepositoryRoot(root, {
         taskId: owner, taskNumber: /^branch refs\/heads\/(.+)$/mu.exec(record)?.[1],
       })) continue;
+      const publishedHistoryBase = await this.#publishedTaskHistoryBase(repoRoot, localMain);
       const merges = String(await runGit([
         "log", "--first-parent", "--merges", "--format=%H %P",
         `--max-count=${MAX_UPSTREAM_ADOPTION_PROOFS + 1}`, commit, `^${base}`, `^${localMain}`,
+        ...(publishedHistoryBase ? [`^${publishedHistoryBase}`] : []),
       ], { cwd: repoRoot })).split(/\r?\n/u).filter(Boolean);
       if (merges.length > MAX_UPSTREAM_ADOPTION_PROOFS) throw new Error("Sibling Task merge history exceeds the bounded proof");
       for (const merge of merges) {
@@ -1561,6 +1578,7 @@ export class TaskGitWorkspaceService {
     return this.#upstreamAdoptionProofFromObjects({
       id, repoKey, repoRoot, expectedBranch, branchRef, exactBase, exactSnapshot, acceptedLocalMain,
       expectedAdopted, devCommit, lease,
+      publishedHistoryBase: expectedAdopted ? null : await this.#publishedTaskHistoryBase(repoRoot, acceptedLocalMain),
     });
   }
 
@@ -1570,11 +1588,12 @@ export class TaskGitWorkspaceService {
   // itself, the first parent and the adopted commit as the second parent.
   async #upstreamAdoptionProofFromObjects({
     id, repoKey, repoRoot, expectedBranch, branchRef, exactBase, exactSnapshot, acceptedLocalMain,
-    expectedAdopted, devCommit, lease,
+    expectedAdopted, devCommit, lease, publishedHistoryBase = null,
   }) {
     const history = String(await this.#runOwned([
       "rev-list", "--first-parent", "--merges",
       `--max-count=${MAX_UPSTREAM_ADOPTION_PROOFS + 1}`, exactSnapshot, `^${exactBase}`,
+      ...(publishedHistoryBase ? [`^${publishedHistoryBase}`] : []),
     ], { cwd: repoRoot, lease })).split(/\r?\n/u).filter(Boolean);
     if (history.length > MAX_UPSTREAM_ADOPTION_PROOFS) {
       throw new Error("explicit upstream adoption proof exceeds the bounded first-parent history");
