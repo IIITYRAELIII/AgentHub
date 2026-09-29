@@ -104,6 +104,60 @@ test.after(async () => {
   await browser?.close();
 });
 
+test("bounded trace archive loads only on demand and citations recover an evicted exact group", { timeout: 20_000 }, async () => {
+  const page = await browser.newPage();
+  try {
+    await openWebApp(page);
+    const message = { id: "trace-source", provider: "codex", threadId: "thread-1",
+      turnId: "turn-trace", itemId: "item-trace", role: "agent", text: "Answer",
+      activityGroups: [{ id: "reasoning:last", reasoning: "Последний этап", activities: [], omittedGroupsBefore: 600 }] };
+    await seedMessages(page, [message]);
+    await page.evaluate(() => {
+      window.__traceRequests = [];
+      window.AgentHub.on("history:trace-page", ({ identity, tracePage, resolve }) => {
+        window.__traceRequests.push({ identity, tracePage });
+        const first = !tracePage.offset;
+        resolve({ turnId: tracePage.turnId, offset: tracePage.offset || 0,
+          nextOffset: first ? 50 : null, sourceSize: 12345, generation: "generation", sourceHash: "hash",
+          groups: [{ id: first ? "reasoning:first" : "reasoning:last",
+            reasoning: first ? "Ранний точный фрагмент" : "Последний этап", activities: [] }] });
+      });
+    });
+    const article = page.locator('[data-message-id="trace-source"]');
+    await article.locator("details.turn-trace > summary").click();
+    assert.equal(await page.evaluate(() => window.__traceRequests.length), 0);
+    const archive = article.locator(".turn-trace-archive");
+    await archive.locator("summary").click();
+    await archive.getByText("Ранний точный фрагмент", { exact: true }).waitFor();
+    await archive.getByRole("button", { name: "Далее", exact: true }).click();
+    await archive.getByText("Последний этап", { exact: true }).waitFor();
+    assert.equal(await archive.getByText("Ранний точный фрагмент", { exact: true }).count(), 0);
+    const requests = await page.evaluate(() => window.__traceRequests);
+    assert.equal(requests[0].identity.streamId, "stream-1");
+    assert.equal(requests[1].tracePage.sourceHash, "hash");
+    assert.equal(requests[1].tracePage.sourceSize, 12345);
+
+    // Build a real locator for an early block which is absent from the preview.
+    const annotation = await page.evaluate(async (message) => {
+      const api = window.AgentHubMessageDisclosure;
+      const text = "Ранний точный фрагмент";
+      const group = { id: "reasoning:first", reasoning: text, activities: [] };
+      const source = { version: 1, ...api.responseAnnotationSourceIdentity(message),
+        surfaceKind: "trace-reasoning", surfaceIndex: 0, traceGroupId: group.id, start: 0, end: text.length };
+      source.contentHash = await api.responseAnnotationSha256(api.responseAnnotationSourceContent(
+        { ...message, activityGroups: [group] }, source));
+      source.surfaceHash = source.selectionHash = await api.responseAnnotationSha256(text);
+      return { text, annotation: "Источник", source };
+    }, message);
+    await seedMessages(page, [message, { id: "trace-quote", role: "user", text: "Проверить",
+      responseAnnotations: [annotation], responseAnnotationRequest: "Проверить" }]);
+    await page.locator('[data-message-id="trace-quote"] [data-response-annotation-source]').click();
+    await article.locator(".msg-source-citation-highlight").waitFor();
+    assert.equal(await article.locator(".msg-source-citation-highlight").textContent(), annotation.text);
+    assert.equal((await page.evaluate(() => window.__traceRequests)).at(-1).tracePage.groupId, "reasoning:first");
+  } finally { await page.close(); }
+});
+
 test("Markdown details safely render historical and new messages with native disclosure and contained JSON", { timeout: 20_000 }, async () => {
   const page = await browser.newPage({ viewport: { width: 1366, height: 900 } });
   const errors = [];

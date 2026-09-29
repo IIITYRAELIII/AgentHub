@@ -3065,6 +3065,17 @@ agentHub.on("bug-report:submit", ({ text, attachments, reportId }) => void (asyn
   }
 })());
 
+agentHub.on("history:trace-page", ({ identity, tracePage, resolve, reject }) => {
+  void control("task-history", {
+    provider: identity.provider, threadId: identity.threadId,
+    ...(identity.streamId ? { streamId: identity.streamId } : {}), tracePage,
+  }).then((result) => {
+    if (result.provider !== identity.provider || result.threadId !== identity.threadId
+      || result.tracePage?.turnId !== tracePage.turnId) throw new Error("Trace identity mismatch");
+    resolve(result.tracePage);
+  }).catch(reject);
+});
+
 agentHub.on("history:load-older", ({ taskId: id }) => runAction(async () => {
   const identity = taskIdentity(id);
   const page = historyPageByTask.get(id);

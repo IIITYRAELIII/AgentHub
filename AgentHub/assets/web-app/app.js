@@ -7355,15 +7355,83 @@ function visibleTurnTraceGroups(groups) {
   ));
 }
 
-function turnTraceGroupsNode(values, { liveStage = "", openGroupIds = [] } = {}) {
+const traceDetailSources = new WeakMap();
+
+function traceReasoningNode(group) {
+  const node = el("div", { class: "turn-trace-reasoning", "data-trace-group-id": group.id });
+  renderMarkdown(node, group.reasoning);
+  traceDetailSources.set(node, group);
+  return node;
+}
+
+function requestTracePage(identity, tracePage) {
+  const boundIdentity = { ...identity, streamId: identity.streamId || currentTask()?.streamId };
+  return new Promise((resolve, reject) => emit("history:trace-page", { identity: boundIdentity, tracePage, resolve, reject }));
+}
+
+function traceArchiveNode(identity) {
+  const content = el("div", { class: "turn-trace-archive-content" });
+  const previous = el("button", { type: "button", text: "Назад", disabled: true });
+  const next = el("button", { type: "button", text: "Далее", disabled: true });
+  const status = el("span", { role: "status" });
+  const details = el("details", { class: "turn-trace-archive" }, [
+    el("summary", { text: "Все этапы" }), content, previous, next, status,
+  ]);
+  let page = null;
+  let pending = false;
+  const offsets = [];
+  async function load(offset, direction = "initial") {
+    if (pending) return;
+    pending = true;
+    previous.disabled = next.disabled = true;
+    status.textContent = "Загрузка…";
+    try {
+      const result = await requestTracePage(identity, {
+        turnId: identity.turnId, offset,
+        ...(page ? { generation: page.generation, sourceSize: page.sourceSize, sourceHash: page.sourceHash } : {}),
+      });
+      if (!details.isConnected) return;
+      if (direction === "next") offsets.push(page.offset);
+      if (direction === "previous") offsets.pop();
+      page = result;
+      content.replaceChildren(...page.groups.map((group) => el("section", {}, [
+        ...(group.reasoning ? [traceReasoningNode(group)] : []),
+        ...group.activities.map(activityItemNode),
+      ])));
+      status.textContent = "";
+    } catch (error) {
+      if (details.isConnected) status.textContent = error.message || "Не удалось прочитать этапы";
+    } finally {
+      pending = false;
+      previous.disabled = !offsets.length;
+      next.disabled = page?.nextOffset == null;
+    }
+  }
+  details.addEventListener("toggle", () => { if (details.open && !page) void load(0); });
+  previous.addEventListener("click", () => void load(offsets.at(-1), "previous"));
+  next.addEventListener("click", () => void load(page.nextOffset, "next"));
+  return details;
+}
+
+function traceOmissionNode(groups, identity = null) {
+  const earlierGroups = Number(groups[0]?.omittedGroupsBefore) || 0;
+  const earlierActivities = groups.reduce(
+    (count, group) => count + (Number(group?.omittedActivities) || 0), 0,
+  );
+  if (!earlierGroups && !earlierActivities) return null;
+  return identity?.provider === "codex" && identity.threadId && identity.turnId
+    ? traceArchiveNode(identity)
+    : el("div", { class: "turn-trace-omission", text: "Показаны последние этапы" });
+}
+
+function turnTraceGroupsNode(values, { liveStage = "", openGroupIds = [], identity = null } = {}) {
   const content = turnTraceContent(values);
   const blocks = content.reasoningBlocks.map((reasoning, index) => {
     const section = el("section", {
       class: "turn-trace-block",
       "data-trace-index": String(index),
     });
-    const reasoningNode = el("div", { class: "turn-trace-reasoning" });
-    renderMarkdown(reasoningNode, reasoning);
+    const reasoningNode = traceReasoningNode(values.filter((group) => String(group.reasoning ?? "").trim())[index]);
     section.append(reasoningNode);
     return section;
   });
@@ -7387,10 +7455,11 @@ function turnTraceGroupsNode(values, { liveStage = "", openGroupIds = [] } = {})
       target.replaceChildren(...content.activities.map(activityItemNode));
     }));
   }
-  return el("div", { class: "turn-trace-groups" }, blocks);
+  const omission = traceOmissionNode(values, identity);
+  return el("div", { class: "turn-trace-groups" }, omission ? [omission, ...blocks] : blocks);
 }
 
-function turnTraceNode(groups) {
+function turnTraceNode(groups, identity = null) {
   const values = visibleTurnTraceGroups(groups);
   if (!values.length) return null;
   const activityCount = values.reduce((total, group) => total + (group.activities?.length ?? 0), 0);
@@ -7399,6 +7468,7 @@ function turnTraceNode(groups) {
     reasoningCount: content.reasoningBlocks.length,
     activityCount,
   });
+  if (traceOmissionNode(values)) summary.label += " · последние";
   const expanded = el("div", {
     class: "turn-trace-groups",
     "data-deferred-disclosure-content": "",
@@ -7408,9 +7478,10 @@ function turnTraceNode(groups) {
     expanded,
   ]);
   return configureDeferredDisclosure(details, expanded, (target) => {
+    const omission = traceOmissionNode(values, identity);
+    if (omission) target.append(omission);
     content.reasoningBlocks.forEach((reasoning, index) => {
-      const reasoningNode = el("div", { class: "turn-trace-reasoning" });
-      renderMarkdown(reasoningNode, reasoning);
+      const reasoningNode = traceReasoningNode(values.filter((group) => String(group.reasoning ?? "").trim())[index]);
       target.append(el("section", {
         class: "turn-trace-block",
         "data-trace-index": String(index),
@@ -7609,7 +7680,7 @@ function renderMessage(message, { readOnly = false, task = currentTask() } = {})
 
   if (maintenance) article.append(body);
   else { article.append(head); if (!readOnly) syncMessageUploadActions(head, message); }
-  const trace = turnTraceNode(message.activityGroups);
+  const trace = turnTraceNode(message.activityGroups, message);
   const activity = trace ? null : activityFeedNode(message.activities);
   if (trace) article.append(trace);
   else if (activity) article.append(activity);
@@ -7831,7 +7902,7 @@ async function focusResponseCitationSource(button) {
   const target = responseCitationSources.get(button);
   const source = normalizedResponseAnnotationSource(target?.source);
   if (!source) return false;
-  const projection = sourceMessageProjection(source);
+  let projection = sourceMessageProjection(source);
   if (!projection) return false;
   const renderedKey = MessageView.messageKey(projection.message, projection.index);
   const rootNode = renderedResponseAnnotationSourceRoot(renderedKey);
@@ -7844,6 +7915,23 @@ async function focusResponseCitationSource(button) {
       details.open = true;
       syncDeferredDisclosure(details);
     }
+  }
+  if (source.traceGroupId && article) {
+    let surface = responseAnnotationSourceSurface(article, source);
+    let group = surface && traceDetailSources.get(surface);
+    if (!group) {
+      try {
+        const page = await requestTracePage(projection.message, { turnId: source.turnId, groupId: source.traceGroupId });
+        if (!article.isConnected) return false;
+        group = page.groups[0];
+        const candidate = { ...projection.message, activityGroups: [group] };
+        if (await responseAnnotationSha256(responseAnnotationSourceContent(candidate, source)) !== source.contentHash) return false;
+        article.querySelector("[data-citation-trace]")?.remove();
+        const target = el("section", { "data-citation-trace": "" }, [traceReasoningNode(group)]);
+        article.append(target);
+      } catch { return false; }
+    }
+    projection = { ...projection, message: { ...projection.message, activityGroups: [group] } };
   }
   const surface = responseAnnotationSourceSurface(article, source);
   if (!article || !surface) return false;
@@ -7968,6 +8056,7 @@ function populateLiveCard(node, live, fallbackAuthor = "Агент", task = curr
     liveTrace.replaceChildren(...(groups.length ? [turnTraceGroupsNode(groups, {
       liveStage: liveStage.detail,
       openGroupIds,
+      identity: liveMessage,
     })] : []));
   });
   liveCardRenderController.reconcile(node, "trace-summary", renderParts.traceSummary, () => {
@@ -9254,7 +9343,9 @@ function sourceMessageForSelection(selection) {
   const index = messages.findIndex((message, messageIndex) => (
     MessageView.messageKey(message, messageIndex) === renderedKey
   ));
-  return index >= 0 ? { message: messages[index], root: renderedRoot } : null;
+  if (index < 0) return null;
+  const group = traceDetailSources.get(selection.surface);
+  return { message: group ? { ...messages[index], activityGroups: [group] } : messages[index], root: renderedRoot };
 }
 
 async function responseAnnotationFromSelection(selection) {
@@ -9267,7 +9358,7 @@ async function responseAnnotationFromSelection(selection) {
   if (!quote || !projection || !identity || !locator
     || !Number.isSafeInteger(start) || !Number.isSafeInteger(end)) return null;
   const [contentHash, surfaceHash, selectionHash] = await Promise.all([
-    responseAnnotationSha256(responseAnnotationSourceContent(projection.message)),
+    responseAnnotationSha256(responseAnnotationSourceContent(projection.message, locator)),
     responseAnnotationSha256(selection.surface.textContent),
     responseAnnotationSha256(quote),
   ]);

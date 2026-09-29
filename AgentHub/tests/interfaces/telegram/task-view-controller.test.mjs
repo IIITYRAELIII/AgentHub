@@ -17,6 +17,29 @@ function controller(overrides = {}) {
   });
 }
 
+test("explicit Codex trace details read the retained source without provider discovery or history writes", async () => {
+  const request = { turnId: "turn-exact", offset: 0 };
+  let reads = 0;
+  const view = controller({
+    findCodexRolloutPath: async (threadId) => {
+      assert.equal(threadId, "thread-exact");
+      return "retained-rollout";
+    },
+    readCodexTracePage: async (file, params) => {
+      assert.equal(file, "retained-rollout");
+      assert.equal(params, request);
+      reads += 1;
+      return { turnId: params.turnId, groups: [] };
+    },
+    ensureCodex: () => assert.fail("trace details must not contact the provider"),
+    taskSyncStore: { history: () => assert.fail("trace details must not hydrate history") },
+  });
+  assert.deepEqual(await view.readHistory({ provider: "codex", threadId: "thread-exact" }, { tracePage: request }),
+    { turnId: "turn-exact", groups: [] });
+  assert.equal(reads, 1);
+  await assert.rejects(view.readHistory({ provider: "claude", threadId: "thread-exact" }, { tracePage: request }), /Codex/u);
+});
+
 test("task view binding resolves exact catalog identity", async () => {
   const entry = {
     provider: "codex",

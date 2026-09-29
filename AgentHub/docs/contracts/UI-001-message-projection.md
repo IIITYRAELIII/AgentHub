@@ -1,5 +1,20 @@
 # UI-001 — Canonical message projection
 
+## Explicit Codex trace details
+
+A shortened rollout preview exposes “All stages” only on explicit expansion.
+Detail pages do not replace canonical messages or turn identity. For new trace
+quotes, the existing version-1 source locator may carry an exact traceGroupId;
+its canonical content hash binds that group's complete reasoning and the
+unchanged provider/Thread/turn/item identity. Other preview groups entering or
+leaving do not invalidate the quote. The existing surface and selection hashes
+and exact UTF-16 ranges remain mandatory. Missing or ambiguous source groups
+fail closed; no text matching supplies identity. An evicted group is read only
+on explicit source navigation. Equal DOM copies in the preview and detail page
+may share one source only after their rendered content agrees and all hashes
+validate. Existing locators without traceGroupId retain their previous content
+hash semantics; they are not retroactively rewritten (ADR-0077).
+
 ## Invariants
 
 - Technical identifier presentation preserves complete Markdown links, including

@@ -143,7 +143,8 @@ async function projectJournal(payload, id) {
   const rateLimits = String(current?.html ?? "").match(
     /<div\b[^>]*data-work-log-rate-limits\b[^>]*>[\s\S]*?<\/div>/iu,
   )?.[0] ?? "";
-  const syncedUsageFacts = await measure("factsReadMs", () => store.facts());
+  const factsSnapshot = await measure("factsReadMs", () => store.projectionFacts());
+  const syncedUsageFacts = factsSnapshot.facts;
   const accountCatalog = await measure("accountCatalogReadMs", () => journal.accountCatalog());
   const options = {
     preferredOpenDate: input.openDate,
@@ -186,6 +187,9 @@ async function projectJournal(payload, id) {
     invalidRecordCount: normalized.invalidRecords.length,
     invalidRecordReasonCounts,
     eventCount: syncedUsageFacts.length,
+    factsSourceRead: factsSnapshot.sourceRead,
+    factsCacheBytes: factsSnapshot.cacheBytes ?? null,
+    factsCacheRetained: factsSnapshot.cacheRetained ?? true,
     ...phases,
     durationMs: performance.now() - startedAt,
     workerThreadId: threadId,

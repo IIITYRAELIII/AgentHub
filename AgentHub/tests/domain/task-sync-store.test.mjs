@@ -487,6 +487,8 @@ test("local task sync preserves durable message metadata and attachments", async
     activityGroups: [{
       id: "reasoning-1",
       reasoning: "Проверяю входные данные.",
+      omittedGroupsBefore: 12,
+      omittedActivities: 3,
       activities: [{ id: "tool-1", type: "tool", label: "Проверка", status: "completed" }],
     }],
     messages: [{
@@ -560,6 +562,8 @@ test("local task sync preserves durable message metadata and attachments", async
   assert.equal(entry.activities[0].label, "Проверка");
   assert.equal(entry.activityGroups[0].reasoning, "Проверяю входные данные.");
   assert.equal(entry.activityGroups[0].activities[0].label, "Проверка");
+  assert.equal(entry.activityGroups[0].omittedGroupsBefore, 12);
+  assert.equal(entry.activityGroups[0].omittedActivities, 3);
   const search = restored.searchMessages({
     references: [{ provider: task.provider, threadId: task.threadId }],
     query: "посмотри скриншот",
