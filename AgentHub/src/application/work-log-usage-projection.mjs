@@ -8,7 +8,8 @@ import {
 } from "../domain/codex-usage-estimate.mjs";
 import { isCodexAutoCompactionTurnId } from "../domain/codex-internal-turn.mjs";
 import { isInheritedSubagentTurn } from "../domain/subagent-turn-identity.mjs";
-import { formatQuotaUnits, QUOTA_CALIBRATION_VERSION, turnQuotaBreakdown } from "../domain/quota-units.mjs";
+import { formatQuotaUnits, PROVISIONAL_QU_PER_API_CREDIT,
+  QUOTA_CALIBRATION_VERSION, turnQuotaBreakdown } from "../domain/quota-units.mjs";
 import { taskDisplayTitle } from "../domain/task-display-title.mjs";
 import {
   normalizeInterstreamClientUserMessageId,
@@ -1591,7 +1592,7 @@ function formatTurnEntry(
       + `<div data-work-log-turn-context><strong>Длит.:</strong> ${
         formatDuration(record?.startedAt, record?.completedAt)
       }</div>`
-      + `<div data-work-log-turn-quota><strong>Quota Units:</strong> ${formatQuotaUnits(quota.total)}${quotaQualifier}${quota.apiEstimateCredits > 0 ? ` · API-оценка 1 cr = 1 QU: ${formatCredits(quota.apiEstimateCredits)}` : ""}</div>`
+      + `<div data-work-log-turn-quota><strong>Quota Units:</strong> ${formatQuotaUnits(quota.total)}${quotaQualifier}${quota.apiEstimateCredits > 0 ? ` · API-основа: ${formatCredits(quota.apiEstimateCredits)}; опора GPT-6 Sol ≈ ${PROVISIONAL_QU_PER_API_CREDIT} QU/cr` : ""}</div>`
       + (descendantCount > 0
         ? `<div data-work-log-turn-own-usage><strong>Свой расход:</strong> ${ownCredits}</div>`
         : "")

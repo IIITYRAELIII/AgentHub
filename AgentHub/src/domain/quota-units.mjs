@@ -1,9 +1,19 @@
 import { modelCreditRates, normalizeTokenUsage, normalizeServiceTier, turnCreditBreakdown,
   WORK_LOG_PRICING_PROJECTION_VERSION } from "./token-usage.mjs";
 
-export const QUOTA_CALIBRATION_VERSION = "preliminary-2026-09-29-api-estimates";
+export const QUOTA_CALIBRATION_VERSION = "preliminary-2026-09-29-gpt6sol-reference-v1";
 export const WORK_LOG_ACCOUNTING_PROJECTION_VERSION =
   `${WORK_LOG_PRICING_PROJECTION_VERSION}+qu:${QUOTA_CALIBRATION_VERSION}`;
+
+// The GPT-6 Sol reference is a provisional QU estimate, rounded from a mixed
+// quota-observation window. It is not an official subscription tariff. Freeze
+// this reference ratio; model credit prices retain their own versioned history.
+const GPT_6_SOL_REFERENCE = Object.freeze({
+  credits: Object.freeze({ input: 50, cachedInput: 5, output: 250 }),
+  quota: Object.freeze({ input: 400, cachedInput: 40, output: 2000 }),
+});
+export const PROVISIONAL_QU_PER_API_CREDIT =
+  GPT_6_SOL_REFERENCE.quota.input / GPT_6_SOL_REFERENCE.credits.input;
 
 // Empirical subscription estimates. These are independent of API price history.
 const QUOTA_RATES = Object.freeze({
@@ -31,6 +41,7 @@ export function turnQuotaBreakdown(usage, {
       ? { ...tokens, outputTokens: tokens.reasoningOutputTokens }
       : tokens;
   const imageEstimate = Math.max(0, Number(estimatedCredits) || 0);
+  const provisionalImageQuota = imageEstimate * PROVISIONAL_QU_PER_API_CREDIT;
   const rates = normalizeServiceTier(serviceTier) === "default" ? QUOTA_RATES[id] : null;
   if (rates) {
     const input = Math.max(0, pricingTokens.inputTokens - pricingTokens.cachedInputTokens)
@@ -38,8 +49,8 @@ export function turnQuotaBreakdown(usage, {
     const cache = pricingTokens.cachedInputTokens * rates.cachedInput / 1_000_000;
     const output = pricingTokens.outputTokens * rates.output / 1_000_000;
     return {
-      input, cache, output: output + imageEstimate,
-      total: input + cache + output + imageEstimate,
+      input, cache, output: output + provisionalImageQuota,
+      total: input + cache + output + provisionalImageQuota,
       apiEstimateCredits: imageEstimate,
       uncalibrated: imageEstimate > 0 || inferredBreakdown,
       calibrationVersion: QUOTA_CALIBRATION_VERSION,
@@ -53,11 +64,13 @@ export function turnQuotaBreakdown(usage, {
   if (tariff && (hasTokens || imageEstimate > 0)) {
     const zeroPriced = priced.total === 0 && imageEstimate === 0;
     return {
-      // A known API tariff gives a numerical provisional QU estimate for every
-      // model/tier. It is not a calibrated subscription-quota conversion.
-      input: priced.input, cache: priced.cache,
-      output: priced.output + priced.reasoning + priced.estimate,
-      total: priced.total,
+      // Preserve the API-credit breakdown and project it onto the frozen
+      // GPT-6 Sol QU reference. Other models have no measured QU coefficient.
+      input: priced.input * PROVISIONAL_QU_PER_API_CREDIT,
+      cache: priced.cache * PROVISIONAL_QU_PER_API_CREDIT,
+      output: (priced.output + priced.reasoning + priced.estimate)
+        * PROVISIONAL_QU_PER_API_CREDIT,
+      total: priced.total * PROVISIONAL_QU_PER_API_CREDIT,
       apiEstimateCredits: priced.total,
       uncalibrated: !zeroPriced,
       calibrationVersion: QUOTA_CALIBRATION_VERSION,
@@ -66,7 +79,7 @@ export function turnQuotaBreakdown(usage, {
   }
   if (imageEstimate > 0) {
     return {
-      input: 0, cache: 0, output: imageEstimate, total: imageEstimate,
+      input: 0, cache: 0, output: provisionalImageQuota, total: provisionalImageQuota,
       apiEstimateCredits: imageEstimate, uncalibrated: true,
       calibrationVersion: QUOTA_CALIBRATION_VERSION, basis: "estimate-only",
     };

@@ -8,29 +8,31 @@ test("empirical Sol and Astra QU use uncached input, cache and all output exactl
   assert.deepEqual(turnQuotaBreakdown(usage, { model: "gpt-5.6-sol" }), {
     input: 450, cache: 45, output: 2250, total: 2745,
     apiEstimateCredits: 0, uncalibrated: false,
-    calibrationVersion: "preliminary-2026-09-29-api-estimates", basis: "empirical",
+    calibrationVersion: "preliminary-2026-09-29-gpt6sol-reference-v1", basis: "empirical",
   });
   assert.equal(turnQuotaBreakdown(usage, { model: "gpt-6-astra" }).total, 10065);
   assert.deepEqual(usage, { inputTokens: 2_000_000, cachedInputTokens: 1_000_000,
     outputTokens: 1_000_000, reasoningOutputTokens: 200_000 });
 });
 
-test("new Sol and Luna use unweighted API estimates as provisional QU", () => {
+test("new Sol is the numerical QU reference and Luna follows its API rate ratios", () => {
   const usage = { inputTokens: 2_000_000, cachedInputTokens: 1_000_000,
     outputTokens: 1_000_000 };
   assert.equal(turnQuotaBreakdown(usage, { model: "gpt-6-sol" }).apiEstimateCredits, 305);
   assert.equal(turnQuotaBreakdown(usage, { model: "gpt-6-luna" }).apiEstimateCredits, 15.25);
-  assert.equal(turnQuotaBreakdown(usage, { model: "gpt-6-sol" }).total, 305);
-  assert.equal(turnQuotaBreakdown(usage, { model: "gpt-6-luna" }).total, 15.25);
+  const sol = turnQuotaBreakdown(usage, { model: "gpt-6-sol" });
+  const luna = turnQuotaBreakdown(usage, { model: "gpt-6-luna" });
+  assert.deepEqual([sol.input, sol.cache, sol.output, sol.total], [400, 40, 2000, 2440]);
+  assert.deepEqual([luna.input, luna.cache, luna.output, luna.total], [20, 2, 100, 122]);
   assert.equal(turnQuotaBreakdown(usage, { model: "gpt-6-sol" }).uncalibrated, true);
 });
 
-test("other priced models and Fast get provisional numerical QU without subscription factors", () => {
+test("other priced models and Fast get provisional numerical QU from the Sol reference", () => {
   const usage = { inputTokens: 1_000_000 };
   const fast = turnQuotaBreakdown(usage, {
     model: "gpt-5.6-sol", serviceTier: "fast", completedAt: "2026-09-29T00:00:00Z",
   });
-  assert.equal(fast.total, 250);
+  assert.equal(fast.total, 2000);
   assert.equal(fast.basis, "api-estimate");
   for (const model of ["gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4", "gpt-5.4-mini"]) {
     const quota = turnQuotaBreakdown(usage, { model, completedAt: "2026-09-29T00:00:00Z" });
@@ -38,7 +40,7 @@ test("other priced models and Fast get provisional numerical QU without subscrip
     assert.equal(quota.uncalibrated, true, model);
   }
   const image = turnQuotaBreakdown(usage, { model: "gpt-6-astra", estimatedCredits: 90 });
-  assert.equal(image.total, 1740);
+  assert.equal(image.total, 2370);
   assert.equal(image.apiEstimateCredits, 90);
   assert.equal(image.uncalibrated, true);
   assert.deepEqual([1, 5, 20, "pro"].map(quotaCapacity), [10000, 50000, 200000, null]);
@@ -56,5 +58,5 @@ test("Spark's zero API price stays zero and a missing model is not invented", ()
   assert.equal(missing.uncalibrated, true);
   assert.equal(turnQuotaBreakdown({ totalTokens: 1_000_000 }, {
     model: "gpt-5.6-terra", completedAt: "2026-09-29T00:00:00Z",
-  }).total, 50);
+  }).total, 400);
 });

@@ -13684,7 +13684,7 @@ function renderUsageHistoryContent() {
         const incomplete = Math.max(0, Number(payload.uncalibratedCount) || 0);
         notes.push(`Калибровка ${payload.quotaCalibrationVersion || "предварительная"}; без подтверждённого QU-коэффициента: ${incomplete} ход(ов).`);
         if (payload.totalApiEstimateCredits > 0) {
-          notes.push(`Для моделей без эмпирической QU-ставки учтена предварительная API-оценка 1 cr = 1 QU без подписочного коэффициента: ${formatUsageValue(payload.totalApiEstimateCredits, "cr")}.`);
+          notes.push(`Для моделей без эмпирической QU-ставки учтена предварительная оценка по опоре GPT-6 Sol; API-основа: ${formatUsageValue(payload.totalApiEstimateCredits, "cr")}. Это не подтверждённый коэффициент подписочной квоты.`);
         }
       }
       usageNote.textContent = `${scopeNote} ${notes.join(" ") || "Все показанные ходы тарифицированы и имеют длительность."}`;
