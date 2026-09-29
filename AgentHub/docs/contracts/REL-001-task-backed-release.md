@@ -1,5 +1,15 @@
 # REL-001 — Task-backed Workspace release
 
+Task merge-adoption analysis excludes an already published ancestor range only
+when the canonical publication generation names that exact repository revision,
+the repository's origin/main tracking ref equals it, and accepted local main is
+its ancestor. This permits consolidation on published code while the registered
+primary checkout deliberately remains behind. It does not advance primary main,
+create an upstream adoption receipt or authorize unpublished sibling merges.
+Exact Task result, managed dev integration and composition checks still apply.
+Explicit and historical adoption-proof reconstruction keep their original
+immutable proof boundaries (ADR-0078).
+
 ## Durable release operation (HUB-260, 2026-09-22)
 
 One authorized release is one durable `ReleaseOperation` owned by the application

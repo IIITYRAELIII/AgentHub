@@ -23,6 +23,68 @@ import { taskRepositoryKey } from "../../../src/domain/task-git-reference.mjs";
 
 const execFileAsync = promisify(execFile);
 
+test("combined Tasks accept proven published history with stale primary main and reject unproven ancestry", { timeout: 90_000 }, async (context) => {
+  const root = await repository(context);
+  const originalMain = await git(root, "rev-parse", "main");
+  const dataDir = path.join(root, "..", `${path.basename(root)}-published-history`);
+  context.after(() => rm(dataDir, { recursive: true, force: true }));
+  let publication = null;
+  const service = new TaskGitWorkspaceService({ dataDir, readPublication: async () => publication });
+  const a = await service.prepare({ taskId: "14141414-1414-4414-8414-141414141414", projectRoot: root });
+  const b = await service.prepare({ taskId: "15151515-1515-4515-8515-151515151515", projectRoot: root });
+  const commit = async (cwd, message) => {
+    await git(cwd, "add", ".");
+    await git(cwd, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", message);
+  };
+  await git(root, "checkout", "-b", "published-feature");
+  await writeFile(path.join(root, "published.txt"), "already published\n");
+  await commit(root, "published feature");
+  await git(root, "checkout", "-b", "publication", "main");
+  await git(root, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+    "merge", "--no-ff", "published-feature", "-m", "publication");
+  const published = await git(root, "rev-parse", "HEAD");
+  await git(root, "checkout", "main");
+  await git(root, "update-ref", "refs/remotes/origin/main", published);
+  for (const workspace of [a, b]) await git(workspace.projectRoot, "merge", "--ff-only", published);
+  await writeFile(path.join(a.projectRoot, "a.txt"), "A\n");
+  await commit(a.projectRoot, "A result");
+  await writeFile(path.join(b.projectRoot, "b.txt"), "B\n");
+  await commit(b.projectRoot, "B result");
+  await git(b.projectRoot, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+    "merge", "--no-ff", a.branch, "-m", "combine A");
+  const snapshot = await service.snapshot({ taskId: b.taskId, projectRoot: b.projectRoot });
+  const devBefore = (await service.prepareDev(root)).headCommit;
+  for (const invalid of [null, { revision: published },
+    { generation: "g", repositories: [{ root: path.join(root, "foreign"), revision: published }] },
+    { generation: "g", repositories: [{ root, revision: originalMain }] }]) {
+    publication = invalid;
+    await assert.rejects(service.mergeIntoDev(snapshot), /upstream|adoption/iu);
+    assert.equal(await git(root, "rev-parse", "dev"), devBefore);
+  }
+  publication = { generation: "published-generation", repositories: [{ root, revision: published }] };
+  await git(root, "update-ref", "refs/remotes/origin/main", originalMain);
+  await assert.rejects(service.mergeIntoDev(snapshot), /upstream|adoption/iu);
+  assert.equal(await git(root, "rev-parse", "dev"), devBefore);
+  await git(root, "update-ref", "refs/remotes/origin/main", published);
+  const result = await service.mergeIntoDev(snapshot);
+  assert.equal(result.integrated, true);
+  assert.equal(await git(root, "rev-parse", "main"), originalMain);
+  assert.equal(await git(root, "status", "--porcelain"), "");
+  assert.equal(await readFile(path.join(result.dev.projectRoot, "a.txt"), "utf8"), "A\n");
+  assert.equal(await readFile(path.join(result.dev.projectRoot, "b.txt"), "utf8"), "B\n");
+  const acceptedDev = await git(root, "rev-parse", "dev");
+  await git(root, "checkout", "-b", "unpublished-foreign", published);
+  await writeFile(path.join(root, "foreign.txt"), "not published\n");
+  await commit(root, "unpublished foreign change");
+  await git(root, "checkout", "main");
+  await git(b.projectRoot, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+    "merge", "--no-ff", "unpublished-foreign", "-m", "unapproved adoption");
+  const changed = await service.snapshot({ taskId: b.taskId, projectRoot: b.projectRoot });
+  await assert.rejects(service.mergeIntoDev(changed), /upstream|adoption/iu);
+  assert.equal(await git(root, "rev-parse", "dev"), acceptedDev);
+  assert.equal(await git(root, "rev-parse", "main"), originalMain);
+});
+
 async function withdrawalFixture(context, { dependent = false } = {}) {
   const root = await repository(context);
   const dataDir = path.join(root, "..", `${path.basename(root)}-withdrawal-data`);
