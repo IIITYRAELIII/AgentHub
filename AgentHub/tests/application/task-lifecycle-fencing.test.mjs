@@ -444,9 +444,9 @@ test("Await composes PreRelease before it commits acceptance and keeps the prior
   });
 
   assert.deepEqual(calls, [
-    "begin", "repo", "validate", "prepare", "commit", "wake:task-await",
-    "begin", "repo", "validate", "fail",
-    "begin", "repo", "validate", "prepare", "commit", "wake:task-await",
+    "lock:workspace-1", "begin", "repo", "validate", "prepare", "commit", "wake:task-await",
+    "lock:workspace-1", "begin", "repo", "validate", "fail",
+    "lock:workspace-1", "begin", "repo", "validate", "prepare", "commit", "wake:task-await",
   ]);
   assert.equal(task.workflowStatus, "awaiting_implementation");
   assert.equal(result.releaseCandidate.status, "prepared");

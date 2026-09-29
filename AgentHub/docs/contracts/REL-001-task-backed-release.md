@@ -27,24 +27,25 @@ Task still names that result. A newer result or workflow transition is never
 overwritten by an older generation.
 
 No prepared, freezing, frozen, failed or awaiting-finalization snapshot blocks
-Task edits or Await acceptance. Workspace/Task/repository locks protect only
-short identity CAS and durable writes; tests, network, Git publication and
-deployment execute outside those locks. A timeout or process death with a
+Task edits or Await acceptance. Await preparation serializes under its
+Workspace/Task/repository locks (ADR-0079); release validation and publication
+do not hold those locks across tests, network or deployment. A timeout or process death with a
 possible external effect is reconciled by exact readback before retry. Partial
 multi-target publication preserves its effect vector and continues only missing
 targets. External unavailability is a visible condition with durable backoff,
 not a request for generic manual resume.
 
-Await composition runs in an operation-scoped independent generation clone.
-Only exact generation import, current-plan verification, live PreRelease pointer
-replacement and the Task CAS run under the Workspace Await lock. A concurrent
-winner makes the loser compose a new generation; it never promotes a stale
-prospective tree. An ambiguous Task CAS preserves the promoted candidate until
-authoritative lifecycle reconciliation proves whether acceptance committed.
-Prospective acceptance clones borrow immutable objects from the registered
-repository while retaining their own index and worktree. A conclusively accepted,
-rejected or stale attempt removes its exact prospective generation root; an
-ambiguous outcome preserves that root as recovery evidence.
+Await acceptance reuses the repository's existing live PreRelease clone.
+Workspace Await -> Task -> repository locks serialize preparation and the exact
+Task CAS, including unknown-outcome recovery and cross-Task cutover. A waiting
+acceptance reads the current accepted set after acquiring those locks. It does
+not create or promote an operation-scoped temporary clone. The existing Git
+owner retains the previous candidate ref, checkout and checkpoint until both
+composition and the Task CAS succeed. A proven rejection restores them; an
+ambiguous commit or rollback preserves evidence for the original operation.
+Dirty release worktrees are rejected without overwriting local files.
+This serializes simultaneous Await transitions, not ordinary message handling.
+See ADR-0079. Publication generations retain their separate immutable lifecycle.
 Immutable operation generations remain available while their operation is active,
 waiting or has an unknown external effect. After a terminal outcome, the durable
 operation, receipts and generation identity remain in SQLite while their owned

@@ -34,8 +34,9 @@ The release runner is stable current-owner code, not executable code loaded from
 the candidate. Every command receives the candidate `AgentHub` directory as its
 explicit working directory, including artifact build/effect callbacks. The
 runner reads N−1 operation schema. Long composition, tests, Git, deployment and
-network work execute outside Workspace and Task CAS locks; Await promotion keeps
-only exact identity checks, pointer writes and the Task CAS inside the lock.
+network work execute outside Workspace and Task CAS locks. ADR-0079 supersedes
+parallel prospective Await generations: Await composition now reuses live
+PreRelease under the Workspace Await lock through the Task CAS.
 
 ## Consequences
 

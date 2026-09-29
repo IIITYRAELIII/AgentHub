@@ -335,81 +335,20 @@ export class WorkspaceReleasePreflightService {
     const root = path.resolve(String(projectRoot ?? "").trim());
     const operation = String(operationId ?? "").trim();
     if (!operation) throw new TypeError("operationId is required");
-    for (let attempt = 1; attempt <= 4; attempt += 1) {
-      const prospective = await this.#prepareAwaitSet({
-        workspaceId,
-        acceptingTask,
-        lease,
-        prospectiveOnly: true,
-        generationIdentity: { operationId: `await-${operation}`, generation: attempt },
-        freezeGeneration: false,
-        ephemeralGeneration: true,
-      });
-      let accepted;
-      let acceptanceError = null;
-      try {
-        accepted = await this.withAwaitTransition(workspaceId, async () => {
-      const current = await this.releasePlanner.plan(workspaceId, { acceptingTask });
-      if (current.revision !== prospective.planRevision) {
-        const error = new Error("Task changed during PreRelease acceptance preparation");
-        error.code = "AWAIT_ACCEPTANCE_STALE";
-        throw error;
-      }
-      let committed;
-      const promote = async (index) => {
-        if (index === prospective.releaseCandidates.length) return;
-        const source = prospective.releaseCandidates[index];
-        await this.releaseGitWorkspaces.promoteGenerationCandidate({
-          projectRoot: source.repositoryRoot,
-          candidate: source,
-          validateBeforeCommit: async () => {
-            const latest = await this.releasePlanner.plan(workspaceId, { acceptingTask });
-            if (latest.revision !== prospective.planRevision) {
-              const error = new Error("Task changed during PreRelease acceptance promotion");
-              error.code = "AWAIT_ACCEPTANCE_STALE";
-              throw error;
-            }
-          },
-          commitPrepared: async (preparedCandidate) => {
-            prospective.releaseCandidates[index] = preparedCandidate;
-            if (index + 1 < prospective.releaseCandidates.length) return promote(index + 1);
-            const prepared = prospective;
+    // Lifecycle holds Workspace Await -> Task -> repository locks, including
+    // recovery and cross-Task cutover. Retain candidate rollback through Task CAS.
+    return this.#prepareAwaitSet({
+      workspaceId, acceptingTask, lease,
+      commitPrepared: async (prepared) => {
         const matches = prepared.releaseCandidates.flatMap((candidate) => (
           canonicalRoot(candidate.repositoryRoot) === canonicalRoot(root)
             ? candidate.frozenTasks.filter((task) => task.taskId === String(acceptingTask?.id ?? ""))
             : []
         ));
         if (matches.length !== 1) throw new Error("Task has no unique prepared Await result to accept");
-            committed = await commitPrepared({ ...prepared, task: matches[0] });
-          },
-        });
-      };
-      await promote(0);
-      return committed;
-        });
-      } catch (error) {
-        acceptanceError = error;
-      }
-      const cleanupErrors = [];
-      const retainsUnknownEvidence = ["AWAIT_ACCEPTANCE_UNKNOWN", "AWAIT_PREPARATION_UNKNOWN"]
-        .includes(acceptanceError?.code);
-      if (!retainsUnknownEvidence) {
-        for (const candidate of prospective.releaseCandidates) {
-          try {
-            await this.releaseGitWorkspaces.discardGenerationCandidate(candidate);
-          } catch (error) {
-            cleanupErrors.push(error);
-          }
-        }
-      }
-      if (acceptanceError) {
-        if (cleanupErrors.length) acceptanceError.cleanupErrors = cleanupErrors;
-        if (acceptanceError.code !== "AWAIT_ACCEPTANCE_STALE" || attempt === 4) throw acceptanceError;
-        continue;
-      }
-      return cleanupErrors.length ? { ...accepted, cleanupWarnings: cleanupErrors } : accepted;
-    }
-    throw new Error("Await acceptance could not stabilize its prospective generation");
+        return commitPrepared({ ...prepared, task: matches[0] });
+      },
+    });
   }
 
   async prepareAwaitSet(options = {}) {

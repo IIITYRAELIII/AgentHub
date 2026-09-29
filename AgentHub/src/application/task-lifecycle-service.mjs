@@ -168,12 +168,10 @@ export class TaskLifecycleService {
     if (!this.releasePreflight) {
       throw new Error("Release preflight is unavailable; workflow status was not changed");
     }
-    const result = options.status === "awaiting_implementation"
-      ? await this.#updateWorkflowStatusLocked(options, { releaseWorkflow: true })
-      : await this.releasePreflight.withAwaitTransition(
-        workspace.id,
-        async () => this.#updateWorkflowStatusLocked(options, { releaseWorkflow: true }),
-      );
+    const result = await this.releasePreflight.withAwaitTransition(
+      workspace.id,
+      async () => this.#updateWorkflowStatusLocked(options, { releaseWorkflow: true }),
+    );
     if (result?.task?.workflowStatus === "awaiting_implementation") this.#releaseOperationWake?.(result.task.id);
     return result;
   }
@@ -846,7 +844,7 @@ export class TaskLifecycleService {
           } : {}),
         };
       } catch (error) {
-        if (["TASK_WITHDRAWAL_UNKNOWN", "AWAIT_ACCEPTANCE_UNKNOWN"].includes(error?.code)) throw error;
+        if (["TASK_WITHDRAWAL_UNKNOWN", "AWAIT_ACCEPTANCE_UNKNOWN", "AWAIT_PREPARATION_UNKNOWN"].includes(error?.code)) throw error;
         if (releaseWorkflow && workflowStatus === "awaiting_implementation") {
           const failure = new TaskAwaitIntegrationError(error);
           await this.#failWhileOwned(lease, operationId, failure);
@@ -897,10 +895,7 @@ export class TaskLifecycleService {
           task.id, projectRoot, taskLease, operation,
         )
         )));
-    const transition = this.taskBoard.lifecycleTransition?.(operationId);
-    return transition?.targetWorkflowStatus === "awaiting_implementation"
-      ? locked()
-      : this.releasePreflight.withAwaitTransition(workspace.id, locked);
+    return this.releasePreflight.withAwaitTransition(workspace.id, locked);
   }
 
   async reconcileUnknownWorkflowStatusOwned({

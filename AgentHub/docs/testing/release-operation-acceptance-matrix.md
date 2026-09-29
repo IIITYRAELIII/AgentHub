@@ -8,7 +8,7 @@ runtime is used.
 
 | Design scenario | Production entrypoint | Executable evidence |
 | --- | --- | --- |
-| 1. Two Await transitions and conflict | `TaskLifecycleService` → independent `prepareGeneration` → short `promoteGenerationCandidate` CAS | `task-await-prerelease-integration`: simultaneous acceptance uses distinct generation roots, stale loser recomposes, final live PreRelease contains both results; conflict remains before Task CAS |
+| 1. Two Await transitions and conflict | `TaskLifecycleService` → serialized live `prepareCandidate` → Task CAS | `task-await-prerelease-integration`: simultaneous acceptance reuses one PreRelease with a hooked primary, creates no temporary generations and retains both results; conflict and proven SQLite rejection restore the prior candidate |
 | 2. G1 validation failure, R2, G2 | `ReleaseOperationCommandService` → `ReleaseOperationService` | fault matrix scenario 2 and `a correction accepted during validation fences G1 and publishes G2` |
 | 3. Unrelated/newer Task result | publish-start reservation and exact finalization | fault matrix scenario 3, workspace adapter reservation tests, release-operation finalization tests |
 | 4. Crash around durable local effects | public command owner plus SQLite receipts | fault matrix scenario 4 kills a real child process after the applied compose receipt; service/store recovery tests cover generation-before-receipt and owner fencing |

@@ -1256,14 +1256,14 @@ for (const refusal of [null, "second-repository", "status-cas"]) {
     const heads = new Map(roots.map((root) => [root, "old"]));
     const active = new Set();
     let commits = 0;
-    service.releaseGitWorkspaces.prepareCandidate = async ({ projectRoot: root, commitPrepared, validateBeforeCommit }) => {
+    service.releaseGitWorkspaces.prepareCandidate = async ({ projectRoot: root, frozenTasks, commitPrepared, validateBeforeCommit }) => {
       const prior = heads.get(root);
       active.add(root);
       try {
         if (root === roots[1] && refusal === "second-repository") throw new Error("second repository conflict");
         await validateBeforeCommit();
         heads.set(root, "new");
-        const prepared = { repositoryRoot: root, preReleaseHead: "new" };
+        const prepared = { repositoryRoot: root, preReleaseHead: "new", frozenTasks };
         await commitPrepared(prepared);
         return prepared;
       } catch (error) {
@@ -1271,14 +1271,16 @@ for (const refusal of [null, "second-repository", "status-cas"]) {
         throw error;
       } finally { active.delete(root); }
     };
-    const operation = service.prepareAwaitSet({
-      workspaceId: "workspace-1", acceptingTask: { id: "task-2", revision: 7 }, preserveFrozen: true,
+    const operation = service.prepareAwaitAcceptance({
+      workspaceId: "workspace-1", acceptingTask: { id: "task-2", revision: 7 },
+      projectRoot: roots[1], operationId: "serial-multi-repository",
       commitPrepared: async (prepared) => {
         assert.equal(active.size, 2);
         assert.equal(prepared.releaseCandidates.length, 2);
         assert.deepEqual([...heads.values()], ["new", "new"]);
         if (refusal === "status-cas") throw new Error("status CAS rejected");
         commits += 1;
+        return prepared;
       },
     });
     if (refusal) await assert.rejects(operation, /conflict|CAS rejected/u);
