@@ -292,9 +292,12 @@ inside the sibling still requires its existing adoption evidence. Already
 published ancestry is excluded using repository-scoped durable publication with
 its generation, provided accepted local main is its ancestor and the published
 revision remains an ancestor of tracked origin/main. A later remote commit does
-not revoke that historical proof and is not thereby adopted. Missing evidence,
-a remote rewind or divergence fails closed. Primary main and archived Task
-adoption records are unchanged.
+not revoke that historical proof and is not thereby adopted. Every common
+ancestor of a Task result and tracked origin/main must be contained in the
+published revision or covered by exact upstream adoption evidence. This also
+rejects unpublished single-parent remote history inherited by fast-forward.
+Missing evidence, a remote rewind or divergence fails closed. Primary main and
+archived Task adoption records are unchanged.
 
 Publication evidence remains scoped to the repository: the prerequisite result
 must be in the confirmed published revision, and that revision must be contained

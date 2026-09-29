@@ -1504,7 +1504,21 @@ export class TaskGitWorkspaceService {
       "merge-base", "--is-ancestor", localMain, published,
     ], { cwd: repoRoot }) === null) return null;
     // Exclude published ancestry only; do not adopt new upstream or move main.
-    return published;
+    return { published, remote };
+  }
+
+  async #unpublishedTrackedBases(repoRoot, commit, publishedHistory, lease) {
+    if (!publishedHistory) return [];
+    const bases = String(await this.#runOwned([
+      "merge-base", "--all", commit, publishedHistory.remote,
+    ], { cwd: repoRoot, lease })).split(/\r?\n/u).filter(Boolean);
+    const unpublished = [];
+    for (const base of bases) {
+      if (await gitMaybe([
+        "merge-base", "--is-ancestor", base, publishedHistory.published,
+      ], { cwd: repoRoot }) === null) unpublished.push(base);
+    }
+    return unpublished;
   }
 
   async #isOtherTaskHead(taskId, repoRoot, commit, localMain, lease, visiting = new Set()) {
@@ -1522,11 +1536,24 @@ export class TaskGitWorkspaceService {
       if (!base || !await this.managedRepositoryRoot(root, {
         taskId: owner, taskNumber: /^branch refs\/heads\/(.+)$/mu.exec(record)?.[1],
       })) continue;
-      const publishedHistoryBase = await this.#publishedTaskHistoryBase(repoRoot, localMain);
+      const publishedHistory = await this.#publishedTaskHistoryBase(repoRoot, localMain);
+      const unpublished = await this.#unpublishedTrackedBases(repoRoot, commit, publishedHistory, lease);
+      if (unpublished.length) {
+        const adoption = await this.#recordedUpstreamAdoptionForSnapshot({
+          taskId: owner, repoRoot, snapshotCommit: commit, localMain, lease,
+        });
+        for (const base of unpublished) {
+          if (!adoption || await gitMaybe([
+            "merge-base", "--is-ancestor", base, adoption.record.adoptedCommit,
+          ], { cwd: repoRoot }) === null) {
+            throw new Error("Sibling Task contains unpublished tracked remote history");
+          }
+        }
+      }
       const merges = String(await runGit([
         "log", "--first-parent", "--merges", "--format=%H %P",
         `--max-count=${MAX_UPSTREAM_ADOPTION_PROOFS + 1}`, commit, `^${base}`, `^${localMain}`,
-        ...(publishedHistoryBase ? [`^${publishedHistoryBase}`] : []),
+        ...(publishedHistory ? [`^${publishedHistory.published}`] : []),
       ], { cwd: repoRoot })).split(/\r?\n/u).filter(Boolean);
       if (merges.length > MAX_UPSTREAM_ADOPTION_PROOFS) throw new Error("Sibling Task merge history exceeds the bounded proof");
       for (const merge of merges) {
@@ -1575,10 +1602,18 @@ export class TaskGitWorkspaceService {
     }
     if (observedBase !== exactBase) throw new Error("explicit upstream adoption Task base changed");
     if (observedSnapshot !== exactSnapshot) throw new Error("explicit upstream adoption Task snapshot changed");
+    const publishedHistory = await this.#publishedTaskHistoryBase(repoRoot, acceptedLocalMain);
+    for (const base of await this.#unpublishedTrackedBases(repoRoot, exactSnapshot, publishedHistory, lease)) {
+      if (!expectedAdopted || await gitMaybe([
+        "merge-base", "--is-ancestor", base, expectedAdopted,
+      ], { cwd: repoRoot }) === null) {
+        throw new Error("Task snapshot contains unpublished tracked remote history");
+      }
+    }
     return this.#upstreamAdoptionProofFromObjects({
       id, repoKey, repoRoot, expectedBranch, branchRef, exactBase, exactSnapshot, acceptedLocalMain,
       expectedAdopted, devCommit, lease,
-      publishedHistoryBase: expectedAdopted ? null : await this.#publishedTaskHistoryBase(repoRoot, acceptedLocalMain),
+      publishedHistoryBase: expectedAdopted ? null : publishedHistory?.published ?? null,
     });
   }
 
