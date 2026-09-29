@@ -1,5 +1,14 @@
 # REL-001 — Task-backed Workspace release
 
+## Bounded plan reads
+
+Only non-archived Await Tasks require Git evidence during release planning.
+Prospective acceptance first projects its exact Test-to-Await CAS and then uses
+the same filter. Draft and legacy done-audit metadata remain available without
+revalidating their Git history; plan hashes and selected-result validation are
+unchanged. Reading the plan observes an existing dev ref without preparing or
+repairing a worktree. See ADR-0080.
+
 ## Durable release operation (HUB-260, 2026-09-22)
 
 One authorized release is one durable `ReleaseOperation` owned by the application

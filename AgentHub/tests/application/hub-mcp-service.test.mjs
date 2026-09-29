@@ -2142,6 +2142,27 @@ test("HubMcpService performs standard reads and writes across Workspace boundari
   }), /outside the selected Workspace/u);
 });
 
+test("release plan reads each dev ref once without preparing shared worktrees", async (context) => {
+  const calls = [];
+  const { service, token } = await fixture(context, {
+    taskGitWorkspacesFactory: async () => claimOnlyTaskGit({
+      readDev: async (projectRoot) => {
+        calls.push(projectRoot);
+        return { repositoryRoot: projectRoot, projectRoot: null, branch: "dev", headCommit: "a".repeat(40) };
+      },
+      prepareDev: async () => { throw new Error("read command attempted dev preparation"); },
+    }),
+  });
+  service.releasePlanner.plan = async () => ({ ready: [
+    { projectRoot: "D:/repo" }, { projectRoot: "D:/repo" },
+  ] });
+  const plan = await service.call("hub_release_plan_get", { context_token: token });
+  assert.deepEqual(calls, ["D:/repo"]);
+  assert.deepEqual(plan.devIntegration.repositories, [{
+    projectRoot: "D:/repo", branch: "dev", headCommit: "a".repeat(40), worktreeRoot: null,
+  }]);
+});
+
 test("hub_stream_history projects active content and deterministic lifecycle states", async (context) => {
   const { service, token, historyRecordsByThread } = await fixture(context);
   const visibleActivity = {

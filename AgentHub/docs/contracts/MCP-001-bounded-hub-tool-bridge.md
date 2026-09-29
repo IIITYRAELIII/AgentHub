@@ -89,6 +89,13 @@ Task rows or copying their files again.
 
 ## Deadline ownership
 
+`hub_release_plan_get` reads Git evidence only for open Await Tasks (including
+the one prospective acceptance when invoked by that lifecycle owner). Archived,
+draft and done-audit metadata cannot trigger Git scans. Its dev projection is an
+observation of the existing ref/worktree, not preparation, repair, adoption or
+integration evidence; a missing dev is reported without creating it or waiting
+for a mutation lease. Exact release validation remains with its existing owner.
+
 The Codex MCP client owns a finite `agent_hub` tool deadline outside
 `HubMcpServer`. It is longer than the server dispatch deadline, so ordinary
 server timeouts keep their authoritative error, while a request stalled before

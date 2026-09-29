@@ -1709,7 +1709,7 @@ export class HubMcpService {
     const repositories = [];
     for (const projectRoot of roots) {
       try {
-        const dev = await this.taskGitWorkspaces.prepareDev(projectRoot);
+        const dev = await this.taskGitWorkspaces.readDev(projectRoot);
         repositories.push({
           projectRoot: dev.repositoryRoot,
           branch: dev.branch,

@@ -2116,6 +2116,25 @@ export class TaskGitWorkspaceService {
     }
   }
 
+  async readDev(projectRoot) {
+    this.#assertAvailable("readDev");
+    const repoRoot = await repositoryRoot(projectRoot);
+    const headCommit = await runGit(["rev-parse", "--verify", `refs/heads/${this.devBranch}^{commit}`], { cwd: repoRoot });
+    const worktrees = await runGit(["worktree", "list", "--porcelain"], { cwd: repoRoot });
+    const record = worktrees.split(/\r?\n\r?\n/u).find((entry) => (
+      entry.split(/\r?\n/u).includes(`branch refs/heads/${this.devBranch}`)
+    ));
+    const worktree = record?.split(/\r?\n/u).find((line) => line.startsWith("worktree "));
+    // An observational ref read is not integration/adoption evidence and must
+    // never create a worktree, recover dev or wait for its mutation lease.
+    return {
+      repositoryRoot: repoRoot,
+      projectRoot: worktree ? canonicalPath(worktree.slice("worktree ".length)) : null,
+      branch: this.devBranch,
+      headCommit,
+    };
+  }
+
   async prepareDev(projectRoot, { lease = null } = {}) {
     this.#assertAvailable("prepareDev");
     const repoRoot = await repositoryRoot(projectRoot);

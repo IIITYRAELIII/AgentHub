@@ -40,6 +40,13 @@ export class TaskReleasePlanService {
     for (const task of tasks) {
       const changedFiles = [];
       let gitError = null;
+      // Metadata remains available for draft/legacy audit projections, but only
+      // the prospective Await set needs live Git evidence. Archived branches
+      // may already have been cleaned up and cannot affect this release.
+      if (task.status === "done" || task.workflowStatus !== "awaiting_implementation") {
+        resolved.push({ ...task, changedFiles, gitError });
+        continue;
+      }
       try {
         for (const reference of task.gitReferences ?? []) {
           const evidence = await this.taskGitWorkspaces.releaseEvidence({
