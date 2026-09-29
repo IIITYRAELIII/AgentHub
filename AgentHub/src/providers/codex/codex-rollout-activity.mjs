@@ -29,6 +29,10 @@ const CODEX_ROLLOUT_OCCURRENCE_CACHE_LIMIT = 512;
 const CODEX_AGENT_MESSAGE_CHARS = 200_000;
 const CODEX_ACTIVITY_CACHE_LIMIT = 200;
 const CODEX_ACTIVE_ACTIVITY_CACHE_LIMIT = 16;
+const CODEX_ACTIVITY_GROUPS_PER_TURN_LIMIT = 256;
+const CODEX_ACTIVITY_GROUP_BYTES_PER_TURN_LIMIT = 512 * 1024;
+const CODEX_ACTIVITY_REASONING_CHARS_LIMIT = 40_000;
+const CODEX_ACTIVITIES_PER_GROUP_LIMIT = 256;
 const GENERATED_IMAGE_CALL_OWNER_LIMIT = 128;
 const AMBIGUOUS_GENERATED_IMAGE_CALL_OWNER = Object.freeze({ state: "ambiguous" });
 const LEGACY_TURN_ID = "__legacy__";
@@ -726,10 +730,85 @@ function codexActivityIndex(index, group) {
   return activities;
 }
 
+function codexActivityTruncation(metadata, turnId) {
+  const current = metadata.activityGroupTruncation.get(turnId);
+  if (current) return current;
+  const value = { omittedGroups: 0, omittedActivities: 0, reasoningTruncated: false };
+  metadata.activityGroupTruncation.set(turnId, value);
+  return value;
+}
+
+function boundedCodexActivityReasoning(metadata, turnId, reasoning) {
+  const value = String(reasoning ?? "");
+  if (value.length <= CODEX_ACTIVITY_REASONING_CHARS_LIMIT) return value;
+  codexActivityTruncation(metadata, turnId).reasoningTruncated = true;
+  return value.slice(-CODEX_ACTIVITY_REASONING_CHARS_LIMIT);
+}
+
+function mutableCodexActivityGroups(metadata, turnId) {
+  let groups = metadata.activityGroups.get(turnId) ?? [];
+  if (metadata.activityGroupSharedTurns?.delete(turnId)) {
+    groups = groups.slice();
+    metadata.activityGroups.set(turnId, groups);
+    metadata.activityGroupIndexes.delete(turnId);
+    metadata.activityGroupBudgetStates?.delete(turnId);
+  }
+  return groups;
+}
+
+function mutableCodexActivityGroup(metadata, turnId, groups, index, group) {
+  let mutable = metadata.mutableActivityGroupIds.get(turnId);
+  if (!mutable) {
+    mutable = new Set();
+    metadata.mutableActivityGroupIds.set(turnId, mutable);
+  }
+  if (mutable.has(group.id)) return group;
+  const position = groups.indexOf(group);
+  if (position < 0) return group;
+  const copy = { ...group, activities: [...(group.activities ?? [])] };
+  groups[position] = copy;
+  mutable.add(copy.id);
+  index.byId.set(copy.id, copy);
+  return copy;
+}
+
+function codexActivityGroupBytes(group) {
+  return Buffer.byteLength(JSON.stringify(group), "utf8");
+}
+
+function enforceCodexActivityBudget(metadata, turnId, groups, index, touchedGroup) {
+  if (!metadata.activityGroupBudgetStates) metadata.activityGroupBudgetStates = new Map();
+  let state = metadata.activityGroupBudgetStates.get(turnId);
+  if (!state || state.groups !== groups) {
+    const sizes = new Map(groups.map((group) => [group.id, codexActivityGroupBytes(group)]));
+    state = { groups, sizes, totalBytes: [...sizes.values()].reduce((sum, size) => sum + size, 0) };
+    metadata.activityGroupBudgetStates.set(turnId, state);
+  } else if (touchedGroup) {
+    const previous = state.sizes.get(touchedGroup.id) ?? 0;
+    const current = codexActivityGroupBytes(touchedGroup);
+    state.sizes.set(touchedGroup.id, current);
+    state.totalBytes += current - previous;
+  }
+  let omittedGroups = 0;
+  while (
+    groups.length > 1
+    && (groups.length > CODEX_ACTIVITY_GROUPS_PER_TURN_LIMIT
+      || state.totalBytes > CODEX_ACTIVITY_GROUP_BYTES_PER_TURN_LIMIT)
+  ) {
+    const removed = groups.shift();
+    state.totalBytes -= state.sizes.get(removed.id) ?? 0;
+    state.sizes.delete(removed.id);
+    index.byId.delete(removed.id);
+    metadata.mutableActivityGroupIds.get(turnId)?.delete(removed.id);
+    omittedGroups += 1;
+  }
+  if (omittedGroups) codexActivityTruncation(metadata, turnId).omittedGroups += omittedGroups;
+}
+
 function rememberCodexTraceEntry(metadata, turnId, entry) {
   if (entry?.type !== "response_item" || !turnId) return;
   const payload = entry.payload ?? {};
-  const groups = metadata.activityGroups.get(turnId) ?? [];
+  const groups = mutableCodexActivityGroups(metadata, turnId);
   const index = codexActivityGroupIndex(metadata, turnId, groups);
   const phase = String(payload.phase ?? "").trim();
   const reasoning = payload.type === "message"
@@ -741,13 +820,24 @@ function rememberCodexTraceEntry(metadata, turnId, entry) {
       : "";
   if (reasoning) {
     const id = `${payload.type === "message" ? "commentary" : "reasoning"}:${String(payload.id ?? groups.length)}`;
-    const current = index.byId.get(id);
-    if (current) current.reasoning = reasoning;
-    else {
-      const group = { id, reasoning, activities: [] };
-      groups.push(group);
-      index.byId.set(id, group);
+    let current = index.byId.get(id);
+    const boundedReasoning = boundedCodexActivityReasoning(metadata, turnId, reasoning);
+    if (current) {
+      current = mutableCodexActivityGroup(metadata, turnId, groups, index, current);
+      current.reasoning = boundedReasoning;
     }
+    else {
+      current = { id, reasoning: boundedReasoning, activities: [] };
+      groups.push(current);
+      index.byId.set(id, current);
+      let mutable = metadata.mutableActivityGroupIds.get(turnId);
+      if (!mutable) {
+        mutable = new Set();
+        metadata.mutableActivityGroupIds.set(turnId, mutable);
+      }
+      mutable.add(id);
+    }
+    enforceCodexActivityBudget(metadata, turnId, groups, index, current);
   } else {
     const activity = rolloutToolActivity(entry);
     if (activity) {
@@ -756,7 +846,8 @@ function rememberCodexTraceEntry(metadata, turnId, entry) {
         groups.push(group);
         index.byId.set(group.id, group);
       }
-      const current = groups.at(-1);
+      let current = groups.at(-1);
+      current = mutableCodexActivityGroup(metadata, turnId, groups, index, current);
       const activities = codexActivityIndex(index, current);
       const existing = activities.get(activity.id) ?? -1;
       if (existing >= 0) current.activities[existing] = activity;
@@ -764,6 +855,15 @@ function rememberCodexTraceEntry(metadata, turnId, entry) {
         activities.set(activity.id, current.activities.length);
         current.activities.push(activity);
       }
+      if (current.activities.length > CODEX_ACTIVITIES_PER_GROUP_LIMIT) {
+        const omitted = current.activities.length - CODEX_ACTIVITIES_PER_GROUP_LIMIT;
+        current.activities.splice(0, omitted);
+        codexActivityTruncation(metadata, turnId).omittedActivities += omitted;
+        index.activitiesByGroup.set(current, new Map(
+          current.activities.map((item, position) => [item.id, position]),
+        ));
+      }
+      enforceCodexActivityBudget(metadata, turnId, groups, index, current);
     }
   }
   if (groups.length) metadata.activityGroups.set(turnId, groups);
@@ -1178,6 +1278,10 @@ export function parseCodexRolloutActivity(text, options = {}) {
     generatedImageSources: new Map(),
     activityGroups: new Map(),
     activityGroupIndexes: new Map(),
+    activityGroupTruncation: new Map(),
+    activityGroupSharedTurns: new Set(),
+    mutableActivityGroupIds: new Map(),
+    activityGroupBudgetStates: new Map(),
     pendingViewImageCalls: new Map(),
     pendingGeneratedImageCalls: new Map(),
     pendingUserMessages: [],
@@ -1238,6 +1342,9 @@ export function parseCodexRolloutActivity(text, options = {}) {
       : {}),
     ...(metadata.activityGroups.size
       ? { activityGroups: Object.fromEntries(metadata.activityGroups) }
+      : {}),
+    ...(metadata.activityGroupTruncation.size
+      ? { activityGroupTruncation: Object.fromEntries(metadata.activityGroupTruncation) }
       : {}),
     unscopedLatestMessage: metadata.unscopedLatestMessage || null,
   });
@@ -1339,6 +1446,9 @@ export async function readCodexRolloutActivityOnCurrentThread(
       ...(cached?.activityGroups?.length
         ? { activityGroups: Object.fromEntries(cached.activityGroups) }
         : {}),
+      ...((cached?.activityGroupTruncation ?? []).length
+        ? { activityGroupTruncation: Object.fromEntries(cached.activityGroupTruncation) }
+        : {}),
       unscopedLatestMessage: cached?.unscopedLatestMessage || null,
       userMessageSnapshotAuthority: cached?.userMessageSnapshotAuthority ?? "incremental",
       userMessageSnapshotAuthorityByTurnId:
@@ -1382,6 +1492,9 @@ export async function readCodexRolloutActivityOnCurrentThread(
       generatedImageSources: Object.fromEntries(cached.generatedImageSources ?? []),
       ...(cached.activityGroups?.length
         ? { activityGroups: Object.fromEntries(cached.activityGroups) }
+        : {}),
+      ...((cached.activityGroupTruncation ?? []).length
+        ? { activityGroupTruncation: Object.fromEntries(cached.activityGroupTruncation) }
         : {}),
       unscopedLatestMessage: cached.unscopedLatestMessage || null,
       userMessageSnapshotAuthority: cached.userMessageSnapshotAuthority ?? "incremental",
@@ -1429,10 +1542,15 @@ export async function readCodexRolloutActivityOnCurrentThread(
         ? (appendOnly ? cached : identityCached).generatedImageSources ?? []
         : [],
     ),
-    activityGroups: new Map((appendOnly ? cached.activityGroups ?? [] : []).map(([turnId, groups]) => (
-      [turnId, structuredClone(groups)]
-    ))),
+    activityGroups: new Map(appendOnly ? cached.activityGroups ?? [] : []),
     activityGroupIndexes: new Map(),
+    activityGroupTruncation: new Map((appendOnly ? cached.activityGroupTruncation ?? [] : [])
+      .map(([turnId, value]) => [turnId, { ...value }])),
+    activityGroupSharedTurns: new Set(
+      appendOnly ? (cached.activityGroups ?? []).map(([turnId]) => turnId) : [],
+    ),
+    mutableActivityGroupIds: new Map(),
+    activityGroupBudgetStates: new Map(),
     pendingViewImageCalls: new Map(appendOnly ? cached.pendingViewImageCalls ?? [] : []),
     pendingGeneratedImageCalls: new Map(
       appendOnly || generatedImageCacheReusable
@@ -1670,6 +1788,7 @@ export async function readCodexRolloutActivityOnCurrentThread(
     userMessages: [...metadata.userMessages],
     generatedImageSources: [...metadata.generatedImageSources],
     activityGroups: [...metadata.activityGroups],
+    activityGroupTruncation: [...metadata.activityGroupTruncation],
     pendingViewImageCalls: [...metadata.pendingViewImageCalls],
     pendingGeneratedImageCalls: [...metadata.pendingGeneratedImageCalls],
     pendingUserMessages: metadata.pendingUserMessages.map((message) => ({ ...message })),
@@ -1709,6 +1828,9 @@ export async function readCodexRolloutActivityOnCurrentThread(
     generatedImageSources: Object.fromEntries(metadata.generatedImageSources),
     ...(metadata.activityGroups.size
       ? { activityGroups: Object.fromEntries(metadata.activityGroups) }
+      : {}),
+    ...(metadata.activityGroupTruncation.size
+      ? { activityGroupTruncation: Object.fromEntries(metadata.activityGroupTruncation) }
       : {}),
     unscopedLatestMessage: metadata.unscopedLatestMessage || null,
     ...snapshotAuthority,
