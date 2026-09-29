@@ -4,7 +4,8 @@ import {
   IMAGE_GENERATION_ESTIMATE_CREDITS,
   looksLikeImageGenerationPrompt,
 } from "../domain/codex-usage-estimate.mjs";
-import { normalizeServiceTier, normalizeTokenUsage, WORK_LOG_PRICING_PROJECTION_VERSION } from "../domain/token-usage.mjs";
+import { normalizeServiceTier, normalizeTokenUsage } from "../domain/token-usage.mjs";
+import { WORK_LOG_ACCOUNTING_PROJECTION_VERSION } from "../domain/quota-units.mjs";
 import { journalProjectionVersion, replaceJournalProjectionFromMarkdown } from "./journal-projection-service.mjs";
 import { buildLazyJournalPayload } from "./journal-projection-data.mjs";
 import {
@@ -245,7 +246,7 @@ export class WorkLogUsageStore {
     });
     const version = `sha256:${crypto.createHash("sha256").update(updated, "utf8").digest("hex")}`;
     if (current?.version === version
-      && await this.#repository.pricingProjectionVersion() === WORK_LOG_PRICING_PROJECTION_VERSION
+      && await this.#repository.pricingProjectionVersion() === WORK_LOG_ACCOUNTING_PROJECTION_VERSION
       && (imageBackfillVersion == null
         || await this.#repository.imageBackfillVersion() === imageBackfillVersion)) {
       return { projected: false, reason: "unchanged" };
@@ -259,7 +260,7 @@ export class WorkLogUsageStore {
     await replaceJournalProjectionFromMarkdown(this.#repository, updated, {
       version,
       accountUsageProjectionVersion: WORK_LOG_ACCOUNT_USAGE_PROJECTION_VERSION,
-      pricingProjectionVersion: WORK_LOG_PRICING_PROJECTION_VERSION,
+      pricingProjectionVersion: WORK_LOG_ACCOUNTING_PROJECTION_VERSION,
       imageBackfillVersion,
     });
     return { projected: true };

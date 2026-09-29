@@ -198,12 +198,13 @@ function recordCreditBreakdown(record) {
 }
 
 function recordQuotaBreakdown(record) {
-  return turnQuotaBreakdown(record?.usageReported === false ? null : record?.usage, {
+  const quota = turnQuotaBreakdown(record?.usageReported === false ? null : record?.usage, {
     model: record?.model,
     serviceTier: record?.serviceTier,
     estimatedCredits: effectiveEstimatedCredits(record),
     completedAt: record?.completedAt,
   });
+  return record?.usageReported === false ? { ...quota, uncalibrated: true } : quota;
 }
 
 function sumRecordQuota(records) {
@@ -273,7 +274,12 @@ export function normalizedLedger(value = {}, { defaultProjectRoot = "" } = {}) {
         : null;
       let workLogId = null;
       if (record?.workLogId) workLogId = normalizeWorkLogId(record.workLogId);
-      const account = normalizedAccountFields(record);
+      const serviceUsageKind = ["context-probe", "context-compaction"].includes(record?.serviceUsageKind)
+        ? record.serviceUsageKind : "";
+      const account = normalizedAccountFields(serviceUsageKind ? {
+        accountKey: "", accountLabel: "", accountType: "", accountPlan: "",
+        accountAttribution: "unknown",
+      } : record);
       const estimatedCredits = normalizeEstimatedCredits(
         record?.estimatedCredits
           ?? (sourceVersion < 6 && record?.estimatedUnits != null
@@ -302,8 +308,7 @@ export function normalizedLedger(value = {}, { defaultProjectRoot = "" } = {}) {
         parentThreadId: String(record?.parentThreadId ?? "").trim(),
         parentTurnId: String(record?.parentTurnId ?? "").trim(),
         aggregateOnly: record?.aggregateOnly === true,
-        serviceUsageKind: ["context-probe", "context-compaction"].includes(record?.serviceUsageKind)
-          ? record.serviceUsageKind : "",
+        serviceUsageKind,
         provisional: record?.provisional === true || (
           legacyLedger
           && String(record?.status ?? "") === "aborted"
@@ -761,23 +766,26 @@ function applyAccountUsageStats(target, entry, record, {
 
 function syncedUsageRecord(event) {
   if (!event) return null;
+  const serviceUsageKind = ["context-probe", "context-compaction"].includes(event.serviceUsageKind)
+    ? event.serviceUsageKind : "";
   return {
     usage: event.usage,
     usageReported: event.usageReported,
     estimatedCredits: event.estimatedCredits,
     model: event.model,
     serviceTier: event.serviceTier,
+    serviceUsageKind,
     provider: event.provider,
     threadId: `sync:${event.deviceId}:${event.threadKey}`,
     taskThreadId: `sync:${event.deviceId}:${event.taskKey}`,
     turnId: event.eventId,
     startedAt: event.startedAt,
     completedAt: event.completedAt,
-    accountKey: event.accountKey,
-    accountAttribution: event.accountAttribution,
-    accountLabel: event.accountLabel,
-    accountType: event.accountType,
-    accountPlan: event.accountPlan,
+    accountKey: serviceUsageKind ? "" : event.accountKey,
+    accountAttribution: serviceUsageKind ? "unknown" : event.accountAttribution,
+    accountLabel: serviceUsageKind ? "" : event.accountLabel,
+    accountType: serviceUsageKind ? "" : event.accountType,
+    accountPlan: serviceUsageKind ? "" : event.accountPlan,
     accountRecovery: event.accountRecovery,
     syncDeviceId: event.deviceId,
     syncDeviceLabel: event.deviceLabel,
@@ -848,7 +856,7 @@ function usageAuthCandidatesByRuntimeHome(authObservations = []) {
 
 function attributedUsageSyncRecord(event, authCandidates) {
   const record = syncedUsageRecord(event);
-  if (!record || String(record.accountKey ?? "").trim()) return record;
+  if (!record || record.serviceUsageKind || String(record.accountKey ?? "").trim()) return record;
   const candidates = authCandidates.get(usageAuthObservationIdentity(event));
   if (!candidates || candidates.size !== 1) return record;
   const [account] = candidates.values();
@@ -3050,7 +3058,12 @@ export function incomingLedgerRecord({
   observedAt,
   status,
 }) {
-  const accountFields = normalizedAccountFields({ account, accountKey, accountAttribution });
+  const normalizedServiceUsageKind = ["context-probe", "context-compaction"].includes(serviceUsageKind)
+    ? serviceUsageKind : "";
+  const accountFields = normalizedAccountFields(normalizedServiceUsageKind ? {
+    accountKey: "", accountLabel: "", accountType: "", accountPlan: "",
+    accountAttribution: "unknown",
+  } : { account, accountKey, accountAttribution });
   const normalizedEstimatedCredits = normalizeEstimatedCredits(estimatedCredits);
   const normalizedEstimateKind = String(estimateKind ?? "").trim();
   const normalizedClientUserMessageId = normalizeInterstreamClientUserMessageId(clientUserMessageId);
@@ -3079,8 +3092,7 @@ export function incomingLedgerRecord({
     parentThreadId: String(parentThreadId ?? "").trim(),
     parentTurnId: String(parentTurnId ?? "").trim(),
     aggregateOnly: aggregateOnly === true,
-    serviceUsageKind: ["context-probe", "context-compaction"].includes(serviceUsageKind)
-      ? serviceUsageKind : "",
+    serviceUsageKind: normalizedServiceUsageKind,
     provisional: provisional === true,
     turnId: String(turnId).trim(),
     runId: String(runId ?? "").trim() || null,
@@ -3137,7 +3149,13 @@ export function mergeLedgerRecord(existing, incoming) {
   }
   if (incoming.imageGenerationCount > 0) existing.imageGenerationCount = incoming.imageGenerationCount;
   existing.limitSamples = mergeUsageLimitSamples(existing.limitSamples, incoming.limitSamples);
-  if (incoming.accountKey) {
+  if (incoming.serviceUsageKind) {
+    existing.accountKey = "";
+    existing.accountLabel = "";
+    existing.accountType = "";
+    existing.accountPlan = "";
+    existing.accountAttribution = "unknown";
+  } else if (incoming.accountKey) {
     existing.accountKey = incoming.accountKey;
     if (incoming.accountLabel) existing.accountLabel = incoming.accountLabel;
     if (incoming.accountType) existing.accountType = incoming.accountType;

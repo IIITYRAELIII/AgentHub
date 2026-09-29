@@ -219,6 +219,8 @@ function turnFactBody(value, { eventId, threadKey }) {
     usageReported: value.usageReported === false ? false : true,
     model: text(value.model).toLowerCase(),
     serviceTier: value.serviceTier == null ? "" : normalizeServiceTier(value.serviceTier),
+    serviceUsageKind: ["context-probe", "context-compaction"].includes(value.serviceUsageKind)
+      ? value.serviceUsageKind : "",
     estimatedCredits: positiveNumber(value.estimatedCredits ?? value.credits),
     estimateKind: text(value.estimateKind),
     imageGenerationCount: Math.max(0, Math.floor(Number(value.imageGenerationCount) || 0)),

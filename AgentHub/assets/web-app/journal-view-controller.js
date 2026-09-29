@@ -72,11 +72,16 @@
     const values = Array.isArray(groups) ? groups : [];
     return values.reduce((summary, group) => {
       const credits = group?.credits;
+      const quotaUnits = group?.quotaUnits;
       const durationSeconds = group?.durationSeconds;
       return {
         count: summary.count + 1,
         credits: summary.credits + (Number.isFinite(credits) ? credits : 0),
         knownCredits: summary.knownCredits + (Number.isFinite(credits) ? 1 : 0),
+        quotaUnits: summary.quotaUnits + (Number.isFinite(quotaUnits) ? quotaUnits : 0),
+        knownQuotaUnits: summary.knownQuotaUnits + (Number.isFinite(quotaUnits) ? 1 : 0),
+        unknownQuotaUnits: summary.unknownQuotaUnits + Math.max(0, Number(group?.unknownQuotaUnits) || 0),
+        uncalibratedCount: summary.uncalibratedCount + Math.max(0, Number(group?.uncalibratedCount) || 0),
         durationSeconds: summary.durationSeconds
           + (Number.isFinite(durationSeconds) ? durationSeconds : 0),
         knownDurations: summary.knownDurations + (Number.isFinite(durationSeconds) ? 1 : 0),
@@ -87,6 +92,10 @@
       count: 0,
       credits: 0,
       knownCredits: 0,
+      quotaUnits: 0,
+      knownQuotaUnits: 0,
+      unknownQuotaUnits: 0,
+      uncalibratedCount: 0,
       durationSeconds: 0,
       knownDurations: 0,
       gaps: 0,
@@ -109,6 +118,10 @@
       credits: 0,
       knownCredits: 0,
       unknownCredits: 0,
+      quotaUnits: 0,
+      knownQuotaUnits: 0,
+      unknownQuotaUnits: 0,
+      uncalibratedCount: 0,
       durationSeconds: 0,
       knownDurations: 0,
       unknownDurations: 0,
@@ -138,6 +151,10 @@
       target.credits += Math.max(0, Number(bucket?.credits) || 0);
       target.knownCredits += Math.max(0, Number(bucket?.knownCredits) || 0);
       target.unknownCredits += Math.max(0, Number(bucket?.unknownCredits) || 0);
+      target.quotaUnits += Math.max(0, Number(bucket?.quotaUnits) || 0);
+      target.knownQuotaUnits += Math.max(0, Number(bucket?.knownQuotaUnits) || 0);
+      target.unknownQuotaUnits += Math.max(0, Number(bucket?.unknownQuotaUnits) || 0);
+      target.uncalibratedCount += Math.max(0, Number(bucket?.uncalibratedCount) || 0);
     }
     target.fileTouches += Math.max(0, Number(bucket?.fileTouches) || 0);
     target.knownFileTouches += Math.max(0, Number(bucket?.knownFileTouches) || 0);
@@ -164,6 +181,7 @@
     return {
       ...value,
       credits: value.knownCredits ? value.credits : null,
+      quotaUnits: value.knownQuotaUnits ? value.quotaUnits : null,
       durationSeconds: value.knownDurations ? value.durationSeconds : null,
       fileTouches: value.knownFileTouches ? value.fileTouches : null,
       changedLines: value.knownChangedLines ? value.changedLines : null,

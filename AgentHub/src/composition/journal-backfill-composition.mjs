@@ -1,5 +1,5 @@
 import { setImmediate } from "node:timers/promises";
-import { WORK_LOG_PRICING_PROJECTION_VERSION } from "../domain/token-usage.mjs";
+import { WORK_LOG_ACCOUNTING_PROJECTION_VERSION } from "../domain/quota-units.mjs";
 import { scanCodexHistoricalRolloutInWorker } from "../providers/codex/codex-historical-backfill.mjs";
 import { WORK_LOG_IMAGE_BACKFILL_VERSION } from "../domain/codex-usage-estimate.mjs";
 import {
@@ -122,7 +122,7 @@ export function createJournalBackfillComposition({
       // Prices are derived from immutable token facts. A shipped tariff change
       // needs one full projection even when every turn already has metadata.
       if (projects.length && typeof workLogUsageStore.pricingProjectionVersion === "function"
-        && await workLogUsageStore.pricingProjectionVersion() !== WORK_LOG_PRICING_PROJECTION_VERSION) {
+        && await workLogUsageStore.pricingProjectionVersion() !== WORK_LOG_ACCOUNTING_PROJECTION_VERSION) {
         signal?.throwIfAborted();
         await measure("pricing-version-project", {}, () => workLogUsageStore.project(null, {
           projectRoot: projects[0].path, projectionProjectRoots,

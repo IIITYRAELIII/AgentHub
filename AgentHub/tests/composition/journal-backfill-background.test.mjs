@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { createJournalBackfillComposition } from "../../src/composition/journal-backfill-composition.mjs";
 import { WORK_LOG_IMAGE_BACKFILL_VERSION } from "../../src/domain/codex-usage-estimate.mjs";
-import { WORK_LOG_PRICING_PROJECTION_VERSION } from "../../src/domain/token-usage.mjs";
+import { WORK_LOG_ACCOUNTING_PROJECTION_VERSION } from "../../src/domain/quota-units.mjs";
 import { scanCodexTurnPricingMetadata, scanCodexTurnJsonlIncrementally } from "../../src/providers/codex/codex-turn-usage.mjs";
 
 test("optional pricing scan yields and can be cancelled while scanning one long rollout", async () => {
@@ -69,7 +69,7 @@ test("shipped pricing reprojects already identified turns once after upgrade", a
       missingImageGenerationEstimateTurns: async () => [],
       synchronizeUsageEstimatesAndProject: async () => ({ updated: 0 }),
       pricingProjectionVersion: async () => version,
-      project: async () => { projections += 1; version = WORK_LOG_PRICING_PROJECTION_VERSION; },
+      project: async () => { projections += 1; version = WORK_LOG_ACCOUNTING_PROJECTION_VERSION; },
     },
   });
   await service.backfill([]);
@@ -106,7 +106,7 @@ test("historical ImageGen is restored in background once across restarts", async
     synchronizeUsageEstimatesAndProject: async ({ items }) => {
       count = items[0]?.imageGenerationCount ?? count;
     },
-    pricingProjectionVersion: async () => WORK_LOG_PRICING_PROJECTION_VERSION,
+    pricingProjectionVersion: async () => WORK_LOG_ACCOUNTING_PROJECTION_VERSION,
     project: async (_file, options) => { imageVersion = options.imageBackfillVersion; },
   };
   const makeService = () => createJournalBackfillComposition({

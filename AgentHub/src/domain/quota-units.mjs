@@ -1,6 +1,9 @@
-import { normalizeTokenUsage, normalizeServiceTier, turnCreditBreakdown } from "./token-usage.mjs";
+import { normalizeTokenUsage, normalizeServiceTier, turnCreditBreakdown,
+  WORK_LOG_PRICING_PROJECTION_VERSION } from "./token-usage.mjs";
 
 export const QUOTA_CALIBRATION_VERSION = "preliminary-2026-09-21";
+export const WORK_LOG_ACCOUNTING_PROJECTION_VERSION =
+  `${WORK_LOG_PRICING_PROJECTION_VERSION}+qu:${QUOTA_CALIBRATION_VERSION}`;
 
 // Empirical subscription estimates. These are independent of API price history.
 const QUOTA_RATES = Object.freeze({

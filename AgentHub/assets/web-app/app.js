@@ -15136,13 +15136,20 @@ function formatTaskDuration(value) {
 /* Тот же цветовой код, что в журнале по датам: cr — «kilo», kcr — «mega»,
    всё крупнее — «high». Разметка совпадает, поэтому бейдж выглядит одинаково
    в обоих режимах. */
-function usageBadge(text, credits = Number.NaN) {
+function usageBadge(text, credits = Number.NaN, quotaUnits = Number.NaN, incomplete = false) {
   const unit = /\b(Gcr|Mcr|kcr|cr)$/u.exec(String(text))?.[1] ?? "cr";
   const level = unit === "cr" ? "kilo" : unit === "kcr" ? "mega" : "high";
   const badge = document.createElement("span");
   badge.setAttribute(`data-${level}-usage`, "");
   if (Number.isFinite(Number(credits))) badge.dataset.usageCredits = String(Number(credits));
-  badge.textContent = text;
+  if (quotaUnits !== null && Number.isFinite(Number(quotaUnits))) {
+    badge.dataset.usageQu = String(Number(quotaUnits));
+    if (incomplete) badge.dataset.usageQuIncomplete = "1";
+  }
+  badge.textContent = usageUnit === "qu"
+    ? quotaUnits === null || !Number.isFinite(Number(quotaUnits)) ? "— QU"
+      : `${incomplete && Number(quotaUnits) <= 0 ? "— QU" : formatUsageValue(quotaUnits, "qu")}${incomplete ? " · неполно" : ""}`
+    : text;
   return badge;
 }
 
@@ -15182,7 +15189,15 @@ function groupedTurn(entry, date) {
     const cost = document.createElement("span");
     cost.dataset.journalTurnCost = "";
     const credits = JournalView.turnDisplayCredits(copy.dataset);
-    if (credits !== null) cost.append(usageBadge(formatUsageValue(credits), credits));
+    const quotaEntries = [copy, ...copy.querySelectorAll("[data-work-log-turn-entry]")];
+    const quotaKnown = quotaEntries.every((node) => node.dataset.workLogTurnQuotaUnits !== undefined);
+    const quotaUnits = quotaKnown ? quotaEntries.reduce((sum, node) => (
+      sum + Math.max(0, Number(node.dataset.workLogTurnQuotaUnits) || 0)
+    ), 0) : null;
+    const quotaIncomplete = quotaEntries.some((node) => (
+      node.dataset.workLogTurnQuotaIncomplete === "1"
+    )) || !quotaKnown;
+    if (credits !== null) cost.append(usageBadge(formatUsageValue(credits), credits, quotaUnits, quotaIncomplete));
     else cost.textContent = "—";
     const share = copy.querySelector("[data-work-log-turn-share]")?.cloneNode(true);
     meta.replaceChildren(when, cost, ...(share ? [share] : []));
@@ -15274,13 +15289,23 @@ function decorateLegacyStreamTurns(scope = journal) {
 function creditsFromEntries(entries) {
   let total = 0;
   let known = 0;
+  let quotaUnits = 0;
+  let quotaKnown = 0;
+  let quotaIncomplete = false;
   for (const entry of entries) {
+    const quotaValue = entry.dataset.workLogTurnQuotaUnits;
+    const quota = quotaValue === undefined ? Number.NaN : Number(quotaValue);
+    if (Number.isFinite(quota) && quota >= 0) {
+      quotaUnits += quota;
+      quotaKnown += 1;
+    } else quotaIncomplete = true;
+    if (entry.dataset.workLogTurnQuotaIncomplete === "1") quotaIncomplete = true;
     const value = Number(entry.dataset.workLogTurnCredits);
     if (!Number.isFinite(value) || value < 0) continue;
     total += value;
     known += 1;
   }
-  return { total, known };
+  return { total, known, quotaUnits: quotaKnown ? quotaUnits : null, quotaIncomplete };
 }
 
 function replaceCollapsedTurnList(list, entries) {
@@ -15367,7 +15392,8 @@ function groupClaudeRowsInDay(day) {
       summary.append(
         el("span", { "data-usage-label": "", text: "Итого" }),
         " ",
-        usageBadge(formatUsageValue(totals.total), totals.total),
+        usageBadge(formatUsageValue(totals.total), totals.total,
+          totals.quotaUnits, totals.quotaIncomplete),
       );
       details.append(summary);
       const collapse = document.createElement("button");
@@ -15804,6 +15830,10 @@ function taskGroupsFrom(source, { workspace = null, hierarchy = "" } = {}) {
           credits: 0,
           knownCredits: 0,
           unknownCredits: 0,
+          quotaUnits: 0,
+          knownQuotaUnits: 0,
+          unknownQuotaUnits: 0,
+          uncalibratedCount: 0,
           latestAt: 0,
           fileTouches: 0,
           knownFileTouches: 0,
@@ -15853,6 +15883,15 @@ function taskGroupsFrom(source, { workspace = null, hierarchy = "" } = {}) {
           } else {
             group.unknownCredits += 1;
           }
+          const quotaValue = entry.dataset.workLogTurnQuotaUnits;
+          const quota = quotaValue === undefined ? Number.NaN : Number(quotaValue);
+          if (Number.isFinite(quota) && quota >= 0) {
+            group.quotaUnits += quota;
+            group.knownQuotaUnits += 1;
+          } else {
+            group.unknownQuotaUnits += 1;
+          }
+          if (entry.dataset.workLogTurnQuotaIncomplete === "1") group.uncalibratedCount += 1;
         }
         const completedAt = Date.parse(entry.dataset.workLogTurnCompletedAt ?? "");
         if (Number.isFinite(completedAt)) group.latestAt = Math.max(group.latestAt, completedAt);
@@ -15909,6 +15948,7 @@ function taskGroupsFrom(source, { workspace = null, hierarchy = "" } = {}) {
       ...group,
       turnCount: group.turnCount,
       credits: group.knownCredits ? group.credits : null,
+      quotaUnits: group.knownQuotaUnits ? group.quotaUnits : null,
       durationSeconds: group.knownDurations ? group.durationSeconds : null,
       fileTouches: group.knownFileTouches ? group.fileTouches : null,
       changedLines: group.knownChangedLines ? group.changedLines : null,
@@ -15958,6 +15998,7 @@ function combinedJournalGroup(groups, { provider = "period", threadId = "period"
       - (Date.parse(left.dataset.workLogTurnCompletedAt ?? "") || 0)
   ));
   const knownCredits = values.reduce((sum, group) => sum + (Number(group.knownCredits) || 0), 0);
+  const knownQuotaUnits = values.reduce((sum, group) => sum + (Number(group.knownQuotaUnits) || 0), 0);
   const knownDurations = values.reduce((sum, group) => sum + (Number(group.knownDurations) || 0), 0);
   const knownFileTouches = values.reduce((sum, group) => sum + (Number(group.knownFileTouches) || 0), 0);
   const knownChangedLines = values.reduce((sum, group) => sum + (Number(group.knownChangedLines) || 0), 0);
@@ -15975,6 +16016,12 @@ function combinedJournalGroup(groups, { provider = "period", threadId = "period"
       : null,
     knownCredits,
     unknownCredits: values.reduce((sum, group) => sum + (Number(group.unknownCredits) || 0), 0),
+    quotaUnits: knownQuotaUnits
+      ? values.reduce((sum, group) => sum + (Number(group.quotaUnits) || 0), 0)
+      : null,
+    knownQuotaUnits,
+    unknownQuotaUnits: values.reduce((sum, group) => sum + (Number(group.unknownQuotaUnits) || 0), 0),
+    uncalibratedCount: values.reduce((sum, group) => sum + (Number(group.uncalibratedCount) || 0), 0),
     durationSeconds: knownDurations
       ? values.reduce((sum, group) => sum + (Number(group.durationSeconds) || 0), 0)
       : null,
@@ -16048,7 +16095,8 @@ function journalLedgerSummary(group, { label = "", showStreams = true } = {}) {
     text: group.lazy ? "—" : String(Math.max(0, Number(group.turnCount) || 0)),
   });
   const credits = el("span", { "data-journal-ledger-metric": "credits" });
-  if (group.knownCredits) credits.append(usageBadge(formatUsageValue(group.credits), group.credits));
+  if (group.knownCredits) credits.append(usageBadge(formatUsageValue(group.credits),
+    group.credits, group.quotaUnits, group.uncalibratedCount > 0 || group.unknownQuotaUnits > 0));
   else credits.textContent = "—";
   const duration = el("span", {
     "data-journal-ledger-metric": "duration",
@@ -16163,10 +16211,13 @@ function dayGroupingContent(source) {
       const creditsValue = sourceSummary?.querySelector(
         "[data-day-usage] [data-usage-credits]",
       )?.dataset.usageCredits;
+      const quotaNode = sourceSummary?.querySelector("[data-day-usage] [data-usage-qu]");
+      const quotaValue = quotaNode?.dataset.usageQu;
       const durationValue = sourceSummary?.querySelector(
         "[data-work-log-day-duration]",
       )?.dataset.workLogDurationSeconds;
       const credits = Number(creditsValue);
+      const quotaUnits = quotaValue === undefined ? Number.NaN : Number(quotaValue);
       const durationSeconds = Number(durationValue);
       const total = {
         provider: "day",
@@ -16175,6 +16226,10 @@ function dayGroupingContent(source) {
         credits: Number.isFinite(credits) ? credits : null,
         knownCredits: Number.isFinite(credits) ? 1 : 0,
         unknownCredits: 0,
+        quotaUnits: Number.isFinite(quotaUnits) ? quotaUnits : null,
+        knownQuotaUnits: Number.isFinite(quotaUnits) ? 1 : 0,
+        unknownQuotaUnits: Number.isFinite(quotaUnits) ? 0 : 1,
+        uncalibratedCount: quotaNode?.dataset.usageQuIncomplete === "1" ? 1 : 0,
         durationSeconds: Number.isFinite(durationSeconds) ? durationSeconds : null,
         knownDurations: Number.isFinite(durationSeconds) ? 1 : 0,
         lazy: true,
@@ -16242,7 +16297,8 @@ function dayGroupingContent(source) {
       if (group.title) title.append(group.title.cloneNode(true));
       else title.textContent = `${group.provider} · ${group.threadId}`;
       const credits = el("span", { "data-journal-day-picker-credits": "" });
-      if (group.knownCredits) credits.append(usageBadge(formatUsageValue(group.credits), group.credits));
+      if (group.knownCredits) credits.append(usageBadge(formatUsageValue(group.credits),
+        group.credits, group.quotaUnits, group.uncalibratedCount > 0 || group.unknownQuotaUnits > 0));
       else credits.textContent = "—";
       const turns = el("span", {
         "data-journal-day-picker-turns": "",
@@ -16312,6 +16368,9 @@ function summarizedLazyDays(source) {
   );
   if (!lazyDays.length || state.selection.includeClaudeUsage === false) return null;
   let credits = 0;
+  let quotaUnits = 0;
+  let quotaKnown = 0;
+  let quotaIncomplete = false;
   let durationSeconds = 0;
   let knownCredits = 0;
   let knownDurations = 0;
@@ -16320,6 +16379,9 @@ function summarizedLazyDays(source) {
     const creditValue = Number(summary?.querySelector(
       "[data-day-usage] [data-usage-credits]",
     )?.dataset.usageCredits);
+    const quotaNode = summary?.querySelector("[data-day-usage] [data-usage-qu]");
+    const quotaValue = quotaNode?.dataset.usageQu;
+    const quota = quotaValue === undefined ? Number.NaN : Number(quotaValue);
     const durationValue = Number(summary?.querySelector(
       "[data-work-log-day-duration]",
     )?.dataset.workLogDurationSeconds);
@@ -16327,12 +16389,18 @@ function summarizedLazyDays(source) {
       credits += creditValue;
       knownCredits += 1;
     }
+    if (Number.isFinite(quota)) {
+      quotaUnits += quota;
+      quotaKnown += 1;
+    } else quotaIncomplete = true;
+    if (quotaNode?.dataset.usageQuIncomplete === "1") quotaIncomplete = true;
     if (Number.isFinite(durationValue)) {
       durationSeconds += durationValue;
       knownDurations += 1;
     }
   }
-  return { credits, durationSeconds, knownCredits, knownDurations };
+  return { credits, quotaUnits: quotaKnown ? quotaUnits : null, quotaIncomplete,
+    durationSeconds, knownCredits, knownDurations };
 }
 
 function updateJournalStreamCount() {
@@ -16348,7 +16416,8 @@ function updateJournalSummary(source) {
     if (journalTotalCredits) {
       journalTotalCredits.replaceChildren(
         lazyTotals.knownCredits
-          ? usageBadge(formatUsageValue(lazyTotals.credits), lazyTotals.credits)
+          ? usageBadge(formatUsageValue(lazyTotals.credits), lazyTotals.credits,
+            lazyTotals.quotaUnits, lazyTotals.quotaIncomplete)
           : document.createTextNode("—"),
       );
     }
@@ -16365,7 +16434,8 @@ function updateJournalSummary(source) {
   if (journalTotalCredits) {
     journalTotalCredits.replaceChildren(
       totals.knownCredits
-        ? usageBadge(formatUsageValue(totals.credits), totals.credits)
+        ? usageBadge(formatUsageValue(totals.credits), totals.credits,
+          totals.quotaUnits, totals.uncalibratedCount > 0 || totals.unknownQuotaUnits > 0)
         : document.createTextNode("—"),
     );
   }
@@ -16530,9 +16600,13 @@ function virtualUsageShare(value, total, known = true) {
 function virtualStreamUsage(stream, workspace) {
   const usage = document.createElement("span");
   usage.dataset.workLogStreamUsage = "";
-  const creditShare = stream.knownCredits
-    ? virtualUsageShare(stream.credits, workspace.credits, workspace.knownCredits)
-    : "";
+  const quotaComplete = stream.knownQuotaUnits && workspace.knownQuotaUnits
+    && !stream.uncalibratedCount && !workspace.uncalibratedCount
+    && !stream.unknownQuotaUnits && !workspace.unknownQuotaUnits;
+  const creditShare = usageUnit === "qu"
+    ? quotaComplete ? virtualUsageShare(stream.quotaUnits, workspace.quotaUnits) : ""
+    : stream.knownCredits
+      ? virtualUsageShare(stream.credits, workspace.credits, workspace.knownCredits) : "";
   usage.append(
     stream.knownDurations
       ? el("span", {
@@ -16546,7 +16620,8 @@ function virtualStreamUsage(stream, workspace) {
       : el("span", { "data-work-log-stream-duration": "", text: "время —" }),
     stream.knownCredits
       ? el("span", { "data-work-log-stream-credits": "" }, [
-        usageBadge(formatUsageValue(stream.credits), stream.credits),
+        usageBadge(formatUsageValue(stream.credits), stream.credits,
+          stream.quotaUnits, stream.uncalibratedCount > 0 || stream.unknownQuotaUnits > 0),
       ])
       : el("span", { text: "расход —" }),
     el("span", { "data-work-log-stream-credit-share": "", text: creditShare }),
@@ -16663,10 +16738,16 @@ function virtualTemporalContent(scope) {
     const credits = el("span", { "data-journal-day-picker-credits": "" });
     if (workspace.knownCredits) {
       credits.append(
-        usageBadge(formatUsageValue(workspace.credits), workspace.credits),
+        usageBadge(formatUsageValue(workspace.credits), workspace.credits,
+          workspace.quotaUnits, workspace.uncalibratedCount > 0 || workspace.unknownQuotaUnits > 0),
         el("span", {
           "data-journal-day-picker-share": "",
-          text: virtualUsageShare(workspace.credits, scope.credits, scope.knownCredits),
+          text: usageUnit === "qu"
+            ? workspace.knownQuotaUnits && scope.knownQuotaUnits
+              && !workspace.uncalibratedCount && !scope.uncalibratedCount
+              && !workspace.unknownQuotaUnits && !scope.unknownQuotaUnits
+                ? virtualUsageShare(workspace.quotaUnits, scope.quotaUnits) : ""
+            : virtualUsageShare(workspace.credits, scope.credits, scope.knownCredits),
         }),
       );
     } else {
@@ -16855,7 +16936,8 @@ function updateVirtualJournalSummary() {
   if (journalTotalCredits) {
     journalTotalCredits.replaceChildren(
       totals.knownCredits
-        ? usageBadge(formatUsageValue(totals.credits), totals.credits)
+        ? usageBadge(formatUsageValue(totals.credits), totals.credits,
+          totals.quotaUnits, totals.uncalibratedCount > 0 || totals.unknownQuotaUnits > 0)
         : document.createTextNode("—"),
     );
   }

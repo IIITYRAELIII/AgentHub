@@ -11,7 +11,7 @@ import {
   WORK_LOG_ACCOUNT_USAGE_PROJECTION_VERSION,
 } from "../application/work-log-usage-projection.mjs";
 import { buildLazyJournalPayload } from "../application/journal-projection-data.mjs";
-import { WORK_LOG_PRICING_PROJECTION_VERSION } from "../domain/token-usage.mjs";
+import { WORK_LOG_ACCOUNTING_PROJECTION_VERSION } from "../domain/quota-units.mjs";
 import { JournalDatabase } from "../infrastructure/persistence/journal-database.mjs";
 import { AsyncSqliteMutationQueue } from "../infrastructure/persistence/async-sqlite-mutation-queue.mjs";
 import { WorkLogUsageSyncStore } from "../infrastructure/persistence/work-log-usage-sync-store.mjs";
@@ -143,7 +143,7 @@ async function projectJournal(payload, id) {
   const projectionSource = { revision: expectedRevision, projectRoots: roots };
   const previousSource = await journal.projectionSource();
   if (current?.version === version
-    && await journal.pricingProjectionVersion() === WORK_LOG_PRICING_PROJECTION_VERSION
+    && await journal.pricingProjectionVersion() === WORK_LOG_ACCOUNTING_PROJECTION_VERSION
     && (payload.imageBackfillVersion == null
       || await journal.imageBackfillVersion() === payload.imageBackfillVersion)
     && await journal.currentRevision() === expectedRevision
@@ -155,7 +155,7 @@ async function projectJournal(payload, id) {
     result = await measure("commitMs", () => journalOperations.run(() => journal.replaceProjection(lazyPayload, {
       expectedRevision, version, projectionSource,
       accountUsageProjectionVersion: WORK_LOG_ACCOUNT_USAGE_PROJECTION_VERSION,
-      pricingProjectionVersion: WORK_LOG_PRICING_PROJECTION_VERSION,
+      pricingProjectionVersion: WORK_LOG_ACCOUNTING_PROJECTION_VERSION,
       imageBackfillVersion: payload.imageBackfillVersion,
     })));
   }
