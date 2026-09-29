@@ -4,7 +4,7 @@ import {
   IMAGE_GENERATION_ESTIMATE_CREDITS,
   looksLikeImageGenerationPrompt,
 } from "../domain/codex-usage-estimate.mjs";
-import { normalizeServiceTier, normalizeTokenUsage } from "../domain/token-usage.mjs";
+import { normalizeServiceTier, normalizeTokenUsage, WORK_LOG_PRICING_PROJECTION_VERSION } from "../domain/token-usage.mjs";
 import { journalProjectionVersion, replaceJournalProjectionFromMarkdown } from "./journal-projection-service.mjs";
 import { buildLazyJournalPayload } from "./journal-projection-data.mjs";
 import {
@@ -228,6 +228,7 @@ export class WorkLogUsageStore {
 
   async #projectDatabase(selectedTurns, {
     includeClaudeUsage = this.#includeClaudeUsage,
+    imageBackfillVersion = null,
   } = {}) {
     const current = await this.#repository.payload();
     const source = await this.#projectionSource();
@@ -243,7 +244,10 @@ export class WorkLogUsageStore {
       syncedUsageEvents,
     });
     const version = `sha256:${crypto.createHash("sha256").update(updated, "utf8").digest("hex")}`;
-    if (current?.version === version) {
+    if (current?.version === version
+      && await this.#repository.pricingProjectionVersion() === WORK_LOG_PRICING_PROJECTION_VERSION
+      && (imageBackfillVersion == null
+        || await this.#repository.imageBackfillVersion() === imageBackfillVersion)) {
       return { projected: false, reason: "unchanged" };
     }
     await this.#beforeProjectionWrite?.({
@@ -255,6 +259,8 @@ export class WorkLogUsageStore {
     await replaceJournalProjectionFromMarkdown(this.#repository, updated, {
       version,
       accountUsageProjectionVersion: WORK_LOG_ACCOUNT_USAGE_PROJECTION_VERSION,
+      pricingProjectionVersion: WORK_LOG_PRICING_PROJECTION_VERSION,
+      imageBackfillVersion,
     });
     return { projected: true };
   }
@@ -481,17 +487,17 @@ export class WorkLogUsageStore {
     });
   }
 
-  missingImageGenerationEstimateTurns({ provider = "codex" } = {}) {
+  missingImageGenerationEstimateTurns({ provider = "codex", allUnestimated = false } = {}) {
     if (typeof this.#usageSyncStore?.readTurnMetadataCandidates === "function") {
-      return this.#readTurnMetadataCandidates({ provider, kind: "image-estimate" });
+      return this.#readTurnMetadataCandidates({ provider, kind: "image-estimate", allUnestimated });
     }
     return this.#enqueueRead(async () => {
       const normalizedProvider = String(provider ?? "").trim().toLowerCase();
       return Object.values(this.#ledger.turns)
         .filter((record) => (
           record.provider === normalizedProvider
-          && normalizeEstimatedCredits(record.estimatedCredits) === 0
-          && looksLikeImageGenerationPrompt(record.prompt)
+          && (allUnestimated || (normalizeEstimatedCredits(record.estimatedCredits) === 0
+            && looksLikeImageGenerationPrompt(record.prompt)))
         ))
         .map((record) => ({
           provider: record.provider,
@@ -894,6 +900,18 @@ export class WorkLogUsageStore {
     };
   }
 
+  pricingProjectionVersion() {
+    return this.#repository.enqueue(
+      () => this.#repository.pricingProjectionVersion(), { load: false, pointRead: true },
+    );
+  }
+
+  imageBackfillVersion() {
+    return this.#repository.enqueue(
+      () => this.#repository.imageBackfillVersion(), { load: false, pointRead: true },
+    );
+  }
+
   #workspaceResolver() {
     return this.#workspaceCatalogStore
       ? (reference) => {
@@ -934,17 +952,19 @@ export class WorkLogUsageStore {
     includeClaudeUsage = this.#includeClaudeUsage,
     projectRoot = this.#defaultProjectRoot,
     projectionProjectRoots,
+    imageBackfillVersion = null,
   } = {}) {
     if (typeof this.#usageSyncStore?.projectJournal === "function" && !this.#beforeProjectionWrite) {
       return this.#coalescedWorkerProjection({
         includeClaudeUsage,
+        imageBackfillVersion,
         projectRoots: Array.isArray(projectionProjectRoots) && projectionProjectRoots.length
           ? projectionProjectRoots : [projectRoot],
       });
     }
     const operation = this.#enqueueMutation(workLogFile, async () => {
       const selectedTurns = this.#turnsForProjection(projectRoot, projectionProjectRoots);
-      return this.#projectDatabase(selectedTurns, { includeClaudeUsage });
+      return this.#projectDatabase(selectedTurns, { includeClaudeUsage, imageBackfillVersion });
     });
     return operation;
   }
@@ -954,7 +974,7 @@ export class WorkLogUsageStore {
   // it is in flight share one trailing projection of the exact same scope; an
   // older run never acknowledges a later terminal revision.
   #coalescedWorkerProjection(scope) {
-    const key = JSON.stringify([scope.includeClaudeUsage, scope.projectRoots]);
+    const key = JSON.stringify([scope.includeClaudeUsage, scope.projectRoots, scope.imageBackfillVersion]);
     const lane = this.#journalProjections.get(key);
     if (!lane) return this.#startWorkerProjection(key, scope);
     if (!lane.trailing) {
@@ -981,7 +1001,7 @@ export class WorkLogUsageStore {
     return run;
   }
 
-  #workerProjection({ includeClaudeUsage, projectRoots }) {
+  #workerProjection({ includeClaudeUsage, projectRoots, imageBackfillVersion }) {
     return this.#repository.enqueue(() => undefined, { load: false, pointRead: true }).then(async () => {
       let projection;
       for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -989,6 +1009,7 @@ export class WorkLogUsageStore {
           defaultProjectRoot: this.#defaultProjectRoot,
           projectRoots,
           includeClaudeUsage,
+          imageBackfillVersion,
           localDeviceId: this.#usageSyncDeviceId,
           localDeviceLabel: this.#usageSyncDeviceLabel,
         }, { workspaceResolver: this.#workspaceResolver() });
@@ -1045,6 +1066,7 @@ export class WorkLogUsageStore {
     parentThreadId,
     parentTurnId,
     aggregateOnly,
+    serviceUsageKind,
     provisional,
     taskTitle,
     title,
@@ -1101,6 +1123,7 @@ export class WorkLogUsageStore {
         parentThreadId,
         parentTurnId,
         aggregateOnly,
+        serviceUsageKind,
         provisional,
         taskTitle,
         title,
@@ -1178,6 +1201,7 @@ export class WorkLogUsageStore {
     parentThreadId,
     parentTurnId,
     aggregateOnly,
+    serviceUsageKind,
     provisional,
     taskTitle,
     title,
@@ -1225,6 +1249,7 @@ export class WorkLogUsageStore {
           parentThreadId,
           parentTurnId,
           aggregateOnly,
+          serviceUsageKind,
           provisional,
           taskTitle,
           title,
@@ -1287,6 +1312,7 @@ export class WorkLogUsageStore {
         parentThreadId,
         parentTurnId,
         aggregateOnly,
+        serviceUsageKind,
         provisional,
         taskTitle,
         title,

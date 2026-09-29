@@ -311,6 +311,21 @@ function generatedImageOutputPaths(entry) {
     .join("\n"));
 }
 
+function completedImageGenerationId(entry) {
+  const payload = entry?.payload ?? {};
+  if (entry?.type !== "event_msg") return "";
+  if (payload.type === "item_completed") {
+    const item = payload.item;
+    if (item?.type !== "Extension" || item.kind !== "image_gen.generation"
+      || item.status !== "completed" || item.failure != null) return "";
+    const id = String(item.id ?? "").trim();
+    return id;
+  }
+  if (payload.type !== "image_generation_end" || payload.status !== "completed") return "";
+  const callId = String(payload.call_id ?? "").trim();
+  return callId;
+}
+
 function normalizedRolloutUsage(value) {
   return normalizeTokenUsage({
     inputTokens: value?.input_tokens,
@@ -631,14 +646,13 @@ function createTurnAccumulator(turnId) {
     if (imageCallId && exactTurnId) {
       rememberImageGenerationCallOwner(imageGenerationCalls, imageCallId, exactTurnId);
     }
-    if (entry?.type === "event_msg"
-      && entry.payload?.type === "image_generation_end"
-      && entry.payload?.status === "completed") {
+    const completedImageId = completedImageGenerationId(entry);
+    if (completedImageId) {
       const callId = String(entry.payload?.call_id ?? "").trim();
       const attributedTurnId = exactTurnId
         || imageGenerationCallOwnerTurnId(imageGenerationCalls, callId);
-      if (callId && attributedTurnId === requestedTurnId) {
-        completedImageGenerationCalls.add(callId);
+      if (attributedTurnId === requestedTurnId) {
+        completedImageGenerationCalls.add(completedImageId);
       }
     }
     const generatedPaths = generatedImageOutputPaths(entry);
@@ -713,6 +727,8 @@ function createTurnAccumulator(turnId) {
     return {
       turnId: requestedTurnId,
       ...(userOperation.clientUserMessageId ? { clientUserMessageId: userOperation.clientUserMessageId } : {}),
+      serviceUsageKind: userOperation.clientUserMessageId?.startsWith("agent-hub-context-probe:")
+        ? "context-probe" : "",
       usage,
       reported,
       started,
@@ -1135,6 +1151,9 @@ function historicalTurnResult(turn, latestModel, latestServiceTier) {
     model: turn.model || latestModel,
     serviceTier: turn.serviceTier || latestServiceTier,
     compactionOnly,
+    serviceUsageKind: compactionOnly ? "context-compaction"
+      : turn.clientUserMessageId?.startsWith("agent-hub-context-probe:")
+        ? "context-probe" : "",
   };
 }
 
@@ -1257,7 +1276,7 @@ export async function scanCodexHistoricalRollout(transcriptPath, {
     if (exactTurnId && ["response_item", "turn_context"].includes(String(entry?.type ?? ""))) {
       latestResponseTurnId = exactTurnId;
       exactTurn.started = true;
-      exactTurn.hasOwnTurnContent = true;
+      if (entry.type === "response_item") exactTurn.hasOwnTurnContent = true;
       touch(exactTurn, timestamp);
     }
     if (entry?.type === "turn_context" && exactTurn) {
@@ -1270,14 +1289,13 @@ export async function scanCodexHistoricalRollout(transcriptPath, {
     if (imageCallId && exactTurnId) {
       rememberImageGenerationCallOwner(imageGenerationCalls, imageCallId, exactTurnId);
     }
-    if (entry?.type === "event_msg"
-      && entry.payload?.type === "image_generation_end"
-      && entry.payload?.status === "completed") {
+    const completedImageId = completedImageGenerationId(entry);
+    if (completedImageId) {
       const callId = String(entry.payload?.call_id ?? "").trim();
       const attributedTurnId = exactTurnId
         || imageGenerationCallOwnerTurnId(imageGenerationCalls, callId);
       const turn = turns.get(attributedTurnId) ?? (exactTurnId ? ensureTurn(exactTurnId) : null);
-      if (turn && callId) turn.imageGenerationCalls.add(callId);
+      if (turn) turn.imageGenerationCalls.add(completedImageId);
       touch(turn, timestamp);
     }
     const generatedPaths = generatedImageOutputPaths(entry);

@@ -67,6 +67,40 @@ test("historical rollout worker excludes a manual compaction pseudo-turn", async
   }
 });
 
+test("historical worker retains only measured service operations with native identities", async (context) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-service-usage-"));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  const file = path.join(directory, "rollout.jsonl");
+  const threadId = "019f1ec7-8de7-7aa3-92b6-045036561c8e";
+  const compactId = "019f1ec8-8de7-7aa3-92b6-045036561c8e";
+  const probeId = "019f1ec9-8de7-7aa3-92b6-045036561c8e";
+  const usage = (turnId, count) => ({ type: "token_usage_record", payload: { turn_id: turnId,
+    turn_token_usage: { input_tokens: count, cached_input_tokens: 0, output_tokens: 0,
+      reasoning_output_tokens: 0, total_tokens: count } } });
+  const rows = [
+    { type: "session_meta", payload: { id: threadId, cwd: directory } },
+    { type: "event_msg", payload: { type: "task_started", turn_id: compactId } },
+    { type: "event_msg", payload: { type: "thread_settings_applied",
+      thread_settings: { model: "gpt-6-astra" } } },
+    { type: "compacted", payload: {} }, usage(compactId, 400),
+    { type: "event_msg", payload: { type: "task_complete", turn_id: compactId } },
+    { type: "event_msg", payload: { type: "task_started", turn_id: probeId } },
+    { type: "response_item", payload: { type: "message", role: "user", client_id: "agent-hub-context-probe:exact",
+      content: [{ type: "input_text", text: "probe" }],
+      internal_chat_message_metadata_passthrough: { turn_id: probeId } } },
+    { type: "turn_context", payload: { turn_id: probeId, model: "gpt-5.6-sol" } },
+    usage(probeId, 300),
+    { type: "event_msg", payload: { type: "task_complete", turn_id: probeId } },
+  ];
+  await writeFile(file, `${rows.map((row) => JSON.stringify(row)).join("\n")}\n`);
+  const first = await scanCodexHistoricalRolloutInWorker({ id: threadId, path: file });
+  const second = await scanCodexHistoricalRolloutInWorker({ id: threadId, path: file });
+  assert.deepEqual(second.turns, first.turns);
+  assert.deepEqual(first.turns.map((turn) => [turn.turnId, turn.serviceUsageKind,
+    turn.usage.inputTokens]), [[compactId, "context-compaction", 400],
+    [probeId, "context-probe", 300]]);
+});
+
 test("live worker preserves the complete scanner result and exact usage across two bounded chunks", async (context) => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-live-worker-"));
   context.after(() => rm(directory, { recursive: true, force: true }));

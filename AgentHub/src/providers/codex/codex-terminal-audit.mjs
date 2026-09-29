@@ -21,9 +21,9 @@ const DEFAULT_AUDIT_THREADS_PER_RUN = 8;
 const DEFAULT_AUDIT_TURNS_PER_RUN = 20;
 const DEFAULT_AUDIT_TIME_MS = 75;
 const ROLLOUT_CHECKPOINT_BYTES = 128;
-const SNAPSHOT_VERSION = 18;
+const SNAPSHOT_VERSION = 19;
 const COMPATIBLE_SNAPSHOT_VERSIONS = new Set([
-  4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, SNAPSHOT_VERSION,
+  4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, SNAPSHOT_VERSION,
 ]);
 const HISTORICAL_BACKFILL_STATE_VERSIONS = new Set([SNAPSHOT_VERSION]);
 
@@ -898,7 +898,8 @@ export class CodexTerminalAudit {
         this.historicalScanCache.set(cacheKey, historical);
       }
       const turns = Array.isArray(historical?.turns) ? historical.turns : [];
-      const terminalTurns = turns.filter((turn) => turn?.terminal === true);
+      const terminalTurns = turns.filter((turn) => turn?.terminal === true
+        && !(turn.compactionOnly === true && turn.reported !== true));
       while (item.terminalTurnIndex < terminalTurns.length) {
         if (!this.shouldRunHistoricalBackfill()) return changed;
         const turn = terminalTurns[item.terminalTurnIndex];
@@ -923,7 +924,8 @@ export class CodexTerminalAudit {
 
       const stale = this.now() - Number(info.mtimeMs || 0) >= this.historicalActiveStaleMs;
       if (stale) {
-        const staleTurns = turns.filter((turn) => turn?.terminal !== true && turn?.startedAt);
+        const staleTurns = turns.filter((turn) => turn?.terminal !== true && turn?.startedAt
+          && !(turn.compactionOnly === true && turn.reported !== true));
         while (item.staleTurnIndex < staleTurns.length) {
           if (!this.shouldRunHistoricalBackfill()) return changed;
           const turn = staleTurns[item.staleTurnIndex];
@@ -970,6 +972,7 @@ export class CodexTerminalAudit {
       const historical = cached.result;
       const terminalTurns = (historical?.turns ?? []).filter((turn) => (
         turn?.terminal === true && isNativeRolloutTurn(item.thread.id, turn)
+          && !(turn.compactionOnly === true && turn.reported !== true)
       ));
       for (const turn of terminalTurns) {
         if (!this.shouldRunHistoricalBackfill()) return changed;

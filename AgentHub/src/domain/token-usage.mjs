@@ -8,6 +8,8 @@ const TOKEN_USAGE_FIELDS = [
 
 export const MODEL_PRICE_CHANGE_EFFECTIVE_FROM = "2026-09-08T00:00:00.000Z";
 export const CREDITS_PER_USD = 25;
+// Advance when a shipped price changes the derived journal projection.
+export const WORK_LOG_PRICING_PROJECTION_VERSION = "2026.9.29.1";
 
 function priceVersion(effectiveFrom, usdPerMillion) {
   return Object.freeze({
@@ -20,12 +22,19 @@ function priceHistory(...versions) {
   return Object.freeze(versions);
 }
 
-// USD per 1M tokens. Historical versions remain immutable so rebuilding an old
-// turn never applies today's price. Astra has one verified price; no earlier
-// official tariff is known.
+// USD per 1M tokens at the Standard short-context rate. Historical versions
+// remain immutable so rebuilding an old turn never applies today's price.
+// Astra has one verified price; no earlier official tariff is known. The
+// per-turn aggregate cannot identify long-context requests within that turn.
 const MODEL_PRICE_REGISTRY = new Map([
   ["gpt-6-astra", priceHistory(
     priceVersion(null, { input: 10, cachedInput: 1, output: 50 }),
+  )],
+  ["gpt-6-sol", priceHistory(
+    priceVersion(null, { input: 2, cachedInput: 0.2, output: 10 }),
+  )],
+  ["gpt-6-luna", priceHistory(
+    priceVersion(null, { input: 0.1, cachedInput: 0.01, output: 0.5 }),
   )],
   ["gpt-5.6-sol", priceHistory(
     priceVersion(null, { input: 5, cachedInput: 0.5, output: 30 }),
@@ -136,6 +145,7 @@ export function fastModeCreditMultiplier(model, serviceTier) {
   const id = normalizedModel(model);
   if (id.startsWith("gpt-5.5") || id.startsWith("gpt-5.6")) return 2.5;
   if (id.startsWith("gpt-5.4") && !id.startsWith("gpt-5.4-mini")) return 2;
+  if (id === "gpt-6-sol" || id === "gpt-6-luna") return 2;
   return 1;
 }
 

@@ -495,7 +495,7 @@ if (themeSelect) {
   }));
 }
 const groupings = new Set(JournalView.GROUPINGS);
-const usageUnits = new Set(["$", "rub", "cr", "pte"]);
+const usageUnits = new Set(["$", "rub", "cr", "pte", "qu"]);
 const CREDITS_PER_USD = 25;
 const PTE_PER_CREDIT = 16_000;
 const {
@@ -12978,6 +12978,7 @@ function formatScaledUsage(value, suffix) {
 
 function formatUsageValue(credits, unit = usageUnit) {
   const value = Math.max(0, Number(credits) || 0);
+  if (unit === "qu") return formatScaledUsage(value, "QU");
   if (unit === "$") {
     const dollars = value / CREDITS_PER_USD;
     return `$${spacedNumber(dollars, dollars < 1 ? 2 : 1)}`;
@@ -12991,6 +12992,42 @@ function formatUsageValue(credits, unit = usageUnit) {
   return formatScaledUsage(value, "cr");
 }
 
+function selectedUsagePayload(payload) {
+  if (usageUnit !== "qu" || !payload || typeof payload !== "object") return payload;
+  const selectedDevice = (device) => ({
+    ...device,
+    credits: Number(device?.quotaUnits) || 0,
+    timedCredits: Number(device?.timedQuotaUnits) || 0,
+  });
+  const selectedPoint = (point) => ({
+    ...point,
+    credits: Number(point?.quotaUnits) || 0,
+    tokenCredits: Number(point?.quotaUnits) || 0,
+    timedCredits: Number(point?.timedQuotaUnits) || 0,
+    localCredits: Number(point?.localQuotaUnits) || 0,
+    otherDeviceCredits: Number(point?.otherDeviceQuotaUnits) || 0,
+    devices: (point?.devices ?? []).map(selectedDevice),
+  });
+  return {
+    ...payload,
+    credits: Number(payload.totalQuotaUnits) || 0,
+    totalCredits: Number(payload.totalQuotaUnits) || 0,
+    totalTokenCredits: Number(payload.totalQuotaUnits) || 0,
+    totalTimedCredits: Number(payload.totalTimedQuotaUnits) || 0,
+    timedCredits: Number(payload.totalTimedQuotaUnits) || 0,
+    localCredits: Number(payload.localQuotaUnits) || 0,
+    localTimedCredits: Number(payload.localTimedQuotaUnits) || 0,
+    otherDeviceCredits: Number(payload.otherDeviceQuotaUnits) || 0,
+    otherDeviceTimedCredits: Number(payload.otherDeviceTimedQuotaUnits) || 0,
+    devices: (payload.devices ?? []).map(selectedDevice),
+    points: (payload.points ?? []).map(selectedPoint),
+    reconstruction: payload.reconstruction ? {
+      ...payload.reconstruction,
+      points: (payload.reconstruction.points ?? []).map(selectedPoint),
+    } : undefined,
+  };
+}
+
 function refreshUsageUnits(scope = document) {
   for (const node of scope.querySelectorAll(
     "[data-kilo-usage], [data-mega-usage], [data-high-usage]",
@@ -13000,7 +13037,16 @@ function refreshUsageUnits(scope = document) {
       if (Number.isFinite(credits)) node.dataset.usageCredits = String(credits);
     }
     const credits = Number(node.dataset.usageCredits);
-    if (Number.isFinite(credits)) node.textContent = formatUsageValue(credits);
+    if (usageUnit === "qu") {
+      const quota = Number(node.dataset.usageQu);
+      const incomplete = node.dataset.usageQuIncomplete === "1";
+      node.textContent = node.dataset.usageQu !== undefined
+        ? `${incomplete && quota <= 0 ? "— QU" : formatUsageValue(quota, "qu")}${incomplete ? " · неполно" : ""}`
+        : "— QU";
+    } else if (Number.isFinite(credits)) node.textContent = formatUsageValue(credits);
+  }
+  for (const node of scope.querySelectorAll("[data-usage-percent]")) {
+    node.hidden = usageUnit === "qu";
   }
 }
 
@@ -13576,7 +13622,7 @@ function renderUsageHistoryContent() {
   if (status === "error") {
     usageErrorText.textContent = usageState.error || "Не удалось загрузить учётный расход.";
   }
-  const payload = usageState.payload;
+  const payload = selectedUsagePayload(usageState.payload);
   const rate = usageState.mode === "rate";
   const intensity = usageState.mode === "intensity";
   const burnAnalysis = intensity && payload && !payload.error ? usageBurnRateAnalysis(payload) : null;
@@ -13631,6 +13677,13 @@ function renderUsageHistoryContent() {
       if (unpriced) notes.push(`Без тарифа и вне суммы: ${unpriced}.`);
       if (rate && usageState.rateBasis === "task" && untimed) {
         notes.push(`Без длительности и вне скорости по времени задач: ${untimed}.`);
+      }
+      if (usageUnit === "qu") {
+        const incomplete = Math.max(0, Number(payload.uncalibratedCount) || 0);
+        notes.push(`Калибровка preliminary-2026-09-21; без подтверждённого QU-коэффициента: ${incomplete} ход(ов).`);
+        if (payload.totalApiEstimateCredits > 0) {
+          notes.push(`Для GPT-6 Sol/Luna учтена предварительная API-оценка по ставке Standard короткого контекста, 1 cr = 1 QU без подписочного коэффициента: ${formatUsageValue(payload.totalApiEstimateCredits, "cr")}.`);
+        }
       }
       usageNote.textContent = `${scopeNote} ${notes.join(" ") || "Все показанные ходы тарифицированы и имеют длительность."}`;
     }
@@ -13780,8 +13833,8 @@ function comparisonBuckets(payload, extent) {
     .map((point) => ({
       at: point.at,
       time: Date.parse(point.at),
-      credits: Math.max(0, Number(point.credits) || 0),
-      tokenCredits: Math.max(0, Number(point.tokenCredits ?? point.credits) || 0),
+      credits: Math.max(0, Number(usageUnit === "qu" ? point.quotaUnits : point.credits) || 0),
+      tokenCredits: Math.max(0, Number(usageUnit === "qu" ? point.quotaUnits : point.tokenCredits ?? point.credits) || 0),
     }))
     .filter((point) => Number.isFinite(point.time))
     .sort((left, right) => left.time - right.time);
@@ -13828,8 +13881,8 @@ function comparisonReconstructionBuckets(payload, extent) {
     return {
       start,
       end: start + step,
-      credits: Math.max(0, Number(point?.credits) || 0),
-      tokenCredits: Math.max(0, Number(point?.tokenCredits ?? point?.credits) || 0),
+      credits: Math.max(0, Number(usageUnit === "qu" ? point?.quotaUnits : point?.credits) || 0),
+      tokenCredits: Math.max(0, Number(usageUnit === "qu" ? point?.quotaUnits : point?.tokenCredits ?? point?.credits) || 0),
     };
   }).filter((bucket) => (
     Number.isFinite(bucket.start)
@@ -13966,7 +14019,7 @@ function correlationStrength(value) {
 function comparisonTooltipText(info) {
   if (info.detail) return `${info.name}. ${formatLimitsDateTime(info.at)}: ${info.detail}`;
   if (info.kind === "cost") {
-    return `${info.name}. ${formatLimitsDateTime(info.at)}: ${formatComparisonNumber(info.raw, 2)} п.п./kcr`;
+    return `${info.name}. ${formatLimitsDateTime(info.at)}: ${formatComparisonNumber(info.raw, 2)} п.п./${usageUnit === "qu" ? "kQU" : "kcr"}`;
   }
   const value = `${Math.round(info.value)}% пика`;
   const raw = info.kind === "local"
@@ -14094,7 +14147,7 @@ function buildUsageComparisonChart(model) {
     y: padT - 3,
     class: "limits-axis-label limits-axis-y comparison-cost-axis",
     "text-anchor": "end",
-  }, ["п.п./kcr"]));
+  }, [`п.п./${usageUnit === "qu" ? "kQU" : "kcr"}`]));
   const dayMs = 24 * 60 * 60_000;
   if (span > dayMs * 1.5) {
     const first = new Date(model.extent.from);
@@ -14186,7 +14239,7 @@ function buildUsageComparisonChart(model) {
       Number.isFinite(model.deviation) ? `${formatComparisonNumber(model.deviation, 1, true)} процентного пункта` : "не рассчитано"
     }; средняя цена ${
       Number.isFinite(model.price.overall?.value)
-        ? `${formatComparisonNumber(model.price.overall.value, 2)} процентного пункта на kcr`
+        ? `${formatComparisonNumber(model.price.overall.value, 2)} процентного пункта на ${usageUnit === "qu" ? "kQU" : "kcr"}`
         : "не рассчитана"
     }; расчётный недельный лимит ${
       Number.isFinite(model.price.weeklyCredits)
@@ -14202,7 +14255,7 @@ function buildUsageComparisonChart(model) {
 }
 
 function comparisonUsageUnitLabel() {
-  return usageUnit === "pte" ? "ПТЭ" : usageUnit === "rub" ? "₽" : usageUnit;
+  return usageUnit === "pte" ? "ПТЭ" : usageUnit === "rub" ? "₽" : usageUnit === "qu" ? "QU" : usageUnit;
 }
 
 function comparisonNumericAxisMax(values) {
@@ -14558,7 +14611,7 @@ function comparisonSeriesPicker(model) {
 
 function comparisonPriceText(price) {
   if (!Number.isFinite(price?.overall?.value)) return "недостаточно данных";
-  const average = `${formatComparisonNumber(price.overall.value, 2)} п.п./kcr в среднем`;
+  const average = `${formatComparisonNumber(price.overall.value, 2)} п.п./${usageUnit === "qu" ? "kQU" : "kcr"} в среднем`;
   if (!Number.isFinite(price?.early?.value) || !Number.isFinite(price?.late?.value)) return average;
   const change = Number.isFinite(price.changePercent)
     ? ` · ${formatComparisonNumber(price.changePercent, 0, true)}%`
@@ -14592,7 +14645,7 @@ function renderComparisonSummary(model) {
     : "—";
   const deviation = Number.isFinite(model?.deviation) ? `${formatComparisonNumber(model.deviation, 1, true)} п.п.` : "—";
   const averagePrice = Number.isFinite(model?.price?.overall?.value)
-    ? `${formatComparisonNumber(model.price.overall.value, 2)} п.п./kcr`
+    ? `${formatComparisonNumber(model.price.overall.value, 2)} п.п./${usageUnit === "qu" ? "kQU" : "kcr"}`
     : "—";
   const weeklyLimit = Number.isFinite(model?.price?.weeklyCredits)
     ? `≈ ${formatUsageValue(model.price.weeklyCredits)}/нед.`
@@ -16395,13 +16448,20 @@ function decorateAccountPanel(scope = journal) {
   }
   for (const value of panel.querySelectorAll("[data-work-log-account-period-value]")) {
     const credits = Number(value.dataset.accountCredits);
+    const incomplete = usageUnit === "qu" && value.dataset.accountQuIncomplete === "1";
+    const selected = usageUnit === "qu" ? Number(value.dataset.accountQu) : credits;
     const { amount, unit } = JournalAccountPanel.splitUsageAmount(
-      Number.isFinite(credits) ? formatUsageValue(credits) : "",
+      Number.isFinite(selected)
+        ? incomplete && selected <= 0 ? "— QU" : formatUsageValue(selected)
+        : "",
     );
     const amountNode = value.querySelector("[data-work-log-account-period-amount]");
     const unitNode = value.querySelector("[data-work-log-account-period-unit]");
     if (amountNode) amountNode.textContent = amount;
     if (unitNode) unitNode.textContent = unit;
+  }
+  for (const node of panel.querySelectorAll("[data-work-log-account-share], [data-work-log-account-bar]")) {
+    node.hidden = usageUnit === "qu";
   }
   applyAccountPanelState(panel);
 }

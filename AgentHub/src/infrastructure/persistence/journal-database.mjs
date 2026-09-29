@@ -1136,6 +1136,12 @@ export class JournalDatabase {
       version = writeProjection(database, normalized, options);
       writeStoreMetadataValue(database, "journal_projection_source", options.projectionSource
         ? JSON.stringify(options.projectionSource) : "");
+      if (options.pricingProjectionVersion != null) {
+        writeStoreMetadataValue(database, "pricing_projection_version", options.pricingProjectionVersion);
+      }
+      if (options.imageBackfillVersion != null) {
+        writeStoreMetadataValue(database, "image_backfill_version", options.imageBackfillVersion);
+      }
       revision = advanceRevision(database);
       database.exec("COMMIT");
     } catch (error) {
@@ -1223,6 +1229,14 @@ export class JournalDatabase {
       await this.#open(),
       ACCOUNT_USAGE_PROJECTION_VERSION_KEY,
     );
+  }
+
+  async pricingProjectionVersion() {
+    return storeMetadataValue(await this.#open(), "pricing_projection_version");
+  }
+
+  async imageBackfillVersion() {
+    return storeMetadataValue(await this.#open(), "image_backfill_version");
   }
 
   async snapshot() {

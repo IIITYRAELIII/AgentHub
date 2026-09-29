@@ -140,7 +140,11 @@ export class WorkspaceCatalogService {
   }
 
   createStream({ workspaceId, name = null, settings = {} } = {}) {
-    return this.#store.createStream({ workspaceId, name, settings });
+    const next = settings?.provider === "codex"
+      ? { ...settings, model: settings.model || "gpt-5.6-terra",
+        reasoning: settings.reasoning || "high" }
+      : settings;
+    return this.#store.createStream({ workspaceId, name, settings: next });
   }
 
   renameStream({ streamId, name = null } = {}) {

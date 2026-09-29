@@ -3776,8 +3776,8 @@ agentHub.on("stream:new", ({ workspaceId, streamName }) => {
       name: streamName,
       settings: {
         provider: settings.provider ?? "codex",
-        model: settings.model ?? "",
-        reasoning: settings.reasoning ?? "",
+        model: (settings.provider ?? "codex") === "codex" ? "gpt-5.6-terra" : settings.model ?? "",
+        reasoning: (settings.provider ?? "codex") === "codex" ? "high" : settings.reasoning ?? "",
         mode: settings.mode ?? "",
         workingDirectory: "",
         autoApprove: settings.approvalMode === "auto",

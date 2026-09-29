@@ -99,6 +99,20 @@ test("Stream settings are stored independently from its future Thread", () => {
   ]);
 });
 
+test("new Codex Stream defaults to Terra/high while explicit and other-provider settings survive", () => {
+  const { service, calls } = fixture();
+  service.createStream({ workspaceId: "workspace-1", settings: { provider: "codex" } });
+  service.createStream({ workspaceId: "workspace-1", settings: {
+    provider: "codex", model: "gpt-5.5", reasoning: "low",
+  } });
+  service.createStream({ workspaceId: "workspace-1", settings: { provider: "claude" } });
+  assert.deepEqual(calls.filter(([name]) => name === "createStream").map(([, value]) => value.settings), [
+    { provider: "codex", model: "gpt-5.6-terra", reasoning: "high" },
+    { provider: "codex", model: "gpt-5.5", reasoning: "low" },
+    { provider: "claude" },
+  ]);
+});
+
 test("archiveStream delegates the stable Stream identity to the catalog", () => {
   const { service, calls } = fixture();
   assert.deepEqual(service.archiveStream({ streamId: "stream-1" }), { id: "stream-1" });

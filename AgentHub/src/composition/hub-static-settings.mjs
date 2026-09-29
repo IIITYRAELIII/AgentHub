@@ -15,18 +15,25 @@ const AGENT_ICONS = ["👾", "🦉", "🐙", "🕶️", "🚀", "⚡", "💻", "
 export function createHubStaticSettings(config, agentHubRoot) {
   const claudeModels = CLAUDE_MODEL_ALIASES;
   const claudeModelLabels = CLAUDE_MODEL_LABELS;
-  const codexModels = config.codexModels;
+  const codexModels = config.codexModels.filter(
+    (model) => !["gpt-5.5", "gpt-5.4", "gpt-5.4-mini"].includes(model.value),
+  );
+  if (!codexModels.length) codexModels.push({ value: "gpt-5.6-terra", label: "GPT-5.6 Terra" });
   const codexModelAliases = new Map(codexModels.flatMap((model) => ([
     [String(model.value).toLowerCase(), model.value],
     [String(model.label).toLowerCase(), model.value],
   ])));
-  const normalizeCodexModel = (value) => (
-    codexModelAliases.get(String(value ?? "").toLowerCase()) ?? codexModels[0].value
-  );
+  const historicalModels = new Set(["gpt-5.5", "gpt-5.4", "gpt-5.4-mini"]);
+  const normalizeCodexModel = (value) => {
+    const requested = String(value ?? "").toLowerCase();
+    return codexModelAliases.get(requested)
+      ?? (historicalModels.has(requested) ? requested : codexModels[0].value);
+  };
   const codexModelLabel = (value) => (
     codexModels.find((model) => model.value === value)?.label ?? value
   );
-  const defaultCodexModel = normalizeCodexModel(config.codexModel);
+  const defaultCodexModel = codexModels.some((model) => model.value === config.codexModel)
+    ? config.codexModel : codexModels[0].value;
   const defaultCodexReasoningEffort = CODEX_REASONING_EFFORTS.includes(config.codexReasoningEffort)
     ? config.codexReasoningEffort
     : "high";

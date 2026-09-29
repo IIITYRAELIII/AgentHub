@@ -14,6 +14,7 @@ function sameHistoricalUsage(record, usageResult) {
     && Math.max(0, Math.floor(Number(record.imageGenerationCount) || 0))
       === Math.max(0, Math.floor(Number(usageResult.imageGenerationCount) || 0))
     && String(record.model ?? "").trim().toLowerCase() === String(usageResult.model ?? "").trim().toLowerCase()
+    && String(record.serviceUsageKind ?? "") === String(usageResult.serviceUsageKind ?? "")
     && normalizeServiceTier(record.serviceTier) === normalizeServiceTier(usageResult.serviceTier);
 }
 
@@ -190,7 +191,7 @@ export class CodexTerminalReconciliationService {
         if (!value || !relative || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return [];
         return [relative.replaceAll(path.sep, "/")];
       }))];
-      if (dedicatedCompaction || accountingThread.isSubagent || terminal?.historical === true) {
+      if (dedicatedCompaction || usageResult.serviceUsageKind || accountingThread.isSubagent || terminal?.historical === true) {
         await this.#projectHistorical({
           identity,
           thread,
@@ -318,8 +319,11 @@ export class CodexTerminalReconciliationService {
       estimatedCredits: usageResult.estimatedCredits,
       estimateKind: usageResult.estimateKind,
       operationKind: dedicatedCompaction ? "context-compaction" : "user-turn",
+      serviceUsageKind: usageResult.serviceUsageKind
+        || (dedicatedCompaction ? "context-compaction" : ""),
+      ...(usageResult.serviceUsageKind ? { accountAttribution: "unknown" } : {}),
       limitSamples: usageResult.limitSamples,
-      resolveAccount: terminal?.historical !== true,
+      resolveAccount: terminal?.historical !== true && !usageResult.serviceUsageKind,
       model: usageResult.model,
       serviceTier: usageResult.serviceTier,
       startedAt: usageResult.startedAt,

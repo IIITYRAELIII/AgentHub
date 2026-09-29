@@ -189,6 +189,7 @@ export class RunJournalService {
       parentThreadId: completion.parentThreadId,
       parentTurnId: completion.parentTurnId,
       aggregateOnly: completion.aggregateOnly,
+      serviceUsageKind: completion.serviceUsageKind,
       provisional: completion.provisional,
       taskTitle: completion.taskTitle,
       title: title || (body ? conciseTurnTitle(body, completion.status) : ""),
@@ -216,7 +217,7 @@ export class RunJournalService {
         provider: completion.provider,
         threadId: completion.threadId,
       });
-      if (resolved) {
+      if (resolved && !completion.serviceUsageKind) {
         await this.workspaceCatalogStore.recordWorkspaceEvent?.({
           workspaceId: resolved.workspaceId,
           streamId: resolved.streamId,
