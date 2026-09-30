@@ -171,7 +171,9 @@ export class TelegramSettingsCallbackService {
 
   async #resolveModel(callback, route, provider) {
     if (!route.modelDigest) return route.model;
-    const values = provider === "codex" ? this.#d.codexModels : this.#d.claudeModels;
+    const values = provider === "codex"
+      ? this.#d.codexModels?.map((model) => model.value)
+      : this.#d.claudeModels;
     const action = `${provider === "codex" ? "cm" : "am"}:${route.modelDigest}`;
     const matches = [...(values ?? [])].filter((value) => modelCallbackAction(provider, value) === action);
     if (matches.length === 1) return matches[0];

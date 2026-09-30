@@ -32,12 +32,12 @@ function service(events, changed = true, models = {}) {
     callbackContext: () => ({ clientId: "telegram:1" }),
     autoApprove: getter(true),
     codexModel: getter("sol"),
-    codexModels: models.codex instanceof Set ? models.codex : new Set(models.codex ?? ["sol"]),
+    codexModels: models.codex ?? [{ value: "sol", label: "Sol" }],
     codexModelLabel: (value) => value.toUpperCase(),
     codexReasoningEffort: getter("high"),
     codexCollaborationMode: getter("work"),
     claudeModel: getter("opus"),
-    claudeModels: models.claude instanceof Set ? models.claude : new Set(models.claude ?? ["opus"]),
+    claudeModels: models.claude ?? ["opus"],
     claudeReasoningEffort: getter("high"),
     claudeCollaborationMode: getter("work"),
     projects: [{ name: "Workspace", path: "D:/workspace" }],
@@ -91,7 +91,9 @@ test("long live Codex and Claude model IDs round-trip through Telegram's 64-byte
     callbackData: (action) => contextualCallback(action, context),
     sendMessage: async (_text, options) => sent.push(options),
   });
-  const callbacks = service(events, true, { codex: [codexId], claude: [claudeId] });
+  const callbacks = service(events, true, {
+    codex: [{ value: codexId, label: "Long Codex" }], claude: [claudeId],
+  });
   await menu.modelPicker({ provider: "codex", codexModel: codexId, codexModelLabel: "Long Codex" });
   await menu.modelPicker({ provider: "claude", claudeModel: claudeId });
   for (const [index, expected] of [codexId, claudeId].entries()) {
@@ -108,10 +110,10 @@ test("long live Codex and Claude model IDs round-trip through Telegram's 64-byte
 test("a compact model callback cannot select an ID removed by catalog refresh", async () => {
   const codexId = `gpt-${"x".repeat(40)}`;
   const events = [];
-  const codexModels = new Set([codexId]);
+  const codexModels = [{ value: codexId, label: "Long Codex" }];
   const callbacks = service(events, true, { codex: codexModels });
   const data = contextualCallback(modelCallbackAction("codex", codexId), "aaaaaaaaaaaa");
-  codexModels.clear();
+  codexModels.splice(0);
   const route = routeTelegramCallback(data, "aaaaaaaaaaaa");
   await callbacks.handle(callback, route);
   assert.equal(events.some((event) => event.name === "model"), false);

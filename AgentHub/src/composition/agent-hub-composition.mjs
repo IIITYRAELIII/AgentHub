@@ -607,6 +607,8 @@ const executionBootstrap = createExecutionBootstrapPhase({
     botCommands: BOT_COMMANDS,
     menuCommands: MENU_COMMANDS,
     projects: PROJECTS,
+    codexModels: CODEX_MODELS,
+    claudeModels: CLAUDE_MODELS,
     taskPickerPageSize: TASK_PICKER_PAGE_SIZE,
     maxBackgroundSpeechJobs: MAX_BACKGROUND_SPEECH_JOBS,
     codexModelLabel,
