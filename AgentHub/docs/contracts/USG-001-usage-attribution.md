@@ -334,8 +334,12 @@ the turn identity or attribution. Missing cache-write or request-level evidence
 does not justify inventing a positive counter. The credit and provisional QU
 breakdowns expose cache writes separately in every presentation; the agreed
 GPT-6 Sol reference remains 8 QU per API-equivalent cr, not an official
-subscription conversion. Advancing the accounting projection marker causes
-the existing resumable background history backfill to recalculate old turns.
+subscription conversion. Advancing the accounting projection marker recalculates
+costs from existing facts. The rollout-audit snapshot v20 migration separately
+replays retained rollouts through its existing idle, resumable historical
+backfill so newly observed cache writes and per-request long-context counters
+enrich old facts. Missing or unavailable rollouts cannot supply those optional
+counters; their prior token facts remain usable without invented writes.
 
 The unscoped accounting chart includes every local turn regardless of account.
 A synchronized turn is included only when its attributed account has an exact

@@ -46,7 +46,7 @@ async function preparedFixture(t, { paused = true, withSidecars = false } = {}) 
   const sourceRollout = path.join(projectRoot, "untouched-source-rollout.jsonl");
   await writeFile(sourceRollout, "owned rollout sentinel; never an executable recording input");
   const capturedAudit = withSidecars ? {
-    version: 18, subagentBackfillPending: true, completedThrough: "2026-01-01T00:00:00.000Z",
+    version: 20, subagentBackfillPending: true, completedThrough: "2026-01-01T00:00:00.000Z",
     positions: [[threadId, { path: sourceRollout, offset: 0, backlog: true }]],
     pendingTurns: [[threadId, { thread: { id: threadId, path: sourceRollout, cwd: projectRoot },
       turns: [{ turnId: "captured-source-turn", startedAt: "2026-01-01T00:00:00.000Z" }] }]],
