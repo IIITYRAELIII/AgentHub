@@ -13,7 +13,10 @@ import { canonicalPath } from "./config.mjs";
 import { taskWorkingTreeDiff } from "./task-git-diff.mjs";
 import { TaskDependencyPendingError } from "../../domain/task-board-task.mjs";
 import { prepareTaskWorktreeDependencies } from "./task-worktree-dependencies.mjs";
-import { withInterprocessLocks } from "../process/interprocess-lock.mjs";
+import { withInterprocessLocks as acquireInterprocessLocks } from "../process/interprocess-lock.mjs";
+import {
+  measureTaskOperation, recordTaskOperationTiming, withTaskOperationTiming,
+} from "../process/task-operation-timing.mjs";
 import {
   isTrustedWindowsPowerShellPath,
   readTrustedSystemBootIdentity,
@@ -135,7 +138,40 @@ async function materializePathWithoutOverwrite(sourceRoot, worktreeRoot, relativ
   }
 }
 
-export function runTaskGitCommand(args, {
+function gitCommandKind(args, commandLabel) {
+  if (commandLabel !== "git") return "external";
+  const verbs = new Set(["rev-parse", "status", "log", "show", "diff", "merge-base", "merge",
+    "worktree", "sparse-checkout", "config", "symbolic-ref", "update-ref", "for-each-ref",
+    "cat-file", "rev-list", "add", "commit", "reset", "read-tree", "checkout", "ls-files"]);
+  for (let index = 0; index < args.length; index += 1) {
+    if (args[index] === "-c" || args[index] === "-C") { index += 1; continue; }
+    if (verbs.has(args[index])) return args[index] === "merge" && args[index + 1] === "--abort"
+      ? "merge-abort" : args[index];
+  }
+  return "other";
+}
+
+function withInterprocessLocks(paths, operation, options = {}) {
+  const lockKind = paths.some(value => path.basename(value).startsWith("task-git-dev-"))
+    ? "repository" : paths.some(value => path.basename(value).startsWith("task-dependencies-"))
+      ? "dependencies" : "task";
+  return measureTaskOperation("lock", () => acquireInterprocessLocks(paths, operation, {
+    ...options,
+    onAcquired: (event) => {
+      recordTaskOperationTiming("lock-acquired", { lockKind, waitMs: event.waitMs, lockCount: event.lockCount });
+      options.onAcquired?.(event);
+    },
+  }), { lockKind });
+}
+
+export function runTaskGitCommand(args, options = {}) {
+  return measureTaskOperation("git-child", () => runTaskGitCommandUntraced(args, options), {
+    detail: true, command: gitCommandKind(args, options.commandLabel ?? "git"),
+    cwdKey: options.cwd ? taskRepositoryKey(options.cwd) : null,
+  });
+}
+
+function runTaskGitCommandUntraced(args, {
   cwd, timeoutMs = 60_000, executable = "git", spawnProcess = spawn, signal = null, input = null,
   commandLabel = "git", env = null, rawOutput = false,
 } = {}) {
@@ -523,6 +559,7 @@ export class TaskGitWorkspaceService {
     readSystemBootIdentity = readTrustedSystemBootIdentity,
     removeProcessGuard = unlink,
     contourExternalEffects = null,
+    recordTiming = (event) => console.info(`[task-operation-timing] ${JSON.stringify(event)}`),
   } = {}) {
     this.#contourExternalEffects = assertContourExternalEffects(contourExternalEffects);
     this.dataDir = canonicalPath(String(dataDir ?? ""));
@@ -534,6 +571,15 @@ export class TaskGitWorkspaceService {
     this.runCommand = runCommand;
     this.readSystemBootIdentity = readSystemBootIdentity;
     this.removeProcessGuard = removeProcessGuard;
+    this.recordTiming = recordTiming;
+  }
+
+  withOperationTrace(identity, operation) {
+    return withTaskOperationTiming({ ...identity, record: this.recordTiming }, operation);
+  }
+
+  measureOperation(stage, operation) {
+    return measureTaskOperation(stage, operation);
   }
 
   #assertAvailable(operation) {
@@ -541,6 +587,12 @@ export class TaskGitWorkspaceService {
   }
 
   async #runOwned(args, { lease = null, guardCommand = null, guardScope = "repository", ...options } = {}) {
+    return measureTaskOperation("owned-command", () => this.#runOwnedTraced(args, {
+      lease, guardCommand, guardScope, ...options,
+    }), { detail: true, command: gitCommandKind(args, options.commandLabel ?? "git") });
+  }
+
+  async #runOwnedTraced(args, { lease, guardCommand, guardScope, ...options }) {
     const owner = requiredGuardLease(lease);
     await owner.assertOwned();
     const guard = await owner.beginProcessTreeGuard({ args: guardCommand ?? args, cwd: options.cwd, scope: guardScope });
@@ -956,6 +1008,10 @@ export class TaskGitWorkspaceService {
   }
 
   async #assertRepositoryProcessTreeClear(repositoryRootValue) {
+    return measureTaskOperation("repository-guards", () => this.#assertRepositoryProcessTreeClearTraced(repositoryRootValue));
+  }
+
+  async #assertRepositoryProcessTreeClearTraced(repositoryRootValue) {
     const root = path.join(this.dataDir, "task-process-tree-guards");
     const taskDirectories = await readdir(root, { withFileTypes: true }).catch((error) => {
       if (error?.code === "ENOENT") return [];
@@ -1073,11 +1129,11 @@ export class TaskGitWorkspaceService {
     return {
       ...lease,
       taskId: id,
-      assertOwned: async () => {
+      assertOwned: () => measureTaskOperation("lease-assert", async () => {
         await lease.assertOwned();
         if (state.unresolved) throw state.unresolved;
-      },
-      beginProcessTreeGuard: (context) => this.#beginProcessTreeGuard(id, lease, context, state),
+      }, { detail: true }),
+      beginProcessTreeGuard: (context) => measureTaskOperation("process-guard", () => this.#beginProcessTreeGuard(id, lease, context, state), { detail: true }),
     };
   }
 
@@ -1382,6 +1438,10 @@ export class TaskGitWorkspaceService {
   }
 
   async #ensureSparseTaskWorktree({ taskId, worktreeRoot: root, selection, created, lease = null }) {
+    return measureTaskOperation("sparse-worktree", () => this.#ensureSparseTaskWorktreeTraced({ taskId, worktreeRoot: root, selection, created, lease }));
+  }
+
+  async #ensureSparseTaskWorktreeTraced({ taskId, worktreeRoot: root, selection, created, lease }) {
     const expectedPatterns = selection.patterns.join("\n");
     if (!created) {
       await assertNoTaskChangelogChanges(root);
@@ -1461,6 +1521,10 @@ export class TaskGitWorkspaceService {
   }
 
   async #prepareDevOwned(projectRoot, repoRoot, lease, { allowUnadoptedLocalMain = false } = {}) {
+    return measureTaskOperation("prepare-dev", () => this.#prepareDevOwnedTraced(projectRoot, repoRoot, lease, { allowUnadoptedLocalMain }));
+  }
+
+  async #prepareDevOwnedTraced(projectRoot, repoRoot, lease, { allowUnadoptedLocalMain }) {
     await requiredGuardLease(lease).assertOwned();
     const mainCommit = await localMainCommit(repoRoot);
     const repoKey = taskRepositoryKey(repoRoot);
@@ -2005,6 +2069,10 @@ export class TaskGitWorkspaceService {
   }
 
   async #snapshotAdoptedMainCommit({ snapshot, repoRoot, localMain, devCommit, lease }) {
+    return measureTaskOperation("ancestry-proof", () => this.#snapshotAdoptedMainCommitTraced({ snapshot, repoRoot, localMain, devCommit, lease }));
+  }
+
+  async #snapshotAdoptedMainCommitTraced({ snapshot, repoRoot, localMain, devCommit, lease }) {
     try {
       const proof = await this.#snapshotUpstreamAdoptionProof({
         taskId: snapshot.taskId,
@@ -2221,6 +2289,12 @@ export class TaskGitWorkspaceService {
   }
 
   async prepareOwned({ taskId, taskNumber = null, projectRoot, lease = null, dependencyMode = "skip", dependencyOverrideReason = null } = {}) {
+    return measureTaskOperation("prepare-task", () => this.#prepareOwned({
+      taskId, taskNumber, projectRoot, lease, dependencyMode, dependencyOverrideReason,
+    }));
+  }
+
+  async #prepareOwned({ taskId, taskNumber, projectRoot, lease, dependencyMode, dependencyOverrideReason }) {
     this.#assertAvailable("prepareOwned");
     if (!["skip", "ensure", "verify"].includes(dependencyMode)) throw new Error("Invalid Task dependency mode");
     const id = normalizedTaskId(taskId);
@@ -2354,6 +2428,10 @@ export class TaskGitWorkspaceService {
   }
 
   async snapshotOwned({ taskId, taskNumber = null, projectRoot, turnId = null, summary = "", lease = null } = {}) {
+    return measureTaskOperation("snapshot", () => this.#snapshotOwned({ taskId, taskNumber, projectRoot, turnId, summary, lease }));
+  }
+
+  async #snapshotOwned({ taskId, taskNumber, projectRoot, turnId, summary, lease }) {
     this.#assertAvailable("snapshotOwned");
     await requiredGuardLease(lease).assertOwned();
     await this.#assertNoProcessTreeGuard(taskId);
@@ -2389,6 +2467,10 @@ export class TaskGitWorkspaceService {
   }
 
   async mergeIntoDevOwned(snapshot, { lease = null } = {}) {
+    return measureTaskOperation("integrate-dev", () => this.#mergeIntoDevOwned(snapshot, { lease }));
+  }
+
+  async #mergeIntoDevOwned(snapshot, { lease }) {
     this.#assertAvailable("mergeIntoDevOwned");
     await requiredGuardLease(lease).assertOwned();
     await this.#assertNoProcessTreeGuard(snapshot.taskId);

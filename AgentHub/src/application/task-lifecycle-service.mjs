@@ -145,7 +145,12 @@ export class TaskLifecycleService {
 
   #mutation(operation, operationId) {
     void operationId;
-    return Promise.resolve().then(operation);
+    return this.#measure("persistence", () => Promise.resolve().then(operation));
+  }
+
+  #measure(stage, operation) {
+    return this.taskGitWorkspaces?.measureOperation
+      ? this.taskGitWorkspaces.measureOperation(stage, operation) : operation();
   }
 
   async #assertOwned(lease) {
@@ -168,6 +173,13 @@ export class TaskLifecycleService {
   }
 
   async updateWorkflowStatus(options = {}) {
+    const operation = () => this.#updateWorkflowStatusTraced(options);
+    return this.taskGitWorkspaces?.withOperationTrace
+      ? this.taskGitWorkspaces.withOperationTrace({ operationId: options.operationId, taskId: options.taskId }, operation)
+      : operation();
+  }
+
+  async #updateWorkflowStatusTraced(options) {
     const task = this.#task(options.taskId);
     const workspace = task.workspaceId ? this.workspaceCatalog.workspace(task.workspaceId) : null;
     if (workspace?.settings?.releaseWorkflowEnabled !== true) {
@@ -176,10 +188,10 @@ export class TaskLifecycleService {
     if (!this.releasePreflight) {
       throw new Error("Release preflight is unavailable; workflow status was not changed");
     }
-    const result = await this.releasePreflight.withAwaitTransition(
+    const result = await this.#measure("await-transition", () => this.releasePreflight.withAwaitTransition(
       workspace.id,
-      async () => this.#updateWorkflowStatusLocked(options, { releaseWorkflow: true }),
-    );
+      () => this.#measure("await-admitted", () => this.#updateWorkflowStatusLocked(options, { releaseWorkflow: true })),
+    ));
     if (result?.task?.workflowStatus === "awaiting_implementation") this.#releaseOperationWake?.(result.task.id);
     return result;
   }

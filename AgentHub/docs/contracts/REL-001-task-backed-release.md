@@ -1,5 +1,19 @@
 # REL-001 — Task-backed Workspace release
 
+## Advisory Task operation timing
+
+Ordinary workflow transitions emit bounded, payload-free stage timing under the
+original operation and Task identities. Await admission, Task/repository lock
+wait, preparation, snapshot, ancestry, Git children and lifecycle persistence
+remain inside their existing owners. Durations are monotonic; start records
+make an unfinished stage visible. Child/lease detail is capped at 512 spans per
+operation, with a suppression count; workflow and major stage outcomes remain
+visible. Diagnostics use the existing rotating runtime log, never authorize a
+transition or retry, and sink failure cannot replace the operation's outcome.
+Git arguments, stdout/stderr, source content, credentials and lock tokens are
+not diagnostic fields. These measurements do not assert that historical slow
+operations had the same cause as an isolated reproduction.
+
 ## Task preparation and definitive validation refusal
 
 Test delegates preparation to the snapshot owner instead of preparing the same

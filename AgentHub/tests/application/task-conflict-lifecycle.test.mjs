@@ -39,8 +39,10 @@ async function fixture(t) {
   const workspaceCatalog = { workspace: () => workspace, stream: () => null, hierarchy: () => [workspace] };
   const taskBoard = new TaskBoardService({ store, workspaceCatalog });
   let publication = null;
+  const timings = [];
   const taskGitWorkspaces = new TaskGitWorkspaceService({
     dataDir: path.join(root, "data"), readPublication: async () => publication,
+    recordTiming: event => timings.push(event),
   });
   const lifecycle = new TaskLifecycleService({ taskBoard, workspaceCatalog, taskGitWorkspaces,
     releasePreflight: {
@@ -61,7 +63,7 @@ async function fixture(t) {
     return { task, root: prepared.projectRoot };
   }
   const status = (id, value, operationId) => lifecycle.updateWorkflowStatus({ taskId: id, status: value, operationId });
-  return { root, primary, workspace, store, taskBoard, taskGitWorkspaces, lifecycle, create, status,
+  return { root, primary, workspace, store, taskBoard, taskGitWorkspaces, lifecycle, create, status, timings,
     publish: (value) => { publication = value; } };
 }
 
@@ -90,6 +92,9 @@ test("Test prepares the Task once before snapshot and merge", async (t) => {
   await f.status(a.task.id, "testing", "single-preparation");
   assert.equal(calls, 1);
   assert.equal(f.taskBoard.task(a.task.id).workflowStatus, "testing");
+  for (const stage of ["workflow", "await-transition", "await-admitted", "prepare-task", "snapshot", "integrate-dev", "persistence", "git-child"]) {
+    assert.ok(f.timings.some(event => event.operationId === "single-preparation" && event.stage === stage && event.phase === "end"), stage);
+  }
 });
 
 test("real conflict saves a terminal failed lifecycle with file and revision evidence", { timeout: 90000 }, async (t) => {
@@ -108,6 +113,8 @@ test("real conflict saves a terminal failed lifecycle with file and revision evi
   assert.equal(f.taskBoard.lifecycleTransition("test-b").phase, "failed");
   assert.equal(f.taskBoard.task(b.task.id).workflowStatus, "new");
   assert.equal(await git(f.primary, "status", "--porcelain"), "");
+  assert.ok(f.timings.some(event => event.operationId === "test-b" && event.stage === "git-child" && event.command === "merge-abort" && event.phase === "end"));
+  assert.equal(f.timings.find(event => event.operationId === "test-b" && event.stage === "workflow" && event.phase === "end").outcome, "error");
 });
 
 test("another Task pending withdrawal gives a terminal refusal without touching its recovery", { timeout: 90000 }, async (t) => {
