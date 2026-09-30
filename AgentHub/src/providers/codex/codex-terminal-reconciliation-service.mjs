@@ -184,17 +184,17 @@ export class CodexTerminalReconciliationService {
         ) ?? ""
         : "";
       const turnDiff = baselineDiff || usageResult.diff || "";
-      const changedFiles = [...new Set((usageResult.changedFiles ?? []).flatMap((file) => {
-        const value = String(file ?? "").trim();
-        const absolute = path.isAbsolute(value) ? path.resolve(value) : path.resolve(project.path, value);
-        const relative = path.relative(project.path, absolute);
-        if (!value || !relative || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return [];
-        return [relative.replaceAll(path.sep, "/")];
-      }))];
-      // Service usage takes the same no-message projection path, independently
-      // of the ordinary historical and subagent routing below.
+      // Service usage is projected without a user message. Route it before the
+      // ordinary historical/subagent decision, which belongs to terminal flow.
       if (usageResult.serviceUsageKind && !dedicatedCompaction
         && !accountingThread.isSubagent && terminal?.historical !== true) {
+        const serviceChangedFiles = [...new Set((usageResult.changedFiles ?? []).flatMap((file) => {
+          const value = String(file ?? "").trim();
+          const absolute = path.isAbsolute(value) ? path.resolve(value) : path.resolve(project.path, value);
+          const relative = path.relative(project.path, absolute);
+          if (!value || !relative || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return [];
+          return [relative.replaceAll(path.sep, "/")];
+        }))];
         await this.#projectHistorical({
           identity,
           thread,
@@ -207,7 +207,7 @@ export class CodexTerminalReconciliationService {
           resolvedStatus,
           resolvedCompletedAt,
           provisional,
-          changedFiles,
+          changedFiles: serviceChangedFiles,
           turnDiff,
           gitBaseline: turnStart?.gitBaseline ?? null,
           onProjectionDeferred,
@@ -216,6 +216,13 @@ export class CodexTerminalReconciliationService {
         this.logger.log(`Accounted service Codex turn ${identity.turnId} to thread ${accountingThread.threadId}`);
         return true;
       }
+      const changedFiles = [...new Set((usageResult.changedFiles ?? []).flatMap((file) => {
+        const value = String(file ?? "").trim();
+        const absolute = path.isAbsolute(value) ? path.resolve(value) : path.resolve(project.path, value);
+        const relative = path.relative(project.path, absolute);
+        if (!value || !relative || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return [];
+        return [relative.replaceAll(path.sep, "/")];
+      }))];
       if (dedicatedCompaction || accountingThread.isSubagent || terminal?.historical === true) {
         await this.#projectHistorical({
           identity,
