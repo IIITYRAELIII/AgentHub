@@ -594,6 +594,10 @@ export class CodexTerminalAudit {
   }
 
   async #reconcileHistorical(thread, project, terminal, options) {
+    // A completed internal compaction without reported usage is not a turn to
+    // project. Keep this at the reconciliation boundary for every scan mode.
+    if (terminal?.usageResult?.compactionOnly === true
+      && terminal.usageResult.reported !== true) return true;
     return this.reconcile(thread, project, terminal, {
       ...options,
       onProjectionDeferred: () => { this.historicalSubagentBackfill.projectionPending = true; },
@@ -898,8 +902,7 @@ export class CodexTerminalAudit {
         this.historicalScanCache.set(cacheKey, historical);
       }
       const turns = Array.isArray(historical?.turns) ? historical.turns : [];
-      const terminalTurns = turns.filter((turn) => turn?.terminal === true
-        && !(turn.compactionOnly === true && turn.reported !== true));
+      const terminalTurns = turns.filter((turn) => turn?.terminal === true);
       while (item.terminalTurnIndex < terminalTurns.length) {
         if (!this.shouldRunHistoricalBackfill()) return changed;
         const turn = terminalTurns[item.terminalTurnIndex];
@@ -924,8 +927,7 @@ export class CodexTerminalAudit {
 
       const stale = this.now() - Number(info.mtimeMs || 0) >= this.historicalActiveStaleMs;
       if (stale) {
-        const staleTurns = turns.filter((turn) => turn?.terminal !== true && turn?.startedAt
-          && !(turn.compactionOnly === true && turn.reported !== true));
+        const staleTurns = turns.filter((turn) => turn?.terminal !== true && turn?.startedAt);
         while (item.staleTurnIndex < staleTurns.length) {
           if (!this.shouldRunHistoricalBackfill()) return changed;
           const turn = staleTurns[item.staleTurnIndex];
@@ -972,7 +974,6 @@ export class CodexTerminalAudit {
       const historical = cached.result;
       const terminalTurns = (historical?.turns ?? []).filter((turn) => (
         turn?.terminal === true && isNativeRolloutTurn(item.thread.id, turn)
-          && !(turn.compactionOnly === true && turn.reported !== true)
       ));
       for (const turn of terminalTurns) {
         if (!this.shouldRunHistoricalBackfill()) return changed;

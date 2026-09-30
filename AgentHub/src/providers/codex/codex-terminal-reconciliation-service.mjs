@@ -191,7 +191,32 @@ export class CodexTerminalReconciliationService {
         if (!value || !relative || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return [];
         return [relative.replaceAll(path.sep, "/")];
       }))];
-      if (dedicatedCompaction || usageResult.serviceUsageKind || accountingThread.isSubagent || terminal?.historical === true) {
+      // Service usage takes the same no-message projection path, independently
+      // of the ordinary historical and subagent routing below.
+      if (usageResult.serviceUsageKind && !dedicatedCompaction
+        && !accountingThread.isSubagent && terminal?.historical !== true) {
+        await this.#projectHistorical({
+          identity,
+          thread,
+          project,
+          terminal,
+          usageResult,
+          dedicatedCompaction,
+          accountingThread,
+          parentTurnId,
+          resolvedStatus,
+          resolvedCompletedAt,
+          provisional,
+          changedFiles,
+          turnDiff,
+          gitBaseline: turnStart?.gitBaseline ?? null,
+          onProjectionDeferred,
+        });
+        this.turnStarts.delete(key);
+        this.logger.log(`Accounted service Codex turn ${identity.turnId} to thread ${accountingThread.threadId}`);
+        return true;
+      }
+      if (dedicatedCompaction || accountingThread.isSubagent || terminal?.historical === true) {
         await this.#projectHistorical({
           identity,
           thread,
@@ -319,11 +344,8 @@ export class CodexTerminalReconciliationService {
       estimatedCredits: usageResult.estimatedCredits,
       estimateKind: usageResult.estimateKind,
       operationKind: dedicatedCompaction ? "context-compaction" : "user-turn",
-      serviceUsageKind: usageResult.serviceUsageKind
-        || (dedicatedCompaction ? "context-compaction" : ""),
-      ...(usageResult.serviceUsageKind ? { accountAttribution: "unknown" } : {}),
       limitSamples: usageResult.limitSamples,
-      resolveAccount: terminal?.historical !== true && !usageResult.serviceUsageKind,
+      resolveAccount: terminal?.historical !== true,
       model: usageResult.model,
       serviceTier: usageResult.serviceTier,
       startedAt: usageResult.startedAt,
@@ -335,6 +357,9 @@ export class CodexTerminalReconciliationService {
       skillsUsed: usageResult.skillsUsed,
       mcpCalls: usageResult.mcpCalls,
       toolMetricsKnown: usageResult.toolMetricsKnown,
+      serviceUsageKind: usageResult.serviceUsageKind
+        || (dedicatedCompaction ? "context-compaction" : ""),
+      ...(usageResult.serviceUsageKind ? { accountAttribution: "unknown", resolveAccount: false } : {}),
       message: null,
     }, {
       title: dedicatedCompaction ? "Свёртка контекста" : conciseTurnTitle(finalAnswer, resolvedStatus),
