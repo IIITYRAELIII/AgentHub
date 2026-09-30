@@ -1488,6 +1488,32 @@ test("terminal event scanner retains terminal identity for marker-shaped user co
   }]);
 });
 
+test("exact reserved context probe identity alone marks service usage in direct and historical scans", async () => {
+  for (const [clientId, expectedKind] of [
+    ["agent-hub-context-probe:de823030-9f98-40e6-9d93-066062d977c6", "context-probe"],
+    ["agent-hub-context-probe:not-a-uuid", ""],
+    ["foreign-context-probe:de823030-9f98-40e6-9d93-066062d977c6", ""],
+  ]) {
+    const turnId = "identity-turn";
+    const text = [
+      line({ type: "event_msg", payload: { type: "task_started", turn_id: turnId } }),
+      line(response(turnId, "message", {
+        role: "user", client_id: clientId,
+        content: [{ type: "input_text", text: "Probe request" }],
+      })),
+      line(response(turnId, "message", {
+        role: "assistant", content: [{ type: "output_text", text: "REAL_USER_FINAL" }],
+      })),
+      line({ type: "event_msg", payload: { type: "task_complete", turn_id: turnId } }),
+    ].join("\n");
+    assert.equal(codexTurnUsageFromJsonl(text, turnId).serviceUsageKind, expectedKind, clientId);
+    const historical = await scanCodexHistoricalRollout("fixture.jsonl", {
+      createReadStreamImpl: () => Readable.from([text]),
+    });
+    assert.equal(historical.turns[0].serviceUsageKind, expectedKind, clientId);
+  }
+});
+
 test("terminal event scanner does not classify identity-less marker-shaped content", async () => {
   const turnId = "user-turn";
   const source = [

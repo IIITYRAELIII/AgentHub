@@ -1,6 +1,7 @@
 import path from "node:path";
 
 import { turnEndKey } from "../../application/turn-end-notifications.mjs";
+import { isCodexContextProbeClientId } from "../../domain/codex-service-usage-identity.mjs";
 import { conciseTurnTitle } from "../../application/turn-title.mjs";
 import { MAINTENANCE_OPERATION_KINDS } from "../../domain/maintenance-operation.mjs";
 import { normalizeServiceTier, normalizeTokenUsage } from "../../domain/token-usage.mjs";
@@ -330,7 +331,8 @@ export class CodexTerminalReconciliationService {
     gitBaseline,
     onProjectionDeferred,
   }) {
-    const contextProbe = usageResult.serviceUsageKind === "context-probe";
+    const contextProbe = usageResult.serviceUsageKind === "context-probe"
+      && isCodexContextProbeClientId(usageResult.clientUserMessageId);
     const finalAnswer = contextProbe ? "" : String(usageResult.finalAnswer ?? "").trim();
     const journal = await this.projectTurn({
       ...identity,

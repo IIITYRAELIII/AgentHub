@@ -8,6 +8,7 @@ import { setImmediate } from "node:timers/promises";
 
 import { uuidV7TimestampMs } from "./codex-subagent-accounting.mjs";
 import { IMAGE_GENERATION_ESTIMATE_CREDITS } from "../../domain/codex-usage-estimate.mjs";
+import { isCodexContextProbeClientId } from "../../domain/codex-service-usage-identity.mjs";
 import {
   codexAssistantResponseProjection,
 } from "../../domain/codex-response-annotation.mjs";
@@ -727,7 +728,7 @@ function createTurnAccumulator(turnId) {
     return {
       turnId: requestedTurnId,
       ...(userOperation.clientUserMessageId ? { clientUserMessageId: userOperation.clientUserMessageId } : {}),
-      serviceUsageKind: userOperation.clientUserMessageId?.startsWith("agent-hub-context-probe:")
+      serviceUsageKind: isCodexContextProbeClientId(userOperation.clientUserMessageId)
         ? "context-probe" : "",
       usage,
       reported,
@@ -1152,7 +1153,7 @@ function historicalTurnResult(turn, latestModel, latestServiceTier) {
     serviceTier: turn.serviceTier || latestServiceTier,
     compactionOnly,
     serviceUsageKind: compactionOnly ? "context-compaction"
-      : turn.clientUserMessageId?.startsWith("agent-hub-context-probe:")
+      : isCodexContextProbeClientId(turn.clientUserMessageId)
         ? "context-probe" : "",
   };
 }

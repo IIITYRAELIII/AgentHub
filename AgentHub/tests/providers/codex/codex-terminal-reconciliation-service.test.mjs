@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { CodexTerminalReconciliationService } from "../../../src/providers/codex/codex-terminal-reconciliation-service.mjs";
+import { codexTurnUsageFromJsonl } from "../../../src/providers/codex/codex-turn-usage.mjs";
 import { createRunAccountingComposition } from "../../../src/composition/run-accounting-composition.mjs";
 import { RunJournalService } from "../../../src/application/run-journal-service.mjs";
 import { createWorkLogUsageStore } from "../../../src/application/work-log-usage-store.mjs";
@@ -144,6 +145,53 @@ test("live context probe service usage keeps its measurement identity and no mar
   assert.deepEqual(completions, []);
   assert.equal(calls.some(([name]) => ["deliver", "seen"].includes(name)), false);
   assert.equal(calls.some(([name, , , options]) => name === "remember" && options?.removeTurnId !== true), false);
+});
+
+test("invalid and foreign probe identities retain an ordinary final in live and historical recovery", async () => {
+  for (const clientId of [
+    "agent-hub-context-probe:not-a-uuid",
+    "foreign-context-probe:de823030-9f98-40e6-9d93-066062d977c6",
+  ]) {
+    const turnId = "ordinary-probe-shaped-turn";
+    const records = [
+      { type: "event_msg", payload: { type: "task_started", turn_id: turnId } },
+      { type: "response_item", payload: {
+        type: "message", role: "user", client_id: clientId,
+        content: [{ type: "input_text", text: "Ordinary prompt" }],
+        internal_chat_message_metadata_passthrough: { turn_id: turnId },
+      } },
+      { type: "response_item", payload: {
+        type: "message", role: "assistant",
+        content: [{ type: "output_text", text: "REAL_USER_FINAL" }],
+        internal_chat_message_metadata_passthrough: { turn_id: turnId },
+      } },
+      { type: "event_msg", payload: { type: "task_complete", turn_id: turnId } },
+    ].map((record) => JSON.stringify(record)).join("\n");
+    const scanned = codexTurnUsageFromJsonl(records, turnId);
+    assert.equal(scanned.serviceUsageKind, "", clientId);
+    for (const historical of [false, true]) {
+      const { service, calls, completions } = harness();
+      assert.equal(await service.reconcile(thread, project, {
+        turnId,
+        status: "completed",
+        completedAt: "2026-08-04T10:00:00.000Z",
+        historical,
+        usageResult: usage({
+          ...scanned,
+          finalAnswer: "REAL_USER_FINAL",
+          completedAt: "2026-08-04T10:00:00.000Z",
+        }),
+      }), true);
+      if (historical) {
+        const projection = calls.find(([name]) => name === "project");
+        assert.equal(projection[1].operationKind, "user-turn");
+        assert.equal(projection[2].body, "REAL_USER_FINAL");
+      } else {
+        assert.equal(completions.length, 1);
+        assert.equal(completions[0].finalAnswer, "REAL_USER_FINAL");
+      }
+    }
+  }
 });
 
 test("inline, legacy markerless and foreign compactions cannot suppress an ordinary provider final", async (t) => {
