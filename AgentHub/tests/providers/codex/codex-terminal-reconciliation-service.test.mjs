@@ -142,7 +142,8 @@ test("live context probe service usage keeps its measurement identity and no mar
   assert.equal(projection[2].title, "Измерение контекста");
   assert.equal(projection[2].body, "");
   assert.deepEqual(completions, []);
-  assert.equal(calls.some(([name]) => ["deliver", "remember", "seen"].includes(name)), false);
+  assert.equal(calls.some(([name]) => ["deliver", "seen"].includes(name)), false);
+  assert.equal(calls.some(([name, , , options]) => name === "remember" && options?.removeTurnId !== true), false);
 });
 
 test("inline, legacy markerless and foreign compactions cannot suppress an ordinary provider final", async (t) => {
