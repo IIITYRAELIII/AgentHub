@@ -847,6 +847,8 @@ export class JournalDatabase {
           outputTokens: Number(usageRow.output_tokens) || 0,
           longContextOutputTokens: Number(usageRow.long_context_output_tokens) || 0,
           reasoningOutputTokens: Number(usageRow.reasoning_output_tokens) || 0,
+          longContextReasoningOutputTokens:
+            Number(usageRow.long_context_reasoning_output_tokens) || 0,
           totalTokens: Number(usageRow.total_tokens) || 0,
         },
         usageReported: Number(usageRow.usage_reported) !== 0,

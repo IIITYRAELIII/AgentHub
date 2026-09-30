@@ -81,6 +81,7 @@ test("exact Codex totals retain cache writes and only long individual requests",
     reasoningOutputTokens: 6_000, totalTokens: 505_001,
     longContextInputTokens: 280_001, longContextCachedInputTokens: 100_000,
     longContextCacheWriteInputTokens: 50_000, longContextOutputTokens: 20_000,
+    longContextReasoningOutputTokens: 5_000,
   };
   assert.deepEqual(codexTurnUsageFromJsonl(records, turnId).usage, expected);
   const historical = await scanCodexHistoricalRollout("pricing.jsonl", {

@@ -11,6 +11,7 @@ const PRICING_USAGE_FIELDS = [
   "longContextCachedInputTokens",
   "longContextCacheWriteInputTokens",
   "longContextOutputTokens",
+  "longContextReasoningOutputTokens",
 ];
 
 export const MODEL_PRICE_CHANGE_EFFECTIVE_FROM = "2026-09-08T00:00:00.000Z";
@@ -278,7 +279,9 @@ export function turnCreditBreakdown(usage, {
   );
   const longOutput = longContext
     ? Math.min(normalized.outputTokens, normalized.longContextOutputTokens ?? 0) : 0;
-  const longReasoning = Math.min(reasoningTokens, longOutput);
+  const longReasoning = Math.min(
+    reasoningTokens, longOutput, normalized.longContextReasoningOutputTokens ?? 0,
+  );
   const input = (uncachedInput + longUncached) * rates.input / perMillion * multiplier;
   const cache = (cacheReadTokens + longCacheRead) * rates.cachedInput / perMillion * multiplier;
   const cacheWrite = (cacheWriteTokens + longCacheWrite) * cacheWriteRate / perMillion * multiplier;

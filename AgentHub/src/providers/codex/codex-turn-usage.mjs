@@ -332,6 +332,7 @@ const LONG_CONTEXT_USAGE_FIELDS = [
   "longContextCachedInputTokens",
   "longContextCacheWriteInputTokens",
   "longContextOutputTokens",
+  "longContextReasoningOutputTokens",
 ];
 const GPT_6_1_LONG_CONTEXT_THRESHOLD = 272_000;
 
@@ -349,6 +350,7 @@ function normalizedRolloutUsage(value, { request = false } = {}) {
     usage.longContextCachedInputTokens = usage.cachedInputTokens;
     usage.longContextCacheWriteInputTokens = usage.cacheWriteInputTokens;
     usage.longContextOutputTokens = usage.outputTokens;
+    usage.longContextReasoningOutputTokens = usage.reasoningOutputTokens;
   }
   return usage;
 }

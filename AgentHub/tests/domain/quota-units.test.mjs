@@ -36,6 +36,7 @@ test("cache-write QU has its own category and the observed long-context premium 
     outputTokens: 20_000, reasoningOutputTokens: 5_000,
     longContextInputTokens: 300_000, longContextCachedInputTokens: 100_000,
     longContextCacheWriteInputTokens: 50_000, longContextOutputTokens: 20_000,
+    longContextReasoningOutputTokens: 5_000,
   };
   const quota = turnQuotaBreakdown(usage, { model: "gpt-6.1-sol" });
   assert.deepEqual([quota.input, quota.cache, quota.cacheWrite, quota.output, quota.total],

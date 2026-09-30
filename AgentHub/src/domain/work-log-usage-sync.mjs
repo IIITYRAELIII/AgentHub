@@ -138,6 +138,7 @@ function eventRank(event) {
       "longContextCachedInputTokens",
       "longContextCacheWriteInputTokens",
       "longContextOutputTokens",
+      "longContextReasoningOutputTokens",
     ].reduce((count, field) => count + Number((event.usage?.[field] ?? 0) > 0), 0),
     event.serviceUsageKind ? 1 : 0,
     positiveNumber(event.estimatedCredits) > 0 ? 1 : 0,
