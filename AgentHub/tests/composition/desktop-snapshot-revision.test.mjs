@@ -21,6 +21,7 @@ function dependencies(overrides = {}) {
     taskRuns: { revision: 3 },
     selectionStore: { revision: 5 },
     agentPreferences: { snapshot: () => ({ model: "gpt-test" }) },
+    modelCatalogRevision: () => 0,
     taskBoard: { snapshotRevision: 11 },
     lastTaskMessageRevision: () => 13,
     taskReadStateStore: { revision: 17 },
@@ -80,4 +81,14 @@ test("transient work still disables the desktop snapshot revision", async () => 
     recentRestartFailure: () => { throw new Error("not read while transient work is in flight"); },
   }));
   assert.equal(await revision(), null);
+});
+
+test("a completed model catalog refresh invalidates the Desktop notModified revision", async () => {
+  let catalogRevision = 0;
+  const revision = createDesktopSnapshotRevision(dependencies({
+    modelCatalogRevision: () => catalogRevision,
+  }));
+  const before = await revision();
+  catalogRevision += 1;
+  assert.notEqual(await revision(), before);
 });

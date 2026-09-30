@@ -93,6 +93,7 @@ export async function createProviderApplicationComposition({
     codexReasoningLabels,
     globalWorkLogProjectRoots,
     journalDatabaseFile,
+    providerModelCatalog,
   } = constants;
   const {
     hostState,
@@ -566,6 +567,9 @@ export async function createProviderApplicationComposition({
     startCodex: api.startCodexAppServer,
     initializeCodex: api.initializeCodex,
     sendRpc: api.sendRpc,
+    refreshCodexModels: () => providerModelCatalog.refreshCodex(api.sendRpc),
+    refreshClaudeModels: () => config.testContourRecording
+      ? Promise.resolve(false) : providerModelCatalog.refreshClaude(),
     resolveResumedCodexThreadTitle: api.resolveResumedCodexThreadTitle,
     applyCodexThreadSettings: api.applyCodexThreadSettings,
     saveState: api.saveState,

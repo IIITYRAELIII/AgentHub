@@ -20,10 +20,13 @@ test("new Sol is the numerical QU reference and Luna follows its API rate ratios
     outputTokens: 1_000_000 };
   assert.equal(turnQuotaBreakdown(usage, { model: "gpt-6-sol" }).apiEstimateCredits, 305);
   assert.equal(turnQuotaBreakdown(usage, { model: "gpt-6-luna" }).apiEstimateCredits, 15.25);
+  assert.equal(turnQuotaBreakdown(usage, { model: "gpt-6.1-sol" }).apiEstimateCredits, 302.5);
   const sol = turnQuotaBreakdown(usage, { model: "gpt-6-sol" });
   const luna = turnQuotaBreakdown(usage, { model: "gpt-6-luna" });
   assert.deepEqual([sol.input, sol.cache, sol.output, sol.total], [400, 40, 2000, 2440]);
   assert.deepEqual([luna.input, luna.cache, luna.output, luna.total], [20, 2, 100, 122]);
+  const sol61 = turnQuotaBreakdown(usage, { model: "gpt-6.1-sol" });
+  assert.deepEqual([sol61.input, sol61.cache, sol61.output, sol61.total], [400, 20, 2000, 2420]);
   assert.equal(turnQuotaBreakdown(usage, { model: "gpt-6-sol" }).uncalibrated, true);
 });
 

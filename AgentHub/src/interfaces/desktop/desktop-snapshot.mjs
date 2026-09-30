@@ -808,10 +808,12 @@ export function createDesktopSnapshotFactory({
     const codexModelOptions = current.codexModels.map((model) => ({
       value: model.value, label: model.label,
     }));
-    if (selectedTaskSnapshot?.streamId
-      && ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini"].includes(current.codexModel)
+    if (selectedTaskSnapshot?.streamId && current.codexModel
       && !codexModelOptions.some((model) => model.value === current.codexModel)) {
-      codexModelOptions.push({ value: current.codexModel, label: current.codexModel });
+      codexModelOptions.push({
+        value: current.codexModel,
+        label: current.codexModelLabel?.(current.codexModel) ?? current.codexModel,
+      });
     }
     const snapshot = {
       apiVersion: protocol,

@@ -23,6 +23,7 @@ import {
 const SOL = "gpt-5.6-sol";
 const ASTRA = "gpt-6-astra";
 const SOL_6 = "gpt-6-sol";
+const SOL_61 = "gpt-6.1-sol";
 const LUNA_6 = "gpt-6-luna";
 const BEFORE_PRICE_CHANGE = "2026-09-07T23:59:59.999Z";
 const AFTER_PRICE_CHANGE = "2026-09-08T00:00:00.001Z";
@@ -30,6 +31,9 @@ const AFTER_PRICE_CHANGE = "2026-09-08T00:00:00.001Z";
 test("model rates and Fast multipliers are explicit", () => {
   assert.deepEqual(modelCreditRates(SOL_6), {
     input: 50, cachedInput: 5, output: 250,
+  });
+  assert.deepEqual(modelCreditRates(SOL_61), {
+    input: 50, cachedInput: 2.5, output: 250,
   });
   assert.deepEqual(modelCreditRates(LUNA_6), {
     input: 2.5, cachedInput: 0.25, output: 12.5,
@@ -73,6 +77,7 @@ test("model rates and Fast multipliers are explicit", () => {
   assert.equal(fastModeCreditMultiplier("gpt-5.4", "fast"), 2);
   assert.equal(fastModeCreditMultiplier(SOL, "default"), 1);
   assert.equal(fastModeCreditMultiplier(SOL_6, "fast"), 2);
+  assert.equal(fastModeCreditMultiplier(SOL_61, "fast"), 2);
   assert.equal(fastModeCreditMultiplier(LUNA_6, "fast"), 2);
 });
 
@@ -80,6 +85,7 @@ test("GPT-6 Sol and Luna API estimates retain exact tokens and exclude cached in
   const usage = { inputTokens: 2_000_000, cachedInputTokens: 1_000_000,
     outputTokens: 1_000_000, reasoningOutputTokens: 200_000 };
   assert.equal(turnCreditBreakdown(usage, { model: SOL_6 }).total, 305);
+  assert.equal(turnCreditBreakdown(usage, { model: SOL_61 }).total, 302.5);
   assert.equal(turnCreditBreakdown(usage, { model: LUNA_6 }).total, 15.25);
   assert.deepEqual(usage, { inputTokens: 2_000_000, cachedInputTokens: 1_000_000,
     outputTokens: 1_000_000, reasoningOutputTokens: 200_000 });

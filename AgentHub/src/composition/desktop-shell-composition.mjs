@@ -223,6 +223,7 @@ export function createDesktopShellComposition({
         taskRuns,
         selectionStore,
         agentPreferences,
+        modelCatalogRevision: models.modelCatalogRevision,
         taskBoard,
         lastTaskMessageRevision: () => runtime.lastTaskMessageRevision(),
         taskReadStateStore,

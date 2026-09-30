@@ -48,3 +48,23 @@ test("Telegram settings menu builds model, reasoning and mode callbacks", async 
   assert.equal(sent[1][1].reply_markup.inline_keyboard[0][0].callback_data, "ctx:claude-reasoning:high");
   assert.equal(sent[2][1].reply_markup.inline_keyboard[0][0].callback_data, "ctx:codex-mode:default");
 });
+
+test("Telegram model picker reads refreshed provider arrays", async () => {
+  const { menu, sent } = fixture();
+  menu.codexModels.splice(0, menu.codexModels.length,
+    { value: "gpt-6.1-sol", label: "GPT-6.1 Sol" },
+    { value: "gpt-6-sol", label: "GPT-6 Sol" });
+  menu.claudeModels.splice(0, menu.claudeModels.length,
+    "default", "claude-sonnet-5");
+  menu.claudeModelLabels.default = "Default";
+  menu.claudeModelLabels["claude-sonnet-5"] = "Sonnet 5";
+  await menu.modelPicker({ provider: "codex", codexModel: "gpt-6-sol",
+    codexModelLabel: "GPT-6 Sol" });
+  await menu.modelPicker({ provider: "claude", claudeModel: "claude-sonnet-5" });
+  assert.deepEqual(sent[0][1].reply_markup.inline_keyboard.map(([item]) => item.callback_data), [
+    "ctx:codex-model:gpt-6.1-sol", "ctx:codex-model:gpt-6-sol",
+  ]);
+  assert.deepEqual(sent[1][1].reply_markup.inline_keyboard.map(([item]) => item.callback_data), [
+    "ctx:model:default", "ctx:model:claude-sonnet-5",
+  ]);
+});

@@ -608,6 +608,7 @@ function loadCodexModels(raw) {
   const shippedModels = [
     { value: "gpt-5.6-terra", label: "GPT-5.6-Terra" },
     astraModel,
+    { value: "gpt-6.1-sol", label: "GPT-6.1 Sol" },
     { value: "gpt-6-sol", label: "GPT-6 Sol" },
     { value: "gpt-6-luna", label: "GPT-6 Luna" },
     legacyShippedModels[1],
@@ -648,7 +649,12 @@ function loadCodexModels(raw) {
       model.value === legacyShippedModels[index + 1].value
       && model.label === legacyShippedModels[index + 1].label
     ));
-  const models = isLegacyShippedCatalog || isPriorShippedCatalog
+  const isPreviousShippedCatalog = normalizedModels.length === shippedModels.length - 1
+    && normalizedModels.every((model, index) => (
+      model.value === shippedModels[index < 2 ? index : index + 1].value
+      && model.label === shippedModels[index < 2 ? index : index + 1].label
+    ));
+  const models = isLegacyShippedCatalog || isPriorShippedCatalog || isPreviousShippedCatalog
     ? shippedModels
     : normalizedModels.filter((model) => !["gpt-5.5", "gpt-5.4", "gpt-5.4-mini"].includes(model.value));
 
