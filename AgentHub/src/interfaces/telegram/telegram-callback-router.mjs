@@ -40,6 +40,10 @@ export function routeTelegramCallback(rawData, contextToken, parseApproval = () 
   if (project) return { kind: "project", data, index: Number(project.index) };
   const engine = match(/^engine:(codex|claude)$/, data, ["provider"]);
   if (engine) return { kind: "engine", data, ...engine };
+  const compactCodexModel = match(/^cm:([A-Za-z0-9_-]{43})$/, data, ["modelDigest"]);
+  if (compactCodexModel) return { kind: "codex-model", data, ...compactCodexModel };
+  const compactClaudeModel = match(/^am:([A-Za-z0-9_-]{43})$/, data, ["modelDigest"]);
+  if (compactClaudeModel) return { kind: "claude-model", data, ...compactClaudeModel };
   const codexModel = match(/^codex-model:(.+)$/, data, ["model"]);
   if (codexModel) return { kind: "codex-model", data, ...codexModel };
   const codexReasoning = match(/^codex-reasoning:(low|medium|high|xhigh|max|ultra)$/, data, ["value"]);
