@@ -107,16 +107,19 @@ test("long live Codex and Claude model IDs round-trip through Telegram's 64-byte
   }
 });
 
-test("a compact model callback cannot select an ID removed by catalog refresh", async () => {
+test("a retired Codex button cannot reselect its model after catalog refresh and another selection", async () => {
   const codexId = `gpt-${"x".repeat(40)}`;
+  const replacement = "gpt-current";
   const events = [];
   const codexModels = [{ value: codexId, label: "Long Codex" }];
   const callbacks = service(events, true, { codex: codexModels });
-  const data = contextualCallback(modelCallbackAction("codex", codexId), "aaaaaaaaaaaa");
-  codexModels.splice(0);
-  const route = routeTelegramCallback(data, "aaaaaaaaaaaa");
-  await callbacks.handle(callback, route);
-  assert.equal(events.some((event) => event.name === "model"), false);
+  const oldData = contextualCallback(modelCallbackAction("codex", codexId), "aaaaaaaaaaaa");
+  codexModels.splice(0, codexModels.length, { value: replacement, label: "Current" });
+  const newData = contextualCallback(modelCallbackAction("codex", replacement), "aaaaaaaaaaaa");
+  await callbacks.handle(callback, routeTelegramCallback(newData, "aaaaaaaaaaaa"));
+  await callbacks.handle(callback, routeTelegramCallback(oldData, "aaaaaaaaaaaa"));
+  assert.ok(events.some((event) => event.name === "model" && event.value === replacement));
+  assert.equal(events.some((event) => event.name === "model" && event.value === codexId), false);
   assert.ok(events.some((event) => event.method === "answerCallbackQuery"
     && /устарело/.test(event.body.text)));
 });
