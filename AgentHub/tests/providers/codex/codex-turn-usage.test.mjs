@@ -37,7 +37,7 @@ function response(turnId, type = "reasoning", extra = {}) {
   };
 }
 
-function token(input, cache, output, reasoning) {
+function token(input, cache, output, reasoning, cacheWrite = 0) {
   return {
     type: "event_msg",
     payload: {
@@ -46,6 +46,7 @@ function token(input, cache, output, reasoning) {
         last_token_usage: {
           input_tokens: input,
           cached_input_tokens: cache,
+          cache_write_input_tokens: cacheWrite,
           output_tokens: output,
           reasoning_output_tokens: reasoning,
           total_tokens: input + output,
@@ -54,6 +55,39 @@ function token(input, cache, output, reasoning) {
     },
   };
 }
+
+test("exact Codex totals retain cache writes and only long individual requests", async () => {
+  const turnId = "pricing-turn";
+  const records = [
+    { type: "event_msg", payload: { type: "task_started", turn_id: turnId } },
+    { type: "turn_context", payload: { turn_id: turnId, model: "gpt-6.1-sol" } },
+    response(turnId),
+    token(200_000, 100_000, 5_000, 1_000),
+    response(turnId),
+    token(280_001, 100_000, 20_000, 5_000, 50_000),
+    { type: "token_usage_record", payload: {
+      turn_id: turnId,
+      turn_token_usage: {
+        input_tokens: 480_001, cached_input_tokens: 200_000,
+        cache_write_input_tokens: 50_000, output_tokens: 25_000,
+        reasoning_output_tokens: 6_000, total_tokens: 505_001,
+      },
+    } },
+    { type: "event_msg", payload: { type: "task_complete", turn_id: turnId } },
+  ].map(line).join("\n") + "\n";
+  const expected = {
+    inputTokens: 480_001, cachedInputTokens: 200_000,
+    cacheWriteInputTokens: 50_000, outputTokens: 25_000,
+    reasoningOutputTokens: 6_000, totalTokens: 505_001,
+    longContextInputTokens: 280_001, longContextCachedInputTokens: 100_000,
+    longContextCacheWriteInputTokens: 50_000, longContextOutputTokens: 20_000,
+  };
+  assert.deepEqual(codexTurnUsageFromJsonl(records, turnId).usage, expected);
+  const historical = await scanCodexHistoricalRollout("pricing.jsonl", {
+    createReadStreamImpl: () => Readable.from([records]),
+  });
+  assert.deepEqual(historical.turns.find((turn) => turn.turnId === turnId).usage, expected);
+});
 
 test("Codex rollout usage sums every model response and sees the final token event", () => {
   const startedAt = "2026-07-26T19:03:03.527Z";

@@ -132,6 +132,13 @@ function eventRank(event) {
     Array.isArray(event.limitSamples) ? event.limitSamples.length : 0,
     event.usageReported ? 1 : 0,
     event.usage?.totalTokens || 0,
+    [
+      "cacheWriteInputTokens",
+      "longContextInputTokens",
+      "longContextCachedInputTokens",
+      "longContextCacheWriteInputTokens",
+      "longContextOutputTokens",
+    ].reduce((count, field) => count + Number((event.usage?.[field] ?? 0) > 0), 0),
     event.serviceUsageKind ? 1 : 0,
     positiveNumber(event.estimatedCredits) > 0 ? 1 : 0,
     event.estimateKind || event.imageGenerationCount > 0 ? 1 : 0,

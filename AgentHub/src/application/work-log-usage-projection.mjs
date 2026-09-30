@@ -211,12 +211,13 @@ function recordQuotaBreakdown(record) {
 function sumRecordQuota(records) {
   return records.reduce((sum, record) => {
     const quota = recordQuotaBreakdown(record);
-    for (const field of ["input", "cache", "output", "total", "apiEstimateCredits"]) {
+    for (const field of ["input", "cache", "cacheWrite", "output", "total", "apiEstimateCredits"]) {
       sum[field] += quota[field];
     }
     sum.uncalibratedCount += Number(quota.uncalibrated);
     return sum;
-  }, { input: 0, cache: 0, output: 0, total: 0, apiEstimateCredits: 0, uncalibratedCount: 0 });
+  }, { input: 0, cache: 0, cacheWrite: 0, output: 0, total: 0,
+    apiEstimateCredits: 0, uncalibratedCount: 0 });
 }
 
 function recordCredits(record) {
@@ -428,6 +429,7 @@ function highlightUsageUnits(text, credits = Number.NaN, quotaUnits = Number.NaN
 const BREAKDOWN_FIELD_BY_LABEL = new Map([
   ["Вход", "input"],
   ["Кэш", "cache"],
+  ["Запись кэша", "cacheWrite"],
   ["Выход", "output"],
   ["Думы", "reasoning"],
 ]);
@@ -1558,6 +1560,11 @@ function formatTurnEntry(
   const quotaQualifier = !quota.uncalibrated ? ""
     : record?.usageReported === false || quota.basis === "unknown"
       ? " · неполное покрытие" : " · предварительная оценка";
+  const sol61 = String(record?.model ?? "").trim().toLowerCase() === "gpt-6.1-sol";
+  const longContextQualifier = sol61 && Number(record?.usage?.longContextInputTokens) > 0
+    ? " · длинный контекст >272K учтён"
+    : sol61 && Number(record?.usage?.inputTokens) > 272_000
+      ? " · запрос >272K не подтверждён" : "";
   const recordTotal = breakdown.total;
   const displayedTotal = Number.isFinite(treeCredits) ? Math.max(0, treeCredits) : recordTotal;
   const elapsedSeconds = durationSeconds(record?.startedAt, record?.completedAt);
@@ -1593,7 +1600,7 @@ function formatTurnEntry(
       + `<div data-work-log-turn-context><strong>Длит.:</strong> ${
         formatDuration(record?.startedAt, record?.completedAt)
       }</div>`
-      + `<div data-work-log-turn-quota><strong>Quota Units:</strong> ${formatQuotaUnits(quota.total)}${quotaQualifier}${quota.apiEstimateCredits > 0 ? ` · API-основа: ${formatCredits(quota.apiEstimateCredits)}; опора GPT-6 Sol ≈ ${PROVISIONAL_QU_PER_API_CREDIT} QU/cr` : ""}</div>`
+      + `<div data-work-log-turn-quota><strong>Quota Units:</strong> ${formatQuotaUnits(quota.total)}${quotaQualifier}${longContextQualifier}${quota.apiEstimateCredits > 0 ? ` · API-основа: ${formatCredits(quota.apiEstimateCredits)}; опора GPT-6 Sol ≈ ${PROVISIONAL_QU_PER_API_CREDIT} QU/cr` : ""}</div>`
       + (descendantCount > 0
         ? `<div data-work-log-turn-own-usage><strong>Свой расход:</strong> ${ownCredits}</div>`
         : "")
@@ -2610,7 +2617,7 @@ function formatWorkspaceRows(rows, dayCredits, dayElapsedSeconds, workspaceResol
     };
     group.rows.push(row);
     group.creditBreakdown = addCreditBreakdown(group.creditBreakdown, row.creditBreakdown);
-    for (const field of ["input", "cache", "output", "total", "apiEstimateCredits", "uncalibratedCount"]) {
+    for (const field of ["input", "cache", "cacheWrite", "output", "total", "apiEstimateCredits", "uncalibratedCount"]) {
       group.quota[field] += row.quota[field];
     }
     group.elapsedSeconds += row.elapsedSeconds;
@@ -2793,7 +2800,7 @@ function projectDaySection(
   );
   const dayCredits = dayBreakdown.total;
   const dayQuota = trackedRows.reduce((sum, row) => {
-    for (const field of ["input", "cache", "output", "total", "apiEstimateCredits", "uncalibratedCount"]) {
+    for (const field of ["input", "cache", "cacheWrite", "output", "total", "apiEstimateCredits", "uncalibratedCount"]) {
       sum[field] += row.quota[field];
     }
     return sum;

@@ -85,7 +85,7 @@ test("historical worker retains only measured service operations with native ide
     { type: "compacted", payload: {} }, usage(compactId, 400),
     { type: "event_msg", payload: { type: "task_complete", turn_id: compactId } },
     { type: "event_msg", payload: { type: "task_started", turn_id: probeId } },
-    { type: "response_item", payload: { type: "message", role: "user", client_id: "agent-hub-context-probe:exact",
+    { type: "response_item", payload: { type: "message", role: "user", client_id: "agent-hub-context-probe:de823030-9f98-40e6-9d93-066062d977c6",
       content: [{ type: "input_text", text: "probe" }],
       internal_chat_message_metadata_passthrough: { turn_id: probeId } } },
     { type: "turn_context", payload: { turn_id: probeId, model: "gpt-5.6-sol" } },

@@ -839,7 +839,13 @@ export class JournalDatabase {
         usage: {
           inputTokens: Number(usageRow.input_tokens) || 0,
           cachedInputTokens: Number(usageRow.cached_input_tokens) || 0,
+          cacheWriteInputTokens: Number(usageRow.cache_write_input_tokens) || 0,
+          longContextInputTokens: Number(usageRow.long_context_input_tokens) || 0,
+          longContextCachedInputTokens: Number(usageRow.long_context_cached_input_tokens) || 0,
+          longContextCacheWriteInputTokens:
+            Number(usageRow.long_context_cache_write_input_tokens) || 0,
           outputTokens: Number(usageRow.output_tokens) || 0,
+          longContextOutputTokens: Number(usageRow.long_context_output_tokens) || 0,
           reasoningOutputTokens: Number(usageRow.reasoning_output_tokens) || 0,
           totalTokens: Number(usageRow.total_tokens) || 0,
         },

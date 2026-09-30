@@ -32,9 +32,11 @@ export function turnQuotaBreakdown(usage, {
   const tokens = normalizeTokenUsage(usage);
   const id = String(model ?? "").trim().toLowerCase();
   const hasTokens = tokens.inputTokens > 0 || tokens.outputTokens > 0
-    || tokens.cachedInputTokens > 0 || tokens.reasoningOutputTokens > 0 || tokens.totalTokens > 0;
+    || tokens.cachedInputTokens > 0 || (tokens.cacheWriteInputTokens ?? 0) > 0
+    || tokens.reasoningOutputTokens > 0 || tokens.totalTokens > 0;
   const inferredBreakdown = tokens.totalTokens > 0 && tokens.inputTokens === 0
-    && tokens.cachedInputTokens === 0 && tokens.outputTokens === 0;
+    && tokens.cachedInputTokens === 0 && (tokens.cacheWriteInputTokens ?? 0) === 0
+    && tokens.outputTokens === 0;
   const pricingTokens = inferredBreakdown
     ? { ...tokens, inputTokens: tokens.totalTokens }
     : tokens.reasoningOutputTokens > tokens.outputTokens
@@ -44,13 +46,21 @@ export function turnQuotaBreakdown(usage, {
   const provisionalImageQuota = imageEstimate * PROVISIONAL_QU_PER_API_CREDIT;
   const rates = normalizeServiceTier(serviceTier) === "default" ? QUOTA_RATES[id] : null;
   if (rates) {
-    const input = Math.max(0, pricingTokens.inputTokens - pricingTokens.cachedInputTokens)
+    const cacheReadTokens = Math.min(pricingTokens.inputTokens, pricingTokens.cachedInputTokens);
+    const cacheWriteTokens = Math.min(
+      Math.max(0, pricingTokens.inputTokens - cacheReadTokens),
+      pricingTokens.cacheWriteInputTokens ?? 0,
+    );
+    const input = Math.max(0, pricingTokens.inputTokens - cacheReadTokens - cacheWriteTokens)
       * rates.input / 1_000_000;
-    const cache = pricingTokens.cachedInputTokens * rates.cachedInput / 1_000_000;
+    const cache = cacheReadTokens * rates.cachedInput / 1_000_000;
+    // Empirical totals already include writes within uncached input. Keep the
+    // calibrated total but expose those observed tokens as their own category.
+    const cacheWrite = cacheWriteTokens * rates.input / 1_000_000;
     const output = pricingTokens.outputTokens * rates.output / 1_000_000;
     return {
-      input, cache, output: output + provisionalImageQuota,
-      total: input + cache + output + provisionalImageQuota,
+      input, cache, cacheWrite, output: output + provisionalImageQuota,
+      total: input + cache + cacheWrite + output + provisionalImageQuota,
       apiEstimateCredits: imageEstimate,
       uncalibrated: imageEstimate > 0 || inferredBreakdown,
       calibrationVersion: QUOTA_CALIBRATION_VERSION,
@@ -68,6 +78,7 @@ export function turnQuotaBreakdown(usage, {
       // GPT-6 Sol QU reference. Other models have no measured QU coefficient.
       input: priced.input * PROVISIONAL_QU_PER_API_CREDIT,
       cache: priced.cache * PROVISIONAL_QU_PER_API_CREDIT,
+      cacheWrite: priced.cacheWrite * PROVISIONAL_QU_PER_API_CREDIT,
       output: (priced.output + priced.reasoning + priced.estimate)
         * PROVISIONAL_QU_PER_API_CREDIT,
       total: priced.total * PROVISIONAL_QU_PER_API_CREDIT,
@@ -79,13 +90,14 @@ export function turnQuotaBreakdown(usage, {
   }
   if (imageEstimate > 0) {
     return {
-      input: 0, cache: 0, output: provisionalImageQuota, total: provisionalImageQuota,
+      input: 0, cache: 0, cacheWrite: 0,
+      output: provisionalImageQuota, total: provisionalImageQuota,
       apiEstimateCredits: imageEstimate, uncalibrated: true,
       calibrationVersion: QUOTA_CALIBRATION_VERSION, basis: "estimate-only",
     };
   }
   return {
-    input: 0, cache: 0, output: 0, total: 0,
+    input: 0, cache: 0, cacheWrite: 0, output: 0, total: 0,
     apiEstimateCredits: 0,
     uncalibrated: hasTokens,
     calibrationVersion: QUOTA_CALIBRATION_VERSION,

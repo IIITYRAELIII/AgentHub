@@ -317,6 +317,26 @@ backfill, restart and sync import must preserve the durable completion timestamp
 and therefore reproduce the same total. The projection must not introduce a
 second surface-specific multiplier or rewrite synchronized usage facts.
 
+For GPT-6.1 Sol from 2026-09-29, Standard short-context API-equivalent rates
+per million are USD `2` uncached input, `0.10` cached input, `2.50` cache
+writes and `10` output. Cache-write tokens are a subset of input, billed as
+their own category rather than in addition to ordinary uncached input. Fast
+mode doubles each rate. A *single request* with more than 272,000 input tokens
+has 2× input/cache rates and 1.5× output rates for the entire request.
+Only per-request provider evidence may classify tokens into that long-context
+tier; the aggregate token count of a turn never establishes the threshold.
+For other GPT-5.6-or-later API estimates, the documented cache-write rate is
+1.25× that model's uncached input rate; empirical QU calibration remains
+unchanged and simply displays observed write tokens separately.
+The Codex rollout's optional `cache_write_input_tokens` and per-request
+`last_token_usage` enrich the same normalized usage fact without changing
+the turn identity or attribution. Missing cache-write or request-level evidence
+does not justify inventing a positive counter. The credit and provisional QU
+breakdowns expose cache writes separately in every presentation; the agreed
+GPT-6 Sol reference remains 8 QU per API-equivalent cr, not an official
+subscription conversion. Advancing the accounting projection marker causes
+the existing resumable background history backfill to recalculate old turns.
+
 The unscoped accounting chart includes every local turn regardless of account.
 A synchronized turn is included only when its attributed account has an exact
 local Codex account-activity interval containing the configured turn timestamp.

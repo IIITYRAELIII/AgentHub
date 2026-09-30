@@ -6,7 +6,7 @@ test("empirical Sol and Astra QU use uncached input, cache and all output exactl
   const usage = { inputTokens: 2_000_000, cachedInputTokens: 1_000_000,
     outputTokens: 1_000_000, reasoningOutputTokens: 200_000 };
   assert.deepEqual(turnQuotaBreakdown(usage, { model: "gpt-5.6-sol" }), {
-    input: 450, cache: 45, output: 2250, total: 2745,
+    input: 450, cache: 45, cacheWrite: 0, output: 2250, total: 2745,
     apiEstimateCredits: 0, uncalibrated: false,
     calibrationVersion: "preliminary-2026-09-29-gpt6sol-reference-v1", basis: "empirical",
   });
@@ -28,6 +28,22 @@ test("new Sol is the numerical QU reference and Luna follows its API rate ratios
   const sol61 = turnQuotaBreakdown(usage, { model: "gpt-6.1-sol" });
   assert.deepEqual([sol61.input, sol61.cache, sol61.output, sol61.total], [400, 20, 2000, 2420]);
   assert.equal(turnQuotaBreakdown(usage, { model: "gpt-6-sol" }).uncalibrated, true);
+});
+
+test("cache-write QU has its own category and the observed long-context premium uses the API reference", () => {
+  const usage = {
+    inputTokens: 300_000, cachedInputTokens: 100_000, cacheWriteInputTokens: 50_000,
+    outputTokens: 20_000, reasoningOutputTokens: 5_000,
+    longContextInputTokens: 300_000, longContextCachedInputTokens: 100_000,
+    longContextCacheWriteInputTokens: 50_000, longContextOutputTokens: 20_000,
+  };
+  const quota = turnQuotaBreakdown(usage, { model: "gpt-6.1-sol" });
+  assert.deepEqual([quota.input, quota.cache, quota.cacheWrite, quota.output, quota.total],
+    [120, 4, 50, 60, 234]);
+  assert.equal(quota.uncalibrated, true);
+  const empirical = turnQuotaBreakdown(usage, { model: "gpt-5.6-sol" });
+  assert.deepEqual([empirical.input, empirical.cache, empirical.cacheWrite, empirical.total],
+    [67.5, 4.5, 22.5, 139.5]);
 });
 
 test("other priced models and Fast get provisional numerical QU from the Sol reference", () => {

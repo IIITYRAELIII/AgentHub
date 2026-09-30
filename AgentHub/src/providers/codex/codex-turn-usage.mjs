@@ -327,14 +327,46 @@ function completedImageGenerationId(entry) {
   return callId;
 }
 
-function normalizedRolloutUsage(value) {
-  return normalizeTokenUsage({
+const LONG_CONTEXT_USAGE_FIELDS = [
+  "longContextInputTokens",
+  "longContextCachedInputTokens",
+  "longContextCacheWriteInputTokens",
+  "longContextOutputTokens",
+];
+const GPT_6_1_LONG_CONTEXT_THRESHOLD = 272_000;
+
+function normalizedRolloutUsage(value, { request = false } = {}) {
+  const usage = normalizeTokenUsage({
     inputTokens: value?.input_tokens,
     cachedInputTokens: value?.cached_input_tokens,
+    cacheWriteInputTokens: value?.cache_write_input_tokens,
     outputTokens: value?.output_tokens,
     reasoningOutputTokens: value?.reasoning_output_tokens,
     totalTokens: value?.total_tokens,
   });
+  if (request && usage.inputTokens > GPT_6_1_LONG_CONTEXT_THRESHOLD) {
+    usage.longContextInputTokens = usage.inputTokens;
+    usage.longContextCachedInputTokens = usage.cachedInputTokens;
+    usage.longContextCacheWriteInputTokens = usage.cacheWriteInputTokens;
+    usage.longContextOutputTokens = usage.outputTokens;
+  }
+  return usage;
+}
+
+function preserveRequestPricingUsage(exact, previous) {
+  const merged = { ...exact };
+  for (const field of LONG_CONTEXT_USAGE_FIELDS) {
+    if ((previous?.[field] ?? 0) > 0) merged[field] = previous[field];
+  }
+  return merged;
+}
+
+function addRequestPricingUsage(exact, request) {
+  const merged = { ...exact };
+  for (const field of LONG_CONTEXT_USAGE_FIELDS) {
+    if ((request?.[field] ?? 0) > 0) merged[field] = (merged[field] ?? 0) + request[field];
+  }
+  return merged;
 }
 
 function exactTurnTokenUsage(entry) {
@@ -629,7 +661,7 @@ function createTurnAccumulator(turnId) {
     if (exactTurnId === requestedTurnId) acceptUserOperationIdentity(userOperation, entry);
     const exactUsage = exactTurnTokenUsage(entry);
     if (exactUsage && exactTurnId === requestedTurnId) {
-      usage = exactUsage;
+      usage = preserveRequestPricingUsage(exactUsage, usage);
       exactUsageReported = true;
       reported = true;
       finalTokenIndex = index;
@@ -713,8 +745,13 @@ function createTurnAccumulator(turnId) {
     const attributedTurnId = latestResponseTurnId
       || (activeTurnIds.size === 1 ? [...activeTurnIds][0] : "");
     if (attributedTurnId === requestedTurnId) {
+      const requestUsage = normalizedRolloutUsage(entry.payload?.info?.last_token_usage, {
+        request: true,
+      });
       if (!exactUsageReported) {
-        usage = addTokenUsage(usage, normalizedRolloutUsage(entry.payload?.info?.last_token_usage));
+        usage = addTokenUsage(usage, requestUsage);
+      } else {
+        usage = addRequestPricingUsage(usage, requestUsage);
       }
       limitSamples = mergeUsageLimitSamples(limitSamples, codexLimitSamplesFromTokenEvent(entry));
       reported = true;
@@ -1268,7 +1305,7 @@ export async function scanCodexHistoricalRollout(transcriptPath, {
     acceptUserOperationIdentity(exactTurn, entry);
     const exactUsage = exactTurnTokenUsage(entry);
     if (exactUsage && exactTurn) {
-      exactTurn.usage = exactUsage;
+      exactTurn.usage = preserveRequestPricingUsage(exactUsage, exactTurn.usage);
       exactTurn.exactUsageReported = true;
       exactTurn.reported = true;
       latestResponseTurnId = exactTurnId;
@@ -1371,11 +1408,16 @@ export async function scanCodexHistoricalRollout(transcriptPath, {
       || (activeTurnIds.size === 1 ? [...activeTurnIds][0] : "");
     const attributedTurn = ensureTurn(attributedTurnId);
     if (attributedTurn) {
+      const requestUsage = normalizedRolloutUsage(entry.payload?.info?.last_token_usage, {
+        request: true,
+      });
       if (!attributedTurn.exactUsageReported) {
         attributedTurn.usage = addTokenUsage(
           attributedTurn.usage,
-          normalizedRolloutUsage(entry.payload?.info?.last_token_usage),
+          requestUsage,
         );
+      } else {
+        attributedTurn.usage = addRequestPricingUsage(attributedTurn.usage, requestUsage);
       }
       attributedTurn.limitSamples = mergeUsageLimitSamples(
         attributedTurn.limitSamples,
