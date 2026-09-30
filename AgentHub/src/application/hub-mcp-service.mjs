@@ -32,6 +32,7 @@ import { taskRunIsActive } from "../domain/task-runs.mjs";
 import { displayUserPrompt } from "./task-history.mjs";
 import { TaskLifecycleService, TaskIntegrationConflictError, TaskAwaitIntegrationError, TaskWithdrawalDependencyError, TaskWithdrawalBusyError, TaskSquashTransferRejectedError } from "./task-lifecycle-service.mjs";
 import { TaskOperationReconciliationService } from "./task-operation-reconciliation-service.mjs";
+import { TaskIntegrationRejectedError } from "./task-lifecycle-service.mjs";
 import { createWorkspaceCatalogMutationOwner } from "./sqlite-mutation-owner.mjs";
 
 const CONTEXT_TOKEN_VERSION = 1;
@@ -2303,7 +2304,7 @@ export class HubMcpService {
             || error instanceof TaskDependencyPendingError || error instanceof TaskWithdrawalDependencyError
             || error instanceof TaskLifecycleBeginRejectedError || error instanceof TaskWithdrawalBusyError
             || error instanceof ReleaseCandidateFrozenError || error instanceof TaskAbsorptionCompositionError
-            || error instanceof TaskSquashTransferRejectedError) {
+             || error instanceof TaskSquashTransferRejectedError || error instanceof TaskIntegrationRejectedError) {
           await this.workspaceCatalog.failMcpOperation(requestId, error);
           throw error;
         }

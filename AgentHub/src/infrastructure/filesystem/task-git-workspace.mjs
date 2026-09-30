@@ -22,6 +22,7 @@ import { publicationStateRepositories, readPublicationState } from "../persisten
 import {
   normalizedTaskId,
   TASK_BRANCH_PREFIX,
+  TaskGitHistoryRejectedError,
   taskBranchName,
   taskRepositoryKey,
 } from "../../domain/task-git-reference.mjs";
@@ -1546,7 +1547,7 @@ export class TaskGitWorkspaceService {
           if (!adoption || await gitMaybe([
             "merge-base", "--is-ancestor", base, adoption.record.adoptedCommit,
           ], { cwd: repoRoot }) === null) {
-            throw new Error("Sibling Task contains unpublished tracked remote history");
+            throw new TaskGitHistoryRejectedError(`Sibling Task ${owner} at ${commit} contains unpublished tracked remote history ${base}`);
           }
         }
       }
@@ -1555,7 +1556,7 @@ export class TaskGitWorkspaceService {
         `--max-count=${MAX_UPSTREAM_ADOPTION_PROOFS + 1}`, commit, `^${base}`, `^${localMain}`,
         ...(publishedHistory ? [`^${publishedHistory.published}`] : []),
       ], { cwd: repoRoot })).split(/\r?\n/u).filter(Boolean);
-      if (merges.length > MAX_UPSTREAM_ADOPTION_PROOFS) throw new Error("Sibling Task merge history exceeds the bounded proof");
+      if (merges.length > MAX_UPSTREAM_ADOPTION_PROOFS) throw new TaskGitHistoryRejectedError(`Sibling Task ${owner} merge history exceeds the bounded proof`);
       for (const merge of merges) {
         const [, , ...sides] = merge.split(" ");
         for (const side of sides) {
@@ -1565,7 +1566,7 @@ export class TaskGitWorkspaceService {
             taskId: owner, repoRoot, snapshotCommit: commit, localMain, lease,
           });
           if (adoption?.record?.adoptedCommit !== side) {
-            throw new Error("Sibling Task contains an unapproved upstream or dev merge");
+            throw new TaskGitHistoryRejectedError(`Sibling Task ${owner} at ${commit} contains an unapproved upstream or dev merge: ${merge.split(" ")[0]} parent ${side}`);
           }
         }
       }
@@ -1607,7 +1608,7 @@ export class TaskGitWorkspaceService {
       if (!expectedAdopted || await gitMaybe([
         "merge-base", "--is-ancestor", base, expectedAdopted,
       ], { cwd: repoRoot }) === null) {
-        throw new Error("Task snapshot contains unpublished tracked remote history");
+        throw new TaskGitHistoryRejectedError(`Task snapshot ${exactSnapshot} contains unpublished tracked remote history ${base}`);
       }
     }
     return this.#upstreamAdoptionProofFromObjects({
@@ -1626,7 +1627,7 @@ export class TaskGitWorkspaceService {
     expectedAdopted, devCommit, lease, publishedHistoryBase = null,
   }) {
     const history = String(await this.#runOwned([
-      "rev-list", "--first-parent", "--merges",
+      "log", "--first-parent", "--merges", "--format=%H %P",
       `--max-count=${MAX_UPSTREAM_ADOPTION_PROOFS + 1}`, exactSnapshot, `^${exactBase}`,
       ...(publishedHistoryBase ? [`^${publishedHistoryBase}`] : []),
     ], { cwd: repoRoot, lease })).split(/\r?\n/u).filter(Boolean);
@@ -1634,10 +1635,9 @@ export class TaskGitWorkspaceService {
       throw new Error("explicit upstream adoption proof exceeds the bounded first-parent history");
     }
     const proofs = [];
-    for (const commit of history) {
-      const parents = String(await this.#runOwned([
-        "rev-list", "--parents", "-n", "1", commit,
-      ], { cwd: repoRoot, lease })).split(/\s+/u).filter(Boolean);
+    for (const entry of history) {
+      const parents = entry.split(/\s+/u).filter(Boolean);
+      const commit = parents[0];
       if (parents.length < 3) continue;
       for (let index = 2; index < parents.length; index += 1) {
         const candidate = parents[index];
@@ -2854,7 +2854,12 @@ export class TaskGitWorkspaceService {
     this.#assertAvailable("snapshotAndMergeOwned");
     await requiredGuardLease(params.lease).assertOwned();
     await this.#assertNoProcessTreeGuard(params.taskId);
-    await this.#assertTaskReleaseWait(params.taskId, await repositoryRoot(params.projectRoot));
+    const repoRoot = await repositoryRoot(params.projectRoot);
+    await this.#assertTaskReleaseWait(params.taskId, repoRoot);
+    if (params.expectedResultReferences) {
+      params = { ...params, expectedResultCommit: params.expectedResultReferences
+        .find((reference) => samePath(reference.projectRoot, repoRoot))?.resultCommit ?? null };
+    }
     if (params.expectedResultCommit) {
       const reused = await this.#reuseTestResultOwned(params);
       if (reused) return reused;

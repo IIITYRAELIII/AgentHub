@@ -43,3 +43,10 @@ export function normalizedTaskGitReferences(values = []) {
   }
   return [...references.values()].sort((left, right) => canonicalRoot(left.projectRoot).localeCompare(canonicalRoot(right.projectRoot)));
 }
+// Only explicit ancestry validation refusals, before the dev merge starts.
+export class TaskGitHistoryRejectedError extends Error {
+  constructor(message) {
+    super(message);
+    this.code = "TASK_GIT_HISTORY_REJECTED";
+  }
+}

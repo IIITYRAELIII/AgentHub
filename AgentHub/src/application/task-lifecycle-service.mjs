@@ -4,6 +4,14 @@ import path from "node:path";
 import { taskProjectRoot } from "../domain/task-project-root.mjs";
 import { TaskAbsorptionCompositionError } from "../domain/task-board-task.mjs";
 import { normalizedTaskSquashCutover } from "../domain/task-squash-cutover.mjs";
+import { TaskGitHistoryRejectedError } from "../domain/task-git-reference.mjs";
+
+export class TaskIntegrationRejectedError extends Error {
+  constructor(cause) {
+    super(cause.message, { cause });
+    this.code = "TASK_INTEGRATION_REJECTED";
+  }
+}
 
 export class TaskWithdrawalBusyError extends Error {
   constructor(cause) {
@@ -764,21 +772,13 @@ export class TaskLifecycleService {
         if (!selectedProjectRoot || !this.taskGitWorkspaces) {
           throw new Error("Task Git workspace is unavailable; workflow status was not changed");
         }
-        const gitWorkspace = await this.taskGitWorkspaces.prepareOwned({
-          taskId: task.id,
-          taskNumber: task.taskNumber,
-          projectRoot: selectedProjectRoot,
-          lease,
-        });
         const { snapshot, integration } = await this.taskGitWorkspaces.snapshotAndMergeOwned({
           taskId: task.id,
           taskNumber: task.taskNumber,
-          projectRoot: gitWorkspace.projectRoot,
+          projectRoot: selectedProjectRoot,
           turnId: null,
           summary: task.title,
-          expectedResultCommit: task.workflowStatus === "testing"
-            ? (task.gitReferences ?? []).find((reference) => samePath(reference.projectRoot, gitWorkspace.gitBaseline?.repoRoot || selectedProjectRoot))?.resultCommit ?? null
-            : null,
+          expectedResultReferences: task.workflowStatus === "testing" ? task.gitReferences ?? [] : null,
           lease,
         });
         if (!integration.resultProved || !integration.integrated) {
@@ -869,6 +869,15 @@ export class TaskLifecycleService {
           throw failure;
         }
         await this.#failWhileOwned(lease, operationId, error);
+        if (error instanceof TaskGitHistoryRejectedError) {
+          await this.#assertOwned(lease);
+          const failed = this.taskBoard.lifecycleTransition(operationId);
+          if (failed?.taskId === task.id && failed.phase === "failed"
+              && failed.error === error.message.slice(0, 4000)
+              && !this.taskBoard.lifecycleOutcome(operationId)) {
+            throw new TaskIntegrationRejectedError(error);
+          }
+        }
         throw error;
       }
   }

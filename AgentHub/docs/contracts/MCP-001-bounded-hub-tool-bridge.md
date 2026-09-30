@@ -1,5 +1,16 @@
 # MCP-001 — Bounded Agent Hub tool bridge
 
+## Failed validation receipt reconciliation
+
+An explicit Task ancestry refusal is terminal only after the lifecycle owner
+confirms its durable failed transition under its lease. Replaying the same
+request returns that failure without repeating Git. Reconciliation of an
+ordinary already failed operation tolerates later metadata revisions only
+while Task identity, executor, workflow and Git references match the recorded
+prior state. It settles the original receipt without mutating Task or Git.
+Pending operations, successful outcomes, squash and cutover retain strict CAS;
+unproved effects remain unknown. See [ADR-0081](../decisions/ADR-0081-task-git-terminal-refusals.md).
+
 ## Confirmed Task conflicts
 
 The existing mutation receipt owner stores `failed` for a typed Task integration

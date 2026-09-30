@@ -213,14 +213,14 @@ function exactWorkflowCasEvidence({ workflowCas, task, transition, outcome }) {
     || priorTask.workflowStatus === workflowCas.expected_workflow_status;
 }
 
-function sameTaskState(current, expected) {
+function sameTaskState(current, expected, { allowMetadataRevision = false } = {}) {
   const state = (task) => task ? {
     id: task.id,
     workspaceId: task.workspaceId ?? null,
     streamId: task.streamId ?? null,
     status: task.status ?? null,
     workflowStatus: task.workflowStatus,
-    revision: Number(task.revision),
+    ...(allowMetadataRevision ? {} : { revision: Number(task.revision) }),
     gitReferences: normalizedTaskGitReferences(task.gitReferences).map((reference) => ({
       projectRoot: path.resolve(reference.projectRoot),
       branch: reference.branch,
@@ -403,7 +403,9 @@ export class TaskOperationReconciliationService {
         ? revisionUnchanged && sameTaskState(task, transition.priorTask)
           && sameTaskState(squashSourceTask, transition.priorSourceTask)
         : revisionUnchanged && task.workflowStatus !== targetWorkflowStatus;
-      const failedUnchanged = revisionUnchanged && sameTaskState(task, transition.priorTask)
+      const failedUnchanged = (revisionUnchanged || (!squash && !cutover
+          && Number(task.revision) > Number(transition.expectedRevision)))
+        && sameTaskState(task, transition.priorTask, { allowMetadataRevision: !squash && !cutover })
         && (!squash || sameTaskState(squashSourceTask, transition.priorSourceTask));
       if (transition.phase === "pending_git" && pendingUnchanged) state = "pending";
       if (transition.phase === "failed" && failedUnchanged) state = "failed";

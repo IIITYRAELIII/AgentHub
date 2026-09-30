@@ -658,14 +658,17 @@ test("repeated Test reuses only the clean exact result still integrated into dev
   const mergeIntoDevOwned = service.mergeIntoDevOwned.bind(service);
   service.snapshotOwned = (...args) => { snapshots += 1; return snapshotOwned(...args); };
   service.mergeIntoDevOwned = (...args) => { merges += 1; return mergeIntoDevOwned(...args); };
-  const repeatInput = { taskId, projectRoot: workspace.projectRoot, expectedResultCommit: first.snapshot.headCommit };
+  const nestedRoot = path.join(workspace.projectRoot, "nested");
+  await mkdir(nestedRoot);
+  const repeatInput = { taskId, projectRoot: nestedRoot,
+    expectedResultReferences: [{ projectRoot: root, resultCommit: first.snapshot.headCommit }] };
 
   const repeatStarted = performance.now();
   const repeated = await service.snapshotAndMerge(repeatInput);
   context.diagnostic(`First Test ${Math.round(firstDuration)} ms; unchanged repeat ${Math.round(performance.now() - repeatStarted)} ms`);
   assert.equal(repeated.integration.reusedResult, true);
   assert.equal(repeated.integration.resultProved, true);
-  assert.deepEqual(repeated.snapshot, first.snapshot);
+  assert.deepEqual(repeated.snapshot, { ...first.snapshot, projectRoot: nestedRoot });
   assert.equal(repeated.integration.dev.headCommit, first.integration.dev.headCommit);
   assert.equal(snapshots, 0);
   assert.equal(merges, 0);

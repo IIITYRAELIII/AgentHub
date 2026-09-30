@@ -431,6 +431,36 @@ test("operator reconciliation settles an exact failed transition into Test witho
   assert.equal(value.lifecycleCalls(), 0);
 });
 
+test("failed Test receipt survives later description and checklist revisions without Git replay", async () => {
+  const value = fixture();
+  value.targetWorkflow("testing", "in_progress");
+  const workflowCas = value.useOrdinaryCasReceipt();
+  value.crashAfterFailedTransition();
+  value.task.revision += 2;
+  value.task.description = "Recorded failure and review evidence";
+  value.task.checklist = [{ completed: false }];
+  const before = structuredClone(value.task);
+  const result = await value.service.reconcileUnknownWorkflow({ ...input(value), ...workflowCas });
+  assert.equal(result.outcome, "failed");
+  assert.equal(value.lifecycleCalls(), 0);
+  assert.deepEqual(value.task, before);
+  assert.equal(value.receipt.receiptState, "failed");
+});
+
+for (const change of ["result", "workflow", "executor", "pending"]) test(`metadata recovery refuses changed ${change}`, async () => {
+  const value = fixture();
+  value.targetWorkflow("testing", "in_progress");
+  const workflowCas = value.useOrdinaryCasReceipt();
+  if (change !== "pending") value.crashAfterFailedTransition();
+  value.task.revision += 2;
+  if (change === "result") value.task.gitReferences[0].resultCommit = "b".repeat(40);
+  if (change === "workflow") value.task.workflowStatus = "testing";
+  if (change === "executor") value.task.streamId = "another-stream";
+  await assert.rejects(value.service.reconcileUnknownWorkflow({ ...input(value), ...workflowCas }), /no exact recoverable/u);
+  assert.equal(value.lifecycleCalls(), 0);
+  assert.equal(value.settlements.length, 0);
+});
+
 test("operator reconciliation settles an exact failed ordinary Test CAS without Git replay", async () => {
   const value = fixture();
   value.targetWorkflow("testing", "in_progress");

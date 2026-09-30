@@ -13,6 +13,8 @@ import { TaskGitWorkspaceService } from "../../src/infrastructure/filesystem/tas
 import { TaskReleasePlanService } from "../../src/application/task-release-plan-service.mjs";
 import { WorkspaceReleasePreflightService } from "../../src/application/workspace-release-preflight-service.mjs";
 import { ReleaseGitWorkspaceService } from "../../src/infrastructure/filesystem/release-git-workspace.mjs";
+import { TaskGitHistoryRejectedError } from "../../src/domain/task-git-reference.mjs";
+import { TaskIntegrationRejectedError } from "../../src/application/task-lifecycle-service.mjs";
 
 const exec = promisify(execFile);
 async function git(cwd, ...args) {
@@ -62,6 +64,33 @@ async function fixture(t) {
   return { root, primary, workspace, store, taskBoard, taskGitWorkspaces, lifecycle, create, status,
     publish: (value) => { publication = value; } };
 }
+
+for (const durableFailure of [true, false]) test(`history refusal becomes terminal only with durable failure=${durableFailure}`, async (t) => {
+  const f = await fixture(t);
+  const a = await f.create("Validation");
+  f.taskGitWorkspaces.snapshotAndMergeOwned = async () => {
+    throw new TaskGitHistoryRejectedError("Sibling Task exact parent is not approved");
+  };
+  if (!durableFailure) f.taskBoard.failLifecycleTransition = () => { throw new Error("database unavailable"); };
+  await assert.rejects(f.status(a.task.id, "testing", "history-refusal"), error => {
+    assert.equal(error instanceof TaskIntegrationRejectedError, durableFailure);
+    return true;
+  });
+  assert.equal(f.taskBoard.task(a.task.id).workflowStatus, "new");
+  assert.equal(f.taskBoard.lifecycleTransition("history-refusal").phase, durableFailure ? "failed" : "pending_git");
+});
+
+test("Test prepares the Task once before snapshot and merge", async (t) => {
+  const f = await fixture(t);
+  const a = await f.create("One preparation");
+  let calls = 0;
+  const prepare = f.taskGitWorkspaces.prepareOwned.bind(f.taskGitWorkspaces);
+  f.taskGitWorkspaces.prepareOwned = async (...args) => { calls += 1; return prepare(...args); };
+  await writeFile(path.join(a.root, "result.txt"), "result\n");
+  await f.status(a.task.id, "testing", "single-preparation");
+  assert.equal(calls, 1);
+  assert.equal(f.taskBoard.task(a.task.id).workflowStatus, "testing");
+});
 
 test("real conflict saves a terminal failed lifecycle with file and revision evidence", { timeout: 90000 }, async (t) => {
   const f = await fixture(t);

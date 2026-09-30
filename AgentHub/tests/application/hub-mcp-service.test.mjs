@@ -6,7 +6,7 @@ import process from "node:process";
 import test from "node:test";
 
 import { HubMcpService } from "../../src/application/hub-mcp-service.mjs";
-import { TaskIntegrationConflictError, TaskAwaitIntegrationError, TaskWithdrawalBusyError } from "../../src/application/task-lifecycle-service.mjs";
+import { TaskIntegrationConflictError, TaskIntegrationRejectedError, TaskAwaitIntegrationError, TaskWithdrawalBusyError } from "../../src/application/task-lifecycle-service.mjs";
 import { ReleaseCandidateFrozenError, TaskAbsorptionCompositionError } from "../../src/domain/task-board-task.mjs";
 import { TaskBoardService } from "../../src/application/task-board-service.mjs";
 import { TaskBoardStore } from "../../src/infrastructure/persistence/task-board-store.mjs";
@@ -397,7 +397,10 @@ async function fixture(context, {
       patchId: "f".repeat(40),
       changedFiles: [{ projectRoot: selectedProjectRoot, path: "AgentHub/app.js", operation: "modified" }],
     }),
-    snapshotAndMergeOwned: async (params) => defaultTaskGitWorkspaces.snapshotAndMerge(params),
+    snapshotAndMergeOwned: async (params) => {
+      await defaultTaskGitWorkspaces.prepare(params);
+      return defaultTaskGitWorkspaces.snapshotAndMerge(params);
+    },
     withTaskLock: async (_taskId, operation) => operation({
       signal: new AbortController().signal,
       async assertOwned() {},
@@ -543,6 +546,7 @@ test("a proved conflict is a terminal MCP failure and exact retry preserves its 
 });
 
 for (const failure of [
+  new TaskIntegrationRejectedError(new Error("Sibling Task contains unapproved history")),
   new ReleaseCandidateFrozenError(),
   new TaskWithdrawalBusyError(new Error("Another Task withdrawal requires reconciliation")),
   new TaskAwaitIntegrationError(new Error("PreRelease conflict")),

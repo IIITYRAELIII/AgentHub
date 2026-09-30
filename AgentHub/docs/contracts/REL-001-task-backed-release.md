@@ -1,5 +1,16 @@
 # REL-001 — Task-backed Workspace release
 
+## Task preparation and definitive validation refusal
+
+Test delegates preparation to the snapshot owner instead of preparing the same
+Task twice. Previous result references are resolved against the canonical
+repository root. Bounded ancestry traversal batches merge-parent reads while
+retaining publication/adoption and lease checks. An explicit ancestry refusal
+becomes a terminal integration rejection only after the lifecycle owner reads
+back its exact failed transition, proves no successful outcome and still owns
+the lease. Persistence failures and ambiguous effects remain unresolved.
+See [ADR-0081](../decisions/ADR-0081-task-git-terminal-refusals.md).
+
 ## Bounded plan reads
 
 Only non-archived Await Tasks require Git evidence during release planning.
