@@ -90,6 +90,37 @@ test("exact Codex totals retain cache writes and only long individual requests",
   assert.deepEqual(historical.turns.find((turn) => turn.turnId === turnId).usage, expected);
 });
 
+test("optional request cache writes survive exact totals in either event order", async () => {
+  const turnId = "write-with-omitted-exact-field";
+  const request = token(280_001, 100_000, 20_000, 0, 50_000);
+  for (const exactHasWrite of [false, true]) {
+    const exact = { type: "token_usage_record", payload: {
+      turn_id: turnId,
+      turn_token_usage: {
+        input_tokens: 280_001, cached_input_tokens: 100_000,
+        ...(exactHasWrite ? { cache_write_input_tokens: 50_000 } : {}),
+        output_tokens: 20_000, reasoning_output_tokens: 0, total_tokens: 300_001,
+      },
+    } };
+    for (const order of [[request, exact], [exact, request]]) {
+      const records = [
+        { type: "event_msg", payload: { type: "task_started", turn_id: turnId } },
+        response(turnId), ...order,
+        { type: "event_msg", payload: { type: "task_complete", turn_id: turnId } },
+      ].map(line).join("\n") + "\n";
+      const direct = codexTurnUsageFromJsonl(records, turnId).usage;
+      const historical = await scanCodexHistoricalRollout("pricing.jsonl", {
+        createReadStreamImpl: () => Readable.from([records]),
+      });
+      for (const usage of [direct, historical.turns.find((turn) => turn.turnId === turnId).usage]) {
+        assert.equal(usage.inputTokens, 280_001);
+        assert.equal(usage.cacheWriteInputTokens, 50_000);
+        assert.equal(usage.longContextCacheWriteInputTokens, 50_000);
+      }
+    }
+  }
+});
+
 test("Codex rollout usage sums every model response and sees the final token event", () => {
   const startedAt = "2026-07-26T19:03:03.527Z";
   const completedAt = "2026-07-26T19:09:33.227Z";

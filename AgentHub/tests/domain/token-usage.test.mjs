@@ -138,6 +138,19 @@ test("GPT-6.1 Sol prices cache writes separately and applies long-context rates 
   }, { model: SOL_61 });
   assert.equal(mixed.reasoning, 2.125, "only long-request reasoning gets the premium");
   assert.equal(mixed.output, 6.625, "short-request output retains its ordinary rate");
+  const shortReasoningOnly = turnCreditBreakdown({
+    inputTokens: 480_001, outputTokens: 25_000, reasoningOutputTokens: 5_000,
+    longContextInputTokens: 280_001, longContextOutputTokens: 20_000,
+  }, { model: SOL_61 });
+  assert.equal(shortReasoningOnly.output, 7.5);
+  assert.equal(shortReasoningOnly.reasoning, 1.25);
+  const longReasoningOnly = turnCreditBreakdown({
+    inputTokens: 480_001, outputTokens: 25_000, reasoningOutputTokens: 5_000,
+    longContextInputTokens: 280_001, longContextOutputTokens: 20_000,
+    longContextReasoningOutputTokens: 5_000,
+  }, { model: SOL_61 });
+  assert.equal(longReasoningOnly.output, 6.875);
+  assert.equal(longReasoningOnly.reasoning, 1.875);
   assert.equal(turnCreditBreakdown({
     inputTokens: 1_000_000, cacheWriteInputTokens: 1_000_000,
   }, { model: SOL, completedAt: "2026-09-29T00:00:00Z" }).cacheWrite, 125);

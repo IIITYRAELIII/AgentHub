@@ -357,14 +357,21 @@ function normalizedRolloutUsage(value, { request = false } = {}) {
 
 function preserveRequestPricingUsage(exact, previous) {
   const merged = { ...exact };
+  if (!merged.cacheWriteInputTokens && (previous?.cacheWriteInputTokens ?? 0) > 0) {
+    merged.cacheWriteInputTokens = previous.cacheWriteInputTokens;
+  }
   for (const field of LONG_CONTEXT_USAGE_FIELDS) {
     if ((previous?.[field] ?? 0) > 0) merged[field] = previous[field];
   }
   return merged;
 }
 
-function addRequestPricingUsage(exact, request) {
+function addRequestPricingUsage(exact, request, { includeCacheWrite = false } = {}) {
   const merged = { ...exact };
+  if (includeCacheWrite && (request?.cacheWriteInputTokens ?? 0) > 0) {
+    merged.cacheWriteInputTokens = (merged.cacheWriteInputTokens ?? 0)
+      + request.cacheWriteInputTokens;
+  }
   for (const field of LONG_CONTEXT_USAGE_FIELDS) {
     if ((request?.[field] ?? 0) > 0) merged[field] = (merged[field] ?? 0) + request[field];
   }
@@ -583,6 +590,7 @@ function createTurnAccumulator(turnId) {
   let latestResponseTurnId = "";
   let usage = emptyTokenUsage();
   let exactUsageReported = false;
+  let exactCacheWriteReported = false;
   let reported = false;
   let started = false;
   let terminal = false;
@@ -665,6 +673,7 @@ function createTurnAccumulator(turnId) {
     if (exactUsage && exactTurnId === requestedTurnId) {
       usage = preserveRequestPricingUsage(exactUsage, usage);
       exactUsageReported = true;
+      exactCacheWriteReported = (exactUsage.cacheWriteInputTokens ?? 0) > 0;
       reported = true;
       finalTokenIndex = index;
       latestResponseTurnId = exactTurnId;
@@ -753,7 +762,9 @@ function createTurnAccumulator(turnId) {
       if (!exactUsageReported) {
         usage = addTokenUsage(usage, requestUsage);
       } else {
-        usage = addRequestPricingUsage(usage, requestUsage);
+        usage = addRequestPricingUsage(usage, requestUsage, {
+          includeCacheWrite: !exactCacheWriteReported,
+        });
       }
       limitSamples = mergeUsageLimitSamples(limitSamples, codexLimitSamplesFromTokenEvent(entry));
       reported = true;
@@ -1099,6 +1110,7 @@ function createHistoricalTurn(turnId) {
   return {
     turnId,
     usage: emptyTokenUsage(),
+    exactCacheWriteReported: false,
     reported: false,
     started: false,
     terminal: false,
@@ -1309,6 +1321,7 @@ export async function scanCodexHistoricalRollout(transcriptPath, {
     if (exactUsage && exactTurn) {
       exactTurn.usage = preserveRequestPricingUsage(exactUsage, exactTurn.usage);
       exactTurn.exactUsageReported = true;
+      exactTurn.exactCacheWriteReported = (exactUsage.cacheWriteInputTokens ?? 0) > 0;
       exactTurn.reported = true;
       latestResponseTurnId = exactTurnId;
       touch(exactTurn, timestamp);
@@ -1419,7 +1432,9 @@ export async function scanCodexHistoricalRollout(transcriptPath, {
           requestUsage,
         );
       } else {
-        attributedTurn.usage = addRequestPricingUsage(attributedTurn.usage, requestUsage);
+        attributedTurn.usage = addRequestPricingUsage(attributedTurn.usage, requestUsage, {
+          includeCacheWrite: !attributedTurn.exactCacheWriteReported,
+        });
       }
       attributedTurn.limitSamples = mergeUsageLimitSamples(
         attributedTurn.limitSamples,
