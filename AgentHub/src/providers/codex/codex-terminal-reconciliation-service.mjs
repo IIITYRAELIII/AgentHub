@@ -330,7 +330,8 @@ export class CodexTerminalReconciliationService {
     gitBaseline,
     onProjectionDeferred,
   }) {
-    const finalAnswer = String(usageResult.finalAnswer ?? "").trim();
+    const contextProbe = usageResult.serviceUsageKind === "context-probe";
+    const finalAnswer = contextProbe ? "" : String(usageResult.finalAnswer ?? "").trim();
     const journal = await this.projectTurn({
       ...identity,
       taskThreadId: accountingThread.threadId,
@@ -367,11 +368,13 @@ export class CodexTerminalReconciliationService {
       serviceUsageKind: usageResult.serviceUsageKind
         || (dedicatedCompaction ? "context-compaction" : ""),
       ...(usageResult.serviceUsageKind ? { accountAttribution: "unknown", resolveAccount: false } : {}),
+      ...(contextProbe ? { operationKind: "context-measurement" } : {}),
       message: null,
     }, {
       title: dedicatedCompaction ? "Свёртка контекста" : conciseTurnTitle(finalAnswer, resolvedStatus),
       body: finalAnswer,
       deferProjection: true,
+      ...(contextProbe ? { title: "Измерение контекста", body: "" } : {}),
     });
     if (journal?.projectionDeferred === true) onProjectionDeferred?.();
     if (journal?.projectionError) {

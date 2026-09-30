@@ -117,6 +117,34 @@ test("persisted dedicated compaction terminal is accounted without completion ca
   }
 });
 
+test("live context probe service usage keeps its measurement identity and no marker body", async () => {
+  const { service, calls, completions } = harness();
+  const marker = "AGENT_HUB_CONTEXT_PROBE_OK_V1";
+  assert.equal(await service.reconcile(thread, project, {
+    turnId: "live-context-probe",
+    status: "completed",
+    completedAt: "2026-08-04T10:00:00.000Z",
+    historical: false,
+    usageResult: usage({
+      clientUserMessageId: "agent-hub-context-probe:de823030-9f98-40e6-9d93-066062d977c6",
+      serviceUsageKind: "context-probe",
+      finalAnswer: marker,
+      usage: { totalTokens: 120 },
+    }),
+  }), true);
+  const projection = calls.find(([name]) => name === "project");
+  assert.ok(projection);
+  assert.equal(projection[1].operationKind, "context-measurement");
+  assert.equal(projection[1].serviceUsageKind, "context-probe");
+  assert.equal(projection[1].usage.totalTokens, 120);
+  assert.equal(projection[1].accountAttribution, "unknown");
+  assert.equal(projection[1].resolveAccount, false);
+  assert.equal(projection[2].title, "Измерение контекста");
+  assert.equal(projection[2].body, "");
+  assert.deepEqual(completions, []);
+  assert.equal(calls.some(([name]) => ["deliver", "remember", "seen"].includes(name)), false);
+});
+
 test("inline, legacy markerless and foreign compactions cannot suppress an ordinary provider final", async (t) => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-inline-compaction-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
