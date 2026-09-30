@@ -415,7 +415,7 @@ export class CodexTerminalAudit {
           .filter(Boolean)
         : [],
     );
-    this.liveProjectionPending = snapshotVersion === SNAPSHOT_VERSION
+    this.liveProjectionPending = compatibleSnapshot
       && snapshot?.liveProjectionPending === true;
     this.lastRun = snapshotVersion === SNAPSHOT_VERSION && snapshot?.lastRun
       ? structuredClone(snapshot.lastRun)

@@ -1128,9 +1128,11 @@ test("v19 cache-write upgrade replays retained rollouts once without losing live
   const audit = new CodexTerminalAudit(options);
   audit.restore({ version: 19, completedThrough: "2026-08-03T11:58:00.000Z",
     positions: [[source.id, { path: source.path, offset: 10 }]],
+    liveProjectionPending: true,
     historicalSubagentBackfill: { pending: false, initialized: true, queue: [] },
   });
   assert.equal(audit.snapshot().historicalSubagentBackfill.pending, true);
+  assert.equal(audit.snapshot().liveProjectionPending, true);
   assert.deepEqual(audit.snapshot().positions, [[source.id, { path: source.path, offset: 10 }]]);
   await audit.run();
   assert.deepEqual(preparations, ["prepared"]);
