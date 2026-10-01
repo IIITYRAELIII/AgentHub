@@ -324,6 +324,45 @@ rejects unpublished single-parent remote history inherited by fast-forward.
 Missing evidence, a remote rewind or divergence fails closed. Primary main and
 archived Task adoption records are unchanged.
 
+### Divergent published main and reviewed selected Task composition
+
+When accepted local main and the repository's published main have a unique
+common base but neither contains the other, ordinary explicit upstream adoption
+does not apply. A separate Release Manager-only selected-composition Test path
+may use a clean managed Task result whose bounded first-parent history contains
+exactly one merge side already included in the exact published revision. The
+current publication generation/revision, live remote main, canonical origin URL,
+accepted local main, immutable Task base/branch/result and clean managed dev
+must all agree. An unpublished or additional Task merge side is not authorized.
+This proof never moves primary main or treats remote-only history as published.
+
+The read-only preview imports reviewed Git objects only into a disposable clone.
+It recomputes the ordered `[oldDev,Task]` proof parents and tree, automatic
+merge-tree baseline, each conflict's exact stage 1/2/3 mode/blob, the reviewed
+regular-file entry and the absence of non-conflict edits. Its content hash binds
+the bundle bytes, exact publication/remote, Task revision and preview caller.
+Confirmation has a new operation ID and rechecks the inputs under the existing
+Task/repository/Await leases before a durable lifecycle intent. The Git owner
+imports the exact bundle objects without moving a ref, stages only bounded
+regular-file edits/additions, then performs one expected-old dev ref CAS.
+Materialization uses exclusive hard links and inode/content readback: an ignored
+or late private target cannot be overwritten by checkout. Unsupported delete,
+rename, symlink, file-directory or mode shapes refuse before CAS. A post-CAS
+collision leaves the original operation pending and its private bytes intact;
+the same operation can resume once the collision is resolved. A clean exact
+index/worktree, Task result ref and durable completed receipt precede Test's
+Task status CAS. Unknown effects are reconciled only under the original ID;
+no ref-only outcome is Test success.
+
+That dev merge is Test evidence, not a Task-owned release result. PreRelease
+must revalidate its exact durable proof and project the selected Task delta
+from the published-side merge base, excluding CHANGELOG and all unselected
+rolling-dev bytes. Missing/changed proof, additional integration, changed
+publication generation or remote, or a non-CHANGELOG release conflict rejects
+preparation rather than falling back to effective dev replay. Candidate reuse
+requires the same mandatory selected projection. Ordinary explicit adoption,
+bootstrap and automatic Task integration keep their existing guards.
+
 Publication evidence remains scoped to the repository: the prerequisite result
 must be in the confirmed published revision, and that revision must be contained
 in current origin/main. Further fast-forward publication does not renew the wait;

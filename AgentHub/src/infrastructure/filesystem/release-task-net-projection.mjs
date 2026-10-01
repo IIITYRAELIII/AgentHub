@@ -3,6 +3,7 @@ import {
   LF_NORMALIZATION_ALREADY_PRESENT,
   normalizedTaskSquashTransfer,
 } from "../../domain/task-squash-transfer.mjs";
+import { verifySelectedCompositionObjects } from "./selected-composition-proof.mjs";
 
 const PATHS = [".", ":(exclude,glob)**/CHANGELOG.md", ":(exclude)CHANGELOG.md"];
 const MAX_ANCESTRY = 512;
@@ -28,6 +29,13 @@ function sameEntry(left, right) {
 function requiredSquashProjectionError(taskId, reason, cause = null) {
   const error = new Error(`PreRelease requires the exact squash projection for Task ${taskId}: ${reason}`);
   error.code = "TASK_SQUASH_PROJECTION_REQUIRED";
+  if (cause) error.cause = cause;
+  return error;
+}
+
+function requiredSelectedProjectionError(taskId, reason, cause = null) {
+  const error = new Error(`PreRelease requires the exact selected composition projection for Task ${taskId}: ${reason}`);
+  error.code = "TASK_SELECTED_PROJECTION_REQUIRED";
   if (cause) error.cause = cause;
   return error;
 }
@@ -97,12 +105,45 @@ export async function releaseTaskNetProjections({ tasks, baseCommit, git }) {
 
   for (const task of tasks) {
     if (!task.integrations.length) {
+      if (task.selectedComposition) {
+        throw requiredSelectedProjectionError(task.taskId, "the reviewed integration is absent from pending dev history");
+      }
       if (task.squashTransfer && !await isApproved(task.resultCommit)) {
         throw requiredSquashProjectionError(task.taskId, "the selected result is absent from the approved base and has no pending integration");
       }
       continue;
     }
     try {
+      if (task.selectedComposition) {
+        const selected = task.selectedComposition;
+        if (selected.taskId !== task.taskId || selected.taskCommit !== task.resultCommit
+            || selected.publishedCommit !== baseCommit) {
+          throw new Error("Task result or approved published base differs from the reviewed selected proof");
+        }
+        const verified = await verifySelectedCompositionObjects({ git, ...selected });
+        const integration = task.integrations.find((item) => item.commit === selected.proofCommit);
+        const values = integration ? await getParents(integration.commit) : [];
+        const tree = integration ? await git(["rev-parse", `${integration.commit}^{tree}`]) : null;
+        if (verified.proofHash !== selected.proofHash
+            || verified.proofTree !== selected.proofTree
+            || verified.releaseParent !== selected.releaseParent
+            || verified.selectedReleaseTree !== selected.selectedReleaseTree
+            || !integration || integration.parent !== selected.devCommit
+            || values.length !== 2 || values[0] !== selected.devCommit
+            || values[1] !== task.resultCommit || tree !== selected.proofTree
+            || integrationOwners.get(integration.commit)?.size !== 1) {
+          throw new Error("reviewed conflict, integration or unique Task ownership changed");
+        }
+        if (task.integrations.length !== 1) {
+          throw new Error("selected composition has unreviewed additional Task integrations");
+        }
+        proofs.set(task.taskId, {
+          parent: verified.releaseParent, commit: task.resultCommit,
+          paths: await changedPaths(verified.releaseParent, task.resultCommit),
+          orderPreserving: true, selectedCompositionHash: selected.previewHash,
+        });
+        continue;
+      }
       if (task.squashTransfer) {
         const proof = normalizedTaskSquashTransfer(task.squashTransfer);
         const integration = task.integrations.find((item) => item.commit === proof.integrationCommit);
@@ -267,6 +308,11 @@ export async function releaseTaskNetProjections({ tasks, baseCommit, git }) {
         parent: bases[0], commit: task.resultCommit, paths, orderPreserving,
       });
     } catch (error) {
+      if (task.selectedComposition) {
+        if (error?.code === "TASK_SELECTED_PROJECTION_REQUIRED") throw error;
+        throw requiredSelectedProjectionError(task.taskId,
+          error?.message ?? "Git proof is unavailable", error);
+      }
       if (task.squashTransfer) {
         if (error?.code === "TASK_SQUASH_PROJECTION_REQUIRED") throw error;
         throw requiredSquashProjectionError(task.taskId, error?.message ?? "Git proof is unavailable", error);

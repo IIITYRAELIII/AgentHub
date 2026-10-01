@@ -1155,6 +1155,45 @@ test("Task status and unknown-operation schemas expose the exact squash transfer
   }
 });
 
+test("Release Manager routes selected composition preview and exact confirm to one owner", async (context) => {
+  const { service, token, streamWorkingDirectory, tasks } = await fixture(context, {
+    releaseWorkflowEnabled: true,
+  });
+  const calls = [];
+  service.taskLifecycle.selectedComposition = async (options) => {
+    calls.push(options);
+    return { task: tasks.get("task-current"), previewHash: "f".repeat(64) };
+  };
+  const common = {
+    context_token: token,
+    task_id: "task-current",
+    status: "testing",
+    expected_task_revision: 1,
+    expected_workflow_status: "in_progress",
+    selected_proof_bundle_path: "C:/review/proof.bundle",
+    selected_proof_bundle_sha256: "a".repeat(64),
+    selected_proof_commit: "b".repeat(40),
+  };
+  await service.call("hub_task_status_update", { ...common, request_id: "selected-preview" });
+  await service.call("hub_task_status_update", { ...common, request_id: "selected-confirm",
+    selected_preview_request_id: "selected-preview",
+    expected_selected_preview_hash: "f".repeat(64) });
+  assert.equal(calls.length, 2);
+  assert.deepEqual(calls.map(({ authority, operationId, expectedPreviewHash }) => ({
+    authority, operationId, expectedPreviewHash,
+  })), [
+    { authority: { workspaceId: "workspace-1", streamId: "stream-1", provider: "codex",
+      threadId: "thread-1", proofRequestId: "selected-preview" },
+    operationId: "selected-preview", expectedPreviewHash: null },
+    { authority: { workspaceId: "workspace-1", streamId: "stream-1", provider: "codex",
+      threadId: "thread-1", proofRequestId: "selected-preview" },
+    operationId: "selected-confirm", expectedPreviewHash: "f".repeat(64) },
+  ]);
+  assert.equal(calls[0].projectRoot, streamWorkingDirectory);
+  assert.equal(calls[0].bundlePath, common.selected_proof_bundle_path);
+  assert.equal(calls[1].bundleSha256, common.selected_proof_bundle_sha256);
+});
+
 test("Release Manager forwards one complete hash-confirmed squash transfer", async (context) => {
   const { service, token, streamWorkingDirectory, tasks } = await fixture(context, { releaseWorkflowEnabled: true });
   const calls = [];

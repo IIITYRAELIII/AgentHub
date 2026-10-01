@@ -86,6 +86,35 @@ function workflowCasArguments({ expectedTaskRevision, expectedWorkflowStatus } =
   };
 }
 
+function selectedCompositionArguments(options = {}) {
+  const values = [options.selectedBundlePath, options.selectedBundleSha256,
+    options.selectedProofCommit, options.selectedPreviewRequestId,
+    options.expectedSelectedPreviewHash];
+  if (values.every((value) => !supplied(value))) return null;
+  const revision = Number(options.expectedTaskRevision);
+  const bundlePath = String(options.selectedBundlePath ?? "").trim();
+  const bundleSha256 = String(options.selectedBundleSha256 ?? "").trim().toLowerCase();
+  const proofCommit = String(options.selectedProofCommit ?? "").trim().toLowerCase();
+  const previewRequestId = String(options.selectedPreviewRequestId ?? "").trim();
+  const previewHash = String(options.expectedSelectedPreviewHash ?? "").trim().toLowerCase();
+  if (!Number.isInteger(revision) || revision < 1
+      || options.expectedWorkflowStatus !== "in_progress"
+      || !bundlePath || !/^[0-9a-f]{64}$/u.test(bundleSha256)
+      || !/^[0-9a-f]{40}$/u.test(proofCommit)
+      || !previewRequestId || !/^[0-9a-f]{64}$/u.test(previewHash)) {
+    throw new Error("invalid selected composition reconciliation identity");
+  }
+  return {
+    expected_task_revision: revision,
+    expected_workflow_status: "in_progress",
+    selected_proof_bundle_path: bundlePath,
+    selected_proof_bundle_sha256: bundleSha256,
+    selected_proof_commit: proofCommit,
+    selected_preview_request_id: previewRequestId,
+    expected_selected_preview_hash: previewHash,
+  };
+}
+
 function squashArguments(options = {}) {
   const values = [
     options.squashSourceTaskId, options.squashSourceTaskRevision,
@@ -297,8 +326,9 @@ export class TaskOperationReconciliationService {
       ?? outcome?.result?.task?.workflowStatus
       ?? null;
     const squash = squashArguments(options);
-    const cutover = squash ? null : cutoverArguments(options);
-    const workflowCas = squash || cutover ? null : workflowCasArguments(options);
+    const selected = squash ? null : selectedCompositionArguments(options);
+    const cutover = squash || selected ? null : cutoverArguments(options);
+    const workflowCas = squash || selected || cutover ? null : workflowCasArguments(options);
     const validTarget = WORKFLOW_STATUSES.has(targetWorkflowStatus);
     const taskRoot = taskProjectRoot({
       workspace,
@@ -310,7 +340,7 @@ export class TaskOperationReconciliationService {
       && validTarget
       && receipt.argumentsHash === workflowArgumentsHash({
         operationId, taskId: task.id, status: targetWorkflowStatus,
-        identityArguments: squash ?? cutover ?? workflowCas,
+        identityArguments: squash ?? selected ?? cutover ?? workflowCas,
       })
       && receipt.operationStatus === "pending"
       && receipt.receiptState === "unknown";
@@ -330,6 +360,20 @@ export class TaskOperationReconciliationService {
     });
     const workflowCasMatches = exactWorkflowCasEvidence({ workflowCas, task, transition, outcome });
     let squashMatches = true;
+    let selectedMatches = true;
+    if (selected) {
+      const selectedProof = transition?.evidence?.selectedComposition
+        ?? outcome?.result?.evidence?.selectedComposition;
+      selectedMatches = targetWorkflowStatus === "testing"
+        && selectedProof?.taskId === task.id
+        && selectedProof?.expectedTaskRevision === selected.expected_task_revision
+        && selectedProof?.authority?.proofRequestId === selected.selected_preview_request_id
+        && selectedProof?.previewHash === selected.expected_selected_preview_hash
+        && selectedProof?.proofCommit === selected.selected_proof_commit
+        && selectedProof?.bundleSha256 === selected.selected_proof_bundle_sha256
+        && selectedProof?.bundlePath === path.resolve(selected.selected_proof_bundle_path)
+        && samePath(selectedProof?.repositoryRoot, root);
+    }
     let squashSourceTask = null;
     if (squash) {
       const proofValue = transition?.evidence?.squashTransfer
@@ -370,7 +414,7 @@ export class TaskOperationReconciliationService {
       } catch { squashMatches = false; }
     }
     if (!receiptMatches || !transitionMatches || !outcomeMatches || !cutoverMatches || !workflowCasMatches
-        || !squashMatches
+        || !squashMatches || !selectedMatches
         || !taskRoot || !samePath(taskRoot, root)) {
       throw new Error("Unknown workflow operation identity, lifecycle state, project root or Task CAS does not match");
     }
@@ -425,6 +469,7 @@ export class TaskOperationReconciliationService {
       projectRoot: root,
       guardId: exactGuardId,
       squash,
+      selected,
       sourceTaskId: squash?.squash_source_task_id ?? null,
       withdrawal: state === "succeeded" && outcome?.result?.evidence?.outcome === "withdrawn_result"
         || state === "pending" && ["new", "in_progress", "blocked"].includes(targetWorkflowStatus)
@@ -496,7 +541,8 @@ export class TaskOperationReconciliationService {
     }, async (lease) => {
       let identity = this.#identity(options);
       const needsRecovery = identity.state === "pending" || identity.withdrawal;
-      if (identity.state === "pending" && !identity.guardId && !identity.withdrawal && !identity.squash) {
+      if (identity.state === "pending" && !identity.guardId && !identity.withdrawal
+          && !identity.squash && !identity.selected) {
         throw new Error("Pending workflow reconciliation requires the exact process-tree guard id");
       }
       const proof = needsRecovery && identity.guardId ? {

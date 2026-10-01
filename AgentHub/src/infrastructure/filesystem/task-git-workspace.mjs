@@ -2,15 +2,21 @@ import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
 import {
-  access, chmod, copyFile, lstat, mkdir, open, readFile, readdir, readlink, rename, rm, rmdir,
+  access, chmod, copyFile, lstat, mkdir, mkdtemp, open, readFile, readdir, readlink, rename, rm, rmdir,
   stat, symlink, unlink, writeFile,
 } from "node:fs/promises";
 import path from "node:path";
+import { tmpdir } from "node:os";
 import { assertContourExternalEffects, assertContourGitAvailable } from "../../ports/contour-external-effects.mjs";
 import process from "node:process";
 
 import { canonicalPath } from "./config.mjs";
 import { taskWorkingTreeDiff } from "./task-git-diff.mjs";
+import { verifySelectedCompositionObjects } from "./selected-composition-proof.mjs";
+import {
+  applySelectedCompositionFiles, prepareSelectedCompositionFiles, readSelectedCompositionFiles,
+  selectedCompositionFilePlan,
+} from "./selected-composition-materializer.mjs";
 import { TaskDependencyPendingError } from "../../domain/task-board-task.mjs";
 import { prepareTaskWorktreeDependencies } from "./task-worktree-dependencies.mjs";
 import { withInterprocessLocks as acquireInterprocessLocks } from "../process/interprocess-lock.mjs";
@@ -47,6 +53,16 @@ const HISTORICAL_ADOPTION_VALIDATION = "historical-immutable-v1";
 const LEGACY_CLAIM_REPOSITORY_GUARD_NO_EFFECT_VERSION = "task-git-repository-guard-before-dev-lock-v1";
 const CLAIM_REPOSITORY_GUARD_NO_EFFECT_VERSION = "task-git-repository-guard-under-dev-lock-v2";
 const CLAIM_REPOSITORY_GUARD_ERROR_PREFIX = "Task Git repository blocked: unresolved process-tree guard requires operator proof";
+
+async function writeSelectedRecord(pathname, value) {
+  const handle = await open(pathname, "wx", 0o600);
+  try {
+    await handle.writeFile(`${JSON.stringify(value)}\n`, "utf8");
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
 
 export function stopTaskProcessTree(child, { spawnProcess = spawn, timeoutMs = 5_000 } = {}) {
   if (!child?.pid || process.platform !== "win32") {
@@ -173,7 +189,7 @@ export function runTaskGitCommand(args, options = {}) {
 
 function runTaskGitCommandUntraced(args, {
   cwd, timeoutMs = 60_000, executable = "git", spawnProcess = spawn, signal = null, input = null,
-  commandLabel = "git", env = null, rawOutput = false,
+  commandLabel = "git", env = null, rawOutput = false, acceptableExitCodes = [],
 } = {}) {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) {
@@ -240,7 +256,7 @@ function runTaskGitCommandUntraced(args, {
       if (termination) settle(() => reject(
         taskGitTerminationError(args, timeoutMs, terminationOutcome, termination, commandLabel),
       ));
-      else if (code === 0) settle(() => resolve(output));
+      else if (code === 0 || acceptableExitCodes.includes(code)) settle(() => resolve(output));
       else {
         const command = commandLabel === "git" ? `git ${args[0]}` : commandLabel;
         settle(() => reject(new Error(errorText || `${command} exited with ${code}`)));
@@ -2807,6 +2823,351 @@ export class TaskGitWorkspaceService {
     return measureTaskOperation("integrate-dev", () => this.#mergeIntoDevOwned(snapshot, { lease }));
   }
 
+  async previewSelectedCompositionOwned({
+    taskId, taskNumber = null, projectRoot, proofCommit, bundlePath,
+    bundleSha256, authority, expectedTaskRevision, lease = null,
+  } = {}) {
+    this.#assertAvailable("previewSelectedCompositionOwned");
+    const id = normalizedTaskId(taskId);
+    await requiredGuardLease(lease).assertOwned();
+    await this.#assertNoProcessTreeGuard(id);
+    const repoRoot = await repositoryRoot(projectRoot);
+    return this.#withClearDevLock(repoRoot, lease, async (ownedLease) => {
+      const repoKey = taskRepositoryKey(repoRoot);
+      const taskRoot = path.join(this.taskWorktreesRoot, id, repoKey);
+      const devRoot = path.join(this.devWorktreesRoot, repoKey);
+      if (!samePath(await this.managedRepositoryRoot(taskRoot, { taskId: id, taskNumber }), repoRoot)) {
+        throw new Error("Selected composition Task checkout is not the exact managed worktree");
+      }
+      await this.#assertRecoverableDev(repoRoot, devRoot, { lease: ownedLease });
+      const branch = taskBranchName(id, repoRoot, taskNumber);
+      const [taskBranch, taskCommit, taskStatus, devBranch, devCommit, devStatus,
+        taskBaseCommit, acceptedLocalMainCommit, remoteUrl] = await Promise.all([
+        runGit(["symbolic-ref", "--quiet", "--short", "HEAD"], { cwd: taskRoot }),
+        runGit(["rev-parse", "HEAD^{commit}"], { cwd: taskRoot }),
+        runGit(["status", "--porcelain=v1", "-z", "--untracked-files=all"], { cwd: taskRoot }),
+        runGit(["symbolic-ref", "--quiet", "--short", "HEAD"], { cwd: devRoot }),
+        runGit(["rev-parse", "HEAD^{commit}"], { cwd: devRoot }),
+        runGit(["status", "--porcelain=v1", "-z", "--untracked-files=all"], { cwd: devRoot }),
+        runGit(["rev-parse", "--verify", `${taskBaseRef(id, repoKey)}^{commit}`], { cwd: repoRoot }),
+        runGit(["rev-parse", "--verify", "refs/heads/main^{commit}"], { cwd: repoRoot }),
+        runGit(["remote", "get-url", "origin"], { cwd: repoRoot }),
+      ]);
+      if (taskBranch !== branch || devBranch !== this.devBranch || taskStatus || devStatus
+          || taskCommit !== await runGit(["rev-parse", `refs/heads/${branch}^{commit}`], { cwd: repoRoot })
+          || devCommit !== await runGit(["rev-parse", `refs/heads/${this.devBranch}^{commit}`], { cwd: repoRoot })) {
+        throw new Error("Selected composition managed Task or dev identity/cleanliness changed");
+      }
+      const publication = await this.readPublication();
+      const publishedCommit = publicationStateRepositories(publication ?? {})
+        .find((entry) => samePath(entry.root, repoRoot))?.revision;
+      const publicationGeneration = String(publication?.generation ?? "");
+      if (!publicationGeneration || !/^[a-f0-9]{40}$/u.test(String(publishedCommit ?? ""))) {
+        throw new Error("Selected composition requires an exact durable publication");
+      }
+      const resultRefBefore = await gitMaybe(["rev-parse", "--verify",
+        `${taskResultRef(id, repoKey)}^{commit}`], { cwd: repoRoot });
+      const remoteOutput = await this.#runOwned(["ls-remote", remoteUrl, "refs/heads/main"], {
+        cwd: repoRoot, lease: ownedLease,
+      });
+      const remoteCommit = /^([a-f0-9]{40})\trefs\/heads\/main$/u.exec(remoteOutput)?.[1];
+      if (!remoteCommit || remoteCommit !== publishedCommit) {
+        throw new Error("Selected composition remote tip is not the exact published revision");
+      }
+      const exactBundle = path.resolve(String(bundlePath ?? ""));
+      const bundleBytes = await readFile(exactBundle);
+      const actualBundleHash = createHash("sha256").update(bundleBytes).digest("hex");
+      if (actualBundleHash !== String(bundleSha256 ?? "").trim().toLowerCase()) {
+        throw new Error("Selected composition reviewed bundle bytes changed");
+      }
+      const tempRoot = await mkdtemp(path.join(tmpdir(), "agent-hub-selected-proof-"));
+      try {
+        const isolatedRepo = path.join(tempRoot, "objects");
+        const isolatedBundle = path.join(tempRoot, "review.bundle");
+        await writeFile(isolatedBundle, bundleBytes, { flag: "wx" });
+        await this.#runOwned(["clone", "--shared", "--no-checkout", "--quiet", repoRoot, isolatedRepo], {
+          cwd: tempRoot, lease: ownedLease,
+        });
+        await this.#runOwned(["bundle", "verify", isolatedBundle], { cwd: isolatedRepo, lease: ownedLease });
+        await this.#runOwned(["bundle", "unbundle", isolatedBundle], { cwd: isolatedRepo, lease: ownedLease });
+        await this.#runOwned(["fetch", "--no-tags", remoteUrl, "refs/heads/main"], {
+          cwd: isolatedRepo, lease: ownedLease, timeoutMs: 120_000,
+        });
+        const proof = await verifySelectedCompositionObjects({
+          git: (args, options) => runGit(args, { ...options, cwd: isolatedRepo }),
+          taskId: id, repositoryKey: repoKey, taskBaseCommit, acceptedLocalMainCommit,
+          taskCommit, devCommit, proofCommit, publishedCommit, publicationGeneration,
+          remoteCommit, bundleSha256: actualBundleHash,
+        });
+        const finalRemote = await this.#runOwned(["ls-remote", remoteUrl, "refs/heads/main"], {
+          cwd: repoRoot, lease: ownedLease,
+        });
+        const finalPublication = await this.readPublication();
+        if (finalRemote !== remoteOutput || finalPublication?.generation !== publicationGeneration
+            || publicationStateRepositories(finalPublication ?? {})
+              .find((entry) => samePath(entry.root, repoRoot))?.revision !== publishedCommit) {
+          throw new Error("Selected composition publication or remote moved during preview");
+        }
+        const preview = {
+          ...proof, repositoryRoot: repoRoot, taskRoot, devRoot, branch, remoteUrl,
+          bundlePath: exactBundle, resultRefBefore,
+          expectedTaskRevision: Number(expectedTaskRevision),
+          authority: {
+            workspaceId: String(authority?.workspaceId ?? ""),
+            streamId: String(authority?.streamId ?? ""),
+            provider: String(authority?.provider ?? ""),
+            threadId: String(authority?.threadId ?? ""),
+            proofRequestId: String(authority?.proofRequestId ?? ""),
+          },
+        };
+        if (!Number.isInteger(preview.expectedTaskRevision) || preview.expectedTaskRevision < 1
+            || Object.values(preview.authority).some((value) => !value)) {
+          throw new Error("Selected composition review authority or Task revision is incomplete");
+        }
+        return {
+          ...preview,
+          previewHash: createHash("sha256").update(JSON.stringify(preview)).digest("hex"),
+        };
+      } finally {
+        if (!tempRoot.startsWith(`${path.resolve(tmpdir())}${path.sep}`)) {
+          throw new Error("Selected composition temporary root escaped the system temp directory");
+        }
+        await rm(tempRoot, { recursive: true, force: true });
+      }
+    });
+  }
+
+  #selectedCompositionRecordRoot(preview, operationId) {
+    const id = String(operationId ?? "").trim();
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/u.test(id)) {
+      throw new Error("Selected composition operation id is not a safe durable identity");
+    }
+    return path.join(this.dataDir, "task-selected-compositions",
+      normalizedTaskId(preview.taskId), taskRepositoryKey(preview.repositoryRoot), id);
+  }
+
+  async #selectedCompositionIntent(preview, operationId) {
+    const root = this.#selectedCompositionRecordRoot(preview, operationId);
+    const pathname = path.join(root, "intent.json");
+    const expected = { version: 1, kind: "selected-task-composition-v1", operationId, preview };
+    const existing = await readFile(pathname, "utf8").then(JSON.parse, (error) => {
+      if (error?.code === "ENOENT") return null;
+      throw error;
+    });
+    if (existing) {
+      if (JSON.stringify(existing) !== JSON.stringify(expected)) {
+        throw new Error("Selected composition original operation identity changed");
+      }
+      return { root, intent: existing };
+    }
+    await mkdir(root, { recursive: true });
+    try {
+      await writeSelectedRecord(pathname, expected);
+    } catch (error) {
+      if (error?.code !== "EEXIST") throw error;
+      const raced = JSON.parse(await readFile(pathname, "utf8"));
+      if (JSON.stringify(raced) !== JSON.stringify(expected)) {
+        throw new Error("Selected composition competing operation identity changed");
+      }
+    }
+    return { root, intent: expected };
+  }
+
+  async readSelectedCompositionOwned(preview, { operationId, lease = null } = {}) {
+    this.#assertAvailable("readSelectedCompositionOwned");
+    await requiredGuardLease(lease).assertOwned();
+    const root = this.#selectedCompositionRecordRoot(preview, operationId);
+    const intent = await readFile(path.join(root, "intent.json"), "utf8").then(JSON.parse, (error) => {
+      if (error?.code === "ENOENT") return null;
+      throw error;
+    });
+    if (!intent) return { status: "not_admitted" };
+    if (intent.version !== 1 || intent.kind !== "selected-task-composition-v1"
+        || intent.operationId !== operationId
+        || JSON.stringify(intent.preview) !== JSON.stringify(preview)) {
+      throw new Error("Selected composition durable intent changed");
+    }
+    const receipt = await readFile(path.join(root, "completed.json"), "utf8").then(JSON.parse, (error) => {
+      if (error?.code === "ENOENT") return null;
+      throw error;
+    });
+    const devRef = await runGit(["rev-parse", "--verify", "refs/heads/dev^{commit}"], {
+      cwd: preview.repositoryRoot,
+    });
+    if (receipt) {
+      if (receipt.version !== 1 || receipt.operationId !== operationId
+          || receipt.previewHash !== preview.previewHash
+          || receipt.devCommit !== preview.proofCommit || devRef !== preview.proofCommit) {
+        throw new Error("Selected composition completion receipt or dev ref changed");
+      }
+      const [head, status, resultRef] = await Promise.all([
+        runGit(["rev-parse", "HEAD^{commit}"], { cwd: preview.devRoot }),
+        runGit(["status", "--porcelain=v1", "-z", "--untracked-files=all"], { cwd: preview.devRoot }),
+        gitMaybe(["rev-parse", "--verify", `${taskResultRef(preview.taskId,
+          taskRepositoryKey(preview.repositoryRoot))}^{commit}`], { cwd: preview.repositoryRoot }),
+      ]);
+      if (head !== preview.proofCommit || status || resultRef !== preview.taskCommit) {
+        throw new Error("Selected composition completed receipt lacks exact clean Git readback");
+      }
+      return { status: "applied", proof: preview, receipt };
+    }
+    if (devRef === preview.devCommit) return { status: "before_cas", proof: preview };
+    if (devRef === preview.proofCommit) return { status: "after_cas", proof: preview };
+    throw new Error("Selected composition dev ref is neither old nor exact reviewed CAS result");
+  }
+
+  async applySelectedCompositionOwned(preview, { operationId, lease = null } = {}) {
+    this.#assertAvailable("applySelectedCompositionOwned");
+    await requiredGuardLease(lease).assertOwned();
+    await this.#assertNoProcessTreeGuard(preview.taskId);
+    return this.#withClearDevLock(preview.repositoryRoot, lease, async (ownedLease) => {
+      const { root } = await this.#selectedCompositionIntent(preview, operationId);
+      const resultRef = taskResultRef(preview.taskId, taskRepositoryKey(preview.repositoryRoot));
+      const state = await this.readSelectedCompositionOwned(preview, { operationId, lease: ownedLease });
+      if (state.status === "applied") return state;
+      if (state.status === "before_cas") {
+        const [main, base, task, dev, taskStatus, devStatus, publication, remoteOutput,
+          currentResultRef, configuredRemote, taskBranch, devBranch] = await Promise.all([
+          runGit(["rev-parse", "--verify", "refs/heads/main^{commit}"], { cwd: preview.repositoryRoot }),
+          runGit(["rev-parse", "--verify", `${taskBaseRef(preview.taskId,
+            taskRepositoryKey(preview.repositoryRoot))}^{commit}`], { cwd: preview.repositoryRoot }),
+          runGit(["rev-parse", "HEAD^{commit}"], { cwd: preview.taskRoot }),
+          runGit(["rev-parse", "HEAD^{commit}"], { cwd: preview.devRoot }),
+          runGit(["status", "--porcelain=v1", "-z", "--untracked-files=all"], { cwd: preview.taskRoot }),
+          runGit(["status", "--porcelain=v1", "-z", "--untracked-files=all"], { cwd: preview.devRoot }),
+          this.readPublication(),
+          this.#runOwned(["ls-remote", preview.remoteUrl, "refs/heads/main"], {
+            cwd: preview.repositoryRoot, lease: ownedLease,
+          }),
+          gitMaybe(["rev-parse", "--verify", `${resultRef}^{commit}`], { cwd: preview.repositoryRoot }),
+          runGit(["remote", "get-url", "origin"], { cwd: preview.repositoryRoot }),
+          runGit(["symbolic-ref", "--quiet", "--short", "HEAD"], { cwd: preview.taskRoot }),
+          runGit(["symbolic-ref", "--quiet", "--short", "HEAD"], { cwd: preview.devRoot }),
+        ]);
+        if (main !== preview.acceptedLocalMainCommit || base !== preview.taskBaseCommit
+            || task !== preview.taskCommit || dev !== preview.devCommit || taskStatus || devStatus
+            || configuredRemote !== preview.remoteUrl || taskBranch !== preview.branch
+            || devBranch !== this.devBranch
+            || currentResultRef !== preview.resultRefBefore
+            || publication?.generation !== preview.publicationGeneration
+            || publicationStateRepositories(publication ?? {})
+              .find((entry) => samePath(entry.root, preview.repositoryRoot))?.revision !== preview.publishedCommit
+            || remoteOutput !== `${preview.remoteCommit}\trefs/heads/main`) {
+          const refusal = new Error("Selected composition inputs changed before its Git CAS; no ref effect");
+          refusal.code = "SELECTED_COMPOSITION_NO_EFFECT";
+          throw refusal;
+        }
+        const bundleBytes = await readFile(preview.bundlePath);
+        if (createHash("sha256").update(bundleBytes).digest("hex") !== preview.bundleSha256) {
+          const refusal = new Error("Selected composition reviewed bundle changed before Git CAS");
+          refusal.code = "SELECTED_COMPOSITION_NO_EFFECT";
+          throw refusal;
+        }
+        const retainedBundle = path.join(root, "review.bundle");
+        const retained = await readFile(retainedBundle).catch((error) => {
+          if (error?.code === "ENOENT") return null;
+          throw error;
+        });
+        if (!retained) await writeFile(retainedBundle, bundleBytes, { flag: "wx" });
+        else if (!retained.equals(bundleBytes)) throw new Error("Selected composition retained bundle changed");
+        await this.#runOwned(["bundle", "verify", retainedBundle], {
+          cwd: preview.repositoryRoot, lease: ownedLease,
+        });
+        await this.#runOwned(["bundle", "unbundle", retainedBundle], {
+          cwd: preview.repositoryRoot, lease: ownedLease,
+        });
+        const importedPlan = selectedCompositionFilePlan(await this.#runOwned([
+          "diff-tree", "--raw", "-r", "-z", "--no-renames", preview.devTree, preview.proofTree,
+        ], { cwd: preview.repositoryRoot, lease: ownedLease }));
+        if (JSON.stringify(importedPlan) !== JSON.stringify(preview.worktreePlan)
+            || await this.#runOwned(["rev-parse", `${preview.proofCommit}^{tree}`], {
+              cwd: preview.repositoryRoot, lease: ownedLease,
+            }) !== preview.proofTree) {
+          throw new Error("Selected composition imported objects changed their exact reviewed tree");
+        }
+        const journalRoot = path.join(root, "materialization");
+        const materialization = await readFile(path.join(journalRoot, "record.json"), "utf8")
+          .then(() => readSelectedCompositionFiles(journalRoot), (error) => {
+            if (error?.code === "ENOENT") return null;
+            throw error;
+          });
+        if (!materialization) await prepareSelectedCompositionFiles({
+          root: preview.devRoot, journalRoot, files: preview.worktreePlan,
+          readBlob: (blob) => this.#runOwned(["cat-file", "blob", blob], {
+            cwd: preview.repositoryRoot, rawOutput: true, lease: ownedLease,
+          }),
+        });
+        const beforeCas = await this.readSelectedCompositionOwned(preview, { operationId, lease: ownedLease });
+        if (beforeCas.status !== "before_cas") {
+          throw new Error("Selected composition dev CAS state changed after materialization preparation");
+        }
+        const [finalPublication, finalRemote, finalMain, finalTask,
+          finalTaskStatus, finalConfiguredRemote] = await Promise.all([
+          this.readPublication(),
+          this.#runOwned(["ls-remote", preview.remoteUrl, "refs/heads/main"], {
+            cwd: preview.repositoryRoot, lease: ownedLease,
+          }),
+          runGit(["rev-parse", "refs/heads/main^{commit}"], { cwd: preview.repositoryRoot }),
+          runGit(["rev-parse", "HEAD^{commit}"], { cwd: preview.taskRoot }),
+          runGit(["status", "--porcelain=v1", "-z", "--untracked-files=all"], { cwd: preview.taskRoot }),
+          runGit(["remote", "get-url", "origin"], { cwd: preview.repositoryRoot }),
+        ]);
+        if (finalPublication?.generation !== preview.publicationGeneration
+            || publicationStateRepositories(finalPublication ?? {})
+              .find((entry) => samePath(entry.root, preview.repositoryRoot))?.revision !== preview.publishedCommit
+            || finalRemote !== `${preview.remoteCommit}\trefs/heads/main`
+            || finalMain !== preview.acceptedLocalMainCommit
+            || finalTask !== preview.taskCommit || finalTaskStatus
+            || finalConfiguredRemote !== preview.remoteUrl) {
+          const refusal = new Error("Selected composition proof changed at the last pre-CAS readback");
+          refusal.code = "SELECTED_COMPOSITION_NO_EFFECT";
+          throw refusal;
+        }
+        await this.#runOwned(["update-ref", "refs/heads/dev", preview.proofCommit, preview.devCommit], {
+          cwd: preview.repositoryRoot, lease: ownedLease,
+        });
+      }
+      const afterCas = await this.readSelectedCompositionOwned(preview, { operationId, lease: ownedLease });
+      if (afterCas.status !== "after_cas") {
+        throw new Error("Selected composition exact dev CAS cannot be proven");
+      }
+      const journal = await readSelectedCompositionFiles(path.join(root, "materialization"));
+      await applySelectedCompositionFiles(journal);
+      await this.#runOwned(["read-tree", preview.proofTree], { cwd: preview.devRoot, lease: ownedLease });
+      const [devHead, status] = await Promise.all([
+        runGit(["rev-parse", "HEAD^{commit}"], { cwd: preview.devRoot }),
+        runGit(["status", "--porcelain=v1", "-z", "--untracked-files=all"], { cwd: preview.devRoot }),
+      ]);
+      if (devHead !== preview.proofCommit || status) {
+        throw new Error("Selected composition exact CAS was not cleanly materialized");
+      }
+      const oldResultRef = preview.resultRefBefore ?? "0".repeat(40);
+      const observedResult = await gitMaybe(["rev-parse", "--verify", `${resultRef}^{commit}`], {
+        cwd: preview.repositoryRoot,
+      });
+      if (observedResult !== preview.taskCommit) {
+        if (observedResult !== preview.resultRefBefore) {
+          throw new Error("Selected composition Task result ref changed after dev CAS");
+        }
+        await this.#runOwned(["update-ref", resultRef, preview.taskCommit, oldResultRef], {
+          cwd: preview.repositoryRoot, lease: ownedLease,
+        });
+      }
+      const receipt = { version: 1, operationId, previewHash: preview.previewHash,
+        devCommit: preview.proofCommit, resultCommit: preview.taskCommit };
+      const completedPath = path.join(root, "completed.json");
+      try {
+        await writeSelectedRecord(completedPath, receipt);
+      } catch (error) {
+        if (error?.code !== "EEXIST"
+            || JSON.stringify(JSON.parse(await readFile(completedPath, "utf8"))) !== JSON.stringify(receipt)) {
+          throw error;
+        }
+      }
+      return { status: "applied", proof: preview, receipt };
+    });
+  }
+
   async #mergeIntoDevOwned(snapshot, { lease }) {
     this.#assertAvailable("mergeIntoDevOwned");
     await requiredGuardLease(lease).assertOwned();
@@ -4082,6 +4443,66 @@ export class TaskGitWorkspaceService {
     });
   }
 
+  async #selectedCompositionForResult({ taskId, repositoryRoot: repoRoot,
+    resultCommit, devHeadCommit }) {
+    const id = normalizedTaskId(taskId);
+    const recordsRoot = path.join(this.dataDir, "task-selected-compositions",
+      id, taskRepositoryKey(repoRoot));
+    const operations = await readdir(recordsRoot).catch((error) => {
+      if (error?.code === "ENOENT") return [];
+      throw error;
+    });
+    if (operations.length > 64) {
+      throw new Error("Selected composition durable operation history exceeds its bound");
+    }
+    const matches = [];
+    for (const operationId of operations) {
+      const root = path.join(recordsRoot, operationId);
+      const receipt = await readFile(path.join(root, "completed.json"), "utf8")
+        .then(JSON.parse, (error) => {
+          if (error?.code === "ENOENT") return null;
+          throw error;
+        });
+      if (receipt?.resultCommit !== resultCommit) continue;
+      const intent = JSON.parse(await readFile(path.join(root, "intent.json"), "utf8"));
+      const preview = intent?.preview;
+      if (intent.version !== 1 || intent.operationId !== operationId
+          || receipt.version !== 1 || receipt.operationId !== operationId
+          || preview?.taskId !== id || !samePath(preview.repositoryRoot, repoRoot)
+          || preview.taskCommit !== resultCommit
+          || receipt.previewHash !== preview.previewHash
+          || receipt.devCommit !== preview.proofCommit
+          || createHash("sha256").update(JSON.stringify({
+            ...preview, previewHash: undefined,
+          })).digest("hex") !== preview.previewHash) {
+        throw new Error("Selected composition result receipt lacks exact durable proof");
+      }
+      const retained = await readFile(path.join(root, "review.bundle"));
+      if (createHash("sha256").update(retained).digest("hex") !== preview.bundleSha256) {
+        throw new Error("Selected composition retained review bundle changed");
+      }
+      if (await gitMaybe(["merge-base", "--is-ancestor", preview.proofCommit,
+        devHeadCommit], { cwd: repoRoot }) === null) {
+        throw new Error("Selected composition exact integration is absent from managed dev");
+      }
+      const publication = await this.readPublication();
+      if (publication?.generation !== preview.publicationGeneration
+          || publicationStateRepositories(publication ?? {})
+            .find((entry) => samePath(entry.root, repoRoot))?.revision !== preview.publishedCommit) {
+        throw new Error("Selected composition publication advanced since its exact Test proof");
+      }
+      const remote = await runGit(["ls-remote", preview.remoteUrl, "refs/heads/main"], {
+        cwd: repoRoot,
+      });
+      if (remote !== `${preview.remoteCommit}\trefs/heads/main`) {
+        throw new Error("Selected composition remote advanced since its exact Test proof");
+      }
+      matches.push(preview);
+    }
+    if (matches.length > 1) throw new Error("Selected composition Task result has ambiguous durable receipts");
+    return matches[0] ?? null;
+  }
+
   async releaseIntegrationEvidence({ projectRoot, tasks = [], lease = null } = {}) {
     this.#assertAvailable("releaseIntegrationEvidence");
     const dev = await this.prepareDev(projectRoot, { lease });
@@ -4098,6 +4519,10 @@ export class TaskGitWorkspaceService {
         throw new Error(`Task ${task.taskId} requires an exact positive revision for release integration evidence`);
       }
       const evidence = await this.releaseEvidence(task);
+      const selectedComposition = await this.#selectedCompositionForResult({
+        taskId: task.taskId, repositoryRoot: evidence.projectRoot,
+        resultCommit: evidence.resultCommit, devHeadCommit: dev.headCommit,
+      });
       const squashTransfer = task.squashTransfer
         ? normalizedTaskSquashTransfer(task.squashTransfer)
         : null;
@@ -4154,6 +4579,7 @@ export class TaskGitWorkspaceService {
         taskRevision,
         baseCommit: evidence.baseCommit,
         resultCommit: evidence.resultCommit,
+        ...(selectedComposition ? { selectedComposition } : {}),
         integrations,
         lineage,
         ...(squashTransfer ? {

@@ -42,7 +42,7 @@ const AWAIT_UNKNOWN_OUTCOME_CODES = new Set([
   "AWAIT_ACCEPTANCE_UNKNOWN",
 ]);
 
-function runGit(args, { cwd, timeoutMs = 120_000, rawOutput = false } = {}) {
+function runGit(args, { cwd, timeoutMs = 120_000, rawOutput = false, acceptableExitCodes = [] } = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn("git", args, { cwd, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
     const stdout = [];
@@ -62,7 +62,7 @@ function runGit(args, { cwd, timeoutMs = 120_000, rawOutput = false } = {}) {
       const bytes = Buffer.concat(stdout);
       const output = rawOutput ? bytes : bytes.toString("utf8").trim();
       const errorText = Buffer.concat(stderr).toString("utf8").trim();
-      if (code === 0) resolve(output);
+      if (code === 0 || acceptableExitCodes.includes(code)) resolve(output);
       else reject(new Error(errorText || `git ${args[0]} exited with ${code}`));
     });
   });
@@ -1399,7 +1399,8 @@ export class ReleaseGitWorkspaceService {
         ...options, cwd: clone.releaseRoot, timeoutMs: 300_000,
       });
       const hasSquashTransfer = tasks.some((task) => task.squashTransfer);
-      let pendingTasks = hasSquashTransfer
+      const hasSelectedComposition = tasks.some((task) => task.selectedComposition);
+      let pendingTasks = hasSquashTransfer || hasSelectedComposition
         ? await pendingTaskIntegrations(tasks, baseCommit, candidateGit)
         : null;
       const verifiedProjections = pendingTasks
@@ -1408,24 +1409,37 @@ export class ReleaseGitWorkspaceService {
       const mandatorySquashTaskIds = (pendingTasks ?? [])
         .filter((task) => task.squashTransfer && task.integrations.length)
         .map((task) => task.taskId);
+      const mandatorySelectedTaskIds = (pendingTasks ?? [])
+        .filter((task) => task.selectedComposition && task.integrations.length)
+        .map((task) => task.taskId);
       for (const task of (pendingTasks ?? []).filter((item) => item.squashTransfer && item.integrations.length)) {
         const projection = verifiedProjections?.get(task.taskId);
         if (!projection || projection.squashTransferHash !== task.squashTransfer.transferHash) {
           throw new Error(`PreRelease requires the exact squash projection for Task ${task.taskId}`);
         }
       }
+      for (const task of (pendingTasks ?? []).filter((item) => item.selectedComposition && item.integrations.length)) {
+        const projection = verifiedProjections?.get(task.taskId);
+        if (!projection || projection.selectedCompositionHash !== task.selectedComposition.previewHash) {
+          throw new Error(`PreRelease requires the exact selected projection for Task ${task.taskId}`);
+        }
+      }
       const checkpointHasMandatorySquashProof = mandatorySquashTaskIds.every((taskId) => (
+        checkpoint?.netProjectedTaskIds?.includes(taskId)
+      ));
+      const checkpointHasMandatorySelectedProof = mandatorySelectedTaskIds.every((taskId) => (
         checkpoint?.netProjectedTaskIds?.includes(taskId)
       ));
       let candidateReuse = await selectedResultSuccessorReuse({
         checkpoint, clone, tasks, baseCommit, workspaceId,
       });
-      if (candidateReuse && !checkpointHasMandatorySquashProof) candidateReuse = null;
+      if (candidateReuse && (!checkpointHasMandatorySquashProof || !checkpointHasMandatorySelectedProof)) candidateReuse = null;
       const manifest = {
         schemaVersion: 2,
         projectionPolicy: [
           "task-net-ancestry-v2",
           ...(hasSquashTransfer ? ["mandatory-squash-v1"] : []),
+          ...(hasSelectedComposition ? ["mandatory-selected-v1"] : []),
           ...(candidateReuse ? [candidateReuse.policy] : []),
         ].join("+"),
         ...(workspaceId ? { workspaceId: String(workspaceId) } : {}),

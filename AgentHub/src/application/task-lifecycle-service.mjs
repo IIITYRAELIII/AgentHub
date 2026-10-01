@@ -566,6 +566,116 @@ export class TaskLifecycleService {
     ));
   }
 
+  async selectedComposition({
+    taskId, operationId, expectedTaskRevision, projectRoot, bundlePath,
+    bundleSha256, proofCommit, expectedPreviewHash = null, authority,
+  } = {}) {
+    for (const name of ["withTaskLock", "previewSelectedCompositionOwned",
+      "applySelectedCompositionOwned", "readSelectedCompositionOwned"]) {
+      requiredMethod(this.taskGitWorkspaces, name);
+    }
+    const initial = this.#task(taskId);
+    const workspace = initial.workspaceId ? this.workspaceCatalog.workspace(initial.workspaceId) : null;
+    if (workspace?.settings?.releaseWorkflowEnabled !== true || !this.releasePreflight
+        || initial.workflowStatus !== "in_progress"
+        || initial.revision !== Number(expectedTaskRevision)) {
+      throw new Error("Selected composition requires one exact in-progress release Task revision");
+    }
+    const root = path.resolve(String(projectRoot || this.#projectRoot(initial) || ""));
+    if (!root || !samePath(root, this.#projectRoot(initial))) {
+      throw new Error("Selected composition Task project root changed");
+    }
+    const operation = String(operationId ?? "").trim();
+    if (!operation) throw new Error("Selected composition operation id is required");
+    return this.releasePreflight.withAwaitTransition(workspace.id, () => (
+      this.taskGitWorkspaces.withTaskLock(initial.id, async (lease) => {
+        const task = this.#task(initial.id);
+        if (task.revision !== Number(expectedTaskRevision)
+            || task.workflowStatus !== "in_progress" || task.workspaceId !== workspace.id) {
+          throw new Error("Selected composition Task revision or status changed");
+        }
+        const preview = await this.taskGitWorkspaces.previewSelectedCompositionOwned({
+          taskId: task.id, taskNumber: task.taskNumber, projectRoot: root,
+          proofCommit, bundlePath, bundleSha256, authority,
+          expectedTaskRevision, lease,
+        });
+        if (!expectedPreviewHash) return {
+          confirmationRequired: true, previewHash: preview.previewHash,
+          selectedComposition: preview, task,
+        };
+        if (String(expectedPreviewHash).trim().toLowerCase() !== preview.previewHash) {
+          throw new Error("Selected composition confirmation hash changed");
+        }
+        await this.#assertOwned(lease);
+        await this.#mutation(() => this.taskBoard.beginLifecycleTransition({
+          id: task.id, operationId: operation, kind: "workflow",
+          targetWorkflowStatus: "testing", expectedRevision: task.revision,
+          evidence: { selectedComposition: preview },
+          releaseContext: {
+            workspaceId: task.workspaceId, streamId: task.streamId, projectRoot: root,
+          },
+        }), operation);
+        let applied;
+        try {
+          applied = await this.taskGitWorkspaces.applySelectedCompositionOwned(preview, {
+            operationId: operation, lease,
+          });
+        } catch (error) {
+          const state = await this.taskGitWorkspaces.readSelectedCompositionOwned(preview, {
+            operationId: operation, lease,
+          });
+          if (state.status === "applied") applied = state;
+          else if (["not_admitted", "before_cas"].includes(state.status)
+              && error?.processTreeStopped !== false) {
+            await this.#failWhileOwned(lease, operation, error);
+            throw error;
+          } else {
+            const unknown = new Error(`Selected composition Git outcome is unknown: ${error.message}`);
+            unknown.code = "TASK_SELECTED_COMPOSITION_UNKNOWN";
+            throw unknown;
+          }
+        }
+        await this.#assertOwned(lease);
+        try {
+          const updated = await this.#mutation(() => this.taskBoard.commitWorkflowTransition({
+            operationId: operation,
+            gitReferences: [{ projectRoot: preview.repositoryRoot,
+              resultCommit: preview.taskCommit, branch: preview.branch }],
+            evidence: {
+              outcome: "integrated", resultCommit: preview.taskCommit,
+              devHeadCommit: preview.proofCommit, selectedComposition: preview,
+              response: {
+                gitWorkspace: { branch: preview.branch, projectRoot: preview.taskRoot,
+                  baseCommit: preview.taskBaseCommit, headCommit: preview.taskCommit },
+                gitIntegration: { outcome: "integrated", integrated: true,
+                  alreadyIntegrated: false, devBranch: "dev",
+                  devHeadCommit: preview.proofCommit, conflicts: [], error: null },
+              },
+            },
+          }), operation);
+          return { task: updated, selectedComposition: preview,
+            gitWorkspace: { branch: preview.branch, projectRoot: preview.taskRoot,
+              baseCommit: preview.taskBaseCommit, headCommit: preview.taskCommit },
+            gitIntegration: { outcome: "integrated", integrated: true,
+              alreadyIntegrated: false, devBranch: "dev", devHeadCommit: preview.proofCommit,
+              conflicts: [], error: null },
+            gitReceipt: applied.receipt };
+        } catch (error) {
+          const outcome = this.taskBoard.lifecycleOutcome(operation);
+          if (outcome?.taskId === task.id
+              && outcome.result?.evidence?.selectedComposition?.previewHash === preview.previewHash
+              && outcome.result?.task?.workflowStatus === "testing") {
+            return { task: outcome.result.task, selectedComposition: preview,
+              ...(outcome.result.evidence.response ?? {}), gitReceipt: applied.receipt };
+          }
+          const unknown = new Error(`Selected composition durable Task outcome is unknown: ${error.message}`);
+          unknown.code = "TASK_SELECTED_COMPOSITION_UNKNOWN";
+          throw unknown;
+        }
+      })
+    ));
+  }
+
   async #updateWorkflowStatusLocked({
     taskId, status, operationId, binding = {}, projectRoot = null,
     expectedRevision = null, expectedWorkflowStatus = null, operationEvidence = null,
@@ -925,6 +1035,48 @@ export class TaskLifecycleService {
     await this.#assertOwned(lease);
     const current = this.#task(taskId);
     const transition = this.taskBoard.lifecycleTransition?.(operationId);
+    const selectedComposition = transition?.evidence?.selectedComposition ?? null;
+    if (selectedComposition) {
+      if (transition.operationId !== operationId || transition.taskId !== current.id
+          || transition.kind !== "workflow" || transition.phase !== "pending_git"
+          || transition.targetWorkflowStatus !== "testing"
+          || transition.expectedRevision !== current.revision
+          || current.workflowStatus !== "in_progress"
+          || !samePath(projectRoot, selectedComposition.repositoryRoot)) {
+        throw new Error("Selected composition original Task lifecycle identity changed");
+      }
+      const recovery = guardId ? await this.taskGitWorkspaces.recoverProcessTreeGuard(current.id, {
+        repositoryRoot: projectRoot, guardId, proof, lease,
+      }) : null;
+      if (!guardId) await this.taskGitWorkspaces.assertNoProcessTreeGuardOwned(current.id, { lease });
+      const applied = await this.taskGitWorkspaces.applySelectedCompositionOwned(selectedComposition, {
+        operationId, lease,
+      });
+      if (applied.status !== "applied") {
+        throw new Error("Selected composition original Git CAS cannot be reconciled");
+      }
+      const updated = await this.#mutation(() => this.taskBoard.commitWorkflowTransition({
+        operationId,
+        gitReferences: [{ projectRoot: selectedComposition.repositoryRoot,
+          resultCommit: selectedComposition.taskCommit, branch: selectedComposition.branch }],
+        evidence: {
+          outcome: "integrated", resultCommit: selectedComposition.taskCommit,
+          devHeadCommit: selectedComposition.proofCommit,
+          selectedComposition,
+          response: {
+            gitWorkspace: { branch: selectedComposition.branch,
+              projectRoot: selectedComposition.taskRoot,
+              baseCommit: selectedComposition.taskBaseCommit,
+              headCommit: selectedComposition.taskCommit },
+            gitIntegration: { outcome: "integrated", integrated: true,
+              alreadyIntegrated: false, devBranch: "dev",
+              devHeadCommit: selectedComposition.proofCommit, conflicts: [], error: null },
+          },
+        },
+      }), operationId);
+      return { result: { task: updated, selectedComposition,
+        gitReceipt: applied.receipt }, recovery };
+    }
     const squashTransfer = transition?.evidence?.squashTransfer ?? null;
     if (squashTransfer) {
       const squashCutover = transition?.evidence?.squashCutover ?? null;

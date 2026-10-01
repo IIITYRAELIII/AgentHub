@@ -380,6 +380,32 @@ Git materialization readback. Unknown-operation reconciliation reproduces every
 cutover argument and both hashes from the original receipt; missing or mixed
 artifact, source, Task, main/dev or preserved-tree identity performs no replay.
 
+## Reviewed selected-composition Test
+
+For a Task based on accepted local main that diverges from an already published
+repository history, the Release Manager may use the `selected_*` argument family
+of `hub_task_status_update` with status `testing`, exact Task revision and
+expected status `in_progress`. The caller supplies one reviewed Git bundle path,
+its SHA-256 and the exact ordered-parent proof commit. A request without
+`expected_selected_preview_hash` returns a no-effect preview. Confirmation is
+a new request with the same bundle/proof, the original
+`selected_preview_request_id` and the returned hash. Preview and confirmation
+are separately content-addressed; mixing them with squash fields or a local
+cutover is invalid. The normal explicit-upstream-adoption interface is not
+relaxed by this mode.
+
+Preview checks current Task/dev, publication generation/revision and live remote
+in a disposable object store; no live ref, index, worktree or Task status is
+changed. Confirmation admits one durable lifecycle intent before the expected-
+old dev CAS, bounded no-overwrite materialization, exact Task result ref and
+Test status CAS. `hub_task_operation_reconcile` reproduces the original
+confirmation arguments, including the preview request/hash, and resumes that
+same pending operation. An absent or post-CAS-ambiguous effect never receives a
+synthetic success; a proved pre-CAS refusal may terminalize without changing
+dev. The completed receipt must still match the clean exact dev and Task result
+on readback. Release preparation requires its independently verified selected
+projection and must not replay unrelated rolling-dev bytes.
+
 `hub_active_runs_list` and `hub_parallel_streams_list` expose bounded,
 payload-free deferred-input summaries separately from live runs. The summary
 includes exact Stream/provider/Thread and command identity, queue state, wait
