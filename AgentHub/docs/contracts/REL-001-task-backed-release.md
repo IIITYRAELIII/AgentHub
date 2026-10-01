@@ -630,6 +630,16 @@ an unknown CAS outcome is never retried as a fresh effect. This path changes no
 Task result, publication evidence, remote ref or registered primary worktree.
 It does not infer acceptance of a new local main from a remote movement. See
 ADR-0082.
+For a sole `CHANGELOG.md` conflict, the operator may supply reviewed regular-file
+bytes and the expected complete resolved Git tree. The owner stages only that
+file, compares `write-tree` to the exact reviewed tree before CAS, and otherwise
+aborts and proves restoration. Other conflicts remain fail-closed. The resolved
+tree is bound to the durable request and same-request replay.
+If publication advances after the last pre-CAS read, exact CAS readback and
+ordered-parent proof still materialize and receipt the already committed dev
+effect; the response reports `merged_publication_advanced`. A different request
+cannot use the stale generation. Same-request replay reports the historical
+completed effect, not a new approval of the advanced publication.
 
 The one-time bootstrap for an already-diverged managed `dev` is itself a Task
 result: under the same Task and dev locks, the snapshot owner accepts a pending

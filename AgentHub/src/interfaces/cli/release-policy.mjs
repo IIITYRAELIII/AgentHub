@@ -72,6 +72,8 @@ function acceptedMainBootstrapInput(options) {
     expectedPublicationGeneration: options.published_generation,
     expectedMergeBaseCommit: options.merge_base,
     requestId: options.request_id,
+    reviewedChangelogFile: options.reviewed_changelog_file ?? null,
+    expectedResolvedTree: options.resolved_tree ?? null,
   };
 }
 

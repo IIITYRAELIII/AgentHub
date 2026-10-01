@@ -26,6 +26,7 @@ async function fixture(context, { divergedPublication = false } = {}) {
   await git(root, "init", "-b", "main");
   await git(root, "config", "core.autocrlf", "false");
   await writeFile(path.join(root, "app.txt"), "base\n");
+  await writeFile(path.join(root, "CHANGELOG.md"), "base\n");
   const base = await commit(root, "shared base");
   let published = base;
   if (divergedPublication) {
@@ -34,7 +35,7 @@ async function fixture(context, { divergedPublication = false } = {}) {
     published = await commit(root, "published side");
     await git(root, "checkout", "main");
   }
-  const publication = { generation: "g1", repositories: [{ root, revision: published }] };
+  let publication = { generation: "g1", repositories: [{ root, revision: published }] };
   const service = new TaskGitWorkspaceService({ dataDir: path.join(parent, "data"),
     readPublication: async () => publication });
   const task = await service.prepare({ taskId: "11111111-1111-4111-8111-111111111111", projectRoot: root });
@@ -46,6 +47,7 @@ async function fixture(context, { divergedPublication = false } = {}) {
   await writeFile(path.join(root, "main.txt"), "accepted local main\n");
   const main = await commit(root, "accepted main advance");
   return { root, service, base, published, main, oldDev, devRoot: dev.projectRoot,
+    setGeneration: (generation) => { publication = { ...publication, generation }; },
     taskRoot: task.projectRoot, taskResult };
 }
 
@@ -116,6 +118,46 @@ test("accepted main bootstrap conflict restores exact managed dev", { timeout: 9
   assert.equal(await readFile(path.join(f.devRoot, "app.txt"), "utf8"), "dev edit\n");
 });
 
+test("reviewed CHANGELOG-only conflict requires exact resolved tree and preserves dev", { timeout: 90_000 }, async (context) => {
+  const f = await fixture(context);
+  await writeFile(path.join(f.devRoot, "CHANGELOG.md"), "base\ndev entry\n");
+  f.oldDev = await commit(f.devRoot, "dev changelog");
+  await writeFile(path.join(f.root, "CHANGELOG.md"), "base\nmain entry\n");
+  f.main = await commit(f.root, "main changelog");
+  const resolution = "base\nmain entry\ndev entry\n";
+  const reviewedChangelogFile = path.join(path.dirname(f.root), "reviewed-changelog.md");
+  await writeFile(reviewedChangelogFile, resolution);
+
+  await assert.rejects(git(f.devRoot, "merge", "--no-ff", "--no-commit", f.main));
+  await writeFile(path.join(f.devRoot, "CHANGELOG.md"), resolution);
+  await git(f.devRoot, "add", "--", "CHANGELOG.md");
+  const expectedResolvedTree = await git(f.devRoot, "write-tree");
+  await git(f.devRoot, "merge", "--abort");
+  assert.equal(await git(f.devRoot, "status", "--porcelain"), "");
+
+  await assert.rejects(f.service.bootstrapAcceptedMainIntoDev({
+    ...input(f, "wrong-reviewed-tree"), reviewedChangelogFile,
+    expectedResolvedTree: f.base,
+  }), /reviewed resolution tree changed/u);
+  assert.equal(await git(f.root, "rev-parse", "dev"), f.oldDev);
+  assert.equal(await git(f.devRoot, "status", "--porcelain"), "");
+  assert.equal(await readFile(path.join(f.devRoot, "CHANGELOG.md"), "utf8"), "base\ndev entry\n");
+
+  const exact = { ...input(f, "reviewed-changelog"), reviewedChangelogFile, expectedResolvedTree };
+  const result = await f.service.bootstrapAcceptedMainIntoDev(exact);
+  assert.equal(result.status, "merged");
+  assert.equal(result.resultTree, expectedResolvedTree);
+  assert.equal(result.reviewedResolvedTree, expectedResolvedTree);
+  assert.equal(await readFile(path.join(f.devRoot, "CHANGELOG.md"), "utf8"), resolution);
+  assert.equal(await readFile(path.join(f.devRoot, "dev.txt"), "utf8"), "unrelated dev\n");
+  assert.equal(await git(f.taskRoot, "rev-parse", "HEAD"), f.taskResult);
+  assert.equal(await git(f.root, "rev-parse", "main"), f.main);
+  assert.equal((await f.service.bootstrapAcceptedMainIntoDev(exact)).status, "completed_replay");
+  await assert.rejects(f.service.bootstrapAcceptedMainIntoDev({
+    ...exact, expectedResolvedTree: f.base,
+  }), /request identity changed/u);
+});
+
 test("accepted main bootstrap recovers one exact CAS after interrupted materialization", { timeout: 90_000 }, async (context) => {
   const f = await fixture(context);
   let interrupted = false;
@@ -138,4 +180,58 @@ test("accepted main bootstrap recovers one exact CAS after interrupted materiali
   assert.equal(recovered.status, "completed_replay");
   assert.equal(recovered.headCommit, advanced);
   assert.equal(await readFile(path.join(f.devRoot, "main.txt"), "utf8"), "accepted local main\n");
+});
+
+test("publication advance at dev CAS still receipts exact effect and replays it", { timeout: 90_000 }, async (context) => {
+  const f = await fixture(context);
+  let advanced = false;
+  let casCount = 0;
+  f.service.runCommand = async (args, options) => {
+    if (!advanced && args[0] === "update-ref" && args[1] === "--stdin") {
+      advanced = true;
+      casCount += 1;
+      f.setGeneration("g2");
+    }
+    return runTaskGitCommand(args, options);
+  };
+  const result = await f.service.bootstrapAcceptedMainIntoDev(input(f, "generation-race"));
+  assert.equal(advanced, true);
+  assert.equal(result.status, "merged_publication_advanced");
+  assert.equal(result.publicationCurrent, false);
+  assert.equal(await git(f.root, "rev-parse", "dev"), result.headCommit);
+  assert.equal(await git(f.devRoot, "status", "--porcelain"), "");
+  const replay = await f.service.bootstrapAcceptedMainIntoDev(input(f, "generation-race"));
+  assert.equal(replay.status, "completed_replay");
+  assert.equal(replay.headCommit, result.headCommit);
+  assert.equal(casCount, 1);
+  await assert.rejects(f.service.bootstrapAcceptedMainIntoDev(input(f, "new-after-generation-change")),
+    /publication provenance changed/u);
+});
+
+test("publication advance plus interrupted post-CAS reset reconciles original receipt", { timeout: 90_000 }, async (context) => {
+  const f = await fixture(context);
+  let casCount = 0;
+  let resetInterrupted = false;
+  f.service.runCommand = async (args, options) => {
+    if (args[0] === "update-ref" && args[1] === "--stdin") {
+      casCount += 1;
+      f.setGeneration("g2");
+    }
+    if (!resetInterrupted && args[0] === "reset" && args[1] === "--hard") {
+      resetInterrupted = true;
+      const error = new Error("reset interrupted after exact CAS");
+      error.processTreeStopped = true;
+      throw error;
+    }
+    return runTaskGitCommand(args, options);
+  };
+  await assert.rejects(f.service.bootstrapAcceptedMainIntoDev(input(f, "generation-and-reset-race")),
+    /reset interrupted after exact CAS/u);
+  const exactEffect = await git(f.root, "rev-parse", "dev");
+  assert.notEqual(exactEffect, f.oldDev);
+  const replay = await f.service.bootstrapAcceptedMainIntoDev(input(f, "generation-and-reset-race"));
+  assert.equal(replay.status, "completed_replay");
+  assert.equal(replay.headCommit, exactEffect);
+  assert.equal(casCount, 1);
+  assert.equal(await git(f.devRoot, "status", "--porcelain"), "");
 });

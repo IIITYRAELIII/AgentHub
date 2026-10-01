@@ -706,12 +706,16 @@ export class TaskGitWorkspaceService {
       && typeof record.publicationGeneration === "string" && record.publicationGeneration.length > 0
       && typeof record.requestId === "string" && record.requestId.length > 0
       && record.requestId.length <= 200
+      && (record.reviewedResolvedTree == null
+        || (/^[0-9a-f]{40}$/u.test(record.reviewedResolvedTree)
+          && record.reviewedResolvedTree === record.resultTree))
       && [record.oldDevCommit, record.mainCommit, record.publishedRevision,
         record.mergeBaseCommit, record.integrationCommit, record.resultTree]
         .every((value) => /^[0-9a-f]{40}$/u.test(String(value ?? "")));
     if (!exact) throw new Error("Accepted-main bootstrap recovery identity is invalid");
-    await this.#acceptedMainBootstrapPublication(repoRoot, record.publishedRevision, record.publicationGeneration);
-    await this.#acceptedMainBootstrapMain(repoRoot, record.mainCommit);
+    // The record was written before the atomic main-verify/dev-CAS transaction.
+    // Once that exact CAS is observable, newer publication or main state must
+    // not prevent materializing and receipting the already-admitted effect.
     const parents = await this.#runOwned(["rev-list", "--parents", "-n", "1", record.integrationCommit], { cwd: repoRoot, lease });
     const tree = await this.#runOwned(["rev-parse", `${record.integrationCommit}^{tree}`], { cwd: repoRoot, lease });
     const bases = await this.#runOwned(["merge-base", "--all", record.oldDevCommit, record.mainCommit], { cwd: repoRoot, lease });
@@ -2388,6 +2392,7 @@ export class TaskGitWorkspaceService {
   async bootstrapAcceptedMainIntoDev({
     projectRoot, acceptedMainCommit, expectedDevCommit, publishedRevision,
     expectedPublicationGeneration, expectedMergeBaseCommit, requestId,
+    reviewedChangelogFile = null, expectedResolvedTree = null,
   } = {}) {
     this.#assertAvailable("bootstrapAcceptedMainIntoDev");
     const main = exactCommitId(acceptedMainCommit, "accepted local main");
@@ -2398,14 +2403,18 @@ export class TaskGitWorkspaceService {
       throw new Error("Accepted-main bootstrap requires exact publication generation");
     }
     const base = exactCommitId(expectedMergeBaseCommit, "expected main/dev merge base");
+    const hasReviewFile = reviewedChangelogFile != null;
+    const hasResolvedTree = expectedResolvedTree != null;
+    if (hasReviewFile !== hasResolvedTree) {
+      throw new Error("Accepted-main bootstrap needs both reviewed CHANGELOG bytes and exact resolved tree");
+    }
+    const resolvedTree = hasResolvedTree ? exactCommitId(expectedResolvedTree, "reviewed resolved tree") : null;
     const id = String(requestId ?? "").trim();
     if (!id || id.length > 200 || id.includes("\0")) {
       throw new Error("Accepted-main bootstrap requires one bounded request id");
     }
     const repoRoot = await repositoryRoot(projectRoot);
     return this.#withClearDevLock(repoRoot, null, async (lease) => {
-      await this.#acceptedMainBootstrapPublication(repoRoot, published, generation);
-      await this.#acceptedMainBootstrapMain(repoRoot, main);
       const devRoot = await worktreeForBranch(repoRoot, this.devBranch);
       if (!devRoot || !pathInside(this.devWorktreesRoot, devRoot)) {
         throw new Error("Accepted-main bootstrap requires the existing managed dev worktree");
@@ -2417,7 +2426,7 @@ export class TaskGitWorkspaceService {
           || receipt.requestId !== id || !samePath(receipt.repositoryRoot, repoRoot)
           || receipt.mainCommit !== main || receipt.oldDevCommit !== oldDev
           || receipt.publishedRevision !== published || receipt.publicationGeneration !== generation
-          || receipt.mergeBaseCommit !== base) {
+          || receipt.mergeBaseCommit !== base || (receipt.reviewedResolvedTree ?? null) !== resolvedTree) {
           throw new Error("Accepted-main bootstrap request identity changed");
         }
         const current = await this.#runOwned(["rev-parse", `refs/heads/${this.devBranch}^{commit}`], {
@@ -2428,6 +2437,8 @@ export class TaskGitWorkspaceService {
         }) === null) throw new Error("Accepted-main bootstrap completed dev identity was replaced");
         return { status: "completed_replay", integrated: true, ...receipt, headCommit: current };
       }
+      await this.#acceptedMainBootstrapPublication(repoRoot, published, generation);
+      await this.#acceptedMainBootstrapMain(repoRoot, main);
       const devHead = await this.#runOwned(["rev-parse", `refs/heads/${this.devBranch}^{commit}`], {
         cwd: repoRoot, lease,
       });
@@ -2447,9 +2458,19 @@ export class TaskGitWorkspaceService {
       if (await gitMaybe(["merge-base", "--is-ancestor", main, oldDev], { cwd: repoRoot }) !== null) {
         return { status: "already_current", integrated: true, mainCommit: main, headCommit: oldDev };
       }
+      let reviewedChangelogBytes = null;
+      if (hasReviewFile) {
+        const source = path.resolve(String(reviewedChangelogFile));
+        const sourceStat = await lstat(source);
+        if (!sourceStat.isFile() || sourceStat.isSymbolicLink()) {
+          throw new Error("Accepted-main bootstrap reviewed CHANGELOG source must be a regular file");
+        }
+        reviewedChangelogBytes = await readFile(source);
+      }
       let mergeActive = false;
       let casStarted = false;
       let conflicts = [];
+      let reviewedConflictApplied = false;
       try {
         try {
           await this.#runOwned([
@@ -2466,14 +2487,27 @@ export class TaskGitWorkspaceService {
             "diff", "--name-only", "--diff-filter=U", "-z",
           ], { cwd: devRoot, lease })).split("\0").filter(Boolean);
           if (!conflicts.length) throw error;
-          await this.#runOwned(["merge", "--abort"], { cwd: devRoot, lease });
-          mergeActive = false;
-          const restored = await runGit(["status", "--porcelain=v1", "-z", "--untracked-files=all"], { cwd: devRoot });
-          const restoredHead = await runGit(["rev-parse", "HEAD^{commit}"], { cwd: devRoot });
-          if (restored || restoredHead !== oldDev) throw new Error("Accepted-main bootstrap conflict rollback is unproved");
-          return { status: "conflict", integrated: false, conflicts, mainCommit: main, headCommit: oldDev };
+          if (resolvedTree && conflicts.length === 1 && conflicts[0] === "CHANGELOG.md") {
+            await writeFile(path.join(devRoot, "CHANGELOG.md"), reviewedChangelogBytes);
+            await this.#runOwned(["add", "--", "CHANGELOG.md"], { cwd: devRoot, lease });
+            const reviewedTree = await this.#runOwned(["write-tree"], { cwd: devRoot, lease });
+            if (reviewedTree !== resolvedTree) {
+              throw new Error("Accepted-main bootstrap reviewed resolution tree changed");
+            }
+            reviewedConflictApplied = true;
+          } else {
+            await this.#runOwned(["merge", "--abort"], { cwd: devRoot, lease });
+            mergeActive = false;
+            const restored = await runGit(["status", "--porcelain=v1", "-z", "--untracked-files=all"], { cwd: devRoot });
+            const restoredHead = await runGit(["rev-parse", "HEAD^{commit}"], { cwd: devRoot });
+            if (restored || restoredHead !== oldDev) throw new Error("Accepted-main bootstrap conflict rollback is unproved");
+            return { status: "conflict", integrated: false, conflicts, mainCommit: main, headCommit: oldDev };
+          }
         }
         const resultTree = await this.#runOwned(["write-tree"], { cwd: devRoot, lease });
+        if (resolvedTree && (!reviewedConflictApplied || resultTree !== resolvedTree)) {
+          throw new Error("Accepted-main bootstrap reviewed conflict proof was not applied");
+        }
         const integrationCommit = await this.#runOwned([
           "-c", "user.name=Agent Hub", "-c", "user.email=agent-hub@local.invalid",
           "commit-tree", resultTree, "-p", oldDev, "-p", main,
@@ -2494,7 +2528,7 @@ export class TaskGitWorkspaceService {
           version: 2, kind: "accepted-local-main-bootstrap-v1", repositoryRoot: repoRoot,
           devRoot, devBranch: this.devBranch, requestId: id, oldDevCommit: oldDev,
           mainCommit: main, publishedRevision: published, publicationGeneration: generation,
-          mergeBaseCommit: base,
+          mergeBaseCommit: base, reviewedResolvedTree: resolvedTree,
           integrationCommit, resultTree, createdAt: new Date().toISOString(),
         };
         const file = this.#devBootstrapRecoveryFile(repoRoot);
@@ -2509,9 +2543,18 @@ export class TaskGitWorkspaceService {
         });
         const recovered = await this.#recoverDevBootstrapTransaction(repoRoot, devRoot, lease);
         if (!recovered?.recovered) throw new Error("Accepted-main bootstrap CAS outcome is unknown");
+        let publicationCurrent = true;
+        try {
+          await this.#acceptedMainBootstrapPublication(repoRoot, published, generation);
+        } catch (error) {
+          if (error.message !== "Accepted-main bootstrap publication provenance changed") throw error;
+          publicationCurrent = false;
+        }
         return {
-          status: "merged", integrated: true, mainCommit: main, devHeadBefore: oldDev,
-          headCommit: integrationCommit, resultTree, mergeBaseCommit: base, requestId: id,
+          status: publicationCurrent ? "merged" : "merged_publication_advanced",
+          integrated: true, publicationCurrent, mainCommit: main, devHeadBefore: oldDev,
+          headCommit: integrationCommit, resultTree, mergeBaseCommit: base,
+          reviewedResolvedTree: resolvedTree, requestId: id,
         };
       } catch (error) {
         if (error?.processTreeStopped === false) throw error;

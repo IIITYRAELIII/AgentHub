@@ -140,8 +140,17 @@ test("release policy CLI pins one accepted-main dev bootstrap request", async ()
     projectRoot: "D:/repo", acceptedMainCommit: "1".repeat(40),
     expectedDevCommit: "2".repeat(40), publishedRevision: "3".repeat(40),
     expectedPublicationGeneration: "generation-1", expectedMergeBaseCommit: "4".repeat(40),
-    requestId: "accepted-main-one",
+    requestId: "accepted-main-one", reviewedChangelogFile: null, expectedResolvedTree: null,
   }]);
+  await runReleasePolicyCli([
+    "task-dev-bootstrap", "enable", "--reviewed-changelog-file", "D:/reviewed.md",
+    "--resolved-tree", "5".repeat(40),
+  ], { write: () => {}, enableDevBootstrap: async (input) => {
+    calls.push(input);
+    return { status: "merged" };
+  } });
+  assert.equal(calls[1].reviewedChangelogFile, "D:/reviewed.md");
+  assert.equal(calls[1].expectedResolvedTree, "5".repeat(40));
   await assert.rejects(() => runReleasePolicyCli(["task-dev-bootstrap", "preview"], {
     write: () => {}, enableDevBootstrap: async () => assert.fail("must not enable"),
   }), /Usage: npm run release:policy/u);
