@@ -640,6 +640,15 @@ ordered-parent proof still materialize and receipt the already committed dev
 effect; the response reports `merged_publication_advanced`. A different request
 cannot use the stale generation. Same-request replay reports the historical
 completed effect, not a new approval of the advanced publication.
+For this accepted-main bootstrap only, materialization currently supports
+content changes to existing regular files with unchanged mode. Path additions
+(including rename destinations), deletions, file-directory and symlink/type
+changes fail before a new CAS. An exact already-admitted CAS is recovered only
+after the same tree-shape proof. A main-edited path deleted from old dev is
+rejected before merge, even if an ignored private file now occupies it.
+Ignored dependencies/WIP do not make an
+otherwise clean dev dirty, but nonignored untracked files remain a refusal.
+No ignored-file overwrite or cleanup is authorized by this bootstrap.
 
 The one-time bootstrap for an already-diverged managed `dev` is itself a Task
 result: under the same Task and dev locks, the snapshot owner accepts a pending

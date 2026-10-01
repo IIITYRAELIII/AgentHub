@@ -36,3 +36,18 @@ The operator's accepted main identity is an explicit input, not inferred from
 `origin/main`. Review of the incoming commits and authorization to run this
 operation are separate from code deployment. This owner operation does not
 mutate production merely by being installed.
+
+The current recovery materializer is deliberately limited to content edits of
+existing regular files with unchanged Git mode. Both the accepted main delta
+from the common base and the exact integration tree delta from old dev are
+checked before the dev CAS; every main-edited path must also still be a tracked
+regular file in old dev. Recovery checks the exact integration tree again before touching
+the worktree. Added/deleted paths, rename destinations (evaluated without
+rename detection), file-directory replacements, symlinks, submodules and mode
+changes return `supports only existing regular-file content edits`. This
+temporary loss of bootstrap support for path additions prevents Git from
+overwriting a private ignored file that appears after a clean-status check.
+Unrelated ignored dependency and WIP files are excluded from the recovery
+untracked proof; ordinary nonignored untracked files still refuse recovery.
+Supporting path additions requires a separately reviewed no-clobber owner,
+not a retry of this operation or manual deletion of private files.

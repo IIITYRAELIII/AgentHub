@@ -697,6 +697,39 @@ export class TaskGitWorkspaceService {
     }
   }
 
+  async #assertAcceptedMainBootstrapModificationsOnly(devRoot, oldCommit, nextCommit, lease,
+    requiredTrackedCommit = null) {
+    // This bounded owner path cannot make Git materialization atomic against a
+    // newly appearing ignored file at an added path. Permit only content edits
+    // to already tracked regular files; no path graph or file-type changes.
+    const raw = await this.#runOwned([
+      "diff", "--no-renames", "--no-ext-diff", "--no-textconv", "--raw", "--abbrev=40", "-z",
+      oldCommit, nextCommit, "--",
+    ], { cwd: devRoot, lease });
+    const entries = raw.split("\0").filter(Boolean);
+    if (entries.length % 2 !== 0) {
+      throw new Error("Accepted-main bootstrap modifications-only proof is malformed");
+    }
+    for (let index = 0; index < entries.length; index += 2) {
+      const match = /^:(\d{6}) (\d{6}) [0-9a-f]{40,64} [0-9a-f]{40,64} ([A-Z])$/u.exec(entries[index]);
+      const relative = entries[index + 1];
+      if (!match || !relative) {
+        throw new Error("Accepted-main bootstrap modifications-only proof is malformed");
+      }
+      const [, beforeMode, afterMode, status] = match;
+      if (status !== "M" || beforeMode !== afterMode
+        || !["100644", "100755"].includes(beforeMode)) {
+        throw new Error(`Accepted-main bootstrap supports only existing regular-file content edits: ${relative}`);
+      }
+      if (requiredTrackedCommit) {
+        const tracked = await this.#treeEntryAt(devRoot, requiredTrackedCommit, relative, lease);
+        if (tracked?.path !== relative || tracked.mode !== beforeMode || tracked.type !== "blob") {
+          throw new Error(`Accepted-main bootstrap supports only existing regular-file content edits: ${relative}`);
+        }
+      }
+    }
+  }
+
   async #recoverAcceptedMainBootstrapTransaction(record, repoRoot, devRoot, lease) {
     const exact = record.version === 2
       && record.kind === "accepted-local-main-bootstrap-v1"
@@ -724,7 +757,9 @@ export class TaskGitWorkspaceService {
     const current = await this.#runOwned(["rev-parse", `refs/heads/${this.devBranch}^{commit}`], { cwd: repoRoot, lease });
     const indexTree = await this.#runOwned(["write-tree"], { cwd: devRoot, lease });
     const worktreeDiff = await this.#runOwned(["diff-files", "--name-only", "-z"], { cwd: devRoot, lease });
-    const otherFiles = await this.#runOwned(["ls-files", "--others", "-z"], { cwd: devRoot, lease });
+    const otherFiles = await this.#runOwned([
+      "ls-files", "--others", "--exclude-standard", "-z",
+    ], { cwd: devRoot, lease });
     const oldTree = await this.#runOwned(["rev-parse", `${record.oldDevCommit}^{tree}`], { cwd: repoRoot, lease });
     if (parents !== `${record.integrationCommit} ${record.oldDevCommit} ${record.mainCommit}`
       || tree !== record.resultTree || bases !== record.mergeBaseCommit
@@ -742,7 +777,16 @@ export class TaskGitWorkspaceService {
     if (current !== record.integrationCommit) {
       throw new Error(`Accepted-main bootstrap found unexpected dev ${current}`);
     }
-    await this.#runOwned(["reset", "--hard", record.integrationCommit], { cwd: devRoot, lease });
+    if (indexTree === oldTree) {
+      await this.#assertAcceptedMainBootstrapModificationsOnly(
+        devRoot, record.oldDevCommit, record.integrationCommit, lease,
+      );
+    }
+    // The exact tree-shape proof above excludes added paths before read-tree
+    // updates only already tracked regular files. Do not use reset --hard here.
+    await this.#runOwned([
+      "read-tree", "-m", "-u", record.oldDevCommit, record.integrationCommit,
+    ], { cwd: devRoot, lease });
     const status = await this.#runOwned([
       "status", "--porcelain=v1", "-z", "--untracked-files=all",
     ], { cwd: devRoot, lease });
@@ -2458,6 +2502,7 @@ export class TaskGitWorkspaceService {
       if (await gitMaybe(["merge-base", "--is-ancestor", main, oldDev], { cwd: repoRoot }) !== null) {
         return { status: "already_current", integrated: true, mainCommit: main, headCommit: oldDev };
       }
+      await this.#assertAcceptedMainBootstrapModificationsOnly(devRoot, base, main, lease, oldDev);
       let reviewedChangelogBytes = null;
       if (hasReviewFile) {
         const source = path.resolve(String(reviewedChangelogFile));
@@ -2505,6 +2550,7 @@ export class TaskGitWorkspaceService {
           }
         }
         const resultTree = await this.#runOwned(["write-tree"], { cwd: devRoot, lease });
+        await this.#assertAcceptedMainBootstrapModificationsOnly(devRoot, oldDev, resultTree, lease);
         if (resolvedTree && (!reviewedConflictApplied || resultTree !== resolvedTree)) {
           throw new Error("Accepted-main bootstrap reviewed conflict proof was not applied");
         }
