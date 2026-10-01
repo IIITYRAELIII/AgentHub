@@ -35,6 +35,7 @@ import { ProviderTurnTelemetryStore } from "../infrastructure/persistence/provid
 import { ReleaseOperationStore } from "../infrastructure/persistence/release-operation-store.mjs";
 import { PreTurnInstructionStore } from "../infrastructure/persistence/pre-turn-instruction-store.mjs";
 import { installRotatingConsole } from "../infrastructure/persistence/rotating-log.mjs";
+import { createTaskOperationTimingLogRecorder } from "../infrastructure/persistence/task-operation-timing-log.mjs";
 import { RuntimeStateStore } from "../infrastructure/persistence/runtime-state-store.mjs";
 import { SharedSqliteRecoveryCoordinator } from "../infrastructure/persistence/shared-sqlite-recovery.mjs";
 import { TaskReadStateStore } from "../infrastructure/persistence/task-read-state-store.mjs";
@@ -424,7 +425,12 @@ export async function createHubInfrastructure({
   const contourExternalEffects = config.testContourRecording
     ? createContourExternalEffects({ root: config.testContourRecording.root })
     : null;
-  const taskGitWorkspaces = new TaskGitWorkspaceService({ dataDir: config.dataDir, contourExternalEffects });
+  const recordTaskTiming = createTaskOperationTimingLogRecorder({
+    logFile: path.join(logDirectory, "agent-hub.log"), maxBytes: config.logMaxBytes,
+    maxFiles: config.logMaxFiles, mirror: process.stdout.isTTY || process.stderr.isTTY,
+  });
+  const taskGitWorkspaces = new TaskGitWorkspaceService({ dataDir: config.dataDir,
+    contourExternalEffects, recordTiming: recordTaskTiming });
   const releaseGitWorkspaces = new ReleaseGitWorkspaceService({ dataDir: config.dataDir, contourExternalEffects });
   const registeredReleaseProjectRoots = workspaceCatalogStore.hierarchy()
     .filter((workspace) => workspace.settings?.releaseWorkflowEnabled === true)

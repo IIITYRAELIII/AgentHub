@@ -15,7 +15,7 @@ import { TaskDependencyPendingError } from "../../domain/task-board-task.mjs";
 import { prepareTaskWorktreeDependencies } from "./task-worktree-dependencies.mjs";
 import { withInterprocessLocks as acquireInterprocessLocks } from "../process/interprocess-lock.mjs";
 import {
-  measureTaskOperation, recordTaskOperationTiming, withTaskOperationTiming,
+  measureTaskOperation, measureTaskOperationAwait, recordTaskOperationTiming, withTaskOperationTiming,
 } from "../process/task-operation-timing.mjs";
 import {
   isTrustedWindowsPowerShellPath,
@@ -1186,15 +1186,17 @@ export class TaskGitWorkspaceService {
 
   async #beginProcessTreeGuard(taskId, lease, { args, cwd, scope = "repository" } = {}, state) {
     if (typeof lease?.assertOwned !== "function") throw new Error("Task Git guard owner lease is required");
-    await lease.assertOwned();
+    await measureTaskOperationAwait("process-guard-lease-await", () => lease.assertOwned());
     if (state.unresolved) throw state.unresolved;
-    const repositoryRoot = await repositoryIdentityFromPath(cwd);
+    const repositoryRoot = await measureTaskOperationAwait("process-guard-identity-await",
+      () => repositoryIdentityFromPath(cwd));
     const guardId = randomUUID();
     const file = path.join(
       this.#processGuardDirectory(taskId),
       `${taskRepositoryKey(repositoryRoot)}.json`,
     );
-    await mkdir(path.dirname(file), { recursive: true });
+    await measureTaskOperationAwait("process-guard-mkdir-await",
+      () => mkdir(path.dirname(file), { recursive: true }));
     const record = {
       version: 1,
       taskId: normalizedTaskId(taskId),
@@ -1207,9 +1209,10 @@ export class TaskGitWorkspaceService {
       createdAt: new Date().toISOString(),
     };
     try {
-      await writeFile(file, `${JSON.stringify(record, null, 2)}\n`, {
-        encoding: "utf8", flag: "wx", mode: 0o600,
-      });
+      await measureTaskOperationAwait("process-guard-write-await",
+        () => writeFile(file, `${JSON.stringify(record, null, 2)}\n`, {
+          encoding: "utf8", flag: "wx", mode: 0o600,
+        }));
     } catch (error) {
       if (error?.code === "EEXIST") {
         throw new Error(`Task Git admission blocked: unresolved process-tree guard requires operator proof (${file})`);
@@ -1220,12 +1223,13 @@ export class TaskGitWorkspaceService {
     return {
       clear: async ({ proof } = {}) => {
         if (cleared) return;
-        const current = await readFile(file, "utf8").then(JSON.parse, () => null);
+        const current = await measureTaskOperationAwait("process-guard-clear-read-await",
+          () => readFile(file, "utf8").then(JSON.parse, () => null));
         if (current?.guardId !== guardId) {
           state.unresolved = new Error(`Task Git process-tree guard ownership changed (${file})`);
           throw state.unresolved;
         }
-        await unlink(file);
+        await measureTaskOperationAwait("process-guard-clear-unlink-await", () => unlink(file));
         cleared = true;
         state.active = null;
         state.lastProof = String(proof ?? "");
