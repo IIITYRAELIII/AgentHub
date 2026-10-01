@@ -49,7 +49,8 @@ test("bounded batches retain every span, flush on failure and reduce synchronous
   }), error => error === failure);
   const events = batches.flat();
   assert.equal(events.filter(event => event.stage === "git-child").length, 80);
-  assert.equal(events.at(-1).stage, "trace-summary");
+  assert.equal(events.at(-2).stage, "trace-summary");
+  assert.equal(events.at(-1).stage, "timing-sink-final");
   assert.ok(batches.length < 10, `expected fewer writes than spans, got ${batches.length}`);
   assert.ok(batches.every(batch => batch.length <= 16));
   assert.ok(events.every(event => event.operationId === "batched"));
@@ -84,10 +85,13 @@ test("batch writer preserves timestamped timing lines in a rotating log", async 
     for (let i = 0; i < 8; i += 1) await measureTaskOperation("git-child", () => i, { detail: true });
   });
   const lines = (await readFile(log, "utf8")).trim().split("\n");
-  assert.equal(lines.length, 19);
+  assert.equal(lines.length, 20);
   assert.ok(lines.every(line => line.includes("[task-operation-timing]")));
-  const summary = JSON.parse(lines.at(-1).split("[task-operation-timing] ")[1]);
+  const summary = JSON.parse(lines.at(-2).split("[task-operation-timing] ")[1]);
+  const tail = JSON.parse(lines.at(-1).split("[task-operation-timing] ")[1]);
   assert.equal(summary.stage, "trace-summary");
+  assert.equal(tail.stage, "timing-sink-final");
+  assert.equal(tail.unmeasuredTailWrites, 1);
   assert.ok(summary.batchWrites > 0);
   assert.ok(summary.batchWriteMs >= 0);
 });
@@ -104,7 +108,27 @@ test("a running child start is persisted by the batch deadline", async () => {
   assert.ok(batches.flat().some(event => event.stage === "git-child" && event.phase === "start"));
   gate.resolve();
   await running;
-  assert.equal(batches.flat().at(-1).stage, "trace-summary");
+  assert.equal(batches.flat().at(-1).stage, "timing-sink-final");
+});
+
+test("final summary sink delay is durably reported with one explicit tail write", async (t) => {
+  const events = [];
+  const record = createTaskOperationTimingBatchRecorder(batch => {
+    if (batch.some(event => event.stage === "trace-summary")) {
+      const until = performance.now() + 50;
+      while (performance.now() < until) { /* Exact delayed final batch. */ }
+    }
+    events.push(...batch);
+  });
+  await withTaskOperationTiming({ operationId: "final-sink", record }, () => 1);
+  const summary = events.find(event => event.stage === "trace-summary");
+  const tail = events.find(event => event.stage === "timing-sink-final");
+  assert.ok(summary.batchWriteMs < 20);
+  assert.ok(tail.finalBatchWriteMs >= 50);
+  assert.ok(tail.totalBatchWriteMs >= tail.finalBatchWriteMs);
+  assert.equal(tail.batchWrites, 2);
+  assert.equal(tail.unmeasuredTailWrites, 1);
+  t.diagnostic(`final-summary sink=${tail.finalBatchWriteMs.toFixed(1)}ms residual=${tail.unmeasuredTailWrites} tail write`);
 });
 
 test("bounded batching shortens a critical path with a slow synchronous log sink", async (t) => {

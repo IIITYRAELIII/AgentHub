@@ -30,16 +30,17 @@ export function createTaskOperationTimingBatchRecorder(writeBatch, { maxEvents =
   const sinkCosts = new Map();
   const flush = (key) => {
     const batch = pending.get(key);
-    if (!batch) return;
+    if (!batch) return null;
     pending.delete(key);
     clearTimeout(batch.timer);
     const started = performance.now();
+    let elapsedMs = 0;
     try { writeBatch(batch.events); }
     finally {
-      const durationMs = Math.max(0, performance.now() - started);
+      elapsedMs = Math.max(0, performance.now() - started);
       const cost = sinkCosts.get(key) ?? { totalMs: 0, maxMs: 0, writes: 0 };
-      cost.totalMs += durationMs;
-      cost.maxMs = Math.max(cost.maxMs, durationMs);
+      cost.totalMs += elapsedMs;
+      cost.maxMs = Math.max(cost.maxMs, elapsedMs);
       cost.writes += 1;
       if (batch.events.some(event => event.stage === "trace-summary")) sinkCosts.delete(key);
       else {
@@ -47,6 +48,7 @@ export function createTaskOperationTimingBatchRecorder(writeBatch, { maxEvents =
         if (sinkCosts.size > 512) sinkCosts.delete(sinkCosts.keys().next().value);
       }
     }
+    return elapsedMs;
   };
   return (event) => {
     const key = event.traceId ?? event.operationId;
@@ -68,7 +70,19 @@ export function createTaskOperationTimingBatchRecorder(writeBatch, { maxEvents =
     batch.events.push(event);
     if (batch.events.length >= maxEvents || event.stage === "trace-summary"
       || (event.stage === "workflow" && event.phase === "start")) {
-      flush(key);
+      const priorTotalMs = sinkCosts.get(key)?.totalMs ?? 0;
+      const priorWrites = sinkCosts.get(key)?.writes ?? 0;
+      const finalBatch = event.stage === "trace-summary";
+      const finalBatchWriteMs = flush(key);
+      if (finalBatch && finalBatchWriteMs != null) {
+        // This second, bounded diagnostic write reports the cost of the final
+        // summary batch. Its own latency is the one explicitly unmeasured tail.
+        writeBatch([{ component: event.component, operationId: event.operationId,
+          traceId: event.traceId, taskId: event.taskId, at: new Date().toISOString(),
+          stage: "timing-sink-final", phase: "checkpoint", finalBatchWriteMs,
+          totalBatchWriteMs: priorTotalMs + finalBatchWriteMs,
+          batchWrites: priorWrites + 1, unmeasuredTailWrites: 1 }]);
+      }
     }
   };
 }
