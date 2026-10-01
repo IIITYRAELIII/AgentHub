@@ -1,5 +1,5 @@
-import { createHash } from "node:crypto";
-import { lstat, link, mkdir, open, readFile, rename, stat, unlink } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { lstat, link, mkdir, open, readFile, readdir, rename, rmdir, stat, unlink } from "node:fs/promises";
 import path from "node:path";
 
 const MAX_FILES = 128;
@@ -70,6 +70,25 @@ async function writeExclusive(pathname, bytes) {
   }
 }
 
+async function discardIncompletePreparation(journalRoot, fileCount) {
+  const directory = await existing(journalRoot);
+  if (!directory?.isDirectory() || directory.isSymbolicLink()) {
+    throw new Error("Selected composition incomplete journal is not an owned directory");
+  }
+  const entries = await readdir(journalRoot, { withFileTypes: true });
+  for (const entry of entries) {
+    const staged = /^new-(0|[1-9][0-9]*)$/u.exec(entry.name);
+    const recordTemporary = /^record\.json\.tmp-[0-9a-f-]{36}$/u.test(entry.name);
+    if (!entry.isFile() || entry.isSymbolicLink()
+        || (!recordTemporary && (!staged || Number(staged[1]) >= fileCount))) {
+      // A completed record or a post-CAS backup is never discarded here.
+      throw new Error(`Selected composition incomplete journal has unexpected entry: ${entry.name}`);
+    }
+    await unlink(path.join(journalRoot, entry.name));
+  }
+  await rmdir(journalRoot);
+}
+
 // Git's diff --raw -z is shape authority. This owner intentionally supports
 // only existing regular-file edits and additions under existing directories.
 // It does not infer safety from a precheck or ask checkout to overwrite ignored
@@ -102,7 +121,16 @@ export async function prepareSelectedCompositionFiles({ root, journalRoot, files
     throw new Error("Selected composition file plan is invalid");
   }
   const worktree = path.resolve(root);
-  await mkdir(journalRoot, { recursive: false });
+  try {
+    await mkdir(journalRoot, { recursive: false });
+  } catch (error) {
+    if (error?.code !== "EEXIST") throw error;
+    // This function is called only while the exact dev ref is still old.
+    // A process crash may leave new-N or an unpublished record temp; neither
+    // has touched the worktree, so discard only those exact private names.
+    await discardIncompletePreparation(journalRoot, files.length);
+    await mkdir(journalRoot, { recursive: false });
+  }
   const prepared = [];
   for (const [index, file] of files.entries()) {
     const target = filePath(worktree, file.path);
@@ -132,7 +160,16 @@ export async function prepareSelectedCompositionFiles({ root, journalRoot, files
       newSha256: digest(newBytes), temp, backup });
   }
   const record = { version: 1, root: worktree, journalRoot: path.resolve(journalRoot), files: prepared };
-  await writeExclusive(path.join(journalRoot, "record.json"), Buffer.from(`${JSON.stringify(record)}\n`, "utf8"));
+  const recordPath = path.join(journalRoot, "record.json");
+  const temporaryRecord = path.join(journalRoot, `record.json.tmp-${randomUUID()}`);
+  await writeExclusive(temporaryRecord, Buffer.from(`${JSON.stringify(record)}\n`, "utf8"));
+  try {
+    await link(temporaryRecord, recordPath);
+  } finally {
+    await unlink(temporaryRecord).catch((error) => {
+      if (error?.code !== "ENOENT") throw error;
+    });
+  }
   return record;
 }
 

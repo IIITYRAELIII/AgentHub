@@ -27,6 +27,13 @@ ignored/private target is never overwritten, and recovery from a post-CAS
 collision uses the same operation and journal. Only clean exact worktree/index,
 result ref and receipt permit Test's Task CAS. Unsupported path shapes reject
 before ref effect. This is not a general-purpose filesystem materializer.
+Intent, journal and completion records become authoritative only after a
+complete synced temp file is linked to its final name. A pre-CAS crash may
+leave incomplete private staging; the same operation discards only known
+unpublished new-file/temp names and rebuilds the journal. An unexpected
+backup or completed record is never inferred away. A post-CAS crash before
+completion publication replays the exact journal/ref/readback and writes the
+same receipt, without another ref update.
 
 The integration proves Test, not release ownership of the whole dev tree.
 PreRelease revalidates the durable selected proof and applies the Task delta

@@ -353,6 +353,10 @@ the same operation can resume once the collision is resolved. A clean exact
 index/worktree, Task result ref and durable completed receipt precede Test's
 Task status CAS. Unknown effects are reconciled only under the original ID;
 no ref-only outcome is Test success.
+Intent, journal and completion records are atomically published from synced
+temporary bytes. An incomplete pre-CAS journal can only be rebuilt for the
+same operation after confirming the old dev ref; post-CAS recovery uses the
+same exact ref, staged bytes and worktree readback before a complete receipt.
 
 That dev merge is Test evidence, not a Task-owned release result. PreRelease
 must revalidate its exact durable proof and project the selected Task delta

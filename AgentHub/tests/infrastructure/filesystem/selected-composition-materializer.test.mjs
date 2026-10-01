@@ -46,6 +46,28 @@ test("selected materialization admits exact edits and additions, then replays af
   await assert.rejects(readFile(path.join(f.root, "docs/new.txt")), { code: "ENOENT" });
 });
 
+test("pre-CAS restart discards only incomplete private staging, then publishes a complete record", async (t) => {
+  const f = await fixture(t);
+  await mkdir(f.journalRoot);
+  await writeFile(path.join(f.journalRoot, "new-0"), "partial staged bytes");
+  await writeFile(path.join(f.journalRoot,
+    "record.json.tmp-00000000-0000-4000-8000-000000000000"), "{partial");
+  const record = await prepareSelectedCompositionFiles({ ...f, files: f.plan });
+  assert.equal((await readSelectedCompositionFiles(f.journalRoot)).files.length, 2);
+  await applySelectedCompositionFiles(record);
+  assert.deepEqual(await readFile(path.join(f.root, "tracked.txt")), f.next);
+  assert.deepEqual(await readFile(path.join(f.root, "docs/new.txt")), f.added);
+});
+
+test("incomplete preparation refuses an unexpected backup without deleting it", async (t) => {
+  const f = await fixture(t);
+  await mkdir(f.journalRoot);
+  await writeFile(path.join(f.journalRoot, "old-0"), "private backup");
+  await assert.rejects(prepareSelectedCompositionFiles({ ...f, files: f.plan }),
+    /unexpected entry/u);
+  assert.equal(await readFile(path.join(f.journalRoot, "old-0"), "utf8"), "private backup");
+});
+
 test("late ignored collision never loses private bytes, and original rollback restores edits", async (t) => {
   const f = await fixture(t);
   const record = await prepareSelectedCompositionFiles({ ...f, files: f.plan });

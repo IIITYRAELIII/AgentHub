@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, rm, unlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, unlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -192,6 +192,47 @@ test("selected owner preview has no live effect; late ignored collision preserve
   assert.equal((await readFile(path.join(candidate, "feature.txt"), "utf8"))
     .replace(/\r\n/gu, "\n"), "selected feature\n");
   await assert.rejects(readFile(path.join(candidate, "unselected.txt")), { code: "ENOENT" });
+});
+
+test("one selected operation recovers crashes before journal and completion publication", {
+  timeout: 90_000,
+}, async (t) => {
+  const f = await fixture(t);
+  const preview = await f.service.withTaskLock(TASK_ID, (lease) => (
+    f.service.previewSelectedCompositionOwned({ taskId: TASK_ID, projectRoot: f.root,
+      proofCommit: f.proof, bundlePath: f.bundle, bundleSha256: f.bundleSha256,
+      expectedTaskRevision: 1, authority: { workspaceId: "workspace", streamId: "rm",
+        provider: "codex", threadId: "thread", proofRequestId: "preview-crash" }, lease })
+  ));
+  const operationId = "confirm-crash";
+  const root = path.join(f.dataDir, "task-selected-compositions", TASK_ID,
+    path.basename(f.taskWorkspace.projectRoot), operationId);
+  const journal = path.join(root, "materialization");
+  await mkdir(journal, { recursive: true });
+  await writeFile(path.join(root, "intent.json.tmp-00000000-0000-4000-8000-000000000000"), "{partial");
+  await writeFile(path.join(journal, "new-0"), "partial staged bytes");
+  assert.equal(await git(f.root, "rev-parse", "dev"), f.dev);
+  const applied = await f.service.withTaskLock(TASK_ID, (lease) => (
+    f.service.applySelectedCompositionOwned(preview, { operationId, lease })
+  ));
+  assert.equal(applied.status, "applied");
+  assert.equal(await git(f.root, "rev-parse", "dev"), f.proof);
+  assert.equal(await git(f.devWorkspace.projectRoot, "status", "--porcelain"), "");
+  // Simulate a process ending after all exact Git effects but before the
+  // atomic completed.json link becomes visible. A partial temp is not proof.
+  await unlink(path.join(root, "completed.json"));
+  await writeFile(path.join(root,
+    "completed.json.tmp-00000000-0000-4000-8000-000000000000"), "{partial");
+  const pending = await f.service.withTaskLock(TASK_ID, (lease) => (
+    f.service.readSelectedCompositionOwned(preview, { operationId, lease })
+  ));
+  assert.equal(pending.status, "after_cas");
+  const recovered = await f.service.withTaskLock(TASK_ID, (lease) => (
+    f.service.applySelectedCompositionOwned(preview, { operationId, lease })
+  ));
+  assert.equal(recovered.status, "applied");
+  assert.equal(recovered.receipt.operationId, operationId);
+  assert.equal(await git(f.devWorkspace.projectRoot, "status", "--porcelain"), "");
 });
 
 test("selected composition enters Test only after exact Git CAS and durable Task result", {

@@ -406,6 +406,12 @@ dev. The completed receipt must still match the clean exact dev and Task result
 on readback. Release preparation requires its independently verified selected
 projection and must not replay unrelated rolling-dev bytes.
 
+Intent, materialization and completion JSON is published only after complete
+synced bytes exist. Incomplete pre-CAS private staging can be rebuilt under
+the original ID without interpreting it as a Git effect; an incomplete
+completion temp is not a receipt, and post-CAS replay requires exact ref,
+journal, worktree and result readback before terminal success.
+
 `hub_active_runs_list` and `hub_parallel_streams_list` expose bounded,
 payload-free deferred-input summaries separately from live runs. The summary
 includes exact Stream/provider/Thread and command identity, queue state, wait

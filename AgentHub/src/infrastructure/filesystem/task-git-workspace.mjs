@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
 import {
-  access, chmod, copyFile, lstat, mkdir, mkdtemp, open, readFile, readdir, readlink, rename, rm, rmdir,
+  access, chmod, copyFile, link, lstat, mkdir, mkdtemp, open, readFile, readdir, readlink, rename, rm, rmdir,
   stat, symlink, unlink, writeFile,
 } from "node:fs/promises";
 import path from "node:path";
@@ -55,12 +55,23 @@ const CLAIM_REPOSITORY_GUARD_NO_EFFECT_VERSION = "task-git-repository-guard-unde
 const CLAIM_REPOSITORY_GUARD_ERROR_PREFIX = "Task Git repository blocked: unresolved process-tree guard requires operator proof";
 
 async function writeSelectedRecord(pathname, value) {
-  const handle = await open(pathname, "wx", 0o600);
+  const temporary = `${pathname}.tmp-${randomUUID()}`;
+  const handle = await open(temporary, "wx", 0o600);
   try {
     await handle.writeFile(`${JSON.stringify(value)}\n`, "utf8");
     await handle.sync();
   } finally {
     await handle.close();
+  }
+  try {
+    // The final name is published only after complete, synced JSON exists.
+    // A crash before link leaves an ignorable private temp, never partial
+    // intent/completion authority. link() also refuses an existing final name.
+    await link(temporary, pathname);
+  } finally {
+    await unlink(temporary).catch((error) => {
+      if (error?.code !== "ENOENT") throw error;
+    });
   }
 }
 
