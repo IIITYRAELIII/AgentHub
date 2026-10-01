@@ -615,6 +615,22 @@ the old dev head and clean worktree were restored. The owner never checks out or
 updates the registered primary worktree, creates `origin/dev`, or treats a
 remote ref movement as acceptance. See ADR-0040.
 
+When an explicitly accepted local `main` has advanced beyond the durable
+published revision while managed `dev` still contains separate Test results,
+the Task Git owner has a separate, operator-invoked bootstrap. It requires one
+stable request ID, the exact accepted main and dev commits, published revision
+and generation, and unique common merge base for both dev/main and
+published/main. Under the existing dev lease it verifies
+cleanliness, ancestry and the unchanged local main, constructs a merge with
+ordered parents `[oldDev, acceptedMain]`, and advances only `dev` by CAS. A
+durable pre-CAS record binds those proofs; recovery distinguishes no effect from
+the exact CAS and restores only its owned worktree. Conflict abort must prove
+the old dev head and clean status. Completed replay uses the original receipt;
+an unknown CAS outcome is never retried as a fresh effect. This path changes no
+Task result, publication evidence, remote ref or registered primary worktree.
+It does not infer acceptance of a new local main from a remote movement. See
+ADR-0082.
+
 The one-time bootstrap for an already-diverged managed `dev` is itself a Task
 result: under the same Task and dev locks, the snapshot owner accepts a pending
 Task-worktree merge only when its exact `MERGE_HEAD` is the current managed dev

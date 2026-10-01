@@ -97,6 +97,25 @@ test("Test prepares the Task once before snapshot and merge", async (t) => {
   }
 });
 
+test("a separate Task Test history refusal is durably failed before dev mutation", { timeout: 90_000 }, async (t) => {
+  const f = await fixture(t);
+  const task = await f.create("Separate Task");
+  const dev = await f.taskGitWorkspaces.prepareDev(f.primary);
+  const devBefore = dev.headCommit;
+  await writeFile(path.join(f.primary, "reviewed-main.txt"), "reviewed main\n");
+  await git(f.primary, "add", "reviewed-main.txt");
+  await git(f.primary, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+    "commit", "-m", "reviewed main advance");
+  await writeFile(path.join(task.root, "task.txt"), "separate result\n");
+  await assert.rejects(f.status(task.task.id, "testing", "separate-task-history-refusal"),
+    (error) => error instanceof TaskIntegrationRejectedError
+      && /does not prove the exact main\/dev bootstrap/u.test(error.message));
+  assert.equal(f.taskBoard.lifecycleTransition("separate-task-history-refusal").phase, "failed");
+  assert.equal(f.taskBoard.task(task.task.id).workflowStatus, "new");
+  assert.equal(await git(f.primary, "rev-parse", "dev"), devBefore);
+  assert.equal(await git(dev.projectRoot, "status", "--porcelain"), "");
+});
+
 test("real conflict saves a terminal failed lifecycle with file and revision evidence", { timeout: 90000 }, async (t) => {
   const f = await fixture(t);
   const a = await f.create("A"), b = await f.create("B");

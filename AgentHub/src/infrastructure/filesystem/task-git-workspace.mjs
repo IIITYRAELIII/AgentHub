@@ -649,6 +649,105 @@ export class TaskGitWorkspaceService {
     );
   }
 
+  #acceptedMainBootstrapReceiptFile(repoRoot, requestId) {
+    const key = createHash("sha256").update(requestId, "utf8").digest("hex");
+    return path.join(this.dataDir, "task-accepted-main-bootstraps", taskRepositoryKey(repoRoot), `${key}.json`);
+  }
+
+  async #acceptedMainBootstrapPublication(repoRoot, expectedRevision, expectedGeneration) {
+    const publication = await this.readPublication();
+    const revision = publicationStateRepositories(publication ?? {})
+      .find((entry) => samePath(entry.root, repoRoot))?.revision;
+    if (publication?.generation !== expectedGeneration || revision !== expectedRevision) {
+      throw new Error("Accepted-main bootstrap publication provenance changed");
+    }
+  }
+
+  async #acceptedMainBootstrapMain(repoRoot, expectedCommit) {
+    const branch = await runGit(["symbolic-ref", "--quiet", "HEAD"], { cwd: repoRoot });
+    const main = await localMainCommit(repoRoot);
+    const head = await runGit(["rev-parse", "HEAD^{commit}"], { cwd: repoRoot });
+    if (branch !== "refs/heads/main" || main !== expectedCommit || head !== expectedCommit) {
+      throw new Error("Accepted-main bootstrap local main identity changed");
+    }
+  }
+
+  async #readAcceptedMainBootstrapReceipt(repoRoot, requestId) {
+    const file = this.#acceptedMainBootstrapReceiptFile(repoRoot, requestId);
+    return readFile(file, "utf8").then(JSON.parse, (error) => {
+      if (error?.code === "ENOENT") return null;
+      throw error;
+    });
+  }
+
+  async #writeAcceptedMainBootstrapReceipt(record) {
+    const file = this.#acceptedMainBootstrapReceiptFile(record.repositoryRoot, record.requestId);
+    const receipt = { ...record, phase: "completed" };
+    await mkdir(path.dirname(file), { recursive: true });
+    try {
+      await writeFile(file, `${JSON.stringify(receipt, null, 2)}\n`, {
+        encoding: "utf8", flag: "wx", mode: 0o600,
+      });
+    } catch (error) {
+      if (error?.code !== "EEXIST") throw error;
+      const existing = await this.#readAcceptedMainBootstrapReceipt(record.repositoryRoot, record.requestId);
+      if (JSON.stringify(existing) !== JSON.stringify(receipt)) {
+        throw new Error("Accepted-main bootstrap receipt identity changed");
+      }
+    }
+  }
+
+  async #recoverAcceptedMainBootstrapTransaction(record, repoRoot, devRoot, lease) {
+    const exact = record.version === 2
+      && record.kind === "accepted-local-main-bootstrap-v1"
+      && samePath(record.repositoryRoot, repoRoot)
+      && samePath(record.devRoot, devRoot)
+      && record.devBranch === this.devBranch
+      && typeof record.publicationGeneration === "string" && record.publicationGeneration.length > 0
+      && typeof record.requestId === "string" && record.requestId.length > 0
+      && record.requestId.length <= 200
+      && [record.oldDevCommit, record.mainCommit, record.publishedRevision,
+        record.mergeBaseCommit, record.integrationCommit, record.resultTree]
+        .every((value) => /^[0-9a-f]{40}$/u.test(String(value ?? "")));
+    if (!exact) throw new Error("Accepted-main bootstrap recovery identity is invalid");
+    await this.#acceptedMainBootstrapPublication(repoRoot, record.publishedRevision, record.publicationGeneration);
+    await this.#acceptedMainBootstrapMain(repoRoot, record.mainCommit);
+    const parents = await this.#runOwned(["rev-list", "--parents", "-n", "1", record.integrationCommit], { cwd: repoRoot, lease });
+    const tree = await this.#runOwned(["rev-parse", `${record.integrationCommit}^{tree}`], { cwd: repoRoot, lease });
+    const bases = await this.#runOwned(["merge-base", "--all", record.oldDevCommit, record.mainCommit], { cwd: repoRoot, lease });
+    const publishedBase = await this.#runOwned(["merge-base", "--all", record.publishedRevision, record.mainCommit], { cwd: repoRoot, lease });
+    const branch = await this.#runOwned(["symbolic-ref", "--quiet", "HEAD"], { cwd: devRoot, lease });
+    const current = await this.#runOwned(["rev-parse", `refs/heads/${this.devBranch}^{commit}`], { cwd: repoRoot, lease });
+    const indexTree = await this.#runOwned(["write-tree"], { cwd: devRoot, lease });
+    const worktreeDiff = await this.#runOwned(["diff-files", "--name-only", "-z"], { cwd: devRoot, lease });
+    const otherFiles = await this.#runOwned(["ls-files", "--others", "-z"], { cwd: devRoot, lease });
+    const oldTree = await this.#runOwned(["rev-parse", `${record.oldDevCommit}^{tree}`], { cwd: repoRoot, lease });
+    if (parents !== `${record.integrationCommit} ${record.oldDevCommit} ${record.mainCommit}`
+      || tree !== record.resultTree || bases !== record.mergeBaseCommit
+      || publishedBase !== record.mergeBaseCommit
+      || branch !== `refs/heads/${this.devBranch}` || worktreeDiff || otherFiles
+      || ![oldTree, record.resultTree].includes(indexTree)) {
+      throw new Error("Accepted-main bootstrap recovery proof changed");
+    }
+    const file = this.#devBootstrapRecoveryFile(repoRoot);
+    if (current === record.oldDevCommit) {
+      if (indexTree !== oldTree) throw new Error("Accepted-main bootstrap changed index before dev CAS");
+      await unlink(file);
+      return { recovered: false, record };
+    }
+    if (current !== record.integrationCommit) {
+      throw new Error(`Accepted-main bootstrap found unexpected dev ${current}`);
+    }
+    await this.#runOwned(["reset", "--hard", record.integrationCommit], { cwd: devRoot, lease });
+    const status = await this.#runOwned([
+      "status", "--porcelain=v1", "-z", "--untracked-files=all",
+    ], { cwd: devRoot, lease });
+    if (status) throw new Error("Accepted-main bootstrap did not restore a clean worktree");
+    await this.#writeAcceptedMainBootstrapReceipt(record);
+    await unlink(file);
+    return { recovered: true, record };
+  }
+
   async #treeEntryAt(repoRoot, commit, relativePath, lease) {
     const output = await this.#runOwned([
       "ls-tree", "-z", exactCommitId(commit, "tree entry commit"), "--", relativePath,
@@ -768,6 +867,9 @@ export class TaskGitWorkspaceService {
       throw error;
     });
     if (!record) return null;
+    if (record.version === 2) {
+      return this.#recoverAcceptedMainBootstrapTransaction(record, repoRoot, devRoot, lease);
+    }
     const exact = record.version === 1
       && samePath(record.repositoryRoot, repoRoot)
       && samePath(record.devRoot, devRoot)
@@ -2283,6 +2385,148 @@ export class TaskGitWorkspaceService {
     });
   }
 
+  async bootstrapAcceptedMainIntoDev({
+    projectRoot, acceptedMainCommit, expectedDevCommit, publishedRevision,
+    expectedPublicationGeneration, expectedMergeBaseCommit, requestId,
+  } = {}) {
+    this.#assertAvailable("bootstrapAcceptedMainIntoDev");
+    const main = exactCommitId(acceptedMainCommit, "accepted local main");
+    const oldDev = exactCommitId(expectedDevCommit, "expected managed dev");
+    const published = exactCommitId(publishedRevision, "durable published revision");
+    const generation = String(expectedPublicationGeneration ?? "").trim();
+    if (!generation || generation.length > 200) {
+      throw new Error("Accepted-main bootstrap requires exact publication generation");
+    }
+    const base = exactCommitId(expectedMergeBaseCommit, "expected main/dev merge base");
+    const id = String(requestId ?? "").trim();
+    if (!id || id.length > 200 || id.includes("\0")) {
+      throw new Error("Accepted-main bootstrap requires one bounded request id");
+    }
+    const repoRoot = await repositoryRoot(projectRoot);
+    return this.#withClearDevLock(repoRoot, null, async (lease) => {
+      await this.#acceptedMainBootstrapPublication(repoRoot, published, generation);
+      await this.#acceptedMainBootstrapMain(repoRoot, main);
+      const devRoot = await worktreeForBranch(repoRoot, this.devBranch);
+      if (!devRoot || !pathInside(this.devWorktreesRoot, devRoot)) {
+        throw new Error("Accepted-main bootstrap requires the existing managed dev worktree");
+      }
+      await this.#assertRecoverableDev(repoRoot, devRoot, { lease });
+      const receipt = await this.#readAcceptedMainBootstrapReceipt(repoRoot, id);
+      if (receipt) {
+        if (receipt.version !== 2 || receipt.phase !== "completed"
+          || receipt.requestId !== id || !samePath(receipt.repositoryRoot, repoRoot)
+          || receipt.mainCommit !== main || receipt.oldDevCommit !== oldDev
+          || receipt.publishedRevision !== published || receipt.publicationGeneration !== generation
+          || receipt.mergeBaseCommit !== base) {
+          throw new Error("Accepted-main bootstrap request identity changed");
+        }
+        const current = await this.#runOwned(["rev-parse", `refs/heads/${this.devBranch}^{commit}`], {
+          cwd: repoRoot, lease,
+        });
+        if (await gitMaybe(["merge-base", "--is-ancestor", receipt.integrationCommit, current], {
+          cwd: repoRoot,
+        }) === null) throw new Error("Accepted-main bootstrap completed dev identity was replaced");
+        return { status: "completed_replay", integrated: true, ...receipt, headCommit: current };
+      }
+      const devHead = await this.#runOwned(["rev-parse", `refs/heads/${this.devBranch}^{commit}`], {
+        cwd: repoRoot, lease,
+      });
+      const [worktreeHead, branch, status, bases] = await Promise.all([
+        runGit(["rev-parse", "HEAD^{commit}"], { cwd: devRoot }),
+        runGit(["symbolic-ref", "--quiet", "HEAD"], { cwd: devRoot }),
+        runGit(["status", "--porcelain=v1", "-z", "--untracked-files=all"], { cwd: devRoot }),
+        runGit(["merge-base", "--all", oldDev, main], { cwd: repoRoot }),
+      ]);
+      if (devHead !== oldDev || worktreeHead !== oldDev || branch !== `refs/heads/${this.devBranch}`) {
+        throw new Error("Accepted-main bootstrap managed dev CAS changed");
+      }
+      if (status) throw new Error("Accepted-main bootstrap requires a clean managed dev worktree");
+      if (bases !== base) throw new Error("Accepted-main bootstrap ancestry proof changed");
+      const publishedBase = await this.#runOwned(["merge-base", "--all", published, main], { cwd: repoRoot, lease });
+      if (publishedBase !== base) throw new Error("Accepted-main bootstrap published ancestry proof changed");
+      if (await gitMaybe(["merge-base", "--is-ancestor", main, oldDev], { cwd: repoRoot }) !== null) {
+        return { status: "already_current", integrated: true, mainCommit: main, headCommit: oldDev };
+      }
+      let mergeActive = false;
+      let casStarted = false;
+      let conflicts = [];
+      try {
+        try {
+          await this.#runOwned([
+            "-c", "user.name=Agent Hub", "-c", "user.email=agent-hub@local.invalid",
+            "merge", "--no-ff", "--no-commit", main,
+          ], { cwd: devRoot, timeoutMs: 300_000, lease });
+          mergeActive = true;
+        } catch (error) {
+          if (error?.processTreeStopped === false) throw error;
+          const mergeHead = path.resolve(await runGit(["rev-parse", "--git-path", "MERGE_HEAD"], { cwd: devRoot }));
+          mergeActive = await access(mergeHead).then(() => true, () => false);
+          if (!mergeActive) throw error;
+          conflicts = String(await this.#runOwned([
+            "diff", "--name-only", "--diff-filter=U", "-z",
+          ], { cwd: devRoot, lease })).split("\0").filter(Boolean);
+          if (!conflicts.length) throw error;
+          await this.#runOwned(["merge", "--abort"], { cwd: devRoot, lease });
+          mergeActive = false;
+          const restored = await runGit(["status", "--porcelain=v1", "-z", "--untracked-files=all"], { cwd: devRoot });
+          const restoredHead = await runGit(["rev-parse", "HEAD^{commit}"], { cwd: devRoot });
+          if (restored || restoredHead !== oldDev) throw new Error("Accepted-main bootstrap conflict rollback is unproved");
+          return { status: "conflict", integrated: false, conflicts, mainCommit: main, headCommit: oldDev };
+        }
+        const resultTree = await this.#runOwned(["write-tree"], { cwd: devRoot, lease });
+        const integrationCommit = await this.#runOwned([
+          "-c", "user.name=Agent Hub", "-c", "user.email=agent-hub@local.invalid",
+          "commit-tree", resultTree, "-p", oldDev, "-p", main,
+        ], { cwd: repoRoot, lease, input: "merge(agent-hub): bootstrap accepted local main into dev\n" });
+        await this.#runOwned(["merge", "--abort"], { cwd: devRoot, lease });
+        mergeActive = false;
+        const restored = await runGit(["status", "--porcelain=v1", "-z", "--untracked-files=all"], { cwd: devRoot });
+        const restoredHead = await runGit(["rev-parse", "HEAD^{commit}"], { cwd: devRoot });
+        if (restored || restoredHead !== oldDev) throw new Error("Accepted-main bootstrap pre-CAS restore is unproved");
+        await lease.assertOwned();
+        await this.#acceptedMainBootstrapPublication(repoRoot, published, generation);
+        await this.#acceptedMainBootstrapMain(repoRoot, main);
+        const currentBase = await this.#runOwned(["merge-base", "--all", oldDev, main], { cwd: repoRoot, lease });
+        if (currentBase !== base) throw new Error("Accepted-main bootstrap ancestry changed before CAS");
+        const currentPublishedBase = await this.#runOwned(["merge-base", "--all", published, main], { cwd: repoRoot, lease });
+        if (currentPublishedBase !== base) throw new Error("Accepted-main bootstrap published ancestry changed before CAS");
+        const record = {
+          version: 2, kind: "accepted-local-main-bootstrap-v1", repositoryRoot: repoRoot,
+          devRoot, devBranch: this.devBranch, requestId: id, oldDevCommit: oldDev,
+          mainCommit: main, publishedRevision: published, publicationGeneration: generation,
+          mergeBaseCommit: base,
+          integrationCommit, resultTree, createdAt: new Date().toISOString(),
+        };
+        const file = this.#devBootstrapRecoveryFile(repoRoot);
+        await mkdir(path.dirname(file), { recursive: true });
+        await writeFile(file, `${JSON.stringify(record, null, 2)}\n`, {
+          encoding: "utf8", flag: "wx", mode: 0o600,
+        });
+        casStarted = true;
+        await this.#runOwned(["update-ref", "--stdin"], {
+          cwd: repoRoot, lease,
+          input: `start\nverify refs/heads/main ${main}\nupdate refs/heads/${this.devBranch} ${integrationCommit} ${oldDev}\nprepare\ncommit\n`,
+        });
+        const recovered = await this.#recoverDevBootstrapTransaction(repoRoot, devRoot, lease);
+        if (!recovered?.recovered) throw new Error("Accepted-main bootstrap CAS outcome is unknown");
+        return {
+          status: "merged", integrated: true, mainCommit: main, devHeadBefore: oldDev,
+          headCommit: integrationCommit, resultTree, mergeBaseCommit: base, requestId: id,
+        };
+      } catch (error) {
+        if (error?.processTreeStopped === false) throw error;
+        // After the CAS boundary the durable record, not an in-process retry,
+        // owns reconciliation of an unknown effect.
+        if (casStarted) throw error;
+        if (mergeActive) {
+          await this.#runOwned(["merge", "--abort"], { cwd: devRoot, lease });
+        }
+        await this.#recoverDevBootstrapTransaction(repoRoot, devRoot, lease);
+        throw error;
+      }
+    });
+  }
+
   async prepare(params = {}) {
     this.#assertAvailable("prepare");
     return this.withTaskLock(params.taskId, (lease) => this.prepareOwned({ ...params, lease }));
@@ -2522,7 +2766,7 @@ export class TaskGitWorkspaceService {
         "merge-base", "--is-ancestor", devHeadBefore, snapshot.headCommit,
       ], { cwd: dev.projectRoot }) !== null;
       if (!dev.acceptedMainIntegrated && (!snapshotContainsMain || !snapshotContainsDev)) {
-        throw new Error(
+        throw new TaskGitHistoryRejectedError(
           `managed dev ${devHeadBefore} does not contain accepted local main ${localMain}; `
           + "Task result does not prove the exact main/dev bootstrap",
         );

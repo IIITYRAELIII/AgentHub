@@ -63,6 +63,18 @@ function localPublicationReceiptInput(options) {
   };
 }
 
+function acceptedMainBootstrapInput(options) {
+  return {
+    projectRoot: options.project_root,
+    acceptedMainCommit: options.accepted_main,
+    expectedDevCommit: options.expected_dev,
+    publishedRevision: options.published_revision,
+    expectedPublicationGeneration: options.published_generation,
+    expectedMergeBaseCommit: options.merge_base,
+    requestId: options.request_id,
+  };
+}
+
 export async function runReleasePolicyCli(args, {
   write = console.log,
   previewGithub = previewGithubReleaseBaseline,
@@ -71,12 +83,14 @@ export async function runReleasePolicyCli(args, {
   enableLocalPublication = enableLocalPublicationReceiptBaseline,
   previewTaskUpstream = null,
   enableTaskUpstream = null,
+  enableDevBootstrap = null,
 } = {}) {
   const [surface, action, ...rawOptions] = args;
-  if (!["github-baseline", "local-publication-receipt", "task-upstream-adoption"].includes(surface)
-      || !["preview", "enable"].includes(action)) {
+  if (!["github-baseline", "local-publication-receipt", "task-upstream-adoption", "task-dev-bootstrap"].includes(surface)
+      || !["preview", "enable"].includes(action)
+      || (surface === "task-dev-bootstrap" && action !== "enable")) {
     throw new Error(
-      "Usage: npm run release:policy -- <github-baseline|local-publication-receipt|task-upstream-adoption> <preview|enable> ...",
+      "Usage: npm run release:policy -- <github-baseline|local-publication-receipt|task-upstream-adoption> <preview|enable> ...; task-dev-bootstrap enable ...",
     );
   }
   const options = parseOptions(rawOptions);
@@ -91,6 +105,15 @@ export async function runReleasePolicyCli(args, {
     result = action === "preview"
       ? await previewLocalPublication(input)
       : await enableLocalPublication(input, { writeState: (state) => writePublicationState(state) });
+  } else if (surface === "task-dev-bootstrap") {
+    const input = acceptedMainBootstrapInput(options);
+    let enable = enableDevBootstrap;
+    if (!enable) {
+      const config = await loadConfig();
+      const taskGitWorkspaces = new TaskGitWorkspaceService({ dataDir: config.dataDir });
+      enable = (value) => taskGitWorkspaces.bootstrapAcceptedMainIntoDev(value);
+    }
+    result = await enable(input);
   } else {
     const input = taskUpstreamAdoptionInput(options);
     let preview = previewTaskUpstream;

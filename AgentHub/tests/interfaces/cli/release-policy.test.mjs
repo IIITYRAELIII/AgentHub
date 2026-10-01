@@ -119,3 +119,30 @@ test("release policy CLI rejects ambiguous commands", async () => {
     /Usage: npm run release:policy/u,
   );
 });
+
+test("release policy CLI pins one accepted-main dev bootstrap request", async () => {
+  const calls = [];
+  const result = await runReleasePolicyCli([
+    "task-dev-bootstrap", "enable",
+    "--project-root", "D:/repo",
+    "--accepted-main", "1".repeat(40),
+    "--expected-dev", "2".repeat(40),
+    "--published-revision", "3".repeat(40),
+    "--published-generation", "generation-1",
+    "--merge-base", "4".repeat(40),
+    "--request-id", "accepted-main-one",
+  ], { write: () => {}, enableDevBootstrap: async (input) => {
+    calls.push(input);
+    return { status: "merged" };
+  } });
+  assert.equal(result.status, "merged");
+  assert.deepEqual(calls, [{
+    projectRoot: "D:/repo", acceptedMainCommit: "1".repeat(40),
+    expectedDevCommit: "2".repeat(40), publishedRevision: "3".repeat(40),
+    expectedPublicationGeneration: "generation-1", expectedMergeBaseCommit: "4".repeat(40),
+    requestId: "accepted-main-one",
+  }]);
+  await assert.rejects(() => runReleasePolicyCli(["task-dev-bootstrap", "preview"], {
+    write: () => {}, enableDevBootstrap: async () => assert.fail("must not enable"),
+  }), /Usage: npm run release:policy/u);
+});
