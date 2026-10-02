@@ -137,7 +137,7 @@ test("candidate planner reads one durable accepted-result snapshot before real G
       } };
     },
   });
-  assert.equal(plan.ready.length, 1);
+  assert.equal(plan.ready.length, 1, JSON.stringify(plan, null, 2));
   assert.equal(plan.ready[0].resultCommit, f.result);
   assert.equal(plan.ready[0].taskRevision, awaiting.releaseRevision);
   assert.equal(plan.ready[0].resultReleaseRevision, acceptedResultReleaseRevision);

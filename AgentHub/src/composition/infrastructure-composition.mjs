@@ -52,6 +52,7 @@ import { captureProcess } from "../infrastructure/process/process-capture.mjs";
 import { RuntimeCommandServer } from "../infrastructure/process/runtime-command.mjs";
 import { createRepositoryProductionValidationAdapter } from "../infrastructure/process/repository-production-validation.mjs";
 import { ReleaseOperationPublication } from "../infrastructure/process/release-operation-publication.mjs";
+import { processIsAlive } from "../infrastructure/process/process-liveness.mjs";
 import {
   copyWindowsFileObject,
   revealWindowsFile,
@@ -509,6 +510,7 @@ export async function createHubInfrastructure({
     reservePublication: (input) => releaseOperationAdapter.reservePublication(input),
     requestCorrection: createReleaseCorrectionRequester({ taskBoard, taskLifecycle }),
     cleanupGeneration: (input) => releaseOperationAdapter.cleanupGeneration(input),
+    processAlive: processIsAlive,
     runnerVersion: AGENT_HUB_VERSION,
   });
   const releaseOperationCommands = new ReleaseOperationCommandService({

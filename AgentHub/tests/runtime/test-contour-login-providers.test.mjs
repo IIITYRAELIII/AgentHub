@@ -178,7 +178,9 @@ test("the Test Contour Codex multiplexer answers account sign-in itself and neve
     assert.deepEqual(forwarded, ["real account/read"], "no sign-in request reached either child");
   } finally {
     multiplexer.stdin.end();
-    await new Promise((resolve) => multiplexer.once("close", resolve));
+    if (multiplexer.exitCode === null && multiplexer.signalCode === null) {
+      await new Promise((resolve) => multiplexer.once("close", resolve));
+    }
     const owned = (await readFile(pidLog, "utf8")).trim().split(/\r?\n/u).filter(Boolean).map(JSON.parse);
     const aliveAfterParentClose = owned.flatMap(({ childPid, descendantPid }) => [childPid, descendantPid])
       .filter((pid) => processIsAlive(pid));

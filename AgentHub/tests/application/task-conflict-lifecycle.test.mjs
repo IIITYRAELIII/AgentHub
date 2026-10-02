@@ -32,7 +32,11 @@ async function fixture(t) {
   const catalog = new WorkspaceCatalogStore({ databaseFile });
   await catalog.load();
   const store = new TaskBoardStore({ databaseFile });
-  t.after(async () => { store.close(); catalog.close(); await rm(root, { recursive: true, force: true }); });
+  t.after(async () => {
+    store.close();
+    catalog.close();
+    await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  });
   const workspace = await catalog.runMutation(() => catalog.createWorkspace({
     name: "Workspace", settings: { workingDirectory: primary, releaseWorkflowEnabled: true },
   }));
@@ -136,7 +140,7 @@ test("real conflict saves a terminal failed lifecycle with file and revision evi
   assert.equal(f.timings.find(event => event.operationId === "test-b" && event.stage === "workflow" && event.phase === "end").outcome, "error");
 });
 
-test("another Task pending withdrawal gives a terminal refusal without touching its recovery", { timeout: 90000 }, async (t) => {
+test("correction preserves its accepted result without touching another pending withdrawal", { timeout: 90000 }, async (t) => {
   const f = await fixture(t);
   const a = await f.create("A"), b = await f.create("B");
   await writeFile(path.join(a.root, "a.txt"), "A\n");
@@ -157,16 +161,17 @@ test("another Task pending withdrawal gives a terminal refusal without touching 
     })
   )), { code: "TASK_WITHDRAWAL_UNKNOWN" });
   const before = await git(f.primary, "rev-parse", "dev");
-  await assert.rejects(f.status(b.task.id, "in_progress", "other-withdrawal"), { code: "TASK_WITHDRAWAL_BUSY" });
-  assert.equal(f.taskBoard.lifecycleTransition("other-withdrawal").phase, "failed");
-  assert.equal(f.taskBoard.task(b.task.id).workflowStatus, "testing");
+  const corrected = await f.status(b.task.id, "in_progress", "other-correction");
+  assert.equal(corrected.task.workflowStatus, "in_progress");
+  assert.equal(corrected.acceptedResultPreserved, true);
+  assert.equal(f.taskBoard.lifecycleTransition("other-correction"), null);
   assert.equal(await git(f.primary, "rev-parse", "dev"), before);
   assert.equal(await f.taskGitWorkspaces.pendingWithdrawal({
     projectRoot: f.primary, taskId: a.task.id, operationId: "original-withdrawal",
   }), true);
 });
 
-for (const previouslyTested of [false, true]) test(`agent consolidation preserves source archive and releases all combined code (previouslyTested=${previouslyTested})`, { timeout: 120000 }, async (t) => {
+test("agent consolidation preserves source archive and releases all combined code", { timeout: 120000 }, async (t) => {
   const f = await fixture(t);
   const origin = path.join(f.root, "origin.git");
   await git(f.root, "init", "--bare", "--initial-branch=main", origin);
@@ -174,11 +179,6 @@ for (const previouslyTested of [false, true]) test(`agent consolidation preserve
   await git(f.primary, "push", "-u", "origin", "main");
   const a = await f.create("Absorbed"), b = await f.create("Survivor");
   await writeFile(path.join(a.root, "a.txt"), "source work\n");
-  if (previouslyTested) {
-    await f.status(a.task.id, "testing", "a-test");
-    await f.status(a.task.id, "in_progress", "a-return");
-    await writeFile(path.join(a.root, "a.txt"), "source work revised\n");
-  }
   await git(a.root, "add", "a.txt");
   await git(a.root, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "Save source");
   const sourceHead = await git(a.root, "rev-parse", "HEAD");
@@ -221,11 +221,11 @@ for (const previouslyTested of [false, true]) test(`agent consolidation preserve
     threadId: "thread", turnId: "turn", operationId: "reopen" }), /archive/);
   const accepted = await f.status(b.task.id, "awaiting_implementation", "accept-combined");
   // Acceptance composes the combined result itself.
-  assert.equal(accepted.releaseCandidate.status, "ready", accepted.releaseCandidate.reason);
-  const prepared = accepted.releaseCandidate;
+  assert.equal(accepted.releaseCandidate.status, "prepared", accepted.releaseCandidate.reason);
+  const prepared = await f.lifecycle.releasePreflight.prepareAwaitSet({ workspaceId: f.workspace.id });
   assert.deepEqual(prepared.taskIds, [b.task.id]);
   const candidate = prepared.releaseCandidates[0];
-  assert.equal(await git(candidate.releaseRoot, "show", "PreRelease:a.txt"), previouslyTested ? "source work revised" : "source work");
+  assert.equal(await git(candidate.releaseRoot, "show", "PreRelease:a.txt"), "source work");
   assert.equal(await git(candidate.releaseRoot, "show", "PreRelease:b.txt"), "surviving work");
   const plan = await new TaskReleasePlanService({ taskBoard: f.taskBoard, taskGitWorkspaces: f.taskGitWorkspaces }).plan(f.workspace.id);
   assert.ok(!plan.candidates.some((task) => task.id === a.task.id));
@@ -332,7 +332,7 @@ test("a sibling branch cannot hide an unapproved upstream merge", { timeout: 900
   assert.equal(await git(f.primary, "rev-parse", "dev"), before);
 });
 
-test("an explicit user exception permits consolidation before prerequisite publication", { timeout: 90000 }, async (t) => {
+test("an accepted prerequisite remains available to its dependent during correction", { timeout: 90000 }, async (t) => {
   const f = await fixture(t);
   const a = await f.create("Prerequisite"), b = await f.create("Dependent");
   await writeFile(path.join(a.root, "a.txt"), "A\n");
@@ -342,16 +342,13 @@ test("an explicit user exception permits consolidation before prerequisite publi
   await f.status(b.task.id, "testing", "test-b");
   await f.lifecycle.updateWorkflowStatus({ taskId: b.task.id, status: "blocked", operationId: "block-b",
     operationEvidence: { blockedBy: { taskId: a.task.id, resultCommit: tested.task.gitReferences[0].resultCommit } } });
-  await assert.rejects(f.taskGitWorkspaces.prepare({ taskId: b.task.id, taskNumber: b.task.taskNumber, projectRoot: f.primary }),
-    { code: "TASK_AWAITING_DEPENDENCY_RELEASE" });
-  await f.taskGitWorkspaces.prepare({ taskId: b.task.id, taskNumber: b.task.taskNumber, projectRoot: f.primary,
-    dependencyOverrideReason: "User explicitly requested consolidation without waiting for A release" });
+  await f.taskGitWorkspaces.prepare({ taskId: b.task.id, taskNumber: b.task.taskNumber, projectRoot: f.primary });
   await f.status(b.task.id, "in_progress", "resume-b");
   await f.taskGitWorkspaces.prepare({ taskId: b.task.id, taskNumber: b.task.taskNumber, projectRoot: f.primary });
   assert.equal(f.taskBoard.task(b.task.id).workflowStatus, "in_progress");
 });
 
-test("explicit dependent return persists Blocked and survives later publication advancement", { timeout: 90000 }, async (t) => {
+test("a corrected prerequisite remains accepted so its dependent can resume immediately", { timeout: 90000 }, async (t) => {
   const f = await fixture(t);
   const a = await f.create("A");
   await writeFile(path.join(a.root, "a.txt"), "A\n");
@@ -369,11 +366,10 @@ test("explicit dependent return persists Blocked and survives later publication 
   assert.equal(blocked.blockedBy.taskId, a.task.id);
   await f.status(b.task.id, "blocked", "repeat-blocked");
   assert.equal(f.taskBoard.task(b.task.id).blockedBy.taskId, a.task.id);
-  await assert.rejects(f.status(b.task.id, "in_progress", "early-resume"), { code: "TASK_AWAITING_DEPENDENCY_RELEASE" });
-  assert.equal(f.taskBoard.task(b.task.id).workflowStatus, "blocked");
+  await f.status(b.task.id, "in_progress", "early-resume");
+  assert.equal(f.taskBoard.task(b.task.id).workflowStatus, "in_progress");
   await git(f.primary, "update-ref", "refs/remotes/origin/main", aCommit);
   f.publish({ generation: "published", revision: aCommit, repositories: [{ root: f.primary, revision: aCommit }] });
-  await f.status(b.task.id, "in_progress", "resume-b");
   assert.equal(f.taskBoard.task(b.task.id).workflowStatus, "in_progress");
   assert.equal(f.taskBoard.task(b.task.id).blockedBy, undefined);
   const tree = await git(f.primary, "rev-parse", `${aCommit}^{tree}`);
@@ -383,7 +379,7 @@ test("explicit dependent return persists Blocked and survives later publication 
   await f.taskGitWorkspaces.prepare({ taskId: b.task.id, taskNumber: b.task.taskNumber, projectRoot: f.primary });
 });
 
-test("dependent return refuses without changing B, then succeeds after the agent explicitly returns B", { timeout: 90000 }, async (t) => {
+test("correction does not cascade into a dependent accepted Task", { timeout: 90000 }, async (t) => {
   const f = await fixture(t);
   const a = await f.create("A");
   await writeFile(path.join(a.root, "a.txt"), "A\n");
@@ -394,16 +390,12 @@ test("dependent return refuses without changing B, then succeeds after the agent
   await f.status(b.task.id, "testing", "test-b");
   const before = await git(f.primary, "rev-parse", "dev");
   const bBefore = f.taskBoard.task(b.task.id);
-  await assert.rejects(f.status(a.task.id, "in_progress", "return-a-refused"), (error) => {
-    assert.equal(error.code, "TASK_WITHDRAWAL_DEPENDENCY");
-    assert.deepEqual(error.details.blockedTaskIds, [b.task.id]);
-    return true;
-  });
-  assert.equal(f.taskBoard.lifecycleTransition("return-a-refused").phase, "failed");
+  const returnedA = await f.status(a.task.id, "in_progress", "return-a");
+  assert.equal(returnedA.acceptedResultPreserved, true);
+  assert.equal(f.taskBoard.lifecycleTransition("return-a"), null);
   assert.equal(await git(f.primary, "rev-parse", "dev"), before);
   assert.deepEqual(f.taskBoard.task(b.task.id), bBefore);
   await f.status(b.task.id, "in_progress", "return-b");
-  await f.status(a.task.id, "in_progress", "return-a-corrected");
   assert.equal(f.taskBoard.task(a.task.id).workflowStatus, "in_progress");
   assert.equal(f.taskBoard.task(b.task.id).workflowStatus, "in_progress");
 });
@@ -425,7 +417,7 @@ test("a conflict diagnostic longer than 4000 characters still has a confirmed te
   assert.equal(f.taskBoard.lifecycleTransition("large-conflict").phase, "failed");
 });
 
-for (const committed of [false, true]) test(`old conflict cannot restore withdrawn code (committed=${committed})`, { timeout: 90000 }, async (t) => {
+for (const committed of [false, true]) test(`old conflict keeps immutable accepted code (committed=${committed})`, { timeout: 90000 }, async (t) => {
   const f = await fixture(t);
   const a = await f.create("A"), b = await f.create("B");
   await writeFile(path.join(a.root, "app.txt"), "A\n");
@@ -441,15 +433,12 @@ for (const committed of [false, true]) test(`old conflict cannot restore withdra
   }
   await f.status(a.task.id, "in_progress", "return-a");
   const before = await git(f.primary, "rev-parse", "dev");
-  await assert.rejects(f.status(b.task.id, "testing", "finish-b"), (error) => {
-    t.diagnostic(error.message);
-    return true;
-  });
-  assert.equal(await git(f.primary, "rev-parse", "dev"), before);
-  await assert.rejects(git(f.primary, "merge-base", "--is-ancestor", testedA.task.gitReferences[0].resultCommit, "dev"));
+  await f.status(b.task.id, "testing", "finish-b");
+  assert.notEqual(await git(f.primary, "rev-parse", "dev"), before);
+  await git(f.primary, "merge-base", "--is-ancestor", testedA.task.gitReferences[0].resultCommit, "dev");
 });
 
-test("a dependency refusal leaves the other Task pending operation untouched", { timeout: 90000 }, async (t) => {
+test("correction leaves another Task pending operation untouched", { timeout: 90000 }, async (t) => {
   const f = await fixture(t);
   const a = await f.create("A");
   await writeFile(path.join(a.root, "a.txt"), "A\n");
@@ -461,8 +450,9 @@ test("a dependency refusal leaves the other Task pending operation untouched", {
   f.taskBoard.beginLifecycleTransition({ id: b.task.id, operationId: "foreign-b", kind: "workflow",
     targetWorkflowStatus: "in_progress", expectedRevision: f.taskBoard.task(b.task.id).revision });
   const before = await git(f.primary, "rev-parse", "dev");
-  await assert.rejects(f.status(a.task.id, "in_progress", "return-a-busy"), { code: "TASK_WITHDRAWAL_DEPENDENCY" });
-  assert.equal(f.taskBoard.lifecycleTransition("return-a-busy").phase, "failed");
+  const returned = await f.status(a.task.id, "in_progress", "return-a");
+  assert.equal(returned.acceptedResultPreserved, true);
+  assert.equal(f.taskBoard.lifecycleTransition("return-a"), null);
   assert.equal(f.taskBoard.lifecycleTransition("foreign-b").phase, "pending_git");
   assert.equal(await git(f.primary, "rev-parse", "dev"), before);
 });

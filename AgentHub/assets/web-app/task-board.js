@@ -2225,6 +2225,12 @@
         node('span', { text: title }),
         node('span', { class: 'task-board-count', text: String(groupTasks.length) }),
       ]);
+      summary.addEventListener('click', () => {
+        // The native `toggle` event is queued. Keep the durable collapse state in
+        // sync immediately so an intervening board snapshot cannot undo the click.
+        if (lane.open) state.collapsedBoardGroups.add(id);
+        else state.collapsedBoardGroups.delete(id);
+      });
       lane.append(summary);
       const cells = node('div', { class: 'task-board-lane-cells' });
       for (const status of statuses) {

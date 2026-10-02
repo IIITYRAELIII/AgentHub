@@ -189,6 +189,10 @@ function sameCanonicalPath(left, right) {
   return path.normalize(left).toLowerCase() === path.normalize(right).toLowerCase();
 }
 
+function sameRelativePath(leftRoot, leftPath, rightRoot, rightPath) {
+  return sameCanonicalPath(path.relative(leftRoot, leftPath), path.relative(rightRoot, rightPath));
+}
+
 function validRecordedCodexIdentity(candidate) {
   return Boolean(candidate
     && typeof candidate.path === "string" && path.isAbsolute(candidate.path)
@@ -217,12 +221,21 @@ export async function verifyRecordedCodexExecutable(candidate, {
   if (platform !== "win32") throw new Error("Recorded Codex executable verification is Windows-only");
   if (!validRecordedCodexIdentity(candidate)) throw new Error("Recorded Codex executable identity is invalid");
   const canonicalPath = await realpathImpl(candidate.path);
-  if (!sameCanonicalPath(canonicalPath, candidate.path)) {
-    throw new Error("Recorded Codex executable canonical path changed");
-  }
   const layout = officialCodexInstallRoots({ environment }).find((entry) => entry.source === candidate.source);
   if (!layout) throw new Error("Recorded Codex executable does not match its official install layout");
   const canonicalRoot = await realpathImpl(layout.root);
+  const suppliedRoot = pathInsideOrSame(candidate.path, layout.root)
+    ? layout.root
+    : (pathInsideOrSame(candidate.path, canonicalRoot) ? canonicalRoot : null);
+  if (!suppliedRoot) {
+    throw new Error("Recorded Codex executable does not match its official install layout");
+  }
+  if (!pathInsideOrSame(canonicalPath, canonicalRoot)) {
+    throw new Error("Codex executable escapes its official install root");
+  }
+  if (!sameRelativePath(suppliedRoot, candidate.path, canonicalRoot, canonicalPath)) {
+    throw new Error("Recorded Codex executable canonical path changed");
+  }
   if (!pathInsideOrSame(canonicalPath, canonicalRoot)) throw new Error("Codex executable escapes its official install root");
   if (!matchesOfficialCodexLayout(canonicalPath, canonicalRoot, candidate.source)) {
     throw new Error("Recorded Codex executable does not match its official install layout");

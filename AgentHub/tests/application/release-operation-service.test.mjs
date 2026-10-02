@@ -35,6 +35,7 @@ async function fixture(t, overrides = {}) {
   const effects = new Map();
   const service = new ReleaseOperationService({
     store,
+    processAlive: (pid) => pid === process.pid,
     ownerId: "worker-1",
     now,
     compose: async (input) => { calls.push(["compose", input.generation]); return generation(); },
@@ -204,6 +205,7 @@ test("partial target publication survives restart and only the missing target ru
   f.effects.set("unblocked", true);
   const replacement = new ReleaseOperationService({
     store: f.store,
+    processAlive: (pid) => pid === process.pid,
     ownerId: "worker-2",
     now: () => new Date(Date.now() + 60_000).toISOString(),
     compose: async () => assert.fail("composition must not repeat"),
@@ -311,6 +313,7 @@ test("lease heartbeat prevents a replacement worker from entering a long validat
   await new Promise((resolve) => setTimeout(resolve, 240));
   const replacement = new ReleaseOperationService({
     store: f.store,
+    processAlive: (pid) => pid === process.pid,
     ownerId: "worker-2",
     leaseMs: 150,
     compose: async () => assert.fail("replacement must not compose"),

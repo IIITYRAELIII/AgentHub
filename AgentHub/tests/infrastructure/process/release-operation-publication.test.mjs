@@ -65,7 +65,7 @@ test("stable publication runner preserves the initiating Stream and Thread for s
 
 test("stable runner process publishes the exact SQLite generation to an isolated Git endpoint", { timeout: 60000 }, async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "release-operation-runner-process-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  t.after(() => rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
   const remote = path.join(root, "origin.git");
   const primary = path.join(root, "primary");
   const taskRoot = path.join(root, "task");

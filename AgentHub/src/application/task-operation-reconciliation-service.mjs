@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { realpathSync } from "node:fs";
 import path from "node:path";
 
 import { normalizedTaskGitReferences } from "../domain/task-git-reference.mjs";
@@ -17,8 +18,16 @@ function requiredText(value, name, maximumLength = 2_000) {
 }
 
 function samePath(left, right) {
-  const a = path.resolve(String(left ?? ""));
-  const b = path.resolve(String(right ?? ""));
+  const canonical = (value) => {
+    const resolved = path.resolve(String(value ?? ""));
+    try {
+      return realpathSync.native(resolved);
+    } catch {
+      return resolved;
+    }
+  };
+  const a = canonical(left);
+  const b = canonical(right);
   return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
 }
 

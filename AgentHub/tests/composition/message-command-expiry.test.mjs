@@ -62,7 +62,7 @@ async function fixture(context, options = {}) {
   context.after(async () => {
     controller.stop();
     await store.close();
-    await rm(dataDir, { recursive: true, force: true });
+    await rm(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
   });
   async function accept(id, { state = "queued", result = null, inMemory = false, item = {} } = {}) {
     const command = messageCommandFixture({ clientUserMessageId: id, itemId: id,
@@ -219,7 +219,10 @@ test("legacy rows retain their original age, expiry tombstone survives archive a
   let now = Date.parse("2026-09-05T00:00:00Z");
   let store = new MessageCommandLedgerStore({ dataDir, now: () => now, terminalHotLimit: 0,
     terminalArchiveLimit: 0 });
-  context.after(async () => { store.close(); await rm(dataDir, { recursive: true, force: true }); });
+  context.after(async () => {
+    store.close();
+    await rm(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  });
   const command = messageCommandFixture({ item: { createdAt: "2026-09-01T00:00:00Z" },
     receipt: { createdAt: "2026-09-01T00:00:00Z" } });
   store.migrateLegacy({ queuedInputs: [command.item], desktopMessageReceipts: [command.receipt] });

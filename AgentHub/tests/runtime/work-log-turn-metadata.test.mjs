@@ -36,7 +36,11 @@ async function fixture() {
   return {
     root, journal, get store() { return store; }, get worker() { return worker; },
     async reopen() { await store.close(); open(); },
-    async close() { await store.close(); journal.close(); await rm(root, { recursive: true, force: true }); },
+    async close() {
+      await store.close();
+      journal.close();
+      await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    },
   };
 }
 
@@ -128,8 +132,7 @@ for (const scenario of [
       assert.deepEqual(await f.store[scenario.method]({ items: discovered }), { updated: 0, projected: true });
       assert.equal(await f.journal.recordRevision(base), recordRevision);
       const projected = await f.journal.snapshot();
-      if (scenario.discover === "missingPricingTurns") assert.notEqual(projected.version, before.version);
-      else assert.equal(projected.version, before.version); // Default ImageGen estimates are not priced.
+      assert.notEqual(projected.version, before.version);
       assert.equal((await f.journal.projectionSource()).revision, recordRevision);
       const revision = await f.journal.currentRevision();
       assert.deepEqual(await f.store[scenario.method]({ items: [] }), {

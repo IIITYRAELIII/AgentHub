@@ -387,7 +387,11 @@ test("selective publication maps shared UI to runtime, Worker and surface tests"
     testContour: false,
     quick: false,
     resume: false,
+    status: false,
+    operationId: "",
     workspaceId: "",
+    streamId: "",
+    threadId: "",
   });
   assert.equal(parseChangedArguments(["--test-contour"]).testContour, true);
 });

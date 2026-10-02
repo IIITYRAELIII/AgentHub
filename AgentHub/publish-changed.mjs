@@ -267,7 +267,7 @@ async function withStepFingerprints(steps, files, repositoryRoot = REPOSITORY_RO
   })));
 }
 
-export function parseChangedArguments(args) {
+export function parseChangedArguments(args, { requireOperationId = false } = {}) {
   let from = "";
   let skipRestart = false;
   let fullTests = false;
@@ -300,7 +300,9 @@ export function parseChangedArguments(args) {
   }
   if (quick && fullTests) throw new Error("Choose either quick or full validation");
   if (resume && status) throw new Error("Choose either --resume or --status");
-  if ((resume || status) && !operationId) throw new Error("--resume and --status require the original --operation id");
+  if (requireOperationId && (resume || status) && !operationId) {
+    throw new Error("--resume and --status require the original --operation id");
+  }
   if (operationId && !resume && !status) throw new Error("--operation requires --resume or --status");
   return { from, skipRestart, fullTests, testContour, quick, resume, status, operationId,
     workspaceId, streamId, threadId };
@@ -557,7 +559,7 @@ export async function runReleaseOperationCli(args = process.argv.slice(2), {
   wait = (delayMs) => new Promise((resolve) => setTimeout(resolve, delayMs)),
   pollMs = 1_000,
 } = {}) {
-  const options = parseChangedArguments(args);
+  const options = parseChangedArguments(args, { requireOperationId: true });
   if (options.skipRestart || options.testContour) {
     throw new Error("ReleaseOperation owns restart and contour policy; legacy publication overrides are not supported");
   }

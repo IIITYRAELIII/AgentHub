@@ -48,7 +48,11 @@ async function fixture(t) {
   const catalogStore = new WorkspaceCatalogStore({ databaseFile });
   await catalogStore.load();
   const store = new TaskBoardStore({ databaseFile });
-  t.after(async () => { store.close(); catalogStore.close(); await rm(root, { recursive: true, force: true }); });
+  t.after(async () => {
+    store.close();
+    catalogStore.close();
+    await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  });
   const workspace = await catalogStore.runMutation(() => catalogStore.createWorkspace({ name: "Workspace", settings: {
     workingDirectory: primary, releaseWorkflowEnabled: true,
   } }));
@@ -56,7 +60,7 @@ async function fixture(t) {
     hierarchy: () => [workspace], workspace: () => workspace, stream: () => null,
   };
   const taskBoard = new TaskBoardService({ store, workspaceCatalog });
-  const taskGitWorkspaces = new TaskGitWorkspaceService({ dataDir });
+  const taskGitWorkspaces = new TaskGitWorkspaceService({ dataDir, recordTiming: () => {} });
   const releaseGitWorkspaces = new ReleaseGitWorkspaceService({ dataDir });
   const releasePlanner = new TaskReleasePlanService({ taskBoard, taskGitWorkspaces });
   const forbidden = () => assert.fail("Await must not start publication, production validation or the test contour");

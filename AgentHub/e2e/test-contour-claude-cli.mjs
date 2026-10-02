@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import { createInterface } from "node:readline";
@@ -18,7 +18,13 @@ const command = argv.filter((_value, index) => stateFlag < 0 || (index !== state
 const runtimeRoot = String(process.env.AGENT_HUB_RUNTIME_ROOT ?? "").trim();
 
 function insideRuntime(candidate) {
-  const relative = path.relative(path.resolve(runtimeRoot), candidate);
+  const physical = (value) => {
+    const resolved = path.resolve(value);
+    try { return realpathSync.native(resolved); } catch {}
+    try { return path.join(realpathSync.native(path.dirname(resolved)), path.basename(resolved)); } catch {}
+    return resolved;
+  };
+  const relative = path.relative(physical(runtimeRoot), physical(candidate));
   return relative !== "" && !relative.startsWith("..") && !path.isAbsolute(relative);
 }
 

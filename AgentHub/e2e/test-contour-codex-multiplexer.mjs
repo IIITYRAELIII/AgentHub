@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import { createInterface } from "node:readline";
@@ -46,7 +46,13 @@ const realArguments = parsed.passthrough.length > 0
   : ["app-server", "--stdio"];
 
 function insideRuntime(candidate) {
-  const relative = path.relative(runtimeRoot, candidate);
+  const canonical = (value) => {
+    const resolved = path.resolve(value);
+    try { return realpathSync.native(resolved); } catch {}
+    try { return path.join(realpathSync.native(path.dirname(resolved)), path.basename(resolved)); } catch {}
+    return resolved;
+  };
+  const relative = path.relative(canonical(runtimeRoot), canonical(candidate));
   return relative !== "" && !relative.startsWith("..") && !path.isAbsolute(relative);
 }
 
@@ -112,17 +118,18 @@ const children = {
 };
 
 async function readFingerprintWithRetry(pid) {
-  for (let attempt = 0; attempt < 4; attempt += 1) {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
     const fingerprint = await readProcessFingerprint(pid);
     if (fingerprint) return fingerprint;
-    if (attempt < 3) await new Promise((resolve) => setTimeout(resolve, 50));
+    if (attempt < 19) await new Promise((resolve) => setTimeout(resolve, 100));
   }
   return null;
 }
 
-const childOwners = new Map(await Promise.all(Object.values(children).map(async (child) => [
+const childOwners = new Map(await Promise.all(Object.entries(children).map(async ([backend, child]) => [
   child,
   {
+    backend,
     root: await readFingerprintWithRetry(child.pid),
     known: [],
   },
@@ -446,7 +453,9 @@ async function stopOwnedChild(child) {
   const pid = Number(child?.pid);
   if (!Number.isInteger(pid) || pid <= 0) return;
   const owner = childOwners.get(child);
-  if (!owner?.root) throw new Error(`Cannot verify owned Codex child tree ${pid}`);
+  if (!owner?.root) {
+    throw new Error(`Cannot verify owned Codex ${owner?.backend ?? "unknown"} child tree ${pid}`);
+  }
   const deadline = Date.now() + CHILD_SHUTDOWN_TIMEOUT_MS;
   let current = await readOwnedProcessTree(owner.root, owner.known, { rootExited: closedChildren.has(child) });
   if (!Array.isArray(current)) throw new Error(`Cannot inspect owned Codex child tree ${pid}`);

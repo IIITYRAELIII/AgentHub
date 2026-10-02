@@ -60,6 +60,7 @@ test('Task status badges and provider dots retain their colors across every them
     await page.locator('[data-task-board-view="list"]').click();
     for (const width of [1440, 390]) {
       await page.setViewportSize({ width, height: 1000 });
+      await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
       for (const theme of registry.themes) {
         await page.evaluate(({ id, assets }) => {
           document.documentElement.dataset.theme = id;

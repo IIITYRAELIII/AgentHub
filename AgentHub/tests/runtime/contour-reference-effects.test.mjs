@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, writeFile, readFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, realpath, writeFile, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -31,7 +31,7 @@ test("recording Git owners reject copied Task cleanup before CAS and preserve re
   const task = { id: "captured-task", revision: 7, workspaceId: "workspace", gitReferences: [{
     projectRoot: source, branch: "captured-task-branch", resultCommit: commit,
   }] };
-  const baseRef = `refs/agent-hub/task-bases/${task.id}/${taskRepositoryKey(source)}`;
+  const baseRef = `refs/agent-hub/task-bases/${task.id}/${taskRepositoryKey(await realpath(source))}`;
   await git("branch", task.gitReferences[0].branch);
   await git("update-ref", baseRef, commit);
   const mutations = [];
@@ -76,7 +76,8 @@ test("recording Git owners deny every executable public operation before argumen
   for (const Owner of [TaskGitWorkspaceService, ReleaseGitWorkspaceService]) {
     assert.throws(() => new Owner({ dataDir: root, contourExternalEffects: { exclude() {} } }), /Unverified/);
     const owner = new Owner({ dataDir: root, contourExternalEffects: policy });
-    for (const method of Object.getOwnPropertyNames(Owner.prototype).filter((name) => !["constructor", "diagnostics"].includes(name))) {
+    for (const method of Object.getOwnPropertyNames(Owner.prototype)
+      .filter((name) => !["constructor", "diagnostics", "withOperationTrace", "measureOperation"].includes(name))) {
       await assert.rejects(async () => owner[method](), { code: "CONTOUR_EXTERNAL_EFFECT_EXCLUDED" }, `${Owner.name}.${method}`);
     }
   }

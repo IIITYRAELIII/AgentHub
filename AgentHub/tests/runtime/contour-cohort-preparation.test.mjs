@@ -16,7 +16,7 @@ const digest = (bytes) => createHash("sha256").update(bytes).digest("hex");
 async function fixture(t) {
   const root = await mkdtemp(path.join(os.tmpdir(), "hub-cohort-prepare-"));
   const writers = [];
-  t.after(async () => { writers.forEach((db) => db.close()); await rm(root, { recursive: true, force: true }); });
+  t.after(async () => { writers.forEach((db) => db.close()); await rm(root, { recursive: true, force: true, maxRetries: 100, retryDelay: 50 }); });
   const sourceDataDirectory = path.join(root, "source");
   await mkdir(sourceDataDirectory);
   const projects = ["one", "two"].map((name) => ({ name, path: path.join(root, "canonical", name) }));

@@ -60,7 +60,8 @@ test("pending legacy completions use bounded shared projections and ACK only aft
   assert.deepEqual(flushes.map(([, ids]) => ids.length), [16, 2]);
   assert.equal(state.rows().length, 18);
   assert.ok(state.rows().every((row) => row.state === "delivered"));
-  assert.equal(state.events.findIndex(([event]) => event === "message"), 33);
+  assert.equal(state.events.findIndex(([event]) => event === "message"), 1);
+  assert.equal(state.events.filter(([event]) => event === "message").length, 36);
   await state.service.retryPending();
   assert.equal(state.events.filter(([event]) => event === "flush").length, 2);
 });
@@ -75,7 +76,8 @@ test("failed or deferred shared projection leaves every exact revision retryable
     };
     await state.service.retryPending();
     assert.ok(state.rows().every((row) => row.state === "pending" && row.terminal_revision === 1));
-    assert.equal(state.events.filter(([event]) => event === "message").length, 0);
+    assert.equal(state.events.filter(([event]) => event === "message").length, 3);
+    state.events.splice(0);
     assert.equal(state.service.delivering.size, 0);
   }
   state.service.flushTurnProjections = successful;
@@ -113,7 +115,7 @@ test("same-revision live delivery cannot steal a staged claim and late correctio
   };
   await state.service.retryPending();
   assert.deepEqual(state.rows().map((row) => [row.terminal_revision, row.state]), [[1, "superseded"], [2, "pending"]]);
-  assert.equal(state.events.filter(([event]) => event === "message").length, 0);
+  assert.equal(state.events.filter(([event]) => event === "message").length, 1);
   state.completions.splice(0);
   state.service.flushTurnProjections = async () => ({ projected: true });
   await state.service.retryPending();

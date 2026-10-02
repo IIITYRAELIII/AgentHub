@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { createContourOperationalPaths } from "../../domain/test-contour-operational-paths.mjs";
@@ -6,14 +6,26 @@ import { assertContourOwnedPath } from "./test-contour-external-effects.mjs";
 
 export const CONTOUR_TARGET_PROJECT_MISMATCH = "CONTOUR_TARGET_PROJECT_MISMATCH";
 
+function physicalPath(value) {
+  const resolved = path.resolve(value);
+  try { return realpathSync.native(resolved); } catch { return resolved; }
+}
+
+function samePath(left, right) {
+  const a = physicalPath(left);
+  const b = physicalPath(right);
+  return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
+}
+
 // Durable state keeps original coordinates; only the recording provider maps
 // canonical input to execution paths. UI/catalog coordinates return here before
 // receipts and admission. Lookup is a point read from the existing ledger owner.
 export function createContourCommandMapping({ root, readCommand = () => null }) {
+  root = physicalPath(root);
   root = assertContourOwnedPath(root, root);
   const markerFile = assertContourOwnedPath(path.join(root, "recording-provider.json"), root);
   const marker = JSON.parse(readFileSync(markerFile, "utf8"));
-  if (marker.schemaVersion !== 1 || marker.kind !== "literal-recording-provider" || marker.root !== root || marker.externalEffects !== "deny") throw new Error("Invalid recording mapping marker");
+  if (marker.schemaVersion !== 1 || marker.kind !== "literal-recording-provider" || !samePath(marker.root, root) || marker.externalEffects !== "deny") throw new Error("Invalid recording mapping marker");
   const paths = createContourOperationalPaths({ root, sources: marker.sources });
   const mappings = paths.manifest();
   const threads = new Map();

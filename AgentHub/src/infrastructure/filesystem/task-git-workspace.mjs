@@ -392,18 +392,39 @@ function taskResultRef(taskId, repoKey) {
   return `${TASK_RESULT_REF_PREFIX}${normalizedTaskId(taskId)}/${repoKey}`;
 }
 
+function taskUpstreamAdoptionTaskKey(taskId) {
+  return createHash("sha256").update(normalizedTaskId(taskId), "utf8").digest("hex").slice(0, 16);
+}
+
 function taskUpstreamAdoptionPrefix(taskId, repoKey) {
+  return `${TASK_UPSTREAM_ADOPTION_REF_PREFIX}t-${taskUpstreamAdoptionTaskKey(taskId)}/${repoKey}/`;
+}
+
+function taskUpstreamAdoptionLegacyPrefix(taskId, repoKey) {
   return `${TASK_UPSTREAM_ADOPTION_REF_PREFIX}${normalizedTaskId(taskId)}/${repoKey}/`;
+}
+
+function taskUpstreamAdoptionPrefixes(taskId, repoKey) {
+  return [taskUpstreamAdoptionPrefix(taskId, repoKey), taskUpstreamAdoptionLegacyPrefix(taskId, repoKey)];
 }
 
 function taskUpstreamAdoptionRef(taskId, repoKey, snapshotCommit, adoptedCommit) {
   return `${taskUpstreamAdoptionPrefix(taskId, repoKey)}${snapshotCommit}/${adoptedCommit}`;
 }
 
+function taskUpstreamAdoptionIdentityRefs(taskId, repoKey, snapshotCommit, adoptedCommit) {
+  return taskUpstreamAdoptionPrefixes(taskId, repoKey)
+    .map((prefix) => `${prefix}${snapshotCommit}/${adoptedCommit}`);
+}
+
 async function taskUpstreamAdoptionRefs(repoRoot, taskId, repoKey) {
-  return String(await runGit([
-    "for-each-ref", "--format=%(refname)", taskUpstreamAdoptionPrefix(taskId, repoKey),
-  ], { cwd: repoRoot })).split(/\r?\n/u).filter(Boolean);
+  const refs = [];
+  for (const prefix of taskUpstreamAdoptionPrefixes(taskId, repoKey)) {
+    refs.push(...String(await runGit([
+      "for-each-ref", "--format=%(refname)", prefix,
+    ], { cwd: repoRoot })).split(/\r?\n/u).filter(Boolean));
+  }
+  return [...new Set(refs)];
 }
 
 function exactRequestId(value) {
@@ -1376,9 +1397,10 @@ export class TaskGitWorkspaceService {
     const relative = path.relative(guardsRoot, guardPath);
     const segments = relative.split(path.sep);
     const repositoryKey = taskRepositoryKey(repositoryRootValue);
+    const repositoryKeys = new Set([repositoryKey, taskRepositoryKey(projectRoot)]);
     if (segments.length !== 2
       || normalizedTaskId(segments[0]) === id
-      || segments[1] !== `${repositoryKey}.json`) return null;
+      || !repositoryKeys.has(segments[1].replace(/\.json$/u, ""))) return null;
     if (error instanceof Error) {
       if (error.code !== "TASK_GIT_REPOSITORY_GUARD_ADMISSION_NO_EFFECT") return null;
       const admission = error.taskGitAdmission;
@@ -1968,10 +1990,12 @@ export class TaskGitWorkspaceService {
       await this.#runOwned(["cat-file", "-e", `${published}^{commit}`], { cwd: repoRoot, lease });
       const outstanding = [];
       for (const task of frozen) {
-        const prefix = `${taskUpstreamAdoptionPrefix(task.taskId, repoKey)}${task.resultCommit}/`;
-        const refs = String(await this.#runOwned([
-          "for-each-ref", "--format=%(refname)%00%(objectname)", prefix,
-        ], { cwd: repoRoot, lease })).split(/\r?\n/u).filter(Boolean);
+        const refs = [];
+        for (const prefix of taskUpstreamAdoptionPrefixes(task.taskId, repoKey)) {
+          refs.push(...String(await this.#runOwned([
+            "for-each-ref", "--format=%(refname)%00%(objectname)", `${prefix}${task.resultCommit}/`,
+          ], { cwd: repoRoot, lease })).split(/\r?\n/u).filter(Boolean));
+        }
         if (refs.length > 1) throw new Error("frozen Task snapshot has ambiguous historical adoption receipts");
         if (!refs.length) continue;
         const [recordRef, recordHash] = refs[0].split("\0");
@@ -2037,7 +2061,7 @@ export class TaskGitWorkspaceService {
     const adopted = exactCommitId(record.adoptedCommit, "historical adopted commit");
     const acceptedLocalMain = exactCommitId(record.acceptedLocalMainCommit, "historical accepted local main");
     const exactBase = exactCommitId(record.taskBaseCommit, "historical Task base");
-    if (recordRef !== taskUpstreamAdoptionRef(task.taskId, repoKey, task.resultCommit, adopted)) {
+    if (!taskUpstreamAdoptionIdentityRefs(task.taskId, repoKey, task.resultCommit, adopted).includes(recordRef)) {
       throw new Error("historical adoption receipt ref does not derive from its record");
     }
     const branch = String(record.branch ?? "").trim();
@@ -2155,14 +2179,22 @@ export class TaskGitWorkspaceService {
       taskId, taskNumber, repoRoot, branch, baseCommit, snapshotCommit,
       localMain, adoptedCommit, lease,
     });
-    const recordRef = taskUpstreamAdoptionRef(
+    const matchingRefs = [];
+    for (const candidateRef of taskUpstreamAdoptionIdentityRefs(
       proof.taskId, proof.repositoryKey, proof.snapshotCommit, proof.adoptedCommit,
-    );
-    const recordHash = await this.#runOwned(["rev-parse", "--verify", recordRef], {
-      cwd: repoRoot, lease,
-    }).catch(() => {
+    )) {
+      const candidateHash = await this.#runOwned(["rev-parse", "--verify", candidateRef], {
+        cwd: repoRoot, lease,
+      }).catch(() => null);
+      if (candidateHash) matchingRefs.push([candidateRef, candidateHash]);
+    }
+    if (!matchingRefs.length) {
       throw new Error(`approved upstream ${proof.adoptedCommit} requires a durable explicit adoption receipt`);
-    });
+    }
+    if (new Set(matchingRefs.map(([, hash]) => hash)).size !== 1) {
+      throw new Error("explicit upstream adoption path aliases have conflicting receipts");
+    }
+    const [recordRef, recordHash] = matchingRefs[0];
     const type = await this.#runOwned(["cat-file", "-t", recordHash], { cwd: repoRoot, lease });
     if (type !== "blob") throw new Error("explicit upstream adoption receipt is not a Git blob");
     const content = await this.#runOwned(["cat-file", "-p", recordHash], { cwd: repoRoot, lease });
@@ -2206,10 +2238,12 @@ export class TaskGitWorkspaceService {
     const id = normalizedTaskId(taskId);
     const repoKey = taskRepositoryKey(repoRoot);
     const exactSnapshot = exactCommitId(snapshotCommit, "Task snapshot commit");
-    const prefix = `${taskUpstreamAdoptionPrefix(id, repoKey)}${exactSnapshot}/`;
-    const records = String(await this.#runOwned([
-      "for-each-ref", "--format=%(refname)%00%(objectname)", prefix,
-    ], { cwd: repoRoot, lease })).split(/\r?\n/u).filter(Boolean);
+    const records = [];
+    for (const prefix of taskUpstreamAdoptionPrefixes(id, repoKey)) {
+      records.push(...String(await this.#runOwned([
+        "for-each-ref", "--format=%(refname)%00%(objectname)", `${prefix}${exactSnapshot}/`,
+      ], { cwd: repoRoot, lease })).split(/\r?\n/u).filter(Boolean));
+    }
     if (!records.length) return null;
     if (records.length !== 1) throw new Error("Task snapshot has ambiguous durable upstream adoption receipts");
     const [recordRef, recordHash] = records[0].split("\0");
@@ -3743,18 +3777,35 @@ export class TaskGitWorkspaceService {
     const repoRoot = await repositoryRoot(projectRoot);
     const expectedBranch = taskBranchName(id, repoRoot, taskNumber);
     const legacyBranch = taskBranchName(id, repoRoot);
+    // A stored Windows root may use its 8.3 spelling while Git resolves the
+    // same repository to the long native path (or vice versa). Branch names
+    // created before that canonicalization must remain valid for this exact
+    // repository; the commit and repository evidence below are still checked.
+    const storedRootBranch = taskBranchName(id, projectRoot, taskNumber);
+    const storedRootLegacyBranch = taskBranchName(id, projectRoot);
     const storedBranch = String(branch ?? "").trim();
-    if (storedBranch !== expectedBranch && storedBranch !== legacyBranch) {
+    if (![expectedBranch, legacyBranch, storedRootBranch, storedRootLegacyBranch].includes(storedBranch)) {
       throw new Error(`Task branch does not match its repository: ${branch}`);
     }
-    const repoKey = taskRepositoryKey(repoRoot);
-    const baseRef = taskBaseRef(id, repoKey);
-    const adoptionRef = taskLegacyAdoptionRef(id, repoKey);
-    const baseCommit = await runGit(["rev-parse", "--verify", `${baseRef}^{commit}`], { cwd: repoRoot });
+    const repoKeys = [...new Set([taskRepositoryKey(repoRoot), taskRepositoryKey(projectRoot)])];
+    const existingCommits = async (refForKey) => {
+      const values = [];
+      for (const repoKey of repoKeys) {
+        const commit = await gitMaybe(["rev-parse", "--verify", `${refForKey(repoKey)}^{commit}`], { cwd: repoRoot });
+        if (commit && !values.includes(commit)) values.push(commit);
+      }
+      if (values.length > 1) throw new Error("Task repository path aliases have conflicting Git evidence");
+      return values[0] ?? null;
+    };
+    const baseCommit = await existingCommits((repoKey) => taskBaseRef(id, repoKey));
+    if (!baseCommit) {
+      await runGit(["rev-parse", "--verify", `${taskBaseRef(id, repoKeys[0])}^{commit}`], { cwd: repoRoot });
+      throw new Error("Task base reference is unavailable");
+    }
     const acceptedCommit = await runGit(["rev-parse", "--verify", `${String(resultCommit)}^{commit}`], { cwd: repoRoot });
     const branchCommit = await runGit(["rev-parse", "--verify", `refs/heads/${storedBranch}^{commit}`], { cwd: repoRoot });
     await runGit(["merge-base", "--is-ancestor", acceptedCommit, branchCommit], { cwd: repoRoot });
-    const adoptedCommit = await gitMaybe(["rev-parse", "--verify", `${adoptionRef}^{commit}`], { cwd: repoRoot });
+    const adoptedCommit = await existingCommits((repoKey) => taskLegacyAdoptionRef(id, repoKey));
     const pathspecs = adoptedCommit === acceptedCommit
       ? ["--", ".", ":(exclude,glob)**/CHANGELOG.md"]
       : ["--"];
@@ -5017,9 +5068,26 @@ export class TaskGitWorkspaceService {
     if (!generation || !/^[a-f0-9]{64}$/u.test(manifestHash) || !published?.planRevision) {
       throw new Error("Release service Task requires exact durable publication and manifest evidence");
     }
-    const manifestFile = path.join(this.dataDir, "release-repositories", taskRepositoryKey(repositoryRoot),
-      "evidence", `${manifestHash}.json`);
-    const manifestBytes = await readFile(manifestFile);
+    const repositoryKeys = [...new Set([
+      taskRepositoryKey(repositoryRoot),
+      taskRepositoryKey(published.root),
+      taskRepositoryKey(workspaces[0].projectRoot),
+    ])];
+    const manifestCopies = [];
+    for (const repositoryKey of repositoryKeys) {
+      const manifestFile = path.join(this.dataDir, "release-repositories", repositoryKey,
+        "evidence", `${manifestHash}.json`);
+      const bytes = await readFile(manifestFile).catch((error) => {
+        if (error?.code === "ENOENT") return null;
+        throw error;
+      });
+      if (bytes) manifestCopies.push(bytes);
+    }
+    if (!manifestCopies.length) throw new Error("Published release manifest evidence is unavailable");
+    if (manifestCopies.some((bytes) => !bytes.equals(manifestCopies[0]))) {
+      throw new Error("Published release repository path aliases have conflicting manifest evidence");
+    }
+    const manifestBytes = manifestCopies[0];
     if (createHash("sha256").update(manifestBytes).digest("hex") !== manifestHash) {
       throw new Error("Published release manifest bytes changed");
     }

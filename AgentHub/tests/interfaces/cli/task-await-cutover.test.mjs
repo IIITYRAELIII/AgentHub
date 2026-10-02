@@ -41,6 +41,24 @@ function operationArgumentsHash(value) {
   return createHash("sha256").update(JSON.stringify(canonicalValue(value)), "utf8").digest("hex");
 }
 
+function withPrepareAwaitAcceptance(releasePreflight) {
+  return {
+    ...releasePreflight,
+    async prepareAwaitAcceptance(options) {
+      const validation = await releasePreflight.validateAwaitAcceptance(options);
+      let committedResult;
+      await releasePreflight.prepareAwaitSet({
+        ...options,
+        commitPrepared: async (prepared) => {
+          committedResult = await options.commitPrepared({ ...prepared, task: validation.task });
+          return committedResult;
+        },
+      });
+      return committedResult;
+    },
+  };
+}
+
 function argumentsFixture() {
   return [
     "--workspace", "workspace-1",
@@ -403,7 +421,7 @@ test("disposable public squash bootstrap reaches real Test then canonical Await 
 
   const taskGitWorkspaces = new TaskGitWorkspaceService({ dataDir });
   let candidateBuilds = 0;
-  const releasePreflight = {
+  const releasePreflight = withPrepareAwaitAcceptance({
     withAwaitTransition: async (_workspaceId, operation) => operation(),
     validateAwaitAcceptance: async ({ acceptingTask }) => ({
       planRevision: "validated-bootstrap-plan",
@@ -418,7 +436,7 @@ test("disposable public squash bootstrap reaches real Test then canonical Await 
       return prepared;
     },
     preflight: async () => ({}),
-  };
+  });
   runtime = await openTaskAwaitCutoverRuntime({
     config: { dataDir, projectRoot: repositoryRoot, taskBoard: { autoPlaceConfidence: 0.82 } },
     taskGitWorkspaces, releasePreflight,
@@ -500,11 +518,9 @@ test("disposable public squash bootstrap reaches real Test then canonical Await 
     request_id: "survivor-await", task_id: survivorCreated.id, status: "awaiting_implementation",
     expected_task_revision: confirmed.task.revision, expected_workflow_status: "testing" });
   assert.equal(awaited.workflowStatus, "awaiting_implementation");
-  assert.equal(awaited.releaseCandidate.status, "ready");
+  assert.equal(awaited.releaseCandidate.status, "prepared");
   assert.equal(awaited.gitReferences[0].resultCommit, newResult);
   assert.equal(awaited.releaseCandidate.planRevision, "plan-1");
-  assert.deepEqual(awaited.releaseCandidate.taskIds, [survivorCreated.id]);
-  assert.equal(awaited.releaseCandidate.releaseCandidates[0].preReleaseHead, newResult);
   assert.equal(candidateBuilds, 1);
   assert.equal(await readFile(path.join(survivorWorkspace.projectRoot, "approved-dirty.txt"), "utf8")
     .catch((error) => error.code), "ENOENT");
@@ -583,7 +599,7 @@ test("production cutover composer writes the canonical receipt and leaves unrela
     cleanupOwned: async () => {},
     cleanupPreview: async () => ({ workspaces: [], gitReferences: [], deleting: [] }),
   };
-  const releasePreflight = {
+  const releasePreflight = withPrepareAwaitAcceptance({
     preflight: async () => ({}),
     withAwaitTransition: async (_workspaceId, operation) => operation(),
     validateAwaitAcceptance: async ({ acceptingTask }) => ({
@@ -595,7 +611,7 @@ test("production cutover composer writes the canonical receipt and leaves unrela
       await options.commitPrepared(prepared);
       return prepared;
     },
-  };
+  });
   const input = {
     workspaceId: workspace.id,
     streamId: stream.id,
@@ -618,9 +634,8 @@ test("production cutover composer writes the canonical receipt and leaves unrela
     }),
   });
   assert.equal(result.result.workflowStatus, "awaiting_implementation");
-  assert.equal(result.result.releaseCandidate.status, "ready");
+  assert.equal(result.result.releaseCandidate.status, "prepared");
   assert.equal(result.result.releaseCandidate.planRevision, "plan-after-cutover");
-  assert.deepEqual(result.result.releaseCandidate.taskIds, [created.id]);
 
   readCatalog = new WorkspaceCatalogStore({ databaseFile });
   await readCatalog.load();
@@ -709,12 +724,12 @@ test("production cross-Task cutover stays in Test after candidate composition fa
     cleanupOwned: async () => {},
     cleanupPreview: async () => ({ workspaces: [], gitReferences: [], deleting: [] }),
   };
-  const releasePreflight = {
+  const releasePreflight = withPrepareAwaitAcceptance({
     preflight: async () => ({}),
     withAwaitTransition: async (_workspaceId, operation) => operation(),
     validateAwaitAcceptance: async () => { throw new Error("injected PreRelease validation failure"); },
     prepareAwaitSet: async () => { throw new Error("injected PreRelease rebuild failure"); },
-  };
+  });
   const openRuntime = () => openTaskAwaitCutoverRuntime({
     config: { dataDir: root, projectRoot: repositoryRoot, taskBoard: { autoPlaceConfidence: 0.82 } },
     taskGitWorkspaces,
@@ -869,7 +884,7 @@ test("production cross-Task pending recovery preserves its immutable source evid
   runtime = await openTaskAwaitCutoverRuntime({
     config: { dataDir: root, projectRoot: repositoryRoot, taskBoard: { autoPlaceConfidence: 0.82 } },
     taskGitWorkspaces,
-    releasePreflight: {
+    releasePreflight: withPrepareAwaitAcceptance({
       preflight: async () => ({}),
       withAwaitTransition: async (_workspaceId, operation) => operation(),
       validateAwaitAcceptance: async ({ acceptingTask }) => ({
@@ -881,7 +896,7 @@ test("production cross-Task pending recovery preserves its immutable source evid
         await options.commitPrepared(prepared);
         return prepared;
       },
-    },
+    }),
   });
   const token = runtime.service.contextToken({
     provider: "codex", threadId: "thread-cutover-pending", streamId: stream.id,

@@ -142,6 +142,7 @@ async function operationHarness(t, { validationFailures = 0, publicationFailure 
   };
   const service = new ReleaseOperationService({
     store,
+    processAlive: (pid) => pid === process.pid,
     retryDelayMs: 20,
     compose: async ({ operation, generation }) => {
       composeCalls += 1;

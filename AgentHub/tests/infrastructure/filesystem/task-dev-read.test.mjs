@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile, access } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, rm, writeFile, access } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -28,7 +28,7 @@ test("readDev observes existing refs without creating worktrees or touching dirt
   await git("worktree", "add", dev, "dev");
   await writeFile(path.join(dev, "app.txt"), "uncommitted\n");
   const second = await service.readDev(repo);
-  assert.equal(second.projectRoot.toLowerCase(), dev.toLowerCase());
+  assert.equal(second.projectRoot.toLowerCase(), (await realpath(dev)).toLowerCase());
   assert.equal(await readFile(path.join(dev, "app.txt"), "utf8"), "uncommitted\n");
   assert.equal(await git("show-ref"), before);
   await assert.rejects(access(data));

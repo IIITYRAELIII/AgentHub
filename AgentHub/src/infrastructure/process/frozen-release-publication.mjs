@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
+import { realpathSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -8,9 +9,14 @@ import { assertReleaseCloneForPublication } from "../filesystem/release-git-work
 
 const execute = promisify(execFile);
 const sha = /^[a-f0-9]{40,64}$/u;
+function canonicalPath(value) {
+  const resolved = path.resolve(value);
+  try { return realpathSync.native(resolved); } catch { return resolved; }
+}
+
 const samePath = (a, b) => process.platform === "win32"
-  ? path.resolve(a).toLowerCase() === path.resolve(b).toLowerCase()
-  : path.resolve(a) === path.resolve(b);
+  ? canonicalPath(a).toLowerCase() === canonicalPath(b).toLowerCase()
+  : canonicalPath(a) === canonicalPath(b);
 
 async function git(args, { cwd }) {
   const { stdout } = await execute("git", args, {

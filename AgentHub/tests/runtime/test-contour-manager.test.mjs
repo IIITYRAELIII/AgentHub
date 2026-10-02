@@ -80,7 +80,7 @@ test("Test Contour aligns cloned Stream settings with the requested provider mod
       verified.close();
     }
   } finally {
-    await rm(root, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
 
@@ -121,7 +121,7 @@ test("Test Contour retries transient SQLite I/O while production releases its re
     assert.equal(attempts, 2);
     assert.equal(waits, 1);
   } finally {
-    await rm(root, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
 
@@ -521,7 +521,7 @@ test("Fake Codex recovery initializes a missing Test Contour data directory", as
     );
     assert.equal(await readFile(paths.markerFile, "utf8"), markerBefore);
   } finally {
-    await rm(root, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
 
@@ -644,7 +644,7 @@ test("Fake Codex recovery recreates the exact Thread and preserves five FIFO com
   } finally {
     catalog?.close();
     ledger?.close();
-    await rm(root, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
 

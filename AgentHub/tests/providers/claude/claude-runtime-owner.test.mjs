@@ -237,7 +237,7 @@ test("PowerShell parser seam requires runtime identity and exact parsed session 
   ].join(" ");
   const powershell = path.join(process.env.SystemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
   const { stdout, stderr } = await execFileAsync(powershell, [
-    "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command,
+    "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", command,
   ], { windowsHide: true, maxBuffer: 64 * 1024 });
   assert.equal(stderr, "");
   const result = JSON.parse(stdout);

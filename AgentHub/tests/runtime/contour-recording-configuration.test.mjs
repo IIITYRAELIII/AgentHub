@@ -1,6 +1,6 @@
 import { assertRecordingContourConfiguration, prepareRecordingContourEnvironment } from "../../src/infrastructure/filesystem/test-contour-recording-environment.mjs";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -28,8 +28,9 @@ test("installer prepares recording projects consumed by real runtime config and 
     run: async (...args) => calls.push(args) });
   assert.equal(calls.length, 1);
   const recording = await readTestContourRecordingConfiguration(f.root);
+  const recordingRoot = await realpath(f.recording);
   assert.deepEqual(recording.projects.map((project) => project.name), ["Alpha", "Beta"]);
-  assert.ok(recording.projects.every((project) => project.path.startsWith(path.join(f.recording, "execution", "project"))));
+  assert.ok(recording.projects.every((project) => project.path.startsWith(path.join(recordingRoot, "execution", "project"))));
   const descriptorFile = path.join(f.recording, "recording-projects.json");
   const before = await readFile(descriptorFile, "utf8");
   assert.equal(before.includes("source-secret-not-copied"), false);
@@ -37,14 +38,14 @@ test("installer prepares recording projects consumed by real runtime config and 
   assert.equal(await readFile(descriptorFile, "utf8"), before);
   const config = testContourConfig({ paths: installed.paths, telegramApiBaseUrl: "http://127.0.0.1:1234", recording });
   assert.deepEqual(config.projects, recording.projects);
-  assert.deepEqual(config.testContourRecording, { schemaVersion: 1, root: f.recording });
+  assert.deepEqual(config.testContourRecording, { schemaVersion: 1, root: recordingRoot });
   assert.equal(path.basename(config.codexExecutableArgs[0]), "recording-contour-codex-cli.mjs");
-  assert.deepEqual(config.codexExecutableArgs.slice(1), ["--recording-root", f.recording]);
+  assert.deepEqual(config.codexExecutableArgs.slice(1), ["--recording-root", recordingRoot]);
   const environment = testContourEnvironment({ paths: installed.paths, telegramApiBaseUrl: "http://127.0.0.1:1234",
     releaseId: "test-release", contourId: installed.marker.id, port: 1234, runtimeNonce: "fixture-nonce", recording,
     environment: { CODEX_PROJECT_ROOT: "wrong-single-project", AGENT_HUB_RECORDING_PROVIDER_ROOT: "wrong-root" } });
   assert.equal(Object.hasOwn(environment, "CODEX_PROJECT_ROOT"), false);
-  assert.equal(environment.AGENT_HUB_RECORDING_PROVIDER_ROOT, f.recording);
+  assert.equal(environment.AGENT_HUB_RECORDING_PROVIDER_ROOT, recordingRoot);
   await writeFile(f.markerFile, JSON.stringify({ ...f.marker, threads: [{ provider: "codex", id: "new", streamId: "s", cwd: f.sourceConfig.projectRoot }] }));
   await assert.rejects(readTestContourRecordingConfiguration(f.root), /identity mismatch/);
 });

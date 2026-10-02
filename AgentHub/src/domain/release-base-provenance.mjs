@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 // Immutable authority for a release candidate base. A candidate whose base
 // differs from the durable published baseline must carry exactly one of these
 // discriminated envelopes in its manifest and checkpoint:
@@ -14,6 +16,11 @@ function text(value) {
   return String(value ?? "").trim();
 }
 
+function adoptionRefTaskPrefixes(taskId) {
+  const compact = createHash("sha256").update(taskId, "utf8").digest("hex").slice(0, 16);
+  return [`${ADOPTION_REF_PREFIX}${taskId}/`, `${ADOPTION_REF_PREFIX}t-${compact}/`];
+}
+
 function normalizedAdoption(value) {
   const adoption = {
     taskId: text(value?.taskId),
@@ -26,7 +33,7 @@ function normalizedAdoption(value) {
   if (!adoption.taskId
       || ![adoption.resultCommit, adoption.recordHash, adoption.adoptedCommit, adoption.acceptedLocalMainCommit]
         .every((commit) => COMMIT.test(commit))
-      || !adoption.recordRef.startsWith(`${ADOPTION_REF_PREFIX}${adoption.taskId}/`)
+      || !adoptionRefTaskPrefixes(adoption.taskId).some((prefix) => adoption.recordRef.startsWith(prefix))
       || !adoption.recordRef.endsWith(`/${adoption.resultCommit}/${adoption.adoptedCommit}`)) {
     throw new Error("release candidate has invalid selected Task adoption provenance");
   }

@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { AsyncSqliteMutationQueue } from "./async-sqlite-mutation-queue.mjs";
@@ -53,8 +53,16 @@ export const LATEST_TASK_SQUASH_TRANSFER_OUTCOME_SQL = `
 `;
 
 function sameResolvedPath(left, right) {
-  const a = path.resolve(String(left ?? ""));
-  const b = path.resolve(String(right ?? ""));
+  const canonical = (value) => {
+    const resolved = path.resolve(String(value ?? ""));
+    try {
+      return realpathSync.native(resolved);
+    } catch {
+      return resolved;
+    }
+  };
+  const a = canonical(left);
+  const b = canonical(right);
   return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
 }
 

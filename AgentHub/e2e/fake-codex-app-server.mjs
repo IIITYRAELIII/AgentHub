@@ -1,4 +1,4 @@
-import { appendFileSync, existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { createInterface } from "node:readline";
 
@@ -8,8 +8,14 @@ const pidFileArgument = process.argv.indexOf("--pid-file");
 const pidFilePath = pidFileArgument >= 0 ? process.argv[pidFileArgument + 1] : "";
 const acceptAll = process.argv.includes("--accept-all");
 if (process.argv.includes("--require-test-contour")) {
-  const runtimeRoot = path.resolve(String(process.env.AGENT_HUB_RUNTIME_ROOT ?? ""));
-  const resolvedStatePath = path.resolve(statePath || ".");
+  const physical = (value) => {
+    const resolved = path.resolve(value);
+    try { return realpathSync.native(resolved); } catch {}
+    try { return path.join(realpathSync.native(path.dirname(resolved)), path.basename(resolved)); } catch {}
+    return resolved;
+  };
+  const runtimeRoot = physical(String(process.env.AGENT_HUB_RUNTIME_ROOT ?? ""));
+  const resolvedStatePath = physical(statePath || ".");
   const relativeStatePath = path.relative(runtimeRoot, resolvedStatePath);
   if (process.env.AGENT_HUB_TEST_CONTOUR !== "1"
     || process.env.AGENT_HUB_TEST_CONTOUR_PROFILE !== "fake-codex"

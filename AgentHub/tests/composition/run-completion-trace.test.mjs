@@ -63,7 +63,7 @@ test("real completion composition traces pending startup recovery through durabl
     release();
     await recovery;
   }
-  assert.deepEqual(events, ["history", "journal", "flush", "message", "save"]);
+  assert.deepEqual(events, ["history", "message", "journal", "flush", "message", "save"]);
   assert.ok((await composition.terminalStore.pending())
     .every((item) => item.channels.projection.state === "delivered"));
   assert.equal(notifications.values().length, 0);

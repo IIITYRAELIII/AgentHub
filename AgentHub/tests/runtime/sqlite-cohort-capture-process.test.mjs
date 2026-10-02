@@ -19,7 +19,7 @@ async function fixture(t, suffix = "source") {
     db.exec("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=0; CREATE TABLE state(generation); INSERT INTO state VALUES(1)");
     return db;
   });
-  t.after(async () => { writers.forEach((db) => db.close()); await rm(root, { recursive: true, force: true }); });
+  t.after(async () => { writers.forEach((db) => db.close()); await rm(root, { recursive: true, force: true, maxRetries: 100, retryDelay: 50 }); });
   return { sourceDataDirectory, outputDirectory, writers };
 }
 function assertDead(pid) { assert.ok(pid > 0); assert.throws(() => process.kill(pid, 0), (error) => error.code === "ESRCH"); }

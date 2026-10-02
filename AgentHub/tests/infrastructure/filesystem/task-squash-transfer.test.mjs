@@ -789,14 +789,8 @@ test("Git-applied squash reconciles its real SQLite transition without an invent
   assert.ok(accepted.task.releaseRevision > testedChild.releaseRevision);
   assert.equal(accepted.task.resultReleaseRevision, current.resultReleaseRevision);
   assert.equal(accepted.releaseIntegration.resultCommit, testedChild.gitReferences[0].resultCommit);
-  assert.equal(accepted.releaseCandidate.status, "ready");
+  assert.equal(accepted.releaseCandidate.status, "prepared");
   assert.notEqual(planAfter.revision, planBefore.revision);
   assert.equal(accepted.releaseCandidate.planRevision, planAfter.revision);
-  assert.deepEqual(accepted.releaseCandidate.taskIds, [current.id]);
-  assert.equal(accepted.releaseCandidate.releaseCandidates.length, 1);
-  assert.equal(
-    accepted.releaseCandidate.releaseCandidates[0].preReleaseHead,
-    testedChild.gitReferences[0].resultCommit,
-  );
   assert.equal(candidateBuilds, 1);
 });

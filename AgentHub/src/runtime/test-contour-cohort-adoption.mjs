@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { createReadStream } from "node:fs";
+import { createReadStream, realpathSync } from "node:fs";
 import { copyFile, lstat, mkdir, readFile, readdir, rename } from "node:fs/promises";
 import path from "node:path";
 import { recordingContourProfile } from "../infrastructure/filesystem/test-contour-recording-profile.mjs";
@@ -15,12 +15,25 @@ const documentName = "test-contour-adoption.json";
 const digest = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const json = async (file) => JSON.parse(await readFile(file, "utf8"));
 const save = (file, value) => writeTextAtomic(file, `${JSON.stringify(value, null, 2)}\n`);
+function samePath(left, right) {
+  const canonical = (value) => {
+    const resolved = path.resolve(value);
+    try { return realpathSync.native(resolved); } catch { return resolved; }
+  };
+  const a = canonical(left);
+  const b = canonical(right);
+  return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
+}
 async function exists(file) { try { await lstat(file); return true; } catch (e) { if (e.code === "ENOENT") return false; throw e; } }
 async function hash(file) { const h = createHash("sha256"); for await (const b of createReadStream(file)) h.update(b); return h.digest("hex"); }
 
 async function inventory(root, relative = "") {
   const file = assertContourOwnedPath(path.join(root, relative), root);
-  const info = await lstat(file);
+  const info = await lstat(file).catch((error) => {
+    if (relative && error?.code === "ENOENT") return null;
+    throw error;
+  });
+  if (!info) return [];
   if (info.isFile()) return [[relative, await hash(file)]];
   if (!info.isDirectory()) throw new Error("Adoption accepts only regular owned files and directories");
   const result = [];
@@ -36,7 +49,7 @@ async function copyTree(source, destination, sourceRoot) {
   for (const name of await readdir(source)) await copyTree(path.join(source, name), path.join(destination, name), sourceRoot);
 }
 function location(root, document) {
-  if (document?.schemaVersion !== 1 || document.kind !== "recording-cohort-adoption" || document.root !== root
+  if (document?.schemaVersion !== 1 || document.kind !== "recording-cohort-adoption" || !samePath(document.root, root)
       || !/^[a-f0-9-]{36}$/.test(document.id)) throw new Error("Invalid contour adoption ownership");
   const transactionRoot = assertContourOwnedPath(path.join(root, "cohort-adoptions", document.id), root);
   const child = (name) => assertContourOwnedPath(path.join(transactionRoot, name), root, { optional: true });

@@ -1,7 +1,5 @@
 import { randomUUID } from "node:crypto";
 
-import { processIsAlive } from "../infrastructure/process/process-liveness.mjs";
-
 import {
   createCandidateGeneration,
   RELEASE_OPERATION_STATES,
@@ -132,7 +130,7 @@ export class ReleaseOperationService {
     now = () => new Date().toISOString(),
     leaseMs = DEFAULT_LEASE_MS,
     retryDelayMs = DEFAULT_RETRY_MS,
-    processAlive = processIsAlive,
+    processAlive,
     processId = process.pid,
     deliveryRetryMs = 1_000,
     requestCorrection = null,
@@ -157,6 +155,7 @@ export class ReleaseOperationService {
     if (cleanupGeneration != null && typeof cleanupGeneration !== "function") {
       throw new TypeError("cleanupGeneration must be a function");
     }
+    if (typeof processAlive !== "function") throw new TypeError("processAlive is required");
     if (typeof schedule !== "function") throw new TypeError("schedule is required");
     this.store = store;
     this.compose = compose;

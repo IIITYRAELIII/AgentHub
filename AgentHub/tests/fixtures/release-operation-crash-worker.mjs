@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import { ReleaseOperationCommandService } from "../../src/application/release-operation-command-service.mjs";
 import { ReleaseOperationService } from "../../src/application/release-operation-service.mjs";
 import { ReleaseOperationStore } from "../../src/infrastructure/persistence/release-operation-store.mjs";
+import { processIsAlive } from "../../src/infrastructure/process/process-liveness.mjs";
 
 const fixture = JSON.parse(await readFile(process.argv[2], "utf8"));
 const store = new ReleaseOperationStore({ dataDir: fixture.dataDir });
@@ -15,6 +16,7 @@ store.finishStep = (receipt, outcome) => {
 };
 const releaseOperations = new ReleaseOperationService({
   store,
+  processAlive: processIsAlive,
   ownerId: "crash-worker",
   leaseMs: 100,
   compose: async () => fixture.generation,

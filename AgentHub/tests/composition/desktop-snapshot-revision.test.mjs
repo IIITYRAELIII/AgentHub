@@ -36,7 +36,7 @@ function dependencies(overrides = {}) {
 
 test("the desktop snapshot revision follows the recent restart failure owner", async (t) => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-snapshot-revision-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  t.after(() => rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }));
   let clock = Date.parse("2026-09-13T20:00:00.000Z");
   const store = new MaintenanceOperationStore({ dataDir: directory, now: () => new Date(clock).toISOString() });
   const revision = createDesktopSnapshotRevision(dependencies({

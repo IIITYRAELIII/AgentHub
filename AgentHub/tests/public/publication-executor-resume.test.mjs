@@ -12,7 +12,7 @@ import { publicationRunStore } from "../../src/infrastructure/persistence/public
 
 async function fixture(t) {
   const root = await mkdtemp(path.join(os.tmpdir(), "hub-executor-resume-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  t.after(() => rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
   const environment = { LOCALAPPDATA: root };
   const journal = () => publicationRunStore({ environment });
   const checkpoint = publicationCheckpointStore(path.join(root, "checkpoint.json"));
