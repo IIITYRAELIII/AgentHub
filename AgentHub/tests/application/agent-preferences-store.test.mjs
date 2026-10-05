@@ -40,6 +40,9 @@ test("agent preferences restore and validate both providers in one state owner",
   const { store } = fixture();
   store.restore({
     codexModel: "terra",
+    codexCatalogInitialized: false,
+    codexCatalogSeen: [],
+    codexCatalogNovel: [],
     codexReasoningEffort: "low",
     codexCollaborationMode: "plan",
     claudeModel: "opus",
@@ -69,6 +72,9 @@ test("agent preferences restore and validate both providers in one state owner",
   });
   assert.deepEqual(store.snapshot(), {
     codexModel: "terra",
+    codexCatalogInitialized: false,
+    codexCatalogSeen: [],
+    codexCatalogNovel: [],
     codexReasoningEffort: "low",
     codexCollaborationMode: "plan",
     claudeModel: "opus",
@@ -125,6 +131,20 @@ test("agent preferences restore and validate both providers in one state owner",
   assert.equal(store.quickMessageActionMode, "insert");
   assert.deepEqual(store.setQuickMessageActionMode("send"), { changed: true });
   assert.equal(store.quickMessageActionMode, "send");
+});
+
+test("Codex catalog history survives state restore without marking initial models new", () => {
+  const { store } = fixture();
+  assert.deepEqual(store.recordCodexCatalog([{ value: "gpt-6-astra" }, { value: "sol" }]), []);
+  assert.deepEqual(store.recordCodexCatalog([{ value: "gpt-7-new" }, { value: "gpt-6-astra" },
+    { value: "gpt-6-sol" }]),
+    ["gpt-7-new"]);
+  const { store: restarted } = fixture();
+  restarted.restore(JSON.parse(JSON.stringify(store.snapshot())));
+  assert.deepEqual(restarted.recordCodexCatalog([{ value: "gpt-6-astra" }, { value: "gpt-7-new" }]),
+    ["gpt-7-new"]);
+  assert.deepEqual(restarted.recordCodexCatalog([{ value: "gpt-6-astra" }]), []);
+  assert.throws(() => restarted.setCodexModel("gpt-5.4"), /unknown Codex model/u);
 });
 
 test("prompt template action mode defaults safely and survives persistence", () => {

@@ -636,27 +636,9 @@ function loadCodexModels(raw) {
     return { value, label: label || value };
   });
 
-  const isLegacyShippedCatalog = raw.codexModels != null
-    && normalizedModels.length === legacyShippedModels.length
-    && normalizedModels.every((model, index) => (
-      model.value === legacyShippedModels[index].value
-      && model.label === legacyShippedModels[index].label
-    ));
-  const isPriorShippedCatalog = normalizedModels.length === legacyShippedModels.length + 1
-    && normalizedModels[0].value === legacyShippedModels[0].value
-    && normalizedModels[1].value === astraModel.value
-    && normalizedModels.slice(2).every((model, index) => (
-      model.value === legacyShippedModels[index + 1].value
-      && model.label === legacyShippedModels[index + 1].label
-    ));
-  const isPreviousShippedCatalog = normalizedModels.length === shippedModels.length - 1
-    && normalizedModels.every((model, index) => (
-      model.value === shippedModels[index < 2 ? index : index + 1].value
-      && model.label === shippedModels[index < 2 ? index : index + 1].label
-    ));
-  const models = isLegacyShippedCatalog || isPriorShippedCatalog || isPreviousShippedCatalog
-    ? shippedModels
-    : normalizedModels.filter((model) => !["gpt-5.5", "gpt-5.4", "gpt-5.4-mini"].includes(model.value));
+  // An explicit local catalog is only a startup fallback. Never rewrite or
+  // hide its entries before a complete provider refresh establishes availability.
+  const models = normalizedModels;
 
   for (let index = 0; index < models.length; index += 1) {
     if (models.findIndex((model) => model.value === models[index].value) !== index) {

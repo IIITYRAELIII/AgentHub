@@ -504,7 +504,7 @@ test("desktop task snapshot exposes a persisted model without a live run", () =>
   assert.equal(desktopTaskSnapshot({ ...entry, model: "Sol" }).model, "Sol");
 });
 
-test("deprecated model remains selectable only in its currently selected Stream", async () => {
+test("saved unavailable model remains visible as current but not selectable", async () => {
   const setup = fixture({ run: null, currentSettings: {
     codexModel: "gpt-5.5",
     codexModels: [{ value: "gpt-5.6-terra", label: "GPT-5.6 Terra" }],
@@ -512,22 +512,20 @@ test("deprecated model remains selectable only in its currently selected Stream"
   } });
   const selected = await setup.desktopSnapshot();
   assert.equal(selected.settings.model, "gpt-5.5");
-  assert.deepEqual(selected.settings.models.map((model) => model.value), ["gpt-5.6-terra", "gpt-5.5"]);
+  assert.deepEqual(selected.settings.models.map((model) => model.value), ["gpt-5.6-terra"]);
   setup.state.entries = [];
   const unselected = await setup.desktopSnapshot();
   assert.deepEqual(unselected.settings.models.map((model) => model.value), ["gpt-5.6-terra"]);
 });
 
-test("a saved provider model remains visible in its Stream after catalog refresh", async () => {
+test("a saved provider model remains in history but not in the refreshed picker", async () => {
   const setup = fixture({ run: null, currentSettings: {
     codexModel: "gpt-7-new",
     codexModels: [{ value: "gpt-6.1-sol", label: "GPT-6.1 Sol" }],
     codexModelLabel: (model) => model,
   } });
   const selected = await setup.desktopSnapshot();
-  assert.deepEqual(selected.settings.models.map((model) => model.value), [
-    "gpt-6.1-sol", "gpt-7-new",
-  ]);
+  assert.deepEqual(selected.settings.models.map((model) => model.value), ["gpt-6.1-sol"]);
 });
 
 test("desktop task snapshot exposes active Stream maintenance", () => {

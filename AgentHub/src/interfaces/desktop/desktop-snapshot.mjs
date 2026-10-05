@@ -808,13 +808,6 @@ export function createDesktopSnapshotFactory({
     const codexModelOptions = current.codexModels.map((model) => ({
       value: model.value, label: model.label,
     }));
-    if (selectedTaskSnapshot?.streamId && current.codexModel
-      && !codexModelOptions.some((model) => model.value === current.codexModel)) {
-      codexModelOptions.push({
-        value: current.codexModel,
-        label: current.codexModelLabel?.(current.codexModel) ?? current.codexModel,
-      });
-    }
     const snapshot = {
       apiVersion: protocol,
       workspaces,

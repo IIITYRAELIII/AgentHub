@@ -1,4 +1,5 @@
 import { validClaudeModel } from "../domain/agent-runtime-settings.mjs";
+import { orderCodexModels } from "../domain/codex-model-order.mjs";
 
 const MODEL_ID = /^[a-z0-9][a-z0-9._-]{0,127}$/i;
 const PAGE_LIMIT = 100;
@@ -9,10 +10,11 @@ function codexOptions(data) {
   if (!Array.isArray(data)) return [];
   const seen = new Set();
   return data.flatMap((item) => {
-    const value = String(item?.model ?? item?.id ?? "").trim();
-    if (item?.hidden || !MODEL_ID.test(value) || seen.has(value)) return [];
+    const value = String(item?.model ?? item?.slug ?? item?.id ?? "").trim();
+    if (item?.hidden || item?.visibility === "hide" || item?.visibility === "hidden"
+      || !MODEL_ID.test(value) || seen.has(value)) return [];
     seen.add(value);
-    return [{ value, label: String(item?.displayName ?? value).trim() || value }];
+    return [{ value, label: String(item?.displayName ?? item?.display_name ?? value).trim() || value }];
   });
 }
 
@@ -60,11 +62,12 @@ export class ProviderModelCatalogService {
     this.revision = 0;
   }
 
-  async refreshCodex(sendRpc) {
+  async refreshCodex(sendRpc, saveState = async () => {}) {
     const data = [];
     const cursors = new Set();
     let cursor = null;
     let more = false;
+    let complete = false;
     try {
       for (let page = 0; page < MAX_PAGES; page += 1) {
         const response = await sendRpc("model/list", {
@@ -75,24 +78,28 @@ export class ProviderModelCatalogService {
         if (!Array.isArray(response?.data)) throw new Error("invalid model/list response");
         data.push(...response.data);
         const next = String(response.nextCursor ?? "").trim();
+        if (response.hasMore === true && !next) throw new Error("incomplete model/list response");
         more = Boolean(next);
-        if (!next) break;
+        if (!next) {
+          complete = Object.hasOwn(response, "nextCursor") || response.hasMore === false;
+          break;
+        }
         if (cursors.has(next)) throw new Error("repeated model/list cursor");
         cursors.add(next);
         cursor = next;
       }
-      if (more) throw new Error("model/list exceeded page limit");
-      const models = codexOptions(data);
-      if (!models.length) return false;
-      const selected = this.agentPreferences.codexModel;
+      if (more || !complete) throw new Error("incomplete model/list response");
+      const available = codexOptions(data);
+      const novel = this.agentPreferences.recordCodexCatalog(available);
+      const models = orderCodexModels(available, novel);
       const changed = JSON.stringify(this.codexModels) !== JSON.stringify(models);
       this.codexModels.splice(0, this.codexModels.length, ...models);
       this.agentPreferences.codexModels.clear();
-      for (const value of ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", selected]) {
-        if (value) this.agentPreferences.codexModels.add(value);
-      }
       for (const model of models) this.agentPreferences.codexModels.add(model.value);
       if (changed) this.revision += 1;
+      await Promise.resolve().then(saveState).catch((error) => {
+        this.logger.warn?.(`Cannot save Codex model catalog: ${error.message}`);
+      });
       return true;
     } catch (error) {
       this.logger.warn?.(`Cannot refresh Codex models: ${error.message}`);

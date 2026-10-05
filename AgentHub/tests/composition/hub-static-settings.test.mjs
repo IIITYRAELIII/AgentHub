@@ -27,6 +27,7 @@ test("Codex model normalization accepts canonical IDs and display labels", () =>
   assert.deepEqual(settings.codexModels.slice(0, 3), [
     { value: "gpt-6-astra", label: "GPT-6 Astra" },
     { value: "gpt-5.6-sol", label: "GPT-5.6-Sol" },
+    { value: "gpt-5.5", label: "GPT-5.5" },
   ]);
   assert.equal(settings.normalizeCodexModel("gpt-5.5"), "gpt-5.5");
   assert.equal(settings.defaultCodexModel, "gpt-6-astra");

@@ -567,7 +567,7 @@ export async function createProviderApplicationComposition({
     startCodex: api.startCodexAppServer,
     initializeCodex: api.initializeCodex,
     sendRpc: api.sendRpc,
-    refreshCodexModels: () => providerModelCatalog.refreshCodex(api.sendRpc),
+    refreshCodexModels: () => providerModelCatalog.refreshCodex(api.sendRpc, api.saveState),
     refreshClaudeModels: () => config.testContourRecording
       ? Promise.resolve(false) : providerModelCatalog.refreshClaude(),
     resolveResumedCodexThreadTitle: api.resolveResumedCodexThreadTitle,

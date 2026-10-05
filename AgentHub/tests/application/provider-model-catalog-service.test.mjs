@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { ProviderModelCatalogService } from "../../src/application/provider-model-catalog-service.mjs";
+import { isCodexPriorityModel } from "../../src/domain/codex-model-order.mjs";
 
 function fixture(options = {}) {
   const codexModels = [{ value: "gpt-6-sol", label: "GPT-6 Sol" }];
@@ -9,6 +10,19 @@ function fixture(options = {}) {
   const agentPreferences = {
     codexModels: new Set(codexModels.map(({ value }) => value)),
     claudeModels: new Set(claudeModels),
+    codexCatalogInitialized: false,
+    codexCatalogSeen: [],
+    codexCatalogNovel: [],
+    recordCodexCatalog(models) {
+      const available = new Set(models.map(({ value }) => value));
+      const fresh = this.codexCatalogInitialized
+        ? [...available].filter((value) => !this.codexCatalogSeen.includes(value)
+          && !isCodexPriorityModel(value)) : [];
+      this.codexCatalogNovel = [...fresh, ...this.codexCatalogNovel.filter((id) => available.has(id))];
+      this.codexCatalogSeen = [...new Set([...this.codexCatalogSeen, ...available])];
+      this.codexCatalogInitialized = true;
+      return this.codexCatalogNovel;
+    },
   };
   const warnings = [];
   const service = new ProviderModelCatalogService({
@@ -50,6 +64,25 @@ test("failed or empty Codex discovery leaves the working catalog intact", async 
   assert.deepEqual(codexModels, [{ value: "gpt-6-sol", label: "GPT-6 Sol" }]);
 });
 
+test("explicitly complete empty provider catalog removes all selectable models", async () => {
+  const { service, codexModels, agentPreferences } = fixture();
+  assert.equal(await service.refreshCodex(async () => ({ data: [], nextCursor: null })), true);
+  assert.deepEqual(codexModels, []);
+  assert.equal(agentPreferences.codexModels.size, 0);
+});
+
+test("successful catalog records its persistent ordering state; failure does not", async () => {
+  const { service } = fixture();
+  let saves = 0;
+  const save = async () => { saves += 1; };
+  assert.equal(await service.refreshCodex(async () => ({ data: [] }), save), false);
+  assert.equal(saves, 0);
+  assert.equal(await service.refreshCodex(async () => ({
+    data: [{ model: "gpt-6-sol" }], nextCursor: null,
+  }), save), true);
+  assert.equal(saves, 1);
+});
+
 test("Codex refresh removes unavailable choices but retains the saved selection", async () => {
   const { service, codexModels, agentPreferences } = fixture();
   agentPreferences.codexModel = "gpt-6-sol";
@@ -60,7 +93,57 @@ test("Codex refresh removes unavailable choices but retains the saved selection"
   })), true);
   assert.deepEqual(codexModels.map(({ value }) => value), ["gpt-6.1-sol"]);
   assert.equal(agentPreferences.codexModels.has("gpt-retired"), false);
-  assert.equal(agentPreferences.codexModels.has("gpt-6-sol"), true);
+  assert.equal(agentPreferences.codexModels.has("gpt-6-sol"), false);
+});
+
+test("complete Codex refresh lists all selectable IDs in manual order without a blacklist", async () => {
+  const { service, codexModels, agentPreferences } = fixture();
+  const ids = ["gpt-5.5", "gpt-6-luna", "gpt-6-sol", "gpt-5.6-luna", "gpt-6-astra",
+    "gpt-5.6-terra", "gpt-6.1-sol", "gpt-5.6-sol", "gpt-other"];
+  assert.equal(await service.refreshCodex(async () => ({ data: [
+    ...ids.map((slug) => ({ slug, visibility: "list", display_name: slug })),
+    { slug: "gpt-reserve", visibility: "hide" },
+    { slug: "codex-auto-review", visibility: "hide" },
+  ], nextCursor: null })), true);
+  assert.deepEqual(codexModels.map(({ value }) => value), [
+    "gpt-6-astra", "gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna",
+    "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-other",
+  ]);
+  assert.equal(agentPreferences.codexModels.has("gpt-reserve"), false);
+  assert.deepEqual(agentPreferences.codexCatalogNovel, [], "initial discovery is baseline, not all new");
+});
+
+test("newly available Codex IDs lead, survive restart state, and disappear only on complete refresh", async () => {
+  const { service, codexModels, agentPreferences } = fixture();
+  const reply = (ids) => async () => ({ data: ids.map((model) => ({ model })), nextCursor: null });
+  assert.equal(await service.refreshCodex(reply(["gpt-6-astra", "gpt-6-sol"])), true);
+  assert.equal(await service.refreshCodex(reply(["gpt-6-astra", "gpt-7-new", "gpt-6-sol"])), true);
+  assert.deepEqual(codexModels.map(({ value }) => value), ["gpt-7-new", "gpt-6-astra", "gpt-6-sol"]);
+  const saved = {
+    initialized: agentPreferences.codexCatalogInitialized,
+    seen: [...agentPreferences.codexCatalogSeen],
+    novel: [...agentPreferences.codexCatalogNovel],
+  };
+  assert.equal(await service.refreshCodex(async () => ({
+    data: [{ model: "gpt-6-astra" }], hasMore: true,
+  })), false, "incomplete discovery cannot remove choices");
+  assert.deepEqual(codexModels.map(({ value }) => value), ["gpt-7-new", "gpt-6-astra", "gpt-6-sol"]);
+  agentPreferences.codexCatalogInitialized = saved.initialized;
+  agentPreferences.codexCatalogSeen = saved.seen;
+  agentPreferences.codexCatalogNovel = saved.novel;
+  assert.equal(await service.refreshCodex(reply(["gpt-6-sol", "gpt-7-new", "gpt-6-astra"])), true);
+  assert.deepEqual(codexModels.map(({ value }) => value), ["gpt-7-new", "gpt-6-astra", "gpt-6-sol"]);
+  assert.equal(await service.refreshCodex(reply(["gpt-6-astra", "gpt-6-sol"])), true);
+  assert.deepEqual(codexModels.map(({ value }) => value), ["gpt-6-astra", "gpt-6-sol"]);
+  assert.equal(agentPreferences.codexModels.has("gpt-7-new"), false);
+});
+
+test("a later provider discovery of a manually prioritized ID keeps the manual order", async () => {
+  const { service, codexModels } = fixture();
+  const reply = (ids) => async () => ({ data: ids.map((model) => ({ model })), nextCursor: null });
+  assert.equal(await service.refreshCodex(reply(["gpt-6-astra"])), true);
+  assert.equal(await service.refreshCodex(reply(["gpt-6-sol", "gpt-7-new", "gpt-6-astra"])), true);
+  assert.deepEqual(codexModels.map(({ value }) => value), ["gpt-7-new", "gpt-6-astra", "gpt-6-sol"]);
 });
 
 test("Claude Code metadata replaces the picker with account-available models", async () => {

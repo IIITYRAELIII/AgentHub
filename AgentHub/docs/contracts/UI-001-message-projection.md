@@ -26,6 +26,14 @@ navigation. Legacy citations already bound to shortened content are not rewritte
 
 ## Invariants
 
+- The Codex picker contains every selectable ID from the last complete successful
+  provider catalog, excluding provider-hidden entries. A failed or incomplete
+  refresh cannot remove an option. Manual priority controls order, not
+  availability; genuinely new IDs lead and their order survives restart.
+  The first complete catalog is a baseline, not a batch of new IDs. A saved
+  historical Stream model remains visible as a label, but cannot be re-added
+  to the active picker after the provider removes it.
+
 - Technical identifier presentation preserves complete Markdown links, including
   commit/runtime labels and punctuation inside their targets. Link-bearing lines
   remain in the message body rather than being split into technical rows.

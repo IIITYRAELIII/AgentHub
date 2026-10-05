@@ -1,3 +1,5 @@
+import { isCodexPriorityModel } from "../domain/codex-model-order.mjs";
+
 function oneOf(value, allowed, fallback) {
   return allowed.has(value) ? value : fallback;
 }
@@ -123,6 +125,13 @@ function quickMessages(value) {
   };
 }
 
+function modelIds(value) {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.filter((item) => (
+    typeof item === "string" && /^[a-z0-9][a-z0-9._-]{0,127}$/iu.test(item)
+  )))].slice(0, 500);
+}
+
 export class AgentPreferencesStore {
   constructor({
     selectionStore,
@@ -144,7 +153,7 @@ export class AgentPreferencesStore {
   }) {
     this.selectionStore = selectionStore;
     this.taskMetadata = taskMetadata;
-    this.codexModels = new Set([...codexModels, "gpt-5.5", "gpt-5.4", "gpt-5.4-mini"]);
+    this.codexModels = new Set(codexModels);
     this.claudeModels = new Set(claudeModels);
     this.codexReasoningEfforts = new Set(codexReasoningEfforts);
     this.claudeReasoningEfforts = new Set(claudeReasoningEfforts);
@@ -203,6 +212,19 @@ export class AgentPreferencesStore {
   setCodexModel(value) {
     if (!this.codexModels.has(value)) throw new Error("unknown Codex model");
     return this.#set("codexModel", value);
+  }
+
+  recordCodexCatalog(models) {
+    const available = new Set(models.map(({ value }) => value));
+    const seen = new Set(this.values.codexCatalogSeen);
+    const newIds = this.values.codexCatalogInitialized
+      ? [...available].filter((value) => !seen.has(value) && !isCodexPriorityModel(value))
+      : [];
+    const novel = [...newIds, ...this.values.codexCatalogNovel.filter((value) => available.has(value))];
+    this.values.codexCatalogSeen = [...new Set([...seen, ...available])].slice(-500);
+    this.values.codexCatalogNovel = [...new Set(novel)].slice(0, 500);
+    this.values.codexCatalogInitialized = true;
+    return this.values.codexCatalogNovel;
   }
 
   setClaudeModel(value) {
@@ -383,6 +405,9 @@ export class AgentPreferencesStore {
       pinnedWorkspaceStreams: pinnedWorkspaceStreams(snapshot.pinnedWorkspaceStreams),
       quickMessages: quickMessages(snapshot.quickMessages),
       quickMessageActionMode: quickMessageActionMode(snapshot.quickMessageActionMode),
+      codexCatalogInitialized: snapshot.codexCatalogInitialized === true,
+      codexCatalogSeen: modelIds(snapshot.codexCatalogSeen),
+      codexCatalogNovel: modelIds(snapshot.codexCatalogNovel),
     };
     return this.snapshot();
   }
@@ -390,6 +415,8 @@ export class AgentPreferencesStore {
   snapshot() {
     return {
       ...this.values,
+      codexCatalogSeen: [...this.values.codexCatalogSeen],
+      codexCatalogNovel: [...this.values.codexCatalogNovel],
       pinnedWorkspaceStreams: structuredClone(this.values.pinnedWorkspaceStreams),
       quickMessages: structuredClone(this.values.quickMessages),
     };

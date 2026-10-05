@@ -189,7 +189,7 @@ test("release validation policy is explicit and disabled by default", async () =
   }
 });
 
-test("shipped and legacy default Codex catalogs include Astra without changing custom allowlists", async () => {
+test("shipped Codex defaults include Astra while explicit catalogs survive until refresh", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-codex-model-catalog-"));
   const configFile = path.join(root, "config.json");
   const previous = process.env.AGENT_HUB_CONFIG;
@@ -221,20 +221,20 @@ test("shipped and legacy default Codex catalogs include Astra without changing c
       { value: "gpt-6-luna", label: "GPT-6 Luna" },
       legacyShippedModels[1], legacyShippedModels[3], legacyShippedModels[6],
     ];
-    assert.deepEqual((await loadConfig()).codexModels, shippedModels);
+    assert.deepEqual((await loadConfig()).codexModels, legacyShippedModels);
 
     await writeFile(configFile, JSON.stringify({
       ...baseConfig,
       codexModels: shippedModels.filter(({ value }) => value !== "gpt-6.1-sol"),
     }), "utf8");
-    assert.deepEqual((await loadConfig()).codexModels, shippedModels);
+    assert.deepEqual((await loadConfig()).codexModels,
+      shippedModels.filter(({ value }) => value !== "gpt-6.1-sol"));
 
     const customModels = legacyShippedModels.map((model, index) => (
       index === 0 ? { ...model, label: "Team Default" } : model
     ));
     await writeFile(configFile, JSON.stringify({ ...baseConfig, codexModels: customModels }), "utf8");
-    assert.deepEqual((await loadConfig()).codexModels,
-      customModels.filter((model) => !["gpt-5.5", "gpt-5.4", "gpt-5.4-mini"].includes(model.value)));
+    assert.deepEqual((await loadConfig()).codexModels, customModels);
 
     const example = JSON.parse(await readFile(
       new URL("../../../config.example.json", import.meta.url),

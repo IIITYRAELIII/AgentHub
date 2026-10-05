@@ -2,6 +2,7 @@ import path from "node:path";
 
 import { defaultTestContourRoot } from "../infrastructure/filesystem/runtime-layout.mjs";
 import { CODEX_REASONING_EFFORTS } from "../providers/codex/codex-settings.mjs";
+import { orderCodexModels } from "../domain/codex-model-order.mjs";
 import {
   CLAUDE_MODEL_ALIASES,
   CLAUDE_MODEL_LABELS,
@@ -15,11 +16,8 @@ const AGENT_ICONS = ["👾", "🦉", "🐙", "🕶️", "🚀", "⚡", "💻", "
 export function createHubStaticSettings(config, agentHubRoot) {
   const claudeModels = [...CLAUDE_MODEL_ALIASES];
   const claudeModelLabels = CLAUDE_MODEL_LABELS;
-  const codexModels = config.codexModels.filter(
-    (model) => !["gpt-5.5", "gpt-5.4", "gpt-5.4-mini"].includes(model.value),
-  );
+  const codexModels = orderCodexModels(config.codexModels);
   if (!codexModels.length) codexModels.push({ value: "gpt-5.6-terra", label: "GPT-5.6 Terra" });
-  const historicalModels = new Set(["gpt-5.5", "gpt-5.4", "gpt-5.4-mini"]);
   const normalizeCodexModel = (value) => {
     const requested = String(value ?? "").toLowerCase();
     const codexModelAliases = new Map(codexModels.flatMap((model) => ([
@@ -29,7 +27,7 @@ export function createHubStaticSettings(config, agentHubRoot) {
     // A saved provider ID may precede this startup's asynchronous discovery.
     // Preserve it verbatim; only the live picker grants new selections.
     return codexModelAliases.get(requested)
-      ?? ((historicalModels.has(requested) || /^[a-z0-9][a-z0-9._-]{0,127}$/u.test(requested))
+      ?? ((/^[a-z0-9][a-z0-9._-]{0,127}$/u.test(requested))
         ? requested : codexModels[0].value);
   };
   const codexModelLabel = (value) => (
