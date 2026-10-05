@@ -557,6 +557,9 @@ const interactionShell = createInteractionShellPhase({
     maxDeferredInputs: MAX_DEFERRED_INPUTS,
     codexModels: CODEX_MODELS, codexModelLabel,
     modelCatalogRevision: () => providerModelCatalog.revision,
+    refreshCodexModels: () => providerModelCatalog.refreshCodex(sendRpc, saveState, {
+      source: "on-demand",
+    }),
     claudeModels: CLAUDE_MODELS, claudeModelLabels: CLAUDE_MODEL_LABELS, claudeModelLabel,
     codexReasoningEfforts: CODEX_REASONING_EFFORTS, codexReasoningLabels: CODEX_REASONING_LABELS,
     claudeReasoningEfforts: CLAUDE_REASONING_EFFORTS, claudeReasoningLabels: CLAUDE_REASONING_LABELS,

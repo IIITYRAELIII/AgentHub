@@ -4,6 +4,7 @@ import { createDesktopControlRouter } from "./desktop-control-router.mjs";
 const MUTATION_ACTIONS = Object.freeze([
   "select-task", "send-message", "new-task", "rotate-stream", "create-stream",
   "update-setting", "rename-task", "archive-task", "cancel-run",
+  "refresh-model-catalog",
   "resolve-approval", "deferred-input", "restart-server", "retry-startup", "set-autostart",
   "update-server-configuration", "update-root-agents", "update-global-pre-turn-instructions", "compact-context", "create-device-pairing",
   "revoke-device", "submit-bug-report",
@@ -20,6 +21,7 @@ const MUTATION_ACTIONS = Object.freeze([
 
 const CONCURRENT_MUTATION_ACTIONS = Object.freeze([
   "send-message", "cancel-run", "deferred-input", "restart-server", "retry-startup",
+  "refresh-model-catalog",
   "usage-sync-now", "usage-sync-invite", "usage-sync-enroll", "usage-sync-device-label",
 ]);
 
@@ -34,6 +36,7 @@ const LOCAL_ONLY_ACTIONS = Object.freeze([
   "update-server-configuration",
   "start-provider-login",
   "submit-provider-login-code",
+  "refresh-model-catalog",
   "cancel-provider-login",
   "command-trace-timeline",
   "command-trace-percentiles",
@@ -92,6 +95,7 @@ export function createDesktopApplicationRouter({
   return createDesktopControlRouter({
     handlers: {
       snapshot: handlers.snapshot,
+      "refresh-model-catalog": handlers.refreshModelCatalog,
       "runtime-health": handlers.runtimeHealth,
       "retry-startup": (params) => {
         if (!handlers.retryStartup) throw new Error("Повтор запуска недоступен в этой версии");

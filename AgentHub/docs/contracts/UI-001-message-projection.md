@@ -34,6 +34,14 @@ navigation. Legacy citations already bound to shortened content are not rewritte
   historical Stream model remains visible as a label, but cannot be re-added
   to the active picker after the provider removes it.
 
+- The existing Stream settings dialog reads and writes that Stream's canonical
+  settings, not the selected Thread or global preference. An unset value is
+  explicitly inherited; an unavailable saved model is displayed as a disabled
+  historical label, not silently replaced or re-added to the selectable catalog.
+  A settings update does not alter the model captured by an active turn.
+  The dialog's manual catalog refresh uses the provider owner and updates the
+  picker only after a complete response; failure leaves existing choices intact.
+
 - Technical identifier presentation preserves complete Markdown links, including
   commit/runtime labels and punctuation inside their targets. Link-bearing lines
   remain in the message body rather than being split into technical rows.

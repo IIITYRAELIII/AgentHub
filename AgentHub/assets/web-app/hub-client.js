@@ -113,7 +113,10 @@ const REMOTE_WAIT_MS = 0;
 const REMOTE_RESULT_FALLBACK_POLL_MS = 600;
 const DEFAULT_CONTROL_TIMEOUT_MS = 45_000;
 const LONG_CONTROL_TIMEOUT_MS = 180_000;
-const LONG_CONTROL_ACTIONS = new Set(["rotate-stream", "submit-bug-report", "browse-directory"]);
+// Model discovery may use its separate 60s provider budget plus snapshot/persistence.
+const LONG_CONTROL_ACTIONS = new Set([
+  "rotate-stream", "submit-bug-report", "browse-directory", "refresh-model-catalog",
+]);
 const VSCODE_MESSAGE_CONTROL_TIMEOUT_MS = LONG_CONTROL_TIMEOUT_MS;
 const VSCODE_MESSAGE_RETRY_DELAYS_MS = Object.freeze([150, 600]);
 const VSCODE_DIRECT_SEND_HEDGE_DELAY_MS = 250;
@@ -3883,6 +3886,17 @@ agentHub.on("stream:new", ({ workspaceId, streamName }) => {
 agentHub.on("stream:settings-save", ({ streamId, settings }) => runAction(async () => {
   applySnapshot(await control("update-stream-settings", { streamId, settings }));
 }));
+let modelCatalogRefresh = null;
+agentHub.on("model-catalog:refresh", ({ manual = false } = {}) => {
+  if (modelCatalogRefresh) return;
+  modelCatalogRefresh = runAction(async () => {
+    const result = await control("refresh-model-catalog");
+    if (result?.snapshot) applySnapshot(result.snapshot);
+    if (manual) agentHub.toast(result?.refreshed
+      ? "Список доступных моделей обновлён"
+      : "Каталог пока недоступен; прежний список сохранён");
+  }).finally(() => { modelCatalogRefresh = null; });
+});
 agentHub.on("stream:rules-save", ({ streamId, rules }) => runAction(async () => {
   applySnapshot(await control("update-stream-rules", { streamId, content: String(rules ?? "") }));
   agentHub.toast("Правила Stream сохранены");

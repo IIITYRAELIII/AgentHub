@@ -10222,8 +10222,10 @@ function selectTurnTimeMode(value) {
 
 function renderDialogSettings() {
   const task = currentTask();
-  const selection = task?.draftStream ? task.streamSettings : state.selection;
-  const effectiveProvider = task?.draftStream ? selection?.provider : task?.provider;
+  const selection = task?.draftStream
+    ? { provider: task?.provider, ...(task?.streamSettings ?? {}) }
+    : { ...(task?.streamSettings ?? {}), provider: task?.provider };
+  const effectiveProvider = task?.draftStream ? selection.provider : task?.provider;
   const streamId = String(task?.streamId ?? "").trim();
   const workspaceId = workspaceKey(task);
   const running = task?.running === true;
@@ -10243,13 +10245,17 @@ function renderDialogSettings() {
       ?? state.options.reasoning,
     mode: state.options.mode,
   };
+  const refreshModels = dialogSettings.querySelector("[data-dialog-model-refresh]");
+  if (refreshModels) refreshModels.hidden = effectiveProvider !== "codex";
   for (const [group, values] of Object.entries(optionGroups)) {
     const container = dialogSettings.querySelector(`[data-dialog-options='${group}']`);
     if (!container) continue;
     container.replaceChildren();
+    const saved = String(selection?.[group] ?? "").trim();
     if (!Array.isArray(values) || values.length === 0) {
       if (container instanceof HTMLSelectElement) {
-        container.append(el("option", { value: "", selected: true, text: "—" }));
+        container.append(el("option", { value: "", selected: true,
+          text: saved ? `Сохранено: ${saved} (каталог недоступен)` : "Наследуется" }));
         container.disabled = true;
       } else {
         container.append(el("span", { class: "setting-empty", text: "—" }));
@@ -10257,6 +10263,14 @@ function renderDialogSettings() {
       continue;
     }
     if (container instanceof HTMLSelectElement) container.disabled = false;
+    if (container instanceof HTMLSelectElement && group !== "provider") {
+      if (!saved) {
+        container.append(el("option", { value: "", selected: true, text: "Наследуется" }));
+      } else if (!values.some((option) => (typeof option === "string" ? option : option.value) === saved)) {
+        container.append(el("option", { value: "", selected: true, disabled: true,
+          text: `Сохранено: ${saved} (сейчас недоступно)` }));
+      }
+    }
     for (const option of values) {
       const value = typeof option === "string" ? option : option.value;
       const label = typeof option === "string" ? option : (option.label ?? option.value);
@@ -10370,8 +10384,8 @@ function selectDialogSetting(group, value) {
     }
     emit("stream:settings-save", { streamId: task.streamId, settings: { ...task.streamSettings } });
   } else {
-    state.selection[group] = value;
-    emit("selection:set", { key: group, value });
+    task.streamSettings = { ...(task.streamSettings ?? {}), [group]: value };
+    emit("stream:settings-save", { streamId: task.streamId, settings: { ...task.streamSettings } });
   }
   renderOptions();
 }
@@ -10460,6 +10474,10 @@ dialogSettings.addEventListener("click", (event) => {
     setDialogSettingsOpen(false);
     return;
   }
+  if (event.target.closest("[data-dialog-model-refresh]")) {
+    emit("model-catalog:refresh", { manual: true });
+    return;
+  }
   const chip = event.target.closest("[data-select-group]");
   if (!chip) return;
   selectDialogSetting(chip.dataset.selectGroup, chip.dataset.selectValue);
@@ -10510,8 +10528,8 @@ dialogSettings.addEventListener("change", (event) => {
     task.streamSettings[key] = toggle.checked;
     emit("stream:settings-save", { streamId: task.streamId, settings: { ...task.streamSettings } });
   } else {
-    state.selection[key] = toggle.checked;
-    emit("selection:set", { key, value: toggle.checked });
+    task.streamSettings = { ...(task.streamSettings ?? {}), [key]: toggle.checked };
+    emit("stream:settings-save", { streamId: task.streamId, settings: { ...task.streamSettings } });
   }
 });
 

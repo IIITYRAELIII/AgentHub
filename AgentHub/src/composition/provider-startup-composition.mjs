@@ -18,6 +18,7 @@ export function createProviderStartupComposition({
   sendRpc,
   refreshCodexModels = async () => {},
   refreshClaudeModels = async () => {},
+  waitForModelRetry = (ms) => new Promise((resolve) => { setTimeout(resolve, ms).unref?.(); }),
   resolveResumedCodexThreadTitle,
   applyCodexThreadSettings,
   saveState,
@@ -41,10 +42,26 @@ export function createProviderStartupComposition({
     // Claude discovery remains available even when Codex startup fails.
     void Promise.resolve().then(refreshClaudeModels)
       .catch((error) => logger.warn?.("Cannot refresh Claude models:", error.message));
+    const startAt = performance.now();
     await startCodex();
+    const initializedAt = performance.now();
     await initializeCodex({ attachSelectedThread: false });
+    try {
+      logger.info?.("Codex model catalog startup readiness", {
+        transportStartMs: Math.round(initializedAt - startAt),
+        initializeMs: Math.round(performance.now() - initializedAt),
+      });
+    } catch {
+      // Diagnostics must not affect provider startup.
+    }
     // Discovery is best effort and must not delay Hub readiness or run recovery.
-    void Promise.resolve().then(refreshCodexModels)
+    void Promise.resolve().then(async () => {
+      if (await refreshCodexModels({ source: "startup" }) !== false) return;
+      for (const [index, delayMs] of [10_000, 30_000].entries()) {
+        await waitForModelRetry(delayMs);
+        if (await refreshCodexModels({ source: `startup-retry-${index + 1}` }) !== false) return;
+      }
+    })
       .catch((error) => logger.warn?.("Cannot refresh Codex models:", error.message));
     if (config.telegramEnabled && config.createInitialThreadOnStartup !== false && !getThreadId()) {
       await createThread();

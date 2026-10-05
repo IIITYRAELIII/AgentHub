@@ -605,6 +605,10 @@ export function createDesktopShellComposition({
     },
     desktop: {
       snapshot: desktopReadSystem.desktopSnapshot,
+      refreshModelCatalog: async () => ({
+        refreshed: await models.refreshCodexModels(),
+        snapshot: await desktopReadSystem.desktopSnapshot(),
+      }),
       runtimeHealth: () => ({
         ...agentHubRuntimeHealth.snapshot(),
         process: {

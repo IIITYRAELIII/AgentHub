@@ -7,7 +7,7 @@ function router(calls, { omit = [], overrides = {} } = {}) {
   const handlers = Object.fromEntries([
     "snapshot", "runtimeHealth", "retryStartup", "taskHistory", "rateLimitHistory", "usageHistory", "search", "workspaceMessageSearch", "markTaskRead",
     "openTask", "openTurn", "workspaceMessageOpen", "sendMessage", "taskDiff", "deferredInput",
-    "statusDetails", "speakLastAnswer", "restartServer", "setAutostart",
+    "statusDetails", "speakLastAnswer", "restartServer", "setAutostart", "refreshModelCatalog",
     "updateServerConfiguration", "readPreTurnInstructions", "updateGlobalPreTurnInstructions",
     "readRootAgents", "updateRootAgents", "compactContext", "openAttachment", "uploadAttachment", "browseDirectory", "submitBugReport", "reportDiagnostic",
     "trustedDevices", "createDevicePairing", "revokeDevice",
@@ -57,6 +57,20 @@ test("Desktop application router forwards the exact startup generation for recov
     context: { source: "desktop-control", userId: "7" },
   });
   assert.equal(result.params.startedAtMs, 1234);
+});
+
+test("Desktop model catalog refresh uses the local owner without changing Stream or Thread settings", async () => {
+  const calls = [];
+  const control = router(calls, { overrides: {
+    refreshModelCatalog: async () => ({ refreshed: true, snapshot: { settings: { models: [] } } }),
+  } });
+  assert.equal((await control.handleDesktopControl({
+    action: "refresh-model-catalog", params: {}, context: { source: "desktop-control" },
+  })).refreshed, true);
+  assert.deepEqual(calls, []);
+  await assert.rejects(control.handleDesktopControl({
+    action: "refresh-model-catalog", params: {}, context: { source: "trusted-device" },
+  }), /локаль|local/iu);
 });
 
 test("Desktop application router addresses mutations explicitly", async () => {

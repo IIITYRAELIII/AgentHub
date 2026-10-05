@@ -245,6 +245,7 @@ export function createDesktopRunRouterWiring({
     canonicalizeRequest: services.contourCommandMapping?.request,
     handlers: {
       snapshot: desktop.snapshot,
+      refreshModelCatalog: desktop.refreshModelCatalog,
       runtimeHealth: desktop.runtimeHealth,
       retryStartup: desktop.retryStartup,
       taskHistory: desktop.taskHistory,

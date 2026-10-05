@@ -64,6 +64,58 @@ test("failed or empty Codex discovery leaves the working catalog intact", async 
   assert.deepEqual(codexModels, [{ value: "gpt-6-sol", label: "GPT-6 Sol" }]);
 });
 
+test("Codex discovery uses a separate 20-second page deadline and later succeeds without restart", async () => {
+  const { service, codexModels, agentPreferences } = fixture();
+  const budgets = [];
+  const timedOut = async (_method, _params, options) => {
+    budgets.push(options.timeoutMs);
+    throw new Error("model/list timed out");
+  };
+  assert.equal(await service.refreshCodex(timedOut), false);
+  assert.deepEqual(codexModels.map(({ value }) => value), ["gpt-6-sol"]);
+  assert.equal(budgets[0], 20_000);
+  assert.equal(await service.refreshCodex(async (_method, _params, options) => {
+    budgets.push(options.timeoutMs);
+    return { data: [{ model: "gpt-6.1-sol" }, { model: "gpt-6-sol" }], nextCursor: null };
+  }, async () => {}, { source: "on-demand" }), true);
+  assert.deepEqual(codexModels.map(({ value }) => value), ["gpt-6.1-sol", "gpt-6-sol"]);
+  assert.equal(agentPreferences.codexModels.has("gpt-6.1-sol"), true);
+  assert.equal(budgets[1], 20_000);
+});
+
+test("concurrent startup and on-demand catalog reads share one provider request", async () => {
+  const { service } = fixture();
+  let resolveRequest;
+  let calls = 0;
+  const sendRpc = () => {
+    calls += 1;
+    return new Promise((resolve) => { resolveRequest = resolve; });
+  };
+  const startup = service.refreshCodex(sendRpc);
+  const manual = service.refreshCodex(sendRpc, async () => {}, { source: "on-demand" });
+  assert.equal(calls, 1);
+  resolveRequest({ data: [{ model: "gpt-6-sol" }], nextCursor: null });
+  assert.deepEqual(await Promise.all([startup, manual]), [true, true]);
+});
+
+test("catalog diagnostics report bounded content-free page and persistence durations", async () => {
+  const events = [];
+  const { service } = fixture({ logger: {
+    warn() {}, info: (name, fields) => events.push({ name, fields }),
+  } });
+  assert.equal(await service.refreshCodex(async () => ({
+    data: [{ model: "gpt-6-sol" }], nextCursor: null,
+  }), async () => {}, { source: "on-demand" }), true);
+  assert.equal(events[0].name, "Codex model catalog discovery");
+  assert.equal(events[0].fields.source, "on-demand");
+  assert.equal(events[0].fields.outcome, "complete");
+  assert.equal(events[0].fields.attemptedPages, 1);
+  assert.equal(events[0].fields.completedPages, 1);
+  assert.equal(events[0].fields.pageRpcAndQueueMs.length, 1);
+  assert.ok(Number.isFinite(events[0].fields.persistenceMs));
+  assert.equal(JSON.stringify(events[0]).includes("gpt-6-sol"), false);
+});
+
 test("explicitly complete empty provider catalog removes all selectable models", async () => {
   const { service, codexModels, agentPreferences } = fixture();
   assert.equal(await service.refreshCodex(async () => ({ data: [], nextCursor: null })), true);

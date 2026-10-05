@@ -99,6 +99,7 @@ async function openStreamTabsDomFixture(page, {
   includeHubClient = false,
   control = null,
   initialSettings = {},
+  snapshot = null,
 } = {}) {
   const initialSnapshot = {
     apiVersion: 3,
@@ -142,7 +143,8 @@ async function openStreamTabsDomFixture(page, {
       return;
     }
     if (requestUrl.pathname === "/api/snapshot") {
-      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(initialSnapshot) });
+      await route.fulfill({ status: 200, contentType: "application/json",
+        body: JSON.stringify(typeof snapshot === "function" ? snapshot() : snapshot ?? initialSnapshot) });
       return;
     }
     if (requestUrl.pathname === "/api/control" && route.request().method() === "POST") {
@@ -365,6 +367,157 @@ test("Stream model label follows saved settings while idle and exact turn while 
   stream.settings.provider = "claude";
   assert.equal(streamModelLabel(task, stream, settings), "GPT-5.6 Sol");
   assert.equal(streamModelLabel(task, null, settings), "GPT-5.6 Sol");
+});
+
+test("existing Stream dialog selects and saves Stream model, not global or captured turn model", async () => {
+  const { chromium } = await import("playwright");
+  const browser = await launchDomBrowser(chromium);
+  try {
+    const page = await browser.newPage();
+    await openStreamTabsDomFixture(page);
+    await page.evaluate(() => {
+      window.__modelIntents = [];
+      document.addEventListener("agenthub:intent", (event) => window.__modelIntents.push(event.detail));
+      window.AgentHub.setWorkspaces([{ id: "workspace-models", name: "Models", settings: {} }]);
+      window.AgentHub.setOptions({
+        provider: [{ value: "codex", label: "Codex" }],
+        modelOptionsByProvider: { codex: [
+          { value: "gpt-5.6-sol", label: "GPT-5.6 Sol" },
+          { value: "gpt-6-sol", label: "GPT-6 Sol" },
+          { value: "gpt-6.1-sol", label: "GPT-6.1 Sol" },
+        ] }, reasoningOptionsByProvider: { codex: [] }, mode: [],
+      });
+      window.AgentHub.setSelection({ provider: "codex", model: "gpt-5.6-sol" });
+      window.__modelTask = {
+        id: "stream-models", selected: true, streamId: "stream-models", streamName: "S2",
+        workspaceId: "workspace-models", provider: "codex", threadId: "thread-models",
+        running: true, run: { model: "gpt-5.6-sol", turnId: "turn-models" },
+        streamSettings: { provider: "codex", model: "gpt-6-sol" },
+      };
+      window.AgentHub.setTasks([window.__modelTask]);
+      window.AgentHub.openDialogSettings();
+    });
+    const picker = page.locator('[data-dialog-settings] select[data-dialog-options="model"]');
+    assert.equal(await picker.inputValue(), "gpt-6-sol");
+    await page.getByRole("button", { name: "Модель", exact: true }).click();
+    await page.locator('.themed-select-menu:popover-open .themed-select-option[data-value="gpt-6.1-sol"]').click();
+    const result = await page.evaluate(() => ({
+      saves: window.__modelIntents.filter((item) => item.type === "stream:settings-save"),
+      selectionWrites: window.__modelIntents.filter((item) => item.type === "selection:set"),
+      captured: window.__modelTask.run.model,
+    }));
+    assert.equal(result.saves.at(-1)?.settings.model, "gpt-6.1-sol");
+    assert.deepEqual(result.selectionWrites, []);
+    assert.equal(result.captured, "gpt-5.6-sol");
+    await page.evaluate(() => {
+      document.querySelector("[data-dialog-settings]").close();
+      window.AgentHub.setTasks([{ ...window.__modelTask,
+        streamSettings: { provider: "codex", model: "gpt-6.1-sol" } }]);
+      window.AgentHub.openDialogSettings();
+    });
+    assert.equal(await picker.inputValue(), "gpt-6.1-sol");
+    await page.evaluate(() => {
+      window.AgentHub.setOptions({ modelOptionsByProvider: { codex: [
+        { value: "gpt-6-sol", label: "GPT-6 Sol" },
+      ] } });
+    });
+    assert.equal(await picker.inputValue(), "");
+    assert.match(await picker.locator("option:checked").textContent(), /Сохранено: gpt-6\.1-sol/);
+    assert.equal(await picker.locator("option:checked").evaluate((node) => node.disabled), true);
+    await page.evaluate(() => {
+      window.AgentHub.setTasks([{ ...window.__modelTask,
+        streamSettings: { provider: "codex", model: "" } }]);
+    });
+    assert.equal(await picker.inputValue(), "");
+    assert.equal(await picker.locator("option:checked").textContent(), "Наследуется");
+  } finally {
+    await browser.close();
+  }
+});
+
+test("shipped Stream dialog reads back canonical model after control save and reopen", async () => {
+  const { chromium } = await import("playwright");
+  const browser = await launchDomBrowser(chromium);
+  let releaseCatalogResponse;
+  const catalogResponseGate = new Promise((resolve) => { releaseCatalogResponse = resolve; });
+  let markCatalogRequested;
+  const catalogRequested = new Promise((resolve) => { markCatalogRequested = resolve; });
+  let savedModel = "gpt-6-sol";
+  let catalog = ["gpt-5.6-sol", "gpt-6-sol"];
+  let version = 1;
+  const commands = [];
+  const snapshot = () => ({
+    apiVersion: 3, version: `stream-model-${version}`, server: { status: "online" },
+    workspaces: [{ id: "workspace-models", name: "Models", settings: {}, streams: [{
+      id: "stream-models", name: "S2", ordinal: 1,
+      settings: { provider: "codex", model: savedModel }, threads: [{ id: "thread-models" }],
+    }] }],
+    tasks: [{ provider: "codex", threadId: "thread-models", streamId: "stream-models",
+      workspaceId: "workspace-models", title: "Thread", running: false }],
+    selected: { provider: "codex", threadId: "thread-models", streamId: "stream-models" },
+    boardTasks: [], boardLayout: { columnOrder: [] }, deferredInputs: [],
+    messageReceipts: [], pendingApprovals: [],
+    settings: { provider: "codex", model: "gpt-5.6-sol",
+      models: catalog.map((value) => ({ value, label: value })),
+      modelOptionsByProvider: { codex: catalog.map((value) => ({ value, label: value })) },
+      reasoningOptions: [], reasoningOptionsByProvider: {}, modeOptions: [],
+      quickMessages: { global: [], workspaces: {}, streams: {} } },
+  });
+  try {
+    const page = await browser.newPage();
+    await openStreamTabsDomFixture(page, { includeHubClient: true, snapshot,
+      control: async (request) => {
+        commands.push(request.action);
+        if (request.action === "refresh-model-catalog") {
+          markCatalogRequested();
+          await catalogResponseGate;
+          catalog = ["gpt-6.1-sol", ...catalog];
+          version += 1;
+          return { body: { ok: true, result: { refreshed: true, snapshot: snapshot() } } };
+        }
+        if (request.action === "update-stream-settings") {
+          savedModel = request.params.settings.model;
+          version += 1;
+        }
+        return { body: { ok: true, result: snapshot() } };
+      },
+    });
+    await page.evaluate((initial) => {
+      window.AgentHub.setWorkspaces(initial.workspaces);
+      window.AgentHub.setOptions({ provider: [{ value: "codex", label: "Codex" }],
+        modelOptionsByProvider: initial.settings.modelOptionsByProvider });
+      window.AgentHub.setSelection({ provider: "codex", model: initial.settings.model });
+      window.AgentHub.setTasks([{ id: "stream-models", selected: true, streamId: "stream-models",
+        streamName: "S2", workspaceId: "workspace-models", provider: "codex",
+        threadId: "thread-models", running: false,
+        streamSettings: { provider: "codex", model: "gpt-6-sol" } }]);
+      window.AgentHub.openDialogSettings();
+    }, snapshot());
+    assert.equal(await page.locator("[data-dialog-settings]").evaluate((node) => node.open), true);
+    const picker = page.locator('[data-dialog-settings] select[data-dialog-options="model"]');
+    assert.equal(await picker.inputValue(), "gpt-6-sol");
+    await page.locator("[data-dialog-model-refresh]").click();
+    await catalogRequested;
+    // Three valid provider pages can finish after the default 45s client deadline.
+    await page.clock.fastForward(50_000);
+    releaseCatalogResponse();
+    assert.ok(commands.includes("refresh-model-catalog"), JSON.stringify(commands));
+    await page.waitForFunction(() => document.querySelector(
+      '[data-dialog-settings] select[data-dialog-options="model"] option[value="gpt-6.1-sol"]',
+    ));
+    await page.getByRole("button", { name: "Модель", exact: true }).click();
+    await page.locator('.themed-select-menu:popover-open .themed-select-option[data-value="gpt-6.1-sol"]').click();
+    await page.waitForFunction(() => document.querySelector(
+      '[data-dialog-settings] select[data-dialog-options="model"]',
+    )?.value === "gpt-6.1-sol");
+    assert.equal(savedModel, "gpt-6.1-sol");
+    assert.equal(commands.includes("update-setting"), false);
+    await page.evaluate(() => document.querySelector("[data-dialog-settings]").close());
+    await page.evaluate(() => window.AgentHub.openDialogSettings());
+    assert.equal(await picker.inputValue(), "gpt-6.1-sol");
+  } finally {
+    await browser.close();
+  }
 });
 
 const stream = (id, ordinal, lastActivity) => ({

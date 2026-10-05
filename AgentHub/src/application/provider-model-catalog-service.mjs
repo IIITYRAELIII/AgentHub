@@ -4,6 +4,9 @@ import { orderCodexModels } from "../domain/codex-model-order.mjs";
 const MODEL_ID = /^[a-z0-9][a-z0-9._-]{0,127}$/i;
 const PAGE_LIMIT = 100;
 const MAX_PAGES = 5;
+// Background metadata discovery must not inherit the interactive RPC deadline.
+const CODEX_PAGE_TIMEOUT_MS = 20_000;
+const CODEX_DISCOVERY_BUDGET_MS = 60_000;
 const DISCOVERY_TIMEOUT_MS = 3_000;
 
 function codexOptions(data) {
@@ -60,21 +63,53 @@ export class ProviderModelCatalogService {
     this.claudeQueryFactory = claudeQueryFactory;
     this.logger = logger;
     this.revision = 0;
+    this.codexRefresh = null;
   }
 
-  async refreshCodex(sendRpc, saveState = async () => {}) {
+  async refreshCodex(sendRpc, saveState = async () => {}, { source = "background" } = {}) {
+    if (this.codexRefresh) return this.codexRefresh;
+    const refresh = this.#refreshCodex(sendRpc, saveState, source);
+    this.codexRefresh = refresh;
+    try {
+      return await refresh;
+    } finally {
+      if (this.codexRefresh === refresh) this.codexRefresh = null;
+    }
+  }
+
+  async #refreshCodex(sendRpc, saveState, source) {
     const data = [];
     const cursors = new Set();
     let cursor = null;
     let more = false;
     let complete = false;
+    let attemptedPages = 0;
+    let completedPages = 0;
+    let rpcMs = 0;
+    const pageRpcAndQueueMs = [];
+    let persistenceMs = 0;
+    const started = performance.now();
+    let outcome = "failed";
+    let failureKind = null;
     try {
       for (let page = 0; page < MAX_PAGES; page += 1) {
-        const response = await sendRpc("model/list", {
-          limit: PAGE_LIMIT,
-          includeHidden: false,
-          ...(cursor ? { cursor } : {}),
-        }, { timeoutMs: DISCOVERY_TIMEOUT_MS, priority: "background" });
+        const remainingMs = CODEX_DISCOVERY_BUDGET_MS - (performance.now() - started);
+        if (remainingMs <= 0) throw new Error("Codex model discovery budget exhausted");
+        const rpcStarted = performance.now();
+        attemptedPages += 1;
+        let response;
+        try {
+          response = await sendRpc("model/list", {
+            limit: PAGE_LIMIT,
+            includeHidden: false,
+            ...(cursor ? { cursor } : {}),
+          }, { timeoutMs: Math.ceil(Math.min(CODEX_PAGE_TIMEOUT_MS, remainingMs)), priority: "background" });
+        } finally {
+          const elapsedMs = performance.now() - rpcStarted;
+          rpcMs += elapsedMs;
+          pageRpcAndQueueMs.push(Math.round(elapsedMs));
+        }
+        completedPages += 1;
         if (!Array.isArray(response?.data)) throw new Error("invalid model/list response");
         data.push(...response.data);
         const next = String(response.nextCursor ?? "").trim();
@@ -97,13 +132,30 @@ export class ProviderModelCatalogService {
       this.agentPreferences.codexModels.clear();
       for (const model of models) this.agentPreferences.codexModels.add(model.value);
       if (changed) this.revision += 1;
+      const persistenceStarted = performance.now();
       await Promise.resolve().then(saveState).catch((error) => {
         this.logger.warn?.(`Cannot save Codex model catalog: ${error.message}`);
       });
+      persistenceMs = performance.now() - persistenceStarted;
+      outcome = "complete";
       return true;
     } catch (error) {
+      failureKind = /timed? out|deadline|budget/iu.test(String(error?.message ?? ""))
+        ? "timeout" : "invalid-or-unavailable";
       this.logger.warn?.(`Cannot refresh Codex models: ${error.message}`);
       return false;
+    } finally {
+      // RPC time includes provider queue/readiness and transport; it is not CPU time.
+      try {
+        this.logger.info?.("Codex model catalog discovery", {
+          source, outcome, failureKind, attemptedPages, completedPages,
+          durationMs: Math.round(performance.now() - started),
+          rpcAndQueueMs: Math.round(rpcMs), pageRpcAndQueueMs,
+          persistenceMs: Math.round(persistenceMs),
+        });
+      } catch {
+        // Diagnostics cannot change the catalog result.
+      }
     }
   }
 

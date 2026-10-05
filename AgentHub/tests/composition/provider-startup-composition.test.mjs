@@ -4,7 +4,8 @@ import test from "node:test";
 import { createProviderStartupComposition } from "../../src/composition/provider-startup-composition.mjs";
 
 function fixture(config = {}, refreshCodexModels = async () => {},
-  refreshClaudeModels = async () => {}, startCodex = async () => {}) {
+  refreshClaudeModels = async () => {}, startCodex = async () => {},
+  waitForModelRetry = async () => {}) {
   const calls = [];
   const service = createProviderStartupComposition({
     config: {
@@ -27,6 +28,7 @@ function fixture(config = {}, refreshCodexModels = async () => {},
     sendRpc: async () => ({}),
     refreshCodexModels,
     refreshClaudeModels,
+    waitForModelRetry,
     resolveResumedCodexThreadTitle: async () => "Thread",
     applyCodexThreadSettings() {},
     saveState: async () => {},
@@ -43,6 +45,17 @@ test("provider startup can skip the empty Telegram bootstrap Thread", async () =
     ["start"],
     ["initialize", { attachSelectedThread: false }],
   ]);
+});
+
+test("failed startup catalog retries in background and a later complete response becomes available", async () => {
+  const attempts = [];
+  const { service } = fixture({ createInitialThreadOnStartup: false }, async ({ source }) => {
+    attempts.push(source);
+    return attempts.length === 3;
+  }, async () => {}, async () => {}, async () => {});
+  await service.initializeProvider();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(attempts, ["startup", "startup-retry-1", "startup-retry-2"]);
 });
 
 test("provider startup begins model discovery without waiting for it", async () => {

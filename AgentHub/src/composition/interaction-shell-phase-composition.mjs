@@ -132,6 +132,7 @@ export function createInteractionShellPhase({
     models: {
       codexModels: settings.codexModels,
       modelCatalogRevision: settings.modelCatalogRevision,
+      refreshCodexModels: settings.refreshCodexModels,
       codexModelLabel: settings.codexModelLabel,
       claudeModels: settings.claudeModels,
       claudeModelLabels: settings.claudeModelLabels,
