@@ -65,12 +65,19 @@ export class RunJournalService {
     this.lastTaskMessages = new Map();
   }
 
-  rememberLastMessage(run, text, { updatedAt = null, terminalRevision = null } = {}) {
+  rememberLastMessage(run, text, { updatedAt = null, terminalRevision = null, removeTurnId = false } = {}) {
     const value = String(text ?? "").trim();
-    if (!run?.threadId || !value) return false;
+    if (!run?.threadId) return false;
     const key = taskRunKey(run);
     const current = this.lastMessageRecord(run);
     const turnId = String(run.turnId ?? "").trim() || null;
+    if (!value && removeTurnId === true) {
+      if (!turnId || current?.turnId !== turnId) return false;
+      this.lastTaskMessages.delete(key);
+      this.#revision += 1;
+      return true;
+    }
+    if (!value) return false;
     const authoritativeUpdatedAt = normalizedIsoTimestamp(updatedAt);
     const startedAt = normalizedIsoTimestamp(run.startedAt);
     const sameTurn = Boolean(turnId) && current?.turnId === turnId;

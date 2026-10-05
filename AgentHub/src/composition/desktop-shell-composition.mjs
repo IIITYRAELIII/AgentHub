@@ -202,6 +202,11 @@ export function createDesktopShellComposition({
       trustedDeviceStore: runtime.trustedDeviceStore,
       resolveTask: desktopCommandsPort.api.messageTarget,
       lastTaskMessage: runtime.savedLastTaskMessageRecord,
+      forgetLastTaskMessage: async (identity) => {
+        const removed = runtime.rememberLastTaskMessage(identity, "", { removeTurnId: true });
+        if (removed) await saveState();
+        return removed;
+      },
       enqueueSpeech: (target, text) => backgroundJobs.enqueue(
         "speech",
         { chatId: hostState.chatId, text },
@@ -270,6 +275,7 @@ export function createDesktopShellComposition({
       hasAllowedUsers: () => Boolean(config.allowedUserIds.size),
       androidEnabled: () => Boolean(config.components.androidApp),
       readCachedHistory,
+      readExactHistoryTurn: (identity) => taskSyncStore.historyTurn(identity),
       readHistoryPage: (...args) => taskSyncStore.readHistoryPage(...args),
       refreshHistory,
       attachmentImporter: importCodexDesktopAttachments,

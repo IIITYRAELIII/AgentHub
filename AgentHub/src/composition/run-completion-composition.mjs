@@ -105,6 +105,7 @@ export function createRunCompletionComposition({
   const turnEndDelivery = new TurnEndDeliveryService({
     notifications: turnEndNotifications,
     terminalCommits,
+    runLifecycleTerminals,
     taskRuns,
     persistHistory: persistManagedRunHistory,
     projectTurn: (...args) => runJournal.projectTurn(...args),

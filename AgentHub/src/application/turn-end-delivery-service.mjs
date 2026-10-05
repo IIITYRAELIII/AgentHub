@@ -82,10 +82,12 @@ export class TurnEndDeliveryService {
   #projectionRetryTimer = null;
   #projectionRecoveryEnabled = false;
   #projectionDrain = null;
+  #telegramDeliveryLanes = new Map();
 
   constructor({
     notifications,
     terminalCommits = null,
+    runLifecycleTerminals = null,
     taskRuns,
     persistHistory = async () => {},
     projectTurn,
@@ -109,6 +111,7 @@ export class TurnEndDeliveryService {
     this.notifications = notifications;
     this.legacy = new LegacyTurnEndProjectionAdapter(notifications);
     this.terminalCommits = terminalCommits;
+    this.runLifecycleTerminals = runLifecycleTerminals;
     this.taskRuns = taskRuns;
     this.persistHistory = persistHistory;
     this.projectTurn = projectTurn;
@@ -152,6 +155,26 @@ export class TurnEndDeliveryService {
     }, operation) : operation();
   }
 
+  async #withTelegramDeliveryLane(identity, operation) {
+    const key = turnEndKey(identity);
+    const previous = this.#telegramDeliveryLanes.get(key) ?? Promise.resolve();
+    let release;
+    const current = new Promise((resolve) => { release = resolve; });
+    this.#telegramDeliveryLanes.set(key, current);
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      if (this.#telegramDeliveryLanes.get(key) === current) this.#telegramDeliveryLanes.delete(key);
+      release();
+    }
+  }
+
+  withTelegramOutboxAttempt(item, operation) {
+    if (!item?.intent?.terminalRevision) return operation();
+    return this.#withTelegramDeliveryLane(item.intent, operation);
+  }
+
   rememberCompletion(completion, body = "") {
     if (!completion || completion.aggregateOnly) return false;
     const notificationBody = String(body || completion.finalAnswer
@@ -179,6 +202,27 @@ export class TurnEndDeliveryService {
   async commit(completion, options = {}) {
     if (!this.terminalCommits) return { terminal: null, outbox: null, completion };
     return this.terminalCommits.commit(completion, options);
+  }
+
+  async correctFromExactProviderTerminal(identity, terminal) {
+    const result = await this.#withTelegramDeliveryLane(identity, async () => {
+      const committed = await this.terminalCommits?.correctFromExactProviderTerminal(identity, terminal);
+      if (committed?.terminal?.status === terminal.status && !committed.conflict && !committed.stale) {
+        const priorRunTerminal = this.runLifecycleTerminals?.get(identity);
+        if (priorRunTerminal && priorRunTerminal.status !== terminal.status) {
+          const runCorrection = await this.runLifecycleTerminals.correctFromExactTerminal({ ...identity, status: terminal.status }, {
+            priorStatus: priorRunTerminal.status,
+            priorCommittedAt: priorRunTerminal.committedAt,
+          });
+          if (runCorrection.current?.status !== terminal.status) {
+            throw new Error(`run terminal correction did not settle for ${identity.turnId}`);
+          }
+        }
+      }
+      return committed;
+    });
+    if (result?.corrected) await this.deliverOutbox(result.outbox, { projectionOnly: true });
+    return result;
   }
 
   async deliver(completion, { run = null } = {}) {
@@ -388,31 +432,35 @@ export class TurnEndDeliveryService {
   }
 
   async #materializeTelegramIntent(item) {
-    const channel = item?.channels?.telegram;
-    if (!channel || !["intent", "uncertain"].includes(channel.state)) return null;
-    if (!channel.intent || typeof this.finalizeRunDelivery !== "function") {
-      throw new Error("Telegram terminal intent cannot be materialized");
-    }
-    const intent = channel.intent;
-    return this.finalizeRunDelivery({ ...intent.run }, {
-      answer: intent.answer,
-      message: intent.message,
-      speechText: intent.speechText,
-      forceSpeechButton: intent.forceSpeechButton === true,
-      deliver: true,
-      silent: intent.silent === true,
-      complete: false,
-      refreshDiff: false,
-      description: intent.description,
-      terminalIntent: {
-        id: intent.id,
-        provider: item.provider,
-        threadId: item.threadId,
-        turnId: item.turnId,
-        terminalRevision: item.terminalRevision,
-        channel: "telegram",
-        supersedeKey: `${item.provider}\0${item.threadId}\0${item.turnId}\0telegram`,
-      },
+    return this.#withTelegramDeliveryLane(item, async () => {
+      const channel = item?.channels?.telegram;
+      if (!channel || !["intent", "uncertain"].includes(channel.state)) return null;
+      const current = await this.terminalCommits.get(item);
+      if (current?.terminalRevision !== item.terminalRevision) return null;
+      if (!channel.intent || typeof this.finalizeRunDelivery !== "function") {
+        throw new Error("Telegram terminal intent cannot be materialized");
+      }
+      const intent = channel.intent;
+      return this.finalizeRunDelivery({ ...intent.run }, {
+        answer: intent.answer,
+        message: intent.message,
+        speechText: intent.speechText,
+        forceSpeechButton: intent.forceSpeechButton === true,
+        deliver: true,
+        silent: intent.silent === true,
+        complete: false,
+        refreshDiff: false,
+        description: intent.description,
+        terminalIntent: {
+          id: intent.id,
+          provider: item.provider,
+          threadId: item.threadId,
+          turnId: item.turnId,
+          terminalRevision: item.terminalRevision,
+          channel: "telegram",
+          supersedeKey: `${item.provider}\0${item.threadId}\0${item.turnId}\0telegram`,
+        },
+      });
     });
   }
 

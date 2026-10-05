@@ -96,6 +96,36 @@ export class ProviderRunTerminalStore {
     });
   }
 
+  correctFromExactTerminal(value, { priorStatus, priorCommittedAt } = {}) {
+    const key = identity(value);
+    const previous = String(priorStatus ?? "").trim().toLowerCase();
+    const committedAt = String(priorCommittedAt ?? "").trim();
+    if (!providerRunTerminalStatusSupported(previous) || !Number.isFinite(Date.parse(committedAt))) {
+      throw new Error("prior run terminal evidence is required for correction");
+    }
+    return this.#mutations.run(() => {
+      const database = this.#database();
+      try {
+        const result = database.prepare(`
+          UPDATE provider_run_terminals SET status = ?, committed_at = ?
+          WHERE provider = ? AND thread_id = ? AND turn_id = ?
+            AND status = ? AND committed_at = ?
+        `).run(key.status, new Date().toISOString(), key.provider, key.threadId, key.turnId,
+          previous, committedAt);
+        const current = terminalRow(database.prepare(`
+          SELECT provider, thread_id, turn_id, status, committed_at
+          FROM provider_run_terminals WHERE provider = ? AND thread_id = ? AND turn_id = ?
+        `).get(key.provider, key.threadId, key.turnId));
+        return { corrected: result.changes === 1, current };
+      } finally {
+        database.close();
+      }
+    }, {
+      timeoutMs: this.#mutationTimeoutMs,
+      requestId: `${key.provider}\0${key.threadId}\0${key.turnId}`,
+    });
+  }
+
   get(value) {
     const provider = String(value?.provider ?? "").trim().toLowerCase();
     const threadId = String(value?.threadId ?? "").trim();

@@ -73,6 +73,8 @@ function createLatestIntentController() {
 const navigationIntents = createLatestIntentController();
 let bridgeSequence = 0;
 let lastSnapshot = null;
+let appliedSnapshotGeneration = 0;
+const responseSnapshotBaselines = new WeakMap();
 let observedServerIdentity = readStoredServerIdentity();
 let selectedTaskId = readSelectedTaskId();
 let refreshTimer = null;
@@ -316,6 +318,31 @@ function serverIdentity(snapshot) {
   const instanceId = String(process?.instanceId ?? "").trim();
   const releaseId = String(process?.releaseId ?? "").trim();
   return instanceId && releaseId ? { instanceId, releaseId } : null;
+}
+
+function snapshotServerKey(identity) {
+  return identity ? `${identity.instanceId}\0${identity.releaseId}` : "";
+}
+
+function currentSnapshotBaseline() {
+  return `${appliedSnapshotGeneration}\0${snapshotServerKey(observedServerIdentity)}`;
+}
+
+function bindSnapshotBaseline(result, baseline) {
+  if (result && typeof result === "object") {
+    responseSnapshotBaselines.set(result, baseline);
+    if (result.snapshot && typeof result.snapshot === "object") {
+      responseSnapshotBaselines.set(result.snapshot, baseline);
+    }
+  }
+  return result;
+}
+
+function snapshotResponseIsStale(result) {
+  const baseline = result && typeof result === "object"
+    ? responseSnapshotBaselines.get(result)
+    : undefined;
+  return baseline !== undefined && baseline !== currentSnapshotBaseline();
 }
 
 function rememberServerIdentity(identity) {
@@ -1688,6 +1715,7 @@ commandTrace.bindReporter(async (batch) => {
 });
 
 async function control(action, params = {}) {
+  const snapshotBaseline = currentSnapshotBaseline();
   const commandId = params.clientUserMessageId || params.clientTraceId || commandTrace.currentId() || commandTrace.newId();
   const started = performance.now();
   const tracedParams = { ...params, clientTraceId: commandId, clientTiming: params.clientTiming ?? {
@@ -1699,7 +1727,7 @@ async function control(action, params = {}) {
     try {
       const result = await controlTransport(action, tracedParams);
       reportClientCommandAck(commandId, tracedParams.clientTiming, "succeeded");
-      return commandTrace.associate(result, commandId);
+      return bindSnapshotBaseline(commandTrace.associate(result, commandId), snapshotBaseline);
     } catch (error) {
       reportClientCommandAck(commandId, tracedParams.clientTiming, "failed");
       throw error;
@@ -2086,23 +2114,33 @@ function observeContextCompactions(tasks) {
     const measurementPending = measurementStatus === "running"
       || (!measurementStatus && context?.usagePending);
     if (status === "completed" && !measurementPending) {
-      const measurementKnown = beforePercent !== null && afterPercent !== null;
-      const maintenanceLabel = measurementKnown
+      if (previous.measurementStatus !== measurementStatus) {
+        const trace = window.AgentHubCommandTrace;
+        trace?.afterPaint?.("context-estimate-paint", "compaction", trace.now(), compactionId, {
+          threadId: task.threadId, turnId: compaction.turnId ?? null,
+          hasEstimate: afterPercent !== null,
+        });
+      }
+      const afterKnown = afterPercent !== null;
+      const measurementKnown = beforePercent !== null && afterKnown;
+      const maintenanceLabel = afterKnown
         ? "Свёртка завершена успешно"
         : "Свёртка завершена";
       const afterLabel = estimated ? `≈${afterPercent}%` : `${afterPercent}%`;
       const maintenanceDetail = measurementKnown
         ? `${beforePercent}% → ${afterLabel}${estimated ? " · Предварительная оценка провайдера после свёртки" : ""}`
+        : afterKnown ? `${afterLabel}${estimated ? " · Предварительная оценка провайдера после свёртки" : ""}`
         : beforePercent !== null
-          ? `${beforePercent}% → замер после не получен`
-          : "Замер контекста не получен";
+          ? `${beforePercent}% → оценка после недоступна`
+          : "Оценка контекста недоступна";
       const text = measurementKnown
         ? estimated
           ? `Свёртка контекста · ${beforePercent}% → ${afterLabel}`
           : `Свёртка завершена успешно ${beforePercent}%>${afterLabel}`
-        : beforePercent !== null
-          ? `Свёртка завершена; до ${beforePercent}%, замер после не получен`
-          : "Свёртка завершена; замер контекста не получен";
+        : afterKnown ? `Свёртка контекста · ${afterLabel}`
+          : beforePercent !== null
+            ? `Свёртка завершена; до ${beforePercent}%, оценка после недоступна`
+            : "Свёртка завершена; оценка контекста недоступна";
       if (rememberMaintenanceEvent(stableTaskId, {
         id: eventId,
         provider: task.provider,
@@ -2202,6 +2240,10 @@ function representativeSnapshotTasks(tasks) {
 }
 
 function applySnapshot(snapshot, { materialized = false } = {}) {
+  if (snapshotResponseIsStale(snapshot)) {
+    void refresh();
+    return;
+  }
   return commandTrace.measure("ui-snapshot", "apply-snapshot", () => (
     applySnapshotContent(snapshot, { materialized })
   ), commandTrace.objectId(snapshot));
@@ -2218,6 +2260,11 @@ function applySnapshotContent(snapshot, { materialized = false } = {}) {
     const previousSnapshot = lastSnapshot;
     const previousTasks = previousSnapshot?.tasks ?? [];
     updateSendTaskGenerations(previousTasks, snapshot.tasks);
+    if (!previousSnapshot
+      || String(previousSnapshot.version ?? "") !== String(snapshot.version ?? "")
+      || snapshotServerKey(serverIdentity(previousSnapshot)) !== snapshotServerKey(serverIdentity(snapshot))) {
+      appliedSnapshotGeneration += 1;
+    }
     lastSnapshot = snapshot;
     for (const session of attachmentSendSessions.values()) {
       try { assertCurrentSendTaskOperation(session.operation); }
@@ -2740,6 +2787,22 @@ function applyOpened(result, {
     return;
   }
   const id = taskId(history.provider, history.threadId, history.streamId);
+  if (!result?.focusedTurn && snapshotResponseIsStale(result)) {
+    // The embedded history belongs to the same old open-task response as its
+    // snapshot. Keep any newer final already rendered while finishing the
+    // user's navigation, then load this Thread from its current authority.
+    if (selectTask) {
+      rememberSelectedTaskId(id);
+      agentHub.selectTask(id);
+      void settleOpenedTaskHistory(id, {
+        ...(history.streamId ? { streamId: history.streamId } : {}),
+        provider: history.provider,
+        threadId: history.threadId,
+      });
+    }
+    if (!skipSnapshot) void refresh();
+    return;
+  }
   if (history.notModified === true) {
     const page = historyPageByTask.get(id);
     if (page) page.version = history.version;
@@ -5065,6 +5128,10 @@ async function refresh({ reportError = false } = {}) {
       "snapshot",
       window.AgentHubSnapshotTransport.requestParams(lastSnapshot),
     );
+    if (snapshotResponseIsStale(snapshotResult)) {
+      refreshRequested = true;
+      return;
+    }
     let snapshot = lastSnapshot;
     if (snapshotResult?.notModified !== true) {
       try {
@@ -5075,6 +5142,10 @@ async function refresh({ reportError = false } = {}) {
           "snapshot",
           window.AgentHubSnapshotTransport.requestParams(null),
         );
+        if (snapshotResponseIsStale(snapshotResult)) {
+          refreshRequested = true;
+          return;
+        }
         if (snapshotResult?.notModified === true) {
           throw new Error("Agent Hub returned notModified without a snapshot baseline");
         }

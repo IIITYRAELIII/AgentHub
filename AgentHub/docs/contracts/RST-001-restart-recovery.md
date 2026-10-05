@@ -10,7 +10,8 @@ The client may show an explicit compaction boundary with before/after context
 as a system maintenance marker. Codex uses its preliminary provider estimate,
 labelled as approximate; missing evidence remains unknown. Context maintenance
 does not generate measurement turns, including after rotation. Former marker
-text has no special classification or suppression rule.
+text has no special classification or suppression rule. The retired generated
+probe `client_id` remains an exact historical identity guard (ADR-0073).
 
 Test Contour refresh is a separate persisted infrastructure operation governed
 by REL-001 and ADR-0015. It binds contour root/marker/port and source/release
@@ -99,6 +100,10 @@ provider/process completion owner may commit the exact terminal outcome.
   completion or wake cancels that delay and rechecks the lane head immediately.
 - Process death does not preserve local `running` as fact. Recovery reconciles
   provider state or records an honest terminal timeout/unknown result.
+- An exact Codex turn whose rollout has only `task_started` remains unknown
+  across reconnect and restart, even after the promptless grace period or an
+  App Server `interrupted` projection. The original run and queue lane remain
+  owned; no terminal, interruption or new provider effect is fabricated.
 - Before provider discovery finishes, the initial catalog resolves retained
   Threads against existing visible Workspace/Stream bindings read-only. It does
   not expose an unbound historical Thread as a synthetic Stream. Discovery

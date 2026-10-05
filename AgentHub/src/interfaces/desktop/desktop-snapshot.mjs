@@ -329,28 +329,41 @@ export function createDesktopSnapshotFactory({
     const compaction = context.compactionFor(String(thread ?? "")) ?? null;
     if (!usage && !compaction) return null;
     const windowTokens = Math.max(0, Number(usage?.modelContextWindow) || 0);
-    const usedTokens = Math.max(0, Number(usage?.usedTokens) || 0);
     const compactionStartedAtMs = Date.parse(String(compaction?.startedAt ?? "")) || 0;
     const usageUpdatedAtMs = Date.parse(String(usage?.updatedAt ?? "")) || 0;
+    const boundaryMs = Date.parse(String(compaction?.compactedAt ?? compaction?.completedAt ?? "")) || compactionStartedAtMs;
+    const completedCompaction = compaction?.status === "completed";
+    const freshExact = usage?.provisional !== true && usageUpdatedAtMs > boundaryMs;
+    const estimatedAfter = completedCompaction && !freshExact
+      && compaction?.measurementStatus === "completed" && compaction?.measurementKind === "estimated"
+      && compaction.afterPercent != null && Number.isFinite(Number(compaction.afterPercent));
+    const staleUsage = completedCompaction && !freshExact && !estimatedAfter;
+    const usedTokens = estimatedAfter && windowTokens
+      ? Math.round((Number(compaction.afterPercent) / 100) * windowTokens)
+      : staleUsage ? null : usage?.usedTokens ?? null;
+    const percent = estimatedAfter ? Number(compaction.afterPercent)
+      : usedTokens !== null && windowTokens ? Math.min(100, (Number(usedTokens) / windowTokens) * 100) : null;
     return {
       usedTokens,
       modelContextWindow: windowTokens,
-      percent: windowTokens ? Math.min(100, (usedTokens / windowTokens) * 100) : null,
+      percent,
+      estimated: estimatedAfter || (!completedCompaction && usage?.provisional === true),
       turnId: usage?.turnId ?? compaction?.turnId ?? null,
       updatedAt: usage?.updatedAt ?? null,
       compacting: context.isCompacting(String(thread ?? "")),
       compaction,
-      usagePending: !usage || usage?.provisional === true || (
-        compaction?.status === "completed"
-        && compactionStartedAtMs > 0
-        && usageUpdatedAtMs < compactionStartedAtMs
-      ),
-      breakdown: presentContextUsageBreakdown({
-        breakdown: usage?.breakdown,
-        provider: usage?.provider,
-        usedTokens,
-        modelContextWindow: windowTokens,
-      }),
+      usagePending: !completedCompaction && (!usage || usage?.provisional === true),
+      breakdown: staleUsage ? null : (() => {
+        const breakdown = presentContextUsageBreakdown({
+          breakdown: estimatedAfter ? null : usage?.breakdown,
+          provider: usage?.provider,
+          usedTokens: usedTokens ?? 0,
+          modelContextWindow: windowTokens,
+        });
+        return estimatedAfter && breakdown
+          ? { ...breakdown, note: "Предварительная оценка провайдера после свёртки." }
+          : breakdown;
+      })(),
     };
   }
 

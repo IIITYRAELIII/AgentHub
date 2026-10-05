@@ -395,6 +395,7 @@ test("desktopContextSnapshot preserves the context JSON contract", () => {
     usedTokens: 250,
     modelContextWindow: 1_000,
     percent: 25,
+    estimated: false,
     turnId: "turn-1",
     updatedAt: "2026-07-30T10:01:00.000Z",
     compacting: true,
@@ -411,9 +412,10 @@ test("desktopContextSnapshot preserves the context JSON contract", () => {
   });
   state.usage = null;
   assert.deepEqual(desktopContextSnapshot("thread-1"), {
-    usedTokens: 0,
+    usedTokens: null,
     modelContextWindow: 0,
     percent: null,
+    estimated: false,
     turnId: null,
     updatedAt: null,
     compacting: true,
@@ -732,7 +734,7 @@ test("desktop snapshot exposes durable Stream message pins", async () => {
   assert.deepEqual(snapshot.collectionDeltas.messagePins.reset, state.messagePins);
 });
 
-test("desktopContextSnapshot marks a completed compaction until fresh usage arrives", () => {
+test("desktopContextSnapshot shows exact current estimate and never reuses pre-compaction usage", () => {
   const { desktopContextSnapshot, state } = fixture();
   state.compaction = {
     id: "compact-2",
@@ -740,11 +742,20 @@ test("desktopContextSnapshot marks a completed compaction until fresh usage arri
     startedAt: "2026-07-30T10:01:30.000Z",
     completedAt: "2026-07-30T10:01:31.000Z",
   };
-  assert.equal(desktopContextSnapshot("thread-1").usagePending, true);
+  assert.equal(desktopContextSnapshot("thread-1").usagePending, false);
+  assert.equal(desktopContextSnapshot("thread-1").percent, null);
+  assert.equal(desktopContextSnapshot("thread-1").usedTokens, null);
+  state.compaction.measurementStatus = "completed";
+  state.compaction.measurementKind = "estimated";
+  state.compaction.afterPercent = 28.37;
+  assert.equal(desktopContextSnapshot("thread-1").percent, 28.37);
+  assert.equal(desktopContextSnapshot("thread-1").estimated, true);
   state.usage.updatedAt = "2026-07-30T10:01:32.000Z";
   assert.equal(desktopContextSnapshot("thread-1").usagePending, false);
+  assert.equal(desktopContextSnapshot("thread-1").estimated, false);
   state.usage.provisional = true;
-  assert.equal(desktopContextSnapshot("thread-1").usagePending, true);
+  assert.equal(desktopContextSnapshot("thread-1").usagePending, false);
+  assert.equal(desktopContextSnapshot("thread-1").estimated, true);
 });
 
 test("desktopRunSnapshot preserves run fields and nested context", () => {
@@ -789,6 +800,7 @@ test("desktopRunSnapshot preserves run fields and nested context", () => {
       usedTokens: 250,
       modelContextWindow: 1_000,
       percent: 25,
+      estimated: false,
       turnId: "turn-1",
       updatedAt: "2026-07-30T10:01:00.000Z",
       compacting: true,
@@ -1699,6 +1711,25 @@ test("desktopSnapshot returns a compact marker before rebuilding an unchanged re
     state.boardWorkspaceBuilds,
     state.boardLayoutBuilds,
   ], boardBuilds);
+});
+
+test("a transient null revision rebuilds safely without resending unchanged collections", async () => {
+  const { desktopSnapshot, state } = fixture({ revisionFn: () => null });
+  const first = await desktopSnapshot({ snapshotProtocol: 4, compactSnapshot: true });
+  const builds = state.snapshotBuilds;
+  const next = await desktopSnapshot({
+    snapshotProtocol: 4,
+    compactSnapshot: true,
+    knownVersion: first.version,
+    conversationsVersion: first.collectionDeltas.conversations.version,
+    workspacesVersion: first.collectionDeltas.workspaces.version,
+    boardTasksVersion: first.collectionDeltas.boardTasks.version,
+    messageReceiptsVersion: first.collectionDeltas.messageReceipts.version,
+    messagePinsVersion: first.collectionDeltas.messagePins.version,
+  });
+  assert.ok(state.snapshotBuilds > builds, "a transient input prevents the early revision shortcut");
+  assert.equal(next.notModified, true, "unchanged versioned collections need no reset transfer");
+  assert.equal(next.snapshotTiming.cacheHit, false);
 });
 
 test("desktopSnapshot rebuilds when a source revision changes", async () => {

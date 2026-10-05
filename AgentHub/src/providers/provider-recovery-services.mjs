@@ -3,7 +3,6 @@ import { codexThreadWaitingOnApproval } from "./codex/codex-approvals.mjs";
 import {
   codexThreadHistory,
   codexTurnActivityGroups,
-  codexTurnHasExplicitFinalAnswer,
 } from "../application/task-history.mjs";
 import { replaceRunActivityGroups } from "../domain/run-activity.mjs";
 import { resolveTaskRecoveryAction, TASK_RECOVERY_ACTIONS } from "../domain/task-recovery.mjs";
@@ -69,7 +68,12 @@ export class CodexRecoveryService {
       observerSnapshot,
       codexAvailable: d.transportRunning(),
     });
-    if (initialAction === TASK_RECOVERY_ACTIONS.INTERRUPTED_LOCAL) return d.finishInterrupted(run);
+    if (initialAction === TASK_RECOVERY_ACTIONS.INTERRUPTED_LOCAL) {
+      d.setProgressStage(run, "Связь с Codex недоступна; исходный ход ожидает проверки.");
+      d.scheduleObservedRun(run);
+      await d.saveState();
+      return;
+    }
 
     let recoveryResult;
     await d.readThread(run.threadId, {
@@ -99,13 +103,26 @@ export class CodexRecoveryService {
       autoApprove: d.autoApprove(),
       restartRequested: d.restartRequested(),
     });
-    if (recoveryAction === TASK_RECOVERY_ACTIONS.MISSING_CODEX_TURN) {
-      await d.finishProgress(run, "Не удалось найти сохранённый запуск.");
-      await d.completeRun(run);
+    let terminalSnapshot = null;
+    if (exactTurnId) {
+      try {
+        terminalSnapshot = await d.readTaskSnapshot(run, { threadResult: result, fresh: true });
+      } catch {
+        // A failed provider/rollout read is not terminal evidence. Keep the
+        // original run and let the exact observer retry the same identity.
+      }
+    }
+    const exactTerminal = terminalSnapshot?.completed === true
+      && String(terminalSnapshot.turnId ?? "").trim() === exactTurnId
+      ? terminalSnapshot : null;
+    if (!exactTerminal && recoveryAction === TASK_RECOVERY_ACTIONS.MISSING_CODEX_TURN) {
+      d.setProgressStage(run, "Ожидаю подтверждения исходного хода Codex…");
+      d.scheduleObservedRun(run);
+      await d.saveState();
       return;
     }
-    run.responseText = d.recoveredAnswer(turn) || run.responseText;
-    if (recoveryAction === TASK_RECOVERY_ACTIONS.RETRY_LOST_APPROVAL) {
+    run.responseText = (turn ? d.recoveredAnswer(turn) : "") || run.responseText;
+    if (!exactTerminal && recoveryAction === TASK_RECOVERY_ACTIONS.RETRY_LOST_APPROVAL) {
       const originalPrompt = codexThreadHistory([turn]).at(-1)?.prompt || run.promptPreview || "текущий поток";
       run.responseText = "";
       run.progressReasoning = "";
@@ -118,7 +135,7 @@ export class CodexRecoveryService {
       );
       return;
     }
-    if (recoveryAction === TASK_RECOVERY_ACTIONS.ATTACH_CODEX) {
+    if (!exactTerminal && recoveryAction === TASK_RECOVERY_ACTIONS.ATTACH_CODEX) {
       const previousTurnId = run.turnId;
       run.turnId = turn.id;
       d.reindexRun(run, { turnId: previousTurnId });
@@ -131,18 +148,24 @@ export class CodexRecoveryService {
       await d.saveState();
       return;
     }
-    if (recoveryAction === TASK_RECOVERY_ACTIONS.DISMISS_RESTART_INTERRUPTION) {
+    if (!exactTerminal) {
+      d.setProgressStage(run, "Ожидаю точное terminal-событие исходного хода Codex…");
+      d.scheduleObservedRun(run);
+      await d.saveState();
+      return;
+    }
+    if (d.restartRequested() && exactTerminal.status === "aborted") {
       while (run.progressUpdateInFlight) await delay(50);
       const progressMessageIds = [...run.progressMessageIds];
       run.progressMessageIds = [];
       run.progressReasoning = "";
       run.lastProgressText = "";
       await d.finalizeDelivery(run, {
-        answer: d.recoveredAnswer(turn)
+        answer: (turn ? d.recoveredAnswer(turn) : "")
           || run.responseText.trim()
           || "Ход прерван при перезапуске.",
         turnId: run.turnId,
-        status: "interrupted",
+        status: "aborted",
         tracker: d.consumeTracker(run.turnId),
         deliver: false,
         silent: true,
@@ -153,17 +176,17 @@ export class CodexRecoveryService {
       }
       return;
     }
-    const answer = d.recoveredAnswer(turn)
+    const answer = exactTerminal.answer || (turn ? d.recoveredAnswer(turn) : "")
       || run.responseText.trim()
-      || turn.error?.message
-      || `Сохранённый запуск завершён со статусом ${turn.status}.`;
+      || turn?.error?.message
+      || `Сохранённый запуск завершён со статусом ${exactTerminal.status}.`;
     const tracker = d.consumeTracker(run.turnId);
-    const recoveredAsCompleted = turn.status === "completed" || codexTurnHasExplicitFinalAnswer(turn);
-    await d.finishProgress(run, recoveredAsCompleted ? "Поток завершён." : `Поток остановлен: ${turn.status}.`);
+    const recoveredAsCompleted = exactTerminal.status === "completed";
+    await d.finishProgress(run, recoveredAsCompleted ? "Поток завершён." : `Поток остановлен: ${exactTerminal.status}.`);
     await d.finalizeDelivery(run, {
       answer,
       turnId: run.turnId,
-      status: turn.status ?? "completed",
+      status: exactTerminal.status,
       tracker,
       description: "восстановленный ответ",
     });

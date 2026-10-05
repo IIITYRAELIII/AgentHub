@@ -445,7 +445,7 @@ test("terminal audit advances through an active rollout and reads its later term
   assert.equal(audit.snapshot().positions[0][1].offset, 120);
 });
 
-test("terminal audit recovers an interrupted turn when rollout has no terminal event", async () => {
+test("terminal audit retains an interrupted turn when rollout has no terminal event", async () => {
   let nowMs = Date.parse("2026-07-27T04:00:00.000Z");
   let scans = 0;
   const recovered = [];
@@ -493,13 +493,8 @@ test("terminal audit recovers an interrupted turn when rollout has no terminal e
   nowMs += 6_000;
   await audit.run();
 
-  assert.deepEqual(recovered, [{
-    turnId: "turn-missing-terminal",
-    status: "aborted",
-    completedAt: "2026-07-27T04:00:04.000Z",
-    authoritative: true,
-  }]);
-  assert.equal(audit.snapshot().pendingTurns.length, 0);
+  assert.deepEqual(recovered, []);
+  assert.equal(audit.snapshot().pendingTurns.length, 1);
 });
 
 test("terminal audit does not trust interrupted status while the exact rollout turn is active", async () => {
@@ -549,8 +544,8 @@ test("terminal audit does not trust interrupted status while the exact rollout t
   active = false;
   nowMs += 30_000;
   await audit.run();
-  assert.equal(recovered.length, 1);
-  assert.equal(recovered[0].status, "aborted");
+  assert.deepEqual(recovered, []);
+  assert.equal(audit.snapshot().pendingTurns.length, 1);
 });
 
 test("terminal audit performs one compatible bootstrap for unknown snapshots", () => {
@@ -1306,7 +1301,7 @@ test("terminal audit checkpoints historical maintenance before current rollouts"
   assert.deepEqual(order, ["historical:historical.jsonl", "live:historical.jsonl"]);
 });
 
-test("historical subagent backfill records a stale unterminated turn as aborted", async () => {
+test("historical subagent backfill does not invent a terminal for an old unterminated turn", async () => {
   const recovered = [];
   const audit = new CodexTerminalAudit({
     now: () => Date.parse("2026-08-01T14:00:00.000Z"),
@@ -1345,15 +1340,9 @@ test("historical subagent backfill records a stale unterminated turn as aborted"
 
   await audit.run();
 
-  assert.deepEqual(recovered, [{
-    turnId: "unterminated-turn",
-    status: "aborted",
-    completedAt: "2026-07-01T00:10:00.000Z",
-    authoritative: true,
-    historical: true,
-  }]);
+  assert.deepEqual(recovered, []);
   assert.equal(audit.snapshot().historicalSubagentBackfill.pending, false);
-  assert.equal(audit.snapshot().historicalSubagentBackfill.processedTurns, 1);
+  assert.equal(audit.snapshot().historicalSubagentBackfill.processedTurns, 0);
 });
 
 test("terminal audit isolates a missing pending rollout from unrelated completed turns", async () => {
@@ -1811,7 +1800,7 @@ test("terminal audit catches up a recent 200 MiB rollout while advancing thousan
   assert.equal(audit.snapshot().lastRun.backlog, false);
 });
 
-test("terminal audit rotates slow pending polls without starving another rollout after restart", async () => {
+test("terminal audit keeps pending turns without provider status polls and scans another rollout after restart", async () => {
   let nowMs = Date.parse("2026-09-03T12:00:00.000Z");
   const candidates = ["pending-one", "pending-two", "live"].map((id) => thread(id, "2026-09-03T11:59:00.000Z", `${id}.jsonl`));
   const polls = [];
@@ -1839,15 +1828,15 @@ test("terminal audit rotates slow pending polls without starving another rollout
     }]),
   });
   await audit.run();
-  assert.deepEqual(polls, ["pending-one"]);
-  assert.deepEqual(scans, []);
+  assert.deepEqual(polls, []);
+  assert.deepEqual(scans, ["live.jsonl"]);
   assert.equal(audit.snapshot().nextThreadId, "live");
   const checkpoint = audit.snapshot();
   audit = new CodexTerminalAudit(options);
   audit.restore(checkpoint);
   await audit.run();
   assert.deepEqual(scans, ["live.jsonl"]);
-  assert.deepEqual(polls, ["pending-one", "pending-two"]);
+  assert.deepEqual(polls, []);
 });
 
 test("worker-adapted incremental audit retains resume and same-path replacement guards", async () => {
@@ -2051,8 +2040,8 @@ test("pending native interrupted turns survive an empty active identity list whi
   assert.deepEqual(audit.snapshot().pendingTurns[0][1].turns.map((turn) => turn.turnId), [nativeId]);
   nowMs += 6_000;
   await audit.run();
-  assert.deepEqual(recovered.map((turn) => [turn.turnId, turn.status, turn.authoritative]), [[nativeId, "aborted", true]]);
-  assert.deepEqual(audit.snapshot().pendingTurns, []);
+  assert.deepEqual(recovered, []);
+  assert.deepEqual(audit.snapshot().pendingTurns[0][1].turns.map((turn) => turn.turnId), [nativeId]);
 });
 
 test("bounded historical native chunks reject inherited terminals attachments and stale active turns", async () => {
@@ -2086,8 +2075,7 @@ test("bounded historical native chunks reject inherited terminals attachments an
     },
   });
   await audit.runHistoricalMaintenance();
-  assert.deepEqual(reconciled.map((turn) => turn.turnId), [terminalId, attachmentId, activeId]);
-  assert.equal(reconciled[2].status, "aborted");
+  assert.deepEqual(reconciled.map((turn) => turn.turnId), [terminalId, attachmentId]);
   assert.equal(audit.snapshot().historicalSubagentBackfill.pending, false);
 });
 

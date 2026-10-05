@@ -45,8 +45,20 @@ terminal.
   evidence that an already-started provider operation has finished.
 - A Codex `task_complete` event carrying an error is a failed terminal, not a
   successful empty answer. Exact-turn, tail and historical readers retain the
-  same outcome. Context maintenance does not generate a user turn, and terminal
-  reconciliation has no special prompt, client-ID or response-text classifier.
+  same outcome. A promptless `task_started`, a missing active-turn projection,
+  an App Server `interrupted` status, a lost connection and rollout age are not
+  terminal evidence. Observer and restart recovery keep the exact run and its
+  admission lane until an exact terminal event is committed; a late terminal
+  releases that lane once. Current context maintenance does not generate a user
+  turn. The retired probe is a bounded historical exception identified only by
+  its generated reserved `client_id`, never by prompt or response text (ADR-0073).
+- If a previously committed Codex completion is contradicted by a later exact
+  rollout terminal for the same provider/thread/turn, the terminal owner uses
+  expected-revision CAS to commit a higher revision and its existing projection
+  outbox. The original user command is not redispatched and an already delivered
+  external message cannot be withdrawn. An absent rollout terminal alone does
+  not authorize retracting an older committed completion; it remains a separate
+  unresolved evidence case until the completion's provenance is established.
 - Optional rollout usage, pricing and tool-metadata reconstruction never delays
   terminal commit or admission release. The terminal audit resumes from its
   durable append-only byte checkpoint and reconciles that metadata afterward.
@@ -59,7 +71,11 @@ terminal.
   projection; live-preview bounds must not truncate durable final content.
 - A provider completion event is not sufficient evidence to persist a known
   prefix while the authoritative final is still materializing. Terminal commit
-  uses the exact reconciled provider final after a bounded settle window.
+  uses the exact reconciled provider final after a bounded settle window. A
+  complete exact-turn `task_complete` record from the validated rollout tail
+  may supply that final without waiting for unrelated generated-image metadata
+  before the tail. Missing, incomplete and interrupted records retain the
+  existing full reconciliation fallback.
 - A managed Claude result does not release its exact process owner while the
   provider tree is still live. Completion closes input, gives the provider a
   bounded nonzero graceful-exit window, and verifies the exact root and
@@ -124,6 +140,15 @@ terminal.
   intake validation; terminal coalescing cannot strip or retarget them.
 - Delivery uses a durable outbox. A missing UI ACK retries delivery without
   reverting terminal state or regenerating the provider effect.
+- An exact later provider terminal may correct a previously committed Codex
+  status through the same revision-CAS owner. Its new revision reprojects
+  history, journal and command outcome without a second ordinary completion
+  commit or Telegram notification, even if the older notification ACK is
+  missing. Old unsent Telegram intent is retired; an uncertain external attempt
+  stays recorded as superseded-uncertain but cannot be retried. Queued Telegram
+  delivery verifies the exact current revision before an external send and
+  retires a superseded item on reopen. A late ACK for an already issued attempt
+  may still be recorded; an external message already sent cannot be recalled.
 - Recovery may stage a bounded batch of exact outbox revisions and perform one
   shared journal projection. Every revision remains unacknowledged until its
   history and journal data are persisted and the shared projection succeeds.

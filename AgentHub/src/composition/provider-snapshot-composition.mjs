@@ -14,6 +14,7 @@ import {
 } from "../providers/codex/codex-task-snapshot-service.mjs";
 import {
   codexRolloutTurnState,
+  readCodexCompletedTurnAnswer,
   readCodexRolloutActivity,
   selectCodexTurn,
 } from "../providers/codex/codex-rollout-activity.mjs";
@@ -108,6 +109,7 @@ export function createProviderSnapshotComposition({
   });
   const codexTaskSnapshots = new CodexTaskSnapshotService({
     knownRolloutPath: knownCodexRolloutPath,
+    readCompletedTurnAnswer: readCodexCompletedTurnAnswer,
     readRolloutActivity: readCodexRolloutActivity,
     rolloutTurnState: codexRolloutTurnState,
     capturedOwner: capturedCodexExecutionOwner,

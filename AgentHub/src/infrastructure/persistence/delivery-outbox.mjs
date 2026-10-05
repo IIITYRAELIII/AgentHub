@@ -14,6 +14,7 @@ const DEFAULT_MAX_DELAY_MS = 5 * 60_000;
 const DELIVERY_PENDING = "pending";
 const DELIVERY_IN_PROGRESS = "delivering";
 const DELIVERY_PENDING_ACK = "delivered-pending-ack";
+const SKIPPED_DELIVERY = Symbol("superseded delivery");
 const DELIVERY_STATES = new Set([
   DELIVERY_PENDING,
   DELIVERY_IN_PROGRESS,
@@ -52,6 +53,7 @@ export class PersistentDeliveryOutbox {
     directoryPath,
     deliver,
     onUncertain = async () => {},
+    attemptDelivery = async (_item, operation) => operation(),
     onDelivered = async () => {},
     onPermanentFailure = async () => {},
     removeFile = unlink,
@@ -62,6 +64,7 @@ export class PersistentDeliveryOutbox {
     this.directoryPath = directoryPath;
     this.deliver = deliver;
     this.onUncertain = onUncertain;
+    this.attemptDelivery = attemptDelivery;
     this.onDelivered = onDelivered;
     this.onPermanentFailure = onPermanentFailure;
     this.removeFile = removeFile;
@@ -232,6 +235,10 @@ export class PersistentDeliveryOutbox {
         await this.#acknowledge(filePath, item);
         continue;
       }
+      if (item.discardRequested === true) {
+        await this.#retireDiscarded(filePath, item);
+        continue;
+      }
       if (item.nextAttemptAt > this.now()) {
         if (item.groupId) blockedGroups.add(item.groupId);
         continue;
@@ -243,28 +250,32 @@ export class PersistentDeliveryOutbox {
         deliveryStartedAt: new Date(this.now()).toISOString(),
       });
       if (!started) continue;
-      try {
-        await this.onUncertain(item, { attemptId });
-      } catch (error) {
-        const attempts = item.attempts + 1;
-        await this.#transition(filePath, item, {
-          state: DELIVERY_PENDING,
-          attempts,
-          lastError: `cannot persist uncertain delivery state: ${String(error.message ?? error)}`,
-          nextAttemptAt: this.now() + this.retryDelay(attempts),
-        });
-        if (item.groupId) blockedGroups.add(item.groupId);
-        continue;
-      }
       let result;
+      let externalAttemptStarted = false;
       try {
-        result = await this.deliver(item.method, item.body, {
-          deliveryId: item.id,
-          idempotencyKey: item.id,
-          attemptId,
-          uncertain: item.uncertain === true,
+        result = await this.attemptDelivery(item, async () => {
+          const authorized = await this.onUncertain(item, { attemptId });
+          if (authorized === false || item.discardRequested === true) return SKIPPED_DELIVERY;
+          externalAttemptStarted = true;
+          return this.deliver(item.method, item.body, {
+            deliveryId: item.id,
+            idempotencyKey: item.id,
+            attemptId,
+            uncertain: item.uncertain === true,
+          });
         });
       } catch (error) {
+        if (!externalAttemptStarted) {
+          const attempts = item.attempts + 1;
+          await this.#transition(filePath, item, {
+            state: DELIVERY_PENDING,
+            attempts,
+            lastError: `cannot persist uncertain delivery state: ${String(error.message ?? error)}`,
+            nextAttemptAt: this.now() + this.retryDelay(attempts),
+          });
+          if (item.groupId) blockedGroups.add(item.groupId);
+          continue;
+        }
         if (error?.retryable !== true) {
           this.#items.delete(filePath);
           await rename(filePath, `${filePath}.failed-${this.now()}`).catch(() => {});
@@ -288,6 +299,10 @@ export class PersistentDeliveryOutbox {
             : item.uncertainSince,
         });
         if (item.groupId) blockedGroups.add(item.groupId);
+        continue;
+      }
+      if (result === SKIPPED_DELIVERY) {
+        await this.#retireDiscarded(filePath, item);
         continue;
       }
       let recorded;
@@ -330,6 +345,16 @@ export class PersistentDeliveryOutbox {
   async #acknowledge(filePath, item) {
     await this.onDelivered(item, item.deliveryResult);
     await this.#serialize(async () => {
+      if (this.#items.get(filePath) !== item) return;
+      await this.removeFile(filePath).catch((error) => {
+        if (error?.code !== "ENOENT") throw error;
+      });
+      this.#items.delete(filePath);
+    });
+  }
+
+  #retireDiscarded(filePath, item) {
+    return this.#serialize(async () => {
       if (this.#items.get(filePath) !== item) return;
       await this.removeFile(filePath).catch((error) => {
         if (error?.code !== "ENOENT") throw error;

@@ -240,6 +240,57 @@ export class TerminalTurnCommitService {
     return result;
   }
 
+  async correctFromExactProviderTerminal(identity, {
+    status,
+    completedAt,
+    finalAnswer = "",
+  } = {}) {
+    if (identity?.provider !== "codex" || !identity.threadId || !identity.turnId) {
+      throw new Error("exact Codex terminal identity is required for correction");
+    }
+    if (!["completed", "failed", "aborted", "cancelled"].includes(status)
+      || !Number.isFinite(Date.parse(String(completedAt ?? "")))) {
+      throw new Error("exact provider terminal status and time are required for correction");
+    }
+    const current = await this.get(identity);
+    if (!current || current.status === status) {
+      return { corrected: false, terminal: current, outbox: null };
+    }
+    const previousAt = Date.parse(String(current.payload?.completion?.completedAt ?? ""));
+    if (!Number.isFinite(previousAt) || Date.parse(completedAt) <= previousAt) {
+      return { corrected: false, stale: true, terminal: current, outbox: null };
+    }
+    const answer = String(finalAnswer ?? "").trim();
+    const completion = {
+      ...structuredClone(current.payload?.completion ?? {}),
+      status,
+      completedAt,
+      finalAnswer: answer,
+      message: answer ? { text: answer } : null,
+    };
+    const history = {
+      ...structuredClone(current.payload?.history ?? {}),
+      responseText: answer,
+    };
+    const result = await this.store.commit({
+      ...identity,
+      status,
+      finalAnswer: answer,
+      usageIdentity: current.usageIdentity,
+      lastMessage: answer ? { text: answer, updatedAt: completedAt,
+        startedAt: completion.startedAt ?? null } : null,
+      payload: { ...structuredClone(current.payload), completion, history },
+      expectedTerminalRevision: current.terminalRevision,
+      terminalStatusCorrection: true,
+    });
+    if (result.conflict) return { corrected: false, conflict: true, ...result };
+    if (result.created) {
+      this.terminals.set(terminalKey(identity), result.terminal);
+      result.commandReconciled = await this.#reconcileTerminal(result.terminal);
+    }
+    return { ...result, corrected: result.created === true };
+  }
+
   async enrichResponseAttachments(identity, {
     expectedCount = 1,
     resolveAttachments,
@@ -372,6 +423,13 @@ export class TerminalTurnCommitService {
 
   markChannelUncertain(identity, options) {
     return this.store.updateChannel(identity, "telegram", "uncertain", options);
+  }
+
+  async authorizeTelegramOutboxAttempt(identity, { deliveryId } = {}) {
+    const current = await this.get(identity);
+    if (current?.terminalRevision !== identity?.terminalRevision) return false;
+    const channel = await this.markChannelUncertain(identity, { deliveryId });
+    return channel?.channels?.telegram?.state === "uncertain";
   }
 
   acknowledgeChannel(identity, options) {

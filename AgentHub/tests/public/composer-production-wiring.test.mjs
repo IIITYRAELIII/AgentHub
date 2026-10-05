@@ -2040,3 +2040,27 @@ test("production attachment boundary rejects unsafe names and accepts more than 
     await browser.close();
   }
 });
+
+test("shipped queue explains a real context-maintenance wait without a new toast", {
+  timeout: 30_000,
+}, async () => {
+  const browser = await launchBrowser();
+  const page = await browser.newPage();
+  try {
+    const fixtureSnapshot = snapshot();
+    fixtureSnapshot.deferredInputs = [{
+      id: "waiting-for-compaction", state: "queued", provider: "codex",
+      streamId: "stream-a", threadId: "thread-a",
+      clientUserMessageId: "queued-user-1", text: "Продолжай",
+      conflictKind: "context-maintenance", waitReason: "context-maintenance",
+      createdAt: "2026-09-29T11:51:57.201Z", attachments: [],
+    }];
+    await openFixture(page, { fixtureSnapshot });
+    const row = page.locator(".queue-item[data-queue-id='waiting-for-compaction']");
+    await row.waitFor({ state: "visible" });
+    assert.match(await row.locator(".queue-status").textContent(), /свёртки или ротации контекста/u);
+    assert.equal(await page.locator(".queue-toast").count(), 0);
+  } finally {
+    await browser.close();
+  }
+});

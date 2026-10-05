@@ -1,5 +1,7 @@
 import { recycleCodexCompactionTransport } from "./codex-compaction-transport.mjs";
 import {
+  readCodexCompactionEstimate,
+  readCodexTurnIdle,
   readCodexTurnItemsAfterCompaction,
   readLatestCodexCompactionItem,
 } from "./codex-compaction-rollout.mjs";
@@ -30,6 +32,7 @@ export class CodexContextMaintenanceService {
     refreshTaskCatalog = async () => [],
     knownRolloutPath = async () => "",
     readRolloutActivity = readCodexRolloutActivity,
+    readTurnIdle = readCodexTurnIdle,
     readThread = async () => null,
     rememberRolloutPath = () => {},
     stopTransport = async () => {},
@@ -47,6 +50,7 @@ export class CodexContextMaintenanceService {
     injectItems = async () => null,
     deleteThread = async () => null,
     readCompactionItem = readLatestCodexCompactionItem,
+    readCompactionEstimate = readCodexCompactionEstimate,
     readTurnResponseItems = readCodexTurnItemsAfterCompaction,
     sandboxSettings = () => ({}),
     recycleTransport = recycleCodexCompactionTransport,
@@ -70,6 +74,7 @@ export class CodexContextMaintenanceService {
     this.refreshTaskCatalog = refreshTaskCatalog;
     this.knownRolloutPath = knownRolloutPath;
     this.readRolloutActivity = readRolloutActivity;
+    this.readTurnIdle = readTurnIdle;
     this.readThread = readThread;
     this.rememberRolloutPath = rememberRolloutPath;
     this.stopTransport = stopTransport;
@@ -87,6 +92,7 @@ export class CodexContextMaintenanceService {
     this.injectItems = injectItems;
     this.deleteThread = deleteThread;
     this.readCompactionItem = readCompactionItem;
+    this.readCompactionEstimate = readCompactionEstimate;
     this.readTurnResponseItems = readTurnResponseItems;
     this.sandboxSettings = sandboxSettings;
     this.recycleTransport = recycleTransport;
@@ -213,12 +219,12 @@ export class CodexContextMaintenanceService {
           this.knownRolloutPath(normalizedId(target?.threadId)), expired,
         ]);
         stage = "rollout-activity";
-        const activity = rolloutPath
-          ? await Promise.race([this.readRolloutActivity(rolloutPath), expired])
-          : null;
+        const nativeIdle = rolloutPath
+          ? await Promise.race([this.readTurnIdle(rolloutPath, expectedTurnId), expired])
+          : false;
         // Recheck the managed run after the asynchronous observation.
         const run = this.runForTask(target);
-        const turnBusy = normalizedId(run?.turnId) === expectedTurnId || activity?.running === true;
+        const turnBusy = normalizedId(run?.turnId) === expectedTurnId || nativeIdle !== true;
         const currentTime = this.now();
         if (currentTime >= deadline) return false;
         if (turnBusy) idleSince = null;
@@ -294,10 +300,10 @@ export class CodexContextMaintenanceService {
       /* Всё, что ход успел сделать до свёртки, уже представлено ею. Переносится
          только хвост этого хода после той самой свёртки; пустой хвост законен,
          а недоказанная граница срывает перенос до создания нового Thread. */
+      await this.ensureTransport();
       const turnItems = transferredTurnId
         ? await this.readTurnResponseItems(rolloutPath, transferredTurnId, compactionItem)
         : [];
-      await this.ensureTransport();
       const sourceThread = resolvedSource?.thread ?? {};
       const startParams = {
         cwd: normalizedId(
@@ -347,6 +353,22 @@ export class CodexContextMaintenanceService {
 
   discardCompactionTransfer(threadId, compactionId) {
     return this.compactions.clearRawItem(threadId, compactionId);
+  }
+
+  async restoreCompactionEstimate(threadId, compactionId) {
+    const record = this.compactions.get(threadId);
+    if (record?.id !== compactionId || record.status !== "completed" || !record.turnId) return null;
+    if (record.measurementKind === "estimated" && record.measurementStatus === "completed") return record;
+    const rolloutPath = await Promise.resolve(this.knownRolloutPath(threadId, record.startedAt)).catch(() => "");
+    if (!rolloutPath) return null;
+    const estimate = await this.readCompactionEstimate(rolloutPath, {
+      turnId: record.turnId, notBefore: record.startedAt,
+    }).catch(() => null);
+    if (!estimate) return null;
+    return this.compactions.annotate(threadId, compactionId, {
+      afterPercent: (estimate.usedTokens / estimate.modelContextWindow) * 100,
+      measurementStatus: "completed", measurementKind: "estimated",
+    });
   }
 
   beginCompactionCleanup(threadId, details = {}) {

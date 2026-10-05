@@ -3,13 +3,13 @@ import test from "node:test";
 
 import { RunRecoveryCoordinator } from "../../src/application/run-recovery-coordinator.mjs";
 
-function coordinatorHarness(runs) {
+function coordinatorHarness(runs, recoverySnapshot = { active: true, turnId: "turn-1" }) {
   const events = [];
   const providers = {
     get: () => ({ name: "Codex" }),
     call: async (_provider, operation) => {
       events.push(operation);
-      if (operation === "readRecoverySnapshot") return { active: true, turnId: "turn-1" };
+      if (operation === "readRecoverySnapshot") return recoverySnapshot;
       return null;
     },
   };
@@ -18,7 +18,8 @@ function coordinatorHarness(runs) {
     runCoordinator: { recoverProviderRun: async () => events.push("recover-provider") },
     observer: {
       update: () => events.push("observe-update"), schedule: () => events.push("observe-schedule"),
-      finish: async () => events.push("observe-finish"), finishUnknown: async () => events.push("observe-unknown"),
+      finish: async () => events.push("observe-finish"),
+      finishUnknown: async () => { events.push("observe-unknown"); return { retained: true }; },
     },
     progress: {
       replace: async () => events.push("progress-replace"), clear: async () => events.push("progress-clear"),
@@ -39,6 +40,14 @@ test("run recovery coordinator restores a displayed observed run", async () => {
     "prepareRecovery", "readRecoverySnapshot", "observe-update", "progress-replace",
     "observe-schedule", "typing", "save",
   ]);
+});
+
+test("run recovery keeps an unknown exact Codex observer scheduled after restart", async () => {
+  const run = { id: "run-1", provider: "codex", observer: true,
+    threadId: "thread-1", turnId: "turn-1" };
+  const { coordinator, events } = coordinatorHarness([run], { activityUnknown: true });
+  await coordinator.recover(run);
+  assert.deepEqual(events, ["readRecoverySnapshot", "observe-unknown", "observe-schedule", "save"]);
 });
 
 test("run recovery coordinator closes one interrupted managed run", async () => {

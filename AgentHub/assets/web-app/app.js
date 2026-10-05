@@ -5905,11 +5905,12 @@ function contextMaintenancePreparing(task) {
 function renderContextUsage(task) {
   if (!contextUsageButton) return;
   const context = task?.context;
-  const available = Number(context?.modelContextWindow) > 0;
+  const known = context?.percent != null && Number.isFinite(Number(context.percent));
+  const available = Number(context?.modelContextWindow) > 0 || known;
   contextUsageButton.hidden = !available;
   if (!available) return;
-  const percent = Math.max(0, Math.min(100, Number(context.percent) || 0));
-  const used = Math.max(0, Number(context.usedTokens) || 0);
+  const percent = known ? Math.max(0, Math.min(100, Number(context.percent))) : 0;
+  const used = context.usedTokens == null ? null : Math.max(0, Number(context.usedTokens) || 0);
   const total = Math.max(0, Number(context.modelContextWindow) || 0);
   const cleaningImages = context.compaction?.stage === "cleaning-images";
   const preparing = contextMaintenancePreparing(task);
@@ -5917,7 +5918,8 @@ function renderContextUsage(task) {
     && task?.maintenance?.phase === "starting";
   contextLabel.textContent = preparing ? "подготовка…" : starting ? "запуск…" : context.compacting
     ? "свёртка…"
-    : context.usagePending ? "обновление…" : `${Math.round(percent)}% контекста`;
+    : context.usagePending ? "обновление…" : known
+      ? `${context.estimated ? "≈" : ""}${Math.round(percent)}% контекста` : "нет оценки";
   contextRing.style.setProperty("--context-percent", `${percent}%`);
   contextUsageButton.title = preparing ? "Подготовка обслуживания контекста. Проверяется завершение предыдущего хода…"
     : starting ? "Запуск обслуживания контекста…" : context.compacting
@@ -5926,7 +5928,10 @@ function renderContextUsage(task) {
       : "Контекст сворачивается…"
     : context.usagePending
       ? "Контекст свёрнут. Ожидается обновлённый объём…"
-    : `Контекст: ${used.toLocaleString("ru-RU")} из ${total.toLocaleString("ru-RU")}. Нажмите для подробностей.`;
+    : known ? used !== null && total
+      ? `Контекст: ${context.estimated ? "≈" : ""}${used.toLocaleString("ru-RU")} из ${total.toLocaleString("ru-RU")}. Нажмите для подробностей.`
+      : `Контекст: ${context.estimated ? "≈" : ""}${Math.round(percent)}%. Нажмите для подробностей.`
+      : "Оценка контекста после свёртки недоступна.";
   contextUsageButton.disabled = false;
   contextUsageButton.toggleAttribute("data-compacting", Boolean(context.compacting));
   if (contextUsageModal?.open) renderContextUsageDetails(task);
@@ -5939,12 +5944,17 @@ function contextTokens(value, estimated = false) {
 
 function renderContextUsageDetails(task) {
   const context = task?.context;
-  if (!context || !Number(context.modelContextWindow)) return;
-  const used = Math.max(0, Number(context.usedTokens) || 0);
+  if (!context) return;
+  const known = context.percent != null && Number.isFinite(Number(context.percent));
+  const used = known && context.usedTokens != null ? Math.max(0, Number(context.usedTokens) || 0) : null;
   const total = Math.max(0, Number(context.modelContextWindow) || 0);
-  const percent = Math.max(0, Math.min(100, Number(context.percent) || 0));
-  contextUsageSummary.textContent = `${used.toLocaleString("ru-RU")} из ${total.toLocaleString("ru-RU")} токенов`;
-  contextUsageSummaryPercent.textContent = `${Math.round(percent)}%`;
+  const percent = known ? Math.max(0, Math.min(100, Number(context.percent))) : 0;
+  contextUsageSummary.textContent = known
+    ? used !== null && total
+      ? `${context.estimated ? "≈" : ""}${used.toLocaleString("ru-RU")} из ${total.toLocaleString("ru-RU")} токенов`
+      : `${context.estimated ? "≈" : ""}${Math.round(percent)}% контекста`
+    : "Оценка после свёртки недоступна";
+  contextUsageSummaryPercent.textContent = known ? `${context.estimated ? "≈" : ""}${Math.round(percent)}%` : "—";
   contextUsageTotalFill.style.width = `${percent}%`;
   contextUsageCategories.replaceChildren();
   for (const category of Array.isArray(context.breakdown?.categories) ? context.breakdown.categories : []) {
@@ -5986,7 +5996,8 @@ function renderContextUsageDetails(task) {
 
 function openContextUsage() {
   const task = currentTask();
-  if (!task?.context || !Number(task.context.modelContextWindow) || !contextUsageModal) return;
+  if (!task?.context || (Number(task.context.modelContextWindow) <= 0 && task.context.percent == null)
+    || !contextUsageModal) return;
   if (contextUsageModal.open) {
     closeContextUsage();
     return;
@@ -8385,6 +8396,8 @@ function renderQueueForTask(taskId, container) {
         ? el("div", { class: "queue-status", text: "Thread удерживается другим Codex. Автоповторы остановлены; проверьте снова после закрытия задачи или отправьте сообщение в новую." })
         : entry.waitReason === "provider-temporarily-unavailable"
           ? el("div", { class: "queue-status", text: "Связь с Codex временно недоступна; сообщение сохранено и будет отправлено автоматически." })
+          : entry.waitReason === "context-maintenance" || entry.conflictKind === "context-maintenance"
+            ? el("div", { class: "queue-status", text: "Ожидает завершения свёртки или ротации контекста; сообщение сохранено в очереди." })
           : null,
       entry.lastError ? el("div", { class: "queue-error", text: entry.lastError }) : null,
       entryAnnotations.length

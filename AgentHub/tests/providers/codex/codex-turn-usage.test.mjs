@@ -162,6 +162,25 @@ test("Codex rollout usage sums every model response and sees the final token eve
   });
 });
 
+test("retired probe rollout preserves its provider client identity and original timestamps", () => {
+  const turnId = "01a07cd5-b5cc-7b30-8078-e6abc2e9ce01";
+  const clientId = "agent-hub-context-probe:de823030-9f98-40e6-9d93-066062d977c6";
+  const startedAt = "2026-09-07T17:06:00.000Z";
+  const completedAt = "2026-09-07T17:06:20.693Z";
+  const text = [
+    { timestamp: startedAt, type: "event_msg", payload: { type: "task_started", turn_id: turnId } },
+    { timestamp: startedAt, type: "event_msg", payload: { type: "user_message", turn_id: turnId,
+      client_id: clientId, message: "Ответь строго: AGENT_HUB_CONTEXT_PROBE_OK_V1" } },
+    { timestamp: completedAt, type: "event_msg", payload: { type: "task_complete", turn_id: turnId,
+      last_agent_message: "AGENT_HUB_CONTEXT_PROBE_OK_V1" } },
+  ].map(line).join("\n") + "\n";
+  const result = codexTurnUsageFromJsonl(text, turnId);
+  assert.equal(result.terminal, true);
+  assert.equal(result.clientUserMessageId, clientId);
+  assert.equal(result.startedAt, startedAt);
+  assert.equal(result.completedAt, completedAt);
+});
+
 test("exact turn counters replace legacy sums and survive a resumed scan without double counting", async () => {
   const turnId = "astra-turn";
   const exact = (input) => ({ type: "token_usage_record", payload: {

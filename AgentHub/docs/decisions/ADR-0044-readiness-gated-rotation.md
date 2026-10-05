@@ -35,6 +35,17 @@ and omitted the before-compaction value.
    replacement history carries that item. Items before it are not transferred.
    An empty suffix is valid. An absent or non-unique boundary refuses the
    transfer before `thread/start`.
+   A process-local index counts every matching boundary across the rollout and
+   keeps its exact byte offset. Its first proof reads the full source once;
+   subsequent checks of the same file generation read only appended complete
+   JSONL records and a bounded tail, or the suffix from the recorded offset
+   when that suffix exceeds the tail. A restart rebuilds the proof. Observed
+   replacement, truncation, rewrite or incomplete final record invalidates it.
+   Reuse relies on the [native Codex recorder's append-only write path](https://github.com/openai/codex/blob/a933dd77dbe101d7bd746ea3c7d1f8174eca4a05/codex-rs/rollout/src/recorder.rs), plus
+   file generation, metadata and prefix/cursor anchors. These bounded checks
+   do not prove the absence of an external interior rewrite that also forges
+   those signals; that stronger guarantee requires a full prefix verification
+   or an authoritative writer-owned index.
 2. Readiness before switching. Create the unbound target, inject the exact
    transfer, then freshly read that same Thread and require `status.type=idle`.
    No model turn or synthetic user message is started. Only successful readiness

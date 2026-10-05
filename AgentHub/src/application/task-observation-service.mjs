@@ -365,9 +365,13 @@ export class TaskObservationService {
       ? `Активность ${providerName} неизвестна: нет новых событий ${idleMinutes} мин.`
       : `Активность ${providerName} неизвестна: новых событий нет.`;
     this.update(run, { ...snapshot, stage });
+    if (run.provider === "codex") {
+      return { retained: true };
+    }
     await this.finishProgress(run, stage);
     await this.completeRun(run);
     this.logger.log(`${providerName} activity became unknown for ${run.threadId}`);
+    return { retained: false };
   }
 
   async applyActive(run, snapshot) {

@@ -209,8 +209,10 @@ export async function createClientRuntimeComposition({
     },
     onUncertain: async (item) => {
       if (!item.intent?.terminalRevision) return;
-      await terminalCommits?.markChannelUncertain(item.intent, { deliveryId: item.id });
+      if (!terminalCommits) throw new Error("terminal delivery owner is unavailable");
+      return terminalCommits.authorizeTelegramOutboxAttempt(item.intent, { deliveryId: item.id });
     },
+    attemptDelivery: (item, operation) => turnEndDelivery.withTelegramOutboxAttempt(item, operation),
     onDelivered: async (item, result) => {
       await late.telegramDeliveryService().recordDeliveredOutbox(item, result);
       if (item.intent?.final === true) {

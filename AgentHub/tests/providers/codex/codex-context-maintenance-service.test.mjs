@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { Readable } from "node:stream";
 
 import { CodexContextMaintenanceService } from "../../../src/providers/codex/codex-context-maintenance-service.mjs";
-import { CodexCompactionBoundaryError } from "../../../src/providers/codex/codex-compaction-rollout.mjs";
+import { CodexCompactionBoundaryError, readCodexTurnItemsAfterCompaction } from "../../../src/providers/codex/codex-compaction-rollout.mjs";
 
 function harness(overrides = {}) {
   const calls = [];
@@ -185,6 +186,42 @@ test("compaction start still fails when the provider turn was not observed", asy
   ]);
 });
 
+test("rollout fallback annotates only the exact completed compaction estimate", async () => {
+  const reads = [];
+  const { service, entries } = harness({
+    knownRolloutPath: async (threadId, startedAt) => {
+      reads.push(["path", threadId, startedAt]);
+      return "bounded-rollout.jsonl";
+    },
+    readCompactionEstimate: async (path, options) => {
+      reads.push(["estimate", path, options]);
+      return { usedTokens: 73312, modelContextWindow: 258400 };
+    },
+  });
+  entries.set("thread", { id: "compact-current", status: "completed", turnId: "turn-current",
+    startedAt: "2026-10-01T12:30:37Z" });
+  service.compactions.annotate = (threadId, id, details) => {
+    const record = entries.get(threadId);
+    if (record?.id !== id) return null;
+    Object.assign(record, details);
+    return record;
+  };
+  assert.equal(await service.restoreCompactionEstimate("thread", "compact-foreign"), null);
+  assert.deepEqual(reads, []);
+  const result = await service.restoreCompactionEstimate("thread", "compact-current");
+  assert.equal(result.afterPercent, 73312 / 258400 * 100);
+  assert.equal(result.measurementKind, "estimated");
+  assert.equal(result.measurementStatus, "completed");
+  assert.deepEqual(reads, [
+    ["path", "thread", "2026-10-01T12:30:37Z"],
+    ["estimate", "bounded-rollout.jsonl", {
+      turnId: "turn-current", notBefore: "2026-10-01T12:30:37Z",
+    }],
+  ]);
+  assert.equal(await service.restoreCompactionEstimate("thread", "compact-current"), result);
+  assert.equal(reads.length, 2, "duplicate recovery must not reread the rollout");
+});
+
 test("turn settlement waits for stable managed and rollout inactivity", async () => {
   let now = 0;
   let run = { turnId: "settling-turn" };
@@ -192,7 +229,7 @@ test("turn settlement waits for stable managed and rollout inactivity", async ()
   const { service, calls } = harness({
     runForTask: () => run,
     knownRolloutPath: async () => "rollout.jsonl",
-    readRolloutActivity: async () => ({ running: rolloutReads++ < 2 }),
+    readTurnIdle: async () => rolloutReads++ >= 2,
     now: () => now,
     sleep: async (milliseconds) => {
       calls.push(["sleep", milliseconds]);
@@ -221,13 +258,13 @@ for (const stage of ["rollout-path", "rollout-activity"]) {
     const blocked = new Promise((resolve) => { finishRead = resolve; });
     const { service } = harness({
       knownRolloutPath: () => stage === "rollout-path" ? blocked : "rollout.jsonl",
-      readRolloutActivity: () => { reads += 1; return blocked; },
+      readTurnIdle: () => { reads += 1; return blocked; },
     });
     await assert.rejects(service.waitForTurnIdle(
       { provider: "codex", threadId: "thread-1" }, "turn-1", { timeoutMs: 20 },
     ), { code: "CODEX_CONTEXT_IDLE_TIMEOUT", stage });
     const readsAtTimeout = reads;
-    finishRead(stage === "rollout-path" ? "rollout.jsonl" : { running: false });
+    finishRead(stage === "rollout-path" ? "rollout.jsonl" : true);
     await new Promise((resolve) => setImmediate(resolve));
     assert.equal(reads, readsAtTimeout, "timed-out polling must not resume on a late read");
   });
@@ -238,7 +275,7 @@ test("context idle deadline is shared across observations instead of renewed per
   let reads = 0;
   const { service } = harness({
     knownRolloutPath: async () => { now += 6; return "rollout.jsonl"; },
-    readRolloutActivity: async () => { reads += 1; now += 6; return { running: false }; },
+    readTurnIdle: async () => { reads += 1; now += 6; return true; },
     now: () => now,
     sleep: async (milliseconds) => { now += milliseconds; },
   });
@@ -492,6 +529,29 @@ test("an unproven compaction boundary aborts rotation before a new Thread is cre
   assert.equal(calls.some(([name]) => name === "start-thread"), false, "новый Thread создан без доказанной границы");
   assert.equal(calls.some(([name]) => name === "inject"), false);
   assert.deepEqual(calls.find(([name]) => name === "clear-raw"), ["clear-raw", "thread-1", "compact-1"]);
+});
+
+test("rotation refuses a split-tail duplicate boundary before creating a Thread", async () => {
+  const record = (payload) => JSON.stringify({ type: "compacted", payload: {
+    replacement_history: [payload],
+  } });
+  const response = JSON.stringify({ type: "response_item", payload: { type: "message",
+    role: "assistant", content: [], internal_chat_message_metadata_passthrough: { turn_id: "turn-1" } } });
+  const boundary = { type: "compaction", encrypted_content: "summary" };
+  const tail = [record(boundary), response].join("\n");
+  const full = [record(boundary), tail].join("\n");
+  const { calls, rotate } = deferredRotationHarness({
+    readTurnResponseItems: (path, turnId, item) => readCodexTurnItemsAfterCompaction(path, turnId, item, {
+      maxBytes: 20, statImpl: async () => ({ size: Buffer.byteLength(`${full}\n`) }),
+      readAnchor: async () => ({ head: "h", suffix: "s", complete: true }),
+      indexCache: new Map(),
+      readTail: async () => tail,
+      createReadStreamImpl: () => Readable.from([`${full}\n`]),
+    }),
+  });
+  await assert.rejects(rotate, (error) => error instanceof CodexCompactionBoundaryError
+    && error.reason === "boundary-ambiguous");
+  assert.equal(calls.some(([name]) => name === "start-thread" || name === "inject"), false);
 });
 
 test("compaction-triggered cleanup stays disabled until the unstable feature is re-enabled", () => {

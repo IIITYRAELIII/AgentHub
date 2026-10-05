@@ -196,6 +196,8 @@ function fixture(overrides = {}) {
       refresh: async () => state.catalogRefresh ? state.catalogRefresh() : state.entries,
     },
     historyReader: {
+      ...(overrides.readPage ? { readPage: overrides.readPage } : {}),
+      ...(overrides.readTurn ? { readTurn: overrides.readTurn } : {}),
       read: async (binding, options = {}) => {
         calls.binding = binding;
         const history = structuredClone(state.history);
@@ -214,6 +216,7 @@ function fixture(overrides = {}) {
       forTask: () => state.run,
     },
     latestMessage: overrides.latestMessage ?? (() => null),
+    forgetLastMessage: overrides.forgetLastMessage ?? (async () => false),
     historyMerger: {
       mergeActive: (history, active) => {
         calls.merged = active;
@@ -843,6 +846,97 @@ test("desktop task history preserves existing messages with legacy context ident
   const result = await desktopTaskHistory({ includeActive: false, limit: 10 });
 
   assert.deepEqual(result.items.map((item) => item.id), ["real-turn", "probe-turn"]);
+});
+
+test("verified old probe identity cannot reappear as a fresh final after restart", async () => {
+  const oldTurnId = "01a07cd5-b5cc-7b30-8078-e6abc2e9ce01";
+  const oldClientId = "agent-hub-context-probe:de823030-9f98-40e6-9d93-066062d977c6";
+  let saved = {
+    provider: "codex", threadId: "thread-1", turnId: oldTurnId,
+    text: CODEX_CONTEXT_PROBE_RESPONSE, updatedAt: "2026-09-29T11:44:42.991Z",
+  };
+  const removed = [];
+  const history = [{
+    id: oldTurnId,
+    startedAt: "2026-09-07T17:06:00.000Z",
+    completedAt: "2026-09-07T17:06:20.693Z",
+    prompt: CODEX_CONTEXT_PROBE_PROMPT,
+    answer: CODEX_CONTEXT_PROBE_RESPONSE,
+    completed: true,
+    messages: [{ role: "user", itemId: "old-probe", clientUserMessageId: oldClientId,
+      text: CODEX_CONTEXT_PROBE_PROMPT }],
+  }, {
+    id: "ordinary-turn", startedAt: "2026-09-29T11:45:00.000Z",
+    messages: [{ role: "user", itemId: "ordinary", clientUserMessageId: "user-continue",
+      text: CODEX_CONTEXT_PROBE_PROMPT }],
+  }];
+  const create = () => fixture({
+    run: null, history,
+    latestMessage: () => saved,
+    forgetLastMessage: async (identity) => {
+      removed.push(identity.turnId);
+      if (identity.turnId === saved?.turnId) saved = null;
+      return true;
+    },
+  });
+  for (const setup of [create(), create()]) {
+    const result = await setup.desktopTaskHistory({ includeActive: false, limit: 10 });
+    assert.deepEqual(result.items.map((turn) => turn.id), ["ordinary-turn"]);
+    assert.equal(result.items[0].startedAt, "2026-09-29T11:45:00.000Z");
+  }
+  assert.deepEqual(removed, [oldTurnId, oldTurnId]);
+});
+
+test("paged history verifies an off-page saved probe by exact durable turn before overlay", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "hub-paged-probe-"));
+  const filePath = path.join(directory, "tasks.json");
+  const store = new LocalTaskSyncStore({ filePath });
+  const oldTurnId = "01a07cd5-b5cc-7b30-8078-e6abc2e9ce01";
+  const oldClientId = "agent-hub-context-probe:de823030-9f98-40e6-9d93-066062d977c6";
+  const binding = { provider: "codex", threadId: "thread-1" };
+  const forgotten = [];
+  try {
+    await store.load();
+    await store.recordHistory(binding, [{
+      id: oldTurnId, startedAt: "2026-09-07T17:06:00.000Z", completed: true,
+      answer: CODEX_CONTEXT_PROBE_RESPONSE,
+      messages: [{ role: "user", itemId: "old-probe", clientUserMessageId: oldClientId,
+        text: CODEX_CONTEXT_PROBE_PROMPT }],
+    }, {
+      id: "ordinary-turn", startedAt: "2026-09-29T11:45:00.000Z", completed: true,
+      messages: [{ role: "user", itemId: "ordinary", clientUserMessageId: "user-continue",
+        text: "Продолжай" }],
+    }]);
+    assert.equal(store.historyTurn({ ...binding, turnId: oldTurnId })?.id, oldTurnId);
+    const setup = fixture({
+      run: null,
+      readPage: async (bindings, options) => store.historyPage(bindings, options),
+      readTurn: async (identity) => store.historyTurn(identity),
+      latestMessage: () => ({ ...binding, turnId: oldTurnId,
+        text: CODEX_CONTEXT_PROBE_RESPONSE, updatedAt: "2026-09-29T11:44:42.991Z" }),
+      forgetLastMessage: async (identity) => { forgotten.push(identity.turnId); return true; },
+    });
+    const result = await setup.desktopTaskHistory({ includeActive: false, limit: 1 });
+    assert.deepEqual(result.items.map((turn) => turn.id), ["ordinary-turn"]);
+    assert.deepEqual(forgotten, [oldTurnId]);
+    assert.equal(store.historyTurn({ ...binding, turnId: "missing-turn" }), null);
+  } finally {
+    store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("conflicting ordinary user identity prevents legacy probe suppression", async () => {
+  const { desktopTaskHistory } = fixture({
+    run: null,
+    history: [{
+      id: "mixed-turn", completed: true,
+      clientUserMessageId: "agent-hub-context-probe:de823030-9f98-40e6-9d93-066062d977c6",
+      messages: [{ role: "user", itemId: "real-user", clientUserMessageId: "ordinary-client",
+        text: "Пользовательский запрос" }],
+    }],
+  });
+  assert.deepEqual((await desktopTaskHistory({ includeActive: false })).items.map((turn) => turn.id), ["mixed-turn"]);
 });
 
 test("desktop task history preserves former marker text without metadata", async () => {

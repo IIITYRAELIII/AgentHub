@@ -45,7 +45,11 @@ export class RunRecoveryCoordinator {
         return;
       }
       if (action === TASK_RECOVERY_ACTIONS.UNKNOWN_OBSERVED) {
-        await d.observer.finishUnknown(run, observerSnapshot);
+        const outcome = await d.observer.finishUnknown(run, observerSnapshot);
+        if (outcome?.retained === true) {
+          d.observer.schedule(run);
+          await d.saveState();
+        }
         return;
       }
     }

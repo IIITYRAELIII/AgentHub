@@ -171,6 +171,14 @@ only a successful exact-session process probe may prove its external writer
 absent, while probe failure stays fail-closed. Unknown provider-start outcomes remain excluded because they
 require exact reconciliation or an explicit user decision before another
 effect.
+An exact Codex `task_started` without a terminal remains uncertain too, even
+when an idle/interrupt projection or elapsed grace hides it from the active
+display. The original managed run continues to own admission until exact
+terminal evidence. A separate maintenance barrier is shown in the queue as
+the concrete `context-maintenance` wait reason. When a deferred command starts,
+its receipt clears the stale wait
+reason. `providerAccepted` becomes true only for a matching accepted provider
+turn identity; delivery/intake time alone does not assert provider acceptance.
 Potential owners must match the configured Claude executable and wrapper-prefix
 signature before an exact parsed `--resume` or `--session-id` token can identify
 the session; a process name or flag-shaped command line alone is not evidence.

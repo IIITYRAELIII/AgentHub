@@ -126,6 +126,13 @@ The VS Code WebView does not open a direct `/events` stream: journal changes are
 already delivered by the extension subscription, so a retained panel cannot
 consume a long-lived Chromium HTTP socket for duplicate notifications.
 
+Large Mini App JSON responses use asynchronous gzip so snapshot compression
+cannot block local command admission on the Hub event loop. At most two
+compressions run concurrently; excess responses use the valid uncompressed
+representation rather than retaining a queue of complete snapshot bodies.
+Aborted responses are not written after compression finishes, and compression
+failure falls back to the unchanged JSON body without a false gzip header.
+
 Provider transcript maintenance does not run on the command, snapshot or task
 catalog critical path. Active append-only transcripts are never historically
 rescanned. Historical full scans are bounded to 16 MiB; larger transcripts use
@@ -176,6 +183,18 @@ migration exception is removed with the legacy author repair (UI-001).
 Exact App Server state and managed run identity remain preferred over JSONL
 fallback; reducing the projection window must not truncate the terminal answer
 retained by TURN-001.
+For an already-owned exact Codex turn whose lifecycle event precedes the 16 MiB
+tail, restart/observer recovery may make a worker-side cold terminal scan of
+at most 256 MiB for that exact turn. Only matching lifecycle records contribute
+terminal authority; positive or negative results are retained in the bounded
+per-process source cache while its entry survives, and append-only reads resume
+from the byte cursor rather than rescanning on every poll. The requested turn's
+terminal status and final answer survive the ordinary recent-final eviction in
+that cached observation; later turns cannot replace its exact final.
+Larger sources remain unknown to this fallback and require existing exact
+terminal/audit evidence; no age or App Server status substitutes for it. This
+exception never expands ordinary activity projection or runs on an active
+command path.
 
 Codex `thread/read` coalescing is single-flight only: a completed read retains no
 Thread payload in Hub memory. Rollout session discovery incrementally parses at

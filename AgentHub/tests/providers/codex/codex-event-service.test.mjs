@@ -56,6 +56,25 @@ test("terminal turn recovers its exact compaction item when the separate complet
   } finally { tracker.dispose(); }
 });
 
+test("an unregistered live turn offers its completed compaction to post-turn rotation", async () => {
+  const tracker = new ContextCompactionTracker();
+  const offered = [];
+  tracker.begin("thread-external", { origin: "automatic", turnId: "turn-external", itemId: "compact-external" });
+  const service = createService(null, {
+    isCompactionItem: isContextCompactionItem,
+    getCompaction: (id) => tracker.get(id),
+    beginCompactionCleanup: (id, details) => tracker.mutate(id, () => tracker.complete(id, details)),
+    settleCompactionTurn: (id, details) => tracker.mutate(id, () => tracker.settleProviderTurn(id, details)),
+    completeUnregisteredTurn: (identity) => offered.push(identity),
+  });
+  try {
+    const params = { threadId: "thread-external", turn: { id: "turn-external", status: "completed",
+      items: [{ id: "compact-external", type: "contextCompaction" }] } };
+    await service.handle({ method: "turn/completed", params });
+    assert.deepEqual(offered, [{ threadId: "thread-external", turnId: "turn-external" }]);
+  } finally { tracker.dispose(); }
+});
+
 test("Codex event service reduces answer deltas into the exact item", async () => {
   const run = { responseText: "", status: "running" };
   let scheduled = false;

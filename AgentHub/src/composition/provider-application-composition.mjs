@@ -185,6 +185,7 @@ export async function createProviderApplicationComposition({
   hubMcpService.setActiveRuns(() => runtimeData.taskRuns.values());
   hubMcpService.setDeferredInputs(() => runtimeData.deferredInputs.diagnostics());
 
+  let correctCommittedTerminal = async () => ({ corrected: false });
   const codexObservability = createCodexObservabilityComposition({
     config,
     sendRpc: api.sendRpc,
@@ -200,6 +201,7 @@ export async function createProviderApplicationComposition({
     saveState: api.saveState,
     deliverTurnEndNotification: api.deliverTurnEndNotification,
     repairTurnEndAttachments: api.repairTurnEndAttachments,
+    correctCommittedTerminal: (...args) => correctCommittedTerminal(...args),
     defaultNotificationChatId,
     findProject,
     resolveTaskByProviderRef: ({ provider, providerTaskId }) => providerCatalog.taskCatalog.find((entry) => (
@@ -281,6 +283,7 @@ export async function createProviderApplicationComposition({
     runtimeStateStore,
     commandTrace: commandTraceService,
   });
+  correctCommittedTerminal = (...args) => completion.turnEndDelivery.correctFromExactProviderTerminal(...args);
 
   const hubThreadNaming = createHubThreadNamingService({
     workspaceCatalog: workspaceCatalogStore, taskMetadata, sendRpc: api.sendRpc,
@@ -344,6 +347,7 @@ export async function createProviderApplicationComposition({
     autoCompactThreshold: () => config.contextAutomation.autoCompactThresholdPercent,
     autoRotateEnabled: () => config.contextAutomation.autoRotateAfterCompaction,
     autoRotateThreshold: () => config.contextAutomation.autoRotateThresholdPercent,
+    commandTrace: commandTraceService,
   });
 
   const backgroundWork = await createBackgroundWorkComposition({

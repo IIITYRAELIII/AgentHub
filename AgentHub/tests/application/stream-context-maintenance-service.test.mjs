@@ -10,6 +10,7 @@ import {
 import { StreamMaintenanceRegistry } from "../../src/application/stream-maintenance-registry.mjs";
 import { ContextCompactionTracker } from "../../src/providers/codex/context-compaction-tracker.mjs";
 import { CodexContextMaintenanceService } from "../../src/providers/codex/codex-context-maintenance-service.mjs";
+import { codexCompactionEstimateFromJsonl } from "../../src/providers/codex/codex-compaction-rollout.mjs";
 
 async function waitFor(predicate, attempts = 200) {
   for (let attempt = 0; attempt < attempts; attempt += 1) {
@@ -160,6 +161,66 @@ test("provider-internal compaction is active without becoming a Hub-owned reserv
   assert.equal(service.isManagedActive(source), false);
 });
 
+test("unregistered completed turn rotates only its bound above-threshold compaction once", async () => {
+  const state = fixture({ observedCompaction: true, observedAfterPercent: 28 });
+  const identity = { threadId: state.source.threadId, turnId: state.source.turnId };
+  assert.equal(await state.service.completeUnregisteredTurn({ ...identity, turnId: "foreign" }), null);
+  assert.equal(await state.service.completeUnregisteredTurn({ threadId: "foreign", turnId: identity.turnId }), null);
+  assert.equal(state.events.some(([name]) => name === "rotate"), false);
+  const result = await state.service.completeUnregisteredTurn(identity);
+  assert.equal(result.rotated, true);
+  assert.equal(result.afterPercent, 28);
+  assert.equal(state.tracker.get(identity.threadId).rotated, true);
+  assert.equal(await state.service.completeUnregisteredTurn(identity), null);
+  assert.equal(state.events.filter(([name]) => name === "rotate").length, 1);
+  assert.equal(state.events.filter(([name]) => name === "save").length, 1);
+  const restored = new ContextCompactionTracker();
+  restored.restore(state.tracker.snapshot());
+  assert.equal(restored.get(identity.threadId).rotated, true,
+    "a restarted Hub must retain the one-shot rotation decision");
+});
+
+test("unregistered turn keeps current Thread at or below threshold and on missing estimate", async () => {
+  for (const percent of [20, null]) {
+    const state = fixture({ observedCompaction: true, observedAfterPercent: percent,
+      estimateAvailable: false });
+    const result = await state.service.completeUnregisteredTurn({
+      threadId: state.source.threadId, turnId: state.source.turnId,
+    });
+    assert.equal(result.rotated, false);
+    assert.equal(result.afterPercent, percent);
+    assert.equal(state.events.some(([name]) => name === "rotate"), false);
+    assert.equal(state.events.some(([name]) => name === "bind"), false);
+  }
+});
+
+test("a zero-billable observation timestamped before the current boundary cannot rotate", async () => {
+  const state = fixture({ observedCompaction: true, estimateAvailable: false });
+  const text = [
+    { timestamp: "2026-10-01T12:30:37Z", type: "event_msg",
+      payload: { type: "task_started", turn_id: state.source.turnId } },
+    { timestamp: "2026-10-01T12:33:53.160Z", type: "compacted", payload: {} },
+    { timestamp: "2026-10-01T12:33:53.150Z", type: "event_msg", payload: { type: "token_count",
+      info: { model_context_window: 258400, last_token_usage: { total_tokens: 73312,
+        input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, reasoning_output_tokens: 0 } } } },
+  ].map((entry) => JSON.stringify(entry)).join("\n");
+  state.service.provider.restoreCompactionEstimate = async (threadId, compactionId) => {
+    const estimate = codexCompactionEstimateFromJsonl(text, { turnId: state.source.turnId,
+      notBefore: "2026-10-01T12:30:37Z" });
+    if (!estimate) return null;
+    return state.tracker.annotate(threadId, compactionId, {
+      afterPercent: estimate.usedTokens / estimate.modelContextWindow * 100,
+      measurementKind: "estimated", measurementStatus: "completed",
+    });
+  };
+  const result = await state.service.completeUnregisteredTurn({
+    threadId: state.source.threadId, turnId: state.source.turnId,
+  });
+  assert.equal(result.rotated, false);
+  assert.equal(result.afterPercent, null);
+  assert.equal(state.events.some(([name]) => name === "rotate"), false);
+});
+
 test("hung post-turn rollout read releases maintenance and wakes the original queued input", async () => {
   const state = fixture({ beforePercent: 90 });
   const queued = { id: "queued-after-terminal", streamId: state.source.streamId,
@@ -172,7 +233,7 @@ test("hung post-turn rollout read releases maintenance and wakes the original qu
   const blocked = new Promise((resolve) => { finishRead = resolve; });
   const provider = new CodexContextMaintenanceService({
     knownRolloutPath: async () => "rollout.jsonl",
-    readRolloutActivity: () => { reads += 1; return blocked; },
+    readTurnIdle: () => { reads += 1; return blocked; },
   });
   // Use the real provider deadline and the production post-turn timeout.
   state.service.provider.waitForTurnIdle = provider.waitForTurnIdle.bind(provider);
@@ -190,7 +251,7 @@ test("hung post-turn rollout read releases maintenance and wakes the original qu
   assert.deepEqual(state.deferredInputs.get(queued.id), originalInput);
   assert.equal(state.events.filter(([name, id]) => name === "wake" && id === queued.id).length, 1);
   assert.equal(state.events.some(([name]) => name === "compact" || name === "rotate"), false);
-  finishRead({ running: false });
+  finishRead(true);
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(reads, 1);
   assert.equal(state.events.some(([name]) => name === "compact" || name === "rotate"), false);
@@ -490,6 +551,15 @@ test("native mid-turn estimate is retained until terminal; later usage does not 
   assert.equal(result.afterPercent, 34);
   assert.equal(state.events.some(([name]) => name === "compact"), false);
   assert.equal(state.events.find(([name]) => name === "rotate")[2].includeTurnId, "turn-1");
+});
+
+test("automatic rotation waits for a late exact-turn preliminary estimate", async () => {
+  const state = fixture({ observedCompaction: true, observedAfterPercent: null, beforePercent: 10, afterPercent: 34 });
+  assert.equal(state.service.reserveAfterTurn(state.source), true);
+  const result = await state.service.maintainAfterTurn(state.source);
+  assert.equal(result.afterPercent, 34);
+  assert.equal(result.rotated, true);
+  assert.equal(state.events.some(([name]) => name === "usage"), true);
 });
 
 test("rotation failure keeps old binding and remains visible on completed compaction", async () => {

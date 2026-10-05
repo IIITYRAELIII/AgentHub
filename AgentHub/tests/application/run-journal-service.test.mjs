@@ -71,6 +71,19 @@ test("RunJournalService preserves authoritative answer time during repeated obse
   assert.equal(service.lastMessageRecord(task).text, "Answer");
 });
 
+test("verified legacy-turn cleanup removes only that exact saved completion", () => {
+  const { service } = fixture();
+  const target = { provider: "codex", projectRoot: "C:/workspace", threadId: "thread", turnId: "old-probe" };
+  service.rememberLastMessage(target, "AGENT_HUB_CONTEXT_PROBE_OK_V1");
+  assert.equal(service.rememberLastMessage({ ...target, turnId: "other-turn" }, "", { removeTurnId: true }), false);
+  assert.equal(service.lastMessageRecord(target).turnId, "old-probe");
+  assert.equal(service.rememberLastMessage(target, "", { removeTurnId: true }), true);
+  assert.equal(service.lastMessageRecord(target), null);
+  service.rememberLastMessage({ ...target, turnId: "new-turn" }, "Real answer");
+  assert.equal(service.rememberLastMessage(target, "", { removeTurnId: true }), false);
+  assert.equal(service.lastMessageRecord(target).text, "Real answer");
+});
+
 test("RunJournalService never replaces a newer exact terminal revision with an older projection", () => {
   const { service } = fixture();
   const task = { provider: "codex", projectRoot: "C:/workspace", threadId: "thread", turnId: "turn" };

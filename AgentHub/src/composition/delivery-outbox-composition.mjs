@@ -9,6 +9,7 @@ export async function createDeliveryOutboxComposition({
   deliver,
   recordingRoot = null,
   onUncertain,
+  attemptDelivery,
   onDelivered,
   onPermanentFailure,
   logger = console,
@@ -17,6 +18,7 @@ export async function createDeliveryOutboxComposition({
     directoryPath,
     deliver: recordingRoot ? await createRecordingContourDelivery({ root: recordingRoot }) : deliver,
     onUncertain,
+    attemptDelivery,
     onDelivered,
     onPermanentFailure,
   });

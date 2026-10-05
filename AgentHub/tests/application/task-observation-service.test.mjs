@@ -490,7 +490,7 @@ test("TaskObservationService never reuses an older turn answer for an empty main
   assert.equal(state.completed[0][2].deliver, false);
 });
 
-test("TaskObservationService closes stale activity without delivering a partial answer", async () => {
+test("TaskObservationService retains unconfirmed Codex activity without delivering a partial answer", async () => {
   const state = fixture({ now: 10 * 60_000 });
   const run = await state.service.create({
     provider: "codex",
@@ -503,5 +503,6 @@ test("TaskObservationService closes stale activity without delivering a partial 
 
   assert.match(run.progressStage, /нет новых событий 5 мин/);
   assert.equal(state.completed.length, 0);
-  assert.equal(state.currentRun(), null);
+  assert.equal(state.currentRun(), run);
+  assert.equal(state.events.some(([kind]) => kind === "complete" || kind === "finish-progress"), false);
 });

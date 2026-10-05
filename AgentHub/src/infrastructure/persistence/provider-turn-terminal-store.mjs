@@ -5,7 +5,7 @@ import { AsyncSqliteMutationQueue } from "./async-sqlite-mutation-queue.mjs";
 import { openRuntimeDatabase } from "./runtime-state-store.mjs";
 
 const OUTBOX_STATES = new Set(["pending", "projecting", "delivered", "superseded"]);
-const TELEGRAM_STATES = new Set(["not-requested", "intent", "uncertain", "acked", "failed", "superseded"]);
+const TELEGRAM_STATES = new Set(["not-requested", "intent", "uncertain", "acked", "failed", "superseded", "superseded-uncertain"]);
 const COMMAND_STATES = new Set(["not-required", "intent", "acked", "superseded"]);
 const NON_TERMINAL_STATUSES = new Set(["active", "inprogress", "running", "finishing", "progress"]);
 const TERMINAL_PAYLOAD_METADATA_MIGRATION_LIMIT = 200;
@@ -316,6 +316,10 @@ export class ProviderTurnTerminalStore {
       && (!Number.isSafeInteger(expectedTerminalRevision) || expectedTerminalRevision < 1)) {
       throw new Error("expected terminal revision must be a positive safe integer");
     }
+    const terminalStatusCorrection = value.terminalStatusCorrection === true;
+    if (terminalStatusCorrection && expectedTerminalRevision == null) {
+      throw new Error("terminal status correction requires the exact prior revision");
+    }
     const basePayload = sanitizedTerminalPayload(value.payload);
     const status = text(value.status) || "completed";
     const finalAnswer = String(value.finalAnswer ?? "").trim();
@@ -348,7 +352,11 @@ export class ProviderTurnTerminalStore {
           : null;
         // A later projection of the same provider turn may be silent, but it
         // cannot revoke a delivery intent already committed for that turn.
-        const telegramIntent = requestedTelegramIntent ?? inheritedTelegramIntent;
+        // A status correction reprojects the exact turn; it is not a new
+        // Telegram delivery. Keep an already uncertain older intent under its
+        // original revision/identity for supported same-ID reconciliation.
+        const telegramIntent = terminalStatusCorrection
+          ? null : requestedTelegramIntent ?? inheritedTelegramIntent;
         const hash = contentHash({
           status,
           finalAnswer,
@@ -373,6 +381,10 @@ export class ProviderTurnTerminalStore {
             created: false,
             conflict: true,
           };
+        }
+        if (terminalStatusCorrection && (!current || current.status === status)) {
+          database.exec("COMMIT");
+          return { terminal: current, outbox: currentOutbox, created: false, conflict: true };
         }
         if (NON_TERMINAL_STATUSES.has(status.toLowerCase())) {
           if (!current) throw new Error(`cannot commit non-terminal provider turn status ${status}`);
@@ -443,7 +455,9 @@ export class ProviderTurnTerminalStore {
                 ELSE command_state
               END,
               telegram_state = CASE
-                WHEN telegram_state IN ('intent', 'uncertain') THEN 'superseded'
+                 WHEN telegram_state = 'intent' THEN 'superseded'
+                 WHEN telegram_state = 'uncertain' AND ? = 1 THEN 'superseded-uncertain'
+                 WHEN telegram_state = 'uncertain' THEN 'superseded'
                 ELSE telegram_state
               END,
               updated_at = ?, telegram_updated_at = ?
@@ -453,7 +467,8 @@ export class ProviderTurnTerminalStore {
               OR command_state = 'intent'
               OR telegram_state IN ('intent', 'uncertain')
             )
-        `).run(committedAt, committedAt, key.provider, key.threadId, key.turnId);
+        `).run(terminalStatusCorrection ? 1 : 0,
+          committedAt, committedAt, key.provider, key.threadId, key.turnId);
         database.prepare(`
           INSERT INTO provider_turn_terminal_outbox (
             provider, thread_id, turn_id, terminal_revision, state, attempt_count,
@@ -596,7 +611,8 @@ export class ProviderTurnTerminalStore {
         const now = new Date().toISOString();
         const allowed = state === "uncertain"
           ? ["intent", "uncertain"]
-          : state === "acked" ? ["intent", "uncertain", "acked"] : ["intent", "uncertain"];
+          : state === "acked" ? ["intent", "uncertain", "superseded-uncertain", "acked"]
+            : ["intent", "uncertain", "superseded-uncertain"];
         const placeholders = allowed.map(() => "?").join(", ");
         database.prepare(`
           UPDATE provider_turn_terminal_outbox

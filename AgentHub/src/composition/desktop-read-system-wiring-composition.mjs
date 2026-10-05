@@ -181,6 +181,7 @@ export function createDesktopReadSystemWiring({
       },
       historyReader: {
         read: services.readCachedHistory,
+        readTurn: services.readExactHistoryTurn,
         readPage: services.readHistoryPage,
         refresh: services.refreshHistory,
       },
@@ -188,6 +189,7 @@ export function createDesktopReadSystemWiring({
         forTask: services.runForTask,
       },
       latestMessage: services.lastTaskMessage,
+      forgetLastMessage: services.forgetLastTaskMessage,
       historyMerger: {
         mergeActive: mergeActiveTaskHistory,
         mergeCompleted: mergeCompletedTaskHistory,

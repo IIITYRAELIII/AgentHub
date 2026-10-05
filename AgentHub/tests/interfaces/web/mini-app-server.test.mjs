@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createHash, createHmac } from "node:crypto";
+import { createHash, createHmac, randomBytes } from "node:crypto";
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { createConnection } from "node:net";
 import os from "node:os";
@@ -7,6 +7,7 @@ import path from "node:path";
 import test from "node:test";
 
 import {
+  createJsonResponder,
   extractWorkLogHtml,
   loopbackRequest,
   miniAppMenuButtonRequests,
@@ -270,6 +271,109 @@ test("large snapshot responses use gzip when the client accepts it", async () =>
   } finally {
     await server.close();
   }
+});
+
+test("large snapshot compression leaves a local control command responsive", async () => {
+  // The body is deliberately hard to compress. A synchronous gzip blocks the
+  // same Hub event loop that must accept unrelated local commands.
+  const payload = { text: randomBytes(8 * 1_024 * 1_024).toString("base64") };
+  let handlerEntered;
+  const entered = new Promise((resolve) => { handlerEntered = resolve; });
+  const server = new MiniAppServer({
+    host: "127.0.0.1",
+    port: 0,
+    journalDatabase: memoryJournal(),
+    controlHandler: async ({ action }) => {
+      if (action !== "snapshot") return { accepted: true };
+      handlerEntered();
+      return payload;
+    },
+  });
+  try {
+    const address = await server.start();
+    const snapshot = fetch(`${address.url}api/snapshot`, {
+      headers: { "Accept-Encoding": "gzip" },
+    });
+    await entered;
+    const command = fetch(`${address.url}api/control`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "read-status", params: {}, commandId: "latency-probe-1" }),
+    });
+    const first = await Promise.race([
+      snapshot.then(() => "snapshot"),
+      command.then(() => "command"),
+    ]);
+    assert.equal(first, "command");
+    assert.deepEqual(await (await command).json(), {
+      ok: true,
+      result: { accepted: true },
+      receiptId: "latency-probe-1",
+    });
+    assert.deepEqual(await (await snapshot).json(), payload);
+  } finally {
+    await server.close();
+  }
+});
+
+test("JSON compression is bounded, abort-safe, and preserves the raw fallback", () => {
+  const callbacks = [];
+  const json = createJsonResponder({
+    maxConcurrentCompressions: 2,
+    compress: (_body, callback) => callbacks.push(callback),
+  });
+  const response = () => ({
+    headers: null,
+    body: null,
+    destroyed: false,
+    getHeader: () => undefined,
+    writeHead(_status, headers) { this.headers = headers; },
+    end(body) { this.body = body; this.writableEnded = true; },
+  });
+  const value = { text: "x".repeat(20_000) };
+  const first = response();
+  const second = response();
+  const third = response();
+  for (const target of [first, second, third]) {
+    json(target, 200, value, "GET", { acceptEncoding: "gzip" });
+  }
+  assert.equal(callbacks.length, 2);
+  assert.equal(first.headers, null);
+  assert.equal(second.headers, null);
+  assert.equal(third.headers["Content-Encoding"], undefined);
+  assert.equal(third.headers.Vary, "Accept-Encoding");
+  assert.deepEqual(JSON.parse(third.body), value);
+  first.destroyed = true;
+  callbacks[0](null, Buffer.from("compressed"));
+  assert.equal(first.headers, null);
+  callbacks[1](new Error("compression failed"));
+  assert.equal(second.headers["Content-Encoding"], undefined);
+  assert.equal(second.headers.Vary, "Accept-Encoding");
+  assert.deepEqual(JSON.parse(second.body), value);
+  const fourth = response();
+  json(fourth, 200, value, "HEAD", { acceptEncoding: "gzip" });
+  assert.equal(callbacks.length, 3);
+  callbacks[2](null, Buffer.from("compressed"));
+  assert.equal(fourth.headers["Content-Encoding"], "gzip");
+  assert.equal(fourth.headers["Content-Length"], "compressed".length.toString());
+  assert.equal(fourth.body, "");
+  const broken = response();
+  broken.writeHead = () => { throw new Error("socket closed"); };
+  broken.destroy = () => { broken.destroyed = true; };
+  json(broken, 200, value, "GET", { acceptEncoding: "gzip" });
+  callbacks[3](null, Buffer.from("compressed"));
+  assert.equal(broken.destroyed, true);
+  const afterBroken = response();
+  json(afterBroken, 200, value, "GET", { acceptEncoding: "gzip" });
+  assert.equal(callbacks.length, 5, "a failed socket releases its compression slot");
+  callbacks[4](new Error("compression failed"));
+  assert.deepEqual(JSON.parse(afterBroken.body), value);
+
+  const throwing = createJsonResponder({ compress: () => { throw new Error("dispatch failed"); } });
+  const immediateFallback = response();
+  throwing(immediateFallback, 200, value, "GET", { acceptEncoding: "gzip" });
+  assert.equal(immediateFallback.headers["Content-Encoding"], undefined);
+  assert.deepEqual(JSON.parse(immediateFallback.body), value);
 });
 
 test("large lazy journal fragments use gzip without bloating the initial response", async () => {

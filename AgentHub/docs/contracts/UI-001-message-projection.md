@@ -498,10 +498,14 @@ rewrite the maintenance cache or accumulate discarded older events.
 
 Every live projection has an explicit `operationKind`. Only `user-turn` may
 produce user-visible running state. `compaction` and `maintenance` may have
-system presentation but cannot create or revive a user-turn card. Ordinary
-prompt, final-answer or client-ID text never classifies a turn as internal,
-including text that resembles an old context-measurement marker. No historical
-marker matching or reclassification subsystem remains.
+system presentation but cannot create or revive a user-turn card. Prompt and
+final-answer text never classifies a turn as internal, including the retired
+context-measurement marker. A pre-retirement Codex probe with the generated
+reserved `agent-hub-context-probe:<UUID>` provider `client_id` is the sole
+historical exception: its exact turn is removed from user history and a saved
+last-message overlay only for that same turn. Its original provider start/end
+times remain on the accounting record; a later observation timestamp cannot
+make it a new user message. Missing or conflicting identity stays visible.
 A current compaction with an unknown outcome has a dedicated system marker,
 `Статус свёртки неизвестен`, keyed by its exact maintenance operation identity.
 Legacy timeout state has the same unknown presentation, never a failed or
@@ -573,8 +577,9 @@ hydration starts strictly as background work and is never awaited by mark-read.
   revision `1` and carry `migrationGuard=legacy-terminal-revision`. Remove this
   after one supported release has rewritten every retained terminal record.
 - Pre-UI-001 live/message records without `operationKind` retain generic
-  lifecycle projection rules. Text or client-ID shape does not classify them as
-  context maintenance; old marker-shaped content remains ordinary history.
+  lifecycle projection rules. Marker-shaped text remains ordinary history.
+  Only a provider-sourced generated reserved probe `client_id` may suppress
+  the exact historical probe turn; other client IDs never classify maintenance.
 - A retained pre-origin MCP message may recover inter-Stream provenance only by
   exact `mcp:<requestId>` lookup of a successful audited
   `hub_stream_message_send`, `hub_task_start` or `hub_task_reassign` operation.

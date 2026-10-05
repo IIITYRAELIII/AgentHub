@@ -220,12 +220,17 @@ export class CodexEventService {
     if (method === "thread/tokenUsage/updated") {
       await d.mutateCompaction(params.threadId, () => {
         const compaction = d.getCompaction(params.threadId);
+        const provisionalContext = isCompactionOnlyContextMeasurement(params, compaction);
         d.trackTokenUsage(params, {
           // A standalone compaction reports an intermediate token count with no
           // billable input/output. It still belongs in turn accounting, but it
           // is a preliminary size estimate rather than exact model usage.
           // The compaction owner retains it separately from later user usage.
-          provisionalContext: isCompactionOnlyContextMeasurement(params, compaction),
+          provisionalContext,
+        });
+        if (provisionalContext && compaction?.id) d.recordContextEstimate?.({
+          operationId: compaction.id, threadId: params.threadId, turnId: eventTurnId,
+          accepted: d.getCompaction(params.threadId)?.measurementKind === "estimated",
         });
       });
       saveStateBestEffort(d);
@@ -405,6 +410,11 @@ export class CodexEventService {
         d.temporaryFiles.delete(eventTurnId);
         await Promise.all(temporaryFiles.map((file) => (d.removeFile ?? ((value) => unlink(value).catch(() => {})))(file)));
         d.logWarn?.(`Completed Codex turn ${eventTurnId ?? "unknown"} has no registered task run`);
+        if (params.agentHubHydrationReplay !== true && params.turn?.status === "completed") {
+          void Promise.resolve(d.completeUnregisteredTurn?.({
+            threadId: params.threadId, turnId: eventTurnId,
+          })).catch((error) => d.logWarn?.(`Post-turn context maintenance failed: ${error.message}`));
+        }
         return;
       }
       if (run.status !== "running") return;

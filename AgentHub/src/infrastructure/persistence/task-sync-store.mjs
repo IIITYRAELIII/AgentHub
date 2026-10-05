@@ -2532,6 +2532,19 @@ export class LocalTaskSyncStore {
     return cleanHistory(this.#readHistory(task, limit), limit, { provider: task.provider });
   }
 
+  historyTurn({ provider, threadId, turnId } = {}) {
+    const exactProvider = cleanText(provider, 20).toLowerCase();
+    const exactThreadId = cleanText(threadId, 100);
+    const exactTurnId = cleanText(turnId, 200);
+    if (!exactProvider || !exactThreadId || !exactTurnId) return null;
+    const row = this.#database.prepare(`
+      SELECT * FROM task_read_model_turns
+      WHERE provider = ? AND thread_id = ? AND id = ?
+      LIMIT 1
+    `).get(exactProvider, exactThreadId, exactTurnId);
+    return row ? this.#hydrateHistoryRows([row])[0] ?? null : null;
+  }
+
   async readHistoryPage(references, options = {}) {
     const page = this.historyPage(references, options);
     const candidates = page.items.filter(({ turn }) => (
