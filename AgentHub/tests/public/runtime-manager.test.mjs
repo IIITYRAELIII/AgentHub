@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { cp, mkdtemp, mkdir, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { createRequire } from "node:module";
 import test from "node:test";
 
 import {
@@ -39,6 +40,53 @@ test("preparing a runtime leaves the current installation intact; applying consu
   assert.deepEqual(await readFile(path.join(runtimeRoot, "current.json")), installedPointer);
   await writeFile(path.join(prepared.releaseRoot, "helper.mjs"), "damaged");
   await assert.rejects(installPreparedRuntime({ runtimeRoot, ...prepared }), /mismatch/);
+});
+
+test("prepared runtime manifests locked production modules and resolves them from its own release", async (t) => {
+  const { sourceRoot, runtimeRoot } = await fixture();
+  t.after(() => rm(path.dirname(runtimeRoot), { recursive: true, force: true }));
+  await writeFile(path.join(sourceRoot, "package.json"), JSON.stringify({
+    name: "agent-hub", version: "2026.8.23", dependencies: { "example-runtime": "1.0.0" },
+  }));
+  await writeFile(path.join(sourceRoot, "package-lock.json"), JSON.stringify({
+    name: "agent-hub", lockfileVersion: 3, packages: { "": {
+      dependencies: { "example-runtime": "1.0.0" },
+    } },
+  }));
+  const prepared = await prepareRuntime({
+    sourceRoot, runtimeRoot, releaseId: "locked-production-dependency",
+    installProductionDependencies: async (stagingRoot) => {
+      const modules = path.join(stagingRoot, "node_modules");
+      const dependency = path.join(modules, "example-runtime");
+      await mkdir(dependency, { recursive: true });
+      await writeFile(path.join(modules, ".package-lock.json"), "{}\n");
+      await writeFile(path.join(dependency, "package.json"), JSON.stringify({
+        name: "example-runtime", version: "1.0.0", type: "module", exports: "./index.mjs",
+      }));
+      await writeFile(path.join(dependency, "index.mjs"), "export const ready = true;\n");
+    },
+  });
+  const manifest = JSON.parse(await readFile(path.join(prepared.releaseRoot, "runtime-manifest.json"), "utf8"));
+  const names = manifest.files.map((file) => file.path);
+  assert.ok(names.includes("package-lock.json"));
+  assert.ok(names.includes("node_modules/example-runtime/index.mjs"));
+  assert.ok(names.includes("node_modules/.package-lock.json"));
+  const fromInstalledModule = createRequire(path.join(prepared.releaseRoot, "src", "application", "service.mjs"));
+  assert.equal(fromInstalledModule.resolve("example-runtime"),
+    path.join(prepared.releaseRoot, "node_modules", "example-runtime", "index.mjs"));
+});
+
+test("runtime dependency admission rejects a missing lock before installation", async (t) => {
+  const { sourceRoot, runtimeRoot } = await fixture();
+  t.after(() => rm(path.dirname(runtimeRoot), { recursive: true, force: true }));
+  await writeFile(path.join(sourceRoot, "package.json"), JSON.stringify({
+    name: "agent-hub", version: "2026.8.23", dependencies: { "example-runtime": "1.0.0" },
+  }));
+  await assert.rejects(prepareRuntime({
+    sourceRoot, runtimeRoot, releaseId: "missing-lock",
+    installProductionDependencies: () => assert.fail("npm must not start without the lock"),
+  }), /pinned package-lock/u);
+  await assert.rejects(readFile(path.join(runtimeRoot, "current.json"), "utf8"), /ENOENT/u);
 });
 
 test("runner N operation remains readable across an interrupted and retried N+1 installation", async (t) => {

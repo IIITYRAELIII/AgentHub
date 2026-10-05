@@ -13,6 +13,7 @@ import {
 } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
+import { spawn } from "node:child_process";
 
 import { readAgentHubVersion } from "../infrastructure/filesystem/agent-hub-package.mjs";
 import { defaultRuntimeRoot, runtimeLayout, runtimeReleaseDirectory } from "../infrastructure/filesystem/runtime-layout.mjs";
@@ -27,6 +28,7 @@ const SOURCE_ROOT = path.resolve(import.meta.dirname, "..", "..");
 const TOP_LEVEL_FILES = new Set([
   "AGENT_HUB_GUIDE.md",
   "package.json",
+  "package-lock.json",
   "RuntimeHost.release-acceptance-v1.json",
   "codex-process-ancestry.ps1",
   "codex-rollout-processes.ps1",
@@ -93,6 +95,30 @@ async function releaseFileNames(sourceRoot) {
     await visitInternal("src");
   }
   return [...topLevel, ...internal].sort();
+}
+
+async function installLockedRuntimeDependencies(stagingRoot) {
+  const windows = process.platform === "win32";
+  const command = windows ? "cmd.exe" : "npm";
+  const args = ["ci", "--omit=dev", "--include=optional", "--ignore-scripts", "--no-bin-links", "--no-audit", "--no-fund"];
+  await new Promise((resolve, reject) => {
+    const child = spawn(command, windows ? ["/d", "/s", "/c", "npm.cmd", ...args] : args, {
+      cwd: stagingRoot,
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let diagnostic = "";
+    for (const stream of [child.stdout, child.stderr]) {
+      stream.on("data", (chunk) => {
+        diagnostic = `${diagnostic}${chunk.toString("utf8")}`.slice(-16_384);
+      });
+    }
+    child.once("error", reject);
+    child.once("close", (code, signal) => {
+      if (code === 0 && !signal) resolve();
+      else reject(new Error(`Locked runtime dependency install failed (${signal ?? code}): ${diagnostic}`));
+    });
+  });
 }
 
 async function hashFile(target) {
@@ -267,6 +293,7 @@ export async function prepareRuntime({
   publicationRevision = null,
   mobileAssetsRoot = null,
   beforeManifest,
+  installProductionDependencies = installLockedRuntimeDependencies,
 } = {}) {
   const layout = runtimeLayout(runtimeRoot);
   const releaseRoot = runtimeReleaseDirectory(runtimeRoot, releaseId);
@@ -330,6 +357,17 @@ export async function prepareRuntime({
       }
     }
     await beforeManifest?.({ stagingRoot: staging, releaseId });
+    const sourcePackage = JSON.parse(await readFile(path.join(sourceRoot, "package.json"), "utf8"));
+    if (Object.keys(sourcePackage.dependencies ?? {}).length) {
+      if (!names.includes("package-lock.json")) {
+        throw new Error("Runtime production dependencies require a pinned package-lock.json");
+      }
+      await installProductionDependencies(staging);
+      if (!await exists(path.join(staging, "node_modules", ".package-lock.json"))) {
+        throw new Error("Runtime production dependency installation has no lock evidence");
+      }
+      names.push("node_modules");
+    }
     const packageVersion = readAgentHubVersion({ packageFile: path.join(sourceRoot, "package.json") });
     const manifest = {
       releaseId,
@@ -648,4 +686,3 @@ export async function main(args = process.argv.slice(2)) {
     throw new Error(`Unknown command: ${command}`);
   }
 }
-

@@ -14,7 +14,11 @@ function normalizedRelative(value) {
 export async function verifyRuntimeImportClosure(releaseRoot, files) {
   const included = new Set(files.map((entry) => normalizedRelative(entry.path ?? entry)));
   const missing = [];
-  for (const importer of [...included].filter((entry) => MODULE_FILE_PATTERN.test(entry))) {
+  // npm's locked package tree is verified by npm ci and the runtime manifest.
+  // Its modules may use package exports or extensionless internal specifiers;
+  // the first-party relative-import rule does not model Node package resolution.
+  for (const importer of [...included].filter((entry) =>
+    MODULE_FILE_PATTERN.test(entry) && !entry.startsWith("node_modules/"))) {
     const source = await readFile(releasePath(releaseRoot, importer), "utf8");
     for (const specifier of relativeModuleSpecifiers(source)) {
       const target = normalizedRelative(path.posix.normalize(path.posix.join(
