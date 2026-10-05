@@ -130,6 +130,10 @@ const RESOURCE_BUCKET_FIELDS = [
   "credits",
   "knownCredits",
   "unknownCredits",
+  "quotaUnits",
+  "knownQuotaUnits",
+  "unknownQuotaUnits",
+  "uncalibratedCount",
   "durationSeconds",
   "knownDurations",
   "unknownDurations",
@@ -142,6 +146,10 @@ const PROFILE_SUM_FIELDS = [
   "credits",
   "knownCredits",
   "unknownCredits",
+  "quotaUnits",
+  "knownQuotaUnits",
+  "unknownQuotaUnits",
+  "uncalibratedCount",
   "durationSeconds",
   "knownDurations",
   "unknownDurations",
@@ -361,6 +369,10 @@ export function buildVirtualJournalProjection(sections) {
           credits: 0,
           knownCredits: 0,
           unknownCredits: 0,
+          quotaUnits: 0,
+          knownQuotaUnits: 0,
+          unknownQuotaUnits: 0,
+          uncalibratedCount: 0,
           durationSeconds: 0,
           knownDurations: 0,
           unknownDurations: 0,
@@ -402,6 +414,16 @@ export function buildVirtualJournalProjection(sections) {
           "credits",
           "unknownCredits",
         );
+        addMetric(
+          bucket,
+          finiteMetric(attribute(entry.opening, "data-work-log-turn-quota-units")),
+          "knownQuotaUnits",
+          "quotaUnits",
+          "unknownQuotaUnits",
+        );
+        if (attribute(entry.opening, "data-work-log-turn-quota-incomplete") === "1") {
+          bucket.uncalibratedCount += 1;
+        }
         addMetric(
           bucket,
           finiteMetric(attribute(entry.opening, "data-work-log-turn-duration-seconds")),

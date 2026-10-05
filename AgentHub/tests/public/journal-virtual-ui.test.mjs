@@ -209,6 +209,31 @@ test("virtual Stream mode preserves overview profile and default-open semantics"
   }
 });
 
+test("virtual journal switches exact QU and shows incomplete coverage without converting credits", async () => {
+  const { chromium } = await import("playwright");
+  const browser = await chromium.launch(process.platform === "win32"
+    ? { channel: "msedge", headless: true } : { headless: true });
+  try {
+    const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    await openProductionJournal(page, { summaryBuckets: [
+      bucket({ quotaUnits: 45, knownQuotaUnits: 1, unknownQuotaUnits: 0, uncalibratedCount: 0 }),
+      bucket({ streamId: "stream-low", streamDisplayName: "Low", credits: 10,
+        quotaUnits: 0, knownQuotaUnits: 1, unknownQuotaUnits: 0, uncalibratedCount: 1 }),
+    ] });
+    await page.locator('[data-usage-unit="qu"]').first().evaluate((button) => button.click());
+    await page.waitForFunction(() => document.querySelector('[data-journal-total-credits]')
+      ?.textContent?.includes('45 QU'));
+    assert.match(await page.locator('[data-journal-total-credits]').innerText(), /45 QU.*неполно/u);
+    const groups = page.locator('[data-journal-virtual-mode="stream"]');
+    assert.match(await groups.nth(0).locator('[data-journal-ledger-metric="credits"]').innerText(), /45 QU/u);
+    assert.match(await groups.nth(1).locator('[data-journal-ledger-metric="credits"]').innerText(), /— QU.*неполно/u);
+    await page.locator('[data-usage-unit="cr"]').first().evaluate((button) => button.click());
+    await page.waitForFunction(() => document.querySelector('[data-journal-total-credits]')
+      ?.textContent?.includes('40 cr'));
+    assert.match(await page.locator('[data-journal-total-credits]').innerText(), /40 cr/u);
+  } finally { await browser.close(); }
+});
+
 test("journal version conflict refreshes once and restores the open Stream without an error", async () => {
   const { chromium } = await import("playwright");
   const browser = await chromium.launch(process.platform === "win32"

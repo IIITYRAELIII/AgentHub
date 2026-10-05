@@ -1,6 +1,7 @@
 import path from "node:path";
 
 import { turnEndKey } from "../../application/turn-end-notifications.mjs";
+import { isCodexContextProbeClientId } from "../../domain/codex-service-usage-identity.mjs";
 import { conciseTurnTitle } from "../../application/turn-title.mjs";
 import { MAINTENANCE_OPERATION_KINDS } from "../../domain/maintenance-operation.mjs";
 import { normalizeServiceTier, normalizeTokenUsage } from "../../domain/token-usage.mjs";
@@ -14,6 +15,7 @@ function sameHistoricalUsage(record, usageResult) {
     && Math.max(0, Math.floor(Number(record.imageGenerationCount) || 0))
       === Math.max(0, Math.floor(Number(usageResult.imageGenerationCount) || 0))
     && String(record.model ?? "").trim().toLowerCase() === String(usageResult.model ?? "").trim().toLowerCase()
+    && String(record.serviceUsageKind ?? "") === String(usageResult.serviceUsageKind ?? "")
     && normalizeServiceTier(record.serviceTier) === normalizeServiceTier(usageResult.serviceTier);
 }
 
@@ -183,6 +185,38 @@ export class CodexTerminalReconciliationService {
         ) ?? ""
         : "";
       const turnDiff = baselineDiff || usageResult.diff || "";
+      // Service usage is projected without a user message. Route it before the
+      // ordinary historical/subagent decision, which belongs to terminal flow.
+      if (usageResult.serviceUsageKind && !dedicatedCompaction
+        && !accountingThread.isSubagent && terminal?.historical !== true) {
+        const serviceChangedFiles = [...new Set((usageResult.changedFiles ?? []).flatMap((file) => {
+          const value = String(file ?? "").trim();
+          const absolute = path.isAbsolute(value) ? path.resolve(value) : path.resolve(project.path, value);
+          const relative = path.relative(project.path, absolute);
+          if (!value || !relative || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return [];
+          return [relative.replaceAll(path.sep, "/")];
+        }))];
+        await this.#projectHistorical({
+          identity,
+          thread,
+          project,
+          terminal,
+          usageResult,
+          dedicatedCompaction,
+          accountingThread,
+          parentTurnId,
+          resolvedStatus,
+          resolvedCompletedAt,
+          provisional,
+          changedFiles: serviceChangedFiles,
+          turnDiff,
+          gitBaseline: turnStart?.gitBaseline ?? null,
+          onProjectionDeferred,
+        });
+        this.turnStarts.delete(key);
+        this.logger.log(`Accounted service Codex turn ${identity.turnId} to thread ${accountingThread.threadId}`);
+        return true;
+      }
       const changedFiles = [...new Set((usageResult.changedFiles ?? []).flatMap((file) => {
         const value = String(file ?? "").trim();
         const absolute = path.isAbsolute(value) ? path.resolve(value) : path.resolve(project.path, value);
@@ -297,7 +331,9 @@ export class CodexTerminalReconciliationService {
     gitBaseline,
     onProjectionDeferred,
   }) {
-    const finalAnswer = String(usageResult.finalAnswer ?? "").trim();
+    const contextProbe = usageResult.serviceUsageKind === "context-probe"
+      && isCodexContextProbeClientId(usageResult.clientUserMessageId);
+    const finalAnswer = contextProbe ? "" : String(usageResult.finalAnswer ?? "").trim();
     const journal = await this.projectTurn({
       ...identity,
       taskThreadId: accountingThread.threadId,
@@ -331,11 +367,16 @@ export class CodexTerminalReconciliationService {
       skillsUsed: usageResult.skillsUsed,
       mcpCalls: usageResult.mcpCalls,
       toolMetricsKnown: usageResult.toolMetricsKnown,
+      serviceUsageKind: usageResult.serviceUsageKind
+        || (dedicatedCompaction ? "context-compaction" : ""),
+      ...(usageResult.serviceUsageKind ? { accountAttribution: "unknown", resolveAccount: false } : {}),
+      ...(contextProbe ? { operationKind: "context-measurement" } : {}),
       message: null,
     }, {
       title: dedicatedCompaction ? "Свёртка контекста" : conciseTurnTitle(finalAnswer, resolvedStatus),
       body: finalAnswer,
       deferProjection: true,
+      ...(contextProbe ? { title: "Измерение контекста", body: "" } : {}),
     });
     if (journal?.projectionDeferred === true) onProjectionDeferred?.();
     if (journal?.projectionError) {

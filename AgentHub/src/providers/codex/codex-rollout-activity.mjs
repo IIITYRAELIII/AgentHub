@@ -10,6 +10,13 @@ import {
 } from "../../application/task-history.mjs";
 import { TASK_EXECUTION_OWNERS } from "../../domain/task-execution-owner.mjs";
 import {
+  CODEX_TRACE_GROUP_LIMIT,
+  CODEX_TRACE_ACTIVITIES_PER_GROUP_LIMIT,
+  CODEX_TRACE_ACTIVITIES_PER_TURN_LIMIT,
+  CODEX_TRACE_REASONING_TOTAL_CHARS,
+  boundedTraceId,
+} from "../../domain/codex-trace-budget.mjs";
+import {
   codexAssistantResponseProjection,
   visibleCodexAssistantText,
 } from "../../domain/codex-response-annotation.mjs";
@@ -29,6 +36,8 @@ const CODEX_ROLLOUT_OCCURRENCE_CACHE_LIMIT = 512;
 const CODEX_AGENT_MESSAGE_CHARS = 200_000;
 const CODEX_ACTIVITY_CACHE_LIMIT = 200;
 const CODEX_ACTIVE_ACTIVITY_CACHE_LIMIT = 16;
+const CODEX_ACTIVITY_CACHE_BYTE_LIMIT = 32 * 1024 * 1024;
+const CODEX_ACTIVE_ACTIVITY_CACHE_BYTE_LIMIT = 16 * 1024 * 1024;
 const GENERATED_IMAGE_CALL_OWNER_LIMIT = 128;
 const AMBIGUOUS_GENERATED_IMAGE_CALL_OWNER = Object.freeze({ state: "ambiguous" });
 const LEGACY_TURN_ID = "__legacy__";
@@ -36,32 +45,43 @@ const codexActivityCache = new Map();
 const codexActiveActivityCache = new Map();
 const codexActivityReadsInFlight = new Map();
 
-function retainCachedActivity(cache, key, value, limit) {
+function retainCachedActivity(cache, key, value, limit, byteLimit) {
   cache.delete(key);
   cache.set(key, value);
-  while (cache.size > limit) cache.delete(cache.keys().next().value);
+  let bytes = [...cache.values()].reduce((sum, entry) => sum + entry.cacheBytes, 0);
+  while (cache.size > limit || bytes > byteLimit) {
+    const oldest = cache.keys().next().value;
+    bytes -= cache.get(oldest).cacheBytes;
+    cache.delete(oldest);
+  }
   return value;
 }
 
 function cachedActivity(key, pinCache) {
   const active = codexActiveActivityCache.get(key);
   if (active) {
-    retainCachedActivity(codexActiveActivityCache, key, active, CODEX_ACTIVE_ACTIVITY_CACHE_LIMIT);
+    retainCachedActivity(codexActiveActivityCache, key, active, CODEX_ACTIVE_ACTIVITY_CACHE_LIMIT,
+      CODEX_ACTIVE_ACTIVITY_CACHE_BYTE_LIMIT);
     return active;
   }
   const cached = codexActivityCache.get(key);
   if (!cached) return null;
-  retainCachedActivity(codexActivityCache, key, cached, CODEX_ACTIVITY_CACHE_LIMIT);
+  retainCachedActivity(codexActivityCache, key, cached, CODEX_ACTIVITY_CACHE_LIMIT,
+    CODEX_ACTIVITY_CACHE_BYTE_LIMIT);
   if (pinCache) {
-    retainCachedActivity(codexActiveActivityCache, key, cached, CODEX_ACTIVE_ACTIVITY_CACHE_LIMIT);
+    retainCachedActivity(codexActiveActivityCache, key, cached, CODEX_ACTIVE_ACTIVITY_CACHE_LIMIT,
+      CODEX_ACTIVE_ACTIVITY_CACHE_BYTE_LIMIT);
   }
   return cached;
 }
 
 function cacheActivity(key, value, pinCache) {
-  retainCachedActivity(codexActivityCache, key, value, CODEX_ACTIVITY_CACHE_LIMIT);
+  value.cacheBytes = Buffer.byteLength(JSON.stringify(value));
+  retainCachedActivity(codexActivityCache, key, value, CODEX_ACTIVITY_CACHE_LIMIT,
+    CODEX_ACTIVITY_CACHE_BYTE_LIMIT);
   if (pinCache || codexActiveActivityCache.has(key)) {
-    retainCachedActivity(codexActiveActivityCache, key, value, CODEX_ACTIVE_ACTIVITY_CACHE_LIMIT);
+    retainCachedActivity(codexActiveActivityCache, key, value, CODEX_ACTIVE_ACTIVITY_CACHE_LIMIT,
+      CODEX_ACTIVE_ACTIVITY_CACHE_BYTE_LIMIT);
   }
 }
 
@@ -687,7 +707,7 @@ function rolloutToolActivity(entry) {
   if (!payloadType.endsWith("_call") || payloadType.endsWith("_call_output")) return null;
   const input = String(payload.input ?? payload.arguments ?? "");
   const nestedTool = /\btools\.([A-Za-z0-9_]+)/u.exec(input)?.[1] ?? "";
-  const tool = nestedTool || String(payload.name ?? payload.tool ?? payloadType).trim();
+  const tool = (nestedTool || String(payload.name ?? payload.tool ?? payloadType).trim()).slice(0, 200);
   const type = tool === "shell_command" ? "command" : tool === "apply_patch" ? "file" : "tool";
   const completed = !["in_progress", "running", "started"].includes(String(payload.status ?? "").toLowerCase());
   const labels = {
@@ -695,7 +715,7 @@ function rolloutToolActivity(entry) {
     file: completed ? "Файлы изменены" : "Изменяются файлы",
     tool: completed ? "Инструмент завершён" : "Используется инструмент",
   };
-  const id = String(payload.id ?? payload.call_id ?? `${payloadType}:${tool}`).trim();
+  const id = boundedTraceId(payload.id ?? payload.call_id ?? `${payloadType}:${tool}`);
   return {
     id: `item:${id}`,
     type,
@@ -726,11 +746,9 @@ function codexActivityIndex(index, group) {
   return activities;
 }
 
-function rememberCodexTraceEntry(metadata, turnId, entry) {
-  if (entry?.type !== "response_item" || !turnId) return;
+export function codexTraceEntry(entry, sequence = 0) {
+  if (entry?.type !== "response_item") return null;
   const payload = entry.payload ?? {};
-  const groups = metadata.activityGroups.get(turnId) ?? [];
-  const index = codexActivityGroupIndex(metadata, turnId, groups);
   const phase = String(payload.phase ?? "").trim();
   const reasoning = payload.type === "message"
     && payload.role === "assistant"
@@ -739,38 +757,87 @@ function rememberCodexTraceEntry(metadata, turnId, entry) {
     : payload.type === "reasoning"
       ? rolloutReasoningSummary(payload)
       : "";
+  const activity = reasoning ? null : rolloutToolActivity(entry);
+  if (!reasoning && !activity) return null;
+  return reasoning ? {
+    id: `${payload.type === "message" ? "commentary" : "reasoning"}:${boundedTraceId(payload.id ?? sequence)}`,
+    reasoning, activities: [],
+  } : { id: `activity:${activity.id}`, reasoning: "", activities: [activity] };
+}
+
+function rememberCodexTraceEntry(metadata, turnId, entry) {
+  if (!turnId) return;
+  const sequence = metadata.activityGroupSequenceByTurnId.get(turnId) ?? 0;
+  const projected = codexTraceEntry(entry, sequence);
+  if (!projected) return;
+  const reasoning = projected.reasoning;
+  const activity = projected.activities[0];
+  if (!reasoning && !activity) return;
+  let groups = metadata.activityGroups.get(turnId) ?? [];
+  if (metadata.sharedActivityGroups?.has(turnId)) {
+    groups = groups.slice();
+    metadata.activityGroups.set(turnId, groups);
+    metadata.sharedActivityGroups.delete(turnId);
+  }
+  const index = codexActivityGroupIndex(metadata, turnId, groups);
+  const mutableGroup = (group) => {
+    if (!metadata.sharedTraceGroups?.has(group)) return group;
+    const copy = { ...group, activities: [...group.activities] };
+    groups[groups.indexOf(group)] = copy;
+    index.byId.set(copy.id, copy);
+    return copy;
+  };
   if (reasoning) {
-    const id = `${payload.type === "message" ? "commentary" : "reasoning"}:${String(payload.id ?? groups.length)}`;
+    metadata.activityGroupSequenceByTurnId.set(turnId, sequence + 1);
+    const id = projected.id;
     const current = index.byId.get(id);
-    if (current) current.reasoning = reasoning;
+    if (current) mutableGroup(current).reasoning = reasoning;
     else {
       const group = { id, reasoning, activities: [] };
       groups.push(group);
       index.byId.set(id, group);
     }
   } else {
-    const activity = rolloutToolActivity(entry);
-    if (activity) {
-      if (!groups.length) {
-        const group = { id: `activity:${activity.id}`, reasoning: "", activities: [] };
-        groups.push(group);
-        index.byId.set(group.id, group);
-      }
-      const current = groups.at(-1);
-      const activities = codexActivityIndex(index, current);
-      const existing = activities.get(activity.id) ?? -1;
-      if (existing >= 0) current.activities[existing] = activity;
-      else {
-        activities.set(activity.id, current.activities.length);
-        current.activities.push(activity);
+    if (!groups.length) {
+      const group = { id: `activity:${activity.id}`, reasoning: "", activities: [] };
+      groups.push(group);
+      index.byId.set(group.id, group);
+    }
+    const current = mutableGroup(groups.at(-1));
+    const activities = codexActivityIndex(index, current);
+    const existing = activities.get(activity.id) ?? -1;
+    if (existing >= 0) current.activities[existing] = activity;
+    else {
+      activities.set(activity.id, current.activities.length);
+      current.activities.push(activity);
+      if (current.activities.length > CODEX_TRACE_ACTIVITIES_PER_GROUP_LIMIT) {
+        current.activities.shift();
+        current.omittedActivities = (current.omittedActivities ?? 0) + 1;
+        index.activitiesByGroup.delete(current);
       }
     }
+    let totalActivities = groups.reduce((count, group) => count + group.activities.length, 0);
+    while (totalActivities > CODEX_TRACE_ACTIVITIES_PER_TURN_LIMIT) {
+      const oldest = mutableGroup(groups.find((group) => group.activities.length));
+      oldest.activities.shift();
+      oldest.omittedActivities = (oldest.omittedActivities ?? 0) + 1;
+      index.activitiesByGroup.delete(oldest);
+      totalActivities -= 1;
+    }
+  }
+  while (groups.length > CODEX_TRACE_GROUP_LIMIT || (groups.length > 1
+    && groups.reduce((count, group) => count + group.reasoning.length, 0) > CODEX_TRACE_REASONING_TOTAL_CHARS)) {
+    const removed = groups.shift();
+    if (index.byId.get(removed.id) === removed) index.byId.delete(removed.id);
+    const first = mutableGroup(groups[0]);
+    first.omittedGroupsBefore = (removed.omittedGroupsBefore ?? 0) + 1;
   }
   if (groups.length) metadata.activityGroups.set(turnId, groups);
   while (metadata.activityGroups.size > 8) {
     const oldestTurnId = metadata.activityGroups.keys().next().value;
     metadata.activityGroups.delete(oldestTurnId);
     metadata.activityGroupIndexes.delete(oldestTurnId);
+    metadata.activityGroupSequenceByTurnId.delete(oldestTurnId);
   }
 }
 
@@ -1178,6 +1245,7 @@ export function parseCodexRolloutActivity(text, options = {}) {
     generatedImageSources: new Map(),
     activityGroups: new Map(),
     activityGroupIndexes: new Map(),
+    activityGroupSequenceByTurnId: new Map(),
     pendingViewImageCalls: new Map(),
     pendingGeneratedImageCalls: new Map(),
     pendingUserMessages: [],
@@ -1429,10 +1497,11 @@ export async function readCodexRolloutActivityOnCurrentThread(
         ? (appendOnly ? cached : identityCached).generatedImageSources ?? []
         : [],
     ),
-    activityGroups: new Map((appendOnly ? cached.activityGroups ?? [] : []).map(([turnId, groups]) => (
-      [turnId, structuredClone(groups)]
-    ))),
+    activityGroups: new Map(appendOnly ? cached.activityGroups ?? [] : []),
     activityGroupIndexes: new Map(),
+    activityGroupSequenceByTurnId: new Map(appendOnly ? cached.activityGroupSequenceByTurnId ?? [] : []),
+    sharedActivityGroups: new Set((appendOnly ? cached.activityGroups ?? [] : []).map(([turnId]) => turnId)),
+    sharedTraceGroups: new WeakSet((appendOnly ? cached.activityGroups ?? [] : []).flatMap(([, groups]) => groups)),
     pendingViewImageCalls: new Map(appendOnly ? cached.pendingViewImageCalls ?? [] : []),
     pendingGeneratedImageCalls: new Map(
       appendOnly || generatedImageCacheReusable
@@ -1670,6 +1739,7 @@ export async function readCodexRolloutActivityOnCurrentThread(
     userMessages: [...metadata.userMessages],
     generatedImageSources: [...metadata.generatedImageSources],
     activityGroups: [...metadata.activityGroups],
+    activityGroupSequenceByTurnId: [...metadata.activityGroupSequenceByTurnId],
     pendingViewImageCalls: [...metadata.pendingViewImageCalls],
     pendingGeneratedImageCalls: [...metadata.pendingGeneratedImageCalls],
     pendingUserMessages: metadata.pendingUserMessages.map((message) => ({ ...message })),

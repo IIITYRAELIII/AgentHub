@@ -246,6 +246,14 @@ export class WorkLogUsageRepository {
     return this.#database.accountUsageProjectionVersion();
   }
 
+  pricingProjectionVersion() {
+    return this.#database.pricingProjectionVersion();
+  }
+
+  imageBackfillVersion() {
+    return this.#database.imageBackfillVersion();
+  }
+
   snapshot() {
     return this.#database.snapshot();
   }

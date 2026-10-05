@@ -37,7 +37,7 @@ function response(turnId, type = "reasoning", extra = {}) {
   };
 }
 
-function token(input, cache, output, reasoning) {
+function token(input, cache, output, reasoning, cacheWrite = 0) {
   return {
     type: "event_msg",
     payload: {
@@ -46,6 +46,7 @@ function token(input, cache, output, reasoning) {
         last_token_usage: {
           input_tokens: input,
           cached_input_tokens: cache,
+          cache_write_input_tokens: cacheWrite,
           output_tokens: output,
           reasoning_output_tokens: reasoning,
           total_tokens: input + output,
@@ -54,6 +55,71 @@ function token(input, cache, output, reasoning) {
     },
   };
 }
+
+test("exact Codex totals retain cache writes and only long individual requests", async () => {
+  const turnId = "pricing-turn";
+  const records = [
+    { type: "event_msg", payload: { type: "task_started", turn_id: turnId } },
+    { type: "turn_context", payload: { turn_id: turnId, model: "gpt-6.1-sol" } },
+    response(turnId),
+    token(200_000, 100_000, 5_000, 1_000),
+    response(turnId),
+    token(280_001, 100_000, 20_000, 5_000, 50_000),
+    { type: "token_usage_record", payload: {
+      turn_id: turnId,
+      turn_token_usage: {
+        input_tokens: 480_001, cached_input_tokens: 200_000,
+        cache_write_input_tokens: 50_000, output_tokens: 25_000,
+        reasoning_output_tokens: 6_000, total_tokens: 505_001,
+      },
+    } },
+    { type: "event_msg", payload: { type: "task_complete", turn_id: turnId } },
+  ].map(line).join("\n") + "\n";
+  const expected = {
+    inputTokens: 480_001, cachedInputTokens: 200_000,
+    cacheWriteInputTokens: 50_000, outputTokens: 25_000,
+    reasoningOutputTokens: 6_000, totalTokens: 505_001,
+    longContextInputTokens: 280_001, longContextCachedInputTokens: 100_000,
+    longContextCacheWriteInputTokens: 50_000, longContextOutputTokens: 20_000,
+    longContextReasoningOutputTokens: 5_000,
+  };
+  assert.deepEqual(codexTurnUsageFromJsonl(records, turnId).usage, expected);
+  const historical = await scanCodexHistoricalRollout("pricing.jsonl", {
+    createReadStreamImpl: () => Readable.from([records]),
+  });
+  assert.deepEqual(historical.turns.find((turn) => turn.turnId === turnId).usage, expected);
+});
+
+test("optional request cache writes survive exact totals in either event order", async () => {
+  const turnId = "write-with-omitted-exact-field";
+  const request = token(280_001, 100_000, 20_000, 0, 50_000);
+  for (const exactHasWrite of [false, true]) {
+    const exact = { type: "token_usage_record", payload: {
+      turn_id: turnId,
+      turn_token_usage: {
+        input_tokens: 280_001, cached_input_tokens: 100_000,
+        ...(exactHasWrite ? { cache_write_input_tokens: 50_000 } : {}),
+        output_tokens: 20_000, reasoning_output_tokens: 0, total_tokens: 300_001,
+      },
+    } };
+    for (const order of [[request, exact], [exact, request]]) {
+      const records = [
+        { type: "event_msg", payload: { type: "task_started", turn_id: turnId } },
+        response(turnId), ...order,
+        { type: "event_msg", payload: { type: "task_complete", turn_id: turnId } },
+      ].map(line).join("\n") + "\n";
+      const direct = codexTurnUsageFromJsonl(records, turnId).usage;
+      const historical = await scanCodexHistoricalRollout("pricing.jsonl", {
+        createReadStreamImpl: () => Readable.from([records]),
+      });
+      for (const usage of [direct, historical.turns.find((turn) => turn.turnId === turnId).usage]) {
+        assert.equal(usage.inputTokens, 280_001);
+        assert.equal(usage.cacheWriteInputTokens, 50_000);
+        assert.equal(usage.longContextCacheWriteInputTokens, 50_000);
+      }
+    }
+  }
+});
 
 test("Codex rollout usage sums every model response and sees the final token event", () => {
   const startedAt = "2026-07-26T19:03:03.527Z";
@@ -1486,6 +1552,32 @@ test("terminal event scanner retains terminal identity for marker-shaped user co
     status: "completed",
     completedAt: "2026-08-07T23:43:52.306Z",
   }]);
+});
+
+test("exact reserved context probe identity alone marks service usage in direct and historical scans", async () => {
+  for (const [clientId, expectedKind] of [
+    ["agent-hub-context-probe:de823030-9f98-40e6-9d93-066062d977c6", "context-probe"],
+    ["agent-hub-context-probe:not-a-uuid", ""],
+    ["foreign-context-probe:de823030-9f98-40e6-9d93-066062d977c6", ""],
+  ]) {
+    const turnId = "identity-turn";
+    const text = [
+      line({ type: "event_msg", payload: { type: "task_started", turn_id: turnId } }),
+      line(response(turnId, "message", {
+        role: "user", client_id: clientId,
+        content: [{ type: "input_text", text: "Probe request" }],
+      })),
+      line(response(turnId, "message", {
+        role: "assistant", content: [{ type: "output_text", text: "REAL_USER_FINAL" }],
+      })),
+      line({ type: "event_msg", payload: { type: "task_complete", turn_id: turnId } }),
+    ].join("\n");
+    assert.equal(codexTurnUsageFromJsonl(text, turnId).serviceUsageKind, expectedKind, clientId);
+    const historical = await scanCodexHistoricalRollout("fixture.jsonl", {
+      createReadStreamImpl: () => Readable.from([text]),
+    });
+    assert.equal(historical.turns[0].serviceUsageKind, expectedKind, clientId);
+  }
 });
 
 test("terminal event scanner does not classify identity-less marker-shaped content", async () => {

@@ -1,4 +1,6 @@
 // Handles settings-only callback routes after transport-level parsing.
+import { modelCallbackAction } from "./callback-context.mjs";
+
 const ROUTE_KINDS = new Set([
   "approval-mode",
   "project",
@@ -95,7 +97,9 @@ export class TelegramSettingsCallbackService {
       return true;
     }
     if (route.kind === "codex-model") {
-      await this.#model(callback, route.model, {
+      const model = await this.#resolveModel(callback, route, "codex");
+      if (!model) return true;
+      await this.#model(callback, model, {
         provider: "Codex",
         success: "Codex model changed",
         unchanged: "This Codex model is already selected",
@@ -105,7 +109,9 @@ export class TelegramSettingsCallbackService {
       return true;
     }
     if (route.kind === "claude-model") {
-      await this.#model(callback, route.model, {
+      const model = await this.#resolveModel(callback, route, "claude");
+      if (!model) return true;
+      await this.#model(callback, model, {
         provider: "Claude Code",
         success: "Модель изменена",
         unchanged: "Эта модель уже выбрана",
@@ -161,6 +167,22 @@ export class TelegramSettingsCallbackService {
       });
       await d.sendMessage(`Ошибка смены модели ${labels.provider}: ${error.message}`);
     }
+  }
+
+  async #resolveModel(callback, route, provider) {
+    if (!route.modelDigest) return route.model;
+    const values = provider === "codex"
+      ? this.#d.codexModels?.map((model) => model.value)
+      : this.#d.claudeModels;
+    const action = `${provider === "codex" ? "cm" : "am"}:${route.modelDigest}`;
+    const matches = [...(values ?? [])].filter((value) => modelCallbackAction(provider, value) === action);
+    if (matches.length === 1) return matches[0];
+    await this.#d.telegram("answerCallbackQuery", {
+      callback_query_id: callback.id,
+      text: "Это меню устарело. Откройте его заново.",
+      show_alert: true,
+    });
+    return null;
   }
 
   async #syncTaskSelection(callback, result) {

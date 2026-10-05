@@ -21,9 +21,11 @@ const DEFAULT_AUDIT_THREADS_PER_RUN = 8;
 const DEFAULT_AUDIT_TURNS_PER_RUN = 20;
 const DEFAULT_AUDIT_TIME_MS = 75;
 const ROLLOUT_CHECKPOINT_BYTES = 128;
-const SNAPSHOT_VERSION = 18;
+// v20 replays retained rollouts through the existing idle, resumable history
+// backfill so newly reported cache-write and request-tier counters reach facts.
+const SNAPSHOT_VERSION = 20;
 const COMPATIBLE_SNAPSHOT_VERSIONS = new Set([
-  4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, SNAPSHOT_VERSION,
+  4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, SNAPSHOT_VERSION,
 ]);
 const HISTORICAL_BACKFILL_STATE_VERSIONS = new Set([SNAPSHOT_VERSION]);
 
@@ -413,7 +415,7 @@ export class CodexTerminalAudit {
           .filter(Boolean)
         : [],
     );
-    this.liveProjectionPending = snapshotVersion === SNAPSHOT_VERSION
+    this.liveProjectionPending = compatibleSnapshot
       && snapshot?.liveProjectionPending === true;
     this.lastRun = snapshotVersion === SNAPSHOT_VERSION && snapshot?.lastRun
       ? structuredClone(snapshot.lastRun)
@@ -594,6 +596,10 @@ export class CodexTerminalAudit {
   }
 
   async #reconcileHistorical(thread, project, terminal, options) {
+    // A completed internal compaction without reported usage is not a turn to
+    // project. Keep this at the reconciliation boundary for every scan mode.
+    if (terminal?.usageResult?.compactionOnly === true
+      && terminal.usageResult.reported !== true) return true;
     return this.reconcile(thread, project, terminal, {
       ...options,
       onProjectionDeferred: () => { this.historicalSubagentBackfill.projectionPending = true; },

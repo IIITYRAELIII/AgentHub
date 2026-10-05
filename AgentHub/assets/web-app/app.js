@@ -495,7 +495,7 @@ if (themeSelect) {
   }));
 }
 const groupings = new Set(JournalView.GROUPINGS);
-const usageUnits = new Set(["$", "rub", "cr", "pte"]);
+const usageUnits = new Set(["$", "rub", "cr", "pte", "qu"]);
 const CREDITS_PER_USD = 25;
 const PTE_PER_CREDIT = 16_000;
 const {
@@ -7355,15 +7355,83 @@ function visibleTurnTraceGroups(groups) {
   ));
 }
 
-function turnTraceGroupsNode(values, { liveStage = "", openGroupIds = [] } = {}) {
+const traceDetailSources = new WeakMap();
+
+function traceReasoningNode(group) {
+  const node = el("div", { class: "turn-trace-reasoning", "data-trace-group-id": group.id });
+  renderMarkdown(node, group.reasoning);
+  traceDetailSources.set(node, group);
+  return node;
+}
+
+function requestTracePage(identity, tracePage) {
+  const boundIdentity = { ...identity, streamId: identity.streamId || currentTask()?.streamId };
+  return new Promise((resolve, reject) => emit("history:trace-page", { identity: boundIdentity, tracePage, resolve, reject }));
+}
+
+function traceArchiveNode(identity) {
+  const content = el("div", { class: "turn-trace-archive-content" });
+  const previous = el("button", { type: "button", text: "Назад", disabled: true });
+  const next = el("button", { type: "button", text: "Далее", disabled: true });
+  const status = el("span", { role: "status" });
+  const details = el("details", { class: "turn-trace-archive" }, [
+    el("summary", { text: "Все этапы" }), content, previous, next, status,
+  ]);
+  let page = null;
+  let pending = false;
+  const offsets = [];
+  async function load(offset, direction = "initial") {
+    if (pending) return;
+    pending = true;
+    previous.disabled = next.disabled = true;
+    status.textContent = "Загрузка…";
+    try {
+      const result = await requestTracePage(identity, {
+        turnId: identity.turnId, offset,
+        ...(page ? { generation: page.generation, sourceSize: page.sourceSize, sourceHash: page.sourceHash } : {}),
+      });
+      if (!details.isConnected) return;
+      if (direction === "next") offsets.push(page.offset);
+      if (direction === "previous") offsets.pop();
+      page = result;
+      content.replaceChildren(...page.groups.map((group) => el("section", {}, [
+        ...(group.reasoning ? [traceReasoningNode(group)] : []),
+        ...group.activities.map(activityItemNode),
+      ])));
+      status.textContent = "";
+    } catch (error) {
+      if (details.isConnected) status.textContent = error.message || "Не удалось прочитать этапы";
+    } finally {
+      pending = false;
+      previous.disabled = !offsets.length;
+      next.disabled = page?.nextOffset == null;
+    }
+  }
+  details.addEventListener("toggle", () => { if (details.open && !page) void load(0); });
+  previous.addEventListener("click", () => void load(offsets.at(-1), "previous"));
+  next.addEventListener("click", () => void load(page.nextOffset, "next"));
+  return details;
+}
+
+function traceOmissionNode(groups, identity = null) {
+  const earlierGroups = Number(groups[0]?.omittedGroupsBefore) || 0;
+  const earlierActivities = groups.reduce(
+    (count, group) => count + (Number(group?.omittedActivities) || 0), 0,
+  );
+  if (!earlierGroups && !earlierActivities) return null;
+  return identity?.provider === "codex" && identity.threadId && identity.turnId
+    ? traceArchiveNode(identity)
+    : el("div", { class: "turn-trace-omission", text: "Показаны последние этапы" });
+}
+
+function turnTraceGroupsNode(values, { liveStage = "", openGroupIds = [], identity = null } = {}) {
   const content = turnTraceContent(values);
   const blocks = content.reasoningBlocks.map((reasoning, index) => {
     const section = el("section", {
       class: "turn-trace-block",
       "data-trace-index": String(index),
     });
-    const reasoningNode = el("div", { class: "turn-trace-reasoning" });
-    renderMarkdown(reasoningNode, reasoning);
+    const reasoningNode = traceReasoningNode(values.filter((group) => String(group.reasoning ?? "").trim())[index]);
     section.append(reasoningNode);
     return section;
   });
@@ -7387,10 +7455,11 @@ function turnTraceGroupsNode(values, { liveStage = "", openGroupIds = [] } = {})
       target.replaceChildren(...content.activities.map(activityItemNode));
     }));
   }
-  return el("div", { class: "turn-trace-groups" }, blocks);
+  const omission = traceOmissionNode(values, identity);
+  return el("div", { class: "turn-trace-groups" }, omission ? [omission, ...blocks] : blocks);
 }
 
-function turnTraceNode(groups) {
+function turnTraceNode(groups, identity = null) {
   const values = visibleTurnTraceGroups(groups);
   if (!values.length) return null;
   const activityCount = values.reduce((total, group) => total + (group.activities?.length ?? 0), 0);
@@ -7399,6 +7468,7 @@ function turnTraceNode(groups) {
     reasoningCount: content.reasoningBlocks.length,
     activityCount,
   });
+  if (traceOmissionNode(values)) summary.label += " · последние";
   const expanded = el("div", {
     class: "turn-trace-groups",
     "data-deferred-disclosure-content": "",
@@ -7408,9 +7478,10 @@ function turnTraceNode(groups) {
     expanded,
   ]);
   return configureDeferredDisclosure(details, expanded, (target) => {
+    const omission = traceOmissionNode(values, identity);
+    if (omission) target.append(omission);
     content.reasoningBlocks.forEach((reasoning, index) => {
-      const reasoningNode = el("div", { class: "turn-trace-reasoning" });
-      renderMarkdown(reasoningNode, reasoning);
+      const reasoningNode = traceReasoningNode(values.filter((group) => String(group.reasoning ?? "").trim())[index]);
       target.append(el("section", {
         class: "turn-trace-block",
         "data-trace-index": String(index),
@@ -7609,7 +7680,7 @@ function renderMessage(message, { readOnly = false, task = currentTask() } = {})
 
   if (maintenance) article.append(body);
   else { article.append(head); if (!readOnly) syncMessageUploadActions(head, message); }
-  const trace = turnTraceNode(message.activityGroups);
+  const trace = turnTraceNode(message.activityGroups, message);
   const activity = trace ? null : activityFeedNode(message.activities);
   if (trace) article.append(trace);
   else if (activity) article.append(activity);
@@ -7831,7 +7902,7 @@ async function focusResponseCitationSource(button) {
   const target = responseCitationSources.get(button);
   const source = normalizedResponseAnnotationSource(target?.source);
   if (!source) return false;
-  const projection = sourceMessageProjection(source);
+  let projection = sourceMessageProjection(source);
   if (!projection) return false;
   const renderedKey = MessageView.messageKey(projection.message, projection.index);
   const rootNode = renderedResponseAnnotationSourceRoot(renderedKey);
@@ -7845,7 +7916,30 @@ async function focusResponseCitationSource(button) {
       syncDeferredDisclosure(details);
     }
   }
-  const surface = responseAnnotationSourceSurface(article, source);
+  let recoveredTraceSurface = null;
+  if (source.traceGroupId && article) {
+    let surface = responseAnnotationSourceSurface(article, source);
+    let group = surface && traceDetailSources.get(surface);
+    const previewContent = group && responseAnnotationSourceContent(
+      { ...projection.message, activityGroups: [group] }, source,
+    );
+    if (!previewContent || await responseAnnotationSha256(previewContent) !== source.contentHash) {
+      try {
+        const page = await requestTracePage(projection.message, { turnId: source.turnId, groupId: source.traceGroupId });
+        if (!article.isConnected) return false;
+        if (page.groups?.length !== 1 || page.groups[0].id !== source.traceGroupId) return false;
+        group = page.groups[0];
+        const candidate = { ...projection.message, activityGroups: [group] };
+        if (await responseAnnotationSha256(responseAnnotationSourceContent(candidate, source)) !== source.contentHash) return false;
+        article.querySelector("[data-citation-trace]")?.remove();
+        recoveredTraceSurface = traceReasoningNode(group);
+        const target = el("section", { "data-citation-trace": "" }, [recoveredTraceSurface]);
+        article.append(target);
+      } catch { return false; }
+    }
+    projection = { ...projection, message: { ...projection.message, activityGroups: [group] } };
+  }
+  const surface = recoveredTraceSurface || responseAnnotationSourceSurface(article, source);
   if (!article || !surface) return false;
   const range = domRangeFromOffsets(surface, source.start, source.end);
   if (!range) return false;
@@ -7968,6 +8062,7 @@ function populateLiveCard(node, live, fallbackAuthor = "Агент", task = curr
     liveTrace.replaceChildren(...(groups.length ? [turnTraceGroupsNode(groups, {
       liveStage: liveStage.detail,
       openGroupIds,
+      identity: liveMessage,
     })] : []));
   });
   liveCardRenderController.reconcile(node, "trace-summary", renderParts.traceSummary, () => {
@@ -9254,7 +9349,9 @@ function sourceMessageForSelection(selection) {
   const index = messages.findIndex((message, messageIndex) => (
     MessageView.messageKey(message, messageIndex) === renderedKey
   ));
-  return index >= 0 ? { message: messages[index], root: renderedRoot } : null;
+  if (index < 0) return null;
+  const group = traceDetailSources.get(selection.surface);
+  return { message: group ? { ...messages[index], activityGroups: [group] } : messages[index], root: renderedRoot };
 }
 
 async function responseAnnotationFromSelection(selection) {
@@ -9266,9 +9363,23 @@ async function responseAnnotationFromSelection(selection) {
   const end = Number(selection?.offsets?.end);
   if (!quote || !projection || !identity || !locator
     || !Number.isSafeInteger(start) || !Number.isSafeInteger(end)) return null;
+  let sourceMessage = projection.message;
+  let sourceSurface = selection.surface;
+  if (locator.traceGroupId && identity.provider === "codex") {
+    // Durable history is a bounded preview, including legacy rows with no
+    // truncation marker. Bind new exact-group quotes to the source, not that copy.
+    const page = await requestTracePage(sourceMessage, { turnId: identity.turnId, groupId: locator.traceGroupId });
+    if (!selection.surface.isConnected || !projection.root.isConnected
+      || page.groups?.length !== 1 || page.groups[0].id !== locator.traceGroupId) return null;
+    sourceMessage = { ...sourceMessage, activityGroups: page.groups };
+    sourceSurface = traceReasoningNode(page.groups[0]);
+    // A cut Markdown construct may render differently. Do not guess a new range.
+    if (!sourceSurface.textContent.startsWith(selection.surface.textContent.trimEnd())
+      || domRangeFromOffsets(sourceSurface, start, end)?.toString().trim() !== quote) return null;
+  }
   const [contentHash, surfaceHash, selectionHash] = await Promise.all([
-    responseAnnotationSha256(responseAnnotationSourceContent(projection.message)),
-    responseAnnotationSha256(selection.surface.textContent),
+    responseAnnotationSha256(responseAnnotationSourceContent(sourceMessage, locator)),
+    responseAnnotationSha256(sourceSurface.textContent),
     responseAnnotationSha256(quote),
   ]);
   const source = normalizedResponseAnnotationSource({
@@ -13114,6 +13225,7 @@ function formatScaledUsage(value, suffix) {
 
 function formatUsageValue(credits, unit = usageUnit) {
   const value = Math.max(0, Number(credits) || 0);
+  if (unit === "qu") return formatScaledUsage(value, "QU");
   if (unit === "$") {
     const dollars = value / CREDITS_PER_USD;
     return `$${spacedNumber(dollars, dollars < 1 ? 2 : 1)}`;
@@ -13127,6 +13239,42 @@ function formatUsageValue(credits, unit = usageUnit) {
   return formatScaledUsage(value, "cr");
 }
 
+function selectedUsagePayload(payload) {
+  if (usageUnit !== "qu" || !payload || typeof payload !== "object") return payload;
+  const selectedDevice = (device) => ({
+    ...device,
+    credits: Number(device?.quotaUnits) || 0,
+    timedCredits: Number(device?.timedQuotaUnits) || 0,
+  });
+  const selectedPoint = (point) => ({
+    ...point,
+    credits: Number(point?.quotaUnits) || 0,
+    tokenCredits: Number(point?.quotaUnits) || 0,
+    timedCredits: Number(point?.timedQuotaUnits) || 0,
+    localCredits: Number(point?.localQuotaUnits) || 0,
+    otherDeviceCredits: Number(point?.otherDeviceQuotaUnits) || 0,
+    devices: (point?.devices ?? []).map(selectedDevice),
+  });
+  return {
+    ...payload,
+    credits: Number(payload.totalQuotaUnits) || 0,
+    totalCredits: Number(payload.totalQuotaUnits) || 0,
+    totalTokenCredits: Number(payload.totalQuotaUnits) || 0,
+    totalTimedCredits: Number(payload.totalTimedQuotaUnits) || 0,
+    timedCredits: Number(payload.totalTimedQuotaUnits) || 0,
+    localCredits: Number(payload.localQuotaUnits) || 0,
+    localTimedCredits: Number(payload.localTimedQuotaUnits) || 0,
+    otherDeviceCredits: Number(payload.otherDeviceQuotaUnits) || 0,
+    otherDeviceTimedCredits: Number(payload.otherDeviceTimedQuotaUnits) || 0,
+    devices: (payload.devices ?? []).map(selectedDevice),
+    points: (payload.points ?? []).map(selectedPoint),
+    reconstruction: payload.reconstruction ? {
+      ...payload.reconstruction,
+      points: (payload.reconstruction.points ?? []).map(selectedPoint),
+    } : undefined,
+  };
+}
+
 function refreshUsageUnits(scope = document) {
   for (const node of scope.querySelectorAll(
     "[data-kilo-usage], [data-mega-usage], [data-high-usage]",
@@ -13136,7 +13284,16 @@ function refreshUsageUnits(scope = document) {
       if (Number.isFinite(credits)) node.dataset.usageCredits = String(credits);
     }
     const credits = Number(node.dataset.usageCredits);
-    if (Number.isFinite(credits)) node.textContent = formatUsageValue(credits);
+    if (usageUnit === "qu") {
+      const quota = Number(node.dataset.usageQu);
+      const incomplete = node.dataset.usageQuIncomplete === "1";
+      node.textContent = node.dataset.usageQu !== undefined
+        ? `${incomplete && quota <= 0 ? "— QU" : formatUsageValue(quota, "qu")}${incomplete ? " · неполно" : ""}`
+        : "— QU";
+    } else if (Number.isFinite(credits)) node.textContent = formatUsageValue(credits);
+  }
+  for (const node of scope.querySelectorAll("[data-usage-percent]")) {
+    node.hidden = usageUnit === "qu";
   }
 }
 
@@ -13712,7 +13869,7 @@ function renderUsageHistoryContent() {
   if (status === "error") {
     usageErrorText.textContent = usageState.error || "Не удалось загрузить учётный расход.";
   }
-  const payload = usageState.payload;
+  const payload = selectedUsagePayload(usageState.payload);
   const rate = usageState.mode === "rate";
   const intensity = usageState.mode === "intensity";
   const burnAnalysis = intensity && payload && !payload.error ? usageBurnRateAnalysis(payload) : null;
@@ -13764,9 +13921,18 @@ function renderUsageHistoryContent() {
           `${device.label} — ${formatUsageValue(device.credits)}`
         )).join("; ")}.`);
       }
-      if (unpriced) notes.push(`Без тарифа и вне суммы: ${unpriced}.`);
+      if (unpriced) notes.push(usageUnit === "qu"
+        ? `Без модели или API-тарифа для токенного QU: ${unpriced}.`
+        : `Без тарифа и вне суммы: ${unpriced}.`);
       if (rate && usageState.rateBasis === "task" && untimed) {
         notes.push(`Без длительности и вне скорости по времени задач: ${untimed}.`);
+      }
+      if (usageUnit === "qu") {
+        const incomplete = Math.max(0, Number(payload.uncalibratedCount) || 0);
+        notes.push(`Калибровка ${payload.quotaCalibrationVersion || "предварительная"}; без подтверждённого QU-коэффициента: ${incomplete} ход(ов).`);
+        if (payload.totalApiEstimateCredits > 0) {
+          notes.push(`Для моделей без эмпирической QU-ставки учтена предварительная оценка по опоре GPT-6 Sol; API-основа: ${formatUsageValue(payload.totalApiEstimateCredits, "cr")}. Это не подтверждённый коэффициент подписочной квоты.`);
+        }
       }
       usageNote.textContent = `${scopeNote} ${notes.join(" ") || "Все показанные ходы тарифицированы и имеют длительность."}`;
     }
@@ -13916,8 +14082,8 @@ function comparisonBuckets(payload, extent) {
     .map((point) => ({
       at: point.at,
       time: Date.parse(point.at),
-      credits: Math.max(0, Number(point.credits) || 0),
-      tokenCredits: Math.max(0, Number(point.tokenCredits ?? point.credits) || 0),
+      credits: Math.max(0, Number(usageUnit === "qu" ? point.quotaUnits : point.credits) || 0),
+      tokenCredits: Math.max(0, Number(usageUnit === "qu" ? point.quotaUnits : point.tokenCredits ?? point.credits) || 0),
     }))
     .filter((point) => Number.isFinite(point.time))
     .sort((left, right) => left.time - right.time);
@@ -13964,8 +14130,8 @@ function comparisonReconstructionBuckets(payload, extent) {
     return {
       start,
       end: start + step,
-      credits: Math.max(0, Number(point?.credits) || 0),
-      tokenCredits: Math.max(0, Number(point?.tokenCredits ?? point?.credits) || 0),
+      credits: Math.max(0, Number(usageUnit === "qu" ? point?.quotaUnits : point?.credits) || 0),
+      tokenCredits: Math.max(0, Number(usageUnit === "qu" ? point?.quotaUnits : point?.tokenCredits ?? point?.credits) || 0),
     };
   }).filter((bucket) => (
     Number.isFinite(bucket.start)
@@ -14102,7 +14268,7 @@ function correlationStrength(value) {
 function comparisonTooltipText(info) {
   if (info.detail) return `${info.name}. ${formatLimitsDateTime(info.at)}: ${info.detail}`;
   if (info.kind === "cost") {
-    return `${info.name}. ${formatLimitsDateTime(info.at)}: ${formatComparisonNumber(info.raw, 2)} п.п./kcr`;
+    return `${info.name}. ${formatLimitsDateTime(info.at)}: ${formatComparisonNumber(info.raw, 2)} п.п./${usageUnit === "qu" ? "kQU" : "kcr"}`;
   }
   const value = `${Math.round(info.value)}% пика`;
   const raw = info.kind === "local"
@@ -14230,7 +14396,7 @@ function buildUsageComparisonChart(model) {
     y: padT - 3,
     class: "limits-axis-label limits-axis-y comparison-cost-axis",
     "text-anchor": "end",
-  }, ["п.п./kcr"]));
+  }, [`п.п./${usageUnit === "qu" ? "kQU" : "kcr"}`]));
   const dayMs = 24 * 60 * 60_000;
   if (span > dayMs * 1.5) {
     const first = new Date(model.extent.from);
@@ -14322,7 +14488,7 @@ function buildUsageComparisonChart(model) {
       Number.isFinite(model.deviation) ? `${formatComparisonNumber(model.deviation, 1, true)} процентного пункта` : "не рассчитано"
     }; средняя цена ${
       Number.isFinite(model.price.overall?.value)
-        ? `${formatComparisonNumber(model.price.overall.value, 2)} процентного пункта на kcr`
+        ? `${formatComparisonNumber(model.price.overall.value, 2)} процентного пункта на ${usageUnit === "qu" ? "kQU" : "kcr"}`
         : "не рассчитана"
     }; расчётный недельный лимит ${
       Number.isFinite(model.price.weeklyCredits)
@@ -14338,7 +14504,7 @@ function buildUsageComparisonChart(model) {
 }
 
 function comparisonUsageUnitLabel() {
-  return usageUnit === "pte" ? "ПТЭ" : usageUnit === "rub" ? "₽" : usageUnit;
+  return usageUnit === "pte" ? "ПТЭ" : usageUnit === "rub" ? "₽" : usageUnit === "qu" ? "QU" : usageUnit;
 }
 
 function comparisonNumericAxisMax(values) {
@@ -14694,7 +14860,7 @@ function comparisonSeriesPicker(model) {
 
 function comparisonPriceText(price) {
   if (!Number.isFinite(price?.overall?.value)) return "недостаточно данных";
-  const average = `${formatComparisonNumber(price.overall.value, 2)} п.п./kcr в среднем`;
+  const average = `${formatComparisonNumber(price.overall.value, 2)} п.п./${usageUnit === "qu" ? "kQU" : "kcr"} в среднем`;
   if (!Number.isFinite(price?.early?.value) || !Number.isFinite(price?.late?.value)) return average;
   const change = Number.isFinite(price.changePercent)
     ? ` · ${formatComparisonNumber(price.changePercent, 0, true)}%`
@@ -14728,7 +14894,7 @@ function renderComparisonSummary(model) {
     : "—";
   const deviation = Number.isFinite(model?.deviation) ? `${formatComparisonNumber(model.deviation, 1, true)} п.п.` : "—";
   const averagePrice = Number.isFinite(model?.price?.overall?.value)
-    ? `${formatComparisonNumber(model.price.overall.value, 2)} п.п./kcr`
+    ? `${formatComparisonNumber(model.price.overall.value, 2)} п.п./${usageUnit === "qu" ? "kQU" : "kcr"}`
     : "—";
   const weeklyLimit = Number.isFinite(model?.price?.weeklyCredits)
     ? `≈ ${formatUsageValue(model.price.weeklyCredits)}/нед.`
@@ -15219,13 +15385,20 @@ function formatTaskDuration(value) {
 /* Тот же цветовой код, что в журнале по датам: cr — «kilo», kcr — «mega»,
    всё крупнее — «high». Разметка совпадает, поэтому бейдж выглядит одинаково
    в обоих режимах. */
-function usageBadge(text, credits = Number.NaN) {
+function usageBadge(text, credits = Number.NaN, quotaUnits = Number.NaN, incomplete = false) {
   const unit = /\b(Gcr|Mcr|kcr|cr)$/u.exec(String(text))?.[1] ?? "cr";
   const level = unit === "cr" ? "kilo" : unit === "kcr" ? "mega" : "high";
   const badge = document.createElement("span");
   badge.setAttribute(`data-${level}-usage`, "");
   if (Number.isFinite(Number(credits))) badge.dataset.usageCredits = String(Number(credits));
-  badge.textContent = text;
+  if (quotaUnits !== null && Number.isFinite(Number(quotaUnits))) {
+    badge.dataset.usageQu = String(Number(quotaUnits));
+    if (incomplete) badge.dataset.usageQuIncomplete = "1";
+  }
+  badge.textContent = usageUnit === "qu"
+    ? quotaUnits === null || !Number.isFinite(Number(quotaUnits)) ? "— QU"
+      : `${incomplete && Number(quotaUnits) <= 0 ? "— QU" : formatUsageValue(quotaUnits, "qu")}${incomplete ? " · неполно" : ""}`
+    : text;
   return badge;
 }
 
@@ -15265,7 +15438,15 @@ function groupedTurn(entry, date) {
     const cost = document.createElement("span");
     cost.dataset.journalTurnCost = "";
     const credits = JournalView.turnDisplayCredits(copy.dataset);
-    if (credits !== null) cost.append(usageBadge(formatUsageValue(credits), credits));
+    const quotaEntries = [copy, ...copy.querySelectorAll("[data-work-log-turn-entry]")];
+    const quotaKnown = quotaEntries.every((node) => node.dataset.workLogTurnQuotaUnits !== undefined);
+    const quotaUnits = quotaKnown ? quotaEntries.reduce((sum, node) => (
+      sum + Math.max(0, Number(node.dataset.workLogTurnQuotaUnits) || 0)
+    ), 0) : null;
+    const quotaIncomplete = quotaEntries.some((node) => (
+      node.dataset.workLogTurnQuotaIncomplete === "1"
+    )) || !quotaKnown;
+    if (credits !== null) cost.append(usageBadge(formatUsageValue(credits), credits, quotaUnits, quotaIncomplete));
     else cost.textContent = "—";
     const share = copy.querySelector("[data-work-log-turn-share]")?.cloneNode(true);
     meta.replaceChildren(when, cost, ...(share ? [share] : []));
@@ -15357,13 +15538,23 @@ function decorateLegacyStreamTurns(scope = journal) {
 function creditsFromEntries(entries) {
   let total = 0;
   let known = 0;
+  let quotaUnits = 0;
+  let quotaKnown = 0;
+  let quotaIncomplete = false;
   for (const entry of entries) {
+    const quotaValue = entry.dataset.workLogTurnQuotaUnits;
+    const quota = quotaValue === undefined ? Number.NaN : Number(quotaValue);
+    if (Number.isFinite(quota) && quota >= 0) {
+      quotaUnits += quota;
+      quotaKnown += 1;
+    } else quotaIncomplete = true;
+    if (entry.dataset.workLogTurnQuotaIncomplete === "1") quotaIncomplete = true;
     const value = Number(entry.dataset.workLogTurnCredits);
     if (!Number.isFinite(value) || value < 0) continue;
     total += value;
     known += 1;
   }
-  return { total, known };
+  return { total, known, quotaUnits: quotaKnown ? quotaUnits : null, quotaIncomplete };
 }
 
 function replaceCollapsedTurnList(list, entries) {
@@ -15450,7 +15641,8 @@ function groupClaudeRowsInDay(day) {
       summary.append(
         el("span", { "data-usage-label": "", text: "Итого" }),
         " ",
-        usageBadge(formatUsageValue(totals.total), totals.total),
+        usageBadge(formatUsageValue(totals.total), totals.total,
+          totals.quotaUnits, totals.quotaIncomplete),
       );
       details.append(summary);
       const collapse = document.createElement("button");
@@ -15887,6 +16079,10 @@ function taskGroupsFrom(source, { workspace = null, hierarchy = "" } = {}) {
           credits: 0,
           knownCredits: 0,
           unknownCredits: 0,
+          quotaUnits: 0,
+          knownQuotaUnits: 0,
+          unknownQuotaUnits: 0,
+          uncalibratedCount: 0,
           latestAt: 0,
           fileTouches: 0,
           knownFileTouches: 0,
@@ -15936,6 +16132,15 @@ function taskGroupsFrom(source, { workspace = null, hierarchy = "" } = {}) {
           } else {
             group.unknownCredits += 1;
           }
+          const quotaValue = entry.dataset.workLogTurnQuotaUnits;
+          const quota = quotaValue === undefined ? Number.NaN : Number(quotaValue);
+          if (Number.isFinite(quota) && quota >= 0) {
+            group.quotaUnits += quota;
+            group.knownQuotaUnits += 1;
+          } else {
+            group.unknownQuotaUnits += 1;
+          }
+          if (entry.dataset.workLogTurnQuotaIncomplete === "1") group.uncalibratedCount += 1;
         }
         const completedAt = Date.parse(entry.dataset.workLogTurnCompletedAt ?? "");
         if (Number.isFinite(completedAt)) group.latestAt = Math.max(group.latestAt, completedAt);
@@ -15992,6 +16197,7 @@ function taskGroupsFrom(source, { workspace = null, hierarchy = "" } = {}) {
       ...group,
       turnCount: group.turnCount,
       credits: group.knownCredits ? group.credits : null,
+      quotaUnits: group.knownQuotaUnits ? group.quotaUnits : null,
       durationSeconds: group.knownDurations ? group.durationSeconds : null,
       fileTouches: group.knownFileTouches ? group.fileTouches : null,
       changedLines: group.knownChangedLines ? group.changedLines : null,
@@ -16041,6 +16247,7 @@ function combinedJournalGroup(groups, { provider = "period", threadId = "period"
       - (Date.parse(left.dataset.workLogTurnCompletedAt ?? "") || 0)
   ));
   const knownCredits = values.reduce((sum, group) => sum + (Number(group.knownCredits) || 0), 0);
+  const knownQuotaUnits = values.reduce((sum, group) => sum + (Number(group.knownQuotaUnits) || 0), 0);
   const knownDurations = values.reduce((sum, group) => sum + (Number(group.knownDurations) || 0), 0);
   const knownFileTouches = values.reduce((sum, group) => sum + (Number(group.knownFileTouches) || 0), 0);
   const knownChangedLines = values.reduce((sum, group) => sum + (Number(group.knownChangedLines) || 0), 0);
@@ -16058,6 +16265,12 @@ function combinedJournalGroup(groups, { provider = "period", threadId = "period"
       : null,
     knownCredits,
     unknownCredits: values.reduce((sum, group) => sum + (Number(group.unknownCredits) || 0), 0),
+    quotaUnits: knownQuotaUnits
+      ? values.reduce((sum, group) => sum + (Number(group.quotaUnits) || 0), 0)
+      : null,
+    knownQuotaUnits,
+    unknownQuotaUnits: values.reduce((sum, group) => sum + (Number(group.unknownQuotaUnits) || 0), 0),
+    uncalibratedCount: values.reduce((sum, group) => sum + (Number(group.uncalibratedCount) || 0), 0),
     durationSeconds: knownDurations
       ? values.reduce((sum, group) => sum + (Number(group.durationSeconds) || 0), 0)
       : null,
@@ -16131,7 +16344,8 @@ function journalLedgerSummary(group, { label = "", showStreams = true } = {}) {
     text: group.lazy ? "—" : String(Math.max(0, Number(group.turnCount) || 0)),
   });
   const credits = el("span", { "data-journal-ledger-metric": "credits" });
-  if (group.knownCredits) credits.append(usageBadge(formatUsageValue(group.credits), group.credits));
+  if (group.knownCredits) credits.append(usageBadge(formatUsageValue(group.credits),
+    group.credits, group.quotaUnits, group.uncalibratedCount > 0 || group.unknownQuotaUnits > 0));
   else credits.textContent = "—";
   const duration = el("span", {
     "data-journal-ledger-metric": "duration",
@@ -16246,10 +16460,13 @@ function dayGroupingContent(source) {
       const creditsValue = sourceSummary?.querySelector(
         "[data-day-usage] [data-usage-credits]",
       )?.dataset.usageCredits;
+      const quotaNode = sourceSummary?.querySelector("[data-day-usage] [data-usage-qu]");
+      const quotaValue = quotaNode?.dataset.usageQu;
       const durationValue = sourceSummary?.querySelector(
         "[data-work-log-day-duration]",
       )?.dataset.workLogDurationSeconds;
       const credits = Number(creditsValue);
+      const quotaUnits = quotaValue === undefined ? Number.NaN : Number(quotaValue);
       const durationSeconds = Number(durationValue);
       const total = {
         provider: "day",
@@ -16258,6 +16475,10 @@ function dayGroupingContent(source) {
         credits: Number.isFinite(credits) ? credits : null,
         knownCredits: Number.isFinite(credits) ? 1 : 0,
         unknownCredits: 0,
+        quotaUnits: Number.isFinite(quotaUnits) ? quotaUnits : null,
+        knownQuotaUnits: Number.isFinite(quotaUnits) ? 1 : 0,
+        unknownQuotaUnits: Number.isFinite(quotaUnits) ? 0 : 1,
+        uncalibratedCount: quotaNode?.dataset.usageQuIncomplete === "1" ? 1 : 0,
         durationSeconds: Number.isFinite(durationSeconds) ? durationSeconds : null,
         knownDurations: Number.isFinite(durationSeconds) ? 1 : 0,
         lazy: true,
@@ -16325,7 +16546,8 @@ function dayGroupingContent(source) {
       if (group.title) title.append(group.title.cloneNode(true));
       else title.textContent = `${group.provider} · ${group.threadId}`;
       const credits = el("span", { "data-journal-day-picker-credits": "" });
-      if (group.knownCredits) credits.append(usageBadge(formatUsageValue(group.credits), group.credits));
+      if (group.knownCredits) credits.append(usageBadge(formatUsageValue(group.credits),
+        group.credits, group.quotaUnits, group.uncalibratedCount > 0 || group.unknownQuotaUnits > 0));
       else credits.textContent = "—";
       const turns = el("span", {
         "data-journal-day-picker-turns": "",
@@ -16395,6 +16617,9 @@ function summarizedLazyDays(source) {
   );
   if (!lazyDays.length || state.selection.includeClaudeUsage === false) return null;
   let credits = 0;
+  let quotaUnits = 0;
+  let quotaKnown = 0;
+  let quotaIncomplete = false;
   let durationSeconds = 0;
   let knownCredits = 0;
   let knownDurations = 0;
@@ -16403,6 +16628,9 @@ function summarizedLazyDays(source) {
     const creditValue = Number(summary?.querySelector(
       "[data-day-usage] [data-usage-credits]",
     )?.dataset.usageCredits);
+    const quotaNode = summary?.querySelector("[data-day-usage] [data-usage-qu]");
+    const quotaValue = quotaNode?.dataset.usageQu;
+    const quota = quotaValue === undefined ? Number.NaN : Number(quotaValue);
     const durationValue = Number(summary?.querySelector(
       "[data-work-log-day-duration]",
     )?.dataset.workLogDurationSeconds);
@@ -16410,12 +16638,18 @@ function summarizedLazyDays(source) {
       credits += creditValue;
       knownCredits += 1;
     }
+    if (Number.isFinite(quota)) {
+      quotaUnits += quota;
+      quotaKnown += 1;
+    } else quotaIncomplete = true;
+    if (quotaNode?.dataset.usageQuIncomplete === "1") quotaIncomplete = true;
     if (Number.isFinite(durationValue)) {
       durationSeconds += durationValue;
       knownDurations += 1;
     }
   }
-  return { credits, durationSeconds, knownCredits, knownDurations };
+  return { credits, quotaUnits: quotaKnown ? quotaUnits : null, quotaIncomplete,
+    durationSeconds, knownCredits, knownDurations };
 }
 
 function updateJournalStreamCount() {
@@ -16431,7 +16665,8 @@ function updateJournalSummary(source) {
     if (journalTotalCredits) {
       journalTotalCredits.replaceChildren(
         lazyTotals.knownCredits
-          ? usageBadge(formatUsageValue(lazyTotals.credits), lazyTotals.credits)
+          ? usageBadge(formatUsageValue(lazyTotals.credits), lazyTotals.credits,
+            lazyTotals.quotaUnits, lazyTotals.quotaIncomplete)
           : document.createTextNode("—"),
       );
     }
@@ -16448,7 +16683,8 @@ function updateJournalSummary(source) {
   if (journalTotalCredits) {
     journalTotalCredits.replaceChildren(
       totals.knownCredits
-        ? usageBadge(formatUsageValue(totals.credits), totals.credits)
+        ? usageBadge(formatUsageValue(totals.credits), totals.credits,
+          totals.quotaUnits, totals.uncalibratedCount > 0 || totals.unknownQuotaUnits > 0)
         : document.createTextNode("—"),
     );
   }
@@ -16531,13 +16767,20 @@ function decorateAccountPanel(scope = journal) {
   }
   for (const value of panel.querySelectorAll("[data-work-log-account-period-value]")) {
     const credits = Number(value.dataset.accountCredits);
+    const incomplete = usageUnit === "qu" && value.dataset.accountQuIncomplete === "1";
+    const selected = usageUnit === "qu" ? Number(value.dataset.accountQu) : credits;
     const { amount, unit } = JournalAccountPanel.splitUsageAmount(
-      Number.isFinite(credits) ? formatUsageValue(credits) : "",
+      Number.isFinite(selected)
+        ? incomplete && selected <= 0 ? "— QU" : formatUsageValue(selected)
+        : "",
     );
     const amountNode = value.querySelector("[data-work-log-account-period-amount]");
     const unitNode = value.querySelector("[data-work-log-account-period-unit]");
     if (amountNode) amountNode.textContent = amount;
     if (unitNode) unitNode.textContent = unit;
+  }
+  for (const node of panel.querySelectorAll("[data-work-log-account-share], [data-work-log-account-bar]")) {
+    node.hidden = usageUnit === "qu";
   }
   applyAccountPanelState(panel);
 }
@@ -16606,9 +16849,13 @@ function virtualUsageShare(value, total, known = true) {
 function virtualStreamUsage(stream, workspace) {
   const usage = document.createElement("span");
   usage.dataset.workLogStreamUsage = "";
-  const creditShare = stream.knownCredits
-    ? virtualUsageShare(stream.credits, workspace.credits, workspace.knownCredits)
-    : "";
+  const quotaComplete = stream.knownQuotaUnits && workspace.knownQuotaUnits
+    && !stream.uncalibratedCount && !workspace.uncalibratedCount
+    && !stream.unknownQuotaUnits && !workspace.unknownQuotaUnits;
+  const creditShare = usageUnit === "qu"
+    ? quotaComplete ? virtualUsageShare(stream.quotaUnits, workspace.quotaUnits) : ""
+    : stream.knownCredits
+      ? virtualUsageShare(stream.credits, workspace.credits, workspace.knownCredits) : "";
   usage.append(
     stream.knownDurations
       ? el("span", {
@@ -16622,7 +16869,8 @@ function virtualStreamUsage(stream, workspace) {
       : el("span", { "data-work-log-stream-duration": "", text: "время —" }),
     stream.knownCredits
       ? el("span", { "data-work-log-stream-credits": "" }, [
-        usageBadge(formatUsageValue(stream.credits), stream.credits),
+        usageBadge(formatUsageValue(stream.credits), stream.credits,
+          stream.quotaUnits, stream.uncalibratedCount > 0 || stream.unknownQuotaUnits > 0),
       ])
       : el("span", { text: "расход —" }),
     el("span", { "data-work-log-stream-credit-share": "", text: creditShare }),
@@ -16739,10 +16987,16 @@ function virtualTemporalContent(scope) {
     const credits = el("span", { "data-journal-day-picker-credits": "" });
     if (workspace.knownCredits) {
       credits.append(
-        usageBadge(formatUsageValue(workspace.credits), workspace.credits),
+        usageBadge(formatUsageValue(workspace.credits), workspace.credits,
+          workspace.quotaUnits, workspace.uncalibratedCount > 0 || workspace.unknownQuotaUnits > 0),
         el("span", {
           "data-journal-day-picker-share": "",
-          text: virtualUsageShare(workspace.credits, scope.credits, scope.knownCredits),
+          text: usageUnit === "qu"
+            ? workspace.knownQuotaUnits && scope.knownQuotaUnits
+              && !workspace.uncalibratedCount && !scope.uncalibratedCount
+              && !workspace.unknownQuotaUnits && !scope.unknownQuotaUnits
+                ? virtualUsageShare(workspace.quotaUnits, scope.quotaUnits) : ""
+            : virtualUsageShare(workspace.credits, scope.credits, scope.knownCredits),
         }),
       );
     } else {
@@ -16931,7 +17185,8 @@ function updateVirtualJournalSummary() {
   if (journalTotalCredits) {
     journalTotalCredits.replaceChildren(
       totals.knownCredits
-        ? usageBadge(formatUsageValue(totals.credits), totals.credits)
+        ? usageBadge(formatUsageValue(totals.credits), totals.credits,
+          totals.quotaUnits, totals.uncalibratedCount > 0 || totals.unknownQuotaUnits > 0)
         : document.createTextNode("—"),
     );
   }

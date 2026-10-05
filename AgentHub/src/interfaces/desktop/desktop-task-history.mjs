@@ -407,6 +407,15 @@ export function createDesktopTaskHistoryFactory({
     return [...turns.values()].map((turn) => structuredClone(turn));
   }
 
+  function readCachedTurn(cache, key, id) {
+    const turns = cache.get(key);
+    if (!turns) return null;
+    cache.delete(key);
+    cache.set(key, turns);
+    const turn = turns.get(id);
+    return turn ? structuredClone(turn) : null;
+  }
+
   function cacheHistory(cache, key, history, { replace = false } = {}) {
     const turns = replace ? new Map() : new Map(cache.get(key) ?? []);
     for (const turn of Array.isArray(history) ? history : []) {
@@ -510,6 +519,13 @@ export function createDesktopTaskHistoryFactory({
       chatId: binding.chatId,
     })) : [binding];
     const historySources = new Map();
+    if (params.tracePage) {
+      const source = threadBindings.find((thread) => thread.provider === provider
+        && thread.threadId === selectedThreadId);
+      if (!source) throw new Error("Trace Thread does not belong to the Stream");
+      return { provider, threadId: selectedThreadId,
+        tracePage: await historyReader.refresh(source, { tracePage: params.tracePage }) };
+    }
     const history = [];
     let sourceRefreshFailed = false;
     const currentThreadBinding = threadBindings.find((threadBinding) => (
@@ -533,24 +549,17 @@ export function createDesktopTaskHistoryFactory({
       })
       : null;
     if (pagedHistory) {
-      const cachedByKey = new Map();
-      for (const threadBinding of threadBindings) {
-        const key = `${threadBinding.provider}:${threadBinding.threadId}`;
-        cachedByKey.set(key, {
-          provider: readCachedHistory(providerHistories, key),
-          hydrated: readCachedHistory(hydratedHistories, key),
-        });
-      }
       for (const source of pagedHistory.items) {
         const key = `${source.provider}:${source.threadId}`;
-        const cached = cachedByKey.get(key) ?? { provider: [], hydrated: [] };
         const id = String(source.turn?.id ?? "").trim();
+        const providerTurn = readCachedTurn(providerHistories, key, id);
+        const hydratedTurn = readCachedTurn(hydratedHistories, key, id);
         let item = mergeCachedTaskHistory(
-          cached.provider.filter((turn) => String(turn?.id ?? "").trim() === id),
+          providerTurn ? [providerTurn] : [],
           [source.turn],
         )[0];
         item = mergeCachedTaskHistory(
-          cached.hydrated.filter((turn) => String(turn?.id ?? "").trim() === id),
+          hydratedTurn ? [hydratedTurn] : [],
           [item],
         )[0];
         if (!visibleProviderHistory(source.provider, [item]).length) continue;

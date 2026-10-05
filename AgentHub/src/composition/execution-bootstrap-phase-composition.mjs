@@ -233,6 +233,8 @@ export function createExecutionBootstrapPhase({
       menuCommands: settings.menuCommands,
       botMenu: settings.botMenu,
       projects: settings.projects,
+      codexModels: settings.codexModels,
+      claudeModels: settings.claudeModels,
       reasoningLabels: settings.codexReasoningLabels,
       collaborationModeLabels: settings.codexCollaborationModeLabels,
       claudeModelLabels: settings.claudeModelLabels,

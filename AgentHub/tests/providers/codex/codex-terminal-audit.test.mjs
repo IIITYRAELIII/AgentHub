@@ -203,7 +203,7 @@ test("terminal audit resumes byte positions after a long server outage", async (
     reconcile: async (_thread, _project, terminal) => recovered.push(terminal.turnId),
   });
   audit.restore({
-    version: 18,
+    version: 20,
     completedThrough: "2026-07-27T04:00:00.000Z",
     positions: [["thread-1", { path: "rollout.jsonl", offset: 100 }]],
   });
@@ -245,7 +245,7 @@ test("terminal audit reuses persisted usage state and passes exact usage to reco
     reconcile: async (_thread, _project, terminal) => reconciled.push(terminal),
   });
   audit.restore({
-    version: 18,
+    version: 20,
     completedThrough: "2026-08-30T03:58:00.000Z",
     positions: [["thread-indexed", {
       path: "indexed.jsonl",
@@ -281,7 +281,7 @@ test("terminal audit resets its offset when a rollout file is replaced", async (
     reconcile: async () => true,
   });
   audit.restore({
-    version: 18,
+    version: 20,
     completedThrough: "2026-08-30T03:58:00.000Z",
     positions: [["thread-replaced", {
       path: "replaced.jsonl",
@@ -339,7 +339,7 @@ test("terminal audit follows every thread-list page newer than its cursor", asyn
     reconcile: async (_thread, _project, terminal) => reconciled.push(terminal.turnId),
   });
   audit.restore({
-    version: 18,
+    version: 20,
     completedThrough: "2026-07-27T04:00:00.000Z",
     positions: [],
   });
@@ -378,7 +378,7 @@ test("terminal audit does not advance its cursor past a deferred terminal", asyn
     reconcile: async () => false,
   });
   audit.restore({
-    version: 18,
+    version: 20,
     completedThrough: "2026-07-27T04:00:00.000Z",
     positions: [["thread-1", { path: "thread-1.jsonl", offset: 10 }]],
   });
@@ -428,7 +428,7 @@ test("terminal audit advances through an active rollout and reads its later term
     reconcile: async (_thread, _project, terminal) => recovered.push(terminal.turnId),
   });
   audit.restore({
-    version: 18,
+    version: 20,
     completedThrough: "2026-07-27T04:00:00.000Z",
     positions: [["thread-active", { path: "active.jsonl", offset: 50 }]],
   });
@@ -576,7 +576,7 @@ test("terminal audit bounds persisted per-thread positions", () => {
     maxPositions: 100,
   });
   audit.restore({
-    version: 18,
+    version: 20,
     positions: Array.from({ length: 120 }, (_, index) => [
       `thread-${index}`,
       { path: `thread-${index}.jsonl`, offset: index },
@@ -618,7 +618,7 @@ test("terminal audit uses rollout mtime when thread updatedAt stays at creation 
     reconcile: async (_thread, _project, terminal) => recovered.push(terminal.turnId),
   });
   audit.restore({
-    version: 18,
+    version: 20,
     completedThrough: "2026-08-01T13:33:00.000Z",
     positions: [],
   });
@@ -658,7 +658,7 @@ test("terminal audit discovers a new subagent rollout omitted by thread/list", a
     reconcile: async (_thread, _project, terminal) => recovered.push(terminal.turnId),
   });
   audit.restore({
-    version: 18,
+    version: 20,
     completedThrough: "2026-08-04T02:59:00.000Z",
     positions: [],
     pendingTurns: [],
@@ -739,7 +739,7 @@ test("terminal audit migrates v7 and imports an external parent with four subage
   );
   assert.ok(recovered.every((value) => value.project === project));
   assert.ok(recovered.every((value) => value.turnId.startsWith("turn-")));
-  assert.equal(audit.snapshot().version, 18);
+  assert.equal(audit.snapshot().version, 20);
   assert.equal(audit.snapshot().historicalSubagentBackfill.pending, false);
   assert.equal(audit.snapshot().historicalSubagentBackfill.completedFiles, 5);
 });
@@ -785,7 +785,7 @@ test("terminal audit retains pending subagent backfill across restart", async ()
     reconcile: async (_thread, _project, terminal) => recovered.push(terminal.turnId),
   });
   audit.restore({
-    version: 18,
+    version: 20,
     subagentBackfillPending: true,
     completedThrough: "2026-08-01T13:30:00.000Z",
     positions: [["old-parent", { path: "parent.jsonl", offset: 500 }]],
@@ -1090,7 +1090,7 @@ test("terminal audit reruns v11 historical reconciliation once after preparing a
   assert.deepEqual(preparations, ["prepared"]);
   assert.deepEqual(scans, ["previously-completed.jsonl"]);
   const checkpoint = audit.snapshot();
-  assert.equal(checkpoint.version, 18);
+  assert.equal(checkpoint.version, 20);
   assert.equal(checkpoint.historicalSubagentBackfill.pending, false);
   assert.equal(checkpoint.historicalSubagentBackfill.prepared, true);
   assert.equal(
@@ -1103,6 +1103,47 @@ test("terminal audit reruns v11 historical reconciliation once after preparing a
   await restored.run();
   assert.deepEqual(preparations, ["prepared"]);
   assert.deepEqual(scans, ["previously-completed.jsonl"]);
+});
+
+test("v19 cache-write upgrade replays retained rollouts once without losing live positions", async () => {
+  const reconciled = [];
+  const preparations = [];
+  const source = thread("cache-write-history", "2026-08-01T00:00:00.000Z", "cache-write.jsonl");
+  const options = {
+    listPage: async () => ({ data: [], nextCursor: null }),
+    discoverHistoricalThreads: async () => [source],
+    resolveProject: () => project,
+    statFile: async () => ({ size: 10, mtimeMs: Date.parse("2026-08-01T00:00:00.000Z") }),
+    scanHistoricalFile: async () => ({ turns: [{
+      turnId: "cached-turn", terminal: true, status: "completed",
+      completedAt: "2026-08-01T00:01:00.000Z",
+      usage: { inputTokens: 300_000, cacheWriteInputTokens: 50_000 },
+    }] }),
+    prepareHistoricalBackfill: async () => { preparations.push("prepared"); return {}; },
+    reconcile: async (_thread, _project, terminal) => {
+      reconciled.push(terminal.usageResult.usage.cacheWriteInputTokens);
+      return true;
+    },
+  };
+  const audit = new CodexTerminalAudit(options);
+  audit.restore({ version: 19, completedThrough: "2026-08-03T11:58:00.000Z",
+    positions: [[source.id, { path: source.path, offset: 10 }]],
+    liveProjectionPending: true,
+    historicalSubagentBackfill: { pending: false, initialized: true, queue: [] },
+  });
+  assert.equal(audit.snapshot().historicalSubagentBackfill.pending, true);
+  assert.equal(audit.snapshot().liveProjectionPending, true);
+  assert.deepEqual(audit.snapshot().positions, [[source.id, { path: source.path, offset: 10 }]]);
+  await audit.run();
+  assert.deepEqual(preparations, ["prepared"]);
+  assert.deepEqual(reconciled, [50_000]);
+  const checkpoint = audit.snapshot();
+  assert.equal(checkpoint.version, 20);
+  assert.equal(checkpoint.historicalSubagentBackfill.pending, false);
+  const restarted = new CodexTerminalAudit(options);
+  restarted.restore(checkpoint);
+  await restarted.run();
+  assert.deepEqual(reconciled, [50_000]);
 });
 
 test("historical rollout backfill yields while interactive work is active", async () => {
@@ -1171,7 +1212,7 @@ test("historical rollout backfill pauses inside a scanned file and resumes at th
     },
   });
   audit.restore({
-    version: 18,
+    version: 20,
     completedThrough: "2026-08-03T11:58:00.000Z",
     historicalSubagentBackfill: { pending: true, initialized: false },
   });
@@ -1346,7 +1387,7 @@ test("terminal audit isolates a missing pending rollout from unrelated completed
     reconcile: async (_thread, _project, terminal) => recovered.push(terminal.turnId),
   });
   audit.restore({
-    version: 18,
+    version: 20,
     completedThrough: "2026-08-02T09:50:00.000Z",
     pendingTurns: [["missing", {
       thread: thread("missing", "2026-08-02T09:55:00.000Z", "missing.jsonl"),
@@ -2098,6 +2139,6 @@ test("terminal audit checkpoints historical maintenance before live discovery", 
     "persist",
     "live-discovery",
   ]);
-  assert.equal(audit.snapshot().version, 18);
+  assert.equal(audit.snapshot().version, 20);
   assert.equal(audit.snapshot().historicalSubagentBackfill.pending, false);
 });

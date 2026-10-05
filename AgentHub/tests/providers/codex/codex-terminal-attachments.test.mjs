@@ -407,7 +407,7 @@ test("late verified nested exec outputs enrich the exact delivered terminal and 
   }).get(identity);
   const durableAttachments = afterFirst.payload.completion.responseAttachments;
 
-  assert.equal(firstHook.payload.imageGenerationCount, 0);
+  assert.equal(firstHook.payload.imageGenerationCount, 3);
   assert.equal(firstHook.payload.generatedImageSources.length, 3);
   assert.equal(JSON.stringify(firstHook.payload).includes("base64"), false);
   assert.deepEqual(secondHook.payload.generatedImageSources, firstHook.payload.generatedImageSources);

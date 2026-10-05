@@ -3,7 +3,8 @@ import test from "node:test";
 
 import { createProviderStartupComposition } from "../../src/composition/provider-startup-composition.mjs";
 
-function fixture(config = {}) {
+function fixture(config = {}, refreshCodexModels = async () => {},
+  refreshClaudeModels = async () => {}, startCodex = async () => {}) {
   const calls = [];
   const service = createProviderStartupComposition({
     config: {
@@ -21,9 +22,11 @@ function fixture(config = {}) {
     getProjectRoot: () => "D:/contour",
     getThreadId: () => null,
     isCodex: () => true,
-    startCodex: async () => calls.push(["start"]),
+    startCodex: async () => { calls.push(["start"]); await startCodex(); },
     initializeCodex: async (options) => calls.push(["initialize", options]),
     sendRpc: async () => ({}),
+    refreshCodexModels,
+    refreshClaudeModels,
     resolveResumedCodexThreadTitle: async () => "Thread",
     applyCodexThreadSettings() {},
     saveState: async () => {},
@@ -40,4 +43,31 @@ test("provider startup can skip the empty Telegram bootstrap Thread", async () =
     ["start"],
     ["initialize", { attachSelectedThread: false }],
   ]);
+});
+
+test("provider startup begins model discovery without waiting for it", async () => {
+  let releaseDiscovery;
+  const discovery = new Promise((resolve) => { releaseDiscovery = resolve; });
+  const { service, calls } = fixture({}, async () => {
+    calls.push(["codex-discover"]);
+    await discovery;
+  }, async () => calls.push(["claude-discover"]));
+
+  await service.initializeProvider();
+  assert.deepEqual(calls, [
+    ["start"],
+    ["claude-discover"],
+    ["initialize", { attachSelectedThread: false }],
+    ["create", "codex", "createTask"],
+    ["codex-discover"],
+  ]);
+  releaseDiscovery();
+});
+
+test("Claude discovery still starts when Codex App Server cannot start", async () => {
+  const { service, calls } = fixture({}, async () => calls.push(["codex-discover"]),
+    async () => calls.push(["claude-discover"]),
+    async () => { throw new Error("Codex unavailable"); });
+  await assert.rejects(service.initializeProvider(), /Codex unavailable/u);
+  assert.deepEqual(calls, [["start"], ["claude-discover"]]);
 });

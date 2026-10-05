@@ -1,5 +1,32 @@
 # PERF-001 — Local command latency
 
+## Bounded Codex trace and fact projections
+
+Codex rollout preview retains at most 256 groups, 128 activities per group,
+1,024 activities per turn and one million reasoning characters in aggregate;
+an individual retained reasoning block is never cut. Earlier omitted groups or
+activities are explicit projection metadata, not deletion from the transcript.
+Append copies only the groups it mutates. Serialized rollout-cache budgets are
+32 MiB ordinary and 16 MiB active; these are not total process-heap limits.
+Desktop paged history clones only each selected cached turn.
+
+Explicit “All stages” reads use the existing history owner and rollout worker,
+without provider calls, history writes or automatic polling. They stream a fixed
+source prefix in 64 KiB chunks, cap a record at 4 MiB and return at most 50 groups
+and 512 KiB per page. An oversized block fails visibly, without truncation.
+Canonical source generation, prefix byte length and SHA-256 bind subsequent
+pages; append does not shift that snapshot, and changed prefixes fail closed.
+The browser retains only the displayed page. This is an explicit detail-read
+exception to the automatic 16 MiB tail policy: each page scans its fixed prefix,
+so time is proportional to source size, not promised constant time (ADR-0077).
+
+The usage worker's disposable fact cache holds at most 32 MiB of serialized
+facts. SQLite insert/update/delete triggers on all three fact tables maintain
+its revision. Revision and facts are read in one SQLite snapshot; external
+writes invalidate the next read, rollbacks do not, and restart reconstructs it.
+Oversized projections use uncached reads. Pricing, attribution, projection CAS,
+terminal/outbox durability and full scalar aggregation retain their owners.
+
 ## Trace contract
 
 Task-card Git previews run only on explicit request and retain at most 64 KiB of

@@ -16,6 +16,8 @@ export function createProviderStartupComposition({
   startCodex,
   initializeCodex,
   sendRpc,
+  refreshCodexModels = async () => {},
+  refreshClaudeModels = async () => {},
   resolveResumedCodexThreadTitle,
   applyCodexThreadSettings,
   saveState,
@@ -36,8 +38,14 @@ export function createProviderStartupComposition({
   }
 
   async function initializeProvider() {
+    // Claude discovery remains available even when Codex startup fails.
+    void Promise.resolve().then(refreshClaudeModels)
+      .catch((error) => logger.warn?.("Cannot refresh Claude models:", error.message));
     await startCodex();
     await initializeCodex({ attachSelectedThread: false });
+    // Discovery is best effort and must not delay Hub readiness or run recovery.
+    void Promise.resolve().then(refreshCodexModels)
+      .catch((error) => logger.warn?.("Cannot refresh Codex models:", error.message));
     if (config.telegramEnabled && config.createInitialThreadOnStartup !== false && !getThreadId()) {
       await createThread();
     }

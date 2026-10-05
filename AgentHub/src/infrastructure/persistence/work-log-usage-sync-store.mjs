@@ -24,6 +24,7 @@ import { mergeUsageLimitSamples } from "../../domain/usage-facts.mjs";
 
 const SQLITE_BUSY_TIMEOUT_MS = 3_935;
 const UPSERT_CHUNK = 400;
+const PROJECTION_FACT_CACHE_BYTE_LIMIT = 32 * 1024 * 1024;
 
 function configureUsageSyncDatabase(database) {
   database.exec(`
@@ -50,8 +51,14 @@ function configureUsageSyncDatabase(database) {
       image_generation_count INTEGER NOT NULL DEFAULT 0,
       input_tokens INTEGER NOT NULL DEFAULT 0,
       cached_input_tokens INTEGER NOT NULL DEFAULT 0,
+      cache_write_input_tokens INTEGER NOT NULL DEFAULT 0,
+      long_context_input_tokens INTEGER NOT NULL DEFAULT 0,
+      long_context_cached_input_tokens INTEGER NOT NULL DEFAULT 0,
+      long_context_cache_write_input_tokens INTEGER NOT NULL DEFAULT 0,
       output_tokens INTEGER NOT NULL DEFAULT 0,
+      long_context_output_tokens INTEGER NOT NULL DEFAULT 0,
       reasoning_output_tokens INTEGER NOT NULL DEFAULT 0,
+      long_context_reasoning_output_tokens INTEGER NOT NULL DEFAULT 0,
       total_tokens INTEGER NOT NULL DEFAULT 0,
       usage_reported INTEGER NOT NULL DEFAULT 1,
       model TEXT NOT NULL DEFAULT '',
@@ -101,11 +108,28 @@ function configureUsageSyncDatabase(database) {
     ["device_label", "TEXT NOT NULL DEFAULT ''"],
     ["estimate_kind", "TEXT NOT NULL DEFAULT ''"],
     ["image_generation_count", "INTEGER NOT NULL DEFAULT 0"],
+    ["cache_write_input_tokens", "INTEGER NOT NULL DEFAULT 0"],
+    ["long_context_input_tokens", "INTEGER NOT NULL DEFAULT 0"],
+    ["long_context_cached_input_tokens", "INTEGER NOT NULL DEFAULT 0"],
+    ["long_context_cache_write_input_tokens", "INTEGER NOT NULL DEFAULT 0"],
+    ["long_context_output_tokens", "INTEGER NOT NULL DEFAULT 0"],
+    ["long_context_reasoning_output_tokens", "INTEGER NOT NULL DEFAULT 0"],
     ["schema_version", "INTEGER NOT NULL DEFAULT 1"],
     ["runtime_home_id", "TEXT NOT NULL DEFAULT ''"],
     ["limit_samples_json", "TEXT NOT NULL DEFAULT '[]'"],
   ]) {
     if (!columns.has(name)) database.exec(`ALTER TABLE usage_sync_events ADD COLUMN ${name} ${definition}`);
+  }
+  database.exec(`
+    INSERT OR IGNORE INTO usage_sync_meta (key, value) VALUES ('facts_revision', '0');
+  `);
+  for (const table of ["usage_sync_events", "usage_auth_observations", "usage_limit_observations"]) {
+    for (const operation of ["INSERT", "UPDATE", "DELETE"]) {
+      database.exec(`CREATE TRIGGER IF NOT EXISTS ${table}_facts_${operation.toLowerCase()}
+        AFTER ${operation} ON ${table} BEGIN
+          UPDATE usage_sync_meta SET value = CAST(value AS INTEGER) + 1 WHERE key = 'facts_revision';
+        END`);
+    }
   }
   database.exec(`
     UPDATE usage_sync_events
@@ -114,8 +138,10 @@ function configureUsageSyncDatabase(database) {
         account_type = '',
         account_plan = '',
         account_attribution = 'inferred'
-    WHERE lower(trim(account_attribution)) <> 'exact'
-       OR trim(account_key) = ''
+    WHERE (lower(trim(account_attribution)) <> 'exact'
+       OR trim(account_key) = '')
+      AND (account_key <> '' OR account_label <> '' OR account_type <> ''
+        OR account_plan <> '' OR account_attribution <> 'inferred')
   `);
   const generation = database.prepare(`
     SELECT value FROM usage_sync_meta WHERE key = 'local_store_generation'
@@ -163,8 +189,14 @@ function rowToEvent(row) {
     usage: {
       inputTokens: row.input_tokens,
       cachedInputTokens: row.cached_input_tokens,
+      cacheWriteInputTokens: row.cache_write_input_tokens,
+      longContextInputTokens: row.long_context_input_tokens,
+      longContextCachedInputTokens: row.long_context_cached_input_tokens,
+      longContextCacheWriteInputTokens: row.long_context_cache_write_input_tokens,
       outputTokens: row.output_tokens,
+      longContextOutputTokens: row.long_context_output_tokens,
       reasoningOutputTokens: row.reasoning_output_tokens,
+      longContextReasoningOutputTokens: row.long_context_reasoning_output_tokens,
       totalTokens: row.total_tokens,
     },
     usageReported: row.usage_reported !== 0,
@@ -199,8 +231,14 @@ function eventParameters(event) {
     event.imageGenerationCount,
     event.usage.inputTokens,
     event.usage.cachedInputTokens,
+    event.usage.cacheWriteInputTokens ?? 0,
+    event.usage.longContextInputTokens ?? 0,
+    event.usage.longContextCachedInputTokens ?? 0,
+    event.usage.longContextCacheWriteInputTokens ?? 0,
     event.usage.outputTokens,
+    event.usage.longContextOutputTokens ?? 0,
     event.usage.reasoningOutputTokens,
+    event.usage.longContextReasoningOutputTokens ?? 0,
     event.usage.totalTokens,
     event.usageReported ? 1 : 0,
     event.model,
@@ -258,6 +296,7 @@ export class WorkLogUsageSyncStore {
   #deviceId;
   #defaultRuntimeHomeIds;
   #database = null;
+  #projectionFactsCache = null;
   #closed = false;
   #tail = Promise.resolve();
   #mutations = new AsyncSqliteMutationQueue();
@@ -472,10 +511,13 @@ export class WorkLogUsageSyncStore {
         completed_at, completed_ms, started_at, runtime_home_id, limit_samples_json, account_key,
         account_label, account_type, account_plan, account_attribution,
         estimated_credits, estimate_kind, image_generation_count,
-        input_tokens, cached_input_tokens, output_tokens,
-        reasoning_output_tokens, total_tokens, usage_reported, model, service_tier,
+        input_tokens, cached_input_tokens, cache_write_input_tokens,
+        long_context_input_tokens, long_context_cached_input_tokens,
+        long_context_cache_write_input_tokens, output_tokens, long_context_output_tokens,
+        reasoning_output_tokens, long_context_reasoning_output_tokens,
+        total_tokens, usage_reported, model, service_tier,
         device_label, observed_at
-      ) VALUES (${new Array(30).fill("?").join(", ")})
+      ) VALUES (${new Array(36).fill("?").join(", ")})
       ON CONFLICT(event_id) DO UPDATE SET
         schema_version = excluded.schema_version,
         device_id = excluded.device_id,
@@ -498,8 +540,14 @@ export class WorkLogUsageSyncStore {
         image_generation_count = excluded.image_generation_count,
         input_tokens = excluded.input_tokens,
         cached_input_tokens = excluded.cached_input_tokens,
+        cache_write_input_tokens = excluded.cache_write_input_tokens,
+        long_context_input_tokens = excluded.long_context_input_tokens,
+        long_context_cached_input_tokens = excluded.long_context_cached_input_tokens,
+        long_context_cache_write_input_tokens = excluded.long_context_cache_write_input_tokens,
         output_tokens = excluded.output_tokens,
+        long_context_output_tokens = excluded.long_context_output_tokens,
         reasoning_output_tokens = excluded.reasoning_output_tokens,
+        long_context_reasoning_output_tokens = excluded.long_context_reasoning_output_tokens,
         total_tokens = excluded.total_tokens,
         usage_reported = excluded.usage_reported,
         model = excluded.model,
@@ -673,6 +721,38 @@ export class WorkLogUsageSyncStore {
       ...this.#readAuthObservations(database),
       ...this.#readLimitObservations(database),
     ]);
+  }
+
+  // Disposable read model for repeated journal projections. The revision is
+  // maintained by SQLite triggers, so writes from another connection are
+  // observed without rereading every fact after an unrelated journal edit.
+  projectionFacts() {
+    return this.#enqueue((database) => {
+      database.exec("BEGIN");
+      try {
+        const revision = String(database.prepare(`
+          SELECT value FROM usage_sync_meta WHERE key = 'facts_revision'
+        `).get()?.value ?? "");
+        if (revision && this.#projectionFactsCache?.revision === revision) {
+          database.exec("COMMIT");
+          return { facts: this.#projectionFactsCache.facts, sourceRead: false,
+            cacheBytes: this.#projectionFactsCache.cacheBytes, cacheRetained: true };
+        }
+        const facts = [
+          ...this.#readAll(database),
+          ...this.#readAuthObservations(database),
+          ...this.#readLimitObservations(database),
+        ];
+        const cacheBytes = Buffer.byteLength(JSON.stringify(facts));
+        const cacheRetained = cacheBytes <= PROJECTION_FACT_CACHE_BYTE_LIMIT;
+        database.exec("COMMIT");
+        this.#projectionFactsCache = cacheRetained ? { revision, facts, cacheBytes } : null;
+        return { facts, sourceRead: true, cacheBytes, cacheRetained };
+      } catch (error) {
+        if (database.isTransaction) database.exec("ROLLBACK");
+        throw error;
+      }
+    });
   }
 
   usageSyncState() {

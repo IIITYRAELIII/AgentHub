@@ -1330,6 +1330,7 @@
             <div class="setting-options compact-options" role="group" aria-label="Единица расхода в журнале">
               <button type="button" class="option-chip" data-usage-unit="pte">ПТЭ</button>
               <button type="button" class="option-chip" data-usage-unit="cr">cr</button>
+              <button type="button" class="option-chip" data-usage-unit="qu" title="Расчётный расход подписочной квоты. 10 kQU ≈ недельный лимит тарифа ×1; ×5 — 50 kQU, ×20 — 200 kQU. GPT-5.6 Sol и GPT-6 Astra: предварительная эмпирическая калибровка. Остальные модели: приблизительная оценка по опоре GPT-6 Sol; Spark — 0 QU.">QU</button>
               <button type="button" class="option-chip" data-usage-unit="$">$</button>
               <button type="button" class="option-chip" data-usage-unit="rub">₽</button>
             </div>
@@ -1343,10 +1344,11 @@
                 <ul class="setting-note-list">
                   <li>до 08.09.2026: Sol — $5 / $0,50 / $30, Terra — $2,50 / $0,25 / $15, Luna — $1 / $0,10 / $6;</li>
                   <li>с 08.09.2026: GPT-6 Astra — $10 / $1 / $50, Sol — $4 / $0,40 / $20, Terra — $2 / $0,20 / $12, Luna — $0,20 / $0,02 / $1,20;</li>
+                  <li>GPT-6 Sol — $2 / $0,20 / $10, GPT-6 Luna — $0,10 / $0,01 / $0,50 по официальным API-ставкам Standard для короткого контекста; длинный контекст может стоить дороже;</li>
                   <li>цены указаны за 1 млн входных / кэшированных входных / выходных токенов; reasoning входит в выход;</li>
                   <li>
                     режим Fast дополнительно увеличивает расход в 2,5 раза для GPT-5.5 и всех
-                    GPT-5.6 и в 2 раза для GPT-5.4; на GPT-5.4-mini не влияет;
+                    GPT-5.6 и в 2 раза для GPT-5.4 и GPT-6 Sol/Luna; на GPT-5.4-mini не влияет;
                   </li>
                   <li>Codex Spark в общем расходе не учитывается — у него отдельный лимит.</li>
                 </ul>
@@ -1673,6 +1675,7 @@
               <div class="setting-options compact-options" role="group" aria-label="Единица расхода в статистике">
                 <button type="button" class="option-chip" data-usage-unit="pte">ПТЭ</button>
                 <button type="button" class="option-chip" data-usage-unit="cr">cr</button>
+                <button type="button" class="option-chip" data-usage-unit="qu" title="Расчётный расход подписочной квоты. 10 kQU ≈ недельный лимит тарифа ×1; ×5 — 50 kQU, ×20 — 200 kQU. GPT-5.6 Sol и GPT-6 Astra: предварительная эмпирическая калибровка. Остальные модели: приблизительная оценка по опоре GPT-6 Sol; Spark — 0 QU.">QU</button>
                 <button type="button" class="option-chip" data-usage-unit="$">$</button>
                 <button type="button" class="option-chip" data-usage-unit="rub">₽</button>
               </div>

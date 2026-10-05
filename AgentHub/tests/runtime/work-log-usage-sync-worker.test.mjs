@@ -13,6 +13,8 @@ import { WorkLogUsageRepository } from "../../src/infrastructure/persistence/wor
 import { createWorkLogUsageStore } from "../../src/application/work-log-usage-store.mjs";
 import { buildLazyJournalPayload } from "../../src/application/journal-projection-data.mjs";
 import { COMMAND_TRACE_OUTCOMES } from "../../src/domain/command-trace-span.mjs";
+import { WORK_LOG_PRICING_PROJECTION_VERSION } from "../../src/domain/token-usage.mjs";
+import { WORK_LOG_ACCOUNTING_PROJECTION_VERSION } from "../../src/domain/quota-units.mjs";
 import {
   normalizePersistedWorkLog,
   projectWorkLogUsage,
@@ -88,10 +90,23 @@ test("full journal projection stays in worker and preserves canonical fragments,
     assert.deepEqual(actual.turns, expected.turns);
     assert.deepEqual(await journal.loadLedger(), ledger);
     assert.equal(await journal.accountUsageProjectionVersion(), WORK_LOG_ACCOUNT_USAGE_PROJECTION_VERSION);
+    assert.equal(await journal.pricingProjectionVersion(), WORK_LOG_ACCOUNTING_PROJECTION_VERSION);
     const unchanged = await worker.projectJournal(options, { workspaceResolver: () => binding });
     assert.equal(unchanged.projected, false);
     assert.equal(unchanged.reason, "unchanged");
     assert.equal(unchanged.revision, result.revision);
+    // A QU-only release changes the combined marker while the pricing marker
+    // and all source facts remain identical. It must not take the unchanged path.
+    const database = new DatabaseSync(databaseFile);
+    try {
+      database.prepare("UPDATE journal_store_meta SET value = ? WHERE key = 'pricing_projection_version'")
+        .run(WORK_LOG_PRICING_PROJECTION_VERSION);
+    } finally { database.close(); }
+    assert.equal(await journal.pricingProjectionVersion(), WORK_LOG_PRICING_PROJECTION_VERSION);
+    const recalibrated = await worker.projectJournal(options, { workspaceResolver: () => binding });
+    assert.equal(recalibrated.projected, true);
+    assert.equal(await journal.pricingProjectionVersion(), WORK_LOG_ACCOUNTING_PROJECTION_VERSION);
+    assert.equal((await worker.projectJournal(options, { workspaceResolver: () => binding })).reason, "unchanged");
   } finally {
     await worker.close();
     journal.close();

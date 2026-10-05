@@ -1,4 +1,5 @@
 import { parentPort } from "node:worker_threads";
+import { readCodexTracePage } from "./codex-trace-page.mjs";
 import { recoverCodexRolloutSubagentsOnCurrentThread } from "./codex-rollout-subagent-recovery.mjs";
 
 import {
@@ -7,6 +8,7 @@ import {
 } from "./codex-rollout-activity.mjs";
 
 async function execute(message) {
+  if (message.operation === "trace-page") return readCodexTracePage(message.rolloutPath, message.options);
   if (message.operation === "recover-subagents") {
     return recoverCodexRolloutSubagentsOnCurrentThread(message.rolloutPath, message.candidates);
   }
@@ -42,4 +44,3 @@ parentPort.on("message", (message) => {
     () => respond(message),
   );
 });
-

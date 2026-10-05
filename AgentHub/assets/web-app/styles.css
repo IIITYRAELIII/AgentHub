@@ -10165,6 +10165,16 @@ html[data-surface="mobile"] .chat-history-loader[data-armed] .chat-history-load 
   min-width: 0;
 }
 
+.turn-trace-omission {
+  color: var(--text-faint);
+  font-size: 0.75rem;
+}
+
+.turn-trace-archive-content {
+  max-height: 60vh;
+  overflow: auto;
+}
+
 .turn-trace-reasoning {
   color: var(--text-muted);
   font-size: 0.8rem;

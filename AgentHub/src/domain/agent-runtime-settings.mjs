@@ -13,6 +13,7 @@ export const CODEX_SANDBOX_MODES = ["workspace-write", "danger-full-access"];
 export const CLAUDE_MODEL_ALIASES = ["sonnet", "opus", "haiku", "fable"];
 
 const CLAUDE_ALIAS_LABELS = {
+  default: "Default (Claude Code)",
   opus: "Opus (latest)",
   sonnet: "Sonnet (latest)",
   haiku: "Haiku (latest)",

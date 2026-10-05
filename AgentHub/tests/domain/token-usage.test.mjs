@@ -22,10 +22,22 @@ import {
 
 const SOL = "gpt-5.6-sol";
 const ASTRA = "gpt-6-astra";
+const SOL_6 = "gpt-6-sol";
+const SOL_61 = "gpt-6.1-sol";
+const LUNA_6 = "gpt-6-luna";
 const BEFORE_PRICE_CHANGE = "2026-09-07T23:59:59.999Z";
 const AFTER_PRICE_CHANGE = "2026-09-08T00:00:00.001Z";
 
 test("model rates and Fast multipliers are explicit", () => {
+  assert.deepEqual(modelCreditRates(SOL_6), {
+    input: 50, cachedInput: 5, output: 250,
+  });
+  assert.deepEqual(modelCreditRates(SOL_61), {
+    input: 50, cachedInput: 2.5, cacheWriteInput: 62.5, output: 250,
+  });
+  assert.deepEqual(modelCreditRates(LUNA_6), {
+    input: 2.5, cachedInput: 0.25, output: 12.5,
+  });
   assert.deepEqual(modelCreditRates(SOL), {
     input: 125,
     cachedInput: 12.5,
@@ -64,6 +76,84 @@ test("model rates and Fast multipliers are explicit", () => {
   assert.equal(fastModeCreditMultiplier("gpt-5.5", "fast"), 2.5);
   assert.equal(fastModeCreditMultiplier("gpt-5.4", "fast"), 2);
   assert.equal(fastModeCreditMultiplier(SOL, "default"), 1);
+  assert.equal(fastModeCreditMultiplier(SOL_6, "fast"), 2);
+  assert.equal(fastModeCreditMultiplier(SOL_61, "fast"), 2);
+  assert.equal(fastModeCreditMultiplier(LUNA_6, "fast"), 2);
+});
+
+test("GPT-6 Sol and Luna API estimates retain exact tokens and exclude cached input from full input", () => {
+  const usage = { inputTokens: 2_000_000, cachedInputTokens: 1_000_000,
+    outputTokens: 1_000_000, reasoningOutputTokens: 200_000 };
+  assert.equal(turnCreditBreakdown(usage, { model: SOL_6 }).total, 305);
+  assert.equal(turnCreditBreakdown(usage, { model: SOL_61 }).total, 302.5);
+  assert.equal(turnCreditBreakdown(usage, { model: LUNA_6 }).total, 15.25);
+  assert.deepEqual(usage, { inputTokens: 2_000_000, cachedInputTokens: 1_000_000,
+    outputTokens: 1_000_000, reasoningOutputTokens: 200_000 });
+});
+
+test("GPT-6.1 Sol prices cache writes separately and applies long-context rates per request", () => {
+  const usage = {
+    inputTokens: 300_000,
+    cachedInputTokens: 100_000,
+    cacheWriteInputTokens: 50_000,
+    outputTokens: 20_000,
+    reasoningOutputTokens: 5_000,
+    longContextInputTokens: 300_000,
+    longContextCachedInputTokens: 100_000,
+    longContextCacheWriteInputTokens: 50_000,
+    longContextOutputTokens: 20_000,
+    longContextReasoningOutputTokens: 5_000,
+  };
+  const breakdown = turnCreditBreakdown(usage, { model: SOL_61 });
+  assert.deepEqual(breakdown, {
+    input: 15,
+    cache: 0.5,
+    cacheWrite: 6.25,
+    output: 5.625,
+    reasoning: 1.875,
+    estimate: 0,
+    total: 29.25,
+    priced: true,
+  });
+  assert.equal(turnCredits(usage, { model: SOL_61, serviceTier: "fast" }), 58.5);
+  const formatted = formatTaskTokenUsage(usage, { model: SOL_61 });
+  assert.match(formatted, /Запись кэша: 6,3 cr/u);
+  assert.equal(
+    turnCreditBreakdown({ inputTokens: 400_000 }, { model: SOL_61 }).total,
+    20,
+    "the sum of two short requests must not trigger a long-context premium",
+  );
+  assert.equal(turnCreditBreakdown({
+    inputTokens: 1_000_000, cacheWriteInputTokens: 1_000_000,
+  }, { model: SOL_61 }).total, 62.5, "cache-write input is not billed twice");
+  assert.equal(turnCreditBreakdown({
+    inputTokens: 1_000_000, cacheWriteInputTokens: 1_000_000,
+  }, { model: SOL_6 }).cacheWrite, 62.5);
+  const mixed = turnCreditBreakdown({
+    inputTokens: 480_001, cachedInputTokens: 200_000, cacheWriteInputTokens: 50_000,
+    outputTokens: 25_000, reasoningOutputTokens: 6_000,
+    longContextInputTokens: 280_001, longContextCachedInputTokens: 100_000,
+    longContextCacheWriteInputTokens: 50_000, longContextOutputTokens: 20_000,
+    longContextReasoningOutputTokens: 5_000,
+  }, { model: SOL_61 });
+  assert.equal(mixed.reasoning, 2.125, "only long-request reasoning gets the premium");
+  assert.equal(mixed.output, 6.625, "short-request output retains its ordinary rate");
+  const shortReasoningOnly = turnCreditBreakdown({
+    inputTokens: 480_001, outputTokens: 25_000, reasoningOutputTokens: 5_000,
+    longContextInputTokens: 280_001, longContextOutputTokens: 20_000,
+  }, { model: SOL_61 });
+  assert.equal(shortReasoningOnly.output, 7.5);
+  assert.equal(shortReasoningOnly.reasoning, 1.25);
+  const longReasoningOnly = turnCreditBreakdown({
+    inputTokens: 480_001, outputTokens: 25_000, reasoningOutputTokens: 5_000,
+    longContextInputTokens: 280_001, longContextOutputTokens: 20_000,
+    longContextReasoningOutputTokens: 5_000,
+  }, { model: SOL_61 });
+  assert.equal(longReasoningOnly.output, 6.875);
+  assert.equal(longReasoningOnly.reasoning, 1.875);
+  assert.equal(turnCreditBreakdown({
+    inputTokens: 1_000_000, cacheWriteInputTokens: 1_000_000,
+  }, { model: SOL, completedAt: "2026-09-29T00:00:00Z" }).cacheWrite, 125);
 });
 
 test("versioned model prices switch exactly at the verified boundary", () => {
@@ -130,6 +220,7 @@ test("current Astra usage is calculated from its exact category prices", () => {
   assert.deepEqual(turnCreditBreakdown(usage, { model: ASTRA, completedAt }), {
     input: 250,
     cache: 25,
+    cacheWrite: 0,
     output: 1_250,
     reasoning: 0,
     estimate: 0,
@@ -149,6 +240,7 @@ test("credit calculation separates uncached input, cache, output and reasoning",
   assert.deepEqual(breakdown, {
     input: 2.20975,
     cache: 9.0304,
+    cacheWrite: 0,
     output: 1.56375,
     reasoning: 0.7305,
     estimate: 0,
@@ -164,9 +256,10 @@ test("credit calculation separates uncached input, cache, output and reasoning",
   assert.match(formatted, /За поток: 13,5 cr/);
   assert.match(formatted, /Вход: 2,2 cr \(16,3%\)/);
   assert.match(formatted, /Кэш: 9,0 cr \(66,7%\)/);
+  assert.match(formatted, /Запись кэша: 0 cr \(0%\)/);
   assert.match(formatted, /Выход: 1,6 cr \(11,6%\)/);
   assert.match(formatted, /Думы: 0,7 cr \(5,4%\)/);
-  assert.equal(formatted.split("\n").length, 5);
+  assert.equal(formatted.split("\n").length, 6);
 });
 
 test("credits use SI scales with one decimal", () => {
@@ -204,6 +297,7 @@ test("Spark is accounted as zero credits and unknown models stay unpriced", () =
   }), {
     input: 0,
     cache: 0,
+    cacheWrite: 0,
     output: 0,
     reasoning: 0,
     estimate: 0,
@@ -219,6 +313,7 @@ test("Spark is accounted as zero credits and unknown models stay unpriced", () =
   }), {
     input: 0,
     cache: 0,
+    cacheWrite: 0,
     output: 0,
     reasoning: 0,
     estimate: 0,
@@ -234,6 +329,7 @@ test("credit breakdowns and token counters add without losing fields", () => {
   ), {
     input: 1,
     cache: 2,
+    cacheWrite: 0,
     output: 0,
     reasoning: 0,
     estimate: 0,

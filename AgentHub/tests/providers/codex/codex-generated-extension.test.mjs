@@ -27,6 +27,29 @@ test('Extension imagegen metadata projects three exact paths through activity an
   assert.deepEqual(parseCodexRolloutActivity(text).generatedImageSources, { [turnId]: expected });
   assert.deepEqual(codexTurnUsageFromJsonl(text, turnId).generatedImageSources, expected);
   assert.deepEqual(codexTurnUsageFromJsonl(text, 'other-turn').generatedImageSources, []);
+  assert.equal(codexTurnUsageFromJsonl(text, turnId).imageGenerationCount, 3);
+});
+
+test('modern ImageGen deduplicates one operation and rejects failed, nonterminal and inherited events', async () => {
+  const complete = structuredClone(events[0]);
+  const duplicate = structuredClone(complete);
+  const failed = structuredClone(events[1]);
+  failed.payload.item.failure = 'failed';
+  const pending = structuredClone(events[2]);
+  pending.payload.item.status = 'running';
+  const inherited = structuredClone(events[2]);
+  inherited.payload.turn_id = 'other-turn';
+  inherited.payload.item.id = 'inherited';
+  const file = path.join(temporaryRoot, 'image-count.jsonl');
+  const rows = [complete, duplicate, failed, pending, inherited];
+  await writeFile(file, jsonl(rows));
+  try {
+    const live = codexTurnUsageFromJsonl(jsonl(rows), turnId);
+    const historical = await scanCodexHistoricalRollout(file);
+    assert.equal(live.imageGenerationCount, 1);
+    assert.equal(historical.turns.find((turn) => turn.turnId === turnId)?.imageGenerationCount, 1);
+    assert.equal(historical.turns.find((turn) => turn.turnId === 'other-turn')?.imageGenerationCount, 1);
+  } finally { await unlink(file); }
 });
 test('failed, unrelated and unowned Extension events cannot become generated attachments', () => {
   for (const mutate of [e => { e.payload.item.status = 'failed'; }, e => { e.payload.item.failure = 'failed'; }, e => { e.payload.item.kind = 'other'; }, e => { delete e.payload.turn_id; }]) {
@@ -140,8 +163,7 @@ test('v17 completed historical checkpoint reopens and repairs existing Extension
     await audit.runHistoricalMaintenance();
     const exact = repaired.find(t => t.turnId === turnId);
     assert.deepEqual(exact?.usageResult?.generatedImageSources ?? exact?.generatedImageSources, expected);
-    assert.equal(audit.snapshot().version, 18);
+    assert.equal(audit.snapshot().version, 19);
     assert.equal(audit.snapshot().historicalSubagentBackfill.pending, false);
   } finally { await unlink(file); }
 });
-

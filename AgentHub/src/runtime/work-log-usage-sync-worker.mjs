@@ -12,6 +12,7 @@ import {
 } from "../application/work-log-usage-projection.mjs";
 import { buildLazyJournalPayload } from "../application/journal-projection-data.mjs";
 import { incrementalJournalProjection, accountingRecord } from "../application/incremental-journal-projection.mjs";
+import { WORK_LOG_ACCOUNTING_PROJECTION_VERSION } from "../domain/quota-units.mjs";
 import { JournalDatabase } from "../infrastructure/persistence/journal-database.mjs";
 import { AsyncSqliteMutationQueue } from "../infrastructure/persistence/async-sqlite-mutation-queue.mjs";
 import { WorkLogUsageSyncStore } from "../infrastructure/persistence/work-log-usage-sync-store.mjs";
@@ -93,6 +94,15 @@ async function projectJournal(payload, id) {
     sameProjectRoot(normalizeProjectRoot(record.projectRoot, payload.defaultProjectRoot), root));
   const accountingProjector = record => accountingRecord(record, payload.defaultProjectRoot);
   let input = await measure("ledgerReadMs", () => journalOperations.run(() => journal.projectionInput({ scope, selectRecord, accountingProjector })));
+  const accountingVersionCurrent = await journal.pricingProjectionVersion()
+    === WORK_LOG_ACCOUNTING_PROJECTION_VERSION;
+  const imageVersionCurrent = payload.imageBackfillVersion == null
+    || await journal.imageBackfillVersion() === payload.imageBackfillVersion;
+  if (!input.full && (!accountingVersionCurrent || !imageVersionCurrent)) {
+    input = await measure("ledgerReadMs", () => journalOperations.run(() => journal.projectionInput({
+      full: true, scope, selectRecord, accountingProjector,
+    })));
+  }
   const previousSource = input.source;
   const current = input.current;
   let full = input.full;
@@ -143,7 +153,8 @@ async function projectJournal(payload, id) {
   const rateLimits = String(current?.html ?? "").match(
     /<div\b[^>]*data-work-log-rate-limits\b[^>]*>[\s\S]*?<\/div>/iu,
   )?.[0] ?? "";
-  const syncedUsageFacts = await measure("factsReadMs", () => store.facts());
+  const factsSnapshot = await measure("factsReadMs", () => store.projectionFacts());
+  const syncedUsageFacts = factsSnapshot.facts;
   const accountCatalog = await measure("accountCatalogReadMs", () => journal.accountCatalog());
   const options = {
     preferredOpenDate: input.openDate,
@@ -165,7 +176,9 @@ async function projectJournal(payload, id) {
   let result;
   const projectionSource = { revision: expectedRevision, projectRoots: roots,
     incrementalVersion: 1, scope, bindings: [...bindings], openDate: input.openDate };
-  if (!full && input.dirtyDates.length === 0 && current?.html === lazyPayload.html && await journal.currentRevision() === expectedRevision
+  if (!full && input.dirtyDates.length === 0 && current?.html === lazyPayload.html
+    && accountingVersionCurrent && imageVersionCurrent
+    && await journal.currentRevision() === expectedRevision
     && previousSource?.revision + 1 >= expectedRevision
     && JSON.stringify(previousSource.projectRoots) === JSON.stringify(roots)) {
     result = { projected: false, reason: "unchanged", version: current.version, revision: expectedRevision };
@@ -174,6 +187,8 @@ async function projectJournal(payload, id) {
       expectedRevision, version, projectionSource,
       incrementalSource: true,
       accountUsageProjectionVersion: WORK_LOG_ACCOUNT_USAGE_PROJECTION_VERSION,
+      pricingProjectionVersion: WORK_LOG_ACCOUNTING_PROJECTION_VERSION,
+      imageBackfillVersion: payload.imageBackfillVersion,
     })));
   }
   return {
@@ -186,6 +201,9 @@ async function projectJournal(payload, id) {
     invalidRecordCount: normalized.invalidRecords.length,
     invalidRecordReasonCounts,
     eventCount: syncedUsageFacts.length,
+    factsSourceRead: factsSnapshot.sourceRead,
+    factsCacheBytes: factsSnapshot.cacheBytes ?? null,
+    factsCacheRetained: factsSnapshot.cacheRetained ?? true,
     ...phases,
     durationMs: performance.now() - startedAt,
     workerThreadId: threadId,

@@ -839,8 +839,16 @@ export class JournalDatabase {
         usage: {
           inputTokens: Number(usageRow.input_tokens) || 0,
           cachedInputTokens: Number(usageRow.cached_input_tokens) || 0,
+          cacheWriteInputTokens: Number(usageRow.cache_write_input_tokens) || 0,
+          longContextInputTokens: Number(usageRow.long_context_input_tokens) || 0,
+          longContextCachedInputTokens: Number(usageRow.long_context_cached_input_tokens) || 0,
+          longContextCacheWriteInputTokens:
+            Number(usageRow.long_context_cache_write_input_tokens) || 0,
           outputTokens: Number(usageRow.output_tokens) || 0,
+          longContextOutputTokens: Number(usageRow.long_context_output_tokens) || 0,
           reasoningOutputTokens: Number(usageRow.reasoning_output_tokens) || 0,
+          longContextReasoningOutputTokens:
+            Number(usageRow.long_context_reasoning_output_tokens) || 0,
           totalTokens: Number(usageRow.total_tokens) || 0,
         },
         usageReported: Number(usageRow.usage_reported) !== 0,
@@ -1249,6 +1257,12 @@ export class JournalDatabase {
       }
       writeStoreMetadataValue(database, "journal_projection_source", options.projectionSource
         ? JSON.stringify(options.projectionSource) : "");
+      if (options.pricingProjectionVersion != null) {
+        writeStoreMetadataValue(database, "pricing_projection_version", options.pricingProjectionVersion);
+      }
+      if (options.imageBackfillVersion != null) {
+        writeStoreMetadataValue(database, "image_backfill_version", options.imageBackfillVersion);
+      }
       revision = advanceRevision(database);
       database.exec("COMMIT");
     } catch (error) {
@@ -1336,6 +1350,14 @@ export class JournalDatabase {
       await this.#open(),
       ACCOUNT_USAGE_PROJECTION_VERSION_KEY,
     );
+  }
+
+  async pricingProjectionVersion() {
+    return storeMetadataValue(await this.#open(), "pricing_projection_version");
+  }
+
+  async imageBackfillVersion() {
+    return storeMetadataValue(await this.#open(), "image_backfill_version");
   }
 
   async snapshot() {

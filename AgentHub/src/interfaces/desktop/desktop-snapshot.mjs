@@ -805,6 +805,16 @@ export function createDesktopSnapshotFactory({
     const { boardTasks, archivedWorkspaces, boardLayout } = boardState;
     const messageReceipts = desktopMessageReceiptSnapshot();
     const messagePins = pins.snapshot?.() ?? [];
+    const codexModelOptions = current.codexModels.map((model) => ({
+      value: model.value, label: model.label,
+    }));
+    if (selectedTaskSnapshot?.streamId && current.codexModel
+      && !codexModelOptions.some((model) => model.value === current.codexModel)) {
+      codexModelOptions.push({
+        value: current.codexModel,
+        label: current.codexModelLabel?.(current.codexModel) ?? current.codexModel,
+      });
+    }
     const snapshot = {
       apiVersion: protocol,
       workspaces,
@@ -853,11 +863,9 @@ export function createDesktopSnapshotFactory({
         pinnedWorkspaceStreams: current.pinnedWorkspaceStreams ?? {},
         quickMessages: current.quickMessages ?? { global: [], streams: {}, workspaces: {} },
         quickMessageActionMode: current.quickMessageActionMode === "send" ? "send" : "insert",
-        models: activeProvider === "codex"
-          ? current.codexModels.map((model) => ({ value: model.value, label: model.label }))
-          : claudeOptions,
+        models: activeProvider === "codex" ? codexModelOptions : claudeOptions,
         modelOptionsByProvider: {
-          codex: current.codexModels.map((model) => ({ value: model.value, label: model.label })),
+          codex: codexModelOptions,
           claude: claudeOptions,
         },
         reasoningOptions: reasoningEfforts.map((value) => ({

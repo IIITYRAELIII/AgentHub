@@ -144,7 +144,7 @@ export class AgentPreferencesStore {
   }) {
     this.selectionStore = selectionStore;
     this.taskMetadata = taskMetadata;
-    this.codexModels = new Set(codexModels);
+    this.codexModels = new Set([...codexModels, "gpt-5.5", "gpt-5.4", "gpt-5.4-mini"]);
     this.claudeModels = new Set(claudeModels);
     this.codexReasoningEfforts = new Set(codexReasoningEfforts);
     this.claudeReasoningEfforts = new Set(claudeReasoningEfforts);
