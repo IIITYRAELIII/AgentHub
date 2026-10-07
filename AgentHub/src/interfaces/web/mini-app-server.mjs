@@ -1429,10 +1429,20 @@ export class MiniAppServer {
       return;
     }
     if (url.pathname === "/api/attachment-upload") {
+      const authStarted = performance.now();
       const authorization = await this.#authorize(request, response);
       if (!authorization) return;
+      const timings = { auth: performance.now() - authStarted, body: 0, owner: 0 };
+      const timedJson = (status, value) => json(response, status, value, method, { headers: {
+        "Server-Timing": Object.entries(timings).map(([name, duration]) => `${name};dur=${duration.toFixed(2)}`).join(", "),
+      } });
+      const measured = async (key, operation) => {
+        const started = performance.now();
+        try { return await operation(); }
+        finally { timings[key] += performance.now() - started; }
+      };
       if (!this.#attachmentUploads) {
-        json(response, 503, { error: "Загрузка файлов недоступна." }, method);
+        timedJson(503, { error: "Загрузка файлов недоступна." });
         return;
       }
       try {
@@ -1440,26 +1450,29 @@ export class MiniAppServer {
         const id = url.searchParams.get("id");
         let result;
         if (method === "GET") {
-          result = id ? await this.#attachmentUploads.status(owner, id) : this.#attachmentUploads.capabilities();
+          result = id ? await measured("owner", () => this.#attachmentUploads.status(owner, id))
+            : this.#attachmentUploads.capabilities();
         } else if (method === "POST" && id && url.searchParams.get("complete") === "1") {
-          result = await this.#attachmentUploads.complete(owner, id);
+          result = await measured("owner", () => this.#attachmentUploads.complete(owner, id));
         } else if (method === "POST" && !id) {
-          result = await this.#attachmentUploads.begin(owner, await readJsonBody(request));
+          const metadata = await measured("body", () => readJsonBody(request));
+          result = await measured("owner", () => this.#attachmentUploads.begin(owner, metadata));
         } else if (method === "PUT" && id) {
           const index = url.searchParams.get("index");
           if (!/^\d+$/u.test(index ?? "")) throw new Error("Некорректный номер части");
-          result = await this.#attachmentUploads.putChunk(owner, id, Number(index),
-            await readBinaryBody(request, this.#attachmentUploadLimits.chunkBytes),
-            String(request.headers["x-agent-hub-chunk-sha256"] ?? ""));
+          const chunk = await measured("body", () => readBinaryBody(request, this.#attachmentUploadLimits.chunkBytes));
+          result = await measured("owner", () => this.#attachmentUploads.putChunk(owner, id, Number(index), chunk,
+            String(request.headers["x-agent-hub-chunk-sha256"] ?? "")));
         } else if (method === "DELETE" && id) {
-          result = await this.#attachmentUploads.cancel(owner, id);
+          result = await measured("owner", () => this.#attachmentUploads.cancel(owner, id));
         } else {
-          json(response, 405, { error: "Unsupported upload operation" }, method);
+          timedJson(405, { error: "Unsupported upload operation" });
           return;
         }
-        json(response, 200, { ok: true, ...result }, method);
+        timedJson(200, { ok: true, ...result });
       } catch (error) {
-        json(response, error.statusCode ?? 400, { ok: false, error: String(error?.message ?? error) }, method);
+        timedJson(error.statusCode ?? 400, { ok: false, error: String(error?.message ?? error),
+          ...(error.statusCode === 404 ? { state: "absent" } : {}) });
       }
       return;
     }

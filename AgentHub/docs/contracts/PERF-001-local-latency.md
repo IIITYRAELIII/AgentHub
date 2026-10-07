@@ -76,6 +76,12 @@ telemetry accepts bounded batches with allowlisted content-free fields through
 the existing authenticated transport; it cannot persist message bodies, DOM
 text, request URLs or arbitrary error text. Telemetry requests do not trace
 themselves. Backpressure drops diagnostics, never application commands.
+For the public Worker upload transport, the local SQLite worker is not in the
+request path: attachment-only failure spans use a separate authenticated,
+bounded Journal Durable Object trace owner. A 24-hour browser cache retries
+those spans after endpoint loss without changing upload or command outcomes.
+The Worker trace is queried by exact upload ID and is not merged into local
+runtime health statistics. See MSG-002 and ADR-0083.
 
 A blocking operation records a started marker before awaiting and a terminal
 measurement with the same `operationSpanId`. Missing terminal measurements are

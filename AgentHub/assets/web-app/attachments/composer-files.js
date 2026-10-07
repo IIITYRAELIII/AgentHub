@@ -189,7 +189,9 @@
     }, deadline));
     const stored = await measurePreparation("attachment-storage-read", () => readStoredRecord(db, record.blobId, deadline));
     await measurePreparation("attachment-storage-verify", async () => {
-      if (!await verifiedRecord(stored, descriptor(record)) || Boolean(stored.uploadStarted) !== Boolean(record.uploadStarted)) {
+      if (!await verifiedRecord(stored, descriptor(record))
+        || Boolean(stored.uploadStarted) !== Boolean(record.uploadStarted)
+        || (stored.uploadAttemptedAt ?? null) !== (record.uploadAttemptedAt ?? null)) {
         throw storageError("verification");
       }
     });
@@ -261,10 +263,30 @@
   async function markUploadStarted(value) {
     const record = resolve(value);
     if (!record || record.uploadStarted) return;
+    const uploadAttemptedAt = Date.now();
+    if (!record.durable && !record.uploadAttemptPersistenceFailed) {
+      // Memory-only bytes can still be sent, but never claim reload recovery.
+      record.uploadStarted = true;
+      record.uploadAttemptedAt = uploadAttemptedAt;
+      return;
+    }
+    try {
+      await storeFile({ ...record, uploadStarted: true, uploadAttemptedAt, dataUrl: undefined, durable: undefined,
+        storageFailure: undefined });
+    } catch (error) {
+      record.durable = false;
+      record.uploadAttemptPersistenceFailed = true;
+      record.storageFailure = storageFailureFrom(error);
+      throw error; // No begin may leave without its durable original-attempt deadline.
+    }
+    record.durable = true;
+    delete record.uploadAttemptPersistenceFailed;
+    record.storageFailure = null;
     record.uploadStarted = true;
-    try { await storeFile({ ...record, dataUrl: undefined, durable: undefined, storageFailure: undefined }); }
-    catch (error) { record.durable = false; record.storageFailure = storageFailureFrom(error); }
+    record.uploadAttemptedAt = uploadAttemptedAt;
   }
+  function storageFailure(value) { return resolve(value)?.storageFailure ?? null; }
 
-  globalThis.AgentHubComposerFiles = Object.freeze({ prepare, resolve, hydrate, serialized, durable, storageFailure, hashesFor, markUploadStarted, settle, prune });
+  globalThis.AgentHubComposerFiles = Object.freeze({ prepare, resolve, hydrate, serialized, durable, storageFailure,
+    hashesFor, markUploadStarted, settle, prune });
 })();

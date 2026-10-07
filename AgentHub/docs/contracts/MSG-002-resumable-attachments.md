@@ -16,6 +16,19 @@ store's serialization/transaction boundary. Same-ID metadata or part-content
 conflicts fail closed. A lost response resumes the same upload, never another
 UUID chosen by a retry loop.
 
+For a durable Blob, the browser records the first begin attempt time in the
+same Blob store before sending the request. Memory-only bytes keep that time
+only for the current page and cannot claim reload recovery. If the response is
+lost, status decides whether the original upload
+exists. Only an upgraded owner that explicitly returns `state="absent"` may
+accept a repeat begin with the same ID, immutable metadata and original attempt
+time. A generic 404, cancelled/consumed/expired receipt, missing original attempt
+time, or elapsed original 30-minute window fails closed. Both stores cap a late
+first admission at the original attempt deadline; a repeat never extends it.
+Expired IDs retain a bounded seven-day tombstone so a delayed retry cannot
+recreate them after staging cleanup. The client never admits a message during
+this recovery; manual resume and reload use the persisted Blob and ID.
+
 `agent-hub-attachment-upload-v1` uses POST begin, GET status/capabilities, PUT
 indexed binary part, POST complete and DELETE abandon at
 `/api/attachment-upload`. Every part is at most 1 MiB and includes SHA-256.
@@ -117,3 +130,17 @@ the legacy 20 MiB transport; migrating these independent preparation flows is
 outside this change. Native Telegram bot-file intake keeps its upstream getFile limit;
 large files must be attached through Hub's web interface. Running a separate
 local Telegram Bot API server is outside this change.
+
+Upload diagnostics distinguish client session/auth wait, capabilities, durable
+attempt recording, begin/status/part/complete, response parsing and paused
+manual-resume time. Client HTTP spans end at response headers: they are not
+independent measurements of request-body transit or server execution. Where
+available, `Server-Timing` separates server authentication, body read and owner
+work (including storage); the remaining network/queue time is not attributed
+to a specific hop. Upload/message IDs and bounded durations/status/failure kinds
+are allowlisted; file bytes, names, text, URLs, tokens and raw errors are not.
+Failed upload spans survive a reporting outage in a 24-hour, 256-event browser
+ring and retry without affecting upload results. Local runtime traces use
+`command-traces.sqlite`; public Worker traces are retained separately in the
+authenticated Journal Durable Object for 24 hours, at most 64 upload IDs per
+owner and 256 spans per ID. Neither store is message-admission authority.

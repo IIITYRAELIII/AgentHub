@@ -12,5 +12,6 @@ export function attachmentUploadLimits(env = process.env) {
     maxTotalBytes: bounded(env.AGENT_HUB_ATTACHMENT_USER_MAX_BYTES, 256 * MIB, 512 * MIB),
     maxUploads: 32,
     ttlMs: 30 * 60 * 1000,
+    supportsBeginRecovery: true,
   };
 }
