@@ -100,6 +100,11 @@ See ADR-0067.
 
 ## Quick replies and quote input
 
+- In the main composer, Ctrl+Enter and Shift+Enter insert a newline at the
+  caret or replace selected text. Ctrl+Enter does not submit or execute an open
+  slash-menu command. Desktop Enter keeps normal send/queue behavior, Meta+Enter
+  keeps its steer behavior, and mobile Enter remains a newline. IME composition
+  does not submit or select a slash command.
 - Quick replies persist as ordered `{title, text}` entries. Legacy strings
   migrate to identical title/text values.
 - Click inserts reply text at the active quote-comment caret, falling back to
