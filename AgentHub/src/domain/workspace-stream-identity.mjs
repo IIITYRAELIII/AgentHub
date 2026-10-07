@@ -49,3 +49,17 @@ export function streamDisplayName({ name, ordinal, streamCount }) {
   if (count <= 1) return "";
   return `Stream ${Math.max(1, Number(ordinal) || 1)}`;
 }
+
+// Keep the durable Thread number even when a provider title must be truncated.
+export function workspaceProviderThreadTitle(workspace, stream, position) {
+  const text = (value) => String(value ?? "").replace(/\s+/gu, " ").trim();
+  const workspaceName = text(workspace?.name);
+  if (!workspaceName || !stream?.id || !Number.isSafeInteger(position) || position < 1) {
+    throw new Error("Workspace, Stream and durable Thread position are required");
+  }
+  const number = ` ${position}`;
+  const streamName = (text(stream.name) || `Поток ${Math.max(1, Number(stream.ordinal) || 1)}`)
+    .slice(0, 80 - number.length - 4);
+  const suffix = ` - ${streamName}${number}`;
+  return `${workspaceName.slice(0, 80 - suffix.length)}${suffix}`;
+}

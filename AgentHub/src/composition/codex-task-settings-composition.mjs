@@ -12,6 +12,7 @@ export function createCodexTaskSettingsComposition({
   saveState,
   codexModelLabel,
   reasoningLabels,
+  recoverThreadNaming = async () => null,
 }) {
   function codexThreadResponseTitle(thread) {
     return String(thread?.name ?? thread?.preview ?? "")
@@ -31,6 +32,8 @@ export function createCodexTaskSettingsComposition({
   }
 
   async function resolveResumedCodexThreadTitle(id, thread) {
+    const recoveredNaming = await recoverThreadNaming({ provider: "codex", threadId: id }, thread);
+    if (recoveredNaming) return recoveredNaming;
     const resumedTitle = codexThreadResponseTitle(thread);
     const pinnedTitle = pinnedTaskTitle("codex", id);
     if (pinnedTitle) {

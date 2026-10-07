@@ -23,6 +23,20 @@ function dependencies({ sendRpc, events, resumeCodexThread = async () => {} }) {
   };
 }
 
+test("normal resume delegates pending naming to the same owner before legacy title reconciliation", async () => {
+  const calls = [];
+  const composition = createCodexTaskSettingsComposition({
+    ...dependencies({ events: [], sendRpc: async () => assert.fail("second naming path") }),
+    readCodexThreadTitleHistory: async () => assert.fail("pending name must not use payload/history"),
+    recoverThreadNaming: async (reference, observed) => {
+      calls.push([reference, observed]); return "Workspace - S8 4";
+    },
+  });
+  const observed = { id: "exact-thread", name: '{"kind":"interstream"}' };
+  assert.equal(await composition.resolveResumedCodexThreadTitle("exact-thread", observed), "Workspace - S8 4");
+  assert.deepEqual(calls, [[{ provider: "codex", threadId: "exact-thread" }, observed]]);
+});
+
 test("Codex task settings persist metadata only after provider acceptance", async () => {
   const events = [];
   const composition = createCodexTaskSettingsComposition(dependencies({

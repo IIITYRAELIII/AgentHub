@@ -35,6 +35,7 @@ export class CodexProviderTaskService {
   #clearLatestDiff;
   #saveState;
   #nameCreatedThread;
+  #pendingCreatedThread;
   #discoverLocalTasks;
   #logWarn;
 
@@ -57,6 +58,7 @@ export class CodexProviderTaskService {
     this.#clearLatestDiff = requiredFunction(options.clearLatestDiff, "clearLatestDiff");
     this.#saveState = requiredFunction(options.saveState, "saveState");
     this.#nameCreatedThread = options.nameCreatedThread;
+    this.#pendingCreatedThread = options.pendingCreatedThread ?? (() => null);
     this.#discoverLocalTasks = options.discoverLocalTasks ?? null;
     if (this.#discoverLocalTasks !== null && typeof this.#discoverLocalTasks !== "function") {
       throw new TypeError("discoverLocalTasks must be a function");
@@ -67,7 +69,8 @@ export class CodexProviderTaskService {
   async createTask() {
     const projectRoot = this.#activeProjectRoot();
     const streamId = this.#selection.streamId;
-    const result = await this.#sendRpc("thread/start", {
+    const pending = this.#pendingCreatedThread({ provider: "codex", streamId });
+    const result = pending ? { thread: { id: pending.threadId } } : await this.#sendRpc("thread/start", {
       cwd: projectRoot,
       model: this.#model() || undefined,
       ...codexThreadSandboxSettings(this.#sandboxMode()),
@@ -85,15 +88,26 @@ export class CodexProviderTaskService {
       provider: "codex",
       streamId,
     });
-    this.#clearLatestDiff();
-    await this.#saveState();
-    this.#invalidateCatalog();
-    this.#restoreSettings(threadId, { inheritCurrent: true });
-    await this.#updateSettings();
-    if (typeof this.#nameCreatedThread !== "function") throw new Error("Hub Thread naming is not configured");
-    const title = await this.#nameCreatedThread({ provider: "codex", threadId, streamId, projectRoot });
-    this.#selection.setTitle(title);
-    await this.#saveState();
+    let setupError;
+    let namingError;
+    let title;
+    try {
+      this.#clearLatestDiff();
+      await this.#saveState();
+      this.#invalidateCatalog();
+      this.#restoreSettings(threadId, { inheritCurrent: true });
+      await this.#updateSettings();
+    } catch (error) { setupError = error; }
+    try {
+      if (typeof this.#nameCreatedThread !== "function") throw new Error("Hub Thread naming is not configured");
+      title = await this.#nameCreatedThread({ provider: "codex", threadId, streamId, projectRoot, recovering: Boolean(pending) });
+      if (this.#selection.threadId === threadId) this.#selection.setTitle(title);
+      await this.#saveState();
+    } catch (error) { namingError = error; }
+    if (setupError && namingError) {
+      throw new AggregateError([setupError, namingError], "Thread setup and naming both failed");
+    }
+    if (setupError || namingError) throw setupError ?? namingError;
     return {
       provider: "codex",
       threadId,
@@ -154,6 +168,9 @@ export class ClaudeProviderTaskService {
   #activeProjectRoot;
   #clearLatestDiff;
   #saveState;
+  #bindCreatedThread;
+  #nameCreatedThread;
+  #pendingCreatedThread;
 
   constructor(options = {}) {
     this.#selection = options.selection;
@@ -161,14 +178,21 @@ export class ClaudeProviderTaskService {
     this.#activeProjectRoot = requiredFunction(options.activeProjectRoot, "activeProjectRoot");
     this.#clearLatestDiff = requiredFunction(options.clearLatestDiff, "clearLatestDiff");
     this.#saveState = requiredFunction(options.saveState, "saveState");
+    this.#bindCreatedThread = requiredFunction(options.bindCreatedThread, "bindCreatedThread");
+    this.#nameCreatedThread = requiredFunction(options.nameCreatedThread, "nameCreatedThread");
+    this.#pendingCreatedThread = options.pendingCreatedThread ?? (() => null);
   }
 
   async createTask() {
-    const threadId = randomUUID();
+    const streamId = this.#selection.streamId;
+    const pending = this.#pendingCreatedThread({ provider: "claude", streamId });
+    const threadId = pending?.threadId ?? randomUUID();
+    await this.#bindCreatedThread({ provider: "claude", threadId, streamId, projectRoot: this.#activeProjectRoot() });
+    const title = await this.#nameCreatedThread({ provider: "claude", threadId, recovering: Boolean(pending) });
     this.#selection.setThread(threadId, {
       provider: "claude",
       streamId: this.#selection.streamId,
-      title: "Новый поток Claude",
+      title,
     });
     this.#clearLatestDiff();
     await this.#saveState();
@@ -176,7 +200,7 @@ export class ClaudeProviderTaskService {
       provider: "claude",
       threadId,
       projectRoot: this.#activeProjectRoot(),
-      title: "Новый поток Claude",
+      title,
     };
   }
 }

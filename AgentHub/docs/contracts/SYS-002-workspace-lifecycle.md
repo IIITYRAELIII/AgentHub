@@ -65,14 +65,42 @@ See ADR-0067.
 
 ## Provider Thread names
 
-- A new Hub-created Codex Thread uses `Workspace — Поток N`, where the number
-  is the bound Stream's durable ordinal. An explicitly named Stream contributes
-  its exact name instead of `Поток N`, including when it is the only Stream.
+- A new Hub-created Thread uses `Workspace - Stream N` (ASCII hyphen). An
+  explicitly named Stream contributes its name; an unnamed Stream uses
+  `Поток <Stream ordinal>`. N is the exact binding's durable `position`, not the
+  Stream ordinal or a number parsed from a title. Whitespace is normalized and
+  the 80-character bound preserves the numeric suffix.
   Workspace/Stream UUIDs, the first message and transport timestamps are not
   naming sources. Creating a Thread never renames its Workspace implicitly.
-- The durable Workspace/Stream binding precedes the provider name write. The
-  existing pinned-title and expected-title stores retain the intended name for
-  normal catalog reconciliation; naming introduces no second identity owner.
+- The catalog allocates position, advances its high-water and persists the exact
+  naming intent in one transaction before a provider name write. First allocation
+  initializes high-water from max confirmed current positions (new Stream: 0).
+  This explicit legacy baseline cannot recover unknown deleted/moved history.
+  Replay of an exact binding consumes nothing. Rebind/split preserve source
+  high-water and allocate target positions through the same catalog owner;
+  gaps remain valid ordering keys. Moving an existing Thread is not creation
+  and supersedes an unfinished intent without automatically renaming it.
+  Naming revalidates that exact binding/intent after each asynchronous step and
+  before another provider dispatch or title projection. Supersession cancels
+  further effects with an explicit authority-changed error, not a pending retry.
+  A provider write dispatched while authority was valid cannot be recalled;
+  its late acknowledgement/readback does not authorize stale local projections
+  or an automatic corrective rename. No SQLite transaction spans provider I/O.
+- The existing naming service owns create, rotation and pending-name recovery
+  on normal resume or before first input. Codex requires `thread/name/set` and
+  exact metadata-only `thread/read` name/identity confirmation before completion.
+  Lost replies retain the intent and read back that same Thread, never create
+  another or increment N. An unconfirmed name blocks provider input and remains
+  a visible naming error; independent settings/projection errors are preserved.
+  Resume timeout or post-resume naming failure does not authorize replacement;
+  definitive resume-not-found or wrong-project evidence retains legitimate
+  startup recovery. No timer, table sweep or second recovery owner is added.
+- Pinned/expected titles remain projections. Claude receives the same canonical
+  Hub name with explicit `providerRename=unsupported`, not a false native-rename
+  success, transient error or permanent pending retry. No provider DB/transcript
+  writes are introduced. Legacy/discovered bindings without an intent and
+  completed explicit custom titles are not automatically renamed. Bounded
+  legacy correction requires an exact preview and explicit supported rename.
 - Rotation transfers the compaction result and only the ordered suffix of the
   compacted turn after that exact compaction: turn items before it are already
   represented by the compaction and are never transferred again. The boundary
@@ -89,8 +117,9 @@ See ADR-0067.
   rotation is not retried for the same compaction.
 - The successful `rebirth` binding owns the target's managed title through normal
   Workspace/Stream naming. Existing explicit custom titles remain preserved;
-  discovered foreign Threads are not renamed. No measurement-specific title
-  repair, startup scan or provider call is added.
+  discovered foreign Threads are not renamed. Rotation's confirmed naming uses
+  the same owner as creation; no measurement-specific repair or startup scan
+  is added. Selection, client and deferred titles retain the canonical name.
 - The post-compaction percentage is a preliminary provider estimate. It belongs
   to the same exact Thread, turn and current compaction, requires a finite
   observation timestamp at or after the compaction boundary, and is labelled
