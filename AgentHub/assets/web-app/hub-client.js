@@ -170,6 +170,16 @@ const sendTaskGenerationById = new Map();
 let messageRenderBatchDepth = 0;
 const MAX_OUTGOING_MESSAGES_PER_TASK = 100;
 const acknowledgedFinalByTask = new Map();
+const confirmedReadCursorByThread = new Map();
+const readMarker = window.AgentHubReadMarker;
+const READ_MARKER_CODE = "hub291.read-marker.3";
+const readMarkerDocumentId = commandTrace.newId();
+function retainReadMarker(map, key, value) {
+  const replaced = map.get(key);
+  if (replaced !== value && replaced?.phase === "paint") cancelReadPaint(key, replaced, "superseded");
+  map.delete(key);
+  map.set(key, value);
+}
 const { isUserRunningProjection, projectCanonicalMessages } = window.AgentHubMessageProjection;
 const {
   activeRunSubmissionTiming,
@@ -1186,6 +1196,7 @@ function renderTaskMessagesContent(taskIdValue, { preserveScroll, exactNavigatio
     agentHub.setMessagesForExactNavigation(taskIdValue, messages, exactNavigation);
   } else if (preserveScroll) agentHub.setMessagesPreservingScroll(taskIdValue, messages);
   else agentHub.setMessages(taskIdValue, messages);
+  considerDisplayedFinal(taskIdValue);
   return messages;
 }
 
@@ -1384,7 +1395,10 @@ function bridgeCallOnce(action, params = {}) {
   return new Promise((resolve, reject) => {
     const timer = window.setTimeout(() => {
       pendingBridgeCalls.delete(id);
-      reject(markConnectionFailure(new Error("Agent Hub в VS Code не ответил вовремя")));
+      const error = new Error("Agent Hub в VS Code не ответил вовремя");
+      error.name = "TimeoutError";
+      error.code = "AGENT_HUB_CONTROL_TIMEOUT";
+      reject(markConnectionFailure(error));
     }, LONG_CONTROL_ACTIONS.has(action)
       ? LONG_CONTROL_TIMEOUT_MS
       : action === "send-message"
@@ -1770,7 +1784,9 @@ function modelTask(task, snapshot, effectiveSelectedId, serverSelectedId) {
   const answerAt = Date.parse(task.lastAnswerAt ?? "") || 0;
   const running = window.AgentHubStreamTabs.isExactActiveUserTurn(task);
   const unknown = task.activityUnknown === true;
-  const unread = task.unread === true;
+  const unread = task.unread === true && !readMarker.cursorCovers(
+    task.latestFinal, confirmedReadCursorByThread.get(readMarker.threadIdentity(task.latestFinal)),
+  );
   const serverSelected = id === serverSelectedId;
   const executionOwner = task.run?.executionOwner ?? task.executionOwner ?? "";
   const runtimeTitle = task.run?.runtime ?? task.runtime ?? "";
@@ -2269,6 +2285,34 @@ function applySnapshotContent(snapshot, { materialized = false } = {}) {
       appliedSnapshotGeneration += 1;
     }
     lastSnapshot = snapshot;
+    const representativeTasks = representativeSnapshotTasks(snapshot.tasks);
+    // Pending/retry identities belong to the current canonical final. Capacity
+    // pressure must never create a second operation for that same read.
+    const currentReadTasks = new Map(representativeTasks.map((task) => [
+      taskId(task.provider, task.threadId, task.streamId), task,
+    ]));
+    for (const [id, entry] of acknowledgedFinalByTask) {
+      const current = currentReadTasks.get(id);
+      const currentFinal = readMarker.finalIdentity(current?.latestFinal);
+      if (current && String(current.provider ?? "").trim().toLowerCase() === String(entry.final.provider).trim().toLowerCase()
+        && String(current.threadId ?? "").trim() === String(entry.final.threadId).trim()
+        && (!currentFinal || currentFinal === entry.identity)) continue;
+      if (entry.phase === "paint") cancelReadPaint(id, entry, "superseded");
+      acknowledgedFinalByTask.delete(id);
+    }
+    // Receipt mirrors are bounded by the canonical conversation collection,
+    // not an arbitrary LRU that could revive one of its acknowledged answers.
+    const readThreads = new Set((snapshot.tasks ?? []).map((task) => (
+      [String(task.provider ?? "").trim().toLowerCase(), String(task.threadId ?? "").trim()].join("\0")
+    )));
+    for (const key of confirmedReadCursorByThread.keys()) if (!readThreads.has(key)) confirmedReadCursorByThread.delete(key);
+    for (const task of snapshot.tasks ?? []) {
+      const receipt = { final: task.latestFinal, cursor: task.readCursor };
+      if (!readMarker.cursorCovers(task.latestFinal, receipt)) continue;
+      const key = readMarker.threadIdentity(task.latestFinal);
+      retainReadMarker(confirmedReadCursorByThread, key,
+        readMarker.newerReceipt(confirmedReadCursorByThread.get(key), receipt));
+    }
     for (const session of attachmentSendSessions.values()) {
       try { assertCurrentSendTaskOperation(session.operation); }
       catch (error) {
@@ -2277,7 +2321,6 @@ function applySnapshotContent(snapshot, { materialized = false } = {}) {
         session.resume?.();
       }
     }
-    const representativeTasks = representativeSnapshotTasks(snapshot.tasks);
     agentHub.setExchangeRates(snapshot.exchangeRates ?? null);
     agentHub.setServerStatus(snapshot.server ?? null);
     agentHub.setWorkspaces(snapshot.workspaces ?? [], snapshot.boardLayout?.columnOrder ?? []);
@@ -2438,6 +2481,7 @@ function applySnapshotContent(snapshot, { materialized = false } = {}) {
     selectedDraft?.streamSettings,
   ));
   applySnapshotConnection(snapshot);
+  considerDisplayedFinal(selectedTaskId);
 }
 
 function applySnapshotConnection(snapshot, idleStatus = "online") {
@@ -2850,20 +2894,6 @@ function applyOpened(result, {
   syncHistoryPagination(id);
   const renderedMessages = renderTaskMessages(id, { preserveScroll, exactNavigation });
   renderTaskQueue(id, lastSnapshot);
-  const acknowledgementSnapshot = lastSnapshot;
-  const acknowledgementTask = (acknowledgementSnapshot?.tasks ?? []).find((item) => taskId(
-    item.provider,
-    item.threadId,
-    item.streamId,
-  ) === id);
-  if (displayedFinalAcknowledgement({
-    messages: renderedMessages,
-    final: acknowledgementTask?.latestFinal,
-    focusedTurn: result.focusedTurn,
-    selectTask,
-    selectedTaskId,
-    taskId: id,
-  })) acknowledgeDisplayedFinal(id, acknowledgementSnapshot);
   if (result.focusedMessage && !exactNavigation) {
     window.requestAnimationFrame(() => agentHub.focusMessage?.({
       turnId: result.focusedMessage.turnId,
@@ -2883,32 +2913,116 @@ function applyOpened(result, {
   updateHistoryCatchUp(id, history, task);
 }
 
-function acknowledgeDisplayedFinal(id, snapshot) {
-  if (document.visibilityState !== "visible") return;
-  const task = (snapshot?.tasks ?? []).find((item) => taskId(
-    item.provider,
-    item.threadId,
-    item.streamId,
-  ) === id);
+function readMarkerMetadata(id, final) {
+  return { streamId: id, provider: final.provider, threadId: final.threadId,
+    turnId: final.turnId, terminalRevision: Number(final.revision),
+    codeMarker: READ_MARKER_CODE, documentId: readMarkerDocumentId,
+    instanceId: lastSnapshot?.server?.process?.instanceId,
+    releaseId: lastSnapshot?.server?.process?.releaseId };
+}
+
+function displayedReadCard(id, final) {
+  if (document.visibilityState !== "visible" || document.documentElement.dataset.view !== "chat"
+    || selectedTaskId !== id || focusedHistoryWindowByTask.has(id)) return null;
+  const current = snapshotTask(lastSnapshot, id)?.latestFinal;
+  if (readMarker.finalIdentity(current) !== readMarker.finalIdentity(final)) return null;
+  // Only canonical opened history proves the exact final, never snapshot arrival.
+  if (!displayedFinalAcknowledgement({ messages: historyWindowByTask.get(id), final,
+    selectedTaskId, taskId: id })) return null;
+  const pane = document.querySelector("[data-chat-pane]");
+  if (pane?.dataset.streamChatTaskId !== id || !pane.getClientRects().length) return null;
+  return [...pane.querySelectorAll("[data-role='agent'][data-turn-id]")].find((node) => (
+    node.dataset.provider === final.provider && node.dataset.threadId === final.threadId
+    && node.dataset.turnId === final.turnId && Number(node.dataset.terminalRevision) === Number(final.revision)
+    && node.getClientRects().length
+  )) ?? null;
+}
+
+function projectReadReceipt(id, entry) {
+  const current = snapshotTask(lastSnapshot, id);
+  if (!current) return;
+  const model = modelTask(current, lastSnapshot, selectedTaskId, selectedTaskId);
+  agentHub.patchTask(id, { unread: model.unread, status: model.status, statusLabel: model.statusLabel });
+  commandTrace.afterPaint("ui-render", "read-marker-clear", entry.viewedAt, entry.commandId,
+    readMarkerMetadata(id, entry.final), () => {
+      if (readMarker.finalIdentity(snapshotTask(lastSnapshot, id)?.latestFinal) !== entry.identity) {
+        return { outcome: "cancelled", metadata: { render: "superseded" } };
+      }
+      const tabs = [...document.querySelectorAll("[data-stream-task-id]")].filter((node) => node.dataset.streamTaskId === id);
+      const cards = [...document.querySelectorAll("[data-activity-task-id]")].filter((node) => node.dataset.activityTaskId === id);
+      const tabReady = tabs.some((node) => node.hasAttribute("data-answer-ready"));
+      const cardReady = cards.some((node) => node.hasAttribute("data-answer-ready"));
+      return { outcome: !tabReady && !cardReady && tabs.length ? "succeeded" : "cancelled",
+        metadata: { render: !tabReady && !cardReady ? "cleared" : "pending",
+          tabReady, cardReady, tabPresent: tabs.length > 0, cardPresent: cards.length > 0 } };
+    });
+}
+
+function considerDisplayedFinal(id) {
+  const task = snapshotTask(lastSnapshot, id);
   const final = task?.latestFinal;
-  if (!final?.provider || !final?.threadId || !final?.turnId || !Number(final?.revision)) return;
-  const identity = [final.provider, final.threadId, final.turnId, final.revision].join("\0");
-  if (acknowledgedFinalByTask.get(id) === identity) return;
-  acknowledgedFinalByTask.set(id, identity);
-  const acknowledge = () => {
-    void control("mark-task-read", { final }).then((result) => {
-      if (result?.marked === true && acknowledgedFinalByTask.get(id) === identity) {
-        agentHub.patchTask(id, { unread: false, status: "idle", statusLabel: "" });
+  const identity = readMarker.finalIdentity(final);
+  if (!identity || task.unread !== true || !displayedReadCard(id, final)
+    || readMarker.cursorCovers(final, confirmedReadCursorByThread.get(readMarker.threadIdentity(final)))) return;
+  let entry = acknowledgedFinalByTask.get(id);
+  if (entry?.identity === identity && ["paint", "pending", "confirmed"].includes(entry.phase)) return;
+  if (entry?.identity !== identity) {
+    entry = { identity, final: { ...final }, commandId: commandTrace.newId(), phase: "retry" };
+    retainReadMarker(acknowledgedFinalByTask, id, entry);
+  }
+  entry.phase = "paint";
+  entry.paintStarted = commandTrace.now();
+  commandTrace.record("ui-render", "read-marker-view", 0, entry.commandId,
+    readMarkerMetadata(id, final), Date.now(), "started");
+  // Read admission is independent of the diagnostic queue/paint cap.
+  entry.paintFrame = window.requestAnimationFrame(() => {
+    entry.paintFrame = window.requestAnimationFrame(() => {
+      entry.paintFrame = null;
+      const card = displayedReadCard(id, final);
+      if (!card || acknowledgedFinalByTask.get(id) !== entry || entry.phase !== "paint") {
+        cancelReadPaint(id, entry, "superseded");
         return;
       }
-      if (acknowledgedFinalByTask.get(id) === identity) acknowledgedFinalByTask.delete(id);
-      if (result?.reason === "stale-final") void refresh();
-    }).catch(() => {
-      if (acknowledgedFinalByTask.get(id) === identity) acknowledgedFinalByTask.delete(id);
+      entry.phase = "pending";
+      entry.viewedAt = commandTrace.now();
+      const rect = card.getBoundingClientRect();
+      void control("mark-task-read", { final: entry.final, streamId: id, clientTraceId: entry.commandId }).then((result) => {
+        const confirmed = result?.marked === true
+          && readMarker.finalIdentity(result.final) === entry.identity
+          && readMarker.cursorCovers(entry.final, result);
+        commandTrace.record("ui-render", "read-marker-receipt", commandTrace.now() - entry.viewedAt,
+          entry.commandId, { ...readMarkerMetadata(id, final), render: confirmed ? "confirmed" : "unconfirmed" });
+        entry.phase = confirmed ? "confirmed" : "retry";
+        if (confirmed) {
+          const key = readMarker.threadIdentity(final);
+          if ((lastSnapshot?.tasks ?? []).some((task) => task.provider === final.provider && task.threadId === final.threadId)) {
+            retainReadMarker(confirmedReadCursorByThread, key,
+              readMarker.newerReceipt(confirmedReadCursorByThread.get(key), { final: result.final, cursor: result.cursor }));
+          }
+          projectReadReceipt(id, entry);
+        } else if (result?.reason === "stale-final") void refresh();
+      }).catch(() => { entry.phase = "retry"; });
+      commandTrace.record("ui-render", "read-marker-view", commandTrace.now() - entry.paintStarted,
+        entry.commandId, { ...readMarkerMetadata(id, final), render: "viewed",
+          viewport: rect.bottom > 0 && rect.top < innerHeight && rect.right > 0 && rect.left < innerWidth });
     });
-  };
-  window.requestAnimationFrame(() => window.requestAnimationFrame(acknowledge));
+  });
 }
+
+function cancelReadPaint(id, entry, render) {
+  if (entry.paintFrame != null) window.cancelAnimationFrame(entry.paintFrame);
+  entry.paintFrame = null;
+  entry.phase = "retry";
+  commandTrace.record("ui-render", "read-marker-view", commandTrace.now() - entry.paintStarted,
+    entry.commandId, { ...readMarkerMetadata(id, entry.final), render }, Date.now(), "cancelled");
+}
+
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState !== "visible") {
+    for (const [id, entry] of acknowledgedFinalByTask) if (entry.phase === "paint") cancelReadPaint(id, entry, "hidden");
+  }
+  if (document.visibilityState === "visible") considerDisplayedFinal(selectedTaskId);
+});
 
 function annotatedText(text, annotations) {
   return responseAnnotationPrompt(text, annotations);
@@ -5170,6 +5284,7 @@ async function refresh({ reportError = false } = {}) {
     if (snapshotResult?.notModified === true) {
       resetConnectionFailures();
       applySnapshotConnection(snapshot);
+      considerDisplayedFinal(selectedTaskId);
     } else {
       applySnapshot(snapshot, { materialized: true });
     }

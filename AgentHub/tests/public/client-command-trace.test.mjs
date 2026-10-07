@@ -25,6 +25,26 @@ function fixture() {
     hide: () => { window.document.hidden = true; listeners.get("visibilitychange")?.(); } };
 }
 
+test("after-paint observer cancels an obsolete display and read metadata remains content-free", async () => {
+  const { trace, frames } = fixture();
+  const events = [];
+  trace.bindReporter(async (batch) => events.push(...batch.events));
+  trace.afterPaint("ui-render", "read-marker-clear", 10, "original-read", {
+    provider: "codex", threadId: "thread", turnId: "turn", terminalRevision: 2,
+    streamId: "stream", documentId: "document", codeMarker: "hub291.read-marker.1",
+    text: "PRIVATE", url: "PRIVATE", token: "PRIVATE",
+  }, () => ({ outcome: "cancelled", metadata: { render: "superseded", tabReady: true, cardReady: true } }));
+  frames.shift()(); frames.shift()();
+  await trace.flush();
+  const spans = clientPerformanceTraceSpans({ events });
+  assert.equal(spans.at(-1).outcome, "cancelled");
+  assert.equal(spans.at(-1).metadata.render, "superseded");
+  assert.equal(spans.at(-1).metadata.threadId, "thread");
+  assert.equal(spans.at(-1).metadata.terminalRevision, 2);
+  assert.equal(spans.at(-1).metadata.codeMarker, "hub291.read-marker.1");
+  assert.doesNotMatch(JSON.stringify(spans), /PRIVATE/u);
+});
+
 test("client trace batches are bounded and do not hold the measured result behind a stalled reporter", async () => {
   const { trace, advance } = fixture();
   let release;

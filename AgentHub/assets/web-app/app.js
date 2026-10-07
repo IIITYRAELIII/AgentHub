@@ -6603,6 +6603,9 @@ function patchRenderedMessage(node, message) {
   if (!article) return;
   article.dataset.messageId = message.id ?? "";
   article.dataset.turnId = message.turnId ?? "";
+  article.dataset.provider = message.provider ?? article.dataset.provider ?? "";
+  article.dataset.threadId = message.threadId ?? "";
+  article.dataset.terminalRevision = String(Number(message.terminalRevision) || 0);
   article.dataset.itemId = message.itemId ?? "";
   article.dataset.deliveryState = message.deliveryState ?? "";
   const role = message.role === "user" ? "user" : message.role === "system" ? "system" : "agent";
@@ -7613,6 +7616,8 @@ function renderMessage(message, { readOnly = false, task = currentTask() } = {})
     "data-role": role,
     "data-message-id": message.id ?? "",
     "data-turn-id": message.turnId ?? "",
+    "data-thread-id": message.threadId ?? "",
+    "data-terminal-revision": String(Number(message.terminalRevision) || 0),
     "data-item-id": message.itemId ?? "",
     "data-message-key": message.messageKey ?? "",
     "data-delivery-state": message.deliveryState ?? "",
