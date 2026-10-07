@@ -798,6 +798,22 @@ evidence and the current Task status unchanged.
 
 ## Task Git reference and CAS
 
+Ordinary expected revision/status refusal before lifecycle admission seals a
+bounded `NO_EFFECT` outcome through the existing Task SQLite owner. It cannot
+overwrite an admitted/terminal operation or authorize replay. Fresh-intake and
+lease authority must still hold, and preparation/effects must not have started.
+The MCP classifier/startup/canonical original-ID reconciler use the exact sealed
+identity, not an error string or present-day Task/Git state. A crash between that
+outcome and receipt settlement never requires repeating the refused operation.
+Exact immutable refusal settlement is only the existing SQLite receipt CAS,
+including database-only/null-root workspaces; it does not acquire release/Git
+authority or invoke recovery. Ordinary Git reconciliation keeps its existing
+workflow, root, process guard and owner requirements.
+Legacy missing-admission UNKNOWN without this evidence remains UNKNOWN; no manual
+certificate, guard bypass, SQL repair or historical effects inference is allowed.
+The reconciler's own proven pre-effect refusal is terminal without altering the
+original ambiguous operation. See MCP-001 and ADR-0085.
+
 The server-side Git boundary owns:
 
 - the Task-number branch;

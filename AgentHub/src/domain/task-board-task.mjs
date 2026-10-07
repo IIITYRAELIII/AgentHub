@@ -1,3 +1,5 @@
+import { mcpArgumentsHash } from "./mcp-arguments-hash.mjs";
+
 export const TASK_BUCKETS = Object.freeze(["backlog", "workspace", "notes"]);
 export const TASK_STATUSES = Object.freeze(["open", "started", "done"]);
 export const TASK_WORKFLOW_STATUSES = Object.freeze([
@@ -24,6 +26,58 @@ export class TaskLifecycleBeginRejectedError extends Error {
     super(message);
     this.code = "TASK_LIFECYCLE_BEGIN_REJECTED";
   }
+}
+
+export class TaskLifecycleNoEffectError extends Error {
+  constructor(evidence) {
+    super(evidence.code === "WORKFLOW_REVISION_CHANGED"
+      ? "Task workflow cutover revision changed" : "Task workflow cutover status changed");
+    this.code = "TASK_WORKFLOW_NO_EFFECT";
+  }
+}
+
+export class TaskOperationReconciliationRefusedError extends Error {
+  constructor(cause) {
+    super(cause.message, { cause });
+    this.code = "TASK_RECONCILIATION_REFUSED";
+  }
+}
+
+// Only the existing lifecycle owner writes this outcome. Neither an error string
+// nor an absent transition is a certificate; the exact admitted MCP identity is
+// sealed with the observed CAS refusal before any workflow effects.
+export function workflowAdmissionNoEffectEvidence(outcome, receipt) {
+  const proof = outcome?.result?.noEffect;
+  if (!proof || proof.version !== 1 || outcome.kind !== "workflow"
+      || outcome.operationId !== receipt?.requestId || outcome.taskId !== proof.taskId
+      || receipt.toolName !== "hub_task_status_update") return null;
+  for (const key of ["requestId", "workspaceId", "streamId", "provider", "threadId", "toolName", "argumentsHash"]) {
+    if (typeof proof[key] !== "string" || !proof[key] || proof[key].length > 200
+        || proof[key].includes("\0") || proof[key] !== receipt[key]) return null;
+  }
+  if (!/^[a-f0-9]{64}$/u.test(proof.argumentsHash)
+      || proof.createdAtMs !== receipt.createdAtMs
+      || !Number.isSafeInteger(proof.createdAtMs)
+      || typeof proof.taskId !== "string" || !proof.taskId || proof.taskId.length > 200
+      || (proof.projectRoot !== null && (typeof proof.projectRoot !== "string" || !proof.projectRoot
+        || proof.projectRoot.length > 2000 || proof.projectRoot.includes("\0")))
+      || !TASK_WORKFLOW_STATUSES.includes(proof.targetWorkflowStatus)
+      || !TASK_WORKFLOW_STATUSES.includes(proof.observedWorkflowStatus)
+      || !Number.isSafeInteger(proof.observedRevision) || proof.observedRevision < 1
+      || (proof.expectedRevision !== null && (!Number.isSafeInteger(proof.expectedRevision) || proof.expectedRevision < 1))
+      || (proof.expectedWorkflowStatus !== null && !TASK_WORKFLOW_STATUSES.includes(proof.expectedWorkflowStatus))) return null;
+  if (proof.argumentsHash !== mcpArgumentsHash({
+    request_id: proof.requestId, task_id: proof.taskId, status: proof.targetWorkflowStatus,
+    ...(proof.expectedRevision !== null ? { expected_task_revision: proof.expectedRevision } : {}),
+    ...(proof.expectedWorkflowStatus !== null ? { expected_workflow_status: proof.expectedWorkflowStatus } : {}),
+  })) return null;
+  if (proof.code === "WORKFLOW_REVISION_CHANGED") {
+    return proof.expectedRevision !== null && proof.expectedRevision !== proof.observedRevision ? proof : null;
+  }
+  if (proof.code === "WORKFLOW_STATUS_CHANGED") {
+    return proof.expectedWorkflowStatus !== null && proof.expectedWorkflowStatus !== proof.observedWorkflowStatus ? proof : null;
+  }
+  return null;
 }
 
 export class TaskDependencyPendingError extends Error {

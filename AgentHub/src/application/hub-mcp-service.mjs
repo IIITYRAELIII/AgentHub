@@ -25,6 +25,9 @@ import {
   TASK_TITLE_MAX_LENGTH,
   TaskDependencyPendingError,
   TaskLifecycleBeginRejectedError,
+  TaskLifecycleNoEffectError,
+  TaskOperationReconciliationRefusedError,
+  workflowAdmissionNoEffectEvidence,
   ReleaseCandidateFrozenError,
   TaskAbsorptionCompositionError,
 } from "../domain/task-board-task.mjs";
@@ -526,6 +529,18 @@ export class HubMcpService {
       const transition = expectedKind ? this.taskBoard.lifecycleTransition?.(receipt.requestId) : null;
       const outcome = expectedKind ? this.taskBoard.lifecycleOutcome?.(receipt.requestId) : null;
       const exactOutcome = outcome?.operationId === receipt.requestId && outcome?.kind === expectedKind;
+      if (outcome?.result?.noEffect) {
+        const proof = !transition && workflowAdmissionNoEffectEvidence(outcome, receipt);
+        if (proof) {
+          await this.workspaceCatalog.failMcpOperation(receipt.requestId, new TaskLifecycleNoEffectError(proof), {
+            outcome: "NO_EFFECT", evidence: proof,
+          });
+        } else {
+          await this.workspaceCatalog.markMcpOperationUnknown(receipt.requestId, new Error("Workflow refusal identity is not authoritative"));
+        }
+        reconciled += 1;
+        continue;
+      }
       if (exactOutcome) {
         if (expectedKind === "workflow" && outcome.result?.rollback?.completed === true) {
           await this.workspaceCatalog.failMcpOperation(
@@ -739,7 +754,7 @@ export class HubMcpService {
       tool("hub_task_operation_reconcile", "Release Manager-only reconciliation of one exact unknown Task workflow operation. A real unresolved process guard requires trusted proof; exact pending withdrawal or squash state can reconcile without inventing one. An already terminal lifecycle settles its original receipt without Git replay.", {
         task_id: { type: "string" },
         operation_request_id: { type: "string" },
-        project_root: { type: "string" },
+        project_root: { type: "string", description: "Required for Git reconciliation or an owner refusal with a recorded root. May be omitted only for an exact durable pre-admission refusal whose recorded root is null; a supplied locator grants no Git authority in that case." },
         guard_id: { type: "string", description: "Required for an actually guarded pending operation. Exact persisted Task withdrawal or squash state without a process guard can reconcile without it." },
         proof_kind: { type: "string", enum: ["system-restart-after-guard"], description: "Required when recovering a process-tree guard." },
         proof_summary: { type: "string", description: "Required when recovering a process-tree guard." },
@@ -771,7 +786,7 @@ export class HubMcpService {
         selected_preview_request_id: { type: "string" },
         expected_selected_preview_hash: { type: "string", pattern: "^[0-9a-f]{64}$" },
         confirm_reconcile: { type: "boolean", description: "Must be true because this settles the original unknown receipt and may recover a guarded process boundary." },
-      }, ["task_id", "operation_request_id", "project_root", "confirm_reconcile"]),
+      }, ["task_id", "operation_request_id", "confirm_reconcile"]),
       tool("hub_task_legacy_git_adopt", "Release Manager-only migration for a legacy Await Task with no Git reference. It verifies terminal Stream evidence and exact non-changelog patch equivalence to a named commit already in local main before recording immutable Task evidence.", {
         task_id: { type: "string" },
         expected_task_revision: { type: "integer", minimum: 1 },
@@ -883,7 +898,7 @@ export class HubMcpService {
     const context = this.#authorize(args.context_token);
     const toolName = String(name ?? "");
     if (MUTATING_TOOLS.has(toolName)) {
-      const operation = () => this.#dispatch(context, toolName, args);
+      const operation = (admissionReceipt) => this.#dispatch({ ...context, admissionReceipt }, toolName, args);
       return this.#mutate(context, toolName, args, operation);
     }
     return this.#dispatch(context, toolName, args);
@@ -1007,9 +1022,12 @@ export class HubMcpService {
       case "hub_task_status_update":
         return this.#updateTaskWorkflowStatus(context, args);
       case "hub_task_operation_reconcile":
-        if (!this.#isReleaseManager(context)) throw new Error("Task operation reconciliation requires a Release Manager Stream");
-        if (args.confirm_reconcile !== true) throw new Error("Task operation reconciliation requires explicit confirmation");
-        if (!this.taskOperationReconciliation) throw new Error("Task operation reconciliation is unavailable");
+        if (!this.#isReleaseManager(context)) throw new TaskOperationReconciliationRefusedError(new Error("Task operation reconciliation requires a Release Manager Stream"));
+        if (args.confirm_reconcile !== true) throw new TaskOperationReconciliationRefusedError(new Error("Task operation reconciliation requires explicit confirmation"));
+        if (!this.taskOperationReconciliation) throw new TaskOperationReconciliationRefusedError(new Error("Task operation reconciliation is unavailable"));
+        if (this.#pendingMutations.has(args.operation_request_id)) {
+          throw new TaskOperationReconciliationRefusedError(new Error("Original workflow worker is still active"));
+        }
         return this.taskOperationReconciliation.reconcileUnknownWorkflow({
           workspaceId: context.workspaceId,
           taskId: args.task_id,
@@ -1596,6 +1614,7 @@ export class HubMcpService {
       ),
       expectedRevision,
       expectedWorkflowStatus,
+      admissionReceipt: context.admissionReceipt ?? null,
     };
     const result = source
       ? await this.taskLifecycle.updateWorkflowStatusFromSource(options, source)
@@ -2320,7 +2339,9 @@ export class HubMcpService {
             return reconciled;
           }
         }
-        const result = await operation();
+        const existingRefusal = toolName === "hub_task_status_update" ? this.#workflowAdmissionRefusal(started) : null;
+        if (existingRefusal) throw new TaskLifecycleNoEffectError(existingRefusal);
+        const result = await operation(started);
         effectCompleted = true;
         await this.workspaceCatalog.completeMcpOperation(requestId, result);
         return result;
@@ -2343,6 +2364,21 @@ export class HubMcpService {
             new Error(`effect completed but durable receipt failed: ${error.message}`),
           )).catch(() => {});
           throw new Error(`MCP effect completed but receipt reconciliation is required for request_id ${requestId}`);
+        }
+        const workflowRefusal = toolName === "hub_task_status_update" ? this.#workflowAdmissionRefusal(started) : null;
+        const reconciliationRefusal = toolName === "hub_task_operation_reconcile"
+          && error instanceof TaskOperationReconciliationRefusedError;
+        if (workflowRefusal || reconciliationRefusal) {
+          try {
+            await this.workspaceCatalog.failMcpOperation(requestId, error, {
+              outcome: "NO_EFFECT",
+              ...(workflowRefusal ? { evidence: workflowRefusal } : { code: error.code }),
+            });
+          } catch (settlementError) {
+            await Promise.resolve(this.workspaceCatalog.markMcpOperationUnknown?.(requestId, settlementError)).catch(() => {});
+            throw settlementError;
+          }
+          throw error;
         }
         if (error instanceof TaskInputValidationError || error instanceof TaskIntegrationConflictError || error instanceof TaskAwaitIntegrationError
             || error instanceof TaskDependencyPendingError || error instanceof TaskWithdrawalDependencyError
@@ -2376,6 +2412,11 @@ export class HubMcpService {
     })();
     this.#pendingMutations.set(requestId, pending);
     return pending;
+  }
+
+  #workflowAdmissionRefusal(receipt) {
+    if (this.taskBoard.lifecycleTransition?.(receipt.requestId)) return null;
+    return workflowAdmissionNoEffectEvidence(this.taskBoard.lifecycleOutcome?.(receipt.requestId), receipt);
   }
 
   async #reconcileClaimAdmissionNoEffect(context, args, receipt) {

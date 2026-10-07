@@ -152,6 +152,34 @@ change the arguments hash and fail closed. An already failed transition or
 authoritative outcome settles only the original receipt without Git replay;
 pending Git work still requires its existing process-tree guard and owner.
 
+Ordinary workflow CAS refusal on a fresh MCP intake seals a bounded `NO_EFFECT`
+outcome in the existing Task lifecycle owner before throwing. It binds the exact
+request/arguments hash, Workspace/Stream/provider/Thread intake identity, target,
+expected and observed CAS, and repository (nullable for database-only workflows).
+Only a current owned pre-admission boundary may issue it: an existing transition
+or outcome, replayed intake, lost lease or prior preparation excludes issuance.
+The terminal outcome fences any later begin using that operation ID. A refusal
+at BEGIN's CAS is sealed only after rollback and only when no preparation/effects
+preceded BEGIN. Typed errors alone are not a substitute for this owner evidence.
+
+The MCP receipt records `failed` with structural `NO_EFFECT` evidence. A crash
+after outcome commit but before receipt settlement is recovered by pending-startup
+readback or canonical original-ID reconciliation of an unknown receipt, without
+Git/status replay. Reconciliation retains the exact optional CAS argument shape
+and original identity. Its own identity/confirmation/active-worker refusal before
+effects terminalizes only its own receipt; the ambiguous original remains unknown.
+An exact immutable admission refusal settles through the existing SQLite receipt
+CAS only, before release/Git reconciliation locks: database-only workspaces are
+supported with release workflow disabled. `project_root` may be omitted only when
+that owner proof records a null root; a supplied locator in that case grants no
+Git authority. A recorded non-null root still requires an exact locator. Ordinary
+Git recovery still requires its configured root, enabled workflow and owner locks.
+Failures once recovery/settlement begins retain ordinary unknown semantics.
+Legacy missing-admission cases without positive durable owner evidence remain
+unsupported/unknown: absent transitions, error text, timings or current refs are
+not certificates. No operator proof register or new historical recovery API is
+introduced. See ADR-0085.
+
 The local Await cutover uses the same canonical `hub_task_status_update` receipt.
 When its projector source is a separate Task, the receipt includes that source
 Task's exact ID, Test revision, result commit and projector hash. Both Task locks

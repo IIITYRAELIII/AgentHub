@@ -898,13 +898,15 @@ export class WorkspaceCatalogStore {
     ).get(id));
   }
 
-  failMcpOperation(requestId, error) {
+  failMcpOperation(requestId, error, evidence = null) {
     const id = safeIdentifier(requestId, "MCP request id");
-    this.#database.prepare(`
+    const updated = this.#database.prepare(`
       UPDATE hub_mcp_operations
-      SET status = 'failed', receipt_state = 'failed', result_json = NULL, error_text = ?, completed_at_ms = ?
+      SET status = 'failed', receipt_state = 'failed', result_json = ?, error_text = ?, completed_at_ms = ?
       WHERE request_id = ? AND receipt_state IN ('pending', 'reconciling')
-    `).run(String(error?.message ?? error ?? "MCP operation failed").slice(0, 4000), this.#nowMs(), id);
+    `).run(evidence == null ? null : compactMcpOperationResult(evidence),
+      String(error?.message ?? error ?? "MCP operation failed").slice(0, 4000), this.#nowMs(), id);
+    if (evidence != null && !Number(updated.changes)) throw new Error("MCP refusal settlement CAS failed");
     return mcpOperationFromRow(this.#database.prepare(
       "SELECT * FROM hub_mcp_operations WHERE request_id = ?",
     ).get(id));

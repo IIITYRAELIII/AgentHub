@@ -14,6 +14,7 @@ import {
   normalizedTaskWorkflowStatus,
   TASK_WORKFLOW_STATUSES,
   TaskLifecycleBeginRejectedError,
+  workflowAdmissionNoEffectEvidence,
   taskPresentation,
 } from "../../domain/task-board-task.mjs";
 import {
@@ -2575,6 +2576,9 @@ export class TaskBoardStore {
     return this.#withDatabase((database) => {
       database.exec("BEGIN IMMEDIATE");
       try {
+        if (database.prepare("SELECT 1 FROM hub_task_lifecycle_outcomes WHERE operation_id = ?").get(operation)) {
+          throw new Error("Task lifecycle operation already has a terminal outcome");
+        }
         const current = this.#taskRow(database, taskId);
         const revision = Number(expectedRevision);
         if (!Number.isInteger(revision) || revision !== Number(current.row_revision)) {
@@ -2810,6 +2814,43 @@ export class TaskBoardStore {
         };
       } catch {
         throw new Error("Task lifecycle outcome is corrupt");
+      }
+    });
+  }
+
+  recordWorkflowAdmissionRefusal({ taskId, receipt, projectRoot, targetWorkflowStatus,
+    expectedRevision = null, expectedWorkflowStatus = null } = {}) {
+    if (receipt?.replayed !== false || receipt.status !== "pending"
+        || receipt.operationStatus !== "pending") throw new Error("Workflow refusal requires a fresh MCP intake");
+    return this.#withDatabase((database) => {
+      database.exec("BEGIN IMMEDIATE");
+      try {
+        const current = this.#taskRow(database, taskId);
+        const operation = receipt.requestId;
+        if (current.workspace_id !== receipt.workspaceId
+            || database.prepare("SELECT 1 FROM hub_task_lifecycle_transitions WHERE operation_id = ?").get(operation)
+            || database.prepare("SELECT 1 FROM hub_task_lifecycle_outcomes WHERE operation_id = ?").get(operation)) {
+          throw new Error("Workflow refusal cannot overwrite admitted or foreign lifecycle state");
+        }
+        const observedRevision = Number(current.row_revision);
+        const code = expectedRevision !== null && expectedRevision !== observedRevision
+          ? "WORKFLOW_REVISION_CHANGED"
+          : expectedWorkflowStatus !== null && expectedWorkflowStatus !== current.workflow_status
+            ? "WORKFLOW_STATUS_CHANGED" : null;
+        const noEffect = { version: 1, code, taskId, projectRoot, targetWorkflowStatus,
+          expectedRevision, expectedWorkflowStatus, observedRevision, observedWorkflowStatus: current.workflow_status,
+          ...Object.fromEntries(["requestId", "workspaceId", "streamId", "provider", "threadId", "toolName",
+            "argumentsHash", "createdAtMs"].map((key) => [key, receipt[key]])) };
+        const outcome = { operationId: operation, taskId, kind: "workflow", result: { noEffect } };
+        if (!workflowAdmissionNoEffectEvidence(outcome, receipt)) throw new Error("Workflow refusal identity or CAS is invalid");
+        database.prepare(`INSERT INTO hub_task_lifecycle_outcomes
+          (operation_id, task_id, kind, result_json, completed_at_ms) VALUES (?, ?, 'workflow', ?, ?)`)
+          .run(operation, taskId, JSON.stringify(outcome.result), this.now());
+        database.exec("COMMIT");
+        return outcome;
+      } catch (error) {
+        database.exec("ROLLBACK");
+        throw error;
       }
     });
   }

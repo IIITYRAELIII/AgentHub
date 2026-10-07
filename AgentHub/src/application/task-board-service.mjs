@@ -367,6 +367,11 @@ export class TaskBoardService {
     return this.store.lifecycleOutcome(operationId);
   }
 
+  recordWorkflowAdmissionRefusal(payload) {
+    requiredMethod(this.store, "recordWorkflowAdmissionRefusal");
+    return this.store.recordWorkflowAdmissionRefusal(payload);
+  }
+
   failLifecycleTransition(operationId, error) {
     requiredMethod(this.store, "failLifecycleTransition");
     return this.store.failLifecycleTransition(operationId, error);
