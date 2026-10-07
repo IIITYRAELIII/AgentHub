@@ -13319,7 +13319,7 @@ function refreshUsageUnits(scope = document) {
       const quota = Number(node.dataset.usageQu);
       const incomplete = node.dataset.usageQuIncomplete === "1";
       node.textContent = node.dataset.usageQu !== undefined
-        ? `${incomplete && quota <= 0 ? "— QU" : formatUsageValue(quota, "qu")}${incomplete ? " · неполно" : ""}`
+        ? incomplete && quota <= 0 ? "— QU" : formatUsageValue(quota, "qu")
         : "— QU";
     } else if (Number.isFinite(credits)) node.textContent = formatUsageValue(credits);
   }
@@ -15428,7 +15428,7 @@ function usageBadge(text, credits = Number.NaN, quotaUnits = Number.NaN, incompl
   }
   badge.textContent = usageUnit === "qu"
     ? quotaUnits === null || !Number.isFinite(Number(quotaUnits)) ? "— QU"
-      : `${incomplete && Number(quotaUnits) <= 0 ? "— QU" : formatUsageValue(quotaUnits, "qu")}${incomplete ? " · неполно" : ""}`
+      : incomplete && Number(quotaUnits) <= 0 ? "— QU" : formatUsageValue(quotaUnits, "qu")
     : text;
   return badge;
 }
