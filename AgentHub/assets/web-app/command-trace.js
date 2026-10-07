@@ -188,6 +188,7 @@
     associate(object, commandId) {
       if (object && typeof object === "object") objectIds.set(object, commandId);
       if (object?.snapshot && typeof object.snapshot === "object") objectIds.set(object.snapshot, commandId);
+      if (object?.history && typeof object.history === "object") objectIds.set(object.history, commandId);
       return object;
     },
     ack(commandId, timing, outcome) {

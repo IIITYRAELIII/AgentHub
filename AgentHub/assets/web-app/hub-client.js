@@ -4,6 +4,29 @@
 
 const agentHub = window.AgentHub;
 const commandTrace = window.AgentHubCommandTrace;
+const traceIdentifierPattern = /^[A-Za-z0-9][A-Za-z0-9:._-]{0,199}$/u;
+// This marker identifies the executing client code path, not a file hash or
+// the release currently served by the Hub.
+const clientAssetRevision = "hub283.client.4";
+const documentInstanceId = commandTrace.newId();
+let previousDocumentInstanceId = "";
+try {
+  previousDocumentInstanceId = String(sessionStorage.getItem("agent-hub-client-document-id") ?? "");
+  sessionStorage.setItem("agent-hub-client-document-id", documentInstanceId);
+} catch {
+  // A blocked storage surface still emits this document's independent identity.
+}
+commandTrace.record("ui-snapshot", "client-document", 0, documentInstanceId, {
+  render: "created", documentInstanceId,
+  previousDocumentInstanceId: boundedTraceIdentifier(previousDocumentInstanceId),
+  clientAssetRevision,
+});
+window.addEventListener("pagehide", () => {
+  commandTrace.record("ui-snapshot", "client-document", 0, documentInstanceId, {
+    render: "closing", documentInstanceId, clientAssetRevision,
+  });
+  void commandTrace.flush();
+});
 const telegramInitData = String(window.Telegram?.WebApp?.initData ?? "");
 const localSessionReady = window.AgentHubLocalSessionReady ?? Promise.resolve();
 const vscode = window.__agentHubVscode ?? (typeof window.acquireVsCodeApi === "function"
@@ -393,6 +416,10 @@ function observeServerIdentity(snapshot) {
   );
   let reloadStarted = false;
   if (transition.reloadRequired) {
+    commandTrace.record("ui-snapshot", "runtime-reload", 0, documentInstanceId, {
+      render: "requested", documentInstanceId, clientAssetRevision,
+      serverReleaseId: identity.releaseId,
+    });
     rememberServerIdentity(identity);
     if (transition.instanceChanged) notifyAndroidAboutRelease(identity);
     reloadStarted = reloadForPublishedRuntime();
@@ -1122,6 +1149,17 @@ function promoteLiveCompletion(taskIdValue, selected, incomingTurnId = "") {
   return true;
 }
 
+function projectedActiveUserRun(taskIdValue, task) {
+  const run = activeTaskRun(task);
+  if (!run || !isUserRunningProjection(run)
+    || !window.AgentHubStreamTabs.isExactActiveUserTurn(task)) return null;
+  // Canonical terminal history is absorbing for this exact provider/Thread/turn.
+  // Reuse the history owner; a later raw active snapshot cannot revive that turn.
+  return completedLiveTurnIdentity(historyByTask.get(taskIdValue) ?? [], {
+    provider: task.provider, threadId: task.threadId, turnId: run.turnId,
+  }) ? null : run;
+}
+
 function clearDurablyCompletedLiveCard(taskIdValue) {
   const liveCard = liveCardsByTask.get(taskIdValue);
   const liveUsers = liveUserMessagesByTask.get(taskIdValue) ?? {};
@@ -1144,6 +1182,15 @@ function clearDurablyCompletedLiveCard(taskIdValue) {
   liveProbeByTask.delete(taskIdValue);
   liveUserMessagesByTask.delete(taskIdValue);
   agentHub.setLive(taskIdValue, null);
+  const task = (lastSnapshot?.tasks ?? []).find((value) => taskId(
+    value.provider, value.threadId, value.streamId,
+  ) === taskIdValue);
+  if (task && !projectedActiveUserRun(taskIdValue, task)) {
+    const model = modelTask(task, lastSnapshot, selectedTaskId, selectedTaskId);
+    agentHub.patchTask(taskIdValue, {
+      running: model.running, status: model.status, statusLabel: model.statusLabel,
+    });
+  }
   return true;
 }
 
@@ -1231,14 +1278,15 @@ function updateLiveMessage(taskIdValue, selected) {
   // Only an explicitly classified user turn may own the live card. Internal or
   // unknown projections must also clear a previously cached card so stale
   // maintenance cannot keep later user input queued behind false activity.
-  const run = activeTaskRun(selected);
-  if (run && !isUserRunningProjection({ ...run, projectionState: "active" })) {
-    const promoted = promoteLiveCompletion(taskIdValue, selected, run.turnId);
-    const snapshotCompletionRemembered = rememberSnapshotCompletion(taskIdValue, selected, run.turnId);
+  const rawRun = activeTaskRun(selected);
+  if (rawRun && !isUserRunningProjection({ ...rawRun, projectionState: "active" })) {
+    const promoted = promoteLiveCompletion(taskIdValue, selected, rawRun.turnId);
+    const snapshotCompletionRemembered = rememberSnapshotCompletion(taskIdValue, selected, rawRun.turnId);
     clearNonUserLiveProjection(taskIdValue);
     if (promoted || snapshotCompletionRemembered) renderTaskMessages(taskIdValue);
     return null;
   }
+  const run = projectedActiveUserRun(taskIdValue, selected);
   const promoted = promoteLiveCompletion(taskIdValue, selected, run?.turnId);
   const snapshotCompletionRemembered = rememberSnapshotCompletion(taskIdValue, selected, run?.turnId);
   if (!run) {
@@ -1768,7 +1816,7 @@ function modelTask(task, snapshot, effectiveSelectedId, serverSelectedId) {
   const streamId = String(task.streamId ?? "").trim()
     || `legacy:${String(task.provider ?? "").trim()}:${String(task.threadId ?? "").trim()}`;
   const answerAt = Date.parse(task.lastAnswerAt ?? "") || 0;
-  const running = window.AgentHubStreamTabs.isExactActiveUserTurn(task);
+  const running = Boolean(projectedActiveUserRun(id, task));
   const unknown = task.activityUnknown === true;
   const unread = task.unread === true;
   const serverSelected = id === serverSelectedId;
@@ -2242,6 +2290,75 @@ function representativeSnapshotTasks(tasks) {
   return window.AgentHubStreamTabs.representativeSnapshotTasks(tasks);
 }
 
+function boundedTraceIdentifier(value) {
+  const text = String(value ?? "").trim();
+  return traceIdentifierPattern.test(text) ? text : "";
+}
+
+function selectedRunFacts(snapshot, id) {
+  const tasks = Array.isArray(snapshot?.tasks) ? snapshot.tasks : [];
+  const selected = tasks.find((task) => taskId(
+    task.provider, task.threadId, task.streamId,
+  ) === id) ?? (!id ? tasks.find((task) => task.selected === true) : null);
+  if (!selected) return { run: "unknown", providerStart: "missing", clientId: "", turnId: "",
+    provider: "", threadId: "", streamId: "", finalTurnId: "", finalRevision: "" };
+  const run = selected.run;
+  const active = selected.running === true && run?.operationKind === "user-turn"
+    && run?.projectionState === "active" && Boolean(String(run?.turnId ?? "").trim());
+  return {
+    run: selected.running !== true ? "idle" : !run ? "missing"
+      : active && window.AgentHubStreamTabs.isExactActiveUserTurn(selected) ? "active"
+        : active ? "absorbed" : "other",
+    providerStart: run?.providerStart || selected.providerStart ? "present" : "missing",
+    clientId: boundedTraceIdentifier(run?.clientUserMessageId),
+    turnId: boundedTraceIdentifier(run?.turnId),
+    provider: boundedTraceIdentifier(selected.provider),
+    threadId: boundedTraceIdentifier(selected.threadId),
+    streamId: boundedTraceIdentifier(selected.streamId),
+    finalTurnId: boundedTraceIdentifier(selected.latestFinal?.turnId),
+    finalRevision: boundedTraceIdentifier(selected.latestFinal?.revision),
+  };
+}
+
+let lastSnapshotGateTrace = { key: "", at: 0 };
+function traceSnapshotGate(snapshot, { decision, id = selectedTaskId, before = lastSnapshot } = {}) {
+  const previous = selectedRunFacts(before, id);
+  const next = selectedRunFacts(snapshot, id);
+  const releaseId = boundedTraceIdentifier(serverIdentity(snapshot)?.releaseId);
+  const key = [decision, id, previous.run, next.run, previous.providerStart,
+    next.providerStart, previous.turnId, next.turnId, previous.clientId, next.clientId,
+    previous.finalTurnId, next.finalTurnId, previous.finalRevision, next.finalRevision,
+    releaseId].join("\0");
+  const at = Date.now();
+  if (lastSnapshotGateTrace.key === key && at - lastSnapshotGateTrace.at < 30_000) return;
+  lastSnapshotGateTrace = { key, at };
+  const requestTraceId = boundedTraceIdentifier(commandTrace.objectId(snapshot));
+  const commandId = next.clientId || previous.clientId || requestTraceId || documentInstanceId;
+  const metadata = {
+    decision, documentInstanceId, clientAssetRevision, serverReleaseId: releaseId,
+    snapshotVersion: boundedTraceIdentifier(snapshot?.version),
+    requestTraceId, turnId: next.turnId || previous.turnId,
+    beforeTurnId: previous.turnId, afterTurnId: next.turnId,
+    finalTurnId: next.finalTurnId, finalRevision: next.finalRevision,
+    provider: next.provider || previous.provider,
+    threadId: next.threadId || previous.threadId,
+    streamId: next.streamId || previous.streamId,
+    beforeRun: previous.run, afterRun: next.run,
+    beforeProviderStart: previous.providerStart, afterProviderStart: next.providerStart,
+  };
+  commandTrace.record("ui-snapshot", "selected-gate", 0, commandId, metadata);
+  if (decision !== "applied" || document.hidden) return;
+  window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
+    if (document.hidden || lastSnapshot !== snapshot || selectedTaskId !== id) return;
+    const link = document.querySelector("[data-provider-connection-quality]");
+    commandTrace.record("ui-render", "snapshot-live-dom", 0, commandId, {
+      ...metadata,
+      render: renderedActiveCardState(),
+      providerLink: String(link?.dataset.linkState ?? "unknown"),
+    });
+  }));
+}
+
 function applySnapshot(snapshot, { materialized = false } = {}) {
   if (snapshotResponseIsStale(snapshot)) {
     void refresh();
@@ -2254,8 +2371,11 @@ function applySnapshot(snapshot, { materialized = false } = {}) {
 
 function applySnapshotContent(snapshot, { materialized = false } = {}) {
   if (!snapshot) return;
+  const requestTraceId = commandTrace.objectId(snapshot);
   if (!materialized) snapshot = window.AgentHubSnapshotTransport.materialize(lastSnapshot, snapshot);
+  if (requestTraceId) commandTrace.associate(snapshot, requestTraceId);
   if (observeServerIdentity(snapshot)) return;
+  const priorSnapshotForTrace = lastSnapshot;
   let effectiveSelectedId = "";
   let tasks = [];
   runBatchedMessageRenders(() => {
@@ -2410,7 +2530,7 @@ function applySnapshotContent(snapshot, { materialized = false } = {}) {
     for (const task of representativeTasks) {
       const stableTaskId = taskId(task.provider, task.threadId, task.streamId);
       agentHub.setLive(stableTaskId, updateLiveMessage(stableTaskId, task));
-      agentHub.setRunning(stableTaskId, Boolean(task.running));
+      agentHub.setRunning(stableTaskId, Boolean(projectedActiveUserRun(stableTaskId, task)));
     }
     for (const task of representativeTasks) {
       renderTaskQueue(taskId(task.provider, task.threadId, task.streamId), snapshot);
@@ -2422,6 +2542,9 @@ function applySnapshotContent(snapshot, { materialized = false } = {}) {
         snapshot.pendingApprovals, task, { serverSelected: stableTaskId === serverSelectedId },
       ));
     }
+  });
+  traceSnapshotGate(snapshot, {
+    decision: "applied", id: effectiveSelectedId, before: priorSnapshotForTrace,
   });
   const settings = snapshot.settings ?? {};
   agentHub.setOptions({
@@ -2778,6 +2901,60 @@ function reconcileFocusedHistoryWindows(pins) {
   return changed;
 }
 
+const historyCardTraces = new Map();
+
+function renderedActiveCardState() {
+  const card = document.querySelector("[data-chat-live]");
+  const scroll = document.querySelector("[data-chat-scroll]");
+  if (!card?.isConnected || card.hidden || !card.getClientRects().length) return "absent";
+  const cardRect = card.getBoundingClientRect();
+  const scrollRect = scroll?.getBoundingClientRect();
+  return scrollRect && cardRect.bottom > scrollRect.top && cardRect.top < scrollRect.bottom
+    ? "viewport" : "offscreen";
+}
+
+function traceHistoryCard(id, history, { liveBefore, cleared, commandId }) {
+  const snapshotTask = (lastSnapshot?.tasks ?? []).find((task) => taskId(
+    task.provider, task.threadId, task.streamId,
+  ) === id);
+  if (!liveBefore && snapshotTask?.running !== true) return;
+  const turnId = String(liveBefore?.turnId ?? snapshotTask?.run?.turnId ?? "");
+  const exactItem = (Array.isArray(history?.items) ? history.items : [])
+    .findLast((item) => String(item?.id ?? "") === turnId);
+  const historyState = exactItem?.completed === true ? "completed"
+    : exactItem?.active === true ? "active" : "missing";
+  const decision = cleared ? "cleared" : liveBefore ? "retained" : "no-cache";
+  const key = `${id}\0${turnId}\0${historyState}\0${decision}`;
+  const now = Date.now();
+  const previous = historyCardTraces.get(id);
+  if (previous?.key === key && now - previous.at < 5_000) return;
+  const trace = { key, at: now };
+  historyCardTraces.delete(id);
+  historyCardTraces.set(id, trace);
+  if (historyCardTraces.size > 64) historyCardTraces.delete(historyCardTraces.keys().next().value);
+  commandTrace.record("ui-render", "history-live-decision", 0, commandId, {
+    render: decision, trigger: historyState, documentInstanceId, clientAssetRevision,
+    turnId: boundedTraceIdentifier(turnId),
+  });
+  if (selectedTaskId !== id || document.hidden) return;
+  const snapshotAtDecision = lastSnapshot;
+  const liveAtDecision = liveCardsByTask.get(id) ?? null;
+  const cardAtDecision = document.querySelector("[data-chat-live]");
+  const cardKeyAtDecision = cardAtDecision?.dataset.messageKey ?? "";
+  window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
+    const card = document.querySelector("[data-chat-live]");
+    const superseded = document.hidden || selectedTaskId !== id
+      || historyCardTraces.get(id) !== trace || lastSnapshot !== snapshotAtDecision
+      || (liveCardsByTask.get(id) ?? null) !== liveAtDecision
+      || card !== cardAtDecision || (card?.dataset.messageKey ?? "") !== cardKeyAtDecision;
+    commandTrace.record("ui-render", "history-live-dom", 0, commandId, {
+      render: superseded ? "superseded" : renderedActiveCardState(), trigger: historyState,
+      documentInstanceId, clientAssetRevision,
+      turnId: boundedTraceIdentifier(turnId),
+    });
+  }));
+}
+
 function applyOpened(result, {
   preserveScroll = false,
   skipSnapshot = false,
@@ -2824,7 +3001,8 @@ function applyOpened(result, {
     : preserveOlder
       ? mergeNewestHistory(previousWindow ?? [], newest)
       : newest);
-  clearDurablyCompletedLiveCard(id);
+  const liveBefore = liveCardsByTask.get(id) ?? null;
+  const liveCleared = clearDurablyCompletedLiveCard(id);
   if (!retainsPinnedFocus || !previousPage) {
     historyPageByTask.set(id, {
       start: preserveOlder ? previousPage.start : history.start,
@@ -2849,6 +3027,11 @@ function applyOpened(result, {
   if (selectTask) agentHub.selectTask(id);
   syncHistoryPagination(id);
   const renderedMessages = renderTaskMessages(id, { preserveScroll, exactNavigation });
+  traceHistoryCard(id, history, {
+    liveBefore,
+    cleared: liveCleared,
+    commandId: commandTrace.objectId(result) || commandTrace.objectId(history) || commandTrace.newId(),
+  });
   renderTaskQueue(id, lastSnapshot);
   const acknowledgementSnapshot = lastSnapshot;
   const acknowledgementTask = (acknowledgementSnapshot?.tasks ?? []).find((item) => taskId(

@@ -3,7 +3,12 @@ import { clientCommandAckTraceSpan } from "./client-command-trace.mjs";
 const ID = /^[A-Za-z0-9][A-Za-z0-9:._-]{0,199}$/u;
 const TOKEN = /^[a-z][a-z0-9.-]{0,63}$/u;
 const STAGES = new Set(["ui-interaction", "ui-navigation", "ui-render", "ui-long-task", "ui-snapshot", "ui-control"]);
-const LABELS = new Set(["action", "surface", "view", "trigger", "render"]);
+const LABELS = new Set(["action", "surface", "view", "trigger", "render", "decision",
+  "beforeRun", "afterRun", "beforeProviderStart", "afterProviderStart", "providerLink",
+  "clientAssetRevision"]);
+const IDENTIFIERS = new Set(["documentInstanceId", "previousDocumentInstanceId", "serverReleaseId", "snapshotVersion",
+  "requestTraceId", "turnId", "beforeTurnId", "afterTurnId", "provider", "threadId", "streamId",
+  "finalTurnId", "finalRevision"]);
 const NUMBERS = new Set(["count", "longTaskCount", "maxLongTaskMs", "totalLongTaskMs", "droppedEvents", "droppedCount", "queueDepth"]);
 const FAILURE_KINDS = new Set(["aborted", "timeout", "error", "hidden"]);
 
@@ -29,6 +34,7 @@ export function clientPerformanceTraceSpans(body, { now = Date.now() } = {}) {
     const metadata = {};
     for (const [key, value] of Object.entries(event.metadata ?? {})) {
       if (LABELS.has(key) && typeof value === "string" && TOKEN.test(value)) metadata[key] = value;
+      if (IDENTIFIERS.has(key) && typeof value === "string" && ID.test(value)) metadata[key] = value;
       if (NUMBERS.has(key) && Number.isFinite(value) && value >= 0 && value <= 1_000_000_000) metadata[key] = value;
       if (key === "operationSpanId" && typeof value === "string" && ID.test(value)) metadata[key] = value;
       if (key === "startedAtMs" && Number.isSafeInteger(value)

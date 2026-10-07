@@ -590,6 +590,11 @@ test("a terminal identity absorbs a stale active Stream projection", async () =>
   assert.equal(isExactActiveUserTurn(task), false);
   assert.equal(isExactActiveUserTurn({ ...task, latestFinal: null }), true);
   assert.equal(isExactActiveUserTurn({ ...task, run: null }), false);
+  assert.equal(isExactActiveUserTurn({ ...task, latestFinal: { ...task.latestFinal, revision: 0 } }), true);
+  assert.equal(isExactActiveUserTurn({ ...task, latestFinal: { ...task.latestFinal, revision: -1 } }), true);
+  assert.equal(isExactActiveUserTurn({ ...task, latestFinal: { ...task.latestFinal, revision: 1.5 } }), true);
+  assert.equal(isExactActiveUserTurn({ ...task, latestFinal: { ...task.latestFinal, threadId: "foreign" } }), true);
+  assert.equal(isExactActiveUserTurn({ ...task, latestFinal: null, run: { ...task.run, terminalRevision: 2 } }), false);
 });
 
 test("rotation notice follows the actually compacted Thread instead of the previous head", async () => {
