@@ -496,8 +496,19 @@ test("shipped Stream dialog reads back canonical model after control save and re
     assert.equal(await page.locator("[data-dialog-settings]").evaluate((node) => node.open), true);
     const picker = page.locator('[data-dialog-settings] select[data-dialog-options="model"]');
     assert.equal(await picker.inputValue(), "gpt-6-sol");
-    await page.locator("[data-dialog-model-refresh]").click();
+    assert.equal(await page.locator("[data-dialog-model-refresh]").count(), 0);
+    await page.getByRole("button", { name: "Модель", exact: true }).click();
+    await page.getByRole("button", { name: "Обновить доступные модели", exact: true }).click();
     await catalogRequested;
+    assert.equal(await picker.inputValue(), "gpt-6-sol");
+    assert.equal(commands.includes("update-stream-settings"), false);
+    await page.getByRole("button", { name: "Модель", exact: true }).click();
+    const pendingRefresh = page.getByRole("button", { name: "Обновление моделей…", exact: true });
+    assert.equal(await pendingRefresh.isDisabled(), true);
+    await pendingRefresh.dispatchEvent("click");
+    assert.equal(commands.filter((action) => action === "refresh-model-catalog").length, 1);
+    await page.waitForFunction(() => document.activeElement?.closest('.themed-select-menu:popover-open'));
+    await page.keyboard.press("Escape");
     // Three valid provider pages can finish after the default 45s client deadline.
     await page.clock.fastForward(50_000);
     releaseCatalogResponse();
@@ -505,7 +516,11 @@ test("shipped Stream dialog reads back canonical model after control save and re
     await page.waitForFunction(() => document.querySelector(
       '[data-dialog-settings] select[data-dialog-options="model"] option[value="gpt-6.1-sol"]',
     ));
+    assert.equal(await picker.inputValue(), "gpt-6-sol");
+    assert.equal(commands.includes("update-stream-settings"), false);
     await page.getByRole("button", { name: "Модель", exact: true }).click();
+    assert.equal(await page.locator('.themed-select-menu:popover-open > :last-child').getAttribute("data-select-action"),
+      "model-catalog-refresh");
     await page.locator('.themed-select-menu:popover-open .themed-select-option[data-value="gpt-6.1-sol"]').click();
     await page.waitForFunction(() => document.querySelector(
       '[data-dialog-settings] select[data-dialog-options="model"]',
@@ -519,6 +534,118 @@ test("shipped Stream dialog reads back canonical model after control save and re
     await browser.close();
   }
 });
+
+for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 }]) {
+  test(`shipped model dropdown keeps refresh last and retryable without a model write ${viewport.width}`, async () => {
+    const { chromium } = await import("playwright");
+    const browser = await launchDomBrowser(chromium);
+    let attempt = 0;
+    let catalog = [];
+    const commands = [];
+    const fixtureSnapshot = () => ({
+      apiVersion: 3, version: `picker-${attempt}`, server: { status: "online" },
+      tasks: [{ provider: "codex", threadId: "thread-models", streamId: "stream-models",
+        workspaceId: "workspace-models", title: "Thread", running: false }],
+      workspaces: [{ id: "workspace-models", name: "Models", settings: {}, streams: [{
+        id: "stream-models", name: "S6", ordinal: 1,
+        settings: { provider: "codex", model: "gpt-6-sol" }, threads: [{ id: "thread-models" }],
+      }] }],
+      selected: { provider: "codex", threadId: "thread-models", streamId: "stream-models" },
+      boardTasks: [], boardLayout: { columnOrder: [] }, deferredInputs: [], messageReceipts: [], pendingApprovals: [],
+      settings: { provider: "codex", models: catalog,
+        modelOptionsByProvider: { codex: catalog }, reasoningOptions: [],
+        reasoningOptionsByProvider: {}, modeOptions: [], quickMessages: {} },
+    });
+    try {
+      const page = await browser.newPage({ viewport });
+      const errors = [];
+      page.on("pageerror", (error) => errors.push(error.message));
+      await openStreamTabsDomFixture(page, { includeHubClient: true, snapshot: fixtureSnapshot,
+        control: async (request) => {
+          commands.push(request.action);
+          if (request.action === "open-task" || request.action === "task-history") {
+            const history = { provider: "codex", threadId: "thread-models", streamId: "stream-models",
+              items: [], start: 0, end: 0, total: 0, messageTotal: 0, nextBefore: null, version: "empty" };
+            return { body: { ok: true, result: request.action === "task-history" ? history
+              : { history, snapshot: fixtureSnapshot() } } };
+          }
+          if (request.action !== "refresh-model-catalog") return { body: { ok: true, result: fixtureSnapshot() } };
+          attempt += 1;
+          if (attempt === 1) return { body: { ok: false, error: "Fixture catalog unavailable" } };
+          if (attempt === 2) return { body: { ok: true, result: { refreshed: false } } };
+          catalog = [
+            { value: "gpt-6-sol", label: "GPT-6 Sol" },
+            { value: "gpt-6.1-sol", label: "GPT-6.1 Sol" },
+          ];
+          return { body: { ok: true, result: { refreshed: true, snapshot: fixtureSnapshot() } } };
+        },
+      });
+      await page.waitForFunction(() => document.documentElement.dataset.connection === "online");
+      await page.evaluate((initial) => {
+        window.AgentHub.setWorkspaces(initial.workspaces);
+        window.AgentHub.setOptions({ modelOptionsByProvider: initial.settings.modelOptionsByProvider });
+        window.AgentHub.setTasks([{ ...initial.tasks[0], id: "stream-models", selected: true,
+          streamName: "S6", streamSettings: { provider: "codex", model: "gpt-6-sol" } }]);
+        window.AgentHub.showSelectedTask();
+        window.AgentHub.openDialogSettings();
+      }, fixtureSnapshot());
+      const picker = page.locator('select[data-dialog-options="model"]');
+      const trigger = page.getByRole("button", { name: "Модель", exact: true });
+      const action = page.getByRole("button", { name: "Обновить доступные модели", exact: true });
+      assert.equal(await page.locator("[data-dialog-model-refresh]").count(), 0);
+      assert.match(await picker.locator("option:checked").textContent(), /Сохранено: gpt-6-sol/);
+      assert.equal(await trigger.isDisabled(), false);
+      await trigger.focus();
+      await page.keyboard.press("Enter");
+      await action.waitFor({ state: "visible" });
+      await page.waitForFunction(() => document.activeElement?.dataset.selectAction === "model-catalog-refresh");
+      assert.equal(await page.locator('.themed-select-menu:popover-open > :last-child').getAttribute("data-select-action"),
+        "model-catalog-refresh");
+      await page.keyboard.press("Enter");
+      await page.getByText("Fixture catalog unavailable", { exact: true }).waitFor();
+      assert.equal(await trigger.evaluate((node) => node === document.activeElement), true);
+      assert.equal(commands.includes("update-stream-settings"), false);
+      await trigger.press("End");
+      await action.waitFor();
+      await page.waitForFunction(() => document.activeElement?.dataset.selectAction === "model-catalog-refresh");
+      await page.keyboard.press("Space");
+      await page.getByText("Каталог пока недоступен; прежний список сохранён", { exact: true }).waitFor();
+      assert.match(await picker.locator("option:checked").textContent(), /Сохранено: gpt-6-sol/);
+      await trigger.click();
+      await action.click();
+      await page.waitForFunction(() => document.querySelector('select[data-dialog-options="model"]')?.value === "gpt-6-sol");
+      assert.equal(commands.filter((command) => command === "refresh-model-catalog").length, 3);
+      assert.equal(commands.includes("update-stream-settings"), false);
+      assert.equal(commands.includes("update-setting"), false);
+      assert.deepEqual(await picker.locator("option").evaluateAll((nodes) => nodes.map((node) => node.value)),
+        ["gpt-6-sol", "gpt-6.1-sol"]);
+      await trigger.click();
+      await action.waitFor();
+      assert.equal(await page.locator('.themed-select-menu:popover-open > :last-child').getAttribute("data-select-action"),
+        "model-catalog-refresh");
+      assert.equal(await page.getByRole("option", { name: "GPT-6 Sol", exact: true }).getAttribute("aria-selected"), "true");
+      if (process.env.AGENT_HUB_UI_EVIDENCE_DIR) {
+        await mkdir(process.env.AGENT_HUB_UI_EVIDENCE_DIR, { recursive: true });
+        await page.screenshot({ path: path.join(process.env.AGENT_HUB_UI_EVIDENCE_DIR, `hub289-model-menu-${viewport.width}.png`) });
+      }
+      await page.keyboard.press("End");
+      assert.equal(await action.evaluate((node) => node === document.activeElement), true);
+      await page.keyboard.press("ArrowUp");
+      assert.equal(await page.evaluate(() => document.activeElement?.dataset.value), "gpt-6.1-sol");
+      await page.keyboard.press("ArrowDown");
+      assert.equal(await action.evaluate((node) => node === document.activeElement), true);
+      await page.keyboard.press("Home");
+      assert.equal(await page.evaluate(() => document.activeElement?.dataset.value), "gpt-6-sol");
+      await page.keyboard.press("End");
+      await page.keyboard.press("Escape");
+      assert.equal(await trigger.evaluate((node) => node === document.activeElement), true);
+      assert.equal(await page.locator("[data-dialog-settings]").evaluate((node) => node.open), true);
+      assert.deepEqual(errors, []);
+    } finally {
+      await browser.close();
+    }
+  });
+}
 
 const stream = (id, ordinal, lastActivity) => ({
   id,

@@ -31,6 +31,12 @@
 
 ## Cards and menus
 
+- The Codex Stream model dropdown ends with the separate action
+  **Обновить доступные модели** after all model values. It invokes the existing
+  catalog refresh owner without changing or saving a model. Pending refresh
+  disables that action; catalog failure preserves the saved model and permits
+  an explicit retry, including when no selectable catalog is available.
+
 - Workspace creation and editing show an independent **Авто-ревью** checkbox
   immediately after **Релизный процесс**, with a separate help control.
   `settings.autoReviewEnabled === true` injects the review policy into all
