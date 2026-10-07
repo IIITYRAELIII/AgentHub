@@ -732,6 +732,7 @@ export class HubMcpService {
         expected_squash_transfer_hash: { type: "string", pattern: "^[0-9a-f]{64}$", description: "Omit for an exact preview; confirm a later request with the returned hash." },
         selected_proof_bundle_path: { type: "string", description: "Release Manager-only immutable selected-composition proof bundle; preview has no live Git or lifecycle effect." },
         selected_proof_bundle_sha256: { type: "string", pattern: "^[0-9a-f]{64}$" },
+        selected_published_resolution: { type: "object", description: "Optional ordinary OWN published-conflict proof envelope; binds the exact Task/base/application bundle/publication generation and reviewed resolution bundle. No reviewer flag grants authority." },
         selected_proof_commit: { type: "string", pattern: "^[0-9a-f]{40}$" },
         selected_preview_request_id: { type: "string", description: "Exact original preview request_id on confirmation." },
         expected_selected_preview_hash: { type: "string", pattern: "^[0-9a-f]{64}$", description: "Omit for preview; exact returned hash is required for confirmation." },
@@ -767,6 +768,7 @@ export class HubMcpService {
         expected_squash_cutover_hash: { type: "string", pattern: "^[0-9a-f]{64}$" },
         selected_proof_bundle_path: { type: "string" },
         selected_proof_bundle_sha256: { type: "string", pattern: "^[0-9a-f]{64}$" },
+        selected_published_resolution: { type: "object" },
         selected_proof_commit: { type: "string", pattern: "^[0-9a-f]{40}$" },
         selected_preview_request_id: { type: "string" },
         expected_selected_preview_hash: { type: "string", pattern: "^[0-9a-f]{64}$" },
@@ -1040,13 +1042,14 @@ export class HubMcpService {
             squashCutoverBundleSha256: args.squash_cutover_bundle_sha256,
             squashCutoverManifestSha256: args.squash_cutover_manifest_sha256,
             squashCutoverFilesSha256: args.squash_cutover_files_sha256,
-          expectedSquashCutoverHash: args.expected_squash_cutover_hash,
+            expectedSquashCutoverHash: args.expected_squash_cutover_hash,
+          } : {}),
           selectedBundlePath: args.selected_proof_bundle_path,
           selectedBundleSha256: args.selected_proof_bundle_sha256,
+          selectedPublishedResolution: args.selected_published_resolution,
           selectedProofCommit: args.selected_proof_commit,
           selectedPreviewRequestId: args.selected_preview_request_id,
           expectedSelectedPreviewHash: args.expected_selected_preview_hash,
-          } : {}),
           confirmed: args.confirm_reconcile,
         });
       case "hub_task_legacy_git_adopt":
@@ -1455,6 +1458,7 @@ export class HubMcpService {
     selected_proof_bundle_path: selectedBundlePath = null,
     selected_proof_bundle_sha256: selectedBundleSha256 = null,
     selected_proof_commit: selectedProofCommit = null,
+    selected_published_resolution: selectedPublishedResolution = null,
     selected_preview_request_id: selectedPreviewRequestId = null,
     expected_selected_preview_hash: expectedSelectedPreviewHash = null,
   } = {}, { source = null } = {}) {
@@ -1470,7 +1474,7 @@ export class HubMcpService {
     const squashRequested = [...squashValues, squashProofRequestId, expectedSquashTransferHash,
       expectedSquashCutoverHash]
       .some((value) => value != null);
-    const selectedRequested = [selectedBundlePath, selectedBundleSha256, selectedProofCommit,
+    const selectedRequested = [selectedBundlePath, selectedBundleSha256, selectedProofCommit, selectedPublishedResolution,
       selectedPreviewRequestId, expectedSelectedPreviewHash].some((value) => value != null);
     if (selectedRequested) {
       if (squashRequested || source || workflowStatus !== "testing"
@@ -1489,6 +1493,7 @@ export class HubMcpService {
           String(task.streamId ?? "").trim() || context.streamId, task.workspaceId),
         bundlePath: selectedBundlePath, bundleSha256: selectedBundleSha256,
         proofCommit: selectedProofCommit, expectedPreviewHash: expectedSelectedPreviewHash,
+        publishedResolutionInput: selectedPublishedResolution,
         authority: { workspaceId: context.workspaceId, streamId: context.streamId,
           provider: context.provider, threadId: context.threadId, proofRequestId: previewRequestId },
       });

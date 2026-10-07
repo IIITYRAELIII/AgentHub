@@ -382,6 +382,15 @@ artifact, source, Task, main/dev or preserved-tree identity performs no replay.
 
 ## Reviewed selected-composition Test
 
+The same selected argument family and no-effect preview/exact confirmation
+support a bounded ordinary own-only conflict proof (ADR-0093). No new writer,
+authority registry or public replay entrypoint is introduced. The Git owner
+classifies immutable ancestry, rather than trusting a caller-supplied mode.
+An ordinary result keeps its Task base; all existing caller, bundle, Task CAS,
+publication/remote, materialization and original-ID receipt rules apply.
+Preview refusals and legacy UNKNOWN settlement retain their existing owners;
+this classification does not itself prove that an old operation had no effect.
+
 For a Task based on accepted local main that diverges from an already published
 repository history, the Release Manager may use the `selected_*` argument family
 of `hub_task_status_update` with status `testing`, exact Task revision and
@@ -405,6 +414,26 @@ synthetic success; a proved pre-CAS refusal may terminalize without changing
 dev. The completed receipt must still match the clean exact dev and Task result
 on readback. Release preparation requires its independently verified selected
 projection and must not replay unrelated rolling-dev bytes.
+
+For the ordinary route only, optional `selected_published_resolution` carries
+the version-1 `ordinary-published-resolution-v1` envelope: `taskId`,
+`repositoryKey`, `taskBaseCommit`, `acceptedLocalMainCommit`, `taskCommit`,
+`devCommit`, `proofCommit`, `publishedCommit`, `publicationGeneration`,
+`remoteCommit`, application `bundleSha256`, `resolutionCommit`,
+`resolutionBundlePath`, `resolutionBundleSha256` and exact conflict
+`resolutions` entries (`path`, `mode=100644`, `blob`). Unknown fields,
+including reviewer-approval flags, confer no authority and are refused. The
+existing Git owner verifies the full published OWN projection in its private
+preview store; confirmation rechecks fresh fences and retains both bundles
+under the original operation before its dev CAS. This does not mutate published
+refs or grant permission to install, Await or publish.
+
+Public `hub_task_operation_reconcile` forwards the selected fields independently
+of squash and requires the original envelope, preview request/hash and original
+confirmation identity. Changed or omitted published proof cannot settle that
+operation. The existing `task-operation-reconcile.mjs` CLI accepts the selected
+bundle/proof/preview flags and `--selected-published-resolution <json-file>`;
+it forwards the parsed envelope through the same owner. See ADR-0095.
 
 Intent, materialization and completion JSON is published only after complete
 synced bytes exist. Incomplete pre-CAS private staging can be rebuilt under

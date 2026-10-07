@@ -121,6 +121,9 @@ export async function releaseTaskNetProjections({ tasks, baseCommit, git }) {
           throw new Error("Task result or approved published base differs from the reviewed selected proof");
         }
         const verified = await verifySelectedCompositionObjects({ git, ...selected });
+        if (verified.proofRoute === "ordinary-own-conflict-v1" && !verified.selectedReleaseTree) {
+          throw new Error("ordinary own Test proof has unresolved published release conflicts");
+        }
         const integration = task.integrations.find((item) => item.commit === selected.proofCommit);
         const values = integration ? await getParents(integration.commit) : [];
         const tree = integration ? await git(["rev-parse", `${integration.commit}^{tree}`]) : null;
@@ -136,6 +139,14 @@ export async function releaseTaskNetProjections({ tasks, baseCommit, git }) {
         }
         if (task.integrations.length !== 1) {
           throw new Error("selected composition has unreviewed additional Task integrations");
+        }
+        if (verified.publishedResolution) {
+          proofs.set(task.taskId, {
+            parent: verified.publishedCommit, commit: verified.publishedResolution.resolutionCommit,
+            paths: await changedPaths(verified.publishedCommit, verified.publishedResolution.resolutionCommit),
+            orderPreserving: true, selectedCompositionHash: selected.previewHash,
+          });
+          continue;
         }
         proofs.set(task.taskId, {
           parent: verified.releaseParent, commit: task.resultCommit,

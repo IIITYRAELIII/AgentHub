@@ -577,7 +577,7 @@ export class TaskLifecycleService {
 
   async selectedComposition({
     taskId, operationId, expectedTaskRevision, projectRoot, bundlePath,
-    bundleSha256, proofCommit, expectedPreviewHash = null, authority,
+    bundleSha256, proofCommit, publishedResolutionInput = null, expectedPreviewHash = null, authority,
   } = {}) {
     for (const name of ["withTaskLock", "previewSelectedCompositionOwned",
       "applySelectedCompositionOwned", "readSelectedCompositionOwned"]) {
@@ -605,7 +605,7 @@ export class TaskLifecycleService {
         }
         const preview = await this.taskGitWorkspaces.previewSelectedCompositionOwned({
           taskId: task.id, taskNumber: task.taskNumber, projectRoot: root,
-          proofCommit, bundlePath, bundleSha256, authority,
+          proofCommit, bundlePath, bundleSha256, publishedResolutionInput, authority,
           expectedTaskRevision, lease,
         });
         if (!expectedPreviewHash) return {

@@ -1,4 +1,5 @@
 import path from "node:path";
+import { readFile } from "node:fs/promises";
 
 import { TaskBoardService } from "./src/application/task-board-service.mjs";
 import { TaskLifecycleService } from "./src/application/task-lifecycle-service.mjs";
@@ -85,6 +86,13 @@ try {
     proofSummary: input.summary,
     expectedTaskRevision: input["expected-task-revision"],
     expectedWorkflowStatus: input["expected-workflow-status"],
+    selectedBundlePath: input["selected-proof-bundle-path"],
+    selectedBundleSha256: input["selected-proof-bundle-sha256"],
+    selectedProofCommit: input["selected-proof-commit"],
+    selectedPreviewRequestId: input["selected-preview-request-id"],
+    expectedSelectedPreviewHash: input["expected-selected-preview-hash"],
+    selectedPublishedResolution: input["selected-published-resolution"]
+      ? JSON.parse(await readFile(path.resolve(input["selected-published-resolution"]), "utf8")) : null,
     cutoverSourceCommit: input["cutover-source-commit"],
     cutoverProjectorSha256: input["cutover-projector-sha256"],
     cutoverSourceTaskId: input["cutover-source-task"],

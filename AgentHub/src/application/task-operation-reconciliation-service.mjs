@@ -6,6 +6,7 @@ import { normalizedTaskGitReferences } from "../domain/task-git-reference.mjs";
 import { taskProjectRoot } from "../domain/task-project-root.mjs";
 import { normalizedTaskSquashTransfer } from "../domain/task-squash-transfer.mjs";
 import { normalizedTaskSquashCutover } from "../domain/task-squash-cutover.mjs";
+import { normalizePublishedResolution } from "../infrastructure/filesystem/selected-composition-proof.mjs";
 
 function requiredMethod(value, name) {
   if (typeof value?.[name] !== "function") throw new TypeError(`${name} is required`);
@@ -98,7 +99,7 @@ function workflowCasArguments({ expectedTaskRevision, expectedWorkflowStatus } =
 function selectedCompositionArguments(options = {}) {
   const values = [options.selectedBundlePath, options.selectedBundleSha256,
     options.selectedProofCommit, options.selectedPreviewRequestId,
-    options.expectedSelectedPreviewHash];
+    options.expectedSelectedPreviewHash, options.selectedPublishedResolution];
   if (values.every((value) => !supplied(value))) return null;
   const revision = Number(options.expectedTaskRevision);
   const bundlePath = String(options.selectedBundlePath ?? "").trim();
@@ -121,6 +122,8 @@ function selectedCompositionArguments(options = {}) {
     selected_proof_commit: proofCommit,
     selected_preview_request_id: previewRequestId,
     expected_selected_preview_hash: previewHash,
+    ...(supplied(options.selectedPublishedResolution)
+      ? { selected_published_resolution: options.selectedPublishedResolution } : {}),
   };
 }
 
@@ -381,6 +384,8 @@ export class TaskOperationReconciliationService {
         && selectedProof?.proofCommit === selected.selected_proof_commit
         && selectedProof?.bundleSha256 === selected.selected_proof_bundle_sha256
         && selectedProof?.bundlePath === path.resolve(selected.selected_proof_bundle_path)
+        && JSON.stringify(normalizePublishedResolution(selectedProof?.publishedResolutionInput))
+          === JSON.stringify(normalizePublishedResolution(selected.selected_published_resolution))
         && samePath(selectedProof?.repositoryRoot, root);
     }
     let squashSourceTask = null;

@@ -12,7 +12,7 @@ import process from "node:process";
 
 import { canonicalPath } from "./config.mjs";
 import { taskWorkingTreeDiff } from "./task-git-diff.mjs";
-import { verifySelectedCompositionObjects } from "./selected-composition-proof.mjs";
+import { normalizePublishedResolution, verifySelectedCompositionObjects } from "./selected-composition-proof.mjs";
 import {
   applySelectedCompositionFiles, prepareSelectedCompositionFiles, readSelectedCompositionFiles,
   selectedCompositionFilePlan,
@@ -2870,7 +2870,7 @@ export class TaskGitWorkspaceService {
 
   async previewSelectedCompositionOwned({
     taskId, taskNumber = null, projectRoot, proofCommit, bundlePath,
-    bundleSha256, authority, expectedTaskRevision, lease = null,
+    bundleSha256, publishedResolutionInput = null, authority, expectedTaskRevision, lease = null,
   } = {}) {
     this.#assertAvailable("previewSelectedCompositionOwned");
     const id = normalizedTaskId(taskId);
@@ -2925,6 +2925,12 @@ export class TaskGitWorkspaceService {
       if (actualBundleHash !== String(bundleSha256 ?? "").trim().toLowerCase()) {
         throw new Error("Selected composition reviewed bundle bytes changed");
       }
+      const publishedInput = normalizePublishedResolution(publishedResolutionInput);
+      const publishedBundleBytes = publishedInput ? await readFile(publishedInput.resolutionBundlePath) : null;
+      if (publishedInput && createHash("sha256").update(publishedBundleBytes).digest("hex")
+          !== publishedInput.resolutionBundleSha256) {
+        throw new Error("Selected composition published resolution bundle bytes changed");
+      }
       const tempRoot = await mkdtemp(path.join(tmpdir(), "agent-hub-selected-proof-"));
       try {
         const isolatedRepo = path.join(tempRoot, "objects");
@@ -2935,6 +2941,12 @@ export class TaskGitWorkspaceService {
         });
         await this.#runOwned(["bundle", "verify", isolatedBundle], { cwd: isolatedRepo, lease: ownedLease });
         await this.#runOwned(["bundle", "unbundle", isolatedBundle], { cwd: isolatedRepo, lease: ownedLease });
+        if (publishedInput) {
+          const publishedBundle = path.join(tempRoot, "published-review.bundle");
+          await writeFile(publishedBundle, publishedBundleBytes, { flag: "wx" });
+          await this.#runOwned(["bundle", "verify", publishedBundle], { cwd: isolatedRepo, lease: ownedLease });
+          await this.#runOwned(["bundle", "unbundle", publishedBundle], { cwd: isolatedRepo, lease: ownedLease });
+        }
         await this.#runOwned(["fetch", "--no-tags", remoteUrl, "refs/heads/main"], {
           cwd: isolatedRepo, lease: ownedLease, timeoutMs: 120_000,
         });
@@ -2942,7 +2954,7 @@ export class TaskGitWorkspaceService {
           git: (args, options) => runGit(args, { ...options, cwd: isolatedRepo }),
           taskId: id, repositoryKey: repoKey, taskBaseCommit, acceptedLocalMainCommit,
           taskCommit, devCommit, proofCommit, publishedCommit, publicationGeneration,
-          remoteCommit, bundleSha256: actualBundleHash,
+          remoteCommit, bundleSha256: actualBundleHash, publishedResolutionInput: publishedInput,
         });
         const finalRemote = await this.#runOwned(["ls-remote", remoteUrl, "refs/heads/main"], {
           cwd: repoRoot, lease: ownedLease,
@@ -3121,6 +3133,24 @@ export class TaskGitWorkspaceService {
         await this.#runOwned(["bundle", "unbundle", retainedBundle], {
           cwd: preview.repositoryRoot, lease: ownedLease,
         });
+        if (preview.publishedResolutionInput) {
+          const published = preview.publishedResolutionInput;
+          const bytes = await readFile(published.resolutionBundlePath);
+          if (createHash("sha256").update(bytes).digest("hex") !== published.resolutionBundleSha256) {
+            const refusal = new Error("Selected composition published resolution bundle changed before Git CAS");
+            refusal.code = "SELECTED_COMPOSITION_NO_EFFECT";
+            throw refusal;
+          }
+          const retainedPath = path.join(root, "published-review.bundle");
+          const existing = await readFile(retainedPath).catch((error) => {
+            if (error?.code === "ENOENT") return null;
+            throw error;
+          });
+          if (!existing) await writeFile(retainedPath, bytes, { flag: "wx" });
+          else if (!existing.equals(bytes)) throw new Error("Selected composition retained published bundle changed");
+          await this.#runOwned(["bundle", "verify", retainedPath], { cwd: preview.repositoryRoot, lease: ownedLease });
+          await this.#runOwned(["bundle", "unbundle", retainedPath], { cwd: preview.repositoryRoot, lease: ownedLease });
+        }
         const importedPlan = selectedCompositionFilePlan(await this.#runOwned([
           "diff-tree", "--raw", "-r", "-z", "--no-renames", preview.devTree, preview.proofTree,
         ], { cwd: preview.repositoryRoot, lease: ownedLease }));
@@ -3165,6 +3195,13 @@ export class TaskGitWorkspaceService {
             || finalTask !== preview.taskCommit || finalTaskStatus
             || finalConfiguredRemote !== preview.remoteUrl) {
           const refusal = new Error("Selected composition proof changed at the last pre-CAS readback");
+          refusal.code = "SELECTED_COMPOSITION_NO_EFFECT";
+          throw refusal;
+        }
+        if (preview.publishedResolutionInput && createHash("sha256")
+          .update(await readFile(preview.publishedResolutionInput.resolutionBundlePath)).digest("hex")
+          !== preview.publishedResolutionInput.resolutionBundleSha256) {
+          const refusal = new Error("Selected composition published resolution bundle changed at the last pre-CAS readback");
           refusal.code = "SELECTED_COMPOSITION_NO_EFFECT";
           throw refusal;
         }
@@ -4542,6 +4579,13 @@ export class TaskGitWorkspaceService {
       const retained = await readFile(path.join(root, "review.bundle"));
       if (createHash("sha256").update(retained).digest("hex") !== preview.bundleSha256) {
         throw new Error("Selected composition retained review bundle changed");
+      }
+      if (preview.publishedResolutionInput) {
+        const retainedPublished = await readFile(path.join(root, "published-review.bundle"));
+        if (createHash("sha256").update(retainedPublished).digest("hex")
+            !== preview.publishedResolutionInput.resolutionBundleSha256) {
+          throw new Error("Selected composition retained published resolution bundle changed");
+        }
       }
       if (await gitMaybe(["merge-base", "--is-ancestor", preview.proofCommit,
         devHeadCommit], { cwd: repoRoot }) === null) {

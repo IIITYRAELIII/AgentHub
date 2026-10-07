@@ -324,7 +324,39 @@ rejects unpublished single-parent remote history inherited by fast-forward.
 Missing evidence, a remote rewind or divergence fails closed. Primary main and
 archived Task adoption records are unchanged.
 
-### Divergent published main and reviewed selected Task composition
+### Reviewed selected Task composition
+
+An ordinary own-only result may resolve reviewed Test conflicts through the
+same selected-composition owner without merging dev or changing its Task base.
+This classification requires the immutable Task base to equal current accepted
+local main, a nonempty bounded single-parent history (at most 256 commits), and
+that exact base to be the unique Task/dev merge base. Its bounded net delta
+supports only regular-file additions/edits and excludes CHANGELOG. Conflict
+stage 3 must name the exact own edited blob. All non-conflict entries must equal
+the automatic merge, and every materialized path must belong to the own delta.
+Bundle, ordered proof parents, caller/preview identity, Task revision, current
+dev/result, publication/remote and ordinary durable CAS/recovery guards remain
+mandatory. This is not upstream adoption or authorization of a merge side.
+
+An ordinary Test conflict proof does not approve a conflict against published
+release bytes. The same owner may receive an optional
+`ordinary-published-resolution-v1` input with exact Task/base/application,
+bundle, publication revision/generation and remote bindings. It independently
+recomputes the complete ordinary OWN and automatic published merge. The supplied
+single-parent resolution commit must name that publication as its sole parent,
+resolve exactly the actual owning conflicts with explicitly bound regular-file
+blobs, preserve every automatic non-conflict OWN entry and preserve every
+outside-OWN mode/type/blob, including CHANGELOG and Instructions. Additional,
+missing, non-owning, rename, deletion and mode/type changes are refused.
+
+The independently verified release tree, conflict stages, resolution commit
+and input bundle hash are included in the existing proof/hash, original
+lifecycle intent and receipt. The existing release net projector consumes that
+full OWN commit against its pinned published parent. Missing proof with an
+unresolved non-CHANGELOG published conflict retains the fail-closed guard.
+Clean ordinary proofs and legacy joined proof shapes/hashes are unchanged.
+No standalone tree, review flag or bundle is an installation or publication
+receipt. See ADR-0093 and ADR-0095.
 
 When accepted local main and the repository's published main have a unique
 common base but neither contains the other, ordinary explicit upstream adoption
