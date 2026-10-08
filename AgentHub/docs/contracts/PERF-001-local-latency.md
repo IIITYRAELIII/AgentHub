@@ -1,5 +1,28 @@
 # PERF-001 — Local command latency
 
+Repeated journal projection may reuse a verified rendering only within the
+existing usage worker lifetime. Its bounded scalar receipt is not source
+authority: the current SQLite journal revision/index, clean dirty set, exact
+scope/version/device settings, freshly resolved Workspace bindings, freshly read
+account catalog and generation-fenced facts revision must still match. Workspace
+resolution and unknown-Thread assignment are never skipped. A single SQLite
+read snapshot rechecks journal/facts/dirty and pricing/image markers after
+asynchronous callbacks, both when consuming and establishing a reuse receipt.
+Marker drift requires a canonical full rebuild with the original revision CAS;
+pre-callback version observations never authorize reuse.
+Rolling-window future-record/24h boundaries and local midnight expire reuse;
+backward or invalid clocks fail closed. Restart, a failed/stale render and changed
+inputs reconstruct through the canonical renderer and existing revision CAS.
+The receipt retains hashes/scalars only, not another HTML or facts cache.
+Matching facts are checked through their indexed revision/generation metadata;
+no facts are hydrated on this path, including when the existing facts payload
+cache declined retention at its byte limit. A miss still uses that bounded cache
+and the canonical renderer. Content-free retained byte/count scalars are not
+payloads and do not widen its retention limit.
+Content-free reuse-check/window and render measurements distinguish eliminated
+render work from preserved ledger reads, callbacks and queue waits. A no-dirty
+result alone never establishes unchanged projection inputs.
+
 ## Bounded Codex trace and fact projections
 
 Codex rollout preview retains at most 256 groups, 128 activities per group,
