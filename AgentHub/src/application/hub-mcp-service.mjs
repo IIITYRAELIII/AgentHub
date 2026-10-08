@@ -34,6 +34,9 @@ import { TaskLifecycleService, TaskIntegrationConflictError, TaskAwaitIntegratio
 import { TaskOperationReconciliationService } from "./task-operation-reconciliation-service.mjs";
 import { TaskIntegrationRejectedError } from "./task-lifecycle-service.mjs";
 import { createWorkspaceCatalogMutationOwner } from "./sqlite-mutation-owner.mjs";
+import { assertPreparationRows, readPreparationSourceClosure, ReleasePreparationRejectedError,
+  validatePreparationEnvelope } from "./release-preparation-admission.mjs";
+import { measureTaskOperation } from "../infrastructure/process/task-operation-timing.mjs";
 
 const CONTEXT_TOKEN_VERSION = 1;
 const MAX_REGISTERED_CONTEXT_CAPABILITIES = 1_000;
@@ -45,7 +48,7 @@ const MUTATING_TOOLS = new Set([
   "hub_task_attachment_add", "hub_workspace_rules_update", "hub_stream_rules_update",
   "hub_stream_message_send",
   "hub_task_operation_reconcile",
-  "hub_release_run", "hub_release_continue",
+  "hub_release_run", "hub_release_continue", "hub_release_prepare",
 ]);
 
 // Only the synchronous input boundary below can produce this proof of no effects.
@@ -807,6 +810,13 @@ export class HubMcpService {
       tool("hub_release_plan_get", "Read the complete release plan and exact integrated dev heads for any existing Workspace.", {
         workspace_id: { type: "string", description: "Defaults to the caller Workspace." },
       }),
+      tool("hub_release_prepare", "Release Manager-only preparation of the exact current accepted set. Binds fresh CAS, publication, source closure and reviewed tree; preserves Task transitions and original Await receipts. Does not validate, publish or install a release.", {
+        preparation: { type: "object", description: "Exact schemaVersion=1 preparation envelope defined by REL-001; unknown or missing fields fail closed." },
+      }, ["preparation"]),
+      tool("hub_release_prepare_get", "Read the exact original preparation receipt. Unknown remains unknown; current candidate state never settles an original.", {
+        preparation_request_id: { type: "string" },
+        expected_arguments_hash: { type: "string", pattern: "^[a-f0-9]{64}$" },
+      }, ["preparation_request_id", "expected_arguments_hash"]),
       tool("hub_release_run", "Persist one authorized release operation and return its operation id immediately. The durable owner continues compose, validation, publication and finalization without holding this MCP request open.", {
         workspace_id: { type: "string", description: "Defaults to the caller Workspace." },
         task_ids: { type: "array", minItems: 1, items: { type: "string" } },
@@ -884,6 +894,27 @@ export class HubMcpService {
     await this.#startupReconciliation;
     const context = this.#authorize(args.context_token);
     const toolName = String(name ?? "");
+    if (["hub_release_prepare", "hub_release_prepare_get"].includes(toolName)
+        && !this.#isReleaseManager(context)) {
+      throw new ReleasePreparationRejectedError("Candidate preparation requires a Release Manager Stream");
+    }
+    if (toolName === "hub_release_prepare") {
+      validatePreparationEnvelope(args.preparation);
+      if (Object.keys(args).some((key) => !["context_token", "request_id", "preparation"].includes(key))) {
+        throw new ReleasePreparationRejectedError("Unexpected preparation command argument");
+      }
+      const operation = () => this.#mutate(context, toolName, args, () => this.#prepareRelease(context, args));
+      return this.taskGitWorkspaces?.withOperationTrace
+        ? this.taskGitWorkspaces.withOperationTrace({ operationId: args.request_id }, operation)
+        : operation();
+    }
+    if (toolName === "hub_release_prepare_get") {
+      const operation = () => measureTaskOperation("preparation:original-readback",
+        () => this.#preparationReadback(context, args));
+      return this.taskGitWorkspaces?.withOperationTrace
+        ? this.taskGitWorkspaces.withOperationTrace({ operationId: args.preparation_request_id }, operation)
+        : operation();
+    }
     if (MUTATING_TOOLS.has(toolName)) {
       const operation = () => this.#dispatch(context, toolName, args);
       return this.#mutate(context, toolName, args, operation);
@@ -1072,6 +1103,8 @@ export class HubMcpService {
         return this.#addAttachment(context, args);
       case "hub_release_plan_get":
         return this.#releasePlan(context, args);
+      case "hub_release_prepare_get":
+        return this.#preparationReadback(context, args);
       case "hub_release_run":
         if (!this.#isReleaseManager(context)) throw new Error("release execution requires a Release Manager Stream");
         return this.#runReleaseOperation(context, args);
@@ -1669,6 +1702,78 @@ export class HubMcpService {
     return this.#workspace(context).streams.some((stream) => (
       stream.id === context.streamId && stream.settings?.releaseManager === true
     ));
+  }
+
+  #preparationReadback(context, args) {
+    const requestId = requiredText(args.preparation_request_id, "original preparation request id", 200);
+    const operation = this.workspaceCatalog.mcpOperation(requestId);
+    if (!/^[a-f0-9]{64}$/u.test(String(args.expected_arguments_hash ?? ""))
+        || !operation || operation.workspaceId !== context.workspaceId
+        || operation.toolName !== "hub_release_prepare"
+        || operation.argumentsHash !== args.expected_arguments_hash) {
+      throw new ReleasePreparationRejectedError("Original preparation receipt identity does not match");
+    }
+    return { requestId, argumentsHash: operation.argumentsHash,
+      caller: { workspaceId: operation.workspaceId, streamId: operation.streamId,
+        provider: operation.provider, threadId: operation.threadId },
+      status: operation.status, receiptState: operation.receiptState,
+      createdAtMs: operation.createdAtMs, completedAtMs: operation.completedAtMs,
+      result: operation.status === "succeeded" ? operation.result : null, error: operation.error };
+  }
+
+  async #prepareRelease(context, args) {
+    const envelope = validatePreparationEnvelope(args.preparation);
+    const hash = argumentsHash(args);
+    const checkRows = () => {
+      if (!this.#isReleaseManager(context)) throw new ReleasePreparationRejectedError("Release Manager authority changed");
+      assertPreparationRows(envelope, this.taskBoard, context.workspaceId);
+      const original = this.workspaceCatalog.mcpOperation(args.request_id);
+      if (original?.argumentsHash !== hash || original?.toolName !== "hub_release_prepare"
+          || original?.workspaceId !== context.workspaceId || original?.status !== "pending") {
+        throw new ReleasePreparationRejectedError("Preparation intake identity changed");
+      }
+    };
+    const validate = async () => {
+      checkRows();
+      if ((await readPreparationSourceClosure()).hash !== envelope.sourceClosureHash) {
+        throw new ReleasePreparationRejectedError("Preparation source closure changed");
+      }
+    };
+    await measureTaskOperation("preparation:pins", validate);
+    if (typeof this.releasePreflight?.prepareCurrentAwaitSet !== "function") {
+      throw new ReleasePreparationRejectedError("Preparation owner is unavailable");
+    }
+    return this.releasePreflight.prepareCurrentAwaitSet({
+      workspaceId: context.workspaceId, envelope, requestId: args.request_id, argumentsHash: hash, validate,
+      commitPrepared: async (prepared) => {
+        await validate();
+        const result = { schemaVersion: 1, kind: "preparation-only", requestId: args.request_id,
+          argumentsHash: hash, workspaceId: context.workspaceId, planRevision: prepared.planRevision,
+          sourceCommit: envelope.sourceCommit, sourceTree: envelope.sourceTree,
+          sourceClosureHash: envelope.sourceClosureHash, publicationHash: envelope.publicationHash,
+          taskIds: prepared.taskIds, candidates: prepared.releaseCandidates.map((candidate) => ({
+            repositoryRoot: candidate.repositoryRoot, preReleaseHead: candidate.preReleaseHead,
+            tree: candidate.tree, baseCommit: candidate.baseCommit, manifestHash: candidate.manifestHash,
+            preflightRequestId: candidate.manifest?.preflightRequestId,
+          })) };
+        if (Buffer.byteLength(JSON.stringify(result)) > 48 * 1024) {
+          throw new ReleasePreparationRejectedError("Preparation terminal receipt exceeds its exact retention budget");
+        }
+        try {
+          await measureTaskOperation("preparation:terminal-receipt", () => this.workspaceCatalog
+            .completeMcpOperation(args.request_id, result, { validate: checkRows }));
+        } catch (cause) {
+          const terminal = this.workspaceCatalog.mcpOperation(args.request_id);
+          if (terminal?.status === "succeeded" && terminal.argumentsHash === hash
+              && JSON.stringify(terminal.result) === JSON.stringify(result)) return terminal.result;
+          if (cause instanceof ReleasePreparationRejectedError) throw cause;
+          const unknown = new Error("Preparation terminal persistence outcome is unknown", { cause });
+          unknown.code = "AWAIT_ACCEPTANCE_UNKNOWN";
+          throw unknown;
+        }
+        return result;
+      },
+    });
   }
 
   async #adoptLegacyTaskGit(context, {
@@ -2276,7 +2381,7 @@ export class HubMcpService {
         requestId: args.request_id,
       });
     }
-    const started = await this.workspaceCatalog.beginMcpOperation({
+    const started = await measureTaskOperation("mcp:admission", () => this.workspaceCatalog.beginMcpOperation({
       requestId,
       workspaceId: context.workspaceId,
       streamId: context.streamId,
@@ -2284,7 +2389,7 @@ export class HubMcpService {
       threadId: context.auditThreadId,
       toolName,
       argumentsHash: argumentsHash(args),
-    });
+    }));
     if (started.status === "succeeded") return started.result;
     if (started.status === "failed") throw new Error(started.error || "previous MCP operation failed");
     if (started.status === "unknown" && toolName === "hub_task_claim") {
@@ -2327,9 +2432,20 @@ export class HubMcpService {
         }
         const result = await operation();
         effectCompleted = true;
+        if (toolName === "hub_release_prepare") {
+          const terminal = this.workspaceCatalog.mcpOperation(requestId);
+          if (terminal?.status !== "succeeded" || terminal.argumentsHash !== argumentsHash(args)) {
+            throw new Error("Preparation owner did not persist its exact terminal receipt");
+          }
+          return terminal.result;
+        }
         await this.workspaceCatalog.completeMcpOperation(requestId, result);
         return result;
       } catch (error) {
+        if (toolName === "hub_release_prepare") {
+          const terminal = this.workspaceCatalog.mcpOperation(requestId);
+          if (terminal?.status === "succeeded" && terminal.argumentsHash === argumentsHash(args)) return terminal.result;
+        }
         if (!effectCompleted && checklistMutation) {
           const reconciled = await this.#reconcileTaskChecklist(context, args).catch(() => null);
           if (reconciled) {
@@ -2349,7 +2465,7 @@ export class HubMcpService {
           )).catch(() => {});
           throw new Error(`MCP effect completed but receipt reconciliation is required for request_id ${requestId}`);
         }
-        if (error instanceof TaskInputValidationError || error instanceof TaskIntegrationConflictError || error instanceof TaskAwaitIntegrationError
+        if (error instanceof ReleasePreparationRejectedError || error instanceof TaskInputValidationError || error instanceof TaskIntegrationConflictError || error instanceof TaskAwaitIntegrationError
             || error instanceof TaskDependencyPendingError || error instanceof TaskWithdrawalDependencyError
             || error instanceof TaskLifecycleBeginRejectedError || error instanceof TaskWithdrawalBusyError
             || error instanceof ReleaseCandidateFrozenError || error instanceof TaskAbsorptionCompositionError

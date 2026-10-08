@@ -31,6 +31,7 @@ import {
   resolveTestContourSource,
   TEST_CONTOUR_RELEASE_CANDIDATE_SOURCE,
 } from "../../../src/runtime/test-contour-manager.mjs";
+import { assertPreparationTree } from "../../../src/infrastructure/filesystem/release-preparation-guard.mjs";
 
 const execFileAsync = promisify(execFile);
 const RECOVERY_SOURCE = { commit: "c".repeat(40), ownerSha256: "d".repeat(64) };
@@ -135,6 +136,92 @@ async function registeredTaskBranch(setup, context, { taskId, startCommit, baseC
     `refs/agent-hub/task-bases/${taskId}/${taskRepositoryKey(setup.primary)}`, baseCommit);
   return { branch, taskRoot };
 }
+
+for (const disposition of ["success", "tree-refusal", "callback-refusal", "callback-unknown"]) {
+  test(`preparation-only native full15 precommit and ${disposition} retain canonical rollback boundary`, { timeout: 60000 }, async (t) => {
+    const setup = await fixture(t);
+    const initial = await setup.service.prepareCandidate({ planRevision: "prepare-plan", projectRoot: setup.primary });
+    const prior = await setup.service.frozenCandidate(setup.primary);
+    const rawCheckpoint = await readFile(prior.checkpointFile);
+    const branch = "HUB-prepare-full15";
+    const firstResult = await taskResult(setup, t, { branch, file: "owned/01.txt", content: "own-01\n" });
+    const taskRoot = path.join(setup.root, "task-hub-prepare-full15");
+    for (let index = 2; index <= 15; index += 1) {
+      await writeFile(path.join(taskRoot, "owned", `${String(index).padStart(2, "0")}.txt`), `own-${index}\n`);
+    }
+    const resultCommit = await commit(taskRoot, "full15");
+    const expectedTree = await git(taskRoot, "rev-parse", "HEAD^{tree}");
+    const guard = { checkpointHash: createHash("sha256").update(rawCheckpoint).digest("hex"),
+      manifestHash: initial.manifestHash, preReleaseHead: initial.preReleaseHead, tree: initial.tree,
+      primaryMainCommit: setup.baseCommit, originMainCommit: setup.baseCommit,
+      approvedBaseCommit: setup.baseCommit, publishedRevision: setup.baseCommit,
+      approvedTree: disposition === "tree-refusal" ? "0".repeat(40) : expectedTree,
+      argumentsHash: "a".repeat(64), sourceCommit: "b".repeat(40), sourceTree: "c".repeat(40),
+      sourceClosureHash: "d".repeat(64), publicationHash: "e".repeat(64) };
+    let callbackCalls = 0;
+    const operation = () => setup.service.prepareCandidate({
+      planRevision: "prepare-plan", projectRoot: setup.primary, workspaceId: "workspace-1",
+      preflightRequestId: "native-preparation-original", preparationGuard: guard, preserveFrozen: true,
+      frozenTasks: [{ taskId: "full15", taskRevision: 1, baseCommit: setup.baseCommit, resultCommit,
+        integrations: [{ commit: firstResult, parent: setup.baseCommit, order: 1 },
+          { commit: resultCommit, parent: firstResult, order: 2 }] }],
+      commitPrepared: async (candidate) => {
+        callbackCalls += 1;
+        assert.equal(candidate.tree, expectedTree);
+        for (let index = 1; index <= 15; index += 1) {
+          const file = `owned/${String(index).padStart(2, "0")}.txt`;
+          assert.equal(await git(candidate.releaseRoot, "ls-tree", candidate.preReleaseHead, "--", file),
+            await git(taskRoot, "ls-tree", resultCommit, "--", file));
+        }
+        assert.equal(await git(candidate.releaseRoot, "show", `${candidate.preReleaseHead}:app.txt`), "main");
+        if (disposition === "callback-refusal") throw new Error("definitive receipt refusal");
+        if (disposition === "callback-unknown") {
+          const error = new Error("ambiguous receipt write");
+          error.code = "AWAIT_ACCEPTANCE_UNKNOWN";
+          throw error;
+        }
+      },
+    });
+    if (disposition === "success") {
+      const candidate = await operation();
+      assert.equal(candidate.tree, expectedTree);
+      assert.equal(candidate.manifest.preparationIdentity.argumentsHash, guard.argumentsHash);
+      assert.equal((await setup.service.frozenCandidate(setup.primary)).preflightRequestId, "native-preparation-original");
+    } else {
+      await assert.rejects(operation(), disposition === "tree-refusal"
+        ? /reviewed tree/ : disposition === "callback-refusal" ? /definitive/ : { code: "AWAIT_ACCEPTANCE_UNKNOWN" });
+      const after = await setup.service.frozenCandidate(setup.primary);
+      if (disposition === "callback-unknown") {
+        assert.equal(after.tree, expectedTree);
+        assert.notEqual(after.preReleaseHead, prior.preReleaseHead);
+      } else {
+        assert.equal(after.preReleaseHead, prior.preReleaseHead);
+        assert.deepEqual(await readFile(prior.checkpointFile), rawCheckpoint);
+      }
+    }
+    assert.equal(callbackCalls, disposition === "tree-refusal" ? 0 : 1);
+    assert.equal(await git(setup.primary, "rev-parse", "HEAD"), setup.baseCommit);
+    assert.equal(await git(setup.primary, "status", "--porcelain"), "");
+  });
+}
+
+test("preparation-only matching approved tree still refuses outside-owned entries", async (t) => {
+  const setup = await fixture(t);
+  const ownCommit = await taskResult(setup, t, { branch: "HUB-outside-guard", file: "own.txt" });
+  const taskRoot = path.join(setup.root, "task-hub-outside-guard");
+  await writeFile(path.join(taskRoot, "unselected.txt"), "unselected\n");
+  const foreign = await commit(taskRoot, "unselected witness");
+  const tree = await git(taskRoot, "rev-parse", `${foreign}^{tree}`);
+  const readGit = async (args, options = {}) => {
+    const { stdout } = await execFileAsync("git", args, { cwd: taskRoot, windowsHide: true,
+      encoding: options.rawOutput ? "buffer" : "utf8" });
+    return options.rawOutput ? stdout : String(stdout).trim();
+  };
+  await assert.rejects(assertPreparationTree({ guard: { approvedTree: tree,
+    approvedBaseCommit: setup.baseCommit, publishedRevision: setup.baseCommit }, tree,
+    baseCommit: setup.baseCommit, tasks: [{ baseCommit: setup.baseCommit, resultCommit: ownCommit }],
+    git: readGit }), /outside/);
+});
 
 test("one operation generation isolates source bundles per repository", { timeout: 30000 }, async (context) => {
   const first = await fixture(context);

@@ -1,5 +1,23 @@
 # MCP-001 — Bounded Agent Hub tool bridge
 
+## Preparation-only release admission
+
+The explicit exception `hub_release_prepare` and original-addressed
+`hub_release_prepare_get` follow REL-001 and ADR-0104. Both require genuine RM
+context; non-RM fails before mutation intake. The preparation original is
+separate from succeeded Task Await and is canonically argument-bound by the
+existing MCP ledger. Terminal persistence occurs inside existing candidate
+rollback ownership, through that same receipt owner, with all selected row CAS
+checked in its SQLite transaction. Exact terminal result stays below 48 KiB,
+so receipt compaction cannot discard candidate/source/request binding.
+
+This command performs bounded explicit composition without validation,
+publication or installation. UNKNOWN cannot automatically replay Git.
+Readback returns only the exact original outcome, hash, caller and candidate
+binding; a later checkpoint is never original terminal evidence. Existing
+original-ID tracing covers admission, lock wait, composition, precommit checks,
+terminal persistence and readback without arguments, file contents or secrets.
+
 ## Failed validation receipt reconciliation
 
 An explicit Task ancestry refusal is terminal only after the lifecycle owner
@@ -164,12 +182,13 @@ source Task state or replay the target lifecycle. The transition records the
 accepted result. An ordinary Await transition composes that result into the
 prospective `PreRelease` first and commits only after the composition succeeded;
 a conflict leaves the Task in Test with the last good candidate intact. There is
-no separate public prepare tool. Active release generations retain their own
+`hub_release_prepare` is the explicit RM-only preparation exception described
+below. Active release generations retain their own
 exact membership. A corrected result creates a later generation without removing
 historical dev integration. `hub_release_preflight` reads and audits a prepared
 candidate; it does not refresh the rolling contour or silently rebuild one.
 
-`hub_release_run` is the only public release mutation entrypoint. It requires a
+`hub_release_run` is the public release execution entrypoint. It requires a
 stable request ID, exact Task IDs, validation mode and approved publication
 targets. It commits the durable operation and returns `{accepted, operationId,
 state, revision}` before long work. Same-ID replay with identical authorization

@@ -32,6 +32,10 @@ import {
   resolveExactTaskBaseMerge,
 } from "./release-order-preserving-union.mjs";
 import { releaseTaskNetProjections } from "./release-task-net-projection.mjs";
+import { assertPreparationCheckpoint, assertPreparationTree } from "./release-preparation-guard.mjs";
+import { measureTaskOperation, recordTaskOperationTiming } from "../process/task-operation-timing.mjs";
+import { performance } from "node:perf_hooks";
+import { ReleasePreparationRejectedError } from "../../domain/release-preparation.mjs";
 
 const RELEASE_MARKER = "agent-hub-release-clone.json";
 const RELEASE_BRANCH = "PreRelease";
@@ -516,6 +520,17 @@ async function selectedResultSuccessorReuse({ checkpoint, clone, tasks, baseComm
     if (await gitMaybe(["merge-base", "--is-ancestor", correction.baseCommit, correctionBaseCommit], {
       cwd: clone.releaseRoot,
     }) === null) return null;
+    // Incremental reuse requires the complete Task-owned parent snapshot.
+    const priorChangedPaths = (await runGit([
+      "diff", "--no-renames", "--name-only", "-z", correction.baseCommit, correctionBaseCommit, "--",
+    ], { cwd: clone.releaseRoot, rawOutput: true })).toString("utf8").split("\0").filter(Boolean);
+    for (let index = 0; index < priorChangedPaths.length; index += 100) {
+      const pathspecs = priorChangedPaths.slice(index, index + 100)
+        .map((relativePath) => `:(literal)${relativePath}`);
+      if (await gitMaybe([
+        "diff", "--quiet", "--no-ext-diff", correctionBaseCommit, checkpoint.preReleaseHead, "--", ...pathspecs,
+      ], { cwd: clone.releaseRoot }) === null) return null;
+    }
     const changedPaths = (await runGit([
       "diff", "--name-only", correctionBaseCommit, correction.resultCommit, "--",
     ], { cwd: clone.releaseRoot })).split("\n").filter(Boolean);
@@ -1301,7 +1316,7 @@ export class ReleaseGitWorkspaceService {
   async prepareCandidate({
     planRevision, projectRoot, workspaceId = null, preflightRequestId = null,
     frozenTasks = [], approvedBaseCommit = null, baseProvenance = null, validateBeforeCommit = null,
-    preserveFrozen = false, commitPrepared = null,
+    preserveFrozen = false, commitPrepared = null, preparationGuard = null,
   } = {}) {
     this.#assertAvailable("prepareCandidate");
     const revision = String(planRevision ?? "").trim();
@@ -1322,7 +1337,11 @@ export class ReleaseGitWorkspaceService {
     });
     const layout = this.#layout(initial.root);
     const lock = path.join(this.dataDir, "locks", `release-git-${layout.repositoryKey}`);
+    const preparationLockStarted = preparationGuard ? performance.now() : null;
     return withInterprocessLocks([lock], async () => {
+      if (preparationGuard) recordTaskOperationTiming("preparation:candidate-lock-wait", {
+        durationMs: performance.now() - preparationLockStarted,
+      });
       const clone = await this.#ensureClone(initial);
       const dirty = await runGit(["status", "--porcelain=v1", "--untracked-files=all"], { cwd: clone.releaseRoot });
       if (dirty) throw new Error(`Agent Hub-owned release clone is dirty: ${clone.releaseRoot}: ${dirty}`);
@@ -1331,6 +1350,23 @@ export class ReleaseGitWorkspaceService {
         timeoutMs: 300_000,
       });
       const checkpoint = await readJson(clone.checkpointFile);
+      const preparationGit = (args, options = {}) => measureTaskOperation("preparation:git-io", () => (
+        runGit(args, { ...options, cwd: clone.releaseRoot, timeoutMs: 300_000 })
+      ), { detail: true });
+      const validatePreparationMain = async () => {
+        if (!preparationGuard) return;
+        const current = await primarySnapshot(initial.root);
+        const remote = await preparationGit(["ls-remote", "origin", "refs/heads/main"]);
+        if (current.mainCommit !== preparationGuard.primaryMainCommit
+            || current.headCommit !== initial.headCommit || current.branchRef !== initial.branchRef
+            || remote.split(/\s/u)[0] !== preparationGuard.originMainCommit) {
+          throw new ReleasePreparationRejectedError("Preparation current main or remote changed");
+        }
+      };
+      await validatePreparationMain();
+      await measureTaskOperation("preparation:checkpoint", () => assertPreparationCheckpoint({
+        guard: preparationGuard, clone, initial, checkpoint, git: preparationGit,
+      }));
       const acceptanceBefore = commitPrepared ? {
         head: await runGit(["rev-parse", "HEAD^{commit}"], { cwd: clone.releaseRoot }),
         checkout: await gitMaybe(["symbolic-ref", "-q", "HEAD"], { cwd: clone.releaseRoot }),
@@ -1444,6 +1480,12 @@ export class ReleaseGitWorkspaceService {
         ].join("+"),
         ...(workspaceId ? { workspaceId: String(workspaceId) } : {}),
         ...(preflightRequestId ? { preflightRequestId: String(preflightRequestId) } : {}),
+        ...(preparationGuard ? { preparationIdentity: {
+          argumentsHash: preparationGuard.argumentsHash, sourceCommit: preparationGuard.sourceCommit,
+          sourceTree: preparationGuard.sourceTree, sourceClosureHash: preparationGuard.sourceClosureHash,
+          publicationHash: preparationGuard.publicationHash, approvedTree: preparationGuard.approvedTree,
+          previousCheckpointHash: preparationGuard.checkpointHash,
+        } } : {}),
         planRevision: revision,
         primaryRoot: initial.root,
         primaryGitCommonDir: initial.commonDir,
@@ -1664,6 +1706,10 @@ export class ReleaseGitWorkspaceService {
           if (staged || candidateReuse) {
             const tree = await runGit(["write-tree"], { cwd: clone.releaseRoot });
             preparedCompositionTree = tree;
+            await measureTaskOperation("preparation:full-tree", () => assertPreparationTree({
+              guard: preparationGuard, tree, baseCommit, tasks, git: preparationGit,
+            }));
+            await validatePreparationMain();
             if (typeof validateBeforeCommit === "function") await validateBeforeCommit();
             const parents = [candidateReuse?.sourceHead ?? baseCommit, ...new Set(tasks.map((task) => task.resultCommit))]
               .flatMap((commit) => ["-p", commit]);
@@ -1681,8 +1727,11 @@ export class ReleaseGitWorkspaceService {
           } else {
             preReleaseHead = baseCommit;
             preparedCompositionTree = await runGit(["rev-parse", `${baseCommit}^{tree}`], { cwd: clone.releaseRoot });
+            await assertPreparationTree({ guard: preparationGuard, tree: preparedCompositionTree,
+              baseCommit, tasks, git: preparationGit });
           }
           if (typeof validateBeforeCommit === "function") await validateBeforeCommit();
+          await validatePreparationMain();
           await validateReviewedMain();
           const finalIndexTree = await runGit(["write-tree"], { cwd: clone.releaseRoot });
           const finalCommitTree = await runGit(["rev-parse", `${preReleaseHead}^{tree}`], { cwd: clone.releaseRoot });
@@ -1700,6 +1749,7 @@ export class ReleaseGitWorkspaceService {
             netProjectedTaskIds,
             planRevision: revision,
             ...(preflightRequestId ? { preflightRequestId: String(preflightRequestId) } : {}),
+            ...(preparationGuard ? { preparationIdentity: manifest.preparationIdentity } : {}),
             manifestHash,
             manifestFile,
             baseCommit,
@@ -1730,6 +1780,10 @@ export class ReleaseGitWorkspaceService {
       }
 
       if (reused) {
+        await validatePreparationMain();
+        await assertPreparationTree({ guard: preparationGuard,
+          tree: await preparationGit(["rev-parse", `${preReleaseHead}^{tree}`]),
+          baseCommit, tasks, git: preparationGit });
         if (typeof validateBeforeCommit === "function") await validateBeforeCommit();
         await validateReviewedMain();
       }
@@ -1764,6 +1818,7 @@ export class ReleaseGitWorkspaceService {
       if (commitPrepared) {
         try {
           await verifyPrimary();
+          await validatePreparationMain();
           await commitPrepared(result);
         } catch (error) {
           // An unknown Task acceptance outcome must never roll the candidate
