@@ -2826,6 +2826,8 @@ export class TaskBoardStore {
           AND json_extract(result_json, '$.task.workflowStatus') = 'testing'
           AND EXISTS (SELECT 1 FROM json_each(result_json, '$.task.gitReferences')
             WHERE json_extract(value, '$.resultCommit') = ?)
+          AND (json_extract(result_json, '$.evidence.selectedCompositionRequired') = 1
+            OR json_type(result_json, '$.evidence.selectedComposition') IS NOT NULL)
         ORDER BY completed_at_ms DESC, operation_id LIMIT 65
       `).all(taskId, resultCommit);
       if (rows.length > 64) throw selectedCompositionRequiredError("Test outcome history exceeds bounded proof lookup");

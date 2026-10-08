@@ -323,6 +323,13 @@ test("durable selected protocol rejects missing, tampered and ambiguous Test out
   try {
     const raw = database.prepare("SELECT result_json FROM hub_task_lifecycle_outcomes WHERE operation_id = ?")
       .get("bridge-confirm").result_json;
+    const ordinary = JSON.parse(raw);
+    delete ordinary.evidence.selectedComposition;
+    delete ordinary.evidence.selectedCompositionRequired;
+    const insert = database.prepare(`INSERT INTO hub_task_lifecycle_outcomes
+      (operation_id, task_id, kind, result_json, completed_at_ms) VALUES (?, ?, 'workflow', ?, ?)`);
+    for (let i = 0; i < 70; i += 1) insert.run(`ordinary-${i}`, TASK_ID, JSON.stringify(ordinary), Date.now() + i);
+    assert.equal((await planner.plan(p.workspace.id, { acceptingTask: confirmed.task })).revision, initial.revision);
     const missing = JSON.parse(raw);
     delete missing.evidence.selectedComposition;
     database.prepare("UPDATE hub_task_lifecycle_outcomes SET result_json = ? WHERE operation_id = ?")
