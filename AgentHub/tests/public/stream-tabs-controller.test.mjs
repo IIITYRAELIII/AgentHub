@@ -362,6 +362,10 @@ test("Stream model label follows saved settings while idle and exact turn while 
   task.run = { turnId: "turn", operationKind: "user-turn", projectionState: "active", model: "GPT-5.6 Sol" };
   assert.equal(streamModelLabel(task, stream, settings), "GPT-5.6 Sol");
   task.latestFinal = { provider: "codex", threadId: "old-thread", turnId: "turn" };
+  assert.equal(streamModelLabel(task, stream, settings), "GPT-5.6 Sol");
+  task.latestFinal.revision = 0;
+  assert.equal(streamModelLabel(task, stream, settings), "GPT-5.6 Sol");
+  task.latestFinal.revision = 1;
   assert.equal(streamModelLabel(task, stream, settings), "GPT-6 Luna");
   task.running = false;
   stream.settings.provider = "claude";
