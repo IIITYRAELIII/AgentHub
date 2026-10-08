@@ -574,10 +574,31 @@ export class ReleaseOperationStore {
     const identity = String(sourceIdentity ?? "").trim();
     if (!identity) throw new TypeError("legacy source identity is required");
     const importedAt = this.now();
-    const evidenceSha256 = releaseIdentitySha256(evidence ?? {});
+    let evidenceSha256 = releaseIdentitySha256(evidence ?? {});
     const evidenceId = `${LEGACY_MIGRATION_PREFIX}${releaseIdentitySha256({ sourceKind, identity })}`;
     const operationId = `legacy-${releaseIdentitySha256({ sourceKind, identity }).slice(0, 32)}`;
     const imported = this.get(operationId);
+    // Primary synchronization may annotate an already imported orphan checkpoint.
+    // It cannot activate that orphan or rewrite its original migration evidence.
+    // Remove this compatibility boundary with the legacy checkpoint importer.
+    if (imported?.migration?.evidenceSha256 !== evidenceSha256
+        && sourceKind === "release-checkpoint-v2"
+        && imported?.migration?.sourceKind === sourceKind
+        && imported.migration.sourceIdentity === identity
+        && evidenceOnly === true && imported.migration.evidenceOnly === true
+        && imported.state === "waiting" && !imported.owner && !imported.resumeState
+        && imported.waitReason?.code === "legacy_snapshot_evidence"
+        && !imported.waitReason.retryAt
+        && Object.hasOwn(evidence?.checkpoint ?? {}, "primarySynchronizationProof")) {
+      const checkpoint = { ...evidence.checkpoint };
+      delete checkpoint.primarySynchronizationProof;
+      const originalEvidence = { ...evidence, checkpoint };
+      const originalHash = releaseIdentitySha256(originalEvidence);
+      if (originalHash === imported.migration.evidenceSha256) {
+        evidence = originalEvidence;
+        evidenceSha256 = originalHash;
+      }
+    }
     if (imported && (imported.migration?.sourceKind !== String(sourceKind)
         || imported.migration?.sourceIdentity !== identity
         || imported.migration?.evidenceSha256 !== evidenceSha256

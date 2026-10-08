@@ -103,6 +103,16 @@ plus canonical digests rather than base64-expanding the document through the
 control transport. Composition re-reads and verifies the complete supported
 repository release notes up to 8 MiB; callers do not truncate or summarize them.
 
+An already imported evidence-only orphan checkpoint may later receive a
+`primarySynchronizationProof` annotation from the primary synchronization owner.
+Replay first checks the complete evidence hash. Only an unowned `waiting`
+operation with `legacy_snapshot_evidence`, no resume state and no retry time may
+ignore this newly added field, and only if removing that field alone reproduces
+the original evidence hash exactly. The checkpoint and original stored evidence,
+generation and operation remain unchanged. This never grants publication or
+recovery authority. Any other difference still rejects import. Remove this
+compatibility boundary when legacy checkpoint import is retired.
+
 At cutover, old checkpoint and publication-status files are imported once as
 immutable evidence. Only a status whose revision and owned release root match an
 exact checkpoint activates recovery; a checkpoint without matching publication

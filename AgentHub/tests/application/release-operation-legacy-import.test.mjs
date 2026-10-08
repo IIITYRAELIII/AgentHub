@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
 import { importLegacyReleaseOperations } from "../../src/infrastructure/persistence/release-operation-legacy-import.mjs";
 import { ReleaseOperationStore } from "../../src/infrastructure/persistence/release-operation-store.mjs";
+import { DatabaseSync } from "node:sqlite";
 
 async function fixture(context) {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "release-operation-legacy-import-"));
@@ -40,6 +41,68 @@ async function fixture(context) {
   await writeFile(path.join(root, "checkpoint.json"), JSON.stringify(checkpoint));
   return { dataDir, releaseRoot, checkpoint, manifest, manifestHash };
 }
+
+test("post-import primary proof preserves orphan evidence, generation and events byte-for-byte", async (context) => {
+  const setup = await fixture(context);
+  const store = new ReleaseOperationStore({ dataDir: setup.dataDir });
+  const options = { store, dataDir: setup.dataDir, runnerVersion: "runner-n",
+    readStatus: async () => null, resolveTree: async () => "e".repeat(40) };
+  const first = await importLegacyReleaseOperations(options);
+  const operationId = first.imported[0].operationId;
+  const original = store.snapshot(operationId);
+  const rows = () => {
+    const db = new DatabaseSync(path.join(setup.dataDir, "runtime.sqlite"), { readOnly: true });
+    try { return ["release_operations", "release_candidate_generations", "release_legacy_evidence", "release_operation_events"]
+      .map((table) => db.prepare(`SELECT * FROM ${table}`).all()); } finally { db.close(); }
+  };
+  const before = rows();
+  const checkpointFile = path.join(setup.releaseRoot, "..", "checkpoint.json");
+  const changed = JSON.stringify({ ...setup.checkpoint,
+    primarySynchronizationProof: { operationId: "sync-exact", proofHash: "f".repeat(64) } });
+  await writeFile(checkpointFile, changed);
+  const replay = await importLegacyReleaseOperations({ ...options, runnerVersion: "runner-new" });
+  assert.equal(replay.imported[0].created, false);
+  assert.deepEqual(store.snapshot(operationId), original);
+  assert.deepEqual(rows(), before);
+  assert.equal(await readFile(checkpointFile, "utf8"), changed);
+  assert.equal(original.operation.resumeState, null);
+  assert.equal(original.operation.waitReason.retryAt, undefined);
+  await writeFile(checkpointFile, JSON.stringify({ ...JSON.parse(changed), phase: "changed" }));
+  await assert.rejects(importLegacyReleaseOperations(options), /legacy release evidence changed/);
+  assert.deepEqual(rows(), before);
+});
+
+test("proof already present at first import remains exact evidence on replay", async (context) => {
+  const setup = await fixture(context);
+  const checkpointFile = path.join(setup.releaseRoot, "..", "checkpoint.json");
+  const checkpoint = { ...setup.checkpoint, primarySynchronizationProof: { proofHash: "a".repeat(64) } };
+  await writeFile(checkpointFile, JSON.stringify(checkpoint));
+  const store = new ReleaseOperationStore({ dataDir: setup.dataDir });
+  const options = { store, dataDir: setup.dataDir, runnerVersion: "runner-n",
+    readStatus: async () => null, resolveTree: async () => "e".repeat(40) };
+  const first = await importLegacyReleaseOperations(options);
+  const original = store.snapshot(first.imported[0].operationId);
+  await importLegacyReleaseOperations(options);
+  assert.deepEqual(store.snapshot(first.imported[0].operationId), original);
+  await writeFile(checkpointFile, JSON.stringify({ ...checkpoint,
+    primarySynchronizationProof: { proofHash: "b".repeat(64) } }));
+  await assert.rejects(importLegacyReleaseOperations(options), /legacy release evidence changed/);
+});
+
+test("primary proof cannot relax an authoritative publication evidence guard", async (context) => {
+  const setup = await fixture(context);
+  const store = new ReleaseOperationStore({ dataDir: setup.dataDir });
+  const status = { version: 2, runId: "publication", status: "awaiting_finalization",
+    identity: { revision: setup.checkpoint.preReleaseHead, worktreeRoot: setup.releaseRoot } };
+  const options = { store, dataDir: setup.dataDir, runnerVersion: "runner-n",
+    readStatus: async () => status, resolveTree: async () => "e".repeat(40) };
+  const first = await importLegacyReleaseOperations(options);
+  const original = store.snapshot(first.imported[0].operationId);
+  await writeFile(path.join(setup.releaseRoot, "..", "checkpoint.json"), JSON.stringify({
+    ...setup.checkpoint, primarySynchronizationProof: { proofHash: "f".repeat(64) } }));
+  await assert.rejects(importLegacyReleaseOperations(options), /legacy release evidence changed/);
+  assert.deepEqual(store.snapshot(first.imported[0].operationId), original);
+});
 
 test("startup migration activates only a matching publication and preserves exact generation evidence", async (context) => {
   const setup = await fixture(context);
