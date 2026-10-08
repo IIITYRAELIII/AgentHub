@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { selectedCompositionFields } from "./task-selected-composition.mjs";
 
 export const MAX_RELEASE_METADATA_BYTES = 8 * 1024 * 1024;
 
@@ -119,6 +120,7 @@ function normalizedResults(value) {
   return (Array.isArray(value) ? value : []).map((entry) => ({
     taskId: requiredText(entry?.taskId, "selected result taskId"),
     resultCommit: requiredText(entry?.resultCommit, "selected result commit"),
+    ...selectedCompositionFields(entry),
     ...(optionalText(entry?.tree) ? { tree: optionalText(entry.tree) } : {}),
     acceptanceRevision: Number.isSafeInteger(Number(entry?.acceptanceRevision))
       ? Number(entry.acceptanceRevision)

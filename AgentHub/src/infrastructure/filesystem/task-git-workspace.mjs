@@ -41,6 +41,7 @@ import {
   normalizedTaskSquashTransfer,
 } from "../../domain/task-squash-transfer.mjs";
 import { normalizedTaskSquashCutover } from "../../domain/task-squash-cutover.mjs";
+import { selectedCompositionFields, selectedCompositionIdentity, selectedCompositionRequiredError } from "../../domain/task-selected-composition.mjs";
 
 export const TASK_DEV_BRANCH = "dev";
 const TASK_BASE_REF_PREFIX = "refs/agent-hub/task-bases/";
@@ -4625,10 +4626,16 @@ export class TaskGitWorkspaceService {
         throw new Error(`Task ${task.taskId} requires an exact positive revision for release integration evidence`);
       }
       const evidence = await this.releaseEvidence(task);
+      const authoritative = selectedCompositionFields(task);
       const selectedComposition = await this.#selectedCompositionForResult({
         taskId: task.taskId, repositoryRoot: evidence.projectRoot,
         resultCommit: evidence.resultCommit, devHeadCommit: dev.headCommit,
       });
+      if (authoritative.selectedCompositionRequired && (!selectedComposition
+          || selectedCompositionIdentity({ ...task, selectedComposition })
+            !== selectedCompositionIdentity({ ...task, ...authoritative }))) {
+        throw selectedCompositionRequiredError("selected Test filesystem proof missing or differs from durable outcome");
+      }
       const squashTransfer = task.squashTransfer
         ? normalizedTaskSquashTransfer(task.squashTransfer)
         : null;
@@ -4685,7 +4692,8 @@ export class TaskGitWorkspaceService {
         taskRevision,
         baseCommit: evidence.baseCommit,
         resultCommit: evidence.resultCommit,
-        ...(selectedComposition ? { selectedComposition } : {}),
+        ...selectedCompositionFields({ taskId: String(task.taskId), resultCommit: evidence.resultCommit,
+          ...(selectedComposition ? { selectedComposition } : authoritative) }),
         integrations,
         lineage,
         ...(squashTransfer ? {

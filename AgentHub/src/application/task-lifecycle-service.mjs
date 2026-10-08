@@ -6,6 +6,7 @@ import { taskProjectRoot } from "../domain/task-project-root.mjs";
 import { TaskAbsorptionCompositionError } from "../domain/task-board-task.mjs";
 import { normalizedTaskSquashCutover } from "../domain/task-squash-cutover.mjs";
 import { TaskGitHistoryRejectedError } from "../domain/task-git-reference.mjs";
+import { selectedCompositionFields } from "../domain/task-selected-composition.mjs";
 
 export class TaskIntegrationRejectedError extends Error {
   constructor(cause) {
@@ -619,7 +620,7 @@ export class TaskLifecycleService {
         await this.#mutation(() => this.taskBoard.beginLifecycleTransition({
           id: task.id, operationId: operation, kind: "workflow",
           targetWorkflowStatus: "testing", expectedRevision: task.revision,
-          evidence: { selectedComposition: preview },
+          evidence: { selectedCompositionRequired: true, selectedComposition: preview },
           releaseContext: {
             workspaceId: task.workspaceId, streamId: task.streamId, projectRoot: root,
           },
@@ -652,7 +653,7 @@ export class TaskLifecycleService {
               resultCommit: preview.taskCommit, branch: preview.branch }],
             evidence: {
               outcome: "integrated", resultCommit: preview.taskCommit,
-              devHeadCommit: preview.proofCommit, selectedComposition: preview,
+              devHeadCommit: preview.proofCommit, selectedCompositionRequired: true, selectedComposition: preview,
               response: {
                 gitWorkspace: { branch: preview.branch, projectRoot: preview.taskRoot,
                   baseCommit: preview.taskBaseCommit, headCommit: preview.taskCommit },
@@ -1045,6 +1046,10 @@ export class TaskLifecycleService {
     const current = this.#task(taskId);
     const transition = this.taskBoard.lifecycleTransition?.(operationId);
     const selectedComposition = transition?.evidence?.selectedComposition ?? null;
+    if (transition?.evidence?.selectedCompositionRequired || selectedComposition) {
+      selectedCompositionFields({ taskId, resultCommit: selectedComposition?.taskCommit,
+        selectedCompositionRequired: true, selectedComposition });
+    }
     if (selectedComposition) {
       if (transition.operationId !== operationId || transition.taskId !== current.id
           || transition.kind !== "workflow" || transition.phase !== "pending_git"
@@ -1071,7 +1076,7 @@ export class TaskLifecycleService {
         evidence: {
           outcome: "integrated", resultCommit: selectedComposition.taskCommit,
           devHeadCommit: selectedComposition.proofCommit,
-          selectedComposition,
+          selectedCompositionRequired: true, selectedComposition,
           response: {
             gitWorkspace: { branch: selectedComposition.branch,
               projectRoot: selectedComposition.taskRoot,

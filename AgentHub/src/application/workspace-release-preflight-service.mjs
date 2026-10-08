@@ -5,6 +5,7 @@ import {
   SELECTED_TASK_ADOPTION_PROVENANCE,
 } from "../domain/release-base-provenance.mjs";
 import { realpathSync } from "node:fs";
+import { selectedCompositionFields, selectedCompositionIdentity } from "../domain/task-selected-composition.mjs";
 import path from "node:path";
 import { preparationHash, ReleasePreparationRejectedError } from "./release-preparation-admission.mjs";
 import { measureTaskOperation } from "../infrastructure/process/task-operation-timing.mjs";
@@ -123,7 +124,8 @@ function readyRepositories(ready = [], fallbackProjectRoots = []) {
       throw new Error(`release Task ${taskId} has no exact revision`);
     }
     const existing = repository.frozenTasks.get(taskId);
-    if (existing && (existing.resultCommit !== resultCommit || existing.taskRevision !== taskRevision)) {
+    if (existing && (existing.resultCommit !== resultCommit || existing.taskRevision !== taskRevision
+        || selectedCompositionIdentity(existing) !== selectedCompositionIdentity(entry))) {
       throw new Error(`release Task ${taskId} has multiple revisions or result commits`);
     }
     repository.frozenTasks.set(taskId, {
@@ -133,6 +135,7 @@ function readyRepositories(ready = [], fallbackProjectRoots = []) {
       projectRoot,
       branch: entry.branch,
       resultCommit,
+      ...selectedCompositionFields(entry),
       ...(entry.resultReleaseRevision != null ? { resultReleaseRevision: entry.resultReleaseRevision } : {}),
       ...(entry.squashTransfer ? { squashTransfer: entry.squashTransfer } : {}),
     });
@@ -173,6 +176,7 @@ function sameFrozenTasks(left = [], right = []) {
     resultReleaseRevision: item?.resultReleaseRevision == null ? null : Number(item.resultReleaseRevision),
     resultCommit: String(item?.resultCommit ?? ""),
     squashTransferHash: String(item?.squashTransfer?.transferHash ?? ""),
+    selectedCompositionIdentity: selectedCompositionIdentity(item),
   })).sort((a, b) => a.taskId.localeCompare(b.taskId));
   return JSON.stringify(normalize(left)) === JSON.stringify(normalize(right));
 }
@@ -459,6 +463,7 @@ export class WorkspaceReleasePreflightService {
       repository.frozenTasks.map((task) => ({
         taskId: task.taskId,
         resultCommit: task.resultCommit,
+        ...selectedCompositionFields(task),
         acceptanceRevision: task.resultReleaseRevision ?? task.taskRevision,
       }))
     )).sort((left, right) => left.taskId.localeCompare(right.taskId));

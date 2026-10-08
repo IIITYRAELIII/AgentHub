@@ -241,6 +241,15 @@ candidate owner retains the last accepted PreRelease. The final commit is made
 only after the complete selected composition tree and its pinned authority have
 both been revalidated.
 
+For a reviewed selected Test, its committed lifecycle outcome independently
+establishes that the exact selected composition proof is mandatory. Planning,
+integration evidence, frozen-task normalization, manifests and reconstruction
+retain that descriptor and its content identity. Missing, changed or ambiguous
+proof fails before successor reuse or candidate promotion; absence of a field
+does not reclassify the result as ordinary. Duplicate, cache and lineage checks
+bind the same proof as well as the result commit. Ordinary results without this
+protocol retain their existing projection and reuse behavior.
+
 The latest recorded Task result must be covered by that Task's uniquely owned
 dev integrations before release acceptance. Merely finding the result somewhere
 in dev ancestry is insufficient: another Task may have carried a later result

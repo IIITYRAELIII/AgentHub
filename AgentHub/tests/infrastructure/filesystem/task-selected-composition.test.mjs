@@ -16,6 +16,14 @@ import { TaskBoardStore } from "../../../src/infrastructure/persistence/task-boa
 import { WorkspaceCatalogStore } from "../../../src/infrastructure/persistence/workspace-catalog-store.mjs";
 import { HubMcpService } from "../../../src/application/hub-mcp-service.mjs";
 import { ordinaryPublishedResolutionFixture } from "../../fixtures/ordinary-published-resolution-fixture.mjs";
+import { DatabaseSync } from "node:sqlite";
+import { ReleaseGitWorkspaceService } from "../../../src/infrastructure/filesystem/release-git-workspace.mjs";
+import { TaskReleasePlanService } from "../../../src/application/task-release-plan-service.mjs";
+import { WorkspaceReleasePreflightService } from "../../../src/application/workspace-release-preflight-service.mjs";
+import { publicationStateFile } from "../../../src/infrastructure/persistence/publication-state.mjs";
+import { selectedCompositionIdentity } from "../../../src/domain/task-selected-composition.mjs";
+import { createReleaseOperation, restoreReleaseOperation } from "../../../src/domain/release-operation.mjs";
+import { WorkspaceReleaseOperationAdapter } from "../../../src/application/workspace-release-operation-adapter.mjs";
 
 const exec = promisify(execFile);
 const TASK_ID = "367ffe17-f69f-4886-b9be-901558ecace2";
@@ -163,8 +171,191 @@ async function publicFixture(f) {
     if (!closed) { closed = true; store.close(); catalog.close(); }
   };
   f.closeDependencies.push(close);
-  return { mcp, args, catalog, taskBoard, lifecycle, close };
+  return { mcp, args, catalog, taskBoard, lifecycle, close, databaseFile, workspace };
 }
+
+async function canonicalAwaitFixture(f, p) {
+  const environment = { ...process.env, LOCALAPPDATA: path.join(path.dirname(f.root), "state") };
+  const publication = { generation: "generation-1", repositories: [{ root: f.root, revision: f.published }] };
+  const file = publicationStateFile(environment);
+  await mkdir(path.dirname(file), { recursive: true });
+  await writeFile(file, JSON.stringify(publication));
+  const releaseGit = new ReleaseGitWorkspaceService({ dataDir: f.dataDir, environment });
+  const planner = new TaskReleasePlanService({ taskBoard: p.taskBoard, taskGitWorkspaces: f.service });
+  const preflight = new WorkspaceReleasePreflightService({ releasePlanner: planner,
+    taskGitWorkspaces: f.service, releaseGitWorkspaces: releaseGit,
+    readPublicationState: async () => publication,
+    resolveReleaseValidationSource: async () => { throw new Error("Await must not validate a release"); } });
+  p.lifecycle.releasePreflight = preflight;
+  p.mcp.releasePreflight = preflight;
+  return { releaseGit, planner, preflight };
+}
+
+async function selectedTestFixture(t) {
+  const f = await fixture(t);
+  const p = await publicFixture(f);
+  const preview = await p.mcp.call("hub_task_status_update", { ...p.args, request_id: "bridge-preview" });
+  const confirm = { ...p.args, request_id: "bridge-confirm", selected_preview_request_id: "bridge-preview",
+    expected_selected_preview_hash: preview.previewHash };
+  const confirmed = await p.mcp.call("hub_task_status_update", confirm);
+  const a = await canonicalAwaitFixture(f, p);
+  return { f, p, preview, confirmed, confirm, ...a };
+}
+
+test("durable selected Test reaches normal Await manifest and exact original readback after reopen", {
+  timeout: 120_000,
+}, async (t) => {
+  const { f, p, preview, confirmed, releaseGit, planner } = await selectedTestFixture(t);
+  const plan = await planner.plan(p.workspace.id, { acceptingTask: confirmed.task });
+  assert.equal(plan.blocked.length, 0);
+  assert.equal(plan.ready[0].selectedCompositionRequired, true);
+  assert.deepEqual(plan.ready[0].selectedComposition, preview.selectedComposition);
+  let compositions = 0;
+  const originalPrepare = releaseGit.prepareCandidate.bind(releaseGit);
+  releaseGit.prepareCandidate = (...args) => { compositions += 1; return originalPrepare(...args); };
+  const args = { context_token: p.args.context_token, request_id: "bridge-await",
+    task_id: TASK_ID, status: "awaiting_implementation", expected_task_revision: confirmed.task.revision,
+    expected_workflow_status: "testing" };
+  // The caller discards the terminal response. Durable original readback must
+  // recover it without composing a second candidate or committing another CAS.
+  await p.mcp.call("hub_task_status_update", args);
+  const row = p.catalog.mcpOperation(args.request_id);
+  assert.equal(row.status, "succeeded");
+  const checkpoint = await releaseGit.frozenCandidate(f.root);
+  assert.deepEqual(checkpoint.manifest.tasks[0].selectedComposition, preview.selectedComposition);
+  assert.equal(checkpoint.manifest.tasks[0].selectedCompositionRequired, true);
+  assert.deepEqual(p.taskBoard.lifecycleOutcome(args.request_id).result.evidence.releaseIntegration.selectedComposition,
+    preview.selectedComposition);
+  assert.equal(compositions, 1);
+  const rawManifest = JSON.parse(await readFile(checkpoint.manifestFile, "utf8"));
+  const task = rawManifest.tasks[0];
+  const changed = structuredClone(task);
+  changed.selectedComposition.proofHash = "f".repeat(64);
+  changed.selectedComposition.previewHash = createHash("sha256")
+    .update(JSON.stringify({ ...changed.selectedComposition, previewHash: undefined })).digest("hex");
+  assert.notEqual(selectedCompositionIdentity(task), selectedCompositionIdentity(changed));
+  const operation = createReleaseOperation({ operationId: "selection-binding", requestId: "selection-binding",
+    workspaceId: p.workspace.id, streamId: "rm", threadId: "test-thread", runnerVersion: "private",
+    authorization: { taskIds: [TASK_ID], approvedTargets: [{ id: "private", kind: "git-runtime" }], validationMode: "full" },
+    selectedResults: [{ ...task, acceptanceRevision: task.taskRevision }] });
+  const restored = restoreReleaseOperation(JSON.parse(JSON.stringify(operation)));
+  assert.deepEqual(restored.selectedResults[0].selectedComposition, preview.selectedComposition);
+  const adapter = new WorkspaceReleaseOperationAdapter({ releasePreflight: {
+    prepareOperationGeneration: async () => ({ releaseCandidates: [{ ...checkpoint, repositoryRoot: f.root,
+      frozenTasks: [task] }], planRevision: checkpoint.planRevision }),
+    validateOperationGeneration: async () => { throw new Error("no validation"); },
+    operationSelection: async () => [{ ...changed, acceptanceRevision: task.taskRevision }],
+    withAwaitTransition: async (_workspaceId, action) => action(),
+  }, publication: { publish: async () => { throw new Error("no publication"); }, readback: async () => null },
+  finalization: { finalize: async () => { throw new Error("no finalize"); } } });
+  const composed = await adapter.compose({ operation: restored, generation: 1 });
+  assert.deepEqual(composed.selectedResults[0].selectedComposition, preview.selectedComposition);
+  assert.equal(await adapter.reservePublication({ operation: restored,
+    generation: { selectedResults: restored.selectedResults }, reserve: () => "reserve", recompose: () => "recompose" }), "recompose");
+  const candidateArgs = { projectRoot: f.root, workspaceId: p.workspace.id,
+    planRevision: checkpoint.planRevision, approvedBaseCommit: f.published };
+  await assert.rejects(originalPrepare({ ...candidateArgs, frozenTasks: [task, changed] }), /multiple result commits/u);
+  const missing = { ...task, selectedComposition: undefined };
+  await assert.rejects(originalPrepare({ ...candidateArgs, frozenTasks: [missing] }), /descriptor missing/u);
+  await assert.rejects(originalPrepare({ ...candidateArgs, frozenTasks: [changed] }), /exact selected composition projection/u);
+  assert.equal((await releaseGit.frozenCandidate(f.root)).preReleaseHead, checkpoint.preReleaseHead);
+  await assert.rejects(releaseGit.assertSelectedResultLineage({ candidate: {
+    ...checkpoint, frozenTasks: [changed],
+  }, previousSelectedResults: [task] }), /selected proof lineage changed/u);
+  const result = await p.mcp.call("hub_task_status_update", args);
+  assert.equal(result.workflowStatus, "awaiting_implementation");
+  assert.equal(compositions, 1);
+  await assert.rejects(p.mcp.call("hub_task_status_update", { ...args, expected_task_revision: args.expected_task_revision + 1 }),
+    /request.*different|arguments|already.*used/iu);
+  p.close();
+  const reopened = await publicFixture(f);
+  const a = await canonicalAwaitFixture(f, reopened);
+  a.releaseGit.prepareCandidate = () => { throw new Error("original must not replay Git"); };
+  const cached = await reopened.mcp.call("hub_task_status_update", { ...args, context_token: reopened.args.context_token });
+  assert.equal(cached.revision, result.revision);
+  const after = await a.releaseGit.frozenCandidate(f.root);
+  assert.equal(after.preReleaseHead, checkpoint.preReleaseHead);
+  assert.equal(after.manifestHash, checkpoint.manifestHash);
+  assert.deepEqual(after.manifest.tasks[0].selectedComposition, preview.selectedComposition);
+  assert.equal(await git(f.root, "rev-parse", "main"), f.local);
+});
+
+test("selected Test authority refuses missing or tampered filesystem proof before candidate reuse", {
+  timeout: 120_000,
+}, async (t) => {
+  const { f, p, confirmed, preview, planner, preflight, releaseGit } = await selectedTestFixture(t);
+  const record = path.join(f.dataDir, "task-selected-compositions", TASK_ID,
+    path.basename(f.taskWorkspace.projectRoot), "bridge-confirm");
+  let compositions = 0;
+  releaseGit.prepareCandidate = () => { compositions += 1; throw new Error("no candidate entry allowed"); };
+  const completed = await readFile(path.join(record, "completed.json"));
+  await unlink(path.join(record, "completed.json"));
+  const plan = await planner.plan(p.workspace.id, { acceptingTask: confirmed.task });
+  assert.equal(plan.ready[0].selectedCompositionRequired, true);
+  await assert.rejects(preflight.prepareAwaitAcceptance({ workspaceId: p.workspace.id,
+    acceptingTask: confirmed.task, projectRoot: f.root, operationId: "missing-proof",
+    commitPrepared: () => { throw new Error("no CAS allowed"); } }), /selected Test filesystem proof missing/u);
+  await writeFile(path.join(record, "completed.json"), completed);
+  const intentFile = path.join(record, "intent.json");
+  const rawIntent = await readFile(intentFile);
+  const intent = JSON.parse(rawIntent);
+  intent.preview.proofHash = "0".repeat(64);
+  await writeFile(intentFile, JSON.stringify(intent));
+  await assert.rejects(f.service.releaseIntegrationEvidence({ projectRoot: f.root, tasks: plan.ready }),
+    /receipt lacks exact durable proof/u);
+  await writeFile(intentFile, rawIntent);
+  const changed = structuredClone(preview.selectedComposition);
+  changed.proofHash = "1".repeat(64);
+  changed.previewHash = createHash("sha256").update(JSON.stringify({ ...changed, previewHash: undefined })).digest("hex");
+  await assert.rejects(f.service.releaseIntegrationEvidence({ projectRoot: f.root,
+    tasks: [{ ...plan.ready[0], selectedComposition: changed }] }), /differs from durable outcome/u);
+  assert.equal(compositions, 0);
+  assert.equal(p.taskBoard.task(TASK_ID).workflowStatus, "testing");
+  assert.equal(await git(f.root, "rev-parse", "dev"), f.proof);
+});
+
+test("durable selected protocol rejects missing, tampered and ambiguous Test outcomes and binds plan drift", {
+  timeout: 120_000,
+}, async (t) => {
+  const { f, p, confirmed, planner } = await selectedTestFixture(t);
+  const initial = await planner.plan(p.workspace.id, { acceptingTask: confirmed.task });
+  const database = new DatabaseSync(p.databaseFile);
+  try {
+    const raw = database.prepare("SELECT result_json FROM hub_task_lifecycle_outcomes WHERE operation_id = ?")
+      .get("bridge-confirm").result_json;
+    const missing = JSON.parse(raw);
+    delete missing.evidence.selectedComposition;
+    database.prepare("UPDATE hub_task_lifecycle_outcomes SET result_json = ? WHERE operation_id = ?")
+      .run(JSON.stringify(missing), "bridge-confirm");
+    let plan = await planner.plan(p.workspace.id, { acceptingTask: confirmed.task });
+    assert.equal(plan.ready.length, 0);
+    assert.match(plan.blocked[0].reason, /descriptor missing/u);
+    const wrongResult = JSON.parse(raw);
+    wrongResult.evidence.resultCommit = "0".repeat(40);
+    database.prepare("UPDATE hub_task_lifecycle_outcomes SET result_json = ? WHERE operation_id = ?")
+      .run(JSON.stringify(wrongResult), "bridge-confirm");
+    plan = await planner.plan(p.workspace.id, { acceptingTask: confirmed.task });
+    assert.match(plan.blocked[0].reason, /repository\/integration changed/u);
+    const tampered = JSON.parse(raw);
+    tampered.evidence.selectedComposition.proofHash = "f".repeat(64);
+    database.prepare("UPDATE hub_task_lifecycle_outcomes SET result_json = ? WHERE operation_id = ?")
+      .run(JSON.stringify(tampered), "bridge-confirm");
+    plan = await planner.plan(p.workspace.id, { acceptingTask: confirmed.task });
+    assert.match(plan.blocked[0].reason, /identity\/hash changed/u);
+    tampered.evidence.selectedComposition.previewHash = createHash("sha256")
+      .update(JSON.stringify({ ...tampered.evidence.selectedComposition, previewHash: undefined })).digest("hex");
+    database.prepare("UPDATE hub_task_lifecycle_outcomes SET result_json = ? WHERE operation_id = ?")
+      .run(JSON.stringify(tampered), "bridge-confirm");
+    plan = await planner.plan(p.workspace.id, { acceptingTask: confirmed.task });
+    assert.notEqual(plan.revision, initial.revision);
+    database.prepare(`INSERT INTO hub_task_lifecycle_outcomes
+      (operation_id, task_id, kind, result_json, completed_at_ms) VALUES (?, ?, 'workflow', ?, ?)`)
+      .run("ambiguous-confirm", TASK_ID, raw, Date.now());
+    plan = await planner.plan(p.workspace.id, { acceptingTask: confirmed.task });
+    assert.equal(plan.ready.length, 0);
+    assert.match(plan.blocked[0].reason, /ambiguous/u);
+  } finally { database.close(); }
+});
 
 async function publishedFixture(f) {
   return ordinaryPublishedResolutionFixture(f, {

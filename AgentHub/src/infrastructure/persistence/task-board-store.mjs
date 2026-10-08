@@ -23,6 +23,7 @@ import {
 import { normalizedTaskGitReferences, taskBranchName } from "../../domain/task-git-reference.mjs";
 import { normalizedTaskSquashTransfer } from "../../domain/task-squash-transfer.mjs";
 import { normalizedTaskSquashCutover } from "../../domain/task-squash-cutover.mjs";
+import { selectedCompositionFields, selectedCompositionIdentity, selectedCompositionRequiredError } from "../../domain/task-selected-composition.mjs";
 import { normalizedTaskNumber, normalizedWorkspaceTaskPrefix, taskNumberParts } from "../../domain/task-number.mjs";
 import { taskProjectRoot } from "../../domain/task-project-root.mjs";
 import {
@@ -2811,6 +2812,45 @@ export class TaskBoardStore {
       } catch {
         throw new Error("Task lifecycle outcome is corrupt");
       }
+    });
+  }
+
+  // The committed Test outcome is authoritative even if a filesystem receipt
+  // disappears. Read the existing outcome owner; never infer ordinary protocol
+  // from the absence of an optional field in downstream release objects.
+  selectedCompositionForRelease({ taskId, projectRoot, resultCommit } = {}) {
+    return this.#withDatabase((database) => {
+      const rows = database.prepare(`
+        SELECT result_json FROM hub_task_lifecycle_outcomes
+        WHERE task_id = ? AND kind = 'workflow'
+          AND json_extract(result_json, '$.task.workflowStatus') = 'testing'
+          AND EXISTS (SELECT 1 FROM json_each(result_json, '$.task.gitReferences')
+            WHERE json_extract(value, '$.resultCommit') = ?)
+        ORDER BY completed_at_ms DESC, operation_id LIMIT 65
+      `).all(taskId, resultCommit);
+      if (rows.length > 64) throw selectedCompositionRequiredError("Test outcome history exceeds bounded proof lookup");
+      let selected = null;
+      for (const row of rows) {
+        const outcome = JSON.parse(row.result_json);
+        if (!(outcome.task.gitReferences ?? []).some((reference) => (
+          reference.resultCommit === resultCommit && sameResolvedPath(reference.projectRoot, projectRoot)
+        ))) continue;
+        const evidence = outcome.evidence;
+        if (!evidence.selectedCompositionRequired && !Object.hasOwn(evidence, "selectedComposition")) continue;
+        const fields = selectedCompositionFields({ taskId, resultCommit,
+          selectedCompositionRequired: true, selectedComposition: evidence.selectedComposition });
+        if (evidence.resultCommit !== resultCommit
+            || !sameResolvedPath(fields.selectedComposition.repositoryRoot, projectRoot)
+            || evidence.devHeadCommit !== fields.selectedComposition.proofCommit) {
+          throw selectedCompositionRequiredError("durable Test repository/integration changed");
+        }
+        if (selected && selectedCompositionIdentity({ taskId, resultCommit, ...selected })
+            !== selectedCompositionIdentity({ taskId, resultCommit, ...fields })) {
+          throw selectedCompositionRequiredError("ambiguous durable selected Test outcomes");
+        }
+        selected = fields;
+      }
+      return selected;
     });
   }
 

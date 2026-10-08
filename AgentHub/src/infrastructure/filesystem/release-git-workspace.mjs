@@ -15,6 +15,7 @@ import {
   releaseBaseProvenanceApprovedBase,
 } from "../../domain/release-base-provenance.mjs";
 import { normalizedTaskSquashTransfer } from "../../domain/task-squash-transfer.mjs";
+import { selectedCompositionFields, selectedCompositionIdentity } from "../../domain/task-selected-composition.mjs";
 import { canonicalPath } from "./config.mjs";
 import { withInterprocessLocks } from "../process/interprocess-lock.mjs";
 import { withPublicationLock } from "../process/publication-lock.mjs";
@@ -449,6 +450,7 @@ function normalizedFrozenTasks(tasks = []) {
       taskId, taskRevision,
       ...(resultReleaseRevision != null ? { resultReleaseRevision } : {}),
       ...(baseCommit ? { baseCommit } : {}), resultCommit, integrations,
+      ...selectedCompositionFields(task),
       ...(task?.squashTransfer ? {
         squashTransfer: normalizedTaskSquashTransfer(task.squashTransfer),
       } : {}),
@@ -506,6 +508,7 @@ async function selectedResultSuccessorReuse({ checkpoint, clone, tasks, baseComm
       const current = currentById.get(prior.taskId);
       if (!current || prior.baseCommit !== current.baseCommit
           || prior.resultCommit !== current.resultCommit
+          || selectedCompositionIdentity(prior) !== selectedCompositionIdentity(current)
           || String(prior.squashTransfer?.transferHash ?? "")
             !== String(current.squashTransfer?.transferHash ?? "")) return null;
     }
@@ -557,6 +560,7 @@ async function selectedResultSuccessorReuse({ checkpoint, clone, tasks, baseComm
   for (const current of tasks) {
     const prior = priorById.get(current.taskId);
     if (!prior || prior.baseCommit !== current.baseCommit
+        || selectedCompositionIdentity(prior) !== selectedCompositionIdentity(current)
         || String(prior.squashTransfer?.transferHash ?? "")
           !== String(current.squashTransfer?.transferHash ?? "")) return null;
     if (prior.resultCommit !== current.resultCommit) changed.push({ prior, current });
@@ -1198,9 +1202,14 @@ export class ReleaseGitWorkspaceService {
   async assertSelectedResultLineage({ candidate, previousSelectedResults = [] } = {}) {
     this.#assertAvailable("assertSelectedResultLineage");
     const previous = new Map((Array.isArray(previousSelectedResults) ? previousSelectedResults : [])
-      .map((item) => [String(item?.taskId ?? ""), String(item?.resultCommit ?? "")]));
+      .map((item) => [String(item?.taskId ?? ""), item]));
     for (const task of candidate?.frozenTasks ?? []) {
-      const priorResultCommit = previous.get(String(task.taskId));
+      const prior = previous.get(String(task.taskId));
+      const priorResultCommit = String(prior?.resultCommit ?? "");
+      if (priorResultCommit === task.resultCommit && prior
+          && selectedCompositionIdentity(prior) !== selectedCompositionIdentity(task)) {
+        throw new Error(`PreRelease selected proof lineage changed for Task ${task.taskId}`);
+      }
       if (!priorResultCommit || priorResultCommit === task.resultCommit) continue;
       const related = await gitMaybe(["merge-base", "--is-ancestor", priorResultCommit, task.resultCommit], {
         cwd: candidate.releaseRoot,
@@ -2152,6 +2161,7 @@ export class ReleaseGitWorkspaceService {
         taskId: task.taskId,
         taskRevision: task.taskRevision,
         resultCommit: task.resultCommit,
+        ...selectedCompositionFields(task),
         integrations: task.integrations,
       })),
       originMain,
@@ -2327,6 +2337,7 @@ export class ReleaseGitWorkspaceService {
       preparedManifestHash,
       frozenTasks: normalizedFrozenTasks(manifest.tasks ?? []).map((task) => ({
         taskId: task.taskId, taskRevision: task.taskRevision, resultCommit: task.resultCommit,
+        ...selectedCompositionFields(task),
       })),
     };
     const resolved = await resolver({ request, candidate });
@@ -2799,6 +2810,11 @@ export class ReleaseGitWorkspaceService {
       throw new Error("release checkpoint Workspace identity disagrees with the immutable manifest");
     }
     const manifestTasks = normalizedFrozenTasks(manifest.tasks ?? []);
+    const selectedTasks = manifestTasks.filter((task) => task.selectedCompositionRequired);
+    if (String(manifest.projectionPolicy ?? "").includes("mandatory-selected-v1") !== Boolean(selectedTasks.length)
+        || selectedTasks.some((task) => !checkpoint.netProjectedTaskIds?.includes(task.taskId))) {
+      throw new Error("release checkpoint mandatory selected proof identity is incomplete");
+    }
     return {
       repositoryRoot: primary.root,
       releaseRoot: layout.releaseRoot,
@@ -2825,6 +2841,7 @@ export class ReleaseGitWorkspaceService {
             : {}),
           ...(task.baseCommit ? { baseCommit: task.baseCommit } : {}),
           resultCommit: task.resultCommit,
+          ...selectedCompositionFields(task),
           ...(task.squashTransfer ? { squashTransfer: task.squashTransfer } : {}),
         })),
         taskIds: manifestTasks.map((task) => task.taskId).sort(),
