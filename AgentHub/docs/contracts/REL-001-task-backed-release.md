@@ -167,6 +167,17 @@ candidate. CHANGELOG and version bytes remain owned by publication freeze.
 The correction delta is rejected if it changes CHANGELOG or package-version
 metadata. See ADR-0085.
 
+A registered Task base newer than the approved published base cannot rely on
+effective dev replay: another integration may already carry the Task's bytes,
+making its own dev delta empty or correction-only. The existing net projector
+requires an exact bounded single-parent result lineage rooted at that registered
+base, automatic uniquely owned integrations covering the latest result, and
+unambiguous selected order. It projects only registered-base-to-result OWN,
+excluding inherited main context. Unproved lineage, ownership, integration or
+order refuses before candidate ref/checkpoint promotion. Previously approved-base
+projection and proven incremental reuse retain their existing boundaries.
+See [ADR-0086](../decisions/ADR-0086-migrated-registered-base-projection.md).
+
 ## Exact result coverage and absorption composition (2026-09-16)
 
 A squash owner witness may classify a reviewed change as already satisfied only
