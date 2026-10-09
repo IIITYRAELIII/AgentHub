@@ -523,7 +523,10 @@ async function selectedResultSuccessorReuse({ checkpoint, clone, tasks, baseComm
     if (await gitMaybe(["merge-base", "--is-ancestor", correction.baseCommit, correctionBaseCommit], {
       cwd: clone.releaseRoot,
     }) === null) return null;
-    // Incremental reuse requires the complete Task-owned parent snapshot.
+    // A single-parent correction is incremental only when the retained
+    // candidate already represents its entire Task-owned parent snapshot.
+    // Commit ancestry alone cannot prove this for an aggregate PreRelease;
+    // compare every changed entry, including deletions, by mode and blob.
     const priorChangedPaths = (await runGit([
       "diff", "--no-renames", "--name-only", "-z", correction.baseCommit, correctionBaseCommit, "--",
     ], { cwd: clone.releaseRoot, rawOutput: true })).toString("utf8").split("\0").filter(Boolean);
@@ -531,7 +534,8 @@ async function selectedResultSuccessorReuse({ checkpoint, clone, tasks, baseComm
       const pathspecs = priorChangedPaths.slice(index, index + 100)
         .map((relativePath) => `:(literal)${relativePath}`);
       if (await gitMaybe([
-        "diff", "--quiet", "--no-ext-diff", correctionBaseCommit, checkpoint.preReleaseHead, "--", ...pathspecs,
+        "diff", "--quiet", "--no-ext-diff", correctionBaseCommit, checkpoint.preReleaseHead,
+        "--", ...pathspecs,
       ], { cwd: clone.releaseRoot }) === null) return null;
     }
     const changedPaths = (await runGit([
