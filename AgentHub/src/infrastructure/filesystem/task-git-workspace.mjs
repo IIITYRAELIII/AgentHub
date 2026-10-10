@@ -15,7 +15,7 @@ import { taskWorkingTreeDiff } from "./task-git-diff.mjs";
 import { normalizePublishedResolution, verifySelectedCompositionObjects } from "./selected-composition-proof.mjs";
 import {
   applySelectedCompositionFiles, prepareSelectedCompositionFiles, readSelectedCompositionFiles,
-  selectedCompositionFilePlan,
+  selectedCompositionFilePlan, readSelectedCheckoutAuthority, verifySelectedCompositionFiles,
 } from "./selected-composition-materializer.mjs";
 import { TaskDependencyPendingError } from "../../domain/task-board-task.mjs";
 import { prepareTaskWorktreeDependencies } from "./task-worktree-dependencies.mjs";
@@ -3058,6 +3058,22 @@ export class TaskGitWorkspaceService {
     return { root, intent: expected };
   }
 
+  #selectedMaterializationBinding(preview, lease) {
+    const blobs = new Map();
+    return {
+      root: preview.devRoot, files: preview.worktreePlan,
+      readBlob: async (blob) => {
+        if (!blobs.has(blob)) blobs.set(blob, await this.#runOwned(["cat-file", "blob", blob], {
+          cwd: preview.repositoryRoot, rawOutput: true, lease,
+        }));
+        return blobs.get(blob);
+      },
+      readCheckout: (paths) => readSelectedCheckoutAuthority((args, options) => this.#runOwned(args, {
+        ...options, cwd: preview.devRoot, lease,
+      }), paths),
+    };
+  }
+
   async readSelectedCompositionOwned(preview, { operationId, lease = null, validateAbsorption = null } = {}) {
     this.#assertAvailable("readSelectedCompositionOwned");
     await requiredGuardLease(lease).assertOwned();
@@ -3089,7 +3105,11 @@ export class TaskGitWorkspaceService {
       await requiredGuardLease(lease).assertOwned();
     }
     if (receipt) {
-      if (receipt.version !== 1 || receipt.operationId !== operationId
+      const journal = await readSelectedCompositionFiles(path.join(root, "materialization"), null, {
+        ...this.#selectedMaterializationBinding(preview, lease), phase: "applied",
+      });
+      if (receipt.version !== 2 || receipt.materializationHash !== createHash("sha256").update(JSON.stringify(journal)).digest("hex")
+          || receipt.operationId !== operationId
           || receipt.previewHash !== preview.previewHash
           || receipt.devCommit !== preview.proofCommit || devRef !== preview.proofCommit) {
         throw new Error("Selected composition completion receipt or dev ref changed");
@@ -3117,6 +3137,7 @@ export class TaskGitWorkspaceService {
     return this.#withClearDevLock(preview.repositoryRoot, lease, async (ownedLease) => {
       const { root } = await this.#selectedCompositionIntent(preview, operationId);
       const resultRef = taskResultRef(preview.taskId, taskRepositoryKey(preview.repositoryRoot));
+      const materializationBinding = this.#selectedMaterializationBinding(preview, ownedLease);
       const state = await this.readSelectedCompositionOwned(preview, { operationId, lease: ownedLease, validateAbsorption });
       if (state.status === "applied") return state;
       if (state.status === "before_cas") {
@@ -3211,15 +3232,12 @@ export class TaskGitWorkspaceService {
         }
         const journalRoot = path.join(root, "materialization");
         const materialization = await readFile(path.join(journalRoot, "record.json"), "utf8")
-          .then(() => readSelectedCompositionFiles(journalRoot), (error) => {
+          .then(() => readSelectedCompositionFiles(journalRoot, null, materializationBinding), (error) => {
             if (error?.code === "ENOENT") return null;
             throw error;
           });
         if (!materialization) await prepareSelectedCompositionFiles({
-          root: preview.devRoot, journalRoot, files: preview.worktreePlan,
-          readBlob: (blob) => this.#runOwned(["cat-file", "blob", blob], {
-            cwd: preview.repositoryRoot, rawOutput: true, lease: ownedLease,
-          }),
+          root: preview.devRoot, journalRoot, ...materializationBinding,
         });
         const beforeCas = await this.readSelectedCompositionOwned(preview, { operationId, lease: ownedLease, validateAbsorption });
         if (beforeCas.status !== "before_cas") {
@@ -3258,6 +3276,8 @@ export class TaskGitWorkspaceService {
         }
         await this.#assertSelectedAbsorptionGit(preview.absorptionInput, preview.repositoryRoot, ownedLease);
         if (preview.absorptionInput) validateAbsorption();
+        const preparedFiles = await readSelectedCompositionFiles(journalRoot, null, materializationBinding);
+        await verifySelectedCompositionFiles(preparedFiles, { ...materializationBinding, phase: "before_cas" });
         await this.#runOwned(["update-ref", "refs/heads/dev", preview.proofCommit, preview.devCommit], {
           cwd: preview.repositoryRoot, lease: ownedLease,
         });
@@ -3266,8 +3286,8 @@ export class TaskGitWorkspaceService {
       if (afterCas.status !== "after_cas") {
         throw new Error("Selected composition exact dev CAS cannot be proven");
       }
-      const journal = await readSelectedCompositionFiles(path.join(root, "materialization"));
-      await applySelectedCompositionFiles(journal);
+      const journal = await readSelectedCompositionFiles(path.join(root, "materialization"), null, materializationBinding);
+      await applySelectedCompositionFiles(journal, materializationBinding);
       await this.#runOwned(["read-tree", preview.proofTree], { cwd: preview.devRoot, lease: ownedLease });
       const [devHead, status] = await Promise.all([
         runGit(["rev-parse", "HEAD^{commit}"], { cwd: preview.devRoot }),
@@ -3288,7 +3308,8 @@ export class TaskGitWorkspaceService {
           cwd: preview.repositoryRoot, lease: ownedLease,
         });
       }
-      const receipt = { version: 1, operationId, previewHash: preview.previewHash,
+      const receipt = { version: 2, operationId, previewHash: preview.previewHash,
+        materializationHash: createHash("sha256").update(JSON.stringify(journal)).digest("hex"),
         devCommit: preview.proofCommit, resultCommit: preview.taskCommit };
       const completedPath = path.join(root, "completed.json");
       try {

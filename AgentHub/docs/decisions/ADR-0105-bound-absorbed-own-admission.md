@@ -60,3 +60,22 @@ closure uses only the existing combined-closure preview/confirmation after
 verified canonical composition. No arbitrary merge admission, new completion
 path, publication, installation or shared-window permission follows from this
 source capability.
+
+
+## Physical checkout identity for selected materialization
+
+Selected materialization keeps pinned old/new Git blobs as composition authority
+and separately binds exact physical old/staged-new bytes to supported built-in
+EOL serialization. Effective worktree-path attributes and core.autocrlf/eol/
+safecrlf configuration are captured and rechecked before CAS, materialization
+and applied/UNKNOWN recovery. Clean Git equivalence does not authorize later
+physical byte drift. Arbitrary filters, ident, encoding transformations and
+unsupported text normalization refuse without invoking those transformations.
+Private movement, hard-link ownership, no-overwrite and byte-exact backup/
+rollback remain mandatory. No shared EOL/config/attribute conversion is allowed.
+
+Version-2 materialization journals explicitly separate blob and physical hashes
+and retain checkout authority; version-2 completion receipts bind the complete
+materialization record hash. Older journal/receipt identities are not silently
+reinterpreted: unsupported recovery refuses while preserving bytes and original
+UNKNOWN. R1 absorbed source fences remain unchanged.
