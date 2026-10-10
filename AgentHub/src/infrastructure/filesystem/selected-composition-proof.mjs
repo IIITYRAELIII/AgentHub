@@ -178,11 +178,13 @@ async function absorbedOwnPlan(git, identity, input, merges) {
   const suffix = identity.taskCommit === d.absorptionCommit ? 0
     : await linearOwnedHistory(git, identity.taskCommit, d.absorptionCommit);
   if (total + suffix + 1 > MAX_OWN_COMMITS
-      || await git(["rev-parse", `${d.sourceCommit}^{tree}`]) !== d.sourceTree) {
+      || exact(await git(["rev-parse", `${d.sourceCommit}^{tree}`]), "absorbed source tree") !== d.sourceTree) {
     throw new Error("Absorbed selected composition source tree or history bound changed");
   }
   const automatic = await mergeTree(git, d.survivorParentCommit, d.sourceCommit);
-  if (automatic.conflicts.size || automatic.tree !== await git(["rev-parse", `${d.absorptionCommit}^{tree}`])) {
+  if (automatic.conflicts.size || automatic.tree !== exact(
+    await git(["rev-parse", `${d.absorptionCommit}^{tree}`]), "absorption tree",
+  )) {
     throw new Error("Absorbed selected composition is not its complete automatic owning merge");
   }
   if (await onlyMergeBase(git, identity.devCommit, identity.taskCommit, "absorbed dev/Task") !== d.baseCommit) {

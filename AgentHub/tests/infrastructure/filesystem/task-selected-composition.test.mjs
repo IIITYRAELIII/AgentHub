@@ -290,6 +290,11 @@ test("absorbed own immutable proof rejects foreign merge sides and lost downstre
   const preview = await p.mcp.call("hub_task_status_update", { ...p.args, request_id: "abs-object-preview" });
   const proof = preview.selectedComposition;
   const gitReader = (args, options) => runTaskGitCommand(args, { ...options, cwd: f.root });
+  const rawLineReader = async (args, options) => {
+    const value = await gitReader(args, options);
+    return args[0] === "rev-parse" ? `${value}\n` : value;
+  };
+  assert.equal((await verifySelectedCompositionObjects({ ...proof, git: rawLineReader })).proofHash, proof.proofHash);
   await assert.rejects(verifySelectedCompositionObjects({ ...proof, git: gitReader, absorptionInput: null }), /divergent/u);
   const changed = structuredClone(proof.absorptionInput);
   const d = JSON.parse(changed.text);
