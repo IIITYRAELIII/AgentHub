@@ -2805,6 +2805,24 @@ export class TaskGitWorkspaceService {
     return workspace;
   }
 
+  async assertInitialNativeTestOwned(evidence, { lease, record = null } = {}) {
+    await requiredGuardLease(lease).assertOwned();
+    const identity = evidence.identity;
+    const managed = await this.managedRepositoryRoot(identity.sourceRoot,
+      { taskId: evidence.taskId, taskNumber: evidence.taskNumber });
+    if (!managed || !samePath(managed, evidence.projectRoot)) throw new Error("Initial native Test source is not its exact managed Task checkout");
+    const git = (args, cwd = identity.sourceRoot) => this.#runOwned(args, { cwd, lease });
+    if (await git(["rev-parse", "HEAD^{commit}"]) !== identity.sourceCommit
+        || await git(["rev-parse", "HEAD^{tree}"]) !== identity.sourceTree
+        || await git(["symbolic-ref", "--quiet", "--short", "HEAD"]) !== identity.sourceBranch
+        || await git(["status", "--porcelain=v1", "--untracked-files=all"])
+        || await localMainCommit(managed) !== identity.mainCommit) throw new Error("Initial native Test exact source or main changed");
+    if (record && (record.before !== identity.devCommit || record.mainCommit !== identity.mainCommit
+        || JSON.stringify(record.initialNativeTest) !== JSON.stringify(evidence))) throw new Error("Initial native Test original dev/source intent changed");
+    const dev = await git(["rev-parse", `refs/heads/${this.devBranch}^{commit}`], managed);
+    if (dev !== identity.devCommit && dev !== record?.target) throw new Error("Initial native Test exact dev changed");
+  }
+
   async managedRepositoryRoot(projectRoot, { taskId, taskNumber = null } = {}) {
     this.#assertAvailable("managedRepositoryRoot");
     const expectedTaskId = String(taskId ?? "").trim();
@@ -3393,12 +3411,21 @@ export class TaskGitWorkspaceService {
   }
 
   async withNativeIntegrationTerminalOwned(snapshot, { operationId, lease, nativeAbsorptionInput = null,
-    nativeAbsorptionHistory = null, validateAbsorption = null }, commit) {
+    nativeAbsorptionHistory = null, validateAbsorption = null, initialNativeTest = null, validateInitialNativeTest = null }, commit) {
     return this.#withClearDevLock(snapshot.repositoryRoot, lease, async (ownedLease) => {
       const record = await this.assertNativeIntegrationOwned(snapshot,
         { operationId, lease: ownedLease, nativeAbsorptionInput, nativeAbsorptionHistory, validateAbsorption });
       const descriptor = record && (nativeAbsorptionInput || nativeAbsorptionHistory)
         ? this.#nativeIntegrationDescriptor(record) : null;
+      if (initialNativeTest) {
+        if (JSON.stringify(record?.initialNativeTest) !== JSON.stringify(initialNativeTest)) throw new Error("Initial native Test terminal Git binding changed");
+        await validateInitialNativeTest({ record });
+        // The source/candidate verifier awaits I/O. Re-fence this exact dev
+        // owner and materialization after it, immediately before SQL terminal.
+        await ownedLease.assertOwned();
+        await this.assertNativeIntegrationOwned(snapshot,
+          { operationId, lease: ownedLease, nativeAbsorptionInput, nativeAbsorptionHistory, validateAbsorption });
+      }
       validateAbsorption?.();
       return commit(descriptor);
     });
@@ -3498,7 +3525,8 @@ export class TaskGitWorkspaceService {
   }
 
   async #mergeIntoDevOwned(snapshot, { lease, operationId = null, nativeAbsorptionInput = null,
-    nativeAbsorptionHistory = null, expectedTaskRevision = null, validateAbsorption = null }) {
+    nativeAbsorptionHistory = null, expectedTaskRevision = null, validateAbsorption = null,
+    initialNativeTest = null, validateInitialNativeTest = null }) {
     this.#assertAvailable("mergeIntoDevOwned");
     await requiredGuardLease(lease).assertOwned();
     await this.#assertNoProcessTreeGuard(snapshot.taskId);
@@ -3510,7 +3538,9 @@ export class TaskGitWorkspaceService {
       let record = await this.pendingNativeIntegrationOwned({ taskId: snapshot.taskId,
         projectRoot: snapshot.repositoryRoot, operationId, lease: ownedLease });
       let dev;
+      if (initialNativeTest) await validateInitialNativeTest({ record });
       if (record) {
+        if (JSON.stringify(record.initialNativeTest ?? null) !== JSON.stringify(initialNativeTest)) throw new Error("Initial native Test original Git binding changed");
         if (JSON.stringify(record.nativeAbsorptionInput ?? null) !== JSON.stringify(nativeAbsorptionInput)
             || JSON.stringify(record.nativeAbsorptionHistory ?? null) !== JSON.stringify(nativeAbsorptionHistory)
             || ((nativeAbsorptionInput || nativeAbsorptionHistory) && record.expectedTaskRevision !== expectedTaskRevision)) {
@@ -3543,6 +3573,7 @@ export class TaskGitWorkspaceService {
         });
         record = { version: 1, kind: "native-task-integration-v1", operationId, phase: "prepared",
           snapshot, devRoot: dev.projectRoot, before: dev.headCommit, mainCommit: dev.mainCommit,
+          ...(initialNativeTest ? { initialNativeTest } : {}),
           ...(nativeAbsorptionInput || nativeAbsorptionHistory ? { expectedTaskRevision,
             ...(nativeAbsorptionInput ? { nativeAbsorptionInput } : {}),
             ...(nativeAbsorptionHistory ? { nativeAbsorptionHistory } : {}) } : {}) };
@@ -3553,6 +3584,7 @@ export class TaskGitWorkspaceService {
         guardRepositoryRoot: snapshot.repositoryRoot, timeoutMs: 300_000 });
       const sourceFence = async () => {
         await ownedLease.assertOwned();
+        if (initialNativeTest) await validateInitialNativeTest({ record });
         if (nativeAbsorptionHistory) validateAbsorption();
         if (nativeAbsorptionInput) {
           validateAbsorption();
@@ -3907,6 +3939,7 @@ export class TaskGitWorkspaceService {
     this.#assertAvailable("snapshotAndMergeOwned");
     await requiredGuardLease(params.lease).assertOwned();
     await this.#assertNoProcessTreeGuard(params.taskId);
+    if (params.initialNativeTest) await params.validateInitialNativeTest();
     const repoRoot = await repositoryRoot(params.projectRoot);
     await this.#assertTaskReleaseWait(params.taskId, repoRoot);
     if (params.nativeAbsorptionHistory) {
@@ -3947,6 +3980,7 @@ export class TaskGitWorkspaceService {
     const integration = await this.mergeIntoDevOwned(snapshot, { lease: params.lease, operationId: params.operationId,
       nativeAbsorptionInput: params.nativeAbsorptionInput, expectedTaskRevision: params.expectedTaskRevision,
       nativeAbsorptionHistory: params.nativeAbsorptionHistory,
+      initialNativeTest: params.initialNativeTest, validateInitialNativeTest: params.validateInitialNativeTest,
       validateAbsorption: params.validateAbsorption });
     if (integration.integrated) {
       await params.lease.assertOwned();

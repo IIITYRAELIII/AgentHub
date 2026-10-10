@@ -20,7 +20,7 @@ import {
   normalizedTaskChangedFiles,
   taskReleasePlanRevision,
 } from "../../domain/task-release-snapshot.mjs";
-import { normalizedTaskGitReferences, taskBranchName } from "../../domain/task-git-reference.mjs";
+import { normalizedTaskGitReferences, taskBranchName, normalizedInitialNativeTest } from "../../domain/task-git-reference.mjs";
 import { normalizedTaskSquashTransfer } from "../../domain/task-squash-transfer.mjs";
 import { normalizedTaskSquashCutover } from "../../domain/task-squash-cutover.mjs";
 import { selectedCompositionFields, selectedCompositionIdentity, selectedCompositionRequiredError,
@@ -2708,6 +2708,28 @@ export class TaskBoardStore {
     return proof;
   }
 
+  #assertInitialNativeTestContext(database, current, evidence) {
+    normalizedInitialNativeTest(evidence.identity);
+    const { authority, projectRoot } = evidence;
+    const workspace = database.prepare("SELECT id, settings_json FROM hub_workspaces WHERE id = ?").get(authority.workspaceId);
+    const stream = database.prepare("SELECT id, workspace_id, settings_json FROM hub_streams WHERE id = ?").get(authority.streamId);
+    const thread = database.prepare(`SELECT provider, provider_thread_id FROM hub_threads
+      WHERE stream_id = ? AND detached_at_ms IS NULL ORDER BY position DESC LIMIT 1`).get(authority.streamId);
+    const refs = database.prepare("SELECT COUNT(*) AS count FROM hub_task_git_references WHERE task_id = ?").get(current.id);
+    const root = workspace && stream ? taskProjectRoot({
+      workspace: { settings: parsedSettings(workspace.settings_json) },
+      stream: { settings: parsedSettings(stream.settings_json) },
+    }) : null;
+    if (current.id !== evidence.taskId || Number(current.row_revision) !== evidence.taskRevision
+        || current.workflow_status !== "in_progress" || current.status !== "started" || Number(refs.count)
+        || current.workspace_id !== authority.workspaceId || current.stream_id !== authority.streamId
+        || stream?.workspace_id !== workspace?.id || !root || !sameResolvedPath(root, projectRoot)
+        || parsedSettings(workspace.settings_json).releaseWorkflowEnabled !== true
+        || thread?.provider !== authority.provider || thread?.provider_thread_id !== authority.threadId) {
+      throw new Error("Initial native Test current SQL caller, assignment, Task or repository changed");
+    }
+  }
+
   beginLifecycleTransition(id, {
     operationId, kind = "workflow", targetWorkflowStatus = null, expectedRevision, evidence = null,
     releaseContext = null,
@@ -2759,12 +2781,15 @@ export class TaskBoardStore {
                 !== normalizedTaskSquashCutover(evidence.squashCutover).cutoverHash)) {
             throw new Error("Task lifecycle operation id was already used for another squash cutover");
           }
+          if (JSON.stringify(JSON.parse(existing.evidence_json ?? "{}")?.initialNativeTest ?? null)
+              !== JSON.stringify(evidence?.initialNativeTest ?? null)) throw new Error("Initial native Test lifecycle binding changed");
           if (JSON.stringify(existingAbsorbed ?? null) !== JSON.stringify(evidence?.absorbedInto ?? null)) {
             throw new Error("Task lifecycle operation id was already used for another absorption");
           }
           database.exec("COMMIT");
           return { task: this.#taskWithRelease(database, current), replayed: true, phase: existing.phase };
         }
+        if (evidence?.initialNativeTest) this.#assertInitialNativeTestContext(database, current, evidence.initialNativeTest);
         if (releaseContext) {
           const workspaceId = String(releaseContext.workspaceId ?? "").trim();
           const streamId = String(releaseContext.streamId ?? "").trim();
@@ -3064,6 +3089,15 @@ export class TaskBoardStore {
         const current = this.#taskRow(database, transition.task_id);
         if (Number(current.row_revision) !== Number(transition.expected_task_revision)) {
           throw new Error("Task changed while Git evidence was prepared");
+        }
+        const initialNativeTest = JSON.parse(transition.evidence_json ?? "{}")?.initialNativeTest;
+        if (initialNativeTest) {
+          this.#assertInitialNativeTestContext(database, current, initialNativeTest);
+          if (JSON.stringify(evidence?.initialNativeTest) !== JSON.stringify(initialNativeTest)
+              || evidence.resultCommit !== initialNativeTest.identity.sourceCommit
+              || evidence.response?.gitWorkspace?.headCommit !== initialNativeTest.identity.sourceCommit
+              || evidence.response?.gitWorkspace?.branch !== initialNativeTest.identity.sourceBranch
+              || evidence.response?.gitIntegration?.integrated !== true) throw new Error("Initial native Test terminal binding changed");
         }
         const pendingSelected = JSON.parse(transition.evidence_json ?? "{}")?.selectedComposition;
         const pendingNativeInput = JSON.parse(transition.evidence_json ?? "{}")?.nativeAbsorptionInput;

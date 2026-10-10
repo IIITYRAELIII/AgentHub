@@ -2433,6 +2433,17 @@ export class ReleaseGitWorkspaceService {
     return outcome;
   }
 
+  async initialNativeTestCandidate(projectRoot) {
+    const primary = await primarySnapshot(projectRoot);
+    const layout = this.#layout(primary.root);
+    const bytes = await readFile(layout.checkpointFile).catch(error => {
+      if (error.code === "ENOENT") return null;
+      throw error;
+    });
+    if (bytes === null) return { checkpointSha256: null, candidate: null };
+    return { checkpointSha256: sha256(bytes), candidate: await this.frozenCandidate(projectRoot) };
+  }
+
   async frozenCandidate(projectRoot, { changelogContent = undefined } = {}) {
     this.#assertAvailable("frozenCandidate");
     const primary = await primarySnapshot(projectRoot);

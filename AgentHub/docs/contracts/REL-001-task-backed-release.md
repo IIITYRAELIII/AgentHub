@@ -2,6 +2,22 @@
 
 ## Native Git composition cutover (HUB-303)
 
+Delivery of an independently reviewed native owner before installation uses the
+bounded initial-native-test mode of the existing task-await-cutover CLI. The
+assigned current caller may move its exact Progress/empty-ref Task to Test;
+source commit/tree/branch/clean managed ownership is checked before stores and
+under the existing Task/dev/Await owners. The original status arguments and
+durable lifecycle/native intent bind main/dev, publication, exact current
+candidate/checkpoint/manifest and current plan. SQLite admission and terminal
+CAS fence the current caller/active Thread, assignment, empty refs and repository
+settings. Test preserves the existing candidate and accepted membership; normal
+Await remains the prospective native composition owner. This is a one-shot
+delivery bridge, not a new status service or installation. Verified active native
+installed status capability closes new bootstrap admissions; historical original
+readback and UNKNOWN reconciliation remain available with no second dev CAS.
+Old receipts and already prepared full composition are never rewritten to make
+the first-run guard pass.
+
 The ordinary path is `main-selected-git-merge-v1`. Task branches, dev and
 PreRelease start from the agreed repository-local main. Each selected exact
 reviewed result is merged with native Git into an isolated Hub-owned checkout.

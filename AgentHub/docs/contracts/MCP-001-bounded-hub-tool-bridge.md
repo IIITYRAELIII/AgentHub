@@ -2,6 +2,21 @@
 
 ## Native Git Task/release cutover (HUB-303)
 
+The existing local task-await-cutover entry admits one explicitly reviewed
+initial native Test from Progress with empty accepted refs. It inspects the clean
+managed source commit/tree/branch before opening stores. The canonical status
+receipt binds initial_native_test (source, main/dev, publication/candidate/plan
+and installed-runtime pins), Task CAS and authenticated caller. Only this narrow
+local entry admits that family; ordinary public Test has no launcher dependency.
+Existing Await/Task/dev leases, native original intent and SQLite admission and
+terminal transactions recheck current assignment, active Thread, repository,
+source and selected evidence. New bootstrap admission closes when the verified
+active installed owner advertises native Task status; this does not close exact
+original readback or recovery. Same-ID UNKNOWN uses the existing reconciliation
+owner with the complete original argument family. Pending recovery still needs
+its exact native intent/source authority; terminal readback never replays Git.
+Startup recovery of unrelated originals remains disabled in this local process.
+
 The existing public ordinary Test/Await lifecycle and durable release run/get/
 continue owner remain authoritative. New selected-composition preview/materializer
 admission refuses with TASK_NATIVE_GIT_REQUIRED before a legacy intent is created.

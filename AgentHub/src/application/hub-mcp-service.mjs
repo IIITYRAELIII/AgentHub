@@ -18,6 +18,7 @@ import {
 } from "../domain/interstream-message.mjs";
 import { canonicalMcpValue, mcpArgumentsHash } from "../domain/mcp-arguments-hash.mjs";
 import { taskProjectRoot } from "../domain/task-project-root.mjs";
+import { normalizedInitialNativeTest } from "../domain/task-git-reference.mjs";
 import {
   normalizedTaskDescription,
   normalizedTaskText,
@@ -448,6 +449,7 @@ function tool(name, description, properties = {}, required = []) {
 }
 
 export class HubMcpService {
+  static nativeTaskStatusVersion = 1;
   #activeRuns = () => [];
   #deferredInputs = () => [];
   #taskLauncher = async () => { throw new Error("Agent Hub task launcher is not ready"); };
@@ -751,6 +753,7 @@ export class HubMcpService {
         cutover_projector_sha256: { type: "string", description: "Required only to reproduce an original local cutover receipt." },
         cutover_source_task_id: { type: "string", description: "Required only when the original local cutover used a separate source Task." },
         cutover_source_task_revision: { type: "integer", minimum: 1, description: "Required only when the original local cutover used a separate source Task." },
+        initial_native_test: { type: "object", description: "Complete original local initial native Test identity, for terminal reconciliation only. Pending source recovery uses the existing local cutover entry." },
         squash_source_task_id: { type: "string" },
         squash_source_task_revision: { type: "integer", minimum: 1 },
         squash_baseline_result_commit: { type: "string", pattern: "^[0-9a-f]{40}$" },
@@ -893,9 +896,43 @@ export class HubMcpService {
     return this.#dispatch(context, toolName, args);
   }
 
-  async callTaskStatusCutover(args = {}, { verifySource } = {}) {
+  async callTaskStatusCutover(args = {}, { verifySource, inspectInstalledNativeOwner } = {}) {
     await this.#startupReconciliation;
     const context = this.#authorize(args.context_token);
+    if (args.initial_native_test != null) {
+      const identity = normalizedInitialNativeTest(args.initial_native_test);
+      if (argumentsHash({ initial_native_test: identity }) !== argumentsHash({ initial_native_test: args.initial_native_test })) {
+        throw new Error("Initial native Test requires canonical exact source arguments");
+      }
+      if (args.status !== "testing" || args.expected_workflow_status !== "in_progress"
+          || !Number.isInteger(args.expected_task_revision) || args.expected_task_revision < 1
+          || Object.keys(args).some(key => !["context_token", "request_id", "task_id", "status",
+            "expected_task_revision", "expected_workflow_status", "initial_native_test"].includes(key))) {
+        throw new Error("Initial native Test requires exact ordinary Progress CAS and no other cutover family");
+      }
+      if (typeof verifySource !== "function" || typeof inspectInstalledNativeOwner !== "function") {
+        throw new Error("Initial native Test requires the existing local source inspection entrypoint");
+      }
+      const original = this.workspaceCatalog.mcpOperation?.(args.request_id);
+      if (original && (original.workspaceId !== context.workspaceId || original.streamId !== context.streamId
+          || original.provider !== context.provider || original.threadId !== context.auditThreadId
+          || original.toolName !== "hub_task_status_update" || original.argumentsHash !== argumentsHash(args))) {
+        throw new Error("Initial native Test original caller or arguments changed");
+      }
+      const source = { kind: "initial-native-test", identity, verifySource, inspectInstalledNativeOwner,
+        authority: { workspaceId: context.workspaceId, streamId: context.streamId,
+          provider: context.provider, threadId: context.threadId } };
+      if (original?.status === "unknown") {
+        const recovered = await this.taskOperationReconciliation.reconcileUnknownWorkflow({
+          workspaceId: context.workspaceId, taskId: args.task_id, operationRequestId: args.request_id,
+          projectRoot: this.#taskProjectRoot(context), expectedTaskRevision: args.expected_task_revision,
+          expectedWorkflowStatus: args.expected_workflow_status, initialNativeTest: identity,
+          verifyInitialNativeTest: source,
+        });
+        if (!recovered.resolved) throw new Error(`Initial native Test original remains UNKNOWN: ${recovered.error ?? "readback incomplete"}`);
+      }
+      return this.#mutate(context, "hub_task_status_update", args, () => this.#updateTaskWorkflowStatus(context, args, { source }));
+    }
     const squashBootstrap = args.squash_source_task_id != null;
     const sourceTaskId = requiredText(
       squashBootstrap ? args.squash_source_task_id : args.cutover_source_task_id,
@@ -1028,6 +1065,7 @@ export class HubMcpService {
           cutoverProjectorSha256: args.cutover_projector_sha256,
           cutoverSourceTaskId: args.cutover_source_task_id,
           cutoverSourceTaskRevision: args.cutover_source_task_revision,
+          initialNativeTest: args.initial_native_test,
           ...(args.squash_source_task_id != null ? {
             squashSourceTaskId: args.squash_source_task_id,
             squashSourceTaskRevision: args.squash_source_task_revision,
@@ -1465,7 +1503,11 @@ export class HubMcpService {
     selected_absorption_handoff: selectedAbsorptionHandoff = null,
     selected_preview_request_id: selectedPreviewRequestId = null,
     expected_selected_preview_hash: expectedSelectedPreviewHash = null,
+    initial_native_test: initialNativeTest = null,
   } = {}, { source = null } = {}) {
+    if (initialNativeTest != null && source?.kind !== "initial-native-test") {
+      throw new TaskInputValidationError("Initial native Test requires the supported local cutover entrypoint");
+    }
     if ((sourceTaskId != null || sourceTaskRevision != null) && !source) {
       throw new Error("Cross-Task cutover requires the supported local cutover entrypoint");
     }
@@ -1592,8 +1634,9 @@ export class HubMcpService {
       expectedWorkflowStatus,
       selectedAbsorptionHandoff,
     };
-    const result = source
-      ? await this.taskLifecycle.updateWorkflowStatusFromSource(options, source)
+    const result = source?.kind === "initial-native-test"
+      ? await this.taskLifecycle.updateWorkflowStatusFromInitialSource(options, source)
+      : source ? await this.taskLifecycle.updateWorkflowStatusFromSource(options, source)
       : await this.taskLifecycle.updateWorkflowStatus(options);
     if (!result?.task) return compactTask(result);
     const { task: updated, ...evidence } = result;

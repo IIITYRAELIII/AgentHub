@@ -27,6 +27,20 @@ Known acceptance refusal restores the previous exact candidate/checkpoint.
 
 ## Cutover and compatibility
 
+The existing task-await-cutover CLI gains bounded initial native Test admission
+for independently reviewed source when the installed owner still lacks native
+Task status. It uses the normal HubMcpService status receipt, TaskLifecycle,
+native Git intent and existing reconciliation; no second launcher or ledger.
+Source inspection precedes stores. Full current caller/assignment/active Thread,
+managed source, Task CAS/empty refs, main/dev, publication and candidate/plan pins
+are rechecked before effects and SQL terminal. The active installed manifest and
+native status capability close new admissions after installation. First-run
+availability/status guards do not block exact original terminal readback or
+pending recovery. Recovery retains source and current ownership fences, skips
+only bootstrap availability, and cannot invent a new CAS or turn UNKNOWN into
+refusal. Remove new admission when all supported installations provide native
+status; retain original receipt/evidence readers for their supported history.
+
 Preserve old full10, raw checkpoint/manifest, source SHA, required selected
 descriptors, receipts and frozen generations. Already main-based originals merge
 directly; no alias is needed. One-time lineage is recorded in the existing

@@ -8,6 +8,7 @@ import {
 import { realpathSync } from "node:fs";
 import path from "node:path";
 import { selectedCompositionFields, selectedCompositionIdentity } from "../domain/task-selected-composition.mjs";
+import { taskGitIdentityHash } from "../domain/task-git-reference.mjs";
 
 function requiredMethod(value, name) {
   if (typeof value?.[name] !== "function") throw new TypeError(`${name} is required`);
@@ -309,6 +310,16 @@ export class WorkspaceReleasePreflightService {
 
   withAwaitTransition(workspaceId, operation, { changesAwait = null } = {}) {
     return this.releaseGitWorkspaces.withAwaitTransition(workspaceId, operation);
+  }
+
+  async initialNativeTestState({ workspaceId, projectRoot } = {}) {
+    const plan = await this.releasePlanner.plan(workspaceId);
+    if (plan.blocked?.length) throw new Error("Initial native Test current release plan is blocked");
+    const publication = await this.readPublicationState();
+    publicationBaselineFor({ projectRoot }, publication);
+    const candidate = await this.releaseGitWorkspaces.initialNativeTestCandidate(projectRoot);
+    return { planRevision: plan.revision, publicationHash: taskGitIdentityHash(publication),
+      candidateHash: taskGitIdentityHash(candidate) };
   }
 
   async validateAwaitAcceptance({ workspaceId, acceptingTask, projectRoot, lease = null } = {}) {

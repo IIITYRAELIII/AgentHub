@@ -6,6 +6,31 @@ import { normalizedTaskNumber } from "./task-number.mjs";
 
 export const TASK_BRANCH_PREFIX = "agenthub/task/";
 
+export function taskGitIdentityHash(value) {
+  const canonical = (item) => Array.isArray(item) ? item.map(canonical)
+    : item && typeof item === "object"
+      ? Object.fromEntries(Object.keys(item).sort().map(key => [key, canonical(item[key])])) : item;
+  return createHash("sha256").update(JSON.stringify(canonical(value))).digest("hex");
+}
+
+// An argument family of the existing status operation, never a separate ledger.
+export function normalizedInitialNativeTest(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Initial native Test identity is required");
+  const keys = ["sourceRoot", "sourceCommit", "sourceTree", "sourceBranch", "mainCommit", "devCommit",
+    "publicationHash", "candidateHash", "planRevision", "runtimeHash"];
+  if (Object.keys(value).length !== keys.length || keys.some(key => typeof value[key] !== "string" || !value[key].trim())) {
+    throw new Error("Initial native Test requires its complete exact identity");
+  }
+  const result = Object.fromEntries(keys.map(key => [key, value[key].trim()]));
+  result.sourceRoot = path.resolve(result.sourceRoot);
+  if (!["sourceCommit", "sourceTree", "mainCommit", "devCommit"].every(key => /^[a-f0-9]{40}$/u.test(result[key]))
+      || !["publicationHash", "candidateHash", "planRevision", "runtimeHash"].every(key => /^[a-f0-9]{64}$/u.test(result[key]))
+      || result.sourceBranch.length > 200 || result.sourceBranch.includes("\0")) {
+    throw new Error("Initial native Test commit, tree, branch or hash is invalid");
+  }
+  return result;
+}
+
 function canonicalRoot(value) {
   const resolved = path.resolve(String(value ?? "").trim());
   return process.platform === "win32" ? resolved.toLowerCase() : resolved;
