@@ -658,19 +658,26 @@ export class TaskLifecycleService {
             workspaceId: task.workspaceId, streamId: task.streamId, projectRoot: root,
           },
         }), operation);
+        const validateAbsorption = absorptionInput ? () => {
+          if (JSON.stringify(this.#selectedAbsorptionBinding(this.#task(task.id), absorptionHandoff, operation))
+              !== JSON.stringify(absorptionInput)) throw new Error("Selected absorption original handoff changed");
+        } : null;
         let applied;
         try {
           applied = await this.taskGitWorkspaces.applySelectedCompositionOwned(preview, {
-            operationId: operation, lease,
-            validateAbsorption: absorptionInput ? () => {
-              if (JSON.stringify(this.#selectedAbsorptionBinding(this.#task(task.id), absorptionHandoff, operation))
-                  !== JSON.stringify(absorptionInput)) throw new Error("Selected absorption handoff changed before CAS");
-            } : null,
+            operationId: operation, lease, validateAbsorption,
           });
         } catch (error) {
-          const state = await this.taskGitWorkspaces.readSelectedCompositionOwned(preview, {
-            operationId: operation, lease,
-          });
+          let state;
+          try {
+            state = await this.taskGitWorkspaces.readSelectedCompositionOwned(preview, {
+              operationId: operation, lease, validateAbsorption,
+            });
+          } catch (readError) {
+            const unknown = new Error(`Selected composition Git readback is unknown: ${readError.message}`);
+            unknown.code = "TASK_SELECTED_COMPOSITION_UNKNOWN";
+            throw unknown;
+          }
           if (state.status === "applied") applied = state;
           else if (["not_admitted", "before_cas"].includes(state.status)
               && error?.processTreeStopped !== false) {
@@ -684,22 +691,28 @@ export class TaskLifecycleService {
         }
         await this.#assertOwned(lease);
         try {
-          const updated = await this.#mutation(() => this.taskBoard.commitWorkflowTransition({
-            operationId: operation,
-            gitReferences: [{ projectRoot: preview.repositoryRoot,
-              resultCommit: preview.taskCommit, branch: preview.branch }],
-            evidence: {
-              outcome: "integrated", resultCommit: preview.taskCommit,
-              devHeadCommit: preview.proofCommit, selectedCompositionRequired: true, selectedComposition: preview,
-              response: {
-                gitWorkspace: { branch: preview.branch, projectRoot: preview.taskRoot,
-                  baseCommit: preview.taskBaseCommit, headCommit: preview.taskCommit },
-                gitIntegration: { outcome: "integrated", integrated: true,
-                  alreadyIntegrated: false, devBranch: "dev",
-                  devHeadCommit: preview.proofCommit, conflicts: [], error: null },
-              },
-            },
-          }), operation);
+          const updated = await this.#mutation(async () => {
+            const terminal = await this.taskGitWorkspaces.readSelectedCompositionOwned(preview, {
+              operationId: operation, lease, validateAbsorption,
+            });
+            if (terminal.status !== "applied") throw new Error("Selected composition terminal Git readback changed");
+            return this.taskBoard.commitWorkflowTransition({
+                operationId: operation,
+                gitReferences: [{ projectRoot: preview.repositoryRoot,
+                  resultCommit: preview.taskCommit, branch: preview.branch }],
+                evidence: {
+                  outcome: "integrated", resultCommit: preview.taskCommit,
+                  devHeadCommit: preview.proofCommit, selectedCompositionRequired: true, selectedComposition: preview,
+                  response: {
+                    gitWorkspace: { branch: preview.branch, projectRoot: preview.taskRoot,
+                      baseCommit: preview.taskBaseCommit, headCommit: preview.taskCommit },
+                    gitIntegration: { outcome: "integrated", integrated: true,
+                      alreadyIntegrated: false, devBranch: "dev",
+                      devHeadCommit: preview.proofCommit, conflicts: [], error: null },
+                  },
+                },
+              });
+          }, operation);
           return { task: updated, selectedComposition: preview,
             gitWorkspace: { branch: preview.branch, projectRoot: preview.taskRoot,
               baseCommit: preview.taskBaseCommit, headCommit: preview.taskCommit },
@@ -1105,18 +1118,24 @@ export class TaskLifecycleService {
         repositoryRoot: projectRoot, guardId, proof, lease,
       }) : null;
       if (!guardId) await this.taskGitWorkspaces.assertNoProcessTreeGuardOwned(current.id, { lease });
-      const applied = await this.taskGitWorkspaces.applySelectedCompositionOwned(selectedComposition, {
-        operationId, lease,
-        validateAbsorption: selectedComposition.absorptionInput ? () => {
+      const validateAbsorption = selectedComposition.absorptionInput ? () => {
           const expected = selectedComposition.absorptionInput;
-          const fresh = this.#selectedAbsorptionBinding(current, { requestId: expected.requestId, text: expected.text }, operationId);
+          const fresh = this.#selectedAbsorptionBinding(this.#task(current.id),
+            { requestId: expected.requestId, text: expected.text }, operationId);
           if (JSON.stringify(fresh) !== JSON.stringify(expected)) throw new Error("Selected absorption original handoff changed");
-        } : null,
+        } : null;
+      const applied = await this.taskGitWorkspaces.applySelectedCompositionOwned(selectedComposition, {
+        operationId, lease, validateAbsorption,
       });
       if (applied.status !== "applied") {
         throw new Error("Selected composition original Git CAS cannot be reconciled");
       }
-      const updated = await this.#mutation(() => this.taskBoard.commitWorkflowTransition({
+      const updated = await this.#mutation(async () => {
+        const terminal = await this.taskGitWorkspaces.readSelectedCompositionOwned(selectedComposition, {
+          operationId, lease, validateAbsorption,
+        });
+        if (terminal.status !== "applied") throw new Error("Selected composition terminal Git readback changed");
+        return this.taskBoard.commitWorkflowTransition({
         operationId,
         gitReferences: [{ projectRoot: selectedComposition.repositoryRoot,
           resultCommit: selectedComposition.taskCommit, branch: selectedComposition.branch }],
@@ -1134,7 +1153,8 @@ export class TaskLifecycleService {
               devHeadCommit: selectedComposition.proofCommit, conflicts: [], error: null },
           },
         },
-      }), operationId);
+        });
+      }, operationId);
       return { result: { task: updated, selectedComposition,
         gitReceipt: applied.receipt }, recovery };
     }

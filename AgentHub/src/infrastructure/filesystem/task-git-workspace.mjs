@@ -3058,7 +3058,7 @@ export class TaskGitWorkspaceService {
     return { root, intent: expected };
   }
 
-  async readSelectedCompositionOwned(preview, { operationId, lease = null } = {}) {
+  async readSelectedCompositionOwned(preview, { operationId, lease = null, validateAbsorption = null } = {}) {
     this.#assertAvailable("readSelectedCompositionOwned");
     await requiredGuardLease(lease).assertOwned();
     const root = this.#selectedCompositionRecordRoot(preview, operationId);
@@ -3079,6 +3079,15 @@ export class TaskGitWorkspaceService {
     const devRef = await runGit(["rev-parse", "--verify", "refs/heads/dev^{commit}"], {
       cwd: preview.repositoryRoot,
     });
+    if (preview.absorptionInput && (receipt || devRef === preview.proofCommit)) {
+      if (typeof validateAbsorption !== "function") {
+        throw selectedCompositionRequiredError("live absorbed terminal fence unavailable");
+      }
+      validateAbsorption();
+      await this.#assertSelectedAbsorptionGit(preview.absorptionInput, preview.repositoryRoot, lease);
+      validateAbsorption();
+      await requiredGuardLease(lease).assertOwned();
+    }
     if (receipt) {
       if (receipt.version !== 1 || receipt.operationId !== operationId
           || receipt.previewHash !== preview.previewHash
@@ -3108,7 +3117,7 @@ export class TaskGitWorkspaceService {
     return this.#withClearDevLock(preview.repositoryRoot, lease, async (ownedLease) => {
       const { root } = await this.#selectedCompositionIntent(preview, operationId);
       const resultRef = taskResultRef(preview.taskId, taskRepositoryKey(preview.repositoryRoot));
-      const state = await this.readSelectedCompositionOwned(preview, { operationId, lease: ownedLease });
+      const state = await this.readSelectedCompositionOwned(preview, { operationId, lease: ownedLease, validateAbsorption });
       if (state.status === "applied") return state;
       if (state.status === "before_cas") {
         if (preview.absorptionInput) {
@@ -3212,7 +3221,7 @@ export class TaskGitWorkspaceService {
             cwd: preview.repositoryRoot, rawOutput: true, lease: ownedLease,
           }),
         });
-        const beforeCas = await this.readSelectedCompositionOwned(preview, { operationId, lease: ownedLease });
+        const beforeCas = await this.readSelectedCompositionOwned(preview, { operationId, lease: ownedLease, validateAbsorption });
         if (beforeCas.status !== "before_cas") {
           throw new Error("Selected composition dev CAS state changed after materialization preparation");
         }
@@ -3253,7 +3262,7 @@ export class TaskGitWorkspaceService {
           cwd: preview.repositoryRoot, lease: ownedLease,
         });
       }
-      const afterCas = await this.readSelectedCompositionOwned(preview, { operationId, lease: ownedLease });
+      const afterCas = await this.readSelectedCompositionOwned(preview, { operationId, lease: ownedLease, validateAbsorption });
       if (afterCas.status !== "after_cas") {
         throw new Error("Selected composition exact dev CAS cannot be proven");
       }
@@ -3290,7 +3299,7 @@ export class TaskGitWorkspaceService {
           throw error;
         }
       }
-      return { status: "applied", proof: preview, receipt };
+      return this.readSelectedCompositionOwned(preview, { operationId, lease: ownedLease, validateAbsorption });
     });
   }
 

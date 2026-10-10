@@ -372,6 +372,151 @@ test("absorbed own original UNKNOWN fences its source and reconciles after reope
     preview.selectedComposition);
 });
 
+test("absorbed own post-CAS recovery retains UNKNOWN on source Git drift and resumes only after exact restoration", {
+  timeout: 120_000,
+}, async (t) => {
+  const { f, p } = await absorbedPublicFixture(t);
+  const preview = await p.mcp.call("hub_task_status_update", { ...p.args, request_id: "abs-git-fence-preview" });
+  const confirm = { ...p.args, request_id: "abs-git-fence-confirm",
+    selected_preview_request_id: "abs-git-fence-preview", expected_selected_preview_hash: preview.previewHash };
+  p.taskBoard.commitWorkflowTransition = () => { throw new Error("lost terminal after exact Git CAS"); };
+  await assert.rejects(p.mcp.call("hub_task_status_update", confirm), /unknown/u);
+  assert.equal(await git(f.root, "rev-parse", "dev"), f.proof);
+  p.close();
+  const reopened = await publicFixture(f);
+  let repeatedCas = 0;
+  f.service.runCommand = async (args, options) => {
+    if (args[0] === "update-ref" && args[1] === "refs/heads/dev") repeatedCas++;
+    return runTaskGitCommand(args, options);
+  };
+  const sourceRoot = f.sourceWorkspace.projectRoot;
+  const sourceFile = path.join(sourceRoot, "absorbed.txt");
+  const baseRef = `refs/agent-hub/task-bases/${ABSORBED_ID}/${preview.selectedComposition.repositoryKey}`;
+  const sourceBase = await git(f.root, "rev-parse", baseRef);
+  assert.notEqual(sourceBase, f.published);
+  const guard = path.join(f.dataDir, "task-process-tree-guards", ABSORBED_ID, "source.json");
+  const reconcile = (name) => reopened.mcp.call("hub_task_operation_reconcile", { ...confirm,
+    context_token: reopened.args.context_token, request_id: `abs-git-fence-${name}`,
+    operation_request_id: confirm.request_id, project_root: f.root, confirm_reconcile: true });
+  const controls = [
+    ["dirty", () => writeFile(sourceFile, "resumed private source bytes\n"),
+      () => git(sourceRoot, "restore", "--", "absorbed.txt")],
+    ["untracked", () => writeFile(path.join(sourceRoot, "private.txt"), "private\n"),
+      () => unlink(path.join(sourceRoot, "private.txt"))],
+    ["head", () => git(sourceRoot, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+      "commit", "--allow-empty", "-m", "source resumed"),
+      () => git(sourceRoot, "reset", "--hard", f.sourceCommit)],
+    ["base", () => git(f.root, "update-ref", baseRef, f.published),
+      () => git(f.root, "update-ref", baseRef, sourceBase)],
+    ["branch", () => git(sourceRoot, "checkout", "-b", "resumed-source"),
+      () => git(sourceRoot, "checkout", "HUB-999")],
+    ["process-guard", async () => {
+      await mkdir(path.dirname(guard), { recursive: true });
+      await writeFile(guard, JSON.stringify({ taskId: ABSORBED_ID, operationId: "source-unresolved" }));
+    }, () => unlink(guard)],
+  ];
+  for (const [name, change, restore] of controls) {
+    await change();
+    try {
+      const refused = await reconcile(name).catch((error) => ({ outcome: "refused", error: error.message }));
+      assert.ok(["unknown", "refused"].includes(refused.outcome), `source ${name}: ${JSON.stringify(refused)}`);
+      assert.equal(reopened.catalog.mcpOperation(confirm.request_id).status, "unknown");
+      assert.equal(reopened.store.task(TASK_ID).workflowStatus, "in_progress");
+      assert.equal(reopened.store.lifecycleTransition(confirm.request_id).phase, "pending_git");
+      assert.equal(reopened.taskBoard.lifecycleOutcome(confirm.request_id), null);
+      assert.equal(await git(f.root, "rev-parse", "dev"), f.proof);
+      assert.equal(repeatedCas, 0);
+      if (name === "dirty") assert.equal(await readFile(sourceFile, "utf8"), "resumed private source bytes\n");
+    } finally { await restore(); }
+  }
+  const restored = await reconcile("restored");
+  assert.equal(restored.outcome, "succeeded");
+  assert.equal(reopened.catalog.mcpOperation(confirm.request_id).status, "succeeded");
+  assert.equal(reopened.store.task(TASK_ID).workflowStatus, "testing");
+  assert.equal(await git(sourceRoot, "rev-parse", "HEAD"), f.sourceCommit);
+  assert.equal(await git(sourceRoot, "status", "--porcelain"), "");
+  assert.equal(repeatedCas, 0);
+});
+
+for (const fallback of [false, true]) test(`absorbed own terminal source fence survives ${fallback ? "applied catch fallback" : "normal applied return"}`, {
+  timeout: 120_000,
+}, async (t) => {
+  const { f, p } = await absorbedPublicFixture(t);
+  const preview = await p.mcp.call("hub_task_status_update", { ...p.args, request_id: "abs-terminal-preview" });
+  const confirm = { ...p.args, request_id: "abs-terminal-confirm",
+    selected_preview_request_id: "abs-terminal-preview", expected_selected_preview_hash: preview.previewHash };
+  const apply = f.service.applySelectedCompositionOwned.bind(f.service);
+  const sourceFile = path.join(f.sourceWorkspace.projectRoot, "absorbed.txt");
+  f.service.applySelectedCompositionOwned = async (...args) => {
+    const applied = await apply(...args);
+    await writeFile(sourceFile, "private bytes after applied readback\n");
+    if (fallback) throw new Error("lost applied return");
+    return applied;
+  };
+  await assert.rejects(p.mcp.call("hub_task_status_update", confirm), /unknown/u);
+  assert.equal(p.catalog.mcpOperation(confirm.request_id).status, "unknown");
+  assert.equal(p.store.task(TASK_ID).workflowStatus, "in_progress");
+  assert.equal(p.taskBoard.lifecycleOutcome(confirm.request_id), null);
+  assert.equal(await git(f.root, "rev-parse", "dev"), f.proof);
+  assert.equal(await readFile(sourceFile, "utf8"), "private bytes after applied readback\n");
+  f.service.applySelectedCompositionOwned = apply;
+  await git(f.sourceWorkspace.projectRoot, "restore", "--", "absorbed.txt");
+  p.close();
+  const reopened = await publicFixture(f);
+  f.service.runCommand = async (args, options) => {
+    assert.ok(!(args[0] === "update-ref" && args[1] === "refs/heads/dev"), "restoration must not repeat Git CAS");
+    return runTaskGitCommand(args, options);
+  };
+  const result = await reopened.mcp.call("hub_task_operation_reconcile", { ...confirm,
+    context_token: reopened.args.context_token, request_id: "abs-terminal-restored",
+    operation_request_id: confirm.request_id, project_root: f.root, confirm_reconcile: true });
+  assert.equal(result.outcome, "succeeded");
+  assert.equal(reopened.catalog.mcpOperation(confirm.request_id).status, "succeeded");
+});
+
+test("absorbed own recovery terminal fence rechecks source after applied readback", { timeout: 120_000 }, async (t) => {
+  const { f, p } = await absorbedPublicFixture(t);
+  const preview = await p.mcp.call("hub_task_status_update", { ...p.args, request_id: "abs-recovery-terminal-preview" });
+  const confirm = { ...p.args, request_id: "abs-recovery-terminal-confirm",
+    selected_preview_request_id: "abs-recovery-terminal-preview", expected_selected_preview_hash: preview.previewHash };
+  p.taskBoard.commitWorkflowTransition = () => { throw new Error("lost first terminal after CAS"); };
+  await assert.rejects(p.mcp.call("hub_task_status_update", confirm), /unknown/u);
+  p.close();
+  const reopened = await publicFixture(f);
+  const apply = f.service.applySelectedCompositionOwned.bind(f.service);
+  const sourceFile = path.join(f.sourceWorkspace.projectRoot, "absorbed.txt");
+  let repeatedCas = 0;
+  f.service.runCommand = async (args, options) => {
+    if (args[0] === "update-ref" && args[1] === "refs/heads/dev") repeatedCas++;
+    return runTaskGitCommand(args, options);
+  };
+  f.service.applySelectedCompositionOwned = async (...args) => {
+    const applied = await apply(...args);
+    await writeFile(sourceFile, "private bytes before recovery terminal\n");
+    return applied;
+  };
+  const reconcile = (requestId) => reopened.mcp.call("hub_task_operation_reconcile", { ...confirm,
+    context_token: reopened.args.context_token, request_id: requestId,
+    operation_request_id: confirm.request_id, project_root: f.root, confirm_reconcile: true });
+  const refused = await reconcile("abs-recovery-terminal-dirty")
+    .catch((error) => ({ outcome: "refused", error: error.message }));
+  assert.ok(["unknown", "refused"].includes(refused.outcome));
+  assert.equal(reopened.catalog.mcpOperation(confirm.request_id).status, "unknown");
+  assert.equal(reopened.store.task(TASK_ID).workflowStatus, "in_progress");
+  assert.equal(reopened.store.lifecycleTransition(confirm.request_id).phase, "pending_git");
+  assert.equal(reopened.taskBoard.lifecycleOutcome(confirm.request_id), null);
+  assert.equal(await git(f.root, "rev-parse", "dev"), f.proof);
+  assert.equal(await readFile(sourceFile, "utf8"), "private bytes before recovery terminal\n");
+  assert.equal(repeatedCas, 0);
+  f.service.applySelectedCompositionOwned = apply;
+  await git(f.sourceWorkspace.projectRoot, "restore", "--", "absorbed.txt");
+  const restored = await reconcile("abs-recovery-terminal-restored");
+  assert.equal(restored.outcome, "succeeded");
+  assert.equal(reopened.catalog.mcpOperation(confirm.request_id).status, "succeeded");
+  assert.equal(reopened.store.task(TASK_ID).workflowStatus, "testing");
+  assert.equal(repeatedCas, 0);
+});
+
 test("absorbed own admission rechecks saved source bytes and current source ownership before confirmation", {
   timeout: 120_000,
 }, async (t) => {

@@ -35,6 +35,15 @@ that same original under both Task recovery locks; a committed Git effect is
 read back rather than repeated. Downstream projection re-verifies immutable
 Git evidence, not a later source Task status or a partial effective-dev delta.
 
+Already-applied and post-CAS readback also rechecks the exact current absorbed
+source HEAD/base/branch, tracked/untracked cleanliness and process-tree guard,
+plus the durable binding, under both existing leases. Normal terminal and
+UNKNOWN recovery repeat that readback immediately before terminal Task CAS.
+An applied-return catch cannot bypass a failed source fence. Once Git CAS has
+committed, source drift retains the original UNKNOWN and its committed Git
+effect; it is not a no-effect refusal. Private source bytes are preserved.
+Exact restoration permits the same original to settle without another Git CAS.
+
 ## Evidence and limits
 
 Focused real Git/SQLite fixtures exercise public preview/confirmation, ordinary

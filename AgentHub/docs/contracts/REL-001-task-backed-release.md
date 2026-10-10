@@ -462,6 +462,12 @@ the existing SQLite intent fences source edits, deletion, new claims and
 competing transitions until that original becomes terminal. Current source,
 durable handoff and publication inputs are rechecked before dev CAS and terminal
 Task CAS. UNKNOWN remains owned by that original and cannot repeat Git CAS.
+Already-applied/post-CAS readback and both normal and recovery terminal paths
+must recheck source HEAD/base/branch, tracked/untracked cleanliness, process-tree
+guards and the same durable binding under both leases. A raw applied catch
+fallback cannot bypass this fence. Source drift after a committed Git effect
+preserves private bytes and the original UNKNOWN; it is not NO_EFFECT. Exact
+restoration allows that same original to settle with no additional Git CAS.
 The full binding survives receipts, descriptors, readback, reconciliation,
 release projection, mandatory-selected lineage and reuse. Release recomputes
 immutable Git evidence and full combined OWN rather than a last effective-dev
