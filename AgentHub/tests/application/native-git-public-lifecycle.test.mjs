@@ -547,8 +547,12 @@ test("public durable release composes native immutable generation with separatel
   const published = await git(publishedRoot, "rev-parse", "HEAD");
   await git(publishedRoot, "push", "origin", `${published}:refs/heads/main`);
   f.publication.repositories[0].revision = published;
+  const stale = await f.release(a, published);
+  assert.equal(stale.operation.waitReason.code, "prepared_candidate_stale");
+  assert.equal(stale.generations.length, 0);
   await f.preflight.prepareAwaitSet({ workspaceId: f.workspace.id });
-  const snapshot = await f.release(a, published);
+  const snapshot = await f.continueRelease(stale.operation.operationId);
+  assert.equal(snapshot.operation.operationId, stale.operation.operationId);
   assert.equal(snapshot.operation.state, "waiting", JSON.stringify(snapshot.operation.lastError));
   assert.equal(snapshot.operation.waitReason.code, "validation_failed");
   assert.equal(snapshot.generations.length, 1);
@@ -594,7 +598,8 @@ test("public release generation retains prepared PreRelease conflict resolution"
   const prepared = await f.releaseGit.frozenCandidate(f.primary);
   assert.equal(prepared.preReleaseHead, resolution);
   const subset = await f.release(a, f.base, "prepared-stale-selection");
-  assert.equal(subset.operation.state, "failed");
+  assert.equal(subset.operation.state, "waiting");
+  assert.equal(subset.operation.waitReason.code, "prepared_candidate_stale");
   assert.equal(subset.operation.lastError.code, "RELEASE_PREPARED_CANDIDATE_STALE");
   assert.equal(subset.generations.length, 0);
   const notes = Buffer.from("authorized prepared release notes\n");

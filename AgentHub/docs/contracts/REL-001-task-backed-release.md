@@ -74,6 +74,8 @@ owner changes version/CHANGELOG metadata. Missing or stale prepared selection,
 result, base or evidence requires normal candidate preparation and explicit retry.
 The original generation identity pins this capture; lost responses reuse its
 promotion journal and freeze payload without rebinding or another Git merge.
+Stale prepared refusal leaves the same ReleaseOperation waiting at compose;
+normal preparation and continue reuse its authorization and original identity.
 Only a dirty CHANGELOG whose regular-file bytes equal the immutable release
 authorization may accompany capture; other dirty files and unbound notes refuse.
 

@@ -93,6 +93,36 @@ test("release operation acknowledges before work and finishes one exact generati
   assert.deepEqual(cleaned, [["done", 1, snapshot.generations[0].identitySha256]]);
 });
 
+test("stale prepared candidate waits for normal preparation on the original operation", async t => {
+  let prepared = false;
+  const attempts = [];
+  const f = await fixture(t, {
+    compose: async input => {
+      attempts.push(input.generation);
+      if (!prepared) throw Object.assign(new Error("prepared selection is stale"), { code: "RELEASE_PREPARED_CANDIDATE_STALE" });
+      return generation();
+    },
+    validate: async () => { throw Object.assign(new Error("fixture stops before publication"), { code: "RELEASE_VALIDATION_FAILED" }); },
+    publishTarget: () => assert.fail("stale preparation must not publish"),
+  });
+  const ack = start(f.service);
+  const refused = await f.service.drain(ack.operationId);
+  assert.equal(refused.operation.state, "waiting");
+  assert.equal(refused.operation.waitReason.code, "prepared_candidate_stale");
+  assert.equal(refused.operation.resumeState, "compose");
+  assert.equal(refused.generations.length, 0);
+  prepared = true;
+  f.service.continue(ack.operationId);
+  const resumed = await f.service.drain(ack.operationId);
+  assert.equal(resumed.operation.operationId, ack.operationId);
+  assert.equal(resumed.operation.authorization.fingerprint, refused.operation.authorization.fingerprint);
+  assert.equal(resumed.operation.waitReason.code, "validation_failed");
+  assert.equal(resumed.generations.length, 1);
+  assert.equal(resumed.operation.currentGeneration, 1);
+  assert.deepEqual(attempts, [1, 1]);
+  assert.equal(start(f.service).operationId, ack.operationId);
+});
+
 test("validation failure waits for a correction and continues as generation two", async (t) => {
   let validation = 0;
   let resultVersion = 1;

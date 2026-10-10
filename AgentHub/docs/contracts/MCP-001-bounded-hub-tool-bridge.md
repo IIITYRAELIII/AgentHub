@@ -33,6 +33,12 @@ v1/v2 originals retain explicit pinned recovery and sealed historical readback;
 version downgrade cannot turn v2 evidence into an unsealed v1 capture. See REL-001
 and ADR-0106. Source delivery/publication authorization remains separate.
 
+Publication generation imports the exact prepared native candidate, retaining
+its resolution ancestry. RELEASE_PREPARED_CANDIDATE_STALE leaves the original
+release waiting at compose for normal candidate preparation; continue wakes
+that same operation. It never silently rebuilds the candidate or changes the
+immutable authorization. See REL-001 for metadata and original capture fences.
+
 
 ## Failed validation receipt reconciliation
 

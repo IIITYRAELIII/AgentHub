@@ -63,6 +63,13 @@ function normalizeReadback(value) {
 function classifiedFailure(error, state, now, retryDelayMs) {
   const details = releaseError(error);
   switch (details.code) {
+    case "RELEASE_PREPARED_CANDIDATE_STALE":
+      return {
+        state: "waiting", currentStep: state, resumeState: "compose",
+        waitReason: { code: "prepared_candidate_stale", message: details.message, details },
+        nextAction: "prepare and verify the current selected PreRelease candidate through its normal owner, then continue this operation",
+        lastError: { ...details, step: state },
+      };
     case "RELEASE_VALIDATION_FAILED":
       return {
         state: "waiting", currentStep: "validate", resumeState: "compose",
