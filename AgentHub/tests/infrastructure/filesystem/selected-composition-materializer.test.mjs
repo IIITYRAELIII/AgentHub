@@ -161,6 +161,47 @@ async function realEolFixture(t) {
     readCheckout: (paths) => readSelectedCheckoutAuthority(git, paths) };
 }
 
+test("real Git LF attributes preserve clean old CRLF and stage LF with exact reopened rollback", async (t) => {
+  const f = await realEolFixture(t);
+  await writeFile(path.join(f.root, ".git", "info", "attributes"),
+    "tracked.txt text eol=lf\ndocs/new.txt text eol=lf\n");
+  assert.equal((await f.git(["status", "--porcelain"])).trim(), "");
+  assert.equal((await f.git(["hash-object", "--path=tracked.txt", "tracked.txt"])).trim(), blob(f.old));
+  const record = await prepareSelectedCompositionFiles(f);
+  assert.equal(record.files[0].oldSerialization, "normalized-crlf");
+  assert.equal(record.files[0].oldSha256, createHash("sha256").update(f.physicalOld).digest("hex"));
+  assert.deepEqual(await readFile(record.files[0].temp), f.next);
+  const reopened = await readSelectedCompositionFiles(f.journalRoot, record, f);
+  await writeFile(path.join(f.root, "tracked.txt"), f.old);
+  await assert.rejects(applySelectedCompositionFiles(reopened, f), /old tracked bytes changed/u);
+  await writeFile(path.join(f.root, "tracked.txt"), f.physicalOld);
+  await writeFile(path.join(f.root, ".git", "info", "attributes"),
+    "tracked.txt text eol=crlf\ndocs/new.txt text eol=lf\n");
+  await assert.rejects(applySelectedCompositionFiles(reopened, f), /checkout authority changed/u);
+  await writeFile(path.join(f.root, ".git", "info", "attributes"),
+    "tracked.txt text eol=lf\ndocs/new.txt text eol=lf\n");
+  await applySelectedCompositionFiles(reopened, f);
+  assert.deepEqual(await readFile(path.join(f.root, "tracked.txt")), f.next);
+  assert.deepEqual(await readFile(path.join(f.root, "docs/new.txt")), f.added);
+  await verifySelectedCompositionRecord(reopened, f);
+  await rollbackSelectedCompositionFiles(await readSelectedCompositionFiles(f.journalRoot, record, f), f);
+  assert.deepEqual(await readFile(path.join(f.root, "tracked.txt")), f.physicalOld);
+  assert.equal((await f.git(["status", "--porcelain"])).trim(), "");
+});
+
+test("real Git LF attributes refuse genuine old content and nontext CRLF before movement", async (t) => {
+  const f = await realEolFixture(t);
+  await writeFile(path.join(f.root, ".git", "info", "attributes"), "tracked.txt text eol=lf\n");
+  const privateBytes = Buffer.from("different private content\r\n");
+  await writeFile(path.join(f.root, "tracked.txt"), privateBytes);
+  await assert.rejects(prepareSelectedCompositionFiles(f), /old tracked bytes changed/u);
+  assert.deepEqual(await readFile(path.join(f.root, "tracked.txt")), privateBytes);
+  await writeFile(path.join(f.root, "tracked.txt"), f.physicalOld);
+  await writeFile(path.join(f.root, ".git", "info", "attributes"), "tracked.txt -text\n");
+  await assert.rejects(prepareSelectedCompositionFiles(f), /old tracked bytes changed/u);
+  assert.deepEqual(await readFile(path.join(f.root, "tracked.txt")), f.physicalOld);
+});
+
 test("real Git CRLF checkout stages CRLF, reopens, and rolls back exact physical bytes", async (t) => {
   const f = await realEolFixture(t);
   const record = await prepareSelectedCompositionFiles(f);

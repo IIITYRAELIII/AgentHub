@@ -1430,6 +1430,87 @@ test("historical selected completion refuses paired downgrade and preserves expl
   assert.equal(repeatedCas, 0);
 });
 
+test("absorbed own clean old CRLF under LF attributes public Test retains UNKNOWN and sealed history after reopen", {
+  timeout: 180_000,
+}, async (t) => {
+  const { f, p } = await absorbedPublicFixture(t);
+  const devRoot = f.devWorkspace.projectRoot;
+  await git(devRoot, "config", "core.autocrlf", "true");
+  await unlink(path.join(devRoot, "conflict.txt"));
+  await git(devRoot, "checkout-index", "--index", "--force", "--all");
+  assert.equal(await git(devRoot, "status", "--porcelain"), "");
+  assert.deepEqual(await readFile(path.join(devRoot, "conflict.txt")), Buffer.from("dev\r\n"));
+  const attributesPath = path.resolve(devRoot, await git(devRoot, "rev-parse", "--git-path", "info/attributes"));
+  await writeFile(attributesPath, "conflict.txt text eol=lf\n");
+  assert.equal(await git(devRoot, "status", "--porcelain"), "");
+  const preview = await p.mcp.call("hub_task_status_update", { ...p.args, request_id: "old-crlf-preview" });
+  const confirm = { ...p.args, request_id: "old-crlf-confirm", selected_preview_request_id: "old-crlf-preview",
+    expected_selected_preview_hash: preview.previewHash };
+  p.taskBoard.commitWorkflowTransition = () => { throw new Error("lost terminal after CRLF materialization"); };
+  await assert.rejects(p.mcp.call("hub_task_status_update", confirm), /unknown/u);
+  assert.equal(await git(f.root, "rev-parse", "dev"), f.proof);
+  assert.equal(await git(devRoot, "status", "--porcelain"), "");
+  const displayed = path.join(devRoot, "conflict.txt");
+  const exact = await readFile(displayed);
+  assert.deepEqual(exact, Buffer.from("reviewed\n"));
+  p.close();
+  const reopened = await publicFixture(f);
+  let repeatedCas = 0;
+  f.service.runCommand = async (args, options) => {
+    if (args[0] === "update-ref" && args[1] === "refs/heads/dev") repeatedCas++;
+    return runTaskGitCommand(args, options);
+  };
+  const reconcile = (name) => reopened.mcp.call("hub_task_operation_reconcile", { ...confirm,
+    context_token: reopened.args.context_token, request_id: `old-crlf-${name}`,
+    operation_request_id: confirm.request_id, project_root: f.root, confirm_reconcile: true });
+  const recordPath = path.join(f.dataDir, "task-selected-compositions", TASK_ID,
+    path.basename(f.taskWorkspace.projectRoot), confirm.request_id, "materialization", "record.json");
+  const recordBytes = await readFile(recordPath);
+  assert.equal(JSON.parse(recordBytes).files.find((file) => file.path === "conflict.txt").oldSerialization, "normalized-crlf");
+  const controls = [
+    ["config", () => git(devRoot, "config", "core.eol", "lf"), () => git(devRoot, "config", "--unset", "core.eol")],
+    ["physical", () => writeFile(displayed, "reviewed\r\n"), () => writeFile(displayed, exact)],
+    ["legacy-journal", () => writeFile(recordPath, JSON.stringify({ ...JSON.parse(recordBytes), version: 1 })),
+      () => writeFile(recordPath, recordBytes)],
+  ];
+  for (const [name, change, restore] of controls) {
+    await change();
+    try {
+      assert.equal(await git(devRoot, "hash-object", "--path=conflict.txt", "conflict.txt"),
+        await git(devRoot, "rev-parse", "HEAD:conflict.txt"));
+      const refused = await reconcile(name).catch((error) => ({ outcome: "refused", error: error.message }));
+      assert.ok(["unknown", "refused"].includes(refused.outcome), JSON.stringify(refused));
+      assert.equal(reopened.catalog.mcpOperation(confirm.request_id).status, "unknown");
+      assert.equal(reopened.store.task(TASK_ID).workflowStatus, "in_progress");
+      assert.equal(reopened.taskBoard.lifecycleOutcome(confirm.request_id), null);
+      assert.equal(repeatedCas, 0);
+    } finally { await restore(); }
+  }
+  const restored = await reconcile("restored");
+  assert.equal(restored.outcome, "succeeded");
+  assert.equal(reopened.store.task(TASK_ID).workflowStatus, "testing");
+  assert.equal(reopened.catalog.mcpOperation(confirm.request_id).status, "succeeded");
+  assert.deepEqual(await readFile(displayed), exact);
+  assert.equal(await git(devRoot, "status", "--porcelain"), "");
+  const evidence = () => f.service.releaseIntegrationEvidence({ projectRoot: f.root,
+    tasks: [{ taskId: TASK_ID, taskRevision: reopened.store.task(TASK_ID).revision,
+      projectRoot: f.root, branch: f.taskWorkspace.branch, resultCommit: f.task }] });
+  assert.deepEqual((await evidence()).tasks[0].selectedComposition, preview.selectedComposition);
+  const completedPath = path.join(path.dirname(path.dirname(recordPath)), "completed.json");
+  const completedBytes = await readFile(completedPath);
+  await writeFile(completedPath, JSON.stringify({ ...JSON.parse(completedBytes), version: 1 }));
+  await assert.rejects(evidence(), /exact durable proof/u);
+  await writeFile(completedPath, completedBytes);
+  const changedRecord = JSON.parse(recordBytes);
+  changedRecord.files[0].newSha256 = "0".repeat(64);
+  await writeFile(recordPath, JSON.stringify(changedRecord));
+  await assert.rejects(evidence(), /historical materialization binding changed/u);
+  await writeFile(recordPath, recordBytes);
+  assert.deepEqual((await evidence()).tasks[0].selectedComposition, preview.selectedComposition);
+  assert.equal(reopened.catalog.mcpOperation(confirm.request_id).status, "succeeded");
+  assert.equal(repeatedCas, 0);
+});
+
 test("absorbed own real CRLF public Test retains UNKNOWN on checkout drift and resumes same original after reopen", {
   timeout: 180_000,
 }, async (t) => {

@@ -182,6 +182,19 @@ function checkedBlob(bytes, id, name) {
   return bytes;
 }
 
+// Old clean CRLF can precede an LF attribute. Capture that bounded clean
+// serialization separately from the NEW checkout format, without filters.
+function normalizedCrlfBytes(bytes, authority, name) {
+  checkoutBytes(bytes, authority, name);
+  const attrs = authority.attributes.find((row) => row.path === name);
+  const normalizesText = attrs.text !== "unset" && (attrs.text === "set"
+    || attrs.text === "auto" || attrs.eol !== "unspecified"
+    || ["true", "input"].includes(authority.config.autocrlf));
+  if (!normalizesText || bytes.includes(13) || bytes.includes(0)
+      || bytes.some((value) => (value < 32 && value !== 9 && value !== 10) || value === 127)) return null;
+  return Buffer.from(bytes.toString("latin1").replace(/\n/gu, "\r\n"), "latin1");
+}
+
 async function assertCheckout(record, readCheckout) {
   if (typeof readCheckout !== "function"
       || JSON.stringify(await readCheckout(record.files.map((file) => file.path))) !== JSON.stringify(record.checkout)) {
@@ -215,7 +228,8 @@ export async function verifySelectedCompositionRecord(record, { root, journalRoo
     if (file.kind === "M") {
       const old = checkedBlob(await readBlob(file.oldBlob), file.oldBlob, file.path);
       const oldPhysical = file.oldSerialization === "raw" ? old
-        : file.oldSerialization === "checkout" ? checkoutBytes(old, record.checkout, file.path) : null;
+        : file.oldSerialization === "checkout" ? checkoutBytes(old, record.checkout, file.path)
+          : file.oldSerialization === "normalized-crlf" ? normalizedCrlfBytes(old, record.checkout, file.path) : null;
       if (!oldPhysical || digest(old) !== file.oldGitSha256 || digest(oldPhysical) !== file.oldSha256) {
         throw new Error("Selected composition old serialization changed");
       }
@@ -291,10 +305,14 @@ export async function prepareSelectedCompositionFiles({ root, journalRoot, files
       }
       oldPhysical = await readFile(target);
       const converted = checkoutBytes(oldBytes, checkout, file.path);
-      if (!oldPhysical.equals(oldBytes) && !oldPhysical.equals(converted)) {
+      const normalizedCrlf = normalizedCrlfBytes(oldBytes, checkout, file.path);
+      if (oldPhysical.equals(oldBytes)) oldSerialization = "raw";
+      else if (oldPhysical.equals(converted)) oldSerialization = "checkout";
+      else if (normalizedCrlf && oldPhysical.equals(normalizedCrlf)) {
+        oldSerialization = "normalized-crlf";
+      } else {
         throw new Error(`Selected composition old tracked bytes changed: ${target}`);
       }
-      oldSerialization = oldPhysical.equals(oldBytes) ? "raw" : "checkout";
       await assertBytes(target, digest(oldPhysical), "old tracked");
     }
     prepared.push({ ...file, oldSerialization, oldGitSha256: oldBytes ? digest(oldBytes) : null,

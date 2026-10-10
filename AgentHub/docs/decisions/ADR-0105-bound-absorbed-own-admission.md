@@ -74,6 +74,15 @@ unsupported text normalization refuse without invoking those transformations.
 Private movement, hard-link ownership, no-overwrite and byte-exact backup/
 rollback remain mandatory. No shared EOL/config/attribute conversion is allowed.
 
+An existing clean text file may retain complete CRLF after `text eol=lf` is
+introduced. Old-byte admission therefore also permits only that exact CRLF
+serialization of a normalized LF blob under captured built-in text-normalizing
+authority, explicitly recorded as `normalized-crlf`. New checkout bytes follow
+current LF/CRLF output rules. Sealed historical verification reconstructs the
+old serialization; live rechecks and rollback continue to use its exact physical
+hash. Mixed EOL, foreign content, binary/unset-text and unsupported transforms
+are excluded. This does not reinterpret previous journals or change attributes.
+
 Version-2 intents/materialization journals explicitly separate blob and physical hashes
 and retain checkout authority; version-2 completion receipts bind the complete
 materialization record hash. Older journal/receipt identities are not silently

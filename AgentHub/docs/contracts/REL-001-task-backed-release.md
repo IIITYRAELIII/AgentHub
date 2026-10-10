@@ -2173,6 +2173,15 @@ unsupported text normalization refuse without invoking those transformations.
 Private movement, hard-link ownership, no-overwrite and byte-exact backup/
 rollback remain mandatory. No shared EOL/config/attribute conversion is allowed.
 
+Before preparation, a text path may retain a complete CRLF serialization of
+its normalized LF old blob even when current attributes require LF checkout.
+If captured built-in text normalization permits it, version 2 records this
+explicitly as `normalized-crlf`; new bytes still follow current checkout EOL.
+The sealed reader reconstructs that exact old serialization. Binary/unset-text,
+mixed or foreign bytes and unsupported transformations refuse. Once captured,
+physical identity and checkout-authority drift still refuse; rollback restores
+the exact old CRLF without changing shared configuration or attributes.
+
 Version-2 intents/materialization journals explicitly separate blob and physical hashes
 and retain checkout authority; version-2 completion receipts bind the complete
 materialization record hash. Older journal/receipt identities are not silently
