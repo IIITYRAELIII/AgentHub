@@ -136,7 +136,7 @@ async function registeredTaskBranch(setup, context, { taskId, startCommit, baseC
   return { branch, taskRoot };
 }
 
-test("one operation generation isolates source bundles per repository", { timeout: 30000 }, async (context) => {
+test("one operation generation isolates source bundles per repository", { timeout: 60000 }, async (context) => {
   const first = await fixture(context);
   const second = await fixture(context);
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "rg-"));
@@ -149,6 +149,8 @@ test("one operation generation isolates source bundles per repository", { timeou
     workspaceId: "workspace",
     frozenTasks: [],
   };
+  await service.prepareCandidate({ ...common, projectRoot: first.primary, approvedBaseCommit: first.baseCommit });
+  await service.prepareCandidate({ ...common, projectRoot: second.primary, approvedBaseCommit: second.baseCommit });
   const firstCandidate = await service.prepareGeneration({
     ...common,
     projectRoot: first.primary,

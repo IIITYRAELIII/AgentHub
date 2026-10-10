@@ -257,3 +257,35 @@ test("generation promotion reopens its original target after lost SQLite respons
   assert.equal(await git(prior.releaseRoot, "reflog", "show", "--format=%H", "PreRelease"), reflog);
   assert.equal(await git(f.primary, "rev-parse", "main"), f.base);
 });
+
+test("publication generation refuses stale prepared head result and base", { timeout: 120_000 }, async t => {
+  const f = await fixture(t), a = await f.result("A", "a.txt", "accepted\n");
+  const prepared = await f.service.prepareCandidate(f.request([a]));
+  const checkpointFile = path.join(path.dirname(prepared.releaseRoot), "checkpoint.json");
+  const checkpoint = await readFile(checkpointFile);
+  const request = { ...f.request([a]), operationId: "prepared-original", generation: 1 };
+  await assert.rejects(f.service.prepareGeneration({ ...request, planRevision: "stale" }),
+    { code: "RELEASE_PREPARED_CANDIDATE_STALE" });
+  const notes = path.join(prepared.releaseRoot, "CHANGELOG.md");
+  await writeFile(notes, "prepared notes\n");
+  await assert.rejects(f.service.prepareGeneration({ ...request, changelogContent: Buffer.from("foreign notes\n") }),
+    { code: "RELEASE_PREPARED_CANDIDATE_STALE" });
+  const foreign = path.join(prepared.releaseRoot, "foreign.txt");
+  await writeFile(foreign, "unbound source bytes\n");
+  await assert.rejects(f.service.prepareGeneration({ ...request, changelogContent: Buffer.from("prepared notes\n") }),
+    { code: "RELEASE_PREPARED_CANDIDATE_STALE" });
+  await rm(foreign); await rm(notes);
+  const corrected = await f.result("A", "a.txt", "corrected\n");
+  await assert.rejects(f.service.prepareGeneration({ ...request, frozenTasks: [corrected] }),
+    { code: "RELEASE_PREPARED_CANDIDATE_STALE" });
+  await git(prepared.releaseRoot, "update-ref", "refs/heads/PreRelease", a.resultCommit, prepared.preReleaseHead);
+  await assert.rejects(f.service.prepareGeneration(request), { code: "RELEASE_PREPARED_CANDIDATE_STALE" });
+  await git(prepared.releaseRoot, "update-ref", "refs/heads/PreRelease", prepared.preReleaseHead, a.resultCommit);
+  await writeFile(path.join(f.primary, "new-main.txt"), "new agreed base\n");
+  const newBase = await commit(f.primary, "advance main in private fixture");
+  await assert.rejects(f.service.prepareGeneration({ ...request, approvedBaseCommit: newBase }),
+    { code: "RELEASE_PREPARED_CANDIDATE_STALE" });
+  assert.deepEqual(await readFile(checkpointFile), checkpoint);
+  assert.equal(await git(prepared.releaseRoot, "rev-parse", "HEAD"), prepared.preReleaseHead);
+  assert.equal(await git(prepared.releaseRoot, "show", "HEAD:a.txt"), "accepted");
+});

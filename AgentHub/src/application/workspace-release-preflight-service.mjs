@@ -379,14 +379,14 @@ export class WorkspaceReleasePreflightService {
     if (typeof this.releaseGitWorkspaces.prepareGeneration !== "function") {
       throw new Error("immutable release generation preparation is unavailable");
     }
-    return this.#prepareAwaitSet({
+    return this.withAwaitTransition(workspaceId, () => this.#prepareAwaitSet({
       workspaceId,
       selectedTaskIds: taskIds,
       generationIdentity: { operationId, generation },
       previousSelectedResults,
       ...(changelogContent === undefined ? {} : { changelogContent }),
       ...(approvedRepositories.length ? { reviewedMainApprovals: { approvedRepositories } } : {}),
-    });
+    }));
   }
 
   async discardOperationGeneration(generation) {

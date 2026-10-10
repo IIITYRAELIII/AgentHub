@@ -67,6 +67,12 @@ original is terminal; retain historical readers while their receipts are support
 
 The existing durable ReleaseOperation run/get/continue API remains the sole
 release owner. Freeze immutable generation/version/CHANGELOG, never Task work.
+Publication imports the already prepared native PreRelease commit and its checked
+resolution ancestry through the existing promotion owner. Original generation
+identity and manifest pin its head/tree/checkpoint/manifest/selection/base; no new
+merge of selected tips occurs. Stale inputs require normal Await preparation.
+Only the existing metadata freeze may change version/CHANGELOG, and retry resumes
+the same promotion/freeze rather than recapturing a different live candidate.
 Generated instructions describe that actual API. Opaque authored rules are not
 rewritten, and conflicting stored instructions require their separate handoff.
 Raw Workspace policy, production installation/restart/push and publication are

@@ -122,6 +122,24 @@ async function verifyMergeStep(git, before, result, target) {
   }
 }
 
+// Verify an already accepted native candidate without composing another one.
+export async function assertNativePreparedComposition({ git, baseCommit, tasks, merges, head, tree }) {
+  await assertNativeTaskHistories({ git, baseCommit, tasks });
+  if (!Array.isArray(merges) || merges.length !== tasks.length) throw failure("Prepared native selection changed");
+  let prefix = baseCommit;
+  for (const [index, step] of merges.entries()) {
+    const task = tasks[index];
+    if (step.taskId !== task.taskId || step.resultCommit !== task.resultCommit) {
+      throw failure("Prepared native result evidence changed");
+    }
+    await verifyMergeStep(git, prefix, step.resultCommit, step.commit);
+    prefix = step.commit;
+  }
+  if (prefix !== head || String(await git(["rev-parse", `${head}^{tree}`])) !== tree) {
+    throw failure("Prepared native head or tree changed");
+  }
+}
+
 // Every accepted step is a real Git merge commit (or an already-contained
 // result). A conflict leaves Git's MERGE_HEAD/index in this private checkout.
 // An executor resolves it with ordinary git add/commit; continuation checks the

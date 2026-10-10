@@ -65,6 +65,18 @@ network/QA/publication do not reserve Task leases. Existing target authorization
 Git/SQLite CAS, original-ID receipts, exact result finalization and external
 effect recovery remain mandatory. Source acceptance never authorizes production.
 
+Publication generation captures the exact clean prepared native PreRelease
+commit/tree, manifest and checkpoint hashes, selected results and base under the
+existing Await/repository owners. It imports that commit through native promotion
+into the immutable generation; it never recomposes selected tips during publication.
+Accepted conflict resolution commits remain ancestors. Only the existing freeze
+owner changes version/CHANGELOG metadata. Missing or stale prepared selection,
+result, base or evidence requires normal candidate preparation and explicit retry.
+The original generation identity pins this capture; lost responses reuse its
+promotion journal and freeze payload without rebinding or another Git merge.
+Only a dirty CHANGELOG whose regular-file bytes equal the immutable release
+authorization may accompany capture; other dirty files and unbound notes refuse.
+
 The agreed-main-native-git-v1 provenance records agreed main separately from
 durable published history. A newer remote observation cannot replace main.
 Known main/publication divergence stays explicit; this cutover does not silently

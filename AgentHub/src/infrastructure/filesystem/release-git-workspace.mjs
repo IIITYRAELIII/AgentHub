@@ -28,7 +28,7 @@ import {
 } from "../persistence/publication-run-store.mjs";
 import { publicationStateFile, publicationStateRepositories, readPublicationState } from "../persistence/publication-state.mjs";
 import { freezePreparedPublicationCandidate } from "./freeze-publication-candidate.mjs";
-import { assertNativeTaskHistories, mergeSelectedResults, NATIVE_RELEASE_POLICY } from "./native-release-merge.mjs";
+import { assertNativeTaskHistories, assertNativePreparedComposition, mergeSelectedResults, NATIVE_RELEASE_POLICY } from "./native-release-merge.mjs";
 
 const RELEASE_MARKER = "agent-hub-release-clone.json";
 const RELEASE_BRANCH = "PreRelease";
@@ -879,6 +879,35 @@ export class ReleaseGitWorkspaceService {
     }
   }
 
+  async #preparedGenerationSource({ projectRoot, workspaceId, planRevision, frozenTasks, approvedBaseCommit, baseProvenance, changelogContent }) {
+    const layout = this.#layout(projectRoot);
+    const stale = message => Object.assign(new Error(`${message}; prepare the current Await candidate through the normal owner`),
+      { code: "RELEASE_PREPARED_CANDIDATE_STALE" });
+    return withInterprocessLocks([path.join(this.dataDir, "locks", `release-git-${layout.repositoryKey}`)], async () => {
+      const source = await this.frozenCandidate(projectRoot, { changelogContent }).catch(error => { throw stale(error.message); });
+      const manifest = JSON.parse(await readFile(source.manifestFile, "utf8"));
+      const tasks = normalizedFrozenTasks(frozenTasks);
+      if (source.checkpointPhase !== "prepared" || manifest.compositionPolicy !== NATIVE_RELEASE_POLICY
+          || source.planRevision !== planRevision || source.baseCommit !== approvedBaseCommit
+          || String(manifest.workspaceId ?? "") !== String(workspaceId ?? "")
+          || stableManifest(normalizedFrozenTasks(manifest.tasks)) !== stableManifest(tasks)
+          || (manifest.baseProvenance?.publishedBaseCommit ?? null) !== (baseProvenance?.publishedBaseCommit ?? null)) {
+        throw stale("Prepared PreRelease selection, base or evidence is stale");
+      }
+      const git = (args, options = {}) => runGit(args, { ...options, cwd: source.releaseRoot });
+      await assertNativePreparedComposition({ git, baseCommit: source.baseCommit, tasks,
+        merges: manifest.merges, head: source.preReleaseHead, tree: source.tree });
+      const binding = { kind: "native-prepared-release-v1", releaseRoot: source.releaseRoot,
+        commit: source.preReleaseHead, tree: source.tree, manifestHash: source.manifestHash,
+        checkpointSha256: sha256(await readFile(source.checkpointFile)),
+        inputHash: sha256(stableManifest({ workspaceId, planRevision, approvedBaseCommit, tasks, baseProvenance,
+          changelogHash: changelogContent === undefined ? "prepared" : changelogContent === null ? null : sha256(Buffer.from(changelogContent)) })) };
+      return { binding, candidate: { ...source, baseProvenance, frozenTasks: tasks,
+        mergedTaskIds: tasks.map(task => task.taskId),
+        manifest: { ...manifest, ...(baseProvenance ? { baseProvenance } : {}), preparedCandidate: binding } } };
+    });
+  }
+
   async prepareGeneration({
     operationId, generation, planRevision, projectRoot, workspaceId = null,
     frozenTasks = [], approvedBaseCommit = null, baseProvenance = null,
@@ -900,7 +929,7 @@ export class ReleaseGitWorkspaceService {
       try {
         await mkdir(generationDataDir, { recursive: true });
         const identityFile = path.join(generationDataDir, "identity.json");
-        const identity = {
+        let identity = {
           schemaVersion: 1,
           operationId: operation,
           generation: generationNumber,
@@ -908,10 +937,37 @@ export class ReleaseGitWorkspaceService {
           identitySha256: generationIdentitySha256,
         };
         const existingIdentity = await readJson(identityFile);
-        if (existingIdentity && JSON.stringify(existingIdentity) !== JSON.stringify(identity)) {
+        const { preparedCandidate: existingPrepared, ...existingOwner } = existingIdentity ?? {};
+        if (existingIdentity && JSON.stringify(existingOwner) !== JSON.stringify(identity)) {
           throw new Error("release generation directory identity collision");
         }
+        if (existingPrepared) identity = existingIdentity;
         if (!existingIdentity) await writeJsonAtomic(identityFile, identity);
+        const preparedInput = { projectRoot: sourceRoot, workspaceId, planRevision,
+          frozenTasks, approvedBaseCommit, baseProvenance, changelogContent };
+        const generationLayout = this.#layout(sourceRoot);
+        const localCheckpointFile = path.join(generationDataDir, "release-repositories", generationLayout.repositoryKey, "checkpoint.json");
+        const localCheckpoint = freezePublication ? await readJson(localCheckpointFile) : null;
+        let preparedSource = null;
+        if (freezePublication) {
+          const inputHash = sha256(stableManifest({ workspaceId, planRevision, approvedBaseCommit,
+            tasks: normalizedFrozenTasks(frozenTasks), baseProvenance,
+            changelogHash: changelogContent === undefined ? "prepared" : changelogContent === null ? null : sha256(Buffer.from(changelogContent)) }));
+          if (existingPrepared && existingPrepared.inputHash !== inputHash) {
+            throw Object.assign(new Error("Original generation prepared input changed"), { code: "RELEASE_PREPARED_CANDIDATE_STALE" });
+          }
+          if (!localCheckpoint?.publicationFreeze) {
+            preparedSource = await this.#preparedGenerationSource(preparedInput);
+            if (existingPrepared && stableManifest(existingPrepared) !== stableManifest(preparedSource.binding)) {
+              throw Object.assign(new Error("Original generation prepared PreRelease changed"), { code: "RELEASE_PREPARED_CANDIDATE_STALE" });
+            }
+            if (!existingPrepared) {
+              if (localCheckpoint) throw new Error("Existing generation has no prepared candidate binding");
+              identity = { ...identity, preparedCandidate: preparedSource.binding };
+              await writeJsonAtomic(identityFile, identity);
+            }
+          } else if (!existingPrepared) throw new Error("Frozen generation has no original prepared binding");
+        }
         const bundle = path.join(generationDataDir, "source.bundle");
         if (!ephemeral && !await fileExists(bundle)) {
           const temporaryBundle = `${bundle}.${process.pid}.${randomUUID()}.tmp`;
@@ -931,10 +987,43 @@ export class ReleaseGitWorkspaceService {
         });
         if (ephemeral) isolated.#validationReferenceRoot = sourceRoot;
         else isolated.#validationBundle = bundle;
-        const candidate = await isolated.prepareCandidate({
-          planRevision, projectRoot, workspaceId, frozenTasks, approvedBaseCommit,
-          baseProvenance, validateBeforeCommit, preserveFrozen: false,
-        });
+        const validatePrepared = async () => {
+          if (typeof validateBeforeCommit === "function") await validateBeforeCommit();
+          if (!localCheckpoint?.publicationFreeze) {
+            const current = await this.#preparedGenerationSource(preparedInput);
+            if (stableManifest(current.binding) !== stableManifest(identity.preparedCandidate)) {
+              throw Object.assign(new Error("Prepared PreRelease changed during generation capture"), { code: "RELEASE_PREPARED_CANDIDATE_STALE" });
+            }
+          }
+        };
+        let candidate;
+        if (!freezePublication) {
+          candidate = await isolated.prepareCandidate({ planRevision, projectRoot, workspaceId, frozenTasks,
+            approvedBaseCommit, baseProvenance, validateBeforeCommit, preserveFrozen: false });
+        } else {
+          const journal = await readJson(path.join(path.dirname(localCheckpointFile), "native-preparation.json"));
+          if (localCheckpoint && (localCheckpoint.publicationFreeze || journal?.phase === "completed")) {
+            const manifestFile = path.join(path.dirname(localCheckpointFile), "evidence", `${localCheckpoint.manifestHash}.json`);
+            const bytes = await readFile(manifestFile);
+            if (sha256(bytes) !== localCheckpoint.manifestHash) throw new Error("Generation manifest changed");
+            const manifest = JSON.parse(bytes.toString("utf8"));
+            if (stableManifest(manifest.preparedCandidate) !== stableManifest(identity.preparedCandidate)
+                || manifest.planRevision !== planRevision || manifest.baseCommit !== approvedBaseCommit
+                || stableManifest(normalizedFrozenTasks(manifest.tasks)) !== stableManifest(normalizedFrozenTasks(frozenTasks))) {
+              throw new Error("Generation no longer binds its original prepared candidate");
+            }
+            candidate = { repositoryRoot: sourceRoot, releaseRoot: isolated.#layout(sourceRoot).releaseRoot,
+              planRevision, baseCommit: approvedBaseCommit, baseProvenance, manifest, manifestFile,
+              manifestHash: localCheckpoint.manifestHash, preReleaseHead: identity.preparedCandidate.commit,
+              tree: identity.preparedCandidate.tree, frozenTasks: normalizedFrozenTasks(frozenTasks),
+              mergedTaskIds: frozenTasks.map(task => task.taskId) };
+            if (!localCheckpoint.publicationFreeze) await isolated.frozenCandidate(sourceRoot);
+            await validatePrepared();
+          } else {
+            candidate = await isolated.promoteGenerationCandidate({ projectRoot: sourceRoot,
+              candidate: preparedSource.candidate, validateBeforeCommit: validatePrepared });
+          }
+        }
         if (!freezePublication) {
           return {
             ...candidate,
@@ -950,7 +1039,7 @@ export class ReleaseGitWorkspaceService {
             throw error;
           })
           : changelogContent;
-        if (changelogContent !== undefined) {
+        if (changelogContent !== undefined && !localCheckpoint?.publicationFreeze) {
           const changelogFile = path.join(candidate.releaseRoot, "CHANGELOG.md");
           if (frozenChangelog === null) await rm(changelogFile, { force: true });
           else await writeFile(changelogFile, Buffer.from(frozenChangelog));
@@ -961,7 +1050,8 @@ export class ReleaseGitWorkspaceService {
           expectedPlanRevision: planRevision,
           expectedPreparedHead: candidate.preReleaseHead,
           changelogContent: frozenChangelog,
-          validateBeforeCommit: validateBeforeCommit ?? (async () => {}),
+          reusePersistedChangelog: Boolean(localCheckpoint?.publicationFreeze),
+          validateBeforeCommit: validatePrepared,
         });
         const frozen = await isolated.frozenCandidate(sourceRoot);
         const tree = await runGit(["rev-parse", `${frozen.preReleaseHead}^{tree}`], {
@@ -2343,7 +2433,7 @@ export class ReleaseGitWorkspaceService {
     return outcome;
   }
 
-  async frozenCandidate(projectRoot) {
+  async frozenCandidate(projectRoot, { changelogContent = undefined } = {}) {
     this.#assertAvailable("frozenCandidate");
     const primary = await primarySnapshot(projectRoot);
     const layout = this.#layout(primary.root);
@@ -2401,7 +2491,15 @@ export class ReleaseGitWorkspaceService {
       runGit(["rev-parse", "HEAD^{tree}"], { cwd: marker.releaseRoot }),
       runGit(["status", "--porcelain=v1", "--untracked-files=all"], { cwd: marker.releaseRoot }),
     ]);
-    if (releaseBranch !== expectedCheckout || releaseHead !== branchHead || releaseDirty) {
+    let authorizedNotes = false;
+    if (checkpointPhase === "prepared" && releaseDirty && changelogContent != null
+        && releaseDirty.split(/\r?\n/u).filter(Boolean).every(line => line.slice(3) === "CHANGELOG.md")) {
+      const file = path.join(marker.releaseRoot, "CHANGELOG.md");
+      const info = await lstat(file).catch(error => { if (error.code === "ENOENT") return null; throw error; });
+      authorizedNotes = Boolean(info?.isFile() && !info.isSymbolicLink()
+        && (await readFile(file)).equals(Buffer.from(changelogContent)));
+    }
+    if (releaseBranch !== expectedCheckout || releaseHead !== branchHead || (releaseDirty && !authorizedNotes)) {
       throw new Error(`release checkpoint clone is not an exact clean ${expectedCheckout} checkout for phase ${checkpointPhase}`);
     }
     if (manifest.schemaVersion !== 2
@@ -2448,6 +2546,7 @@ export class ReleaseGitWorkspaceService {
         ...(manifest.compositionPolicy ? { compositionPolicy: manifest.compositionPolicy } : {}),
         ...(manifest.merges ? { merges: manifest.merges } : {}),
         ...(manifest.cutover ? { cutover: manifest.cutover } : {}),
+        ...(manifest.preparedCandidate ? { preparedCandidate: manifest.preparedCandidate } : {}),
         tasks: manifestTasks.map((task) => ({
           taskId: task.taskId,
           taskRevision: task.taskRevision,

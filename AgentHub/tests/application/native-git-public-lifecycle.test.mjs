@@ -6,6 +6,7 @@ import path from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 import { DatabaseSync } from "node:sqlite";
+import { createHash } from "node:crypto";
 import { HubMcpService } from "../../src/application/hub-mcp-service.mjs";
 import { TaskBoardService } from "../../src/application/task-board-service.mjs";
 import { TaskLifecycleService } from "../../src/application/task-lifecycle-service.mjs";
@@ -18,6 +19,7 @@ import { ReleaseGitWorkspaceService } from "../../src/infrastructure/filesystem/
 import { ReleaseOperationService } from "../../src/application/release-operation-service.mjs";
 import { WorkspaceReleaseOperationAdapter } from "../../src/application/workspace-release-operation-adapter.mjs";
 import { ReleaseOperationStore } from "../../src/infrastructure/persistence/release-operation-store.mjs";
+import { ReleaseOperationCommandService } from "../../src/application/release-operation-command-service.mjs";
 
 const exec = promisify(execFile);
 async function git(cwd, ...args) {
@@ -97,6 +99,10 @@ async function fixture(t, { releaseMetadata = false } = {}) {
     root, primary, base, workspace,
     get board() { return board; }, get taskGit() { return taskGit; }, get lifecycle() { return lifecycle; }, get catalog() { return catalog; },
     get preflight() { return preflight; },
+    async continueRelease(operationId) {
+      await service.call("hub_release_continue", { context_token: token, operation_id: operationId, request_id: "prepared-release-continue" });
+      return releaseOperations.drain(operationId);
+    },
     get publication() { return publication; },
     get releaseGit() { return releaseGit; },
     get store() { return store; },
@@ -171,13 +177,17 @@ async function fixture(t, { releaseMetadata = false } = {}) {
       return service.call("hub_task_complete", { ...args, request_id: `${prefix}-confirm`,
         confirm_cleanup: true, expected_cleanup_token: preview.cleanupToken });
     },
-    async release(task, originMain = base) {
-      const args = { context_token: token, request_id: "native-release-original", task_ids: [task.id],
+    async release(task, originMain = base, requestId = "native-release-original", releaseMetadata = null) {
+      const args = { context_token: token, request_id: requestId, task_ids: (Array.isArray(task) ? task : [task]).map(item => item.id),
         validation_mode: "focused", approved_targets: [{ targetId: "fixture", kind: "git", repositoryRoot: primary,
           approvedLocalMainCommit: base, approvedOriginMainCommit: originMain }] };
-      const ack = await service.call("hub_release_run", args);
+      const commands = new ReleaseOperationCommandService({ releaseOperations, workspaceCatalog: catalog, taskBoard: board });
+      const admit = () => releaseMetadata ? commands.start({ requestId, workspaceId: workspace.id,
+        streamId: stream.id, threadId: "fixture-thread", taskIds: args.task_ids, validationMode: args.validation_mode,
+        approvedTargets: args.approved_targets, releaseMetadata }) : service.call("hub_release_run", args);
+      const ack = await admit();
       const snapshot = await releaseOperations.drain(ack.operationId);
-      const replay = await service.call("hub_release_run", args);
+      const replay = await admit();
       assert.equal(replay.operationId, ack.operationId);
       const read = await service.call("hub_release_get", { context_token: token, operation_id: ack.operationId });
       assert.equal(read.operation.operationId, ack.operationId);
@@ -537,6 +547,7 @@ test("public durable release composes native immutable generation with separatel
   const published = await git(publishedRoot, "rev-parse", "HEAD");
   await git(publishedRoot, "push", "origin", `${published}:refs/heads/main`);
   f.publication.repositories[0].revision = published;
+  await f.preflight.prepareAwaitSet({ workspaceId: f.workspace.id });
   const snapshot = await f.release(a, published);
   assert.equal(snapshot.operation.state, "waiting", JSON.stringify(snapshot.operation.lastError));
   assert.equal(snapshot.operation.waitReason.code, "validation_failed");
@@ -555,4 +566,73 @@ test("public durable release composes native immutable generation with separatel
   // Frozen operation bytes coexist with continued Task work. No Task freeze.
   assert.equal((await f.status(a, "in_progress", "return-a")).workflowStatus, "in_progress");
   assert.equal(await git(candidate.releaseRoot, "rev-parse", "HEAD"), candidate.commit);
+});
+
+test("public release generation retains prepared PreRelease conflict resolution", { timeout: 240_000 }, async t => {
+  const f = await fixture(t, { releaseMetadata: true }), a = await f.create("A"), b = await f.create("B");
+  await writeFile(path.join(a.root, "shared.txt"), "A\n");
+  await f.status(a, "testing", "prepared-test-a");
+  await writeFile(path.join(b.root, "shared.txt"), "B\n");
+  let devConflict;
+  await assert.rejects(f.status(b, "testing", "prepared-test-b-conflict"), error => {
+    assert.equal(error.code, "TASK_INTEGRATION_CONFLICT"); devConflict = error.details; return true;
+  });
+  await writeFile(path.join(devConflict.nativeConflictRoot, "shared.txt"), "dev resolution\n");
+  await commit(devConflict.nativeConflictRoot, "resolve dev preview");
+  await f.status(b, "testing", "prepared-test-b-resolved");
+  await f.status(a, "awaiting_implementation", "prepared-await-a");
+  let awaitConflict;
+  await assert.rejects(f.status(b, "awaiting_implementation", "prepared-await-b-conflict"), error => {
+    assert.equal(error.code, "TASK_AWAIT_INTEGRATION_FAILED");
+    awaitConflict = /Resolve the native Git merge for Task .+ in (.+)$/u.exec(error.message)?.[1];
+    assert.ok(awaitConflict, error.message); return true;
+  });
+  await writeFile(path.join(awaitConflict, "shared.txt"), "accepted PreRelease resolution\n");
+  await commit(awaitConflict, "resolve accepted PreRelease");
+  const resolution = await git(awaitConflict, "rev-parse", "HEAD");
+  await f.status(b, "awaiting_implementation", "prepared-await-b-resolved");
+  const prepared = await f.releaseGit.frozenCandidate(f.primary);
+  assert.equal(prepared.preReleaseHead, resolution);
+  const subset = await f.release(a, f.base, "prepared-stale-selection");
+  assert.equal(subset.operation.state, "failed");
+  assert.equal(subset.operation.lastError.code, "RELEASE_PREPARED_CANDIDATE_STALE");
+  assert.equal(subset.generations.length, 0);
+  const notes = Buffer.from("authorized prepared release notes\n");
+  const notesPath = path.join(prepared.releaseRoot, "CHANGELOG.md");
+  await writeFile(notesPath, notes);
+  const notesHash = createHash("sha256").update(notes).digest("hex");
+  const releaseMetadata = { sourcePath: notesPath, byteLength: notes.length,
+    rawSha256: notesHash, canonicalSha256: notesHash };
+  const prepareGeneration = f.preflight.prepareOperationGeneration.bind(f.preflight);
+  let lost = null;
+  f.preflight.prepareOperationGeneration = async input => {
+    const value = await prepareGeneration(input);
+    if (!lost) {
+      lost = value.releaseCandidates[0];
+      throw Object.assign(new Error("lost generation response after metadata freeze"), { code: "RELEASE_EXTERNAL_CONDITION" });
+    }
+    return value;
+  };
+  const interrupted = await f.release([a, b], f.base, "native-release-original", releaseMetadata);
+  assert.equal(interrupted.operation.waitReason.code, "external_condition");
+  assert.equal(interrupted.generations.length, 0);
+  const reflog = await git(lost.releaseRoot, "reflog", "show", "--format=%H", "PreRelease");
+  const snapshot = await f.continueRelease(interrupted.operation.operationId);
+  assert.equal(snapshot.operation.state, "waiting", JSON.stringify(snapshot.operation));
+  assert.equal(snapshot.operation.waitReason?.code, "validation_failed", JSON.stringify(snapshot.operation.lastError));
+  assert.equal(snapshot.generations.length, 1);
+  const candidate = snapshot.generations[0].candidates[0];
+  assert.equal(snapshot.operation.operationId, interrupted.operation.operationId);
+  assert.equal(candidate.commit, lost.preReleaseHead);
+  assert.equal(await git(candidate.releaseRoot, "reflog", "show", "--format=%H", "PreRelease"), reflog);
+  assert.equal(candidate.manifest.preparedCandidate.commit, resolution);
+  assert.equal(candidate.manifest.preparedCandidate.tree, prepared.tree);
+  assert.equal(await git(candidate.releaseRoot, "show", `${candidate.commit}:shared.txt`), "accepted PreRelease resolution");
+  assert.equal(await git(candidate.releaseRoot, "show", `${candidate.commit}:CHANGELOG.md`), notes.toString().trim());
+  assert.equal(await git(candidate.releaseRoot, "merge-base", "--is-ancestor", resolution, candidate.commit), "");
+  const metadata = new Set(["CHANGELOG.md", "AgentHub/package.json", "AgentHub/package-lock.json"]);
+  assert.ok((await git(candidate.releaseRoot, "diff", "--name-only", resolution, candidate.commit))
+    .split(/\r?\n/u).filter(Boolean).every(file => metadata.has(file)));
+  assert.equal(await git(prepared.releaseRoot, "rev-parse", "HEAD"), resolution);
+  assert.deepEqual(await readFile(notesPath), notes);
 });
