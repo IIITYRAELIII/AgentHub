@@ -25,6 +25,13 @@ Git owns merge ancestry, index, checkout, modes, add/delete/rename and EOL.
 There is no ordinary effective-dev replay, net projector, cherry-pick fallback,
 synthetic aggregate tree or selected-composition per-file writer.
 
+Native merge staging imports source objects/refs through a Git bundle, then
+performs ordinary clone/checkout and proves each exact input commit exists.
+It does not invoke upload-pack against the primary's local configuration,
+disable Git clone protection or copy source hooks. Mandatory team hooks and
+the primary's config/HEAD/worktree remain unchanged. Bundle transport grants
+no selection authority; the same bounded history, merge and CAS fences apply.
+
 Dev is preview only. The exact accepted set and its required descriptors remain
 Hub authority. Test-only branches are excluded. A result's bounded first-parent
 history (at most 512 commits) must start from accepted main; an unselected merge

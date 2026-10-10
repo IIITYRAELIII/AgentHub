@@ -198,6 +198,35 @@ test("public CLI initial native Test refuses stale and foreign source, caller, T
   assert.equal(f.catalog.mcpOperation("guard-original"), null);
 });
 
+test("public CLI native Test and Await preserve primary hooks without invoking clone configuration", { timeout: 180_000 }, async t => {
+  const f = await fixture(t), accepted = await f.create("accepted-before-hooks");
+  await f.status(accepted, "testing", "before-hooks-test");
+  await f.status(accepted, "awaiting_implementation", "before-hooks-await");
+  const prepared = await f.releaseGit.initialNativeTestCandidate(f.primary);
+  const task = await f.create("hooked");
+  const hooks = path.join(f.root, "team-hooks"), marker = path.join(f.root, "hook-ran");
+  await mkdir(hooks);
+  const hook = `#!/bin/sh\nprintf ran > '${marker.replaceAll("\\", "/")}'\nexit 91\n`;
+  const packHook = path.join(hooks, "pack-objects");
+  await writeFile(packHook, hook, { mode: 0o755 });
+  await git(f.primary, "config", "core.hooksPath", hooks);
+  await git(f.primary, "config", "uploadpack.packObjectsHook", `sh '${packHook.replaceAll("\\", "/")}'`);
+  const config = await readFile(path.join(f.primary, ".git", "config"));
+  const input = await f.input(task, "hooked-native-original");
+  const result = await f.run(task, input);
+  assert.equal(result.result.workflowStatus, "testing");
+  assert.equal(f.catalog.mcpOperation(input.requestId).status, "succeeded");
+  assert.deepEqual(await f.releaseGit.initialNativeTestCandidate(f.primary), prepared);
+  await f.status(task, "awaiting_implementation", "hooked-native-await");
+  const candidate = await f.releaseGit.frozenCandidate(f.primary);
+  assert.deepEqual(candidate.manifest.taskIds.sort(), [accepted.id, task.id].sort());
+  await git(candidate.releaseRoot, "merge-base", "--is-ancestor", input.expectedSourceCommit, candidate.preReleaseHead);
+  assert.equal(await git(f.primary, "rev-parse", "main"), f.main);
+  assert.deepEqual(await readFile(path.join(f.primary, ".git", "config")), config);
+  await assert.rejects(readFile(marker), { code: "ENOENT" });
+  assert.deepEqual((await f.run(task, input)).result, wire(result.result));
+});
+
 test("public CLI initial native Test fences caller rotation in the lifecycle admission transaction", { timeout: 90_000 }, async t => {
   const f = await fixture(t), task = await f.create("sql-race"), input = await f.input(task, "sql-caller-race");
   const before = f.board.task(task.id), dev = await git(f.primary, "rev-parse", "dev");

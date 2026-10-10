@@ -155,11 +155,15 @@ export async function mergeSelectedResults({
     throw failure("Native merge staging identity changed", "RELEASE_NATIVE_CHECKOUT_CHANGED");
   }
   if (!state) {
-    // Never clone the primary's worktree bytes, local config or hooks.
-    await gitAt(root, ["clone", "--no-local", "--no-hardlinks", "--no-checkout", sourceRoot, repository]);
+    // Transport only Git objects/refs. Direct upload-pack from a repository with
+    // mandatory local hooks is refused by Git clone protection; keep that
+    // protection enabled and never import or execute the source configuration.
+    const bundle = path.join(root, "source.bundle");
+    await gitAt(sourceRoot, ["bundle", "create", bundle, "--all"]);
+    await gitAt(root, ["clone", "--no-local", "--no-hardlinks", "--no-checkout", bundle, repository]);
     const git = (args) => gitAt(repository, args);
     for (const commit of [baseCommit, ...tasks.map((task) => task.resultCommit)]) {
-      await git(["fetch", "--no-tags", "origin", commit]);
+      await git(["cat-file", "-e", `${commit}^{commit}`]);
     }
     await git(["checkout", "--detach", "--no-overwrite-ignore", baseCommit]);
     state = { version: 1, identity, next: 0, head: baseCommit, merges: [], conflict: null };

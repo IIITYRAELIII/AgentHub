@@ -13,6 +13,12 @@ Task/release CAS and durable external effects. Replace ordinary effective-dev
 replay, release-task-net-projection fallback and per-file selected materialization.
 No second composer or permanent cherry-pick/projection layer is introduced.
 
+Native staging exports Git objects/refs into an owned bundle and clones that
+bundle with clone protection enabled. Direct local upload-pack rejects active
+mandatory core.hooksPath; disabling that protection or changing team hooks is
+not an admission mechanism. Exact commit presence and all existing source,
+history, merge and terminal fences remain authoritative after transport.
+
 Real merge commits retain exact selected result parents. Conflicts keep isolated
 MERGE_HEAD/index; reviewed normal resolution commits preserve automatic entries.
 Changing selection recomposes from main. Dev is preview and Test-only work stays
