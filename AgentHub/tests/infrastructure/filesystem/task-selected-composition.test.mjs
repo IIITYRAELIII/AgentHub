@@ -1350,6 +1350,86 @@ test("publication generation drift before CAS leaves dev and Task result untouch
 });
 
 
+test("historical selected completion refuses paired downgrade and preserves explicit legacy evidence", {
+  timeout: 180_000,
+}, async (t) => {
+  const { f, p } = await absorbedPublicFixture(t);
+  const preview = await p.mcp.call("hub_task_status_update", { ...p.args, request_id: "history-preview" });
+  const confirm = { ...p.args, request_id: "history-confirm", selected_preview_request_id: "history-preview",
+    expected_selected_preview_hash: preview.previewHash };
+  await p.mcp.call("hub_task_status_update", confirm);
+  const root = path.join(f.dataDir, "task-selected-compositions", TASK_ID,
+    path.basename(f.taskWorkspace.projectRoot), confirm.request_id);
+  const names = ["intent.json", "completed.json", path.join("materialization", "record.json")];
+  const originals = await Promise.all(names.map((name) => readFile(path.join(root, name))));
+  const [intent, receipt, record] = originals.map((bytes) => JSON.parse(bytes));
+  assert.deepEqual([intent.version, receipt.version, record.version], [2, 2, 2]);
+  const evidence = () => f.service.releaseIntegrationEvidence({ projectRoot: f.root,
+    tasks: [{ taskId: TASK_ID, taskRevision: p.store.task(TASK_ID).revision,
+      projectRoot: f.root, branch: f.taskWorkspace.branch, resultCommit: f.task }] });
+  const write = (values) => Promise.all(names.map((name, index) => (
+    writeFile(path.join(root, name), JSON.stringify(values[index]))
+  )));
+  const restore = () => Promise.all(names.map((name, index) => writeFile(path.join(root, name), originals[index])));
+  const exact = async () => assert.deepEqual((await evidence()).tasks[0].selectedComposition, preview.selectedComposition);
+  const head = await git(f.root, "rev-parse", "dev");
+  const task = p.store.task(TASK_ID);
+  let repeatedCas = 0;
+  f.service.runCommand = async (args, options) => {
+    if (args[0] === "update-ref" && args[1] === "refs/heads/dev") repeatedCas++;
+    return runTaskGitCommand(args, options);
+  };
+  try {
+    await exact();
+    const tampered = structuredClone(record);
+    tampered.files[0].newSha256 = "0".repeat(64);
+    await write([intent, receipt, tampered]);
+    await assert.rejects(evidence(), /historical materialization binding changed/u);
+    await restore(); await exact();
+    const { materializationHash: _seal, ...unsealedReceipt } = receipt;
+    for (const [claimedReceipt, captured] of [
+      [{ ...receipt, version: 1 }, record],
+      [{ ...unsealedReceipt, version: 1 }, record],
+      [{ ...receipt, version: 1 }, tampered],
+      [{ ...unsealedReceipt, version: 1 }, tampered],
+      [{ ...unsealedReceipt, version: 1 }, { ...record, version: 1 }],
+    ]) {
+      await write([{ ...intent, version: 1 }, claimedReceipt, captured]);
+      await assert.rejects(evidence(), /historical materialization version changed/u);
+      await restore(); await exact();
+    }
+    // Explicit original v1 fixture shape has no v2 seal or serialization
+    // authority. LF physical hashes equal the pinned Git-byte hashes here.
+    const legacy = { version: 1, root: record.root, journalRoot: record.journalRoot,
+      files: record.files.map((file) => {
+        assert.equal(file.newSha256, file.newGitSha256);
+        assert.equal(file.oldSha256, file.oldGitSha256);
+        const { path: name, kind, oldBlob, newBlob, oldSha256, newSha256, temp, backup } = file;
+        return { path: name, kind, oldBlob, newBlob, oldSha256, newSha256, temp, backup };
+      }) };
+    await write([{ ...intent, version: 1 }, { ...unsealedReceipt, version: 1 }, legacy]);
+    await exact();
+    for (const captured of [
+      { ...legacy, checkout: record.checkout },
+      { ...legacy, files: legacy.files.map((file) => ({ ...file, oldSerialization: "raw" })) },
+      { ...legacy, files: legacy.files.map((file) => ({ ...file, newGitSha256: file.newSha256 })) },
+    ]) {
+      await write([{ ...intent, version: 1 }, { ...unsealedReceipt, version: 1 }, captured]);
+      await assert.rejects(evidence(), /historical materialization version changed/u);
+    }
+    await write([{ ...intent, version: 1 }, { ...receipt, version: 1 }, legacy]);
+    await assert.rejects(evidence(), /historical materialization version changed/u);
+    await restore();
+    await git(f.devWorkspace.projectRoot, "config", "core.safecrlf", "true");
+    try { await exact(); } finally { await git(f.devWorkspace.projectRoot, "config", "--unset", "core.safecrlf"); }
+  } finally { await restore(); }
+  await exact();
+  assert.equal(await git(f.root, "rev-parse", "dev"), head);
+  assert.deepEqual(p.store.task(TASK_ID), task);
+  assert.equal(p.catalog.mcpOperation(confirm.request_id).status, "succeeded");
+  assert.equal(repeatedCas, 0);
+});
+
 test("absorbed own real CRLF public Test retains UNKNOWN on checkout drift and resumes same original after reopen", {
   timeout: 180_000,
 }, async (t) => {

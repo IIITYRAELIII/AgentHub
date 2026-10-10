@@ -4650,9 +4650,19 @@ export class TaskGitWorkspaceService {
           })).digest("hex") !== preview.previewHash) {
         throw new Error("Selected composition result receipt lacks exact durable proof");
       }
+      const journalRoot = path.join(root, "materialization");
+      const record = JSON.parse(await readFile(path.join(journalRoot, "record.json"), "utf8"));
+      // Legacy interpretation belongs to actual v1 capture, not merely two
+      // mutable headers. Retained v2-only identities cannot bypass their seal.
+      if (record.version !== intent.version
+          || (intent.version === 1 && (Object.hasOwn(receipt, "materializationHash")
+            || Object.hasOwn(record, "checkout")
+            || !Array.isArray(record.files)
+            || record.files.some((file) => ["oldGitSha256", "newGitSha256", "oldSerialization"]
+              .some((key) => Object.hasOwn(file, key)))))) {
+        throw new Error("Selected composition historical materialization version changed");
+      }
       if (receipt.version === 2) {
-        const journalRoot = path.join(root, "materialization");
-        const record = JSON.parse(await readFile(path.join(journalRoot, "record.json"), "utf8"));
         if (receipt.materializationHash !== createHash("sha256").update(JSON.stringify(record)).digest("hex")) {
           throw new Error("Selected composition historical materialization binding changed");
         }

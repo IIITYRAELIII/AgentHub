@@ -80,8 +80,11 @@ materialization record hash. Older journal/receipt identities are not silently
 reinterpreted: unsupported recovery refuses while preserving bytes and original
 UNKNOWN. R1 absorbed source fences remain unchanged.
 
-Historical release evidence accepts only matching explicit intent/receipt
-versions. Version 1 retains its original historical proof interpretation;
+Historical release evidence accepts only matching explicit intent/receipt/
+materialization-record versions. A claimed version 1 carrying a version-2
+seal, checkout authority or blob/serialization identities refuses; paired header
+downgrade cannot turn sealed evidence into legacy interpretation.
+Version 1 retains its original historical proof interpretation;
 version 2 additionally checks the sealed materialization record and pinned
 blob-to-serialization relations. Historical projection does not authorize
 movement or use later rolling-dev bytes/configuration. Live recovery requires
