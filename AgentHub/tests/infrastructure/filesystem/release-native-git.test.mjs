@@ -112,6 +112,23 @@ test("native merge selects exact independent main branches and complete correcti
   assert.equal(await git(f.primary, "rev-parse", "main"), f.base);
 });
 
+test("native transport retains exact selected objects imported without intermediate refs", { timeout: 60000 }, async t => {
+  const f = await fixture(t), selected = await f.result("A", "a.txt", "selected exact result\n");
+  const retainedRef = "refs/agent-hub/task-results/A";
+  await git(f.primary, "update-ref", retainedRef, selected.resultCommit);
+  // Only this disposable fixture's own temporary branch/worktree is removed.
+  const taskRoot = f.branches.get("A");
+  const relative = path.relative(f.root, taskRoot);
+  assert.ok(relative && !relative.startsWith("..") && !path.isAbsolute(relative));
+  await git(f.primary, "worktree", "remove", taskRoot);
+  await git(f.primary, "branch", "-D", "A");
+  const candidate = await f.service.prepareCandidate(f.request([selected]));
+  assert.equal(await git(candidate.releaseRoot, "show", "PreRelease:a.txt"), "selected exact result");
+  await git(candidate.releaseRoot, "merge-base", "--is-ancestor", selected.resultCommit, candidate.preReleaseHead);
+  assert.equal(await git(f.primary, "rev-parse", retainedRef), selected.resultCommit);
+  assert.equal(await git(f.primary, "rev-parse", "main"), f.base);
+});
+
 test("joint file uses Git merge; conflict retains last candidate and normal resolution commit resumes", { timeout: 60000 }, async (t) => {
   const f = await fixture(t);
   const a = await f.result("A", "shared.txt", "A\nsecond\nthird\n");

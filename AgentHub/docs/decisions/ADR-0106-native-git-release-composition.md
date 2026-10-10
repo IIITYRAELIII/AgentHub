@@ -18,6 +18,9 @@ bundle with clone protection enabled. Direct local upload-pack rejects active
 mandatory core.hooksPath; disabling that protection or changing team hooks is
 not an admission mechanism. Exact commit presence and all existing source,
 history, merge and terminal fences remain authoritative after transport.
+The export names every exact base/result through Git's revision stdin, including
+objects imported without intermediate refs. It creates no new source refs or
+selection authority and retains the same post-import object readback.
 
 Real merge commits retain exact selected result parents. Conflicts keep isolated
 MERGE_HEAD/index; reviewed normal resolution commits preserve automatic entries.

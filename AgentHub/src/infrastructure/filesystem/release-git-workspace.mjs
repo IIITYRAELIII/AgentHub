@@ -39,9 +39,9 @@ const AWAIT_UNKNOWN_OUTCOME_CODES = new Set([
   "AWAIT_ACCEPTANCE_UNKNOWN",
 ]);
 
-function runGit(args, { cwd, timeoutMs = 120_000, rawOutput = false, acceptableExitCodes = [] } = {}) {
+function runGit(args, { cwd, timeoutMs = 120_000, rawOutput = false, acceptableExitCodes = [], input = null } = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn("git", args, { cwd, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn("git", args, { cwd, windowsHide: true, stdio: [input == null ? "ignore" : "pipe", "pipe", "pipe"] });
     const stdout = [];
     const stderr = [];
     const timer = setTimeout(() => {
@@ -62,6 +62,7 @@ function runGit(args, { cwd, timeoutMs = 120_000, rawOutput = false, acceptableE
       if (code === 0 || acceptableExitCodes.includes(code)) resolve(output);
       else reject(new Error(errorText || `git ${args[0]} exited with ${code}`));
     });
+    if (input != null) child.stdin.end(input);
   });
 }
 

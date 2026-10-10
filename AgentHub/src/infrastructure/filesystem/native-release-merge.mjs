@@ -159,10 +159,15 @@ export async function mergeSelectedResults({
     // mandatory local hooks is refused by Git clone protection; keep that
     // protection enabled and never import or execute the source configuration.
     const bundle = path.join(root, "source.bundle");
-    await gitAt(sourceRoot, ["bundle", "create", bundle, "--all"]);
+    const inputs = [...new Set([baseCommit, ...tasks.map(task => task.resultCommit)])];
+    // The existing owner may have fetched an exact result with no local ref.
+    // Include its ancestry explicitly; stdin avoids a platform argv-size limit.
+    await gitAt(sourceRoot, ["bundle", "create", bundle, "--all", "--stdin"], {
+      input: `${inputs.join("\n")}\n`,
+    });
     await gitAt(root, ["clone", "--no-local", "--no-hardlinks", "--no-checkout", bundle, repository]);
     const git = (args) => gitAt(repository, args);
-    for (const commit of [baseCommit, ...tasks.map((task) => task.resultCommit)]) {
+    for (const commit of inputs) {
       await git(["cat-file", "-e", `${commit}^{commit}`]);
     }
     await git(["checkout", "--detach", "--no-overwrite-ignore", baseCommit]);

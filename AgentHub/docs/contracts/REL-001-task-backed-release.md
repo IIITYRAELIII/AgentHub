@@ -31,6 +31,9 @@ It does not invoke upload-pack against the primary's local configuration,
 disable Git clone protection or copy source hooks. Mandatory team hooks and
 the primary's config/HEAD/worktree remain unchanged. Bundle transport grants
 no selection authority; the same bounded history, merge and CAS fences apply.
+The export explicitly includes every exact base/result object already admitted
+by the owner, even when imported into an intermediate clone without a local ref.
+Ref reachability in that clone is not a new selected-result prerequisite.
 
 Dev is preview only. The exact accepted set and its required descriptors remain
 Hub authority. Test-only branches are excluded. A result's bounded first-parent
