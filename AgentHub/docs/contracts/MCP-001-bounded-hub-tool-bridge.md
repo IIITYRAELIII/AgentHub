@@ -1,5 +1,26 @@
 # MCP-001 — Bounded Agent Hub tool bridge
 
+## Native Git Task/release cutover (HUB-303)
+
+The existing public ordinary Test/Await lifecycle and durable release run/get/
+continue owner remain authoritative. New selected-composition preview/materializer
+admission refuses with TASK_NATIVE_GIT_REQUIRED before a legacy intent is created.
+An isolated native conflict returns its exact conflictRoot and paths; the original
+is failed only after dev is proved unchanged and the lifecycle failure is durable.
+Its retry returns that failure. A reviewed ordinary resolution uses a fresh Test
+original. A lost native Git/SQLite terminal reply remains UNKNOWN; same-ID reopen
+uses its exact journal and source/dev fences, not a replacement request. The
+existing reconciliation owner may read this pending native original without a
+live process guard only after matching the exact pending lifecycle transition
+and original native intent under their leases. Foreign/missing bindings refuse.
+
+No public preflight/freeze/reconcile/complete writer is restored. Immutable release
+generations coexist with Task edits; authored stored rules remain opaque. Legacy
+v1/v2 originals retain explicit pinned recovery and sealed historical readback;
+version downgrade cannot turn v2 evidence into an unsealed v1 capture. See REL-001
+and ADR-0106. Source delivery/publication authorization remains separate.
+
+
 ## Failed validation receipt reconciliation
 
 An explicit Task ancestry refusal is terminal only after the lifecycle owner
@@ -166,8 +187,8 @@ prospective `PreRelease` first and commits only after the composition succeeded;
 a conflict leaves the Task in Test with the last good candidate intact. There is
 no separate public prepare tool. Active release generations retain their own
 exact membership. A corrected result creates a later generation without removing
-historical dev integration. `hub_release_preflight` reads and audits a prepared
-candidate; it does not refresh the rolling contour or silently rebuild one.
+historical dev integration. Internal preflight reads and audits a prepared
+candidate; it is not a public tool and does not refresh the rolling contour.
 
 `hub_release_run` is the only public release mutation entrypoint. It requires a
 stable request ID, exact Task IDs, validation mode and approved publication
@@ -380,7 +401,13 @@ Git materialization readback. Unknown-operation reconciliation reproduces every
 cutover argument and both hashes from the original receipt; missing or mixed
 artifact, source, Task, main/dev or preserved-tree identity performs no replay.
 
-## Reviewed selected-composition Test
+## Historical reviewed selected-composition originals (recovery only)
+
+The following protocol describes captured pre-cutover originals. New admission
+is closed with TASK_NATIVE_GIT_REQUIRED; current Test uses native Git. Retain
+this protocol only to reconcile the exact supported historical original IDs,
+including their explicit v1/v2 record interpretation. It grants no new preview
+or confirmation capability after HUB-303 cutover.
 
 For a Task based on accepted local main that diverges from an already published
 repository history, the Release Manager may use the `selected_*` argument family

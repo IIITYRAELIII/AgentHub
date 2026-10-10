@@ -732,6 +732,8 @@ export class HubMcpService {
         expected_squash_transfer_hash: { type: "string", pattern: "^[0-9a-f]{64}$", description: "Omit for an exact preview; confirm a later request with the returned hash." },
         selected_proof_bundle_path: { type: "string", description: "Release Manager-only immutable selected-composition proof bundle; preview has no live Git or lifecycle effect." },
         selected_proof_bundle_sha256: { type: "string", pattern: "^[0-9a-f]{64}$" },
+        selected_published_resolution: { type: "object", description: "Historical original reconciliation envelope; new selected materialization admission is closed." },
+        selected_absorption_handoff: { type: "object", description: "Historical saved/stopped handoff bound to the existing original receipt." },
         selected_proof_commit: { type: "string", pattern: "^[0-9a-f]{40}$" },
         selected_preview_request_id: { type: "string", description: "Exact original preview request_id on confirmation." },
         expected_selected_preview_hash: { type: "string", pattern: "^[0-9a-f]{64}$", description: "Omit for preview; exact returned hash is required for confirmation." },
@@ -767,6 +769,8 @@ export class HubMcpService {
         expected_squash_cutover_hash: { type: "string", pattern: "^[0-9a-f]{64}$" },
         selected_proof_bundle_path: { type: "string" },
         selected_proof_bundle_sha256: { type: "string", pattern: "^[0-9a-f]{64}$" },
+        selected_published_resolution: { type: "object", description: "Historical original reconciliation envelope; new selected materialization admission is closed." },
+        selected_absorption_handoff: { type: "object", description: "Historical saved/stopped handoff bound to the existing original receipt." },
         selected_proof_commit: { type: "string", pattern: "^[0-9a-f]{40}$" },
         selected_preview_request_id: { type: "string" },
         expected_selected_preview_hash: { type: "string", pattern: "^[0-9a-f]{64}$" },
@@ -1040,13 +1044,15 @@ export class HubMcpService {
             squashCutoverBundleSha256: args.squash_cutover_bundle_sha256,
             squashCutoverManifestSha256: args.squash_cutover_manifest_sha256,
             squashCutoverFilesSha256: args.squash_cutover_files_sha256,
-          expectedSquashCutoverHash: args.expected_squash_cutover_hash,
+            expectedSquashCutoverHash: args.expected_squash_cutover_hash,
+          } : {}),
           selectedBundlePath: args.selected_proof_bundle_path,
           selectedBundleSha256: args.selected_proof_bundle_sha256,
+          selectedPublishedResolution: args.selected_published_resolution,
+          selectedAbsorptionHandoff: args.selected_absorption_handoff,
           selectedProofCommit: args.selected_proof_commit,
           selectedPreviewRequestId: args.selected_preview_request_id,
           expectedSelectedPreviewHash: args.expected_selected_preview_hash,
-          } : {}),
           confirmed: args.confirm_reconcile,
         });
       case "hub_task_legacy_git_adopt":
@@ -1455,6 +1461,8 @@ export class HubMcpService {
     selected_proof_bundle_path: selectedBundlePath = null,
     selected_proof_bundle_sha256: selectedBundleSha256 = null,
     selected_proof_commit: selectedProofCommit = null,
+    selected_published_resolution: selectedPublishedResolution = null,
+    selected_absorption_handoff: selectedAbsorptionHandoff = null,
     selected_preview_request_id: selectedPreviewRequestId = null,
     expected_selected_preview_hash: expectedSelectedPreviewHash = null,
   } = {}, { source = null } = {}) {
@@ -1470,29 +1478,11 @@ export class HubMcpService {
     const squashRequested = [...squashValues, squashProofRequestId, expectedSquashTransferHash,
       expectedSquashCutoverHash]
       .some((value) => value != null);
-    const selectedRequested = [selectedBundlePath, selectedBundleSha256, selectedProofCommit,
+    const selectedRequested = [selectedBundlePath, selectedBundleSha256, selectedProofCommit, selectedPublishedResolution, selectedAbsorptionHandoff,
       selectedPreviewRequestId, expectedSelectedPreviewHash].some((value) => value != null);
     if (selectedRequested) {
-      if (squashRequested || source || workflowStatus !== "testing"
-          || expectedWorkflowStatus !== "in_progress"
-          || expectedRevision == null || !this.#isReleaseManager(context)
-          || [selectedBundlePath, selectedBundleSha256, selectedProofCommit].some((value) => value == null)
-          || Boolean(selectedPreviewRequestId) !== Boolean(expectedSelectedPreviewHash)) {
-        throw new Error("Selected composition requires exact RM Test preview/confirm identity");
-      }
-      const previewRequestId = expectedSelectedPreviewHash
-        ? requiredText(selectedPreviewRequestId, "selected preview request id", 200)
-        : operationId;
-      const result = await this.taskLifecycle.selectedComposition({
-        taskId: task.id, operationId, expectedTaskRevision: expectedRevision,
-        projectRoot: this.#taskProjectRoot(context,
-          String(task.streamId ?? "").trim() || context.streamId, task.workspaceId),
-        bundlePath: selectedBundlePath, bundleSha256: selectedBundleSha256,
-        proofCommit: selectedProofCommit, expectedPreviewHash: expectedSelectedPreviewHash,
-        authority: { workspaceId: context.workspaceId, streamId: context.streamId,
-          provider: context.provider, threadId: context.threadId, proofRequestId: previewRequestId },
-      });
-      return { ...result, ...(result.task ? { task: compactTask(result.task) } : {}) };
+      throw Object.assign(new TaskInputValidationError("New selected materialization is closed; use ordinary native Git Test and isolated conflict resolution"),
+        { code: "TASK_NATIVE_GIT_REQUIRED" });
     }
     if (squashRequested) {
       if (squashValues.some((value) => value == null)) {

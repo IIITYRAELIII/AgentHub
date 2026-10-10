@@ -1,11 +1,13 @@
 import {
   assertReleaseBaseProvenance,
   EXPLICIT_REVIEWED_MAIN_PROVENANCE,
+  NATIVE_MAIN_PROVENANCE,
   normalizedReleaseBaseProvenance,
   SELECTED_TASK_ADOPTION_PROVENANCE,
 } from "../domain/release-base-provenance.mjs";
 import { realpathSync } from "node:fs";
 import path from "node:path";
+import { selectedCompositionFields, selectedCompositionIdentity } from "../domain/task-selected-composition.mjs";
 
 function requiredMethod(value, name) {
   if (typeof value?.[name] !== "function") throw new TypeError(`${name} is required`);
@@ -121,7 +123,8 @@ function readyRepositories(ready = [], fallbackProjectRoots = []) {
       throw new Error(`release Task ${taskId} has no exact revision`);
     }
     const existing = repository.frozenTasks.get(taskId);
-    if (existing && (existing.resultCommit !== resultCommit || existing.taskRevision !== taskRevision)) {
+    if (existing && (existing.resultCommit !== resultCommit || existing.taskRevision !== taskRevision
+        || selectedCompositionIdentity(existing) !== selectedCompositionIdentity(entry))) {
       throw new Error(`release Task ${taskId} has multiple revisions or result commits`);
     }
     repository.frozenTasks.set(taskId, {
@@ -131,6 +134,7 @@ function readyRepositories(ready = [], fallbackProjectRoots = []) {
       projectRoot,
       branch: entry.branch,
       resultCommit,
+      ...selectedCompositionFields(entry),
       ...(entry.resultReleaseRevision != null ? { resultReleaseRevision: entry.resultReleaseRevision } : {}),
       ...(entry.squashTransfer ? { squashTransfer: entry.squashTransfer } : {}),
     });
@@ -171,6 +175,7 @@ function sameFrozenTasks(left = [], right = []) {
     resultReleaseRevision: item?.resultReleaseRevision == null ? null : Number(item.resultReleaseRevision),
     resultCommit: String(item?.resultCommit ?? ""),
     squashTransferHash: String(item?.squashTransfer?.transferHash ?? ""),
+    selectedCompositionIdentity: selectedCompositionIdentity(item),
   })).sort((a, b) => a.taskId.localeCompare(b.taskId));
   return JSON.stringify(normalize(left)) === JSON.stringify(normalize(right));
 }
@@ -408,6 +413,7 @@ export class WorkspaceReleasePreflightService {
       repository.frozenTasks.map((task) => ({
         taskId: task.taskId,
         resultCommit: task.resultCommit,
+        ...selectedCompositionFields(task),
         acceptanceRevision: task.resultReleaseRevision ?? task.taskRevision,
       }))
     )).sort((left, right) => left.taskId.localeCompare(right.taskId));
@@ -542,14 +548,16 @@ export class WorkspaceReleasePreflightService {
           if (currentBaseline.publishedRevision !== reviewed.provenance.publishedBaseCommit) {
             throw new Error("published release base changed during explicit reviewed-main preparation");
           }
-          const currentAdoption = await this.taskGitWorkspaces.assertExplicitUpstreamAdoption({
+          const currentAudit = await this.releaseGitWorkspaces.inspectMainChanges({
             projectRoot: repository.projectRoot,
-            acceptedLocalMainCommit: reviewed.provenance.approvedLocalMainCommit,
-            approvedUpstreamCommit: reviewed.provenance.approvedOriginMainCommit,
-            frozenTasks: repository.frozenTasks,
+            publishedRevision: currentBaseline.publishedRevision,
+            approvedLocalMainCommit: reviewed.provenance.approvedLocalMainCommit,
+            approvedOriginMainCommit: reviewed.provenance.approvedOriginMainCommit,
           });
-          if (JSON.stringify(currentAdoption) !== JSON.stringify(reviewed.adoption)) {
-            throw new Error("reviewed main adoption authority changed during PreRelease preparation");
+          if (currentAudit.approvalRequired || !currentAudit.approved
+              || currentAudit.localMain !== reviewed.provenance.approvedLocalMainCommit
+              || currentAudit.originMain !== reviewed.provenance.approvedOriginMainCommit) {
+            throw new Error("reviewed main authority changed during native PreRelease preparation");
           }
         }
       }
@@ -605,17 +613,19 @@ export class WorkspaceReleasePreflightService {
             || audit.originMain !== provenance.approvedOriginMainCommit) {
           throw new Error(`explicit reviewed-main approval is stale for ${repository.projectRoot}`);
         }
-        const adoption = await this.taskGitWorkspaces.assertExplicitUpstreamAdoption({
-          projectRoot: repository.projectRoot,
-          acceptedLocalMainCommit: audit.localMain,
-          approvedUpstreamCommit: audit.originMain,
-          frozenTasks: repository.frozenTasks,
-        });
-        reviewed = { provenance, adoption };
+        // Native composition starts at the explicitly agreed local main.
+        // Reviewing origin does not silently adopt it as a different base.
+        reviewed = { provenance, adoption: null };
       }
       baseChecks.push({ repository, base, reviewed });
-      const approvedBaseCommit = reviewed?.provenance.approvedOriginMainCommit ?? base.baseCommit;
-      const baseProvenance = reviewed?.provenance ?? selectedTaskAdoptionProvenance(base);
+      if (reviewed && reviewed.provenance.approvedLocalMainCommit !== base.baseCommit) {
+        throw new Error("Native release agreed main changed after its explicit approval");
+      }
+      const approvedBaseCommit = base.baseCommit;
+      const baseProvenance = { schemaVersion: 1, kind: NATIVE_MAIN_PROVENANCE,
+        publishedBaseCommit: base.publishedBaseCommit, agreedMainCommit: base.baseCommit,
+        ...(reviewed ? { approvedLocalMainCommit: reviewed.provenance.approvedLocalMainCommit,
+          approvedOriginMainCommit: reviewed.provenance.approvedOriginMainCommit } : {}) };
       if (validateOnly) {
         releaseCandidates.push(await this.releaseGitWorkspaces.validateCandidate({
           planRevision: plan.revision, workspaceId, projectRoot: repository.projectRoot,
@@ -795,15 +805,6 @@ export class WorkspaceReleasePreflightService {
         mainAudits,
       };
     }
-    for (const authority of mainAuthorities) {
-      const { repository, audit } = authority;
-      authority.adoption = await this.taskGitWorkspaces.assertExplicitUpstreamAdoption({
-        projectRoot: repository.projectRoot,
-        acceptedLocalMainCommit: audit.localMain,
-        approvedUpstreamCommit: audit.originMain,
-        frozenTasks: repository.frozenTasks,
-      });
-    }
     const primaryRepositories = [];
     for (const repository of selectedRepositories) {
       const primary = await this.releaseGitWorkspaces.assertPrimaryInvariant(repository.projectRoot, {
@@ -831,7 +832,13 @@ export class WorkspaceReleasePreflightService {
           || !sameFrozenTasks(candidate.manifest?.tasks, repository.frozenTasks)) {
         throw new Error(`prepared PreRelease does not match the accepted release plan for ${repository.projectRoot}`);
       }
-      if (candidate.baseCommit !== audit.originMain || candidate.manifest?.baseCommit !== candidate.baseCommit) {
+      const native = candidate.manifest?.compositionPolicy === "main-selected-git-merge-v1";
+      if (!native) authority.adoption = await this.taskGitWorkspaces.assertExplicitUpstreamAdoption({
+        projectRoot: repository.projectRoot, acceptedLocalMainCommit: audit.localMain,
+        approvedUpstreamCommit: audit.originMain, frozenTasks: repository.frozenTasks,
+      });
+      const reviewedBase = native ? audit.localMain : audit.originMain;
+      if (candidate.baseCommit !== reviewedBase || candidate.manifest?.baseCommit !== candidate.baseCommit) {
         throw new Error(`prepared PreRelease base does not match reviewed main for ${repository.projectRoot}; integrate the reviewed changes through a Task`);
       }
       const actualProvenance = normalizedReleaseBaseProvenance(
@@ -852,6 +859,12 @@ export class WorkspaceReleasePreflightService {
       const explicitApprovalSupplied = Boolean(
         approval.approvedLocalMainCommit && approval.approvedOriginMainCommit,
       );
+      if (native && actualProvenance?.approvedOriginMainCommit
+          && (actualProvenance.agreedMainCommit !== audit.localMain
+            || actualProvenance.approvedLocalMainCommit !== audit.localMain
+            || actualProvenance.approvedOriginMainCommit !== audit.originMain)) {
+        throw new Error(`prepared native main approval is stale for ${repository.projectRoot}`);
+      }
       let provenanceRequired = false;
       let releaseBase = null;
       const currentReleaseBase = async () => {

@@ -10,9 +10,15 @@ import { tmpdir } from "node:os";
 import { assertContourExternalEffects, assertContourGitAvailable } from "../../ports/contour-external-effects.mjs";
 import process from "node:process";
 
+import { normalizePublishedResolution } from "./selected-composition-proof.mjs";
+import { selectedCompositionFields, selectedCompositionIdentity, selectedCompositionRequiredError,
+  normalizedSelectedAbsorption, selectedAbsorptionHandoff } from "../../domain/task-selected-composition.mjs";
+import { readSelectedCheckoutAuthority, verifySelectedCompositionFiles, verifySelectedCompositionRecord }
+  from "./selected-composition-materializer.mjs";
 import { canonicalPath } from "./config.mjs";
 import { taskWorkingTreeDiff } from "./task-git-diff.mjs";
-import { verifySelectedCompositionObjects } from "./selected-composition-proof.mjs";
+import * as legacySelectedV1 from "./legacy-selected-composition-materializer-v1.mjs";
+import { mergeSelectedResults, assertNativeTaskHistories } from "./native-release-merge.mjs";
 import {
   applySelectedCompositionFiles, prepareSelectedCompositionFiles, readSelectedCompositionFiles,
   selectedCompositionFilePlan,
@@ -640,10 +646,11 @@ export class TaskGitWorkspaceService {
     }), { detail: true, command: gitCommandKind(args, options.commandLabel ?? "git") });
   }
 
-  async #runOwnedTraced(args, { lease, guardCommand, guardScope, ...options }) {
+  async #runOwnedTraced(args, { lease, guardCommand, guardScope, guardRepositoryRoot, ...options }) {
     const owner = requiredGuardLease(lease);
     await owner.assertOwned();
-    const guard = await owner.beginProcessTreeGuard({ args: guardCommand ?? args, cwd: options.cwd, scope: guardScope });
+    const guard = await owner.beginProcessTreeGuard({ args: guardCommand ?? args, cwd: options.cwd,
+      scope: guardScope, repositoryRoot: guardRepositoryRoot });
     try {
       const result = await this.runCommand(args, { ...options, signal: owner.signal ?? null });
       await guard.clear({ proof: "natural-process-tree-completion" });
@@ -1232,12 +1239,12 @@ export class TaskGitWorkspaceService {
     }
   }
 
-  async #beginProcessTreeGuard(taskId, lease, { args, cwd, scope = "repository" } = {}, state) {
+  async #beginProcessTreeGuard(taskId, lease, { args, cwd, scope = "repository", repositoryRoot: guardRepositoryRoot } = {}, state) {
     if (typeof lease?.assertOwned !== "function") throw new Error("Task Git guard owner lease is required");
     await measureTaskOperationAwait("process-guard-lease-await", () => lease.assertOwned());
     if (state.unresolved) throw state.unresolved;
     const repositoryRoot = await measureTaskOperationAwait("process-guard-identity-await",
-      () => repositoryIdentityFromPath(cwd));
+      () => repositoryIdentityFromPath(guardRepositoryRoot ?? cwd));
     const guardId = randomUUID();
     const file = path.join(
       this.#processGuardDirectory(taskId),
@@ -2864,8 +2871,136 @@ export class TaskGitWorkspaceService {
     return this.withTaskLock(snapshot.taskId, (lease) => this.mergeIntoDevOwned(snapshot, { lease }));
   }
 
-  async mergeIntoDevOwned(snapshot, { lease = null } = {}) {
-    return measureTaskOperation("integrate-dev", () => this.#mergeIntoDevOwned(snapshot, { lease }));
+  async mergeIntoDevOwned(snapshot, { lease = null, operationId = null } = {}) {
+    return measureTaskOperation("integrate-dev", () => this.#mergeIntoDevOwned(snapshot, { lease, operationId }));
+  }
+
+  async #assertSelectedAbsorptionGit(input, repoRoot, lease) {
+    if (!input) return;
+    const binding = normalizedSelectedAbsorption(input);
+    const { declaration: d } = selectedAbsorptionHandoff({ requestId: binding.requestId, text: binding.text });
+    await requiredGuardLease(lease).assertOwned();
+    await this.#assertNoProcessTreeGuard(d.sourceTaskId);
+    const repoKey = taskRepositoryKey(repoRoot);
+    const sourceRoot = path.join(this.taskWorktreesRoot, d.sourceTaskId, repoKey);
+    if (!samePath(await this.managedRepositoryRoot(sourceRoot, {
+      taskId: d.sourceTaskId, taskNumber: binding.sourceTaskNumber,
+    }), repoRoot)) throw selectedCompositionRequiredError("absorbed source checkout identity changed");
+    const [head, base, branch, status] = await Promise.all([
+      runGit(["rev-parse", "HEAD^{commit}"], { cwd: sourceRoot }),
+      runGit(["rev-parse", `${taskBaseRef(d.sourceTaskId, repoKey)}^{commit}`], { cwd: repoRoot }),
+      runGit(["symbolic-ref", "--quiet", "--short", "HEAD"], { cwd: sourceRoot }),
+      runGit(["status", "--porcelain=v1", "-z", "--untracked-files=all"], { cwd: sourceRoot }),
+    ]);
+    if (head !== d.sourceCommit || base !== d.baseCommit || status
+        || branch !== taskBranchName(d.sourceTaskId, repoRoot, binding.sourceTaskNumber)
+        || await runGit(["rev-parse", `refs/heads/${branch}^{commit}`], { cwd: repoRoot }) !== head) {
+      throw selectedCompositionRequiredError("absorbed source HEAD/base/branch or saved cleanliness changed");
+    }
+  }
+
+  #selectedMaterializationBinding(preview, lease) {
+    const blobs = new Map();
+    return {
+      root: preview.devRoot, files: preview.worktreePlan,
+      readBlob: async (blob) => {
+        if (!blobs.has(blob)) blobs.set(blob, await this.#runOwned(["cat-file", "blob", blob], {
+          cwd: preview.repositoryRoot, rawOutput: true, lease,
+        }));
+        return blobs.get(blob);
+      },
+      readCheckout: (paths) => readSelectedCheckoutAuthority((args, options) => this.#runOwned(args, {
+        ...options, cwd: preview.devRoot, lease,
+      }), paths),
+    };
+  }
+
+  async #selectedCompositionForResult({ taskId, repositoryRoot: repoRoot,
+    resultCommit, devHeadCommit }) {
+    const id = normalizedTaskId(taskId);
+    const recordsRoot = path.join(this.dataDir, "task-selected-compositions",
+      id, taskRepositoryKey(repoRoot));
+    const operations = await readdir(recordsRoot).catch((error) => {
+      if (error?.code === "ENOENT") return [];
+      throw error;
+    });
+    if (operations.length > 64) {
+      throw new Error("Selected composition durable operation history exceeds its bound");
+    }
+    const matches = [];
+    for (const operationId of operations) {
+      const root = path.join(recordsRoot, operationId);
+      const receipt = await readFile(path.join(root, "completed.json"), "utf8")
+        .then(JSON.parse, (error) => {
+          if (error?.code === "ENOENT") return null;
+          throw error;
+        });
+      if (receipt?.resultCommit !== resultCommit) continue;
+      const intent = JSON.parse(await readFile(path.join(root, "intent.json"), "utf8"));
+      const preview = intent?.preview;
+      if (![1, 2].includes(intent.version) || intent.operationId !== operationId
+          || receipt.version !== intent.version || receipt.operationId !== operationId
+          || preview?.taskId !== id || !samePath(preview.repositoryRoot, repoRoot)
+          || preview.taskCommit !== resultCommit
+          || receipt.previewHash !== preview.previewHash
+          || receipt.devCommit !== preview.proofCommit
+          || createHash("sha256").update(JSON.stringify({
+            ...preview, previewHash: undefined,
+          })).digest("hex") !== preview.previewHash) {
+        throw new Error("Selected composition result receipt lacks exact durable proof");
+      }
+      const journalRoot = path.join(root, "materialization");
+      const record = JSON.parse(await readFile(path.join(journalRoot, "record.json"), "utf8"));
+      // Legacy interpretation belongs to actual v1 capture, not merely two
+      // mutable headers. Retained v2-only identities cannot bypass their seal.
+      if (record.version !== intent.version
+          || (intent.version === 1 && (Object.hasOwn(receipt, "materializationHash")
+            || Object.hasOwn(record, "checkout")
+            || !Array.isArray(record.files)
+            || record.files.some((file) => ["oldGitSha256", "newGitSha256", "oldSerialization"]
+              .some((key) => Object.hasOwn(file, key)))))) {
+        throw new Error("Selected composition historical materialization version changed");
+      }
+      if (receipt.version === 2) {
+        if (receipt.materializationHash !== createHash("sha256").update(JSON.stringify(record)).digest("hex")) {
+          throw new Error("Selected composition historical materialization binding changed");
+        }
+        await verifySelectedCompositionRecord(record, {
+          root: preview.devRoot, journalRoot, files: preview.worktreePlan,
+          readBlob: (blob) => runGit(["cat-file", "blob", blob], { cwd: repoRoot, rawOutput: true }),
+        });
+      }
+      const retained = await readFile(path.join(root, "review.bundle"));
+      if (createHash("sha256").update(retained).digest("hex") !== preview.bundleSha256) {
+        throw new Error("Selected composition retained review bundle changed");
+      }
+      if (preview.publishedResolutionInput) {
+        const retainedPublished = await readFile(path.join(root, "published-review.bundle"));
+        if (createHash("sha256").update(retainedPublished).digest("hex")
+            !== preview.publishedResolutionInput.resolutionBundleSha256) {
+          throw new Error("Selected composition retained published resolution bundle changed");
+        }
+      }
+      if (await gitMaybe(["merge-base", "--is-ancestor", preview.proofCommit,
+        devHeadCommit], { cwd: repoRoot }) === null) {
+        throw new Error("Selected composition exact integration is absent from managed dev");
+      }
+      const publication = await this.readPublication();
+      if (publication?.generation !== preview.publicationGeneration
+          || publicationStateRepositories(publication ?? {})
+            .find((entry) => samePath(entry.root, repoRoot))?.revision !== preview.publishedCommit) {
+        throw new Error("Selected composition publication advanced since its exact Test proof");
+      }
+      const remote = await runGit(["ls-remote", preview.remoteUrl, "refs/heads/main"], {
+        cwd: repoRoot,
+      });
+      if (remote !== `${preview.remoteCommit}\trefs/heads/main`) {
+        throw new Error("Selected composition remote advanced since its exact Test proof");
+      }
+      matches.push(preview);
+    }
+    if (matches.length > 1) throw new Error("Selected composition Task result has ambiguous durable receipts");
+    return matches[0] ?? null;
   }
 
   async previewSelectedCompositionOwned({
@@ -2873,113 +3008,8 @@ export class TaskGitWorkspaceService {
     bundleSha256, authority, expectedTaskRevision, lease = null,
   } = {}) {
     this.#assertAvailable("previewSelectedCompositionOwned");
-    const id = normalizedTaskId(taskId);
-    await requiredGuardLease(lease).assertOwned();
-    await this.#assertNoProcessTreeGuard(id);
-    const repoRoot = await repositoryRoot(projectRoot);
-    return this.#withClearDevLock(repoRoot, lease, async (ownedLease) => {
-      const repoKey = taskRepositoryKey(repoRoot);
-      const taskRoot = path.join(this.taskWorktreesRoot, id, repoKey);
-      const devRoot = path.join(this.devWorktreesRoot, repoKey);
-      if (!samePath(await this.managedRepositoryRoot(taskRoot, { taskId: id, taskNumber }), repoRoot)) {
-        throw new Error("Selected composition Task checkout is not the exact managed worktree");
-      }
-      await this.#assertRecoverableDev(repoRoot, devRoot, { lease: ownedLease });
-      const branch = taskBranchName(id, repoRoot, taskNumber);
-      const [taskBranch, taskCommit, taskStatus, devBranch, devCommit, devStatus,
-        taskBaseCommit, acceptedLocalMainCommit, remoteUrl] = await Promise.all([
-        runGit(["symbolic-ref", "--quiet", "--short", "HEAD"], { cwd: taskRoot }),
-        runGit(["rev-parse", "HEAD^{commit}"], { cwd: taskRoot }),
-        runGit(["status", "--porcelain=v1", "-z", "--untracked-files=all"], { cwd: taskRoot }),
-        runGit(["symbolic-ref", "--quiet", "--short", "HEAD"], { cwd: devRoot }),
-        runGit(["rev-parse", "HEAD^{commit}"], { cwd: devRoot }),
-        runGit(["status", "--porcelain=v1", "-z", "--untracked-files=all"], { cwd: devRoot }),
-        runGit(["rev-parse", "--verify", `${taskBaseRef(id, repoKey)}^{commit}`], { cwd: repoRoot }),
-        runGit(["rev-parse", "--verify", "refs/heads/main^{commit}"], { cwd: repoRoot }),
-        runGit(["remote", "get-url", "origin"], { cwd: repoRoot }),
-      ]);
-      if (taskBranch !== branch || devBranch !== this.devBranch || taskStatus || devStatus
-          || taskCommit !== await runGit(["rev-parse", `refs/heads/${branch}^{commit}`], { cwd: repoRoot })
-          || devCommit !== await runGit(["rev-parse", `refs/heads/${this.devBranch}^{commit}`], { cwd: repoRoot })) {
-        throw new Error("Selected composition managed Task or dev identity/cleanliness changed");
-      }
-      const publication = await this.readPublication();
-      const publishedCommit = publicationStateRepositories(publication ?? {})
-        .find((entry) => samePath(entry.root, repoRoot))?.revision;
-      const publicationGeneration = String(publication?.generation ?? "");
-      if (!publicationGeneration || !/^[a-f0-9]{40}$/u.test(String(publishedCommit ?? ""))) {
-        throw new Error("Selected composition requires an exact durable publication");
-      }
-      const resultRefBefore = await gitMaybe(["rev-parse", "--verify",
-        `${taskResultRef(id, repoKey)}^{commit}`], { cwd: repoRoot });
-      const remoteOutput = await this.#runOwned(["ls-remote", remoteUrl, "refs/heads/main"], {
-        cwd: repoRoot, lease: ownedLease,
-      });
-      const remoteCommit = /^([a-f0-9]{40})\trefs\/heads\/main$/u.exec(remoteOutput)?.[1];
-      if (!remoteCommit || remoteCommit !== publishedCommit) {
-        throw new Error("Selected composition remote tip is not the exact published revision");
-      }
-      const exactBundle = path.resolve(String(bundlePath ?? ""));
-      const bundleBytes = await readFile(exactBundle);
-      const actualBundleHash = createHash("sha256").update(bundleBytes).digest("hex");
-      if (actualBundleHash !== String(bundleSha256 ?? "").trim().toLowerCase()) {
-        throw new Error("Selected composition reviewed bundle bytes changed");
-      }
-      const tempRoot = await mkdtemp(path.join(tmpdir(), "agent-hub-selected-proof-"));
-      try {
-        const isolatedRepo = path.join(tempRoot, "objects");
-        const isolatedBundle = path.join(tempRoot, "review.bundle");
-        await writeFile(isolatedBundle, bundleBytes, { flag: "wx" });
-        await this.#runOwned(["clone", "--shared", "--no-checkout", "--quiet", repoRoot, isolatedRepo], {
-          cwd: tempRoot, lease: ownedLease,
-        });
-        await this.#runOwned(["bundle", "verify", isolatedBundle], { cwd: isolatedRepo, lease: ownedLease });
-        await this.#runOwned(["bundle", "unbundle", isolatedBundle], { cwd: isolatedRepo, lease: ownedLease });
-        await this.#runOwned(["fetch", "--no-tags", remoteUrl, "refs/heads/main"], {
-          cwd: isolatedRepo, lease: ownedLease, timeoutMs: 120_000,
-        });
-        const proof = await verifySelectedCompositionObjects({
-          git: (args, options) => runGit(args, { ...options, cwd: isolatedRepo }),
-          taskId: id, repositoryKey: repoKey, taskBaseCommit, acceptedLocalMainCommit,
-          taskCommit, devCommit, proofCommit, publishedCommit, publicationGeneration,
-          remoteCommit, bundleSha256: actualBundleHash,
-        });
-        const finalRemote = await this.#runOwned(["ls-remote", remoteUrl, "refs/heads/main"], {
-          cwd: repoRoot, lease: ownedLease,
-        });
-        const finalPublication = await this.readPublication();
-        if (finalRemote !== remoteOutput || finalPublication?.generation !== publicationGeneration
-            || publicationStateRepositories(finalPublication ?? {})
-              .find((entry) => samePath(entry.root, repoRoot))?.revision !== publishedCommit) {
-          throw new Error("Selected composition publication or remote moved during preview");
-        }
-        const preview = {
-          ...proof, repositoryRoot: repoRoot, taskRoot, devRoot, branch, remoteUrl,
-          bundlePath: exactBundle, resultRefBefore,
-          expectedTaskRevision: Number(expectedTaskRevision),
-          authority: {
-            workspaceId: String(authority?.workspaceId ?? ""),
-            streamId: String(authority?.streamId ?? ""),
-            provider: String(authority?.provider ?? ""),
-            threadId: String(authority?.threadId ?? ""),
-            proofRequestId: String(authority?.proofRequestId ?? ""),
-          },
-        };
-        if (!Number.isInteger(preview.expectedTaskRevision) || preview.expectedTaskRevision < 1
-            || Object.values(preview.authority).some((value) => !value)) {
-          throw new Error("Selected composition review authority or Task revision is incomplete");
-        }
-        return {
-          ...preview,
-          previewHash: createHash("sha256").update(JSON.stringify(preview)).digest("hex"),
-        };
-      } finally {
-        if (!tempRoot.startsWith(`${path.resolve(tmpdir())}${path.sep}`)) {
-          throw new Error("Selected composition temporary root escaped the system temp directory");
-        }
-        await rm(tempRoot, { recursive: true, force: true });
-      }
-    });
+    throw Object.assign(new Error("New Test conflicts use native Git resolution; legacy selected materialization is recovery-only"),
+      { code: "TASK_NATIVE_GIT_REQUIRED" });
   }
 
   #selectedCompositionRecordRoot(preview, operationId) {
@@ -2991,34 +3021,45 @@ export class TaskGitWorkspaceService {
       normalizedTaskId(preview.taskId), taskRepositoryKey(preview.repositoryRoot), id);
   }
 
+  async #selectedRecoveryVersion(root, intent, receipt = null) {
+    if (![1, 2].includes(intent.version) || (receipt && receipt.version !== intent.version)) {
+      throw new Error("Selected recovery explicit version changed");
+    }
+    const record = await readFile(path.join(root, "materialization", "record.json"), "utf8")
+      .then(JSON.parse, error => { if (error.code === "ENOENT") return null; throw error; });
+    if (record && (record.version !== intent.version
+        || (intent.version === 1 && (Object.hasOwn(record, "checkout")
+          || record.files.some(file => ["oldGitSha256", "newGitSha256", "oldSerialization"]
+            .some(key => Object.hasOwn(file, key))))))) {
+      throw new Error("Selected recovery materialization version changed");
+    }
+    if (intent.version === 1 && (intent.preview.absorptionInput
+        || (receipt && Object.hasOwn(receipt, "materializationHash")))) {
+      throw new Error("Selected recovery cannot reinterpret v2 authority as v1");
+    }
+    return intent.version;
+  }
+
   async #selectedCompositionIntent(preview, operationId) {
     const root = this.#selectedCompositionRecordRoot(preview, operationId);
     const pathname = path.join(root, "intent.json");
-    const expected = { version: 1, kind: "selected-task-composition-v1", operationId, preview };
     const existing = await readFile(pathname, "utf8").then(JSON.parse, (error) => {
       if (error?.code === "ENOENT") return null;
       throw error;
     });
     if (existing) {
+      const existingVersion = await this.#selectedRecoveryVersion(root, existing);
+      const expected = { version: existingVersion, kind: "selected-task-composition-v1", operationId, preview };
       if (JSON.stringify(existing) !== JSON.stringify(expected)) {
         throw new Error("Selected composition original operation identity changed");
       }
       return { root, intent: existing };
     }
-    await mkdir(root, { recursive: true });
-    try {
-      await writeSelectedRecord(pathname, expected);
-    } catch (error) {
-      if (error?.code !== "EEXIST") throw error;
-      const raced = JSON.parse(await readFile(pathname, "utf8"));
-      if (JSON.stringify(raced) !== JSON.stringify(expected)) {
-        throw new Error("Selected composition competing operation identity changed");
-      }
-    }
-    return { root, intent: expected };
+    throw Object.assign(new Error("Legacy materialization requires an existing original intent"),
+      { code: "TASK_NATIVE_GIT_REQUIRED" });
   }
 
-  async readSelectedCompositionOwned(preview, { operationId, lease = null } = {}) {
+  async readSelectedCompositionOwned(preview, { operationId, lease = null, validateAbsorption = null } = {}) {
     this.#assertAvailable("readSelectedCompositionOwned");
     await requiredGuardLease(lease).assertOwned();
     const root = this.#selectedCompositionRecordRoot(preview, operationId);
@@ -3027,7 +3068,7 @@ export class TaskGitWorkspaceService {
       throw error;
     });
     if (!intent) return { status: "not_admitted" };
-    if (intent.version !== 1 || intent.kind !== "selected-task-composition-v1"
+    if (![1, 2].includes(intent.version) || intent.kind !== "selected-task-composition-v1"
         || intent.operationId !== operationId
         || JSON.stringify(intent.preview) !== JSON.stringify(preview)) {
       throw new Error("Selected composition durable intent changed");
@@ -3036,11 +3077,26 @@ export class TaskGitWorkspaceService {
       if (error?.code === "ENOENT") return null;
       throw error;
     });
+    const version = await this.#selectedRecoveryVersion(root, intent, receipt);
+    const readFiles = version === 1 ? legacySelectedV1.readSelectedCompositionFiles : readSelectedCompositionFiles;
     const devRef = await runGit(["rev-parse", "--verify", "refs/heads/dev^{commit}"], {
       cwd: preview.repositoryRoot,
     });
+    if (preview.absorptionInput && (receipt || devRef === preview.proofCommit)) {
+      if (typeof validateAbsorption !== "function") {
+        throw selectedCompositionRequiredError("live absorbed terminal fence unavailable");
+      }
+      validateAbsorption();
+      await this.#assertSelectedAbsorptionGit(preview.absorptionInput, preview.repositoryRoot, lease);
+      validateAbsorption();
+      await requiredGuardLease(lease).assertOwned();
+    }
     if (receipt) {
-      if (receipt.version !== 1 || receipt.operationId !== operationId
+      const journal = await readFiles(path.join(root, "materialization"), null, {
+        ...this.#selectedMaterializationBinding(preview, lease), phase: "applied",
+      });
+      if (receipt.version !== version || (version === 2 && receipt.materializationHash !== createHash("sha256").update(JSON.stringify(journal)).digest("hex"))
+          || receipt.operationId !== operationId
           || receipt.previewHash !== preview.previewHash
           || receipt.devCommit !== preview.proofCommit || devRef !== preview.proofCommit) {
         throw new Error("Selected composition completion receipt or dev ref changed");
@@ -3061,16 +3117,26 @@ export class TaskGitWorkspaceService {
     throw new Error("Selected composition dev ref is neither old nor exact reviewed CAS result");
   }
 
-  async applySelectedCompositionOwned(preview, { operationId, lease = null } = {}) {
+  async applySelectedCompositionOwned(preview, { operationId, lease = null, validateAbsorption = null } = {}) {
     this.#assertAvailable("applySelectedCompositionOwned");
     await requiredGuardLease(lease).assertOwned();
     await this.#assertNoProcessTreeGuard(preview.taskId);
     return this.#withClearDevLock(preview.repositoryRoot, lease, async (ownedLease) => {
-      const { root } = await this.#selectedCompositionIntent(preview, operationId);
+      const { root, intent } = await this.#selectedCompositionIntent(preview, operationId);
+      const version = intent.version;
+      const readFiles = version === 1 ? legacySelectedV1.readSelectedCompositionFiles : readSelectedCompositionFiles;
+      const prepareFiles = version === 1 ? legacySelectedV1.prepareSelectedCompositionFiles : prepareSelectedCompositionFiles;
+      const applyFiles = version === 1 ? legacySelectedV1.applySelectedCompositionFiles : applySelectedCompositionFiles;
       const resultRef = taskResultRef(preview.taskId, taskRepositoryKey(preview.repositoryRoot));
-      const state = await this.readSelectedCompositionOwned(preview, { operationId, lease: ownedLease });
+      const materializationBinding = this.#selectedMaterializationBinding(preview, ownedLease);
+      const state = await this.readSelectedCompositionOwned(preview, { operationId, lease: ownedLease, validateAbsorption });
       if (state.status === "applied") return state;
       if (state.status === "before_cas") {
+        if (preview.absorptionInput) {
+          if (typeof validateAbsorption !== "function") throw selectedCompositionRequiredError("live absorbed Task fence unavailable");
+          validateAbsorption();
+          await this.#assertSelectedAbsorptionGit(preview.absorptionInput, preview.repositoryRoot, ownedLease);
+        }
         const [main, base, task, dev, taskStatus, devStatus, publication, remoteOutput,
           currentResultRef, configuredRemote, taskBranch, devBranch] = await Promise.all([
           runGit(["rev-parse", "--verify", "refs/heads/main^{commit}"], { cwd: preview.repositoryRoot }),
@@ -3121,6 +3187,24 @@ export class TaskGitWorkspaceService {
         await this.#runOwned(["bundle", "unbundle", retainedBundle], {
           cwd: preview.repositoryRoot, lease: ownedLease,
         });
+        if (preview.publishedResolutionInput) {
+          const published = preview.publishedResolutionInput;
+          const bytes = await readFile(published.resolutionBundlePath);
+          if (createHash("sha256").update(bytes).digest("hex") !== published.resolutionBundleSha256) {
+            const refusal = new Error("Selected composition published resolution bundle changed before Git CAS");
+            refusal.code = "SELECTED_COMPOSITION_NO_EFFECT";
+            throw refusal;
+          }
+          const retainedPath = path.join(root, "published-review.bundle");
+          const existing = await readFile(retainedPath).catch((error) => {
+            if (error?.code === "ENOENT") return null;
+            throw error;
+          });
+          if (!existing) await writeFile(retainedPath, bytes, { flag: "wx" });
+          else if (!existing.equals(bytes)) throw new Error("Selected composition retained published bundle changed");
+          await this.#runOwned(["bundle", "verify", retainedPath], { cwd: preview.repositoryRoot, lease: ownedLease });
+          await this.#runOwned(["bundle", "unbundle", retainedPath], { cwd: preview.repositoryRoot, lease: ownedLease });
+        }
         const importedPlan = selectedCompositionFilePlan(await this.#runOwned([
           "diff-tree", "--raw", "-r", "-z", "--no-renames", preview.devTree, preview.proofTree,
         ], { cwd: preview.repositoryRoot, lease: ownedLease }));
@@ -3130,22 +3214,28 @@ export class TaskGitWorkspaceService {
             }) !== preview.proofTree) {
           throw new Error("Selected composition imported objects changed their exact reviewed tree");
         }
+        if (preview.absorptionInput) {
+          const checked = await verifySelectedCompositionObjects({ ...preview,
+            git: (args, options) => runGit(args, { ...options, cwd: preview.repositoryRoot }) });
+          if (checked.proofHash !== preview.proofHash) {
+            throw selectedCompositionRequiredError("absorbed proof changed before materialization");
+          }
+        }
         const journalRoot = path.join(root, "materialization");
         const materialization = await readFile(path.join(journalRoot, "record.json"), "utf8")
-          .then(() => readSelectedCompositionFiles(journalRoot), (error) => {
+          .then(() => readFiles(journalRoot, null, materializationBinding), (error) => {
             if (error?.code === "ENOENT") return null;
             throw error;
           });
-        if (!materialization) await prepareSelectedCompositionFiles({
-          root: preview.devRoot, journalRoot, files: preview.worktreePlan,
-          readBlob: (blob) => this.#runOwned(["cat-file", "blob", blob], {
-            cwd: preview.repositoryRoot, rawOutput: true, lease: ownedLease,
-          }),
+        if (!materialization) await prepareFiles({
+          root: preview.devRoot, journalRoot, ...materializationBinding,
         });
-        const beforeCas = await this.readSelectedCompositionOwned(preview, { operationId, lease: ownedLease });
+        const beforeCas = await this.readSelectedCompositionOwned(preview, { operationId, lease: ownedLease, validateAbsorption });
         if (beforeCas.status !== "before_cas") {
           throw new Error("Selected composition dev CAS state changed after materialization preparation");
         }
+        await this.#assertSelectedAbsorptionGit(preview.absorptionInput, preview.repositoryRoot, ownedLease);
+        if (preview.absorptionInput) validateAbsorption();
         const [finalPublication, finalRemote, finalMain, finalTask,
           finalTaskStatus, finalConfiguredRemote] = await Promise.all([
           this.readPublication(),
@@ -3168,16 +3258,27 @@ export class TaskGitWorkspaceService {
           refusal.code = "SELECTED_COMPOSITION_NO_EFFECT";
           throw refusal;
         }
+        if (preview.publishedResolutionInput && createHash("sha256")
+          .update(await readFile(preview.publishedResolutionInput.resolutionBundlePath)).digest("hex")
+          !== preview.publishedResolutionInput.resolutionBundleSha256) {
+          const refusal = new Error("Selected composition published resolution bundle changed at the last pre-CAS readback");
+          refusal.code = "SELECTED_COMPOSITION_NO_EFFECT";
+          throw refusal;
+        }
+        await this.#assertSelectedAbsorptionGit(preview.absorptionInput, preview.repositoryRoot, ownedLease);
+        if (preview.absorptionInput) validateAbsorption();
+        const preparedFiles = await readFiles(journalRoot, null, materializationBinding);
+        if (version === 2) await verifySelectedCompositionFiles(preparedFiles, { ...materializationBinding, phase: "before_cas" });
         await this.#runOwned(["update-ref", "refs/heads/dev", preview.proofCommit, preview.devCommit], {
           cwd: preview.repositoryRoot, lease: ownedLease,
         });
       }
-      const afterCas = await this.readSelectedCompositionOwned(preview, { operationId, lease: ownedLease });
+      const afterCas = await this.readSelectedCompositionOwned(preview, { operationId, lease: ownedLease, validateAbsorption });
       if (afterCas.status !== "after_cas") {
         throw new Error("Selected composition exact dev CAS cannot be proven");
       }
-      const journal = await readSelectedCompositionFiles(path.join(root, "materialization"));
-      await applySelectedCompositionFiles(journal);
+      const journal = await readFiles(path.join(root, "materialization"), null, materializationBinding);
+      await applyFiles(journal, materializationBinding);
       await this.#runOwned(["read-tree", preview.proofTree], { cwd: preview.devRoot, lease: ownedLease });
       const [devHead, status] = await Promise.all([
         runGit(["rev-parse", "HEAD^{commit}"], { cwd: preview.devRoot }),
@@ -3198,7 +3299,8 @@ export class TaskGitWorkspaceService {
           cwd: preview.repositoryRoot, lease: ownedLease,
         });
       }
-      const receipt = { version: 1, operationId, previewHash: preview.previewHash,
+      const receipt = { version, operationId, previewHash: preview.previewHash,
+        ...(version === 2 ? { materializationHash: createHash("sha256").update(JSON.stringify(journal)).digest("hex") } : {}),
         devCommit: preview.proofCommit, resultCommit: preview.taskCommit };
       const completedPath = path.join(root, "completed.json");
       try {
@@ -3209,181 +3311,197 @@ export class TaskGitWorkspaceService {
           throw error;
         }
       }
-      return { status: "applied", proof: preview, receipt };
+      return this.readSelectedCompositionOwned(preview, { operationId, lease: ownedLease, validateAbsorption });
     });
   }
 
-  async #mergeIntoDevOwned(snapshot, { lease }) {
+  #nativeIntegrationFile(taskId, repoRoot, operationId) {
+    const operation = String(operationId ?? "").trim();
+    if (!operation) throw new Error("Native Test requires its original lifecycle operation id");
+    return path.join(this.dataDir, "task-native-integrations", normalizedTaskId(taskId),
+      taskRepositoryKey(repoRoot), `${createHash("sha256").update(operation).digest("hex")}.json`);
+  }
+
+  async pendingNativeIntegrationOwned({ taskId, projectRoot, operationId, lease } = {}) {
+    await requiredGuardLease(lease).assertOwned();
+    const repoRoot = await repositoryRoot(projectRoot);
+    const file = this.#nativeIntegrationFile(taskId, repoRoot, operationId);
+    const record = await readFile(file, "utf8").then(JSON.parse, (error) => {
+      if (error.code === "ENOENT") return null;
+      throw error;
+    });
+    if (!record) return null;
+    if (record.version !== 1 || record.kind !== "native-task-integration-v1"
+        || record.operationId !== operationId || record.snapshot.taskId !== taskId
+        || !samePath(record.snapshot.repositoryRoot, repoRoot)) throw new Error("Native Test journal identity changed");
+    return record.phase === "failed" ? null : record;
+  }
+
+  async assertNativeIntegrationOwned(snapshot, { operationId, lease } = {}) {
+    await requiredGuardLease(lease).assertOwned();
+    await this.#assertNoProcessTreeGuard(snapshot.taskId);
+    const git = (args, cwd = snapshot.projectRoot) => this.#runOwned(args, { cwd, lease });
+    if (await git(["rev-parse", "HEAD^{commit}"]) !== snapshot.headCommit
+        || await git(["symbolic-ref", "-q", "HEAD"]) !== `refs/heads/${snapshot.branch}`
+        || await git(["rev-parse", `${taskBaseRef(snapshot.taskId, taskRepositoryKey(snapshot.repositoryRoot))}^{commit}`], snapshot.repositoryRoot) !== snapshot.baseCommit
+        || await git(["status", "--porcelain=v1", "-z", "--untracked-files=all"])) {
+      throw Object.assign(new Error("Native Test source changed before terminal persistence"), { code: "TASK_NATIVE_INTEGRATION_UNKNOWN" });
+    }
+    const record = operationId ? await this.pendingNativeIntegrationOwned({
+      taskId: snapshot.taskId, projectRoot: snapshot.repositoryRoot, operationId, lease,
+    }) : null;
+    if (record) {
+      if (record.snapshot.headCommit !== snapshot.headCommit || record.snapshot.baseCommit !== snapshot.baseCommit
+          || record.snapshot.branch !== snapshot.branch) throw new Error("Native Test source binding changed");
+      if (record.target) {
+        await this.#nativeIntegrationComposition(record, lease);
+        if (await localMainCommit(snapshot.repositoryRoot) !== record.mainCommit) {
+          throw Object.assign(new Error("Native Test main changed before terminal persistence"), { code: "TASK_NATIVE_INTEGRATION_UNKNOWN" });
+        }
+        if (await git(["rev-parse", `refs/heads/${this.devBranch}^{commit}`], snapshot.repositoryRoot) !== record.target
+            || await git(["rev-parse", "HEAD^{commit}"], record.devRoot) !== record.target
+            || await git(["write-tree"], record.devRoot) !== record.targetTree
+            || await git(["status", "--porcelain=v1", "-z", "--untracked-files=all"], record.devRoot)) {
+          throw Object.assign(new Error("Native Test Git effect lacks exact readback"), { code: "TASK_NATIVE_INTEGRATION_UNKNOWN" });
+        }
+      }
+    }
+    if (!record) {
+      const dev = await this.#prepareDevOwned(snapshot.repositoryRoot, snapshot.repositoryRoot, lease);
+      if (await git(["symbolic-ref", "-q", "HEAD"], dev.projectRoot) !== `refs/heads/${this.devBranch}`
+          || await git(["status", "--porcelain=v1", "-z", "--untracked-files=all"], dev.projectRoot)
+          || await gitMaybe(["merge-base", "--is-ancestor", snapshot.headCommit, dev.headCommit], { cwd: snapshot.repositoryRoot }) === null) {
+        throw Object.assign(new Error("Reused native Test lacks exact current dev readback"), { code: "TASK_NATIVE_INTEGRATION_UNKNOWN" });
+      }
+    }
+    return record;
+  }
+
+  async withNativeIntegrationTerminalOwned(snapshot, { operationId, lease }, commit) {
+    return this.#withClearDevLock(snapshot.repositoryRoot, lease, async (ownedLease) => {
+      await this.assertNativeIntegrationOwned(snapshot, { operationId, lease: ownedLease });
+      return commit();
+    });
+  }
+
+  async #nativeIntegrationComposition(record, lease) {
+    const snapshot = record.snapshot;
+    const identity = { policy: "native-dev-merge-v1", taskId: snapshot.taskId,
+      resultCommit: snapshot.headCommit, before: record.before, mainCommit: record.mainCommit };
+    const root = path.join(this.dataDir, "task-native-merges",
+      createHash("sha256").update(JSON.stringify(identity)).digest("hex").slice(0, 24));
+    if (record.target) {
+      if (!samePath(record.stageRoot, path.join(root, "repository"))) {
+        throw new Error("Native Test staging root binding changed");
+      }
+      // A journaled effect cannot reconstruct a missing staging capture.
+      await readFile(path.join(root, "merge.json"), "utf8");
+    }
+    const composition = await mergeSelectedResults({ root, sourceRoot: snapshot.repositoryRoot,
+      baseCommit: record.before, tasks: [{ taskId: snapshot.taskId, resultCommit: snapshot.headCommit }], identity,
+      gitAt: (cwd, args, options = {}) => this.#runOwned(args, { ...options, cwd, lease,
+        guardRepositoryRoot: snapshot.repositoryRoot, timeoutMs: 300_000 }),
+      readJson: pathname => readFile(pathname, "utf8").then(JSON.parse, error => {
+        if (error.code === "ENOENT") return null;
+        throw error;
+      }),
+      writeJson: async (pathname, value) => {
+        const temporary = `${pathname}.${randomUUID()}.tmp`;
+        await writeSelectedRecord(temporary, value);
+        await rename(temporary, pathname);
+      },
+    });
+    if (record.target && (record.target !== composition.head || record.targetTree !== composition.tree)) {
+      throw new Error("Native Test completed merge binding changed");
+    }
+    return composition;
+  }
+
+  async #mergeIntoDevOwned(snapshot, { lease, operationId = null }) {
     this.#assertAvailable("mergeIntoDevOwned");
     await requiredGuardLease(lease).assertOwned();
     await this.#assertNoProcessTreeGuard(snapshot.taskId);
+    // Direct private Git callers also receive a stable content identity; public
+    // lifecycle calls always supply their original durable operation id.
+    operationId ??= `native:${snapshot.taskId}:${snapshot.headCommit}`;
     return this.#withClearDevLock(snapshot.repositoryRoot, lease, async (ownedLease) => {
-      let dev = await this.#prepareDevOwned(
-        snapshot.repositoryRoot,
-        snapshot.repositoryRoot,
-        ownedLease,
-        { allowUnadoptedLocalMain: true },
-      );
-      let devHeadBefore = dev.headCommit;
-      let statusBefore = await runGit([
-        "status", "--porcelain=v1", "-z", "--untracked-files=all",
-      ], { cwd: dev.projectRoot });
-      const localMain = dev.mainCommit;
-      let adoptionReceipt = await this.#recordedUpstreamAdoptionForSnapshot({
-        taskId: snapshot.taskId,
-        repoRoot: snapshot.repositoryRoot,
-        snapshotCommit: snapshot.headCommit,
-        localMain,
-        lease: ownedLease,
-      });
-      let mainCommit = adoptionReceipt?.record.adoptedCommit ?? null;
-      if (!mainCommit) {
-        const adoptedMain = await this.#snapshotAdoptedMainCommit({
-          snapshot,
-          repoRoot: snapshot.repositoryRoot,
-          localMain,
-          devCommit: devHeadBefore,
-          lease: ownedLease,
+      const file = this.#nativeIntegrationFile(snapshot.taskId, snapshot.repositoryRoot, operationId);
+      let record = await this.pendingNativeIntegrationOwned({ taskId: snapshot.taskId,
+        projectRoot: snapshot.repositoryRoot, operationId, lease: ownedLease });
+      let dev;
+      if (record) {
+        snapshot = record.snapshot;
+        dev = { repositoryRoot: snapshot.repositoryRoot, projectRoot: record.devRoot,
+          branch: this.devBranch, headCommit: record.before, mainCommit: record.mainCommit };
+      } else {
+        dev = await this.#prepareDevOwned(snapshot.repositoryRoot, snapshot.repositoryRoot, ownedLease);
+        await assertNativeTaskHistories({
+          git: args => this.#runOwned(args, { cwd: snapshot.repositoryRoot, lease: ownedLease }),
+          baseCommit: dev.mainCommit,
+          tasks: [{ taskId: snapshot.taskId, baseCommit: snapshot.baseCommit, resultCommit: snapshot.headCommit }],
         });
-        mainCommit = adoptedMain.mainCommit;
-        adoptionReceipt = mainCommit === localMain ? null : await this.#requireExplicitUpstreamAdoption({
-          taskId: snapshot.taskId,
-          taskNumber: snapshot.taskNumber,
-          repoRoot: snapshot.repositoryRoot,
-          branch: snapshot.branch,
-          baseCommit: snapshot.baseCommit,
-          snapshotCommit: snapshot.headCommit,
-          localMain,
-          adoptedCommit: mainCommit,
-          lease: ownedLease,
-        });
+        record = { version: 1, kind: "native-task-integration-v1", operationId, phase: "prepared",
+          snapshot, devRoot: dev.projectRoot, before: dev.headCommit, mainCommit: dev.mainCommit };
+        await mkdir(path.dirname(file), { recursive: true });
+        await writeSelectedRecord(file, record);
       }
-      const snapshotContainsMain = await gitMaybe([
-        "merge-base", "--is-ancestor", mainCommit, snapshot.headCommit,
-      ], { cwd: dev.projectRoot }) !== null;
-      const snapshotContainsDev = await gitMaybe([
-        "merge-base", "--is-ancestor", devHeadBefore, snapshot.headCommit,
-      ], { cwd: dev.projectRoot }) !== null;
-      if (!dev.acceptedMainIntegrated && (!snapshotContainsMain || !snapshotContainsDev)) {
-        throw new TaskGitHistoryRejectedError(
-          `managed dev ${devHeadBefore} does not contain accepted local main ${localMain}; `
-          + "Task result does not prove the exact main/dev bootstrap",
-        );
-      }
-      if ((!dev.acceptedMainIntegrated || mainCommit !== localMain)
-          && snapshotContainsMain && snapshotContainsDev) {
-        dev = await this.#synchronizeMainIntoDevOwned({
-          repoRoot: snapshot.repositoryRoot,
-          observedMainCommit: mainCommit,
-          snapshotResolution: snapshot,
-          adoptionReceipt,
-          lease: ownedLease,
-        });
-        if (!dev.integrated) {
-          return {
-            integrated: false,
-            conflicts: dev.conflicts ?? [],
-            error: `main to dev synchronization requires manual resolution: ${dev.reason}`,
-            dev,
-          };
+      const git = (args, cwd = dev.projectRoot, options = {}) => this.#runOwned(args, { ...options, cwd, lease: ownedLease,
+        guardRepositoryRoot: snapshot.repositoryRoot, timeoutMs: 300_000 });
+      const sourceFence = async () => {
+        await ownedLease.assertOwned();
+        await this.#assertNoProcessTreeGuard(snapshot.taskId);
+        if (await git(["rev-parse", "HEAD^{commit}"], snapshot.projectRoot) !== snapshot.headCommit
+            || await git(["symbolic-ref", "-q", "HEAD"], snapshot.projectRoot) !== `refs/heads/${snapshot.branch}`
+            || await git(["status", "--porcelain=v1", "-z", "--untracked-files=all"], snapshot.projectRoot)
+            || await localMainCommit(snapshot.repositoryRoot) !== record.mainCommit
+            || await git(["rev-parse", `${taskBaseRef(snapshot.taskId, taskRepositoryKey(snapshot.repositoryRoot))}^{commit}`], snapshot.repositoryRoot) !== snapshot.baseCommit) {
+          throw Object.assign(new Error("Native Test source/main changed; original remains unresolved"), { code: "TASK_NATIVE_INTEGRATION_UNKNOWN" });
         }
-        if (dev.snapshotIntegrated) {
-          return {
-            integrated: true,
-            alreadyIntegrated: false,
-            bootstrapCommit: dev.bootstrapCommit,
-            dev,
-          };
+      };
+      await sourceFence();
+      {
+        try {
+          const composition = await this.#nativeIntegrationComposition(record, ownedLease);
+          record.target = composition.head;
+          record.targetTree = composition.tree;
+          record.stageRoot = composition.root;
+        } catch (error) {
+          if (error.code !== "RELEASE_NATIVE_MERGE_CONFLICT") throw error;
+          if (await git(["rev-parse", `refs/heads/${this.devBranch}^{commit}`]) !== record.before
+              || await git(["rev-parse", "HEAD^{commit}"]) !== record.before
+              || await git(["status", "--porcelain=v1", "-z", "--untracked-files=all"])) throw error;
+          record.phase = "failed";
+          const temporary = `${file}.${randomUUID()}.tmp`;
+          await writeSelectedRecord(temporary, record); await rename(temporary, file);
+          return { integrated: false, conflicts: error.conflicts, devRestored: true,
+            nativeConflictRoot: error.conflictRoot, error: error.message, dev };
         }
-        devHeadBefore = dev.headCommit;
-        statusBefore = await runGit([
-          "status", "--porcelain=v1", "-z", "--untracked-files=all",
-        ], { cwd: dev.projectRoot });
+        const temporary = `${file}.${randomUUID()}.tmp`;
+        await writeSelectedRecord(temporary, record); await rename(temporary, file);
       }
-      if (statusBefore) {
-        return {
-          integrated: false,
-          conflicts: [],
-          error: "managed dev worktree changed before Task result merge",
-          dev: { ...dev, headCommit: devHeadBefore },
-        };
-      }
-      const isMerged = await gitMaybe([
-        "merge-base", "--is-ancestor", snapshot.headCommit, devHeadBefore,
-      ], {
-        cwd: dev.projectRoot,
-      }) !== null;
-      if (isMerged) {
-        return {
-          integrated: true,
-          alreadyIntegrated: true,
-          dev: { ...dev, headCommit: devHeadBefore },
-        };
+      // The target is journaled before import. Reopen must also finish that
+      // import when the process stopped between these two steps.
+      await git(["fetch", "--no-tags", record.stageRoot, record.target]);
+      await sourceFence();
+      const head = await git(["rev-parse", "HEAD^{commit}"]);
+      const ref = await git(["rev-parse", `refs/heads/${this.devBranch}^{commit}`]);
+      if (![record.before, record.target].includes(head) || ![record.before, record.target].includes(ref)
+          || await git(["write-tree"]) !== await git(["rev-parse", `${head}^{tree}`])
+          || await git(["status", "--porcelain=v1", "-z", "--untracked-files=all"])) {
+        throw Object.assign(new Error("Native Test materialization is unknown; foreign bytes retained"), { code: "TASK_NATIVE_INTEGRATION_UNKNOWN" });
       }
       try {
-        await ownedLease.assertOwned();
-        await this.#revalidateExplicitUpstreamAdoption(adoptionReceipt, ownedLease);
-        await this.#runOwned([
-          "-c", "user.name=Agent Hub",
-          "-c", "user.email=agent-hub@local.invalid",
-          "merge", "--no-ff", "--no-edit", snapshot.headCommit,
-        ], { cwd: dev.projectRoot, timeoutMs: 120_000, lease: ownedLease });
-        await ownedLease.assertOwned();
-        const headCommit = await this.#runOwned(["rev-parse", "HEAD^{commit}"], {
-          cwd: dev.projectRoot, lease: ownedLease,
-        });
-        await this.#runOwned([
-          "merge-base", "--is-ancestor", snapshot.headCommit, headCommit,
-        ], { cwd: dev.projectRoot, lease: ownedLease });
-        await this.#runOwned([
-          "merge-base", "--is-ancestor", devHeadBefore, headCommit,
-        ], { cwd: dev.projectRoot, lease: ownedLease });
-        return {
-          integrated: true,
-          alreadyIntegrated: false,
-          dev: { ...dev, headCommit },
-        };
+        if (head !== record.target) await git(["checkout", "--detach", "--no-overwrite-ignore", record.target]);
+        await sourceFence();
+        if (ref !== record.target) await git(["update-ref", `refs/heads/${this.devBranch}`, record.target, record.before]);
+        await git(["symbolic-ref", "HEAD", `refs/heads/${this.devBranch}`]);
+        await sourceFence();
+        await this.assertNativeIntegrationOwned(snapshot, { operationId, lease: ownedLease });
       } catch (error) {
-        if (error?.processTreeStopped === false) {
-          const blockFile = await this.#integrationBlockFile(dev.repositoryRoot);
-          await mkdir(path.dirname(blockFile), { recursive: true });
-          await writeFile(blockFile, `${JSON.stringify({
-            repositoryRoot: dev.repositoryRoot,
-            devRoot: dev.projectRoot,
-            reason: error.message,
-            processTreeStopUnproven: true,
-            observedAt: new Date().toISOString(),
-          }, null, 2)}\n`, "utf8");
-          throw error;
-        }
-        const conflicts = String(await gitMaybe(["diff", "--name-only", "--diff-filter=U"], {
-          cwd: dev.projectRoot,
-        }) ?? "").split(/\r?\n/u).filter(Boolean);
-        const aborted = await this.#runOwned(["merge", "--abort"], {
-          cwd: dev.projectRoot, lease: ownedLease,
-        }).then(() => true, () => false);
-        await ownedLease.assertOwned();
-        const headCommit = await runGit(["rev-parse", "HEAD^{commit}"], { cwd: dev.projectRoot });
-        const statusAfter = await runGit([
-          "status", "--porcelain=v1", "-z", "--untracked-files=all",
-        ], { cwd: dev.projectRoot });
-        const mergeHead = path.resolve(await runGit([
-          "rev-parse", "--git-path", "MERGE_HEAD",
-        ], { cwd: dev.projectRoot }));
-        const mergeStillActive = await access(mergeHead).then(() => true, () => false);
-        if (!aborted || mergeStillActive || headCommit !== devHeadBefore || statusAfter !== statusBefore) {
-          throw new Error(
-            `Task result merge failed and could not restore managed dev ${devHeadBefore}: ${error.message}`,
-          );
-        }
-        return {
-          integrated: false,
-          conflicts,
-          devRestored: true,
-          error: error.message,
-          dev: { ...dev, headCommit },
-        };
+        throw Object.assign(new Error(`Native Test original Git effect requires readback: ${error.message}`), { code: "TASK_NATIVE_INTEGRATION_UNKNOWN" });
       }
+      return { integrated: true, alreadyIntegrated: record.before === record.target,
+        nativeOperationId: operationId, dev: { ...dev, headCommit: record.target } };
     });
   }
 
@@ -3689,7 +3807,8 @@ export class TaskGitWorkspaceService {
       const reused = await this.#reuseTestResultOwned(params);
       if (reused) return reused;
     }
-    const snapshot = await this.snapshotOwned(params);
+    const pendingNative = params.operationId ? await this.pendingNativeIntegrationOwned({ ...params, projectRoot: repoRoot }) : null;
+    const snapshot = pendingNative?.snapshot ?? await this.snapshotOwned(params);
     await params.lease.assertOwned();
     if (!snapshot.changedFiles.length) {
       const dev = await this.#withClearDevLock(snapshot.repositoryRoot, params.lease, (ownedLease) => (
@@ -3711,7 +3830,7 @@ export class TaskGitWorkspaceService {
       };
     }
     await params.lease.assertOwned();
-    const integration = await this.mergeIntoDevOwned(snapshot, { lease: params.lease });
+    const integration = await this.mergeIntoDevOwned(snapshot, { lease: params.lease, operationId: params.operationId });
     if (integration.integrated) {
       await params.lease.assertOwned();
       await this.#withClearDevLock(snapshot.repositoryRoot, params.lease, (ownedLease) => (
@@ -3829,27 +3948,11 @@ export class TaskGitWorkspaceService {
     return this.#withClearDevLock(repoRoot, lease, async (ownedLease) => {
       await this.#runOwned(["cat-file", "-e", `${published}^{commit}`], { cwd: repoRoot, lease: ownedLease });
       const localMain = await localMainCommit(repoRoot);
-      let baseCommit = published;
-      const adoptions = [];
-      const ancestor = async (left, right) => await gitMaybe([
-        "merge-base", "--is-ancestor", left, right,
-      ], { cwd: repoRoot }) !== null;
-      for (const task of [...tasks].sort((a, b) => String(a.taskId).localeCompare(String(b.taskId)))) {
-        const receipt = await this.#recordedUpstreamAdoptionForSnapshot({
-          taskId: task.taskId, repoRoot, snapshotCommit: task.resultCommit, localMain, lease: ownedLease,
-          publishedBaseCommit: published,
-        });
-        if (!receipt) continue;
-        const adopted = receipt.record.adoptedCommit;
-        if (await ancestor(adopted, published)) continue;
-        if (!await ancestor(published, adopted)) throw new Error("adopted release base diverges from published history");
-        if (await ancestor(baseCommit, adopted)) baseCommit = adopted;
-        else if (!await ancestor(adopted, baseCommit)) throw new Error("selected Task release bases diverge");
-        adoptions.push({ taskId: task.taskId, resultCommit: task.resultCommit,
-          recordRef: receipt.recordRef, recordHash: receipt.recordHash,
-          adoptedCommit: adopted, acceptedLocalMainCommit: receipt.record.acceptedLocalMainCommit });
-      }
-      return { publishedBaseCommit: published, baseCommit, adoptions };
+      // local main is the agreed branch baseline. Publication and observation
+      // remain separate authorities and do not silently choose another base.
+      void tasks;
+      return { publishedBaseCommit: published, baseCommit: localMain,
+        compositionPolicy: "main-selected-git-merge-v1", adoptions: [] };
     });
   }
 
@@ -4505,66 +4608,6 @@ export class TaskGitWorkspaceService {
     });
   }
 
-  async #selectedCompositionForResult({ taskId, repositoryRoot: repoRoot,
-    resultCommit, devHeadCommit }) {
-    const id = normalizedTaskId(taskId);
-    const recordsRoot = path.join(this.dataDir, "task-selected-compositions",
-      id, taskRepositoryKey(repoRoot));
-    const operations = await readdir(recordsRoot).catch((error) => {
-      if (error?.code === "ENOENT") return [];
-      throw error;
-    });
-    if (operations.length > 64) {
-      throw new Error("Selected composition durable operation history exceeds its bound");
-    }
-    const matches = [];
-    for (const operationId of operations) {
-      const root = path.join(recordsRoot, operationId);
-      const receipt = await readFile(path.join(root, "completed.json"), "utf8")
-        .then(JSON.parse, (error) => {
-          if (error?.code === "ENOENT") return null;
-          throw error;
-        });
-      if (receipt?.resultCommit !== resultCommit) continue;
-      const intent = JSON.parse(await readFile(path.join(root, "intent.json"), "utf8"));
-      const preview = intent?.preview;
-      if (intent.version !== 1 || intent.operationId !== operationId
-          || receipt.version !== 1 || receipt.operationId !== operationId
-          || preview?.taskId !== id || !samePath(preview.repositoryRoot, repoRoot)
-          || preview.taskCommit !== resultCommit
-          || receipt.previewHash !== preview.previewHash
-          || receipt.devCommit !== preview.proofCommit
-          || createHash("sha256").update(JSON.stringify({
-            ...preview, previewHash: undefined,
-          })).digest("hex") !== preview.previewHash) {
-        throw new Error("Selected composition result receipt lacks exact durable proof");
-      }
-      const retained = await readFile(path.join(root, "review.bundle"));
-      if (createHash("sha256").update(retained).digest("hex") !== preview.bundleSha256) {
-        throw new Error("Selected composition retained review bundle changed");
-      }
-      if (await gitMaybe(["merge-base", "--is-ancestor", preview.proofCommit,
-        devHeadCommit], { cwd: repoRoot }) === null) {
-        throw new Error("Selected composition exact integration is absent from managed dev");
-      }
-      const publication = await this.readPublication();
-      if (publication?.generation !== preview.publicationGeneration
-          || publicationStateRepositories(publication ?? {})
-            .find((entry) => samePath(entry.root, repoRoot))?.revision !== preview.publishedCommit) {
-        throw new Error("Selected composition publication advanced since its exact Test proof");
-      }
-      const remote = await runGit(["ls-remote", preview.remoteUrl, "refs/heads/main"], {
-        cwd: repoRoot,
-      });
-      if (remote !== `${preview.remoteCommit}\trefs/heads/main`) {
-        throw new Error("Selected composition remote advanced since its exact Test proof");
-      }
-      matches.push(preview);
-    }
-    if (matches.length > 1) throw new Error("Selected composition Task result has ambiguous durable receipts");
-    return matches[0] ?? null;
-  }
-
   async releaseIntegrationEvidence({ projectRoot, tasks = [], lease = null } = {}) {
     this.#assertAvailable("releaseIntegrationEvidence");
     const dev = await this.prepareDev(projectRoot, { lease });
@@ -4581,10 +4624,16 @@ export class TaskGitWorkspaceService {
         throw new Error(`Task ${task.taskId} requires an exact positive revision for release integration evidence`);
       }
       const evidence = await this.releaseEvidence(task);
+      const authoritative = selectedCompositionFields(task);
       const selectedComposition = await this.#selectedCompositionForResult({
         taskId: task.taskId, repositoryRoot: evidence.projectRoot,
         resultCommit: evidence.resultCommit, devHeadCommit: dev.headCommit,
       });
+      if (authoritative.selectedCompositionRequired && (!selectedComposition
+          || selectedCompositionIdentity({ ...task, selectedComposition })
+            !== selectedCompositionIdentity({ ...task, ...authoritative }))) {
+        throw selectedCompositionRequiredError("selected Test filesystem proof missing or differs from durable outcome");
+      }
       const squashTransfer = task.squashTransfer
         ? normalizedTaskSquashTransfer(task.squashTransfer)
         : null;
@@ -4641,7 +4690,8 @@ export class TaskGitWorkspaceService {
         taskRevision,
         baseCommit: evidence.baseCommit,
         resultCommit: evidence.resultCommit,
-        ...(selectedComposition ? { selectedComposition } : {}),
+        ...selectedCompositionFields({ taskId: String(task.taskId), resultCommit: evidence.resultCommit,
+          ...(selectedComposition ? { selectedComposition } : authoritative) }),
         integrations,
         lineage,
         ...(squashTransfer ? {

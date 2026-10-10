@@ -1,0 +1,255 @@
+import path from "node:path";
+import { mkdir } from "node:fs/promises";
+import { selectedCompositionFields, normalizedSelectedAbsorption, selectedAbsorptionHandoff }
+  from "../../domain/task-selected-composition.mjs";
+
+// Internal Git sequencing of ReleaseGitWorkspaceService. This has no Task,
+// publication or ref-promotion authority. The application retains those leases.
+export const NATIVE_RELEASE_POLICY = "main-selected-git-merge-v1";
+
+async function maybe(git, args) {
+  try { return await git(args); } catch { return null; }
+}
+
+function failure(message, code = "RELEASE_NATIVE_HISTORY_REQUIRED", details = {}) {
+  return Object.assign(new Error(message), { code, ...details });
+}
+
+export async function assertNativeTaskHistories({ git, baseCommit, tasks }) {
+  const owned = new Set();
+  const histories = [];
+  for (const task of tasks) {
+    const taskBase = task.baseCommit || baseCommit;
+    if (await maybe(git, ["merge-base", "--is-ancestor", taskBase, baseCommit]) === null
+        || await maybe(git, ["merge-base", "--is-ancestor", taskBase, task.resultCommit]) === null) {
+      throw failure(`Task ${task.taskId} requires a main-based result or explicit historical migration`);
+    }
+    const rows = String(await git([
+      "rev-list", "--first-parent", "--parents", "--max-count=513", task.resultCommit, `^${baseCommit}`,
+    ])).split(/\r?\n/u).filter(Boolean).map((row) => row.split(" "));
+    if (rows.length > 512) throw failure(`Task ${task.taskId} history exceeds the native merge bound`);
+    for (const [commit] of rows) owned.add(commit);
+    histories.push({ task, rows });
+    const metadata = String(await git([
+      "diff", "--name-only", "--no-renames", taskBase, task.resultCommit,
+      "--", "CHANGELOG.md", ":(glob)**/CHANGELOG.md",
+    ]));
+    if (metadata) throw failure(`Task ${task.taskId} changes release-owned CHANGELOG metadata`);
+  }
+  for (const { task, rows } of histories) {
+    const selected = selectedCompositionFields(task);
+    const absorbed = selected.selectedComposition?.absorptionInput;
+    let authorizedSide = null;
+    if (absorbed) {
+      const binding = normalizedSelectedAbsorption(absorbed);
+      const d = selectedAbsorptionHandoff({ requestId: binding.requestId, text: binding.text }).declaration;
+      if (!selected.selectedCompositionRequired || d.survivorTaskId !== task.taskId
+          || d.baseCommit !== (task.baseCommit || baseCommit)
+          || await maybe(git, ["merge-base", "--is-ancestor", d.absorptionCommit, task.resultCommit]) === null
+          || String(await git(["show", "-s", "--format=%P", d.absorptionCommit]))
+            !== `${d.survivorParentCommit} ${d.sourceCommit}`
+          || String(await git(["rev-parse", `${d.sourceCommit}^{tree}`])) !== d.sourceTree) {
+        throw failure(`Task ${task.taskId} absorbed history differs from its accepted durable proof`);
+      }
+      const sourceRows = String(await git(["rev-list", "--first-parent", "--parents", "--max-count=513",
+        d.sourceCommit, `^${baseCommit}`])).split(/\r?\n/u).filter(Boolean).map(row => row.split(" "));
+      if (sourceRows.length > 512 || sourceRows.some(row => row.length !== 2)
+          || await maybe(git, ["merge-base", "--is-ancestor", d.baseCommit, d.sourceCommit]) === null) {
+        throw failure(`Task ${task.taskId} absorbed source requires explicit historical migration`);
+      }
+      authorizedSide = { commit: d.absorptionCommit, source: d.sourceCommit };
+    }
+    for (const [commit, ...parents] of rows) {
+      if (parents.length > 2 || !parents.length) throw failure(`Task ${task.taskId} has unsupported result history`);
+      for (const side of parents.slice(1)) {
+        if (!owned.has(side) && !(authorizedSide?.commit === commit && authorizedSide.source === side)
+            && await maybe(git, ["merge-base", "--is-ancestor", side, baseCommit]) === null) {
+          throw failure(`Task ${task.taskId} contains an unselected merge side; migrate it explicitly`,
+            "RELEASE_NATIVE_HISTORY_REQUIRED", { taskId: task.taskId, sideCommit: side });
+        }
+      }
+    }
+  }
+}
+
+async function entries(git, args) {
+  return String(await git(args)).split("\0").filter(Boolean).map((entry) => {
+    const separator = entry.indexOf("\t");
+    if (separator < 0) throw new Error("Invalid native Git index record");
+    return [entry.slice(separator + 1), entry.slice(0, separator)];
+  });
+}
+
+async function requireClean(git) {
+  if (String(await git(["status", "--porcelain=v1", "-z", "--untracked-files=all"]))) {
+    throw failure("Native merge checkout has unsaved or foreign files", "RELEASE_NATIVE_CHECKOUT_CHANGED");
+  }
+}
+
+// Reopen must prove completed native steps from Git objects, rather than trusting
+// a mutable journal's next/head counters. Git identifies the actual conflict
+// boundary; resolutions may change only that boundary.
+async function verifyMergeStep(git, before, result, target) {
+  const contained = await maybe(git, ["merge-base", "--is-ancestor", result, before]) !== null;
+  if (contained) {
+    if (target !== before) throw failure("Contained native result changed the prefix");
+    return;
+  }
+  if (String(await git(["show", "-s", "--format=%P", target])) !== `${before} ${result}`) {
+    throw failure("Completed native merge parents changed", "RELEASE_NATIVE_CHECKOUT_CHANGED");
+  }
+  const output = String(await git(["merge-tree", "--write-tree", "--name-only", "-z", before, result],
+    { acceptableExitCodes: [1] })).split("\0");
+  const automaticTree = output.shift();
+  if (!/^[a-f0-9]{40}$/u.test(automaticTree)) throw failure("Native automatic tree unavailable");
+  const conflicts = new Set();
+  for (const file of output) { if (!file) break; conflicts.add(file); }
+  const automatic = new Map(await entries(git, ["ls-tree", "-r", "-z", automaticTree]));
+  const resolved = new Map(await entries(git, ["ls-tree", "-r", "-z", `${target}^{tree}`]));
+  for (const file of new Set([...automatic.keys(), ...resolved.keys()])) {
+    if (!conflicts.has(file) && automatic.get(file) !== resolved.get(file)) {
+      throw failure(`Completed native resolution changed automatic path ${file}`, "RELEASE_NATIVE_CHECKOUT_CHANGED");
+    }
+  }
+}
+
+// Every accepted step is a real Git merge commit (or an already-contained
+// result). A conflict leaves Git's MERGE_HEAD/index in this private checkout.
+// An executor resolves it with ordinary git add/commit; continuation checks the
+// exact ordered parents and preserves all previously automatic clean entries.
+export async function mergeSelectedResults({
+  root, sourceRoot, baseCommit, tasks, identity, gitAt, readJson, writeJson,
+}) {
+  const repository = path.join(root, "repository");
+  const stateFile = path.join(root, "merge.json");
+  await mkdir(root, { recursive: true });
+  let state = await readJson(stateFile);
+  if (state && JSON.stringify(state.identity) !== JSON.stringify(identity)) {
+    throw failure("Native merge staging identity changed", "RELEASE_NATIVE_CHECKOUT_CHANGED");
+  }
+  if (!state) {
+    // Never clone the primary's worktree bytes, local config or hooks.
+    await gitAt(root, ["clone", "--no-local", "--no-hardlinks", "--no-checkout", sourceRoot, repository]);
+    const git = (args) => gitAt(repository, args);
+    for (const commit of [baseCommit, ...tasks.map((task) => task.resultCommit)]) {
+      await git(["fetch", "--no-tags", "origin", commit]);
+    }
+    await git(["checkout", "--detach", "--no-overwrite-ignore", baseCommit]);
+    state = { version: 1, identity, next: 0, head: baseCommit, merges: [], conflict: null };
+    await writeJson(stateFile, state);
+  }
+  const git = (args, options) => gitAt(repository, args, options);
+  if (state.version !== 1 || !Number.isInteger(state.next) || state.next < 0
+      || state.next > tasks.length || state.merges?.length !== state.next) {
+    throw failure("Native merge journal progress changed", "RELEASE_NATIVE_CHECKOUT_CHANGED");
+  }
+  let prefix = baseCommit;
+  for (const [index, step] of state.merges.entries()) {
+    if (step.taskId !== tasks[index].taskId || step.resultCommit !== tasks[index].resultCommit) {
+      throw failure("Native merge journal selection changed", "RELEASE_NATIVE_CHECKOUT_CHANGED");
+    }
+    await verifyMergeStep(git, prefix, step.resultCommit, step.commit);
+    prefix = step.commit;
+  }
+  if (prefix !== state.head) throw failure("Native merge journal prefix changed", "RELEASE_NATIVE_CHECKOUT_CHANGED");
+  while (state.next < tasks.length) {
+    const task = tasks[state.next];
+    if (state.merging && !state.conflict) {
+      const head = String(await git(["rev-parse", "HEAD^{commit}"]));
+      if (head !== state.head) {
+        const parents = String(await git(["show", "-s", "--format=%P", head])).split(" ");
+        const automatic = await maybe(git, ["merge-tree", "--write-tree", state.head, task.resultCommit]);
+        if (parents.length !== 2 || parents[0] !== state.head || parents[1] !== task.resultCommit
+            || !automatic || automatic.split(/\r?\n/u)[0] !== String(await git(["rev-parse", `${head}^{tree}`]))) {
+          throw failure("Interrupted native merge has no exact automatic readback", "RELEASE_NATIVE_CHECKOUT_CHANGED");
+        }
+        await requireClean(git);
+        state.merges.push({ taskId: task.taskId, resultCommit: task.resultCommit, commit: head });
+        state.head = head;
+        state.next += 1;
+        state.merging = false;
+        await writeJson(stateFile, state);
+        continue;
+      }
+      const mergeHead = await maybe(git, ["rev-parse", "--verify", "MERGE_HEAD"]);
+      if (mergeHead) {
+        if (mergeHead !== task.resultCommit) throw failure("Interrupted native merge side changed");
+        const stages = await entries(git, ["ls-files", "--stage", "-z"]);
+        const paths = [...new Set(stages.filter(([, entry]) => !entry.endsWith(" 0")).map(([file]) => file))];
+        if (!paths.length) throw failure("Interrupted native merge lacks conflict stages");
+        state.conflict = { paths, stages, automatic: stages.filter(([, entry]) => entry.endsWith(" 0")) };
+        await writeJson(stateFile, state);
+      }
+    }
+    if (state.conflict) {
+      const head = String(await git(["rev-parse", "HEAD^{commit}"]));
+      const parents = String(await git(["show", "-s", "--format=%P", head])).split(" ");
+      if (head === state.head || await maybe(git, ["rev-parse", "--verify", "MERGE_HEAD"]) !== null) {
+        throw failure(`Resolve the native Git merge for Task ${task.taskId} in ${repository}`,
+          "RELEASE_NATIVE_MERGE_CONFLICT", { conflictRoot: repository, conflicts: state.conflict.paths });
+      }
+      if (parents.length !== 2 || parents[0] !== state.head || parents[1] !== task.resultCommit) {
+        throw failure("Native resolution has different merge parents", "RELEASE_NATIVE_CHECKOUT_CHANGED");
+      }
+      await requireClean(git);
+      await verifyMergeStep(git, state.head, task.resultCommit, head);
+      const resolved = new Map(await entries(git, ["ls-files", "--stage", "-z"]));
+      const allowed = new Set([...state.conflict.paths, ...state.conflict.automatic.map(([file]) => file)]);
+      for (const file of resolved.keys()) {
+        if (!allowed.has(file)) throw failure(`Native resolution added unrelated path ${file}`,
+          "RELEASE_NATIVE_CHECKOUT_CHANGED");
+      }
+      for (const [file, entry] of state.conflict.automatic) {
+        if (resolved.get(file) !== entry) throw failure(`Native resolution changed automatic path ${file}`,
+          "RELEASE_NATIVE_CHECKOUT_CHANGED");
+      }
+      state.merges.push({ taskId: task.taskId, resultCommit: task.resultCommit, commit: head, resolved: true });
+      state.head = head;
+      state.conflict = null;
+      state.merging = false;
+      state.next += 1;
+      await writeJson(stateFile, state);
+      continue;
+    }
+    await requireClean(git);
+    if (String(await git(["rev-parse", "HEAD^{commit}"])) !== state.head) {
+      throw failure("Native merge prefix changed", "RELEASE_NATIVE_CHECKOUT_CHANGED");
+    }
+    if (await maybe(git, ["merge-base", "--is-ancestor", task.resultCommit, state.head]) !== null) {
+      state.merges.push({ taskId: task.taskId, resultCommit: task.resultCommit, commit: state.head, contained: true });
+      state.next += 1;
+      await writeJson(stateFile, state);
+      continue;
+    }
+    try {
+      state.merging = true;
+      await writeJson(stateFile, state);
+      await git(["-c", "user.name=Agent Hub", "-c", "user.email=agent-hub@local.invalid",
+        "-c", "core.hooksPath=", "-c", "rerere.enabled=false",
+        "merge", "--no-ff", "--no-edit", "--no-overwrite-ignore", task.resultCommit]);
+    } catch (error) {
+      const stages = await entries(git, ["ls-files", "--stage", "-z"]);
+      const paths = [...new Set(stages.filter(([, entry]) => !entry.endsWith(" 0")).map(([file]) => file))];
+      if (!paths.length) throw error;
+      state.conflict = { paths, stages, automatic: stages.filter(([, entry]) => entry.endsWith(" 0")) };
+      await writeJson(stateFile, state);
+      throw failure(`Resolve the native Git merge for Task ${task.taskId} in ${repository}`,
+        "RELEASE_NATIVE_MERGE_CONFLICT", { conflictRoot: repository, conflicts: paths });
+    }
+    const head = String(await git(["rev-parse", "HEAD^{commit}"]));
+    const parents = String(await git(["show", "-s", "--format=%P", head])).split(" ");
+    if (parents.length !== 2 || parents[0] !== state.head || parents[1] !== task.resultCommit) {
+      throw failure("Native Git merge did not retain the exact selected parents");
+    }
+    await requireClean(git);
+    state.merges.push({ taskId: task.taskId, resultCommit: task.resultCommit, commit: head });
+    state.head = head;
+    state.merging = false;
+    state.next += 1;
+    await writeJson(stateFile, state);
+  }
+  await requireClean(git);
+  if (String(await git(["rev-parse", "HEAD^{commit}"])) !== state.head) throw failure("Native final merge head changed");
+  return { root: repository, head: state.head,
+    tree: String(await git(["rev-parse", "HEAD^{tree}"])), merges: state.merges };
+}

@@ -125,18 +125,22 @@ test("real conflict saves a terminal failed lifecycle with file and revision evi
   const a = await f.create("A"), b = await f.create("B");
   await writeFile(path.join(a.root, "app.txt"), "A\n");
   await f.status(a.task.id, "testing", "test-a");
+  const devBefore = await git(f.primary, "rev-parse", "dev");
+  let conflictRoot;
   await writeFile(path.join(b.root, "app.txt"), "B\n");
   await assert.rejects(f.status(b.task.id, "testing", "test-b"), (error) => {
     assert.ok(error instanceof TaskIntegrationConflictError);
     assert.deepEqual(error.details.conflicts, ["app.txt"]);
     assert.equal(error.details.devRestored, true);
     assert.equal(error.details.taskId, b.task.id);
+    conflictRoot = error.details.nativeConflictRoot;
     return true;
   });
   assert.equal(f.taskBoard.lifecycleTransition("test-b").phase, "failed");
   assert.equal(f.taskBoard.task(b.task.id).workflowStatus, "new");
   assert.equal(await git(f.primary, "status", "--porcelain"), "");
-  assert.ok(f.timings.some(event => event.operationId === "test-b" && event.stage === "git-child" && event.command === "merge-abort" && event.phase === "end"));
+  assert.equal(await git(f.primary, "rev-parse", "dev"), devBefore);
+  assert.equal(await git(conflictRoot, "rev-parse", "MERGE_HEAD"), await git(b.root, "rev-parse", "HEAD"));
   assert.equal(f.timings.find(event => event.operationId === "test-b" && event.stage === "workflow" && event.phase === "end").outcome, "error");
 });
 

@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import { selectedCompositionFields, selectedAbsorptionHandoff, normalizedSelectedAbsorption,
+  assertSelectedAbsorptionTasks } from "../domain/task-selected-composition.mjs";
 import { realpathSync } from "node:fs";
 import path from "node:path";
 
@@ -23,7 +25,7 @@ export class TaskWithdrawalBusyError extends Error {
 
 export class TaskIntegrationConflictError extends Error {
   constructor(details) {
-    super(`Task merge conflict: ${details.conflicts.join(", ")}. dev restored; continue in ${details.projectRoot}. ${JSON.stringify(details)}`);
+    super(`Task merge conflict: ${details.conflicts.join(", ")}. dev unchanged; resolve and commit in ${details.nativeConflictRoot ?? details.projectRoot}. ${JSON.stringify(details)}`);
     this.code = "TASK_INTEGRATION_CONFLICT";
     this.details = details;
   }
@@ -575,6 +577,31 @@ export class TaskLifecycleService {
     ));
   }
 
+  #selectedAbsorptionBinding(task, input, operationId = null) {
+    const handoff = selectedAbsorptionHandoff(input);
+    if (!handoff) return null;
+    const source = this.#task(handoff.declaration.sourceTaskId);
+    const receipt = this.workspaceCatalog.mcpOperation?.(handoff.requestId);
+    if (receipt?.toolName !== "hub_stream_message_send" || receipt.status !== "succeeded"
+        || receipt.result?.delivery?.accepted !== true
+        || receipt.result?.target?.streamId !== task.streamId
+        || receipt.streamId !== source.streamId || receipt.workspaceId !== task.workspaceId
+        || !samePath(this.#projectRoot(source), this.#projectRoot(task))) {
+      throw new Error("Selected absorption requires its durable source-executor handoff receipt");
+    }
+    const binding = normalizedSelectedAbsorption({ requestId: handoff.requestId, text: handoff.text,
+      origin: { workspaceId: receipt.workspaceId, streamId: receipt.streamId, provider: receipt.provider,
+        sourceThreadId: receipt.threadId, requestId: receipt.requestId },
+      contentHash: receipt.interstreamContentHash, createdAtMs: receipt.createdAtMs,
+      sourceTaskNumber: source.taskNumber,
+      sourceDescriptionSha256: createHash("sha256").update(source.description).digest("hex"),
+    });
+    assertSelectedAbsorptionTasks(binding, source, task);
+    requiredMethod(this.taskBoard, "assertSelectedAbsorptionState");
+    this.taskBoard.assertSelectedAbsorptionState({ binding, survivorTaskId: task.id, operationId });
+    return binding;
+  }
+
   async selectedComposition({
     taskId, operationId, expectedTaskRevision, projectRoot, bundlePath,
     bundleSha256, proofCommit, expectedPreviewHash = null, authority,
@@ -904,6 +931,7 @@ export class TaskLifecycleService {
           throw new Error("Task Git workspace is unavailable; workflow status was not changed");
         }
         const { snapshot, integration } = await this.taskGitWorkspaces.snapshotAndMergeOwned({
+          operationId,
           taskId: task.id,
           taskNumber: task.taskNumber,
           projectRoot: selectedProjectRoot,
@@ -918,6 +946,7 @@ export class TaskLifecycleService {
               taskId: task.id, operationId, projectRoot: snapshot.projectRoot,
               resultCommit: snapshot.headCommit, devCommit: integration.dev.headCommit,
               conflicts: integration.conflicts, devRestored: true,
+              nativeConflictRoot: integration.nativeConflictRoot,
             });
             await this.#assertOwned(lease);
             await this.#mutation(() => this.taskBoard.failLifecycleTransition(operationId, failure), operationId);
@@ -945,7 +974,7 @@ export class TaskLifecycleService {
           conflicts: [],
           error: null,
         };
-        const current = await this.#mutation(() => this.taskBoard.commitWorkflowTransition({
+        const terminal = () => this.#mutation(() => this.taskBoard.commitWorkflowTransition({
           operationId,
           gitReferences: [{
             projectRoot: snapshot.repositoryRoot,
@@ -966,6 +995,9 @@ export class TaskLifecycleService {
             },
           },
         }), operationId);
+        const current = this.taskGitWorkspaces.withNativeIntegrationTerminalOwned
+          ? await this.taskGitWorkspaces.withNativeIntegrationTerminalOwned(snapshot, { operationId, lease }, terminal)
+          : await terminal();
         return {
           task: current,
           gitWorkspace: gitWorkspaceResult,
@@ -975,7 +1007,14 @@ export class TaskLifecycleService {
           } : {}),
         };
       } catch (error) {
-        if (["TASK_WITHDRAWAL_UNKNOWN", "AWAIT_ACCEPTANCE_UNKNOWN", "AWAIT_PREPARATION_UNKNOWN"].includes(error?.code)) throw error;
+        if (["TASK_WITHDRAWAL_UNKNOWN", "AWAIT_ACCEPTANCE_UNKNOWN", "AWAIT_PREPARATION_UNKNOWN", "TASK_NATIVE_INTEGRATION_UNKNOWN"].includes(error?.code)) throw error;
+        if (releaseWorkflow && workflowStatus === "testing" && this.taskGitWorkspaces.pendingNativeIntegrationOwned) {
+          const native = await this.taskGitWorkspaces.pendingNativeIntegrationOwned({
+            taskId: task.id, projectRoot: selectedProjectRoot, operationId, lease,
+          });
+          if (native?.target) throw Object.assign(new Error(`Native Test terminal outcome requires original readback: ${error.message}`),
+            { code: "TASK_NATIVE_INTEGRATION_UNKNOWN" });
+        }
         if (releaseWorkflow && workflowStatus === "awaiting_implementation") {
           const failure = new TaskAwaitIntegrationError(error);
           await this.#failWhileOwned(lease, operationId, failure);
@@ -1013,8 +1052,23 @@ export class TaskLifecycleService {
       }
   }
 
+  async pendingNativeWorkflowOwned({ taskId, operationId, projectRoot, lease } = {}) {
+    const transition = this.taskBoard.lifecycleTransition(operationId);
+    const task = this.#task(taskId);
+    if (transition?.taskId !== task.id || transition.operationId !== operationId
+        || transition.kind !== "workflow" || transition.phase !== "pending_git"
+        || transition.targetWorkflowStatus !== "testing" || transition.expectedRevision !== task.revision
+        || !this.taskGitWorkspaces?.pendingNativeIntegrationOwned) return false;
+    return Boolean(await this.taskGitWorkspaces.pendingNativeIntegrationOwned({ taskId, operationId, projectRoot, lease }));
+  }
+
   withUnknownWorkflowReconciliationLock({ taskId, sourceTaskId = null, projectRoot, operationId } = {}, operation) {
     const task = this.#task(taskId);
+    const selected = this.taskBoard.lifecycleTransition?.(operationId)?.evidence?.selectedComposition;
+    if (selected?.absorptionInput) {
+      sourceTaskId = selectedAbsorptionHandoff({ requestId: selected.absorptionInput.requestId,
+        text: selected.absorptionInput.text }).declaration.sourceTaskId;
+    }
     const workspace = task.workspaceId ? this.workspaceCatalog.workspace(task.workspaceId) : null;
     if (workspace?.settings?.releaseWorkflowEnabled !== true || !this.releasePreflight) {
       throw new Error("Unknown workflow reconciliation requires an enabled release workflow");
@@ -1045,6 +1099,10 @@ export class TaskLifecycleService {
     const current = this.#task(taskId);
     const transition = this.taskBoard.lifecycleTransition?.(operationId);
     const selectedComposition = transition?.evidence?.selectedComposition ?? null;
+    if (transition?.evidence?.selectedCompositionRequired || selectedComposition) {
+      selectedCompositionFields({ taskId, resultCommit: selectedComposition?.taskCommit,
+        selectedCompositionRequired: true, selectedComposition });
+    }
     if (selectedComposition) {
       if (transition.operationId !== operationId || transition.taskId !== current.id
           || transition.kind !== "workflow" || transition.phase !== "pending_git"
@@ -1058,20 +1116,31 @@ export class TaskLifecycleService {
         repositoryRoot: projectRoot, guardId, proof, lease,
       }) : null;
       if (!guardId) await this.taskGitWorkspaces.assertNoProcessTreeGuardOwned(current.id, { lease });
+      const validateAbsorption = selectedComposition.absorptionInput ? () => {
+          const expected = selectedComposition.absorptionInput;
+          const fresh = this.#selectedAbsorptionBinding(this.#task(current.id),
+            { requestId: expected.requestId, text: expected.text }, operationId);
+          if (JSON.stringify(fresh) !== JSON.stringify(expected)) throw new Error("Selected absorption original handoff changed");
+        } : null;
       const applied = await this.taskGitWorkspaces.applySelectedCompositionOwned(selectedComposition, {
-        operationId, lease,
+        operationId, lease, validateAbsorption,
       });
       if (applied.status !== "applied") {
         throw new Error("Selected composition original Git CAS cannot be reconciled");
       }
-      const updated = await this.#mutation(() => this.taskBoard.commitWorkflowTransition({
+      const updated = await this.#mutation(async () => {
+        const terminal = await this.taskGitWorkspaces.readSelectedCompositionOwned(selectedComposition, {
+          operationId, lease, validateAbsorption,
+        });
+        if (terminal.status !== "applied") throw new Error("Selected composition terminal Git readback changed");
+        return this.taskBoard.commitWorkflowTransition({
         operationId,
         gitReferences: [{ projectRoot: selectedComposition.repositoryRoot,
           resultCommit: selectedComposition.taskCommit, branch: selectedComposition.branch }],
         evidence: {
           outcome: "integrated", resultCommit: selectedComposition.taskCommit,
           devHeadCommit: selectedComposition.proofCommit,
-          selectedComposition,
+          selectedCompositionRequired: true, selectedComposition,
           response: {
             gitWorkspace: { branch: selectedComposition.branch,
               projectRoot: selectedComposition.taskRoot,
@@ -1082,7 +1151,8 @@ export class TaskLifecycleService {
               devHeadCommit: selectedComposition.proofCommit, conflicts: [], error: null },
           },
         },
-      }), operationId);
+        });
+      }, operationId);
       return { result: { task: updated, selectedComposition,
         gitReceipt: applied.receipt }, recovery };
     }
@@ -1168,6 +1238,19 @@ export class TaskLifecycleService {
         });
       }
       return { result: { task: current, ...(outcome.result.evidence.response ?? {}) }, recovery };
+    }
+    if (transition?.targetWorkflowStatus === "testing" && transition.phase === "pending_git"
+        && this.taskGitWorkspaces.pendingNativeIntegrationOwned) {
+      if (transition.operationId !== operationId || transition.taskId !== current.id
+          || transition.kind !== "workflow" || transition.expectedRevision !== current.revision) {
+        throw new Error("Native Test original lifecycle identity changed");
+      }
+      const native = await this.taskGitWorkspaces.pendingNativeIntegrationOwned({ taskId, projectRoot, operationId, lease });
+      if (!native) throw new Error("Native Test recovery has no original Git intent");
+      if (guardId) await this.taskGitWorkspaces.recoverProcessTreeGuard(current.id, { repositoryRoot: projectRoot, guardId, proof, lease });
+      else await this.taskGitWorkspaces.assertNoProcessTreeGuardOwned(current.id, { lease });
+      return { result: await this.#updateWorkflowStatusWithLease({ taskId, status: "testing", operationId, projectRoot,
+        operationEvidence: transition.evidence }, { releaseWorkflow: true, lease }), recovery: null };
     }
     const pendingWithdrawal = ["new", "in_progress", "blocked"].includes(transition?.targetWorkflowStatus)
       && ["testing", "awaiting_implementation"].includes(current.workflowStatus);
