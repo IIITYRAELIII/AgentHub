@@ -208,7 +208,11 @@ checked. A published-base candidate needs no envelope.
 After a candidate is prepared or frozen, explicit preparation may add exactly
 one newly selected correction Task while every previously selected Task result,
 base and squash proof remains identical. The correction snapshot has exactly one
-parent, its recorded Task base is an ancestor of that parent, and the candidate
+parent, its recorded Task base is an ancestor of that parent, and every path
+changed from that Task base to the parent (including deletions and file modes)
+must already match the prior candidate's tree. Without that exact representation
+proof, preparation falls back to the full selected Task-owned net projection;
+it never marks a partial correction as projected. With proof, the candidate
 owner performs an exact three-way tree merge using the snapshot parent as the
 forced merge base, the prior candidate as the retained side and the correction
 result as the new side. This deliberately does not infer ancestry from the aggregate commit graph:
@@ -218,7 +222,18 @@ non-descendant correction result, second membership change, changed prior result
 or missing mandatory squash proof rejects reuse and preserves the prior
 candidate. CHANGELOG and version bytes remain owned by publication freeze.
 The correction delta is rejected if it changes CHANGELOG or package-version
-metadata.
+metadata. See ADR-0085.
+
+A registered Task base newer than the approved published base cannot rely on
+effective dev replay: another integration may already carry the Task's bytes,
+making its own dev delta empty or correction-only. The existing net projector
+requires an exact bounded single-parent result lineage rooted at that registered
+base, automatic uniquely owned integrations covering the latest result, and
+unambiguous selected order. It projects only registered-base-to-result OWN,
+excluding inherited main context. Unproved lineage, ownership, integration or
+order refuses before candidate ref/checkpoint promotion. Previously approved-base
+projection and proven incremental reuse retain their existing boundaries.
+See [ADR-0086](../decisions/ADR-0086-migrated-registered-base-projection.md).
 
 ## Exact result coverage and absorption composition (2026-09-16)
 
