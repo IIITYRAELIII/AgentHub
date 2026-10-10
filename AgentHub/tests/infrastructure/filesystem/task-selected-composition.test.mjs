@@ -262,6 +262,23 @@ test("absorbed own admission carries the real handoff through Test ordinary Awai
   const second = await a.releaseGit.frozenCandidate(f.root);
   assert.equal(second.preReleaseHead, first.preReleaseHead);
   assert.equal(second.manifestHash, first.manifestHash);
+  await canonicalAwaitFixture(f, reopened);
+  const closing = { context_token: reopened.args.context_token, task_id: ABSORBED_ID,
+    absorbed_into_task_id: TASK_ID };
+  const closure = await reopened.mcp.call("hub_task_complete", { ...closing, request_id: "abs-close-preview" });
+  assert.equal(reopened.store.task(ABSORBED_ID).workflowStatus, "in_progress");
+  assert.equal(await git(f.sourceWorkspace.projectRoot, "rev-parse", "HEAD"), f.sourceCommit);
+  const closedSource = await reopened.mcp.call("hub_task_complete", { ...closing, request_id: "abs-close-confirm",
+    confirm_cleanup: true, expected_cleanup_token: closure.cleanupToken });
+  assert.equal(closedSource.status, "done");
+  assert.equal(reopened.store.task(ABSORBED_ID).status, "done");
+  assert.equal(await git(f.sourceWorkspace.projectRoot, "rev-parse", "HEAD"), f.sourceCommit);
+  assert.equal(await git(f.root, "rev-parse", "refs/heads/HUB-999"), f.sourceCommit);
+  await reopened.lifecycle.releasePreflight.prepareAwaitSet({ workspaceId: reopened.workspace.id, validateOnly: true });
+  const afterClosure = await a.releaseGit.frozenCandidate(f.root);
+  assert.deepEqual(afterClosure.manifest.tasks[0].selectedComposition, proof);
+  assert.equal(await git(afterClosure.releaseRoot, "rev-parse", `${afterClosure.preReleaseHead}^{tree}`),
+    await git(first.releaseRoot, "rev-parse", `${first.preReleaseHead}^{tree}`));
 });
 
 test("absorbed own admission rejects missing foreign and stale handoffs before Task or dev effects", {
