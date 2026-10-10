@@ -736,6 +736,7 @@ export class HubMcpService {
         selected_proof_bundle_path: { type: "string", description: "Release Manager-only immutable selected-composition proof bundle; preview has no live Git or lifecycle effect." },
         selected_proof_bundle_sha256: { type: "string", pattern: "^[0-9a-f]{64}$" },
         selected_published_resolution: { type: "object", description: "Optional ordinary OWN published-conflict proof envelope; binds the exact Task/base/application bundle/publication generation and reviewed resolution bundle. No reviewer flag grants authority." },
+        selected_absorption_handoff: { type: "object", description: "Exact requestId and JSON text of the saved/stopped source executor's durable Inter-Stream handoff receipt. Both owned histories and current Task/source fences are verified." },
         selected_proof_commit: { type: "string", pattern: "^[0-9a-f]{40}$" },
         selected_preview_request_id: { type: "string", description: "Exact original preview request_id on confirmation." },
         expected_selected_preview_hash: { type: "string", pattern: "^[0-9a-f]{64}$", description: "Omit for preview; exact returned hash is required for confirmation." },
@@ -772,6 +773,7 @@ export class HubMcpService {
         selected_proof_bundle_path: { type: "string" },
         selected_proof_bundle_sha256: { type: "string", pattern: "^[0-9a-f]{64}$" },
         selected_published_resolution: { type: "object" },
+        selected_absorption_handoff: { type: "object" },
         selected_proof_commit: { type: "string", pattern: "^[0-9a-f]{40}$" },
         selected_preview_request_id: { type: "string" },
         expected_selected_preview_hash: { type: "string", pattern: "^[0-9a-f]{64}$" },
@@ -1078,6 +1080,7 @@ export class HubMcpService {
           selectedBundlePath: args.selected_proof_bundle_path,
           selectedBundleSha256: args.selected_proof_bundle_sha256,
           selectedPublishedResolution: args.selected_published_resolution,
+          selectedAbsorptionHandoff: args.selected_absorption_handoff,
           selectedProofCommit: args.selected_proof_commit,
           selectedPreviewRequestId: args.selected_preview_request_id,
           expectedSelectedPreviewHash: args.expected_selected_preview_hash,
@@ -1492,6 +1495,7 @@ export class HubMcpService {
     selected_proof_bundle_sha256: selectedBundleSha256 = null,
     selected_proof_commit: selectedProofCommit = null,
     selected_published_resolution: selectedPublishedResolution = null,
+    selected_absorption_handoff: selectedAbsorptionHandoff = null,
     selected_preview_request_id: selectedPreviewRequestId = null,
     expected_selected_preview_hash: expectedSelectedPreviewHash = null,
   } = {}, { source = null } = {}) {
@@ -1507,7 +1511,7 @@ export class HubMcpService {
     const squashRequested = [...squashValues, squashProofRequestId, expectedSquashTransferHash,
       expectedSquashCutoverHash]
       .some((value) => value != null);
-    const selectedRequested = [selectedBundlePath, selectedBundleSha256, selectedProofCommit, selectedPublishedResolution,
+    const selectedRequested = [selectedBundlePath, selectedBundleSha256, selectedProofCommit, selectedPublishedResolution, selectedAbsorptionHandoff,
       selectedPreviewRequestId, expectedSelectedPreviewHash].some((value) => value != null);
     if (selectedRequested) {
       if (squashRequested || source || workflowStatus !== "testing"
@@ -1527,6 +1531,7 @@ export class HubMcpService {
         bundlePath: selectedBundlePath, bundleSha256: selectedBundleSha256,
         proofCommit: selectedProofCommit, expectedPreviewHash: expectedSelectedPreviewHash,
         publishedResolutionInput: selectedPublishedResolution,
+        absorptionHandoff: selectedAbsorptionHandoff,
         authority: { workspaceId: context.workspaceId, streamId: context.streamId,
           provider: context.provider, threadId: context.threadId, proofRequestId: previewRequestId },
       });

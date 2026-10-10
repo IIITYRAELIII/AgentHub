@@ -443,6 +443,11 @@ export class TaskBoardService {
     return this.store.selectedCompositionForRelease(payload);
   }
 
+  assertSelectedAbsorptionState(payload) {
+    requiredMethod(this.store, "assertSelectedAbsorptionState");
+    return this.store.assertSelectedAbsorptionState(payload);
+  }
+
   completeRelease(workspaceId, payload = {}) {
     return this.store.completeRelease(workspaceId, payload);
   }

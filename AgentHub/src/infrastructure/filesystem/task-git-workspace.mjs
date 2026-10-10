@@ -41,7 +41,8 @@ import {
   normalizedTaskSquashTransfer,
 } from "../../domain/task-squash-transfer.mjs";
 import { normalizedTaskSquashCutover } from "../../domain/task-squash-cutover.mjs";
-import { selectedCompositionFields, selectedCompositionIdentity, selectedCompositionRequiredError } from "../../domain/task-selected-composition.mjs";
+import { selectedCompositionFields, selectedCompositionIdentity, selectedCompositionRequiredError,
+  normalizedSelectedAbsorption, selectedAbsorptionHandoff } from "../../domain/task-selected-composition.mjs";
 
 export const TASK_DEV_BRANCH = "dev";
 const TASK_BASE_REF_PREFIX = "refs/agent-hub/task-bases/";
@@ -2869,9 +2870,33 @@ export class TaskGitWorkspaceService {
     return measureTaskOperation("integrate-dev", () => this.#mergeIntoDevOwned(snapshot, { lease }));
   }
 
+  async #assertSelectedAbsorptionGit(input, repoRoot, lease) {
+    if (!input) return;
+    const binding = normalizedSelectedAbsorption(input);
+    const { declaration: d } = selectedAbsorptionHandoff({ requestId: binding.requestId, text: binding.text });
+    await requiredGuardLease(lease).assertOwned();
+    await this.#assertNoProcessTreeGuard(d.sourceTaskId);
+    const repoKey = taskRepositoryKey(repoRoot);
+    const sourceRoot = path.join(this.taskWorktreesRoot, d.sourceTaskId, repoKey);
+    if (!samePath(await this.managedRepositoryRoot(sourceRoot, {
+      taskId: d.sourceTaskId, taskNumber: binding.sourceTaskNumber,
+    }), repoRoot)) throw selectedCompositionRequiredError("absorbed source checkout identity changed");
+    const [head, base, branch, status] = await Promise.all([
+      runGit(["rev-parse", "HEAD^{commit}"], { cwd: sourceRoot }),
+      runGit(["rev-parse", `${taskBaseRef(d.sourceTaskId, repoKey)}^{commit}`], { cwd: repoRoot }),
+      runGit(["symbolic-ref", "--quiet", "--short", "HEAD"], { cwd: sourceRoot }),
+      runGit(["status", "--porcelain=v1", "-z", "--untracked-files=all"], { cwd: sourceRoot }),
+    ]);
+    if (head !== d.sourceCommit || base !== d.baseCommit || status
+        || branch !== taskBranchName(d.sourceTaskId, repoRoot, binding.sourceTaskNumber)
+        || await runGit(["rev-parse", `refs/heads/${branch}^{commit}`], { cwd: repoRoot }) !== head) {
+      throw selectedCompositionRequiredError("absorbed source HEAD/base/branch or saved cleanliness changed");
+    }
+  }
+
   async previewSelectedCompositionOwned({
     taskId, taskNumber = null, projectRoot, proofCommit, bundlePath,
-    bundleSha256, publishedResolutionInput = null, authority, expectedTaskRevision, lease = null,
+    bundleSha256, publishedResolutionInput = null, absorptionInput = null, authority, expectedTaskRevision, lease = null,
   } = {}) {
     this.#assertAvailable("previewSelectedCompositionOwned");
     const id = normalizedTaskId(taskId);
@@ -2880,6 +2905,7 @@ export class TaskGitWorkspaceService {
     const repoRoot = await repositoryRoot(projectRoot);
     return this.#withClearDevLock(repoRoot, lease, async (ownedLease) => {
       const repoKey = taskRepositoryKey(repoRoot);
+      await this.#assertSelectedAbsorptionGit(absorptionInput, repoRoot, ownedLease);
       const taskRoot = path.join(this.taskWorktreesRoot, id, repoKey);
       const devRoot = path.join(this.devWorktreesRoot, repoKey);
       if (!samePath(await this.managedRepositoryRoot(taskRoot, { taskId: id, taskNumber }), repoRoot)) {
@@ -2955,12 +2981,13 @@ export class TaskGitWorkspaceService {
           git: (args, options) => runGit(args, { ...options, cwd: isolatedRepo }),
           taskId: id, repositoryKey: repoKey, taskBaseCommit, acceptedLocalMainCommit,
           taskCommit, devCommit, proofCommit, publishedCommit, publicationGeneration,
-          remoteCommit, bundleSha256: actualBundleHash, publishedResolutionInput: publishedInput,
+          remoteCommit, bundleSha256: actualBundleHash, publishedResolutionInput: publishedInput, absorptionInput,
         });
         const finalRemote = await this.#runOwned(["ls-remote", remoteUrl, "refs/heads/main"], {
           cwd: repoRoot, lease: ownedLease,
         });
         const finalPublication = await this.readPublication();
+        await this.#assertSelectedAbsorptionGit(absorptionInput, repoRoot, ownedLease);
         if (finalRemote !== remoteOutput || finalPublication?.generation !== publicationGeneration
             || publicationStateRepositories(finalPublication ?? {})
               .find((entry) => samePath(entry.root, repoRoot))?.revision !== publishedCommit) {
@@ -3074,7 +3101,7 @@ export class TaskGitWorkspaceService {
     throw new Error("Selected composition dev ref is neither old nor exact reviewed CAS result");
   }
 
-  async applySelectedCompositionOwned(preview, { operationId, lease = null } = {}) {
+  async applySelectedCompositionOwned(preview, { operationId, lease = null, validateAbsorption = null } = {}) {
     this.#assertAvailable("applySelectedCompositionOwned");
     await requiredGuardLease(lease).assertOwned();
     await this.#assertNoProcessTreeGuard(preview.taskId);
@@ -3084,6 +3111,11 @@ export class TaskGitWorkspaceService {
       const state = await this.readSelectedCompositionOwned(preview, { operationId, lease: ownedLease });
       if (state.status === "applied") return state;
       if (state.status === "before_cas") {
+        if (preview.absorptionInput) {
+          if (typeof validateAbsorption !== "function") throw selectedCompositionRequiredError("live absorbed Task fence unavailable");
+          validateAbsorption();
+          await this.#assertSelectedAbsorptionGit(preview.absorptionInput, preview.repositoryRoot, ownedLease);
+        }
         const [main, base, task, dev, taskStatus, devStatus, publication, remoteOutput,
           currentResultRef, configuredRemote, taskBranch, devBranch] = await Promise.all([
           runGit(["rev-parse", "--verify", "refs/heads/main^{commit}"], { cwd: preview.repositoryRoot }),
@@ -3161,6 +3193,13 @@ export class TaskGitWorkspaceService {
             }) !== preview.proofTree) {
           throw new Error("Selected composition imported objects changed their exact reviewed tree");
         }
+        if (preview.absorptionInput) {
+          const checked = await verifySelectedCompositionObjects({ ...preview,
+            git: (args, options) => runGit(args, { ...options, cwd: preview.repositoryRoot }) });
+          if (checked.proofHash !== preview.proofHash) {
+            throw selectedCompositionRequiredError("absorbed proof changed before materialization");
+          }
+        }
         const journalRoot = path.join(root, "materialization");
         const materialization = await readFile(path.join(journalRoot, "record.json"), "utf8")
           .then(() => readSelectedCompositionFiles(journalRoot), (error) => {
@@ -3177,6 +3216,8 @@ export class TaskGitWorkspaceService {
         if (beforeCas.status !== "before_cas") {
           throw new Error("Selected composition dev CAS state changed after materialization preparation");
         }
+        await this.#assertSelectedAbsorptionGit(preview.absorptionInput, preview.repositoryRoot, ownedLease);
+        if (preview.absorptionInput) validateAbsorption();
         const [finalPublication, finalRemote, finalMain, finalTask,
           finalTaskStatus, finalConfiguredRemote] = await Promise.all([
           this.readPublication(),
@@ -3206,6 +3247,8 @@ export class TaskGitWorkspaceService {
           refusal.code = "SELECTED_COMPOSITION_NO_EFFECT";
           throw refusal;
         }
+        await this.#assertSelectedAbsorptionGit(preview.absorptionInput, preview.repositoryRoot, ownedLease);
+        if (preview.absorptionInput) validateAbsorption();
         await this.#runOwned(["update-ref", "refs/heads/dev", preview.proofCommit, preview.devCommit], {
           cwd: preview.repositoryRoot, lease: ownedLease,
         });

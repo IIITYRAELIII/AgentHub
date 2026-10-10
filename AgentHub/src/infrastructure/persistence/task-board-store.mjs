@@ -23,7 +23,8 @@ import {
 import { normalizedTaskGitReferences, taskBranchName } from "../../domain/task-git-reference.mjs";
 import { normalizedTaskSquashTransfer } from "../../domain/task-squash-transfer.mjs";
 import { normalizedTaskSquashCutover } from "../../domain/task-squash-cutover.mjs";
-import { selectedCompositionFields, selectedCompositionIdentity, selectedCompositionRequiredError } from "../../domain/task-selected-composition.mjs";
+import { selectedCompositionFields, selectedCompositionIdentity, selectedCompositionRequiredError,
+  normalizedSelectedAbsorption, selectedAbsorptionHandoff, assertSelectedAbsorptionTasks } from "../../domain/task-selected-composition.mjs";
 import { normalizedTaskNumber, normalizedWorkspaceTaskPrefix, taskNumberParts } from "../../domain/task-number.mjs";
 import { taskProjectRoot } from "../../domain/task-project-root.mjs";
 import {
@@ -276,6 +277,10 @@ function configure(database) {
       ON hub_task_lifecycle_transitions(json_extract(evidence_json, '$.squashTransfer.source.taskId'))
       WHERE phase IN ('pending_git', 'cleanup')
         AND json_extract(evidence_json, '$.squashTransfer.source.taskId') IS NOT NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS hub_task_lifecycle_active_absorption_source_idx
+      ON hub_task_lifecycle_transitions(json_extract(
+        json_extract(evidence_json, '$.selectedComposition.absorptionInput.text'), '$.sourceTaskId'))
+      WHERE phase IN ('pending_git', 'cleanup');
     CREATE TABLE IF NOT EXISTS hub_task_lifecycle_outcomes (
       operation_id TEXT PRIMARY KEY,
       task_id TEXT NOT NULL,
@@ -579,6 +584,25 @@ function configure(database) {
       END;
   `);
   configureTaskChecklist(database);
+  // Revision-changing edits are fenced, including updates via the existing
+  // revision trigger. Opening a store may perform a no-op housekeeping UPDATE.
+  database.exec(`
+    CREATE TRIGGER IF NOT EXISTS hub_task_absorption_source_update_fence
+      BEFORE UPDATE ON hub_board_tasks WHEN NEW.row_revision IS NOT OLD.row_revision AND EXISTS (
+        SELECT 1 FROM hub_task_lifecycle_transitions WHERE phase IN ('pending_git', 'cleanup')
+          AND json_extract(json_extract(evidence_json, '$.selectedComposition.absorptionInput.text'), '$.sourceTaskId') = OLD.id
+      ) BEGIN SELECT RAISE(ABORT, 'Absorbed source is owned by a pending selected transition'); END;
+    CREATE TRIGGER IF NOT EXISTS hub_task_absorption_source_delete_fence
+      BEFORE DELETE ON hub_board_tasks WHEN EXISTS (
+        SELECT 1 FROM hub_task_lifecycle_transitions WHERE phase IN ('pending_git', 'cleanup')
+          AND json_extract(json_extract(evidence_json, '$.selectedComposition.absorptionInput.text'), '$.sourceTaskId') = OLD.id
+      ) BEGIN SELECT RAISE(ABORT, 'Absorbed source is owned by a pending selected transition'); END;
+    CREATE TRIGGER IF NOT EXISTS hub_task_absorption_source_claim_fence
+      BEFORE INSERT ON hub_task_turn_bindings WHEN EXISTS (
+        SELECT 1 FROM hub_task_lifecycle_transitions WHERE phase IN ('pending_git', 'cleanup')
+          AND json_extract(json_extract(evidence_json, '$.selectedComposition.absorptionInput.text'), '$.sourceTaskId') = NEW.task_id
+      ) BEGIN SELECT RAISE(ABORT, 'Absorbed source is owned by a pending selected transition'); END;
+  `);
   database.exec(`
     CREATE TRIGGER IF NOT EXISTS hub_board_tasks_release_revision_update
       AFTER UPDATE ON hub_board_tasks
@@ -2563,6 +2587,36 @@ export class TaskBoardStore {
     });
   }
 
+  #assertSelectedAbsorptionState(database, { binding, survivorTaskId, operationId = null }) {
+    const input = normalizedSelectedAbsorption(binding);
+    const { declaration: d } = selectedAbsorptionHandoff({ requestId: input.requestId, text: input.text });
+    const source = this.#taskWithRelease(database, this.#taskRow(database, d.sourceTaskId));
+    const survivor = this.#taskWithRelease(database, this.#taskRow(database, survivorTaskId));
+    assertSelectedAbsorptionTasks(input, source, survivor);
+    const receipt = database.prepare("SELECT * FROM hub_mcp_operations WHERE request_id = ?").get(input.requestId);
+    const result = receipt?.result_json ? JSON.parse(receipt.result_json) : null;
+    if (receipt?.receipt_state !== "succeeded" || receipt.tool_name !== "hub_stream_message_send"
+        || receipt.workspace_id !== input.origin.workspaceId || receipt.stream_id !== input.origin.streamId
+        || receipt.provider !== input.origin.provider || receipt.provider_thread_id !== input.origin.sourceThreadId
+        || receipt.interstream_content_hash !== input.contentHash || receipt.created_at_ms !== input.createdAtMs
+        || result?.delivery?.accepted !== true || result.target?.streamId !== survivor.streamId) {
+      throw selectedCompositionRequiredError("durable absorbed handoff receipt changed");
+    }
+    const reopened = database.prepare(`SELECT 1 FROM hub_task_turn_bindings
+      WHERE task_id = ? AND claimed_at_ms >= ? LIMIT 1`).get(source.id, input.createdAtMs);
+    const active = database.prepare(`SELECT operation_id FROM hub_task_lifecycle_transitions
+      WHERE phase IN ('pending_git', 'cleanup') AND operation_id != ? AND (
+        task_id IN (?, ?) OR json_extract(evidence_json, '$.squashTransfer.source.taskId') IN (?, ?)
+        OR json_extract(json_extract(evidence_json, '$.selectedComposition.absorptionInput.text'), '$.sourceTaskId') IN (?, ?)
+      ) LIMIT 1`).get(operationId ?? "", source.id, survivor.id, source.id, survivor.id, source.id, survivor.id);
+    if (reopened || active) throw selectedCompositionRequiredError("absorbed source reopened or has a competing transition");
+    return input;
+  }
+
+  assertSelectedAbsorptionState(options) {
+    return this.#withDatabase((database) => this.#assertSelectedAbsorptionState(database, options));
+  }
+
   beginLifecycleTransition(id, {
     operationId, kind = "workflow", targetWorkflowStatus = null, expectedRevision, evidence = null,
     releaseContext = null,
@@ -2592,6 +2646,10 @@ export class TaskBoardStore {
           const existingTransfer = JSON.parse(existing.evidence_json ?? "{}")?.squashTransfer;
           const existingCutover = JSON.parse(existing.evidence_json ?? "{}")?.squashCutover;
           const existingAbsorbed = JSON.parse(existing.evidence_json ?? "{}")?.absorbedInto;
+          if (JSON.stringify(JSON.parse(existing.evidence_json ?? "{}")?.selectedComposition ?? null)
+              !== JSON.stringify(evidence?.selectedComposition ?? null)) {
+            throw new Error("Task lifecycle operation id was already used for another selected composition");
+          }
           if (Boolean(existingTransfer) !== Boolean(evidence?.squashTransfer)
               || (existingTransfer && normalizedTaskSquashTransfer(existingTransfer).transferHash
                 !== normalizedTaskSquashTransfer(evidence.squashTransfer).transferHash)) {
@@ -2669,6 +2727,13 @@ export class TaskBoardStore {
         const squashTransfer = evidence?.squashTransfer
           ? normalizedTaskSquashTransfer(evidence.squashTransfer)
           : null;
+        const absorptionInput = evidence?.selectedComposition?.absorptionInput;
+        if (absorptionInput) {
+          if (normalizedKind !== "workflow" || target !== "testing") {
+            throw selectedCompositionRequiredError("absorbed proof requires an exact Test transition");
+          }
+          this.#assertSelectedAbsorptionState(database, { binding: absorptionInput, survivorTaskId: taskId });
+        }
         const squashCutover = evidence?.squashCutover
           ? normalizedTaskSquashCutover(evidence.squashCutover)
           : null;
@@ -2710,16 +2775,18 @@ export class TaskBoardStore {
           SELECT operation_id FROM hub_task_lifecycle_transitions
           WHERE phase IN ('pending_git', 'cleanup') AND (
             task_id = ? OR json_extract(evidence_json, '$.squashTransfer.source.taskId') = ?
+            OR json_extract(json_extract(evidence_json, '$.selectedComposition.absorptionInput.text'), '$.sourceTaskId') = ?
           )
-        `).get(taskId, taskId);
+        `).get(taskId, taskId, taskId);
         if (active) throw new Error(`Task lifecycle transition is already active: ${active.operation_id}`);
         if (squashTransfer) {
           const sourceActive = database.prepare(`
             SELECT operation_id FROM hub_task_lifecycle_transitions
             WHERE phase IN ('pending_git', 'cleanup') AND (
               task_id = ? OR json_extract(evidence_json, '$.squashTransfer.source.taskId') = ?
+              OR json_extract(json_extract(evidence_json, '$.selectedComposition.absorptionInput.text'), '$.sourceTaskId') = ?
             )
-          `).get(squashTransfer.source.taskId, squashTransfer.source.taskId);
+          `).get(squashTransfer.source.taskId, squashTransfer.source.taskId, squashTransfer.source.taskId);
           if (sourceActive) {
             throw new Error(`Source Task lifecycle transition is already active: ${sourceActive.operation_id}`);
           }
@@ -2749,8 +2816,10 @@ export class TaskBoardStore {
           operation, taskId, normalizedKind, normalizedKind === "workflow" ? "pending_git" : "cleanup",
           target, revision, JSON.stringify({
             task: this.#taskWithRelease(database, current),
-            ...(squashTransfer ? {
-              sourceTask: this.#taskWithRelease(database, this.#taskRow(database, squashTransfer.source.taskId)),
+            ...(squashTransfer || absorptionInput ? {
+              sourceTask: this.#taskWithRelease(database, this.#taskRow(database, squashTransfer?.source.taskId
+                ?? selectedAbsorptionHandoff({ requestId: absorptionInput.requestId,
+                  text: absorptionInput.text }).declaration.sourceTaskId)),
             } : {}),
             bindingRequests: database.prepare(`
               SELECT provider, provider_thread_id, turn_id, operation_id, requested_workflow_status
@@ -2884,6 +2953,14 @@ export class TaskBoardStore {
         const current = this.#taskRow(database, transition.task_id);
         if (Number(current.row_revision) !== Number(transition.expected_task_revision)) {
           throw new Error("Task changed while Git evidence was prepared");
+        }
+        const pendingSelected = JSON.parse(transition.evidence_json ?? "{}")?.selectedComposition;
+        if (pendingSelected?.absorptionInput) {
+          if (JSON.stringify(evidence?.selectedComposition) !== JSON.stringify(pendingSelected)) {
+            throw selectedCompositionRequiredError("absorbed terminal proof differs from original admission");
+          }
+          this.#assertSelectedAbsorptionState(database, { binding: pendingSelected.absorptionInput,
+            survivorTaskId: transition.task_id, operationId: operation });
         }
         if (replaceGitReferences) {
           database.prepare("DELETE FROM hub_task_git_references WHERE task_id = ?").run(transition.task_id);

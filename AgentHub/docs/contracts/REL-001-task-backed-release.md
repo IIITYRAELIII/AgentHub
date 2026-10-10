@@ -439,6 +439,35 @@ Clean ordinary proofs and legacy joined proof shapes/hashes are unchanged.
 No standalone tree, review flag or bundle is an installation or publication
 receipt. See ADR-0093 and ADR-0095.
 
+A saved, stopped Progress source may be absorbed into a Progress survivor
+through the existing selected Test owner (ADR-0105). This narrow classification
+requires an authenticated successful source-executor inter-Stream receipt whose
+exact content binds both Tasks, source revision, shared registered base, source
+commit/tree and ordered absorption parents. Current native unfinished linkage,
+complete source requirements in the survivor, unchanged source revision,
+executor/branch/base/result and absence of competing claims/transitions are
+also mandatory; a checklist or caller approval flag alone is insufficient.
+
+Both pre-absorption OWN histories and any survivor correction suffix must be
+single-parent, end at their exact bound bases, and together with the unique
+absorption fit the 256-commit bound. The absorption tree must equal the complete
+conflict-free automatic merge of its ordered owning parents. Arbitrary side
+merges, flattened snapshots or manually resolved absorption trees are refused.
+Full registered-base-to-result combined OWN uses the same regular-file/conflict
+stage, automatic non-conflict and outside-OWN guards as ordinary selected Test.
+Publication conflict proof remains independently required when applicable.
+
+Preview and distinct confirmation bind the same handoff. Both Tasks are locked;
+the existing SQLite intent fences source edits, deletion, new claims and
+competing transitions until that original becomes terminal. Current source,
+durable handoff and publication inputs are rechecked before dev CAS and terminal
+Task CAS. UNKNOWN remains owned by that original and cannot repeat Git CAS.
+The full binding survives receipts, descriptors, readback, reconciliation,
+release projection, mandatory-selected lineage and reuse. Release recomputes
+immutable Git evidence and full combined OWN rather than a last effective-dev
+delta; absorbed source closure remains the existing combined-closure lifecycle,
+after verified canonical composition, and is not a Test side effect.
+
 When accepted local main and the repository's published main have a unique
 common base but neither contains the other, ordinary explicit upstream adoption
 does not apply. A separate Release Manager-only selected-composition Test path

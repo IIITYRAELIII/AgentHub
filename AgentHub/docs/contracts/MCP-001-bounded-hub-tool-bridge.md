@@ -410,6 +410,21 @@ publication/remote, materialization and original-ID receipt rules apply.
 Preview refusals and legacy UNKNOWN settlement retain their existing owners;
 this classification does not itself prove that an old operation had no effect.
 
+For exact saved/stopped Progress absorption (REL-001, ADR-0105), the same tools
+accept optional `selected_absorption_handoff: {requestId,text}`. The text is
+the exact JSON body of a successful authenticated source-executor
+`hub_stream_message_send` receipt targeted to the survivor executor:
+`version=1`, `kind=task-absorption-handoff-v1`, `workspaceId`,
+`sourceTaskId`, `sourceTaskRevision`, `survivorTaskId`, `baseCommit`,
+`sourceCommit`, `sourceTree`, `survivorParentCommit`, `absorptionCommit`,
+`saved=true`, `stopped=true`. Unknown fields are refused. The receipt's
+original ID includes any actual `mcp:` prefix; no inferred/stripped identity
+is accepted. Its durable author/origin/content hash is verified against the
+exact body, current Task/transfer/source state and bounded ordered Git histories.
+No new ledger, handoff writer, composer or completion interface is introduced.
+Both Tasks are reserved through the existing lifecycle intent and recovery
+locks; the same proof is persisted and compared at terminal CAS.
+
 For a Task based on accepted local main that diverges from an already published
 repository history, the Release Manager may use the `selected_*` argument family
 of `hub_task_status_update` with status `testing`, exact Task revision and
@@ -434,7 +449,7 @@ dev. The completed receipt must still match the clean exact dev and Task result
 on readback. Release preparation requires its independently verified selected
 projection and must not replay unrelated rolling-dev bytes.
 
-For the ordinary route only, optional `selected_published_resolution` carries
+For the ordinary and verified absorbed OWN routes, optional `selected_published_resolution` carries
 the version-1 `ordinary-published-resolution-v1` envelope: `taskId`,
 `repositoryKey`, `taskBaseCommit`, `acceptedLocalMainCommit`, `taskCommit`,
 `devCommit`, `proofCommit`, `publishedCommit`, `publicationGeneration`,
@@ -453,6 +468,11 @@ confirmation identity. Changed or omitted published proof cannot settle that
 operation. The existing `task-operation-reconcile.mjs` CLI accepts the selected
 bundle/proof/preview flags and `--selected-published-resolution <json-file>`;
 it forwards the parsed envelope through the same owner. See ADR-0095.
+Absorbed reconciliation also requires the original
+`selected_absorption_handoff`; the CLI accepts
+`--selected-absorption-handoff <json-file>` containing that exact two-field
+input. Missing or altered handoff cannot settle an absorbed original. Reopen,
+readback and downstream projection retain the complete authenticated binding.
 
 Intent, materialization and completion JSON is published only after complete
 synced bytes exist. Incomplete pre-CAS private staging can be rebuilt under

@@ -24,15 +24,18 @@ import { publicationStateFile } from "../../../src/infrastructure/persistence/pu
 import { selectedCompositionIdentity } from "../../../src/domain/task-selected-composition.mjs";
 import { createReleaseOperation, restoreReleaseOperation } from "../../../src/domain/release-operation.mjs";
 import { WorkspaceReleaseOperationAdapter } from "../../../src/application/workspace-release-operation-adapter.mjs";
+import { interstreamAuditContentHash } from "../../../src/domain/interstream-message.mjs";
+import { verifySelectedCompositionObjects } from "../../../src/infrastructure/filesystem/selected-composition-proof.mjs";
 
 const exec = promisify(execFile);
 const TASK_ID = "367ffe17-f69f-4886-b9be-901558ecace2";
+const ABSORBED_ID = "4307b987-80f4-488c-967a-3e4250352c0b";
 
 async function git(cwd, ...args) {
   return (await exec("git", args, { cwd })).stdout.trim();
 }
 
-async function fixture(t, { ordinary = false } = {}) {
+async function fixture(t, { ordinary = false, absorbed = false } = {}) {
   const temp = await mkdtemp(path.join(os.tmpdir(), "selected-owner-"));
   const closeDependencies = [];
   t.after(async () => {
@@ -61,7 +64,7 @@ async function fixture(t, { ordinary = false } = {}) {
   // The closure above is first used after the published commit is initialized.
   let taskWorkspace;
   let devWorkspace;
-  if (!ordinary) {
+  if (!ordinary && !absorbed) {
     taskWorkspace = await service.prepare({ taskId: TASK_ID, projectRoot: root });
     devWorkspace = await service.prepareDev(root);
   }
@@ -70,18 +73,31 @@ async function fixture(t, { ordinary = false } = {}) {
   const published = await commit(root, "published");
   await git(root, "push", "-q", "origin", `${published}:refs/heads/main`);
   await git(root, "switch", "-q", "main");
+  if (absorbed) await git(root, "merge", "--ff-only", published);
   await writeFile(path.join(root, "local.txt"), "approved local\n");
   const local = await commit(root, "local");
-  if (ordinary) {
+  if (ordinary || absorbed) {
     taskWorkspace = await service.prepare({ taskId: TASK_ID, projectRoot: root });
     devWorkspace = await service.prepareDev(root);
   }
   await git(taskWorkspace.projectRoot, "merge", "--ff-only", local);
   await git(devWorkspace.projectRoot, "merge", "--ff-only", local);
   await writeFile(path.join(taskWorkspace.projectRoot, "feature.txt"), "selected feature\n");
-  if (ordinary) await writeFile(path.join(taskWorkspace.projectRoot, "conflict.txt"), "own\n");
+  if (ordinary || absorbed) await writeFile(path.join(taskWorkspace.projectRoot, "conflict.txt"), "own\n");
   await commit(taskWorkspace.projectRoot, "Task feature", { forced: "feature.txt" });
-  if (!ordinary) await git(taskWorkspace.projectRoot, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+  const survivorParent = await git(taskWorkspace.projectRoot, "rev-parse", "HEAD");
+  let sourceWorkspace, sourceCommit, absorptionCommit;
+  if (absorbed) {
+    sourceWorkspace = await service.prepare({ taskId: ABSORBED_ID, taskNumber: "HUB-999", projectRoot: root });
+    await writeFile(path.join(sourceWorkspace.projectRoot, "absorbed.txt"), "full source own\n");
+    sourceCommit = await commit(sourceWorkspace.projectRoot, "absorbed own");
+    await git(taskWorkspace.projectRoot, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+      "merge", "--no-ff", "-m", "authorized automatic absorption", sourceCommit);
+    absorptionCommit = await git(taskWorkspace.projectRoot, "rev-parse", "HEAD");
+    await writeFile(path.join(taskWorkspace.projectRoot, "correction.txt"), "later owning correction\n");
+    await commit(taskWorkspace.projectRoot, "bounded correction above absorption");
+  }
+  if (!ordinary && !absorbed) await git(taskWorkspace.projectRoot, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
     "merge", "--no-ff", "-m", "published side", published);
   const task = await git(taskWorkspace.projectRoot, "rev-parse", "HEAD");
   await writeFile(path.join(devWorkspace.projectRoot, "conflict.txt"), "dev\n");
@@ -114,7 +130,8 @@ async function fixture(t, { ordinary = false } = {}) {
   assert.equal(await git(root, "rev-parse", "main"), local);
   assert.equal(await git(root, "rev-parse", "dev"), dev);
   return { root, remote, dataDir, service, taskWorkspace, devWorkspace,
-    base, local, published, task, dev, proof, tree, bundle, bundleSha256, closeDependencies };
+    base, local, published, task, dev, proof, tree, bundle, bundleSha256, closeDependencies,
+    survivorParent, sourceWorkspace, sourceCommit, absorptionCommit };
 }
 
 async function publicFixture(f) {
@@ -171,8 +188,208 @@ async function publicFixture(f) {
     if (!closed) { closed = true; store.close(); catalog.close(); }
   };
   f.closeDependencies.push(close);
-  return { mcp, args, catalog, taskBoard, lifecycle, close, databaseFile, workspace };
+  return { mcp, args, catalog, taskBoard, lifecycle, close, databaseFile, workspace, store };
 }
+
+async function absorbedPublicFixture(t) {
+  const f = await fixture(t, { absorbed: true });
+  const p = await publicFixture(f);
+  await p.catalog.runMutation(() => p.catalog.createStream({ id: "source-executor",
+    workspaceId: p.workspace.id, name: "Source", settings: { workingDirectory: f.root } }));
+  p.store.idFactory = () => ABSORBED_ID;
+  p.store.create({ text: "Absorbed source\n\nFull parent coverage and migrated OWN requirements.",
+    bucket: "workspace", workspaceId: p.workspace.id });
+  p.store.updatePresentation(ABSORBED_ID, { title: "Absorbed source", taskNumber: "HUB-999",
+    description: "Full parent coverage and migrated OWN requirements." });
+  p.store.claim(ABSORBED_ID, { workspaceId: p.workspace.id, streamId: "source-executor",
+    provider: "codex", threadId: "source-thread", turnId: "source-turn", operationId: "source-claim" });
+  p.store.claim(TASK_ID, { workspaceId: p.workspace.id, streamId: "rm", provider: "codex",
+    threadId: "test-thread", turnId: "survivor-turn", operationId: "survivor-claim" });
+  p.store.updatePresentation(TASK_ID, { title: "Combined", description: p.store.task(ABSORBED_ID).description });
+  const added = await p.taskBoard.updateChecklist({ id: TASK_ID, operation: "add", text: "Unfinished absorbed requirements",
+    expectedRevision: p.store.task(TASK_ID).revision, requestId: "add-source" });
+  await p.taskBoard.updateChecklist({ id: TASK_ID, operation: "link", itemId: added.itemId,
+    linkedTaskId: ABSORBED_ID, expectedRevision: p.store.task(TASK_ID).revision, requestId: "link-source" });
+  const declaration = { version: 1, kind: "task-absorption-handoff-v1", workspaceId: p.workspace.id,
+    sourceTaskId: ABSORBED_ID, sourceTaskRevision: p.store.task(ABSORBED_ID).revision, survivorTaskId: TASK_ID,
+    baseCommit: f.local, sourceCommit: f.sourceCommit,
+    sourceTree: await git(f.root, "rev-parse", `${f.sourceCommit}^{tree}`),
+    survivorParentCommit: f.survivorParent, absorptionCommit: f.absorptionCommit, saved: true, stopped: true };
+  const handoff = { requestId: "source-saved-stopped", text: JSON.stringify(declaration) };
+  const origin = { workspaceId: p.workspace.id, streamId: "source-executor", provider: "codex",
+    sourceThreadId: "source-thread", requestId: handoff.requestId };
+  await p.catalog.runMutation(() => p.catalog.beginMcpOperation({ requestId: handoff.requestId,
+    workspaceId: origin.workspaceId, streamId: origin.streamId, provider: origin.provider,
+    threadId: origin.sourceThreadId, toolName: "hub_stream_message_send", argumentsHash: "a".repeat(64) }));
+  await p.catalog.runMutation(() => p.catalog.bindMcpOperationInterstreamContentHash(handoff.requestId,
+    interstreamAuditContentHash(handoff.text, { origin })));
+  await p.catalog.runMutation(() => p.catalog.completeMcpOperation(handoff.requestId,
+    { target: { streamId: "rm" }, delivery: { accepted: true } }));
+  p.args.expected_task_revision = p.store.task(TASK_ID).revision;
+  p.args.selected_absorption_handoff = handoff;
+  return { f, p, handoff, declaration };
+}
+
+test("absorbed own admission carries the real handoff through Test ordinary Await and candidate reuse", {
+  timeout: 120_000,
+}, async (t) => {
+  const { f, p, handoff } = await absorbedPublicFixture(t);
+  const before = p.store.task(ABSORBED_ID);
+  const preview = await p.mcp.call("hub_task_status_update", { ...p.args, request_id: "abs-preview" });
+  assert.equal(preview.selectedComposition.proofRoute, "absorbed-own-conflict-v1");
+  assert.equal(preview.selectedComposition.absorptionInput.text, handoff.text);
+  assert.equal(await git(f.root, "rev-parse", "dev"), f.dev);
+  const confirmed = await p.mcp.call("hub_task_status_update", { ...p.args, request_id: "abs-confirm",
+    selected_preview_request_id: "abs-preview", expected_selected_preview_hash: preview.previewHash });
+  assert.equal(confirmed.task.workflowStatus, "testing");
+  assert.equal(p.store.task(ABSORBED_ID).revision, before.revision);
+  const a = await canonicalAwaitFixture(f, p);
+  const args = { context_token: p.args.context_token, task_id: TASK_ID, status: "awaiting_implementation",
+    expected_task_revision: confirmed.task.revision, expected_workflow_status: "testing", request_id: "abs-await" };
+  await p.mcp.call("hub_task_status_update", args);
+  const first = await a.releaseGit.frozenCandidate(f.root);
+  const proof = first.manifest.tasks[0].selectedComposition;
+  assert.deepEqual(proof, preview.selectedComposition);
+  for (const name of ["feature.txt", "absorbed.txt", "correction.txt"]) {
+    assert.equal(await git(first.releaseRoot, "show", `${first.preReleaseHead}:${name}`),
+      await git(f.root, "show", `${f.task}:${name}`));
+  }
+  assert.equal(await git(first.releaseRoot, "ls-tree", first.preReleaseHead, "--", "local.txt", "unselected.txt"), "");
+  p.close();
+  const reopened = await publicFixture(f);
+  const again = await reopened.mcp.call("hub_task_status_update", { ...args, context_token: reopened.args.context_token });
+  assert.equal(again.workflowStatus, "awaiting_implementation");
+  const second = await a.releaseGit.frozenCandidate(f.root);
+  assert.equal(second.preReleaseHead, first.preReleaseHead);
+  assert.equal(second.manifestHash, first.manifestHash);
+});
+
+test("absorbed own admission rejects missing foreign and stale handoffs before Task or dev effects", {
+  timeout: 120_000,
+}, async (t) => {
+  const { f, p, handoff, declaration } = await absorbedPublicFixture(t);
+  const revision = p.store.task(TASK_ID).revision;
+  for (const [name, value] of [["missing", null], ["missing-receipt", { ...handoff, requestId: "unrecorded" }],
+    ["forged", { ...handoff, text: JSON.stringify({ ...declaration, sourceCommit: f.local }) }],
+    ["not-stopped", { ...handoff, text: JSON.stringify({ ...declaration, stopped: false }) }]]) {
+    await assert.rejects(p.mcp.call("hub_task_status_update", { ...p.args, request_id: `abs-${name}`,
+      selected_absorption_handoff: value }));
+    assert.equal(await git(f.root, "rev-parse", "dev"), f.dev);
+    assert.equal(p.store.task(TASK_ID).revision, revision);
+  }
+  p.store.updatePresentation(ABSORBED_ID, { title: "Reopened", description: "Source changed" });
+  await assert.rejects(p.mcp.call("hub_task_status_update", { ...p.args, request_id: "abs-stale" }), /changed/u);
+  assert.equal(await git(f.root, "rev-parse", "dev"), f.dev);
+  assert.equal(p.store.task(TASK_ID).revision, revision);
+});
+
+test("absorbed own immutable proof rejects foreign merge sides and lost downstream transfer binding", {
+  timeout: 120_000,
+}, async (t) => {
+  const { f, p } = await absorbedPublicFixture(t);
+  const preview = await p.mcp.call("hub_task_status_update", { ...p.args, request_id: "abs-object-preview" });
+  const proof = preview.selectedComposition;
+  const gitReader = (args, options) => runTaskGitCommand(args, { ...options, cwd: f.root });
+  await assert.rejects(verifySelectedCompositionObjects({ ...proof, git: gitReader, absorptionInput: null }), /divergent/u);
+  const changed = structuredClone(proof.absorptionInput);
+  const d = JSON.parse(changed.text);
+  d.sourceCommit = f.local;
+  changed.text = JSON.stringify(d);
+  changed.contentHash = interstreamAuditContentHash(changed.text, { origin: changed.origin });
+  await assert.rejects(verifySelectedCompositionObjects({ ...proof, git: gitReader, absorptionInput: changed }), /ordered Task merge/u);
+  await assert.rejects(releaseTaskNetProjections({ git: gitReader, baseCommit: f.published,
+    tasks: [{ taskId: TASK_ID, resultCommit: f.task, selectedComposition: { ...proof, absorptionInput: null },
+      integrations: [{ commit: f.proof, parent: f.dev, order: 1 }] }] }),
+  (error) => error.code === "TASK_SELECTED_PROJECTION_REQUIRED");
+});
+
+test("absorbed own original UNKNOWN fences its source and reconciles after reopen without another Git CAS", {
+  timeout: 120_000,
+}, async (t) => {
+  const { f, p } = await absorbedPublicFixture(t);
+  const preview = await p.mcp.call("hub_task_status_update", { ...p.args, request_id: "abs-unknown-preview" });
+  const commit = p.taskBoard.commitWorkflowTransition.bind(p.taskBoard);
+  p.taskBoard.commitWorkflowTransition = () => { throw new Error("lost original terminal write"); };
+  const confirm = { ...p.args, request_id: "abs-unknown-confirm", selected_preview_request_id: "abs-unknown-preview",
+    expected_selected_preview_hash: preview.previewHash };
+  await assert.rejects(p.mcp.call("hub_task_status_update", confirm), /unknown/u);
+  assert.equal(p.catalog.mcpOperation(confirm.request_id).status, "unknown");
+  assert.equal(await git(f.root, "rev-parse", "dev"), f.proof);
+  assert.throws(() => p.store.updatePresentation(ABSORBED_ID, { title: "Foreign edit", description: "lost" }), /pending selected/u);
+  assert.throws(() => p.store.claim(ABSORBED_ID, { workspaceId: p.workspace.id, streamId: "source-executor",
+    provider: "codex", threadId: "source-thread", turnId: "foreign-source-turn", operationId: "foreign-source-claim" }),
+  /pending selected/u);
+  assert.throws(() => p.store.beginLifecycleTransition(ABSORBED_ID, { operationId: "foreign-source-transition",
+    kind: "workflow", targetWorkflowStatus: "testing", expectedRevision: p.store.task(ABSORBED_ID).revision }),
+  /already active/u);
+  assert.equal(p.store.lifecycleTransition(confirm.request_id).priorSourceTask.id, ABSORBED_ID);
+  p.taskBoard.commitWorkflowTransition = commit;
+  p.close();
+  const reopened = await publicFixture(f);
+  for (const [name, changed] of [["missing", null], ["changed", {
+    ...confirm.selected_absorption_handoff, requestId: "other-source-original" }]]) {
+    await assert.rejects(reopened.mcp.call("hub_task_operation_reconcile", { ...confirm,
+      context_token: reopened.args.context_token, request_id: `abs-reconcile-${name}`,
+      operation_request_id: confirm.request_id, project_root: f.root, confirm_reconcile: true,
+      selected_absorption_handoff: changed }), /arguments|identity|match/u);
+    assert.equal(reopened.catalog.mcpOperation(confirm.request_id).status, "unknown");
+    assert.equal(reopened.store.task(TASK_ID).workflowStatus, "in_progress");
+  }
+  f.service.runCommand = async (args, options) => {
+    assert.ok(!(args[0] === "update-ref" && args[1] === "refs/heads/dev"), "original recovery cannot repeat CAS");
+    return runTaskGitCommand(args, options);
+  };
+  const result = await reopened.mcp.call("hub_task_operation_reconcile", { ...confirm,
+    context_token: reopened.args.context_token, request_id: "abs-reconcile", operation_request_id: confirm.request_id,
+    project_root: f.root, confirm_reconcile: true });
+  assert.equal(result.outcome, "succeeded");
+  assert.equal(reopened.catalog.mcpOperation(confirm.request_id).status, "succeeded");
+  assert.equal(reopened.store.task(TASK_ID).workflowStatus, "testing");
+  assert.equal(reopened.store.task(ABSORBED_ID).workflowStatus, "in_progress");
+  assert.deepEqual(reopened.taskBoard.lifecycleOutcome(confirm.request_id).result.evidence.selectedComposition,
+    preview.selectedComposition);
+});
+
+test("absorbed own admission rechecks saved source bytes and current source ownership before confirmation", {
+  timeout: 120_000,
+}, async (t) => {
+  const { f, p } = await absorbedPublicFixture(t);
+  const preview = await p.mcp.call("hub_task_status_update", { ...p.args, request_id: "abs-fence-preview" });
+  const confirm = { ...p.args, selected_preview_request_id: "abs-fence-preview",
+    expected_selected_preview_hash: preview.previewHash };
+  await writeFile(path.join(f.sourceWorkspace.projectRoot, "absorbed.txt"), "source resumed writing\n");
+  await assert.rejects(p.mcp.call("hub_task_status_update", { ...confirm, request_id: "abs-dirty-source" }),
+    /clean|source.*changed/u);
+  assert.equal(await git(f.root, "rev-parse", "dev"), f.dev);
+  assert.equal(p.store.task(TASK_ID).workflowStatus, "in_progress");
+  await git(f.sourceWorkspace.projectRoot, "restore", "--", "absorbed.txt");
+  const receipt = p.catalog.mcpOperation("source-saved-stopped");
+  p.store.now = () => receipt.createdAtMs + 1;
+  p.store.claim(ABSORBED_ID, { workspaceId: p.workspace.id, streamId: "source-executor",
+    provider: "codex", threadId: "source-thread", turnId: "resumed-source-turn", operationId: "resumed-source" });
+  await assert.rejects(p.mcp.call("hub_task_status_update", { ...confirm, request_id: "abs-reopened-source" }),
+    /reopened|changed/u);
+  assert.equal(await git(f.root, "rev-parse", "dev"), f.dev);
+});
+
+test("absorbed own confirmation refuses a lost native transfer and a competing source operation before Git effects", {
+  timeout: 120_000,
+}, async (t) => {
+  const { f, p } = await absorbedPublicFixture(t);
+  const revision = p.store.task(TASK_ID).revision;
+  p.store.beginLifecycleTransition(ABSORBED_ID, { operationId: "source-pending",
+    kind: "workflow", targetWorkflowStatus: "testing", expectedRevision: p.store.task(ABSORBED_ID).revision });
+  await assert.rejects(p.mcp.call("hub_task_status_update", { ...p.args, request_id: "abs-source-busy" }),
+    /competing/u);
+  p.store.failLifecycleTransition("source-pending", new Error("fixture stopped"));
+  const item = p.store.task(TASK_ID).checklist.find((entry) => entry.linkedTaskId === ABSORBED_ID);
+  await p.taskBoard.updateChecklist({ id: TASK_ID, operation: "toggle", itemId: item.id, completed: true,
+    expectedRevision: revision, requestId: "close-fixture-transfer" });
+  await assert.rejects(p.mcp.call("hub_task_status_update", { ...p.args, request_id: "abs-lost-native-transfer",
+    expected_task_revision: p.store.task(TASK_ID).revision }), /changed/u);
+  assert.equal(await git(f.root, "rev-parse", "dev"), f.dev);
+  assert.equal(p.store.task(TASK_ID).workflowStatus, "in_progress");
+});
 
 async function canonicalAwaitFixture(f, p) {
   const environment = { ...process.env, LOCALAPPDATA: path.join(path.dirname(f.root), "state") };
@@ -574,12 +791,13 @@ test("ordinary pre-CAS partial staging resumes under its original public confirm
   assert.equal(p.catalog.mcpOperation("partial-confirm").status, "succeeded");
 });
 
-test("ordinary published resolution CLI settles only the bound original receipt after restart",
+for (const absorbed of [false, true]) test(`${absorbed ? "absorbed own" : "ordinary published resolution"} CLI settles only the bound original receipt after restart`,
   { timeout: 90_000 }, async (t) => {
-    const f = await fixture(t, { ordinary: true });
-    const p = await publicFixture(f);
-    const published = await publishedFixture(f);
-    const args = { ...p.args, selected_published_resolution: published.input };
+    const { f, p } = absorbed ? await absorbedPublicFixture(t)
+      : await (async () => { const f = await fixture(t, { ordinary: true }); return { f, p: await publicFixture(f) }; })();
+    const published = absorbed ? null : await publishedFixture(f);
+    const envelope = absorbed ? p.args.selected_absorption_handoff : published.input;
+    const args = absorbed ? p.args : { ...p.args, selected_published_resolution: envelope };
     const preview = await p.mcp.call("hub_task_status_update", { ...args, request_id: "cli-pub-preview" });
     const workspaceId = p.taskBoard.task(TASK_ID).workspaceId;
     const complete = p.mcp.workspaceCatalog.completeMcpOperation;
@@ -606,13 +824,14 @@ test("ordinary published resolution CLI settles only the bound original receipt 
       "--expected-workflow-status", "in_progress", "--selected-proof-bundle-path", f.bundle,
       "--selected-proof-bundle-sha256", f.bundleSha256, "--selected-proof-commit", f.proof,
       "--selected-preview-request-id", "cli-pub-preview", "--expected-selected-preview-hash", preview.previewHash,
-      "--selected-published-resolution", envelopeFile];
+      absorbed ? "--selected-absorption-handoff" : "--selected-published-resolution", envelopeFile];
     const options = { env: { ...process.env, AGENT_HUB_CONFIG: configFile, CODEX_PROJECT_ROOT: f.root,
       LOCALAPPDATA: f.dataDir, XDG_STATE_HOME: f.dataDir, AI_PROVIDER: "codex" },
       windowsHide: true, timeout: 15_000 };
-    await writeFile(envelopeFile, JSON.stringify({ ...published.input, resolutionCommit: f.task }));
+    await writeFile(envelopeFile, JSON.stringify(absorbed
+      ? { ...envelope, requestId: "foreign-original" } : { ...envelope, resolutionCommit: f.task }));
     await assert.rejects(exec(process.execPath, command, options), /identity|arguments|hash|match/u);
-    await writeFile(envelopeFile, JSON.stringify(published.input));
+    await writeFile(envelopeFile, JSON.stringify(envelope));
     const { stdout } = await exec(process.execPath, command, options);
     assert.equal(JSON.parse(stdout).outcome, "succeeded");
     const catalog = new WorkspaceCatalogStore({ databaseFile });

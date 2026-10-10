@@ -1,0 +1,53 @@
+# ADR-0105 — Bound absorbed OWN admission
+
+## Decision
+
+A real saved/stopped source transfer can produce an unpublished second parent
+in a Progress survivor. Ordinary single-parent selected Test rejects it, and
+the divergent-published classifier cannot authorize an unpublished side.
+Neither equal trees, a linked checklist, flattening, synthetic Test references
+nor a published-side envelope proves the transferred source authority.
+
+Extend the existing selected verifier with one narrow absorbed OWN
+classification. Reuse the authenticated durable inter-Stream MCP receipt:
+the source executor's exact structured saved/stopped body binds both Tasks,
+source revision, base, source commit/tree and ordered absorption parents.
+The source and survivor must remain started Progress in the same Workspace,
+without previous Test refs; source executor/revision/requirements, unfinished
+native linkage, clean managed source branch/base/HEAD and stopped claim history
+are checked under both Task locks. No new transfer ledger or writer is added.
+
+Require exactly one automatic conflict-free absorption merge, both bounded
+single-parent owning histories down to the registered/accepted base, and only
+a bounded linear correction suffix above that merge. The combined bound is
+256 commits. Recompute full combined base-to-result OWN. Existing dev/proof
+ordered parents, every actual conflict stage/resolution, automatic clean entries,
+outside OWN, publication/remote and no-overwrite materialization stay mandatory.
+An actual absorption conflict or another merge remains unsupported.
+
+Carry the full authenticated binding in the existing content-addressed proof,
+preview/distinct confirmation, SQLite intent/outcome, filesystem receipt,
+descriptor/normalization, reconciliation, net projection, mandatory-selected
+lineage and reuse. Source row edits/deletion, new claims and competing
+transitions are fenced by the pending SQLite intent. Recheck the durable handoff
+and source immediately before Git CAS and terminal Task CAS. UNKNOWN resumes
+that same original under both Task recovery locks; a committed Git effect is
+read back rather than repeated. Downstream projection re-verifies immutable
+Git evidence, not a later source Task status or a partial effective-dev delta.
+
+## Evidence and limits
+
+Focused real Git/SQLite fixtures exercise public preview/confirmation, ordinary
+Await with full OWN/outside preservation, reopen/reuse, missing/foreign/stale
+handoff, changed source, lost native transfer, competing ownership and original
+UNKNOWN recovery. CLI carries the same original handoff; the full current
+selected composition and required prior descriptors need an actual exported
+owner check on the chosen tree, separately from synthetic fixtures.
+
+Historical source/transfer approvals remain attributed history; this correction
+requires affected independent review. Clean ordinary and published classifiers
+retain their old proof shapes when the optional handoff is absent. Source
+closure uses only the existing combined-closure preview/confirmation after
+verified canonical composition. No arbitrary merge admission, new completion
+path, publication, installation or shared-window permission follows from this
+source capability.

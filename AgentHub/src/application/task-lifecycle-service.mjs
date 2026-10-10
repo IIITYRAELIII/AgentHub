@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { realpathSync } from "node:fs";
 import path from "node:path";
 
@@ -6,7 +5,9 @@ import { taskProjectRoot } from "../domain/task-project-root.mjs";
 import { TaskAbsorptionCompositionError } from "../domain/task-board-task.mjs";
 import { normalizedTaskSquashCutover } from "../domain/task-squash-cutover.mjs";
 import { TaskGitHistoryRejectedError } from "../domain/task-git-reference.mjs";
-import { selectedCompositionFields } from "../domain/task-selected-composition.mjs";
+import { selectedCompositionFields, selectedAbsorptionHandoff, normalizedSelectedAbsorption,
+  assertSelectedAbsorptionTasks } from "../domain/task-selected-composition.mjs";
+import { createHash } from "node:crypto";
 
 export class TaskIntegrationRejectedError extends Error {
   constructor(cause) {
@@ -576,9 +577,35 @@ export class TaskLifecycleService {
     ));
   }
 
+  #selectedAbsorptionBinding(task, input, operationId = null) {
+    const handoff = selectedAbsorptionHandoff(input);
+    if (!handoff) return null;
+    const source = this.#task(handoff.declaration.sourceTaskId);
+    const receipt = this.workspaceCatalog.mcpOperation?.(handoff.requestId);
+    if (receipt?.toolName !== "hub_stream_message_send" || receipt.status !== "succeeded"
+        || receipt.result?.delivery?.accepted !== true
+        || receipt.result?.target?.streamId !== task.streamId
+        || receipt.streamId !== source.streamId || receipt.workspaceId !== task.workspaceId
+        || !samePath(this.#projectRoot(source), this.#projectRoot(task))) {
+      throw new Error("Selected absorption requires its durable source-executor handoff receipt");
+    }
+    const binding = normalizedSelectedAbsorption({ requestId: handoff.requestId, text: handoff.text,
+      origin: { workspaceId: receipt.workspaceId, streamId: receipt.streamId, provider: receipt.provider,
+        sourceThreadId: receipt.threadId, requestId: receipt.requestId },
+      contentHash: receipt.interstreamContentHash, createdAtMs: receipt.createdAtMs,
+      sourceTaskNumber: source.taskNumber,
+      sourceDescriptionSha256: createHash("sha256").update(source.description).digest("hex"),
+    });
+    assertSelectedAbsorptionTasks(binding, source, task);
+    requiredMethod(this.taskBoard, "assertSelectedAbsorptionState");
+    this.taskBoard.assertSelectedAbsorptionState({ binding, survivorTaskId: task.id, operationId });
+    return binding;
+  }
+
   async selectedComposition({
     taskId, operationId, expectedTaskRevision, projectRoot, bundlePath,
-    bundleSha256, proofCommit, publishedResolutionInput = null, expectedPreviewHash = null, authority,
+    bundleSha256, proofCommit, publishedResolutionInput = null, absorptionHandoff = null,
+    expectedPreviewHash = null, authority,
   } = {}) {
     for (const name of ["withTaskLock", "previewSelectedCompositionOwned",
       "applySelectedCompositionOwned", "readSelectedCompositionOwned"]) {
@@ -597,17 +624,23 @@ export class TaskLifecycleService {
     }
     const operation = String(operationId ?? "").trim();
     if (!operation) throw new Error("Selected composition operation id is required");
+    const absorbedId = selectedAbsorptionHandoff(absorptionHandoff)?.declaration.sourceTaskId;
+    if (absorbedId) requiredMethod(this.taskGitWorkspaces, "withTaskLocks");
+    const lock = absorbedId
+      ? (callback) => this.taskGitWorkspaces.withTaskLocks([initial.id, absorbedId], callback)
+      : (callback) => this.taskGitWorkspaces.withTaskLock(initial.id, callback);
     return this.releasePreflight.withAwaitTransition(workspace.id, () => (
-      this.taskGitWorkspaces.withTaskLock(initial.id, async (lease) => {
+      lock(async (lease) => {
         const task = this.#task(initial.id);
         if (task.revision !== Number(expectedTaskRevision)
             || task.workflowStatus !== "in_progress" || task.workspaceId !== workspace.id) {
           throw new Error("Selected composition Task revision or status changed");
         }
+        const absorptionInput = this.#selectedAbsorptionBinding(task, absorptionHandoff);
         const preview = await this.taskGitWorkspaces.previewSelectedCompositionOwned({
           taskId: task.id, taskNumber: task.taskNumber, projectRoot: root,
           proofCommit, bundlePath, bundleSha256, publishedResolutionInput, authority,
-          expectedTaskRevision, lease,
+          expectedTaskRevision, absorptionInput, lease,
         });
         if (!expectedPreviewHash) return {
           confirmationRequired: true, previewHash: preview.previewHash,
@@ -629,6 +662,10 @@ export class TaskLifecycleService {
         try {
           applied = await this.taskGitWorkspaces.applySelectedCompositionOwned(preview, {
             operationId: operation, lease,
+            validateAbsorption: absorptionInput ? () => {
+              if (JSON.stringify(this.#selectedAbsorptionBinding(this.#task(task.id), absorptionHandoff, operation))
+                  !== JSON.stringify(absorptionInput)) throw new Error("Selected absorption handoff changed before CAS");
+            } : null,
           });
         } catch (error) {
           const state = await this.taskGitWorkspaces.readSelectedCompositionOwned(preview, {
@@ -1016,6 +1053,11 @@ export class TaskLifecycleService {
 
   withUnknownWorkflowReconciliationLock({ taskId, sourceTaskId = null, projectRoot, operationId } = {}, operation) {
     const task = this.#task(taskId);
+    const selected = this.taskBoard.lifecycleTransition?.(operationId)?.evidence?.selectedComposition;
+    if (selected?.absorptionInput) {
+      sourceTaskId = selectedAbsorptionHandoff({ requestId: selected.absorptionInput.requestId,
+        text: selected.absorptionInput.text }).declaration.sourceTaskId;
+    }
     const workspace = task.workspaceId ? this.workspaceCatalog.workspace(task.workspaceId) : null;
     if (workspace?.settings?.releaseWorkflowEnabled !== true || !this.releasePreflight) {
       throw new Error("Unknown workflow reconciliation requires an enabled release workflow");
@@ -1065,6 +1107,11 @@ export class TaskLifecycleService {
       if (!guardId) await this.taskGitWorkspaces.assertNoProcessTreeGuardOwned(current.id, { lease });
       const applied = await this.taskGitWorkspaces.applySelectedCompositionOwned(selectedComposition, {
         operationId, lease,
+        validateAbsorption: selectedComposition.absorptionInput ? () => {
+          const expected = selectedComposition.absorptionInput;
+          const fresh = this.#selectedAbsorptionBinding(current, { requestId: expected.requestId, text: expected.text }, operationId);
+          if (JSON.stringify(fresh) !== JSON.stringify(expected)) throw new Error("Selected absorption original handoff changed");
+        } : null,
       });
       if (applied.status !== "applied") {
         throw new Error("Selected composition original Git CAS cannot be reconciled");

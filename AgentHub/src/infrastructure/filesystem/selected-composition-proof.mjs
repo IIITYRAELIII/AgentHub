@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { selectedCompositionFilePlan } from "./selected-composition-materializer.mjs";
+import { normalizedSelectedAbsorption, selectedAbsorptionHandoff } from "../../domain/task-selected-composition.mjs";
 
 const SHA = /^[0-9a-f]{40}$/u;
 const MAX_CONFLICTS = 16;
@@ -147,6 +148,53 @@ async function ordinaryOwnPlan(git, identity) {
   return plan;
 }
 
+async function linearOwnedHistory(git, tip, base) {
+  const history = await gitLines(git, ["rev-list", `--max-count=${MAX_OWN_COMMITS + 1}`,
+    "--parents", tip, `^${base}`]);
+  if (!history.length || history.length > MAX_OWN_COMMITS) {
+    throw new Error("Absorbed selected composition own history is empty or exceeds its bound");
+  }
+  for (let index = 0; index < history.length; index += 1) {
+    const [commit, parent, ...other] = history[index].split(" ");
+    const expected = index + 1 < history.length ? history[index + 1].split(" ")[0] : base;
+    if (!SHA.test(commit) || !SHA.test(parent) || other.length || parent !== expected) {
+      throw new Error("Absorbed selected composition contains a foreign or merged side history");
+    }
+  }
+  return history.length;
+}
+
+async function absorbedOwnPlan(git, identity, input, merges) {
+  const { declaration: d } = selectedAbsorptionHandoff({ requestId: input.requestId, text: input.text });
+  if (d.survivorTaskId !== identity.taskId || d.baseCommit !== identity.taskBaseCommit
+      || identity.taskBaseCommit !== identity.acceptedLocalMainCommit
+      || merges.length !== 1 || merges[0] !== `${d.absorptionCommit} ${d.survivorParentCommit} ${d.sourceCommit}`) {
+    throw new Error("Absorbed selected composition ordered Task merge or base changed");
+  }
+  const total = await linearOwnedHistory(git, d.survivorParentCommit, d.baseCommit)
+    + await linearOwnedHistory(git, d.sourceCommit, d.baseCommit);
+  // Corrections above the exact absorption remain linear and bounded; the
+  // absorbed side cannot be replaced by a later snapshot or a different merge.
+  const suffix = identity.taskCommit === d.absorptionCommit ? 0
+    : await linearOwnedHistory(git, identity.taskCommit, d.absorptionCommit);
+  if (total + suffix + 1 > MAX_OWN_COMMITS
+      || await git(["rev-parse", `${d.sourceCommit}^{tree}`]) !== d.sourceTree) {
+    throw new Error("Absorbed selected composition source tree or history bound changed");
+  }
+  const automatic = await mergeTree(git, d.survivorParentCommit, d.sourceCommit);
+  if (automatic.conflicts.size || automatic.tree !== await git(["rev-parse", `${d.absorptionCommit}^{tree}`])) {
+    throw new Error("Absorbed selected composition is not its complete automatic owning merge");
+  }
+  if (await onlyMergeBase(git, identity.devCommit, identity.taskCommit, "absorbed dev/Task") !== d.baseCommit) {
+    throw new Error("Absorbed selected composition has partial or ambiguous Task integration");
+  }
+  const plan = await rawPlan(git, d.baseCommit, identity.taskCommit);
+  if (!plan.length || plan.some((file) => /(^|\/)CHANGELOG\.md$/u.test(file.path))) {
+    throw new Error("Absorbed selected composition has no own delta or changes release history");
+  }
+  return plan;
+}
+
 async function completeEntries(git, tree) {
   const rows = String(await git(["ls-tree", "-r", "-z", "--full-tree", tree])).split("\0").filter(Boolean);
   const result = new Map();
@@ -212,7 +260,7 @@ async function verifyPublishedResolution(git, identity, ownPlan, merge, input) {
 export async function verifySelectedCompositionObjects({
   git, taskId, repositoryKey, taskBaseCommit, acceptedLocalMainCommit,
   taskCommit, devCommit, proofCommit, publishedCommit, publicationGeneration,
-  remoteCommit, bundleSha256, publishedResolutionInput = null,
+  remoteCommit, bundleSha256, publishedResolutionInput = null, absorptionInput = null,
 } = {}) {
   if (typeof git !== "function") throw new Error("Selected composition Git reader is unavailable");
   const identity = {
@@ -249,13 +297,21 @@ export async function verifySelectedCompositionObjects({
     identity.taskCommit, `^${identity.taskBaseCommit}`,
   ]);
   const ordinary = firstParentMerges.length === 0;
+  const absorption = normalizedSelectedAbsorption(absorptionInput);
+  if (ordinary && absorption) throw new Error("Absorption proof requires its exact owning merge");
+  const ownRoute = ordinary || Boolean(absorption);
   const publishedInput = normalizePublishedResolution(publishedResolutionInput);
-  if (publishedInput && !ordinary) throw new Error("Selected published resolution requires the ordinary own route");
-  const ownPlan = ordinary ? await ordinaryOwnPlan(git, identity) : null;
+  if (publishedInput && !ownRoute) throw new Error("Selected published resolution requires the ordinary own route");
+  const ownPlan = ordinary ? await ordinaryOwnPlan(git, identity)
+    : absorption ? await absorbedOwnPlan(git, identity, absorption, firstParentMerges) : null;
   let taskMergeCommit = null;
   let taskMergeParents = [];
   let releaseParent = identity.taskBaseCommit;
-  if (!ordinary) {
+  if (absorption) {
+    const { declaration: d } = selectedAbsorptionHandoff({ requestId: absorption.requestId, text: absorption.text });
+    taskMergeCommit = d.absorptionCommit;
+    taskMergeParents = [d.survivorParentCommit, d.sourceCommit];
+  } else if (!ordinary) {
     if (localPublishedCommonBase === identity.acceptedLocalMainCommit
         || localPublishedCommonBase === identity.publishedCommit) {
       throw new Error("Selected composition is not the divergent published-main case");
@@ -295,7 +351,7 @@ export async function verifySelectedCompositionObjects({
   if (!conflicts.size) throw new Error("Selected composition has no reviewed conflict to resolve");
   const resolved = [];
   for (const name of [...conflicts.keys()].sort()) {
-    if (ordinary && !ownPlan.some((file) => file.path === name
+    if (ownRoute && !ownPlan.some((file) => file.path === name
         && file.kind === "M" && file.newBlob === conflicts.get(name)[3].blob)) {
       throw new Error("Ordinary selected composition conflict is outside the exact own edit");
     }
@@ -313,13 +369,13 @@ export async function verifySelectedCompositionObjects({
     }
   }
   const worktreePlan = await rawPlan(git, devTree, proofTree);
-  if (ordinary && worktreePlan.some((file) => !ownPlan.some((own) => own.path === file.path))) {
+  if (ownRoute && worktreePlan.some((file) => !ownPlan.some((own) => own.path === file.path))) {
     throw new Error("Ordinary selected composition changes a path outside its own delta");
   }
   const selectedReleaseMerge = await mergeTree(git, identity.publishedCommit, identity.taskCommit);
   const releaseConflictPaths = [...selectedReleaseMerge.conflicts.keys()]
     .filter((name) => !/(^|\/)CHANGELOG\.md$/u.test(name)).sort();
-  if (!ordinary && releaseConflictPaths.length) {
+  if (!ownRoute && releaseConflictPaths.length) {
     throw new Error("Selected composition release projection conflicts outside CHANGELOG");
   }
   const publishedResolution = publishedInput
@@ -329,9 +385,11 @@ export async function verifySelectedCompositionObjects({
     taskMergeCommit, taskMergeParents,
     localPublishedCommonBase, releaseParent,
     selectedReleaseTree: publishedResolution?.resolutionTree
-      ?? (ordinary && releaseConflictPaths.length ? null : selectedReleaseMerge.tree),
+      ?? (ownRoute && releaseConflictPaths.length ? null : selectedReleaseMerge.tree),
     ...(publishedInput ? { publishedResolutionInput: publishedInput, publishedResolution } : {}),
-    ...(ordinary ? { proofRoute: "ordinary-own-conflict-v1", ownPlan, releaseConflictPaths } : {}),
+    ...(ownRoute ? { proofRoute: absorption ? "absorbed-own-conflict-v1" : "ordinary-own-conflict-v1",
+      ownPlan, releaseConflictPaths } : {}),
+    ...(absorption ? { absorptionInput: absorption } : {}),
     conflictWitnesses: resolved, worktreePlan,
   };
   return { ...proof, proofHash: createHash("sha256").update(JSON.stringify(proof)).digest("hex") };

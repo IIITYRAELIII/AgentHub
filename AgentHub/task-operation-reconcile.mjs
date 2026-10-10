@@ -93,6 +93,8 @@ try {
     expectedSelectedPreviewHash: input["expected-selected-preview-hash"],
     selectedPublishedResolution: input["selected-published-resolution"]
       ? JSON.parse(await readFile(path.resolve(input["selected-published-resolution"]), "utf8")) : null,
+    selectedAbsorptionHandoff: input["selected-absorption-handoff"]
+      ? JSON.parse(await readFile(path.resolve(input["selected-absorption-handoff"]), "utf8")) : null,
     cutoverSourceCommit: input["cutover-source-commit"],
     cutoverProjectorSha256: input["cutover-projector-sha256"],
     cutoverSourceTaskId: input["cutover-source-task"],

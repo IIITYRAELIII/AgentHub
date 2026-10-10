@@ -45,6 +45,7 @@ const TASK_READS = new Set([
   "claimBindingForOperation",
   "lifecycleTransition", "lifecycleOutcome", "releaseTasks", "captureEnabled", "mutationDiagnostics", "close",
   "selectedCompositionForRelease",
+  "assertSelectedAbsorptionState",
   "checklistRequestResult", "awaitRebuildPending", "releaseFinalizationOutcome",
 ]);
 
