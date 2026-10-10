@@ -715,11 +715,28 @@ export class TaskLifecycleService {
   async #updateWorkflowStatusLocked({
     taskId, status, operationId, binding = {}, projectRoot = null,
     expectedRevision = null, expectedWorkflowStatus = null, operationEvidence = null,
+    selectedAbsorptionHandoff: handoffInput = null,
   } = {}, { releaseWorkflow = false } = {}) {
-    return this.#withLock(taskId, (lease = {}) => this.#updateWorkflowStatusWithLease({
-      taskId, status, operationId, binding, projectRoot, expectedRevision, expectedWorkflowStatus,
-      operationEvidence,
-    }, { releaseWorkflow, lease }), { git: releaseWorkflow });
+    const handoff = selectedAbsorptionHandoff(handoffInput);
+    if (handoff && (!releaseWorkflow || status !== "testing" || expectedRevision == null
+        || expectedWorkflowStatus !== "in_progress")) throw new Error("Native absorption requires exact Test admission");
+    const operation = (lease = {}) => {
+      const task = this.#task(taskId);
+      const refs = (task.gitReferences ?? []).filter(ref => samePath(ref.projectRoot, projectRoot || this.#projectRoot(task)));
+      const prior = !handoff && releaseWorkflow && status === "testing" && refs.length === 1
+        ? this.taskBoard.selectedCompositionForRelease({ taskId, projectRoot: refs[0].projectRoot,
+          resultCommit: refs[0].resultCommit })?.selectedComposition : null;
+      const history = prior?.kind === "native-task-integration-v1" ? prior.absorptionHistory ?? prior : null;
+      return this.#updateWorkflowStatusWithLease({
+        taskId, status, operationId, binding, projectRoot, expectedRevision, expectedWorkflowStatus,
+        operationEvidence: handoff ? { ...(operationEvidence ?? {}), nativeAbsorptionInput:
+          this.#selectedAbsorptionBinding(task, handoffInput, operationId) }
+          : history ? { ...(operationEvidence ?? {}), nativeAbsorptionHistory: history } : operationEvidence,
+      }, { releaseWorkflow, lease });
+    };
+    return handoff
+      ? this.taskGitWorkspaces.withTaskLocks([taskId, handoff.declaration.sourceTaskId], operation, { guardTaskId: taskId })
+      : this.#withLock(taskId, operation, { git: releaseWorkflow });
   }
 
   async #updateWorkflowStatusWithLease({
@@ -744,6 +761,22 @@ export class TaskLifecycleService {
       const affectsAwait = workspace?.settings?.releaseWorkflowEnabled === true
         && (task.workflowStatus === "awaiting_implementation" || workflowStatus === "awaiting_implementation");
       const selectedProjectRoot = releaseWorkflow ? projectRoot || this.#projectRoot(task) : null;
+      const nativeAbsorptionInput = operationEvidence?.nativeAbsorptionInput ?? null;
+      const nativeAbsorptionHistory = operationEvidence?.nativeAbsorptionHistory ?? null;
+      const validateAbsorption = nativeAbsorptionHistory ? () => {
+        const original = this.taskBoard.selectedCompositionForRelease({ taskId: task.id,
+          projectRoot: nativeAbsorptionHistory.repositoryRoot, resultCommit: nativeAbsorptionHistory.taskCommit });
+        if (JSON.stringify(original?.selectedComposition) !== JSON.stringify(nativeAbsorptionHistory)) {
+          throw new Error("Native absorption accepted history changed");
+        }
+      } : nativeAbsorptionInput ? () => {
+        const fresh = this.#selectedAbsorptionBinding(this.#task(task.id),
+          { requestId: nativeAbsorptionInput.requestId, text: nativeAbsorptionInput.text }, operationId);
+        if (JSON.stringify(fresh) !== JSON.stringify(nativeAbsorptionInput)) {
+          throw new Error("Native absorption original handoff changed");
+        }
+      } : null;
+      validateAbsorption?.();
       if (releaseWorkflow && task.workflowStatus === "blocked" && workflowStatus !== "blocked") {
         await this.taskGitWorkspaces.prepareOwned({
           taskId: task.id, taskNumber: task.taskNumber, projectRoot: selectedProjectRoot, lease,
@@ -938,6 +971,7 @@ export class TaskLifecycleService {
           turnId: null,
           summary: task.title,
           expectedResultReferences: task.workflowStatus === "testing" ? task.gitReferences ?? [] : null,
+          nativeAbsorptionInput, nativeAbsorptionHistory, expectedTaskRevision: task.revision, validateAbsorption,
           lease,
         });
         if (!integration.resultProved || !integration.integrated) {
@@ -974,7 +1008,7 @@ export class TaskLifecycleService {
           conflicts: [],
           error: null,
         };
-        const terminal = () => this.#mutation(() => this.taskBoard.commitWorkflowTransition({
+        const terminal = (nativeDescriptor = null) => this.#mutation(() => this.taskBoard.commitWorkflowTransition({
           operationId,
           gitReferences: [{
             projectRoot: snapshot.repositoryRoot,
@@ -987,6 +1021,7 @@ export class TaskLifecycleService {
             outcome: integration.outcome,
             resultCommit: snapshot.headCommit,
             devHeadCommit: integration.dev?.headCommit ?? null,
+            ...(nativeDescriptor ? { selectedCompositionRequired: true, selectedComposition: nativeDescriptor } : {}),
             response: {
               gitWorkspace: gitWorkspaceResult, gitIntegration: gitIntegrationResult,
               ...(affectsAwait ? { releaseCandidate: {
@@ -996,7 +1031,8 @@ export class TaskLifecycleService {
           },
         }), operationId);
         const current = this.taskGitWorkspaces.withNativeIntegrationTerminalOwned
-          ? await this.taskGitWorkspaces.withNativeIntegrationTerminalOwned(snapshot, { operationId, lease }, terminal)
+          ? await this.taskGitWorkspaces.withNativeIntegrationTerminalOwned(snapshot,
+            { operationId, lease, nativeAbsorptionInput, nativeAbsorptionHistory, validateAbsorption }, terminal)
           : await terminal();
         return {
           task: current,
@@ -1064,10 +1100,11 @@ export class TaskLifecycleService {
 
   withUnknownWorkflowReconciliationLock({ taskId, sourceTaskId = null, projectRoot, operationId } = {}, operation) {
     const task = this.#task(taskId);
-    const selected = this.taskBoard.lifecycleTransition?.(operationId)?.evidence?.selectedComposition;
-    if (selected?.absorptionInput) {
-      sourceTaskId = selectedAbsorptionHandoff({ requestId: selected.absorptionInput.requestId,
-        text: selected.absorptionInput.text }).declaration.sourceTaskId;
+    const evidence = this.taskBoard.lifecycleTransition?.(operationId)?.evidence;
+    const absorptionInput = evidence?.nativeAbsorptionInput ?? evidence?.selectedComposition?.absorptionInput;
+    if (absorptionInput) {
+      sourceTaskId = selectedAbsorptionHandoff({ requestId: absorptionInput.requestId,
+        text: absorptionInput.text }).declaration.sourceTaskId;
     }
     const workspace = task.workspaceId ? this.workspaceCatalog.workspace(task.workspaceId) : null;
     if (workspace?.settings?.releaseWorkflowEnabled !== true || !this.releasePreflight) {

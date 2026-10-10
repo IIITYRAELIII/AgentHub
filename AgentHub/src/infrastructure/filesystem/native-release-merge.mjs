@@ -38,12 +38,14 @@ export async function assertNativeTaskHistories({ git, baseCommit, tasks }) {
   }
   for (const { task, rows } of histories) {
     const selected = selectedCompositionFields(task);
-    const absorbed = selected.selectedComposition?.absorptionInput;
+    // Fresh admission is supplied only by TaskLifecycle under both Task leases.
+    // Release preparation uses the sealed descriptor from the committed Test.
+    const absorbed = selected.selectedComposition?.absorptionInput ?? task.nativeAbsorptionInput;
     let authorizedSide = null;
     if (absorbed) {
       const binding = normalizedSelectedAbsorption(absorbed);
       const d = selectedAbsorptionHandoff({ requestId: binding.requestId, text: binding.text }).declaration;
-      if (!selected.selectedCompositionRequired || d.survivorTaskId !== task.taskId
+      if (d.survivorTaskId !== task.taskId
           || d.baseCommit !== (task.baseCommit || baseCommit)
           || await maybe(git, ["merge-base", "--is-ancestor", d.absorptionCommit, task.resultCommit]) === null
           || String(await git(["show", "-s", "--format=%P", d.absorptionCommit]))

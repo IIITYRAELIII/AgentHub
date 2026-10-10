@@ -83,6 +83,39 @@ export function normalizedSelectedComposition(value) {
     throw selectedCompositionRequiredError("descriptor missing");
   }
   const proof = JSON.parse(JSON.stringify(value));
+  if (proof.kind === "native-task-integration-v1") {
+    const fields = ["kind", "taskId", "operationId", "expectedTaskRevision", "repositoryRoot",
+      "taskBaseCommit", "taskCommit", "devCommit", "proofCommit", "proofTree", "mainCommit",
+      "absorptionInput", "absorptionHistory", "descriptorHash"];
+    if (Object.keys(proof).some(key => !fields.includes(key)) || !proof.taskId || !proof.operationId
+        || typeof proof.repositoryRoot !== "string" || !proof.repositoryRoot
+        || !Number.isSafeInteger(proof.expectedTaskRevision) || proof.expectedTaskRevision < 1
+        || ["taskBaseCommit", "taskCommit", "devCommit", "proofCommit", "proofTree", "mainCommit"]
+          .some(key => !/^[0-9a-f]{40}$/u.test(proof[key] ?? ""))
+        || !/^[0-9a-f]{64}$/u.test(proof.descriptorHash ?? "")
+        || createHash("sha256").update(JSON.stringify({ ...proof, descriptorHash: undefined }))
+          .digest("hex") !== proof.descriptorHash || !proof.absorptionInput) {
+      throw selectedCompositionRequiredError("native Test descriptor identity/hash changed");
+    }
+    normalizedSelectedAbsorption(proof.absorptionInput);
+    const d = selectedAbsorptionHandoff({ requestId: proof.absorptionInput.requestId,
+      text: proof.absorptionInput.text }).declaration;
+    if (d.survivorTaskId !== proof.taskId || d.baseCommit !== proof.taskBaseCommit) {
+      throw selectedCompositionRequiredError("native Test absorbed identity changed");
+    }
+    if (proof.absorptionHistory) {
+      if (proof.absorptionHistory.absorptionHistory || proof.absorptionHistory.kind !== "native-task-integration-v1") {
+        throw selectedCompositionRequiredError("native absorbed history must reference its original Test");
+      }
+      const original = normalizedSelectedComposition(proof.absorptionHistory);
+      if (original.taskId !== proof.taskId || original.repositoryRoot !== proof.repositoryRoot
+          || original.taskBaseCommit !== proof.taskBaseCommit
+          || JSON.stringify(original.absorptionInput) !== JSON.stringify(proof.absorptionInput)) {
+        throw selectedCompositionRequiredError("native absorbed history identity changed");
+      }
+    }
+    return proof;
+  }
   const commitFields = ["taskBaseCommit", "taskCommit", "devCommit", "proofCommit",
     "publishedCommit", "remoteCommit", "proofTree", "releaseParent", "selectedReleaseTree"];
   if (proof.kind !== "selected-task-composition-v1" || !proof.taskId

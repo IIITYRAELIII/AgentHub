@@ -103,6 +103,12 @@ function selectedCompositionArguments(options = {}) {
     options.selectedProofCommit, options.selectedPreviewRequestId,
     options.expectedSelectedPreviewHash, options.selectedPublishedResolution, options.selectedAbsorptionHandoff];
   if (values.every((value) => !supplied(value))) return null;
+  if (values.slice(0, -1).every(value => !supplied(value))) {
+    if (!Number.isSafeInteger(Number(options.expectedTaskRevision)) || Number(options.expectedTaskRevision) < 1
+        || options.expectedWorkflowStatus !== "in_progress") throw new Error("Invalid native absorption original CAS");
+    return { expected_task_revision: Number(options.expectedTaskRevision), expected_workflow_status: "in_progress",
+      selected_absorption_handoff: options.selectedAbsorptionHandoff };
+  }
   const revision = Number(options.expectedTaskRevision);
   const bundlePath = String(options.selectedBundlePath ?? "").trim();
   const bundleSha256 = String(options.selectedBundleSha256 ?? "").trim().toLowerCase();
@@ -378,6 +384,14 @@ export class TaskOperationReconciliationService {
     let squashMatches = true;
     let selectedMatches = true;
     if (selected) {
+      if (!selected.selected_proof_commit) {
+        const evidence = transition?.evidence ?? outcome?.result?.evidence;
+        const input = evidence?.nativeAbsorptionInput;
+        selectedMatches = targetWorkflowStatus === "testing"
+          && (transition?.expectedRevision ?? outcome?.result?.priorTask?.revision) === selected.expected_task_revision
+          && JSON.stringify(input ? { requestId: input.requestId, text: input.text } : null)
+            === JSON.stringify(selected.selected_absorption_handoff);
+      } else {
       const selectedProof = transition?.evidence?.selectedComposition
         ?? outcome?.result?.evidence?.selectedComposition;
       selectedMatches = targetWorkflowStatus === "testing"
@@ -394,6 +408,7 @@ export class TaskOperationReconciliationService {
           ? { requestId: selectedProof.absorptionInput.requestId, text: selectedProof.absorptionInput.text } : null)
           === JSON.stringify(selected.selected_absorption_handoff ?? null)
         && samePath(selectedProof?.repositoryRoot, root);
+      }
     }
     let squashSourceTask = null;
     if (squash) {

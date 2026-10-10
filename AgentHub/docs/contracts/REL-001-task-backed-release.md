@@ -17,6 +17,15 @@ exact ordered parents and the existing authenticated saved/stopped handoff,
 durable selected receipt and bounded source history. A checklist link, equality
 of trees or caller-supplied flag cannot authorize a foreign merge side.
 
+A fresh absorption Test accepts selected_absorption_handoff alone: the existing
+authenticated saved/stopped inter-Stream receipt, exact transferred requirements,
+source/survivor identities and CAS are checked under both Task leases. Its native
+original intent binds the same input; live source Git and durable ownership are
+rechecked before dev CAS and terminal Task CAS, including UNKNOWN/reopen. The
+successful outcome seals native-task-integration-v1 required selected evidence,
+carried unchanged through plan/manifest/generation and historical readback.
+No legacy selected preview, bundle/materializer or arbitrary merge waiver is used.
+
 Ordinary Test uses an isolated native merge from current dev and its exact Task
 result. A conflict leaves MERGE_HEAD, stages and automatic entries there; shared
 dev and the last accepted candidate remain intact. The executor uses normal

@@ -2608,13 +2608,34 @@ export class TaskBoardStore {
       WHERE phase IN ('pending_git', 'cleanup') AND operation_id != ? AND (
         task_id IN (?, ?) OR json_extract(evidence_json, '$.squashTransfer.source.taskId') IN (?, ?)
         OR json_extract(json_extract(evidence_json, '$.selectedComposition.absorptionInput.text'), '$.sourceTaskId') IN (?, ?)
-      ) LIMIT 1`).get(operationId ?? "", source.id, survivor.id, source.id, survivor.id, source.id, survivor.id);
+        OR json_extract(json_extract(evidence_json, '$.nativeAbsorptionInput.text'), '$.sourceTaskId') IN (?, ?)
+      ) LIMIT 1`).get(operationId ?? "", source.id, survivor.id, source.id, survivor.id, source.id, survivor.id, source.id, survivor.id);
     if (reopened || active) throw selectedCompositionRequiredError("absorbed source reopened or has a competing transition");
     return input;
   }
 
   assertSelectedAbsorptionState(options) {
     return this.#withDatabase((database) => this.#assertSelectedAbsorptionState(database, options));
+  }
+
+  #assertNativeAbsorptionHistory(database, history, taskId) {
+    const proof = selectedCompositionFields({ taskId, resultCommit: history?.taskCommit,
+      selectedComposition: history }).selectedComposition;
+    if (proof?.kind !== "native-task-integration-v1" || proof.absorptionHistory) {
+      throw selectedCompositionRequiredError("native accepted absorption root missing");
+    }
+    const row = database.prepare(`SELECT result_json FROM hub_task_lifecycle_outcomes
+      WHERE operation_id = ? AND task_id = ? AND kind = 'workflow'`).get(proof.operationId, taskId);
+    const outcome = row?.result_json ? JSON.parse(row.result_json) : null;
+    if (outcome?.task?.workflowStatus !== "testing" || outcome.evidence?.selectedCompositionRequired !== true
+        || outcome.evidence?.resultCommit !== proof.taskCommit
+        || outcome.evidence?.devHeadCommit !== proof.proofCommit
+        || JSON.stringify(outcome.evidence?.selectedComposition) !== JSON.stringify(proof)
+        || !(outcome.task.gitReferences ?? []).some(ref => ref.resultCommit === proof.taskCommit
+          && sameResolvedPath(ref.projectRoot, proof.repositoryRoot))) {
+      throw selectedCompositionRequiredError("native accepted absorption outcome changed");
+    }
+    return proof;
   }
 
   beginLifecycleTransition(id, {
@@ -2646,6 +2667,14 @@ export class TaskBoardStore {
           const existingTransfer = JSON.parse(existing.evidence_json ?? "{}")?.squashTransfer;
           const existingCutover = JSON.parse(existing.evidence_json ?? "{}")?.squashCutover;
           const existingAbsorbed = JSON.parse(existing.evidence_json ?? "{}")?.absorbedInto;
+          if (JSON.stringify(JSON.parse(existing.evidence_json ?? "{}")?.nativeAbsorptionInput ?? null)
+              !== JSON.stringify(evidence?.nativeAbsorptionInput ?? null)) {
+            throw new Error("Task lifecycle original native absorption changed");
+          }
+          if (JSON.stringify(JSON.parse(existing.evidence_json ?? "{}")?.nativeAbsorptionHistory ?? null)
+              !== JSON.stringify(evidence?.nativeAbsorptionHistory ?? null)) {
+            throw new Error("Task lifecycle original native absorption history changed");
+          }
           if (JSON.stringify(JSON.parse(existing.evidence_json ?? "{}")?.selectedComposition ?? null)
               !== JSON.stringify(evidence?.selectedComposition ?? null)) {
             throw new Error("Task lifecycle operation id was already used for another selected composition");
@@ -2727,7 +2756,13 @@ export class TaskBoardStore {
         const squashTransfer = evidence?.squashTransfer
           ? normalizedTaskSquashTransfer(evidence.squashTransfer)
           : null;
-        const absorptionInput = evidence?.selectedComposition?.absorptionInput;
+        const absorptionInput = evidence?.nativeAbsorptionInput ?? evidence?.selectedComposition?.absorptionInput;
+        if (evidence?.nativeAbsorptionHistory) {
+          if (absorptionInput || normalizedKind !== "workflow" || target !== "testing") {
+            throw selectedCompositionRequiredError("native accepted history requires ordinary Test");
+          }
+          this.#assertNativeAbsorptionHistory(database, evidence.nativeAbsorptionHistory, taskId);
+        }
         if (absorptionInput) {
           if (normalizedKind !== "workflow" || target !== "testing") {
             throw selectedCompositionRequiredError("absorbed proof requires an exact Test transition");
@@ -2776,8 +2811,9 @@ export class TaskBoardStore {
           WHERE phase IN ('pending_git', 'cleanup') AND (
             task_id = ? OR json_extract(evidence_json, '$.squashTransfer.source.taskId') = ?
             OR json_extract(json_extract(evidence_json, '$.selectedComposition.absorptionInput.text'), '$.sourceTaskId') = ?
+            OR json_extract(json_extract(evidence_json, '$.nativeAbsorptionInput.text'), '$.sourceTaskId') = ?
           )
-        `).get(taskId, taskId, taskId);
+        `).get(taskId, taskId, taskId, taskId);
         if (active) throw new Error(`Task lifecycle transition is already active: ${active.operation_id}`);
         if (squashTransfer) {
           const sourceActive = database.prepare(`
@@ -2888,7 +2924,10 @@ export class TaskBoardStore {
   // disappears. Read the existing outcome owner; never infer ordinary protocol
   // from the absence of an optional field in downstream release objects.
   selectedCompositionForRelease({ taskId, projectRoot, resultCommit } = {}) {
-    return this.#withDatabase((database) => {
+    return this.#withDatabase(database => this.#selectedCompositionForRelease(database, { taskId, projectRoot, resultCommit }));
+  }
+
+  #selectedCompositionForRelease(database, { taskId, projectRoot, resultCommit }) {
       const rows = database.prepare(`
         SELECT result_json FROM hub_task_lifecycle_outcomes
         WHERE task_id = ? AND kind = 'workflow'
@@ -2922,7 +2961,6 @@ export class TaskBoardStore {
         selected = fields;
       }
       return selected;
-    });
   }
 
   failLifecycleTransition(operationId, error) {
@@ -2955,6 +2993,48 @@ export class TaskBoardStore {
           throw new Error("Task changed while Git evidence was prepared");
         }
         const pendingSelected = JSON.parse(transition.evidence_json ?? "{}")?.selectedComposition;
+        const pendingNativeInput = JSON.parse(transition.evidence_json ?? "{}")?.nativeAbsorptionInput;
+        const pendingNativeHistory = JSON.parse(transition.evidence_json ?? "{}")?.nativeAbsorptionHistory;
+        if (pendingNativeHistory) {
+          this.#assertNativeAbsorptionHistory(database, pendingNativeHistory, transition.task_id);
+          if (pendingNativeInput || JSON.stringify(evidence?.nativeAbsorptionHistory) !== JSON.stringify(pendingNativeHistory)) {
+            throw selectedCompositionRequiredError("native accepted history changed before terminal");
+          }
+          if (evidence?.selectedComposition) {
+            const descriptor = selectedCompositionFields({ taskId: transition.task_id,
+              resultCommit: evidence.resultCommit, selectedComposition: evidence.selectedComposition }).selectedComposition;
+            if (descriptor.kind !== "native-task-integration-v1" || descriptor.operationId !== operation
+                || descriptor.expectedTaskRevision !== Number(transition.expected_task_revision)
+                || descriptor.proofCommit !== evidence.devHeadCommit
+                || JSON.stringify(descriptor.absorptionHistory) !== JSON.stringify(pendingNativeHistory)) {
+              throw selectedCompositionRequiredError("native corrected terminal lost accepted history");
+            }
+          } else {
+            const reused = this.#selectedCompositionForRelease(database, { taskId: transition.task_id,
+              projectRoot: pendingNativeHistory.repositoryRoot, resultCommit: evidence?.resultCommit })?.selectedComposition;
+            if (reused?.kind !== "native-task-integration-v1"
+                || JSON.stringify(reused.absorptionHistory ?? reused) !== JSON.stringify(pendingNativeHistory)
+                || evidence?.response?.gitIntegration?.alreadyIntegrated !== true) {
+              throw selectedCompositionRequiredError("native reuse has no exact original Test result");
+            }
+          }
+        }
+        if (pendingNativeInput) {
+          const descriptor = selectedCompositionFields({ taskId: transition.task_id,
+            resultCommit: evidence?.resultCommit, selectedCompositionRequired: true,
+            selectedComposition: evidence?.selectedComposition }).selectedComposition;
+          if (descriptor.kind !== "native-task-integration-v1" || descriptor.operationId !== operation
+              || descriptor.expectedTaskRevision !== Number(transition.expected_task_revision)
+              || descriptor.proofCommit !== evidence?.devHeadCommit
+              || JSON.stringify(descriptor.absorptionInput) !== JSON.stringify(pendingNativeInput)
+              || JSON.stringify(evidence?.nativeAbsorptionInput) !== JSON.stringify(pendingNativeInput)) {
+            throw selectedCompositionRequiredError("native absorbed terminal differs from original admission");
+          }
+          this.#assertSelectedAbsorptionState(database, { binding: pendingNativeInput,
+            survivorTaskId: transition.task_id, operationId: operation });
+        } else if (!pendingNativeHistory && evidence?.selectedComposition?.kind === "native-task-integration-v1") {
+          throw selectedCompositionRequiredError("native terminal has no original absorbed admission");
+        }
         if (pendingSelected?.absorptionInput) {
           if (JSON.stringify(evidence?.selectedComposition) !== JSON.stringify(pendingSelected)) {
             throw selectedCompositionRequiredError("absorbed terminal proof differs from original admission");

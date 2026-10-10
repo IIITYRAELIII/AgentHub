@@ -35,6 +35,24 @@ Approved absorbed parents require exact authenticated saved/stopped transfer and
 sealed receipt binding, not arbitrary merge relaxation. Main context can differ
 from the old published-base candidate and is reported explicitly.
 
+Fresh absorption uses ordinary Test with the existing selected_absorption_handoff
+argument, without a bundle, selected preview or per-file materializer. TaskLifecycle
+authenticates the original inter-Stream receipt and transferred requirements under
+both Task leases. The native Git intent binds that exact input and survivor CAS;
+source HEAD/base/branch/cleanliness/process fences and durable ownership are checked
+before promotion and terminal persistence, including same-original recovery.
+The successful Test outcome stores a native-task-integration-v1 descriptor in the
+existing required selected evidence. Plan/manifest/generation/readback retain it.
+Historical validation verifies the original completed Git capture and immutable
+objects, rather than the later rolling source/dev checkout. Combined closure uses
+the existing preview/confirm owner after successful composition.
+Later ordinary return/correction/reuse retains the original accepted absorption
+descriptor from the existing Test outcome. It must be an ancestor of the new
+exact result and its immutable completed capture must still verify. It does not
+reopen the closed source or reuse its handoff as fresh live authority. The new
+native outcome carries the unchanged original descriptor as absorptionHistory;
+SQL admission and terminal CAS verify the original outcome, without a new ledger.
+
 Legacy selected v1/v2 writers can complete only originals admitted before cutover.
 New preview admission is closed. Actual capture version must agree with intent
 and receipt; v2 seals/markers refuse paired header downgrade. Genuine v1 keeps

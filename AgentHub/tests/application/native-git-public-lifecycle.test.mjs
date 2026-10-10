@@ -55,7 +55,7 @@ async function fixture(t, { releaseMetadata = false } = {}) {
     store = new TaskBoardStore({ databaseFile });
     if (!workspace) {
       workspace = await catalog.runMutation(() => catalog.createWorkspace({ name: "Native", settings: {
-        workingDirectory: primary, releaseWorkflowEnabled: true,
+        workingDirectory: primary, releaseWorkflowEnabled: true, taskPrefix: "NAT",
       } }));
       stream = await catalog.runMutation(() => catalog.createStream({ workspaceId: workspace.id,
         name: "RM", settings: { releaseManager: true, workingDirectory: primary } }));
@@ -87,6 +87,7 @@ async function fixture(t, { releaseMetadata = false } = {}) {
       releaseOperations,
       releaseCompleter: { completeRelease: () => assert.fail("No publication") },
       attachmentDirectory: path.join(root, "attachments"), secret: "synthetic-native-fixture", reconcilePendingOnStartup: false });
+    service.setStreamMessenger(async () => ({ accepted: true, pending: false, deliveryId: "synthetic-handoff" }));
     token = service.contextToken({ provider: "codex", threadId: "fixture-thread" });
   };
   await open();
@@ -97,6 +98,56 @@ async function fixture(t, { releaseMetadata = false } = {}) {
     get preflight() { return preflight; },
     get publication() { return publication; },
     get releaseGit() { return releaseGit; },
+    get store() { return store; },
+    get dataDir() { return dataDir; },
+    async absorption() {
+      const source = store.create({ text: "Saved source\n\nOriginal requirements and unfinished regression", bucket: "workspace", workspaceId: workspace.id });
+      const survivor = store.create({ text: "Survivor\n\nCombined requirements", bucket: "workspace", workspaceId: workspace.id });
+      board.assignWorkspaceTaskNumbers(workspace.id);
+      const sourceStream = await catalog.runMutation(() => catalog.createStream({ workspaceId: workspace.id,
+        name: "Source", settings: { workingDirectory: primary } }));
+      const sourceThread = `source-${source.id}`;
+      await catalog.runMutation(() => catalog.bindThread({ provider: "codex", threadId: sourceThread, streamId: sourceStream.id }));
+      await board.claim({ id: source.id, workspaceId: workspace.id, streamId: sourceStream.id,
+        provider: "codex", threadId: sourceThread, turnId: "saved-turn", operationId: `source-claim-${source.id}` });
+      await board.claim({ id: survivor.id, workspaceId: workspace.id, streamId: stream.id,
+        provider: "codex", threadId: "fixture-thread", turnId: "survivor-turn", operationId: `survivor-claim-${survivor.id}` });
+      store.updatePresentation(survivor.id, { title: "Survivor", description: `Combined requirements\n\n${board.task(source.id).description}` });
+      await board.updateChecklist({ id: survivor.id, operation: "add", text: "Complete transferred requirements",
+        expectedRevision: board.task(survivor.id).revision, requestId: "transfer-add" });
+      const item = board.task(survivor.id).checklist[0];
+      await board.updateChecklist({ id: survivor.id, operation: "link", itemId: item.id, linkedTaskId: source.id,
+        expectedRevision: board.task(survivor.id).revision, requestId: "transfer-link" });
+      const sourceWorkspace = await taskGit.prepare({ taskId: source.id, taskNumber: board.task(source.id).taskNumber, projectRoot: primary });
+      const survivorWorkspace = await taskGit.prepare({ taskId: survivor.id, taskNumber: board.task(survivor.id).taskNumber, projectRoot: primary });
+      source.root = sourceWorkspace.projectRoot; survivor.root = survivorWorkspace.projectRoot;
+      await writeFile(path.join(source.root, "source.txt"), "saved source\n"); await commit(source.root, "saved source");
+      await writeFile(path.join(survivor.root, "survivor.txt"), "survivor\n"); await commit(survivor.root, "survivor");
+      const sourceCommit = await git(source.root, "rev-parse", "HEAD");
+      const survivorParentCommit = await git(survivor.root, "rev-parse", "HEAD");
+      await git(survivor.root, "-c", "user.name=Fixture", "-c", "user.email=fixture@local.invalid",
+        "merge", "--no-ff", "--no-edit", sourceCommit);
+      const declaration = { version: 1, kind: "task-absorption-handoff-v1", workspaceId: workspace.id,
+        sourceTaskId: source.id, sourceTaskRevision: board.task(source.id).revision, survivorTaskId: survivor.id,
+        baseCommit: base, sourceCommit, sourceTree: await git(source.root, "rev-parse", "HEAD^{tree}"),
+        survivorParentCommit, absorptionCommit: await git(survivor.root, "rev-parse", "HEAD"), saved: true, stopped: true };
+      const handoff = async (requestId, delta = {}) => {
+        const text = JSON.stringify({ ...declaration, ...delta });
+        const sourceToken = service.contextToken({ provider: "codex", threadId: sourceThread });
+        await service.call("hub_stream_message_send", { context_token: sourceToken, request_id: requestId,
+          stream_id: stream.id, text, mode: "queue", confirm_send: true });
+        return { requestId, text };
+      };
+      return { source, survivor, declaration, handoff, sourceStream, sourceThread, itemId: item.id };
+    },
+    async closeCombined(source, survivor) {
+      const args = { context_token: token, task_id: source.id, absorbed_into_task_id: survivor.id,
+        request_id: "combined-preview" };
+      const preview = await service.call("hub_task_complete", args);
+      assert.equal(preview.confirmationRequired, true);
+      return service.call("hub_task_complete", { ...args, request_id: "combined-confirm",
+        confirm_cleanup: true, expected_cleanup_token: preview.cleanupToken });
+    },
     async release(task, originMain = base) {
       const args = { context_token: token, request_id: "native-release-original", task_ids: [task.id],
         validation_mode: "focused", approved_targets: [{ targetId: "fixture", kind: "git", repositoryRoot: primary,
@@ -121,14 +172,171 @@ async function fixture(t, { releaseMetadata = false } = {}) {
         task_id: task.id, status, expected_task_revision: current.revision,
         expected_workflow_status: current.workflowStatus, ...overrides });
     },
-    async reconcile(task, request, original, revision, workflowStatus) {
+    async reconcile(task, request, original, revision, workflowStatus, overrides = {}) {
       return service.call("hub_task_operation_reconcile", { context_token: token, request_id: request,
         task_id: task.id, operation_request_id: original, project_root: primary,
         confirm_reconcile: true,
-        expected_task_revision: revision, expected_workflow_status: workflowStatus });
+        expected_task_revision: revision, expected_workflow_status: workflowStatus, ...overrides });
     },
   };
 }
+
+test("public fresh native absorption binds authenticated handoff through Test Await and combined closure", { timeout: 360_000 }, async t => {
+  const f = await fixture(t, { releaseMetadata: true }), { source, survivor, handoff, declaration, itemId } = await f.absorption();
+  const input = await handoff("saved-stopped");
+  await assert.rejects(f.status(survivor, "testing", "missing-handoff"), { code: "RELEASE_NATIVE_HISTORY_REQUIRED" });
+  assert.equal(await git(f.primary, "rev-parse", "dev"), f.base);
+  await assert.rejects(f.status(survivor, "testing", "changed-handoff", {
+    selected_absorption_handoff: { ...input, text: JSON.stringify({ ...declaration, sourceCommit: f.base }) },
+  }), /binding changed/u);
+  const wrongParents = await handoff("wrong-parents", { survivorParentCommit: f.base });
+  await assert.rejects(f.status(survivor, "testing", "wrong-parent-test", { selected_absorption_handoff: wrongParents }),
+    /absorbed history differs/u);
+  const wrongSource = await handoff("wrong-source", { sourceCommit: f.base });
+  await assert.rejects(f.status(survivor, "testing", "wrong-source-test", { selected_absorption_handoff: wrongSource }),
+    /source HEAD\/base\/branch/u);
+  const stale = await handoff("stale-source", { sourceTaskRevision: declaration.sourceTaskRevision + 1 });
+  await assert.rejects(f.status(survivor, "testing", "stale-source-test", { selected_absorption_handoff: stale }),
+    /current Task state changed/u);
+  const transferredDescription = f.board.task(survivor.id).description;
+  f.store.updatePresentation(survivor.id, { title: "Survivor", description: "Transfer omitted" });
+  await assert.rejects(f.status(survivor, "testing", "missing-transfer-test", { selected_absorption_handoff: input }),
+    /current Task state changed/u);
+  f.store.updatePresentation(survivor.id, { title: "Survivor", description: transferredDescription });
+  const before = f.board.task(survivor.id);
+  await writeFile(path.join(source.root, "source.txt"), "resumed source\n");
+  await assert.rejects(f.status(survivor, "testing", "dirty-source-test", { selected_absorption_handoff: input }),
+    /saved cleanliness/u);
+  assert.equal(await readFile(path.join(source.root, "source.txt"), "utf8"), "resumed source\n");
+  await git(source.root, "restore", "source.txt");
+  assert.equal(f.board.task(survivor.id).revision, before.revision);
+  const tested = await f.status(survivor, "testing", "native-absorbed-test", { selected_absorption_handoff: input });
+  assert.equal(tested.workflowStatus, "testing");
+  const proof = f.board.selectedCompositionForRelease({ taskId: survivor.id, projectRoot: f.primary,
+    resultCommit: declaration.absorptionCommit });
+  assert.equal(proof.selectedCompositionRequired, true);
+  assert.equal(proof.selectedComposition.kind, "native-task-integration-v1");
+  assert.equal(proof.selectedComposition.operationId, "native-absorbed-test");
+  assert.equal(proof.selectedComposition.absorptionInput.requestId, input.requestId);
+  assert.equal(proof.selectedComposition.expectedTaskRevision, before.revision);
+  const accepted = await f.status(survivor, "awaiting_implementation", "native-absorbed-await");
+  assert.equal(accepted.workflowStatus, "awaiting_implementation");
+  assert.equal(accepted.releaseCandidate.status, "prepared", accepted.releaseCandidate.reason);
+  const candidate = (await f.preflight.prepareAwaitSet({ workspaceId: f.workspace.id })).releaseCandidates[0];
+  assert.equal(await git(candidate.releaseRoot, "show", "PreRelease:source.txt"), "saved source");
+  assert.equal(await git(candidate.releaseRoot, "show", "PreRelease:survivor.txt"), "survivor");
+  assert.equal(candidate.manifest.tasks[0].selectedComposition.descriptorHash, proof.selectedComposition.descriptorHash);
+  assert.equal((await f.closeCombined(source, survivor)).status, "done");
+  assert.equal(f.board.task(survivor.id).checklist.find(item => item.id === itemId).completed, true);
+  assert.equal(await git(source.root, "rev-parse", "HEAD"), declaration.sourceCommit);
+  assert.equal(await git(survivor.root, "rev-parse", "HEAD"), declaration.absorptionCommit);
+  const originalDescriptor = JSON.stringify(proof.selectedComposition);
+  assert.equal((await f.status(survivor, "in_progress", "native-absorbed-return")).workflowStatus, "in_progress");
+  await writeFile(path.join(survivor.root, "survivor.txt"), "corrected survivor\n");
+  assert.equal((await f.status(survivor, "testing", "native-absorbed-correction")).workflowStatus, "testing");
+  const correctedResult = f.board.task(survivor.id).gitReferences[0].resultCommit;
+  const correctedProof = f.board.selectedCompositionForRelease({ taskId: survivor.id, projectRoot: f.primary,
+    resultCommit: correctedResult });
+  assert.equal(correctedProof.selectedComposition.absorptionHistory.descriptorHash, proof.selectedComposition.descriptorHash);
+  assert.equal(JSON.stringify(f.board.selectedCompositionForRelease({ taskId: survivor.id, projectRoot: f.primary,
+    resultCommit: declaration.absorptionCommit }).selectedComposition), originalDescriptor);
+  assert.equal((await f.status(survivor, "testing", "native-absorbed-reused-test")).workflowStatus, "testing");
+  const correctedAwait = await f.status(survivor, "awaiting_implementation", "native-absorbed-corrected-await");
+  assert.equal(correctedAwait.workflowStatus, "awaiting_implementation");
+  assert.equal(correctedAwait.releaseCandidate.status, "prepared", correctedAwait.releaseCandidate.reason);
+  const correctedCandidate = (await f.preflight.prepareAwaitSet({ workspaceId: f.workspace.id })).releaseCandidates[0];
+  assert.equal(await git(correctedCandidate.releaseRoot, "show", "PreRelease:survivor.txt"), "corrected survivor");
+  assert.equal(await git(correctedCandidate.releaseRoot, "show", "PreRelease:source.txt"), "saved source");
+  assert.equal(f.board.task(source.id).status, "done");
+  const frozen = await f.release(survivor);
+  assert.equal(frozen.operation.state, "waiting", JSON.stringify(frozen.operation.lastError));
+  assert.equal(frozen.generations.length, 1);
+  assert.equal(frozen.generations[0].selectedResults[0].selectedComposition.descriptorHash,
+    correctedProof.selectedComposition.descriptorHash);
+  assert.equal(frozen.generations[0].candidates[0].manifest.tasks[0].selectedComposition.absorptionHistory.descriptorHash,
+    proof.selectedComposition.descriptorHash);
+});
+
+test("public native absorption lost terminal reopens same original and refuses live source drift", { timeout: 240_000 }, async t => {
+  const f = await fixture(t), { source, survivor, handoff, declaration } = await f.absorption();
+  const input = await handoff("saved-stopped"), before = f.board.task(survivor.id);
+  const original = "native-absorption-lost-terminal", terminal = f.board.commitWorkflowTransition.bind(f.board);
+  f.board.commitWorkflowTransition = () => { throw new Error("lost absorbed terminal write"); };
+  await assert.rejects(f.status(survivor, "testing", original, { selected_absorption_handoff: input }));
+  assert.equal(f.catalog.mcpOperation(original).status, "unknown");
+  assert.equal(f.board.lifecycleTransition(original).phase, "pending_git");
+  const dev = await git(f.primary, "rev-parse", "dev");
+  const reflog = await git(f.primary, "reflog", "show", "--format=%H", "dev");
+  f.board.commitWorkflowTransition = terminal;
+  await writeFile(path.join(source.root, "source.txt"), "resumed private work\n");
+  await f.reopen();
+  await assert.rejects(f.reconcile(survivor, "wrong-original-input", original, before.revision, "in_progress", {
+    selected_absorption_handoff: { ...input, requestId: "different-original" },
+  }), /identity|state|CAS/u);
+  const refused = await f.reconcile(survivor, "dirty-reconcile", original, before.revision, "in_progress", {
+    selected_absorption_handoff: input,
+  });
+  assert.equal(refused.outcome, "unknown");
+  assert.equal(f.catalog.mcpOperation(original).status, "unknown");
+  assert.equal(f.board.task(survivor.id).workflowStatus, "in_progress");
+  assert.equal(await readFile(path.join(source.root, "source.txt"), "utf8"), "resumed private work\n");
+  await git(source.root, "restore", "source.txt");
+  const sourceBranch = await git(source.root, "symbolic-ref", "--short", "HEAD");
+  const sourceBaseRef = await git(f.primary, "for-each-ref", "--format=%(refname)",
+    `refs/agent-hub/task-bases/${source.id}`);
+  assert.equal(sourceBaseRef.split(/\r?\n/u).length, 1);
+  const unknown = async request => {
+    const value = await f.reconcile(survivor, request, original, before.revision, "in_progress", {
+      selected_absorption_handoff: input,
+    });
+    assert.equal(value.outcome, "unknown");
+    assert.equal(f.catalog.mcpOperation(original).status, "unknown");
+    assert.equal(f.board.lifecycleTransition(original).phase, "pending_git");
+    assert.equal(await git(f.primary, "rev-parse", "dev"), dev);
+  };
+  await writeFile(path.join(source.root, "source.txt"), "new committed source\n");
+  await commit(source.root, "source reopened HEAD");
+  await unknown("head-reconcile");
+  await git(source.root, "reset", "--hard", declaration.sourceCommit);
+  await git(f.primary, "update-ref", sourceBaseRef, declaration.sourceCommit, f.base);
+  await unknown("base-reconcile");
+  await git(f.primary, "update-ref", sourceBaseRef, f.base, declaration.sourceCommit);
+  await git(source.root, "branch", "-m", "foreign-source-branch");
+  await unknown("branch-reconcile");
+  await git(source.root, "branch", "-m", sourceBranch);
+  await writeFile(path.join(source.root, "resumed-private.txt"), "private untracked\n");
+  await unknown("untracked-reconcile");
+  assert.equal(await readFile(path.join(source.root, "resumed-private.txt"), "utf8"), "private untracked\n");
+  await rm(path.join(source.root, "resumed-private.txt"));
+  const restored = await f.reconcile(survivor, "restored-reconcile", original, before.revision, "in_progress", {
+    selected_absorption_handoff: input,
+  });
+  assert.equal(restored.outcome, "succeeded");
+  assert.equal(f.catalog.mcpOperation(original).status, "succeeded");
+  assert.equal(await git(f.primary, "rev-parse", "dev"), dev);
+  assert.equal(await git(f.primary, "reflog", "show", "--format=%H", "dev"), reflog);
+  const proof = f.board.selectedCompositionForRelease({ taskId: survivor.id, projectRoot: f.primary,
+    resultCommit: declaration.absorptionCommit });
+  assert.equal(proof.selectedComposition.operationId, original);
+  assert.equal((await f.status(survivor, "awaiting_implementation", "restored-await")).workflowStatus, "awaiting_implementation");
+});
+
+test("public native absorption refuses a reopened source executor at terminal Task CAS", { timeout: 180_000 }, async t => {
+  const f = await fixture(t), { source, survivor, handoff, sourceStream, sourceThread } = await f.absorption();
+  const input = await handoff("saved-stopped"), terminal = f.board.commitWorkflowTransition.bind(f.board);
+  f.board.commitWorkflowTransition = async args => {
+    await f.board.claim({ id: source.id, workspaceId: f.workspace.id, streamId: sourceStream.id,
+      provider: "codex", threadId: sourceThread, turnId: "reopened-turn", operationId: "reopened-source" });
+    return terminal(args);
+  };
+  await assert.rejects(f.status(survivor, "testing", "native-absorption-reopened", { selected_absorption_handoff: input }),
+    { code: "TASK_NATIVE_INTEGRATION_UNKNOWN" });
+  assert.equal(f.board.task(survivor.id).workflowStatus, "in_progress");
+  assert.equal(f.board.lifecycleTransition("native-absorption-reopened").phase, "pending_git");
+  assert.equal(f.board.lifecycleOutcome("native-absorption-reopened"), null);
+  assert.equal(f.catalog.mcpOperation("native-absorption-reopened").status, "unknown");
+  assert.equal(await readFile(path.join(source.root, "source.txt"), "utf8"), "saved source\n");
+});
 
 test("public real SQLite Test and Await merge exact full branches and exclude Test-only", { timeout: 180_000 }, async t => {
   const f = await fixture(t), a = await f.create("A"), b = await f.create("Test only");

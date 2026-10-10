@@ -733,7 +733,7 @@ export class HubMcpService {
         selected_proof_bundle_path: { type: "string", description: "Release Manager-only immutable selected-composition proof bundle; preview has no live Git or lifecycle effect." },
         selected_proof_bundle_sha256: { type: "string", pattern: "^[0-9a-f]{64}$" },
         selected_published_resolution: { type: "object", description: "Historical original reconciliation envelope; new selected materialization admission is closed." },
-        selected_absorption_handoff: { type: "object", description: "Historical saved/stopped handoff bound to the existing original receipt." },
+        selected_absorption_handoff: { type: "object", description: "Authenticated saved/stopped handoff for ordinary native Test, bound to exact Task CAS and the original receipt." },
         selected_proof_commit: { type: "string", pattern: "^[0-9a-f]{40}$" },
         selected_preview_request_id: { type: "string", description: "Exact original preview request_id on confirmation." },
         expected_selected_preview_hash: { type: "string", pattern: "^[0-9a-f]{64}$", description: "Omit for preview; exact returned hash is required for confirmation." },
@@ -770,7 +770,7 @@ export class HubMcpService {
         selected_proof_bundle_path: { type: "string" },
         selected_proof_bundle_sha256: { type: "string", pattern: "^[0-9a-f]{64}$" },
         selected_published_resolution: { type: "object", description: "Historical original reconciliation envelope; new selected materialization admission is closed." },
-        selected_absorption_handoff: { type: "object", description: "Historical saved/stopped handoff bound to the existing original receipt." },
+        selected_absorption_handoff: { type: "object", description: "Exact original saved/stopped handoff for native or admitted historical Test reconciliation." },
         selected_proof_commit: { type: "string", pattern: "^[0-9a-f]{40}$" },
         selected_preview_request_id: { type: "string" },
         expected_selected_preview_hash: { type: "string", pattern: "^[0-9a-f]{64}$" },
@@ -1478,11 +1478,15 @@ export class HubMcpService {
     const squashRequested = [...squashValues, squashProofRequestId, expectedSquashTransferHash,
       expectedSquashCutoverHash]
       .some((value) => value != null);
-    const selectedRequested = [selectedBundlePath, selectedBundleSha256, selectedProofCommit, selectedPublishedResolution, selectedAbsorptionHandoff,
+    const selectedRequested = [selectedBundlePath, selectedBundleSha256, selectedProofCommit, selectedPublishedResolution,
       selectedPreviewRequestId, expectedSelectedPreviewHash].some((value) => value != null);
     if (selectedRequested) {
       throw Object.assign(new TaskInputValidationError("New selected materialization is closed; use ordinary native Git Test and isolated conflict resolution"),
         { code: "TASK_NATIVE_GIT_REQUIRED" });
+    }
+    if (selectedAbsorptionHandoff != null && (workflowStatus !== "testing" || squashRequested || source
+        || expectedRevision == null || expectedWorkflowStatus !== "in_progress")) {
+      throw new TaskInputValidationError("Native absorption requires exact ordinary Test CAS from Progress");
     }
     if (squashRequested) {
       if (squashValues.some((value) => value == null)) {
@@ -1586,6 +1590,7 @@ export class HubMcpService {
       ),
       expectedRevision,
       expectedWorkflowStatus,
+      selectedAbsorptionHandoff,
     };
     const result = source
       ? await this.taskLifecycle.updateWorkflowStatusFromSource(options, source)

@@ -2871,8 +2871,8 @@ export class TaskGitWorkspaceService {
     return this.withTaskLock(snapshot.taskId, (lease) => this.mergeIntoDevOwned(snapshot, { lease }));
   }
 
-  async mergeIntoDevOwned(snapshot, { lease = null, operationId = null } = {}) {
-    return measureTaskOperation("integrate-dev", () => this.#mergeIntoDevOwned(snapshot, { lease, operationId }));
+  async mergeIntoDevOwned(snapshot, options = {}) {
+    return measureTaskOperation("integrate-dev", () => this.#mergeIntoDevOwned(snapshot, options));
   }
 
   async #assertSelectedAbsorptionGit(input, repoRoot, lease) {
@@ -3337,7 +3337,8 @@ export class TaskGitWorkspaceService {
     return record.phase === "failed" ? null : record;
   }
 
-  async assertNativeIntegrationOwned(snapshot, { operationId, lease } = {}) {
+  async assertNativeIntegrationOwned(snapshot, { operationId, lease, nativeAbsorptionInput = null,
+    nativeAbsorptionHistory = null, validateAbsorption = null } = {}) {
     await requiredGuardLease(lease).assertOwned();
     await this.#assertNoProcessTreeGuard(snapshot.taskId);
     const git = (args, cwd = snapshot.projectRoot) => this.#runOwned(args, { cwd, lease });
@@ -3350,7 +3351,21 @@ export class TaskGitWorkspaceService {
     const record = operationId ? await this.pendingNativeIntegrationOwned({
       taskId: snapshot.taskId, projectRoot: snapshot.repositoryRoot, operationId, lease,
     }) : null;
+    if (nativeAbsorptionHistory) {
+      if (typeof validateAbsorption !== "function") throw new Error("Native accepted absorption authority missing");
+      validateAbsorption();
+      await this.#nativeSelectedCompositionForResult(nativeAbsorptionHistory, lease);
+    }
     if (record) {
+      if (JSON.stringify(record.nativeAbsorptionInput ?? null) !== JSON.stringify(nativeAbsorptionInput)
+          || JSON.stringify(record.nativeAbsorptionHistory ?? null) !== JSON.stringify(nativeAbsorptionHistory)) {
+        throw new Error("Native Test original absorption binding changed");
+      }
+      if (nativeAbsorptionInput) {
+        if (typeof validateAbsorption !== "function") throw new Error("Native Test live absorption authority missing");
+        validateAbsorption();
+        await this.#assertSelectedAbsorptionGit(nativeAbsorptionInput, snapshot.repositoryRoot, lease);
+      }
       if (record.snapshot.headCommit !== snapshot.headCommit || record.snapshot.baseCommit !== snapshot.baseCommit
           || record.snapshot.branch !== snapshot.branch) throw new Error("Native Test source binding changed");
       if (record.target) {
@@ -3377,19 +3392,84 @@ export class TaskGitWorkspaceService {
     return record;
   }
 
-  async withNativeIntegrationTerminalOwned(snapshot, { operationId, lease }, commit) {
+  async withNativeIntegrationTerminalOwned(snapshot, { operationId, lease, nativeAbsorptionInput = null,
+    nativeAbsorptionHistory = null, validateAbsorption = null }, commit) {
     return this.#withClearDevLock(snapshot.repositoryRoot, lease, async (ownedLease) => {
-      await this.assertNativeIntegrationOwned(snapshot, { operationId, lease: ownedLease });
-      return commit();
+      const record = await this.assertNativeIntegrationOwned(snapshot,
+        { operationId, lease: ownedLease, nativeAbsorptionInput, nativeAbsorptionHistory, validateAbsorption });
+      const descriptor = record && (nativeAbsorptionInput || nativeAbsorptionHistory)
+        ? this.#nativeIntegrationDescriptor(record) : null;
+      validateAbsorption?.();
+      return commit(descriptor);
     });
+  }
+
+  #nativeIntegrationDescriptor(record) {
+    if (!record?.target || (!record.nativeAbsorptionInput && !record.nativeAbsorptionHistory)) {
+      throw new Error("Native absorbed Test capture missing");
+    }
+    const descriptor = { kind: "native-task-integration-v1", taskId: record.snapshot.taskId,
+      operationId: record.operationId, expectedTaskRevision: record.expectedTaskRevision,
+      repositoryRoot: record.snapshot.repositoryRoot, taskBaseCommit: record.snapshot.baseCommit,
+      taskCommit: record.snapshot.headCommit, devCommit: record.before, proofCommit: record.target,
+      proofTree: record.targetTree, mainCommit: record.mainCommit,
+      absorptionInput: record.nativeAbsorptionInput ?? record.nativeAbsorptionHistory.absorptionInput,
+      ...(record.nativeAbsorptionHistory ? { absorptionHistory: record.nativeAbsorptionHistory } : {}) };
+    descriptor.descriptorHash = createHash("sha256").update(JSON.stringify(descriptor)).digest("hex");
+    return selectedCompositionFields({ taskId: descriptor.taskId, resultCommit: descriptor.taskCommit,
+      selectedComposition: descriptor }).selectedComposition;
+  }
+
+  async #nativeSelectedCompositionForResult(proof, lease) {
+    if (!lease) return this.withTaskLock(proof.taskId,
+      ownedLease => this.#nativeSelectedCompositionForResult(proof, ownedLease));
+    const descriptor = selectedCompositionFields({ taskId: proof.taskId, resultCommit: proof.taskCommit,
+      selectedComposition: proof }).selectedComposition;
+    const file = this.#nativeIntegrationFile(descriptor.taskId, descriptor.repositoryRoot, descriptor.operationId);
+    const record = JSON.parse(await readFile(file, "utf8"));
+    if (record.version !== 1 || record.kind !== "native-task-integration-v1" || record.phase === "failed"
+        || record.operationId !== descriptor.operationId
+        || JSON.stringify(this.#nativeIntegrationDescriptor(record)) !== JSON.stringify(descriptor)) {
+      throw selectedCompositionRequiredError("native historical intent differs from committed Test");
+    }
+    const { root } = this.#nativeIntegrationStaging(record);
+    if (!samePath(record.stageRoot, path.join(root, "repository"))) {
+      throw selectedCompositionRequiredError("native historical staging root changed");
+    }
+    const captured = JSON.parse(await readFile(path.join(root, "merge.json"), "utf8"));
+    if (captured.next !== 1 || captured.merges?.length !== 1 || captured.head !== record.target
+        || captured.conflict || captured.merging) {
+      throw selectedCompositionRequiredError("native historical merge capture is not completed");
+    }
+    // Historical evidence is Git objects plus the original capture, never the
+    // later rolling dev/source checkout or its current config/physical bytes.
+    await this.#nativeIntegrationComposition(record, lease);
+    if (descriptor.absorptionHistory) await this.#nativeSelectedCompositionForResult(descriptor.absorptionHistory, lease);
+    await assertNativeTaskHistories({
+      git: args => this.#runOwned(args, { cwd: descriptor.repositoryRoot, lease }),
+      baseCommit: descriptor.mainCommit,
+      tasks: [{ taskId: descriptor.taskId, baseCommit: descriptor.taskBaseCommit,
+        resultCommit: descriptor.taskCommit, selectedComposition: descriptor }],
+    });
+    return descriptor;
+  }
+
+  #nativeIntegrationStaging(record) {
+    const snapshot = record.snapshot;
+    const identity = { policy: "native-dev-merge-v1", taskId: snapshot.taskId,
+      resultCommit: snapshot.headCommit, before: record.before, mainCommit: record.mainCommit,
+      ...(record.nativeAbsorptionInput || record.nativeAbsorptionHistory ? {
+        ...(record.nativeAbsorptionInput ? { nativeAbsorptionInput: record.nativeAbsorptionInput } : {}),
+        ...(record.nativeAbsorptionHistory ? { nativeAbsorptionHistory: record.nativeAbsorptionHistory } : {}),
+        expectedTaskRevision: record.expectedTaskRevision } : {}) };
+    const root = path.join(this.dataDir, "task-native-merges",
+      createHash("sha256").update(JSON.stringify(identity)).digest("hex").slice(0, 24));
+    return { root, identity };
   }
 
   async #nativeIntegrationComposition(record, lease) {
     const snapshot = record.snapshot;
-    const identity = { policy: "native-dev-merge-v1", taskId: snapshot.taskId,
-      resultCommit: snapshot.headCommit, before: record.before, mainCommit: record.mainCommit };
-    const root = path.join(this.dataDir, "task-native-merges",
-      createHash("sha256").update(JSON.stringify(identity)).digest("hex").slice(0, 24));
+    const { root, identity } = this.#nativeIntegrationStaging(record);
     if (record.target) {
       if (!samePath(record.stageRoot, path.join(root, "repository"))) {
         throw new Error("Native Test staging root binding changed");
@@ -3417,7 +3497,8 @@ export class TaskGitWorkspaceService {
     return composition;
   }
 
-  async #mergeIntoDevOwned(snapshot, { lease, operationId = null }) {
+  async #mergeIntoDevOwned(snapshot, { lease, operationId = null, nativeAbsorptionInput = null,
+    nativeAbsorptionHistory = null, expectedTaskRevision = null, validateAbsorption = null }) {
     this.#assertAvailable("mergeIntoDevOwned");
     await requiredGuardLease(lease).assertOwned();
     await this.#assertNoProcessTreeGuard(snapshot.taskId);
@@ -3430,18 +3511,41 @@ export class TaskGitWorkspaceService {
         projectRoot: snapshot.repositoryRoot, operationId, lease: ownedLease });
       let dev;
       if (record) {
+        if (JSON.stringify(record.nativeAbsorptionInput ?? null) !== JSON.stringify(nativeAbsorptionInput)
+            || JSON.stringify(record.nativeAbsorptionHistory ?? null) !== JSON.stringify(nativeAbsorptionHistory)
+            || ((nativeAbsorptionInput || nativeAbsorptionHistory) && record.expectedTaskRevision !== expectedTaskRevision)) {
+          throw new Error("Native Test original absorbed admission changed");
+        }
         snapshot = record.snapshot;
         dev = { repositoryRoot: snapshot.repositoryRoot, projectRoot: record.devRoot,
           branch: this.devBranch, headCommit: record.before, mainCommit: record.mainCommit };
       } else {
         dev = await this.#prepareDevOwned(snapshot.repositoryRoot, snapshot.repositoryRoot, ownedLease);
+        if (nativeAbsorptionHistory) {
+          if (typeof validateAbsorption !== "function") throw new Error("Native accepted absorption authority missing");
+          validateAbsorption();
+          await this.#nativeSelectedCompositionForResult(nativeAbsorptionHistory, ownedLease);
+          if (await gitMaybe(["merge-base", "--is-ancestor", nativeAbsorptionHistory.taskCommit, snapshot.headCommit],
+            { cwd: snapshot.repositoryRoot }) === null) throw new Error("Native absorbed history is not this result's ancestor");
+        }
+        if (nativeAbsorptionInput) {
+          normalizedSelectedAbsorption(nativeAbsorptionInput);
+          if (typeof validateAbsorption !== "function") throw new Error("Native absorbed Test lacks live authority");
+          validateAbsorption();
+          await this.#assertSelectedAbsorptionGit(nativeAbsorptionInput, snapshot.repositoryRoot, ownedLease);
+        }
         await assertNativeTaskHistories({
           git: args => this.#runOwned(args, { cwd: snapshot.repositoryRoot, lease: ownedLease }),
           baseCommit: dev.mainCommit,
-          tasks: [{ taskId: snapshot.taskId, baseCommit: snapshot.baseCommit, resultCommit: snapshot.headCommit }],
+          tasks: [{ taskId: snapshot.taskId, baseCommit: snapshot.baseCommit, resultCommit: snapshot.headCommit,
+            ...(nativeAbsorptionInput || nativeAbsorptionHistory
+              ? { nativeAbsorptionInput: nativeAbsorptionInput ?? nativeAbsorptionHistory.absorptionInput } : {}) }],
         });
         record = { version: 1, kind: "native-task-integration-v1", operationId, phase: "prepared",
-          snapshot, devRoot: dev.projectRoot, before: dev.headCommit, mainCommit: dev.mainCommit };
+          snapshot, devRoot: dev.projectRoot, before: dev.headCommit, mainCommit: dev.mainCommit,
+          ...(nativeAbsorptionInput || nativeAbsorptionHistory ? { expectedTaskRevision,
+            ...(nativeAbsorptionInput ? { nativeAbsorptionInput } : {}),
+            ...(nativeAbsorptionHistory ? { nativeAbsorptionHistory } : {}) } : {}) };
         await mkdir(path.dirname(file), { recursive: true });
         await writeSelectedRecord(file, record);
       }
@@ -3449,6 +3553,11 @@ export class TaskGitWorkspaceService {
         guardRepositoryRoot: snapshot.repositoryRoot, timeoutMs: 300_000 });
       const sourceFence = async () => {
         await ownedLease.assertOwned();
+        if (nativeAbsorptionHistory) validateAbsorption();
+        if (nativeAbsorptionInput) {
+          validateAbsorption();
+          await this.#assertSelectedAbsorptionGit(nativeAbsorptionInput, snapshot.repositoryRoot, ownedLease);
+        }
         await this.#assertNoProcessTreeGuard(snapshot.taskId);
         if (await git(["rev-parse", "HEAD^{commit}"], snapshot.projectRoot) !== snapshot.headCommit
             || await git(["symbolic-ref", "-q", "HEAD"], snapshot.projectRoot) !== `refs/heads/${snapshot.branch}`
@@ -3496,7 +3605,8 @@ export class TaskGitWorkspaceService {
         if (ref !== record.target) await git(["update-ref", `refs/heads/${this.devBranch}`, record.target, record.before]);
         await git(["symbolic-ref", "HEAD", `refs/heads/${this.devBranch}`]);
         await sourceFence();
-        await this.assertNativeIntegrationOwned(snapshot, { operationId, lease: ownedLease });
+        await this.assertNativeIntegrationOwned(snapshot,
+          { operationId, lease: ownedLease, nativeAbsorptionInput, nativeAbsorptionHistory, validateAbsorption });
       } catch (error) {
         throw Object.assign(new Error(`Native Test original Git effect requires readback: ${error.message}`), { code: "TASK_NATIVE_INTEGRATION_UNKNOWN" });
       }
@@ -3799,6 +3909,10 @@ export class TaskGitWorkspaceService {
     await this.#assertNoProcessTreeGuard(params.taskId);
     const repoRoot = await repositoryRoot(params.projectRoot);
     await this.#assertTaskReleaseWait(params.taskId, repoRoot);
+    if (params.nativeAbsorptionHistory) {
+      params.validateAbsorption();
+      await this.#nativeSelectedCompositionForResult(params.nativeAbsorptionHistory, params.lease);
+    }
     if (params.expectedResultReferences) {
       params = { ...params, expectedResultCommit: params.expectedResultReferences
         .find((reference) => samePath(reference.projectRoot, repoRoot))?.resultCommit ?? null };
@@ -3830,7 +3944,10 @@ export class TaskGitWorkspaceService {
       };
     }
     await params.lease.assertOwned();
-    const integration = await this.mergeIntoDevOwned(snapshot, { lease: params.lease, operationId: params.operationId });
+    const integration = await this.mergeIntoDevOwned(snapshot, { lease: params.lease, operationId: params.operationId,
+      nativeAbsorptionInput: params.nativeAbsorptionInput, expectedTaskRevision: params.expectedTaskRevision,
+      nativeAbsorptionHistory: params.nativeAbsorptionHistory,
+      validateAbsorption: params.validateAbsorption });
     if (integration.integrated) {
       await params.lease.assertOwned();
       await this.#withClearDevLock(snapshot.repositoryRoot, params.lease, (ownedLease) => (
@@ -4625,7 +4742,9 @@ export class TaskGitWorkspaceService {
       }
       const evidence = await this.releaseEvidence(task);
       const authoritative = selectedCompositionFields(task);
-      const selectedComposition = await this.#selectedCompositionForResult({
+      const selectedComposition = authoritative.selectedComposition?.kind === "native-task-integration-v1"
+        ? await this.#nativeSelectedCompositionForResult(authoritative.selectedComposition, lease)
+        : await this.#selectedCompositionForResult({
         taskId: task.taskId, repositoryRoot: evidence.projectRoot,
         resultCommit: evidence.resultCommit, devHeadCommit: dev.headCommit,
       });

@@ -14,6 +14,15 @@ existing reconciliation owner may read this pending native original without a
 live process guard only after matching the exact pending lifecycle transition
 and original native intent under their leases. Foreign/missing bindings refuse.
 
+Ordinary native absorption Test supports the existing selected_absorption_handoff
+argument with exact survivor revision and Progress status, without selected proof
+bundle/preview fields. Its source-executor inter-Stream receipt is authenticated
+by the existing catalog, and source/survivor transfer/ownership/Git are fenced
+under both Task leases. The native original and successful required descriptor
+retain that identity. Reconciliation requires the exact original handoff/CAS;
+it cannot change the binding or repeat a committed Git CAS. Existing combined
+closure preview/confirm remains the only combined Task closure route.
+
 No public preflight/freeze/reconcile/complete writer is restored. Immutable release
 generations coexist with Task edits; authored stored rules remain opaque. Legacy
 v1/v2 originals retain explicit pinned recovery and sealed historical readback;
