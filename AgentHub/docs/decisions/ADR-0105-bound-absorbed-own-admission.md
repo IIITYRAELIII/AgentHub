@@ -74,8 +74,16 @@ unsupported text normalization refuse without invoking those transformations.
 Private movement, hard-link ownership, no-overwrite and byte-exact backup/
 rollback remain mandatory. No shared EOL/config/attribute conversion is allowed.
 
-Version-2 materialization journals explicitly separate blob and physical hashes
+Version-2 intents/materialization journals explicitly separate blob and physical hashes
 and retain checkout authority; version-2 completion receipts bind the complete
 materialization record hash. Older journal/receipt identities are not silently
 reinterpreted: unsupported recovery refuses while preserving bytes and original
 UNKNOWN. R1 absorbed source fences remain unchanged.
+
+Historical release evidence accepts only matching explicit intent/receipt
+versions. Version 1 retains its original historical proof interpretation;
+version 2 additionally checks the sealed materialization record and pinned
+blob-to-serialization relations. Historical projection does not authorize
+movement or use later rolling-dev bytes/configuration. Live recovery requires
+version 2 and fresh physical/configuration checks; legacy pending recovery
+refuses while preserving its original and data.

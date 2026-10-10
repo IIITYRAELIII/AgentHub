@@ -1408,5 +1408,21 @@ test("absorbed own real CRLF public Test retains UNKNOWN on checkout drift and r
   assert.equal(reopened.catalog.mcpOperation(confirm.request_id).status, "succeeded");
   assert.deepEqual(await readFile(displayed), exact);
   assert.equal(await git(devRoot, "status", "--porcelain"), "");
+  const evidence = () => f.service.releaseIntegrationEvidence({ projectRoot: f.root,
+    tasks: [{ taskId: TASK_ID, taskRevision: reopened.store.task(TASK_ID).revision,
+      projectRoot: f.root, branch: f.taskWorkspace.branch, resultCommit: f.task }] });
+  assert.deepEqual((await evidence()).tasks[0].selectedComposition, preview.selectedComposition);
+  const completedPath = path.join(path.dirname(path.dirname(recordPath)), "completed.json");
+  const completedBytes = await readFile(completedPath);
+  await writeFile(completedPath, JSON.stringify({ ...JSON.parse(completedBytes), version: 1 }));
+  await assert.rejects(evidence(), /exact durable proof/u);
+  await writeFile(completedPath, completedBytes);
+  const changedRecord = JSON.parse(recordBytes);
+  changedRecord.files[0].newSha256 = "0".repeat(64);
+  await writeFile(recordPath, JSON.stringify(changedRecord));
+  await assert.rejects(evidence(), /historical materialization binding changed/u);
+  await writeFile(recordPath, recordBytes);
+  assert.deepEqual((await evidence()).tasks[0].selectedComposition, preview.selectedComposition);
+  assert.equal(reopened.catalog.mcpOperation(confirm.request_id).status, "succeeded");
   assert.equal(repeatedCas, 0);
 });

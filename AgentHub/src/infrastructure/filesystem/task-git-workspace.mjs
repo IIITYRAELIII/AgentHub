@@ -15,7 +15,7 @@ import { taskWorkingTreeDiff } from "./task-git-diff.mjs";
 import { normalizePublishedResolution, verifySelectedCompositionObjects } from "./selected-composition-proof.mjs";
 import {
   applySelectedCompositionFiles, prepareSelectedCompositionFiles, readSelectedCompositionFiles,
-  selectedCompositionFilePlan, readSelectedCheckoutAuthority, verifySelectedCompositionFiles,
+  selectedCompositionFilePlan, readSelectedCheckoutAuthority, verifySelectedCompositionFiles, verifySelectedCompositionRecord,
 } from "./selected-composition-materializer.mjs";
 import { TaskDependencyPendingError } from "../../domain/task-board-task.mjs";
 import { prepareTaskWorktreeDependencies } from "./task-worktree-dependencies.mjs";
@@ -3034,7 +3034,7 @@ export class TaskGitWorkspaceService {
   async #selectedCompositionIntent(preview, operationId) {
     const root = this.#selectedCompositionRecordRoot(preview, operationId);
     const pathname = path.join(root, "intent.json");
-    const expected = { version: 1, kind: "selected-task-composition-v1", operationId, preview };
+    const expected = { version: 2, kind: "selected-task-composition-v1", operationId, preview };
     const existing = await readFile(pathname, "utf8").then(JSON.parse, (error) => {
       if (error?.code === "ENOENT") return null;
       throw error;
@@ -3083,7 +3083,7 @@ export class TaskGitWorkspaceService {
       throw error;
     });
     if (!intent) return { status: "not_admitted" };
-    if (intent.version !== 1 || intent.kind !== "selected-task-composition-v1"
+    if (intent.version !== 2 || intent.kind !== "selected-task-composition-v1"
         || intent.operationId !== operationId
         || JSON.stringify(intent.preview) !== JSON.stringify(preview)) {
       throw new Error("Selected composition durable intent changed");
@@ -4639,8 +4639,8 @@ export class TaskGitWorkspaceService {
       if (receipt?.resultCommit !== resultCommit) continue;
       const intent = JSON.parse(await readFile(path.join(root, "intent.json"), "utf8"));
       const preview = intent?.preview;
-      if (intent.version !== 1 || intent.operationId !== operationId
-          || receipt.version !== 1 || receipt.operationId !== operationId
+      if (![1, 2].includes(intent.version) || intent.operationId !== operationId
+          || receipt.version !== intent.version || receipt.operationId !== operationId
           || preview?.taskId !== id || !samePath(preview.repositoryRoot, repoRoot)
           || preview.taskCommit !== resultCommit
           || receipt.previewHash !== preview.previewHash
@@ -4649,6 +4649,17 @@ export class TaskGitWorkspaceService {
             ...preview, previewHash: undefined,
           })).digest("hex") !== preview.previewHash) {
         throw new Error("Selected composition result receipt lacks exact durable proof");
+      }
+      if (receipt.version === 2) {
+        const journalRoot = path.join(root, "materialization");
+        const record = JSON.parse(await readFile(path.join(journalRoot, "record.json"), "utf8"));
+        if (receipt.materializationHash !== createHash("sha256").update(JSON.stringify(record)).digest("hex")) {
+          throw new Error("Selected composition historical materialization binding changed");
+        }
+        await verifySelectedCompositionRecord(record, {
+          root: preview.devRoot, journalRoot, files: preview.worktreePlan,
+          readBlob: (blob) => runGit(["cat-file", "blob", blob], { cwd: repoRoot, rawOutput: true }),
+        });
       }
       const retained = await readFile(path.join(root, "review.bundle"));
       if (createHash("sha256").update(retained).digest("hex") !== preview.bundleSha256) {

@@ -189,21 +189,29 @@ async function assertCheckout(record, readCheckout) {
   }
 }
 
-export async function verifySelectedCompositionFiles(record, { root, files, readBlob, readCheckout, phase = null } = {}) {
+// Historical release evidence validates the sealed logical/serialization record,
+// not a later rolling dev checkout. Live application/recovery adds physical and
+// current-authority checks below; this reader cannot materialize anything.
+export async function verifySelectedCompositionRecord(record, { root, journalRoot, files, readBlob } = {}) {
   if (record.version !== 2 || typeof root !== "string" || path.resolve(record.root) !== path.resolve(root)
-      || !Array.isArray(files) || typeof readBlob !== "function"
+      || (journalRoot && path.resolve(record.journalRoot) !== path.resolve(journalRoot))
+      || !Array.isArray(files) || files.length > MAX_FILES || typeof readBlob !== "function"
+      || record.checkout?.version !== 1 || !["win32", "linux", "darwin"].includes(record.checkout.platform)
       || JSON.stringify(record.files.map(({ path, kind, oldBlob, newBlob }) => ({ path, kind, oldBlob, newBlob })))
         !== JSON.stringify(files)) {
     throw new Error("Selected composition materialization version or Git plan is unsupported");
   }
-  await assertCheckout(record, readCheckout);
-  for (const file of record.files) {
+  for (const [index, file] of record.files.entries()) {
+    filePath(record.root, file.path);
+    if (file.temp !== path.join(record.journalRoot, `new-${index}`)
+        || file.backup !== path.join(record.journalRoot, `old-${index}`)) {
+      throw new Error("Selected composition materialization paths changed");
+    }
     const next = checkedBlob(await readBlob(file.newBlob), file.newBlob, file.path);
     const staged = checkoutBytes(next, record.checkout, file.path);
     if (digest(next) !== file.newGitSha256 || digest(staged) !== file.newSha256) {
       throw new Error("Selected composition staged serialization changed");
     }
-    await assertBytes(file.temp, file.newSha256, "staged");
     if (file.kind === "M") {
       const old = checkedBlob(await readBlob(file.oldBlob), file.oldBlob, file.path);
       const oldPhysical = file.oldSerialization === "raw" ? old
@@ -211,12 +219,23 @@ export async function verifySelectedCompositionFiles(record, { root, files, read
       if (!oldPhysical || digest(old) !== file.oldGitSha256 || digest(oldPhysical) !== file.oldSha256) {
         throw new Error("Selected composition old serialization changed");
       }
-      if (phase === "before_cas") await assertBytes(filePath(record.root, file.path), file.oldSha256, "old tracked");
+    }
+  }
+  return record;
+}
+
+export async function verifySelectedCompositionFiles(record, binding = {}) {
+  await verifySelectedCompositionRecord(record, binding);
+  await assertCheckout(record, binding.readCheckout);
+  for (const file of record.files) {
+    await assertBytes(file.temp, file.newSha256, "staged");
+    if (file.kind === "M") {
+      if (binding.phase === "before_cas") await assertBytes(filePath(record.root, file.path), file.oldSha256, "old tracked");
       if (await existing(file.backup)) await assertBytes(file.backup, file.oldSha256, "backup");
-    } else if (phase === "before_cas" && await existing(filePath(record.root, file.path))) {
+    } else if (binding.phase === "before_cas" && await existing(filePath(record.root, file.path))) {
       throw new Error("Selected composition added path is already occupied");
     }
-    if (phase === "applied") {
+    if (binding.phase === "applied") {
       const target = filePath(record.root, file.path);
       await assertParents(record.root, target);
       if (!await sameFile(target, file.temp)) throw new Error("Selected composition applied target ownership changed");
@@ -224,7 +243,7 @@ export async function verifySelectedCompositionFiles(record, { root, files, read
       if (file.kind === "M" && !await existing(file.backup)) throw new Error("Selected composition applied backup missing");
     }
   }
-  await assertCheckout(record, readCheckout);
+  await assertCheckout(record, binding.readCheckout);
   return record;
 }
 

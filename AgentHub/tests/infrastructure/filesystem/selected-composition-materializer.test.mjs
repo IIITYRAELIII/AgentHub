@@ -11,7 +11,7 @@ import {
   prepareSelectedCompositionFiles,
   readSelectedCompositionFiles,
   rollbackSelectedCompositionFiles,
-  selectedCompositionFilePlan, readSelectedCheckoutAuthority, verifySelectedCompositionFiles,
+  selectedCompositionFilePlan, readSelectedCheckoutAuthority, verifySelectedCompositionFiles, verifySelectedCompositionRecord,
 } from "../../../src/infrastructure/filesystem/selected-composition-materializer.mjs";
 
 function blob(bytes) {
@@ -229,5 +229,18 @@ test("arbitrary filter is rejected during preparation without executing it", asy
   await writeFile(path.join(f.root, ".git", "info", "attributes"), "tracked.txt filter=never-run\n");
   await f.git(["config", "filter.never-run.smudge", "this-command-must-never-run"]);
   await assert.rejects(prepareSelectedCompositionFiles(f), /unsupported transformation/u);
+  assert.deepEqual(await readFile(path.join(f.root, "tracked.txt")), f.physicalOld);
+});
+
+
+test("historical sealed EOL record preserves logical evidence without authorizing current checkout movement", async (t) => {
+  const f = await realEolFixture(t);
+  const record = await prepareSelectedCompositionFiles(f);
+  await f.git(["config", "core.autocrlf", "false"]);
+  await verifySelectedCompositionRecord(record, { ...f, journalRoot: f.journalRoot });
+  await assert.rejects(applySelectedCompositionFiles(record, f), /checkout authority changed/u);
+  await assert.rejects(verifySelectedCompositionRecord({ ...record,
+    files: record.files.map((file, index) => index ? file : { ...file, newSha256: "0".repeat(64) }),
+  }, f), /staged serialization changed/u);
   assert.deepEqual(await readFile(path.join(f.root, "tracked.txt")), f.physicalOld);
 });
