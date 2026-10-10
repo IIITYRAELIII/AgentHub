@@ -596,10 +596,14 @@ export class TaskLifecycleService {
       sourceTaskNumber: source.taskNumber,
       sourceDescriptionSha256: createHash("sha256").update(source.description).digest("hex"),
     });
-    assertSelectedAbsorptionTasks(binding, source, task);
     requiredMethod(this.taskBoard, "assertSelectedAbsorptionState");
-    this.taskBoard.assertSelectedAbsorptionState({ binding, survivorTaskId: task.id, operationId });
-    return binding;
+    const authenticated = this.taskBoard.assertSelectedAbsorptionState({ binding,
+      survivorTaskId: task.id, operationId, bindPriorResults: true });
+    if (authenticated.priorResults?.some(prior => !samePath(prior.projectRoot, this.#projectRoot(task)))) {
+      throw new Error("Selected absorption prior result repository changed");
+    }
+    assertSelectedAbsorptionTasks(authenticated, source, task);
+    return authenticated;
   }
 
   async selectedComposition({
@@ -1362,7 +1366,11 @@ export class TaskLifecycleService {
       if (!["new", "in_progress", "blocked"].includes(task.workflowStatus)) {
         throw new Error("Return the source Task from Test/Await before combining it");
       }
-      return this.taskGitWorkspaces.withAbsorptionEvidenceOwned({ source: task, target, lease }, async (gitEvidence, ownedLease) => {
+      const targetRef = target.gitReferences?.find(ref => samePath(ref.projectRoot, this.#projectRoot(target)));
+      const selected = releaseWorkflow && targetRef ? this.taskBoard.selectedCompositionForRelease({
+        taskId: target.id, projectRoot: targetRef.projectRoot, resultCommit: targetRef.resultCommit })?.selectedComposition : null;
+      const nativeAbsorption = selected?.kind === "native-task-integration-v1" ? selected : null;
+      return this.taskGitWorkspaces.withAbsorptionEvidenceOwned({ source: task, target, lease, nativeAbsorption }, async (gitEvidence, ownedLease) => {
         let composition = null;
         // This gate precedes lifecycle admission. Only this bounded scope can
         // classify composition failure as proof that no source closure began.
@@ -1376,7 +1384,7 @@ export class TaskLifecycleService {
           }
           // External editors and Git do not take Hub's leases. Reuse the held
           // repository leases to read both workspaces again after slow validation.
-          await this.taskGitWorkspaces.withAbsorptionEvidenceOwned({ source: task, target, lease: ownedLease }, async (fresh) => {
+          await this.taskGitWorkspaces.withAbsorptionEvidenceOwned({ source: task, target, lease: ownedLease, nativeAbsorption }, async (fresh) => {
             if (JSON.stringify(fresh) !== JSON.stringify(gitEvidence)) {
               throw new Error("Task Git evidence changed during combined closure validation");
             }

@@ -52,6 +52,12 @@ exact result and its immutable completed capture must still verify. It does not
 reopen the closed source or reuse its handoff as fresh live authority. The new
 native outcome carries the unchanged original descriptor as absorptionHistory;
 SQL admission and terminal CAS verify the original outcome, without a new ledger.
+Fresh absorption also accepts source or survivor previously in Test/Await only
+after normal return. The existing SQL owner derives bounded successful Test and
+return identities from preserved refs and seals their exact outcome hashes into
+the same absorption input. Subsequent fences compare those original bindings;
+Git requires the preserved result to be an ancestor of its declared merge parent.
+Receipts and historical selected descriptors are retained unchanged.
 
 Legacy selected v1/v2 writers can complete only originals admitted before cutover.
 New preview admission is closed. Actual capture version must agree with intent

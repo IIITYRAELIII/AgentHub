@@ -2587,11 +2587,81 @@ export class TaskBoardStore {
     });
   }
 
-  #assertSelectedAbsorptionState(database, { binding, survivorTaskId, operationId = null }) {
-    const input = normalizedSelectedAbsorption(binding);
+  #selectedAbsorptionPriorResults(database, tasks, handoffTime) {
+    const priorResults = [];
+    for (const task of tasks) {
+      const refs = task.gitReferences ?? [];
+      if (!refs.length) continue;
+      if (refs.length !== 1) throw selectedCompositionRequiredError("absorbed prior result repository is ambiguous");
+      const ref = refs[0];
+      const returnedRow = database.prepare(`SELECT operation_id, result_json, completed_at_ms
+        FROM hub_task_lifecycle_outcomes WHERE task_id = ? AND kind = 'workflow'
+          AND json_extract(result_json, '$.evidence.outcome') = 'returned_for_correction'
+        ORDER BY completed_at_ms DESC, operation_id DESC LIMIT 1`).get(task.id);
+      const returned = returnedRow ? JSON.parse(returnedRow.result_json) : null;
+      const matches = value => value?.id === task.id && value.workspaceId === task.workspaceId
+        && value.gitReferences?.length === 1 && value.gitReferences[0].resultCommit === ref.resultCommit
+        && sameResolvedPath(value.gitReferences[0].projectRoot, ref.projectRoot);
+      if (!returned || !matches(returned.task) || !matches(returned.priorTask)
+          || !["testing", "awaiting_implementation"].includes(returned.priorTask.workflowStatus)
+          || !["in_progress", "new", "blocked"].includes(returned.task.workflowStatus)
+          || returned.task.revision !== returned.priorTask.revision + 1 || returned.task.revision > task.revision
+          || returned.evidence.acceptedResult?.resultCommit !== ref.resultCommit
+          || !sameResolvedPath(returned.evidence.acceptedResult?.projectRoot, ref.projectRoot)
+          || returned.evidence.acceptedResult?.taskRevision !== returned.priorTask.revision
+          || returned.evidence.response?.acceptedResultPreserved !== true || returnedRow.completed_at_ms > handoffTime) {
+        throw selectedCompositionRequiredError("absorbed prior result has no exact normal return receipt");
+      }
+      const testedRows = database.prepare(`SELECT operation_id, result_json FROM hub_task_lifecycle_outcomes
+        WHERE task_id = ? AND kind = 'workflow'
+          AND json_extract(result_json, '$.task.workflowStatus') = 'testing'
+          AND json_extract(result_json, '$.evidence.resultCommit') = ?
+          AND json_extract(result_json, '$.task.revision') <= ? AND completed_at_ms <= ?
+        ORDER BY completed_at_ms DESC, operation_id DESC LIMIT 65`).all(task.id, ref.resultCommit,
+          returned.priorTask.revision, returnedRow.completed_at_ms);
+      if (testedRows.length > 64) throw selectedCompositionRequiredError("absorbed prior Test history exceeds bounded lookup");
+      const testedRow = testedRows.find(row => matches(JSON.parse(row.result_json).task));
+      const tested = testedRow ? JSON.parse(testedRow.result_json) : null;
+      if (!tested || !/^[0-9a-f]{40}$/u.test(tested.evidence.devHeadCommit ?? "")) {
+        throw selectedCompositionRequiredError("absorbed prior result has no exact successful Test receipt");
+      }
+      if (tested.evidence.selectedCompositionRequired || tested.evidence.selectedComposition) {
+        selectedCompositionFields({ taskId: task.id, resultCommit: ref.resultCommit,
+          selectedCompositionRequired: true, selectedComposition: tested.evidence.selectedComposition });
+      }
+      priorResults.push({ taskId: task.id, projectRoot: ref.projectRoot, resultCommit: ref.resultCommit,
+        testOperationId: testedRow.operation_id, returnOperationId: returnedRow.operation_id,
+        testRevision: tested.task.revision, returnRevision: returned.task.revision,
+        testOutcomeHash: createHash("sha256").update(testedRow.result_json).digest("hex"),
+        returnOutcomeHash: createHash("sha256").update(returnedRow.result_json).digest("hex") });
+    }
+    return priorResults;
+  }
+
+  #assertAbsorptionPriorOutcomes(database, input) {
+    for (const prior of normalizedSelectedAbsorption(input)?.priorResults ?? []) {
+      for (const [operationId, hash] of [[prior.testOperationId, prior.testOutcomeHash],
+        [prior.returnOperationId, prior.returnOutcomeHash]]) {
+        const row = database.prepare(`SELECT result_json FROM hub_task_lifecycle_outcomes
+          WHERE operation_id = ? AND task_id = ? AND kind = 'workflow'`).get(operationId, prior.taskId);
+        if (!row || createHash("sha256").update(row.result_json).digest("hex") !== hash) {
+          throw selectedCompositionRequiredError("absorbed immutable prior outcome changed");
+        }
+      }
+    }
+  }
+
+  #assertSelectedAbsorptionState(database, { binding, survivorTaskId, operationId = null, bindPriorResults = false }) {
+    let input = normalizedSelectedAbsorption(binding);
     const { declaration: d } = selectedAbsorptionHandoff({ requestId: input.requestId, text: input.text });
     const source = this.#taskWithRelease(database, this.#taskRow(database, d.sourceTaskId));
     const survivor = this.#taskWithRelease(database, this.#taskRow(database, survivorTaskId));
+    const priorResults = this.#selectedAbsorptionPriorResults(database, [source, survivor], input.createdAtMs);
+    if (bindPriorResults && !input.priorResults && priorResults.length) {
+      input = normalizedSelectedAbsorption({ ...input, priorResults });
+    } else if (JSON.stringify(input.priorResults ?? []) !== JSON.stringify(priorResults)) {
+      throw selectedCompositionRequiredError("absorbed original prior result identity changed");
+    }
     assertSelectedAbsorptionTasks(input, source, survivor);
     const receipt = database.prepare("SELECT * FROM hub_mcp_operations WHERE request_id = ?").get(input.requestId);
     const result = receipt?.result_json ? JSON.parse(receipt.result_json) : null;
@@ -2949,6 +3019,9 @@ export class TaskBoardStore {
         if (!evidence.selectedCompositionRequired && !Object.hasOwn(evidence, "selectedComposition")) continue;
         const fields = selectedCompositionFields({ taskId, resultCommit,
           selectedCompositionRequired: true, selectedComposition: evidence.selectedComposition });
+        if (fields.selectedComposition.kind === "native-task-integration-v1") {
+          this.#assertAbsorptionPriorOutcomes(database, fields.selectedComposition.absorptionInput);
+        }
         if (evidence.resultCommit !== resultCommit
             || !sameResolvedPath(fields.selectedComposition.repositoryRoot, projectRoot)
             || evidence.devHeadCommit !== fields.selectedComposition.proofCommit) {

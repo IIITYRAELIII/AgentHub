@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
+import { DatabaseSync } from "node:sqlite";
 import { HubMcpService } from "../../src/application/hub-mcp-service.mjs";
 import { TaskBoardService } from "../../src/application/task-board-service.mjs";
 import { TaskLifecycleService } from "../../src/application/task-lifecycle-service.mjs";
@@ -100,7 +101,7 @@ async function fixture(t, { releaseMetadata = false } = {}) {
     get releaseGit() { return releaseGit; },
     get store() { return store; },
     get dataDir() { return dataDir; },
-    async absorption() {
+    async absorption({ priorSource = null, priorSurvivor = null } = {}) {
       const source = store.create({ text: "Saved source\n\nOriginal requirements and unfinished regression", bucket: "workspace", workspaceId: workspace.id });
       const survivor = store.create({ text: "Survivor\n\nCombined requirements", bucket: "workspace", workspaceId: workspace.id });
       board.assignWorkspaceTaskNumbers(workspace.id);
@@ -123,6 +124,28 @@ async function fixture(t, { releaseMetadata = false } = {}) {
       source.root = sourceWorkspace.projectRoot; survivor.root = survivorWorkspace.projectRoot;
       await writeFile(path.join(source.root, "source.txt"), "saved source\n"); await commit(source.root, "saved source");
       await writeFile(path.join(survivor.root, "survivor.txt"), "survivor\n"); await commit(survivor.root, "survivor");
+      const prior = [];
+      for (const [task, priorStatus, threadId] of [[source, priorSource, sourceThread],
+        [survivor, priorSurvivor, "fixture-thread"]]) {
+        if (!priorStatus) continue;
+        const context_token = service.contextToken({ provider: "codex", threadId });
+        const status = async (target, request_id) => service.call("hub_task_status_update", {
+          context_token, task_id: task.id, status: target, request_id,
+          expected_task_revision: board.task(task.id).revision,
+          expected_workflow_status: board.task(task.id).workflowStatus });
+        const testId = `prior-test-${task.id}`, returnId = `prior-return-${task.id}`;
+        assert.equal((await status("testing", testId)).workflowStatus, "testing");
+        if (priorStatus === "await") assert.equal((await status("awaiting_implementation", `prior-await-${task.id}`))
+          .workflowStatus, "awaiting_implementation");
+        const refs = board.task(task.id).gitReferences;
+        assert.equal((await status("in_progress", returnId)).workflowStatus, "in_progress");
+        assert.deepEqual(board.task(task.id).gitReferences, refs);
+        prior.push({ task, refs, testId, returnId, testOutcome: JSON.stringify(board.lifecycleOutcome(testId)),
+          returnOutcome: JSON.stringify(board.lifecycleOutcome(returnId)) });
+        await writeFile(path.join(task.root, task === source ? "source-correction.txt" : "survivor-correction.txt"),
+          `${task === source ? "source" : "survivor"} correction\n`);
+        await commit(task.root, "correction after normal return");
+      }
       const sourceCommit = await git(source.root, "rev-parse", "HEAD");
       const survivorParentCommit = await git(survivor.root, "rev-parse", "HEAD");
       await git(survivor.root, "-c", "user.name=Fixture", "-c", "user.email=fixture@local.invalid",
@@ -138,14 +161,14 @@ async function fixture(t, { releaseMetadata = false } = {}) {
           stream_id: stream.id, text, mode: "queue", confirm_send: true });
         return { requestId, text };
       };
-      return { source, survivor, declaration, handoff, sourceStream, sourceThread, itemId: item.id };
+      return { source, survivor, declaration, handoff, sourceStream, sourceThread, itemId: item.id, prior };
     },
-    async closeCombined(source, survivor) {
+    async closeCombined(source, survivor, prefix = "combined") {
       const args = { context_token: token, task_id: source.id, absorbed_into_task_id: survivor.id,
-        request_id: "combined-preview" };
+        request_id: `${prefix}-preview` };
       const preview = await service.call("hub_task_complete", args);
       assert.equal(preview.confirmationRequired, true);
-      return service.call("hub_task_complete", { ...args, request_id: "combined-confirm",
+      return service.call("hub_task_complete", { ...args, request_id: `${prefix}-confirm`,
         confirm_cleanup: true, expected_cleanup_token: preview.cleanupToken });
     },
     async release(task, originMain = base) {
@@ -179,6 +202,91 @@ async function fixture(t, { releaseMetadata = false } = {}) {
         expected_task_revision: revision, expected_workflow_status: workflowStatus, ...overrides });
     },
   };
+}
+
+for (const scenario of [
+  { name: "survivor Test", priorSurvivor: "test" },
+  { name: "source Await", priorSource: "await" },
+  { name: "both Await and UNKNOWN reopen", priorSource: "await", priorSurvivor: "await", unknown: true },
+]) {
+  test(`public returned native absorption preserves ${scenario.name} prior results`, { timeout: 360_000 }, async t => {
+    const f = await fixture(t), a = await f.absorption(scenario);
+    const input = await a.handoff("returned-saved-stopped"), before = f.board.task(a.survivor.id);
+    const sql = (query, method, ...args) => {
+      const db = new DatabaseSync(path.join(f.root, "hub.sqlite"));
+      try { return db.prepare(query)[method](...args); } finally { db.close(); }
+    };
+    const devBefore = await git(f.primary, "rev-parse", "dev");
+    const foreign = a.prior[0].task === a.source ? a.declaration.survivorParentCommit : a.declaration.sourceCommit;
+    sql("UPDATE hub_task_git_references SET result_commit = ? WHERE task_id = ?", "run", foreign, a.prior[0].task.id);
+    await assert.rejects(f.status(a.survivor, "testing", "foreign-prior-test", { selected_absorption_handoff: input }),
+      /prior result|normal return/u);
+    sql("UPDATE hub_task_git_references SET result_commit = ? WHERE task_id = ?", "run",
+      a.prior[0].refs[0].resultCommit, a.prior[0].task.id);
+    assert.equal(await git(f.primary, "rev-parse", "dev"), devBefore);
+    assert.equal(f.board.task(a.survivor.id).revision, before.revision);
+    const original = "returned-absorption-test";
+    if (scenario.unknown) {
+      f.board.commitWorkflowTransition = () => { throw new Error("lost returned absorption terminal"); };
+      await assert.rejects(f.status(a.survivor, "testing", original, { selected_absorption_handoff: input }));
+      const dev = await git(f.primary, "rev-parse", "dev"), reflog = await git(f.primary, "reflog", "show", "--format=%H", "dev");
+      assert.equal(f.catalog.mcpOperation(original).status, "unknown");
+      await f.reopen();
+      const row = sql("SELECT result_json FROM hub_task_lifecycle_outcomes WHERE operation_id = ?", "get", a.prior[0].returnId);
+      const stale = JSON.parse(row.result_json); stale.evidence.acceptedResult.taskRevision--;
+      sql("UPDATE hub_task_lifecycle_outcomes SET result_json = ? WHERE operation_id = ?", "run",
+        JSON.stringify(stale), a.prior[0].returnId);
+      const refused = await f.reconcile(a.survivor, "stale-prior-reconcile", original, before.revision, "in_progress", {
+        selected_absorption_handoff: input });
+      assert.equal(refused.outcome, "unknown");
+      assert.equal(f.board.lifecycleOutcome(original), null);
+      assert.deepEqual(f.board.task(a.survivor.id).gitReferences, before.gitReferences);
+      sql("UPDATE hub_task_lifecycle_outcomes SET result_json = ? WHERE operation_id = ?", "run", row.result_json, a.prior[0].returnId);
+      const testRow = sql("SELECT result_json FROM hub_task_lifecycle_outcomes WHERE operation_id = ?", "get", a.prior[0].testId);
+      const foreignTest = JSON.parse(testRow.result_json); foreignTest.evidence.devHeadCommit = f.base;
+      sql("UPDATE hub_task_lifecycle_outcomes SET result_json = ? WHERE operation_id = ?", "run", JSON.stringify(foreignTest), a.prior[0].testId);
+      assert.equal((await f.reconcile(a.survivor, "foreign-test-prior-reconcile", original, before.revision, "in_progress", {
+        selected_absorption_handoff: input })).outcome, "unknown");
+      sql("UPDATE hub_task_lifecycle_outcomes SET result_json = ? WHERE operation_id = ?", "run", testRow.result_json, a.prior[0].testId);
+      const resumed = await f.reconcile(a.survivor, "restored-prior-reconcile", original, before.revision, "in_progress", {
+        selected_absorption_handoff: input });
+      assert.equal(resumed.outcome, "succeeded");
+      assert.equal(await git(f.primary, "rev-parse", "dev"), dev);
+      assert.equal(await git(f.primary, "reflog", "show", "--format=%H", "dev"), reflog);
+    } else assert.equal((await f.status(a.survivor, "testing", original, { selected_absorption_handoff: input })).workflowStatus, "testing");
+    const proof = f.board.selectedCompositionForRelease({ taskId: a.survivor.id, projectRoot: f.primary,
+      resultCommit: a.declaration.absorptionCommit }).selectedComposition;
+    assert.equal(proof.operationId, original);
+    assert.equal(proof.absorptionInput.priorResults.length, a.prior.length);
+    for (const prior of a.prior) {
+      const binding = proof.absorptionInput.priorResults.find(entry => entry.taskId === prior.task.id);
+      assert.equal(binding.resultCommit, prior.refs[0].resultCommit);
+      assert.equal(binding.testOperationId, prior.testId); assert.equal(binding.returnOperationId, prior.returnId);
+      assert.equal(JSON.stringify(f.board.lifecycleOutcome(prior.testId)), prior.testOutcome);
+      assert.equal(JSON.stringify(f.board.lifecycleOutcome(prior.returnId)), prior.returnOutcome);
+    }
+    assert.equal((await f.status(a.survivor, "awaiting_implementation", "returned-absorption-await")).workflowStatus, "awaiting_implementation");
+    const candidate = (await f.preflight.prepareAwaitSet({ workspaceId: f.workspace.id })).releaseCandidates[0];
+    assert.equal(candidate.manifest.tasks.find(task => task.taskId === a.survivor.id).selectedComposition.descriptorHash, proof.descriptorHash);
+    assert.equal(await git(candidate.releaseRoot, "show", "PreRelease:source.txt"), "saved source");
+    assert.equal(await git(candidate.releaseRoot, "show", "PreRelease:survivor.txt"), "survivor");
+    for (const prior of a.prior) assert.equal(await git(candidate.releaseRoot, "show",
+      `PreRelease:${prior.task === a.source ? "source" : "survivor"}-correction.txt`),
+    `${prior.task === a.source ? "source" : "survivor"} correction`);
+    const sourcePrior = a.prior.find(prior => prior.task === a.source);
+    if (sourcePrior) {
+      sql("UPDATE hub_task_git_references SET result_commit = ? WHERE task_id = ?", "run", f.base, a.source.id);
+      await assert.rejects(f.closeCombined(a.source, a.survivor, "foreign-closure"), /prior source result/u);
+      assert.equal(f.board.task(a.source.id).status, "started");
+      sql("UPDATE hub_task_git_references SET result_commit = ? WHERE task_id = ?", "run", sourcePrior.refs[0].resultCommit, a.source.id);
+    }
+    assert.equal((await f.closeCombined(a.source, a.survivor)).status, "done");
+    if (sourcePrior) assert.deepEqual(f.board.task(a.source.id).gitReferences, sourcePrior.refs);
+    for (const prior of a.prior) {
+      assert.equal(JSON.stringify(f.board.lifecycleOutcome(prior.testId)), prior.testOutcome);
+      assert.equal(JSON.stringify(f.board.lifecycleOutcome(prior.returnId)), prior.returnOutcome);
+    }
+  });
 }
 
 test("public fresh native absorption binds authenticated handoff through Test Await and combined closure", { timeout: 360_000 }, async t => {

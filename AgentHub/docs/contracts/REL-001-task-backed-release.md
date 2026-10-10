@@ -26,6 +26,17 @@ successful outcome seals native-task-integration-v1 required selected evidence,
 carried unchanged through plan/manifest/generation and historical readback.
 No legacy selected preview, bundle/materializer or arbitrary merge waiver is used.
 
+Previously integrated source and survivor must return through the ordinary lifecycle.
+Their accepted refs stay intact. Existing successful Test and normal-return outcomes
+bind each prior result, repository, revisions and original operation IDs into the
+authenticated absorption input; exact outcome hashes are rechecked at admission,
+recovery and terminal SQL. Git proves each prior result is retained by its declared
+source or survivor parent. Missing, stale or foreign prior bindings refuse.
+Combined closure verifies the sealed native result and exact current source.
+A previous separate source dev integration is retained only when its side parent
+is covered by that source's bound returned result and the integration predates
+the combined Test's exact dev parent. Unproved separate integrations still refuse.
+
 Ordinary Test uses an isolated native merge from current dev and its exact Task
 result. A conflict leaves MERGE_HEAD, stages and automatic entries there; shared
 dev and the last accepted candidate remain intact. The executor uses normal

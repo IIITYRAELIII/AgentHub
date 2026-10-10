@@ -22,6 +22,10 @@ under both Task leases. The native original and successful required descriptor
 retain that identity. Reconciliation requires the exact original handoff/CAS;
 it cannot change the binding or repeat a committed Git CAS. Existing combined
 closure preview/confirm remains the only combined Task closure route.
+Prior accepted refs are preserved after normal return. Their exact successful
+Test and return outcomes are bound internally by the existing lifecycle owner;
+the caller cannot supply prior-result authority. Current refs, immutable outcomes
+and ancestry to the declared merge parents must agree through terminal and recovery.
 
 No public preflight/freeze/reconcile/complete writer is restored. Immutable release
 generations coexist with Task edits; authored stored rules remain opaque. Legacy

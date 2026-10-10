@@ -5109,7 +5109,7 @@ export class TaskGitWorkspaceService {
     return { repositories, truncated: false };
   }
 
-  async withAbsorptionEvidenceOwned({ source, target, lease } = {}, operation) {
+  async withAbsorptionEvidenceOwned({ source, target, lease, nativeAbsorption = null } = {}, operation) {
     this.#assertAvailable("withAbsorptionEvidenceOwned");
     await requiredGuardLease(lease).assertOwned();
     const workspaces = await this.describe(source.id);
@@ -5147,6 +5147,26 @@ export class TaskGitWorkspaceService {
         }
         const sourceHead = await runGit(["rev-parse", "HEAD^{commit}"], { cwd: workspace.projectRoot });
         if (sourceHead !== workspace.headCommit) throw new Error("Source Task changed during combined closure");
+        let priorNativeSource = null;
+        if (nativeAbsorption) {
+          const proof = selectedCompositionFields({ taskId: target.id, resultCommit: targetHead,
+            selectedComposition: nativeAbsorption }).selectedComposition;
+          if (proof.kind !== "native-task-integration-v1" || proof.taskId !== target.id
+              || proof.taskCommit !== targetHead || !samePath(proof.repositoryRoot, repoRoot)) {
+            throw selectedCompositionRequiredError("combined native absorption result changed");
+          }
+          await this.#nativeSelectedCompositionForResult(proof, devLease);
+          const input = normalizedSelectedAbsorption(proof.absorptionInput);
+          const d = selectedAbsorptionHandoff({ requestId: input.requestId, text: input.text }).declaration;
+          if (d.sourceTaskId !== source.id || d.sourceTaskRevision !== source.revision || d.sourceCommit !== sourceHead) {
+            throw selectedCompositionRequiredError("combined native absorbed source changed");
+          }
+          const prior = input.priorResults?.find(result => result.taskId === source.id);
+          const sourceRefs = (source.gitReferences ?? []).filter(ref => samePath(ref.projectRoot, repoRoot));
+          if (sourceRefs.length ? sourceRefs.length !== 1 || !prior || sourceRefs[0].resultCommit !== prior.resultCommit
+            : Boolean(prior)) throw selectedCompositionRequiredError("combined native prior source result changed");
+          priorNativeSource = prior ? { ...prior, devCommit: proof.devCommit } : null;
+        }
         const results = [...new Set([sourceHead, ...(source.gitReferences ?? [])
           .filter((ref) => samePath(ref.projectRoot, repoRoot)).map((ref) => ref.resultCommit)])];
         let squashTransfer = null;
@@ -5201,14 +5221,19 @@ export class TaskGitWorkspaceService {
         if (!squashTransfer) {
           for (const entry of history) {
             const [commit, , ...parents] = entry.split(" ");
-            if (parents.some((parent) => lineage.has(parent) && !targetLineage.has(parent))) {
-              throw new Error(`Source Task still has a separate dev integration ${commit}; return it before integrating the combined Task`);
+            for (const parent of parents.filter(parent => lineage.has(parent) && !targetLineage.has(parent))) {
+              if (!priorNativeSource
+                  || await gitMaybe(["merge-base", "--is-ancestor", parent, priorNativeSource.resultCommit], { cwd: repoRoot }) === null
+                  || await gitMaybe(["merge-base", "--is-ancestor", commit, priorNativeSource.devCommit], { cwd: repoRoot }) === null) {
+                throw new Error(`Source Task still has a separate dev integration ${commit}; return it before integrating the combined Task`);
+              }
             }
           }
         }
         evidence.push({
           projectRoot: repoRoot, sourceHead, targetHead, results,
           ...(squashTransfer ? { squashTransferHash: squashTransfer.transferHash } : {}),
+          ...(nativeAbsorption ? { nativeAbsorptionHash: nativeAbsorption.descriptorHash } : {}),
         });
         return visit(index + 1, devLease);
       });

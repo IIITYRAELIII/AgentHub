@@ -45,8 +45,23 @@ export function normalizedSelectedAbsorption(value) {
       || !/^[0-9a-f]{64}$/u.test(value.contentHash ?? "")
       || interstreamAuditContentHash(handoff.text, { origin }) !== value.contentHash
       || Object.keys(value).some((key) => !["requestId", "text", "origin", "contentHash",
-        "createdAtMs", "sourceDescriptionSha256", "sourceTaskNumber"].includes(key))) {
+        "createdAtMs", "sourceDescriptionSha256", "sourceTaskNumber", "priorResults"].includes(key))) {
     throw selectedCompositionRequiredError("absorption authenticated handoff binding changed");
+  }
+  if (value.priorResults != null) {
+    if (!Array.isArray(value.priorResults) || !value.priorResults.length || value.priorResults.length > 2
+        || new Set(value.priorResults.map(prior => prior?.taskId)).size !== value.priorResults.length
+        || value.priorResults.some(prior => !prior
+          || Object.keys(prior).some(key => !["taskId", "projectRoot", "resultCommit", "testOperationId",
+            "returnOperationId", "testRevision", "returnRevision", "testOutcomeHash", "returnOutcomeHash"].includes(key))
+          || ![handoff.declaration.sourceTaskId, handoff.declaration.survivorTaskId].includes(prior.taskId)
+          || ["projectRoot", "testOperationId", "returnOperationId"].some(key => typeof prior[key] !== "string" || !prior[key])
+          || !/^[0-9a-f]{40}$/u.test(prior.resultCommit ?? "")
+          || ["testOutcomeHash", "returnOutcomeHash"].some(key => !/^[0-9a-f]{64}$/u.test(prior[key] ?? ""))
+          || !Number.isSafeInteger(prior.testRevision) || prior.testRevision < 1
+          || !Number.isSafeInteger(prior.returnRevision) || prior.returnRevision <= prior.testRevision)) {
+      throw selectedCompositionRequiredError("absorption prior returned result binding changed");
+    }
   }
   return JSON.parse(JSON.stringify(value));
 }
@@ -62,7 +77,11 @@ export function assertSelectedAbsorptionTasks(value, source, survivor) {
       || survivor.workspaceId !== d.workspaceId || source.streamId !== input.origin.streamId
       || source.status !== "started" || survivor.status !== "started"
       || source.workflowStatus !== "in_progress" || survivor.workflowStatus !== "in_progress"
-      || source.gitReferences?.length || survivor.gitReferences?.length
+      || [source, survivor].some(task => {
+        const refs = task.gitReferences ?? [], prior = input.priorResults?.find(entry => entry.taskId === task.id);
+        return refs.length ? refs.length !== 1 || !prior || refs[0].resultCommit !== prior.resultCommit
+          || refs[0].projectRoot !== prior.projectRoot || prior.returnRevision > task.revision : Boolean(prior);
+      })
       || !item || item.completed || source.checklistParent?.task?.id !== survivor.id
       || source.checklistParent?.itemId !== item.id
       || !source.description || !survivor.description?.includes(source.description)

@@ -45,6 +45,13 @@ export async function assertNativeTaskHistories({ git, baseCommit, tasks }) {
     if (absorbed) {
       const binding = normalizedSelectedAbsorption(absorbed);
       const d = selectedAbsorptionHandoff({ requestId: binding.requestId, text: binding.text }).declaration;
+      for (const prior of binding.priorResults ?? []) {
+        const parent = prior.taskId === d.sourceTaskId ? d.sourceCommit : d.survivorParentCommit;
+        if (await maybe(git, ["merge-base", "--is-ancestor", d.baseCommit, prior.resultCommit]) === null
+            || await maybe(git, ["merge-base", "--is-ancestor", prior.resultCommit, parent]) === null) {
+          throw failure(`Task ${task.taskId} absorbed prior result is not retained by its exact parent`);
+        }
+      }
       if (d.survivorTaskId !== task.taskId
           || d.baseCommit !== (task.baseCommit || baseCommit)
           || await maybe(git, ["merge-base", "--is-ancestor", d.absorptionCommit, task.resultCommit]) === null
