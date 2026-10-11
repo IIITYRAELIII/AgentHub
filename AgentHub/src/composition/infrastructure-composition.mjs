@@ -9,6 +9,7 @@ import { promisify } from "node:util";
 
 import { RunJournalService } from "../application/run-journal-service.mjs";
 import { HubMcpService } from "../application/hub-mcp-service.mjs";
+import { measureTaskOperation } from "../infrastructure/process/task-operation-timing.mjs";
 import { TaskLifecycleService } from "../application/task-lifecycle-service.mjs";
 import { McpAdmissionCoordinator } from "../application/mcp-admission-coordinator.mjs";
 import { TurnEndNotificationRegistry } from "../application/turn-end-notifications.mjs";
@@ -522,6 +523,7 @@ export async function createHubInfrastructure({
   taskLifecycle.setReleaseOperationPrepare((taskId) => releaseOperations.prepareForTaskAcceptance(taskId));
   releaseOperations.recover();
   const hubMcpService = new HubMcpService({
+    measureOperation: measureTaskOperation,
     workspaceCatalog: workspaceCatalogStore,
     taskBoard,
     taskLifecycle,

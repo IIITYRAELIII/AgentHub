@@ -6,7 +6,7 @@ import { normalizedTaskGitReferences, normalizedInitialNativeTest } from "../dom
 import { taskProjectRoot } from "../domain/task-project-root.mjs";
 import { normalizedTaskSquashTransfer } from "../domain/task-squash-transfer.mjs";
 import { normalizedTaskSquashCutover } from "../domain/task-squash-cutover.mjs";
-import { normalizePublishedResolution } from "../infrastructure/filesystem/selected-composition-proof.mjs";
+import { normalizePublishedResolution } from "../domain/published-resolution.mjs";
 import { selectedAbsorptionHandoff } from "../domain/task-selected-composition.mjs";
 
 function requiredMethod(value, name) {
@@ -390,8 +390,17 @@ export class TaskOperationReconciliationService {
     const workflowCasMatches = exactWorkflowCasEvidence({ workflowCas, task, transition, outcome });
     const initialEvidence = transition?.evidence?.initialNativeTest ?? outcome?.result?.evidence?.initialNativeTest;
     const initialPrior = transition?.priorTask ?? outcome?.result?.priorTask;
+    const returnedCommit = initial?.initial_native_test.returnedResultCommit;
+    const initialReferencesMatch = returnedCommit
+      ? initialPrior?.gitReferences?.length === 1
+        && initialPrior.gitReferences[0].resultCommit === returnedCommit
+        && samePath(initialPrior.gitReferences[0].projectRoot, root)
+        && initialEvidence?.priorResult?.taskId === task.id
+        && initialEvidence.priorResult.resultCommit === returnedCommit
+        && samePath(initialEvidence.priorResult.projectRoot, root)
+      : !initialPrior?.gitReferences?.length && !initialEvidence?.priorResult;
     const initialMatches = !initial || (targetWorkflowStatus === "testing"
-      && initialPrior?.workflowStatus === "in_progress" && !initialPrior.gitReferences?.length
+      && initialPrior?.workflowStatus === "in_progress" && initialReferencesMatch
       && initialPrior.revision === initial.expected_task_revision
       && initialEvidence?.taskId === task.id && initialEvidence.taskRevision === initial.expected_task_revision
       && initialEvidence.authority.workspaceId === receipt.workspaceId

@@ -2638,6 +2638,15 @@ export class TaskBoardStore {
     return priorResults;
   }
 
+  returnedNativeTestPriorResult(taskId) {
+    return this.#withDatabase(database => {
+      const task = this.#taskWithRelease(database, this.#taskRow(database, taskId));
+      const [prior] = this.#selectedAbsorptionPriorResults(database, [task], this.now());
+      if (!prior) throw new Error("Returned native Test has no exact normal return result");
+      return prior;
+    });
+  }
+
   #assertAbsorptionPriorOutcomes(database, input) {
     for (const prior of normalizedSelectedAbsorption(input)?.priorResults ?? []) {
       for (const [operationId, hash] of [[prior.testOperationId, prior.testOutcomeHash],
@@ -2716,12 +2725,22 @@ export class TaskBoardStore {
     const thread = database.prepare(`SELECT provider, provider_thread_id FROM hub_threads
       WHERE stream_id = ? AND detached_at_ms IS NULL ORDER BY position DESC LIMIT 1`).get(authority.streamId);
     const refs = database.prepare("SELECT COUNT(*) AS count FROM hub_task_git_references WHERE task_id = ?").get(current.id);
+    const returned = evidence.identity.returnedResultCommit;
+    if (returned) {
+      const task = this.#taskWithRelease(database, current);
+      const [prior] = this.#selectedAbsorptionPriorResults(database, [task], this.now());
+      if (Number(refs.count) !== 1 || prior?.resultCommit !== returned
+          || !sameResolvedPath(prior.projectRoot, projectRoot)
+          || JSON.stringify(prior) !== JSON.stringify(evidence.priorResult)) {
+        throw new Error("Returned native Test original prior result or outcome changed");
+      }
+    } else if (evidence.priorResult) throw new Error("Initial native Test cannot bind a prior result");
     const root = workspace && stream ? taskProjectRoot({
       workspace: { settings: parsedSettings(workspace.settings_json) },
       stream: { settings: parsedSettings(stream.settings_json) },
     }) : null;
     if (current.id !== evidence.taskId || Number(current.row_revision) !== evidence.taskRevision
-        || current.workflow_status !== "in_progress" || current.status !== "started" || Number(refs.count)
+        || current.workflow_status !== "in_progress" || current.status !== "started" || (!returned && Number(refs.count))
         || current.workspace_id !== authority.workspaceId || current.stream_id !== authority.streamId
         || stream?.workspace_id !== workspace?.id || !root || !sameResolvedPath(root, projectRoot)
         || parsedSettings(workspace.settings_json).releaseWorkflowEnabled !== true

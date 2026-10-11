@@ -7,6 +7,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 
 import { HubMcpService } from "./src/application/hub-mcp-service.mjs";
+import { measureTaskOperation } from "./src/infrastructure/process/task-operation-timing.mjs";
 import { TaskBoardService } from "./src/application/task-board-service.mjs";
 import { TaskLifecycleService } from "./src/application/task-lifecycle-service.mjs";
 import { TaskReleasePlanService } from "./src/application/task-release-plan-service.mjs";
@@ -43,7 +44,7 @@ export function parseTaskAwaitCutoverArguments(argv) {
   for (let index = 0; index < argv.length; index += 1) {
     const name = argv[index];
     if (!name.startsWith("--")) throw new Error(`Unexpected argument: ${name}`);
-    if (name === "--confirm-cutover" || name === "--squash-bootstrap" || name === "--initial-native-test") {
+    if (name === "--confirm-cutover" || name === "--squash-bootstrap" || name === "--initial-native-test" || name === "--returned-native-test") {
       input[name.slice(2)] = true;
       continue;
     }
@@ -61,7 +62,7 @@ export function parseTaskAwaitCutoverArguments(argv) {
     requestId: required(input, "request"),
     repositoryRoot: path.resolve(required(input, "repository")),
     expectedSourceCommit: required(input, "expected-source-commit").toLowerCase(),
-    expectedProjectorSha256: input["initial-native-test"] ? null : required(input, "expected-projector-sha256").toLowerCase(),
+    expectedProjectorSha256: input["initial-native-test"] || input["returned-native-test"] ? null : required(input, "expected-projector-sha256").toLowerCase(),
     expectedTaskRevision: Number(required(input, "expected-task-revision")),
     sourceTaskId: String(input["source-task"] ?? "").trim() || null,
     expectedSourceTaskRevision: input["expected-source-task-revision"] == null
@@ -69,7 +70,7 @@ export function parseTaskAwaitCutoverArguments(argv) {
       : Number(input["expected-source-task-revision"]),
     confirm: input.confirm === true,
     squashBootstrap: input["squash-bootstrap"] === true,
-    initialNativeTest: input["initial-native-test"] === true,
+    initialNativeTest: input["initial-native-test"] === true || input["returned-native-test"] === true,
   };
   parsed.confirm = input["confirm-cutover"] === true;
   if (!Number.isInteger(parsed.expectedTaskRevision) || parsed.expectedTaskRevision < 1) {
@@ -82,6 +83,11 @@ export function parseTaskAwaitCutoverArguments(argv) {
       "expected-task-revision", "initial-native-test", "confirm-cutover", "expected-source-commit",
       "expected-source-tree", "expected-source-branch", "expected-main-commit", "expected-dev-commit",
       "expected-publication-sha256", "expected-candidate-sha256", "expected-plan-revision", "expected-runtime-sha256"]);
+    if (input["returned-native-test"]) {
+      if (input["initial-native-test"]) throw new Error("Returned native Test and initial native Test are distinct admissions");
+      allowed.add("returned-native-test"); allowed.add("expected-returned-result-commit");
+      parsed.expectedReturnedResultCommit = required(input, "expected-returned-result-commit");
+    }
     if (Object.keys(input).some(key => !allowed.has(key))) throw new Error("Initial native Test is a distinct confirmed same-Task admission");
     if (parsed.squashBootstrap || parsed.sourceTaskId || input["expected-projector-sha256"] || !parsed.confirm) {
       throw new Error("Initial native Test is a distinct confirmed same-Task admission");
@@ -95,7 +101,8 @@ export function parseTaskAwaitCutoverArguments(argv) {
       sourceTree: parsed.expectedSourceTree, sourceBranch: parsed.expectedSourceBranch,
       mainCommit: parsed.expectedMainCommit, devCommit: parsed.expectedDevCommit,
       publicationHash: parsed.expectedPublicationHash, candidateHash: parsed.expectedCandidateHash,
-      planRevision: parsed.expectedPlanRevision, runtimeHash: parsed.expectedRuntimeHash });
+      planRevision: parsed.expectedPlanRevision, runtimeHash: parsed.expectedRuntimeHash,
+      ...(parsed.expectedReturnedResultCommit ? { returnedResultCommit: parsed.expectedReturnedResultCommit } : {}) });
   }
   if ((parsed.sourceTaskId == null) !== (parsed.expectedSourceTaskRevision == null)
       || (parsed.sourceTaskId && (!Number.isInteger(parsed.expectedSourceTaskRevision)
@@ -252,6 +259,7 @@ export async function openTaskAwaitCutoverRuntime({
     taskBoard, workspaceCatalog: workspaceCatalogStore, taskGitWorkspaces, releasePreflight,
   });
   const service = new HubMcpService({
+    measureOperation: measureTaskOperation,
     workspaceCatalog: workspaceCatalogStore,
     taskBoard,
     taskLifecycle,
@@ -303,7 +311,8 @@ export async function executeTaskAwaitCutover(input, {
         sourceTree: source.headTree, sourceBranch: source.branch, mainCommit: input.expectedMainCommit,
         devCommit: input.expectedDevCommit, publicationHash: input.expectedPublicationHash,
         candidateHash: input.expectedCandidateHash, planRevision: input.expectedPlanRevision,
-        runtimeHash: input.expectedRuntimeHash });
+        runtimeHash: input.expectedRuntimeHash,
+        ...(input.expectedReturnedResultCommit ? { returnedResultCommit: input.expectedReturnedResultCommit } : {}) });
       const result = await runtime.service.callTaskStatusCutover({ context_token: token,
         request_id: input.requestId, task_id: input.taskId, status: "testing",
         expected_task_revision: input.expectedTaskRevision, expected_workflow_status: "in_progress",

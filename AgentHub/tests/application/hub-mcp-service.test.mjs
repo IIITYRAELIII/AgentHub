@@ -6,6 +6,7 @@ import process from "node:process";
 import test from "node:test";
 
 import { HubMcpService } from "../../src/application/hub-mcp-service.mjs";
+import { measureTaskOperation, withTaskOperationTiming } from "../../src/infrastructure/process/task-operation-timing.mjs";
 import { TaskIntegrationConflictError, TaskIntegrationRejectedError, TaskAwaitIntegrationError, TaskWithdrawalBusyError } from "../../src/application/task-lifecycle-service.mjs";
 import { ReleaseCandidateFrozenError, TaskAbsorptionCompositionError } from "../../src/domain/task-board-task.mjs";
 import { TaskBoardService } from "../../src/application/task-board-service.mjs";
@@ -46,6 +47,7 @@ async function fixture(context, {
   taskGitWorkspacesFactory = null,
   taskOperationReconciliation = null,
   releaseOperations = null,
+  measureOperation = undefined,
 } = {}) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-mcp-"));
   context.after(() => rm(directory, { recursive: true, force: true }));
@@ -419,6 +421,7 @@ async function fixture(context, {
       })
     : defaultTaskGitWorkspaces;
   const service = new HubMcpService({
+    measureOperation,
     workspaceCatalog, taskBoard, workLog, attachmentDirectory, secret: "secret",
     taskGitWorkspaces, taskOperationReconciliation, releaseOperations,
     releasePlanner: {
@@ -528,6 +531,20 @@ async function fixture(context, {
     activeRun,
   };
 }
+
+test("MCP admission timing injection retains one context and original receipt", async t => {
+  const { service, token, operations } = await fixture(t, { measureOperation: measureTaskOperation });
+  const events = [];
+  const args = { context_token: token, task_id: "task-current", title: "timed", request_id: "timed-admission" };
+  await withTaskOperationTiming({ operationId: args.request_id, taskId: args.task_id, record: event => events.push(event) },
+    () => service.call("hub_task_update", args));
+  assert.equal(operations.get(args.request_id).status, "succeeded");
+  assert.ok(events.some(event => event.stage === "mcp:admission" && event.phase === "end" && event.outcome === "ok"));
+  assert.ok(events.every(event => event.operationId === args.request_id && event.taskId === args.task_id));
+  const prior = JSON.stringify(operations.get(args.request_id));
+  await service.call("hub_task_update", args);
+  assert.equal(JSON.stringify(operations.get(args.request_id)), prior);
+});
 
 test("a proved conflict is a terminal MCP failure and exact retry preserves its diagnostics", async (t) => {
   const { service, token, operations } = await fixture(t, { releaseWorkflowEnabled: true });

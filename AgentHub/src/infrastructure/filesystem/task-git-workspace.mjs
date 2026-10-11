@@ -2812,6 +2812,9 @@ export class TaskGitWorkspaceService {
       { taskId: evidence.taskId, taskNumber: evidence.taskNumber });
     if (!managed || !samePath(managed, evidence.projectRoot)) throw new Error("Initial native Test source is not its exact managed Task checkout");
     const git = (args, cwd = identity.sourceRoot) => this.#runOwned(args, { cwd, lease });
+    if (identity.returnedResultCommit) {
+      await git(["merge-base", "--is-ancestor", identity.returnedResultCommit, identity.sourceCommit]);
+    }
     if (await git(["rev-parse", "HEAD^{commit}"]) !== identity.sourceCommit
         || await git(["rev-parse", "HEAD^{tree}"]) !== identity.sourceTree
         || await git(["symbolic-ref", "--quiet", "--short", "HEAD"]) !== identity.sourceBranch

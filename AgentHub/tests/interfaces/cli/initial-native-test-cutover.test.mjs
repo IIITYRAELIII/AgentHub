@@ -6,6 +6,7 @@ import path from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 import { createHash } from "node:crypto";
+import { DatabaseSync } from "node:sqlite";
 import { executeTaskAwaitCutover, inspectTaskAwaitCutoverSource, inspectInstalledNativeTestOwner, openTaskAwaitCutoverRuntime,
   parseTaskAwaitCutoverArguments } from "../../../task-await-cutover.mjs";
 import { TaskBoardService } from "../../../src/application/task-board-service.mjs";
@@ -90,7 +91,7 @@ async function fixture(t) {
     inspectSource: values => inspectTaskAwaitCutoverSource(values, { sourceRoot: task.root }),
     openRuntime: async () => { const runtime = await open(); customize?.(runtime); return runtime; },
   });
-  return { root, primary, main, catalog, board, taskGit, releaseGit, preflight, publication, create, input, run, open,
+  return { root, primary, main, databaseFile, catalog, board, taskGit, releaseGit, preflight, publication, create, input, run, open,
     setInstalled: value => { installed = value; },
     async status(task, status, requestId) {
       const runtime = await open();
@@ -116,7 +117,67 @@ test("initial native Test parser requires the full reviewed identity and keeps l
   assert.throws(() => parseTaskAwaitCutoverArguments(args.slice(0, -2)), /Missing value/u);
   assert.throws(() => parseTaskAwaitCutoverArguments([...args, "--expected-projector-sha256", hash]), /distinct/u);
   assert.throws(() => parseTaskAwaitCutoverArguments([...args, "--squash-bootstrap"]), /distinct/u);
+  const returned = args.map(value => value === "--initial-native-test" ? "--returned-native-test" : value);
+  assert.throws(() => parseTaskAwaitCutoverArguments(returned), /expected-returned-result/u);
+  assert.equal(parseTaskAwaitCutoverArguments([...returned, "--expected-returned-result-commit", "c".repeat(40)]).expectedReturnedResultCommit, "c".repeat(40));
+  assert.throws(() => parseTaskAwaitCutoverArguments([...args, "--expected-returned-result-commit", "c".repeat(40)]), /distinct/u);
 });
+
+for (const failure of ["sql-terminal", "mcp-receipt"]) {
+  test(`public CLI returned native Test preserves prior Await and recovers ${failure} on its original`, { timeout: 240_000 }, async t => {
+    const f = await fixture(t), neighbor = await f.create("neighbor");
+    await f.status(neighbor, "testing", "neighbor-test"); await f.status(neighbor, "awaiting_implementation", "neighbor-await");
+    const task = await f.create("correction");
+    await f.status(task, "testing", "prior-test"); await f.status(task, "awaiting_implementation", "prior-await");
+    const prior = f.board.task(task.id).gitReferences[0].resultCommit;
+    const testOutcome = JSON.stringify(f.board.lifecycleOutcome("prior-test"));
+    const candidate = await f.releaseGit.initialNativeTestCandidate(f.primary);
+    await f.status(task, "in_progress", "prior-return");
+    assert.equal(f.board.task(task.id).gitReferences[0].resultCommit, prior);
+    assert.deepEqual(await f.releaseGit.initialNativeTestCandidate(f.primary), candidate);
+    const returnOutcome = JSON.stringify(f.board.lifecycleOutcome("prior-return"));
+    await writeFile(path.join(task.root, "corrected.txt"), "corrected\n"); await commit(task.root, "corrected descendant");
+    const input = { ...await f.input(task, `returned-${failure}`), expectedReturnedResultCommit: prior };
+    const before = f.board.task(task.id);
+    await assert.rejects(f.run(task, { ...input, requestId: "foreign-prior", expectedReturnedResultCommit: f.board.task(neighbor.id).gitReferences[0].resultCommit }), /prior accepted result/u);
+    await assert.rejects(f.run(task, { ...input, requestId: "missing-return-binding", expectedReturnedResultCommit: undefined }), /caller|Task/u);
+    await assert.rejects(f.run(task, input, runtime => {
+      if (failure === "sql-terminal") runtime.taskBoard.commitWorkflowTransition = async () => { throw new Error("Lost returned SQL terminal"); };
+      else runtime.fixtureCatalog.completeMcpOperation = async () => { throw new Error("Lost returned MCP receipt"); };
+    }), /unknown|UNKNOWN|readback|reconciliation/u);
+    assert.equal(f.catalog.mcpOperation(input.requestId).status, "unknown");
+    const dev = await git(f.primary, "rev-parse", "dev"), reflog = await git(f.primary, "reflog", "show", "--format=%H", "dev");
+    if (failure === "sql-terminal") {
+      const database = new DatabaseSync(f.databaseFile);
+      try {
+        const row = database.prepare("SELECT result_json FROM hub_task_lifecycle_outcomes WHERE operation_id = ?").get("prior-return");
+        const changed = JSON.parse(row.result_json); changed.evidence.acceptedResult.taskRevision += 1;
+        database.prepare("UPDATE hub_task_lifecycle_outcomes SET result_json = ? WHERE operation_id = ?").run(JSON.stringify(changed), "prior-return");
+        await assert.rejects(f.run(task, input), /UNKNOWN|Unknown/u);
+        assert.equal(f.board.task(task.id).workflowStatus, "in_progress");
+        database.prepare("UPDATE hub_task_lifecycle_outcomes SET result_json = ? WHERE operation_id = ?").run(row.result_json, "prior-return");
+      } finally { database.close(); }
+    }
+    f.setInstalled({ available: true, hash: "c".repeat(64) });
+    const result = await f.run(task, input);
+    assert.equal(result.result.workflowStatus, "testing");
+    assert.equal(f.board.task(task.id).revision, before.revision + 1);
+    assert.equal(f.board.task(task.id).gitReferences[0].resultCommit, input.expectedSourceCommit);
+    assert.equal(await git(f.primary, "rev-parse", "dev"), dev);
+    assert.equal(await git(f.primary, "reflog", "show", "--format=%H", "dev"), reflog);
+    assert.equal(JSON.stringify(f.board.lifecycleOutcome("prior-test")), testOutcome);
+    assert.equal(JSON.stringify(f.board.lifecycleOutcome("prior-return")), returnOutcome);
+    assert.deepEqual(await f.releaseGit.initialNativeTestCandidate(f.primary), candidate);
+    assert.deepEqual((await f.run(task, input)).result, wire(result.result));
+    await f.status(task, "awaiting_implementation", "corrected-await");
+    const current = await f.releaseGit.frozenCandidate(f.primary);
+    assert.deepEqual(current.manifest.taskIds.sort(), [neighbor.id, task.id].sort());
+    await git(current.releaseRoot, "merge-base", "--is-ancestor", prior, current.preReleaseHead);
+    await git(current.releaseRoot, "merge-base", "--is-ancestor", input.expectedSourceCommit, current.preReleaseHead);
+    assert.equal((await readFile(path.join(current.releaseRoot, "neighbor.txt"), "utf8")).replaceAll("\r\n", "\n"), "neighbor\n");
+    assert.equal((await readFile(path.join(current.releaseRoot, "corrected.txt"), "utf8")).replaceAll("\r\n", "\n"), "corrected\n");
+  });
+}
 
 test("initial native Test closes bootstrap only for a verified ready installed native status owner", async t => {
   const root = await mkdtemp(path.join(os.tmpdir(), "hub-native-installed-fixture-"));

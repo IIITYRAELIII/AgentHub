@@ -239,8 +239,15 @@ export class TaskLifecycleService {
     const workspace = this.workspaceCatalog.workspace(evidence.authority.workspaceId);
     const stream = this.workspaceCatalog.stream(evidence.authority.streamId);
     const thread = this.workspaceCatalog.activeThread(evidence.authority.streamId);
+    const returned = identity.returnedResultCommit;
+    const refs = task.gitReferences ?? [];
+    if (returned && (refs.length !== 1 || refs[0].resultCommit !== returned
+        || !samePath(refs[0].projectRoot, evidence.projectRoot)
+        || JSON.stringify(await this.taskBoard.returnedNativeTestPriorResult(task.id)) !== JSON.stringify(evidence.priorResult))) {
+      throw new Error("Returned native Test prior accepted result or outcome changed");
+    }
     if (task.revision !== evidence.taskRevision || task.workflowStatus !== "in_progress"
-        || task.status !== "started" || task.gitReferences?.length || task.workspaceId !== workspace?.id
+        || task.status !== "started" || (!returned && refs.length) || task.workspaceId !== workspace?.id
         || task.streamId !== stream?.id || stream?.workspaceId !== workspace?.id
         || workspace?.settings?.releaseWorkflowEnabled !== true
         || thread?.provider !== evidence.authority.provider || thread?.threadId !== evidence.authority.threadId
@@ -273,7 +280,8 @@ export class TaskLifecycleService {
     return this.releasePreflight.withAwaitTransition(task.workspaceId, () => this.#withLock(task.id, async lease => {
       const original = this.taskBoard.lifecycleTransition(options.operationId);
       const evidence = original?.evidence?.initialNativeTest ?? { identity, authority: source.authority,
-        taskId: task.id, taskNumber: task.taskNumber, taskRevision: options.expectedRevision, projectRoot: options.projectRoot };
+        taskId: task.id, taskNumber: task.taskNumber, taskRevision: options.expectedRevision, projectRoot: options.projectRoot,
+        ...(identity.returnedResultCommit ? { priorResult: await this.taskBoard.returnedNativeTestPriorResult(task.id) } : {}) };
       const recovery = Boolean(original);
       if (original && (original.taskId !== task.id || original.kind !== "workflow"
           || original.targetWorkflowStatus !== "testing" || original.phase !== "pending_git"

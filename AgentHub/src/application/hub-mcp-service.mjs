@@ -463,6 +463,7 @@ export class HubMcpService {
     releaseOperations = null,
     taskGitWorkspaces = null, taskLifecycle = null,
     taskOperationReconciliation = null,
+    measureOperation = async (_stage, operation) => operation(),
     reconcilePendingOnStartup = true,
   } = {}) {
     for (const name of [
@@ -486,6 +487,8 @@ export class HubMcpService {
       ? createWorkspaceCatalogMutationOwner(workspaceCatalog)
       : workspaceCatalog;
     this.taskBoard = taskBoard;
+    if (typeof measureOperation !== "function") throw new TypeError("MCP operation timing port is required");
+    this.measureOperation = measureOperation;
     this.workLog = workLog;
     this.attachmentDirectory = path.resolve(requiredText(attachmentDirectory, "attachment directory", 2_000));
     this.secret = requiredText(secret, "MCP secret", 512);
@@ -2309,7 +2312,7 @@ export class HubMcpService {
         requestId: args.request_id,
       });
     }
-    const started = await this.workspaceCatalog.beginMcpOperation({
+    const started = await this.measureOperation("mcp:admission", () => this.workspaceCatalog.beginMcpOperation({
       requestId,
       workspaceId: context.workspaceId,
       streamId: context.streamId,
@@ -2317,7 +2320,7 @@ export class HubMcpService {
       threadId: context.auditThreadId,
       toolName,
       argumentsHash: argumentsHash(args),
-    });
+    }));
     if (started.status === "succeeded") return started.result;
     if (started.status === "failed") throw new Error(started.error || "previous MCP operation failed");
     if (started.status === "unknown" && toolName === "hub_task_claim") {

@@ -4,6 +4,21 @@ Date: 2026-10-10
 Status: accepted architecture, exact implementation requires independent review
 Contracts: REL-001, MCP-001
 
+## Returned-result source delivery
+
+The existing source-cutover CLI has explicit returned-native-Test admission for a
+managed Progress Task retaining one previously accepted result. Existing SQL
+successful-Test/latest-normal-return outcomes bind that result internally, including
+original IDs/revisions/hashes. Admission and terminal transactions recheck it; Git
+verifies corrected-source ancestry. Old refs/receipts remain intact; no new launcher
+or receipt ledger is introduced. Recovery uses the same original even after installed
+native capability closes new bootstrap admissions. Subsequent ordinary Test uses
+the installed owner without this bridge.
+
+Composition injects the existing MCP timing callback, sharing its trace context.
+Domain owns published-resolution normalization; historical filesystem verification
+re-exports the same function and retains object/history verification.
+
 ## Decision
 
 Return to Task/dev/PreRelease branches from agreed main. Existing TaskGit and

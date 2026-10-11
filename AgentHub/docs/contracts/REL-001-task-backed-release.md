@@ -18,6 +18,22 @@ readback and UNKNOWN reconciliation remain available with no second dev CAS.
 Old receipts and already prepared full composition are never rewritten to make
 the first-run guard pass.
 
+The same bounded source entry represents ordinary Test after normal return of a
+previously accepted result. Its explicit returned-result identity equals the unique
+retained ref. The existing SQL owner binds successful Test and latest normal-return
+originals, revisions and immutable outcome hashes; admission and terminal SQL
+recheck them. Git requires the corrected source to descend from that exact result.
+Caller-supplied receipts, cleared refs and arbitrary merge sides grant no admission.
+UNKNOWN retains this internal binding and original dev intent; terminal readback
+remains available after installation closes new bootstrap admissions. Normal Await
+creates the corrected selected composition.
+
+Published-resolution identity normalization belongs to domain; filesystem proof
+verification re-exports the same function for historical recovery and owns Git I/O.
+MCP timing is a callback supplied by composition from the existing timing owner,
+sharing one async trace context across application and Git spans. Application
+services do not import filesystem proof or process timing adapters.
+
 The ordinary path is `main-selected-git-merge-v1`. Task branches, dev and
 PreRelease start from the agreed repository-local main. Each selected exact
 reviewed result is merged with native Git into an isolated Hub-owned checkout.
