@@ -42,12 +42,15 @@ function claimOnlyTaskGit(overrides = {}) {
   return service;
 }
 
+import { readPreparationSourceClosure, ReleasePreparationRejectedError } from "../../src/application/release-preparation-admission.mjs";
+import { preparationEnvelope } from "../helpers/release-preparation-envelope.mjs";
+
 async function fixture(context, {
   releaseWorkflowEnabled = false,
   taskGitWorkspacesFactory = null,
   taskOperationReconciliation = null,
   releaseOperations = null,
-  measureOperation = undefined,
+  measureOperation = measureTaskOperation,
 } = {}) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-mcp-"));
   context.after(() => rm(directory, { recursive: true, force: true }));
@@ -156,7 +159,8 @@ async function fixture(context, {
     operation.interstreamContentHash = contentHash;
     return operation;
   };
-  workspaceCatalog.completeMcpOperation = (requestId, result) => {
+  workspaceCatalog.completeMcpOperation = (requestId, result, { validate = null } = {}) => {
+    validate?.();
     const operation = operations.get(requestId);
     if (["hub_stream_message_send", "hub_task_start", "hub_task_reassign"].includes(operation.toolName)
       && !operation.interstreamContentHash) {
@@ -531,6 +535,118 @@ async function fixture(context, {
     activeRun,
   };
 }
+
+async function preparationFixture(t) {
+  const setup = await fixture(t, { releaseWorkflowEnabled: true });
+  const envelope = preparationEnvelope(setup.projectRoot);
+  envelope.sourceClosureHash = (await readPreparationSourceClosure()).hash;
+  setup.tasks.get("task-current").workflowStatus = "awaiting_implementation";
+  let calls = 0;
+  setup.service.releasePreflight.prepareCurrentAwaitSet = async ({ validate, commitPrepared, requestId }) => {
+    calls += 1;
+    assert.equal(setup.operations.get(requestId).status, "pending", "intake precedes composer");
+    await validate();
+    return commitPrepared({ planRevision: envelope.planRevision, taskIds: ["task-current"],
+      releaseCandidates: [{ repositoryRoot: setup.projectRoot, preReleaseHead: "8".repeat(40),
+        tree: envelope.repositories[0].approvedTree, baseCommit: envelope.repositories[0].approvedBaseCommit,
+        manifestHash: "9".repeat(64), manifest: { preflightRequestId: requestId } }] });
+  };
+  return { ...setup, envelope, calls: () => calls,
+    args: { context_token: setup.token, request_id: "prepare-original", preparation: envelope } };
+}
+
+test("preparation-only genuine RM admission persists exact terminal and duplicate original does not compose again", async (t) => {
+  const setup = await preparationFixture(t);
+  const before = structuredClone(setup.tasks.get("task-current"));
+  const first = await setup.service.call("hub_release_prepare", setup.args);
+  assert.equal(first.requestId, "prepare-original");
+  assert.equal(first.kind, "preparation-only");
+  assert.deepEqual(await setup.service.call("hub_release_prepare", setup.args), first);
+  assert.equal(setup.calls(), 1);
+  assert.deepEqual(setup.tasks.get("task-current"), before);
+  assert.equal(setup.releaseCalls.length, 0);
+  const receipt = await setup.service.call("hub_release_prepare_get", { context_token: setup.token,
+    preparation_request_id: first.requestId, expected_arguments_hash: first.argumentsHash });
+  assert.equal(receipt.status, "succeeded");
+  assert.deepEqual(receipt.result, first);
+  await assert.rejects(setup.service.call("hub_release_prepare", { ...setup.args,
+    preparation: { ...setup.envelope, planRevision: "changed" } }), /another operation/);
+  assert.equal(setup.calls(), 1);
+});
+
+test("preparation-only non-RM and forged caller refuse before receipt or effects", async (t) => {
+  const setup = await preparationFixture(t);
+  const nonRM = setup.service.contextToken({ provider: "codex", threadId: "thread-2" });
+  await assert.rejects(setup.service.call("hub_release_prepare", { ...setup.args, context_token: nonRM }), /Release Manager/);
+  await assert.rejects(setup.service.call("hub_release_prepare", { ...setup.args, context_token: "forged" }));
+  assert.equal(setup.operations.size, 0);
+  assert.equal(setup.calls(), 0);
+});
+
+for (const stale of ["row", "source"]) test(`preparation-only stale ${stale} pins refuse without composer`, async (t) => {
+  const setup = await preparationFixture(t);
+  if (stale === "row") setup.tasks.get("task-current").revision += 1;
+  else setup.envelope.sourceClosureHash = "0".repeat(64);
+  await assert.rejects(setup.service.call("hub_release_prepare", setup.args), { code: "RELEASE_PREPARATION_REJECTED" });
+  assert.equal(setup.operations.get("prepare-original").status, "failed");
+  assert.equal(setup.calls(), 0);
+});
+
+test("preparation-only response loss after durable terminal reads original without current checkpoint inference", async (t) => {
+  const setup = await preparationFixture(t);
+  const compose = setup.service.releasePreflight.prepareCurrentAwaitSet;
+  setup.service.releasePreflight.prepareCurrentAwaitSet = async (request) => {
+    await compose(request);
+    throw new Error("transport response lost");
+  };
+  const result = await setup.service.call("hub_release_prepare", setup.args);
+  assert.equal(setup.operations.get("prepare-original").status, "succeeded");
+  assert.deepEqual(await setup.service.call("hub_release_prepare", setup.args), result);
+  assert.equal(setup.calls(), 1);
+  await assert.rejects(setup.service.call("hub_release_prepare_get", { context_token: setup.token,
+    preparation_request_id: "prepare-original", expected_arguments_hash: "0".repeat(64) }), /identity/);
+});
+
+test("preparation-only ambiguous terminal write preserves UNKNOWN and exact readback cannot replay", async (t) => {
+  const setup = await preparationFixture(t);
+  setup.workspaceCatalog.completeMcpOperation = () => { throw new Error("durable write outcome unavailable"); };
+  await assert.rejects(setup.service.call("hub_release_prepare", setup.args), { code: "AWAIT_ACCEPTANCE_UNKNOWN" });
+  const original = setup.operations.get("prepare-original");
+  assert.equal(original.status, "unknown");
+  const receipt = await setup.service.call("hub_release_prepare_get", { context_token: setup.token,
+    preparation_request_id: original.requestId, expected_arguments_hash: original.argumentsHash });
+  assert.equal(receipt.status, "unknown");
+  assert.equal(receipt.result, null);
+  await assert.rejects(setup.service.call("hub_release_prepare", setup.args), /unknown/);
+  assert.equal(setup.calls(), 1);
+});
+
+test("preparation-only original tracing survives rejection without arguments or secrets", async (t) => {
+  const setup = await preparationFixture(t);
+  const spans = [];
+  setup.service.taskGitWorkspaces.withOperationTrace = (identity, operation) => (
+    withTaskOperationTiming({ ...identity, record: (span) => spans.push(span) }, operation)
+  );
+  setup.envelope.sourceClosureHash = "0".repeat(64);
+  await assert.rejects(setup.service.call("hub_release_prepare", setup.args));
+  assert.ok(spans.some((span) => span.stage === "mcp:admission" && span.phase === "end"));
+  assert.ok(spans.some((span) => span.stage === "preparation:pins" && span.outcome === "error"));
+  assert.ok(spans.some((span) => span.stage === "trace-summary"));
+  assert.ok(spans.every((span) => span.operationId === "prepare-original"));
+  assert.equal(JSON.stringify(spans).includes(setup.token), false);
+  assert.equal(JSON.stringify(spans).includes("sourceClosureHash"), false);
+});
+
+test("preparation-only final row CAS refusal is definitive before terminal receipt", async (t) => {
+  const setup = await preparationFixture(t);
+  const original = setup.workspaceCatalog.completeMcpOperation;
+  setup.workspaceCatalog.completeMcpOperation = (...args) => {
+    setup.tasks.get("task-current").revision += 1;
+    return original(...args);
+  };
+  await assert.rejects(setup.service.call("hub_release_prepare", setup.args), ReleasePreparationRejectedError);
+  assert.equal(setup.operations.get("prepare-original").status, "failed");
+});
 
 test("MCP admission timing injection retains one context and original receipt", async t => {
   const { service, token, operations } = await fixture(t, { measureOperation: measureTaskOperation });

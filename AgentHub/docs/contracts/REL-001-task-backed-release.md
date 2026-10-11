@@ -1,5 +1,62 @@
 # REL-001 — Task-backed Workspace release
 
+## Explicit preparation-only recovery (ADR-0104)
+
+`hub_release_prepare` is an authenticated Release Manager-only preparation
+command through the existing durable MCP receipt owner. It accepts exactly
+`{context_token, request_id, preparation}`; it cannot select Tasks, transition
+their status, replay an original Await, run release validation or publish/install.
+Its distinct original request binds the following strict versioned envelope:
+
+| Field | Required identity |
+| --- | --- |
+| schemaVersion | 1 |
+| planRevision | Exact current accepted plan revision |
+| publicationHash | SHA-256 of canonical complete publication state, including generation |
+| sourceCommit, sourceTree | Reviewed source provenance, verified by the frozen loading packet |
+| sourceClosureHash | SHA-256 of canonical sorted fixed-root source inventory |
+| tasks | Every accepted Task: taskId, rowRevision, taskRevision, baseCommit, resultCommit, projectRoot |
+| repositories | Every selected repository: projectRoot, approvedBaseCommit, publishedRevision, primaryMainCommit, originMainCommit, checkpointHash, manifestHash, preReleaseHead, tree, approvedTree |
+
+Commits/trees use 40 lowercase hexadecimal characters; digests use 64. Task
+editorial `rowRevision` and release `taskRevision` are distinct. Sets must be
+unique and complete, at most 128 Tasks/eight repositories/48 KiB. Unknown/missing
+fields reject. Source inventory includes every regular file under runtime
+`src` and top-level JS/package entrypoints, with normalized relative path,
+raw length and SHA-256; links reject. Bounds are 4096 files/32 MiB. This is an
+explicit preparation check, never a snapshot/startup/background scan.
+
+The existing Await -> selected Task -> repository ownership encloses fresh plan,
+rows, publication, agreed main, approved origin, raw checkpoint/manifest/ref/tree
+and source checks. The native candidate owner verifies bounded ordered selected
+histories and compares the complete composed tree with the independently reviewed
+`approvedTree`. Native Git materializes the candidate. The registered-base owned
+union remains historical ADR-0104 behavior and grants no authority in this route.
+CHANGELOG remains release-owned. No effective-dev fallback replaces missing proof.
+
+The original ID and arguments/source/publication/checkpoint fingerprint are
+bound to the existing manifest/checkpoint envelope. Before candidate commit and
+before ref CAS the original guards run again. Existing expected-head rollback
+remains live until the same MCP receipt owner commits a bounded exact result.
+All selected row CAS and genuine RM authority are rechecked synchronously inside
+that SQLite terminal transaction. Selection, source/base/status and original
+successful Await receipts are preserved.
+
+`hub_release_prepare_get` requires `preparation_request_id` plus
+`expected_arguments_hash` and genuine RM context in the same Workspace. It
+returns only that original receipt and its exact terminal identities. Duplicate
+success returns the same receipt without composition. Response loss after
+terminal persistence is recoverable by that readback. Missing terminal or
+ambiguous persistence remains UNKNOWN; no newer checkpoint, timeout or absent
+lock settles it or authorizes automatic Git replay.
+
+Affected commands:
+`node --test --test-name-pattern=preparation-only tests/application/hub-mcp-service.test.mjs tests/application/release-preparation-admission.test.mjs tests/infrastructure/persistence/workspace-catalog-store.test.mjs` and
+`node --test --test-name-pattern="restored preparation" tests/interfaces/cli/initial-native-test-cutover.test.mjs`.
+Old reviewed invoker bytes are immutable. The extended source closure receives
+one affected review and a separate concrete fresh RM operational disposition
+before live loading/effects.
+
 ## Native Git composition cutover (HUB-303)
 
 Delivery of an independently reviewed native owner before installation uses the

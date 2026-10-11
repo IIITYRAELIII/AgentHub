@@ -47,4 +47,3 @@ function exact(value, label) {
   if (!SHA.test(result)) throw new Error(`Selected composition ${label} is not an exact Git identity`);
   return result;
 }
-

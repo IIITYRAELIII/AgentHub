@@ -245,6 +245,7 @@ export async function openTaskAwaitCutoverRuntime({
     ?? new ReleaseGitWorkspaceService({ dataDir: config.dataDir });
   const releasePlanner = new TaskReleasePlanService({ taskBoard, taskGitWorkspaces });
   const releasePreflight = suppliedReleasePreflight ?? new WorkspaceReleasePreflightService({
+    measureOperation: measureTaskOperation,
     releasePlanner,
     taskGitWorkspaces,
     releaseGitWorkspaces,

@@ -5,6 +5,8 @@ import os from "node:os";
 import path from "node:path";
 import { selectedCompositionFields } from "../../domain/task-selected-composition.mjs";
 import { ReleaseCandidateFrozenError } from "../../domain/task-board-task.mjs";
+import { ReleasePreparationRejectedError } from "../../domain/release-preparation.mjs";
+import { assertPreparationCheckpoint } from "./release-preparation-guard.mjs";
 import process from "node:process";
 import { assertContourExternalEffects, assertContourGitAvailable } from "../../ports/contour-external-effects.mjs";
 
@@ -1371,7 +1373,7 @@ export class ReleaseGitWorkspaceService {
   async prepareCandidate({
     planRevision, projectRoot, workspaceId = null, preflightRequestId = null,
     frozenTasks = [], approvedBaseCommit = null, baseProvenance = null,
-    validateBeforeCommit = null, preserveFrozen = false, commitPrepared = null,
+    validateBeforeCommit = null, preserveFrozen = false, commitPrepared = null, preparationGuard = null,
   } = {}) {
     this.#assertAvailable("prepareCandidate");
     const revision = String(planRevision ?? "").trim();
@@ -1395,6 +1397,18 @@ export class ReleaseGitWorkspaceService {
       const git = (args, options = {}) => runGit(args, { ...options, cwd: clone.releaseRoot, timeoutMs: 300_000 });
       const checkpoint = await readJson(clone.checkpointFile);
       if (preserveFrozen && ["freezing", "frozen"].includes(checkpoint?.phase)) throw new ReleaseCandidateFrozenError();
+      const validatePreparationMain = async () => {
+        if (!preparationGuard) return;
+        const current = await primarySnapshot(initial.root);
+        const remote = await git(["ls-remote", "origin", "refs/heads/main"]);
+        if (current.mainCommit !== preparationGuard.primaryMainCommit
+            || current.headCommit !== initial.headCommit || current.branchRef !== initial.branchRef
+            || remote.split(/\s/u)[0] !== preparationGuard.originMainCommit) {
+          throw new ReleasePreparationRejectedError("Preparation current main or remote changed");
+        }
+      };
+      await validatePreparationMain();
+      await assertPreparationCheckpoint({ guard: preparationGuard, clone, initial, checkpoint, git });
       await git(["fetch", "--prune", "workspace", "+refs/heads/*:refs/remotes/workspace/*"]);
       for (const commit of [baseCommit, ...tasks.map((task) => task.resultCommit)]) {
         if (await gitMaybe(["cat-file", "-e", `${commit}^{commit}`], { cwd: clone.releaseRoot }) === null) {
@@ -1409,10 +1423,23 @@ export class ReleaseGitWorkspaceService {
         gitAt: (cwd, args, options = {}) => runGit(args, { ...options, cwd, timeoutMs: 300_000 }),
         readJson, writeJson: writeJsonAtomic,
       });
+      // Exact approved tree follows the verified native ordered merge history.
+      // Legacy per-file owned-union projection is not a native authority.
+      if (preparationGuard && (composition.tree !== preparationGuard.approvedTree
+          || baseCommit !== preparationGuard.approvedBaseCommit)) {
+        throw new ReleasePreparationRejectedError("Full selected/joint preparation tree differs from the reviewed tree");
+      }
       const cutover = await this.#nativeCutover(clone, checkpoint);
       const manifest = {
         schemaVersion: 2, compositionPolicy: NATIVE_RELEASE_POLICY,
         ...(workspaceId ? { workspaceId: String(workspaceId) } : {}),
+        ...(preflightRequestId ? { preflightRequestId: String(preflightRequestId) } : {}),
+        ...(preparationGuard ? { preparationIdentity: {
+          argumentsHash: preparationGuard.argumentsHash, sourceCommit: preparationGuard.sourceCommit,
+          sourceTree: preparationGuard.sourceTree, sourceClosureHash: preparationGuard.sourceClosureHash,
+          publicationHash: preparationGuard.publicationHash, approvedTree: preparationGuard.approvedTree,
+          previousCheckpointHash: preparationGuard.checkpointHash,
+        } } : {}),
         planRevision: revision, primaryRoot: initial.root, primaryGitCommonDir: initial.commonDir,
         releaseRoot: clone.releaseRoot, releaseGitCommonDir: clone.releaseGitCommonDir,
         baseCommit, ...(provenance ? { baseProvenance: provenance } : {}),
@@ -1431,6 +1458,7 @@ export class ReleaseGitWorkspaceService {
       }
       const validate = async () => {
         if (typeof validateBeforeCommit === "function") await validateBeforeCommit();
+        await validatePreparationMain();
         const current = await primarySnapshot(initial.root);
         await this.assertPrimaryInvariant(initial.root, { phase: "native release promotion" });
         if (current.mainCommit !== baseCommit || current.headCommit !== initial.headCommit
@@ -1503,6 +1531,7 @@ export class ReleaseGitWorkspaceService {
           planRevision: revision, manifestHash, manifestFile, baseCommit,
           ...(provenance ? { baseProvenance: provenance } : {}), preReleaseHead: composition.head,
           ...(preflightRequestId ? { preflightRequestId: String(preflightRequestId) } : {}),
+          ...(preparationGuard ? { preparationIdentity: manifest.preparationIdentity } : {}),
         });
         } catch (error) {
           // A refused checkout is a known no-effect only after both native

@@ -1591,3 +1591,23 @@ test("moving the last Stream removes its empty user Workspace but preserves Othe
   assert.equal(store.workspace(source.id), null);
   assert.equal(store.workspace(experiments.id)?.name, "Other");
 });
+
+test("preparation-only terminal receipt validator runs atomically and refusal retains original pending", async (t) => {
+  const store = await fixture(t);
+  const workspace = store.createWorkspace({ name: "Preparation" });
+  const stream = store.createStream({ workspaceId: workspace.id, displayName: "RM" });
+  store.beginMcpOperation({ requestId: "preparation", workspaceId: workspace.id, streamId: stream.id,
+    provider: "codex", threadId: "thread-1", toolName: "hub_release_prepare", argumentsHash: "a".repeat(64) });
+  assert.throws(() => store.completeMcpOperation("preparation", { tree: "b".repeat(40) },
+    { validate: () => { throw new Error("stale selected CAS"); } }), /stale selected/);
+  assert.equal(store.mcpOperation("preparation").status, "pending");
+  assert.throws(() => store.completeMcpOperation("preparation", {}, { validate: async () => {} }), /synchronous/);
+  let checks = 0;
+  const receipt = store.completeMcpOperation("preparation", { tree: "b".repeat(40) }, { validate: () => {
+    checks += 1;
+    assert.equal(store.mcpOperation("preparation").status, "pending");
+  } });
+  assert.equal(checks, 1);
+  assert.equal(receipt.status, "succeeded");
+  assert.equal(receipt.result.tree, "b".repeat(40));
+});

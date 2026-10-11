@@ -458,6 +458,7 @@ export async function createHubInfrastructure({
   }
   const taskReleasePlanner = new TaskReleasePlanService({ taskBoard, taskGitWorkspaces });
   const workspaceReleasePreflight = new WorkspaceReleasePreflightService({
+    measureOperation: measureTaskOperation,
     releasePlanner: taskReleasePlanner,
     taskGitWorkspaces,
     releaseGitWorkspaces,

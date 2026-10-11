@@ -17,6 +17,7 @@ import { WorkspaceCatalogStore } from "../../../src/infrastructure/persistence/w
 import { TaskGitWorkspaceService } from "../../../src/infrastructure/filesystem/task-git-workspace.mjs";
 import { ReleaseGitWorkspaceService } from "../../../src/infrastructure/filesystem/release-git-workspace.mjs";
 import { openTaskOperationReconciliationStores } from "../../../src/interfaces/cli/task-operation-reconciliation-runtime.mjs";
+import { preparationHash, readPreparationSourceClosure } from "../../../src/application/release-preparation-admission.mjs";
 
 const exec = promisify(execFile);
 const hash = "b".repeat(64);
@@ -29,7 +30,7 @@ async function commit(cwd, message) {
   await git(cwd, "-c", "user.name=Fixture", "-c", "user.email=fixture@local.invalid", "commit", "-m", message);
 }
 
-async function fixture(t) {
+async function fixture(t, { releaseManager = false } = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), "hub-initial-native-"));
   const primary = path.join(root, "primary"), dataDir = path.join(root, "data");
   await mkdir(primary); await mkdir(dataDir);
@@ -45,7 +46,7 @@ async function fixture(t) {
   t.after(async () => { store.close(); catalog.close(); await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }); });
   const workspace = await catalog.runMutation(() => catalog.createWorkspace({ name: "Native fixture",
     settings: { workingDirectory: primary, releaseWorkflowEnabled: true } }));
-  const stream = await catalog.runMutation(() => catalog.createStream({ workspaceId: workspace.id, name: "Owner" }));
+  const stream = await catalog.runMutation(() => catalog.createStream({ workspaceId: workspace.id, name: "Owner", settings: { releaseManager } }));
   await catalog.runMutation(() => catalog.bindThread({ provider: "codex", threadId: "fixture-thread", streamId: stream.id }));
   const publication = { generation: "fixture", repositories: [{ root: primary, revision: main }] };
   const board = new TaskBoardService({ store, workspaceCatalog: catalog });
@@ -92,6 +93,7 @@ async function fixture(t) {
     openRuntime: async () => { const runtime = await open(); customize?.(runtime); return runtime; },
   });
   return { root, primary, main, databaseFile, catalog, board, taskGit, releaseGit, preflight, publication, create, input, run, open,
+    workspaceId: workspace.id, streamId: stream.id,
     setInstalled: value => { installed = value; },
     async status(task, status, requestId) {
       const runtime = await open();
@@ -104,6 +106,58 @@ async function fixture(t) {
     },
   };
 }
+
+test("restored preparation public owner preserves native content and same SQLite original", { timeout: 240_000 }, async t => {
+  const f = await fixture(t, { releaseManager: true }), task = await f.create("accepted");
+  await f.status(task, "testing", "accepted-test");
+  await f.status(task, "awaiting_implementation", "accepted-await");
+  const candidate = await f.releaseGit.initialNativeTestCandidate(f.primary);
+  const prepared = candidate.candidate;
+  const before = structuredClone(f.board.task(task.id));
+  const awaitOutcome = JSON.stringify(f.board.lifecycleOutcome("accepted-await"));
+  const planner = new TaskReleasePlanService({ taskBoard: f.board, taskGitWorkspaces: f.taskGit });
+  const plan = await planner.plan(f.workspaceId);
+  const entry = plan.ready.find(item => item.taskId === task.id);
+  const envelope = { schemaVersion: 1, planRevision: plan.revision,
+    publicationHash: preparationHash(f.publication), sourceCommit: f.main, sourceTree: await git(f.primary, "rev-parse", "main^{tree}"),
+    sourceClosureHash: (await readPreparationSourceClosure()).hash,
+    tasks: [{ taskId: task.id, rowRevision: before.revision, taskRevision: entry.taskRevision,
+      baseCommit: f.main, resultCommit: entry.resultCommit, projectRoot: f.primary }],
+    repositories: [{ projectRoot: f.primary, approvedBaseCommit: f.main, publishedRevision: f.main,
+      primaryMainCommit: f.main, originMainCommit: f.main, checkpointHash: candidate.checkpointSha256,
+      manifestHash: prepared.manifestHash, preReleaseHead: prepared.preReleaseHead, tree: prepared.tree, approvedTree: prepared.tree }] };
+  const invoke = async (args, customize = () => {}) => {
+    const runtime = await f.open();
+    try {
+      customize(runtime);
+      const token = runtime.service.contextToken({ provider: "codex", threadId: "fixture-thread", streamId: f.streamId });
+      return await runtime.service.call("hub_release_prepare", { context_token: token, ...args });
+    } finally { runtime.close(); }
+  };
+  for (const field of ["approvedTree", "checkpointHash", "originMainCommit"]) {
+    const stale = structuredClone(envelope); stale.repositories[0][field] = field.endsWith("Hash") ? "0".repeat(64) : "0".repeat(40);
+    await assert.rejects(invoke({ request_id: `stale-${field}`, preparation: stale }), /changed|differs/u);
+    assert.deepEqual(await f.releaseGit.initialNativeTestCandidate(f.primary), candidate);
+  }
+  const args = { request_id: "prepare-original", preparation: envelope };
+  const result = await invoke(args, runtime => {
+    const original = runtime.service.releasePreflight.prepareCurrentAwaitSet.bind(runtime.service.releasePreflight);
+    runtime.service.releasePreflight.prepareCurrentAwaitSet = async request => {
+      await original(request);
+      throw new Error("lost response after exact SQL terminal");
+    };
+  });
+  assert.equal(f.catalog.mcpOperation(args.request_id).status, "succeeded");
+  assert.equal(result.candidates[0].preReleaseHead, prepared.preReleaseHead);
+  const reflog = await git(prepared.releaseRoot, "reflog", "show", "--format=%H", "PreRelease");
+  const terminal = JSON.stringify(f.catalog.mcpOperation(args.request_id));
+  assert.deepEqual(await invoke(args), result);
+  assert.equal(JSON.stringify(f.catalog.mcpOperation(args.request_id)), terminal);
+  assert.equal(await git(prepared.releaseRoot, "reflog", "show", "--format=%H", "PreRelease"), reflog);
+  assert.deepEqual(f.board.task(task.id), before);
+  assert.equal(JSON.stringify(f.board.lifecycleOutcome("accepted-await")), awaitOutcome);
+  assert.equal(await git(f.primary, "rev-parse", "main"), f.main);
+});
 
 test("initial native Test parser requires the full reviewed identity and keeps legacy families separate", () => {
   const args = ["--workspace", "workspace", "--stream", "stream", "--provider", "codex", "--thread", "thread",

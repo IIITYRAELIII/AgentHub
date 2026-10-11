@@ -1,5 +1,25 @@
 # MCP-001 — Bounded Agent Hub tool bridge
 
+## Preparation-only release admission
+
+The explicit exception `hub_release_prepare` and original-addressed
+`hub_release_prepare_get` follow REL-001 and ADR-0104. Both require genuine RM
+context; non-RM fails before mutation intake. The preparation original is
+separate from succeeded Task Await and is canonically argument-bound by the
+existing MCP ledger. Terminal persistence occurs inside existing candidate
+rollback ownership, through that same receipt owner, with all selected row CAS
+checked in its SQLite transaction. Exact terminal result stays below 48 KiB,
+so receipt compaction cannot discard candidate/source/request binding.
+
+This command performs bounded explicit composition without validation,
+publication or installation. UNKNOWN cannot automatically replay Git.
+Readback returns only the exact original outcome, hash, caller and candidate
+binding; a later checkpoint is never original terminal evidence. Existing
+original-ID tracing covers admission, lock wait, composition, precommit checks,
+terminal persistence and readback without arguments, file contents or secrets.
+
+Native preparation uses the exact agreed-main composition and verified ordered merge history. The prior approved tree, checkpoint/ref/manifest, source closure, Task CAS and immutable terminal receipt remain mandatory. Legacy per-file owned-union projection is not a native composition authority. Existing timing is injected by composition into the application owners.
+
 ## Native Git Task/release cutover (HUB-303)
 
 The existing local task-await-cutover entry admits one explicitly reviewed

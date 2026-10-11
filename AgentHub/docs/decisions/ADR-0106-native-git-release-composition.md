@@ -126,3 +126,7 @@ generation promotion and full accepted composition/main-context preservation.
 Existing focused commands are tests/application/native-git-public-lifecycle.test.mjs
 and tests/infrastructure/filesystem/release-native-git.test.mjs under node --test.
 Historical full10 proof is separate from live admission and installation evidence.
+
+## Preserve existing explicit preparation receipt
+
+The selected HUB-295 result includes the existing RM-only preparation API. Native cutover must retain that admission, original receipt readback and atomic terminal validator, using the same native candidate owner. Verify the exact prior checkpoint/ref/manifest and current main/origin, compare the complete native merged tree with the bound approved tree, and retain caller/source-closure/Task CAS checks under existing leases. The historical per-file owned-union projector is not restored into native preparation. Application timing stays an injected port.
