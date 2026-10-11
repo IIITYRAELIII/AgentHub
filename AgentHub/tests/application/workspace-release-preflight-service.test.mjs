@@ -10,9 +10,8 @@ import { WorkspaceReleasePreflightService } from "../../src/application/workspac
 import { normalizedTaskSquashTransfer } from "../../src/domain/task-squash-transfer.mjs";
 import { ReleaseGitWorkspaceService } from "../../src/infrastructure/filesystem/release-git-workspace.mjs";
 import { createRepositoryProductionValidationAdapter } from "../../src/infrastructure/process/repository-production-validation.mjs";
-
-import { preparationHash } from "../../src/application/release-preparation-admission.mjs";
 import { preparationEnvelope } from "../helpers/release-preparation-envelope.mjs";
+import { preparationHash } from "../../src/application/release-preparation-admission.mjs";
 
 const execFileAsync = promisify(execFile);
 
@@ -193,6 +192,68 @@ function fixture({
     };
   };
   return { calls, locks, plan, projectRoot, service };
+}
+
+for (const drift of ["none", "plan", "publication", "member", "row", "base"]) {
+  test(`preparation-only complete selection and ${drift} checks run through existing locks and terminal callback`, async () => {
+    const { service, plan, projectRoot, calls } = fixture();
+    const envelope = preparationEnvelope(projectRoot);
+    plan.ready = envelope.tasks.map(({ rowRevision, ...item }) => item);
+    const publication = { generation: "generation-1", repositories: [{ root: projectRoot, revision: "f".repeat(40) }] };
+    envelope.publicationHash = preparationHash(publication);
+    service.readPublicationState = async () => publication;
+    service.taskGitWorkspaces.releaseIntegrationEvidence = async () => ({
+      tasks: envelope.tasks.map(({ rowRevision, ...item }) => (
+        drift === "base" ? { ...item, baseCommit: "0".repeat(40) } : item
+      )),
+    });
+    service.taskGitWorkspaces.releaseBaseEvidence = async () => (
+      { baseCommit: "f".repeat(40), publishedBaseCommit: "f".repeat(40) }
+    );
+    const locks = [];
+    service.releaseGitWorkspaces.withAwaitTransition = async (_workspaceId, operation) => {
+      locks.push("await"); try { return await operation(); } finally { locks.pop(); }
+    };
+    service.taskGitWorkspaces.withTaskLocks = async (ids, operation) => {
+      assert.deepEqual(ids, ["task-current"]); locks.push("tasks");
+      try { return await operation({ assertOwned: async () => {} }); } finally { locks.pop(); }
+    };
+    service.taskGitWorkspaces.withTaskRepositoryRecoveryLock = async (_id, _root, lease, operation) => {
+      locks.push("repository"); try { return await operation(lease); } finally { locks.pop(); }
+    };
+    let composed = 0;
+    let terminal = 0;
+    service.releaseGitWorkspaces.prepareCandidate = async (request) => {
+      assert.deepEqual(locks, ["await", "tasks", "repository"]);
+      composed += 1;
+      assert.equal(request.preflightRequestId, "preparation-original");
+      assert.equal(request.preparationGuard.approvedTree, envelope.repositories[0].approvedTree);
+      if (drift === "plan") plan.revision = "changed";
+      if (drift === "publication") publication.generation = "changed";
+      if (drift === "member") plan.ready.push({ ...plan.ready[0], taskId: "foreign" });
+      await request.validateBeforeCommit();
+      await request.commitPrepared({ repositoryRoot: projectRoot, tree: "7".repeat(40) });
+    };
+    let validations = 0;
+    const operation = service.prepareCurrentAwaitSet({ workspaceId: "workspace-1", envelope,
+      requestId: "preparation-original", argumentsHash: "a".repeat(64),
+      validate: async () => {
+        validations += 1;
+        if (drift === "row" && validations > 1) throw new Error("selected row changed");
+      },
+      commitPrepared: async (candidate) => {
+        assert.deepEqual(locks, ["await", "tasks", "repository"]);
+        terminal += 1;
+        assert.deepEqual(candidate.taskIds, ["task-current"]);
+        return { original: "preparation-original" };
+      } });
+    if (drift === "none") assert.deepEqual(await operation, { original: "preparation-original" });
+    else await assert.rejects(operation, /changed/);
+    assert.equal(composed, drift === "base" ? 0 : 1);
+    assert.equal(terminal, drift === "none" ? 1 : 0);
+    assert.deepEqual(locks, []);
+    assert.equal(calls.some(([name]) => ["refresh-contour", "resolve-contour", "production-validation"].includes(name)), false);
+  });
 }
 
 test("release preflight preserves the Test-owned squash result revision for integration evidence", async () => {
@@ -1581,65 +1642,3 @@ test("ordinary Await preparation persists selected Task adoption provenance for 
   assert.equal("baseProvenance" in calls.find(([name]) => name === "prepare-candidate")[1], false);
   assert.equal(projectRoot, path.resolve("D:/repo"));
 });
-
-for (const drift of ["none", "plan", "publication", "member", "row", "base"]) {
-  test(`preparation-only complete selection and ${drift} checks run through existing locks and terminal callback`, async () => {
-    const { service, plan, projectRoot, calls } = fixture();
-    const envelope = preparationEnvelope(projectRoot);
-    plan.ready = envelope.tasks.map(({ rowRevision, ...item }) => item);
-    const publication = { generation: "generation-1", repositories: [{ root: projectRoot, revision: "f".repeat(40) }] };
-    envelope.publicationHash = preparationHash(publication);
-    service.readPublicationState = async () => publication;
-    service.taskGitWorkspaces.releaseIntegrationEvidence = async () => ({
-      tasks: envelope.tasks.map(({ rowRevision, ...item }) => (
-        drift === "base" ? { ...item, baseCommit: "0".repeat(40) } : item
-      )),
-    });
-    service.taskGitWorkspaces.releaseBaseEvidence = async () => (
-      { baseCommit: "f".repeat(40), publishedBaseCommit: "f".repeat(40) }
-    );
-    const locks = [];
-    service.releaseGitWorkspaces.withAwaitTransition = async (_workspaceId, operation) => {
-      locks.push("await"); try { return await operation(); } finally { locks.pop(); }
-    };
-    service.taskGitWorkspaces.withTaskLocks = async (ids, operation) => {
-      assert.deepEqual(ids, ["task-current"]); locks.push("tasks");
-      try { return await operation({ assertOwned: async () => {} }); } finally { locks.pop(); }
-    };
-    service.taskGitWorkspaces.withTaskRepositoryRecoveryLock = async (_id, _root, lease, operation) => {
-      locks.push("repository"); try { return await operation(lease); } finally { locks.pop(); }
-    };
-    let composed = 0;
-    let terminal = 0;
-    service.releaseGitWorkspaces.prepareCandidate = async (request) => {
-      assert.deepEqual(locks, ["await", "tasks", "repository"]);
-      composed += 1;
-      assert.equal(request.preflightRequestId, "preparation-original");
-      assert.equal(request.preparationGuard.approvedTree, envelope.repositories[0].approvedTree);
-      if (drift === "plan") plan.revision = "changed";
-      if (drift === "publication") publication.generation = "changed";
-      if (drift === "member") plan.ready.push({ ...plan.ready[0], taskId: "foreign" });
-      await request.validateBeforeCommit();
-      await request.commitPrepared({ repositoryRoot: projectRoot, tree: "7".repeat(40) });
-    };
-    let validations = 0;
-    const operation = service.prepareCurrentAwaitSet({ workspaceId: "workspace-1", envelope,
-      requestId: "preparation-original", argumentsHash: "a".repeat(64),
-      validate: async () => {
-        validations += 1;
-        if (drift === "row" && validations > 1) throw new Error("selected row changed");
-      },
-      commitPrepared: async (candidate) => {
-        assert.deepEqual(locks, ["await", "tasks", "repository"]);
-        terminal += 1;
-        assert.deepEqual(candidate.taskIds, ["task-current"]);
-        return { original: "preparation-original" };
-      } });
-    if (drift === "none") assert.deepEqual(await operation, { original: "preparation-original" });
-    else await assert.rejects(operation, /changed/);
-    assert.equal(composed, drift === "base" ? 0 : 1);
-    assert.equal(terminal, drift === "none" ? 1 : 0);
-    assert.deepEqual(locks, []);
-    assert.equal(calls.some(([name]) => ["refresh-contour", "resolve-contour", "production-validation"].includes(name)), false);
-  });
-}
