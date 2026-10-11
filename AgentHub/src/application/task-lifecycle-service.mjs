@@ -273,6 +273,13 @@ export class TaskLifecycleService {
   }
 
   async updateWorkflowStatusFromInitialSource(options, source) {
+    const operation = () => this.#updateWorkflowStatusFromInitialSourceTraced(options, source);
+    return this.taskGitWorkspaces?.withOperationTrace
+      ? this.taskGitWorkspaces.withOperationTrace({ operationId: options.operationId, taskId: options.taskId }, operation)
+      : operation();
+  }
+
+  async #updateWorkflowStatusFromInitialSourceTraced(options, source) {
     const task = this.#task(options.taskId);
     const identity = normalizedInitialNativeTest(source.identity);
     if (options.status !== "testing" || options.expectedWorkflowStatus !== "in_progress"

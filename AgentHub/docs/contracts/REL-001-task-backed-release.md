@@ -90,6 +90,10 @@ verification re-exports the same function for historical recovery and owns Git I
 MCP timing is a callback supplied by composition from the existing timing owner,
 sharing one async trace context across application and Git spans. Application
 services do not import filesystem proof or process timing adapters.
+The initial and returned native source entry enters that same existing Task
+operation trace before lifecycle admission and lock waits. Success and refusal
+both retain the original operation/Task identity and bounded trace summary;
+diagnostics cannot change admission, receipt or Git outcomes.
 
 The ordinary path is `main-selected-git-merge-v1`. Task branches, dev and
 PreRelease start from the agreed repository-local main. Each selected exact

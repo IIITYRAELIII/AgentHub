@@ -107,6 +107,29 @@ async function fixture(t, { releaseManager = false } = {}) {
   };
 }
 
+test("public native source entry retains original operation timing on success and admission failure", { timeout: 180_000 }, async t => {
+  const f = await fixture(t), events = [];
+  f.taskGit.recordTiming = event => events.push(event);
+  const success = await f.create("timed-success");
+  const successArgs = await f.input(success, "timed-native-success");
+  await f.run(success, successArgs);
+  const rejected = await f.create("timed-refusal");
+  const rejectedArgs = await f.input(rejected, "timed-native-refusal");
+  f.taskGit.assertInitialNativeTestOwned = async () => { throw new Error("injected owned admission refusal"); };
+  await assert.rejects(f.run(rejected, rejectedArgs), /injected owned admission refusal/);
+  for (const [operationId, task, outcome] of [[successArgs.requestId, success, "ok"], [rejectedArgs.requestId, rejected, "error"]]) {
+    const trace = events.filter(event => event.operationId === operationId);
+    assert.ok(trace.some(event => event.stage === "workflow" && event.phase === "start"));
+    assert.ok(trace.some(event => event.stage === "workflow" && event.phase === "end" && event.outcome === outcome));
+    assert.ok(trace.some(event => event.stage === "trace-summary"));
+    assert.ok(trace.every(event => event.taskId === task.id && Number.isInteger(event.traceId)));
+    assert.ok(trace.every(event => !("context_token" in event) && !("contents" in event) && !("arguments" in event)));
+  }
+  assert.equal(f.board.task(success.id).workflowStatus, "testing");
+  assert.equal(f.board.task(rejected.id).workflowStatus, "in_progress");
+  assert.equal(f.catalog.mcpOperation(rejectedArgs.requestId).status, "failed");
+});
+
 test("restored preparation public owner preserves native content and same SQLite original", { timeout: 240_000 }, async t => {
   const f = await fixture(t, { releaseManager: true }), task = await f.create("accepted");
   await f.status(task, "testing", "accepted-test");
