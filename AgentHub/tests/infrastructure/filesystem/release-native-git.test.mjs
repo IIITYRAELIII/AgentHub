@@ -72,7 +72,7 @@ test("reopen rejects a forged completed native prefix even with exact merge pare
   await git(original.root, "checkout", "--detach", forged);
   const state = JSON.parse(bytes); state.head = forged; state.merges[0].commit = forged;
   await writeFile(stateFile, JSON.stringify(state));
-  await assert.rejects(mergeSelectedResults(request), /changed automatic path foreign.txt/u);
+  await assert.rejects(mergeSelectedResults(request), { code: "RELEASE_NATIVE_REVIEW_REQUIRED" });
   assert.equal(await git(original.root, "rev-parse", "HEAD"), forged);
   assert.equal(await readFile(path.join(original.root, "foreign.txt"), "utf8"), "not selected\n");
   await git(original.root, "checkout", "--detach", original.head);
@@ -162,6 +162,27 @@ test("foreign merge side and release-owned metadata require explicit migration",
   await assert.rejects(f.service.prepareCandidate(f.request([task])), { code: "RELEASE_NATIVE_HISTORY_REQUIRED" });
   const metadata = await f.result("Metadata", "CHANGELOG.md", "unauthorized notes\n");
   await assert.rejects(f.service.prepareCandidate(f.request([metadata])), /release-owned CHANGELOG/u);
+});
+
+test("native candidate refuses existing package version changes but accepts dependency edits", { timeout: 60000 }, async t => {
+  const f = await fixture(t);
+  await writeFile(path.join(f.primary, "package.json"), JSON.stringify({ name: "fixture", version: "1.0.0" }));
+  await writeFile(path.join(f.primary, "package-lock.json"), JSON.stringify({ version: "1.0.0",
+    lockfileVersion: 3, packages: { "": { name: "fixture", version: "1.0.0" } } }));
+  const base = await commit(f.primary, "existing package version");
+  await git(f.primary, "push", "origin", "main");
+  const request = task => ({ ...f.request([task]), approvedBaseCommit: base,
+    frozenTasks: [{ ...task, baseCommit: base }] });
+  const version = await f.result("Version", "package.json", JSON.stringify({ name: "fixture", version: "2.0.0" }), base);
+  await assert.rejects(f.service.prepareCandidate(request(version)), /release-owned package-version metadata/u);
+  const lock = await f.result("Lock", "package-lock.json", JSON.stringify({ version: "1.0.0", lockfileVersion: 3,
+    packages: { "": { name: "fixture", version: "2.0.0" } } }), base);
+  await assert.rejects(f.service.prepareCandidate(request(lock)), /release-owned package-version metadata/u);
+  const dependencies = await f.result("Dependencies", "package.json", JSON.stringify({ name: "fixture",
+    version: "1.0.0", devDependencies: { fixture: "1.2.3" } }), base);
+  const candidate = await f.service.prepareCandidate(request(dependencies));
+  assert.equal(JSON.parse(await git(candidate.releaseRoot, "show", "PreRelease:package.json")).version, "1.0.0");
+  assert.equal(JSON.parse(await git(candidate.releaseRoot, "show", "PreRelease:package.json")).devDependencies.fixture, "1.2.3");
 });
 
 test("native checkout preserves ignored private bytes and uses Git EOL", { timeout: 60000 }, async (t) => {

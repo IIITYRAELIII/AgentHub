@@ -401,6 +401,7 @@ export async function createProviderApplicationComposition({
     saveState: api.saveState,
   });
   const providerSnapshots = createProviderSnapshotComposition({
+    recordingContourRoot: config.testContourRecording?.root ?? null,
     readClaudeSessionSnapshot,
     findProject,
     saveState: api.saveState,

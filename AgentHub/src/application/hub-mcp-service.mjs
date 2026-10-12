@@ -742,6 +742,9 @@ export class HubMcpService {
         selected_proof_bundle_sha256: { type: "string", pattern: "^[0-9a-f]{64}$" },
         selected_published_resolution: { type: "object", description: "Historical original reconciliation envelope; new selected materialization admission is closed." },
         selected_absorption_handoff: { type: "object", description: "Authenticated saved/stopped handoff for ordinary native Test, bound to exact Task CAS and the original receipt." },
+        native_resolution_review: { type: "object", additionalProperties: false,
+          properties: { requestId: { type: "string", maxLength: 200 }, text: { type: "string", maxLength: 16000 } },
+          required: ["requestId", "text"], description: "Exact independent inter-Stream verdict for a native compatibility resolution." },
         selected_proof_commit: { type: "string", pattern: "^[0-9a-f]{40}$" },
         selected_preview_request_id: { type: "string", description: "Exact original preview request_id on confirmation." },
         expected_selected_preview_hash: { type: "string", pattern: "^[0-9a-f]{64}$", description: "Omit for preview; exact returned hash is required for confirmation." },
@@ -760,6 +763,7 @@ export class HubMcpService {
         cutover_source_task_id: { type: "string", description: "Required only when the original local cutover used a separate source Task." },
         cutover_source_task_revision: { type: "integer", minimum: 1, description: "Required only when the original local cutover used a separate source Task." },
         initial_native_test: { type: "object", description: "Complete original local initial native Test identity, for terminal reconciliation only. Pending source recovery uses the existing local cutover entry." },
+        native_resolution_review: { type: "object", description: "Supply exactly the reviewed resolution argument of the original status request." },
         squash_source_task_id: { type: "string" },
         squash_source_task_revision: { type: "integer", minimum: 1 },
         squash_baseline_result_commit: { type: "string", pattern: "^[0-9a-f]{40}$" },
@@ -941,7 +945,7 @@ export class HubMcpService {
       if (args.status !== "testing" || args.expected_workflow_status !== "in_progress"
           || !Number.isInteger(args.expected_task_revision) || args.expected_task_revision < 1
           || Object.keys(args).some(key => !["context_token", "request_id", "task_id", "status",
-            "expected_task_revision", "expected_workflow_status", "initial_native_test"].includes(key))) {
+            "expected_task_revision", "expected_workflow_status", "initial_native_test", "native_resolution_review"].includes(key))) {
         throw new Error("Initial native Test requires exact ordinary Progress CAS and no other cutover family");
       }
       if (typeof verifySource !== "function" || typeof inspectInstalledNativeOwner !== "function") {
@@ -1100,6 +1104,7 @@ export class HubMcpService {
           cutoverSourceTaskId: args.cutover_source_task_id,
           cutoverSourceTaskRevision: args.cutover_source_task_revision,
           initialNativeTest: args.initial_native_test,
+          nativeResolutionReview: args.native_resolution_review,
           ...(args.squash_source_task_id != null ? {
             squashSourceTaskId: args.squash_source_task_id,
             squashSourceTaskRevision: args.squash_source_task_revision,
@@ -1538,6 +1543,7 @@ export class HubMcpService {
     selected_preview_request_id: selectedPreviewRequestId = null,
     expected_selected_preview_hash: expectedSelectedPreviewHash = null,
     initial_native_test: initialNativeTest = null,
+    native_resolution_review: nativeResolutionReview = null,
   } = {}, { source = null } = {}) {
     if (initialNativeTest != null && source?.kind !== "initial-native-test") {
       throw new TaskInputValidationError("Initial native Test requires the supported local cutover entrypoint");
@@ -1546,6 +1552,18 @@ export class HubMcpService {
       throw new Error("Cross-Task cutover requires the supported local cutover entrypoint");
     }
     const task = this.#task(context, taskId);
+    if (nativeResolutionReview != null) {
+      if (!this.#isReleaseManager(context)
+          || !["testing", "awaiting_implementation"].includes(status)
+          || expectedRevision == null || expectedWorkflowStatus == null
+          || typeof nativeResolutionReview !== "object" || Array.isArray(nativeResolutionReview)
+          || Object.keys(nativeResolutionReview).sort().join(",") !== "requestId,text"
+          || typeof nativeResolutionReview.requestId !== "string" || !nativeResolutionReview.requestId.trim()
+          || nativeResolutionReview.requestId.length > 200
+          || typeof nativeResolutionReview.text !== "string" || nativeResolutionReview.text.length > 16000) {
+        throw new TaskInputValidationError("Native resolution review requires exact RM Test/Await CAS and authenticated verdict");
+      }
+    }
     const workflowStatus = requiredText(status, "task workflow status", 40);
     const squashValues = [
       squashSourceTaskId, squashSourceTaskRevision, squashBaselineResultCommit,
@@ -1667,6 +1685,7 @@ export class HubMcpService {
       expectedRevision,
       expectedWorkflowStatus,
       selectedAbsorptionHandoff,
+      operationEvidence: nativeResolutionReview ? { nativeResolutionReview } : null,
     };
     const result = source?.kind === "initial-native-test"
       ? await this.taskLifecycle.updateWorkflowStatusFromInitialSource(options, source)

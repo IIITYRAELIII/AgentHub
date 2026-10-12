@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -87,7 +87,7 @@ function fixture({
       },
     },
     taskGitWorkspaces: {
-      releaseBaseEvidence: async ({ publishedBaseCommit }) => ({ baseCommit: publishedBaseCommit }),
+      releaseBaseEvidence: async ({ publishedBaseCommit }) => ({ publishedBaseCommit, baseCommit: "main-head" }),
       assertExplicitUpstreamAdoption: async (request) => {
         calls.push(["verify-upstream-adoption", request]);
         return { adoptedByResultCommit: null };
@@ -281,7 +281,7 @@ test("release preflight reuses prepared PreRelease without dev preparation or co
   const { calls, locks, service } = fixture({ publishedRevision: "main-head" });
   const result = await service.preflight({ workspaceId: "workspace-1", expectedPlanRevision: "plan-1" });
   assert.deepEqual(calls.map(([name]) => name), [
-    "plan", "inspect-main", "verify-upstream-adoption", "guard-primary", "read-candidate",
+    "plan", "inspect-main", "guard-primary", "read-candidate", "verify-upstream-adoption",
     "resolve-contour", "guard-primary", "read-candidate", "plan",
   ]);
   assert.deepEqual(locks, ["workspace-1"]);
@@ -317,7 +317,7 @@ test("release preflight returns every post-publication main commit before side e
   assert.deepEqual(calls.map(([name]) => name), ["plan", "inspect-main"]);
 });
 
-test("approved upstream still requires adoption by a selected Task before preflight side effects", async () => {
+test("historical prepared candidate requires its retained adoption before preflight validation", async () => {
   const { calls, projectRoot, service } = fixture();
   service.releaseGitWorkspaces.inspectMainChanges = async (request) => {
     calls.push(["inspect-main", request]);
@@ -337,6 +337,10 @@ test("approved upstream still requires adoption by a selected Task before prefli
     calls.push(["verify-upstream-adoption", request]);
     throw new Error("approved upstream requires explicit adoption by a selected Task result and managed dev");
   };
+  service.releaseGitWorkspaces.assertPrimaryInvariant = async (root, options) => {
+    calls.push(["guard-primary", root, options]);
+    return { projectRoot: root, headCommit: "local-main" };
+  };
 
   await assert.rejects(service.preflight({
     workspaceId: "workspace-1",
@@ -347,7 +351,7 @@ test("approved upstream still requires adoption by a selected Task before prefli
       approvedOriginMainCommit: "approved-origin-main",
     }],
   }), /requires explicit adoption by a selected Task/u);
-  assert.deepEqual(calls.map(([name]) => name), ["plan", "inspect-main", "verify-upstream-adoption"]);
+  assert.deepEqual(calls.map(([name]) => name), ["plan", "inspect-main", "guard-primary", "read-candidate", "verify-upstream-adoption"]);
   const request = calls.find(([name]) => name === "verify-upstream-adoption")[1];
   assert.deepEqual(request.frozenTasks, [{
     taskId: "task-1",
@@ -683,7 +687,7 @@ test("release preflight rejects stale external production validation evidence", 
 });
 
 async function realExternalValidationFixture(t, {
-  afterValidation = null, squash = false, reviewedMain = false,
+  afterValidation = null, beforePromotion = null, squash = false, reviewedMain = false,
 } = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), "hub-preflight-real-adapter-"));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -768,6 +772,14 @@ async function realExternalValidationFixture(t, {
     });
   }
   const releaseGitWorkspaces = new ReleaseGitWorkspaceService({ dataDir });
+  if (beforePromotion) {
+    const prepare = releaseGitWorkspaces.prepareCandidate.bind(releaseGitWorkspaces);
+    releaseGitWorkspaces.prepareCandidate = request => prepare({ ...request,
+      validateBeforeCommit: async () => {
+        await request.validateBeforeCommit?.();
+        await beforePromotion({ root, primary, origin, dataDir, reviewedMainCommit, releaseGitWorkspaces });
+      } });
+  }
   let validationCalls = 0;
   let integrationEvidence = null;
   const plan = {
@@ -810,7 +822,9 @@ async function realExternalValidationFixture(t, {
         };
         return integrationEvidence;
       },
-      releaseBaseEvidence: async ({ publishedBaseCommit }) => ({ baseCommit: publishedBaseCommit }),
+      releaseBaseEvidence: async ({ publishedBaseCommit }) => ({
+        publishedBaseCommit, baseCommit: await git(primary, "rev-parse", "refs/heads/main"),
+      }),
     },
     releaseGitWorkspaces,
     readPublicationState: async () => ({ repositories: [{ root: primary, revision: base }] }),
@@ -859,8 +873,9 @@ test("explicit reviewed-main prepare and preflight retain upstream content and e
   };
   const expectedProvenance = {
     schemaVersion: 1,
-    kind: "explicit-reviewed-main-v1",
+    kind: "agreed-main-native-git-v1",
     publishedBaseCommit: base,
+    agreedMainCommit: reviewedMainCommit,
     ...approval,
   };
   const before = await releaseGitWorkspaces.frozenCandidate(primary);
@@ -916,6 +931,28 @@ test("release preflight reuses real prepared candidate readback with the reposit
   assert.equal(await git(primary, "status", "--porcelain=v1"), "");
   assert.deepEqual(await releaseGitWorkspaces.frozenCandidate(primary), before);
   assert.deepEqual(await readFile(before.checkpointFile), checkpointBefore);
+});
+
+test("reviewed native promotion rechecks changed origin inside its held Git owner", { timeout: 60000 }, async t => {
+  let witnessed;
+  await assert.rejects(realExternalValidationFixture(t, { reviewedMain: true,
+    beforePromotion: async current => {
+      if (witnessed) return;
+      witnessed = current;
+      const writer = path.join(current.root, "origin-writer");
+      await git(current.root, "clone", current.origin, writer);
+      await writeFile(path.join(writer, "foreign.txt"), "unapproved origin change\n");
+      await commit(writer, "origin moved after reviewed preparation");
+      await git(writer, "push", "origin", "main");
+    } }), /reviewed main authority changed/u);
+  assert.ok(witnessed);
+  assert.equal(await git(witnessed.primary, "rev-parse", "HEAD"), witnessed.reviewedMainCommit);
+  const repositories = path.join(witnessed.dataDir, "release-repositories");
+  const paths = await readdir(repositories);
+  for (const key of paths) {
+    const candidate = path.join(repositories, key, "repository");
+    assert.equal(await git(candidate, "rev-parse", "HEAD"), witnessed.reviewedMainCommit);
+  }
 });
 
 test("real plan through prepare and preflight preserves exact squash result release identity", async (t) => {
@@ -1130,7 +1167,7 @@ test("release preflight stops before side effects when the registered primary is
     () => service.preflight({ workspaceId: "workspace-1", expectedPlanRevision: "plan-1" }),
     /attached to main/u,
   );
-  assert.deepEqual(calls.map(([name]) => name), ["plan", "inspect-main", "verify-upstream-adoption", "guard-primary"]);
+  assert.deepEqual(calls.map(([name]) => name), ["plan", "inspect-main", "guard-primary"]);
 });
 
 test("Await refuses missing publication authority and changed base before committing acceptance", async () => {
@@ -1173,8 +1210,9 @@ test("explicit reviewed-main preparation requires pinned authority and rechecks 
     assert.equal(request.approvedBaseCommit, "main-head");
     assert.deepEqual(request.baseProvenance, {
       schemaVersion: 1,
-      kind: "explicit-reviewed-main-v1",
+      kind: "agreed-main-native-git-v1",
       publishedBaseCommit: "published-head",
+      agreedMainCommit: "main-head",
       ...approval,
     });
     service.readPublicationState = async () => ({
@@ -1250,7 +1288,7 @@ test("automatic Await preparation composes accepted code without running release
     "plan", "guard-primary", "release-integrations", "prepare-candidate", "plan",
   ]);
   assert.equal(calls.find(([name]) => name === "prepare-candidate")[1].preserveFrozen, true);
-  assert.equal(calls.find(([name]) => name === "prepare-candidate")[1].approvedBaseCommit, "published-head");
+  assert.equal(calls.find(([name]) => name === "prepare-candidate")[1].approvedBaseCommit, "main-head");
 });
 
 test("prospective composition validation does not promote candidates or commit acceptance", async () => {
@@ -1277,7 +1315,7 @@ test("prospective composition validation does not promote candidates or commit a
   service.releaseGitWorkspaces.validateCandidate = async (options) => {
     validations += 1;
     assert.equal(options.planRevision, "prospective");
-    assert.equal(options.approvedBaseCommit, "published-head");
+    assert.equal(options.approvedBaseCommit, "main-head");
     assert.equal(options.commitPrepared, undefined);
     await options.validateBeforeCommit();
     return { status: "validated", tree: "selected-tree", baseCommit: options.approvedBaseCommit };
@@ -1603,7 +1641,7 @@ test("release preflight reconciliation rejects plan movement during readback", a
   }), /plan revision changed during preflight readback/u);
 });
 
-test("ordinary Await preparation persists selected Task adoption provenance for an adopted base", async () => {
+test("ordinary native Await persists agreed main independently of historical adoption metadata", async () => {
   const PUBLISHED = "1".repeat(40);
   const ADOPTED = "2".repeat(40);
   const RESULT = "3".repeat(40);
@@ -1617,8 +1655,8 @@ test("ordinary Await preparation persists selected Task adoption provenance for 
     publishedBaseCommit, baseCommit: ADOPTED, adoptions: [adoption],
   });
   const envelope = {
-    schemaVersion: 1, kind: "selected-task-adoption-v1",
-    publishedBaseCommit: PUBLISHED, adoptedBaseCommit: ADOPTED, adoptions: [adoption],
+    schemaVersion: 1, kind: "agreed-main-native-git-v1",
+    publishedBaseCommit: PUBLISHED, agreedMainCommit: ADOPTED,
   };
   await service.prepareAwaitSet({ workspaceId: "workspace-1" });
   const prepared = calls.find(([name]) => name === "prepare-candidate")[1];
@@ -1633,12 +1671,13 @@ test("ordinary Await preparation persists selected Task adoption provenance for 
   await service.prepareAwaitSet({ workspaceId: "workspace-1", validateOnly: true });
   assert.deepEqual(validated.baseProvenance, envelope);
 
-  // A published base carries no envelope and keeps the unchanged ordinary path.
+  // Equality with published main still keeps explicit native provenance.
   service.taskGitWorkspaces.releaseBaseEvidence = async ({ publishedBaseCommit }) => ({
     publishedBaseCommit, baseCommit: publishedBaseCommit, adoptions: [],
   });
   calls.length = 0;
   await service.prepareAwaitSet({ workspaceId: "workspace-1" });
-  assert.equal("baseProvenance" in calls.find(([name]) => name === "prepare-candidate")[1], false);
+  assert.deepEqual(calls.find(([name]) => name === "prepare-candidate")[1].baseProvenance,
+    { schemaVersion: 1, kind: "agreed-main-native-git-v1", publishedBaseCommit: PUBLISHED, agreedMainCommit: PUBLISHED });
   assert.equal(projectRoot, path.resolve("D:/repo"));
 });

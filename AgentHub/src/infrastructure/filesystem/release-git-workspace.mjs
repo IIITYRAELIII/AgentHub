@@ -647,13 +647,14 @@ export class ReleaseGitWorkspaceService {
   constructor({
     dataDir, contourExternalEffects = null, environment = process.env,
     recoveryEvidenceWrite = (handle, value) => handle.writeFile(value, "utf8"),
-    recoveryPhase = async () => {},
+    recoveryPhase = async () => {}, verifyNativeResolutionReview = null,
   } = {}) {
     this.#contourExternalEffects = assertContourExternalEffects(contourExternalEffects);
     this.#environment = environment;
     this.#recoveryEvidenceWrite = recoveryEvidenceWrite;
     this.#recoveryPhase = recoveryPhase;
     this.dataDir = canonicalPath(String(dataDir ?? ""));
+    this.verifyNativeResolutionReview = verifyNativeResolutionReview;
     this.releaseRepositoriesRoot = path.join(this.dataDir, "release-repositories");
     this.lastReconciliation = {
       checked: 0, registeredWorkspaceRoots: 0, checkpointCount: 0, repositories: [],
@@ -853,6 +854,7 @@ export class ReleaseGitWorkspaceService {
       const isolated = new ReleaseGitWorkspaceService({
         dataDir: temporaryRoot, contourExternalEffects: this.#contourExternalEffects,
         environment: this.#environment,
+        verifyNativeResolutionReview: this.verifyNativeResolutionReview,
       });
       // Copy Git objects/refs only, never local repository configuration or
       // hooks. Git's clone protection remains enabled for the bundle transport.
@@ -899,7 +901,9 @@ export class ReleaseGitWorkspaceService {
       }
       const git = (args, options = {}) => runGit(args, { ...options, cwd: source.releaseRoot });
       await assertNativePreparedComposition({ git, baseCommit: source.baseCommit, tasks,
-        merges: manifest.merges, head: source.preReleaseHead, tree: source.tree });
+        merges: manifest.merges, head: source.preReleaseHead, tree: source.tree,
+        identity: { policy: NATIVE_RELEASE_POLICY, workspaceId, planRevision, baseCommit: source.baseCommit, tasks },
+        verifyReview: this.verifyNativeResolutionReview });
       const binding = { kind: "native-prepared-release-v1", releaseRoot: source.releaseRoot,
         commit: source.preReleaseHead, tree: source.tree, manifestHash: source.manifestHash,
         checkpointSha256: sha256(await readFile(source.checkpointFile)),
@@ -987,6 +991,7 @@ export class ReleaseGitWorkspaceService {
           dataDir: generationDataDir,
           contourExternalEffects: this.#contourExternalEffects,
           environment: this.#environment,
+          verifyNativeResolutionReview: this.verifyNativeResolutionReview,
         });
         if (ephemeral) isolated.#validationReferenceRoot = sourceRoot;
         else isolated.#validationBundle = bundle;
@@ -1177,7 +1182,28 @@ export class ReleaseGitWorkspaceService {
       && !["completed", "rolled_back"].includes(journal.phase) && journal.target === current
       && journal.before?.branch === head
       && journal.before?.checkpointBytes === bytes.toString("base64");
-    if (!/^[a-f0-9]{40}$/u.test(String(head)) || (current !== head && !exactOriginalInFlight)) {
+    let abandonedRecovery = null;
+    if (checkpoint.phase === "abandoned" && checkpoint.recovery?.outcome?.status === "abandoned") {
+      const recovery = checkpoint.recovery, identity = recovery.identity;
+      const evidenceFile = String(recovery.evidenceFile ?? "");
+      if (!pathInside(clone.evidenceRoot, evidenceFile)) throw new Error("Cutover recovery evidence path changed");
+      const stat = await lstat(evidenceFile), evidenceBytes = await readFile(evidenceFile);
+      const evidence = parseRecoveryJson(evidenceBytes, "cutover recovery evidence");
+      if (!stat.isFile() || stat.isSymbolicLink() || sha256(evidenceBytes) !== recovery.evidenceSha256
+          || stableManifest(evidence) !== evidenceBytes.toString("utf8")
+          || recoveryDigest(identity) !== recovery.proofHash || evidence.proofHash !== recovery.proofHash
+          || recovery.outcome.proofHash !== recovery.proofHash
+          || recovery.outcome.operationId !== recovery.operationId
+          || Object.entries(identity).some(([key, value]) => JSON.stringify(evidence[key]) !== JSON.stringify(value))
+          || identity.frozenHead !== head || identity.manifestHash !== checkpoint.manifestHash
+          || identity.sourceManifestSha256 !== sha256(manifestBytes)
+          || sha256(Buffer.from(evidence.sourceCheckpointBytesBase64 ?? "", "base64")) !== identity.sourceCheckpointSha256
+          || sha256(Buffer.from(evidence.sourceManifestBytesBase64 ?? "", "base64")) !== identity.sourceManifestSha256
+          || identity.oldPreRelease !== current) throw new Error("Cutover completed recovery identity changed");
+      abandonedRecovery = { evidenceSha256: recovery.evidenceSha256,
+        evidenceBytesBase64: evidenceBytes.toString("base64"), preparedHead: current };
+    }
+    if (!/^[a-f0-9]{40}$/u.test(String(head)) || (current !== head && !exactOriginalInFlight && !abandonedRecovery)) {
       throw new Error("Cutover requires the exact historical candidate ref");
     }
     const digest = sha256(bytes);
@@ -1190,6 +1216,7 @@ export class ReleaseGitWorkspaceService {
       head, tree: await runGit(["rev-parse", `${head}^{tree}`], { cwd: clone.releaseRoot }),
       checkpointSha256: digest, checkpointBytesBase64: bytes.toString("base64"),
       manifestSha256: checkpoint.manifestHash, manifestBytesBase64: manifestBytes.toString("base64"),
+      ...(abandonedRecovery ? { abandonedRecovery } : {}),
       // Each exact result still passes the bounded native-history admission.
       // This envelope preserves history; it grants no merge-side exception.
       originalTasks: manifest.tasks,
@@ -1374,6 +1401,7 @@ export class ReleaseGitWorkspaceService {
     planRevision, projectRoot, workspaceId = null, preflightRequestId = null,
     frozenTasks = [], approvedBaseCommit = null, baseProvenance = null,
     validateBeforeCommit = null, preserveFrozen = false, commitPrepared = null, preparationGuard = null,
+    nativeResolutionReview = null,
   } = {}) {
     this.#assertAvailable("prepareCandidate");
     const revision = String(planRevision ?? "").trim();
@@ -1420,6 +1448,8 @@ export class ReleaseGitWorkspaceService {
       const mergeRoot = path.join(layout.root, "native-merges", sha256(stableManifest(identity)).slice(0, 24));
       const composition = await mergeSelectedResults({
         root: mergeRoot, sourceRoot: clone.releaseRoot, baseCommit, tasks, identity,
+        resolutionReview: nativeResolutionReview, verifyReview: this.verifyNativeResolutionReview,
+        deliveredHead: checkpoint?.preReleaseHead ?? null,
         gitAt: (cwd, args, options = {}) => runGit(args, { ...options, cwd, timeoutMs: 300_000 }),
         readJson, writeJson: writeJsonAtomic,
       });
@@ -1466,6 +1496,13 @@ export class ReleaseGitWorkspaceService {
             || current.dirty.indexFingerprint !== initial.dirty.indexFingerprint
             || current.dirty.fingerprint !== initial.dirty.fingerprint) {
           throw new Error("Registered primary changed during native release preparation");
+        }
+        if (provenance?.approvedLocalMainCommit || provenance?.approvedOriginMainCommit) {
+          const remote = await git(["ls-remote", "origin", "refs/heads/main"]);
+          if (current.mainCommit !== provenance.approvedLocalMainCommit
+              || remote.split(/\s/u)[0] !== provenance.approvedOriginMainCommit) {
+            throw new Error("reviewed main authority changed during native PreRelease preparation");
+          }
         }
         if (await durablePublishedRevision(this.#environment, initial.root) !== published) {
           throw new Error("Publication authority changed during native release preparation");
@@ -2464,6 +2501,7 @@ export class ReleaseGitWorkspaceService {
   }
 
   async initialNativeTestCandidate(projectRoot) {
+    this.#assertAvailable("initialNativeTestCandidate");
     const primary = await primarySnapshot(projectRoot);
     const layout = this.#layout(primary.root);
     const bytes = await readFile(layout.checkpointFile).catch(error => {

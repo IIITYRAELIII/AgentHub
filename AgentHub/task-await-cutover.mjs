@@ -7,6 +7,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 
 import { HubMcpService } from "./src/application/hub-mcp-service.mjs";
+import { createNativeMergeReviewVerifier } from "./src/application/native-merge-review.mjs";
 import { measureTaskOperation } from "./src/infrastructure/process/task-operation-timing.mjs";
 import { TaskBoardService } from "./src/application/task-board-service.mjs";
 import { TaskLifecycleService } from "./src/application/task-lifecycle-service.mjs";
@@ -83,6 +84,8 @@ export function parseTaskAwaitCutoverArguments(argv) {
       "expected-task-revision", "initial-native-test", "confirm-cutover", "expected-source-commit",
       "expected-source-tree", "expected-source-branch", "expected-main-commit", "expected-dev-commit",
       "expected-publication-sha256", "expected-candidate-sha256", "expected-plan-revision", "expected-runtime-sha256"]);
+    allowed.add("native-resolution-review-file");
+    if (input["native-resolution-review-file"]) parsed.nativeResolutionReviewFile = path.resolve(input["native-resolution-review-file"]);
     if (input["returned-native-test"]) {
       if (input["initial-native-test"]) throw new Error("Returned native Test and initial native Test are distinct admissions");
       allowed.add("returned-native-test"); allowed.add("expected-returned-result-commit");
@@ -239,10 +242,11 @@ export async function openTaskAwaitCutoverRuntime({
     autoPlaceConfidence: config.taskBoard.autoPlaceConfidence,
     recordEvent: (event) => workspaceCatalogStore.recordWorkspaceEvent(event),
   });
+  const verifyNativeResolutionReview = createNativeMergeReviewVerifier({ workspaceCatalog: workspaceCatalogStore, taskBoard });
   const taskGitWorkspaces = suppliedTaskGitWorkspaces
-    ?? new TaskGitWorkspaceService({ dataDir: config.dataDir });
+    ?? new TaskGitWorkspaceService({ dataDir: config.dataDir, verifyNativeResolutionReview });
   const releaseGitWorkspaces = suppliedReleaseGitWorkspaces
-    ?? new ReleaseGitWorkspaceService({ dataDir: config.dataDir });
+    ?? new ReleaseGitWorkspaceService({ dataDir: config.dataDir, verifyNativeResolutionReview });
   const releasePlanner = new TaskReleasePlanService({ taskBoard, taskGitWorkspaces });
   const releasePreflight = suppliedReleasePreflight ?? new WorkspaceReleasePreflightService({
     measureOperation: measureTaskOperation,
@@ -291,6 +295,8 @@ export async function executeTaskAwaitCutover(input, {
   openRuntime = openTaskAwaitCutoverRuntime,
 } = {}) {
   const source = await inspectSource(input);
+  const nativeResolutionReview = input.nativeResolutionReviewFile
+    ? JSON.parse(await readFile(input.nativeResolutionReviewFile, "utf8")) : null;
   const runtime = await openRuntime();
   try {
     const token = runtime.service.contextToken({
@@ -317,7 +323,8 @@ export async function executeTaskAwaitCutover(input, {
       const result = await runtime.service.callTaskStatusCutover({ context_token: token,
         request_id: input.requestId, task_id: input.taskId, status: "testing",
         expected_task_revision: input.expectedTaskRevision, expected_workflow_status: "in_progress",
-        initial_native_test: identity }, {
+        initial_native_test: identity,
+        ...(nativeResolutionReview ? { native_resolution_review: nativeResolutionReview } : {}) }, {
         verifySource: () => inspectSource(input),
         inspectInstalledNativeOwner: runtime.inspectInstalledNativeOwner,
       });

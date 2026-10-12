@@ -137,9 +137,16 @@ export async function releaseTaskNetProjections({ tasks, baseCommit, git }) {
         if (task.integrations.length !== 1) {
           throw new Error("selected composition has unreviewed additional Task integrations");
         }
+        // Retained own-conflict evidence must use its reviewed published tree;
+        // the preview Task tip is not that historical release resolution.
+        if (verified.proofRoute && verified.releaseConflictPaths?.length && !verified.publishedResolution) {
+          throw new Error("retained own conflict lacks its exact published resolution");
+        }
         proofs.set(task.taskId, {
-          parent: verified.releaseParent, commit: task.resultCommit,
-          paths: await changedPaths(verified.releaseParent, task.resultCommit),
+          parent: verified.publishedResolution ? verified.publishedCommit : verified.releaseParent,
+          commit: verified.publishedResolution?.resolutionCommit ?? task.resultCommit,
+          paths: verified.publishedResolution ? verified.ownPlan.map(file => file.path)
+            : await changedPaths(verified.releaseParent, task.resultCommit),
           orderPreserving: true, selectedCompositionHash: selected.previewHash,
         });
         continue;

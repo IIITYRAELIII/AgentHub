@@ -1,5 +1,13 @@
 # ADR-0106 — Native Git selected branch composition
 
+Completed historical freeze abandonment restores the prepared ref, while its
+checkpoint still identifies the frozen original. Native cutover accepts that
+specific difference only after verifying the existing completed recovery outcome,
+immutable evidence bytes/hash, identity/proof and exact restored ref. The native
+manifest retains the old frozen head/checkpoint/manifest and recovery evidence.
+Changed proof or unrecognized ref movement refuses before promotion. Historical
+adoption cannot select another base for ordinary native composition.
+
 Date: 2026-10-10
 Status: accepted architecture, exact implementation requires independent review
 Contracts: REL-001, MCP-001
@@ -38,7 +46,8 @@ objects imported without intermediate refs. It creates no new source refs or
 selection authority and retains the same post-import object readback.
 
 Real merge commits retain exact selected result parents. Conflicts keep isolated
-MERGE_HEAD/index; reviewed normal resolution commits preserve automatic entries.
+MERGE_HEAD/index. ADR-0108 permits exact independently reviewed compatibility
+corrections beyond conflict paths; ordinary unreviewed resolutions preserve automatic entries.
 Changing selection recomposes from main. Dev is preview and Test-only work stays
 outside selected composition. Task CHANGELOG edits remain rejected; existing
 publication generation owns consolidated version/CHANGELOG.
@@ -117,6 +126,12 @@ Raw Workspace policy, production installation/restart/push and publication are
 outside source implementation authorization.
 
 ## Evidence required for implementation acceptance
+
+Native admission, pending-intent readback and terminal validators retain the
+existing recording-contour exclusion at every public Git-owner entry, before
+argument, lease or source processing. Read-only validation of a real referenced
+repository is also excluded in that literal recording contour; the ordinary
+owner retains its existing native validation and terminal fences.
 
 Real isolated Git/SQLite public Test/Await, complete multi-commit correction,
 native shared-file conflict and resume, selection removal/Test-only exclusion,

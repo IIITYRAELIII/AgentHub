@@ -153,7 +153,7 @@ test("Task work advances live PreRelease while the prior frozen commit remains i
   assert.equal(await git(candidate.releaseRoot, "rev-parse", `${frozen.preReleaseHead}^{tree}`), frozenTree);
 });
 
-test("Await membership prepares the candidate and rejects conflicts before acceptance", { timeout: 90000 }, async (t) => {
+test("Await membership prepares the candidate and fences changed agreed-main evidence before acceptance", { timeout: 90000 }, async (t) => {
   const { root, origin, taskBoard, taskGitWorkspaces, lifecycle, testedTask, primary } = await fixture(t);
   const unaccepted = await testedTask("Unaccepted", "unaccepted.txt", "not accepted\n");
   const accepted = await testedTask("Accepted", "accepted.txt", "accepted\n");
@@ -200,13 +200,16 @@ test("Await membership prepares the candidate and rejects conflicts before accep
   // allowed to move the candidate base or introduce this conflict.
   const published = await git(publisher, "rev-parse", "HEAD");
   await git(primary, "fetch", "origin", "main");
+  // Conflict preparation starts from agreed local main, not observation of
+  // origin alone. Advance this disposable fixture's agreed main explicitly.
+  await git(primary, "merge", "--ff-only", "refs/remotes/origin/main");
   lifecycle.releasePreflight.readPublicationState = async () => ({ repositories: [{ root: primary, revision: published }] });
   await assert.rejects(
     lifecycle.updateWorkflowStatus({
       taskId: conflicting.id, status: "awaiting_implementation", operationId: "accept-conflicting",
     }),
     (error) => error?.code === "TASK_AWAIT_INTEGRATION_FAILED"
-      && /PreRelease delta .* failed.*app\.txt/u.test(error.message),
+      && /does not contain accepted local main/u.test(error.message),
   );
   assert.equal(taskBoard.task(conflicting.id).workflowStatus, "testing");
   assert.equal(await readFile(checkpointFile, "utf8"), checkpointBefore);
@@ -383,7 +386,7 @@ test("ambiguous Await preserves its pending operation and rebuilds the candidate
   assert.equal(await git(candidate.releaseCandidates[0].releaseRoot, "show", "PreRelease:recover.txt"), "recover");
 });
 
-test("a stale accepted set is repaired by an explicit same-status Await", { timeout: 90000 }, async (t) => {
+test("same-status Await refuses an unrecognized native candidate ref rewind", { timeout: 90000 }, async (t) => {
   const f = await fixture(t);
   const accepted = await f.testedTask("Accepted", "accepted.txt", "accepted\n");
   const { candidate } = await acceptAndPrepare(f, accepted, "accept-stale");
@@ -400,19 +403,13 @@ test("a stale accepted set is repaired by an explicit same-status Await", { time
   f.taskGitWorkspaces.snapshotAndMergeOwned = async () => {
     throw new Error("repair must not ingest a new result");
   };
-  const repaired = await f.lifecycle.updateWorkflowStatus({
+  await assert.rejects(f.lifecycle.updateWorkflowStatus({
     taskId: accepted.id, status: "awaiting_implementation", operationId: "repair-stale-await",
-  });
-
-  assert.equal(repaired.task.workflowStatus, "awaiting_implementation");
-  assert.equal(repaired.releaseCandidate.status, "prepared", JSON.stringify(repaired.releaseCandidate));
-  const refreshed = await f.releasePreflight.prepareAwaitSet({ workspaceId: f.workspace.id });
-  assert.deepEqual(refreshed.taskIds, [accepted.id]);
-  const repairedCandidate = refreshed.releaseCandidates[0];
-  assert.equal(await git(repairedCandidate.releaseRoot, "show", "PreRelease:accepted.txt"), "accepted");
-  // The acceptance identity is stable: only the row revision moves.
+  }), /Native candidate ref changed/u);
+  assert.equal(f.taskBoard.task(accepted.id).workflowStatus, "awaiting_implementation");
   assert.equal(f.taskBoard.task(accepted.id).releaseRevision, acceptanceIdentity);
-  assert.equal(repaired.releaseIntegration.resultCommit, acceptedTask.gitReferences[0].resultCommit);
+  assert.equal(f.taskBoard.task(accepted.id).gitReferences[0].resultCommit, acceptedTask.gitReferences[0].resultCommit);
+  assert.equal(await git(candidate.releaseRoot, "rev-parse", "PreRelease"), candidate.baseCommit);
 });
 
 test("a frozen candidate keeps its identity while a later Await enters the next generation", { timeout: 90000 }, async (t) => {

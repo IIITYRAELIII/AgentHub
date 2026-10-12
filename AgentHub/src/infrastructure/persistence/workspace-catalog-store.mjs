@@ -363,6 +363,7 @@ function workspaceEventFromRow(row) {
 export class WorkspaceCatalogStore {
   #databaseFile;
   #database = null;
+  #transactionDepth = 0;
   #readOnly;
   #now;
   #idFactory;
@@ -427,14 +428,21 @@ export class WorkspaceCatalogStore {
   }
 
   #transaction(run) {
-    this.#database.exec("BEGIN IMMEDIATE");
+    const nested = this.#transactionDepth > 0;
+    const savepoint = `hub_catalog_${this.#transactionDepth}`;
+    this.#database.exec(nested ? `SAVEPOINT ${savepoint}` : "BEGIN IMMEDIATE");
+    this.#transactionDepth += 1;
     try {
       const result = run();
-      this.#database.exec("COMMIT");
+      this.#database.exec(nested ? `RELEASE SAVEPOINT ${savepoint}` : "COMMIT");
       return result;
     } catch (error) {
-      this.#database.exec("ROLLBACK");
+      this.#database.exec(nested
+        ? `ROLLBACK TO SAVEPOINT ${savepoint}; RELEASE SAVEPOINT ${savepoint}`
+        : "ROLLBACK");
       throw error;
+    } finally {
+      this.#transactionDepth -= 1;
     }
   }
 

@@ -613,6 +613,7 @@ export class TaskGitWorkspaceService {
     readSystemBootIdentity = readTrustedSystemBootIdentity,
     removeProcessGuard = unlink,
     contourExternalEffects = null,
+    verifyNativeResolutionReview = null,
     recordTiming = (event) => console.info(`[task-operation-timing] ${JSON.stringify(event)}`),
   } = {}) {
     this.#contourExternalEffects = assertContourExternalEffects(contourExternalEffects);
@@ -626,6 +627,7 @@ export class TaskGitWorkspaceService {
     this.readSystemBootIdentity = readSystemBootIdentity;
     this.removeProcessGuard = removeProcessGuard;
     this.recordTiming = recordTiming;
+    this.verifyNativeResolutionReview = verifyNativeResolutionReview;
   }
 
   withOperationTrace(identity, operation) {
@@ -2806,6 +2808,7 @@ export class TaskGitWorkspaceService {
   }
 
   async assertInitialNativeTestOwned(evidence, { lease, record = null } = {}) {
+    this.#assertAvailable("assertInitialNativeTestOwned");
     await requiredGuardLease(lease).assertOwned();
     const identity = evidence.identity;
     const managed = await this.managedRepositoryRoot(identity.sourceRoot,
@@ -3344,6 +3347,7 @@ export class TaskGitWorkspaceService {
   }
 
   async pendingNativeIntegrationOwned({ taskId, projectRoot, operationId, lease } = {}) {
+    this.#assertAvailable("pendingNativeIntegrationOwned");
     await requiredGuardLease(lease).assertOwned();
     const repoRoot = await repositoryRoot(projectRoot);
     const file = this.#nativeIntegrationFile(taskId, repoRoot, operationId);
@@ -3360,6 +3364,7 @@ export class TaskGitWorkspaceService {
 
   async assertNativeIntegrationOwned(snapshot, { operationId, lease, nativeAbsorptionInput = null,
     nativeAbsorptionHistory = null, validateAbsorption = null } = {}) {
+    this.#assertAvailable("assertNativeIntegrationOwned");
     await requiredGuardLease(lease).assertOwned();
     await this.#assertNoProcessTreeGuard(snapshot.taskId);
     const git = (args, cwd = snapshot.projectRoot) => this.#runOwned(args, { cwd, lease });
@@ -3414,7 +3419,8 @@ export class TaskGitWorkspaceService {
   }
 
   async withNativeIntegrationTerminalOwned(snapshot, { operationId, lease, nativeAbsorptionInput = null,
-    nativeAbsorptionHistory = null, validateAbsorption = null, initialNativeTest = null, validateInitialNativeTest = null }, commit) {
+    nativeAbsorptionHistory = null, validateAbsorption = null, initialNativeTest = null, validateInitialNativeTest = null } = {}, commit) {
+    this.#assertAvailable("withNativeIntegrationTerminalOwned");
     return this.#withClearDevLock(snapshot.repositoryRoot, lease, async (ownedLease) => {
       const record = await this.assertNativeIntegrationOwned(snapshot,
         { operationId, lease: ownedLease, nativeAbsorptionInput, nativeAbsorptionHistory, validateAbsorption });
@@ -3509,6 +3515,9 @@ export class TaskGitWorkspaceService {
     }
     const composition = await mergeSelectedResults({ root, sourceRoot: snapshot.repositoryRoot,
       baseCommit: record.before, tasks: [{ taskId: snapshot.taskId, resultCommit: snapshot.headCommit }], identity,
+      resolutionReview: record.nativeResolutionReview ?? null,
+      verifyReview: this.verifyNativeResolutionReview,
+      deliveredHead: record.target ?? null,
       gitAt: (cwd, args, options = {}) => this.#runOwned(args, { ...options, cwd, lease,
         guardRepositoryRoot: snapshot.repositoryRoot, timeoutMs: 300_000 }),
       readJson: pathname => readFile(pathname, "utf8").then(JSON.parse, error => {
@@ -3529,7 +3538,7 @@ export class TaskGitWorkspaceService {
 
   async #mergeIntoDevOwned(snapshot, { lease, operationId = null, nativeAbsorptionInput = null,
     nativeAbsorptionHistory = null, expectedTaskRevision = null, validateAbsorption = null,
-    initialNativeTest = null, validateInitialNativeTest = null }) {
+    initialNativeTest = null, validateInitialNativeTest = null, nativeResolutionReview = null }) {
     this.#assertAvailable("mergeIntoDevOwned");
     await requiredGuardLease(lease).assertOwned();
     await this.#assertNoProcessTreeGuard(snapshot.taskId);
@@ -3543,6 +3552,9 @@ export class TaskGitWorkspaceService {
       let dev;
       if (initialNativeTest) await validateInitialNativeTest({ record });
       if (record) {
+        if (JSON.stringify(record.nativeResolutionReview ?? null) !== JSON.stringify(nativeResolutionReview)) {
+          throw new Error("Native Test original reviewed resolution changed");
+        }
         if (JSON.stringify(record.initialNativeTest ?? null) !== JSON.stringify(initialNativeTest)) throw new Error("Initial native Test original Git binding changed");
         if (JSON.stringify(record.nativeAbsorptionInput ?? null) !== JSON.stringify(nativeAbsorptionInput)
             || JSON.stringify(record.nativeAbsorptionHistory ?? null) !== JSON.stringify(nativeAbsorptionHistory)
@@ -3576,6 +3588,7 @@ export class TaskGitWorkspaceService {
         });
         record = { version: 1, kind: "native-task-integration-v1", operationId, phase: "prepared",
           snapshot, devRoot: dev.projectRoot, before: dev.headCommit, mainCommit: dev.mainCommit,
+          ...(nativeResolutionReview ? { nativeResolutionReview } : {}),
           ...(initialNativeTest ? { initialNativeTest } : {}),
           ...(nativeAbsorptionInput || nativeAbsorptionHistory ? { expectedTaskRevision,
             ...(nativeAbsorptionInput ? { nativeAbsorptionInput } : {}),
@@ -3984,6 +3997,7 @@ export class TaskGitWorkspaceService {
       nativeAbsorptionInput: params.nativeAbsorptionInput, expectedTaskRevision: params.expectedTaskRevision,
       nativeAbsorptionHistory: params.nativeAbsorptionHistory,
       initialNativeTest: params.initialNativeTest, validateInitialNativeTest: params.validateInitialNativeTest,
+      nativeResolutionReview: params.nativeResolutionReview,
       validateAbsorption: params.validateAbsorption });
     if (integration.integrated) {
       await params.lease.assertOwned();

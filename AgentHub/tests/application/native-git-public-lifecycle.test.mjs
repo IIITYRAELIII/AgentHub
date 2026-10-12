@@ -20,6 +20,7 @@ import { ReleaseOperationService } from "../../src/application/release-operation
 import { WorkspaceReleaseOperationAdapter } from "../../src/application/workspace-release-operation-adapter.mjs";
 import { ReleaseOperationStore } from "../../src/infrastructure/persistence/release-operation-store.mjs";
 import { ReleaseOperationCommandService } from "../../src/application/release-operation-command-service.mjs";
+import { createNativeMergeReviewVerifier } from "../../src/application/native-merge-review.mjs";
 
 const exec = promisify(execFile);
 async function git(cwd, ...args) {
@@ -29,12 +30,15 @@ async function commit(root, message) {
   await git(root, "add", ".");
   return git(root, "-c", "user.name=Fixture", "-c", "user.email=fixture@local.invalid", "commit", "-m", message);
 }
-async function fixture(t, { releaseMetadata = false } = {}) {
+async function fixture(t, { releaseMetadata = false, compatibilityFiles = false } = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), "hub-native-public-"));
   const primary = path.join(root, "primary"), origin = path.join(root, "origin.git");
   await mkdir(primary);
   await git(primary, "init", "--initial-branch=main");
   await writeFile(path.join(primary, "shared.txt"), "main\n");
+  if (compatibilityFiles) for (const file of ["test-one.js", "test-two.js"]) {
+    await writeFile(path.join(primary, file), "// header\n\n// middle\n\n// footer\n");
+  }
   if (releaseMetadata) {
     await mkdir(path.join(primary, "AgentHub"));
     const pkg = { name: "agent-hub", version: "2026.9.25", type: "module" };
@@ -65,8 +69,9 @@ async function fixture(t, { releaseMetadata = false } = {}) {
       await catalog.runMutation(() => catalog.bindThread({ provider: "codex", threadId: "fixture-thread", streamId: stream.id }));
     }
     board = new TaskBoardService({ store, workspaceCatalog: catalog });
-    taskGit = new TaskGitWorkspaceService({ dataDir, readPublication: async () => publication, recordTiming: () => {} });
-    releaseGit = new ReleaseGitWorkspaceService({ dataDir });
+    const verifyNativeResolutionReview = createNativeMergeReviewVerifier({ workspaceCatalog: catalog, taskBoard: board });
+    taskGit = new TaskGitWorkspaceService({ dataDir, readPublication: async () => publication, recordTiming: () => {}, verifyNativeResolutionReview });
+    releaseGit = new ReleaseGitWorkspaceService({ dataDir, verifyNativeResolutionReview });
     preflight = new WorkspaceReleasePreflightService({
       releasePlanner: new TaskReleasePlanService({ taskBoard: board, taskGitWorkspaces: taskGit }),
       taskGitWorkspaces: taskGit, releaseGitWorkspaces: releaseGit,
@@ -107,6 +112,20 @@ async function fixture(t, { releaseMetadata = false } = {}) {
     get releaseGit() { return releaseGit; },
     get store() { return store; },
     get dataDir() { return dataDir; },
+    async reviewResolution(binding, requestId) {
+      let reviewer = catalog.hierarchy().flatMap(w => w.streams ?? []).find(s => s.name === "Reviewer");
+      if (!reviewer) {
+        reviewer = await catalog.runMutation(() => catalog.createStream({ workspaceId: workspace.id,
+          name: "Reviewer", settings: { model: "gpt-6.1-sol" } }));
+        await catalog.runMutation(() => catalog.bindThread({ provider: "codex", threadId: "reviewer-thread", streamId: reviewer.id }));
+      }
+      const text = `<native-merge-review>${JSON.stringify({ kind: "native-merge-review-v1", verdict: "ACCEPT", binding })}</native-merge-review>`;
+      await service.call("hub_stream_message_send", {
+        context_token: service.contextToken({ provider: "codex", threadId: "reviewer-thread" }),
+        request_id: requestId, stream_id: stream.id, text, mode: "queue", confirm_send: true,
+      });
+      return { requestId, text };
+    },
     async absorption({ priorSource = null, priorSurvivor = null } = {}) {
       const source = store.create({ text: "Saved source\n\nOriginal requirements and unfinished regression", bucket: "workspace", workspaceId: workspace.id });
       const survivor = store.create({ text: "Survivor\n\nCombined requirements", bucket: "workspace", workspaceId: workspace.id });
@@ -509,6 +528,81 @@ test("public native conflict keeps dev and resumes the ordinary resolution commi
   assert.equal((await f.status(b, "testing", "test-b-resolved")).workflowStatus, "testing");
   assert.equal(await git(f.primary, "rev-parse", "dev"), resolution);
   assert.equal(await git(f.primary, "show", "dev:shared.txt"), "A+B");
+});
+
+test("public Test and Await accept only the exact reviewed automatic compatibility cleanup", { timeout: 240000 }, async t => {
+  const f = await fixture(t, { compatibilityFiles: true, releaseMetadata: true }), a = await f.create("A"), b = await f.create("B");
+  for (const file of ["test-one.js", "test-two.js"]) {
+    await writeFile(path.join(a.root, file), "// header\nfunction check() {}\n// middle\n\n// footer\n");
+    await writeFile(path.join(b.root, file), "// header\n\n// middle\nfunction check() {}\n// footer\n");
+  }
+  await writeFile(path.join(a.root, "shared.txt"), "A\n");
+  await f.status(a, "testing", "compat-test-a");
+  await writeFile(path.join(b.root, "shared.txt"), "B\n");
+  let stage;
+  await assert.rejects(f.status(b, "testing", "compat-test-b-conflict"), error => {
+    assert.equal(error.code, "TASK_INTEGRATION_CONFLICT"); stage = error.details.nativeConflictRoot; return true;
+  });
+  const cleanup = async root => {
+    for (const file of ["test-one.js", "test-two.js"]) {
+      assert.equal((await readFile(path.join(root, file), "utf8")).match(/function check/gu).length, 2);
+      await writeFile(path.join(root, file), "// header\nfunction check() {}\n// middle\n\n// footer\n");
+    }
+    await writeFile(path.join(root, "shared.txt"), "A+B\n");
+    await commit(root, "reviewable compatibility cleanup");
+  };
+  await cleanup(stage);
+  const reviewedCommit = await git(stage, "rev-parse", "HEAD");
+  const beforeDev = await git(f.primary, "rev-parse", "dev");
+  let binding;
+  await assert.rejects(f.status(b, "testing", "compat-test-unreviewed"), error => {
+    assert.equal(error.code, "RELEASE_NATIVE_REVIEW_REQUIRED"); binding = error.binding;
+    assert.deepEqual(error.extraPaths, ["test-one.js", "test-two.js"]);
+    assert.ok(error.diffPath); return true;
+  });
+  assert.equal(await git(f.primary, "rev-parse", "dev"), beforeDev);
+  const review = await f.reviewResolution(binding, "compat-independent-dev-review");
+  const stale = await f.reviewResolution({ ...binding, parents: [f.base, binding.parents[1]] }, "compat-stale-parents-review");
+  await assert.rejects(f.status(b, "testing", "compat-stale-parents", { native_resolution_review: stale }), /review receipt.*changed/u);
+  const wrongSet = await f.reviewResolution({ ...binding, identityHash: "0".repeat(64) }, "compat-stale-selection-review");
+  await assert.rejects(f.status(b, "testing", "compat-stale-selection", { native_resolution_review: wrongSet }), /review receipt.*changed/u);
+  await writeFile(path.join(stage, "unreviewed.txt"), "extra bytes\n");
+  await git(stage, "add", ".");
+  await git(stage, "-c", "user.name=Fixture", "-c", "user.email=fixture@local.invalid", "commit", "--amend", "--no-edit");
+  await assert.rejects(f.status(b, "testing", "compat-after-review-change", { native_resolution_review: review }), /review receipt.*changed/u);
+  assert.equal(await git(f.primary, "rev-parse", "dev"), beforeDev);
+  await git(stage, "checkout", "--detach", reviewedCommit);
+  await f.status(b, "testing", "compat-test-reviewed", { native_resolution_review: review });
+  assert.equal(await git(f.primary, "rev-parse", "dev"), reviewedCommit);
+  await f.status(a, "awaiting_implementation", "compat-await-a");
+  await assert.rejects(f.status(b, "awaiting_implementation", "compat-await-conflict"), error => {
+    assert.equal(error.code, "TASK_AWAIT_INTEGRATION_FAILED");
+    stage = /Resolve the native Git merge for Task .+ in (.+)$/u.exec(error.message)?.[1];
+    assert.ok(stage); return true;
+  });
+  await cleanup(stage);
+  const awaitCommit = await git(stage, "rev-parse", "HEAD");
+  let awaitBinding;
+  await assert.rejects(f.status(b, "awaiting_implementation", "compat-await-unreviewed"), error => {
+    assert.equal(error.code, "TASK_AWAIT_INTEGRATION_FAILED");
+    awaitBinding = error.details.nativeResolutionBinding;
+    assert.deepEqual(error.details.extraPaths, ["test-one.js", "test-two.js"]); return true;
+  });
+  const awaitReview = await f.reviewResolution(awaitBinding, "compat-independent-await-review");
+  await f.status(b, "awaiting_implementation", "compat-await-reviewed", { native_resolution_review: awaitReview });
+  const prepared = await f.releaseGit.frozenCandidate(f.primary);
+  assert.equal(prepared.preReleaseHead, awaitCommit);
+  for (const file of ["test-one.js", "test-two.js"]) {
+    assert.equal((await git(prepared.releaseRoot, "show", `HEAD:${file}`)).match(/function check/gu).length, 1);
+  }
+  await f.reopen();
+  assert.equal((await f.releaseGit.frozenCandidate(f.primary)).preReleaseHead, awaitCommit);
+  const generation = await f.release([a, b], f.base, "compat-prepared-generation");
+  assert.equal(generation.generations.length, 1);
+  assert.equal(generation.operation.waitReason.code, "validation_failed");
+  const captured = generation.generations[0].candidates[0];
+  await git(captured.releaseRoot, "merge-base", "--is-ancestor", awaitCommit, captured.commit);
+  assert.equal((await git(captured.releaseRoot, "show", "HEAD:test-one.js")).match(/function check/gu).length, 1);
 });
 
 test("public native lost terminal and source drift retain UNKNOWN through SQLite reopen", { timeout: 180_000 }, async t => {

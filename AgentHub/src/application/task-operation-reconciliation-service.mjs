@@ -369,7 +369,8 @@ export class TaskOperationReconciliationService {
       && validTarget
       && receipt.argumentsHash === workflowArgumentsHash({
         operationId, taskId: task.id, status: targetWorkflowStatus,
-        identityArguments: initial ?? squash ?? selected ?? cutover ?? workflowCas,
+        identityArguments: { ...(initial ?? squash ?? selected ?? cutover ?? workflowCas),
+          ...(options.nativeResolutionReview != null ? { native_resolution_review: options.nativeResolutionReview } : {}) },
       })
       && receipt.operationStatus === "pending"
       && receipt.receiptState === "unknown";

@@ -1,5 +1,22 @@
 # REL-001 — Task-backed Workspace release
 
+Native cutover after completed historical freeze abandonment verifies its
+existing recovery outcome, immutable evidence/hash and exact restored prepared
+ref. It retains frozen-original and recovery bytes in the new manifest; changed
+proof or unrecognized ref movement refuses before promotion. Ordinary native
+preparation keeps exact agreed local main. Historical adoption remains evidence
+for its bounded recovery only.
+
+The existing full-test runner prepares its checkout's tracked npm lock through
+the existing dependency owner before starting validation suites. Frozen Git
+generation clones contain no dependency tree. Preparation uses the same bounded
+lock/physical-tree validation and matching-marker reuse as managed Task
+dependencies, includes locked development dependencies and runs npm under its
+dependency lease with publication capabilities removed. A preparation failure
+fails the full-test stage before artifact or publication effects. This does not
+change the prescribed pipeline, stage contract, frozen tracked content, version
+or original operation; subsequent validation still runs every required suite.
+
 ## Explicit preparation-only recovery (ADR-0104)
 
 `hub_release_prepare` is an authenticated Release Manager-only preparation
@@ -143,8 +160,16 @@ the combined Test's exact dev parent. Unproved separate integrations still refus
 Ordinary Test uses an isolated native merge from current dev and its exact Task
 result. A conflict leaves MERGE_HEAD, stages and automatic entries there; shared
 dev and the last accepted candidate remain intact. The executor uses normal
-Git add/commit. Continuation verifies exact ordered parents, unchanged automatic
-entries, no unrelated additions and a clean checkout. A failed original remains
+Git add/commit. Continuation verifies exact ordered parents and a clean checkout.
+Necessary compatibility changes on automatically merged paths require the exact
+independent inter-Stream ACCEPT receipt, bound through the existing catalog to
+the complete reproducible merge diff, ordered selected inputs and final commit/tree.
+No path allowlist or caller flag authorizes extra bytes. Missing review, changed
+parents/selection/diff/tree or post-review amendments refuse. Ordinary resolutions
+without additional automatic-path changes keep their existing behavior. The same
+binding is retained and rechecked by native Test, Await, prepared generation and
+historical readback; old receipts remain unchanged. See ADR-0108.
+A failed original remains
 failed; a subsequent Test is a new request using that saved resolution. An
 uncertain CAS or SQLite terminal write stays UNKNOWN on its original identity.
 Reopen rechecks exact source HEAD/base/branch/cleanliness/process ownership and
@@ -173,8 +198,10 @@ commit/tree, manifest and checkpoint hashes, selected results and base under the
 existing Await/repository owners. It imports that commit through native promotion
 into the immutable generation; it never recomposes selected tips during publication.
 Accepted conflict resolution commits remain ancestors. Only the existing freeze
-owner changes version/CHANGELOG metadata. Missing or stale prepared selection,
-result, base or evidence requires normal candidate preparation and explicit retry.
+owner changes version/CHANGELOG metadata. Native history admission also compares
+existing package/lock root version fields; dependency edits with an unchanged
+release version remain Task content. Missing or stale prepared selection, result,
+base or evidence requires normal candidate preparation and explicit retry.
 The original generation identity pins this capture; lost responses reuse its
 promotion journal and freeze payload without rebinding or another Git merge.
 Stale prepared refusal leaves the same ReleaseOperation waiting at compose;
@@ -184,6 +211,9 @@ authorization may accompany capture; other dirty files and unbound notes refuse.
 
 The agreed-main-native-git-v1 provenance records agreed main separately from
 durable published history. A newer remote observation cannot replace main.
+Preparation checks those pinned local/origin identities under its existing Git
+lease. Its preflight callback must not reenter the same release Git lock through
+an inspection call; the holding owner performs that fresh read before promotion.
 Known main/publication divergence stays explicit; this cutover does not silently
 initialize publication, adopt upstream, push or rewrite main.
 
@@ -204,6 +234,11 @@ source fences. Historical sealed readers do not impose today's checkout config.
 Remove legacy writers only after all supported old originals are durably terminal;
 retain their historical readers, receipts, bundles and frozen identities while
 those histories remain supported. No old UNKNOWN is replayed with a new original.
+
+A retained historical own-conflict projection reads the exact published
+resolution commit and its parent, bounded by the saved own-plan paths. Missing
+published resolution evidence fails closed; the original Task tip cannot stand
+in for that resolution. This reader does not authorize new net composition.
 
 This section and ADR-0106 supersede the ordinary composition algorithms in the
 historical net-projection, effective-delta and materializer sections below.

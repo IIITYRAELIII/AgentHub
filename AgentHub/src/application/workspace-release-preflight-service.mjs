@@ -400,6 +400,7 @@ export class WorkspaceReleasePreflightService {
 
   async prepareAwaitAcceptance({
     workspaceId, acceptingTask, projectRoot, lease = null, operationId, commitPrepared,
+    nativeResolutionReview = null,
   } = {}) {
     if (typeof commitPrepared !== "function") throw new TypeError("commitPrepared is required");
     const root = path.resolve(String(projectRoot ?? "").trim());
@@ -408,7 +409,7 @@ export class WorkspaceReleasePreflightService {
     // Lifecycle holds Workspace Await -> Task -> repository locks, including
     // recovery and cross-Task cutover. Retain candidate rollback through Task CAS.
     return this.#prepareAwaitSet({
-      workspaceId, acceptingTask, lease,
+      workspaceId, acceptingTask, lease, nativeResolutionReview,
       commitPrepared: async (prepared) => {
         const matches = prepared.releaseCandidates.flatMap((candidate) => (
           canonicalRoot(candidate.repositoryRoot) === canonicalRoot(root)
@@ -545,6 +546,7 @@ export class WorkspaceReleasePreflightService {
     reviewedMainApprovals = null, selectedTaskIds = null, generationIdentity = null, changelogContent = undefined,
     prospectiveOnly = false, freezeGeneration = true, ephemeralGeneration = false,
     previousSelectedResults = [], preparation = null,
+    nativeResolutionReview = null,
   } = {}) {
     if (validateOnly && commitPrepared) throw new Error("Composition validation cannot commit Task acceptance");
     if (validateOnly) requiredMethod(this.releaseGitWorkspaces, "validateCandidate");
@@ -613,15 +615,10 @@ export class WorkspaceReleasePreflightService {
           if (currentBaseline.publishedRevision !== reviewed.provenance.publishedBaseCommit) {
             throw new Error("published release base changed during explicit reviewed-main preparation");
           }
-          const currentAudit = await this.releaseGitWorkspaces.inspectMainChanges({
-            projectRoot: repository.projectRoot,
-            publishedRevision: currentBaseline.publishedRevision,
-            approvedLocalMainCommit: reviewed.provenance.approvedLocalMainCommit,
-            approvedOriginMainCommit: reviewed.provenance.approvedOriginMainCommit,
-          });
-          if (currentAudit.approvalRequired || !currentAudit.approved
-              || currentAudit.localMain !== reviewed.provenance.approvedLocalMainCommit
-              || currentAudit.originMain !== reviewed.provenance.approvedOriginMainCommit) {
+          // Candidate promotion already holds release-git. Reentering
+          // inspectMainChanges here would wait on that same live lease.
+          // Its owner rechecks the pinned origin/main inside its own validate().
+          if (current.baseCommit !== reviewed.provenance.approvedLocalMainCommit) {
             throw new Error("reviewed main authority changed during native PreRelease preparation");
           }
         }
@@ -732,6 +729,7 @@ export class WorkspaceReleasePreflightService {
         approvedBaseCommit,
         ...(baseProvenance ? { baseProvenance } : {}),
         preserveFrozen,
+        nativeResolutionReview,
         ...(preparation ? { preflightRequestId: preparation.requestId, preparationGuard: {
           ...preparationRepository, argumentsHash: preparation.argumentsHash,
           sourceCommit: preparation.envelope.sourceCommit, sourceTree: preparation.envelope.sourceTree,

@@ -2,6 +2,13 @@
 
 ## Archive and deletion
 
+Catalog mutations composed inside one synchronous catalog transaction retain
+that outer SQLite owner. Nested operations use savepoints: an inner refusal
+rolls back its own writes, and an outer refusal rolls back all nested writes.
+Workspace layout migration therefore retains one atomic backed-up application,
+including Thread rebinding and its migration marker. No second queue, connection
+or migration authority is introduced.
+
 - Archiving a user Workspace is reversible and has no deadline. Startup clears
   every legacy `purge_after_ms` value before archive data is projected, and no
   elapsed-time cleanup remains.

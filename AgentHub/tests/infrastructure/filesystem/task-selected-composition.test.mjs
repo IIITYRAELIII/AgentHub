@@ -12,6 +12,7 @@ import { TaskLifecycleService } from "../../../src/application/task-lifecycle-se
 import { TaskBoardService } from "../../../src/application/task-board-service.mjs";
 import { TaskBoardStore } from "../../../src/infrastructure/persistence/task-board-store.mjs";
 import { WorkspaceCatalogStore } from "../../../src/infrastructure/persistence/workspace-catalog-store.mjs";
+import { retainedLegacySelectedPreview, retainLegacySelectedOriginal } from "../../fixtures/legacy-selected-composition-fixture.mjs";
 
 const exec = promisify(execFile);
 const TASK_ID = "367ffe17-f69f-4886-b9be-901558ecace2";
@@ -22,7 +23,11 @@ async function git(cwd, ...args) {
 
 async function fixture(t) {
   const temp = await mkdtemp(path.join(os.tmpdir(), "selected-owner-"));
-  t.after(() => rm(temp, { recursive: true, force: true }));
+  const closeResources = [];
+  t.after(async () => {
+    for (const close of closeResources.reverse()) await close();
+    await rm(temp, { recursive: true, force: true });
+  });
   const root = path.join(temp, "repository");
   const remote = path.join(temp, "remote.git");
   const dataDir = path.join(temp, "data");
@@ -88,7 +93,7 @@ async function fixture(t) {
   const bundleSha256 = createHash("sha256").update(await readFile(bundle)).digest("hex");
   assert.equal(await git(root, "rev-parse", "main"), local);
   assert.equal(await git(root, "rev-parse", "dev"), dev);
-  return { root, remote, dataDir, service, taskWorkspace, devWorkspace,
+  return { root, remote, dataDir, service, taskWorkspace, devWorkspace, closeResources,
     base, local, published, task, dev, proof, tree, bundle, bundleSha256 };
 }
 
@@ -97,6 +102,7 @@ async function lifecycleFixture(f) {
   const catalog = new WorkspaceCatalogStore({ databaseFile });
   await catalog.load();
   const store = new TaskBoardStore({ databaseFile, idFactory: () => TASK_ID });
+  f.closeResources.push(() => { store.close(); catalog.close(); });
   const workspace = await catalog.runMutation(() => catalog.createWorkspace({
     name: "Selected composition", settings: { workingDirectory: f.root,
       releaseWorkflowEnabled: true },
@@ -116,22 +122,109 @@ async function lifecycleFixture(f) {
     authority: { workspaceId: workspace.id, streamId: "rm", provider: "codex",
       threadId: "thread", proofRequestId: "selected-preview" },
   };
-  return { taskBoard, lifecycle, input, close: () => { store.close(); catalog.close(); } };
+  const retainTransition = async (operationId) => {
+    const preview = await retainedLegacySelectedPreview(f, input);
+    await retainLegacySelectedOriginal(f, preview, operationId);
+    // This is the durable pending transition from the pre-cutover original.
+    // Recovery consumes it; the current fresh selected API remains closed.
+    taskBoard.beginLifecycleTransition({ id: TASK_ID, operationId, kind: "workflow",
+      targetWorkflowStatus: "testing", expectedRevision: revision,
+      evidence: { selectedComposition: preview } });
+    return preview;
+  };
+  const recover = operationId => f.service.withTaskRecoveryLock(TASK_ID, taskLease => (
+    f.service.withTaskRepositoryRecoveryLock(TASK_ID, f.root, taskLease, lease => (
+      lifecycle.reconcileUnknownWorkflowStatusOwned({ taskId: TASK_ID,
+        operationId, projectRoot: f.root, guardId: null, lease })
+    ))
+  ));
+  return { taskBoard, lifecycle, input, retainTransition, recover,
+    close: () => { store.close(); catalog.close(); } };
 }
 
-test("selected owner preview has no live effect; late ignored collision preserves bytes and original op recovers", {
+test("retained v1 original completes after cutover while fresh preview and missing original refuse", { timeout: 90000 }, async (t) => {
+  const f = await fixture(t);
+  const input = { taskId: TASK_ID, expectedTaskRevision: 1, authority: {
+    workspaceId: "workspace", streamId: "rm", provider: "codex",
+    threadId: "thread", proofRequestId: "historical-preview",
+  } };
+  const preview = await retainedLegacySelectedPreview(f, input);
+  await assert.rejects(f.service.withTaskLock(TASK_ID, lease => f.service.previewSelectedCompositionOwned({
+    ...input, projectRoot: f.root, proofCommit: f.proof, bundlePath: f.bundle,
+    bundleSha256: f.bundleSha256, lease,
+  })), { code: "TASK_NATIVE_GIT_REQUIRED" });
+  await assert.rejects(f.service.withTaskLock(TASK_ID, lease => f.service.applySelectedCompositionOwned(preview, {
+    operationId: "missing-original", lease,
+  })), { code: "TASK_NATIVE_GIT_REQUIRED" });
+  assert.equal(await git(f.root, "rev-parse", "dev"), f.dev);
+  await retainLegacySelectedOriginal(f, preview, "retained-v1");
+  const completed = await f.service.withTaskLock(TASK_ID, lease => f.service.applySelectedCompositionOwned(preview, {
+    operationId: "retained-v1", lease,
+  }));
+  assert.equal(completed.status, "applied");
+  const reopened = new TaskGitWorkspaceService({ dataDir: f.dataDir,
+    readPublication: f.service.readPublication });
+  const readback = await reopened.withTaskLock(TASK_ID, lease => reopened.readSelectedCompositionOwned(preview, {
+    operationId: "retained-v1", lease,
+  }));
+  assert.equal(readback.status, "applied");
+  assert.equal(await git(f.root, "rev-parse", "dev"), f.proof);
+});
+
+test("retained v2 completion keeps its seal and refuses paired downgrade", { timeout: 90000 }, async t => {
+  const f = await fixture(t);
+  const preview = await retainedLegacySelectedPreview(f, { taskId: TASK_ID, expectedTaskRevision: 1,
+    authority: { workspaceId: "workspace", streamId: "rm", provider: "codex", threadId: "thread", proofRequestId: "retained-v2" } });
+  const operationId = "retained-v2";
+  await retainLegacySelectedOriginal(f, preview, operationId, { version: 2 });
+  await f.service.withTaskLock(TASK_ID, lease => f.service.applySelectedCompositionOwned(preview, { operationId, lease }));
+  const root = path.join(f.dataDir, "task-selected-compositions", TASK_ID,
+    path.basename(f.taskWorkspace.projectRoot), operationId);
+  const files = ["intent.json", "completed.json", "materialization/record.json"].map(name => path.join(root, name));
+  const bytes = await Promise.all(files.map(file => readFile(file)));
+  const [intent, receipt, record] = bytes.map(value => JSON.parse(value));
+  assert.deepEqual([intent.version, receipt.version, record.version], [2, 2, 2]);
+  const head = await git(f.root, "rev-parse", "dev");
+  const evidence = () => f.service.releaseIntegrationEvidence({ projectRoot: f.root,
+    tasks: [{ taskId: TASK_ID, taskRevision: 1, projectRoot: f.root,
+      branch: f.taskWorkspace.branch, resultCommit: f.task }] });
+  const restore = () => Promise.all(files.map((file, index) => writeFile(file, bytes[index])));
+  const write = values => Promise.all(files.map((file, index) => writeFile(file, JSON.stringify(values[index]))));
+  await evidence();
+  try {
+    const tampered = structuredClone(record);
+    tampered.files[0].newSha256 = "0".repeat(64);
+    await write([intent, receipt, tampered]);
+    await assert.rejects(evidence(), /historical materialization binding changed/u);
+    await restore();
+    const { materializationHash: _seal, ...unsealed } = receipt;
+    for (const values of [[{ ...intent, version: 1 }, { ...receipt, version: 1 }, record],
+      [{ ...intent, version: 1 }, { ...unsealed, version: 1 }, { ...record, version: 1 }]]) {
+      await write(values);
+      await assert.rejects(evidence(), /historical materialization version changed/u);
+      await restore();
+    }
+    // A captured v2 physical serialization cannot be relabelled as v1. The
+    // independent retained-v1 case exercises actual v1 data through its owner.
+    await write([{ ...intent, version: 1 }, { ...unsealed, version: 1 },
+      { ...record, version: 1, files: record.files.map(file => ({ ...file, oldSerialization: "raw" })) }]);
+    await assert.rejects(evidence(), /historical materialization version changed/u);
+  } finally { await restore(); }
+  await evidence();
+  assert.equal(await git(f.root, "rev-parse", "dev"), head);
+  assert.equal(await git(f.root, "status", "--porcelain"), "");
+});
+
+test("retained selected proof has no live effect; late ignored collision preserves bytes and original op recovers", {
   timeout: 90_000,
 }, async (t) => {
   const f = await fixture(t);
   const authority = { workspaceId: "workspace", streamId: "rm", provider: "codex",
     threadId: "thread", proofRequestId: "preview-1" };
-  const preview = await f.service.withTaskLock(TASK_ID, (lease) => (
-    f.service.previewSelectedCompositionOwned({
-      taskId: TASK_ID, projectRoot: f.root, proofCommit: f.proof,
-      bundlePath: f.bundle, bundleSha256: f.bundleSha256,
-      expectedTaskRevision: 1, authority, lease,
-    })
-  ));
+  const preview = await retainedLegacySelectedPreview(f, {
+    taskId: TASK_ID, expectedTaskRevision: 1, authority,
+  });
+  await retainLegacySelectedOriginal(f, preview, "confirm-1");
   assert.equal(preview.proofTree, f.tree);
   assert.equal(await git(f.root, "rev-parse", "dev"), f.dev);
   assert.equal(await git(f.root, "rev-parse", "main"), f.local);
@@ -198,13 +291,12 @@ test("one selected operation recovers crashes before journal and completion publ
   timeout: 90_000,
 }, async (t) => {
   const f = await fixture(t);
-  const preview = await f.service.withTaskLock(TASK_ID, (lease) => (
-    f.service.previewSelectedCompositionOwned({ taskId: TASK_ID, projectRoot: f.root,
-      proofCommit: f.proof, bundlePath: f.bundle, bundleSha256: f.bundleSha256,
-      expectedTaskRevision: 1, authority: { workspaceId: "workspace", streamId: "rm",
-        provider: "codex", threadId: "thread", proofRequestId: "preview-crash" }, lease })
-  ));
+  const preview = await retainedLegacySelectedPreview(f, {
+    taskId: TASK_ID, expectedTaskRevision: 1, authority: { workspaceId: "workspace", streamId: "rm",
+      provider: "codex", threadId: "thread", proofRequestId: "preview-crash" },
+  });
   const operationId = "confirm-crash";
+  await retainLegacySelectedOriginal(f, preview, operationId);
   const root = path.join(f.dataDir, "task-selected-compositions", TASK_ID,
     path.basename(f.taskWorkspace.projectRoot), operationId);
   const journal = path.join(root, "materialization");
@@ -235,31 +327,30 @@ test("one selected operation recovers crashes before journal and completion publ
   assert.equal(await git(f.devWorkspace.projectRoot, "status", "--porcelain"), "");
 });
 
-test("selected composition enters Test only after exact Git CAS and durable Task result", {
+test("retained selected lifecycle enters Test only after exact Git CAS and durable Task result", {
   timeout: 90_000,
 }, async (t) => {
   const f = await fixture(t);
-  const { taskBoard, lifecycle, input, close } = await lifecycleFixture(f);
-  const preview = await lifecycle.selectedComposition({ ...input, operationId: "selected-preview" });
-  assert.equal(preview.confirmationRequired, true);
+  const { taskBoard, lifecycle, input, retainTransition, recover, close } = await lifecycleFixture(f);
+  await assert.rejects(lifecycle.selectedComposition({ ...input, operationId: "fresh-preview" }),
+    { code: "TASK_NATIVE_GIT_REQUIRED" });
+  await retainTransition("selected-confirm");
   assert.equal(taskBoard.task(TASK_ID).workflowStatus, "in_progress");
   assert.equal(await git(f.root, "rev-parse", "dev"), f.dev);
-  const confirmed = await lifecycle.selectedComposition({ ...input, operationId: "selected-confirm",
-    expectedPreviewHash: preview.previewHash });
+  const { result: confirmed } = await recover("selected-confirm");
   assert.equal(confirmed.task.workflowStatus, "testing");
   assert.equal(confirmed.task.gitReferences[0].resultCommit, f.task);
   assert.equal(confirmed.gitReceipt.devCommit, f.proof);
   assert.equal(await git(f.root, "rev-parse", "dev"), f.proof);
   assert.equal(await git(f.devWorkspace.projectRoot, "status", "--porcelain"), "");
-  close();
 });
 
 test("interrupted selected Test retains pending lifecycle and reconciles the same operation", {
   timeout: 90_000,
 }, async (t) => {
   const f = await fixture(t);
-  const { taskBoard, lifecycle, input, close } = await lifecycleFixture(f);
-  const preview = await lifecycle.selectedComposition({ ...input, operationId: "selected-preview" });
+  const { taskBoard, retainTransition, recover, close } = await lifecycleFixture(f);
+  await retainTransition("selected-confirm");
   let inject = true;
   f.service.runCommand = async (args, options) => {
     const result = await runTaskGitCommand(args, options);
@@ -269,37 +360,29 @@ test("interrupted selected Test retains pending lifecycle and reconciles the sam
     }
     return result;
   };
-  await assert.rejects(lifecycle.selectedComposition({ ...input, operationId: "selected-confirm",
-    expectedPreviewHash: preview.previewHash }), { code: "TASK_SELECTED_COMPOSITION_UNKNOWN" });
+  await assert.rejects(recover("selected-confirm"), /EEXIST|foreign bytes/u);
   assert.equal(taskBoard.task(TASK_ID).workflowStatus, "in_progress");
   assert.equal(taskBoard.lifecycleTransition("selected-confirm").phase, "pending_git");
   assert.equal(await git(f.root, "rev-parse", "dev"), f.proof);
   assert.equal(await readFile(path.join(f.devWorkspace.projectRoot, "feature.txt"), "utf8"),
     "late private\n");
   await unlink(path.join(f.devWorkspace.projectRoot, "feature.txt"));
-  const recovered = await f.service.withTaskRecoveryLock(TASK_ID, (taskLease) => (
-    f.service.withTaskRepositoryRecoveryLock(TASK_ID, f.root, taskLease, (lease) => (
-      lifecycle.reconcileUnknownWorkflowStatusOwned({ taskId: TASK_ID,
-        operationId: "selected-confirm", projectRoot: f.root, guardId: null, lease })
-    ))
-  ));
+  const recovered = await recover("selected-confirm");
   assert.equal(recovered.result.task.workflowStatus, "testing");
   assert.equal(recovered.result.task.gitReferences[0].resultCommit, f.task);
   assert.equal(taskBoard.lifecycleTransition("selected-confirm"), null);
   assert.equal(await git(f.devWorkspace.projectRoot, "status", "--porcelain"), "");
-  close();
 });
 
 test("publication generation drift before CAS leaves dev and Task result untouched", {
   timeout: 90_000,
 }, async (t) => {
   const f = await fixture(t);
-  const preview = await f.service.withTaskLock(TASK_ID, (lease) => (
-    f.service.previewSelectedCompositionOwned({ taskId: TASK_ID, projectRoot: f.root,
-      proofCommit: f.proof, bundlePath: f.bundle, bundleSha256: f.bundleSha256,
-      expectedTaskRevision: 1, authority: { workspaceId: "workspace", streamId: "rm",
-        provider: "codex", threadId: "thread", proofRequestId: "preview-drift" }, lease })
-  ));
+  const preview = await retainedLegacySelectedPreview(f, {
+    taskId: TASK_ID, expectedTaskRevision: 1, authority: { workspaceId: "workspace", streamId: "rm",
+      provider: "codex", threadId: "thread", proofRequestId: "preview-drift" },
+  });
+  await retainLegacySelectedOriginal(f, preview, "confirm-drift");
   f.service.readPublication = async () => ({ generation: "generation-2",
     repositories: [{ root: f.root, revision: f.published }] });
   await assert.rejects(f.service.withTaskLock(TASK_ID, (lease) => (

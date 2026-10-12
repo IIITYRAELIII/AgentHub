@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
+import { modelCallbackAction } from "../../src/interfaces/telegram/callback-context.mjs";
 import { JournalDatabase } from "../../src/infrastructure/persistence/journal-database.mjs";
 import {
   readRuntimeState,
@@ -314,7 +315,7 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   telegram.pushMessage("/model");
   const modelPicker = await telegram.waitForText("Current Codex model", { after: mark });
   mark = telegram.calls.length;
-  telegram.pushCallback(callbackButton(modelPicker, "codex-model:gpt-e2e").callback_data, modelPicker.result);
+  telegram.pushCallback(callbackButton(modelPicker, modelCallbackAction("codex", "gpt-e2e")).callback_data, modelPicker.result);
   await telegram.waitForText("Codex model: GPT-E2E", { after: mark });
   await waitFor(async () => (await readJson(statePath)).codexModel === "gpt-e2e", "model switch");
 
