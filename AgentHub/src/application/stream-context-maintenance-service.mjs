@@ -27,6 +27,7 @@ export class StreamContextMaintenanceService {
     latestContextUsage,
     waitForContextUpdate,
     workspaceCatalog,
+    nameCreatedThread,
     selectionStore,
     deferredInputs,
     invalidateCatalog,
@@ -54,6 +55,7 @@ export class StreamContextMaintenanceService {
       latestContextUsage,
       waitForContextUpdate,
       workspaceCatalog,
+      nameCreatedThread,
       selectionStore,
       deferredInputs,
       invalidateCatalog,
@@ -323,7 +325,12 @@ export class StreamContextMaintenanceService {
     if (!reservation) throw new Error("Для этого Stream уже выполняется обслуживание контекста");
     let queueTarget = target;
     try {
-      const rotated = await provider.rotate(target);
+      const active = this.workspaceCatalog.activeThread?.(target.streamId);
+      const intent = active && this.workspaceCatalog.threadNaming?.(active);
+      const recovering = intent?.status === "pending" && active.provider === target.provider
+        && (active.threadId === target.threadId || intent.rotationSourceThreadId === target.threadId);
+      const rotated = recovering ? { thread: { id: active.threadId }, recoveredNaming: true }
+        : await provider.rotate(target);
       queueTarget = await this.#bindRotation(target, rotated, rotated?.compactionId);
       return rotated;
     } finally {
@@ -351,39 +358,51 @@ export class StreamContextMaintenanceService {
       streamId: stream.id,
       projectRoot,
       source: "rebirth",
+      rotationSourceThreadId: source.threadId === threadId ? null : source.threadId,
     });
-    if (normalized(compactionId)) {
-      this.maintenanceProvider(source)?.compactions.annotate?.(source.threadId, compactionId, {
-        rotated: true,
-        rotationThreadId: threadId,
-        rotationCompletedAt: new Date().toISOString(),
-      });
-    }
-    if (this.selectionStore.threadId === source.threadId) {
-      this.selectionStore.setThread(threadId, {
+    const title = this.workspaceCatalog.threadNaming({ provider: "codex", threadId }).title;
+    let projectionError;
+    try {
+      if (normalized(compactionId)) {
+        this.maintenanceProvider(source)?.compactions.annotate?.(source.threadId, compactionId, {
+          rotated: true,
+          rotationThreadId: threadId,
+          rotationCompletedAt: new Date().toISOString(),
+        });
+      }
+      if (this.selectionStore.threadId === source.threadId) {
+        this.selectionStore.setThread(threadId, {
+          provider: "codex",
+          streamId: stream.id,
+          title,
+        });
+      }
+      for (const item of this.deferredInputs.values()) {
+        if (normalized(item.streamId) !== stream.id) continue;
+        item.provider = "codex";
+        item.threadId = threadId;
+        item.projectRoot = projectRoot;
+        item.taskTitle = title;
+      }
+      this.retargetClientSelections({
         provider: "codex",
+        sourceThreadId: source.threadId,
+        threadId,
         streamId: stream.id,
-        title: workspace.name,
+        projectRoot,
+        taskTitle: title,
       });
+      this.invalidateCatalog();
+      await this.#traceStep(compactionId, "context-rotation-save", () => this.saveState());
+    } catch (error) { projectionError = error; }
+    try {
+      await this.nameCreatedThread({ provider: "codex", threadId, recovering: rotated.recoveredNaming === true });
+    } catch (namingError) {
+      if (projectionError) throw new AggregateError([projectionError, namingError], "Rotation projection and naming both failed");
+      throw namingError;
     }
-    for (const item of this.deferredInputs.values()) {
-      if (normalized(item.streamId) !== stream.id) continue;
-      item.provider = "codex";
-      item.threadId = threadId;
-      item.projectRoot = projectRoot;
-      item.taskTitle = workspace.name;
-    }
-    this.retargetClientSelections({
-      provider: "codex",
-      sourceThreadId: source.threadId,
-      threadId,
-      streamId: stream.id,
-      projectRoot,
-      taskTitle: workspace.name,
-    });
-    this.invalidateCatalog();
-    await this.#traceStep(compactionId, "context-rotation-save", () => this.saveState());
-    return { ...source, streamId: stream.id, threadId, taskTitle: workspace.name };
+    if (projectionError) throw projectionError;
+    return { ...source, streamId: stream.id, threadId, taskTitle: title };
   }
 
   async #estimatedContextAfterCompaction(target, compactionId, provider = this.provider) {

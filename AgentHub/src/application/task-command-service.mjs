@@ -254,21 +254,7 @@ export class TaskCommandService {
       });
       await this.saveState();
     }
-    let created;
-    try {
-      created = await this.createTask();
-    } catch (error) {
-      const recoveredThreadId = String(this.selectionStore.threadId ?? "").trim();
-      const recoveredStreamId = String(this.selectionStore.streamId ?? "").trim();
-      const recoveredProvider = String(this.selectionStore.activeProvider ?? "").trim();
-      if (!recoveredThreadId || recoveredStreamId !== stream.id || recoveredProvider !== provider) throw error;
-      created = {
-        provider,
-        threadId: recoveredThreadId,
-        projectRoot: this.selectionStore.activeProjectRoot,
-        title: this.selectionStore.activeThreadTitle || workspace.name,
-      };
-    }
+    const created = await this.createTask();
     if (created?.threadId) {
       await this.#mutateWorkspace(() => this.workspaceCatalog.bindThread({
         provider: created.provider,
@@ -289,7 +275,7 @@ export class TaskCommandService {
     this.selectionStore.setThread(created?.threadId ?? null, {
       provider,
       streamId: stream.id,
-      title: workspace.name,
+      title: created?.title ?? workspace.name,
     });
     this.invalidateCatalog();
     await this.saveState();

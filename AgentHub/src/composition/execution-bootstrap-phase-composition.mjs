@@ -91,6 +91,7 @@ export function createExecutionBootstrapPhase({
       delay,
     },
     provider: {
+      hubThreadNaming: provider.hubThreadNaming,
       agentProviders: provider.agentProviders,
       claudeEventService: provider.claudeEventService,
       codexEventService: provider.codexEventService,

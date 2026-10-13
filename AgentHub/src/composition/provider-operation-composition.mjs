@@ -103,7 +103,17 @@ export function createProviderOperationComposition({
   discardContextCompactionRun,
   wakeDeferredInputs,
 }) {
+  const pendingCreatedThread = ({ provider, streamId }) => {
+    if (!streamId) return null;
+    const binding = workspaceCatalogStore.activeThread(streamId);
+    return binding?.provider === provider && workspaceCatalogStore.threadNaming(binding)?.status === "pending"
+      ? binding : null;
+  };
+  const bindCreatedThread = ({ provider, threadId, streamId, projectRoot }) => streamId
+    ? workspaceCatalogStore.bindThread({ provider, threadId, streamId, projectRoot, source: "created" })
+    : workspaceCatalogStore.assignUnknownThread({ provider, threadId, projectRoot }, { source: "created" });
   const codexProviderTasks = new CodexProviderTaskService({
+    pendingCreatedThread,
     nameCreatedThread,
     transportRunning: codexTransportRunning,
     startTransport: startCodexTransport,
@@ -112,16 +122,7 @@ export function createProviderOperationComposition({
     discoverLocalTasks: discoverCodexRollouts,
     logWarn: (...args) => console.warn(...args),
     selection: selectionStore,
-    bindCreatedThread: ({ provider, threadId, streamId, projectRoot }) => (
-      streamId
-        ? workspaceCatalogStore.bindThread({
-          provider, threadId, streamId, projectRoot, source: "created",
-        })
-        : workspaceCatalogStore.assignUnknownThread(
-          { provider, threadId, projectRoot },
-          { source: "created" },
-        )
-    ),
+    bindCreatedThread,
     activeProjectRoot,
     sandboxMode: codexSandboxMode,
     model: codexModel,
@@ -132,6 +133,7 @@ export function createProviderOperationComposition({
     saveState,
   });
   const claudeProviderTasks = new ClaudeProviderTaskService({
+    pendingCreatedThread, bindCreatedThread, nameCreatedThread,
     selection: selectionStore,
     activeProjectRoot,
     clearLatestDiff,
@@ -213,6 +215,7 @@ export function createProviderOperationComposition({
     turnTokenUsage,
   });
   const codexTurnService = new CodexTurnService({
+    ensureThreadNamed: (reference) => nameCreatedThread({ ...reference, recovering: true }),
     sendRpc,
     sandboxMode: codexSandboxMode,
     compactionRecycle: () => codexContextMaintenance.recycleInFlight,

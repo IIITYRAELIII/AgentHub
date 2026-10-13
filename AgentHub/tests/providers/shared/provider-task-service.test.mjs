@@ -21,6 +21,7 @@ test("Codex task service creates, names and discovers tasks through its port", a
     },
     selection: {
       get streamId() { return state.streamId; },
+      get threadId() { return state.threadId; },
       setThread: (id, options) => {
         state.threadId = id;
         state.streamId = options.streamId;
@@ -173,6 +174,8 @@ test("Codex task service binds and persists the created Thread before post-creat
 test("Claude task service reserves a stable Thread before the first message", async () => {
   const state = { args: null, diff: "old", saved: false, streamId: "stream-claude" };
   const service = new ClaudeProviderTaskService({
+    bindCreatedThread: async () => {},
+    nameCreatedThread: async () => "Workspace - Claude 1",
     selection: {
       get streamId() { return state.streamId; },
       setThread: (...args) => { state.args = args; },
@@ -186,7 +189,7 @@ test("Claude task service reserves a stable Thread before the first message", as
   assert.deepEqual(state.args, [created.threadId, {
     provider: "claude",
     streamId: "stream-claude",
-    title: "Новый поток Claude",
+    title: "Workspace - Claude 1",
   }]);
   assert.equal(state.diff, "");
   assert.equal(state.saved, true);

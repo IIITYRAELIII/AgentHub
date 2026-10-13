@@ -15,6 +15,7 @@ import {
   normalizedWorkspaceName,
   providerThreadKey,
   streamDisplayName,
+  workspaceProviderThreadTitle,
 } from "../../domain/workspace-stream-identity.mjs";
 import {
   effectiveStreamDeveloperRules,
@@ -1438,7 +1439,74 @@ export class WorkspaceCatalogStore {
     rows.forEach((row, index) => update.run(index + 1, nowMs, row.id));
   }
 
-  bindThread({ provider, threadId, streamId, projectRoot = "", source = "discovered", position = null } = {}) {
+  bindThread({ provider, threadId, streamId, projectRoot = "", source = "discovered", position = null, rotationSourceThreadId = null } = {}) {
+    return this.#transaction(() => this.#bindThread({ provider, threadId, streamId, projectRoot, source, position, rotationSourceThreadId }));
+  }
+
+  #threadHighWater(streamId) {
+    const key = this.#threadHighWaterKey(streamId);
+    const stored = this.meta(key);
+    const observed = Number(this.#database.prepare(
+      "SELECT COALESCE(MAX(position), 0) AS value FROM hub_threads WHERE stream_id = ?",
+    ).get(streamId)?.value ?? 0);
+    const value = stored === null ? observed : Number(stored);
+    if (!Number.isSafeInteger(value) || value < observed || value < 0) throw new Error("invalid Thread high-water");
+    this.setMeta(key, value);
+    return value;
+  }
+
+  #allocateThreadPosition(streamId, position) {
+    const highWater = this.#threadHighWater(streamId);
+    const next = position == null ? highWater + 1 : Number(position);
+    if (!Number.isSafeInteger(next) || next <= 0) throw new Error("invalid thread position");
+    this.setMeta(this.#threadHighWaterKey(streamId), Math.max(highWater, next));
+    return next;
+  }
+
+  #threadNamingKey(reference) {
+    return `thread-naming-v1:${createHash("sha256").update(providerThreadKey(reference)).digest("hex")}`;
+  }
+
+  #threadHighWaterKey(streamId) {
+    return `thread-position-high-water:${createHash("sha256").update(streamId).digest("hex")}`;
+  }
+
+  #supersedeThreadNaming(reference) {
+    const intent = this.threadNaming(reference);
+    if (intent?.status === "pending") this.setMeta(this.#threadNamingKey(reference), JSON.stringify({
+      ...intent, status: "superseded",
+    }));
+  }
+
+  threadNaming(reference) {
+    const raw = this.meta(this.#threadNamingKey(reference));
+    if (raw === null) return null; // Legacy/discovered Threads are never automatically renamed.
+    const intent = JSON.parse(raw);
+    if (intent?.version !== 1 || !["pending", "complete", "superseded"].includes(intent.status)
+      || !Number.isSafeInteger(intent.position) || intent.position < 1
+      || typeof intent.title !== "string" || !intent.title || intent.title.length > 80) {
+      throw new Error("invalid Thread naming intent");
+    }
+    return intent;
+  }
+
+  completeThreadNaming(reference, title) {
+    return this.#transaction(() => {
+      const binding = this.thread(reference);
+      if (!binding) throw new Error("Thread binding disappeared during naming");
+      const intent = this.threadNaming(reference);
+      if (!intent || intent.title !== title || intent.streamId !== binding.streamId
+        || intent.position !== binding.position || intent.status === "superseded") {
+        throw new Error("Thread naming intent changed");
+      }
+      const completed = { ...intent, status: "complete",
+        providerRename: reference.provider === "codex" ? "confirmed" : "unsupported" };
+      this.setMeta(this.#threadNamingKey(reference), JSON.stringify(completed));
+      return completed;
+    });
+  }
+
+  #bindThread({ provider, threadId, streamId, projectRoot = "", source = "discovered", position = null, rotationSourceThreadId = null }) {
     const identity = normalizedThreadIdentity({ provider, threadId });
     const targetStreamId = safeIdentifier(streamId, "stream id");
     if (!this.stream(targetStreamId)) throw new Error(`stream not found: ${targetStreamId}`);
@@ -1449,13 +1517,7 @@ export class WorkspaceCatalogStore {
       }
       return existing;
     }
-    const nextPosition = position == null
-      ? Number(this.#database.prepare(`
-          SELECT COALESCE(MAX(position), 0) + 1 AS position
-          FROM hub_threads WHERE stream_id = ?
-        `).get(targetStreamId)?.position ?? 1)
-      : Number(position);
-    if (!Number.isSafeInteger(nextPosition) || nextPosition <= 0) throw new Error("invalid thread position");
+    const nextPosition = this.#allocateThreadPosition(targetStreamId, position);
     const nowMs = this.#nowMs();
     this.#database.prepare(`
       INSERT INTO hub_threads
@@ -1471,6 +1533,17 @@ export class WorkspaceCatalogStore {
       nowMs,
       nowMs,
     );
+    if (["created", "rebirth"].includes(source)) {
+      const stream = this.stream(targetStreamId);
+      if (rotationSourceThreadId && this.thread({ provider, threadId: rotationSourceThreadId })?.streamId !== targetStreamId) {
+        throw new Error("Rotation source does not belong to the bound Stream");
+      }
+      const title = workspaceProviderThreadTitle(this.workspace(stream.workspaceId), stream, nextPosition);
+      this.setMeta(this.#threadNamingKey(identity), JSON.stringify({ version: 1,
+        streamId: targetStreamId, position: nextPosition, title, status: "pending",
+        providerRename: identity.provider === "codex" ? "pending" : "unsupported",
+        rotationSourceThreadId }));
+    }
     return this.thread(identity);
   }
 
@@ -1497,21 +1570,21 @@ export class WorkspaceCatalogStore {
   }
 
   rebindThread(value, { streamId, projectRoot = "", source = "migration", position = null } = {}) {
+    return this.#transaction(() => this.#rebindThread(value, { streamId, projectRoot, source, position }));
+  }
+
+  #rebindThread(value, { streamId, projectRoot, source, position }) {
     const identity = normalizedThreadIdentity(value);
     const targetStreamId = safeIdentifier(streamId, "stream id");
     if (!this.stream(targetStreamId)) throw new Error(`stream not found: ${targetStreamId}`);
     const current = this.thread(identity);
-    if (!current) return this.bindThread({
+    if (!current) return this.#bindThread({
       ...identity, streamId: targetStreamId, projectRoot, source, position,
     });
     if (current.streamId === targetStreamId) return current;
-    const nextPosition = position == null
-      ? Number(this.#database.prepare(`
-          SELECT COALESCE(MAX(position), 0) + 1 AS position
-          FROM hub_threads WHERE stream_id = ?
-        `).get(targetStreamId)?.position ?? 1)
-      : Number(position);
-    if (!Number.isSafeInteger(nextPosition) || nextPosition <= 0) throw new Error("invalid thread position");
+    this.#threadHighWater(current.streamId);
+    this.#supersedeThreadNaming(identity);
+    const nextPosition = this.#allocateThreadPosition(targetStreamId, position);
     const previousStreamId = current.streamId;
     this.#database.prepare(`
       UPDATE hub_threads
@@ -1558,7 +1631,7 @@ export class WorkspaceCatalogStore {
       if (repeated) return repeated;
       const experiments = this.ensureExperiments();
       const stream = this.createStream({ workspaceId: experiments.id, name: streamName });
-      this.bindThread({
+      this.#bindThread({
         ...identity,
         streamId: stream.id,
         projectRoot: value?.projectRoot,
@@ -1581,7 +1654,7 @@ export class WorkspaceCatalogStore {
         // Only an explicit Hub action may create or select a user Workspace.
         // Provider-discovered Threads have no trustworthy placement metadata.
         const stream = this.createStream({ workspaceId: experiments.id });
-        this.bindThread({
+        this.#bindThread({
           ...identity,
           streamId: stream.id,
           projectRoot: entry.projectRoot,
@@ -1599,11 +1672,14 @@ export class WorkspaceCatalogStore {
     if (!current) throw new Error(`thread not found: ${providerThreadKey(identity)}`);
     const targetWorkspaceId = safeIdentifier(workspaceId, "workspace id");
     return this.#transaction(() => {
+      this.#threadHighWater(current.streamId);
+      this.#supersedeThreadNaming(identity);
       const stream = this.createStream({ workspaceId: targetWorkspaceId, name: streamName });
+      const position = this.#allocateThreadPosition(stream.id, null);
       this.#database.prepare(`
-        UPDATE hub_threads SET stream_id = ?, position = 1, updated_at_ms = ?
+        UPDATE hub_threads SET stream_id = ?, position = ?, updated_at_ms = ?
         WHERE provider = ? AND provider_thread_id = ?
-      `).run(stream.id, this.#nowMs(), identity.provider, identity.threadId);
+      `).run(stream.id, position, this.#nowMs(), identity.provider, identity.threadId);
       this.#removeEmptyStream(current.streamId);
       return this.resolveThread(identity);
     });

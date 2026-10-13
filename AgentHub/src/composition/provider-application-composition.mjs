@@ -330,6 +330,7 @@ export async function createProviderApplicationComposition({
     ),
     workspaceCatalog: workspaceCatalogStore,
     selectionStore,
+    nameCreatedThread: hubThreadNaming.nameCreatedThread,
     deferredInputs: runtimeData.deferredInputs,
     invalidateCatalog: invalidateTaskCatalog,
     retargetClientSelections: (binding) => retargetTelegramClientSelections(hostState, binding),
@@ -606,5 +607,6 @@ export async function createProviderApplicationComposition({
     ...providerOperations,
     ...providerCatalog,
     providerStartup,
+    hubThreadNaming,
   };
 }
