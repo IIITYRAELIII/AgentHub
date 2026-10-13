@@ -3,6 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { DatabaseSync } from "node:sqlite";
 
 import { ReleaseOperationService } from "../../src/application/release-operation-service.mjs";
 import { createCandidateGeneration } from "../../src/domain/release-operation.mjs";
@@ -91,6 +92,62 @@ test("release operation acknowledges before work and finishes one exact generati
   assert.deepEqual(f.calls, [["compose", 1], ["validate", 1], ["publish", "git"], ["publish", "runtime"], ["finalize", 1]]);
   assert.deepEqual(Object.keys(snapshot.operation.publicationEffects.targets), ["git", "runtime"]);
   assert.deepEqual(cleaned, [["done", 1, snapshot.generations[0].identitySha256]]);
+});
+
+test("startup recovery leaves a reviewed external native owner and its receipts untouched", async t => {
+  const scheduled = [];
+  const f = await fixture(t, { schedule: callback => scheduled.push(callback) });
+  const created = f.store.create({
+    requestId: "native-request", workspaceId: "workspace-1", streamId: "stream-1", threadId: "thread-1",
+    authorization: { taskIds, approvedTargets: targets, validationMode: "full" }, runnerVersion: "native-owner",
+  }).operation;
+  const originalGeneration = f.store.putGeneration({
+    ...generation(), operationId: created.operationId, generation: 1, runnerVersion: "native-owner",
+  }).generation;
+  const receipt = f.store.beginStep({ operationId: created.operationId, generation: 1, stepId: "publish:runtime", input: { candidate: originalGeneration.identitySha256 } }).receipt;
+  f.store.finishStep(receipt, { status: "failed", effect: { status: "partial", revision: "candidate" } });
+  f.store.transition(created.operationId, { state: "publish", currentGeneration: 1, currentStep: "publish" });
+
+  // Seed a persisted external-owner record in this disposable SQLite fixture.
+  // The SQL fence models the already-installed native writer guard; the runtime
+  // must refuse acquisition before attempting that protected UPDATE.
+  const db = new DatabaseSync(path.join(f.root, "runtime.sqlite"));
+  try {
+    const operation = f.store.get(created.operationId);
+    operation.authorization.nativeOwnerCutover = {
+      kind: "native-publication-owner-v1", source: { commit: "a".repeat(40) },
+    };
+    operation.nativeOwnerRecovery = { executionBindingHash: "b".repeat(64) };
+    operation.owner = { ownerId: "native-source-external", epoch: 2, processId: 999999,
+      heartbeatAt: "2026-09-21T00:00:00.000Z", leaseExpiresAt: "2026-09-21T00:00:30.000Z",
+      executionBindingHash: "b".repeat(64) };
+    db.prepare("UPDATE release_operations SET operation_json=? WHERE operation_id=?")
+      .run(JSON.stringify(operation), operation.operationId);
+    db.exec(`CREATE TRIGGER fixture_native_execution_fence BEFORE UPDATE ON release_operations
+      WHEN json_extract(OLD.operation_json, '$.nativeOwnerRecovery') IS NOT NULL
+        AND COALESCE(json_extract(NEW.operation_json, '$.owner.executionBindingHash'), '')
+          != json_extract(OLD.operation_json, '$.nativeOwnerRecovery.executionBindingHash')
+      BEGIN SELECT RAISE(ABORT, 'release reviewed executable owner is fenced'); END;`);
+  } finally { db.close(); }
+  const before = f.store.snapshot(created.operationId);
+  const rawBeforeDb = new DatabaseSync(path.join(f.root, "runtime.sqlite"), { readOnly: true });
+  const rawBefore = rawBeforeDb.prepare("SELECT operation_json FROM release_operations WHERE operation_id=?")
+    .get(created.operationId).operation_json;
+  rawBeforeDb.close();
+  const refused = f.store.acquire(created.operationId, "installed-runtime", { takeoverAllowed: true });
+  assert.equal(refused.acquired, false);
+  assert.equal(refused.reason, "source-owner-fenced");
+  assert.deepEqual(f.service.recover().scheduled, [created.operationId]);
+  assert.equal(scheduled.length, 1);
+  scheduled.shift()();
+  await f.service.drain(created.operationId);
+  assert.equal(scheduled.length, 0, "foreign source refusal must not become an immediate retry loop");
+  assert.deepEqual(f.calls, [], "startup cannot compose, validate, publish or finalize the foreign operation");
+  assert.deepEqual(f.store.snapshot(created.operationId), before);
+  const rawAfterDb = new DatabaseSync(path.join(f.root, "runtime.sqlite"), { readOnly: true });
+  assert.equal(rawAfterDb.prepare("SELECT operation_json FROM release_operations WHERE operation_id=?")
+    .get(created.operationId).operation_json, rawBefore);
+  rawAfterDb.close();
 });
 
 test("stale prepared candidate waits for normal preparation on the original operation", async t => {

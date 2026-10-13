@@ -368,8 +368,19 @@ export class ReleaseOperationStore {
   }
 
   acquire(operationId, ownerId, { leaseMs = 30_000, processId = null, takeoverAllowed = false } = {}) {
-    const current = this.get(operationId);
+    const row = this.#withDatabase(database => database.prepare(
+      "SELECT operation_json FROM release_operations WHERE operation_id = ?",
+    ).get(String(operationId ?? "").trim()));
+    const current = operationFromRow(row);
     if (!current || releaseOperationIsTerminal(current)) return { operation: current, acquired: false, reason: current ? "terminal" : "not-found" };
+    // This installed-runtime store has no reviewed native execution capability.
+    // The standalone source owner retains its own acquisition/recovery path.
+    // Read persisted authority before the legacy normalized status projection,
+    // which intentionally does not expose the standalone source extension.
+    const recorded = JSON.parse(row.operation_json);
+    if (recorded.authorization?.nativeOwnerCutover || recorded.nativeOwnerRecovery) {
+      return { operation: current, acquired: false, reason: "source-owner-fenced" };
+    }
     const now = this.now();
     const active = current.owner && Date.parse(current.owner.leaseExpiresAt) > Date.parse(now)
       && current.owner.ownerId !== String(ownerId);

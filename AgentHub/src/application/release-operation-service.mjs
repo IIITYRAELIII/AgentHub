@@ -383,6 +383,7 @@ export class ReleaseOperationService {
     if (this.#running.has(operationId)) return;
     this.#running.add(operationId);
     let owned = false;
+    let sourceFenced = false;
     let owner = null;
     let heartbeat = null;
     try {
@@ -391,7 +392,10 @@ export class ReleaseOperationService {
       const acquired = this.store.acquire(operationId, this.ownerId, {
         leaseMs: this.leaseMs, processId: this.processId, takeoverAllowed,
       });
-      if (!acquired.acquired) return;
+      if (!acquired.acquired) {
+        sourceFenced = ["source-owner-fenced", "execution-source-fenced"].includes(acquired.reason);
+        return;
+      }
       owned = true;
       owner = acquired.operation.owner;
       heartbeat = setInterval(() => {
@@ -442,8 +446,10 @@ export class ReleaseOperationService {
         const generation = this.store.generation(current.operationId, current.currentGeneration);
         if (generation) await this.cleanupGeneration?.({ operation: current, generation }).catch(() => {});
       }
-      if (current?.state === "waiting") this.#scheduleRetry(current);
-      else if (current && !releaseOperationIsTerminal(current)) this.#schedule(operationId);
+      if (!sourceFenced) {
+        if (current?.state === "waiting") this.#scheduleRetry(current);
+        else if (current && !releaseOperationIsTerminal(current)) this.#schedule(operationId);
+      }
       await this.deliverPendingEvents().catch(() => {});
     }
   }
