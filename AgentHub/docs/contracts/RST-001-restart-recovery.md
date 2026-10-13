@@ -164,6 +164,13 @@ execution authority. Excluded operations retain their evidence and explicitly
 report exclusion; they must not report successful remote work. Recording
 delivery receipts retain their original idempotency identity across restart.
 
+The literal Codex recording adapter recovers a turn from its own isolated
+SQLite command and turn rows. A read-only projection checks the seeded Thread,
+exact command fingerprint and mapped execution identity before supplying that
+turn to the ordinary snapshot and terminal owner. This profile never consumes
+captured production rollout status. Outside the explicit recording profile,
+Codex recovery still requires the exact native rollout terminal event.
+
 Recovery checks must separately report queue/terminal/delivery behavior, source
 immutability, exact replacement identity and excluded effects. Synthetic shell
 recovery alone does not prove production-data parity or installed RuntimeHost

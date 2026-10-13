@@ -153,6 +153,19 @@ export class CodexTaskSnapshotService {
   async read(run, { threadResult = null, fresh = false } = {}) {
     const d = this.#d;
     if (run.observer !== true && !String(run.turnId ?? "").trim()) return null;
+    if (d.readRecordingTurn) {
+      if (!String(run.turnId ?? "").trim()) return null;
+      const turn = await d.readRecordingTurn(run);
+      if (!turn) return null;
+      if (turn.id !== run.turnId) throw new Error("Recording snapshot changed the exact turn");
+      const snapshot = d.turnSnapshot(turn);
+      return {
+        ...snapshot, turnId: turn.id,
+        status: turn.status === "interrupted" ? "aborted" : turn.status,
+        activeTurnCount: snapshot.active ? 1 : 0,
+        executionOwner: d.hubOwner(),
+      };
+    }
     if (run.observer === true) {
       const rolloutPath = String(
         threadResult?.thread?.path

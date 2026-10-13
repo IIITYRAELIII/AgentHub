@@ -361,6 +361,23 @@ async function handleRequest(message) {
       sendClient({ id, result: realResult });
       return;
     }
+    if (method === "model/list") {
+      const result = await callChild("real", method, params);
+      // The synthetic backend owns this model; catalog discovery must expose
+      // it alongside the real backend without changing real pagination.
+      if (Array.isArray(result?.data) && !params.cursor) {
+        const data = result.data.filter(item => (
+          String(item?.model ?? item?.slug ?? item?.id ?? "") !== FAKE_MODEL
+        ));
+        sendClient({ id, result: { ...result, data: [...data, {
+          id: FAKE_MODEL, model: FAKE_MODEL,
+          displayName: "Fake Codex · Принято", hidden: false,
+        }] } });
+      } else {
+        sendClient({ id, result });
+      }
+      return;
+    }
     if (method === "thread/start") {
       const backend = requestedFake(params) ? "fake" : "real";
       const result = await callChild(backend, method, params);

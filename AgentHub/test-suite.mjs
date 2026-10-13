@@ -14,6 +14,8 @@ import {
   testFileCheckpointStore,
 } from "./src/infrastructure/persistence/test-file-checkpoint.mjs";
 import { clearInheritedPublicationOwnership } from "./src/infrastructure/process/publication-lock.mjs";
+import { prepareTaskWorktreeDependencies } from "./src/infrastructure/filesystem/task-worktree-dependencies.mjs";
+import { runTaskGitCommand } from "./src/infrastructure/filesystem/task-git-workspace.mjs";
 
 const ROOT = import.meta.dirname;
 const TEST_RUNNER_FILE = fileURLToPath(import.meta.url);
@@ -27,6 +29,7 @@ export const E2E_FILES = [
   "tests/e2e/agent-hub-server.journal.e2e.test.mjs",
   "tests/e2e/agent-hub-server.recording-contour.e2e.test.mjs",
   "tests/e2e/test-contour-recording-refresh.e2e.test.mjs",
+  "tests/e2e/test-contour-model-catalog.e2e.test.mjs",
   // Измерено 2026-09-10: 1.4 с, 5 из 5 проверок пройдено. Дешёвая проверка
   // владения Thread и восстановления MCP-моста, ранее не выполнялась ни одной
   // группой. Стоимость обычного выпуска практически не меняется.
@@ -169,15 +172,48 @@ function executionPolicy(file, cwd, manifest) {
   return parallelTestExecution(manifest.files[key]) ?? { parallel: false, shared: [] };
 }
 
+export async function prepareTestDependencies({
+  root = ROOT,
+  execute = runTaskGitCommand,
+} = {}) {
+  const projectRoot = path.resolve(root);
+  return prepareTaskWorktreeDependencies({
+    projectRoot,
+    lockfiles: [path.join(projectRoot, "package-lock.json")],
+    lockPath: path.join(projectRoot, "WIP", "test-dependencies"),
+    verify: false,
+    runNpm: async (args, { cwd, lease, signal }) => {
+      await lease.assertOwned();
+      const environment = { ...process.env };
+      clearInheritedPublicationOwnership(environment);
+      // The shared process runner merges its environment over the parent.
+      // Undefined entries explicitly remove inherited publication capabilities.
+      const env = Object.fromEntries(Object.keys(process.env).map((key) => [key, environment[key]]));
+      const windows = process.platform === "win32";
+      await execute(windows ? ["/d", "/s", "/c", "npm.cmd", ...args] : args, {
+        cwd, signal, env,
+        executable: windows ? process.env.ComSpec || "cmd.exe" : "npm",
+        commandLabel: "npm",
+        timeoutMs: 10 * 60_000,
+      });
+      await lease.assertOwned();
+    },
+  });
+}
+
 export async function runTestSuite(mode, {
   checkpointIdentity = String(process.env.AGENT_HUB_FULL_TEST_CHECKPOINT_ID ?? "").trim(),
   checkpoint = checkpointIdentity ? testFileCheckpointStore() : null,
   execute = run,
   discover = discoverTestFiles,
   testConcurrency = boundedTestFileConcurrency(),
+  prepareDependencies = prepareTestDependencies,
 } = {}) {
   const options = { checkpointIdentity, checkpoint, execute, discover, testConcurrency };
   if (mode === "all") {
+    // Frozen generation clones contain tracked inputs, not node_modules.
+    // The existing dependency owner installs once and reuses verified markers.
+    await prepareDependencies();
     const failures = [];
     const stages = [
       ["syntax", () => runCheckpointedTestFiles(["syntax-check.mjs"], {

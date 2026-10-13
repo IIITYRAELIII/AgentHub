@@ -58,7 +58,7 @@ async function fixture(t, revisions = 2) {
   const accepted = `function render() {\n  return trace(renderContent);\n}\nfunction renderContent() {\n  return ${revisions};\n}\n`;
   await put("app.txt", accepted);
   await put("README.md", "published context\nbase\nTask documentation\n");
-  await put("CHANGELOG.md", "unreleased task notes\n");
+  // Task results retain release-owned metadata; publication supplies its notes.
   const resultCommit = await commit("Task resolves current main");
   await integrate(resultCommit);
   await git(["checkout", "main"]);
@@ -66,23 +66,20 @@ async function fixture(t, revisions = 2) {
     task: { taskId: "task", taskRevision: 16, baseCommit: base, resultCommit, integrations } };
 }
 
-test("16 Task integrations project the accepted resolution over current main without losing published context", async (t) => {
+test("retained 16-integration projection proof does not admit its historical dev wrapper to native release", async (t) => {
   const f = await fixture(t, 15);
   const proofs = await releaseTaskNetProjections({ tasks: [f.task], baseCommit: f.main, git: f.git });
   assert.equal(proofs.get("task")?.parent, f.main);
   assert.deepEqual(proofs.get("task").paths, ["README.md", "app.txt"]);
   const service = new ReleaseGitWorkspaceService({ dataDir: path.join(f.root, "data") });
-  const candidate = await service.prepareCandidate({
+  await assert.rejects(service.prepareCandidate({
     projectRoot: f.primary, approvedBaseCommit: f.main, planRevision: "net-16", frozenTasks: [f.task],
-  });
-  assert.equal(await readFile(path.join(candidate.releaseRoot, "app.txt"), "utf8"), f.accepted);
-  assert.equal(await readFile(path.join(candidate.releaseRoot, "README.md"), "utf8"), "published context\nbase\nTask documentation\n");
-  assert.equal(await readFile(path.join(candidate.releaseRoot, "CHANGELOG.md"), "utf8"), "published notes\n");
+  }), { code: "RELEASE_NATIVE_HISTORY_REQUIRED" });
   assert.equal(await f.git(["rev-parse", "HEAD"]), f.main);
   assert.equal(await f.git(["status", "--porcelain"]), "");
 });
 
-test("approved sibling Task base anchors its unique result boundary", async (t) => {
+test("historical sibling-base proof does not authorize a non-descendant native Task result", async (t) => {
   const f = await fixture(t, 1);
   await f.git(["checkout", "-b", "equivalent-base", f.base]);
   await f.put("approved-base-only.txt", "approved base context\n");
@@ -95,13 +92,12 @@ test("approved sibling Task base anchors its unique result boundary", async (t) 
   const proofs = await releaseTaskNetProjections({ tasks: [task], baseCommit: approved, git: f.git });
   assert.equal(proofs.get(task.taskId)?.orderPreserving, true);
   const service = new ReleaseGitWorkspaceService({ dataDir: path.join(f.root, "data-equivalent-base") });
-  const candidate = await service.prepareCandidate({
+  await assert.rejects(service.prepareCandidate({
     projectRoot: f.primary, approvedBaseCommit: approved,
     planRevision: "path-equivalent-base", frozenTasks: [task],
-  });
-  assert.equal(await readFile(path.join(candidate.releaseRoot, "approved-base-only.txt"), "utf8"),
-    "approved base context\n");
-  assert.equal(await readFile(path.join(candidate.releaseRoot, "app.txt"), "utf8"), f.accepted);
+  }), { code: "RELEASE_NATIVE_HISTORY_REQUIRED" });
+  assert.equal(await f.git(["rev-parse", "HEAD"]), approved);
+  assert.equal(await f.git(["status", "--porcelain"]), "");
 });
 
 test("foreign unpublished same-file ancestry cannot enter net projection or bypass conflicting effective replay", async (t) => {
@@ -118,7 +114,7 @@ test("foreign unpublished same-file ancestry cannot enter net projection or bypa
   const service = new ReleaseGitWorkspaceService({ dataDir: path.join(f.root, "data") });
   await assert.rejects(service.prepareCandidate({
     projectRoot: f.primary, approvedBaseCommit: f.main, planRevision: "foreign", frozenTasks: [f.task],
-  }), /PreRelease delta/u);
+  }), { code: "RELEASE_NATIVE_HISTORY_REQUIRED" });
   assert.equal(await f.git(["show", "main:README.md"]), "published context\nbase");
 });
 
@@ -184,7 +180,7 @@ async function reopenPublishedTask(f, { manualIntegration = false, foreignDev = 
   } };
 }
 
-test("reopened published Task composes its remaining delta beside another Task sharing only historical paths", async (t) => {
+test("retained reopened projection proofs cannot grant fresh native admission to historical dev sides", async (t) => {
   const f = await fixture(t);
   const reopened = await reopenPublishedTask(f);
   const tasks = [f.task, reopened.task];
@@ -192,13 +188,9 @@ test("reopened published Task composes its remaining delta beside another Task s
   assert.deepEqual([...proofs.keys()], ["task", "maintenance"]);
   assert.deepEqual(proofs.get("maintenance").paths, ["fix.txt"]);
   const service = new ReleaseGitWorkspaceService({ dataDir: path.join(f.root, "data") });
-  const candidate = await service.prepareCandidate({
+  await assert.rejects(service.prepareCandidate({
     projectRoot: f.primary, approvedBaseCommit: reopened.approved, planRevision: "reopened", frozenTasks: tasks,
-  });
-  assert.equal(await readFile(path.join(candidate.releaseRoot, "app.txt"), "utf8"), f.accepted);
-  assert.equal(await readFile(path.join(candidate.releaseRoot, "fix.txt"), "utf8"), "after\n");
-  assert.equal(await readFile(path.join(candidate.releaseRoot, "README.md"), "utf8"),
-    "published maintenance\npublished context\nbase\nTask documentation\n");
+  }), { code: "RELEASE_NATIVE_HISTORY_REQUIRED" });
   assert.equal(await f.git(["rev-parse", "HEAD"]), reopened.approved);
   assert.equal(await f.git(["status", "--porcelain"]), "");
 });
@@ -210,7 +202,7 @@ test("published Task ancestry does not authorize manual integration baggage", as
   assert.equal(proofs.size, 0);
 });
 
-test("published automatic integration is not replayed before a later owned delta", async (t) => {
+test("published integration metadata cannot strip unselected ancestry from a native Task result", async (t) => {
   const f = await fixture(t);
   const reopened = await reopenPublishedTask(f, { foreignDev: true });
   assert.equal((await releaseTaskNetProjections({
@@ -218,13 +210,12 @@ test("published automatic integration is not replayed before a later owned delta
   })).size, 0);
   const expectedMain = await f.git(["show", `${reopened.approved}:app.txt`]);
   const service = new ReleaseGitWorkspaceService({ dataDir: path.join(f.root, "data") });
-  const candidate = await service.prepareCandidate({
+  await assert.rejects(service.prepareCandidate({
     projectRoot: f.primary, approvedBaseCommit: reopened.approved,
     planRevision: "published-integration", frozenTasks: [reopened.task],
-  });
-  assert.equal(await readFile(path.join(candidate.releaseRoot, "fix.txt"), "utf8"), "after\n");
-  assert.equal(await readFile(path.join(candidate.releaseRoot, "app.txt"), "utf8"), `${expectedMain}\n`);
-  await assert.rejects(readFile(path.join(candidate.releaseRoot, "foreign.txt"), "utf8"), /ENOENT/u);
+  }), { code: "RELEASE_NATIVE_HISTORY_REQUIRED" });
+  assert.equal(await f.git(["show", `${reopened.approved}:app.txt`]), expectedMain);
+  assert.equal(await f.git(["rev-parse", "HEAD"]), reopened.approved);
 });
 
 test("a later shared overlap rejects its own projections without invalidating an earlier interval-safe fold", async (t) => {
@@ -238,7 +229,7 @@ test("a later shared overlap rejects its own projections without invalidating an
   }
 });
 
-test("multi-revision projection folds at its last order across only disjoint intervening work", async (t) => {
+test("retained interval-safe projection cannot authorize a combined native result with unselected ancestry", async (t) => {
   const f = await fixture(t, 1);
   f.task.integrations[0].order = 1;
   f.task.integrations[1].order = 3;
@@ -272,12 +263,11 @@ test("multi-revision projection folds at its last order across only disjoint int
   assert.equal(proofs.get("task")?.orderPreserving, true);
   assert.equal(Math.max(...f.task.integrations.map(({ order }) => order)), 3);
   const service = new ReleaseGitWorkspaceService({ dataDir: path.join(f.root, "data-interval") });
-  const candidate = await service.prepareCandidate({
+  await assert.rejects(service.prepareCandidate({
     projectRoot: f.primary, approvedBaseCommit: f.main, planRevision: "interval-safe", frozenTasks: tasks,
-  });
-  assert.equal(await readFile(path.join(candidate.releaseRoot, "app.txt"), "utf8"),
-    `${f.accepted}// later selected change\n`);
-  assert.equal(await readFile(path.join(candidate.releaseRoot, "side.txt"), "utf8"), "side\n");
+  }), { code: "RELEASE_NATIVE_HISTORY_REQUIRED" });
+  assert.equal(await f.git(["rev-parse", "HEAD"]), f.main);
+  assert.equal(await f.git(["status", "--porcelain"]), "");
 });
 
 test("intervening overlap blocks a multi-revision fold even when the net delta reverted that path", async (t) => {
@@ -397,7 +387,7 @@ test("rename source overlap inside the interval keeps chronological replay", asy
     .has("rename-task"), false);
 });
 
-test("release candidate resolves stale reopened replay through the exact Task base merge", async (t) => {
+test("native release rejects unselected dev baggage and accepts the exact owned Task base resolution", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "hub-release-stale-replay-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const primary = path.join(root, "primary");
@@ -460,11 +450,14 @@ test("release candidate resolves stale reopened replay through the exact Task ba
   };
   assert.equal((await releaseTaskNetProjections({ tasks: [task], baseCommit: approved, git })).size, 0);
   const service = new ReleaseGitWorkspaceService({ dataDir: path.join(root, "data") });
+  await assert.rejects(service.prepareCandidate({
+    projectRoot: primary, approvedBaseCommit: approved, planRevision: "unselected-dev-side", frozenTasks: [task],
+  }), { code: "RELEASE_NATIVE_HISTORY_REQUIRED" });
   const candidate = await service.prepareCandidate({
     projectRoot: primary,
     approvedBaseCommit: approved,
     planRevision: "task-base-merge-fallback",
-    frozenTasks: [task],
+    frozenTasks: [{ ...task, resultCommit: taskBaseMerge }],
   });
   assert.equal(await readFile(path.join(candidate.releaseRoot, "shared.txt"), "utf8"),
     "setting=task+approved-main\n");

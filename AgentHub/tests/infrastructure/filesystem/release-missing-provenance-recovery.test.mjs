@@ -24,6 +24,7 @@ import {
   publicationRunStore,
 } from "../../../src/infrastructure/persistence/publication-run-store.mjs";
 import { WorkspaceCatalogStore } from "../../../src/infrastructure/persistence/workspace-catalog-store.mjs";
+import { retainLegacyPreparedCandidate } from "../../fixtures/legacy-release-candidate-fixture.mjs";
 
 // Real isolated Git + SQLite + public recovery composition for the release11
 // shape: a legacy frozen candidate on an adopted upstream base whose manifest
@@ -123,14 +124,15 @@ async function legacyFrozenFixture(context, { advancePrimary = false } = {}) {
   const databaseFile = path.join(root, "journal.sqlite");
   const emptyState = { ...process.env, LOCALAPPDATA: path.join(root, "no-state") };
   const stateEnvironment = { ...process.env, LOCALAPPDATA: path.join(root, "state") };
-  // Legacy owner: the pre-correction shape had no durable baseline guard.
+  // Current owner creates only the empty managed clone. Historical evidence
+  // below is retained fixture data, not a fresh legacy admission.
   const legacy = new ReleaseGitWorkspaceService({ dataDir: releaseData, environment: emptyState });
   const planRevision = "9".repeat(64);
   state.catalog = await new WorkspaceCatalogStore({ databaseFile }).load();
   const { workspace, stream } = state.catalog.createWorkspaceWithStream({ name: "Release", streamName: "RM" });
   const workspaceId = workspace.id;
   // The managed release clone exists before upstream advances, as in release11.
-  await legacy.prepareCandidate({
+  const initialCandidate = await legacy.prepareCandidate({
     planRevision: "0".repeat(64), projectRoot: primaryRoot, workspaceId, approvedBaseCommit: published, frozenTasks: [],
   });
 
@@ -164,9 +166,12 @@ async function legacyFrozenFixture(context, { advancePrimary = false } = {}) {
     integrations: [{ commit: taskCommit, parent: published, order: 1 }],
   }];
 
-  // The caller-error path: plain preparation on the adopted base, no envelope.
-  const prepared = await legacy.prepareCandidate({
-    planRevision, projectRoot: primaryRoot, workspaceId, approvedBaseCommit: upstream, frozenTasks,
+  await git(initialCandidate.releaseRoot, "fetch", "workspace", resultCommit);
+  await git(initialCandidate.releaseRoot, "fetch", "origin", "main");
+  const prepared = await retainLegacyPreparedCandidate({
+    candidate: initialCandidate, planRevision, baseCommit: upstream, tasks: frozenTasks,
+    tree: await git(initialCandidate.releaseRoot, "rev-parse", `${resultCommit}^{tree}`),
+    parents: [upstream, resultCommit],
   });
   assert.notEqual(prepared.preReleaseHead, upstream);
   assert.equal(await git(prepared.releaseRoot, "show", `${prepared.preReleaseHead}:task.txt`), "task");
@@ -504,14 +509,16 @@ test("missing-provenance recovery binds receipt bytes, historical adoption and o
   })), /historical selected Task adoption is not exact/u);
 });
 
-test("historical adoption survives the real advanced primary while current admission stays stale", { timeout: 240000 }, async (context) => {
+test("historical adoption survives advanced primary while native composition keeps current agreed main", { timeout: 240000 }, async (context) => {
   const f = await legacyFrozenFixture(context, { advancePrimary: true });
   const before = await candidateState(f);
-  // Ordinary current admission keeps its stale-local fence unchanged.
-  await assert.rejects(f.tasks.releaseBaseEvidence({
+  const currentBase = await f.tasks.releaseBaseEvidence({
     projectRoot: f.primaryRoot, publishedBaseCommit: f.published,
     tasks: f.frozenTasks.map(({ taskId, resultCommit }) => ({ taskId, resultCommit })),
-  }), new RegExp(`accepted local main changed from ${f.published} to ${f.advanced}`, "u"));
+  });
+  assert.equal(currentBase.baseCommit, f.advanced);
+  assert.equal(currentBase.compositionPolicy, "main-selected-git-merge-v1");
+  assert.deepEqual(currentBase.adoptions, []);
   const historical = await f.tasks.historicalUpstreamAdoptionEvidence({
     projectRoot: f.primaryRoot, publishedBaseCommit: f.published,
     tasks: f.frozenTasks, expected: f.missingProvenanceRecovery.expectedAdoption, recoveryKind: RECOVERY_KIND,
@@ -898,11 +905,11 @@ test("advanced bases require an immutable provenance envelope before candidate e
   await assert.rejects(guarded.prepareCandidate({
     planRevision: "a".repeat(64), projectRoot: f.primaryRoot, workspaceId: f.workspaceId,
     approvedBaseCommit: f.upstream, frozenTasks: f.frozenTasks,
-  }), /without immutable provenance/u);
+  }), /exact agreed local main/u);
   await assert.rejects(guarded.validateCandidate({
     planRevision: "a".repeat(64), projectRoot: f.primaryRoot, workspaceId: f.workspaceId,
     approvedBaseCommit: f.upstream, frozenTasks: f.frozenTasks,
-  }), /without immutable provenance/u);
+  }), /exact agreed local main/u);
   assert.deepEqual(await candidateState(f), before);
   // Independent freeze defense for the legacy shape, before any effect.
   await assert.rejects(guarded.freezePublicationCandidate({
@@ -912,63 +919,31 @@ test("advanced bases require an immutable provenance envelope before candidate e
   }), /without immutable provenance/u);
   assert.deepEqual(await candidateState(f), before);
 
-  // GREEN: the owner's selected adoption evidence is persisted immutably.
+  // Historical adoption evidence remains readable by recovery. It cannot
+  // select a different base for the current ordinary native composer.
   const base = await f.tasks.releaseBaseEvidence({
     projectRoot: f.primaryRoot, publishedBaseCommit: f.published,
     tasks: f.frozenTasks.map(({ taskId, resultCommit }) => ({ taskId, resultCommit })),
   });
-  assert.equal(base.baseCommit, f.upstream);
-  const envelope = {
-    schemaVersion: 1, kind: "selected-task-adoption-v1", publishedBaseCommit: f.published,
-    adoptedBaseCommit: base.baseCommit, adoptions: base.adoptions,
-  };
-  await assert.rejects(guarded.prepareCandidate({
-    planRevision: "a".repeat(64), projectRoot: f.primaryRoot, workspaceId: f.workspaceId,
-    approvedBaseCommit: f.upstream, frozenTasks: f.frozenTasks,
-    baseProvenance: { ...envelope, publishedBaseCommit: f.upstream },
-  }), /invalid selected Task adoption provenance|belongs to published/u);
-  await assert.rejects(guarded.prepareCandidate({
-    planRevision: "a".repeat(64), projectRoot: f.primaryRoot, workspaceId: f.workspaceId,
-    approvedBaseCommit: f.upstream, frozenTasks: f.frozenTasks,
-    baseProvenance: { ...envelope, adoptions: [{ ...envelope.adoptions[0], recordRef: "refs/heads/main" }] },
-  }), /invalid selected Task adoption provenance/u);
+  assert.equal(base.baseCommit, f.published);
+  assert.deepEqual(base.adoptions, []);
   const recovered = await guarded.recoverFreezingPublicationCandidate(f.request({
     confirm: true,
     expectedProofHash: (await guarded.recoverFreezingPublicationCandidate(f.request())).proofHash,
   }));
   assert.equal(recovered.status, "abandoned");
-  const prepared = await guarded.prepareCandidate({
+  await assert.rejects(guarded.prepareCandidate({
     planRevision: "a".repeat(64), projectRoot: f.primaryRoot, workspaceId: f.workspaceId,
-    approvedBaseCommit: f.upstream, frozenTasks: f.frozenTasks, baseProvenance: envelope,
-  });
-  const manifest = JSON.parse(await readFile(prepared.manifestFile, "utf8"));
-  const checkpoint = JSON.parse(await readFile(f.checkpointFile, "utf8"));
-  assert.deepEqual(manifest.baseProvenance, checkpoint.baseProvenance);
-  assert.equal(manifest.baseProvenance.kind, "selected-task-adoption-v1");
-  assert.equal(manifest.baseProvenance.adoptions[0].recordHash, f.adoption.recordHash);
-  const readback = await guarded.frozenCandidate(f.primaryRoot);
-  assert.deepEqual(readback.manifest.baseProvenance, manifest.baseProvenance);
-  await guarded.freezePublicationCandidate({
+    approvedBaseCommit: f.upstream, frozenTasks: f.frozenTasks,
+  }), /exact agreed local main/u);
+  await assert.rejects(guarded.prepareCandidate({
     projectRoot: f.primaryRoot, workspaceId: f.workspaceId, expectedPlanRevision: "a".repeat(64),
-    expectedPreparedHead: prepared.preReleaseHead,
-    changelogContent: await readFile(path.join(prepared.releaseRoot, "CHANGELOG.md")),
-    releaseDate: new Date("2026-09-23T00:00:00Z"),
-  });
-  const frozen = await guarded.frozenCandidate(f.primaryRoot);
-  assert.equal(frozen.checkpointPhase, "frozen");
-  assert.deepEqual(frozen.manifest.baseProvenance, manifest.baseProvenance);
-  // A later checkpoint-only change disagrees with the immutable manifest.
-  const frozenCheckpoint = JSON.parse(await readFile(f.checkpointFile, "utf8"));
-  await writeFile(f.checkpointFile, `${JSON.stringify({ ...frozenCheckpoint, baseProvenance: undefined }, null, 2)}\n`);
-  await assert.rejects(guarded.frozenCandidate(f.primaryRoot), /disagrees with its immutable manifest/u);
-  await assert.rejects(guarded.freezePublicationCandidate({
-    projectRoot: f.primaryRoot, workspaceId: f.workspaceId, expectedPlanRevision: "a".repeat(64),
-    expectedPreparedHead: prepared.preReleaseHead,
-    changelogContent: await readFile(path.join(prepared.releaseRoot, "CHANGELOG.md")),
-  }), /disagrees with its immutable manifest/u);
+    planRevision: "a".repeat(64), approvedBaseCommit: f.published, frozenTasks: f.frozenTasks,
+  }), { code: "RELEASE_NATIVE_HISTORY_REQUIRED" });
+  assert.equal((JSON.parse(await readFile(f.checkpointFile, "utf8"))).phase, "abandoned");
 });
 
-test("published-base candidates keep working without provenance under the durable baseline", { timeout: 120000 }, async (context) => {
+test("completed historical abandonment permits native preparation with exact recovery evidence and agreed main", { timeout: 120000 }, async (context) => {
   const f = await legacyFrozenFixture(context);
   const guarded = f.service();
   const recovered = await guarded.recoverFreezingPublicationCandidate(f.request({
@@ -976,13 +951,26 @@ test("published-base candidates keep working without provenance under the durabl
     expectedProofHash: (await guarded.recoverFreezingPublicationCandidate(f.request())).proofHash,
   }));
   assert.equal(recovered.status, "abandoned");
+  const originalCheckpoint = await readFile(f.checkpointFile);
+  const abandoned = JSON.parse(originalCheckpoint);
+  await writeFile(f.checkpointFile, JSON.stringify({ ...abandoned, recovery: { ...abandoned.recovery,
+    outcome: { ...abandoned.recovery.outcome, proofHash: "0".repeat(64) } } }));
+  const beforeTampered = await candidateState(f);
+  await assert.rejects(guarded.prepareCandidate({
+    planRevision: "b".repeat(64), projectRoot: f.primaryRoot, workspaceId: f.workspaceId,
+    approvedBaseCommit: f.published, frozenTasks: [],
+  }), /completed recovery identity changed/u);
+  assert.deepEqual(await candidateState(f), beforeTampered);
+  await writeFile(f.checkpointFile, originalCheckpoint);
   const prepared = await guarded.prepareCandidate({
     planRevision: "b".repeat(64), projectRoot: f.primaryRoot, workspaceId: f.workspaceId,
     approvedBaseCommit: f.published, frozenTasks: [],
   });
   assert.equal(prepared.baseCommit, f.published);
   const manifest = JSON.parse(await readFile(prepared.manifestFile, "utf8"));
-  assert.equal(Object.hasOwn(manifest, "baseProvenance"), false);
+  assert.deepEqual(manifest.baseProvenance, { schemaVersion: 1, kind: "agreed-main-native-git-v1",
+    publishedBaseCommit: f.published, agreedMainCommit: f.published });
+  assert.equal(manifest.cutover.abandonedRecovery.evidenceSha256, abandoned.recovery.evidenceSha256);
   await guarded.freezePublicationCandidate({
     projectRoot: f.primaryRoot, workspaceId: f.workspaceId, expectedPlanRevision: "b".repeat(64),
     expectedPreparedHead: prepared.preReleaseHead,

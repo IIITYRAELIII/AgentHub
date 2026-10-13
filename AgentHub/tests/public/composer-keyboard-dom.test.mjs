@@ -15,6 +15,9 @@ async function openKeyboardPage(browser, { running = false, mobile = false } = {
   const fixtureSnapshot = snapshot();
   fixtureSnapshot.version = `keyboard-${running ? "running" : "idle"}-${mobile ? "mobile" : "desktop"}`;
   fixtureSnapshot.tasks[0].running = running;
+  fixtureSnapshot.tasks[0].run = running ? {
+    turnId: "keyboard-active-turn", operationKind: "user-turn", projectionState: "active", model: "gpt-test",
+  } : null;
   const diagnostics = await openFixture(page, { fixtureSnapshot });
   if (mobile) await page.locator('[data-mobile-button="chat"]').click();
   assert.equal(new URL(page.url()).host, "agent-hub.test");
