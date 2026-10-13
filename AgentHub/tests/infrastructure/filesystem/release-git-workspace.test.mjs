@@ -31,6 +31,7 @@ import {
   resolveTestContourSource,
   TEST_CONTOUR_RELEASE_CANDIDATE_SOURCE,
 } from "../../../src/runtime/test-contour-manager.mjs";
+import { assertPreparationTree } from "../../../src/infrastructure/filesystem/release-preparation-guard.mjs";
 
 const execFileAsync = promisify(execFile);
 const RECOVERY_SOURCE = { commit: "c".repeat(40), ownerSha256: "d".repeat(64) };
@@ -135,6 +136,92 @@ async function registeredTaskBranch(setup, context, { taskId, startCommit, baseC
     `refs/agent-hub/task-bases/${taskId}/${taskRepositoryKey(setup.primary)}`, baseCommit);
   return { branch, taskRoot };
 }
+
+for (const disposition of ["success", "tree-refusal", "callback-refusal", "callback-unknown"]) {
+  test(`preparation-only native full15 precommit and ${disposition} retain canonical rollback boundary`, { timeout: 60000 }, async (t) => {
+    const setup = await fixture(t);
+    const initial = await setup.service.prepareCandidate({ planRevision: "prepare-plan", projectRoot: setup.primary });
+    const prior = await setup.service.frozenCandidate(setup.primary);
+    const rawCheckpoint = await readFile(prior.checkpointFile);
+    const branch = "HUB-prepare-full15";
+    const firstResult = await taskResult(setup, t, { branch, file: "owned/01.txt", content: "own-01\n" });
+    const taskRoot = path.join(setup.root, "task-hub-prepare-full15");
+    for (let index = 2; index <= 15; index += 1) {
+      await writeFile(path.join(taskRoot, "owned", `${String(index).padStart(2, "0")}.txt`), `own-${index}\n`);
+    }
+    const resultCommit = await commit(taskRoot, "full15");
+    const expectedTree = await git(taskRoot, "rev-parse", "HEAD^{tree}");
+    const guard = { checkpointHash: createHash("sha256").update(rawCheckpoint).digest("hex"),
+      manifestHash: initial.manifestHash, preReleaseHead: initial.preReleaseHead, tree: initial.tree,
+      primaryMainCommit: setup.baseCommit, originMainCommit: setup.baseCommit,
+      approvedBaseCommit: setup.baseCommit, publishedRevision: setup.baseCommit,
+      approvedTree: disposition === "tree-refusal" ? "0".repeat(40) : expectedTree,
+      argumentsHash: "a".repeat(64), sourceCommit: "b".repeat(40), sourceTree: "c".repeat(40),
+      sourceClosureHash: "d".repeat(64), publicationHash: "e".repeat(64) };
+    let callbackCalls = 0;
+    const operation = () => setup.service.prepareCandidate({
+      planRevision: "prepare-plan", projectRoot: setup.primary, workspaceId: "workspace-1",
+      preflightRequestId: "native-preparation-original", preparationGuard: guard, preserveFrozen: true,
+      frozenTasks: [{ taskId: "full15", taskRevision: 1, baseCommit: setup.baseCommit, resultCommit,
+        integrations: [{ commit: firstResult, parent: setup.baseCommit, order: 1 },
+          { commit: resultCommit, parent: firstResult, order: 2 }] }],
+      commitPrepared: async (candidate) => {
+        callbackCalls += 1;
+        assert.equal(candidate.tree, expectedTree);
+        for (let index = 1; index <= 15; index += 1) {
+          const file = `owned/${String(index).padStart(2, "0")}.txt`;
+          assert.equal(await git(candidate.releaseRoot, "ls-tree", candidate.preReleaseHead, "--", file),
+            await git(taskRoot, "ls-tree", resultCommit, "--", file));
+        }
+        assert.equal(await git(candidate.releaseRoot, "show", `${candidate.preReleaseHead}:app.txt`), "main");
+        if (disposition === "callback-refusal") throw new Error("definitive receipt refusal");
+        if (disposition === "callback-unknown") {
+          const error = new Error("ambiguous receipt write");
+          error.code = "AWAIT_ACCEPTANCE_UNKNOWN";
+          throw error;
+        }
+      },
+    });
+    if (disposition === "success") {
+      const candidate = await operation();
+      assert.equal(candidate.tree, expectedTree);
+      assert.equal(candidate.manifest.preparationIdentity.argumentsHash, guard.argumentsHash);
+      assert.equal((await setup.service.frozenCandidate(setup.primary)).preflightRequestId, "native-preparation-original");
+    } else {
+      await assert.rejects(operation(), disposition === "tree-refusal"
+        ? /reviewed tree/ : disposition === "callback-refusal" ? /definitive/ : { code: "AWAIT_ACCEPTANCE_UNKNOWN" });
+      const after = await setup.service.frozenCandidate(setup.primary);
+      if (disposition === "callback-unknown") {
+        assert.equal(after.tree, expectedTree);
+        assert.notEqual(after.preReleaseHead, prior.preReleaseHead);
+      } else {
+        assert.equal(after.preReleaseHead, prior.preReleaseHead);
+        assert.deepEqual(await readFile(prior.checkpointFile), rawCheckpoint);
+      }
+    }
+    assert.equal(callbackCalls, disposition === "tree-refusal" ? 0 : 1);
+    assert.equal(await git(setup.primary, "rev-parse", "HEAD"), setup.baseCommit);
+    assert.equal(await git(setup.primary, "status", "--porcelain"), "");
+  });
+}
+
+test("preparation-only matching approved tree still refuses outside-owned entries", async (t) => {
+  const setup = await fixture(t);
+  const ownCommit = await taskResult(setup, t, { branch: "HUB-outside-guard", file: "own.txt" });
+  const taskRoot = path.join(setup.root, "task-hub-outside-guard");
+  await writeFile(path.join(taskRoot, "unselected.txt"), "unselected\n");
+  const foreign = await commit(taskRoot, "unselected witness");
+  const tree = await git(taskRoot, "rev-parse", `${foreign}^{tree}`);
+  const readGit = async (args, options = {}) => {
+    const { stdout } = await execFileAsync("git", args, { cwd: taskRoot, windowsHide: true,
+      encoding: options.rawOutput ? "buffer" : "utf8" });
+    return options.rawOutput ? stdout : String(stdout).trim();
+  };
+  await assert.rejects(assertPreparationTree({ guard: { approvedTree: tree,
+    approvedBaseCommit: setup.baseCommit, publishedRevision: setup.baseCommit }, tree,
+    baseCommit: setup.baseCommit, tasks: [{ baseCommit: setup.baseCommit, resultCommit: ownCommit }],
+    git: readGit }), /outside/);
+});
 
 test("one operation generation isolates source bundles per repository", { timeout: 30000 }, async (context) => {
   const first = await fixture(context);
@@ -2321,6 +2408,177 @@ test("a frozen 13-Task candidate accepts one descendant result delta without for
   await assert.rejects(git(reverted.releaseRoot, "show", `${reverted.preReleaseHead}:AgentHub/selected-owner.txt`));
   assert.equal(await git(reverted.releaseRoot, "show", `${reverted.preReleaseHead}:AgentHub/release-refresh.txt`),
     "reviewed fix");
+});
+
+test("newly selected correction does not discard an unrepresented initial result", { timeout: 30000 }, async (context) => {
+  const setup = await fixture(context);
+  const neighborResult = await taskResult(setup, context, {
+    branch: "HUB-addition-neighbor", file: "AgentHub/neighbor.txt", content: "neighbor\n",
+  });
+  const neighborTask = {
+    taskId: "task-neighbor", taskRevision: 1, baseCommit: setup.baseCommit, resultCommit: neighborResult,
+    integrations: [{ commit: neighborResult, parent: setup.baseCommit, order: 1 }],
+  };
+  const accepted = await setup.service.prepareCandidate({
+    planRevision: "plan-addition-prior", workspaceId: "workspace", projectRoot: setup.primary,
+    frozenTasks: [neighborTask],
+  });
+  await taskResult(setup, context, {
+    branch: "HUB-addition-unrelated", file: "AgentHub/unrelated.txt", content: "not selected\n",
+  });
+  const taskRoot = path.join(setup.root, "task-addition-owner");
+  await git(setup.primary, "worktree", "add", "-b", "HUB-addition-owner", taskRoot, setup.baseCommit);
+  context.after(() => git(setup.primary, "worktree", "remove", "--force", taskRoot).catch(() => {}));
+  await writeFile(path.join(taskRoot, "AgentHub", "initial.txt"), "initial production fix\n");
+  await rm(path.join(taskRoot, "app.txt"));
+  const initialResult = await commit(taskRoot, "initial production fix and metadata removal");
+  await writeFile(path.join(taskRoot, "AgentHub", "index.txt"), "reviewed index\n");
+  const correctionResult = await commit(taskRoot, "reviewed index correction");
+  const ownerTask = {
+    taskId: "task-addition", taskRevision: 2, baseCommit: setup.baseCommit, resultCommit: correctionResult,
+    integrations: [
+      { commit: initialResult, parent: setup.baseCommit, order: 2 },
+      { commit: correctionResult, parent: initialResult, order: 3 },
+    ],
+  };
+  const refreshed = await setup.service.prepareCandidate({
+    planRevision: "plan-addition-corrected", workspaceId: "workspace", projectRoot: setup.primary,
+    frozenTasks: [neighborTask, ownerTask],
+  });
+  const manifest = JSON.parse(await readFile(refreshed.manifestFile, "utf8"));
+  assert.equal(manifest.candidateReuse, undefined);
+  assert.equal(await git(refreshed.releaseRoot, "show", `${refreshed.preReleaseHead}:AgentHub/initial.txt`),
+    "initial production fix");
+  assert.equal(await git(refreshed.releaseRoot, "show", `${refreshed.preReleaseHead}:AgentHub/index.txt`),
+    "reviewed index");
+  assert.equal(await git(refreshed.releaseRoot, "show", `${refreshed.preReleaseHead}:AgentHub/neighbor.txt`),
+    "neighbor");
+  await assert.rejects(git(refreshed.releaseRoot, "show", `${refreshed.preReleaseHead}:app.txt`));
+  await assert.rejects(git(refreshed.releaseRoot, "show", `${refreshed.preReleaseHead}:AgentHub/unrelated.txt`));
+  assert.notEqual(refreshed.preReleaseHead, accepted.preReleaseHead);
+});
+
+test("newly selected index-only correction retains the initial rotation", { timeout: 30000 }, async (context) => {
+  const setup = await fixture(context);
+  const selectedResult = await taskResult(setup, context, {
+    branch: "HUB-rotation-neighbor", file: "AgentHub/selected.txt", content: "selected\n",
+  });
+  const selectedTask = {
+    taskId: "task-selected", taskRevision: 1, baseCommit: setup.baseCommit, resultCommit: selectedResult,
+    integrations: [{ commit: selectedResult, parent: setup.baseCommit, order: 1 }],
+  };
+  await setup.service.prepareCandidate({
+    planRevision: "plan-rotation-prior", workspaceId: "workspace", projectRoot: setup.primary,
+    frozenTasks: [selectedTask],
+  });
+  const taskRoot = path.join(setup.root, "task-rotation-owner");
+  await git(setup.primary, "worktree", "add", "-b", "HUB-rotation-owner", taskRoot, setup.baseCommit);
+  context.after(() => git(setup.primary, "worktree", "remove", "--force", taskRoot).catch(() => {}));
+  await writeFile(path.join(taskRoot, "app.txt"), "rotated context\n");
+  const rotationResult = await commit(taskRoot, "initial rotation");
+  await writeFile(path.join(taskRoot, "AgentHub", "rotation-index.txt"), "index only\n");
+  const indexResult = await commit(taskRoot, "index correction");
+  const refreshed = await setup.service.prepareCandidate({
+    planRevision: "plan-rotation-corrected", workspaceId: "workspace", projectRoot: setup.primary,
+    frozenTasks: [selectedTask, {
+      taskId: "task-rotation", taskRevision: 2, baseCommit: setup.baseCommit, resultCommit: indexResult,
+      integrations: [
+        { commit: rotationResult, parent: setup.baseCommit, order: 2 },
+        { commit: indexResult, parent: rotationResult, order: 3 },
+      ],
+    }],
+  });
+  const manifest = JSON.parse(await readFile(refreshed.manifestFile, "utf8"));
+  assert.equal(manifest.candidateReuse, undefined);
+  assert.equal(await git(refreshed.releaseRoot, "show", `${refreshed.preReleaseHead}:app.txt`),
+    "rotated context");
+  assert.equal(await git(refreshed.releaseRoot, "show", `${refreshed.preReleaseHead}:AgentHub/rotation-index.txt`),
+    "index only");
+  assert.equal(await git(refreshed.releaseRoot, "show", `${refreshed.preReleaseHead}:AgentHub/selected.txt`),
+    "selected");
+});
+
+test("renamed initial result cannot hide its source-path deletion", { timeout: 30000 }, async (context) => {
+  const setup = await fixture(context);
+  const neighborResult = await taskResult(setup, context, {
+    branch: "HUB-rename-neighbor", file: "AgentHub/renamed.txt", content: "main\n",
+  });
+  const neighborTask = {
+    taskId: "task-neighbor", taskRevision: 1, baseCommit: setup.baseCommit, resultCommit: neighborResult,
+    integrations: [{ commit: neighborResult, parent: setup.baseCommit, order: 1 }],
+  };
+  const accepted = await setup.service.prepareCandidate({
+    planRevision: "plan-rename-prior", workspaceId: "workspace", projectRoot: setup.primary,
+    frozenTasks: [neighborTask],
+  });
+  await taskResult(setup, context, {
+    branch: "HUB-rename-unrelated", file: "AgentHub/unrelated-rename.txt", content: "unrelated\n",
+  });
+  const taskRoot = path.join(setup.root, "task-rename-owner");
+  await git(setup.primary, "worktree", "add", "-b", "HUB-rename-owner", taskRoot, setup.baseCommit);
+  context.after(() => git(setup.primary, "worktree", "remove", "--force", taskRoot).catch(() => {}));
+  await git(taskRoot, "mv", "app.txt", "AgentHub/renamed.txt");
+  const renameResult = await commit(taskRoot, "initial rename");
+  assert.match(await git(taskRoot, "diff", "--name-status", "-M", setup.baseCommit, renameResult),
+    /R100\s+app\.txt\s+AgentHub\/renamed\.txt/u);
+  await writeFile(path.join(taskRoot, "AgentHub", "rename-index.txt"), "index\n");
+  const finalResult = await commit(taskRoot, "index-only correction");
+  await assert.rejects(setup.service.prepareCandidate({
+    planRevision: "plan-rename-corrected", workspaceId: "workspace", projectRoot: setup.primary,
+    frozenTasks: [neighborTask, {
+      taskId: "task-rename", taskRevision: 2, baseCommit: setup.baseCommit, resultCommit: finalResult,
+      integrations: [
+        { commit: renameResult, parent: setup.baseCommit, order: 2 },
+        { commit: finalResult, parent: renameResult, order: 3 },
+      ],
+    }],
+  }), /PreRelease delta .* failed for Task task-rename/u);
+  assert.equal(await git(accepted.releaseRoot, "rev-parse", "PreRelease"), accepted.preReleaseHead);
+  assert.equal(await git(accepted.releaseRoot, "show", `${accepted.preReleaseHead}:app.txt`), "main");
+  assert.equal(await git(accepted.releaseRoot, "show", `${accepted.preReleaseHead}:AgentHub/renamed.txt`),
+    "main");
+  await assert.rejects(git(accepted.releaseRoot, "show", `${accepted.preReleaseHead}:AgentHub/rename-index.txt`));
+  await assert.rejects(git(accepted.releaseRoot, "show", `${accepted.preReleaseHead}:AgentHub/unrelated-rename.txt`));
+});
+
+test("unrepresented initial rename projects its deletion and index correction", { timeout: 30000 }, async (context) => {
+  const setup = await fixture(context);
+  const neighborResult = await taskResult(setup, context, {
+    branch: "HUB-rename-positive-neighbor", file: "AgentHub/neighbor.txt", content: "neighbor\n",
+  });
+  const neighborTask = {
+    taskId: "task-neighbor", taskRevision: 1, baseCommit: setup.baseCommit, resultCommit: neighborResult,
+    integrations: [{ commit: neighborResult, parent: setup.baseCommit, order: 1 }],
+  };
+  await setup.service.prepareCandidate({
+    planRevision: "plan-rename-positive-prior", workspaceId: "workspace", projectRoot: setup.primary,
+    frozenTasks: [neighborTask],
+  });
+  const taskRoot = path.join(setup.root, "task-rename-positive-owner");
+  await git(setup.primary, "worktree", "add", "-b", "HUB-rename-positive-owner", taskRoot, setup.baseCommit);
+  context.after(() => git(setup.primary, "worktree", "remove", "--force", taskRoot).catch(() => {}));
+  await git(taskRoot, "mv", "app.txt", "AgentHub/renamed.txt");
+  const renameResult = await commit(taskRoot, "initial rename");
+  await writeFile(path.join(taskRoot, "AgentHub", "rename-index.txt"), "index\n");
+  const finalResult = await commit(taskRoot, "index-only correction");
+  const refreshed = await setup.service.prepareCandidate({
+    planRevision: "plan-rename-positive-corrected", workspaceId: "workspace", projectRoot: setup.primary,
+    frozenTasks: [neighborTask, {
+      taskId: "task-rename", taskRevision: 2, baseCommit: setup.baseCommit, resultCommit: finalResult,
+      integrations: [
+        { commit: renameResult, parent: setup.baseCommit, order: 2 },
+        { commit: finalResult, parent: renameResult, order: 3 },
+      ],
+    }],
+  });
+  assert.equal(JSON.parse(await readFile(refreshed.manifestFile, "utf8")).candidateReuse, undefined);
+  await assert.rejects(git(refreshed.releaseRoot, "show", `${refreshed.preReleaseHead}:app.txt`));
+  assert.equal(await git(refreshed.releaseRoot, "show", `${refreshed.preReleaseHead}:AgentHub/renamed.txt`),
+    "main");
+  assert.equal(await git(refreshed.releaseRoot, "show", `${refreshed.preReleaseHead}:AgentHub/rename-index.txt`),
+    "index");
+  assert.equal(await git(refreshed.releaseRoot, "show", `${refreshed.preReleaseHead}:AgentHub/neighbor.txt`),
+    "neighbor");
 });
 
 test("prepared candidate reuses one newly selected correction from its snapshot parent", { timeout: 30000 }, async (context) => {

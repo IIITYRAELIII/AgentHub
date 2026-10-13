@@ -1,8 +1,50 @@
 import { createHash } from "node:crypto";
+import path from "node:path";
 import { selectedCompositionFilePlan } from "./selected-composition-materializer.mjs";
+import { normalizedSelectedAbsorption, selectedAbsorptionHandoff } from "../../domain/task-selected-composition.mjs";
 
 const SHA = /^[0-9a-f]{40}$/u;
 const MAX_CONFLICTS = 16;
+const MAX_OWN_COMMITS = 256;
+const PUBLISHED_BINDINGS = ["taskId", "repositoryKey", "taskBaseCommit", "acceptedLocalMainCommit",
+  "taskCommit", "devCommit", "proofCommit", "publishedCommit", "publicationGeneration", "remoteCommit", "bundleSha256"];
+
+export function normalizePublishedResolution(value) {
+  if (value == null) return null;
+  const keys = ["version", "kind", ...PUBLISHED_BINDINGS, "resolutionCommit",
+    "resolutionBundlePath", "resolutionBundleSha256", "resolutions"];
+  if (typeof value !== "object" || Array.isArray(value) || value.version !== 1
+      || value.kind !== "ordinary-published-resolution-v1"
+      || Object.keys(value).some((key) => !keys.includes(key))) {
+    throw new Error("Selected published resolution has an unsupported identity");
+  }
+  const input = { version: 1, kind: value.kind };
+  for (const key of PUBLISHED_BINDINGS) {
+    input[key] = String(value[key] ?? "").trim();
+    if (!input[key]) throw new Error(`Selected published resolution is missing ${key}`);
+  }
+  input.resolutionCommit = exact(value.resolutionCommit, "published resolution commit");
+  const bundle = String(value.resolutionBundlePath ?? "").trim();
+  input.resolutionBundlePath = bundle ? path.resolve(bundle) : "";
+  input.resolutionBundleSha256 = String(value.resolutionBundleSha256 ?? "").trim().toLowerCase();
+  if (!bundle || !/^[0-9a-f]{64}$/u.test(input.resolutionBundleSha256)
+      || !Array.isArray(value.resolutions) || !value.resolutions.length
+      || value.resolutions.length > MAX_CONFLICTS) {
+    throw new Error("Selected published resolution bundle or conflict identity is incomplete");
+  }
+  input.resolutions = value.resolutions.map((entry) => {
+    if (!entry || Object.keys(entry).some((key) => !["path", "mode", "blob"].includes(key))
+        || typeof entry.path !== "string" || !entry.path || entry.path.includes("\0")
+        || entry.mode !== "100644") {
+      throw new Error("Selected published resolution conflict entry is unsupported");
+    }
+    return { path: entry.path, mode: entry.mode, blob: exact(entry.blob, "published resolution blob") };
+  }).sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
+  if (new Set(input.resolutions.map((entry) => entry.path)).size !== input.resolutions.length) {
+    throw new Error("Selected published resolution has duplicate conflicts");
+  }
+  return input;
+}
 
 function exact(value, label) {
   const result = String(value ?? "").trim().toLowerCase();
@@ -76,6 +118,143 @@ async function rawPlan(git, left, right) {
   ]));
 }
 
+async function ordinaryOwnPlan(git, identity) {
+  if (identity.taskBaseCommit !== identity.acceptedLocalMainCommit) {
+    throw new Error("Ordinary selected composition requires its unchanged local main Task base");
+  }
+  const history = await gitLines(git, [
+    "rev-list", `--max-count=${MAX_OWN_COMMITS + 1}`, "--parents",
+    identity.taskCommit, `^${identity.taskBaseCommit}`,
+  ]);
+  if (!history.length || history.length > MAX_OWN_COMMITS) {
+    throw new Error("Ordinary selected composition own history is empty or exceeds its bound");
+  }
+  for (let index = 0; index < history.length; index += 1) {
+    const [commit, parent, ...other] = history[index].split(" ");
+    const expectedParent = index + 1 < history.length
+      ? history[index + 1].split(" ")[0] : identity.taskBaseCommit;
+    if (!SHA.test(commit) || !SHA.test(parent) || other.length || parent !== expectedParent) {
+      throw new Error("Ordinary selected composition contains a foreign or merged Task history");
+    }
+  }
+  if (await onlyMergeBase(git, identity.devCommit, identity.taskCommit, "ordinary dev/Task")
+      !== identity.taskBaseCommit) {
+    throw new Error("Ordinary selected composition has partial or ambiguous Task integration");
+  }
+  const plan = await rawPlan(git, identity.taskBaseCommit, identity.taskCommit);
+  if (!plan.length || plan.some((file) => /(^|\/)CHANGELOG\.md$/u.test(file.path))) {
+    throw new Error("Ordinary selected composition has no own delta or changes release history");
+  }
+  return plan;
+}
+
+async function linearOwnedHistory(git, tip, base) {
+  const history = await gitLines(git, ["rev-list", `--max-count=${MAX_OWN_COMMITS + 1}`,
+    "--parents", tip, `^${base}`]);
+  if (!history.length || history.length > MAX_OWN_COMMITS) {
+    throw new Error("Absorbed selected composition own history is empty or exceeds its bound");
+  }
+  for (let index = 0; index < history.length; index += 1) {
+    const [commit, parent, ...other] = history[index].split(" ");
+    const expected = index + 1 < history.length ? history[index + 1].split(" ")[0] : base;
+    if (!SHA.test(commit) || !SHA.test(parent) || other.length || parent !== expected) {
+      throw new Error("Absorbed selected composition contains a foreign or merged side history");
+    }
+  }
+  return history.length;
+}
+
+async function absorbedOwnPlan(git, identity, input, merges) {
+  const { declaration: d } = selectedAbsorptionHandoff({ requestId: input.requestId, text: input.text });
+  if (d.survivorTaskId !== identity.taskId || d.baseCommit !== identity.taskBaseCommit
+      || identity.taskBaseCommit !== identity.acceptedLocalMainCommit
+      || merges.length !== 1 || merges[0] !== `${d.absorptionCommit} ${d.survivorParentCommit} ${d.sourceCommit}`) {
+    throw new Error("Absorbed selected composition ordered Task merge or base changed");
+  }
+  const total = await linearOwnedHistory(git, d.survivorParentCommit, d.baseCommit)
+    + await linearOwnedHistory(git, d.sourceCommit, d.baseCommit);
+  // Corrections above the exact absorption remain linear and bounded; the
+  // absorbed side cannot be replaced by a later snapshot or a different merge.
+  const suffix = identity.taskCommit === d.absorptionCommit ? 0
+    : await linearOwnedHistory(git, identity.taskCommit, d.absorptionCommit);
+  if (total + suffix + 1 > MAX_OWN_COMMITS
+      || exact(await git(["rev-parse", `${d.sourceCommit}^{tree}`]), "absorbed source tree") !== d.sourceTree) {
+    throw new Error("Absorbed selected composition source tree or history bound changed");
+  }
+  const automatic = await mergeTree(git, d.survivorParentCommit, d.sourceCommit);
+  if (automatic.conflicts.size || automatic.tree !== exact(
+    await git(["rev-parse", `${d.absorptionCommit}^{tree}`]), "absorption tree",
+  )) {
+    throw new Error("Absorbed selected composition is not its complete automatic owning merge");
+  }
+  if (await onlyMergeBase(git, identity.devCommit, identity.taskCommit, "absorbed dev/Task") !== d.baseCommit) {
+    throw new Error("Absorbed selected composition has partial or ambiguous Task integration");
+  }
+  const plan = await rawPlan(git, d.baseCommit, identity.taskCommit);
+  if (!plan.length || plan.some((file) => /(^|\/)CHANGELOG\.md$/u.test(file.path))) {
+    throw new Error("Absorbed selected composition has no own delta or changes release history");
+  }
+  return plan;
+}
+
+async function completeEntries(git, tree) {
+  const rows = String(await git(["ls-tree", "-r", "-z", "--full-tree", tree])).split("\0").filter(Boolean);
+  const result = new Map();
+  for (const row of rows) {
+    const match = /^(\d{6}) (blob|commit) ([0-9a-f]{40})\t(.+)$/u.exec(row);
+    if (!match || result.has(match[4])) throw new Error("Selected published resolution has malformed tree entries");
+    result.set(match[4], { mode: match[1], type: match[2], blob: match[3] });
+  }
+  return result;
+}
+
+async function verifyPublishedResolution(git, identity, ownPlan, merge, input) {
+  for (const key of PUBLISHED_BINDINGS) {
+    if (input[key] !== identity[key]) throw new Error(`Selected published resolution bound ${key} changed`);
+  }
+  const conflicts = [...merge.conflicts.keys()].filter((name) => !/(^|\/)CHANGELOG\.md$/u.test(name)).sort();
+  if (!conflicts.length || JSON.stringify(conflicts) !== JSON.stringify(input.resolutions.map((entry) => entry.path))) {
+    throw new Error("Selected published resolution does not name the exact actual conflicts");
+  }
+  await git(["cat-file", "-e", `${input.resolutionCommit}^{commit}`]);
+  const parents = (await gitLines(git, ["rev-list", "--parents", "-n", "1", input.resolutionCommit]))[0]?.split(" ");
+  if (parents?.length !== 2 || parents[0] !== input.resolutionCommit || parents[1] !== identity.publishedCommit) {
+    throw new Error("Selected published resolution parents changed");
+  }
+  const resolutionTree = exact(await git(["rev-parse", `${input.resolutionCommit}^{tree}`]), "published resolution tree");
+  const [published, automatic, resolved] = await Promise.all([
+    completeEntries(git, identity.publishedCommit), completeEntries(git, merge.tree), completeEntries(git, resolutionTree),
+  ]);
+  const witnesses = [];
+  for (const entry of input.resolutions) {
+    const stages = merge.conflicts.get(entry.path);
+    if (!ownPlan.some((file) => file.path === entry.path && file.kind === "M" && file.newBlob === stages[3].blob)) {
+      throw new Error("Selected published resolution conflict is outside the exact own edit");
+    }
+    const actual = resolved.get(entry.path);
+    if (actual?.type !== "blob" || actual.mode !== entry.mode || actual.blob !== entry.blob) {
+      throw new Error("Selected published resolution blob differs from its reviewed conflict");
+    }
+    witnesses.push({ path: entry.path, stages, result: { mode: actual.mode, blob: actual.blob } });
+  }
+  const own = new Set(ownPlan.map((file) => file.path));
+  const conflictNames = new Set(conflicts);
+  for (const name of new Set([...published.keys(), ...automatic.keys(), ...resolved.keys()])) {
+    if (conflictNames.has(name)) continue;
+    const expected = own.has(name) ? automatic.get(name) : published.get(name);
+    if (own.has(name) && (expected?.mode !== "100644" || expected.type !== "blob")) {
+      throw new Error("Selected published resolution owning entry is not a regular file");
+    }
+    if (JSON.stringify(resolved.get(name) ?? null) !== JSON.stringify(expected ?? null)) {
+      throw new Error(`Selected published resolution changes an unreviewed non-conflict or outside-own entry: ${name}`);
+    }
+  }
+  const delta = await rawPlan(git, identity.publishedCommit, resolutionTree);
+  if (delta.some((file) => !own.has(file.path))) throw new Error("Selected published resolution changes outside OWN");
+  return { resolutionCommit: input.resolutionCommit, resolutionTree, publishedBaselineTree: merge.tree,
+    conflictWitnesses: witnesses };
+}
+
 // The caller owns live Task/ref/publication/remote fences and runs this on an
 // isolated object store. No review artifact is authority merely because it is
 // importable: every parent, tree, conflict stage and non-conflict entry is
@@ -83,7 +262,7 @@ async function rawPlan(git, left, right) {
 export async function verifySelectedCompositionObjects({
   git, taskId, repositoryKey, taskBaseCommit, acceptedLocalMainCommit,
   taskCommit, devCommit, proofCommit, publishedCommit, publicationGeneration,
-  remoteCommit, bundleSha256,
+  remoteCommit, bundleSha256, publishedResolutionInput = null, absorptionInput = null,
 } = {}) {
   if (typeof git !== "function") throw new Error("Selected composition Git reader is unavailable");
   const identity = {
@@ -115,32 +294,51 @@ export async function verifySelectedCompositionObjects({
   const localPublishedCommonBase = await onlyMergeBase(
     git, identity.acceptedLocalMainCommit, identity.publishedCommit, "accepted main/publication",
   );
-  if (localPublishedCommonBase === identity.acceptedLocalMainCommit
-      || localPublishedCommonBase === identity.publishedCommit) {
-    throw new Error("Selected composition is not the divergent published-main case");
-  }
   const firstParentMerges = await gitLines(git, [
     "log", "--first-parent", "--merges", "--format=%H %P",
     identity.taskCommit, `^${identity.taskBaseCommit}`,
   ]);
-  if (firstParentMerges.length !== 1) {
-    throw new Error("Selected composition requires one exact published-side Task merge");
-  }
-  const [taskMergeCommit, taskFirstParent, publishedSide, ...extraParents] = firstParentMerges[0].split(" ");
-  if (!SHA.test(taskMergeCommit) || !SHA.test(taskFirstParent) || !SHA.test(publishedSide)
-      || extraParents.length) {
-    throw new Error("Selected composition Task merge parent shape changed");
-  }
-  await ancestor(git, identity.taskBaseCommit, taskFirstParent, "Task first parent");
-  await ancestor(git, publishedSide, identity.publishedCommit, "published merge side");
-  if (await onlyMergeBase(git, publishedSide, identity.acceptedLocalMainCommit,
-    "published side/local main") === publishedSide) {
-    throw new Error("Selected composition published side is ordinary local ancestry");
-  }
-  const releaseParent = await onlyMergeBase(git, identity.publishedCommit, identity.taskCommit,
-    "published result/Task result");
-  if (releaseParent !== publishedSide) {
-    throw new Error("Selected composition release boundary is not its exact published Task side");
+  const ordinary = firstParentMerges.length === 0;
+  const absorption = normalizedSelectedAbsorption(absorptionInput);
+  if (ordinary && absorption) throw new Error("Absorption proof requires its exact owning merge");
+  const ownRoute = ordinary || Boolean(absorption);
+  const publishedInput = normalizePublishedResolution(publishedResolutionInput);
+  if (publishedInput && !ownRoute) throw new Error("Selected published resolution requires the ordinary own route");
+  const ownPlan = ordinary ? await ordinaryOwnPlan(git, identity)
+    : absorption ? await absorbedOwnPlan(git, identity, absorption, firstParentMerges) : null;
+  let taskMergeCommit = null;
+  let taskMergeParents = [];
+  let releaseParent = identity.taskBaseCommit;
+  if (absorption) {
+    const { declaration: d } = selectedAbsorptionHandoff({ requestId: absorption.requestId, text: absorption.text });
+    taskMergeCommit = d.absorptionCommit;
+    taskMergeParents = [d.survivorParentCommit, d.sourceCommit];
+  } else if (!ordinary) {
+    if (localPublishedCommonBase === identity.acceptedLocalMainCommit
+        || localPublishedCommonBase === identity.publishedCommit) {
+      throw new Error("Selected composition is not the divergent published-main case");
+    }
+    if (firstParentMerges.length !== 1) {
+      throw new Error("Selected composition requires one exact published-side Task merge");
+    }
+    const [mergeCommit, taskFirstParent, publishedSide, ...extraParents] = firstParentMerges[0].split(" ");
+    taskMergeCommit = mergeCommit;
+    taskMergeParents = [taskFirstParent, publishedSide];
+    if (!SHA.test(taskMergeCommit) || !SHA.test(taskFirstParent) || !SHA.test(publishedSide)
+        || extraParents.length) {
+      throw new Error("Selected composition Task merge parent shape changed");
+    }
+    await ancestor(git, identity.taskBaseCommit, taskFirstParent, "Task first parent");
+    await ancestor(git, publishedSide, identity.publishedCommit, "published merge side");
+    if (await onlyMergeBase(git, publishedSide, identity.acceptedLocalMainCommit,
+      "published side/local main") === publishedSide) {
+      throw new Error("Selected composition published side is ordinary local ancestry");
+    }
+    releaseParent = await onlyMergeBase(git, identity.publishedCommit, identity.taskCommit,
+      "published result/Task result");
+    if (releaseParent !== publishedSide) {
+      throw new Error("Selected composition release boundary is not its exact published Task side");
+    }
   }
   const parents = (await gitLines(git, ["rev-list", "--parents", "-n", "1", identity.proofCommit]))[0]
     ?.split(" ") ?? [];
@@ -155,6 +353,10 @@ export async function verifySelectedCompositionObjects({
   if (!conflicts.size) throw new Error("Selected composition has no reviewed conflict to resolve");
   const resolved = [];
   for (const name of [...conflicts.keys()].sort()) {
+    if (ownRoute && !ownPlan.some((file) => file.path === name
+        && file.kind === "M" && file.newBlob === conflicts.get(name)[3].blob)) {
+      throw new Error("Ordinary selected composition conflict is outside the exact own edit");
+    }
     resolved.push({ path: name, stages: conflicts.get(name), result: await treeEntry(git, proofTree, name) });
   }
   const changedFromBaseline = await rawPlan(git, baselineTree, proofTree);
@@ -169,14 +371,27 @@ export async function verifySelectedCompositionObjects({
     }
   }
   const worktreePlan = await rawPlan(git, devTree, proofTree);
+  if (ownRoute && worktreePlan.some((file) => !ownPlan.some((own) => own.path === file.path))) {
+    throw new Error("Ordinary selected composition changes a path outside its own delta");
+  }
   const selectedReleaseMerge = await mergeTree(git, identity.publishedCommit, identity.taskCommit);
-  if ([...selectedReleaseMerge.conflicts.keys()].some((name) => !/(^|\/)CHANGELOG\.md$/u.test(name))) {
+  const releaseConflictPaths = [...selectedReleaseMerge.conflicts.keys()]
+    .filter((name) => !/(^|\/)CHANGELOG\.md$/u.test(name)).sort();
+  if (!ownRoute && releaseConflictPaths.length) {
     throw new Error("Selected composition release projection conflicts outside CHANGELOG");
   }
+  const publishedResolution = publishedInput
+    ? await verifyPublishedResolution(git, identity, ownPlan, selectedReleaseMerge, publishedInput) : null;
   const proof = {
     ...identity, taskTree, devTree, proofTree, baselineTree,
-    taskMergeCommit, taskMergeParents: [taskFirstParent, publishedSide],
-    localPublishedCommonBase, releaseParent, selectedReleaseTree: selectedReleaseMerge.tree,
+    taskMergeCommit, taskMergeParents,
+    localPublishedCommonBase, releaseParent,
+    selectedReleaseTree: publishedResolution?.resolutionTree
+      ?? (ownRoute && releaseConflictPaths.length ? null : selectedReleaseMerge.tree),
+    ...(publishedInput ? { publishedResolutionInput: publishedInput, publishedResolution } : {}),
+    ...(ownRoute ? { proofRoute: absorption ? "absorbed-own-conflict-v1" : "ordinary-own-conflict-v1",
+      ownPlan, releaseConflictPaths } : {}),
+    ...(absorption ? { absorptionInput: absorption } : {}),
     conflictWitnesses: resolved, worktreePlan,
   };
   return { ...proof, proofHash: createHash("sha256").update(JSON.stringify(proof)).digest("hex") };

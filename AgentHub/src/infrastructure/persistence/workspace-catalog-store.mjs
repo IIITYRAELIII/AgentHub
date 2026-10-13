@@ -879,7 +879,18 @@ export class WorkspaceCatalogStore {
     return this.mcpOperation(id);
   }
 
-  completeMcpOperation(requestId, result) {
+  completeMcpOperation(requestId, result, { validate = null } = {}) {
+    // A preparation terminal keeps all selected editorial CAS and caller
+    // authority fenced through the same durable receipt write. The validator
+    // is synchronous and read-only; no second ledger or Task mutation exists.
+    if (validate != null) {
+      if (typeof validate !== "function") throw new TypeError("Receipt validator must be synchronous");
+      return this.#transaction(() => {
+        const checked = validate();
+        if (checked?.then) throw new TypeError("Receipt validator must be synchronous");
+        return this.completeMcpOperation(requestId, result);
+      });
+    }
     const id = safeIdentifier(requestId, "MCP request id");
     const operation = this.mcpOperation(id);
     if (
