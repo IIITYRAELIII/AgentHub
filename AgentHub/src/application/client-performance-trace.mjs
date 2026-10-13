@@ -11,6 +11,8 @@ const IDENTIFIERS = new Set(["documentInstanceId", "previousDocumentInstanceId",
   "finalTurnId", "finalRevision"]);
 const NUMBERS = new Set(["count", "longTaskCount", "maxLongTaskMs", "totalLongTaskMs", "droppedEvents", "droppedCount", "queueDepth"]);
 const FAILURE_KINDS = new Set(["aborted", "timeout", "error", "hidden"]);
+const READ_IDS = new Set(["streamId", "threadId", "turnId", "instanceId", "releaseId", "documentId"]);
+const READ_FLAGS = new Set(["viewport", "tabReady", "cardReady", "tabPresent", "cardPresent"]);
 
 // Client diagnostics are measurements, never command or lifecycle authority.
 // Accept only content-free fields; no arbitrary metadata, error text or URLs.
@@ -41,6 +43,13 @@ export function clientPerformanceTraceSpans(body, { now = Date.now() } = {}) {
         && value >= now - 86_400_000 && value <= at) metadata[key] = value;
       if (key === "statusCode" && Number.isInteger(value) && value >= 0 && value <= 599) metadata[key] = value;
       if (key === "failureKind" && FAILURE_KINDS.has(value)) metadata[key] = value;
+      if (String(event.metadata?.action ?? "").startsWith("read-marker-")) {
+        if (READ_IDS.has(key) && typeof value === "string" && ID.test(value)) metadata[key] = value;
+        if (key === "provider" && ["codex", "claude"].includes(value)) metadata[key] = value;
+        if (key === "terminalRevision" && Number.isSafeInteger(value) && value > 0) metadata[key] = value;
+        if (READ_FLAGS.has(key) && typeof value === "boolean") metadata[key] = value;
+        if (key === "codeMarker" && typeof value === "string" && TOKEN.test(value)) metadata[key] = value;
+      }
     }
     return {
       commandId: event.commandId, stage: event.stage, outcome: event.outcome,
