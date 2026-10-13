@@ -32,6 +32,20 @@ steps remain fixed. Source acceptance still does not authorize publication.
 
 ## Required evidence
 
+### Retained Test proof after its own partial native publication
+
+Correction acceptance cannot require origin to remain at a pre-publication Test
+baseline after the same native owner has published its selected candidate. The
+existing release store supplies a strictly read-only current-generation witness:
+exact retained descriptor in selection and manifest, authorized membership,
+validated native generation identity and exact observed origin candidate. The
+filesystem owner keeps every original Test seal and rejects other origin changes.
+The witness grants no execution capability and rewrites no operation or receipt.
+Removal follows retirement of retained legacy selected-Test receipts; new native
+Test descriptors retain their existing integration proof. Regression exercises
+the public filesystem owner with real Git publication and SQLite, including
+foreign origin, stale generation/scope and before/after row preservation.
+
 Real isolated public Test and Await owners must accept a reviewed cleanup of two
 automatically merged duplicate test files and retain its exact resulting tree.
 Missing review, stale parents/selection and post-review changes must refuse

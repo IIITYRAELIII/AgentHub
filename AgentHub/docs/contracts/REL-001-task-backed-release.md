@@ -1,5 +1,17 @@
 # REL-001 — Task-backed Workspace release
 
+When a current native generation has already advanced origin during partial
+publication, the unchanged retained selected Test descriptor may be reused for
+ordinary correction acceptance only if the read-only release owner proves that
+same descriptor in both its immutable generation selection and candidate manifest,
+with exact authorized membership, current generation, native composition policy,
+published base, applied validation receipt and origin equal to that candidate.
+An unrelated origin, replaced descriptor, stale generation or ordinary operation
+does not satisfy this exception. The old Test receipt, publication baseline,
+operation, generations and partial effects remain unchanged. This is historical
+proof reuse, not runtime readiness, effect reconciliation or permission to adopt
+a new main base. Current explicit main/preflight and publication gates remain.
+
 Native cutover after completed historical freeze abandonment verifies its
 existing recovery outcome, immutable evidence/hash and exact restored prepared
 ref. It retains frozen-original and recovery bytes in the new manifest; changed

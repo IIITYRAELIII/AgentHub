@@ -34,6 +34,7 @@ import {
   readTrustedSystemBootIdentity,
 } from "../process/system-boot-identity.mjs";
 import { publicationStateRepositories, readPublicationState } from "../persistence/publication-state.mjs";
+import { readNativePublishedSelectedComposition } from "../persistence/release-operation-store.mjs";
 import {
   normalizedTaskId,
   TASK_BRANCH_PREFIX,
@@ -3019,7 +3020,9 @@ export class TaskGitWorkspaceService {
         cwd: repoRoot,
       });
       if (remote !== `${preview.remoteCommit}\trefs/heads/main`) {
-        throw new Error("Selected composition remote advanced since its exact Test proof");
+        const remoteCommit = /^([a-f0-9]{40})\trefs\/heads\/main$/u.exec(remote)?.[1];
+        const published = readNativePublishedSelectedComposition({ dataDir: this.dataDir, preview, remoteCommit });
+        if (!published) throw new Error("Selected composition remote advanced since its exact Test proof");
       }
       matches.push(preview);
     }

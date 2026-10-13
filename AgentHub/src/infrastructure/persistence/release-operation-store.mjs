@@ -1,5 +1,8 @@
 import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
+import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { selectedCompositionIdentity } from "../../domain/task-selected-composition.mjs";
 
 import {
   createCandidateGeneration,
@@ -13,6 +16,71 @@ import {
 import { openRuntimeDatabase, runtimeDatabasePath } from "./runtime-state-store.mjs";
 
 const LEGACY_MIGRATION_PREFIX = "release-operation:legacy:";
+
+// Origin can advance before the native publication owner finalizes its baseline.
+// Reuse only its current immutable, validated generation's identical descriptor.
+// This read never acquires the operation or classifies its pending effects.
+export function readNativePublishedSelectedComposition({ dataDir, preview, remoteCommit } = {}) {
+  const file = runtimeDatabasePath(dataDir);
+  if (!existsSync(file) || !/^[a-f0-9]{40}$/u.test(remoteCommit ?? "")) return null;
+  const database = new DatabaseSync(file, { readOnly: true });
+  const rootKey = value => path.resolve(String(value)).replaceAll("\\", "/").toLowerCase();
+  try {
+    database.exec("BEGIN");
+    if (database.prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE type='table' AND name IN ('release_operations','release_operation_tasks','release_candidate_generations','release_step_receipts')").get().count !== 4) return null;
+    const rows = database.prepare(`
+      SELECT o.operation_json, g.generation_json, g.identity_sha256
+      FROM release_operations o
+      JOIN release_operation_tasks t ON t.operation_id = o.operation_id
+      JOIN release_candidate_generations g ON g.operation_id = o.operation_id
+      WHERE t.task_id = ? AND o.state IN ('publish', 'waiting')
+      ORDER BY o.updated_at DESC, g.generation DESC LIMIT 65
+    `).all(preview.taskId);
+    if (rows.length > 64) throw new Error("Published selected proof history exceeds its bound");
+    const identity = selectedCompositionIdentity({ taskId: preview.taskId,
+      resultCommit: preview.taskCommit, selectedComposition: preview });
+    const matches = [];
+    for (const row of rows) {
+      const operation = JSON.parse(row.operation_json);
+      const generation = JSON.parse(row.generation_json);
+      if (operation.authorization?.nativeOwnerCutover?.kind !== "native-publication-owner-v1"
+          || operation.authorization.nativeOwnerCutover.schemaVersion !== 1
+          || operation.workspaceId !== preview.authority?.workspaceId
+          || !(operation.state === "publish" || (operation.state === "waiting" && operation.resumeState === "publish"))
+          || generation.operationId !== operation.operationId
+          || generation.generation !== operation.currentGeneration) continue;
+      const { identitySha256, ...contents } = generation;
+      if (identitySha256 !== row.identity_sha256 || releaseIdentitySha256(contents) !== identitySha256) {
+        throw new Error("Published native generation identity changed");
+      }
+      if (JSON.stringify([...operation.authorization.taskIds].sort())
+          !== JSON.stringify(generation.selectedResults.map(task => task.taskId).sort())
+          || JSON.stringify(operation.selectedResults) !== JSON.stringify(generation.selectedResults)) continue;
+      const selected = generation.selectedResults.find(task => task.taskId === preview.taskId);
+      if (!selected || selected.resultCommit !== preview.taskCommit
+          || selectedCompositionIdentity(selected) !== identity) continue;
+      const candidate = generation.candidates.find(item => rootKey(item.repositoryRoot) === rootKey(preview.repositoryRoot)
+        && item.commit === remoteCommit);
+      const manifest = candidate?.manifest;
+      const captured = manifest?.tasks?.find(task => task.taskId === preview.taskId);
+      if (!candidate || manifest?.workspaceId !== operation.workspaceId
+          || manifest.compositionPolicy !== "main-selected-git-merge-v1"
+          || manifest.baseProvenance?.publishedBaseCommit !== preview.publishedCommit
+          || !captured || captured.resultCommit !== preview.taskCommit
+          || selectedCompositionIdentity(captured) !== identity) continue;
+      const validated = database.prepare(`SELECT status FROM release_step_receipts
+        WHERE operation_id = ? AND generation = ? AND step_id = 'validate'
+        ORDER BY attempt DESC LIMIT 1`).get(operation.operationId, generation.generation);
+      if (validated?.status !== "applied") continue;
+      matches.push({ operationId: operation.operationId, generation: generation.generation,
+        identitySha256, publishedCommit: remoteCommit, selectedCompositionIdentity: identity });
+    }
+    if (matches.length > 1) throw new Error("Published selected proof is ambiguous");
+    return matches[0] ?? null;
+  } finally {
+    try { database.exec("ROLLBACK"); } finally { database.close(); }
+  }
+}
 
 function configure(database) {
   database.exec(`
