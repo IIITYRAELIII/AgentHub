@@ -258,7 +258,7 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   const secondThreadId = secondThreadState.threadIds.codex;
   assert.notEqual(secondThreadId, firstThreadId);
   assert.equal((await readJson(codexStatePath)).threads
-    .find((thread) => thread.id === secondThreadId)?.name, "New Workspace — Поток 1");
+    .find((thread) => thread.id === secondThreadId)?.name, "New Workspace - Поток 1 1");
 
   mark = telegram.calls.length;
   telegram.pushMessage("/streams");
@@ -345,7 +345,7 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   const renamedProviderThreads = (await readJson(codexStatePath)).threads;
   assert.equal(renamedProviderThreads.find((thread) => thread.id === firstThreadId)?.name, "E2E основная");
   assert.equal(renamedProviderThreads.find((thread) => thread.id === secondThreadId)?.name,
-    "New Workspace — Поток 1", "renaming another Thread must preserve the canonical Workspace/Stream name");
+    "New Workspace - Поток 1 1", "renaming another Thread must preserve the canonical Workspace/Stream name");
   assert.equal(
     renamedState.clientTaskSelections.find(([clientId]) => clientId === `telegram:${CHAT_ID}`)?.[1]?.taskTitle,
     "E2E основная",
