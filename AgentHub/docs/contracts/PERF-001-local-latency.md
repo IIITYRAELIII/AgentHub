@@ -77,6 +77,17 @@ the existing authenticated transport; it cannot persist message bodies, DOM
 text, request URLs or arbitrary error text. Telemetry requests do not trace
 themselves. Backpressure drops diagnostics, never application commands.
 
+Selected-Stream visibility diagnostics retain the original snapshot request
+identity across the server's bounded run-source/gate observation, the client's
+accepted or rejected snapshot decision, and its later rendered viewport state.
+The client records only document identity and predecessor, selected provider,
+Thread, Stream, turn and command IDs, run/provider-start presence, exact final
+revision, model-link state, and whether the live card is in view, offscreen or
+absent. A code marker identifies a loaded client path only when release evidence
+maps it to one reviewed immutable asset digest; a server release ID alone is
+not evidence of client bytes. A missing trace can mean a page close, failed
+transport or diagnostic backpressure, not an idle provider.
+
 A blocking operation records a started marker before awaiting and a terminal
 measurement with the same `operationSpanId`. Missing terminal measurements are
 incomplete evidence, not proof of a running task: retention, process death or

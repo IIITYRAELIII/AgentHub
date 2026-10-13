@@ -1063,6 +1063,40 @@ test("desktopTaskSnapshot does not resurrect a catalog run after its final answe
   assert.equal(snapshot.run, null);
 });
 
+test("selected snapshot reports its bounded run source and visibility gate", async () => {
+  const { desktopSnapshot, state, entry } = fixture();
+  const originalRun = state.run;
+  const registry = await desktopSnapshot();
+  assert.deepEqual(
+    [registry.snapshotTiming.selectedProjection.source, registry.snapshotTiming.selectedProjection.gate],
+    ["registry-bound", "visible"],
+  );
+  state.run = null;
+  entry.turnId = "turn-1";
+  const catalog = await desktopSnapshot();
+  assert.deepEqual(
+    [catalog.snapshotTiming.selectedProjection.source, catalog.snapshotTiming.selectedProjection.gate],
+    ["catalog-fallback", "visible"],
+  );
+  state.lastMessage = { turnId: "turn-1", text: "Private answer" };
+  const noCatalog = await desktopSnapshot();
+  assert.deepEqual(
+    [noCatalog.snapshotTiming.selectedProjection.source, noCatalog.snapshotTiming.selectedProjection.gate],
+    ["none", "inactive"],
+  );
+  state.run = originalRun;
+  const savedAnswer = await desktopSnapshot();
+  assert.deepEqual(
+    [savedAnswer.snapshotTiming.selectedProjection.source,
+      savedAnswer.snapshotTiming.selectedProjection.gate],
+    ["registry-bound", "saved-same-turn"],
+  );
+  assert.doesNotMatch(JSON.stringify(savedAnswer.snapshotTiming.selectedProjection), /Private answer/u);
+  originalRun.clientUserMessageId = "Private answer";
+  const invalidId = await desktopSnapshot();
+  assert.equal(invalidId.snapshotTiming.selectedProjection.clientUserMessageId, "");
+});
+
 test("desktopTaskSnapshot rejects a timestamped catalog ghost without a turn id", () => {
   const { desktopTaskSnapshot, entry, state } = fixture({ run: null });
   entry.turnId = null;

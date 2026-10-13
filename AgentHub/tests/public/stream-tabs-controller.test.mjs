@@ -362,6 +362,10 @@ test("Stream model label follows saved settings while idle and exact turn while 
   task.run = { turnId: "turn", operationKind: "user-turn", projectionState: "active", model: "GPT-5.6 Sol" };
   assert.equal(streamModelLabel(task, stream, settings), "GPT-5.6 Sol");
   task.latestFinal = { provider: "codex", threadId: "old-thread", turnId: "turn" };
+  assert.equal(streamModelLabel(task, stream, settings), "GPT-5.6 Sol");
+  task.latestFinal.revision = 0;
+  assert.equal(streamModelLabel(task, stream, settings), "GPT-5.6 Sol");
+  task.latestFinal.revision = 1;
   assert.equal(streamModelLabel(task, stream, settings), "GPT-6 Luna");
   task.running = false;
   stream.settings.provider = "claude";
@@ -590,6 +594,11 @@ test("a terminal identity absorbs a stale active Stream projection", async () =>
   assert.equal(isExactActiveUserTurn(task), false);
   assert.equal(isExactActiveUserTurn({ ...task, latestFinal: null }), true);
   assert.equal(isExactActiveUserTurn({ ...task, run: null }), false);
+  assert.equal(isExactActiveUserTurn({ ...task, latestFinal: { ...task.latestFinal, revision: 0 } }), true);
+  assert.equal(isExactActiveUserTurn({ ...task, latestFinal: { ...task.latestFinal, revision: -1 } }), true);
+  assert.equal(isExactActiveUserTurn({ ...task, latestFinal: { ...task.latestFinal, revision: 1.5 } }), true);
+  assert.equal(isExactActiveUserTurn({ ...task, latestFinal: { ...task.latestFinal, threadId: "foreign" } }), true);
+  assert.equal(isExactActiveUserTurn({ ...task, latestFinal: null, run: { ...task.run, terminalRevision: 2 } }), false);
 });
 
 test("rotation notice follows the actually compacted Thread instead of the previous head", async () => {
