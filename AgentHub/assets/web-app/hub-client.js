@@ -4072,13 +4072,17 @@ agentHub.on("stream:settings-save", ({ streamId, settings }) => runAction(async 
 let modelCatalogRefresh = null;
 agentHub.on("model-catalog:refresh", ({ manual = false } = {}) => {
   if (modelCatalogRefresh) return;
+  agentHub.setModelCatalogRefreshing(true);
   modelCatalogRefresh = runAction(async () => {
     const result = await control("refresh-model-catalog");
     if (result?.snapshot) applySnapshot(result.snapshot);
     if (manual) agentHub.toast(result?.refreshed
       ? "Список доступных моделей обновлён"
       : "Каталог пока недоступен; прежний список сохранён");
-  }).finally(() => { modelCatalogRefresh = null; });
+  }).finally(() => {
+    modelCatalogRefresh = null;
+    agentHub.setModelCatalogRefreshing(false);
+  });
 });
 agentHub.on("stream:rules-save", ({ streamId, rules }) => runAction(async () => {
   applySnapshot(await control("update-stream-rules", { streamId, content: String(rules ?? "") }));
