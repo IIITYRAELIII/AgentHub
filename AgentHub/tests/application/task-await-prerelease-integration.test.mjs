@@ -221,7 +221,9 @@ test("Await membership prepares the candidate and fences changed agreed-main evi
   assert.equal(failedTransition.priorTask.workflowStatus, "testing");
 });
 
-test("Await and withdrawal retain the published base despite unreviewed origin movement", { timeout: 90000 }, async (t) => {
+// Real Test/Await/withdrawal performs repeated native Git proofs; the former
+// 90-second budget expired while those proofs were still executing.
+test("Await and withdrawal retain the published base despite unreviewed origin movement", { timeout: 180000 }, async (t) => {
   const f = await fixture(t);
   const published = f.publication.repositories[0].revision;
   await f.testedTask("Unaccepted", "unaccepted.txt", "unaccepted\n");

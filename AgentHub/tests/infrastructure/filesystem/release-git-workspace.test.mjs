@@ -2214,7 +2214,9 @@ test("frozen candidate readback is phase-aware and feeds release completion with
   assert.equal(pending, null);
 });
 
-test("a frozen 13-Task candidate accepts one descendant result delta with exact native Task history", { timeout: 120000 }, async (context) => {
+// Thirteen real Git histories are prepared, frozen, corrected and reverted;
+// retain a bounded margin over the measured 116-second isolated execution.
+test("a frozen 13-Task candidate accepts one descendant result delta with exact native Task history", { timeout: 180000 }, async (context) => {
   const setup = await fixture(context);
   await writeFile(path.join(setup.primary, "CHANGELOG.md"), "previous\n", "utf8");
   setup.baseCommit = await commit(setup.primary, "release base");
