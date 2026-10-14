@@ -494,6 +494,7 @@
       "failed",
       "provider",
       "threadId",
+      "terminalRevision",
       "model",
       "agentThreadId",
     ].every((field) => left?.[field] === right?.[field]);

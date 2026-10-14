@@ -272,6 +272,7 @@ export function createDesktopShellComposition({
       exchangeRates: usdRubRateStore,
       serverSnapshot: (...args) => serverControlController.snapshot(...args),
       readStateStore: taskReadStateStore,
+      commandTrace: commandTraceService,
       hasAllowedUsers: () => Boolean(config.allowedUserIds.size),
       androidEnabled: () => Boolean(config.components.androidApp),
       readCachedHistory,

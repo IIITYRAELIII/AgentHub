@@ -577,6 +577,29 @@ revision cache without re-projecting conversations.
 Snapshot receipt alone is not display evidence: acknowledgement is emitted only
 after `applyOpened` rendered a terminal card with the same exact identity and
 revision. Startup snapshot-before-history therefore cannot clear unread state.
+The existing opened-history evidence is rechecked after paint with the same
+selected chat, visible document and exact rendered terminal identity. Returning
+to a visible document or rendering an already-opened history retries an
+unconfirmed acknowledgement with its original operation ID; it never invents
+read evidence from a click or snapshot. Pending and retry entries remain
+single-flight and retain that ID while their exact final is current in the
+canonical conversation collection; a fixed-capacity eviction cannot discard
+unresolved operations. Removing a conversation or replacing its final retires
+that entry through the same snapshot owner; an absent final reference in an
+otherwise current conversation does not prove replacement. The current criterion is rendering in
+the selected visible chat, not scrolling the whole final into the viewport.
+Viewport intersection is measured separately and does not redefine that rule.
+A confirmed server cursor from the acknowledgement or the additive content-free
+`readCursor` snapshot tuple is mirrored only as a client projection. Full and
+delta snapshots cannot revive an answer covered by that cursor, and a newer
+final remains unread. A delayed acknowledgement updates both marker surfaces
+only through the current exact final projection; it cannot clear a newer final
+or downgrade an active run. The server account cursor remains the sole durable
+owner; a new document recovers its state through the ordinary snapshot.
+The original acknowledgement ID correlates render/paint, control transport,
+final resolution, cursor queue wait/write/contention, confirmed receipt and
+after-paint marker state on tabs/cards. These bounded content-free observations
+are diagnostic, not additional read authority.
 The persisted cursor is monotonic even when an older request finishes last:
 `answerAtMs` orders different completion times, a higher revision orders the same
 turn at an equal time, and the exact `turnId` is the deterministic tie-break for

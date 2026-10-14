@@ -1,5 +1,6 @@
 import { openRuntimeDatabase } from "./runtime-state-store.mjs";
-import { AsyncSqliteMutationQueue } from "./async-sqlite-mutation-queue.mjs";
+import { AsyncSqliteMutationQueue, sqliteContention } from "./async-sqlite-mutation-queue.mjs";
+import { performance } from "node:perf_hooks";
 
 const ACCOUNT_ID_MAX_CHARS = 160;
 const THREAD_ID_MAX_CHARS = 200;
@@ -144,11 +145,45 @@ export class TaskReadStateStore {
 
   get revision() { return this.#revision; }
 
-  markRead(value) {
+  async markRead(value, { commandId = "", commandTrace = null } = {}) {
     const retained = { ...value };
-    return this.#mutations.run(() => this.#markRead(retained), {
-      requestId: `read:${retained.accountId}:${retained.provider}:${retained.threadId}:${retained.answerTurnId}:${retained.answerRevision}`,
+    const entered = performance.now();
+    let queueWait = null;
+    let workMs = 0;
+    let attempts = 0;
+    let settledOutcome = "failed";
+    const metadata = { provider: retained.provider, threadId: retained.threadId,
+      turnId: retained.answerTurnId, terminalRevision: retained.answerRevision };
+    const record = (stage, duration, outcome = "succeeded", details = {}) => commandTrace?.recordBestEffort?.({
+      commandId, stage, transport: "server", outcome, monotonicDurationMs: Math.max(0, duration),
+      metadata: { ...metadata, ...details },
     });
+    try {
+      const result = await this.#mutations.run(() => {
+        if (queueWait === null) {
+          queueWait = performance.now() - entered;
+          record("read-cursor-queue-wait", queueWait);
+        }
+        attempts += 1;
+        const started = performance.now();
+        let outcome = "succeeded";
+        let contention = false;
+        try { return this.#markRead(retained); }
+        catch (error) { outcome = "failed"; contention = sqliteContention(error); throw error; }
+        finally {
+          const duration = performance.now() - started;
+          workMs += duration;
+          record("read-cursor-write", duration, outcome, { attempt: attempts, contention });
+        }
+      }, {
+      requestId: `read:${retained.accountId}:${retained.provider}:${retained.threadId}:${retained.answerTurnId}:${retained.answerRevision}`,
+      });
+      settledOutcome = "succeeded";
+      return result;
+    } finally {
+      if (attempts > 1) record("read-cursor-contention-wait",
+        performance.now() - entered - (queueWait ?? 0) - workMs, settledOutcome, { attempts });
+    }
   }
 
   #markRead(value) {

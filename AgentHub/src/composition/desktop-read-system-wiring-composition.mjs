@@ -163,6 +163,7 @@ export function createDesktopReadSystemWiring({
     },
     readModel: {
       readStateStore: services.readStateStore,
+      commandTrace: services.commandTrace,
       trustedDeviceUserId: system.trustedDeviceUserId,
       hasAllowedUsers: services.hasAllowedUsers,
       androidEnabled: services.androidEnabled,
