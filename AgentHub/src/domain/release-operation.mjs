@@ -64,56 +64,6 @@ export function releaseSelectionSha256(results) {
   return releaseIdentitySha256(normalizedResults(results).map(({ tree, ...result }) => result));
 }
 
-export function unpublishedStartupRetryOrigin({ operation, generations, receipts } = {}) {
-  const restored = restorePublishedStartupHistory(operation);
-  const record = restored?.nativeStartupCorrection;
-  if (!record || restored.state !== "failed" || !restored.completedAt || restored.owner) return null;
-  const scope = record.scope;
-  const prior = generations?.find(item => item.generation === scope.priorGeneration);
-  const next = generations?.find(item => item.generation === scope.nextGeneration);
-  const effect = scope.effects?.length === 1 ? scope.effects[0] : null;
-  const latest = step => receipts?.filter(item => item.generation === scope.priorGeneration && item.stepId === step)
-    .sort((a, b) => b.attempt - a.attempt)[0];
-  const composed = receipts?.filter(item => item.generation === scope.nextGeneration && item.stepId === "compose")
-    .sort((a, b) => b.attempt - a.attempt)[0];
-  const validGeneration = value => {
-    if (!value || value.operationId !== restored.operationId) return false;
-    const { identitySha256, ...contents } = value;
-    return releaseIdentitySha256(contents) === identitySha256;
-  };
-  if (restored.currentGeneration !== scope.nextGeneration || !validGeneration(prior) || !validGeneration(next)
-      || prior.identitySha256 !== scope.priorIdentitySha256
-      || prior.candidates.length !== 1 || prior.candidates[0].commit !== scope.priorCommit
-      || releaseSelectionSha256(next.selectedResults) !== scope.selectionSha256
-      || releaseSelectionSha256(restored.selectedResults) !== scope.selectionSha256
-      || composed?.status !== "applied" || composed.effect?.identitySha256 !== next.identitySha256
-      || !effect || effect.status !== "partial" || effect.revision !== scope.priorCommit
-      || effect.releaseVersion !== scope.releaseVersion || effect.publicationStatus !== "awaiting_restart"
-      || latest(`startup-readback:${effect.targetId}`)?.status !== "applied"
-      || releaseIdentitySha256(latest(`startup-readback:${effect.targetId}`).effect) !== releaseIdentitySha256(effect)
-      || latest("validate")?.status !== "applied"
-      || receipts.some(item => item.stepId === "finalize"
-        || (item.generation === scope.nextGeneration && item.stepId !== "compose" && item.stepId !== "validate"))
-      || restored.publicationEffects.generation !== scope.nextGeneration
-      || restored.publicationEffects.publishStarted
-      || Object.keys(restored.publicationEffects.targets ?? {}).length
-      || Object.keys(restored.publicationEffects).some(key => !["generation", "targets", "priorGenerations"].includes(key))
-      || Object.keys(restored.publicationEffects.priorGenerations ?? {}).length !== 1
-      || releaseIdentitySha256(restored.publicationEffects.priorGenerations[scope.priorGeneration])
-        !== releaseIdentitySha256(record.previousPublicationEffects)) return null;
-  const targets = restored.authorization.approvedTargets;
-  if (targets.length !== 1 || targets[0].targetId !== effect.targetId || targets[0].kind !== "agent-hub-publication") return null;
-  // Older failed generations are known not_applied; the interrupted published
-  // generation has the explicit applied PARTIAL readback above, not a waiver.
-  if (receipts.some(item => item.stepId.startsWith("publish:")
-    && (item.stepId !== `publish:${effect.targetId}` || item.generation > scope.priorGeneration
-      || (item.generation < scope.priorGeneration && (item.status !== "failed"
-        || item.effect?.status !== "not_applied" || item.effect.revision !== targets[0].approvedOriginMainCommit))))) return null;
-  return { priorGeneration: scope.priorGeneration, priorPublishedHead: scope.priorCommit,
-    releaseVersion: scope.releaseVersion, selectionSha256: scope.selectionSha256,
-    approvedTargets: targets.map(target => ({ ...target, approvedOriginMainCommit: scope.priorCommit })) };
-}
-
 function uniqueTextList(value, name) {
   const values = [...new Set((Array.isArray(value) ? value : [])
     .map((item) => String(item ?? "").trim()).filter(Boolean))].sort();
