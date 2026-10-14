@@ -18065,7 +18065,10 @@ mobileDialogs = window.AgentHubMobileDialogs.create({
   formatTime: (value) => formatRelativeTime(activityTimestamp(value)), shortModel: shortModelLabel,
   openSearch: openWorkspaceMessageSearch, openSettings: openPanel,
   openWorkspaceCard,
-  workspaceMenu: openWorkspaceContextMenu, folderMenu: openWorkspaceFolderContextMenu,
+  workspaceMenu: (event, id) => { openWorkspaceContextMenu(event, id); return workspaceContextMenu; },
+  folderMenu: (event, name) => { openWorkspaceFolderContextMenu(event, name); return workspaceFolderContextMenu; },
+  closeWorkspaceMenus: () => { closeWorkspaceContextMenu(); closeWorkspaceFolderContextMenu(); },
+  textDialog: dialog, cancelTextDialog: () => closeDialog(null),
   createStream: (workspaceId) => emit("stream:new", { workspaceId }),
   retryConnection: () => emit("connection:retry", { taskId: state.selectedId }),
   closeNative: (opened) => {

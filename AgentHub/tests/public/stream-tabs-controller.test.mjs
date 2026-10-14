@@ -3013,7 +3013,7 @@ test("mobile drawer selection and explicit Workspace settings preserve identity 
     assert.deepEqual(await mobile.evaluate(() => ({
       surface: document.documentElement.dataset.surface,
       pane: document.documentElement.dataset.pane,
-      selected: document.querySelector('[data-workspace-select="workspace-1"]')?.getAttribute("aria-pressed"),
+      selected: document.querySelector('[data-workspace-select="workspace-1"] [data-mobile-workspace-select]')?.getAttribute("aria-pressed"),
       cardOpen: document.querySelector("[data-workspace-card-modal]")?.open,
     })), {
       surface: "mobile",

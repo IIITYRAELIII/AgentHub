@@ -1,11 +1,14 @@
 import assert from "node:assert/strict";
-import { readFile, mkdir } from "node:fs/promises";
+import { readFile, mkdir, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
 import path from "node:path";
 import test from "node:test";
 import { chromium } from "playwright";
 
 const assets = new URL("../../assets/web-app/", import.meta.url);
 const captures = new URL("../../WIP/mobile-dialogs-captures/", import.meta.url);
+const { loadThemeRegistry, renderThemeHtml } = createRequire(import.meta.url)("../../theme-registry.cjs");
 const tasks = [
   { id: "a1", workspaceId: "a", workspaceName: "AgentHub", streamId: "s1", streamName: "Дизайн",
     provider: "codex", agentLabel: "Codex", modelLabel: "GPT-5.6-Sol", selected: true, running: true,
@@ -21,7 +24,7 @@ const tasks = [
     workspaceSettings: { catalogFolder: "РАБОТА" } },
 ];
 
-async function open(page, { vscode = false, transport = null, seed = true } = {}) {
+async function open(page, { vscode = false, transport = null, seed = true, themeRegistry = null } = {}) {
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
   await page.addInitScript((vscode) => { if (vscode) window.__agentHubVscode = true; }, vscode);
@@ -38,7 +41,8 @@ async function open(page, { vscode = false, transport = null, seed = true } = {}
       let body = await readFile(new URL("index.html", assets), "utf8");
       body = body.replace(/\s*<script src="\/browser-device-auth\.js" defer><\/script>/gu, "");
       if (!transport) body = body.replace(/\s*<script src="\/hub-client\.js" defer><\/script>/gu, "");
-      body = body.replace("</head>", '<script type="application/json" data-theme-catalog>[{"id":"orbit","name":"Orbit","color":"#080b11","aliases":[],"assets":{},"backgrounds":[{"id":"none","name":"Нет","assetUrl":"","preload":false}]}]</script></head>');
+      if (themeRegistry) body = renderThemeHtml(body, themeRegistry);
+      else body = body.replace("</head>", '<script type="application/json" data-theme-catalog>[{"id":"orbit","name":"Orbit","color":"#080b11","aliases":[],"assets":{},"backgrounds":[{"id":"none","name":"Нет","assetUrl":"","preload":false}]}]</script></head>');
       return route.fulfill({ contentType: "text/html; charset=utf-8", body });
     }
     try {
@@ -74,6 +78,170 @@ async function open(page, { vscode = false, transport = null, seed = true } = {}
   }, tasks);
   return errors;
 }
+
+async function drawerContrast(page) {
+  return page.evaluate(() => {
+    const canvas = document.createElement("canvas"); canvas.width = canvas.height = 1;
+    const context = canvas.getContext("2d", { willReadFrequently: true });
+    const rgba = (color) => {
+      context.clearRect(0, 0, 1, 1); context.fillStyle = color; context.fillRect(0, 0, 1, 1);
+      const values = [...context.getImageData(0, 0, 1, 1).data]; values[3] /= 255; return values;
+    };
+    const over = (a, b) => [...a.slice(0, 3).map((c, i) => c * a[3] + b[i] * (1 - a[3])), 1];
+    const bg = (node) => {
+      if (!node) return rgba(getComputedStyle(document.documentElement).getPropertyValue("--bg"));
+      const color = rgba(getComputedStyle(node).backgroundColor);
+      return color[3] === 1 ? color : over(color, bg(node.parentElement));
+    };
+    const luminance = (channels) => channels.slice(0, 3).map((c) => c / 255)
+      .map((c) => c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4)
+      .reduce((sum, c, i) => sum + c * [0.2126, 0.7152, 0.0722][i], 0);
+    const ratio = (a, b) => (Math.max(luminance(a), luminance(b)) + 0.05) / (Math.min(luminance(a), luminance(b)) + 0.05);
+    const drawer = document.querySelector("[data-mobile-workspace-drawer]");
+    const selectors = [".mobile-navigation-head strong", ".task-rail-title > span:first-child",
+      ".task-count", "[data-task-filter]", ".task-workspace-name", ".task-workspace-folder-name",
+      ".task-workspace-folder-count", "[data-mobile-workspace-menu]", "[data-mobile-folder-menu]",
+      ".mobile-workspace-footer button", ".mobile-workspace-footer svg", ".mobile-navigation-head button", ".task-workspace-folder-glyph"];
+    const results = [];
+    for (const selector of selectors) for (const node of drawer.querySelectorAll(selector)) {
+      if (!node.getClientRects().length || node.closest("[hidden]")) continue;
+      const style = getComputedStyle(node);
+      const color = rgba(style.color); color[3] *= Number(style.opacity);
+      results.push({ selector, minimum: selector.includes("menu]") || selector.includes("glyph") || selector.includes("svg") ? 3 : 4.5,
+        foreground: style.color, background: bg(node), ratio: ratio(over(color, bg(node)), bg(node)) });
+      if (node.matches("input")) {
+        const placeholder = getComputedStyle(node, "::placeholder");
+        const c = rgba(placeholder.color); c[3] *= Number(placeholder.opacity);
+        results.push({ selector: "search-placeholder", minimum: 4.5,
+          foreground: placeholder.color, background: bg(node), ratio: ratio(over(c, bg(node)), bg(node)) });
+        results.push({ selector: "search-border", minimum: 3, ratio: ratio(over(rgba(style.borderTopColor), bg(node)), bg(node)) });
+      }
+    }
+    const focused = document.activeElement;
+    if (drawer.contains(focused) || document.querySelector("[data-mobile-drawer-menu]").contains(focused)) {
+      const s = getComputedStyle(focused);
+      results.push({ selector: "focus-indicator", minimum: 3, width: parseFloat(s.outlineWidth),
+        ratio: ratio(over(rgba(s.outlineColor), bg(focused)), bg(focused)) });
+    }
+    const selected = drawer.querySelector(".task-workspace-item[data-selected]");
+    if (selected) results.push({ selector: "selected-marker", minimum: 3,
+      ratio: ratio(over(rgba(getComputedStyle(selected).borderLeftColor), bg(selected)), bg(selected)) });
+    const scrim = rgba(getComputedStyle(drawer, "::backdrop").backgroundColor);
+    const menu = document.querySelector("[data-mobile-drawer-menu]");
+    if (menu.open) for (const node of menu.querySelectorAll("[role='menuitem']")) {
+      const style = getComputedStyle(node);
+      results.push({ selector: "context-menu-action", minimum: 4.5,
+        foreground: style.color, background: bg(node), ratio: ratio(over(rgba(style.color), bg(node)), bg(node)) });
+    }
+    const geometry = [...drawer.querySelectorAll(".task-workspace-item, .task-workspace-folder-summary")]
+      .filter((node) => node.getClientRects().length).map((node) => {
+        const box = node.getBoundingClientRect(); const glyph = node.querySelector("[data-mobile-workspace-menu], [data-mobile-folder-menu]");
+        const button = glyph?.getBoundingClientRect();
+        return { folder: node.matches("summary"), height: box.height,
+          target: button ? [button.width, button.height] : null,
+          sameLine: !button || (button.top >= box.top && button.bottom <= box.bottom),
+          image: getComputedStyle(node).backgroundImage, shadow: getComputedStyle(node).boxShadow };
+      });
+    return { results, overflow: drawer.scrollWidth - drawer.clientWidth,
+      opaque: rgba(getComputedStyle(drawer).backgroundColor)[3], scrimAlpha: scrim[3],
+      modal: drawer.matches(":modal"), background: getComputedStyle(drawer).backgroundColor, geometry };
+  });
+}
+
+test("Mobile Workspace drawer contrast survives every shipped theme and background", async () => {
+  const registry = loadThemeRegistry(fileURLToPath(assets));
+  const baseline = process.env.HUB111_DRAWER_BASELINE === "1";
+  const directory = new URL("../../WIP/mobile-drawer-theme-captures/", import.meta.url);
+  await mkdir(directory, { recursive: true });
+  const browser = await chromium.launch({ channel: process.platform === "win32" ? "msedge" : undefined, headless: true });
+  const failures = [], measurements = [];
+  try {
+    for (const width of baseline ? [390] : [320, 360, 390, 430]) {
+      const context = await browser.newContext({ viewport: { width, height: 844 }, isMobile: true, hasTouch: true });
+      const page = await context.newPage();
+      const errors = await open(page, { themeRegistry: registry });
+      await page.evaluate(() => {
+        const drawer = document.querySelector("[data-mobile-workspace-drawer]");
+        drawer.addEventListener("beforetoggle", (event) => {
+          if (event.newState !== "open") return;
+          window.drawerFrameColors = [];
+          const record = () => window.drawerFrameColors.push({
+            drawer: getComputedStyle(drawer).backgroundColor,
+            rail: getComputedStyle(drawer.querySelector(".task-rail")).backgroundColor,
+            text: getComputedStyle(drawer.querySelector(".task-workspace-name")).color,
+            expectedText: getComputedStyle(document.documentElement).getPropertyValue("--mobile-navigation-text").trim(),
+          });
+          record(); requestAnimationFrame(() => { if (drawer.open) record(); });
+        });
+      });
+      if (!baseline) await page.evaluate((tasks) => {
+        AgentHub.setWorkspaces([{ id: "a", name: "AgentHub", settings: { catalogFolder: "РАБОТА" } },
+          { id: "b", name: "Utilities", settings: { catalogFolder: "РАБОТА" } },
+          { id: "c", name: "Workspace с очень длинным названием для проверки строки вне папки", settings: {} }]);
+        AgentHub.setTasks([...tasks, { id: "c1", streamId: "c-stream", workspaceId: "c",
+          workspaceName: "Workspace с очень длинным названием для проверки строки вне папки", streamName: "Long", provider: "codex", workspaceSettings: {} }]);
+      }, tasks);
+      const check = async (state, theme, background) => {
+        const result = await drawerContrast(page);
+        measurements.push({ ...result, width, theme, backgroundId: background, state });
+        if (!result.modal || result.opaque !== 1 || result.scrimAlpha < 0.5 || result.overflow > 1) failures.push({ width, theme, background, state, result });
+        for (const metric of result.results) if (metric.ratio < metric.minimum || metric.width === 0) {
+          failures.push({ width, theme, backgroundId: background, state, ...metric });
+        }
+        if (!baseline) for (const row of result.geometry) {
+          if (row.height < 44 || row.height > (row.folder ? 44 : 48) || !row.sameLine || row.target?.some((value) => value < 44) || row.image !== "none") failures.push({ width, theme, backgroundId: background, state, geometry: row });
+        }
+      };
+      for (const theme of registry.themes.filter((theme) => !baseline || theme.id === "orange")) {
+        await page.locator("[data-theme-select]").evaluate((select, id) => { select.value = id; select.dispatchEvent(new Event("change", { bubbles: true })); }, theme.id);
+        await page.waitForFunction((id) => document.documentElement.dataset.theme === id, theme.id);
+        for (const background of theme.backgrounds) {
+          await page.locator("[data-background-select]").evaluate((select, id) => { select.value = id; select.dispatchEvent(new Event("change", { bubbles: true })); }, background.id);
+          await page.waitForFunction((id) => document.documentElement.dataset.background === id, background.id);
+          await page.locator("[data-mobile-workspaces-open]").click();
+          if (!baseline) {
+            await page.waitForFunction(() => window.drawerFrameColors.length >= 2);
+            const frames = await page.evaluate(() => ({ samples: window.drawerFrameColors, surface: document.documentElement.dataset.surface, innerWidth }));
+            assert.equal(frames.samples.every((sample) => sample.drawer === sample.rail && sample.drawer === frames.samples[0].drawer), true, JSON.stringify({ theme: theme.id, width, frames }));
+          }
+          await check("default-selected", theme.id, background.id);
+          if (!baseline && [320, 390].includes(width) && background.id === theme.id && ["orange", "orbit"].includes(theme.id)) {
+            await page.screenshot({ path: fileURLToPath(new URL(`${theme.id}-density-${width}.png`, directory)) });
+          }
+          await page.locator("[data-task-filter]").focus();
+          await check("search-focus", theme.id, background.id);
+          await page.locator('[data-workspace-select="b"]').hover();
+          await check("hover", theme.id, background.id);
+          await page.keyboard.press("Tab");
+          await page.locator('[data-workspace-select="a"] [data-mobile-workspace-menu]').focus();
+          await check("keyboard-focus", theme.id, background.id);
+          if (!baseline) {
+            await page.locator('[data-workspace-select="a"] [data-mobile-workspace-menu]').click();
+            await check("workspace-menu", theme.id, background.id);
+            assert.equal(await page.locator("[data-mobile-workspace-drawer]").evaluate((d) => d.open), true);
+            await page.keyboard.press("Escape");
+            await page.waitForFunction(() => !document.querySelector("[data-mobile-drawer-menu]").open);
+            assert.equal(await page.locator('[data-workspace-select="a"] [data-mobile-workspace-menu]').evaluate((n) => document.activeElement === n), true);
+            await page.locator('[data-workspace-folder-kind="folder"] [data-mobile-folder-menu]').click();
+            await check("folder-menu", theme.id, background.id);
+            await page.evaluate(() => AgentHub.navigateBack());
+            await page.waitForFunction(() => !document.querySelector("[data-mobile-drawer-menu]").open);
+            assert.equal(await page.locator("[data-mobile-workspace-drawer]").evaluate((d) => d.open), true);
+            assert.equal(await page.locator('[data-workspace-folder-kind="folder"] [data-mobile-folder-menu]').evaluate((n) => document.activeElement === n), true);
+          }
+          if (width === 390 && background.id === theme.id && ["orange", "orbit"].includes(theme.id)) {
+            await page.screenshot({ path: fileURLToPath(new URL(`${theme.id}-${baseline ? "before" : "after"}-390.png`, directory)) });
+          }
+          await page.keyboard.press("Escape");
+        }
+      }
+      assert.deepEqual(errors, []);
+      await context.close();
+    }
+  } finally { await browser.close(); }
+  await writeFile(new URL(baseline ? "before-matrix.json" : "contrast-matrix.json", directory), JSON.stringify({ measurements, failures }, null, 2));
+  assert.equal(failures.length, 0, JSON.stringify(failures.slice(0, 12)));
+});
 
 test("Mobile dialogs scope, modal navigation, Back, drafts and responsive parity", async () => {
   const browser = await chromium.launch({ channel: process.platform === "win32" ? "msedge" : undefined, headless: true });
@@ -249,6 +417,99 @@ test("mobile parity paths expose Workspace/archive, Stream actions and readable 
     await save("composer-disabled-390.png");
     assert.deepEqual(errors, []);
   } finally { await context.close(); await browser.close(); }
+});
+
+test("drawer menu layers keep compact navigation visible through pointer, Back, edit and rename", async () => {
+  const registry = loadThemeRegistry(fileURLToPath(assets));
+  const directory = new URL("../../WIP/mobile-drawer-theme-captures/", import.meta.url);
+  await mkdir(directory, { recursive: true });
+  const browser = await chromium.launch({ channel: process.platform === "win32" ? "msedge" : undefined, headless: true });
+  try {
+    for (const width of [320, 360, 390, 430]) for (const theme of ["orange", "orbit"]) {
+      const context = await browser.newContext({ viewport: { width, height: 844 }, isMobile: true, hasTouch: true,
+        colorScheme: theme === "orange" ? "light" : "dark" });
+      const page = await context.newPage();
+      const errors = await open(page, { themeRegistry: registry });
+      await page.locator("[data-theme-select]").evaluate((select, id) => { select.value = id; select.dispatchEvent(new Event("change", { bubbles: true })); }, theme);
+      await page.evaluate(() => {
+        window.drawerClosedCount = 0;
+        document.querySelector("[data-mobile-workspace-drawer]").addEventListener("close", () => window.drawerClosedCount++);
+      });
+      const save = async (state) => {
+        if ([320, 390].includes(width)) await page.screenshot({ path: fileURLToPath(new URL(`${theme}-${state}-${width}.png`, directory)) });
+      };
+      const drawer = page.locator("[data-mobile-workspace-drawer]");
+      const menu = page.locator("[data-mobile-drawer-menu]");
+      const workspaceOpener = page.locator('[data-workspace-select="b"] [data-mobile-workspace-menu]');
+      const folderOpener = page.locator('[data-workspace-folder-kind="folder"] [data-mobile-folder-menu]');
+      await page.locator("[data-mobile-workspaces-open]").click();
+      await page.locator('[data-workspace-select="a"] [data-mobile-workspace-menu]').focus();
+      await save("matched-after");
+      await workspaceOpener.click();
+      assert.equal(await drawer.evaluate((d) => d.open), true);
+      assert.equal(await menu.evaluate((d) => d.matches(":modal")), true);
+      assert.equal(await page.locator('[data-workspace-select="a"] [data-mobile-workspace-select]').getAttribute("aria-pressed"), "true");
+      for (let index = 0; index < 3; index++) {
+        await page.keyboard.press("Tab");
+        assert.equal(await menu.evaluate((d) => d.contains(document.activeElement)), true);
+      }
+      await save("workspace-menu");
+      await page.evaluate(() => history.back());
+      await page.waitForFunction(() => !document.querySelector("[data-mobile-drawer-menu]").open);
+      assert.equal(await workspaceOpener.evaluate((n) => document.activeElement === n), true);
+      assert.equal(await page.evaluate(() => window.drawerClosedCount), 0);
+      await workspaceOpener.click();
+      await page.mouse.click(4, 100);
+      assert.equal(await menu.evaluate((d) => d.open), false);
+      assert.equal(await drawer.evaluate((d) => d.open), true);
+      assert.equal(await page.evaluate(() => window.drawerClosedCount), 0);
+      await workspaceOpener.focus(); await page.keyboard.press("Enter");
+      assert.equal(await menu.evaluate((d) => d.open), true);
+      assert.equal(await page.locator('[data-workspace-select="a"] [data-mobile-workspace-select]').getAttribute("aria-pressed"), "true");
+      await page.keyboard.press("Escape");
+      await workspaceOpener.focus(); await page.keyboard.press("Shift+F10");
+      assert.equal(await menu.evaluate((d) => d.open), true);
+      await page.keyboard.press("Escape");
+      assert.equal(await workspaceOpener.evaluate((n) => n.parentElement.querySelector("[data-mobile-workspace-select]")?.parentElement === n.parentElement && n.parentElement.getAttribute("role") !== "button"), true);
+      await workspaceOpener.click();
+      await page.getByRole("menuitem", { name: "Редактировать…", exact: true }).click();
+      assert.equal(await page.locator("[data-workspace-card-name]").inputValue(), "Utilities");
+      assert.equal(await drawer.evaluate((d) => d.open), true);
+      await save("edit-layer");
+      await page.evaluate(() => AgentHub.navigateBack());
+      await page.waitForFunction(() => !document.querySelector("[data-workspace-card-modal]").open);
+      assert.equal(await workspaceOpener.evaluate((n) => document.activeElement === n), true);
+      await folderOpener.click(); await save("folder-menu");
+      await page.getByRole("menuitem", { name: "Переименовать папку…", exact: true }).click();
+      assert.equal(await page.locator("[data-text-dialog-input]").inputValue(), "РАБОТА");
+      assert.equal(await drawer.evaluate((d) => d.open), true);
+      assert.equal(await menu.evaluate((d) => d.matches(":modal")), true);
+      await save("rename-layer");
+      await page.keyboard.press("Escape");
+      await page.waitForFunction(() => !document.querySelector("[data-mobile-drawer-menu]").open);
+      assert.equal(await folderOpener.evaluate((n) => document.activeElement === n), true);
+      assert.equal(await page.evaluate(() => window.drawerClosedCount), 0);
+      await workspaceOpener.click();
+      await page.evaluate((tasks) => {
+        AgentHub.setWorkspaces([{ id: "a", name: "AgentHub", settings: { catalogFolder: "РАБОТА" } }]);
+        AgentHub.setTasks(tasks.filter((task) => task.workspaceId === "a"));
+      }, tasks);
+      await page.keyboard.press("Escape");
+      await page.waitForFunction(() => !document.querySelector("[data-mobile-drawer-menu]").open);
+      assert.equal(await page.locator('[data-workspace-select="a"] [data-mobile-workspace-menu]').evaluate((n) => document.activeElement === n), true);
+      await page.evaluate(() => AgentHub.navigateBack());
+      await page.waitForFunction(() => !document.querySelector("[data-mobile-workspace-drawer]").open && window.drawerClosedCount === 1);
+      assert.equal(await page.evaluate(() => window.drawerClosedCount), 1);
+      if (width === 430 && theme === "orbit") {
+        await page.setViewportSize({ width: 1280, height: 844 });
+        await page.waitForFunction(() => !document.documentElement.hasAttribute("data-mobile-dialogs-enabled"));
+        assert.equal(await page.locator("[data-mobile-workspace-select]").count(), 0);
+        assert.equal(await page.locator('[data-workspace-select="a"]').getAttribute("role"), "button");
+      }
+      assert.deepEqual(errors, []);
+      await context.close();
+    }
+  } finally { await browser.close(); }
 });
 
 test("mobile initial loading and failed-load retry keep explicit states", async () => {
