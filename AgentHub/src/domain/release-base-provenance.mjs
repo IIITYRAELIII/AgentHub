@@ -5,9 +5,12 @@ import { createHash } from "node:crypto";
 // discriminated envelopes in its manifest and checkpoint:
 // - explicit-reviewed-main-v1: the Release Manager reviewed local/origin main;
 // - selected-task-adoption-v1: selected Task results adopted the base through
-//   immutable upstream-adoption receipts (REL-001 ordinary Await preparation).
+//   immutable upstream-adoption receipts (historical pre-cutover authority);
+// - agreed-main-native-git-v1: the native ordinary path binds agreed main
+//   separately from publication history, without silently changing either.
 export const EXPLICIT_REVIEWED_MAIN_PROVENANCE = "explicit-reviewed-main-v1";
 export const SELECTED_TASK_ADOPTION_PROVENANCE = "selected-task-adoption-v1";
+export const NATIVE_MAIN_PROVENANCE = "agreed-main-native-git-v1";
 
 const COMMIT = /^[0-9a-f]{40}$/u;
 const ADOPTION_REF_PREFIX = "refs/agent-hub/upstream-adoptions/";
@@ -43,6 +46,22 @@ function normalizedAdoption(value) {
 export function normalizedReleaseBaseProvenance(value, expectedBaseCommit = null) {
   if (value == null) return null;
   const kind = text(value?.kind);
+  if (kind === NATIVE_MAIN_PROVENANCE) {
+    const normalized = { schemaVersion: Number(value?.schemaVersion), kind,
+      publishedBaseCommit: text(value?.publishedBaseCommit), agreedMainCommit: text(value?.agreedMainCommit) };
+    if (value.approvedLocalMainCommit != null || value.approvedOriginMainCommit != null) {
+      normalized.approvedLocalMainCommit = text(value.approvedLocalMainCommit);
+      normalized.approvedOriginMainCommit = text(value.approvedOriginMainCommit);
+      if (normalized.approvedLocalMainCommit !== normalized.agreedMainCommit
+          || !COMMIT.test(normalized.approvedOriginMainCommit)) throw new Error("Native reviewed main provenance changed");
+    }
+    if (normalized.schemaVersion !== 1
+        || ![normalized.publishedBaseCommit, normalized.agreedMainCommit].every((commit) => COMMIT.test(commit))
+        || expectedBaseCommit && normalized.agreedMainCommit !== expectedBaseCommit) {
+      throw new Error("release candidate has invalid agreed main provenance");
+    }
+    return normalized;
+  }
   if (kind === SELECTED_TASK_ADOPTION_PROVENANCE) {
     const adoptions = Array.isArray(value?.adoptions) ? value.adoptions.map(normalizedAdoption) : [];
     const normalized = {
@@ -88,6 +107,7 @@ export function normalizedReleaseBaseProvenance(value, expectedBaseCommit = null
 // exact approved origin main that the operator expects.
 export function releaseBaseProvenanceApprovedBase(provenance) {
   if (!provenance) return null;
+  if (provenance.kind === NATIVE_MAIN_PROVENANCE) return provenance.agreedMainCommit;
   return provenance.kind === SELECTED_TASK_ADOPTION_PROVENANCE
     ? provenance.adoptedBaseCommit
     : provenance.approvedOriginMainCommit;

@@ -3,10 +3,12 @@ import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 
 import { HubMcpService } from "./src/application/hub-mcp-service.mjs";
+import { createNativeMergeReviewVerifier } from "./src/application/native-merge-review.mjs";
+import { measureTaskOperation } from "./src/infrastructure/process/task-operation-timing.mjs";
 import { TaskBoardService } from "./src/application/task-board-service.mjs";
 import { TaskLifecycleService } from "./src/application/task-lifecycle-service.mjs";
 import { TaskReleasePlanService } from "./src/application/task-release-plan-service.mjs";
@@ -14,6 +16,10 @@ import { WorkspaceReleasePreflightService } from "./src/application/workspace-re
 import { resolveReleaseValidationSource } from "./src/composition/infrastructure-composition.mjs";
 import { createPersistenceMutationCapabilities } from "./src/composition/persistence-mutation-composition.mjs";
 import { taskProjectRoot } from "./src/domain/task-project-root.mjs";
+import { normalizedInitialNativeTest, taskGitIdentityHash } from "./src/domain/task-git-reference.mjs";
+import { runtimeLayout, runtimeReleaseDirectory } from "./src/infrastructure/filesystem/runtime-layout.mjs";
+import { verifyRuntimeManifest } from "./src/infrastructure/filesystem/runtime-manifest-verifier.mjs";
+import { runtimeStatus } from "./src/runtime/runtime-manager.mjs";
 import { loadConfig, samePath } from "./src/infrastructure/filesystem/config.mjs";
 import { ReleaseGitWorkspaceService } from "./src/infrastructure/filesystem/release-git-workspace.mjs";
 import { TaskGitWorkspaceService } from "./src/infrastructure/filesystem/task-git-workspace.mjs";
@@ -39,7 +45,7 @@ export function parseTaskAwaitCutoverArguments(argv) {
   for (let index = 0; index < argv.length; index += 1) {
     const name = argv[index];
     if (!name.startsWith("--")) throw new Error(`Unexpected argument: ${name}`);
-    if (name === "--confirm-cutover" || name === "--squash-bootstrap") {
+    if (name === "--confirm-cutover" || name === "--squash-bootstrap" || name === "--initial-native-test" || name === "--returned-native-test") {
       input[name.slice(2)] = true;
       continue;
     }
@@ -57,7 +63,7 @@ export function parseTaskAwaitCutoverArguments(argv) {
     requestId: required(input, "request"),
     repositoryRoot: path.resolve(required(input, "repository")),
     expectedSourceCommit: required(input, "expected-source-commit").toLowerCase(),
-    expectedProjectorSha256: required(input, "expected-projector-sha256").toLowerCase(),
+    expectedProjectorSha256: input["initial-native-test"] || input["returned-native-test"] ? null : required(input, "expected-projector-sha256").toLowerCase(),
     expectedTaskRevision: Number(required(input, "expected-task-revision")),
     sourceTaskId: String(input["source-task"] ?? "").trim() || null,
     expectedSourceTaskRevision: input["expected-source-task-revision"] == null
@@ -65,13 +71,42 @@ export function parseTaskAwaitCutoverArguments(argv) {
       : Number(input["expected-source-task-revision"]),
     confirm: input.confirm === true,
     squashBootstrap: input["squash-bootstrap"] === true,
+    initialNativeTest: input["initial-native-test"] === true || input["returned-native-test"] === true,
   };
   parsed.confirm = input["confirm-cutover"] === true;
   if (!Number.isInteger(parsed.expectedTaskRevision) || parsed.expectedTaskRevision < 1) {
     throw new Error("--expected-task-revision must be a positive integer");
   }
   if (!shaPattern.test(parsed.expectedSourceCommit)) throw new Error("invalid expected source commit");
-  if (!/^[a-f0-9]{64}$/u.test(parsed.expectedProjectorSha256)) throw new Error("invalid expected projector SHA-256");
+  if (!parsed.initialNativeTest && !/^[a-f0-9]{64}$/u.test(parsed.expectedProjectorSha256)) throw new Error("invalid expected projector SHA-256");
+  if (parsed.initialNativeTest) {
+    const allowed = new Set(["workspace", "stream", "provider", "thread", "task", "request", "repository",
+      "expected-task-revision", "initial-native-test", "confirm-cutover", "expected-source-commit",
+      "expected-source-tree", "expected-source-branch", "expected-main-commit", "expected-dev-commit",
+      "expected-publication-sha256", "expected-candidate-sha256", "expected-plan-revision", "expected-runtime-sha256"]);
+    allowed.add("native-resolution-review-file");
+    if (input["native-resolution-review-file"]) parsed.nativeResolutionReviewFile = path.resolve(input["native-resolution-review-file"]);
+    if (input["returned-native-test"]) {
+      if (input["initial-native-test"]) throw new Error("Returned native Test and initial native Test are distinct admissions");
+      allowed.add("returned-native-test"); allowed.add("expected-returned-result-commit");
+      parsed.expectedReturnedResultCommit = required(input, "expected-returned-result-commit");
+    }
+    if (Object.keys(input).some(key => !allowed.has(key))) throw new Error("Initial native Test is a distinct confirmed same-Task admission");
+    if (parsed.squashBootstrap || parsed.sourceTaskId || input["expected-projector-sha256"] || !parsed.confirm) {
+      throw new Error("Initial native Test is a distinct confirmed same-Task admission");
+    }
+    for (const [property, argument] of Object.entries({ expectedSourceTree: "expected-source-tree",
+      expectedSourceBranch: "expected-source-branch", expectedMainCommit: "expected-main-commit",
+      expectedDevCommit: "expected-dev-commit", expectedPublicationHash: "expected-publication-sha256",
+      expectedCandidateHash: "expected-candidate-sha256", expectedPlanRevision: "expected-plan-revision",
+      expectedRuntimeHash: "expected-runtime-sha256" })) parsed[property] = required(input, argument);
+    normalizedInitialNativeTest({ sourceRoot: workspaceRoot, sourceCommit: parsed.expectedSourceCommit,
+      sourceTree: parsed.expectedSourceTree, sourceBranch: parsed.expectedSourceBranch,
+      mainCommit: parsed.expectedMainCommit, devCommit: parsed.expectedDevCommit,
+      publicationHash: parsed.expectedPublicationHash, candidateHash: parsed.expectedCandidateHash,
+      planRevision: parsed.expectedPlanRevision, runtimeHash: parsed.expectedRuntimeHash,
+      ...(parsed.expectedReturnedResultCommit ? { returnedResultCommit: parsed.expectedReturnedResultCommit } : {}) });
+  }
   if ((parsed.sourceTaskId == null) !== (parsed.expectedSourceTaskRevision == null)
       || (parsed.sourceTaskId && (!Number.isInteger(parsed.expectedSourceTaskRevision)
         || parsed.expectedSourceTaskRevision < 1))) {
@@ -123,8 +158,8 @@ export function parseTaskAwaitCutoverArguments(argv) {
   return parsed;
 }
 
-async function git(args) {
-  const result = await execFileAsync("git", ["-C", workspaceRoot, ...args], {
+async function git(args, root = workspaceRoot) {
+  const result = await execFileAsync("git", ["-C", root, ...args], {
     encoding: "utf8", timeout: 10_000, windowsHide: true,
   });
   return String(result.stdout ?? "").trim();
@@ -133,18 +168,25 @@ async function git(args) {
 export async function inspectTaskAwaitCutoverSource({
   expectedSourceCommit, expectedProjectorSha256, squashBootstrap = false,
   expectedSourceTree = null, artifactFiles = null, expectedArtifacts = null,
-} = {}) {
-  const headCommit = (await git(["rev-parse", "HEAD"])).toLowerCase();
+  initialNativeTest = false, expectedSourceBranch = null,
+} = {}, { sourceRoot = workspaceRoot } = {}) {
+  const sourceGit = args => git(args, sourceRoot);
+  const headCommit = (await sourceGit(["rev-parse", "HEAD"])).toLowerCase();
   if (headCommit !== expectedSourceCommit) throw new Error("Task Await cutover source commit changed");
-  if (await git(["status", "--porcelain=v1", "--untracked-files=all"])) {
+  if (await sourceGit(["status", "--porcelain=v1", "--untracked-files=all"])) {
     throw new Error("Task Await cutover source checkout is dirty");
+  }
+  const headTree = (await sourceGit(["rev-parse", "HEAD^{tree}"])).toLowerCase();
+  if (initialNativeTest) {
+    const branch = await sourceGit(["symbolic-ref", "--quiet", "--short", "HEAD"]);
+    if (headTree !== expectedSourceTree || branch !== expectedSourceBranch) throw new Error("Initial native Test source tree or branch changed");
+    return { sourceRoot: path.resolve(sourceRoot), headCommit, headTree, branch };
   }
   const projectorFile = path.join(workspaceRoot, ...projectorRelativePath.split("/"));
   const projectorSha256 = createHash("sha256").update(await readFile(projectorFile)).digest("hex");
   if (projectorSha256 !== expectedProjectorSha256) {
     throw new Error("Task Await cutover projector hash changed");
   }
-  const headTree = (await git(["rev-parse", "HEAD^{tree}"])).toLowerCase();
   if (!squashBootstrap) {
     return { sourceRoot: workspaceRoot, headCommit, headTree, projectorRelativePath, projectorSha256 };
   }
@@ -159,6 +201,24 @@ export async function inspectTaskAwaitCutoverSource({
     throw new Error("Task squash cutover artifact hash changed");
   }
   return { sourceRoot: workspaceRoot, headCommit, headTree, projectorRelativePath, projectorSha256, artifacts };
+}
+
+export async function inspectInstalledNativeTestOwner({ runtimeRoot } = {}) {
+  const layout = runtimeLayout(runtimeRoot);
+  const status = await runtimeStatus({ runtimeRoot: layout.root, requireProcessEvidence: true });
+  const manifest = status.current ? await readFile(path.join(runtimeReleaseDirectory(layout.root, status.current), "runtime-manifest.json")) : null;
+  const parsed = manifest ? JSON.parse(manifest.toString("utf8")) : null;
+  if (parsed && parsed.releaseId !== status.current) throw new Error("Installed runtime manifest identity changed");
+  let available = false;
+  if (status.ready && status.runningRelease === status.current
+      && parsed?.files?.some(entry => entry.path === "src/infrastructure/filesystem/native-release-merge.mjs")) {
+    const releaseRoot = runtimeReleaseDirectory(layout.root, status.current);
+    await verifyRuntimeManifest(releaseRoot, status.current);
+    const owner = await import(pathToFileURL(path.join(releaseRoot, "src/application/hub-mcp-service.mjs")).href);
+    available = owner.HubMcpService?.nativeTaskStatusVersion === 1;
+  }
+  return { available, hash: taskGitIdentityHash({ status, manifestSha256: manifest
+    ? createHash("sha256").update(manifest).digest("hex") : null }) };
 }
 
 export async function openTaskAwaitCutoverRuntime({
@@ -182,12 +242,14 @@ export async function openTaskAwaitCutoverRuntime({
     autoPlaceConfidence: config.taskBoard.autoPlaceConfidence,
     recordEvent: (event) => workspaceCatalogStore.recordWorkspaceEvent(event),
   });
+  const verifyNativeResolutionReview = createNativeMergeReviewVerifier({ workspaceCatalog: workspaceCatalogStore, taskBoard });
   const taskGitWorkspaces = suppliedTaskGitWorkspaces
-    ?? new TaskGitWorkspaceService({ dataDir: config.dataDir });
+    ?? new TaskGitWorkspaceService({ dataDir: config.dataDir, verifyNativeResolutionReview });
   const releaseGitWorkspaces = suppliedReleaseGitWorkspaces
-    ?? new ReleaseGitWorkspaceService({ dataDir: config.dataDir });
+    ?? new ReleaseGitWorkspaceService({ dataDir: config.dataDir, verifyNativeResolutionReview });
   const releasePlanner = new TaskReleasePlanService({ taskBoard, taskGitWorkspaces });
   const releasePreflight = suppliedReleasePreflight ?? new WorkspaceReleasePreflightService({
+    measureOperation: measureTaskOperation,
     releasePlanner,
     taskGitWorkspaces,
     releaseGitWorkspaces,
@@ -202,6 +264,7 @@ export async function openTaskAwaitCutoverRuntime({
     taskBoard, workspaceCatalog: workspaceCatalogStore, taskGitWorkspaces, releasePreflight,
   });
   const service = new HubMcpService({
+    measureOperation: measureTaskOperation,
     workspaceCatalog: workspaceCatalogStore,
     taskBoard,
     taskLifecycle,
@@ -219,6 +282,7 @@ export async function openTaskAwaitCutoverRuntime({
     service,
     taskBoard,
     workspaceCatalog: workspaceCatalogStore,
+    inspectInstalledNativeOwner: () => inspectInstalledNativeTestOwner({ runtimeRoot: path.dirname(config.dataDir) }),
     close() {
       raw.taskBoardStore.close();
       raw.workspaceCatalogStore.close();
@@ -231,6 +295,8 @@ export async function executeTaskAwaitCutover(input, {
   openRuntime = openTaskAwaitCutoverRuntime,
 } = {}) {
   const source = await inspectSource(input);
+  const nativeResolutionReview = input.nativeResolutionReviewFile
+    ? JSON.parse(await readFile(input.nativeResolutionReviewFile, "utf8")) : null;
   const runtime = await openRuntime();
   try {
     const token = runtime.service.contextToken({
@@ -242,6 +308,28 @@ export async function executeTaskAwaitCutover(input, {
     }
     const before = runtime.taskBoard.task(input.taskId);
     if (!before || before.workspaceId !== input.workspaceId) throw new Error("Task Await cutover Task identity changed");
+    if (input.initialNativeTest) {
+      const workspace = runtime.workspaceCatalog.workspace(before.workspaceId);
+      const stream = runtime.workspaceCatalog.stream(before.streamId);
+      if (!workspace || !stream || !samePath(taskProjectRoot({ workspace, stream }), input.repositoryRoot)) {
+        throw new Error("Initial native Test canonical repository changed");
+      }
+      const identity = normalizedInitialNativeTest({ sourceRoot: source.sourceRoot, sourceCommit: source.headCommit,
+        sourceTree: source.headTree, sourceBranch: source.branch, mainCommit: input.expectedMainCommit,
+        devCommit: input.expectedDevCommit, publicationHash: input.expectedPublicationHash,
+        candidateHash: input.expectedCandidateHash, planRevision: input.expectedPlanRevision,
+        runtimeHash: input.expectedRuntimeHash,
+        ...(input.expectedReturnedResultCommit ? { returnedResultCommit: input.expectedReturnedResultCommit } : {}) });
+      const result = await runtime.service.callTaskStatusCutover({ context_token: token,
+        request_id: input.requestId, task_id: input.taskId, status: "testing",
+        expected_task_revision: input.expectedTaskRevision, expected_workflow_status: "in_progress",
+        initial_native_test: identity,
+        ...(nativeResolutionReview ? { native_resolution_review: nativeResolutionReview } : {}) }, {
+        verifySource: () => inspectSource(input),
+        inspectInstalledNativeOwner: runtime.inspectInstalledNativeOwner,
+      });
+      return { source, before: { id: before.id, revision: before.revision, workflowStatus: before.workflowStatus }, result };
+    }
     const expectedBeforeStatus = input.squashBootstrap ? "in_progress" : "testing";
     if (before.revision !== input.expectedTaskRevision || before.workflowStatus !== expectedBeforeStatus) {
       throw new Error("Task Await cutover Task revision or status changed");

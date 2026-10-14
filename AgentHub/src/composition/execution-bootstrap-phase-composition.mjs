@@ -290,7 +290,7 @@ export function createExecutionBootstrapPhase({
       backgroundJobs: provider.backgroundJobs,
       maxSpeechJobs: settings.maxBackgroundSpeechJobs,
       currentUiContextToken: (callbackData = "") => (
-        /^(?:approval-mode:|p:\d+|engine:|codex-model:|codex-reasoning:|codex-mode:|claude-reasoning:|claude-mode:|model:)/
+        /^(?:approval-mode:|p:\d+|engine:|cm:|am:|codex-model:|codex-reasoning:|codex-mode:|claude-reasoning:|claude-mode:|model:)/
           .test(String(callbackData))
           ? api.currentUiContextToken()
           : telegramTasks.currentUiContextToken()

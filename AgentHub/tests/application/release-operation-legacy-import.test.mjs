@@ -68,7 +68,7 @@ test("post-import primary proof preserves orphan evidence, generation and events
   assert.equal(original.operation.resumeState, null);
   assert.equal(original.operation.waitReason.retryAt, undefined);
   await writeFile(checkpointFile, JSON.stringify({ ...JSON.parse(changed), phase: "changed" }));
-  await assert.rejects(importLegacyReleaseOperations(options), /legacy release evidence changed/);
+  assert.equal((await importLegacyReleaseOperations(options)).skipped[0].code, "RELEASE_LEGACY_EVIDENCE_CHANGED");
   assert.deepEqual(rows(), before);
 });
 
@@ -86,7 +86,7 @@ test("proof already present at first import remains exact evidence on replay", a
   assert.deepEqual(store.snapshot(first.imported[0].operationId), original);
   await writeFile(checkpointFile, JSON.stringify({ ...checkpoint,
     primarySynchronizationProof: { proofHash: "b".repeat(64) } }));
-  await assert.rejects(importLegacyReleaseOperations(options), /legacy release evidence changed/);
+  assert.equal((await importLegacyReleaseOperations(options)).skipped[0].code, "RELEASE_LEGACY_EVIDENCE_CHANGED");
 });
 
 test("primary proof cannot relax an authoritative publication evidence guard", async (context) => {
@@ -100,7 +100,7 @@ test("primary proof cannot relax an authoritative publication evidence guard", a
   const original = store.snapshot(first.imported[0].operationId);
   await writeFile(path.join(setup.releaseRoot, "..", "checkpoint.json"), JSON.stringify({
     ...setup.checkpoint, primarySynchronizationProof: { proofHash: "f".repeat(64) } }));
-  await assert.rejects(importLegacyReleaseOperations(options), /legacy release evidence changed/);
+  assert.equal((await importLegacyReleaseOperations(options)).skipped[0].code, "RELEASE_LEGACY_EVIDENCE_CHANGED");
   assert.deepEqual(store.snapshot(first.imported[0].operationId), original);
 });
 
@@ -184,4 +184,27 @@ test("matching succeeded publication imports as terminal history", async (contex
   const snapshot = store.snapshot(result.imported[0].operationId);
   assert.equal(snapshot.operation.state, "done");
   assert.equal(snapshot.operation.migration.evidenceOnly, false);
+});
+
+test("unavailable historical entries are diagnosed separately and a valid entry still imports", async t => {
+  const f = await fixture(t), diagnostics = [];
+  const badRoot = path.join(f.dataDir, "release-repositories", "bad-json");
+  await mkdir(badRoot, { recursive: true });
+  await writeFile(path.join(badRoot, "checkpoint.json"), "{broken");
+  const store = new ReleaseOperationStore({ dataDir: f.dataDir });
+  const options = { store, dataDir: f.dataDir, runnerVersion: "runner", readStatus: async () => null,
+    resolveTree: async () => "e".repeat(40), reportDiagnostic: diagnostic => diagnostics.push(diagnostic) };
+  const result = await importLegacyReleaseOperations(options);
+  assert.equal(result.imported.length, 1);
+  assert.equal(diagnostics[0].repositoryKey, "bad-json");
+  assert.equal(diagnostics[0].code, "INVALID_JSON");
+  const original = store.snapshot(result.imported[0].operationId);
+  const missing = await importLegacyReleaseOperations({ ...options, resolveTree: async () => { throw new Error("old Git object absent"); } });
+  assert.equal(missing.imported.length, 0);
+  assert.equal(missing.skipped.find(entry => entry.repositoryKey === "repository-a").code, "RELEASE_LEGACY_GIT_UNAVAILABLE");
+  assert.deepEqual(store.snapshot(original.operation.operationId), original);
+  assert.equal(original.operation.waitReason.code, "legacy_snapshot_evidence");
+  await assert.rejects(importLegacyReleaseOperations({ ...options,
+    store: { importLegacy: () => { throw Object.assign(new Error("database unavailable"), { code: "SQLITE_BUSY" }); } } }),
+    { code: "SQLITE_BUSY" });
 });

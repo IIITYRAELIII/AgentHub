@@ -1,13 +1,13 @@
+import { createHash } from "node:crypto";
+import { selectedCompositionFields, selectedAbsorptionHandoff, normalizedSelectedAbsorption,
+  assertSelectedAbsorptionTasks } from "../domain/task-selected-composition.mjs";
 import { realpathSync } from "node:fs";
 import path from "node:path";
 
 import { taskProjectRoot } from "../domain/task-project-root.mjs";
 import { TaskAbsorptionCompositionError } from "../domain/task-board-task.mjs";
 import { normalizedTaskSquashCutover } from "../domain/task-squash-cutover.mjs";
-import { TaskGitHistoryRejectedError } from "../domain/task-git-reference.mjs";
-import { selectedCompositionFields, selectedAbsorptionHandoff, normalizedSelectedAbsorption,
-  assertSelectedAbsorptionTasks } from "../domain/task-selected-composition.mjs";
-import { createHash } from "node:crypto";
+import { TaskGitHistoryRejectedError, normalizedInitialNativeTest } from "../domain/task-git-reference.mjs";
 
 export class TaskIntegrationRejectedError extends Error {
   constructor(cause) {
@@ -25,7 +25,7 @@ export class TaskWithdrawalBusyError extends Error {
 
 export class TaskIntegrationConflictError extends Error {
   constructor(details) {
-    super(`Task merge conflict: ${details.conflicts.join(", ")}. dev restored; continue in ${details.projectRoot}. ${JSON.stringify(details)}`);
+    super(`Task merge conflict: ${details.conflicts.join(", ")}. dev unchanged; resolve and commit in ${details.nativeConflictRoot ?? details.projectRoot}. ${JSON.stringify(details)}`);
     this.code = "TASK_INTEGRATION_CONFLICT";
     this.details = details;
   }
@@ -35,6 +35,8 @@ export class TaskAwaitIntegrationError extends Error {
   constructor(cause) {
     super(`Await integration evidence failed; Task status was not changed: ${cause.message}`);
     this.code = "TASK_AWAIT_INTEGRATION_FAILED";
+    if (cause.binding) this.details = { nativeResolutionBinding: cause.binding,
+      diffPath: cause.diffPath, extraPaths: cause.extraPaths ?? [] };
   }
 }
 
@@ -227,6 +229,85 @@ export class TaskLifecycleService {
         ...(error?.code ? { code: error.code } : {}),
       };
     }
+  }
+
+  async #validateInitialNativeTest(evidence, source, { record = null, lease, recovery = false } = {}) {
+    const identity = normalizedInitialNativeTest(evidence.identity);
+    if (!source || JSON.stringify(source.identity) !== JSON.stringify(identity)
+        || JSON.stringify(source.authority) !== JSON.stringify(evidence.authority)) {
+      throw new Error("Initial native Test source verifier differs from its original binding");
+    }
+    const task = this.#task(evidence.taskId);
+    const workspace = this.workspaceCatalog.workspace(evidence.authority.workspaceId);
+    const stream = this.workspaceCatalog.stream(evidence.authority.streamId);
+    const thread = this.workspaceCatalog.activeThread(evidence.authority.streamId);
+    const returned = identity.returnedResultCommit;
+    const refs = task.gitReferences ?? [];
+    if (returned && (refs.length !== 1 || refs[0].resultCommit !== returned
+        || !samePath(refs[0].projectRoot, evidence.projectRoot)
+        || JSON.stringify(await this.taskBoard.returnedNativeTestPriorResult(task.id)) !== JSON.stringify(evidence.priorResult))) {
+      throw new Error("Returned native Test prior accepted result or outcome changed");
+    }
+    if (task.revision !== evidence.taskRevision || task.workflowStatus !== "in_progress"
+        || task.status !== "started" || (!returned && refs.length) || task.workspaceId !== workspace?.id
+        || task.streamId !== stream?.id || stream?.workspaceId !== workspace?.id
+        || workspace?.settings?.releaseWorkflowEnabled !== true
+        || thread?.provider !== evidence.authority.provider || thread?.threadId !== evidence.authority.threadId
+        || !samePath(taskProjectRoot({ workspace, stream }), evidence.projectRoot)) {
+      throw new Error("Initial native Test current caller, assignment, Task or repository changed");
+    }
+    const inspected = await source.verifySource();
+    if (!samePath(inspected.sourceRoot, identity.sourceRoot) || inspected.headCommit !== identity.sourceCommit
+        || inspected.headTree !== identity.sourceTree || inspected.branch !== identity.sourceBranch) {
+      throw new Error("Initial native Test reviewed source changed");
+    }
+    if (!recovery) {
+      const installed = await source.inspectInstalledNativeOwner();
+      if (installed.available || installed.hash !== identity.runtimeHash) {
+        throw new Error("Initial native Test bootstrap is closed or installed runtime changed");
+      }
+    }
+    const state = await this.releasePreflight.initialNativeTestState({ workspaceId: workspace.id, projectRoot: evidence.projectRoot });
+    if (["planRevision", "publicationHash", "candidateHash"].some(key => state[key] !== identity[key])) {
+      throw new Error("Initial native Test current publication, candidate or release plan changed");
+    }
+    await this.taskGitWorkspaces.assertInitialNativeTestOwned(evidence, { lease, record });
+  }
+
+  async updateWorkflowStatusFromInitialSource(options, source) {
+    const operation = () => this.#updateWorkflowStatusFromInitialSourceTraced(options, source);
+    return this.taskGitWorkspaces?.withOperationTrace
+      ? this.taskGitWorkspaces.withOperationTrace({ operationId: options.operationId, taskId: options.taskId }, operation)
+      : operation();
+  }
+
+  async #updateWorkflowStatusFromInitialSourceTraced(options, source) {
+    const task = this.#task(options.taskId);
+    const identity = normalizedInitialNativeTest(source.identity);
+    if (options.status !== "testing" || options.expectedWorkflowStatus !== "in_progress"
+        || options.expectedRevision == null || !this.releasePreflight) throw new Error("Initial native Test admission is incomplete");
+    return this.releasePreflight.withAwaitTransition(task.workspaceId, () => this.#withLock(task.id, async lease => {
+      const original = this.taskBoard.lifecycleTransition(options.operationId);
+      const evidence = original?.evidence?.initialNativeTest ?? { identity, authority: source.authority,
+        taskId: task.id, taskNumber: task.taskNumber, taskRevision: options.expectedRevision, projectRoot: options.projectRoot,
+        ...(identity.returnedResultCommit ? { priorResult: await this.taskBoard.returnedNativeTestPriorResult(task.id) } : {}) };
+      const recovery = Boolean(original);
+      if (original && (original.taskId !== task.id || original.kind !== "workflow"
+          || original.targetWorkflowStatus !== "testing" || original.phase !== "pending_git"
+          || !original.evidence?.initialNativeTest
+          || JSON.stringify(evidence.identity) !== JSON.stringify(identity))) throw new Error("Initial native Test lifecycle original changed");
+      try {
+        const record = recovery ? await this.taskGitWorkspaces.pendingNativeIntegrationOwned({
+          taskId: task.id, operationId: options.operationId, projectRoot: options.projectRoot, lease }) : null;
+        await this.#validateInitialNativeTest(evidence, source, { record, lease, recovery });
+      } catch (error) {
+        if (!original) throw new TaskIntegrationRejectedError(error);
+        throw error;
+      }
+      return this.#updateWorkflowStatusWithLease({ ...options,
+        operationEvidence: { ...(options.operationEvidence ?? {}), initialNativeTest: evidence },
+        initialNativeTestSource: source, initialNativeTestRecovery: recovery }, { releaseWorkflow: true, lease });
+    }));
   }
 
   async updateWorkflowStatusFromSource(options = {}, {
@@ -596,10 +677,14 @@ export class TaskLifecycleService {
       sourceTaskNumber: source.taskNumber,
       sourceDescriptionSha256: createHash("sha256").update(source.description).digest("hex"),
     });
-    assertSelectedAbsorptionTasks(binding, source, task);
     requiredMethod(this.taskBoard, "assertSelectedAbsorptionState");
-    this.taskBoard.assertSelectedAbsorptionState({ binding, survivorTaskId: task.id, operationId });
-    return binding;
+    const authenticated = this.taskBoard.assertSelectedAbsorptionState({ binding,
+      survivorTaskId: task.id, operationId, bindPriorResults: true });
+    if (authenticated.priorResults?.some(prior => !samePath(prior.projectRoot, this.#projectRoot(task)))) {
+      throw new Error("Selected absorption prior result repository changed");
+    }
+    assertSelectedAbsorptionTasks(authenticated, source, task);
+    return authenticated;
   }
 
   async selectedComposition({
@@ -739,16 +824,34 @@ export class TaskLifecycleService {
   async #updateWorkflowStatusLocked({
     taskId, status, operationId, binding = {}, projectRoot = null,
     expectedRevision = null, expectedWorkflowStatus = null, operationEvidence = null,
+    selectedAbsorptionHandoff: handoffInput = null,
   } = {}, { releaseWorkflow = false } = {}) {
-    return this.#withLock(taskId, (lease = {}) => this.#updateWorkflowStatusWithLease({
-      taskId, status, operationId, binding, projectRoot, expectedRevision, expectedWorkflowStatus,
-      operationEvidence,
-    }, { releaseWorkflow, lease }), { git: releaseWorkflow });
+    const handoff = selectedAbsorptionHandoff(handoffInput);
+    if (handoff && (!releaseWorkflow || status !== "testing" || expectedRevision == null
+        || expectedWorkflowStatus !== "in_progress")) throw new Error("Native absorption requires exact Test admission");
+    const operation = (lease = {}) => {
+      const task = this.#task(taskId);
+      const refs = (task.gitReferences ?? []).filter(ref => samePath(ref.projectRoot, projectRoot || this.#projectRoot(task)));
+      const prior = !handoff && releaseWorkflow && status === "testing" && refs.length === 1
+        ? this.taskBoard.selectedCompositionForRelease({ taskId, projectRoot: refs[0].projectRoot,
+          resultCommit: refs[0].resultCommit })?.selectedComposition : null;
+      const history = prior?.kind === "native-task-integration-v1" ? prior.absorptionHistory ?? prior : null;
+      return this.#updateWorkflowStatusWithLease({
+        taskId, status, operationId, binding, projectRoot, expectedRevision, expectedWorkflowStatus,
+        operationEvidence: handoff ? { ...(operationEvidence ?? {}), nativeAbsorptionInput:
+          this.#selectedAbsorptionBinding(task, handoffInput, operationId) }
+          : history ? { ...(operationEvidence ?? {}), nativeAbsorptionHistory: history } : operationEvidence,
+      }, { releaseWorkflow, lease });
+    };
+    return handoff
+      ? this.taskGitWorkspaces.withTaskLocks([taskId, handoff.declaration.sourceTaskId], operation, { guardTaskId: taskId })
+      : this.#withLock(taskId, operation, { git: releaseWorkflow });
   }
 
   async #updateWorkflowStatusWithLease({
     taskId, status, operationId, binding = {}, projectRoot = null,
     expectedRevision = null, expectedWorkflowStatus = null, operationEvidence = null,
+    initialNativeTestSource = null, initialNativeTestRecovery = false,
   } = {}, { releaseWorkflow = false, lease = {} } = {}) {
       const task = this.#task(taskId);
       const workflowStatus = String(status ?? "").trim();
@@ -768,6 +871,30 @@ export class TaskLifecycleService {
       const affectsAwait = workspace?.settings?.releaseWorkflowEnabled === true
         && (task.workflowStatus === "awaiting_implementation" || workflowStatus === "awaiting_implementation");
       const selectedProjectRoot = releaseWorkflow ? projectRoot || this.#projectRoot(task) : null;
+      const nativeAbsorptionInput = operationEvidence?.nativeAbsorptionInput ?? null;
+      const nativeAbsorptionHistory = operationEvidence?.nativeAbsorptionHistory ?? null;
+      const initialNativeTest = operationEvidence?.initialNativeTest ?? null;
+      const validateInitialNativeTest = initialNativeTest ? async ({ record = null } = {}) => {
+        if (!record && initialNativeTestRecovery) record = await this.taskGitWorkspaces.pendingNativeIntegrationOwned({
+          taskId, operationId, projectRoot: selectedProjectRoot, lease });
+        return this.#validateInitialNativeTest(initialNativeTest, initialNativeTestSource,
+          { record, lease, recovery: initialNativeTestRecovery });
+      } : null;
+      await validateInitialNativeTest?.();
+      const validateAbsorption = nativeAbsorptionHistory ? () => {
+        const original = this.taskBoard.selectedCompositionForRelease({ taskId: task.id,
+          projectRoot: nativeAbsorptionHistory.repositoryRoot, resultCommit: nativeAbsorptionHistory.taskCommit });
+        if (JSON.stringify(original?.selectedComposition) !== JSON.stringify(nativeAbsorptionHistory)) {
+          throw new Error("Native absorption accepted history changed");
+        }
+      } : nativeAbsorptionInput ? () => {
+        const fresh = this.#selectedAbsorptionBinding(this.#task(task.id),
+          { requestId: nativeAbsorptionInput.requestId, text: nativeAbsorptionInput.text }, operationId);
+        if (JSON.stringify(fresh) !== JSON.stringify(nativeAbsorptionInput)) {
+          throw new Error("Native absorption original handoff changed");
+        }
+      } : null;
+      validateAbsorption?.();
       if (releaseWorkflow && task.workflowStatus === "blocked" && workflowStatus !== "blocked") {
         await this.taskGitWorkspaces.prepareOwned({
           taskId: task.id, taskNumber: task.taskNumber, projectRoot: selectedProjectRoot, lease,
@@ -801,7 +928,7 @@ export class TaskLifecycleService {
         targetWorkflowStatus: workflowStatus,
         expectedRevision: task.revision,
         evidence: operationEvidence,
-        ...(releaseWorkflow && affectsAwait ? {
+        ...(releaseWorkflow && (affectsAwait || initialNativeTest) ? {
           releaseContext: {
             workspaceId: task.workspaceId,
             streamId: task.streamId,
@@ -875,6 +1002,7 @@ export class TaskLifecycleService {
                   projectRoot: selectedProjectRoot,
                   lease: repositoryLease,
                   operationId,
+                  nativeResolutionReview: operationEvidence?.nativeResolutionReview ?? null,
                   commitPrepared: async (prepared) => {
                     if (prepared.task.resultCommit !== acceptedReference.resultCommit) {
                       throw new Error("Task prospective Await result changed before acceptance");
@@ -955,12 +1083,16 @@ export class TaskLifecycleService {
           throw new Error("Task Git workspace is unavailable; workflow status was not changed");
         }
         const { snapshot, integration } = await this.taskGitWorkspaces.snapshotAndMergeOwned({
+          operationId,
           taskId: task.id,
           taskNumber: task.taskNumber,
           projectRoot: selectedProjectRoot,
           turnId: null,
           summary: task.title,
           expectedResultReferences: task.workflowStatus === "testing" ? task.gitReferences ?? [] : null,
+          nativeAbsorptionInput, nativeAbsorptionHistory, expectedTaskRevision: task.revision, validateAbsorption,
+          initialNativeTest, validateInitialNativeTest,
+          nativeResolutionReview: operationEvidence?.nativeResolutionReview ?? null,
           lease,
         });
         if (!integration.resultProved || !integration.integrated) {
@@ -969,6 +1101,7 @@ export class TaskLifecycleService {
               taskId: task.id, operationId, projectRoot: snapshot.projectRoot,
               resultCommit: snapshot.headCommit, devCommit: integration.dev.headCommit,
               conflicts: integration.conflicts, devRestored: true,
+              nativeConflictRoot: integration.nativeConflictRoot,
             });
             await this.#assertOwned(lease);
             await this.#mutation(() => this.taskBoard.failLifecycleTransition(operationId, failure), operationId);
@@ -996,7 +1129,7 @@ export class TaskLifecycleService {
           conflicts: [],
           error: null,
         };
-        const current = await this.#mutation(() => this.taskBoard.commitWorkflowTransition({
+        const terminal = (nativeDescriptor = null) => this.#mutation(() => this.taskBoard.commitWorkflowTransition({
           operationId,
           gitReferences: [{
             projectRoot: snapshot.repositoryRoot,
@@ -1009,6 +1142,7 @@ export class TaskLifecycleService {
             outcome: integration.outcome,
             resultCommit: snapshot.headCommit,
             devHeadCommit: integration.dev?.headCommit ?? null,
+            ...(nativeDescriptor ? { selectedCompositionRequired: true, selectedComposition: nativeDescriptor } : {}),
             response: {
               gitWorkspace: gitWorkspaceResult, gitIntegration: gitIntegrationResult,
               ...(affectsAwait ? { releaseCandidate: {
@@ -1017,6 +1151,11 @@ export class TaskLifecycleService {
             },
           },
         }), operationId);
+        const current = this.taskGitWorkspaces.withNativeIntegrationTerminalOwned
+          ? await this.taskGitWorkspaces.withNativeIntegrationTerminalOwned(snapshot,
+            { operationId, lease, nativeAbsorptionInput, nativeAbsorptionHistory, validateAbsorption,
+              initialNativeTest, validateInitialNativeTest }, terminal)
+          : await terminal();
         return {
           task: current,
           gitWorkspace: gitWorkspaceResult,
@@ -1026,7 +1165,14 @@ export class TaskLifecycleService {
           } : {}),
         };
       } catch (error) {
-        if (["TASK_WITHDRAWAL_UNKNOWN", "AWAIT_ACCEPTANCE_UNKNOWN", "AWAIT_PREPARATION_UNKNOWN"].includes(error?.code)) throw error;
+        if (["TASK_WITHDRAWAL_UNKNOWN", "AWAIT_ACCEPTANCE_UNKNOWN", "AWAIT_PREPARATION_UNKNOWN", "TASK_NATIVE_INTEGRATION_UNKNOWN"].includes(error?.code)) throw error;
+        if (releaseWorkflow && workflowStatus === "testing" && this.taskGitWorkspaces.pendingNativeIntegrationOwned) {
+          const native = await this.taskGitWorkspaces.pendingNativeIntegrationOwned({
+            taskId: task.id, projectRoot: selectedProjectRoot, operationId, lease,
+          });
+          if (native?.target) throw Object.assign(new Error(`Native Test terminal outcome requires original readback: ${error.message}`),
+            { code: "TASK_NATIVE_INTEGRATION_UNKNOWN" });
+        }
         if (releaseWorkflow && workflowStatus === "awaiting_implementation") {
           const failure = new TaskAwaitIntegrationError(error);
           await this.#failWhileOwned(lease, operationId, failure);
@@ -1064,12 +1210,23 @@ export class TaskLifecycleService {
       }
   }
 
+  async pendingNativeWorkflowOwned({ taskId, operationId, projectRoot, lease } = {}) {
+    const transition = this.taskBoard.lifecycleTransition(operationId);
+    const task = this.#task(taskId);
+    if (transition?.taskId !== task.id || transition.operationId !== operationId
+        || transition.kind !== "workflow" || transition.phase !== "pending_git"
+        || transition.targetWorkflowStatus !== "testing" || transition.expectedRevision !== task.revision
+        || !this.taskGitWorkspaces?.pendingNativeIntegrationOwned) return false;
+    return Boolean(await this.taskGitWorkspaces.pendingNativeIntegrationOwned({ taskId, operationId, projectRoot, lease }));
+  }
+
   withUnknownWorkflowReconciliationLock({ taskId, sourceTaskId = null, projectRoot, operationId } = {}, operation) {
     const task = this.#task(taskId);
-    const selected = this.taskBoard.lifecycleTransition?.(operationId)?.evidence?.selectedComposition;
-    if (selected?.absorptionInput) {
-      sourceTaskId = selectedAbsorptionHandoff({ requestId: selected.absorptionInput.requestId,
-        text: selected.absorptionInput.text }).declaration.sourceTaskId;
+    const evidence = this.taskBoard.lifecycleTransition?.(operationId)?.evidence;
+    const absorptionInput = evidence?.nativeAbsorptionInput ?? evidence?.selectedComposition?.absorptionInput;
+    if (absorptionInput) {
+      sourceTaskId = selectedAbsorptionHandoff({ requestId: absorptionInput.requestId,
+        text: absorptionInput.text }).declaration.sourceTaskId;
     }
     const workspace = task.workspaceId ? this.workspaceCatalog.workspace(task.workspaceId) : null;
     if (workspace?.settings?.releaseWorkflowEnabled !== true || !this.releasePreflight) {
@@ -1096,6 +1253,7 @@ export class TaskLifecycleService {
 
   async reconcileUnknownWorkflowStatusOwned({
     taskId, operationId, projectRoot, guardId, proof, lease, finalizeCommittedWithdrawal = false,
+    verifyInitialNativeTest = null,
   } = {}) {
     await this.#assertOwned(lease);
     const current = this.#task(taskId);
@@ -1241,6 +1399,20 @@ export class TaskLifecycleService {
       }
       return { result: { task: current, ...(outcome.result.evidence.response ?? {}) }, recovery };
     }
+    if (transition?.targetWorkflowStatus === "testing" && transition.phase === "pending_git"
+        && this.taskGitWorkspaces.pendingNativeIntegrationOwned) {
+      if (transition.operationId !== operationId || transition.taskId !== current.id
+          || transition.kind !== "workflow" || transition.expectedRevision !== current.revision) {
+        throw new Error("Native Test original lifecycle identity changed");
+      }
+      const native = await this.taskGitWorkspaces.pendingNativeIntegrationOwned({ taskId, projectRoot, operationId, lease });
+      if (!native) throw new Error("Native Test recovery has no original Git intent");
+      if (guardId) await this.taskGitWorkspaces.recoverProcessTreeGuard(current.id, { repositoryRoot: projectRoot, guardId, proof, lease });
+      else await this.taskGitWorkspaces.assertNoProcessTreeGuardOwned(current.id, { lease });
+      return { result: await this.#updateWorkflowStatusWithLease({ taskId, status: "testing", operationId, projectRoot,
+        operationEvidence: transition.evidence, initialNativeTestSource: verifyInitialNativeTest,
+        initialNativeTestRecovery: true }, { releaseWorkflow: true, lease }), recovery: null };
+    }
     const pendingWithdrawal = ["new", "in_progress", "blocked"].includes(transition?.targetWorkflowStatus)
       && ["testing", "awaiting_implementation"].includes(current.workflowStatus);
     if (
@@ -1314,7 +1486,11 @@ export class TaskLifecycleService {
       if (!["new", "in_progress", "blocked"].includes(task.workflowStatus)) {
         throw new Error("Return the source Task from Test/Await before combining it");
       }
-      return this.taskGitWorkspaces.withAbsorptionEvidenceOwned({ source: task, target, lease }, async (gitEvidence, ownedLease) => {
+      const targetRef = target.gitReferences?.find(ref => samePath(ref.projectRoot, this.#projectRoot(target)));
+      const selected = releaseWorkflow && targetRef ? this.taskBoard.selectedCompositionForRelease({
+        taskId: target.id, projectRoot: targetRef.projectRoot, resultCommit: targetRef.resultCommit })?.selectedComposition : null;
+      const nativeAbsorption = selected?.kind === "native-task-integration-v1" ? selected : null;
+      return this.taskGitWorkspaces.withAbsorptionEvidenceOwned({ source: task, target, lease, nativeAbsorption }, async (gitEvidence, ownedLease) => {
         let composition = null;
         // This gate precedes lifecycle admission. Only this bounded scope can
         // classify composition failure as proof that no source closure began.
@@ -1328,7 +1504,7 @@ export class TaskLifecycleService {
           }
           // External editors and Git do not take Hub's leases. Reuse the held
           // repository leases to read both workspaces again after slow validation.
-          await this.taskGitWorkspaces.withAbsorptionEvidenceOwned({ source: task, target, lease: ownedLease }, async (fresh) => {
+          await this.taskGitWorkspaces.withAbsorptionEvidenceOwned({ source: task, target, lease: ownedLease, nativeAbsorption }, async (fresh) => {
             if (JSON.stringify(fresh) !== JSON.stringify(gitEvidence)) {
               throw new Error("Task Git evidence changed during combined closure validation");
             }

@@ -60,6 +60,10 @@ export function releaseIdentitySha256(value) {
   return createHash("sha256").update(JSON.stringify(stable(value))).digest("hex");
 }
 
+export function releaseSelectionSha256(results) {
+  return releaseIdentitySha256(normalizedResults(results).map(({ tree, ...result }) => result));
+}
+
 function uniqueTextList(value, name) {
   const values = [...new Set((Array.isArray(value) ? value : [])
     .map((item) => String(item ?? "").trim()).filter(Boolean))].sort();

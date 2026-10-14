@@ -38,6 +38,37 @@ async function fixture(t) {
   return store;
 }
 
+test("nested catalog rollback preserves outer writes and the outer transaction remains usable", async (t) => {
+  const store = await fixture(t);
+  const failure = new Error("inner operation failed");
+  await store.runMutation(() => store.transaction(() => {
+    const kept = store.createWorkspaceWithStream({ name: "Kept" });
+    assert.throws(() => store.transaction(() => {
+      store.createWorkspaceWithStream({ name: "Discarded" });
+      throw failure;
+    }), (error) => error === failure);
+    store.createStream({ workspaceId: kept.workspace.id, name: "After inner refusal" });
+  }));
+  assert.equal(store.hierarchy().some((workspace) => workspace.name === "Discarded"), false);
+  const kept = store.hierarchy().find((workspace) => workspace.name === "Kept");
+  assert.equal(kept.streams.length, 2);
+  // Depth and SQLite ownership are released after the outer commit.
+  store.createWorkspaceWithStream({ name: "Next transaction" });
+  assert.equal(store.hierarchy().some((workspace) => workspace.name === "Next transaction"), true);
+});
+
+test("outer catalog refusal rolls back completed nested mutations together", async (t) => {
+  const store = await fixture(t);
+  const before = store.hierarchy();
+  await assert.rejects(store.runMutation(() => store.transaction(() => {
+    store.createWorkspaceWithStream({ name: "Must roll back" });
+    throw new Error("outer operation failed");
+  })), /outer operation failed/u);
+  assert.deepEqual(store.hierarchy(), before);
+  store.createWorkspaceWithStream({ name: "Recovered" });
+  assert.equal(store.hierarchy().some((workspace) => workspace.name === "Recovered"), true);
+});
+
 test("preparation-only terminal receipt validator runs atomically and refusal retains original pending", async (t) => {
   const store = await fixture(t);
   const workspace = store.createWorkspace({ name: "Preparation" });

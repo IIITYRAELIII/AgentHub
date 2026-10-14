@@ -60,7 +60,7 @@ async function fixture(t) {
   await git("checkout", "main");
   const service = new ReleaseGitWorkspaceService({ dataDir: path.join(root, "data") });
   const prior = await service.prepareCandidate({
-    projectRoot: primary, approvedBaseCommit: published,
+    projectRoot: primary, approvedBaseCommit: base,
     planRevision: "before-consumer", frozenTasks: [neighbor],
   });
   const checkpointFile = path.join(path.dirname(prior.releaseRoot), "checkpoint.json");
@@ -68,18 +68,19 @@ async function fixture(t) {
     neighbor, consumer, service, prior, checkpointFile };
 }
 
-test("migrated correction with zero dev delta rebuilds full OWN and retains the selected neighbor", async (t) => {
+test("native correction with zero dev delta retains full agreed-main history and retains the selected neighbor", async (t) => {
   const f = await fixture(t);
   const candidate = await f.service.prepareCandidate({
-    projectRoot: f.primary, approvedBaseCommit: f.published,
+    projectRoot: f.primary, approvedBaseCommit: f.base,
     planRevision: "full-correction", frozenTasks: [f.neighbor, f.consumer],
   });
   assert.equal(await readFile(path.join(candidate.releaseRoot, "initial.txt"), "utf8"), "full initial result\n");
   assert.equal(await readFile(path.join(candidate.releaseRoot, "corrected.txt"), "utf8"), "after review\n");
   assert.equal(await readFile(path.join(candidate.releaseRoot, "neighbor.txt"), "utf8"), "accepted neighbor\n");
   assert.equal(await readFile(path.join(candidate.releaseRoot, "outside.txt"), "utf8"), "published outside\n");
-  await assert.rejects(readFile(path.join(candidate.releaseRoot, "local-context.txt")), { code: "ENOENT" });
-  assert.deepEqual(new Set(candidate.netProjectedTaskIds), new Set(["neighbor", "consumer"]));
+  assert.equal(await readFile(path.join(candidate.releaseRoot, "local-context.txt"), "utf8"), "unpublished main context\n");
+  assert.deepEqual(new Set(candidate.manifest.tasks.map(task => task.taskId)), new Set(["neighbor", "consumer"]));
+  assert.equal(candidate.manifest.compositionPolicy, "main-selected-git-merge-v1");
   const manifest = JSON.parse(await readFile(candidate.manifestFile, "utf8"));
   assert.equal(manifest.candidateReuse, undefined);
   assert.equal(await f.git("rev-parse", "HEAD"), f.base);
@@ -87,7 +88,7 @@ test("migrated correction with zero dev delta rebuilds full OWN and retains the 
 });
 
 for (const scenario of ["manual integration", "foreign result merge", "wrong task-side parent", "duplicate owner"]) {
-  test(`migrated ${scenario} refuses before ref/checkpoint promotion`, async (t) => {
+  test(`native result authority handles ${scenario} without dev projection`, async (t) => {
     const f = await fixture(t);
     const consumer = structuredClone(f.consumer);
     let tasks = [f.neighbor, consumer];
@@ -113,17 +114,24 @@ for (const scenario of ["manual integration", "foreign result merge", "wrong tas
       consumer.integrations = structuredClone(f.neighbor.integrations);
       tasks = [consumer];
     } else {
-      tasks.push({ ...structuredClone(consumer), taskId: "duplicate" });
+      tasks.push({ ...structuredClone(consumer), taskRevision: consumer.taskRevision + 1 });
     }
     await f.git("checkout", "main");
     const beforeCheckpoint = await readFile(f.checkpointFile);
     const beforeRef = await f.run(f.prior.releaseRoot, "rev-parse", "PreRelease");
-    await assert.rejects(f.service.prepareCandidate({
-      projectRoot: f.primary, approvedBaseCommit: f.published,
-      planRevision: `refuse-${scenario}`, frozenTasks: tasks,
-    }), { code: "TASK_RELEASE_OWN_PROJECTION_REQUIRED" });
-    assert.deepEqual(await readFile(f.checkpointFile), beforeCheckpoint);
-    assert.equal(await f.run(f.prior.releaseRoot, "rev-parse", "PreRelease"), beforeRef);
+    const request = { projectRoot: f.primary, approvedBaseCommit: f.base,
+      planRevision: `native-${scenario}`, frozenTasks: tasks };
+    if (scenario === "foreign result merge" || scenario === "duplicate owner") {
+      await assert.rejects(f.service.prepareCandidate(request), scenario === "foreign result merge"
+        ? { code: "RELEASE_NATIVE_HISTORY_REQUIRED" } : /multiple result commits or integration histories/u);
+      assert.deepEqual(await readFile(f.checkpointFile), beforeCheckpoint);
+      assert.equal(await f.run(f.prior.releaseRoot, "rev-parse", "PreRelease"), beforeRef);
+    } else {
+      const candidate = await f.service.prepareCandidate(request);
+      assert.equal(await f.run(candidate.releaseRoot, "show", "PreRelease:outside.txt"), "published outside");
+      assert.equal(await f.run(candidate.releaseRoot, "show", "PreRelease:corrected.txt"), "after review");
+      assert.equal(candidate.manifest.compositionPolicy, "main-selected-git-merge-v1");
+    }
     assert.equal(await f.run(f.prior.releaseRoot, "status", "--porcelain"), "");
     assert.equal(await f.git("rev-parse", "HEAD"), f.base);
   });

@@ -20,7 +20,7 @@ import {
   normalizedTaskChangedFiles,
   taskReleasePlanRevision,
 } from "../../domain/task-release-snapshot.mjs";
-import { normalizedTaskGitReferences, taskBranchName } from "../../domain/task-git-reference.mjs";
+import { normalizedTaskGitReferences, taskBranchName, normalizedInitialNativeTest } from "../../domain/task-git-reference.mjs";
 import { normalizedTaskSquashTransfer } from "../../domain/task-squash-transfer.mjs";
 import { normalizedTaskSquashCutover } from "../../domain/task-squash-cutover.mjs";
 import { selectedCompositionFields, selectedCompositionIdentity, selectedCompositionRequiredError,
@@ -2587,11 +2587,90 @@ export class TaskBoardStore {
     });
   }
 
-  #assertSelectedAbsorptionState(database, { binding, survivorTaskId, operationId = null }) {
-    const input = normalizedSelectedAbsorption(binding);
+  #selectedAbsorptionPriorResults(database, tasks, handoffTime) {
+    const priorResults = [];
+    for (const task of tasks) {
+      const refs = task.gitReferences ?? [];
+      if (!refs.length) continue;
+      if (refs.length !== 1) throw selectedCompositionRequiredError("absorbed prior result repository is ambiguous");
+      const ref = refs[0];
+      const returnedRow = database.prepare(`SELECT operation_id, result_json, completed_at_ms
+        FROM hub_task_lifecycle_outcomes WHERE task_id = ? AND kind = 'workflow'
+          AND json_extract(result_json, '$.evidence.outcome') = 'returned_for_correction'
+        ORDER BY completed_at_ms DESC, operation_id DESC LIMIT 1`).get(task.id);
+      const returned = returnedRow ? JSON.parse(returnedRow.result_json) : null;
+      const matches = value => value?.id === task.id && value.workspaceId === task.workspaceId
+        && value.gitReferences?.length === 1 && value.gitReferences[0].resultCommit === ref.resultCommit
+        && sameResolvedPath(value.gitReferences[0].projectRoot, ref.projectRoot);
+      if (!returned || !matches(returned.task) || !matches(returned.priorTask)
+          || !["testing", "awaiting_implementation"].includes(returned.priorTask.workflowStatus)
+          || !["in_progress", "new", "blocked"].includes(returned.task.workflowStatus)
+          || returned.task.revision !== returned.priorTask.revision + 1 || returned.task.revision > task.revision
+          || returned.evidence.acceptedResult?.resultCommit !== ref.resultCommit
+          || !sameResolvedPath(returned.evidence.acceptedResult?.projectRoot, ref.projectRoot)
+          || returned.evidence.acceptedResult?.taskRevision !== returned.priorTask.revision
+          || returned.evidence.response?.acceptedResultPreserved !== true || returnedRow.completed_at_ms > handoffTime) {
+        throw selectedCompositionRequiredError("absorbed prior result has no exact normal return receipt");
+      }
+      const testedRows = database.prepare(`SELECT operation_id, result_json FROM hub_task_lifecycle_outcomes
+        WHERE task_id = ? AND kind = 'workflow'
+          AND json_extract(result_json, '$.task.workflowStatus') = 'testing'
+          AND json_extract(result_json, '$.evidence.resultCommit') = ?
+          AND json_extract(result_json, '$.task.revision') <= ? AND completed_at_ms <= ?
+        ORDER BY completed_at_ms DESC, operation_id DESC LIMIT 65`).all(task.id, ref.resultCommit,
+          returned.priorTask.revision, returnedRow.completed_at_ms);
+      if (testedRows.length > 64) throw selectedCompositionRequiredError("absorbed prior Test history exceeds bounded lookup");
+      const testedRow = testedRows.find(row => matches(JSON.parse(row.result_json).task));
+      const tested = testedRow ? JSON.parse(testedRow.result_json) : null;
+      if (!tested || !/^[0-9a-f]{40}$/u.test(tested.evidence.devHeadCommit ?? "")) {
+        throw selectedCompositionRequiredError("absorbed prior result has no exact successful Test receipt");
+      }
+      if (tested.evidence.selectedCompositionRequired || tested.evidence.selectedComposition) {
+        selectedCompositionFields({ taskId: task.id, resultCommit: ref.resultCommit,
+          selectedCompositionRequired: true, selectedComposition: tested.evidence.selectedComposition });
+      }
+      priorResults.push({ taskId: task.id, projectRoot: ref.projectRoot, resultCommit: ref.resultCommit,
+        testOperationId: testedRow.operation_id, returnOperationId: returnedRow.operation_id,
+        testRevision: tested.task.revision, returnRevision: returned.task.revision,
+        testOutcomeHash: createHash("sha256").update(testedRow.result_json).digest("hex"),
+        returnOutcomeHash: createHash("sha256").update(returnedRow.result_json).digest("hex") });
+    }
+    return priorResults;
+  }
+
+  returnedNativeTestPriorResult(taskId) {
+    return this.#withDatabase(database => {
+      const task = this.#taskWithRelease(database, this.#taskRow(database, taskId));
+      const [prior] = this.#selectedAbsorptionPriorResults(database, [task], this.now());
+      if (!prior) throw new Error("Returned native Test has no exact normal return result");
+      return prior;
+    });
+  }
+
+  #assertAbsorptionPriorOutcomes(database, input) {
+    for (const prior of normalizedSelectedAbsorption(input)?.priorResults ?? []) {
+      for (const [operationId, hash] of [[prior.testOperationId, prior.testOutcomeHash],
+        [prior.returnOperationId, prior.returnOutcomeHash]]) {
+        const row = database.prepare(`SELECT result_json FROM hub_task_lifecycle_outcomes
+          WHERE operation_id = ? AND task_id = ? AND kind = 'workflow'`).get(operationId, prior.taskId);
+        if (!row || createHash("sha256").update(row.result_json).digest("hex") !== hash) {
+          throw selectedCompositionRequiredError("absorbed immutable prior outcome changed");
+        }
+      }
+    }
+  }
+
+  #assertSelectedAbsorptionState(database, { binding, survivorTaskId, operationId = null, bindPriorResults = false }) {
+    let input = normalizedSelectedAbsorption(binding);
     const { declaration: d } = selectedAbsorptionHandoff({ requestId: input.requestId, text: input.text });
     const source = this.#taskWithRelease(database, this.#taskRow(database, d.sourceTaskId));
     const survivor = this.#taskWithRelease(database, this.#taskRow(database, survivorTaskId));
+    const priorResults = this.#selectedAbsorptionPriorResults(database, [source, survivor], input.createdAtMs);
+    if (bindPriorResults && !input.priorResults && priorResults.length) {
+      input = normalizedSelectedAbsorption({ ...input, priorResults });
+    } else if (JSON.stringify(input.priorResults ?? []) !== JSON.stringify(priorResults)) {
+      throw selectedCompositionRequiredError("absorbed original prior result identity changed");
+    }
     assertSelectedAbsorptionTasks(input, source, survivor);
     const receipt = database.prepare("SELECT * FROM hub_mcp_operations WHERE request_id = ?").get(input.requestId);
     const result = receipt?.result_json ? JSON.parse(receipt.result_json) : null;
@@ -2608,13 +2687,66 @@ export class TaskBoardStore {
       WHERE phase IN ('pending_git', 'cleanup') AND operation_id != ? AND (
         task_id IN (?, ?) OR json_extract(evidence_json, '$.squashTransfer.source.taskId') IN (?, ?)
         OR json_extract(json_extract(evidence_json, '$.selectedComposition.absorptionInput.text'), '$.sourceTaskId') IN (?, ?)
-      ) LIMIT 1`).get(operationId ?? "", source.id, survivor.id, source.id, survivor.id, source.id, survivor.id);
+        OR json_extract(json_extract(evidence_json, '$.nativeAbsorptionInput.text'), '$.sourceTaskId') IN (?, ?)
+      ) LIMIT 1`).get(operationId ?? "", source.id, survivor.id, source.id, survivor.id, source.id, survivor.id, source.id, survivor.id);
     if (reopened || active) throw selectedCompositionRequiredError("absorbed source reopened or has a competing transition");
     return input;
   }
 
   assertSelectedAbsorptionState(options) {
     return this.#withDatabase((database) => this.#assertSelectedAbsorptionState(database, options));
+  }
+
+  #assertNativeAbsorptionHistory(database, history, taskId) {
+    const proof = selectedCompositionFields({ taskId, resultCommit: history?.taskCommit,
+      selectedComposition: history }).selectedComposition;
+    if (proof?.kind !== "native-task-integration-v1" || proof.absorptionHistory) {
+      throw selectedCompositionRequiredError("native accepted absorption root missing");
+    }
+    const row = database.prepare(`SELECT result_json FROM hub_task_lifecycle_outcomes
+      WHERE operation_id = ? AND task_id = ? AND kind = 'workflow'`).get(proof.operationId, taskId);
+    const outcome = row?.result_json ? JSON.parse(row.result_json) : null;
+    if (outcome?.task?.workflowStatus !== "testing" || outcome.evidence?.selectedCompositionRequired !== true
+        || outcome.evidence?.resultCommit !== proof.taskCommit
+        || outcome.evidence?.devHeadCommit !== proof.proofCommit
+        || JSON.stringify(outcome.evidence?.selectedComposition) !== JSON.stringify(proof)
+        || !(outcome.task.gitReferences ?? []).some(ref => ref.resultCommit === proof.taskCommit
+          && sameResolvedPath(ref.projectRoot, proof.repositoryRoot))) {
+      throw selectedCompositionRequiredError("native accepted absorption outcome changed");
+    }
+    return proof;
+  }
+
+  #assertInitialNativeTestContext(database, current, evidence) {
+    normalizedInitialNativeTest(evidence.identity);
+    const { authority, projectRoot } = evidence;
+    const workspace = database.prepare("SELECT id, settings_json FROM hub_workspaces WHERE id = ?").get(authority.workspaceId);
+    const stream = database.prepare("SELECT id, workspace_id, settings_json FROM hub_streams WHERE id = ?").get(authority.streamId);
+    const thread = database.prepare(`SELECT provider, provider_thread_id FROM hub_threads
+      WHERE stream_id = ? AND detached_at_ms IS NULL ORDER BY position DESC LIMIT 1`).get(authority.streamId);
+    const refs = database.prepare("SELECT COUNT(*) AS count FROM hub_task_git_references WHERE task_id = ?").get(current.id);
+    const returned = evidence.identity.returnedResultCommit;
+    if (returned) {
+      const task = this.#taskWithRelease(database, current);
+      const [prior] = this.#selectedAbsorptionPriorResults(database, [task], this.now());
+      if (Number(refs.count) !== 1 || prior?.resultCommit !== returned
+          || !sameResolvedPath(prior.projectRoot, projectRoot)
+          || JSON.stringify(prior) !== JSON.stringify(evidence.priorResult)) {
+        throw new Error("Returned native Test original prior result or outcome changed");
+      }
+    } else if (evidence.priorResult) throw new Error("Initial native Test cannot bind a prior result");
+    const root = workspace && stream ? taskProjectRoot({
+      workspace: { settings: parsedSettings(workspace.settings_json) },
+      stream: { settings: parsedSettings(stream.settings_json) },
+    }) : null;
+    if (current.id !== evidence.taskId || Number(current.row_revision) !== evidence.taskRevision
+        || current.workflow_status !== "in_progress" || current.status !== "started" || (!returned && Number(refs.count))
+        || current.workspace_id !== authority.workspaceId || current.stream_id !== authority.streamId
+        || stream?.workspace_id !== workspace?.id || !root || !sameResolvedPath(root, projectRoot)
+        || parsedSettings(workspace.settings_json).releaseWorkflowEnabled !== true
+        || thread?.provider !== authority.provider || thread?.provider_thread_id !== authority.threadId) {
+      throw new Error("Initial native Test current SQL caller, assignment, Task or repository changed");
+    }
   }
 
   beginLifecycleTransition(id, {
@@ -2646,6 +2778,14 @@ export class TaskBoardStore {
           const existingTransfer = JSON.parse(existing.evidence_json ?? "{}")?.squashTransfer;
           const existingCutover = JSON.parse(existing.evidence_json ?? "{}")?.squashCutover;
           const existingAbsorbed = JSON.parse(existing.evidence_json ?? "{}")?.absorbedInto;
+          if (JSON.stringify(JSON.parse(existing.evidence_json ?? "{}")?.nativeAbsorptionInput ?? null)
+              !== JSON.stringify(evidence?.nativeAbsorptionInput ?? null)) {
+            throw new Error("Task lifecycle original native absorption changed");
+          }
+          if (JSON.stringify(JSON.parse(existing.evidence_json ?? "{}")?.nativeAbsorptionHistory ?? null)
+              !== JSON.stringify(evidence?.nativeAbsorptionHistory ?? null)) {
+            throw new Error("Task lifecycle original native absorption history changed");
+          }
           if (JSON.stringify(JSON.parse(existing.evidence_json ?? "{}")?.selectedComposition ?? null)
               !== JSON.stringify(evidence?.selectedComposition ?? null)) {
             throw new Error("Task lifecycle operation id was already used for another selected composition");
@@ -2660,12 +2800,15 @@ export class TaskBoardStore {
                 !== normalizedTaskSquashCutover(evidence.squashCutover).cutoverHash)) {
             throw new Error("Task lifecycle operation id was already used for another squash cutover");
           }
+          if (JSON.stringify(JSON.parse(existing.evidence_json ?? "{}")?.initialNativeTest ?? null)
+              !== JSON.stringify(evidence?.initialNativeTest ?? null)) throw new Error("Initial native Test lifecycle binding changed");
           if (JSON.stringify(existingAbsorbed ?? null) !== JSON.stringify(evidence?.absorbedInto ?? null)) {
             throw new Error("Task lifecycle operation id was already used for another absorption");
           }
           database.exec("COMMIT");
           return { task: this.#taskWithRelease(database, current), replayed: true, phase: existing.phase };
         }
+        if (evidence?.initialNativeTest) this.#assertInitialNativeTestContext(database, current, evidence.initialNativeTest);
         if (releaseContext) {
           const workspaceId = String(releaseContext.workspaceId ?? "").trim();
           const streamId = String(releaseContext.streamId ?? "").trim();
@@ -2727,7 +2870,13 @@ export class TaskBoardStore {
         const squashTransfer = evidence?.squashTransfer
           ? normalizedTaskSquashTransfer(evidence.squashTransfer)
           : null;
-        const absorptionInput = evidence?.selectedComposition?.absorptionInput;
+        const absorptionInput = evidence?.nativeAbsorptionInput ?? evidence?.selectedComposition?.absorptionInput;
+        if (evidence?.nativeAbsorptionHistory) {
+          if (absorptionInput || normalizedKind !== "workflow" || target !== "testing") {
+            throw selectedCompositionRequiredError("native accepted history requires ordinary Test");
+          }
+          this.#assertNativeAbsorptionHistory(database, evidence.nativeAbsorptionHistory, taskId);
+        }
         if (absorptionInput) {
           if (normalizedKind !== "workflow" || target !== "testing") {
             throw selectedCompositionRequiredError("absorbed proof requires an exact Test transition");
@@ -2776,8 +2925,9 @@ export class TaskBoardStore {
           WHERE phase IN ('pending_git', 'cleanup') AND (
             task_id = ? OR json_extract(evidence_json, '$.squashTransfer.source.taskId') = ?
             OR json_extract(json_extract(evidence_json, '$.selectedComposition.absorptionInput.text'), '$.sourceTaskId') = ?
+            OR json_extract(json_extract(evidence_json, '$.nativeAbsorptionInput.text'), '$.sourceTaskId') = ?
           )
-        `).get(taskId, taskId, taskId);
+        `).get(taskId, taskId, taskId, taskId);
         if (active) throw new Error(`Task lifecycle transition is already active: ${active.operation_id}`);
         if (squashTransfer) {
           const sourceActive = database.prepare(`
@@ -2888,7 +3038,10 @@ export class TaskBoardStore {
   // disappears. Read the existing outcome owner; never infer ordinary protocol
   // from the absence of an optional field in downstream release objects.
   selectedCompositionForRelease({ taskId, projectRoot, resultCommit } = {}) {
-    return this.#withDatabase((database) => {
+    return this.#withDatabase(database => this.#selectedCompositionForRelease(database, { taskId, projectRoot, resultCommit }));
+  }
+
+  #selectedCompositionForRelease(database, { taskId, projectRoot, resultCommit }) {
       const rows = database.prepare(`
         SELECT result_json FROM hub_task_lifecycle_outcomes
         WHERE task_id = ? AND kind = 'workflow'
@@ -2910,6 +3063,9 @@ export class TaskBoardStore {
         if (!evidence.selectedCompositionRequired && !Object.hasOwn(evidence, "selectedComposition")) continue;
         const fields = selectedCompositionFields({ taskId, resultCommit,
           selectedCompositionRequired: true, selectedComposition: evidence.selectedComposition });
+        if (fields.selectedComposition.kind === "native-task-integration-v1") {
+          this.#assertAbsorptionPriorOutcomes(database, fields.selectedComposition.absorptionInput);
+        }
         if (evidence.resultCommit !== resultCommit
             || !sameResolvedPath(fields.selectedComposition.repositoryRoot, projectRoot)
             || evidence.devHeadCommit !== fields.selectedComposition.proofCommit) {
@@ -2922,7 +3078,6 @@ export class TaskBoardStore {
         selected = fields;
       }
       return selected;
-    });
   }
 
   failLifecycleTransition(operationId, error) {
@@ -2954,7 +3109,58 @@ export class TaskBoardStore {
         if (Number(current.row_revision) !== Number(transition.expected_task_revision)) {
           throw new Error("Task changed while Git evidence was prepared");
         }
+        const initialNativeTest = JSON.parse(transition.evidence_json ?? "{}")?.initialNativeTest;
+        if (initialNativeTest) {
+          this.#assertInitialNativeTestContext(database, current, initialNativeTest);
+          if (JSON.stringify(evidence?.initialNativeTest) !== JSON.stringify(initialNativeTest)
+              || evidence.resultCommit !== initialNativeTest.identity.sourceCommit
+              || evidence.response?.gitWorkspace?.headCommit !== initialNativeTest.identity.sourceCommit
+              || evidence.response?.gitWorkspace?.branch !== initialNativeTest.identity.sourceBranch
+              || evidence.response?.gitIntegration?.integrated !== true) throw new Error("Initial native Test terminal binding changed");
+        }
         const pendingSelected = JSON.parse(transition.evidence_json ?? "{}")?.selectedComposition;
+        const pendingNativeInput = JSON.parse(transition.evidence_json ?? "{}")?.nativeAbsorptionInput;
+        const pendingNativeHistory = JSON.parse(transition.evidence_json ?? "{}")?.nativeAbsorptionHistory;
+        if (pendingNativeHistory) {
+          this.#assertNativeAbsorptionHistory(database, pendingNativeHistory, transition.task_id);
+          if (pendingNativeInput || JSON.stringify(evidence?.nativeAbsorptionHistory) !== JSON.stringify(pendingNativeHistory)) {
+            throw selectedCompositionRequiredError("native accepted history changed before terminal");
+          }
+          if (evidence?.selectedComposition) {
+            const descriptor = selectedCompositionFields({ taskId: transition.task_id,
+              resultCommit: evidence.resultCommit, selectedComposition: evidence.selectedComposition }).selectedComposition;
+            if (descriptor.kind !== "native-task-integration-v1" || descriptor.operationId !== operation
+                || descriptor.expectedTaskRevision !== Number(transition.expected_task_revision)
+                || descriptor.proofCommit !== evidence.devHeadCommit
+                || JSON.stringify(descriptor.absorptionHistory) !== JSON.stringify(pendingNativeHistory)) {
+              throw selectedCompositionRequiredError("native corrected terminal lost accepted history");
+            }
+          } else {
+            const reused = this.#selectedCompositionForRelease(database, { taskId: transition.task_id,
+              projectRoot: pendingNativeHistory.repositoryRoot, resultCommit: evidence?.resultCommit })?.selectedComposition;
+            if (reused?.kind !== "native-task-integration-v1"
+                || JSON.stringify(reused.absorptionHistory ?? reused) !== JSON.stringify(pendingNativeHistory)
+                || evidence?.response?.gitIntegration?.alreadyIntegrated !== true) {
+              throw selectedCompositionRequiredError("native reuse has no exact original Test result");
+            }
+          }
+        }
+        if (pendingNativeInput) {
+          const descriptor = selectedCompositionFields({ taskId: transition.task_id,
+            resultCommit: evidence?.resultCommit, selectedCompositionRequired: true,
+            selectedComposition: evidence?.selectedComposition }).selectedComposition;
+          if (descriptor.kind !== "native-task-integration-v1" || descriptor.operationId !== operation
+              || descriptor.expectedTaskRevision !== Number(transition.expected_task_revision)
+              || descriptor.proofCommit !== evidence?.devHeadCommit
+              || JSON.stringify(descriptor.absorptionInput) !== JSON.stringify(pendingNativeInput)
+              || JSON.stringify(evidence?.nativeAbsorptionInput) !== JSON.stringify(pendingNativeInput)) {
+            throw selectedCompositionRequiredError("native absorbed terminal differs from original admission");
+          }
+          this.#assertSelectedAbsorptionState(database, { binding: pendingNativeInput,
+            survivorTaskId: transition.task_id, operationId: operation });
+        } else if (!pendingNativeHistory && evidence?.selectedComposition?.kind === "native-task-integration-v1") {
+          throw selectedCompositionRequiredError("native terminal has no original absorbed admission");
+        }
         if (pendingSelected?.absorptionInput) {
           if (JSON.stringify(evidence?.selectedComposition) !== JSON.stringify(pendingSelected)) {
             throw selectedCompositionRequiredError("absorbed terminal proof differs from original admission");

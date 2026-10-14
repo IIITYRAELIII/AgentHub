@@ -18,6 +18,7 @@ import {
 } from "../domain/interstream-message.mjs";
 import { canonicalMcpValue, mcpArgumentsHash } from "../domain/mcp-arguments-hash.mjs";
 import { taskProjectRoot } from "../domain/task-project-root.mjs";
+import { normalizedInitialNativeTest } from "../domain/task-git-reference.mjs";
 import {
   normalizedTaskDescription,
   normalizedTaskText,
@@ -34,9 +35,9 @@ import { TaskLifecycleService, TaskIntegrationConflictError, TaskAwaitIntegratio
 import { TaskOperationReconciliationService } from "./task-operation-reconciliation-service.mjs";
 import { TaskIntegrationRejectedError } from "./task-lifecycle-service.mjs";
 import { createWorkspaceCatalogMutationOwner } from "./sqlite-mutation-owner.mjs";
+
 import { assertPreparationRows, readPreparationSourceClosure, ReleasePreparationRejectedError,
   validatePreparationEnvelope } from "./release-preparation-admission.mjs";
-import { measureTaskOperation } from "../infrastructure/process/task-operation-timing.mjs";
 
 const CONTEXT_TOKEN_VERSION = 1;
 const MAX_REGISTERED_CONTEXT_CAPABILITIES = 1_000;
@@ -451,6 +452,7 @@ function tool(name, description, properties = {}, required = []) {
 }
 
 export class HubMcpService {
+  static nativeTaskStatusVersion = 1;
   #activeRuns = () => [];
   #deferredInputs = () => [];
   #taskLauncher = async () => { throw new Error("Agent Hub task launcher is not ready"); };
@@ -464,6 +466,7 @@ export class HubMcpService {
     releaseOperations = null,
     taskGitWorkspaces = null, taskLifecycle = null,
     taskOperationReconciliation = null,
+    measureOperation = async (_stage, operation) => operation(),
     reconcilePendingOnStartup = true,
   } = {}) {
     for (const name of [
@@ -487,6 +490,8 @@ export class HubMcpService {
       ? createWorkspaceCatalogMutationOwner(workspaceCatalog)
       : workspaceCatalog;
     this.taskBoard = taskBoard;
+    if (typeof measureOperation !== "function") throw new TypeError("MCP operation timing port is required");
+    this.measureOperation = measureOperation;
     this.workLog = workLog;
     this.attachmentDirectory = path.resolve(requiredText(attachmentDirectory, "attachment directory", 2_000));
     this.secret = requiredText(secret, "MCP secret", 512);
@@ -735,8 +740,11 @@ export class HubMcpService {
         expected_squash_transfer_hash: { type: "string", pattern: "^[0-9a-f]{64}$", description: "Omit for an exact preview; confirm a later request with the returned hash." },
         selected_proof_bundle_path: { type: "string", description: "Release Manager-only immutable selected-composition proof bundle; preview has no live Git or lifecycle effect." },
         selected_proof_bundle_sha256: { type: "string", pattern: "^[0-9a-f]{64}$" },
-        selected_published_resolution: { type: "object", description: "Optional ordinary OWN published-conflict proof envelope; binds the exact Task/base/application bundle/publication generation and reviewed resolution bundle. No reviewer flag grants authority." },
-        selected_absorption_handoff: { type: "object", description: "Exact requestId and JSON text of the saved/stopped source executor's durable Inter-Stream handoff receipt. Both owned histories and current Task/source fences are verified." },
+        selected_published_resolution: { type: "object", description: "Historical original reconciliation envelope; new selected materialization admission is closed." },
+        selected_absorption_handoff: { type: "object", description: "Authenticated saved/stopped handoff for ordinary native Test, bound to exact Task CAS and the original receipt." },
+        native_resolution_review: { type: "object", additionalProperties: false,
+          properties: { requestId: { type: "string", maxLength: 200 }, text: { type: "string", maxLength: 16000 } },
+          required: ["requestId", "text"], description: "Exact independent inter-Stream verdict for a native compatibility resolution." },
         selected_proof_commit: { type: "string", pattern: "^[0-9a-f]{40}$" },
         selected_preview_request_id: { type: "string", description: "Exact original preview request_id on confirmation." },
         expected_selected_preview_hash: { type: "string", pattern: "^[0-9a-f]{64}$", description: "Omit for preview; exact returned hash is required for confirmation." },
@@ -754,6 +762,8 @@ export class HubMcpService {
         cutover_projector_sha256: { type: "string", description: "Required only to reproduce an original local cutover receipt." },
         cutover_source_task_id: { type: "string", description: "Required only when the original local cutover used a separate source Task." },
         cutover_source_task_revision: { type: "integer", minimum: 1, description: "Required only when the original local cutover used a separate source Task." },
+        initial_native_test: { type: "object", description: "Complete original local initial native Test identity, for terminal reconciliation only. Pending source recovery uses the existing local cutover entry." },
+        native_resolution_review: { type: "object", description: "Supply exactly the reviewed resolution argument of the original status request." },
         squash_source_task_id: { type: "string" },
         squash_source_task_revision: { type: "integer", minimum: 1 },
         squash_baseline_result_commit: { type: "string", pattern: "^[0-9a-f]{40}$" },
@@ -772,8 +782,8 @@ export class HubMcpService {
         expected_squash_cutover_hash: { type: "string", pattern: "^[0-9a-f]{64}$" },
         selected_proof_bundle_path: { type: "string" },
         selected_proof_bundle_sha256: { type: "string", pattern: "^[0-9a-f]{64}$" },
-        selected_published_resolution: { type: "object" },
-        selected_absorption_handoff: { type: "object" },
+        selected_published_resolution: { type: "object", description: "Historical original reconciliation envelope; new selected materialization admission is closed." },
+        selected_absorption_handoff: { type: "object", description: "Exact original saved/stopped handoff for native or admitted historical Test reconciliation." },
         selected_proof_commit: { type: "string", pattern: "^[0-9a-f]{40}$" },
         selected_preview_request_id: { type: "string" },
         expected_selected_preview_hash: { type: "string", pattern: "^[0-9a-f]{64}$" },
@@ -911,7 +921,7 @@ export class HubMcpService {
         : operation();
     }
     if (toolName === "hub_release_prepare_get") {
-      const operation = () => measureTaskOperation("preparation:original-readback",
+      const operation = () => this.measureOperation("preparation:original-readback",
         () => this.#preparationReadback(context, args));
       return this.taskGitWorkspaces?.withOperationTrace
         ? this.taskGitWorkspaces.withOperationTrace({ operationId: args.preparation_request_id }, operation)
@@ -924,9 +934,43 @@ export class HubMcpService {
     return this.#dispatch(context, toolName, args);
   }
 
-  async callTaskStatusCutover(args = {}, { verifySource } = {}) {
+  async callTaskStatusCutover(args = {}, { verifySource, inspectInstalledNativeOwner } = {}) {
     await this.#startupReconciliation;
     const context = this.#authorize(args.context_token);
+    if (args.initial_native_test != null) {
+      const identity = normalizedInitialNativeTest(args.initial_native_test);
+      if (argumentsHash({ initial_native_test: identity }) !== argumentsHash({ initial_native_test: args.initial_native_test })) {
+        throw new Error("Initial native Test requires canonical exact source arguments");
+      }
+      if (args.status !== "testing" || args.expected_workflow_status !== "in_progress"
+          || !Number.isInteger(args.expected_task_revision) || args.expected_task_revision < 1
+          || Object.keys(args).some(key => !["context_token", "request_id", "task_id", "status",
+            "expected_task_revision", "expected_workflow_status", "initial_native_test", "native_resolution_review"].includes(key))) {
+        throw new Error("Initial native Test requires exact ordinary Progress CAS and no other cutover family");
+      }
+      if (typeof verifySource !== "function" || typeof inspectInstalledNativeOwner !== "function") {
+        throw new Error("Initial native Test requires the existing local source inspection entrypoint");
+      }
+      const original = this.workspaceCatalog.mcpOperation?.(args.request_id);
+      if (original && (original.workspaceId !== context.workspaceId || original.streamId !== context.streamId
+          || original.provider !== context.provider || original.threadId !== context.auditThreadId
+          || original.toolName !== "hub_task_status_update" || original.argumentsHash !== argumentsHash(args))) {
+        throw new Error("Initial native Test original caller or arguments changed");
+      }
+      const source = { kind: "initial-native-test", identity, verifySource, inspectInstalledNativeOwner,
+        authority: { workspaceId: context.workspaceId, streamId: context.streamId,
+          provider: context.provider, threadId: context.threadId } };
+      if (original?.status === "unknown") {
+        const recovered = await this.taskOperationReconciliation.reconcileUnknownWorkflow({
+          workspaceId: context.workspaceId, taskId: args.task_id, operationRequestId: args.request_id,
+          projectRoot: this.#taskProjectRoot(context), expectedTaskRevision: args.expected_task_revision,
+          expectedWorkflowStatus: args.expected_workflow_status, initialNativeTest: identity,
+          verifyInitialNativeTest: source,
+        });
+        if (!recovered.resolved) throw new Error(`Initial native Test original remains UNKNOWN: ${recovered.error ?? "readback incomplete"}`);
+      }
+      return this.#mutate(context, "hub_task_status_update", args, () => this.#updateTaskWorkflowStatus(context, args, { source }));
+    }
     const squashBootstrap = args.squash_source_task_id != null;
     const sourceTaskId = requiredText(
       squashBootstrap ? args.squash_source_task_id : args.cutover_source_task_id,
@@ -1059,6 +1103,8 @@ export class HubMcpService {
           cutoverProjectorSha256: args.cutover_projector_sha256,
           cutoverSourceTaskId: args.cutover_source_task_id,
           cutoverSourceTaskRevision: args.cutover_source_task_revision,
+          initialNativeTest: args.initial_native_test,
+          nativeResolutionReview: args.native_resolution_review,
           ...(args.squash_source_task_id != null ? {
             squashSourceTaskId: args.squash_source_task_id,
             squashSourceTaskRevision: args.squash_source_task_revision,
@@ -1106,8 +1152,6 @@ export class HubMcpService {
         return this.#addAttachment(context, args);
       case "hub_release_plan_get":
         return this.#releasePlan(context, args);
-      case "hub_release_prepare_get":
-        return this.#preparationReadback(context, args);
       case "hub_release_run":
         if (!this.#isReleaseManager(context)) throw new Error("release execution requires a Release Manager Stream");
         return this.#runReleaseOperation(context, args);
@@ -1498,11 +1542,28 @@ export class HubMcpService {
     selected_absorption_handoff: selectedAbsorptionHandoff = null,
     selected_preview_request_id: selectedPreviewRequestId = null,
     expected_selected_preview_hash: expectedSelectedPreviewHash = null,
+    initial_native_test: initialNativeTest = null,
+    native_resolution_review: nativeResolutionReview = null,
   } = {}, { source = null } = {}) {
+    if (initialNativeTest != null && source?.kind !== "initial-native-test") {
+      throw new TaskInputValidationError("Initial native Test requires the supported local cutover entrypoint");
+    }
     if ((sourceTaskId != null || sourceTaskRevision != null) && !source) {
       throw new Error("Cross-Task cutover requires the supported local cutover entrypoint");
     }
     const task = this.#task(context, taskId);
+    if (nativeResolutionReview != null) {
+      if (!this.#isReleaseManager(context)
+          || !["testing", "awaiting_implementation"].includes(status)
+          || expectedRevision == null || expectedWorkflowStatus == null
+          || typeof nativeResolutionReview !== "object" || Array.isArray(nativeResolutionReview)
+          || Object.keys(nativeResolutionReview).sort().join(",") !== "requestId,text"
+          || typeof nativeResolutionReview.requestId !== "string" || !nativeResolutionReview.requestId.trim()
+          || nativeResolutionReview.requestId.length > 200
+          || typeof nativeResolutionReview.text !== "string" || nativeResolutionReview.text.length > 16000) {
+        throw new TaskInputValidationError("Native resolution review requires exact RM Test/Await CAS and authenticated verdict");
+      }
+    }
     const workflowStatus = requiredText(status, "task workflow status", 40);
     const squashValues = [
       squashSourceTaskId, squashSourceTaskRevision, squashBaselineResultCommit,
@@ -1511,31 +1572,15 @@ export class HubMcpService {
     const squashRequested = [...squashValues, squashProofRequestId, expectedSquashTransferHash,
       expectedSquashCutoverHash]
       .some((value) => value != null);
-    const selectedRequested = [selectedBundlePath, selectedBundleSha256, selectedProofCommit, selectedPublishedResolution, selectedAbsorptionHandoff,
+    const selectedRequested = [selectedBundlePath, selectedBundleSha256, selectedProofCommit, selectedPublishedResolution,
       selectedPreviewRequestId, expectedSelectedPreviewHash].some((value) => value != null);
     if (selectedRequested) {
-      if (squashRequested || source || workflowStatus !== "testing"
-          || expectedWorkflowStatus !== "in_progress"
-          || expectedRevision == null || !this.#isReleaseManager(context)
-          || [selectedBundlePath, selectedBundleSha256, selectedProofCommit].some((value) => value == null)
-          || Boolean(selectedPreviewRequestId) !== Boolean(expectedSelectedPreviewHash)) {
-        throw new Error("Selected composition requires exact RM Test preview/confirm identity");
-      }
-      const previewRequestId = expectedSelectedPreviewHash
-        ? requiredText(selectedPreviewRequestId, "selected preview request id", 200)
-        : operationId;
-      const result = await this.taskLifecycle.selectedComposition({
-        taskId: task.id, operationId, expectedTaskRevision: expectedRevision,
-        projectRoot: this.#taskProjectRoot(context,
-          String(task.streamId ?? "").trim() || context.streamId, task.workspaceId),
-        bundlePath: selectedBundlePath, bundleSha256: selectedBundleSha256,
-        proofCommit: selectedProofCommit, expectedPreviewHash: expectedSelectedPreviewHash,
-        publishedResolutionInput: selectedPublishedResolution,
-        absorptionHandoff: selectedAbsorptionHandoff,
-        authority: { workspaceId: context.workspaceId, streamId: context.streamId,
-          provider: context.provider, threadId: context.threadId, proofRequestId: previewRequestId },
-      });
-      return { ...result, ...(result.task ? { task: compactTask(result.task) } : {}) };
+      throw Object.assign(new TaskInputValidationError("New selected materialization is closed; use ordinary native Git Test and isolated conflict resolution"),
+        { code: "TASK_NATIVE_GIT_REQUIRED" });
+    }
+    if (selectedAbsorptionHandoff != null && (workflowStatus !== "testing" || squashRequested || source
+        || expectedRevision == null || expectedWorkflowStatus !== "in_progress")) {
+      throw new TaskInputValidationError("Native absorption requires exact ordinary Test CAS from Progress");
     }
     if (squashRequested) {
       if (squashValues.some((value) => value == null)) {
@@ -1639,9 +1684,12 @@ export class HubMcpService {
       ),
       expectedRevision,
       expectedWorkflowStatus,
+      selectedAbsorptionHandoff,
+      operationEvidence: nativeResolutionReview ? { nativeResolutionReview } : null,
     };
-    const result = source
-      ? await this.taskLifecycle.updateWorkflowStatusFromSource(options, source)
+    const result = source?.kind === "initial-native-test"
+      ? await this.taskLifecycle.updateWorkflowStatusFromInitialSource(options, source)
+      : source ? await this.taskLifecycle.updateWorkflowStatusFromSource(options, source)
       : await this.taskLifecycle.updateWorkflowStatus(options);
     if (!result?.task) return compactTask(result);
     const { task: updated, ...evidence } = result;
@@ -1744,7 +1792,7 @@ export class HubMcpService {
         throw new ReleasePreparationRejectedError("Preparation source closure changed");
       }
     };
-    await measureTaskOperation("preparation:pins", validate);
+    await this.measureOperation("preparation:pins", validate);
     if (typeof this.releasePreflight?.prepareCurrentAwaitSet !== "function") {
       throw new ReleasePreparationRejectedError("Preparation owner is unavailable");
     }
@@ -1765,7 +1813,7 @@ export class HubMcpService {
           throw new ReleasePreparationRejectedError("Preparation terminal receipt exceeds its exact retention budget");
         }
         try {
-          await measureTaskOperation("preparation:terminal-receipt", () => this.workspaceCatalog
+          await this.measureOperation("preparation:terminal-receipt", () => this.workspaceCatalog
             .completeMcpOperation(args.request_id, result, { validate: checkRows }));
         } catch (cause) {
           const terminal = this.workspaceCatalog.mcpOperation(args.request_id);
@@ -2386,7 +2434,7 @@ export class HubMcpService {
         requestId: args.request_id,
       });
     }
-    const started = await measureTaskOperation("mcp:admission", () => this.workspaceCatalog.beginMcpOperation({
+    const started = await this.measureOperation("mcp:admission", () => this.workspaceCatalog.beginMcpOperation({
       requestId,
       workspaceId: context.workspaceId,
       streamId: context.streamId,

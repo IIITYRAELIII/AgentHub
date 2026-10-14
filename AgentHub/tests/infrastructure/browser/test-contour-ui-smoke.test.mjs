@@ -266,6 +266,7 @@ test("Test Contour smoke selects the exact prepared Stream and verifies its proj
       assert.match(selector, /data-stream-tab-id="stream-smoke"/u);
       assert.doesNotMatch(selector, /data-stream-name/u);
       return {
+        async isVisible() { return true; },
         async waitFor(options) { events.push(["stream.wait", selector, options]); },
         async getAttribute(name) {
           assert.equal(name, "data-stream-task-id");
@@ -279,6 +280,28 @@ test("Test Contour smoke selects the exact prepared Stream and verifies its proj
   await selectTestContourConversation(page, saved(), 5_000);
 
   assert.deepEqual(events.map(([event]) => event), ["workspace.wait", "workspace.click", "stream.wait", "stream.click"]);
+});
+
+test("Test Contour smoke opens the public overflow menu for an exact hidden Stream", async () => {
+  const events = [];
+  let open = false;
+  const page = {
+    locator(selector) {
+      if (selector.includes("data-workspace-select")) return { async waitFor() {}, async click() {} };
+      if (selector === "[data-stream-overflow-toggle]:visible") return {
+        async waitFor() {}, async click() { open = true; events.push("overflow"); },
+      };
+      assert.match(selector, /data-stream-tab-id="stream-smoke"/u);
+      return {
+        async isVisible() { return open; },
+        async waitFor() { assert.equal(open, true); },
+        async getAttribute() { return "stream-smoke"; },
+        async click() { events.push("exact-stream"); },
+      };
+    },
+  };
+  await selectTestContourConversation(page, saved(), 5_000);
+  assert.deepEqual(events, ["overflow", "exact-stream"]);
 });
 
 test("Test Contour smoke persists a fresh public new-task identity and reuses it after refresh", async () => {
@@ -310,6 +333,7 @@ test("Test Contour smoke persists a fresh public new-task identity and reuses it
       if (selector === "[data-workspace]") return { async waitFor() {} };
       if (selector.includes("data-workspace-select")) return { async waitFor() {}, async click() {} };
       return {
+        async isVisible() { return true; },
         async waitFor() {},
         async getAttribute(name) {
           assert.equal(name, "data-stream-task-id");
@@ -498,6 +522,7 @@ test("Test Contour smoke reconciles an unknown setup with its original durable c
       if (selector === "[data-workspace]") return { async waitFor() {} };
       if (selector.includes("data-workspace-select")) return { async waitFor() {}, async click() {} };
       return {
+        async isVisible() { return true; },
         async waitFor() {},
         async getAttribute() { return "stream-smoke"; },
         async click() {},
@@ -567,6 +592,7 @@ test("Test Contour smoke reconciles an unknown send without a new click or messa
     locator(selector) {
       if (selector.includes("data-workspace-select")) return { async waitFor() {}, async click() {} };
       return {
+        async isVisible() { return true; },
         async waitFor() {},
         async getAttribute() { return "stream-smoke"; },
         async click() {},
