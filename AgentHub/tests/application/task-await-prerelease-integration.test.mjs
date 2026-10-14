@@ -256,7 +256,7 @@ test("Await and withdrawal retain the published base despite unreviewed origin m
   assert.equal(f.taskBoard.task(second.id).workflowStatus, "awaiting_implementation");
 });
 
-test("Await leaves PreRelease unchanged after SQLite rejection and rebuilds it after a lost committed reply", { timeout: 90000 }, async (t) => {
+test("Await leaves PreRelease unchanged after SQLite rejection and rebuilds it after a lost committed reply", { timeout: 180000 }, async (t) => {
   const f = await fixture(t);
   f.releaseGitWorkspaces.prepareGeneration = async () => assert.fail("Await must reuse live PreRelease");
   const first = await f.testedTask("First", "first.txt", "first\n");

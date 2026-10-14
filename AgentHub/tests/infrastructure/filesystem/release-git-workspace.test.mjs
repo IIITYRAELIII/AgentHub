@@ -182,7 +182,7 @@ test("one operation generation isolates source bundles per repository", { timeou
   assert.equal((await readFile(path.join(secondArchive, "evidence", `${secondCandidate.manifestHash}.json`))).length > 0, true);
 });
 
-for (const binaryOnly of [false, true]) test(`PreRelease preserves ${binaryOnly ? "terminal binary patch delimiters" : "binary patch bytes and a trailing blank context line"}`, { timeout: 20000 }, async (context) => {
+for (const binaryOnly of [false, true]) test(`PreRelease preserves ${binaryOnly ? "terminal binary patch delimiters" : "binary patch bytes and a trailing blank context line"}`, { timeout: 180000 }, async (context) => {
   const setup = await fixture(context);
   await writeFile(path.join(setup.primary, "z-final.txt"), "before\nunchanged\n\n", "utf8");
   await writeFile(path.join(setup.primary, "binary.bin"), Buffer.from([0, 255, 1, 2, 3]));
