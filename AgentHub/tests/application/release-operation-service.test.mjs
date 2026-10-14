@@ -651,3 +651,27 @@ test("evidence-only legacy operation rejects manual continuation without schedul
   assert.equal(result.operation.waitReason.code, "legacy_snapshot_evidence");
   assert.equal(scheduled.length, 0);
 });
+
+for (const reason of ["owned", "source-owner-fenced", "execution-source-fenced"]) {
+  test(`denied acquire ${reason} does not spin and normal wake can continue`, async t => {
+    const scheduled = [];
+    const f = await fixture(t, { schedule: callback => scheduled.push(callback), retryDelayMs: 1_000 });
+    const acquire = f.store.acquire.bind(f.store);
+    let attempts = 0;
+    f.store.acquire = () => { attempts += 1; return { acquired: false, reason, operation: f.store.get("operation-1") }; };
+    const ack = start(f.service);
+    scheduled.shift()();
+    await f.service.drain(ack.operationId);
+    await new Promise(resolve => setTimeout(resolve, 25));
+    assert.equal(attempts, 1);
+    assert.equal(scheduled.length, 0);
+    assert.deepEqual(f.calls, []);
+    f.store.acquire = acquire;
+    if (reason === "owned") await waitUntil(() => scheduled.length === 1);
+    else f.service.recover();
+    assert.equal(scheduled.length, 1);
+    scheduled.shift()();
+    assert.equal((await f.service.drain(ack.operationId)).operation.state, "done");
+    assert.equal(f.calls.filter(call => call[0] === "publish").length, 2);
+  });
+}

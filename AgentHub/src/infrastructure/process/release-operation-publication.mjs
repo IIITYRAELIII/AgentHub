@@ -48,9 +48,13 @@ function publicationFailure(saved, exitCode, targetId) {
 }
 
 async function gitRemoteHead(candidate) {
+  const checkout = await stat(candidate.releaseRoot).then(() => candidate.releaseRoot, error => {
+    if (error.code !== "ENOENT") throw error;
+    return candidate.repositoryRoot;
+  });
   return new Promise((resolve) => {
     const child = spawn("git", ["ls-remote", "--exit-code", "origin", "refs/heads/main"], {
-      cwd: candidate.releaseRoot,
+      cwd: checkout,
       windowsHide: true,
       stdio: ["ignore", "pipe", "ignore"],
     });
@@ -200,6 +204,13 @@ export class ReleaseOperationPublication {
   async readback({ operation, generation, target }) {
     const candidate = candidateFor(generation, target);
     const layout = this.#layout(operation, generation, target);
+    const runner = await readJson(layout.stateFile);
+    if (runner?.candidate === generation.identitySha256 && this.processAlive(runner.pid)) {
+      return { status: "unknown", cursor: { pid: runner.pid, stateFile: layout.stateFile } };
+    }
+    if (runner?.candidate === generation.identitySha256 && runner?.status === "launching") {
+      return { status: "unknown", cursor: { phase: "launching", stateFile: layout.stateFile } };
+    }
     const result = await readJson(layout.resultFile);
     if (result?.operationId === operation.operationId
         && result?.generation === generation.generation
@@ -217,13 +228,6 @@ export class ReleaseOperationPublication {
       revision: candidate.commit,
       source: "publication-state-readback",
     };
-    const runner = await readJson(layout.stateFile);
-    if (runner?.candidate === generation.identitySha256 && this.processAlive(runner.pid)) {
-      return { status: "unknown", cursor: { pid: runner.pid, stateFile: layout.stateFile } };
-    }
-    if (runner?.candidate === generation.identitySha256 && runner?.status === "launching") {
-      return { status: "unknown", cursor: { phase: "launching", stateFile: layout.stateFile } };
-    }
     const journal = this.publicationRunStore({ runtimeRoot: layout.root, environment: this.environment });
     const saved = await journal.read().catch(() => null);
     if (saved?.identity?.revision === candidate.commit && saved?.progress?.publicationState) {

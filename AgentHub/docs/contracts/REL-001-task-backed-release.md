@@ -1,5 +1,46 @@
 # REL-001 — Task-backed Workspace release
 
+## Current corrected candidates and historical release facts (2026-10-14)
+
+A new candidate is admitted from the exact CURRENT normally accepted results.
+Historical `selectedResults`, terminal predecessor state, reserved startup
+selection or generation number do not authorize or veto the new selection.
+The ordinary preparation/compose/reservation owners bind the current exact set,
+version, entry and candidate. A later accepted correction uses that same normal
+lifecycle. Terminal attempts remain immutable history; a normal next operation
+needs reconciled actual effects and one publisher, not another manual release GO.
+
+An observed OWN published commit is a historical fact: the immutable original
+Workspace/authorization, validated generation, descriptor and exact observed
+commit prove it independently of the operation's later state or selected result.
+This read grants no acquisition, readiness or target-effect credit. Actual
+publication readback precedes a new attempt; UNKNOWN or live custody cannot be
+reclassified as no effect. Foreign origin commits still require explicit review.
+The previous version and consolidated entry may be retained from archived freeze
+evidence; the new artifact has its own immutable identity and current acceptance.
+Special predecessor-selection equality and stopped/startup successor admission
+routes in ADR-0108–0110 do not govern new ordinary attempts after this correction.
+Their old immutable records/receipts remain supported historical readback only.
+
+A denied native/execution acquisition stops that worker; temporary owned refusal
+uses a bounded timer and normal wake. SQL writer fences remain in force. Exact
+published/healthy Task delivery is persisted before optional dev synchronization;
+unpublished foreign dev is preserved. Pending sync/cleanup remains explicit and
+prevents the release service operation from being called fully complete.
+
+Optional malformed/missing archive entries are diagnosed per entry, including the
+startup Git-reconciliation read before legacy import. Their evidence is preserved
+and never credited as readiness. Unrelated database/admission errors propagate.
+Installed Task Test capability is not publication authority and cannot veto an
+independently accepted source publication owner. Current authorization, runtime
+identity, candidate and exclusive publication lease still determine execution.
+
+The user explicitly authorized immediate direct production hotfix of these
+confirmed defects outside the broken release lifecycle. This exception permits
+normal install/start and restart for the exact independently reviewed hotfix;
+it does not falsify old receipts or claim the main logical release complete.
+
+
 When a current native generation has already advanced origin during partial
 publication, the unchanged retained selected Test descriptor may be reused for
 ordinary correction acceptance only if the read-only release owner proves that

@@ -2646,6 +2646,25 @@ export class ReleaseGitWorkspaceService {
     };
   }
 
+  async verifyPublishedPrimary({ projectRoot, publishedRevision } = {}) {
+    this.#assertAvailable("verifyPublishedPrimary");
+    const target = String(publishedRevision ?? "").trim();
+    if (!/^[a-f0-9]{40}$/u.test(target)) throw new Error("published primary verification requires an exact revision");
+    const initial = await this.assertPrimaryInvariant(projectRoot, { phase: "published primary verification" });
+    const layout = this.#layout(initial.projectRoot);
+    return withInterprocessLocks([path.join(this.dataDir, "locks", `release-git-${layout.repositoryKey}`)], async () => {
+      await runGit(["fetch", "--no-tags", "--no-recurse-submodules", "origin",
+        "+refs/heads/main:refs/remotes/origin/main"], { cwd: initial.projectRoot, timeoutMs: 300_000 });
+      const originMain = await runGit(["rev-parse", "refs/remotes/origin/main^{commit}"], { cwd: initial.projectRoot });
+      if (originMain !== target) throw new Error("published primary origin changed");
+      await runGit(["merge-base", "--is-ancestor", initial.headCommit, target], { cwd: initial.projectRoot });
+      const after = await this.assertPrimaryInvariant(initial.projectRoot, { phase: "published primary verification completion" });
+      if (after.headCommit !== initial.headCommit || after.indexFingerprint !== initial.indexFingerprint
+          || after.dirtyFingerprint !== initial.dirtyFingerprint) throw new Error("registered primary changed during publication readback");
+      return { status: "preserved", publishedRevision: target, primaryHead: after.headCommit };
+    });
+  }
+
   async synchronizePublishedPrimary({ projectRoot, publishedRevision, planRevision = null } = {}) {
     this.#assertAvailable("synchronizePublishedPrimary");
     const target = String(publishedRevision ?? "").trim();
@@ -2725,16 +2744,24 @@ export class ReleaseGitWorkspaceService {
       throw error;
     });
     const checkpoints = [];
+    const repositories = [];
     for (const entry of entries.filter((item) => item.isDirectory())) {
       const checkpointFile = path.join(this.releaseRepositoriesRoot, entry.name, "checkpoint.json");
+      try {
       const checkpoint = await readJson(checkpointFile);
       const manifest = checkpoint?.manifestFile ? await readJson(checkpoint.manifestFile) : null;
       if (manifest?.primaryRoot) checkpoints.push({
         repositoryKey: entry.name, checkpointFile, checkpoint, manifest,
       });
+      } catch (error) {
+        if (!(error instanceof SyntaxError)) throw error;
+        const diagnostic = { source: "checkpoint", repositoryKey: entry.name,
+          status: "manual_required", reason: error.message, code: "INVALID_HISTORICAL_JSON" };
+        repositories.push(diagnostic);
+        console.warn("Historical release entry unavailable", diagnostic);
+      }
     }
 
-    const repositories = [];
     const auditedRoots = [];
     const attemptedRegisteredRoots = [];
     const registeredRoots = projectRoots.map((item) => ({

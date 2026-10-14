@@ -50,6 +50,8 @@ test("retained selected Test proof survives its exact partial native publication
   // native capability; the proof read must preserve these rows and receipts.
   const persisted = { ...operation, state: "publish", currentGeneration: 1, selectedResults: generation.selectedResults,
     authorization: { ...operation.authorization, nativeOwnerCutover: { schemaVersion: 1, kind: "native-publication-owner-v1" } } };
+  const { fingerprint: originalFingerprint, ...originalAuthority } = persisted.authorization;
+  persisted.authorization.fingerprint = releaseIdentitySha256(originalAuthority);
   const save = value => database.prepare("UPDATE release_operations SET state=?, operation_json=? WHERE operation_id=?")
     .run(value.state, JSON.stringify(value), operation.operationId);
   save(persisted);
@@ -58,11 +60,16 @@ test("retained selected Test proof survives its exact partial native publication
   const before = rows();
   assert.equal((await evidence()).tasks[0].selectedComposition.previewHash, preview.previewHash);
   assert.equal(rows(), before);
-  for (const changed of [ { ...persisted, state: "waiting", resumeState: "compose" },
-    { ...persisted, workspaceId: "foreign" },
-    { ...persisted, currentGeneration: 2 }, { ...persisted, authorization: { ...persisted.authorization, taskIds: ["foreign"] } },
-    { ...persisted, selectedResults: [] }, { ...persisted, authorization: { ...persisted.authorization, nativeOwnerCutover: null } } ]) {
-    save(changed); await assert.rejects(evidence(), /remote advanced/u);
+  for (const changed of [{ ...persisted, state: "waiting", resumeState: "compose" },
+    { ...persisted, currentGeneration: 2 }, { ...persisted, selectedResults: [] }]) {
+    save(changed); const unchanged = rows();
+    assert.equal((await evidence()).tasks[0].selectedComposition.previewHash, preview.previewHash);
+    assert.equal(rows(), unchanged);
+  }
+  for (const changed of [{ ...persisted, workspaceId: "foreign" },
+    { ...persisted, authorization: { ...persisted.authorization, taskIds: ["foreign"] } },
+    { ...persisted, authorization: { ...persisted.authorization, nativeOwnerCutover: null } }]) {
+    save(changed); await assert.rejects(evidence(), /remote advanced|authorization identity changed/u);
   }
   save(persisted);
   await git(f.root, "update-ref", "refs/heads/foreign", f.proof);
@@ -77,7 +84,7 @@ test("retained selected Test proof survives its exact partial native publication
   assert.equal(rows(), before);
 });
 
-test("retained selected acceptance recognizes exact terminal startup history without replaying effects", { timeout: 90000 }, async t => {
+test("retained selected acceptance uses OWN historical facts after terminal and later selection changes", { timeout: 90000 }, async t => {
   const f = await fixture(t);
   const preview = await retainedLegacySelectedPreview(f, { taskId: TASK_ID, expectedTaskRevision: 1,
     authority: { workspaceId: "workspace", streamId: "rm", provider: "codex", threadId: "thread", proofRequestId: "terminal-published" } });
@@ -136,28 +143,27 @@ test("retained selected acceptance recognizes exact terminal startup history wit
   save(persisted); const before = rows();
   assert.equal((await evidence()).tasks[0].selectedComposition.previewHash, preview.previewHash);
   assert.equal(rows(), before);
-  for (const mutate of [value => { value.workspaceId = "foreign"; }, value => { value.owner = { ownerId: "live" }; },
-    value => { value.state = "done"; }, value => { value.nativeStartupCorrection.recordHash = "f".repeat(64); },
-    value => { value.authorization.nativeOwnerCutover.admissionSha256 = "f".repeat(64); },
-    value => { value.nativeOwnerRecovery.executionBindingHash = "f".repeat(64); },
-    value => { value.nativeStartupCorrection.scope.priorIdentitySha256 = "f".repeat(64);
-      value.nativeStartupCorrection = seal({ ...value.nativeStartupCorrection, recordHash: undefined }); },
-    value => { value.nativeStartupCorrection.scope.selectionSha256 = "f".repeat(64);
-      value.nativeStartupCorrection = seal({ ...value.nativeStartupCorrection, recordHash: undefined }); },
-    value => { value.nativeStartupCorrection.previousExecutionBinding = original;
-      value.nativeStartupCorrection = seal({ ...value.nativeStartupCorrection, recordHash: undefined }); },
-    value => { value.nativeStartupCorrection.scope.effects[0].publicationStatus = "ready";
-      value.nativeStartupCorrection = seal({ ...value.nativeStartupCorrection, recordHash: undefined }); },
-    value => { value.publicationEffects.targets.production = effect; },
-    value => { value.selectedResults = []; }, value => { value.currentGeneration = 1; }]) {
+  for (const mutate of [value => { value.owner = { ownerId: "live" }; },
+    value => { value.state = "done"; }, value => { value.selectedResults = []; },
+    value => { value.currentGeneration = 1; }]) {
     const changed = structuredClone(persisted); mutate(changed); save(changed);
-    const negativeBefore = rows(); await assert.rejects(evidence(), /remote advanced/u); assert.equal(rows(), negativeBefore);
+    const immutable = rows();
+    assert.equal((await evidence()).tasks[0].selectedComposition.previewHash, preview.previewHash);
+    assert.equal(rows(), immutable, "authorship read grants no owner or effect mutation");
+  }
+  for (const mutate of [value => { value.workspaceId = "foreign"; },
+    value => { value.authorization.nativeOwnerCutover.admissionSha256 = "f".repeat(64); }]) {
+    const changed = structuredClone(persisted); mutate(changed); save(changed);
+    const immutable = rows(); await assert.rejects(evidence(), /remote advanced|authorization identity changed/u);
+    assert.equal(rows(), immutable);
   }
   save(persisted);
   const readback = database.prepare("SELECT receipt_json FROM release_step_receipts WHERE step_id='startup-readback:production'").get();
   database.prepare("UPDATE release_step_receipts SET status='failed', receipt_json=? WHERE step_id='startup-readback:production'")
     .run(JSON.stringify({ ...JSON.parse(readback.receipt_json), status: "failed" }));
-  const refused = rows(); await assert.rejects(evidence(), /remote advanced/u); assert.equal(rows(), refused);
+  const historical = rows();
+  assert.equal((await evidence()).tasks[0].selectedComposition.previewHash, preview.previewHash);
+  assert.equal(rows(), historical, "actual OWN commit and validation establish authorship without a special startup receipt");
   database.prepare("UPDATE release_step_receipts SET status='applied', receipt_json=? WHERE step_id='startup-readback:production'").run(readback.receipt_json);
   assert.equal(rows(), before);
   await git(f.root, "push", "-q", "--force", "origin", `${f.task}:refs/heads/main`);

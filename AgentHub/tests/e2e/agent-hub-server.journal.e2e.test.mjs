@@ -95,6 +95,9 @@ test("prepared runtime becomes ready beside an external reviewed release awaitin
 
   // Use the actual packager and locked production dependencies, not a stub
   // server. Only the provider transport is the existing local E2E fake.
+  const invalidArchive = path.join(dataDir, "release-repositories", "optional-corrupt-history");
+  await mkdir(invalidArchive, { recursive: true });
+  await writeFile(path.join(invalidArchive, "checkpoint.json"), "{invalid legacy evidence");
   const prepared = await prepareRuntime({ sourceRoot: ROOT, runtimeRoot, releaseId: "startup-regression" });
   await installPreparedRuntime({ runtimeRoot, releaseId: prepared.releaseId, releaseRoot: prepared.releaseRoot });
   assert.equal(await verifyInstalledRuntime({ runtimeRoot, releaseId: prepared.releaseId, releaseRoot: prepared.releaseRoot }), true);
@@ -184,7 +187,10 @@ test("prepared runtime becomes ready beside an external reviewed release awaitin
   bot.stdout.on("data", chunk => { stdout += chunk; });
   bot.stderr.on("data", chunk => { stderr += chunk; });
   try {
-    await waitFor(() => /Agent Hub ready; components: core/u.test(stdout), "prepared runtime ready", 30_000);
+    await waitFor(() => {
+      if (bot.exitCode !== null) throw new Error(`Artifact exited before ready: ${bot.exitCode}; ${stderr}`);
+      return /Agent Hub ready; components: core/u.test(stdout);
+    }, "prepared runtime ready", 30_000);
     const lock = JSON.parse(await readFile(path.join(dataDir, "bot.lock"), "utf8"));
     assert.equal(lock.pid, bot.pid);
     assert.equal(lock.ready, true);
@@ -192,6 +198,7 @@ test("prepared runtime becomes ready beside an external reviewed release awaitin
     await callDesktopControl("snapshot", {}, { runtimeRoot });
     await callDesktopControl("snapshot", {}, { runtimeRoot });
     assert.equal(bot.exitCode, null, "ready runtime remains responsive after startup recovery");
+    assert.match(`${stdout}\n${stderr}`, /Historical release entry unavailable/u);
     assert.doesNotMatch(`${stdout}\n${stderr}`, /unhandled rejection|Stopping on unhandled|release reviewed executable owner is fenced/u);
     assert.deepEqual(originalRows(), before, "external operation, immutable generation and receipts cannot be acquired or rewritten");
     assert.equal(await readFile(publicationFile, "utf8"), publication);

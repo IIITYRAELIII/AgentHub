@@ -383,7 +383,7 @@ export class ReleaseOperationService {
     if (this.#running.has(operationId)) return;
     this.#running.add(operationId);
     let owned = false;
-    let sourceFenced = false;
+    let acquisitionDenied = null;
     let owner = null;
     let heartbeat = null;
     try {
@@ -393,7 +393,7 @@ export class ReleaseOperationService {
         leaseMs: this.leaseMs, processId: this.processId, takeoverAllowed,
       });
       if (!acquired.acquired) {
-        sourceFenced = ["source-owner-fenced", "execution-source-fenced"].includes(acquired.reason);
+        acquisitionDenied = acquired.reason;
         return;
       }
       owned = true;
@@ -446,12 +446,24 @@ export class ReleaseOperationService {
         const generation = this.store.generation(current.operationId, current.currentGeneration);
         if (generation) await this.cleanupGeneration?.({ operation: current, generation }).catch(() => {});
       }
-      if (!sourceFenced) {
+      if (acquisitionDenied === "owned") this.#scheduleOwnedRetry(operationId);
+      else if (owned) {
         if (current?.state === "waiting") this.#scheduleRetry(current);
         else if (current && !releaseOperationIsTerminal(current)) this.#schedule(operationId);
       }
       await this.deliverPendingEvents().catch(() => {});
     }
+  }
+
+  #scheduleOwnedRetry(operationId) {
+    if (this.#retryTimers.has(operationId)) return;
+    const timer = setTimeout(() => {
+      this.#retryTimers.delete(operationId);
+      const current = this.store.get(operationId);
+      if (current && !releaseOperationIsTerminal(current)) this.#schedule(operationId);
+    }, this.retryDelayMs);
+    timer.unref?.();
+    this.#retryTimers.set(operationId, timer);
   }
 
   #scheduleRetry(operation) {
@@ -588,11 +600,27 @@ export class ReleaseOperationService {
   async #publish(operation, owner) {
     const generation = this.#generation(operation);
     let latest = this.store.get(operation.operationId);
-    if (!latest.publicationEffects?.publishStarted) {
+    if (!latest.publicationEffects?.publishStarted
+        || latest.publicationEffects.generation !== generation.generation) {
+      // Selection is awaited under the adapter's Await boundary. A heartbeat may
+      // advance the revision there; it cannot authorize a different publication.
+      const transitionBoundary = (patch, options) => {
+        const current = this.store.get(latest.operationId);
+        if (!ownsRelease(current, owner)) return { applied: false, reason: "owner-fenced" };
+        if (current.state !== "publish" || current.currentGeneration !== generation.generation
+            || this.#generation(current).identitySha256 !== generation.identitySha256
+            || releaseIdentitySha256(current.selectedResults) !== releaseIdentitySha256(latest.selectedResults)
+            || releaseIdentitySha256(current.publicationEffects) !== releaseIdentitySha256(latest.publicationEffects)) {
+          return { applied: false, reason: "publication-boundary-changed" };
+        }
+        return this.store.transition(current.operationId, patch, {
+          ...options, expectedRevision: current.revision, expectedOwner: owner,
+        });
+      };
       const boundary = await this.reservePublication({
         operation: latest,
         generation,
-        reserve: () => this.store.transition(latest.operationId, {
+        reserve: () => transitionBoundary({
           publicationEffects: {
             ...latest.publicationEffects,
             generation: generation.generation,
@@ -604,18 +632,14 @@ export class ReleaseOperationService {
           },
           nextAction: "publish exact reserved generation",
         }, {
-          expectedRevision: latest.revision,
-          expectedOwner: owner,
           emitEvent: false,
         }),
-        recompose: () => this.store.transition(latest.operationId, {
+        recompose: () => transitionBoundary({
           state: "compose",
           currentStep: "compose",
           nextAction: "compose the accepted selection before publication",
           lastError: null,
         }, {
-          expectedRevision: latest.revision,
-          expectedOwner: owner,
           eventKind: "operation.selection-changed",
         }),
       });
@@ -733,7 +757,8 @@ export class ReleaseOperationService {
       this.store.finishStep(started.receipt, { status: "applied", effect: effect ?? { status: "completed" }, expectedOwner: owner });
       return this.#advance(operation.operationId, "done", { lastError: null }, owner);
     } catch (error) {
-      this.store.finishStep(started.receipt, { status: "failed", error, expectedOwner: owner });
+      this.store.finishStep(started.receipt, { status: "failed", error,
+        ...(error?.finalization ? { effect: error.finalization } : {}), expectedOwner: owner });
       const wrapped = error instanceof Error ? error : new Error(String(error));
       if (!wrapped.code) wrapped.code = "RELEASE_EXTERNAL_CONDITION";
       throw wrapped;

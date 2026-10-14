@@ -60,47 +60,6 @@ export function releaseIdentitySha256(value) {
   return createHash("sha256").update(JSON.stringify(stable(value))).digest("hex");
 }
 
-// Read-only interpretation of the external native owner's immutable history.
-// It grants no capability to this installed store or to ordinary operation writes.
-function restorePublishedStartupHistory(value) {
-  if (!restoreReleaseOperation(value)) return null;
-  const original = value.authorization?.nativeOwnerCutover;
-  const recovery = value.nativeOwnerRecovery;
-  const correction = value.nativeStartupCorrection;
-  const validBinding = binding => {
-    const retry = binding?.frozenRetry;
-    return binding?.schemaVersion === 1 && binding.kind === "native-publication-owner-v1"
-      && /^[a-f0-9]{64}$/u.test(binding.admissionSha256 ?? "")
-      && /^[a-f0-9]{40}$/u.test(binding.source?.commit ?? "")
-      && /^[a-f0-9]{40}$/u.test(binding.source?.tree ?? "")
-      && [binding.source?.root, binding.source?.branch,
-        ...["provider", "threadId", "turnId", "serviceTaskId", "repositoryRoot"].map(key => binding.intake?.[key])]
-        .every(item => typeof item === "string" && item.trim())
-      && Number.isSafeInteger(binding.intake?.taskRevision) && binding.intake.taskRevision > 0
-      && (!retry || (retry.kind === "native-frozen-release-retry-v1"
-        && typeof retry.operationId === "string" && retry.operationId.trim()
-        && Number.isSafeInteger(retry.generation) && retry.generation > 0
-        && /^\d{4}\.\d{1,2}\.\d{1,2}$/u.test(retry.releaseVersion ?? "")
-        && ["identitySha256", "manifestHash", "terminalSha256"].every(key => /^[a-f0-9]{64}$/u.test(retry[key] ?? ""))));
-  };
-  const validRecord = (record, kind) => record?.schemaVersion === 1 && record.kind === kind
-    && validBinding(record.binding)
-    && releaseIdentitySha256(record.binding) === record.executionBindingHash
-    && ["preservedSha256", "recordHash", "executionBindingHash"].every(key => /^[a-f0-9]{64}$/u.test(record[key] ?? ""))
-    && releaseIdentitySha256({ ...record, recordHash: undefined }) === record.recordHash;
-  const { fingerprint, ...authorization } = value.authorization;
-  if (!validBinding(original) || releaseIdentitySha256(authorization) !== fingerprint
-      || !validRecord(recovery, "reviewed-native-owner-recovery-v1")
-      || releaseIdentitySha256(recovery.originalBinding) !== releaseIdentitySha256(original)
-      || recovery.binding.source.commit === original.source.commit
-      || !validRecord(correction, "reviewed-native-startup-correction-v1")
-      || !validBinding(correction.previousExecutionBinding)
-      || releaseIdentitySha256(correction.previousExecutionBinding) !== recovery.executionBindingHash
-      || !Number.isSafeInteger(correction.scope?.priorGeneration) || correction.scope.priorGeneration < 1
-      || correction.scope.nextGeneration !== correction.scope.priorGeneration + 1) return null;
-  return value;
-}
-
 export function releaseSelectionSha256(results) {
   return releaseIdentitySha256(normalizedResults(results).map(({ tree, ...result }) => result));
 }

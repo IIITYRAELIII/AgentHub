@@ -489,6 +489,7 @@ export async function createHubInfrastructure({
     store: releaseOperationStore,
     dataDir: config.dataDir,
     runnerVersion: AGENT_HUB_VERSION,
+    reportDiagnostic: diagnostic => console.warn("Historical release entry unavailable", diagnostic),
   }));
   const releaseOperationPublication = new ReleaseOperationPublication({
     dataDir: config.dataDir,

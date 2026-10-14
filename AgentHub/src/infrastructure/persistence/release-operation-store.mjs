@@ -9,7 +9,6 @@ import {
   createReleaseOperation,
   RELEASE_OPERATION_STATES,
   releaseIdentitySha256,
-  unpublishedStartupRetryOrigin,
   releaseOperationIsTerminal,
   restoreReleaseOperation,
   transitionReleaseOperation,
@@ -18,9 +17,8 @@ import { openRuntimeDatabase, runtimeDatabasePath } from "./runtime-state-store.
 
 const LEGACY_MIGRATION_PREFIX = "release-operation:legacy:";
 
-// Origin can advance before the native publication owner finalizes its baseline.
-// Reuse only its current immutable, validated generation's identical descriptor.
-// This read never acquires the operation or classifies its pending effects.
+// Read-only OWN publication fact: immutable original, validated generation and
+// descriptor matching the actual remote, independent of later operation state.
 export function readNativePublishedSelectedComposition({ dataDir, preview, remoteCommit } = {}) {
   const file = runtimeDatabasePath(dataDir);
   if (!existsSync(file) || !/^[a-f0-9]{40}$/u.test(remoteCommit ?? "")) return null;
@@ -34,7 +32,7 @@ export function readNativePublishedSelectedComposition({ dataDir, preview, remot
       FROM release_operations o
       JOIN release_operation_tasks t ON t.operation_id = o.operation_id
       JOIN release_candidate_generations g ON g.operation_id = o.operation_id
-      WHERE t.task_id = ? AND o.state IN ('publish', 'waiting', 'failed')
+      WHERE t.task_id = ?
       ORDER BY o.updated_at DESC, g.generation DESC LIMIT 65
     `).all(preview.taskId);
     if (rows.length > 64) throw new Error("Published selected proof history exceeds its bound");
@@ -48,22 +46,10 @@ export function readNativePublishedSelectedComposition({ dataDir, preview, remot
           || operation.authorization.nativeOwnerCutover.schemaVersion !== 1
           || operation.workspaceId !== preview.authority?.workspaceId
           || generation.operationId !== operation.operationId) continue;
-      const currentPublication = (operation.state === "publish"
-        || (operation.state === "waiting" && operation.resumeState === "publish"))
-        && generation.generation === operation.currentGeneration
-        && JSON.stringify(operation.selectedResults) === JSON.stringify(generation.selectedResults);
-      let terminalCorrection = false;
-      if (operation.state === "failed" && operation.nativeStartupCorrection) {
-        const generations = database.prepare("SELECT generation_json FROM release_candidate_generations WHERE operation_id=? ORDER BY generation")
-          .all(operation.operationId).map(item => JSON.parse(item.generation_json));
-        const receipts = database.prepare("SELECT receipt_json FROM release_step_receipts WHERE operation_id=? ORDER BY generation, step_id, attempt")
-          .all(operation.operationId).map(item => JSON.parse(item.receipt_json));
-        const retry = unpublishedStartupRetryOrigin({ operation, generations, receipts });
-        terminalCorrection = Boolean(retry && generation.generation === retry.priorGeneration
-          && generation.identitySha256 === operation.nativeStartupCorrection.scope.priorIdentitySha256
-          && remoteCommit === retry.priorPublishedHead);
+      const { fingerprint, ...authorization } = operation.authorization;
+      if (releaseIdentitySha256(authorization) !== fingerprint) {
+        throw new Error("Published original authorization identity changed");
       }
-      if (!currentPublication && !terminalCorrection) continue;
       const { identitySha256, ...contents } = generation;
       if (identitySha256 !== row.identity_sha256 || releaseIdentitySha256(contents) !== identitySha256) {
         throw new Error("Published native generation identity changed");
@@ -87,8 +73,7 @@ export function readNativePublishedSelectedComposition({ dataDir, preview, remot
         ORDER BY attempt DESC LIMIT 1`).get(operation.operationId, generation.generation);
       if (validated?.status !== "applied") continue;
       matches.push({ operationId: operation.operationId, generation: generation.generation,
-        identitySha256, publishedCommit: remoteCommit, selectedCompositionIdentity: identity,
-        ...(terminalCorrection ? { startupCorrectionRecordHash: operation.nativeStartupCorrection.recordHash } : {}) });
+        identitySha256, publishedCommit: remoteCommit, selectedCompositionIdentity: identity });
     }
     if (matches.length > 1) throw new Error("Published selected proof is ambiguous");
     return matches[0] ?? null;
@@ -668,15 +653,37 @@ export class ReleaseOperationStore {
     const identity = String(sourceIdentity ?? "").trim();
     if (!identity) throw new TypeError("legacy source identity is required");
     const importedAt = this.now();
-    const evidenceSha256 = releaseIdentitySha256(evidence ?? {});
+    let evidenceSha256 = releaseIdentitySha256(evidence ?? {});
     const evidenceId = `${LEGACY_MIGRATION_PREFIX}${releaseIdentitySha256({ sourceKind, identity })}`;
     const operationId = `legacy-${releaseIdentitySha256({ sourceKind, identity }).slice(0, 32)}`;
     const imported = this.get(operationId);
+    // Primary synchronization may annotate an already imported orphan checkpoint.
+    // It cannot activate that orphan or rewrite its original migration evidence.
+    // Remove this compatibility boundary with the legacy checkpoint importer.
+    if (imported?.migration?.evidenceSha256 !== evidenceSha256
+        && sourceKind === "release-checkpoint-v2"
+        && imported?.migration?.sourceKind === sourceKind
+        && imported.migration.sourceIdentity === identity
+        && evidenceOnly === true && imported.migration.evidenceOnly === true
+        && imported.state === "waiting" && !imported.owner && !imported.resumeState
+        && imported.waitReason?.code === "legacy_snapshot_evidence"
+        && !imported.waitReason.retryAt
+        && Object.hasOwn(evidence?.checkpoint ?? {}, "primarySynchronizationProof")) {
+      const checkpoint = { ...evidence.checkpoint };
+      delete checkpoint.primarySynchronizationProof;
+      const originalEvidence = { ...evidence, checkpoint };
+      const originalHash = releaseIdentitySha256(originalEvidence);
+      if (originalHash === imported.migration.evidenceSha256) {
+        evidence = originalEvidence;
+        evidenceSha256 = originalHash;
+      }
+    }
+
     if (imported && (imported.migration?.sourceKind !== String(sourceKind)
         || imported.migration?.sourceIdentity !== identity
         || imported.migration?.evidenceSha256 !== evidenceSha256
         || imported.migration?.evidenceOnly !== Boolean(evidenceOnly))) {
-      throw new Error("legacy release evidence changed after import");
+      throw Object.assign(new Error("legacy release evidence changed after import"), { code: "RELEASE_LEGACY_EVIDENCE_CHANGED" });
     }
     // Re-observing immutable legacy evidence after a runtime upgrade is not a
     // new release request. Keep the first import's runner on both identities;
@@ -702,7 +709,7 @@ export class ReleaseOperationStore {
       const existing = database.prepare(
         "SELECT evidence_sha256 FROM release_legacy_evidence WHERE evidence_id = ?",
       ).get(evidenceId);
-      if (existing && existing.evidence_sha256 !== evidenceSha256) throw new Error("legacy release evidence changed after import");
+      if (existing && existing.evidence_sha256 !== evidenceSha256) throw Object.assign(new Error("legacy release evidence changed after import"), { code: "RELEASE_LEGACY_EVIDENCE_CHANGED" });
       if (!existing) database.prepare(`
         INSERT INTO release_legacy_evidence
           (evidence_id, operation_id, source_kind, evidence_sha256, evidence_json, imported_at)
