@@ -13,10 +13,11 @@ import {
 } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
+import { spawn } from "node:child_process";
 
 import { readAgentHubVersion } from "../infrastructure/filesystem/agent-hub-package.mjs";
 import { defaultRuntimeRoot, runtimeLayout, runtimeReleaseDirectory } from "../infrastructure/filesystem/runtime-layout.mjs";
-import { verifyRuntimeImportClosure } from "../infrastructure/filesystem/runtime-manifest-verifier.mjs";
+import { verifyRuntimeImportClosure, verifyRuntimeManifest } from "../infrastructure/filesystem/runtime-manifest-verifier.mjs";
 import { nextRuntimeReleaseVersion } from "../infrastructure/filesystem/runtime-release-version.mjs";
 import { protectRuntimeConfig, protectRuntimeDirectory } from "../infrastructure/filesystem/runtime-security.mjs";
 import { buildWindowsRuntimeHost, runtimeHostSourceHash } from "../infrastructure/process/runtime-host-builder.mjs";
@@ -27,6 +28,7 @@ const SOURCE_ROOT = path.resolve(import.meta.dirname, "..", "..");
 const TOP_LEVEL_FILES = new Set([
   "AGENT_HUB_GUIDE.md",
   "package.json",
+  "package-lock.json",
   "RuntimeHost.release-acceptance-v1.json",
   "codex-process-ancestry.ps1",
   "codex-rollout-processes.ps1",
@@ -41,6 +43,11 @@ const TOP_LEVEL_FILES = new Set([
   "tts_worker.py",
   "work-log.css",
 ]);
+
+const RUNTIME_MODULE_ASSETS = [
+  ["src/infrastructure/persistence/windows-delete-verified-entry.mjs",
+    "src/infrastructure/persistence/windows-delete-verified-entry.cs"],
+];
 
 async function exists(target) {
   return access(target).then(() => true, () => false);
@@ -92,7 +99,40 @@ async function releaseFileNames(sourceRoot) {
   if (entries.some((entry) => entry.isDirectory() && entry.name === "src")) {
     await visitInternal("src");
   }
+  for (const [module, asset] of RUNTIME_MODULE_ASSETS) {
+    if (!internal.includes(path.normalize(module))) continue;
+    const info = await stat(path.join(sourceRoot, asset)).catch((error) => {
+      if (error?.code === "ENOENT") return null;
+      throw error;
+    });
+    if (!info?.isFile()) throw new Error(`Runtime module asset is missing: ${asset}`);
+    internal.push(path.normalize(asset));
+  }
   return [...topLevel, ...internal].sort();
+}
+
+async function installLockedRuntimeDependencies(stagingRoot) {
+  const windows = process.platform === "win32";
+  const command = windows ? "cmd.exe" : "npm";
+  const args = ["ci", "--omit=dev", "--include=optional", "--ignore-scripts", "--no-bin-links", "--no-audit", "--no-fund"];
+  await new Promise((resolve, reject) => {
+    const child = spawn(command, windows ? ["/d", "/s", "/c", "npm.cmd", ...args] : args, {
+      cwd: stagingRoot,
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let diagnostic = "";
+    for (const stream of [child.stdout, child.stderr]) {
+      stream.on("data", (chunk) => {
+        diagnostic = `${diagnostic}${chunk.toString("utf8")}`.slice(-16_384);
+      });
+    }
+    child.once("error", reject);
+    child.once("close", (code, signal) => {
+      if (code === 0 && !signal) resolve();
+      else reject(new Error(`Locked runtime dependency install failed (${signal ?? code}): ${diagnostic}`));
+    });
+  });
 }
 
 async function hashFile(target) {
@@ -260,29 +300,20 @@ async function installStableRuntimeFiles(layout, releaseRoot, {
   }
 }
 
-export async function deployRuntime({
+export async function prepareRuntime({
   sourceRoot = SOURCE_ROOT,
   runtimeRoot = defaultRuntimeRoot(),
   releaseId = newReleaseId(),
-  removeRelease,
-  onPruneWarning,
+  publicationRevision = null,
+  mobileAssetsRoot = null,
   beforeManifest,
-  beforeStableLauncherCommit,
-  beforePointerCommit,
-  commitStableFile,
-  writePointer = atomicJson,
-  protectPointer = protectRuntimeConfig,
-  restorePointer = async (target, priorText) => {
-    if (priorText === null) await rm(target, { force: true });
-    else await writeTextAtomic(target, priorText);
-  },
+  installProductionDependencies = installLockedRuntimeDependencies,
 } = {}) {
   const layout = runtimeLayout(runtimeRoot);
   const releaseRoot = runtimeReleaseDirectory(runtimeRoot, releaseId);
   const staging = `${releaseRoot}.staging-${randomUUID()}`;
   await mkdir(layout.root, { recursive: true });
   await protectRuntimeDirectory(layout.root);
-  await pruneReplacedStableFiles(layout);
   await mkdir(layout.releasesDir, { recursive: true });
   await protectRuntimeDirectory(layout.releasesDir);
   await mkdir(staging, { recursive: true });
@@ -333,7 +364,24 @@ export async function deployRuntime({
     }
     // Customize only the unpublished copy. Manifest bytes become immutable
     // before the release is renamed or any stable launcher/pointer is changed.
+    if (mobileAssetsRoot) {
+      await mkdir(path.join(staging, "assets", "mobile"), { recursive: true });
+      for (const name of ["AgentHub-Mobile.apk", "update.json"]) {
+        await cp(path.join(mobileAssetsRoot, name), path.join(staging, "assets", "mobile", name));
+      }
+    }
     await beforeManifest?.({ stagingRoot: staging, releaseId });
+    const sourcePackage = JSON.parse(await readFile(path.join(sourceRoot, "package.json"), "utf8"));
+    if (Object.keys(sourcePackage.dependencies ?? {}).length) {
+      if (!names.includes("package-lock.json")) {
+        throw new Error("Runtime production dependencies require a pinned package-lock.json");
+      }
+      await installProductionDependencies(staging);
+      if (!await exists(path.join(staging, "node_modules", ".package-lock.json"))) {
+        throw new Error("Runtime production dependency installation has no lock evidence");
+      }
+      names.push("node_modules");
+    }
     const packageVersion = readAgentHubVersion({ packageFile: path.join(sourceRoot, "package.json") });
     const manifest = {
       releaseId,
@@ -344,6 +392,7 @@ export async function deployRuntime({
       }),
       createdAt: new Date().toISOString(),
       sourceRoot: path.resolve(sourceRoot),
+      ...(publicationRevision ? { publicationRevision } : {}),
       files: await releaseManifest(staging, names),
     };
     await verifyRuntimeImportClosure(staging, manifest.files);
@@ -353,6 +402,46 @@ export async function deployRuntime({
     // every copied file inherits the owner-only ACL. Running icacls /T with
     // directory inheritance flags would strip effective ACEs from files.
     await protectRuntimeDirectory(releaseRoot);
+
+    return { layout, releaseId, releaseRoot };
+  } catch (error) {
+    await rm(staging, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+export async function verifyInstalledRuntime({ runtimeRoot = defaultRuntimeRoot(), releaseId, releaseRoot }) {
+  const layout = runtimeLayout(runtimeRoot);
+  await verifyRuntimeManifest(releaseRoot, releaseId);
+  const pointer = JSON.parse(await readFile(layout.currentFile, "utf8").catch((error) => {
+    if (error.code === "ENOENT") return "{}";
+    throw error;
+  }));
+  if (pointer.current !== releaseId) return false;
+  for (const file of stableRuntimeFiles(layout, releaseRoot)) {
+    if (!await exists(file.target) || !await sameFileContents(file.source, file.target)) return false;
+  }
+  return true;
+}
+
+export async function installPreparedRuntime({
+  runtimeRoot = defaultRuntimeRoot(), releaseId, releaseRoot = runtimeReleaseDirectory(runtimeRoot, releaseId),
+  removeRelease, onPruneWarning, beforeStableLauncherCommit, beforePointerCommit, commitStableFile,
+  writePointer = atomicJson, protectPointer = protectRuntimeConfig,
+  restorePointer = async (target, priorText) => {
+    if (priorText === null) await rm(target, { force: true });
+    else await writeTextAtomic(target, priorText);
+  },
+} = {}) {
+  const layout = runtimeLayout(runtimeRoot);
+  if (path.resolve(releaseRoot) !== path.resolve(runtimeReleaseDirectory(runtimeRoot, releaseId))) {
+    throw new Error("Prepared runtime must belong to the target runtime release directory");
+  }
+  await verifyRuntimeManifest(releaseRoot, releaseId);
+  if (await verifyInstalledRuntime({ runtimeRoot, releaseId, releaseRoot })) {
+    return { layout, releaseId, releaseRoot, reused: true, stableUpdateDeferred: false, blockedStableTarget: null };
+  }
+  await pruneReplacedStableFiles(layout);
 
     // The stable launchers select current.json.  They must therefore be fully
     // staged and installed before publishing a pointer to this release.
@@ -414,10 +503,13 @@ export async function deployRuntime({
       stableUpdateDeferred: false,
       blockedStableTarget: null,
     };
-  } catch (error) {
-    await rm(staging, { recursive: true, force: true });
-    throw error;
-  }
+}
+
+// Compatibility entry point for installers and contours: the publication
+// executor calls the two phases separately, with its persisted artifact proof.
+export async function deployRuntime(options = {}) {
+  const prepared = await prepareRuntime(options);
+  return installPreparedRuntime({ ...options, ...prepared });
 }
 
 export async function prepareRuntimeConfig({
@@ -608,4 +700,3 @@ export async function main(args = process.argv.slice(2)) {
     throw new Error(`Unknown command: ${command}`);
   }
 }
-

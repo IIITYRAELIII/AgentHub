@@ -74,10 +74,18 @@ export function createStartupScreenModel(snapshot, nowMs = Date.now()) {
   };
 }
 
-export function createStartupDisconnectedModel(model, { restarting = false } = {}) {
+export function createStartupDisconnectedModel(model, {
+  restarting = false,
+  responding = false,
+  sinceMs = null,
+  nowMs = Date.now(),
+} = {}) {
   // A disconnected health sample cannot describe the replacement's progress.
   // Keep only known error details and the generation used by recovery actions.
   const failedOperations = restarting ? [] : (model?.failedOperations ?? []);
+  // The waiting time is measured from the first confirmed wait; without it the
+  // screen shows no invented duration.
+  const waitingSinceMs = Number(sinceMs) > 0 ? Number(sinceMs) : null;
   return {
     available: true,
     ready: false,
@@ -95,8 +103,12 @@ export function createStartupDisconnectedModel(model, { restarting = false } = {
     connectionLost: true,
     eyebrow: restarting ? "Agent Hub перезапускается" : "Нет связи с Agent Hub",
     title: restarting ? "Ожидание нового процесса" : "Ожидание соединения",
-    elapsed: "—",
-    stageLabel: "Соединение временно недоступно",
+    waitingSinceMs,
+    elapsed: waitingSinceMs ? formatStartupElapsed(waitingSinceMs, nowMs) : "—",
+    // Only a successful health response proves the previous process still answers.
+    stageLabel: responding
+      ? "Прежний процесс ещё отвечает — ожидаю замену"
+      : "Соединение временно недоступно",
   };
 }
 

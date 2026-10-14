@@ -2,7 +2,6 @@ import { contourRolloutPolicy } from "../../infrastructure/filesystem/test-conto
 import { createHash } from "node:crypto";
 import { open, stat } from "node:fs/promises";
 
-import { isCodexContextProbeTurn } from "../../domain/codex-context-probe.mjs";
 import { scanCodexHistoricalRollout } from "./codex-turn-usage.mjs";
 import { uuidV7TimestampMs } from "./codex-subagent-accounting.mjs";
 
@@ -22,9 +21,11 @@ const DEFAULT_AUDIT_THREADS_PER_RUN = 8;
 const DEFAULT_AUDIT_TURNS_PER_RUN = 20;
 const DEFAULT_AUDIT_TIME_MS = 75;
 const ROLLOUT_CHECKPOINT_BYTES = 128;
-const SNAPSHOT_VERSION = 18;
+// v20 replays retained rollouts through the existing idle, resumable history
+// backfill so newly reported cache-write and request-tier counters reach facts.
+const SNAPSHOT_VERSION = 20;
 const COMPATIBLE_SNAPSHOT_VERSIONS = new Set([
-  4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, SNAPSHOT_VERSION,
+  4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, SNAPSHOT_VERSION,
 ]);
 const HISTORICAL_BACKFILL_STATE_VERSIONS = new Set([SNAPSHOT_VERSION]);
 
@@ -132,7 +133,6 @@ function normalizedLiveScanResult(result, threadId) {
         turnId: String(turn.turnId),
         status: terminalTurnStatus(turn.status) || "completed",
         completedAt: String(turn.completedAt ?? turn.lastActivityAt ?? ""),
-        ...(turn.contextProbe === true ? { contextProbe: true } : {}),
         ...(attachmentCandidates.has(String(turn.turnId)) ? {
           generatedImageSources: attachmentCandidates.get(String(turn.turnId)),
         } : {}),
@@ -148,7 +148,6 @@ function normalizedLiveScanResult(result, threadId) {
       turnId: String(turn.turnId),
       startedAt: String(turn.startedAt ?? ""),
       lastActivityAt: String(turn.lastActivityAt ?? turn.startedAt ?? ""),
-      ...(turn.contextProbe === true ? { contextProbe: true } : {}),
     })),
     nextOffset: result.nextOffset,
     resumeState: result.resumeState ?? null,
@@ -211,7 +210,6 @@ function restoredPendingThread(value) {
       turnId,
       startedAt: String(turn?.startedAt ?? ""),
       lastActivityAt: String(turn?.lastActivityAt ?? turn?.startedAt ?? ""),
-      ...(turn?.contextProbe === true ? { contextProbe: true } : {}),
     });
   }
   if (!turns.size) return null;
@@ -266,7 +264,6 @@ function restoredHistoricalSubagentBackfill(value) {
           turnId,
           startedAt: String(turn?.startedAt ?? ""),
           lastActivityAt: String(turn?.lastActivityAt ?? turn?.startedAt ?? ""),
-          ...(turn?.contextProbe === true ? { contextProbe: true } : {}),
         }] : [];
       }) : [],
     });
@@ -418,7 +415,7 @@ export class CodexTerminalAudit {
           .filter(Boolean)
         : [],
     );
-    this.liveProjectionPending = snapshotVersion === SNAPSHOT_VERSION
+    this.liveProjectionPending = compatibleSnapshot
       && snapshot?.liveProjectionPending === true;
     this.lastRun = snapshotVersion === SNAPSHOT_VERSION && snapshot?.lastRun
       ? structuredClone(snapshot.lastRun)
@@ -584,7 +581,6 @@ export class CodexTerminalAudit {
         turnId,
         startedAt: String(turn?.startedAt ?? ""),
         lastActivityAt: String(turn?.lastActivityAt ?? turn?.startedAt ?? ""),
-        ...(turn?.contextProbe === true ? { contextProbe: true } : {}),
       });
     }
     pending.lastActivityMs = activityMs;
@@ -600,6 +596,10 @@ export class CodexTerminalAudit {
   }
 
   async #reconcileHistorical(thread, project, terminal, options) {
+    // A completed internal compaction without reported usage is not a turn to
+    // project. Keep this at the reconciliation boundary for every scan mode.
+    if (terminal?.usageResult?.compactionOnly === true
+      && terminal.usageResult.reported !== true) return true;
     return this.reconcile(thread, project, terminal, {
       ...options,
       onProjectionDeferred: () => { this.historicalSubagentBackfill.projectionPending = true; },
@@ -648,7 +648,7 @@ export class CodexTerminalAudit {
     await this.#rememberActiveTurns(
       thread,
       project,
-      (result.activeTurns ?? []).filter((turn) => !isCodexContextProbeTurn(turn)),
+      result.activeTurns ?? [],
       {
         lowerBoundMs,
         canResume,
@@ -665,10 +665,7 @@ export class CodexTerminalAudit {
     for (; terminalIndex < terminals.length; terminalIndex += 1) {
       if (!this.#hasBudget(budget)) break;
       const terminal = terminals[terminalIndex];
-      const candidate = isCodexContextProbeTurn(terminal)
-        ? { ...terminal, historical: true, resolveCurrentAccount: true }
-        : terminal;
-      const handled = await this.#reconcileLive(thread, project, candidate);
+      const handled = await this.#reconcileLive(thread, project, terminal);
       budget.workUnits += 1;
       if (handled === false) {
         allHandled = false;
@@ -745,53 +742,18 @@ export class CodexTerminalAudit {
 
         const current = this.pendingTurns.get(threadId);
         if (!current || nowMs < current.nextStatusCheckMs) continue;
-        if (typeof this.readThread !== "function") {
-          current.nextStatusCheckMs = nowMs + this.statusPollMs;
-          continue;
-        }
-        const response = await this.readThread(threadId);
-        const fullThread = response?.thread ?? response;
-        if (!fullThread?.id) {
-          current.nextStatusCheckMs = nowMs + this.statusPollMs;
-          continue;
-        }
-        current.thread = threadReference(fullThread);
-        const turns = new Map((fullThread.turns ?? []).map((turn) => [String(turn?.id ?? ""), turn]));
         for (const turn of [...current.turns.values()]) {
           if (!this.#hasBudget(budget)) {
             complete = false;
             break;
           }
-          current.turns.delete(turn.turnId);
-          current.turns.set(turn.turnId, turn);
           try {
             if (typeof this.isTurnActive === "function"
               && await this.isTurnActive(current.thread, turn.turnId)) {
               if (typeof this.onTurnActive === "function") {
                 await this.onTurnActive(current.thread, project, turn.turnId);
               }
-              continue;
             }
-            const exactTurn = turns.get(turn.turnId);
-            const contextProbe = isCodexContextProbeTurn(exactTurn);
-            const status = terminalTurnStatus(exactTurn?.status);
-            if (!status) continue;
-            const handled = await this.#reconcileLive(fullThread, project, {
-              turnId: turn.turnId,
-              status,
-              completedAt: new Date(
-                timestampMs(turn.lastActivityAt)
-                || timestampMs(fullThread.updatedAt)
-                || info.mtimeMs
-                || nowMs,
-              ).toISOString(),
-              authoritative: true,
-              ...(contextProbe ? { historical: true, resolveCurrentAccount: true } : {}),
-            });
-            if (handled === false) continue;
-            budget.turns += 1;
-            this.#removePendingTurn(threadId, turn.turnId);
-            madeProgress = true;
           } finally {
             budget.workUnits += 1;
           }
@@ -932,32 +894,6 @@ export class CodexTerminalAudit {
         if (handledTurns >= this.historicalTurnsPerRun) return changed;
       }
 
-      const stale = this.now() - Number(info.mtimeMs || 0) >= this.historicalActiveStaleMs;
-      if (stale) {
-        const staleTurns = turns.filter((turn) => turn?.terminal !== true && turn?.startedAt);
-        while (item.staleTurnIndex < staleTurns.length) {
-          if (!this.shouldRunHistoricalBackfill()) return changed;
-          const turn = staleTurns[item.staleTurnIndex];
-          const identity = historicalTurnIdentity(item.thread, turn.turnId, historical?.session);
-          if (!this.historicalTurnIdentities.has(identity)) {
-            const handled = await this.#reconcileHistorical(item.thread, project, {
-              turnId: turn.turnId,
-              status: "aborted",
-              completedAt: turn.lastActivityAt || turn.startedAt || new Date(info.mtimeMs).toISOString(),
-              authoritative: true,
-              historical: true,
-              usageResult: turn,
-            }, { localOnlyAccounting });
-            if (handled === false) return changed;
-            this.historicalTurnIdentities.add(identity);
-            backfill.processedTurns += 1;
-            changed = true;
-          }
-          item.staleTurnIndex += 1;
-          handledTurns += 1;
-          if (handledTurns >= this.historicalTurnsPerRun) return changed;
-        }
-      }
       this.historicalScanCache.delete(cacheKey);
       backfill.queue.shift();
       backfill.completedFiles += 1;
@@ -1042,30 +978,6 @@ export class CodexTerminalAudit {
       changed = true;
       if (item.offset < info.size) return changed;
 
-      if (item.activeTurns.length) {
-        const stale = this.now() - Number(info.mtimeMs || 0) >= this.historicalActiveStaleMs;
-        if (!stale) {
-          backfill.queue.push(backfill.queue.shift());
-          return true;
-        }
-        for (const turn of item.activeTurns) {
-          const identity = historicalTurnIdentity(item.thread, turn.turnId, historical?.session);
-          if (this.historicalTurnIdentities.has(identity)) continue;
-          const handled = await this.#reconcileHistorical(item.thread, project, {
-            turnId: turn.turnId,
-            status: "aborted",
-            completedAt: turn.lastActivityAt || turn.startedAt || new Date(info.mtimeMs).toISOString(),
-            authoritative: true,
-            historical: true,
-            usageResult: turn,
-          }, { localOnlyAccounting });
-          if (handled === false) return changed;
-          this.historicalTurnIdentities.add(identity);
-          backfill.processedTurns += 1;
-          handledTurns += 1;
-          if (handledTurns >= this.historicalTurnsPerRun) return changed;
-        }
-      }
       this.historicalScanCache.delete(cacheKey);
       backfill.queue.shift();
       backfill.completedFiles += 1;
@@ -1105,38 +1017,6 @@ export class CodexTerminalAudit {
     item.activeTurns = result.activeTurns ?? [];
     changed = true;
     if (item.offset >= info.size) {
-      if (item.activeTurns.length) {
-        const stale = this.now() - Number(info.mtimeMs || 0) >= this.historicalActiveStaleMs;
-        if (!stale) {
-          backfill.queue.push(backfill.queue.shift());
-          return true;
-        }
-        let activeHandled = true;
-        for (const turn of item.activeTurns) {
-          const identity = historicalTurnIdentity(item.thread, turn.turnId);
-          if (this.historicalTurnIdentities.has(identity)) continue;
-          const handled = await this.#reconcileHistorical(item.thread, project, {
-            turnId: turn.turnId,
-            status: "aborted",
-            completedAt: new Date(
-              timestampMs(turn.lastActivityAt)
-              || Number(info.mtimeMs)
-              || this.now(),
-            ).toISOString(),
-            authoritative: true,
-            historical: true,
-          }, { localOnlyAccounting });
-          if (handled === false) activeHandled = false;
-          else {
-            this.historicalTurnIdentities.add(identity);
-            backfill.processedTurns += 1;
-            handledTurns += 1;
-            if (handledTurns >= this.historicalTurnsPerRun) return true;
-          }
-        }
-        if (!activeHandled) return true;
-        item.activeTurns = [];
-      }
       backfill.queue.shift();
       backfill.completedFiles += 1;
       if (!backfill.queue.length) backfill.pending = false;

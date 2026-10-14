@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createHash, createHmac } from "node:crypto";
+import { createHash, createHmac, randomBytes } from "node:crypto";
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { createConnection } from "node:net";
 import os from "node:os";
@@ -7,6 +7,7 @@ import path from "node:path";
 import test from "node:test";
 
 import {
+  createJsonResponder,
   extractWorkLogHtml,
   loopbackRequest,
   miniAppMenuButtonRequests,
@@ -18,6 +19,7 @@ import {
 import { buildLazyJournalPayload } from "../../../src/interfaces/web/mini-app-journal-data.mjs";
 import { createAttachmentStorageName } from "../../../src/domain/attachment-files.mjs";
 import { createDesktopControlRouter } from "../../../src/interfaces/desktop/desktop-control-router.mjs";
+import { createDesktopApplicationRouter } from "../../../src/interfaces/desktop/desktop-application-router.mjs";
 import { createRuntimeHealth } from "../../../src/application/runtime-health.mjs";
 import { createLocalWebviewSession } from "../../../src/interfaces/web/local-webview-session.mjs";
 import { JournalDatabase } from "../../../src/infrastructure/persistence/journal-database.mjs";
@@ -176,6 +178,79 @@ test("local Web App accepts short-lived VS Code WebView CORS sessions", async ()
   }
 });
 
+test("the local VS Code webview session reaches local-only provider sign-in through the real /api/control authorizer", async () => {
+  const secret = "w".repeat(43);
+  const code = "Kc0de-AbC_123#sTaTe-456_xyz";
+  const calls = [];
+  const sources = [];
+  const handlers = new Proxy({}, {
+    get: (_target, name) => async (params) => {
+      calls.push({ handler: String(name), provider: params?.provider });
+      return { accepted: true, login: { provider: params?.provider, status: "pending" } };
+    },
+  });
+  const router = createDesktopApplicationRouter({
+    handlers,
+    commands: { dispatch: async () => ({ accepted: true }), settingTarget: () => ({}) },
+  });
+  const server = new MiniAppServer({
+    host: "127.0.0.1",
+    port: 0,
+    journalDatabase: memoryJournal(),
+    localAccessSecret: secret,
+    deviceStore: {
+      async resolveSession(token) {
+        if (token !== "y".repeat(43)) throw new Error("device session is invalid");
+        return { id: "remote-owner", deviceId: "phone" };
+      },
+    },
+    controlHandler: (request) => {
+      sources.push(request.context?.source);
+      return router.handleDesktopControl(request);
+    },
+  });
+  const post = (address, authorization, action, params) => fetch(`${address.url}api/control`, {
+    method: "POST",
+    headers: { ...(authorization ? { Authorization: authorization } : {}), "Content-Type": "application/json" },
+    body: JSON.stringify({ action, params }),
+  });
+  try {
+    const address = await server.start();
+    const webview = `webview ${createLocalWebviewSession(secret).token}`;
+    for (const [action, params] of [
+      ["start-provider-login", { provider: "claude" }],
+      ["submit-provider-login-code", { provider: "claude", attemptId: "1", code }],
+      ["cancel-provider-login", { provider: "claude" }],
+    ]) {
+      const response = await post(address, webview, action, params);
+      const body = await response.text();
+      assert.equal(response.status, 200, `${action}: ${body}`);
+      assert.equal(JSON.parse(body).ok, true);
+      assert.equal(body.includes("Kc0de"), false, "the manual code is never echoed");
+
+      const expired = createLocalWebviewSession(secret, { now: Date.now() - 60_000, ttlSeconds: 30 });
+      assert.equal((await post(address, `webview ${expired.token}`, action, params)).status, 401);
+      assert.equal((await post(address, "", action, params)).status, 401);
+      const remote = await post(address, `device ${"y".repeat(43)}`, action, params);
+      assert.equal(remote.status, 400);
+      assert.match((await remote.json()).error, /только локальному Agent Hub/u);
+    }
+    assert.deepEqual(calls, [
+      { handler: "startProviderLogin", provider: "claude" },
+      { handler: "submitProviderLoginCode", provider: "claude" },
+      { handler: "cancelProviderLogin", provider: "claude" },
+    ]);
+    // The source is assigned by the authorizer, not by request parameters.
+    assert.deepEqual(sources, [
+      "local-vscode-webview", "trusted-device",
+      "local-vscode-webview", "trusted-device",
+      "local-vscode-webview", "trusted-device",
+    ]);
+  } finally {
+    await server.close();
+  }
+});
+
 test("large snapshot responses use gzip when the client accepts it", async () => {
   const payload = { tasks: [{ id: "large", text: "snapshot".repeat(8_192) }] };
   const server = new MiniAppServer({
@@ -196,6 +271,109 @@ test("large snapshot responses use gzip when the client accepts it", async () =>
   } finally {
     await server.close();
   }
+});
+
+test("large snapshot compression leaves a local control command responsive", async () => {
+  // The body is deliberately hard to compress. A synchronous gzip blocks the
+  // same Hub event loop that must accept unrelated local commands.
+  const payload = { text: randomBytes(8 * 1_024 * 1_024).toString("base64") };
+  let handlerEntered;
+  const entered = new Promise((resolve) => { handlerEntered = resolve; });
+  const server = new MiniAppServer({
+    host: "127.0.0.1",
+    port: 0,
+    journalDatabase: memoryJournal(),
+    controlHandler: async ({ action }) => {
+      if (action !== "snapshot") return { accepted: true };
+      handlerEntered();
+      return payload;
+    },
+  });
+  try {
+    const address = await server.start();
+    const snapshot = fetch(`${address.url}api/snapshot`, {
+      headers: { "Accept-Encoding": "gzip" },
+    });
+    await entered;
+    const command = fetch(`${address.url}api/control`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "read-status", params: {}, commandId: "latency-probe-1" }),
+    });
+    const first = await Promise.race([
+      snapshot.then(() => "snapshot"),
+      command.then(() => "command"),
+    ]);
+    assert.equal(first, "command");
+    assert.deepEqual(await (await command).json(), {
+      ok: true,
+      result: { accepted: true },
+      receiptId: "latency-probe-1",
+    });
+    assert.deepEqual(await (await snapshot).json(), payload);
+  } finally {
+    await server.close();
+  }
+});
+
+test("JSON compression is bounded, abort-safe, and preserves the raw fallback", () => {
+  const callbacks = [];
+  const json = createJsonResponder({
+    maxConcurrentCompressions: 2,
+    compress: (_body, callback) => callbacks.push(callback),
+  });
+  const response = () => ({
+    headers: null,
+    body: null,
+    destroyed: false,
+    getHeader: () => undefined,
+    writeHead(_status, headers) { this.headers = headers; },
+    end(body) { this.body = body; this.writableEnded = true; },
+  });
+  const value = { text: "x".repeat(20_000) };
+  const first = response();
+  const second = response();
+  const third = response();
+  for (const target of [first, second, third]) {
+    json(target, 200, value, "GET", { acceptEncoding: "gzip" });
+  }
+  assert.equal(callbacks.length, 2);
+  assert.equal(first.headers, null);
+  assert.equal(second.headers, null);
+  assert.equal(third.headers["Content-Encoding"], undefined);
+  assert.equal(third.headers.Vary, "Accept-Encoding");
+  assert.deepEqual(JSON.parse(third.body), value);
+  first.destroyed = true;
+  callbacks[0](null, Buffer.from("compressed"));
+  assert.equal(first.headers, null);
+  callbacks[1](new Error("compression failed"));
+  assert.equal(second.headers["Content-Encoding"], undefined);
+  assert.equal(second.headers.Vary, "Accept-Encoding");
+  assert.deepEqual(JSON.parse(second.body), value);
+  const fourth = response();
+  json(fourth, 200, value, "HEAD", { acceptEncoding: "gzip" });
+  assert.equal(callbacks.length, 3);
+  callbacks[2](null, Buffer.from("compressed"));
+  assert.equal(fourth.headers["Content-Encoding"], "gzip");
+  assert.equal(fourth.headers["Content-Length"], "compressed".length.toString());
+  assert.equal(fourth.body, "");
+  const broken = response();
+  broken.writeHead = () => { throw new Error("socket closed"); };
+  broken.destroy = () => { broken.destroyed = true; };
+  json(broken, 200, value, "GET", { acceptEncoding: "gzip" });
+  callbacks[3](null, Buffer.from("compressed"));
+  assert.equal(broken.destroyed, true);
+  const afterBroken = response();
+  json(afterBroken, 200, value, "GET", { acceptEncoding: "gzip" });
+  assert.equal(callbacks.length, 5, "a failed socket releases its compression slot");
+  callbacks[4](new Error("compression failed"));
+  assert.deepEqual(JSON.parse(afterBroken.body), value);
+
+  const throwing = createJsonResponder({ compress: () => { throw new Error("dispatch failed"); } });
+  const immediateFallback = response();
+  throwing(immediateFallback, 200, value, "GET", { acceptEncoding: "gzip" });
+  assert.equal(immediateFallback.headers["Content-Encoding"], undefined);
+  assert.deepEqual(JSON.parse(immediateFallback.body), value);
 });
 
 test("large lazy journal fragments use gzip without bloating the initial response", async () => {
@@ -1335,7 +1513,7 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
     assert.match(hubClient, /cli: "CLI"/u);
     assert.match(hubClient, /pendingSelectionId/u);
     assert.match(hubClient, /history\.replaceState/u);
-    assert.match(hubClient, /task\.run\?\.model \?\? task\.model/u);
+    assert.match(hubClient, /modelLabel: window\.AgentHubStreamTabs\.streamModelLabel\(task, catalogStream, snapshot\.settings\)/u);
     assert.doesNotMatch(hubClient, /location\.hash\s*=/u);
     assert.match(script, /document\.documentElement\.dataset\.surface = surface/u);
     assert.match(script, /telegram\?\.expand\(\)/u);
@@ -2166,7 +2344,7 @@ test("Mini App serves compact totals first and bounded turn shells on demand", a
     '<details data-work-log-workspace data-work-log-workspace-id="workspace-1"',
     ' data-work-log-workspace-kind="catalog"><summary><strong>Agent HUB</strong></summary>',
     '<details data-work-log-stream data-work-log-stream-id="stream-1">',
-    '<summary><span data-work-log-stream-title>Architect</span></summary>',
+    '<summary><span data-work-log-stream-title>Release Manager</span></summary>',
     '<div data-work-log-row data-work-log-provider="codex" data-work-log-thread-id="thread-1"',
     ' data-work-log-workspace-id="workspace-1" data-work-log-stream-id="stream-1">',
     '<div data-work-log-task-content>Задача</div><div data-work-log-turn-list>',

@@ -11,7 +11,7 @@ import { MaintenanceOperationStore } from "../../src/infrastructure/persistence/
 
 test("deferred restart recovery settles durable cutover before readiness and permits a new request", async (t) => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-restart-recovery-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  t.after(() => rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
   const store = new MaintenanceOperationStore({ dataDir: directory });
   const target = { streamId: "stream-exact", threadId: "thread-exact" };
   const operation = store.create({

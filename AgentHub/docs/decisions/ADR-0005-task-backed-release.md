@@ -3,7 +3,7 @@
 ## Status
 
 Accepted. Supersedes the live ChangeSet authority and migration boundary in
-ADR-0003; refines ADR-0004 cleanup and Architect-role persistence. Workflow
+ADR-0003; refines ADR-0004 cleanup and Release Manager-role persistence. Workflow
 status freedom is refined by ADR-0006, and aggregate mutability after freeze is
 refined by ADR-0007.
 
@@ -12,14 +12,14 @@ refined by ADR-0007.
 The Dashboard Task aggregate is the sole live release owner. Exact durable
 provider-turn bindings attach terminal diffs to Tasks. A Task revision CAS and
 append-only Task-owned manifest rows freeze verified Git evidence. Release plans
-hash exact Task revisions and Architect completion atomically marks and closes
+hash exact Task revisions and Release Manager completion atomically marks and closes
 only the frozen Tasks that were published and deployed.
 
 Legacy release tables are exported with row cardinality and SHA-256 verification,
 imported once into the logical active Task union, and made read-only. They are not
 dropped during constructor migration and receive no further live writes.
 
-`settings.architect` is the sole runtime Architect marker and may be true for
+`settings.releaseManager` is the sole runtime Release Manager marker and may be true for
 multiple Streams. Legacy role/name detection runs once only to preserve existing
 behavior.
 

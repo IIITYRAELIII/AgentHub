@@ -32,12 +32,23 @@ export class DeferredInputPresentationService {
     };
     if (!identity.clientUserMessageId) return false;
     const base = { id: item.id, clientUserMessageId: item.clientUserMessageId };
+    if (state === "expired") {
+      return this.receipts.updateResult(identity, { ...base, ...started });
+    }
     if (state === "started") {
+      const acceptedTurnId = String(started?.providerStart?.turnId ?? "").trim();
+      const providerAccepted = Boolean(acceptedTurnId)
+        && acceptedTurnId === String(started?.turnId ?? "").trim()
+        && ["accepted-awaiting-first-event", "observed"].includes(
+          String(started?.providerStart?.state ?? ""),
+        );
       return this.receipts.updateResult(identity, {
         accepted: true,
+        providerAccepted,
         deferred: false,
         queued: false,
         dispatching: false,
+        reason: null,
         cancelled: false,
         steered: false,
         runId: started?.id ?? null,
@@ -51,8 +62,10 @@ export class DeferredInputPresentationService {
     if (state === "steered") {
       return this.receipts.updateResult(identity, {
         accepted: true,
+        providerAccepted: Boolean(String(started?.turnId ?? "").trim()),
         deferred: false,
         queued: false,
+        reason: null,
         cancelled: false,
         steered: true,
         id: item.id,

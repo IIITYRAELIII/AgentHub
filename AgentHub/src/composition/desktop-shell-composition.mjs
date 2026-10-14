@@ -5,6 +5,9 @@ import { createDesktopRunRouterWiring } from "./desktop-run-router-wiring-compos
 import { createDesktopTaskCreationPreparation } from "./desktop-task-creation-composition.mjs";
 import { WorkspaceCatalogService } from "../application/workspace-catalog-service.mjs";
 import { ClientTaskSelectionService } from "../application/client-task-selection-service.mjs";
+import { recoverRejectedContourSelection } from "./contour-selection-recovery.mjs";
+import { createRecentRestartFailure } from "../application/restart-failure-notice.mjs";
+import { createDesktopSnapshotRevision } from "./desktop-snapshot-revision.mjs";
 import { agentHubRuntimeHealth } from "../application/runtime-health.mjs";
 import { retryAgentHubStartup } from "../application/agent-hub-startup-coordinator.mjs";
 import { StreamMessagePinService } from "../application/stream-message-pin-service.mjs";
@@ -59,6 +62,7 @@ export function createDesktopShellComposition({
     workspaceCatalogStore,
     taskReleasePlanner,
     workspaceReleaseService,
+    releaseOperationCommands,
     streamHandoff,
     runtimeStateStore,
     commandTraceService,
@@ -149,6 +153,8 @@ export function createDesktopShellComposition({
     resolveMessage: (identity) => taskSyncStore.durableMessageCandidate(identity),
   });
 
+  const recentRestartFailure = createRecentRestartFailure({ operations: maintenanceOperations });
+
   const contourCommandMapping = config.testContourRecording
     ? createContourCommandMapping({ root: config.testContourRecording.root,
       readCommand: (id) => runtimeStateStore.messageCommand(id) })
@@ -196,6 +202,11 @@ export function createDesktopShellComposition({
       trustedDeviceStore: runtime.trustedDeviceStore,
       resolveTask: desktopCommandsPort.api.messageTarget,
       lastTaskMessage: runtime.savedLastTaskMessageRecord,
+      forgetLastTaskMessage: async (identity) => {
+        const removed = runtime.rememberLastTaskMessage(identity, "", { removeTurnId: true });
+        if (removed) await saveState();
+        return removed;
+      },
       enqueueSpeech: (target, text) => backgroundJobs.enqueue(
         "speech",
         { chatId: hostState.chatId, text },
@@ -206,31 +217,28 @@ export function createDesktopShellComposition({
       isCompacting: (contextThreadId) => contextCompactions.isRunning(contextThreadId),
       compactionFor: (contextThreadId) => contextCompactions.get(contextThreadId),
       maintenanceFor: (target) => streamMaintenance.entry(target),
-      desktopSnapshotRevision: async () => {
-        if (
-          pendingInputs.size
-          || queuedInputs.size
-          || approvalController.pending.size
-          || hostState.restartRequest
-          || contextCompactions.runningCount()
-        ) return null;
-        const entries = taskCatalogService.entries;
-        if (entries.some((entry) => streamMaintenance.entry(entry))) return null;
-        return JSON.stringify({
-          catalog: taskCatalogService.snapshotRevision,
-          runs: taskRuns.revision,
-          selection: selectionStore.revision,
-          preferences: agentPreferences.snapshot(),
-          autoApprove: hostState.autoApprove,
-          board: taskBoard.snapshotRevision,
-          messages: runtime.lastTaskMessageRevision(),
-          readState: taskReadStateStore.revision,
-          receipts: desktopMessageReceipts.revision,
-          messagePins: messagePins.revision, taskHistory: taskSyncStore.revision,
-          exchangeRates: usdRubRateStore.snapshot(),
-          server: await serverControlController.snapshot({ activeCount: 0, restart: null }),
-        });
-      },
+      desktopSnapshotRevision: createDesktopSnapshotRevision({
+        pendingInputs,
+        queuedInputs,
+        approvalController,
+        hostState,
+        contextCompactions,
+        taskCatalogService,
+        streamMaintenance,
+        taskRuns,
+        selectionStore,
+        agentPreferences,
+        modelCatalogRevision: models.modelCatalogRevision,
+        taskBoard,
+        lastTaskMessageRevision: () => runtime.lastTaskMessageRevision(),
+        taskReadStateStore,
+        desktopMessageReceipts,
+        messagePins,
+        taskSyncStore,
+        usdRubRateStore,
+        serverControlController,
+        recentRestartFailure,
+      }),
       runForTask: (task) => taskRuns.forTask(task),
       runTitle: runTaskTitle,
       findProject,
@@ -257,15 +265,18 @@ export function createDesktopShellComposition({
       ),
       approvalSnapshot: () => approvalController.snapshot(),
       restartBlockingRuns: runtime.restartBlockingRuns,
+      recentRestartFailure,
       compactionCount: () => contextCompactions.runningCount(),
       mediaJobCount: () => backgroundJobs.mediaSize,
       speechJobCount: () => backgroundJobs.speechSize,
       exchangeRates: usdRubRateStore,
       serverSnapshot: (...args) => serverControlController.snapshot(...args),
       readStateStore: taskReadStateStore,
+      commandTrace: commandTraceService,
       hasAllowedUsers: () => Boolean(config.allowedUserIds.size),
       androidEnabled: () => Boolean(config.components.androidApp),
       readCachedHistory,
+      readExactHistoryTurn: (identity) => taskSyncStore.historyTurn(identity),
       readHistoryPage: (...args) => taskSyncStore.readHistoryPage(...args),
       refreshHistory,
       attachmentImporter: importCodexDesktopAttachments,
@@ -309,6 +320,12 @@ export function createDesktopShellComposition({
     saveState,
   });
 
+  recoverRejectedContourSelection({
+    mapping: contourCommandMapping,
+    selectionStore,
+    selectedTask,
+    logger: console,
+  });
   const canonicalSelection = (value) => contourCommandMapping ? contourCommandMapping.target(value) : value;
   const telegramSelection = new ClientTaskSelectionService({
     sessionState: hostState,
@@ -412,6 +429,7 @@ export function createDesktopShellComposition({
       streamHandoff,
       workspaceCatalog: workspaceCatalogStore,
       workspaceCatalogService: workspaceCatalog,
+      releaseOperationCommands,
       workspaceMutation,
       blockingWorkCount: runtime.restartBlockingWorkCount,
       maintenanceOperations,
@@ -517,6 +535,7 @@ export function createDesktopShellComposition({
         }) ?? fallbackReceipt,
       }),
       commandTrace: commandTraceService,
+      releaseOperationCommands,
       usageSyncAuto,
       usageSyncRemoteConfigStore: workLogUsageRemoteConfigStore,
       executionRuntimeLabel: taskExecutionRuntimeLabel,
@@ -545,6 +564,7 @@ export function createDesktopShellComposition({
       describeAttachments: desktopAttachmentDescriptors,
       hasDeferredBacklog: (target) => deferredInputs.hasBacklog(target),
       isMaintenanceActive: (target) => streamContextMaintenance.isActive(target),
+      isManagedMaintenanceActive: (target) => streamContextMaintenance.isManagedActive(target),
       isRestartPending: () => Boolean(hostState.restartRequest),
       scheduleDeferred: scheduleQueuedInput,
       setProgressStage: (...args) => taskProgress.setStage(...args),
@@ -586,6 +606,10 @@ export function createDesktopShellComposition({
     },
     desktop: {
       snapshot: desktopReadSystem.desktopSnapshot,
+      refreshModelCatalog: async () => ({
+        refreshed: await models.refreshCodexModels(),
+        snapshot: await desktopReadSystem.desktopSnapshot(),
+      }),
       runtimeHealth: () => ({
         ...agentHubRuntimeHealth.snapshot(),
         process: {

@@ -3,9 +3,7 @@ import { retargetTelegramClientSelections } from "../application/client-task-sel
 import { StreamContextMaintenanceService } from "../application/stream-context-maintenance-service.mjs";
 import { UsageSyncAutoService } from "../application/usage-sync-auto-service.mjs";
 import { UsageSyncRemoteClient } from "../infrastructure/http/usage-sync-remote-client.mjs";
-import { applyWorkLogAccountBackfill } from "../infrastructure/persistence/work-log-account-backfill.mjs";
 import { MaintenanceOperationStore } from "../infrastructure/persistence/maintenance-operation-store.mjs";
-import { readClaudeAccount } from "../providers/claude/claude-account.mjs";
 import { ClaudeContextMaintenanceService } from "../providers/claude/claude-context-maintenance-service.mjs";
 import { processIsAlive } from "../providers/claude/claude-run-io.mjs";
 import { readClaudeSessionSnapshot } from "../providers/claude/claude-session-reader.mjs";
@@ -93,6 +91,7 @@ export async function createProviderApplicationComposition({
     codexReasoningLabels,
     globalWorkLogProjectRoots,
     journalDatabaseFile,
+    providerModelCatalog,
   } = constants;
   const {
     hostState,
@@ -145,13 +144,7 @@ export async function createProviderApplicationComposition({
     projectRoot: config.projectRoot,
     projectionProjectRoots: globalWorkLogProjectRoots,
     suggestedDeviceLabel: suggestUsageSyncDeviceLabel,
-    accountBackfill: async () => {
-      const claudeAccount = await readClaudeAccount();
-      return applyWorkLogAccountBackfill({
-        databaseFile: journalDatabaseFile,
-        providerAccounts: claudeAccount ? [{ provider: "claude", ...claudeAccount }] : [],
-      });
-    },
+    trace: commandTraceService,
     isStopping: () => hostState.stopping,
   });
 
@@ -184,6 +177,7 @@ export async function createProviderApplicationComposition({
   hubMcpService.setActiveRuns(() => runtimeData.taskRuns.values());
   hubMcpService.setDeferredInputs(() => runtimeData.deferredInputs.diagnostics());
 
+  let correctCommittedTerminal = async () => ({ corrected: false });
   const codexObservability = createCodexObservabilityComposition({
     config,
     sendRpc: api.sendRpc,
@@ -199,7 +193,7 @@ export async function createProviderApplicationComposition({
     saveState: api.saveState,
     deliverTurnEndNotification: api.deliverTurnEndNotification,
     repairTurnEndAttachments: api.repairTurnEndAttachments,
-    reclassifyTurnEndContextProbe: api.reclassifyTurnEndContextProbe,
+    correctCommittedTerminal: (...args) => correctCommittedTerminal(...args),
     defaultNotificationChatId,
     findProject,
     resolveTaskByProviderRef: ({ provider, providerTaskId }) => providerCatalog.taskCatalog.find((entry) => (
@@ -281,13 +275,13 @@ export async function createProviderApplicationComposition({
     runtimeStateStore,
     commandTrace: commandTraceService,
   });
+  correctCommittedTerminal = (...args) => completion.turnEndDelivery.correctFromExactProviderTerminal(...args);
 
   const hubThreadNaming = createHubThreadNamingService({
     workspaceCatalog: workspaceCatalogStore, taskMetadata, sendRpc: api.sendRpc,
     saveTitles: api.savePinnedTaskTitles, saveState: api.saveState,
   });
   const codexContextMaintenance = createCodexContextMaintenanceComposition({
-    preserveProbeTitle: hubThreadNaming.preserveProbeTitle,
     config, runtimeTimers,
     contextCompactions: codexObservability.compactions,
     sanitizer: codexRolloutContextSanitizer,
@@ -334,11 +328,9 @@ export async function createProviderApplicationComposition({
     waitForContextUpdate: (threadId, options) => (
       codexObservability.usageTracker.waitForContextUpdate(threadId, options)
     ),
-    waitForTurnCompletion: (turnId, options) => (
-      codexObservability.usageTracker.waitForTurnCompletion(turnId, options)
-    ),
     workspaceCatalog: workspaceCatalogStore,
     selectionStore,
+    nameCreatedThread: hubThreadNaming.nameCreatedThread,
     deferredInputs: runtimeData.deferredInputs,
     invalidateCatalog: invalidateTaskCatalog,
     retargetClientSelections: (binding) => retargetTelegramClientSelections(hostState, binding),
@@ -348,6 +340,7 @@ export async function createProviderApplicationComposition({
     autoCompactThreshold: () => config.contextAutomation.autoCompactThresholdPercent,
     autoRotateEnabled: () => config.contextAutomation.autoRotateAfterCompaction,
     autoRotateThreshold: () => config.contextAutomation.autoRotateThresholdPercent,
+    commandTrace: commandTraceService,
   });
 
   const backgroundWork = await createBackgroundWorkComposition({
@@ -401,6 +394,7 @@ export async function createProviderApplicationComposition({
     saveState: api.saveState,
   });
   const providerSnapshots = createProviderSnapshotComposition({
+    recordingContourRoot: config.testContourRecording?.root ?? null,
     readClaudeSessionSnapshot,
     findProject,
     saveState: api.saveState,
@@ -497,9 +491,6 @@ export async function createProviderApplicationComposition({
     applyCodexThreadSettings: api.applyCodexThreadSettings,
     trackTurnTokenUsage: api.trackTurnTokenUsage,
     latestContextUsage: (threadId) => codexObservability.usageTracker.latestExactContext(threadId),
-    completeContextTurn: (turnId, status) => (
-      codexObservability.usageTracker.markTurnCompleted(turnId, status)
-    ),
     setLatestDiff: (value) => hostState.setLatestDiff(value),
     requestApproval: api.requestApproval,
     formatCommandApproval: api.formatCommandApproval,
@@ -574,6 +565,11 @@ export async function createProviderApplicationComposition({
     startCodex: api.startCodexAppServer,
     initializeCodex: api.initializeCodex,
     sendRpc: api.sendRpc,
+    refreshCodexModels: ({ source = "startup" } = {}) => providerModelCatalog.refreshCodex(
+      api.sendRpc, api.saveState, { source },
+    ),
+    refreshClaudeModels: () => config.testContourRecording
+      ? Promise.resolve(false) : providerModelCatalog.refreshClaude(),
     resolveResumedCodexThreadTitle: api.resolveResumedCodexThreadTitle,
     applyCodexThreadSettings: api.applyCodexThreadSettings,
     saveState: api.saveState,
@@ -612,5 +608,6 @@ export async function createProviderApplicationComposition({
     ...providerOperations,
     ...providerCatalog,
     providerStartup,
+    hubThreadNaming,
   };
 }

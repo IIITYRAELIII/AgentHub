@@ -1,12 +1,8 @@
+import { randomUUID } from "node:crypto";
 import {
   CODEX_COLLABORATION_MODES,
   CODEX_REASONING_EFFORTS,
 } from "../../domain/agent-runtime-settings.mjs";
-import {
-  CODEX_CONTEXT_PROBE_PROMPT,
-  CODEX_CONTEXT_PROBE_RESPONSE,
-} from "../../domain/codex-context-probe.mjs";
-
 export {
   CODEX_COLLABORATION_MODES,
   CODEX_REASONING_EFFORTS,
@@ -70,21 +66,37 @@ export function buildCodexDeveloperInstructions({
   }
   const contextContent = String(context ?? "");
   if (contextContent.trim()) sections.push(contextContent);
-  sections.push([
-    "<agent_hub_context_probe>",
-    `If the User Prompt is exactly \"${CODEX_CONTEXT_PROBE_PROMPT}\", this is an internal context measurement.`,
-    "Do not call tools or execute pre-turn, release-registry, repository, or other work.",
-    `Respond with exactly \"${CODEX_CONTEXT_PROBE_RESPONSE}\" and no additional text.`,
-    "This probe-only exception overrides the Agent Hub Guide, Global, Workspace, Stream, and context pre-turn instructions.",
-    "</agent_hub_context_probe>",
-  ].join("\n"));
   return sections.join("\n\n");
 }
 
-export function buildCodexApplicationContext(developerInstructions) {
-  return {
-    "agent-hub": { kind: "application", value: String(developerInstructions ?? "") },
-  };
+export function buildCodexApplicationContext(developerInstructions, snapshotId = randomUUID()) {
+  // Codex bounds each application entry and deduplicates unchanged entries even
+  // after compaction removed them. A fresh complete snapshot belongs to one
+  // launch; RPC retries must reuse this same object.
+  if (!/^[0-9A-Za-z_.:-]{1,128}$/u.test(String(snapshotId))) {
+    throw new Error("Invalid Agent Hub instruction snapshot identity");
+  }
+  const chunks = [];
+  let chunk = "";
+  let bytes = 0;
+  for (const character of String(developerInstructions ?? "")) {
+    const size = Buffer.byteLength(character, "utf8");
+    if (bytes + size > 2600) {
+      chunks.push(chunk);
+      chunk = "";
+      bytes = 0;
+    }
+    chunk += character;
+    bytes += size;
+  }
+  chunks.push(chunk);
+  return Object.fromEntries(chunks.map((content, index) => [
+    index === 0 ? "agent-hub" : `agent-hub-${String(index).padStart(4, "0")}`,
+    {
+      kind: "application",
+      value: `Agent Hub snapshot ${snapshotId}; part ${index + 1}/${chunks.length}. Join parts in order. This complete snapshot replaces all earlier Hub instructions, including removed sections.\n\n${content}`,
+    },
+  ]));
 }
 
 export function buildCodexCollaborationMode({ mode, model, reasoningEffort }) {

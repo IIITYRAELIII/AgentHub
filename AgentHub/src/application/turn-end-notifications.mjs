@@ -196,7 +196,6 @@ function normalizedCompletion(value) {
     ...(String(value.operationKind ?? "").trim()
       ? { operationKind: String(value.operationKind).trim().toLowerCase() }
       : {}),
-    ...(typeof value.contextProbe === "boolean" ? { contextProbe: value.contextProbe } : {}),
     ...(clientUserMessageId
       ? { clientUserMessageId }
       : {}),
@@ -333,7 +332,6 @@ export class TurnEndNotificationRegistry {
     completion.completedAt = completion.completedAt || incoming.completedAt;
     completion.startedAt = completion.startedAt || incoming.startedAt;
     if (incoming.operationKind) completion.operationKind = incoming.operationKind;
-    if (typeof incoming.contextProbe === "boolean") completion.contextProbe = incoming.contextProbe;
     if (incoming.clientUserMessageId && (
       !completion.clientUserMessageId
       || completion.clientUserMessageId === incoming.clientUserMessageId

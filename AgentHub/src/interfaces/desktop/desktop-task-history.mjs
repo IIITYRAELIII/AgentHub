@@ -17,10 +17,6 @@ import {
   userMessageSnapshotAuthority,
 } from "../../domain/canonical-user-messages.mjs";
 import {
-  CODEX_CONTEXT_PROBE_CLIENT_ID_PREFIX,
-  isCodexContextProbeTurn,
-} from "../../domain/codex-context-probe.mjs";
-import {
   CODEX_AUTO_COMPACTION_TURN_ID_PREFIX,
   isCodexAutoCompactionTurnId,
 } from "../../domain/codex-internal-turn.mjs";
@@ -35,6 +31,7 @@ import {
 } from "../../domain/interstream-message.mjs";
 import { taskDisplayTitle } from "../../domain/task-display-title.mjs";
 import { taskRunIsActive } from "../../domain/task-runs.mjs";
+import { isLegacyCodexContextProbeTurn } from "../../domain/legacy-codex-context-probe.mjs";
 import { withDurableMessageMetadata } from "../../domain/stream-message-pin.mjs";
 
 const MAX_CACHED_HISTORIES = 12;
@@ -355,15 +352,20 @@ export function mergeCachedTaskHistory(cachedHistory, durableHistory) {
   return sortTaskHistoryChronologically(values);
 }
 
-function visibleProviderHistory(provider, history) {
+async function visibleProviderHistory(provider, history, onLegacyProbe = async () => {}) {
   const values = Array.isArray(history) ? history : [];
-  return provider === "codex"
-    ? withoutCodexInspectionAttachments(values.filter((turn) => (
-      !isCodexContextProbeTurn(turn)
-      && !isCodexAutoCompactionTurnId(turn?.id)
-      && !isEmptyTurnCompletionPlaceholder(turn)
-    )))
-    : values;
+  if (provider !== "codex") return values;
+  const visible = [];
+  for (const turn of values) {
+    if (isLegacyCodexContextProbeTurn(turn)) {
+      await onLegacyProbe(turn);
+      continue;
+    }
+    if (!isCodexAutoCompactionTurnId(turn?.id) && !isEmptyTurnCompletionPlaceholder(turn)) {
+      visible.push(turn);
+    }
+  }
+  return withoutCodexInspectionAttachments(visible);
 }
 
 export function createDesktopTaskHistoryFactory({
@@ -373,6 +375,7 @@ export function createDesktopTaskHistoryFactory({
   runs,
   historyMerger,
   latestMessage = () => null,
+  forgetLastMessage = async () => false,
   receipts = {},
   interstreamOriginForClientMessage = () => null,
   attachmentImporter = async () => [],
@@ -383,8 +386,31 @@ export function createDesktopTaskHistoryFactory({
   const refreshedAt = new Map();
   const providerHistories = new Map();
   const hydratedHistories = new Map();
+  const verifiedLegacyProbeTurns = new Set();
+  const clearedLegacyProbeTurns = new Set();
   const refreshIntervalMs = 15_000;
   let catalogRefresh = null;
+
+  async function noteLegacyProbe(binding, turn) {
+    const turnId = String(turn?.id ?? "").trim();
+    if (!turnId) return;
+    const key = `${binding.provider}:${binding.threadId}:${turnId}`;
+    verifiedLegacyProbeTurns.add(key);
+    while (verifiedLegacyProbeTurns.size > 500) {
+      verifiedLegacyProbeTurns.delete(verifiedLegacyProbeTurns.values().next().value);
+    }
+    if (clearedLegacyProbeTurns.has(key)) return;
+    try {
+      if (await forgetLastMessage({ provider: binding.provider, threadId: binding.threadId, turnId })) {
+        clearedLegacyProbeTurns.add(key);
+        while (clearedLegacyProbeTurns.size > 500) {
+          clearedLegacyProbeTurns.delete(clearedLegacyProbeTurns.values().next().value);
+        }
+      }
+    } catch (error) {
+      warn(`Cannot clear verified legacy context measurement ${turnId}: ${error?.message ?? error}`);
+    }
+  }
 
   async function hydrateHistory(history) {
     const result = structuredClone(Array.isArray(history) ? history : []);
@@ -410,6 +436,15 @@ export function createDesktopTaskHistoryFactory({
     cache.delete(key);
     cache.set(key, turns);
     return [...turns.values()].map((turn) => structuredClone(turn));
+  }
+
+  function readCachedTurn(cache, key, id) {
+    const turns = cache.get(key);
+    if (!turns) return null;
+    cache.delete(key);
+    cache.set(key, turns);
+    const turn = turns.get(id);
+    return turn ? structuredClone(turn) : null;
   }
 
   function cacheHistory(cache, key, history, { replace = false } = {}) {
@@ -449,7 +484,8 @@ export function createDesktopTaskHistoryFactory({
           cacheHistory(
             providerHistories,
             key,
-            visibleProviderHistory(binding.provider, refreshed.history)
+            (await visibleProviderHistory(binding.provider, refreshed.history,
+              (turn) => noteLegacyProbe(binding, turn)))
               .slice(-MAX_CACHED_TURNS_PER_HISTORY),
             { replace: true },
           );
@@ -515,6 +551,13 @@ export function createDesktopTaskHistoryFactory({
       chatId: binding.chatId,
     })) : [binding];
     const historySources = new Map();
+    if (params.tracePage) {
+      const source = threadBindings.find((thread) => thread.provider === provider
+        && thread.threadId === selectedThreadId);
+      if (!source) throw new Error("Trace Thread does not belong to the Stream");
+      return { provider, threadId: selectedThreadId,
+        tracePage: await historyReader.refresh(source, { tracePage: params.tracePage }) };
+    }
     const history = [];
     let sourceRefreshFailed = false;
     const currentThreadBinding = threadBindings.find((threadBinding) => (
@@ -534,32 +577,25 @@ export function createDesktopTaskHistoryFactory({
         limit,
         hiddenProvider: "codex",
         hiddenTurnIdPrefixes: [CODEX_AUTO_COMPACTION_TURN_ID_PREFIX],
-        hiddenClientUserMessageIdPrefixes: [CODEX_CONTEXT_PROBE_CLIENT_ID_PREFIX],
         emptyCompletionText: EMPTY_TURN_COMPLETION_TEXT,
       })
       : null;
     if (pagedHistory) {
-      const cachedByKey = new Map();
-      for (const threadBinding of threadBindings) {
-        const key = `${threadBinding.provider}:${threadBinding.threadId}`;
-        cachedByKey.set(key, {
-          provider: readCachedHistory(providerHistories, key),
-          hydrated: readCachedHistory(hydratedHistories, key),
-        });
-      }
       for (const source of pagedHistory.items) {
         const key = `${source.provider}:${source.threadId}`;
-        const cached = cachedByKey.get(key) ?? { provider: [], hydrated: [] };
         const id = String(source.turn?.id ?? "").trim();
+        const providerTurn = readCachedTurn(providerHistories, key, id);
+        const hydratedTurn = readCachedTurn(hydratedHistories, key, id);
         let item = mergeCachedTaskHistory(
-          cached.provider.filter((turn) => String(turn?.id ?? "").trim() === id),
+          providerTurn ? [providerTurn] : [],
           [source.turn],
         )[0];
         item = mergeCachedTaskHistory(
-          cached.hydrated.filter((turn) => String(turn?.id ?? "").trim() === id),
+          hydratedTurn ? [hydratedTurn] : [],
           [item],
         )[0];
-        if (!visibleProviderHistory(source.provider, [item]).length) continue;
+        if (!(await visibleProviderHistory(source.provider, [item],
+          (turn) => noteLegacyProbe(source, turn))).length) continue;
         history.push(item);
         historySources.set(item, { key, provider: source.provider, threadId: source.threadId });
       }
@@ -580,7 +616,8 @@ export function createDesktopTaskHistoryFactory({
         readCachedHistory(hydratedHistories, key),
         threadHistory,
       );
-      threadHistory = visibleProviderHistory(threadBinding.provider, threadHistory);
+      threadHistory = await visibleProviderHistory(threadBinding.provider, threadHistory,
+        (turn) => noteLegacyProbe(threadBinding, turn));
       if (currentThread) scheduleRefresh(threadBinding);
       for (const item of threadHistory) {
         history.push(item);
@@ -601,12 +638,7 @@ export function createDesktopTaskHistoryFactory({
       && String(indexedRun.threadId ?? "") === String(binding.threadId ?? "")
       ? indexedRun
       : null;
-    const running = binding.provider === "codex" && isCodexContextProbeTurn({
-      prompt: candidateRun?.promptPreview,
-      finalAnswer: candidateRun?.responseText,
-      clientUserMessageId: candidateRun?.clientUserMessageId,
-      userMessages: candidateRun?.userMessages,
-    }) ? null : candidateRun;
+    const running = candidateRun;
     if (running) {
       historyMerger.mergeActive(history, {
         active: true,
@@ -638,6 +670,19 @@ export function createDesktopTaskHistoryFactory({
       ? null
       : savedCompletion;
     const completedTurnId = String(completed?.turnId ?? "").trim();
+    if (binding.provider === "codex" && completedTurnId
+      && !verifiedLegacyProbeTurns.has(`${binding.provider}:${binding.threadId}:${completedTurnId}`)
+      && !history.some((item) => String(item?.id ?? "").trim() === completedTurnId)
+      && typeof historyReader.readTurn === "function") {
+      const exactTurn = await historyReader.readTurn({
+        provider: binding.provider,
+        threadId: binding.threadId,
+        turnId: completedTurnId,
+      });
+      if (isLegacyCodexContextProbeTurn(exactTurn)) {
+        await noteLegacyProbe(binding, exactTurn);
+      }
+    }
     const matchingTurnVisible = completedTurnId && history.some((item) => (
       String(item?.id ?? "").trim() === completedTurnId
     ));
@@ -654,15 +699,8 @@ export function createDesktopTaskHistoryFactory({
         )))
       )
     ));
-    if (completed?.turnId && completed?.text && !(
-      binding.provider === "codex" && isCodexContextProbeTurn({
-        turnId: completed.turnId,
-        finalAnswer: completed.text,
-        operationKind: completed.operationKind,
-        contextProbe: completed.contextProbe,
-        clientUserMessageId: completed.clientUserMessageId,
-      })
-    ) && !(
+    if (completed?.turnId && completed?.text
+      && !verifiedLegacyProbeTurns.has(`${binding.provider}:${completed.threadId ?? binding.threadId}:${completed.turnId}`) && !(
       binding.provider === "codex" && isEmptyTurnCompletionPlaceholder({
         answer: completed.text,
       })

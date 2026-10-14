@@ -5,7 +5,7 @@ import { AsyncSqliteMutationQueue } from "./async-sqlite-mutation-queue.mjs";
 import { openRuntimeDatabase } from "./runtime-state-store.mjs";
 
 const OUTBOX_STATES = new Set(["pending", "projecting", "delivered", "superseded"]);
-const TELEGRAM_STATES = new Set(["not-requested", "intent", "uncertain", "acked", "failed", "superseded"]);
+const TELEGRAM_STATES = new Set(["not-requested", "intent", "uncertain", "acked", "failed", "superseded", "superseded-uncertain"]);
 const COMMAND_STATES = new Set(["not-required", "intent", "acked", "superseded"]);
 const NON_TERMINAL_STATUSES = new Set(["active", "inprogress", "running", "finishing", "progress"]);
 const TERMINAL_PAYLOAD_METADATA_MIGRATION_LIMIT = 200;
@@ -179,6 +179,8 @@ function configure(database) {
     ) WITHOUT ROWID;
     CREATE INDEX IF NOT EXISTS provider_turn_terminal_outbox_pending_idx
       ON provider_turn_terminal_outbox(state, created_at, provider, thread_id, turn_id, terminal_revision);
+    CREATE INDEX IF NOT EXISTS provider_turn_terminal_outbox_projection_retry_idx
+      ON provider_turn_terminal_outbox(state, updated_at, created_at, provider, thread_id, turn_id, terminal_revision);
   `);
   const terminalColumns = new Set(database.prepare("PRAGMA table_info(provider_turn_terminals)").all()
     .map((column) => String(column.name)));
@@ -314,45 +316,75 @@ export class ProviderTurnTerminalStore {
       && (!Number.isSafeInteger(expectedTerminalRevision) || expectedTerminalRevision < 1)) {
       throw new Error("expected terminal revision must be a positive safe integer");
     }
+    const terminalStatusCorrection = value.terminalStatusCorrection === true;
+    if (terminalStatusCorrection && expectedTerminalRevision == null) {
+      throw new Error("terminal status correction requires the exact prior revision");
+    }
     const basePayload = sanitizedTerminalPayload(value.payload);
     const status = text(value.status) || "completed";
     const finalAnswer = String(value.finalAnswer ?? "").trim();
     const usageIdentity = text(value.usageIdentity);
     const lastMessage = value.lastMessage == null ? null : jsonValue(value.lastMessage);
-    const telegramIntent = value.channels?.telegram?.requested === true
+    const requestedTelegramIntent = value.channels?.telegram?.requested === true
       ? jsonValue(value.channels.telegram)
       : null;
-    const hash = contentHash({
-      status,
-      finalAnswer,
-      usageIdentity,
-      lastMessageText: String(lastMessage?.text ?? "").trim(),
-      responseAttachments: basePayload?.completion?.responseAttachments ?? [],
-      telegramIntent,
-      ...([basePayload?.completion, basePayload?.history].some((part) => (
-        part?.contextProbe === true
-        || (text(part?.operationKind) && text(part.operationKind) !== "user-turn")
-      )) ? {
-          classification: [basePayload?.completion, basePayload?.history].map((part) => ({
-            operationKind: text(part?.operationKind) || "user-turn",
-            contextProbe: part?.contextProbe === true,
-          })),
-        } : {}),
-    });
     return this.#enqueue(() => {
       const database = this.#database();
       try {
         database.exec("BEGIN IMMEDIATE");
         const current = selectTerminal(database, key);
+        const currentOutbox = current ? selectOutbox(database, current) : null;
+        const storedTelegramIntent = ["intent", "uncertain"].includes(
+          currentOutbox?.channels?.telegram?.state,
+        ) ? currentOutbox.channels.telegram.intent : null;
+        const inheritedTelegramIntent = storedTelegramIntent
+          ? (({ id: _id, identity: _identity, channel: _channel, ...intent }) => {
+              const previousAnswer = String(current?.finalAnswer ?? "").trim();
+              const previousMessage = String(intent.message ?? "");
+              if (Object.hasOwn(intent, "answer")) intent.answer = finalAnswer;
+              if (Object.hasOwn(intent, "speechText")) intent.speechText = finalAnswer;
+              if (!previousMessage || previousMessage === previousAnswer) intent.message = finalAnswer;
+              else if (previousAnswer && previousMessage.startsWith(previousAnswer)) {
+                intent.message = `${finalAnswer}${previousMessage.slice(previousAnswer.length)}`;
+              }
+              return intent;
+            })(storedTelegramIntent)
+          : null;
+        // A later projection of the same provider turn may be silent, but it
+        // cannot revoke a delivery intent already committed for that turn.
+        // A status correction reprojects the exact turn; it is not a new
+        // Telegram delivery. Keep an already uncertain older intent under its
+        // original revision/identity for supported same-ID reconciliation.
+        const telegramIntent = terminalStatusCorrection
+          ? null : requestedTelegramIntent ?? inheritedTelegramIntent;
+        const hash = contentHash({
+          status,
+          finalAnswer,
+          usageIdentity,
+          lastMessageText: String(lastMessage?.text ?? "").trim(),
+          responseAttachments: basePayload?.completion?.responseAttachments ?? [],
+          telegramIntent,
+          ...([basePayload?.completion, basePayload?.history].some((part) => (
+            text(part?.operationKind) && text(part.operationKind) !== "user-turn"
+          )) ? {
+              classification: [basePayload?.completion, basePayload?.history].map((part) => ({
+                operationKind: text(part?.operationKind) || "user-turn",
+              })),
+            } : {}),
+        });
         if (expectedTerminalRevision != null
           && current?.terminalRevision !== expectedTerminalRevision) {
           database.exec("COMMIT");
           return {
             terminal: current,
-            outbox: current ? selectOutbox(database, current) : null,
+            outbox: currentOutbox,
             created: false,
             conflict: true,
           };
+        }
+        if (terminalStatusCorrection && (!current || current.status === status)) {
+          database.exec("COMMIT");
+          return { terminal: current, outbox: currentOutbox, created: false, conflict: true };
         }
         if (NON_TERMINAL_STATUSES.has(status.toLowerCase())) {
           if (!current) throw new Error(`cannot commit non-terminal provider turn status ${status}`);
@@ -366,7 +398,7 @@ export class ProviderTurnTerminalStore {
         }
         if (current?.contentHash === hash) {
           database.exec("COMMIT");
-          return { terminal: current, outbox: selectOutbox(database, current), created: false };
+          return { terminal: current, outbox: currentOutbox, created: false };
         }
         const terminalRevision = (current?.terminalRevision ?? 0) + 1;
         const committedAt = new Date().toISOString();
@@ -423,7 +455,9 @@ export class ProviderTurnTerminalStore {
                 ELSE command_state
               END,
               telegram_state = CASE
-                WHEN telegram_state IN ('intent', 'uncertain') THEN 'superseded'
+                 WHEN telegram_state = 'intent' THEN 'superseded'
+                 WHEN telegram_state = 'uncertain' AND ? = 1 THEN 'superseded-uncertain'
+                 WHEN telegram_state = 'uncertain' THEN 'superseded'
                 ELSE telegram_state
               END,
               updated_at = ?, telegram_updated_at = ?
@@ -433,7 +467,8 @@ export class ProviderTurnTerminalStore {
               OR command_state = 'intent'
               OR telegram_state IN ('intent', 'uncertain')
             )
-        `).run(committedAt, committedAt, key.provider, key.threadId, key.turnId);
+        `).run(terminalStatusCorrection ? 1 : 0,
+          committedAt, committedAt, key.provider, key.threadId, key.turnId);
         database.prepare(`
           INSERT INTO provider_turn_terminal_outbox (
             provider, thread_id, turn_id, terminal_revision, state, attempt_count,
@@ -486,6 +521,26 @@ export class ProviderTurnTerminalStore {
           FROM provider_turn_terminal_outbox
           WHERE state = 'pending' OR command_state = 'intent' OR telegram_state IN ('intent', 'uncertain')
           ORDER BY created_at, provider, thread_id, turn_id, terminal_revision
+          LIMIT ?
+        `).all(Math.max(1, Math.min(1_000, Number(limit) || 100))).map(outboxRow);
+      } finally {
+        database.close();
+      }
+    });
+  }
+
+  pendingProjections({ limit = 100 } = {}) {
+    return this.#enqueue(() => {
+      const database = this.#database();
+      try {
+        return database.prepare(`
+          SELECT provider, thread_id, turn_id, terminal_revision, state, attempt_count,
+            last_error, payload_json, command_state, command_client_user_message_id,
+            command_last_error, command_updated_at, telegram_state, telegram_intent_json,
+            telegram_delivery_id, telegram_last_error, telegram_updated_at, created_at, updated_at
+          FROM provider_turn_terminal_outbox INDEXED BY provider_turn_terminal_outbox_projection_retry_idx
+          WHERE state = 'pending'
+          ORDER BY updated_at, created_at, provider, thread_id, turn_id, terminal_revision
           LIMIT ?
         `).all(Math.max(1, Math.min(1_000, Number(limit) || 100))).map(outboxRow);
       } finally {
@@ -556,7 +611,8 @@ export class ProviderTurnTerminalStore {
         const now = new Date().toISOString();
         const allowed = state === "uncertain"
           ? ["intent", "uncertain"]
-          : state === "acked" ? ["intent", "uncertain", "acked"] : ["intent", "uncertain"];
+          : state === "acked" ? ["intent", "uncertain", "superseded-uncertain", "acked"]
+            : ["intent", "uncertain", "superseded-uncertain"];
         const placeholders = allowed.map(() => "?").join(", ");
         database.prepare(`
           UPDATE provider_turn_terminal_outbox

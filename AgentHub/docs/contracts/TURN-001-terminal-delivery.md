@@ -1,9 +1,8 @@
 # TURN-001 — Terminal turn commit and delivery
 
-Audit checkpoints before version 17 retain their live byte cursors but rebuild
-the existing bounded historical queue once to repair failed identity-less context
-probes. Version 17 historical completion is durable across restart; it does not
-authorize periodic full-history scans or resubmission of provider operations.
+Audit byte cursors and completed historical work remain durable across restart.
+Removing context measurements does not authorize a history rewrite, periodic
+full-history scans or resubmission of provider operations.
 
 ## Identity and owner
 
@@ -11,10 +10,25 @@ A provider run is identified by `provider + threadId + turnId`. A terminal
 revision extends that identity. The terminal record is the only durable owner of
 final status and final content.
 
+The minimal `provider_run_terminals` lifecycle ledger is not a second final or
+delivery owner. The managed-run completion boundary records only the immutable
+normalized outcome (`completed`, `failed` or `aborted`) needed by external
+ownership recovery such as a surviving manual Test Contour helper. It contains
+no final content, message command identity or outbox and cannot satisfy or alter
+the terminal projection invariants below. Codex's ordinary terminal record
+remains authoritative for its final status/content and is also valid lifecycle
+evidence; Claude uses the minimal record because it has no Codex delivery
+terminal.
+
 ## Invariants
 
 - Terminal status, final content, usage identity and last-message identity are
   committed before admission or queue ownership is released.
+- Ordinary Claude turns remain background work on Windows: starting a turn or
+  any console descendant must not expose a console window or steal foreground
+  focus. The durable worker survives an Agent Hub restart, retains redirected
+  file output and stream input, and cancellation still owns its complete process
+  tree.
 - The post-turn reservation is acquired before admission release. Once the
   terminal is durable, admission completion starts reserved post-turn
   maintenance independently of outbox delivery. A stalled delivery cannot hold
@@ -31,9 +45,20 @@ final status and final content.
   evidence that an already-started provider operation has finished.
 - A Codex `task_complete` event carrying an error is a failed terminal, not a
   successful empty answer. Exact-turn, tail and historical readers retain the
-  same outcome. An identity-less context probe stays internal under UI-001;
-  discovering it during reconciliation may update accounting but must not emit
-  an ordinary completion notification.
+  same outcome. A promptless `task_started`, a missing active-turn projection,
+  an App Server `interrupted` status, a lost connection and rollout age are not
+  terminal evidence. Observer and restart recovery keep the exact run and its
+  admission lane until an exact terminal event is committed; a late terminal
+  releases that lane once. Current context maintenance does not generate a user
+  turn. The retired probe is a bounded historical exception identified only by
+  its generated reserved `client_id`, never by prompt or response text (ADR-0073).
+- If a previously committed Codex completion is contradicted by a later exact
+  rollout terminal for the same provider/thread/turn, the terminal owner uses
+  expected-revision CAS to commit a higher revision and its existing projection
+  outbox. The original user command is not redispatched and an already delivered
+  external message cannot be withdrawn. An absent rollout terminal alone does
+  not authorize retracting an older committed completion; it remains a separate
+  unresolved evidence case until the completion's provenance is established.
 - Optional rollout usage, pricing and tool-metadata reconstruction never delays
   terminal commit or admission release. The terminal audit resumes from its
   durable append-only byte checkpoint and reconciles that metadata afterward.
@@ -46,7 +71,52 @@ final status and final content.
   projection; live-preview bounds must not truncate durable final content.
 - A provider completion event is not sufficient evidence to persist a known
   prefix while the authoritative final is still materializing. Terminal commit
-  uses the exact reconciled provider final after a bounded settle window.
+  uses the exact reconciled provider final after a bounded settle window. A
+  complete exact-turn `task_complete` record from the validated rollout tail
+  may supply that final without waiting for unrelated generated-image metadata
+  before the tail. Missing, incomplete and interrupted records retain the
+  existing full reconciliation fallback.
+- A managed Claude result does not release its exact process owner while the
+  provider tree is still live. Completion closes input, gives the provider a
+  bounded nonzero graceful-exit window, and verifies the exact root and
+  descendant identities even when the root has already exited. A remaining
+  live tree receives one owner-verified, deadline-bounded stop before terminal
+  delivery. Exact stop targets and an unknown-outcome fence are durable before
+  the first external stop effect. An unconfirmed stop retains the run,
+  descendant identities and the same in-flight stop attempt; it cannot
+  authorize another killer by numeric PID alone or after restart. A stop
+  intent whose durable write is rejected before any effect is a known
+  non-effect: the owner retries canonical completion with bounded backoff
+  until storage recovers, without cancellation or restart, including when the
+  rejection lands after the stop deadline.
+- A provider named by the launch sidecar is owned only through the exact
+  fingerprint captured while its ancestry to the exact live root is
+  observable, at launch or during ordinary polling. The sidecar token and a
+  creation time inside the run lifetime never authorize a stop by themselves;
+  a reused PID with a different creation time is never stopped. A captured
+  identity is retried until one durable save succeeds, so a restart cannot
+  lose it. An entry without an exact fingerprint is only a historical ancestry
+  anchor for descendants created inside its closed lifetime, and only while
+  its PID is absent. Recorded exit times follow the real exit, so a current
+  holder of a root or provider PID that is not the saved exact identity makes
+  that anchor ambiguous: the holder is never owned, and an unknown child whose
+  known creation time lies outside the anchor's recorded lifetime (including
+  the start tolerance) is foreign and excluded. Inside that lifetime an
+  unknown child created at or after the holder's creation is the holder's own
+  and is excluded; an earlier unknown child inside the bounded historical
+  lifetime, a child without a valid creation time, or any child when the
+  holder creation time is unknown leaves the tree unresolved. An exited root
+  without a recorded lifetime fails closed the same way, with an explicit
+  missing-lifetime diagnostic. An unresolved tree is not terminal: completion
+  keeps cleanup pending, never reports success, and re-checks ownership with
+  bounded backoff on the single owner timer until a later authoritative
+  snapshot resolves it; a re-check never dispatches a second stop. Descendants
+  captured with their own exact fingerprint remain actionable, but stopping
+  them never proves that an unresolved tree has ended.
+  On Windows, discovery through a currently live parent PID requires a child
+  creation time no earlier than that live parent's creation time. A child born
+  before its current parent is foreign even when both were born during the run;
+  missing chronology cannot authorize a new numeric-parent descendant.
 - Terminal is absorbing: late running, progress, snapshot or reconnect events
   cannot revive it.
 - A bounded restart or opened-history-page reprojection may replace a corrupted terminal user
@@ -55,6 +125,11 @@ final status and final content.
   Hub command identity. Missing, duplicate or conflicting proof fails closed;
   successful reprojection preserves terminal state and never dispatches again.
 - Live, focused, history and badge views derive from the same terminal revision.
+- Once exact terminal history is persisted, the existing last-message projection
+  advances before optional accounting and global journal-index work. A slow or
+  failed journal rebuild cannot hold a readable final until another user turn.
+  The current terminal revision is checked before this publication; outbox ACK
+  still requires all canonical projection readbacks below.
 - Terminal completion and history payloads retain the raw root prompt separately
   from body-only live user projections. Their `clientUserMessageId` is nonempty
   and at most 200 characters; invalid or conflicting provider identity and its
@@ -65,11 +140,40 @@ final status and final content.
   intake validation; terminal coalescing cannot strip or retarget them.
 - Delivery uses a durable outbox. A missing UI ACK retries delivery without
   reverting terminal state or regenerating the provider effect.
+- An exact later provider terminal may correct a previously committed Codex
+  status through the same revision-CAS owner. Its new revision reprojects
+  history, journal and command outcome without a second ordinary completion
+  commit or Telegram notification, even if the older notification ACK is
+  missing. Old unsent Telegram intent is retired; an uncertain external attempt
+  stays recorded as superseded-uncertain but cannot be retried. Queued Telegram
+  delivery verifies the exact current revision before an external send and
+  retires a superseded item on reopen. A late ACK for an already issued attempt
+  may still be recorded; an external message already sent cannot be recalled.
 - Recovery may stage a bounded batch of exact outbox revisions and perform one
   shared journal projection. Every revision remains unacknowledged until its
   history and journal data are persisted and the shared projection succeeds.
   Projection failure preserves retryability; a superseding revision retains its
   own delivery identity. Ordinary live completion does not wait for a batch.
+- The durable terminal outbox is the sole retry owner for terminal projection.
+  A projection revision is acknowledged only after canonical readback confirms
+  its exact journal record, matching immutable accounting fields in the
+  deterministic usage fact, and a turn index produced from a journal revision
+  at least as new as that record. The index and its source revision are replaced
+  atomically by the existing journal projection owner.
+  An already-complete projection is acknowledged without rewriting richer
+  display metadata or account attribution. Projection-only recovery never
+  repeats the provider turn, command trace or Telegram delivery.
+- Transient SQLite busy/locked and journal-revision conflicts receive one
+  runtime-scoped, bounded single-flight retry with capped backoff. Conflict
+  recovery re-reads the exact projection before another write. A retry of an
+  already durable terminal cannot infer its historical account from the
+  runtime's current ambient account; independently persisted attribution may
+  still be retained or enriched by its existing evidence owner.
+- Projection recovery reads only projection-pending outbox rows in durable
+  least-recently-attempted order. A bounded page of permanent failures moves to
+  the back without starving later rows. Exhausted fast retries and enumeration
+  failures remain eligible for the existing owner's low-frequency pass; no
+  zero-delay full-page loop is allowed.
 - A later user turn cannot suppress or mutate the previous terminal entity.
 - Projection overlays the exact latest terminal independently of a later active
   turn, so both entities remain visible in provider sequence.

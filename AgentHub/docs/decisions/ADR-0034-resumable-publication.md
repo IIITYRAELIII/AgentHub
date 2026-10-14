@@ -106,3 +106,26 @@ command identity; only a definitive authenticated Desktop rejection may rotate
 that identity and retry the same idempotent Workspace completion. When a later
 publication replaces a terminal run projection, the exact prior status is
 archived beside its canonical log before replacement.
+
+## Candidate-owned plan reads before runtime replacement (2026-09-17)
+
+The publication process may be running candidate code while the installed
+Desktop runtime still implements an older release-plan projection. A successful
+old response is not a transport failure, so the former missing-plan-only MCP
+bootstrap cannot repair this version-skew case.
+
+All pre-install plan guards now use one candidate composition boundary backed by
+the existing `TaskReleasePlanService`, a short read-only snapshot of the
+authoritative Task database, and the existing Git release-evidence reader. The
+snapshot is closed before Git inspection. The same reader is used before freeze,
+when the frozen publication identity is prepared, and immediately before Git
+publication; every guard still compares the complete plan revision exactly.
+Installed Desktop control remains the sole owner of post-install Workspace
+completion and its idempotent durable command.
+
+Read-only opening is fail-closed: it creates no storage, performs no migration or
+cleanup, and rejects incompatible schema. `--bootstrap-mcp-context` is rejected
+as obsolete instead of silently selecting the installed planner. Completion-only
+resume keeps using the saved immutable publication identity and installed
+completion owner; any resume that has not crossed the publication-effect boundary
+must pass the fresh candidate plan guards again.

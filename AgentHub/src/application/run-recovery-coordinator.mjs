@@ -45,7 +45,11 @@ export class RunRecoveryCoordinator {
         return;
       }
       if (action === TASK_RECOVERY_ACTIONS.UNKNOWN_OBSERVED) {
-        await d.observer.finishUnknown(run, observerSnapshot);
+        const outcome = await d.observer.finishUnknown(run, observerSnapshot);
+        if (outcome?.retained === true) {
+          d.observer.schedule(run);
+          await d.saveState();
+        }
         return;
       }
     }
@@ -86,7 +90,9 @@ export class RunRecoveryCoordinator {
       } catch (error) {
         d.logError(`Cannot recover task ${run.id}:`, error);
         await d.sendRunMessage(run, `⚠️ Не удалось восстановить поток: ${error.message}`).catch(() => {});
-        await d.completeRun(run);
+        // A failed provider read or reattach is not proof that the exact turn
+        // terminated. Keep the managed run active so recovery can be retried
+        // and so consumers of provider terminal evidence remain fail-closed.
       }
     }
   }

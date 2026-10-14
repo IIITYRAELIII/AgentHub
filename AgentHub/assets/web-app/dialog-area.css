@@ -56,12 +56,12 @@ html[data-view="chat"][data-surface][data-theme] {
   border-bottom: 1px solid var(--dialog-hairline) !important;
   border-radius: 0 !important;
   display: flex;
-  flex: 0 0 var(--dialog-stream-tabs-height);
+  flex: 0 0 calc(var(--dialog-stream-tabs-height) + var(--dialog-stream-tabs-inset-top, 0px));
   gap: 0 !important;
-  height: var(--dialog-stream-tabs-height);
-  min-height: var(--dialog-stream-tabs-height) !important;
+  height: calc(var(--dialog-stream-tabs-height) + var(--dialog-stream-tabs-inset-top, 0px));
+  min-height: calc(var(--dialog-stream-tabs-height) + var(--dialog-stream-tabs-inset-top, 0px)) !important;
   overflow: visible;
-  padding: 0 !important;
+  padding: var(--dialog-stream-tabs-inset-top, 0px) var(--dialog-stream-tabs-inset-inline, 0px) 0 !important;
   position: relative;
   scrollbar-width: none;
   z-index: 50;
@@ -521,30 +521,58 @@ html[data-view="chat"][data-surface][data-theme] {
 
 /* Шапка выбранного потока. */
 .chat-pane {
-  grid-template-rows: 42px auto minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr);
 }
 
 .chat-pane[data-dialog-settings-open] {
-  grid-template-rows: 42px auto minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr);
 }
 
 .stream-chat-header {
   align-items: center;
   background: var(--dialog-canvas);
   border-bottom: 1px solid var(--dialog-hairline);
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 4px 10px;
   grid-column: 1;
   grid-row: 1;
-  height: 42px;
+  min-height: 62px;
   justify-content: space-between;
   min-width: 0;
-  padding: 0 10px 0 24px;
+  padding: 8px 10px 8px 24px;
+}
+
+.stream-chat-identity {
+  align-items: baseline;
+  color: var(--dialog-text-3);
+  display: flex;
+  gap: 8px;
+  grid-column: 1 / -1;
+  font-size: 13px;
+  min-width: 0;
+}
+
+.stream-chat-workspace {
+  flex: 0 1 auto;
+  max-width: 35%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stream-chat-name {
+  color: var(--dialog-text);
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-weight: 600;
 }
 
 .stream-chat-meta {
   align-items: center;
   color: var(--dialog-text-3);
   display: flex;
+  flex-wrap: wrap;
   font-size: 12px;
   gap: 10px;
   min-width: 0;

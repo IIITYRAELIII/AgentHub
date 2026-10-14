@@ -1,4 +1,5 @@
 import { samePath } from "../../infrastructure/filesystem/config.mjs";
+import { modelCallbackAction } from "./callback-context.mjs";
 
 export class TelegramSettingsMenu {
   constructor({
@@ -57,7 +58,7 @@ export class TelegramSettingsMenu {
     if (provider === "codex") {
       const keyboard = this.codexModels.map((model) => [{
         text: `${model.value === codexModel ? "? " : ""}${model.label}`,
-        callback_data: this.callbackData(`codex-model:${model.value}`),
+        callback_data: this.callbackData(modelCallbackAction("codex", model.value)),
       }]);
       await this.sendMessage(
         `Current Codex model: ${codexModelLabel}\n\nChoose model for next Codex turns:`,
@@ -67,7 +68,7 @@ export class TelegramSettingsMenu {
     }
     const keyboard = this.claudeModels.map((value) => [{
       text: `${value === claudeModel ? "✓ " : ""}${this.claudeModelLabels[value]}`,
-      callback_data: this.callbackData(`model:${value}`),
+      callback_data: this.callbackData(modelCallbackAction("claude", value)),
     }]);
     await this.sendMessage(
       `Текущая модель Claude Code: ${this.claudeModelLabels[claudeModel]}\n\nВыберите модель:`,

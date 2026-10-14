@@ -8,10 +8,13 @@ import test from "node:test";
 
 import { WorkLogUsageSyncWorkerStore } from "../../src/runtime/work-log-usage-sync-worker-client.mjs";
 import { JournalDatabase } from "../../src/infrastructure/persistence/journal-database.mjs";
+import { USAGE_FACT_SCHEMA_VERSION } from "../../src/domain/usage-facts.mjs";
 import { WorkLogUsageRepository } from "../../src/infrastructure/persistence/work-log-usage-repository.mjs";
 import { createWorkLogUsageStore } from "../../src/application/work-log-usage-store.mjs";
 import { buildLazyJournalPayload } from "../../src/application/journal-projection-data.mjs";
 import { COMMAND_TRACE_OUTCOMES } from "../../src/domain/command-trace-span.mjs";
+import { WORK_LOG_PRICING_PROJECTION_VERSION } from "../../src/domain/token-usage.mjs";
+import { WORK_LOG_ACCOUNTING_PROJECTION_VERSION } from "../../src/domain/quota-units.mjs";
 import {
   normalizePersistedWorkLog,
   projectWorkLogUsage,
@@ -87,10 +90,23 @@ test("full journal projection stays in worker and preserves canonical fragments,
     assert.deepEqual(actual.turns, expected.turns);
     assert.deepEqual(await journal.loadLedger(), ledger);
     assert.equal(await journal.accountUsageProjectionVersion(), WORK_LOG_ACCOUNT_USAGE_PROJECTION_VERSION);
+    assert.equal(await journal.pricingProjectionVersion(), WORK_LOG_ACCOUNTING_PROJECTION_VERSION);
     const unchanged = await worker.projectJournal(options, { workspaceResolver: () => binding });
     assert.equal(unchanged.projected, false);
     assert.equal(unchanged.reason, "unchanged");
     assert.equal(unchanged.revision, result.revision);
+    // A QU-only release changes the combined marker while the pricing marker
+    // and all source facts remain identical. It must not take the unchanged path.
+    const database = new DatabaseSync(databaseFile);
+    try {
+      database.prepare("UPDATE journal_store_meta SET value = ? WHERE key = 'pricing_projection_version'")
+        .run(WORK_LOG_PRICING_PROJECTION_VERSION);
+    } finally { database.close(); }
+    assert.equal(await journal.pricingProjectionVersion(), WORK_LOG_PRICING_PROJECTION_VERSION);
+    const recalibrated = await worker.projectJournal(options, { workspaceResolver: () => binding });
+    assert.equal(recalibrated.projected, true);
+    assert.equal(await journal.pricingProjectionVersion(), WORK_LOG_ACCOUNTING_PROJECTION_VERSION);
+    assert.equal((await worker.projectJournal(options, { workspaceResolver: () => binding })).reason, "unchanged");
   } finally {
     await worker.close();
     journal.close();
@@ -278,7 +294,12 @@ test("task title synchronization selects and writes in the worker without loadin
     });
     assert.equal(projections, 1);
     assert.equal(await journal.currentRevision(), revision);
-    assert.deepEqual(await journal.projectionSource(), { revision: revision - 1, projectRoots: [root] });
+    const projectedSource = await journal.projectionSource();
+    assert.equal(projectedSource.revision, revision - 1);
+    assert.deepEqual(projectedSource.projectRoots, [root]);
+    assert.equal(projectedSource.incrementalVersion, 1);
+    assert.ok(projectedSource.bindings.some(([key, value]) => key === "codex\0task-root"
+      && value.streamId === "stream-title"));
     assert.deepEqual(await store.synchronizeTaskTitlesAndProject({ titles: [] }), {
       updated: 0, projected: false, reason: "unchanged",
     });
@@ -831,6 +852,51 @@ test("usage sync worker keeps turns without startedAt as accountless legacy even
   } finally {
     await source.close();
     await target.close();
+    await removeRoot(root);
+  }
+});
+
+test("cursor usage snapshot keeps auth and limit facts without re-exporting stored sync events", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-usage-cursor-facts-"));
+  const databaseFile = path.join(root, "journal.sqlite");
+  const journal = new JournalDatabase(databaseFile);
+  const initial = await journal.upsertRecords([{
+    provider: "codex", threadId: "thread-local", taskThreadId: "thread-local", turnId: "turn-local",
+    projectRoot: root, startedAt: "2026-08-20T09:59:00.000Z", completedAt: "2026-08-20T10:00:00.000Z",
+    observedAt: "2026-08-20T10:01:00.000Z", accountKey: "chatgpt:owner", accountAttribution: "exact",
+    usageReported: true, usage: { inputTokens: 10 },
+  }]);
+  journal.close();
+  const store = new WorkLogUsageSyncWorkerStore({
+    databaseFile, deviceId: "device-local", defaultRuntimeHomeIds: { codex: "1".repeat(64) },
+  });
+  try {
+    await store.importSnapshot({ events: [{
+      deviceId: "device-remote", provider: "codex", threadId: "thread-remote", turnId: "turn-remote",
+      completedAt: "2026-08-20T09:00:00.000Z", estimatedCredits: 2,
+    }, {
+      schemaVersion: USAGE_FACT_SCHEMA_VERSION,
+      type: "auth_observation", deviceId: "device-remote", provider: "codex", runtimeHomeId: "2".repeat(64),
+      accountKey: "chatgpt:owner", observedAt: "2026-08-20T09:30:00.000Z",
+      installationInstanceId: "0b7f3a52-3c1e-4c55-9a8e-5d2f1a7c9e10",
+    }, {
+      schemaVersion: USAGE_FACT_SCHEMA_VERSION,
+      type: "limit_observation", deviceId: "device-remote", provider: "codex", accountKey: "chatgpt:owner",
+      limitId: "codex", window: "primary", observedAt: "2026-08-20T09:30:00.000Z", usedPercent: 40,
+    }] });
+    const turns = (snapshot) => snapshot.events.filter((event) => event.type === "turn").map((event) => event.deviceId).sort();
+    const observations = (snapshot) => snapshot.events.filter((event) => event.observationId).map((event) => event.type).sort();
+
+    const full = await store.usageSyncSnapshot();
+    assert.deepEqual(turns(full), ["device-local", "device-remote"]);
+    assert.deepEqual(observations(full), ["auth_observation", "limit_observation"]);
+
+    const cursor = await store.usageSyncSnapshot({ afterJournalRevision: initial.revision });
+    assert.equal(cursor.journalRevision, initial.revision);
+    assert.deepEqual(turns(cursor), []);
+    assert.deepEqual(observations(cursor), ["auth_observation", "limit_observation"]);
+  } finally {
+    await store.close();
     await removeRoot(root);
   }
 });

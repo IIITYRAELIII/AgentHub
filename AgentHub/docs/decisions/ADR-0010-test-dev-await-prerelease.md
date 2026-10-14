@@ -16,7 +16,7 @@ rebuilds `PreRelease` from current `main` plus the exact result commits of all
 accepted Await Tasks. `dev` is never merged into `PreRelease`, so Test-only work
 cannot enter the release candidate.
 
-Architect freezes the exact release-plan revision, included Task IDs and
+Release Manager freezes the exact release-plan revision, included Task IDs and
 `PreRelease` head. A consolidated changelog entry is written only in
 `PreRelease`, and only when the repository has `CHANGELOG.md`.
 

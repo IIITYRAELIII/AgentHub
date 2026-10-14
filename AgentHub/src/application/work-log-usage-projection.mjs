@@ -6,9 +6,10 @@ import {
   IMAGE_GENERATION_ESTIMATE_CREDITS,
   looksLikeImageGenerationPrompt,
 } from "../domain/codex-usage-estimate.mjs";
-import { isCodexContextProbeClientId, isCodexContextProbeTurn } from "../domain/codex-context-probe.mjs";
 import { isCodexAutoCompactionTurnId } from "../domain/codex-internal-turn.mjs";
 import { isInheritedSubagentTurn } from "../domain/subagent-turn-identity.mjs";
+import { formatQuotaUnits, PROVISIONAL_QU_PER_API_CREDIT,
+  QUOTA_CALIBRATION_VERSION, turnQuotaBreakdown } from "../domain/quota-units.mjs";
 import { taskDisplayTitle } from "../domain/task-display-title.mjs";
 import {
   normalizeInterstreamClientUserMessageId,
@@ -34,12 +35,12 @@ import {
 import { mergeUsageLimitSamples, normalizeAuthObservation } from "../domain/usage-facts.mjs";
 
 const WORK_LOG_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const ACCOUNT_ATTRIBUTIONS = new Set(["exact", "inferred"]);
+const ACCOUNT_ATTRIBUTIONS = new Set(["exact", "inferred", "unknown"]);
 const UNKNOWN_ACCOUNT_UI_KEY = "__unknown_account__";
 
 /* Stable shipped identity of the account-usage projection algorithm. Bump this
    only when the same durable facts must be materialized again after upgrade. */
-export const WORK_LOG_ACCOUNT_USAGE_PROJECTION_VERSION = "2026.9.8.1";
+export const WORK_LOG_ACCOUNT_USAGE_PROJECTION_VERSION = "2026.9.29.1";
 
 export function normalizeWorkLogId(value) {
   const id = String(value ?? "").trim().toLowerCase();
@@ -89,10 +90,6 @@ function effectiveEstimatedCredits(record) {
   return String(record?.estimateKind ?? "").trim() === "imagegen-default"
     ? 0
     : normalizeEstimatedCredits(record?.estimatedCredits);
-}
-
-function isContextProbeRecord(record) {
-  return record?.contextProbe === true || isCodexContextProbeTurn(record);
 }
 
 function normalizedSkillsUsed(value) {
@@ -201,6 +198,28 @@ function recordCreditBreakdown(record) {
   );
 }
 
+function recordQuotaBreakdown(record) {
+  const quota = turnQuotaBreakdown(record?.usageReported === false ? null : record?.usage, {
+    model: record?.model,
+    serviceTier: record?.serviceTier,
+    estimatedCredits: effectiveEstimatedCredits(record),
+    completedAt: record?.completedAt,
+  });
+  return record?.usageReported === false ? { ...quota, uncalibrated: true } : quota;
+}
+
+function sumRecordQuota(records) {
+  return records.reduce((sum, record) => {
+    const quota = recordQuotaBreakdown(record);
+    for (const field of ["input", "cache", "cacheWrite", "output", "total", "apiEstimateCredits"]) {
+      sum[field] += quota[field];
+    }
+    sum.uncalibratedCount += Number(quota.uncalibrated);
+    return sum;
+  }, { input: 0, cache: 0, cacheWrite: 0, output: 0, total: 0,
+    apiEstimateCredits: 0, uncalibratedCount: 0 });
+}
+
 function recordCredits(record) {
   return recordCreditBreakdown(record).total;
 }
@@ -257,7 +276,12 @@ export function normalizedLedger(value = {}, { defaultProjectRoot = "" } = {}) {
         : null;
       let workLogId = null;
       if (record?.workLogId) workLogId = normalizeWorkLogId(record.workLogId);
-      const account = normalizedAccountFields(record);
+      const serviceUsageKind = ["context-probe", "context-compaction"].includes(record?.serviceUsageKind)
+        ? record.serviceUsageKind : "";
+      const account = normalizedAccountFields(serviceUsageKind ? {
+        accountKey: "", accountLabel: "", accountType: "", accountPlan: "",
+        accountAttribution: "unknown",
+      } : record);
       const estimatedCredits = normalizeEstimatedCredits(
         record?.estimatedCredits
           ?? (sourceVersion < 6 && record?.estimatedUnits != null
@@ -276,7 +300,6 @@ export function normalizedLedger(value = {}, { defaultProjectRoot = "" } = {}) {
           estimatedCredits,
           estimateKind,
         }),
-        contextProbe: isContextProbeRecord(record),
         model: String(record?.model ?? "").trim().toLowerCase(),
         serviceTier: normalizeServiceTier(record?.serviceTier ?? record?.service_tier),
         pricingMetadataResolved: sourceVersion >= 7
@@ -287,6 +310,7 @@ export function normalizedLedger(value = {}, { defaultProjectRoot = "" } = {}) {
         parentThreadId: String(record?.parentThreadId ?? "").trim(),
         parentTurnId: String(record?.parentTurnId ?? "").trim(),
         aggregateOnly: record?.aggregateOnly === true,
+        serviceUsageKind,
         provisional: record?.provisional === true || (
           legacyLedger
           && String(record?.status ?? "") === "aborted"
@@ -385,16 +409,19 @@ function alignUsagePercent(text) {
 /* Показанный текст округлён до одного знака и сжат до kcr/Mcr, поэтому клиент не
    может восстановить из него точное число при переходе в $, ₽ или ПТЭ. Точное
    значение едет рядом в data-usage-credits. */
-function highlightUsageUnits(text, credits = Number.NaN) {
+function highlightUsageUnits(text, credits = Number.NaN, quotaUnits = Number.NaN, incomplete = false) {
   const exact = Number(credits);
   const usageCredits = Number.isFinite(exact) && exact >= 0
     ? ` data-usage-credits="${escapeHtmlAttribute(String(exact))}"`
     : "";
+  const quota = Number(quotaUnits);
+  const usageQuota = Number.isFinite(quota) && quota >= 0
+    ? ` data-usage-qu="${escapeHtmlAttribute(String(quota))}"` : "";
   return String(text).replace(
     /(\d+(?:[  ]\d{3})*(?:,\d+)? (Gcr|Mcr|kcr|cr))/gu,
     (match, _value, unit) => {
       const level = unit === "cr" ? "kilo" : unit === "kcr" ? "mega" : "high";
-      return `<span data-${level}-usage${usageCredits}>${match}</span>`;
+      return `<span data-${level}-usage${usageCredits}${usageQuota}${incomplete ? ' data-usage-qu-incomplete="1"' : ""}>${match}</span>`;
     },
   );
 }
@@ -402,6 +429,7 @@ function highlightUsageUnits(text, credits = Number.NaN) {
 const BREAKDOWN_FIELD_BY_LABEL = new Map([
   ["Вход", "input"],
   ["Кэш", "cache"],
+  ["Запись кэша", "cacheWrite"],
   ["Выход", "output"],
   ["Думы", "reasoning"],
 ]);
@@ -419,22 +447,24 @@ function markUsageLabel(text) {
   );
 }
 
-function formatTaskUsageDetails(creditBreakdown, dayCredits) {
+function formatTaskUsageDetails(creditBreakdown, dayCredits, quota) {
   const [total, ...breakdown] = formatTaskShare(creditBreakdown, dayCredits).split("<br>");
   const totalHtml = highlightUsageUnits(
     alignUsagePercent(markUsageLabel(total)),
     creditBreakdown.total,
+    quota.total,
+    quota.uncalibratedCount > 0,
   );
   return "<details data-task-usage-details>"
     + `<summary data-task-usage>${totalHtml}</summary>`
     + `<span data-task-usage-breakdown>${breakdown
       .map((part) => `<span data-task-usage-part>${
-        highlightUsageUnits(alignUsagePercent(part), breakdownPartCredits(part, creditBreakdown))
+        highlightUsageUnits(alignUsagePercent(part), breakdownPartCredits(part, creditBreakdown), breakdownPartCredits(part, quota), quota.uncalibratedCount > 0)
       }</span>`)
       .join("")}</span></details>\n`;
 }
 
-function formatStreamUsage(creditBreakdown, dayCredits, elapsedSeconds, dayElapsedSeconds) {
+function formatStreamUsage(creditBreakdown, dayCredits, elapsedSeconds, dayElapsedSeconds, quota) {
   const [total] = formatTaskShare(creditBreakdown, dayCredits).split("<br>");
   /* Расход и время стоят в одной строке справа от названия Stream: раньше итог
      занимал отдельную строку под ним, а времени в строке не было вовсе. */
@@ -445,14 +475,18 @@ function formatStreamUsage(creditBreakdown, dayCredits, elapsedSeconds, dayElaps
   }<span data-work-log-stream-credits>${highlightUsageUnits(
     alignUsagePercent(total.replace(/^Итого\s+/u, "")),
     creditBreakdown.total,
+    quota.total,
+    quota.uncalibratedCount > 0,
   )}</span></span>`;
 }
 
-function formatWorkspaceUsage(creditBreakdown, dayCredits) {
+function formatWorkspaceUsage(creditBreakdown, dayCredits, quota) {
   const [total] = formatTaskShare(creditBreakdown, dayCredits).split("<br>");
   return highlightUsageUnits(
     alignUsagePercent(total.replace(/^Итого\s+/u, "")),
     creditBreakdown.total,
+    quota.total,
+    quota.uncalibratedCount > 0,
   );
 }
 
@@ -461,11 +495,14 @@ function formatCollapsedWorkspaceUsage(
   dayCredits,
   elapsedSeconds,
   dayElapsedSeconds,
+  quota,
 ) {
   const [total, ...breakdown] = formatTaskShare(creditBreakdown, dayCredits).split("<br>");
   const totalHtml = highlightUsageUnits(
     alignUsagePercent(total.replace(/^Итого\s+/u, "")),
     creditBreakdown.total,
+    quota.total,
+    quota.uncalibratedCount > 0,
   );
   return "<details data-task-usage-details data-work-log-workspace-usage-details "
     + "data-work-log-collapsed-workspace-usage-details>"
@@ -474,16 +511,16 @@ function formatCollapsedWorkspaceUsage(
     }</summary>`
     + `<span data-task-usage-breakdown>${breakdown
       .map((part) => `<span data-task-usage-part>${
-        highlightUsageUnits(alignUsagePercent(part), breakdownPartCredits(part, creditBreakdown))
+        highlightUsageUnits(alignUsagePercent(part), breakdownPartCredits(part, creditBreakdown), breakdownPartCredits(part, quota), quota.uncalibratedCount > 0)
       }</span>`)
       .join("")}</span></details>`;
 }
 
-function formatDayUsageBreakdown(creditBreakdown) {
+function formatDayUsageBreakdown(creditBreakdown, quota) {
   const [, ...breakdown] = formatWorkLogUsage(creditBreakdown).split("<br>");
   return `<span data-day-usage-breakdown>${breakdown
     .map((part) => `<span data-day-usage-part>${
-      highlightUsageUnits(alignUsagePercent(part), breakdownPartCredits(part, creditBreakdown))
+      highlightUsageUnits(alignUsagePercent(part), breakdownPartCredits(part, creditBreakdown), breakdownPartCredits(part, quota), quota.uncalibratedCount > 0)
     }</span>`)
     .join("")}</span>`;
 }
@@ -642,6 +679,8 @@ function emptyAccountUsageBucket(accountKey, catalog) {
     noCost,
     unknown,
     credits: 0,
+    quotaUnits: 0,
+    uncalibratedCount: 0,
     turns: 0,
     exactTurns: 0,
     inferredTurns: 0,
@@ -680,6 +719,8 @@ function emptyAccountDeviceBucket(deviceId, source, { noCost = false, label = ""
     label: accountDeviceDisplayName(deviceId, source, label),
     noCost,
     credits: 0,
+    quotaUnits: 0,
+    uncalibratedCount: 0,
     turns: 0,
     exactTurns: 0,
     inferredTurns: 0,
@@ -703,6 +744,8 @@ function applyAccountUsageStats(target, entry, record, {
   noCost = false,
 } = {}) {
   target.credits += entry.credits;
+  target.quotaUnits += entry.quota.total;
+  target.uncalibratedCount += Number(entry.quota.uncalibrated);
   target.turns += 1;
   if (noCost) target.noCostTurns += 1;
   const provider = String(record?.provider ?? "unknown").trim().toLowerCase() || "unknown";
@@ -726,23 +769,26 @@ function applyAccountUsageStats(target, entry, record, {
 
 function syncedUsageRecord(event) {
   if (!event) return null;
+  const serviceUsageKind = ["context-probe", "context-compaction"].includes(event.serviceUsageKind)
+    ? event.serviceUsageKind : "";
   return {
     usage: event.usage,
     usageReported: event.usageReported,
     estimatedCredits: event.estimatedCredits,
     model: event.model,
     serviceTier: event.serviceTier,
+    serviceUsageKind,
     provider: event.provider,
     threadId: `sync:${event.deviceId}:${event.threadKey}`,
     taskThreadId: `sync:${event.deviceId}:${event.taskKey}`,
     turnId: event.eventId,
     startedAt: event.startedAt,
     completedAt: event.completedAt,
-    accountKey: event.accountKey,
-    accountAttribution: event.accountAttribution,
-    accountLabel: event.accountLabel,
-    accountType: event.accountType,
-    accountPlan: event.accountPlan,
+    accountKey: serviceUsageKind ? "" : event.accountKey,
+    accountAttribution: serviceUsageKind ? "unknown" : event.accountAttribution,
+    accountLabel: serviceUsageKind ? "" : event.accountLabel,
+    accountType: serviceUsageKind ? "" : event.accountType,
+    accountPlan: serviceUsageKind ? "" : event.accountPlan,
     accountRecovery: event.accountRecovery,
     syncDeviceId: event.deviceId,
     syncDeviceLabel: event.deviceLabel,
@@ -813,7 +859,7 @@ function usageAuthCandidatesByRuntimeHome(authObservations = []) {
 
 function attributedUsageSyncRecord(event, authCandidates) {
   const record = syncedUsageRecord(event);
-  if (!record || String(record.accountKey ?? "").trim()) return record;
+  if (!record || record.serviceUsageKind || String(record.accountKey ?? "").trim()) return record;
   const candidates = authCandidates.get(usageAuthObservationIdentity(event));
   if (!candidates || candidates.size !== 1) return record;
   const [account] = candidates.values();
@@ -836,6 +882,7 @@ function syncedUsageRecords(values) {
 }
 
 export function buildWorkLogAccountUsageSummary(turns = {}, {
+  normalized = false,
   accountCatalog = [],
   syncedUsageEvents = [],
   localDeviceId = "",
@@ -844,7 +891,7 @@ export function buildWorkLogAccountUsageSummary(turns = {}, {
   ranges = ACCOUNT_USAGE_RANGES.map((range) => range.id),
 } = {}) {
   const catalog = accountCatalogByKey(accountCatalog);
-  const normalizedTurns = normalizedLedger({ version: 9, turns }).ledger.turns;
+  const normalizedTurns = normalized ? turns : normalizedLedger({ version: 9, turns }).ledger.turns;
   const normalizedLocalDeviceId = String(localDeviceId ?? "").trim();
   const normalizedLocalDeviceLabel = String(localDeviceLabel ?? "").trim();
   const normalizedSyncedTurns = syncedUsageRecords(syncedUsageEvents)
@@ -862,6 +909,7 @@ export function buildWorkLogAccountUsageSummary(turns = {}, {
       ...entry,
       timestamp: Date.parse(entry.record?.completedAt || entry.record?.startedAt || ""),
       credits: recordCredits(entry.record),
+      quota: recordQuotaBreakdown(entry.record),
     }))
     .filter((entry) => Number.isFinite(entry.timestamp) && entry.timestamp <= nowMs);
   const rangeSet = new Set(ranges.map((range) => String(range)));
@@ -871,6 +919,8 @@ export function buildWorkLogAccountUsageSummary(turns = {}, {
       const fromMs = accountUsageRangeStart(range.id, nowMs);
       const accounts = new Map();
       let totalCredits = 0;
+      let totalQuotaUnits = 0;
+      let uncalibratedCount = 0;
       let totalTurns = 0;
       let exactTurns = 0;
       let inferredTurns = 0;
@@ -930,6 +980,8 @@ export function buildWorkLogAccountUsageSummary(turns = {}, {
           }
         }
         totalCredits += entry.credits;
+        totalQuotaUnits += entry.quota.total;
+        uncalibratedCount += Number(entry.quota.uncalibrated);
         totalTurns += 1;
       }
       return {
@@ -938,6 +990,8 @@ export function buildWorkLogAccountUsageSummary(turns = {}, {
         from: Number.isFinite(fromMs) ? new Date(fromMs).toISOString() : null,
         to: new Date(nowMs).toISOString(),
         totalCredits,
+        totalQuotaUnits,
+        uncalibratedCount,
         totalTurns,
         exactTurns,
         inferredTurns,
@@ -959,6 +1013,34 @@ export function buildWorkLogAccountUsageSummary(turns = {}, {
         )),
       };
     });
+}
+
+// The rendered panel exposes membership/totals, not its moving from/to
+// timestamps. Between these exact boundaries its HTML is stable. Derive the
+// window from the SAME normalized local/sync records as the summary owner.
+// This is a disposable reuse guard, never another attribution/pricing owner.
+export function workLogAccountUsageWindow(turns, {
+  syncedUsageEvents = [], localDeviceId = "", now = Date.now(),
+} = {}) {
+  const from = Number(now);
+  if (!Number.isSafeInteger(from)) return null;
+  const midnight = new Date(from);
+  midnight.setHours(24, 0, 0, 0);
+  let until = midnight.getTime();
+  const observe = record => {
+    const timestamp = Date.parse(record?.completedAt || record?.startedAt || "");
+    if (!Number.isFinite(timestamp)) return;
+    if (timestamp > from) until = Math.min(until, timestamp);
+    // At the exact 24h boundary membership is still inclusive. Conservatively
+    // refuse reuse AT that boundary too, including fractional caller clocks.
+    const expiry = timestamp + 24 * 60 * 60 * 1_000;
+    if (expiry >= from) until = Math.min(until, expiry);
+  };
+  for (const record of Object.values(turns)) observe(record);
+  for (const record of syncedUsageRecords(syncedUsageEvents)) {
+    if (record && record.syncDeviceId !== String(localDeviceId ?? "").trim()) observe(record);
+  }
+  return { from, until };
 }
 
 const ACCOUNT_PROVIDER_PRESENTATION = Object.freeze({
@@ -1201,7 +1283,7 @@ function formatAccountUsageRow(account, totalCredits, groupId) {
     + `<span data-work-log-account-bar aria-hidden="true">${formatShareSegments(segments)}</span>`
     + `<span data-work-log-account-share>${share}%</span>`
     + `<span data-work-log-account-turns>${account.turns}</span>`
-    + `<span data-work-log-account-credits>${highlightUsageUnits(formatCredits(account.credits), account.credits)}</span>`
+    + `<span data-work-log-account-credits>${highlightUsageUnits(formatCredits(account.credits), account.credits, account.quotaUnits, account.uncalibratedCount > 0)}</span>`
     + "</button>";
 }
 
@@ -1238,7 +1320,7 @@ function formatAccountDeviceRow(account, device, index) {
     + `<span data-work-log-account-bar aria-hidden="true">${deviceFill}</span>`
     + `<span data-work-log-account-share>${share}%</span>`
     + `<span data-work-log-account-turns>${device.turns}</span>`
-    + `<span data-work-log-account-credits>${highlightUsageUnits(formatCredits(device.credits), device.credits)}</span>`
+    + `<span data-work-log-account-credits>${highlightUsageUnits(formatCredits(device.credits), device.credits, device.quotaUnits, device.uncalibratedCount > 0)}</span>`
     + "</div>";
 }
 
@@ -1269,7 +1351,9 @@ function formatAccountUsagePeriodTab(range, active) {
     + `<span data-work-log-account-period-title>${escapeHtmlText(range.title)}</span>`
     + "</span>"
     + '<span data-work-log-account-period-value '
-    + `data-account-credits="${escapeHtmlAttribute(String(range.totalCredits))}">`
+    + `data-account-credits="${escapeHtmlAttribute(String(range.totalCredits))}" `
+    + `data-account-qu="${escapeHtmlAttribute(String(range.totalQuotaUnits))}" `
+    + `data-account-qu-incomplete="${range.uncalibratedCount > 0 ? "1" : "0"}">`
     + `<span data-work-log-account-period-amount>${escapeHtmlText(amount)}</span>`
     + `<span data-work-log-account-period-unit>${escapeHtmlText(unit)}</span>`
     + "</span>"
@@ -1286,7 +1370,9 @@ function formatAccountUsagePeriodHeadline(range) {
     + `<span data-work-log-account-period-headline-title>${escapeHtmlText(range.title)}</span>`
     + `<span data-work-log-account-period-headline-quality>${escapeHtmlText(formatAccountQuality(range))}</span>`
     + '<span data-work-log-account-period-value data-work-log-account-period-headline-value '
-    + `data-account-credits="${escapeHtmlAttribute(String(range.totalCredits))}">`
+    + `data-account-credits="${escapeHtmlAttribute(String(range.totalCredits))}" `
+    + `data-account-qu="${escapeHtmlAttribute(String(range.totalQuotaUnits))}" `
+    + `data-account-qu-incomplete="${range.uncalibratedCount > 0 ? "1" : "0"}">`
     + `<span data-work-log-account-period-amount>${escapeHtmlText(amount)}</span>`
     + `<span data-work-log-account-period-unit>${escapeHtmlText(unit)}</span>`
     + "</span>"
@@ -1324,7 +1410,8 @@ function formatAccountUsagePeriodBody(range, active, accountCount) {
     + "<div data-work-log-account-foot>"
     + `<span data-work-log-account-idle>${escapeHtmlText(formatAccountUsageFootNote(range, accountCount))}</span>`
     + "<span data-work-log-account-total>итого "
-    + highlightUsageUnits(formatCredits(range.totalCredits), range.totalCredits)
+    + highlightUsageUnits(formatCredits(range.totalCredits), range.totalCredits,
+      range.totalQuotaUnits, range.uncalibratedCount > 0)
     + ` · ${range.totalTurns} ход.</span>`
     + "</div>"
     + "</div>";
@@ -1497,6 +1584,15 @@ function formatTurnEntry(
   treeCreditsKnown = false,
 ) {
   const breakdown = recordCreditBreakdown(record);
+  const quota = recordQuotaBreakdown(record);
+  const quotaQualifier = !quota.uncalibrated ? ""
+    : record?.usageReported === false || quota.basis === "unknown"
+      ? " · неполное покрытие" : " · предварительная оценка";
+  const sol61 = String(record?.model ?? "").trim().toLowerCase() === "gpt-6.1-sol";
+  const longContextQualifier = sol61 && Number(record?.usage?.longContextInputTokens) > 0
+    ? " · длинный контекст >272K учтён"
+    : sol61 && Number(record?.usage?.inputTokens) > 272_000
+      ? " · запрос >272K не подтверждён" : "";
   const recordTotal = breakdown.total;
   const displayedTotal = Number.isFinite(treeCredits) ? Math.max(0, treeCredits) : recordTotal;
   const elapsedSeconds = durationSeconds(record?.startedAt, record?.completedAt);
@@ -1505,9 +1601,10 @@ function formatTurnEntry(
     ? "нет данных"
     : !breakdown.priced && recordTotal <= 0
       ? "нет тарифа"
-      : highlightUsageUnits(formatCredits(recordTotal), recordTotal);
+      : highlightUsageUnits(formatCredits(recordTotal), recordTotal, quota.total, quota.uncalibrated);
   const credits = displayedTotal > 0
-    ? highlightUsageUnits(formatCredits(displayedTotal), displayedTotal)
+    ? highlightUsageUnits(formatCredits(displayedTotal), displayedTotal,
+      descendantCount > 0 ? Number.NaN : quota.total, quota.uncalibrated || descendantCount > 0)
     : ownCredits;
   const share = taskCredits > 0 && displayedTotal > 0
     ? `${Math.round(displayedTotal / taskCredits * 100)}%`
@@ -1531,6 +1628,7 @@ function formatTurnEntry(
       + `<div data-work-log-turn-context><strong>Длит.:</strong> ${
         formatDuration(record?.startedAt, record?.completedAt)
       }</div>`
+      + `<div data-work-log-turn-quota><strong>Quota Units:</strong> ${formatQuotaUnits(quota.total)}${quotaQualifier}${longContextQualifier}${quota.apiEstimateCredits > 0 ? ` · API-основа: ${formatCredits(quota.apiEstimateCredits)}; опора GPT-6 Sol ≈ ${PROVISIONAL_QU_PER_API_CREDIT} QU/cr` : ""}</div>`
       + (descendantCount > 0
         ? `<div data-work-log-turn-own-usage><strong>Свой расход:</strong> ${ownCredits}</div>`
         : "")
@@ -1586,7 +1684,7 @@ function formatTurnEntry(
     + `data-work-log-turn-parent-thread-id="${parentThread}" data-work-log-turn-parent-turn-id="${parentTurn}" `
     + `data-work-log-turn-depth="${escapeHtmlAttribute(String(depth))}" `
     + `data-work-log-turn-id="${escapeHtmlAttribute(record?.turnId)}" ${profileAttributes}${toolProfileAttributes}`
-    + `${timingAttributes}${completedAtAttribute}${creditsAttribute}${totalCreditsAttribute}>`
+    + `${timingAttributes}${completedAtAttribute}${creditsAttribute}${totalCreditsAttribute} data-work-log-turn-quota-units="${escapeHtmlAttribute(String(quota.total))}" data-work-log-turn-quota-incomplete="${quota.uncalibrated ? "1" : "0"}">`
     + "<details data-work-log-turn-details>"
     + "<summary>"
     + '<span data-work-log-turn-meta>'
@@ -2157,6 +2255,7 @@ function turnProjectionIndex(turns) {
   const recordsByDate = new Map();
   const automaticByIdentity = new Map();
   for (const record of Object.values(turns)) {
+    if (record?.serviceUsageKind) continue;
     const date = recordLocalDate(record.completedAt);
     if (!date) continue;
     const datedRecords = recordsByDate.get(date) ?? [];
@@ -2164,7 +2263,7 @@ function turnProjectionIndex(turns) {
     recordsByDate.set(date, datedRecords);
     const provider = String(record.provider ?? "").trim().toLowerCase();
     const threadId = taskThreadId(record);
-    if (!provider || !record.threadId || !threadId || isContextProbeRecord(record)) continue;
+    if (!provider || !record.threadId || !threadId) continue;
     const key = `${date}\0${provider}\0${threadId}`;
     const automaticRecords = automaticByIdentity.get(key) ?? [];
     automaticRecords.push(record);
@@ -2352,8 +2451,8 @@ export function searchWorkLogRecords(turns = {}, query, {
     .filter(Boolean);
   const groups = new Map();
   for (const record of Object.values(turns ?? {})) {
+    if (record?.serviceUsageKind) continue;
     if (!record || typeof record !== "object") continue;
-    if (isContextProbeRecord(record)) continue;
     if (roots.length && !roots.some((root) => sameProjectRoot(root, record.projectRoot))) continue;
     const fields = [
       ["Поток", record.taskTitle],
@@ -2540,11 +2639,15 @@ function formatWorkspaceRows(rows, dayCredits, dayElapsedSeconds, workspaceResol
       workspace,
       rows: [],
       creditBreakdown: emptyCreditBreakdown(),
+      quota: sumRecordQuota([]),
       elapsedSeconds: 0,
       latestCompletedAt: 0,
     };
     group.rows.push(row);
     group.creditBreakdown = addCreditBreakdown(group.creditBreakdown, row.creditBreakdown);
+    for (const field of ["input", "cache", "cacheWrite", "output", "total", "apiEstimateCredits", "uncalibratedCount"]) {
+      group.quota[field] += row.quota[field];
+    }
     group.elapsedSeconds += row.elapsedSeconds;
     group.latestCompletedAt = Math.max(group.latestCompletedAt, row.latestCompletedAt);
     groups.set(key, group);
@@ -2605,6 +2708,7 @@ function formatWorkspaceRows(rows, dayCredits, dayElapsedSeconds, workspaceResol
           (total, row) => addCreditBreakdown(total, row.creditBreakdown),
           emptyCreditBreakdown(),
         );
+        const streamQuota = sumRecordQuota(records);
         const markers = [...new Set(stream.rows.flatMap((row) => row.ids))]
           .map((id) => `<span data-usage-id="${id}" hidden></span>`)
           .join("\n");
@@ -2613,7 +2717,7 @@ function formatWorkspaceRows(rows, dayCredits, dayElapsedSeconds, workspaceResol
           0,
         );
         const streamUsage = breakdown.total > 0 || streamElapsedSeconds > 0
-          ? formatStreamUsage(breakdown, dayCredits, streamElapsedSeconds, dayElapsedSeconds)
+          ? formatStreamUsage(breakdown, dayCredits, streamElapsedSeconds, dayElapsedSeconds, streamQuota)
           : "";
         const rowHtml = replaceProjectedCells(
           representative.match.text,
@@ -2631,7 +2735,7 @@ function formatWorkspaceRows(rows, dayCredits, dayElapsedSeconds, workspaceResol
           + `<div data-work-log-stream-turns>${rowHtml}</div></details>`;
       }).join("\n");
       const usage = group.creditBreakdown.total > 0
-        ? formatWorkspaceUsage(group.creditBreakdown, dayCredits)
+        ? formatWorkspaceUsage(group.creditBreakdown, dayCredits, group.quota)
         : "";
       const workspaceUsage = usage
         ? `<span data-work-log-workspace-usage>${usage}</span>`
@@ -2643,6 +2747,7 @@ function formatWorkspaceRows(rows, dayCredits, dayElapsedSeconds, workspaceResol
             dayCredits,
             group.elapsedSeconds,
             dayElapsedSeconds,
+            group.quota,
           )
         }</div>`
         : "";
@@ -2691,6 +2796,7 @@ function projectDaySection(
         (total, record) => addCreditBreakdown(total, recordCreditBreakdown(record)),
         emptyCreditBreakdown(),
       );
+      const quota = sumRecordQuota(usageRecords);
       const cells = workLogRowCells(match.text);
       const turnCell = cells.find(
         (cell) => hasBareAttribute(cell.opening, "data-work-log-turn-list"),
@@ -2701,6 +2807,7 @@ function projectDaySection(
         ids,
         recorded,
         creditBreakdown,
+        quota,
         credits: creditBreakdown.total,
         elapsedSeconds: recordsDurationSeconds(recorded),
         latestCompletedAt: recorded.reduce(
@@ -2720,6 +2827,12 @@ function projectDaySection(
     emptyCreditBreakdown(),
   );
   const dayCredits = dayBreakdown.total;
+  const dayQuota = trackedRows.reduce((sum, row) => {
+    for (const field of ["input", "cache", "cacheWrite", "output", "total", "apiEstimateCredits", "uncalibratedCount"]) {
+      sum[field] += row.quota[field];
+    }
+    return sum;
+  }, sumRecordQuota([]));
   const dayElapsedSeconds = trackedRows.reduce(
     (total, row) => total + row.elapsedSeconds,
     0,
@@ -2732,7 +2845,7 @@ function projectDaySection(
     ))
     .map((row) => {
       const visible = row.credits > 0
-        ? formatTaskUsageDetails(row.creditBreakdown, dayCredits)
+        ? formatTaskUsageDetails(row.creditBreakdown, dayCredits, row.quota)
         : "";
       const markers = row.ids.map((id) => (
         `<span data-usage-id="${id}" hidden>${recordsById.has(id) ? "" : id}</span>`
@@ -2762,10 +2875,10 @@ function projectDaySection(
   const summary = dayCredits > 0 || dayElapsedSeconds > 0
     ? `<summary data-work-log-day><strong>${date}</strong> <span data-day-usage-table>`
       + `<span data-day-usage><span data-usage-label>Итого</span> ${
-        dayCredits > 0 ? highlightUsageUnits(formatCredits(dayCredits), dayCredits) : ""
+        dayCredits > 0 ? highlightUsageUnits(formatCredits(dayCredits), dayCredits, dayQuota.total, dayQuota.uncalibratedCount > 0) : ""
       }${dayDuration ? ` ${dayDuration}` : ""
       }</span>`
-      + `${dayCredits > 0 ? formatDayUsageBreakdown(dayBreakdown) : ""}</span></summary>`
+      + `${dayCredits > 0 ? formatDayUsageBreakdown(dayBreakdown, dayQuota) : ""}</span></summary>`
     : `<summary data-work-log-day><strong>${date}</strong></summary>`;
   return [
     `<details data-work-log-day-section${open ? " open" : ""}>`,
@@ -2785,6 +2898,8 @@ function projectDaySection(
 }
 
 export function projectWorkLogUsage(workLogText, turns = {}, {
+  includeAccountPanel = true,
+  preferredOpenDate = null,
   includeClaudeUsage = true,
   workspaceResolver = null,
   accountCatalog = [],
@@ -2795,13 +2910,13 @@ export function projectWorkLogUsage(workLogText, turns = {}, {
 } = {}) {
   let text = removeAccountUsagePanel(String(workLogText ?? ""));
   const normalizedTurns = normalizedLedger({ version: 8, turns }).ledger.turns;
-  const accountPanel = formatAccountUsagePanel(buildWorkLogAccountUsageSummary(normalizedTurns, {
+  const accountPanel = includeAccountPanel ? formatAccountUsagePanel(buildWorkLogAccountUsageSummary(normalizedTurns, {
     accountCatalog,
     syncedUsageEvents,
     localDeviceId,
     localDeviceLabel,
     now,
-  }));
+  })) : "";
   const records = ledgerByWorkLogId(normalizedTurns);
   const turnIndex = turnProjectionIndex(normalizedTurns);
   const existingDates = new Set(daySectionRanges(text).map((range) => range.date));
@@ -2822,9 +2937,9 @@ export function projectWorkLogUsage(workLogText, turns = {}, {
     /<details\b[^>]*>\s*<summary[^>]*><strong>(\d{2}\.\d{2}\.\d{4})<\/strong>[\s\S]*?<\/summary>/gi,
   )];
   const currentDate = formatLocalDate(new Date());
-  const defaultOpenDate = dayStarts.some((match) => match[1] === currentDate)
+  const defaultOpenDate = preferredOpenDate ?? (dayStarts.some((match) => match[1] === currentDate)
     ? currentDate
-    : dayStarts[0]?.[1];
+    : dayStarts[0]?.[1]);
   const projected = [text.slice(0, dayStarts[0]?.index ?? text.length)];
   for (let index = 0; index < dayStarts.length; index += 1) {
     const start = dayStarts[index].index;
@@ -2845,16 +2960,18 @@ export function projectWorkLogUsage(workLogText, turns = {}, {
 }
 
 export function projectWorkLogAccountUsage(workLogText, turns = {}, {
+  normalized = false,
   accountCatalog = [],
   syncedUsageEvents = [],
   localDeviceId = "",
   localDeviceLabel = "",
   now = Date.now(),
 } = {}) {
-  const normalizedTurns = normalizedLedger({ version: 9, turns }).ledger.turns;
+  const normalizedTurns = normalized ? turns : normalizedLedger({ version: 9, turns }).ledger.turns;
   return insertAccountUsagePanel(
     String(workLogText ?? ""),
     formatAccountUsagePanel(buildWorkLogAccountUsageSummary(normalizedTurns, {
+      normalized,
       accountCatalog,
       syncedUsageEvents,
       localDeviceId,
@@ -2956,7 +3073,6 @@ export function incomingLedgerRecord({
   estimatedCredits,
   estimateKind,
   imageGenerationCount,
-  contextProbe,
   model,
   serviceTier,
   taskTitle,
@@ -2964,6 +3080,7 @@ export function incomingLedgerRecord({
   parentThreadId,
   parentTurnId,
   aggregateOnly,
+  serviceUsageKind,
   provisional,
   title,
   body,
@@ -2985,7 +3102,12 @@ export function incomingLedgerRecord({
   observedAt,
   status,
 }) {
-  const accountFields = normalizedAccountFields({ account, accountKey, accountAttribution });
+  const normalizedServiceUsageKind = ["context-probe", "context-compaction"].includes(serviceUsageKind)
+    ? serviceUsageKind : "";
+  const accountFields = normalizedAccountFields(normalizedServiceUsageKind ? {
+    accountKey: "", accountLabel: "", accountType: "", accountPlan: "",
+    accountAttribution: "unknown",
+  } : { account, accountKey, accountAttribution });
   const normalizedEstimatedCredits = normalizeEstimatedCredits(estimatedCredits);
   const normalizedEstimateKind = String(estimateKind ?? "").trim();
   const normalizedClientUserMessageId = normalizeInterstreamClientUserMessageId(clientUserMessageId);
@@ -3005,7 +3127,6 @@ export function incomingLedgerRecord({
       estimatedCredits: normalizedEstimatedCredits,
       estimateKind: normalizedEstimateKind,
     }),
-    contextProbe: contextProbe === true,
     model: String(model ?? "").trim().toLowerCase(),
     serviceTier: serviceTier == null ? "" : normalizeServiceTier(serviceTier),
     pricingMetadataResolved: Boolean(String(model ?? "").trim() && serviceTier != null),
@@ -3015,6 +3136,7 @@ export function incomingLedgerRecord({
     parentThreadId: String(parentThreadId ?? "").trim(),
     parentTurnId: String(parentTurnId ?? "").trim(),
     aggregateOnly: aggregateOnly === true,
+    serviceUsageKind: normalizedServiceUsageKind,
     provisional: provisional === true,
     turnId: String(turnId).trim(),
     runId: String(runId ?? "").trim() || null,
@@ -3070,9 +3192,14 @@ export function mergeLedgerRecord(existing, incoming) {
     existing.estimateKind = incoming.estimateKind;
   }
   if (incoming.imageGenerationCount > 0) existing.imageGenerationCount = incoming.imageGenerationCount;
-  if (incoming.contextProbe) existing.contextProbe = true;
   existing.limitSamples = mergeUsageLimitSamples(existing.limitSamples, incoming.limitSamples);
-  if (incoming.accountKey) {
+  if (incoming.serviceUsageKind) {
+    existing.accountKey = "";
+    existing.accountLabel = "";
+    existing.accountType = "";
+    existing.accountPlan = "";
+    existing.accountAttribution = "unknown";
+  } else if (incoming.accountKey) {
     existing.accountKey = incoming.accountKey;
     if (incoming.accountLabel) existing.accountLabel = incoming.accountLabel;
     if (incoming.accountType) existing.accountType = incoming.accountType;
@@ -3089,9 +3216,6 @@ export function mergeLedgerRecord(existing, incoming) {
     existing.clientUserMessageId = incomingClientUserMessageId;
   }
   const effectiveClientUserMessageId = normalizeInterstreamClientUserMessageId(existing.clientUserMessageId);
-  if (effectiveClientUserMessageId && !isCodexContextProbeClientId(effectiveClientUserMessageId)) {
-    existing.contextProbe = false;
-  }
   if (
     incoming.messageOrigin
     && incomingClientUserMessageId
@@ -3132,6 +3256,7 @@ export function mergeLedgerRecord(existing, incoming) {
   }
   if (incoming.pricingMetadataResolved) existing.pricingMetadataResolved = true;
   if (incoming.aggregateOnly) existing.aggregateOnly = true;
+  if (incoming.serviceUsageKind) existing.serviceUsageKind = incoming.serviceUsageKind;
   if (incoming.toolMetricsKnown) existing.toolMetricsKnown = true;
   existing.provisional = incoming.provisional === true;
   if (incoming.status && (incoming.status !== "unknown" || !existing.status || existing.status === "unknown")) {
@@ -3170,20 +3295,28 @@ function turnUsageTimeMs(record, mode) {
 
 function usageHistoryBucket(value = {}) {
   return {
+    quotaUnits: Math.max(0, Number(value?.quotaUnits) || 0),
+    timedQuotaUnits: Math.max(0, Number(value?.timedQuotaUnits) || 0),
+    apiEstimateCredits: Math.max(0, Number(value?.apiEstimateCredits) || 0),
+    uncalibratedCount: Math.max(0, Number(value?.uncalibratedCount) || 0),
     credits: Math.max(0, Number(value?.credits) || 0),
     tokenCredits: Math.max(0, Number(value?.tokenCredits) || 0),
     timedCredits: Math.max(0, Number(value?.timedCredits) || 0),
     durationSeconds: Math.max(0, Number(value?.durationSeconds) || 0),
     localCredits: Math.max(0, Number(value?.localCredits) || 0),
+    localQuotaUnits: Math.max(0, Number(value?.localQuotaUnits) || 0),
     localTimedCredits: Math.max(0, Number(value?.localTimedCredits) || 0),
     localDurationSeconds: Math.max(0, Number(value?.localDurationSeconds) || 0),
     otherDeviceCredits: Math.max(0, Number(value?.otherDeviceCredits) || 0),
+    otherDeviceQuotaUnits: Math.max(0, Number(value?.otherDeviceQuotaUnits) || 0),
     otherDeviceTimedCredits: Math.max(0, Number(value?.otherDeviceTimedCredits) || 0),
     otherDeviceDurationSeconds: Math.max(0, Number(value?.otherDeviceDurationSeconds) || 0),
     devices: (Array.isArray(value?.devices) ? value.devices : []).map((device) => ({
       deviceId: String(device?.deviceId ?? "").trim(),
       label: String(device?.label ?? "").trim(),
       source: device?.source === "local" ? "local" : "sync",
+      quotaUnits: Math.max(0, Number(device?.quotaUnits) || 0),
+      timedQuotaUnits: Math.max(0, Number(device?.timedQuotaUnits) || 0),
       credits: Math.max(0, Number(device?.credits) || 0),
       timedCredits: Math.max(0, Number(device?.timedCredits) || 0),
       durationSeconds: Math.max(0, Number(device?.durationSeconds) || 0),
@@ -3330,6 +3463,7 @@ export function buildWorkLogUsageHistory(turns = {}, {
       if (requestedStreamId && workspace?.streamId !== requestedStreamId) return null;
       const pointMs = turnUsageTimeMs(record, normalizedTimeMode);
       const breakdown = recordCreditBreakdown(record);
+      const quota = recordQuotaBreakdown(record);
       const priced = !(
         (record?.usageReported === false && breakdown.total <= 0)
         || (!breakdown.priced && breakdown.total <= 0)
@@ -3337,6 +3471,9 @@ export function buildWorkLogUsageHistory(turns = {}, {
       return {
         pointMs,
         credits: Math.max(0, Number(breakdown.total) || 0),
+        quotaUnits: quota.total,
+        apiEstimateCredits: quota.apiEstimateCredits,
+        quotaUncalibrated: quota.uncalibrated,
         tokenCredits: Math.max(0, Number(breakdown.total - breakdown.estimate) || 0),
         priced,
         durationSeconds: durationSeconds(record?.startedAt, record?.completedAt),
@@ -3385,13 +3522,21 @@ export function buildWorkLogUsageHistory(turns = {}, {
     : 0;
   const reconstructionBuckets = new Map();
   let totalCredits = 0;
+  let totalQuotaUnits = 0;
+  let totalTimedQuotaUnits = 0;
+  let totalApiEstimateCredits = 0;
+  let uncalibratedCount = 0;
   let totalTokenCredits = 0;
   let totalTimedCredits = 0;
   let totalDurationSeconds = 0;
   let localCredits = 0;
+  let localQuotaUnits = 0;
+  let localTimedQuotaUnits = 0;
   let localTimedCredits = 0;
   let localDurationSeconds = 0;
   let otherDeviceCredits = 0;
+  let otherDeviceQuotaUnits = 0;
+  let otherDeviceTimedQuotaUnits = 0;
   let otherDeviceTimedCredits = 0;
   let otherDeviceDurationSeconds = 0;
   const deviceTotals = new Map();
@@ -3413,6 +3558,14 @@ export function buildWorkLogUsageHistory(turns = {}, {
         })()
         : Math.floor(record.pointMs / bucketMs) * bucketMs;
     const bucketValue = usageHistoryBucket(buckets.get(bucket));
+    totalQuotaUnits += record.quotaUnits;
+    totalApiEstimateCredits += record.apiEstimateCredits;
+    bucketValue.quotaUnits += record.quotaUnits;
+    bucketValue.apiEstimateCredits += record.apiEstimateCredits;
+    if (record.quotaUncalibrated) {
+      uncalibratedCount += 1;
+      bucketValue.uncalibratedCount += 1;
+    }
     if (!record.priced) {
       unpricedCount += 1;
     } else {
@@ -3423,9 +3576,10 @@ export function buildWorkLogUsageHistory(turns = {}, {
       if (reconstructionStepMs > 0 && record.credits > 0) {
         const reconstructionBucket = Math.floor(record.pointMs / reconstructionStepMs) * reconstructionStepMs;
         const reconstructionValue = reconstructionBuckets.get(reconstructionBucket)
-          ?? { credits: 0, tokenCredits: 0 };
+          ?? { credits: 0, tokenCredits: 0, quotaUnits: 0 };
         reconstructionValue.credits += record.credits;
         reconstructionValue.tokenCredits += record.tokenCredits;
+        reconstructionValue.quotaUnits += record.quotaUnits;
         reconstructionBuckets.set(reconstructionBucket, reconstructionValue);
       }
       const otherDevice = record.source === "other-device";
@@ -3434,6 +3588,8 @@ export function buildWorkLogUsageHistory(turns = {}, {
         label: record.deviceLabel,
         source: otherDevice ? "sync" : "local",
         credits: 0,
+        quotaUnits: 0,
+        timedQuotaUnits: 0,
         timedCredits: 0,
         durationSeconds: 0,
       };
@@ -3442,6 +3598,8 @@ export function buildWorkLogUsageHistory(turns = {}, {
         label: record.deviceLabel,
         source: otherDevice ? "sync" : "local",
         credits: 0,
+        quotaUnits: 0,
+        timedQuotaUnits: 0,
         timedCredits: 0,
         durationSeconds: 0,
       };
@@ -3449,34 +3607,46 @@ export function buildWorkLogUsageHistory(turns = {}, {
         bucketValue.devices.push(bucketDevice);
       }
       device.credits += record.credits;
+      device.quotaUnits += record.quotaUnits;
       bucketDevice.credits += record.credits;
+      bucketDevice.quotaUnits += record.quotaUnits;
       if (otherDevice) {
         otherDeviceCredits += record.credits;
+        otherDeviceQuotaUnits += record.quotaUnits;
         bucketValue.otherDeviceCredits += record.credits;
+        bucketValue.otherDeviceQuotaUnits = (bucketValue.otherDeviceQuotaUnits ?? 0) + record.quotaUnits;
       } else {
         localCredits += record.credits;
+        localQuotaUnits += record.quotaUnits;
         bucketValue.localCredits += record.credits;
+        bucketValue.localQuotaUnits = (bucketValue.localQuotaUnits ?? 0) + record.quotaUnits;
       }
       if (record.credits > 0) {
         if (Number.isFinite(record.durationSeconds) && record.durationSeconds > 0) {
           totalTimedCredits += record.credits;
+          totalTimedQuotaUnits += record.quotaUnits;
           bucketValue.timedCredits += record.credits;
+          bucketValue.timedQuotaUnits += record.quotaUnits;
           totalDurationSeconds += record.durationSeconds;
           bucketValue.durationSeconds += record.durationSeconds;
           if (otherDevice) {
             otherDeviceTimedCredits += record.credits;
+            otherDeviceTimedQuotaUnits += record.quotaUnits;
             otherDeviceDurationSeconds += record.durationSeconds;
             bucketValue.otherDeviceTimedCredits += record.credits;
             bucketValue.otherDeviceDurationSeconds += record.durationSeconds;
           } else {
             localTimedCredits += record.credits;
+            localTimedQuotaUnits += record.quotaUnits;
             localDurationSeconds += record.durationSeconds;
             bucketValue.localTimedCredits += record.credits;
             bucketValue.localDurationSeconds += record.durationSeconds;
           }
           device.timedCredits += record.credits;
+          device.timedQuotaUnits += record.quotaUnits;
           device.durationSeconds += record.durationSeconds;
           bucketDevice.timedCredits += record.credits;
+          bucketDevice.timedQuotaUnits += record.quotaUnits;
           bucketDevice.durationSeconds += record.durationSeconds;
         } else {
           untimedCreditCount += 1;
@@ -3522,13 +3692,22 @@ export function buildWorkLogUsageHistory(turns = {}, {
     ...(requestedWorkspaceId ? { workspaceId: requestedWorkspaceId } : {}),
     ...(requestedStreamId ? { streamId: requestedStreamId } : {}),
     totalCredits,
+    totalQuotaUnits,
+    quotaCalibrationVersion: QUOTA_CALIBRATION_VERSION,
+    totalTimedQuotaUnits,
+    totalApiEstimateCredits,
+    uncalibratedCount,
     totalTokenCredits,
     totalTimedCredits,
     totalDurationSeconds,
     localCredits,
+    localQuotaUnits,
+    localTimedQuotaUnits,
     localTimedCredits,
     localDurationSeconds,
     otherDeviceCredits,
+    otherDeviceQuotaUnits,
+    otherDeviceTimedQuotaUnits,
     otherDeviceTimedCredits,
     otherDeviceDurationSeconds,
     devices: [...deviceTotals.values()].sort((left, right) => (

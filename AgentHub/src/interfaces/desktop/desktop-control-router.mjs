@@ -12,16 +12,19 @@ const DEFAULT_MINI_APP_LIMITS = Object.freeze({
 const DEFAULT_DESKTOP_MAX_RESPONSE_BYTES = 3_500_000;
 /**
  * Sources that reach the Hub over a locally authenticated channel: the Desktop
- * named pipe guarded by the ACL-protected secret, and the loopback Web session.
- * Every other source is remote and must not mint credentials or rewrite the
- * server configuration, however well authenticated it is.
+ * named pipe guarded by the ACL-protected secret, the loopback Web session, and
+ * the loopback VS Code webview session. The last two are assigned only by the
+ * loopback server after verifying a token derived from the local web secret,
+ * never taken from request parameters. Every other source is remote and must
+ * not mint credentials or rewrite the server configuration, however well
+ * authenticated it is.
  */
-const PRIVILEGED_CONTROL_SOURCES = Object.freeze(["desktop-control", "local-mini-app"]);
+const PRIVILEGED_CONTROL_SOURCES = Object.freeze(["desktop-control", "local-mini-app", "local-vscode-webview"]);
 const RECEIPT_SHAPE = "__agentHubControlReceiptShape";
 const SNAPSHOT_RESULT_KEYS = Object.freeze([
   "apiVersion", "workspaces", "boardTasks", "boardLayout", "selected", "settings",
   "pendingApprovals", "messageReceipts", "messagePins", "deferredInputs", "restartPending",
-  "restartWaiting", "restartBlockingCount", "exchangeRates", "activeCount", "server",
+  "restartWaiting", "restartBlockingCount", "restartFailure", "exchangeRates", "activeCount", "server",
   "tasks", "conversations", "collectionDeltas", "generatedAt", "version", "notModified",
 ]);
 
@@ -225,6 +228,32 @@ export function createDesktopControlRouter({
         }
       } else {
         result = await measuredHandler();
+      }
+      const projection = action === "snapshot"
+        ? result?.snapshotTiming?.selectedProjection
+        : action === "open-task" ? result?.snapshot?.snapshotTiming?.selectedProjection : null;
+      if (projection) {
+        const snapshot = action === "snapshot" ? result : result.snapshot;
+        const boundedId = (value) => {
+          const text = String(value ?? "").trim();
+          return /^[A-Za-z0-9][A-Za-z0-9:._-]{0,199}$/u.test(text) ? text : "";
+        };
+        commandTrace?.recordBestEffort?.({
+          commandId: traceCommandId,
+          stage: "snapshot-selected-projection",
+          outcome: "succeeded",
+          transport: traceTransport,
+          metadata: {
+            action, source: projection.source, gate: projection.gate,
+            provider: projection.provider, threadId: projection.threadId,
+            streamId: projection.streamId, turnId: projection.turnId,
+            clientUserMessageId: projection.clientUserMessageId,
+            entryRunning: projection.entryRunning,
+            providerStartPresent: projection.providerStartPresent,
+            snapshotVersion: boundedId(snapshot.version),
+            serverReleaseId: boundedId(snapshot.server?.process?.releaseId),
+          },
+        });
       }
       responseSpan?.finish?.({
         outcome: "succeeded",

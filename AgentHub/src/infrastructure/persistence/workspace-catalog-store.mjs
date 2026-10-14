@@ -1,10 +1,9 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { AsyncSqliteMutationQueue } from "./async-sqlite-mutation-queue.mjs";
 
-import { editableWorkspaceDeveloperRules } from "../../domain/editable-workspace-developer-rules.mjs";
 import { normalizeInterstreamOrigin } from "../../domain/interstream-message.mjs";
 
 import {
@@ -16,18 +15,18 @@ import {
   normalizedWorkspaceName,
   providerThreadKey,
   streamDisplayName,
+  workspaceProviderThreadTitle,
 } from "../../domain/workspace-stream-identity.mjs";
 import {
   effectiveStreamDeveloperRules,
   effectiveWorkspaceDeveloperRules,
-  legacyReleaseWorkflowRules,
   RELEASE_WORKFLOW_SETTING,
   releaseWorkflowEnabled,
   workspaceSettingsWithReleaseWorkflow,
 } from "../../domain/workspace-release-workflow.mjs";
 import { workspaceSettingsWithTaskPrefix } from "../../domain/task-number.mjs";
 import {
-  withArchitectReleasePrimaryWorkspaceRule,
+  withReleaseManagerReleasePrimaryWorkspaceRule,
   withReleasePrimaryWorkspaceRule,
 } from "../../domain/release-primary-workspace-policy.mjs";
 
@@ -365,6 +364,7 @@ function workspaceEventFromRow(row) {
 export class WorkspaceCatalogStore {
   #databaseFile;
   #database = null;
+  #transactionDepth = 0;
   #readOnly;
   #now;
   #idFactory;
@@ -387,9 +387,8 @@ export class WorkspaceCatalogStore {
     await this.#open();
     if (this.#readOnly) return this;
     this.#migratePermanentWorkspaceArchive();
-    this.#migrateReleaseWorkflowSettings();
-    this.#migrateWorkspaceDeveloperRules();
     this.#migrateArchitectStreamSettings();
+    this.#migrateReleaseManagerStreamSettings();
     this.ensureExperiments();
     return this;
   }
@@ -397,6 +396,14 @@ export class WorkspaceCatalogStore {
   get revision() {
     if (!this.#database) return 0;
     return Number(this.#database.prepare("SELECT total_changes() AS value").get()?.value) || 0;
+  }
+
+  get snapshotRevision() {
+    if (!this.#database) return null;
+    const externalRevision = Number(
+      this.#database.prepare("PRAGMA data_version").get()?.data_version,
+    ) || 0;
+    return `${this.revision}:${externalRevision}`;
   }
 
   async #open() {
@@ -422,67 +429,27 @@ export class WorkspaceCatalogStore {
   }
 
   #transaction(run) {
-    this.#database.exec("BEGIN IMMEDIATE");
+    const nested = this.#transactionDepth > 0;
+    const savepoint = `hub_catalog_${this.#transactionDepth}`;
+    this.#database.exec(nested ? `SAVEPOINT ${savepoint}` : "BEGIN IMMEDIATE");
+    this.#transactionDepth += 1;
     try {
       const result = run();
-      this.#database.exec("COMMIT");
+      this.#database.exec(nested ? `RELEASE SAVEPOINT ${savepoint}` : "COMMIT");
       return result;
     } catch (error) {
-      this.#database.exec("ROLLBACK");
+      this.#database.exec(nested
+        ? `ROLLBACK TO SAVEPOINT ${savepoint}; RELEASE SAVEPOINT ${savepoint}`
+        : "ROLLBACK");
       throw error;
+    } finally {
+      this.#transactionDepth -= 1;
     }
   }
 
   #nowMs() {
     const value = Number(this.#now());
     return Number.isSafeInteger(value) && value > 0 ? value : Date.now();
-  }
-
-  #migrateReleaseWorkflowSettings() {
-    const rows = this.#database.prepare("SELECT id, settings_json FROM hub_workspaces").all();
-    const pending = rows.filter((row) => {
-      try {
-        const settings = JSON.parse(String(row.settings_json ?? "{}"));
-        return typeof settings?.[RELEASE_WORKFLOW_SETTING] !== "boolean";
-      } catch {
-        return true;
-      }
-    });
-    if (!pending.length) return;
-    this.#transaction(() => {
-      const update = this.#database.prepare(`
-        UPDATE hub_workspaces SET settings_json = ? WHERE id = ?
-      `);
-      for (const row of pending) {
-        let settings = {};
-        try { settings = JSON.parse(String(row.settings_json ?? "{}")); } catch { settings = {}; }
-        const currentRules = this.#developerRules("workspace", row.id);
-        const migration = legacyReleaseWorkflowRules(currentRules?.content ?? "");
-        const editableContent = editableWorkspaceDeveloperRules(currentRules?.content ?? "");
-        update.run(
-          JSON.stringify(workspaceSettingsWithReleaseWorkflow(settings, migration.enabled)),
-          row.id,
-        );
-        if (editableContent !== (currentRules?.content ?? "")) {
-          this.#updateWorkspaceDeveloperRules(row.id, editableContent);
-        }
-      }
-    });
-  }
-
-  #migrateWorkspaceDeveloperRules() {
-    const key = "workspace_system_rules_removed_v2";
-    if (this.#database.prepare("SELECT 1 FROM hub_workspace_catalog_meta WHERE key = ?").get(key)) return;
-    this.#transaction(() => {
-      for (const row of this.#database.prepare("SELECT id FROM hub_workspaces").all()) {
-        const current = this.#developerRules("workspace", row.id);
-        const content = editableWorkspaceDeveloperRules(current?.content ?? "");
-        if (content !== (current?.content ?? "")) this.#updateWorkspaceDeveloperRules(row.id, content);
-      }
-      this.#database.prepare(
-        "INSERT INTO hub_workspace_catalog_meta (key, value) VALUES (?, ?)",
-      ).run(key, "completed");
-    });
   }
 
   #migratePermanentWorkspaceArchive() {
@@ -583,6 +550,12 @@ export class WorkspaceCatalogStore {
       ? releaseWorkflowEnabled(settings)
       : releaseWorkflowEnabled(current.settings);
     const nextSettings = workspaceSettingsWithReleaseWorkflow(workspaceSettingsWithTaskPrefix(settings), enabled);
+    if (Object.prototype.hasOwnProperty.call(settings ?? {}, "autoReviewEnabled")
+      || Object.prototype.hasOwnProperty.call(current.settings ?? {}, "autoReviewEnabled")) {
+      nextSettings.autoReviewEnabled = Object.prototype.hasOwnProperty.call(settings ?? {}, "autoReviewEnabled")
+        ? settings.autoReviewEnabled === true
+        : current.settings?.autoReviewEnabled === true;
+    }
     this.#database.prepare(`
       UPDATE hub_workspaces SET settings_json = ?, updated_at_ms = ? WHERE id = ?
     `).run(JSON.stringify(nextSettings), this.#nowMs(), id);
@@ -773,6 +746,26 @@ export class WorkspaceCatalogStore {
     });
   }
 
+  #migrateReleaseManagerStreamSettings() {
+    const key = "release_manager_stream_settings_migrated_v1";
+    if (this.#database.prepare("SELECT 1 FROM hub_workspace_catalog_meta WHERE key = ?").get(key)) return;
+    this.#transaction(() => {
+      const update = this.#database.prepare("UPDATE hub_streams SET settings_json = ? WHERE id = ?");
+      for (const row of this.#database.prepare("SELECT id, settings_json FROM hub_streams").all()) {
+        let settings = {};
+        try { settings = JSON.parse(String(row.settings_json ?? "{}")); } catch { continue; }
+        if (!settings || typeof settings !== "object" || Array.isArray(settings)) continue;
+        const next = { ...settings };
+        if (typeof next.releaseManager !== "boolean" && typeof next.architect === "boolean") {
+          next.releaseManager = next.architect;
+        }
+        delete next.architect;
+        update.run(JSON.stringify(next), row.id);
+      }
+      this.#database.prepare("INSERT INTO hub_workspace_catalog_meta (key, value) VALUES (?, 'completed')").run(key);
+    });
+  }
+
   recordWorkspaceEvent({
     workspaceId, streamId = null, type, subjectId = null, payload = {}, dedupeKey = null,
   } = {}) {
@@ -894,7 +887,18 @@ export class WorkspaceCatalogStore {
     return this.mcpOperation(id);
   }
 
-  completeMcpOperation(requestId, result) {
+  completeMcpOperation(requestId, result, { validate = null } = {}) {
+    // A preparation terminal keeps all selected editorial CAS and caller
+    // authority fenced through the same durable receipt write. The validator
+    // is synchronous and read-only; no second ledger or Task mutation exists.
+    if (validate != null) {
+      if (typeof validate !== "function") throw new TypeError("Receipt validator must be synchronous");
+      return this.#transaction(() => {
+        const checked = validate();
+        if (checked?.then) throw new TypeError("Receipt validator must be synchronous");
+        return this.completeMcpOperation(requestId, result);
+      });
+    }
     const id = safeIdentifier(requestId, "MCP request id");
     const operation = this.mcpOperation(id);
     if (
@@ -1067,6 +1071,21 @@ export class WorkspaceCatalogStore {
     return mcpOperationFromRow(this.#database.prepare(
       "SELECT * FROM hub_mcp_operations WHERE request_id = ?",
     ).get(id));
+  }
+
+  // Exact persisted receipt for release recovery evidence: the parsed
+  // operation plus the raw stored result_json and its SHA-256 over those UTF-8
+  // bytes. Callers must not hash a reconstruction of the parsed result.
+  mcpOperationResultEvidence(requestId) {
+    const id = safeIdentifier(requestId, "MCP request id");
+    const row = this.#database.prepare("SELECT * FROM hub_mcp_operations WHERE request_id = ?").get(id);
+    if (!row) return null;
+    const resultJson = row.result_json == null ? null : String(row.result_json);
+    return {
+      ...mcpOperationFromRow(row),
+      resultJson,
+      resultJsonSha256: resultJson == null ? null : createHash("sha256").update(resultJson, "utf8").digest("hex"),
+    };
   }
 
   pendingMcpOperations() {
@@ -1262,7 +1281,7 @@ export class WorkspaceCatalogStore {
     const rawStreamRules = this.#developerRules("stream", stream.id);
     const workspace = this.workspace(stream.workspaceId);
     const streamContent = releaseWorkflowEnabled(workspace?.settings)
-      ? withArchitectReleasePrimaryWorkspaceRule(
+      ? withReleaseManagerReleasePrimaryWorkspaceRule(
         effectiveStreamDeveloperRules(rawStreamRules?.content ?? "", stream.settings),
         stream.settings,
       )
@@ -1328,8 +1347,7 @@ export class WorkspaceCatalogStore {
   }
 
   #updateWorkspaceDeveloperRules(workspaceId, content) {
-    const editableContent = developerRuleContent(editableWorkspaceDeveloperRules(content));
-    return this.#updateDeveloperRules("workspace", workspaceId, editableContent);
+    return this.#updateDeveloperRules("workspace", workspaceId, content);
   }
 
   #updateDeveloperRules(scopeType, scopeId, content, maximumBytes = DEVELOPER_RULES_MAX_BYTES) {
@@ -1440,7 +1458,74 @@ export class WorkspaceCatalogStore {
     rows.forEach((row, index) => update.run(index + 1, nowMs, row.id));
   }
 
-  bindThread({ provider, threadId, streamId, projectRoot = "", source = "discovered", position = null } = {}) {
+  bindThread({ provider, threadId, streamId, projectRoot = "", source = "discovered", position = null, rotationSourceThreadId = null } = {}) {
+    return this.#transaction(() => this.#bindThread({ provider, threadId, streamId, projectRoot, source, position, rotationSourceThreadId }));
+  }
+
+  #threadHighWater(streamId) {
+    const key = this.#threadHighWaterKey(streamId);
+    const stored = this.meta(key);
+    const observed = Number(this.#database.prepare(
+      "SELECT COALESCE(MAX(position), 0) AS value FROM hub_threads WHERE stream_id = ?",
+    ).get(streamId)?.value ?? 0);
+    const value = stored === null ? observed : Number(stored);
+    if (!Number.isSafeInteger(value) || value < observed || value < 0) throw new Error("invalid Thread high-water");
+    this.setMeta(key, value);
+    return value;
+  }
+
+  #allocateThreadPosition(streamId, position) {
+    const highWater = this.#threadHighWater(streamId);
+    const next = position == null ? highWater + 1 : Number(position);
+    if (!Number.isSafeInteger(next) || next <= 0) throw new Error("invalid thread position");
+    this.setMeta(this.#threadHighWaterKey(streamId), Math.max(highWater, next));
+    return next;
+  }
+
+  #threadNamingKey(reference) {
+    return `thread-naming-v1:${createHash("sha256").update(providerThreadKey(reference)).digest("hex")}`;
+  }
+
+  #threadHighWaterKey(streamId) {
+    return `thread-position-high-water:${createHash("sha256").update(streamId).digest("hex")}`;
+  }
+
+  #supersedeThreadNaming(reference) {
+    const intent = this.threadNaming(reference);
+    if (intent?.status === "pending") this.setMeta(this.#threadNamingKey(reference), JSON.stringify({
+      ...intent, status: "superseded",
+    }));
+  }
+
+  threadNaming(reference) {
+    const raw = this.meta(this.#threadNamingKey(reference));
+    if (raw === null) return null; // Legacy/discovered Threads are never automatically renamed.
+    const intent = JSON.parse(raw);
+    if (intent?.version !== 1 || !["pending", "complete", "superseded"].includes(intent.status)
+      || !Number.isSafeInteger(intent.position) || intent.position < 1
+      || typeof intent.title !== "string" || !intent.title || intent.title.length > 80) {
+      throw new Error("invalid Thread naming intent");
+    }
+    return intent;
+  }
+
+  completeThreadNaming(reference, title) {
+    return this.#transaction(() => {
+      const binding = this.thread(reference);
+      if (!binding) throw new Error("Thread binding disappeared during naming");
+      const intent = this.threadNaming(reference);
+      if (!intent || intent.title !== title || intent.streamId !== binding.streamId
+        || intent.position !== binding.position || intent.status === "superseded") {
+        throw new Error("Thread naming intent changed");
+      }
+      const completed = { ...intent, status: "complete",
+        providerRename: reference.provider === "codex" ? "confirmed" : "unsupported" };
+      this.setMeta(this.#threadNamingKey(reference), JSON.stringify(completed));
+      return completed;
+    });
+  }
+
+  #bindThread({ provider, threadId, streamId, projectRoot = "", source = "discovered", position = null, rotationSourceThreadId = null }) {
     const identity = normalizedThreadIdentity({ provider, threadId });
     const targetStreamId = safeIdentifier(streamId, "stream id");
     if (!this.stream(targetStreamId)) throw new Error(`stream not found: ${targetStreamId}`);
@@ -1451,13 +1536,7 @@ export class WorkspaceCatalogStore {
       }
       return existing;
     }
-    const nextPosition = position == null
-      ? Number(this.#database.prepare(`
-          SELECT COALESCE(MAX(position), 0) + 1 AS position
-          FROM hub_threads WHERE stream_id = ?
-        `).get(targetStreamId)?.position ?? 1)
-      : Number(position);
-    if (!Number.isSafeInteger(nextPosition) || nextPosition <= 0) throw new Error("invalid thread position");
+    const nextPosition = this.#allocateThreadPosition(targetStreamId, position);
     const nowMs = this.#nowMs();
     this.#database.prepare(`
       INSERT INTO hub_threads
@@ -1473,6 +1552,17 @@ export class WorkspaceCatalogStore {
       nowMs,
       nowMs,
     );
+    if (["created", "rebirth"].includes(source)) {
+      const stream = this.stream(targetStreamId);
+      if (rotationSourceThreadId && this.thread({ provider, threadId: rotationSourceThreadId })?.streamId !== targetStreamId) {
+        throw new Error("Rotation source does not belong to the bound Stream");
+      }
+      const title = workspaceProviderThreadTitle(this.workspace(stream.workspaceId), stream, nextPosition);
+      this.setMeta(this.#threadNamingKey(identity), JSON.stringify({ version: 1,
+        streamId: targetStreamId, position: nextPosition, title, status: "pending",
+        providerRename: identity.provider === "codex" ? "pending" : "unsupported",
+        rotationSourceThreadId }));
+    }
     return this.thread(identity);
   }
 
@@ -1499,21 +1589,21 @@ export class WorkspaceCatalogStore {
   }
 
   rebindThread(value, { streamId, projectRoot = "", source = "migration", position = null } = {}) {
+    return this.#transaction(() => this.#rebindThread(value, { streamId, projectRoot, source, position }));
+  }
+
+  #rebindThread(value, { streamId, projectRoot, source, position }) {
     const identity = normalizedThreadIdentity(value);
     const targetStreamId = safeIdentifier(streamId, "stream id");
     if (!this.stream(targetStreamId)) throw new Error(`stream not found: ${targetStreamId}`);
     const current = this.thread(identity);
-    if (!current) return this.bindThread({
+    if (!current) return this.#bindThread({
       ...identity, streamId: targetStreamId, projectRoot, source, position,
     });
     if (current.streamId === targetStreamId) return current;
-    const nextPosition = position == null
-      ? Number(this.#database.prepare(`
-          SELECT COALESCE(MAX(position), 0) + 1 AS position
-          FROM hub_threads WHERE stream_id = ?
-        `).get(targetStreamId)?.position ?? 1)
-      : Number(position);
-    if (!Number.isSafeInteger(nextPosition) || nextPosition <= 0) throw new Error("invalid thread position");
+    this.#threadHighWater(current.streamId);
+    this.#supersedeThreadNaming(identity);
+    const nextPosition = this.#allocateThreadPosition(targetStreamId, position);
     const previousStreamId = current.streamId;
     this.#database.prepare(`
       UPDATE hub_threads
@@ -1560,7 +1650,7 @@ export class WorkspaceCatalogStore {
       if (repeated) return repeated;
       const experiments = this.ensureExperiments();
       const stream = this.createStream({ workspaceId: experiments.id, name: streamName });
-      this.bindThread({
+      this.#bindThread({
         ...identity,
         streamId: stream.id,
         projectRoot: value?.projectRoot,
@@ -1583,7 +1673,7 @@ export class WorkspaceCatalogStore {
         // Only an explicit Hub action may create or select a user Workspace.
         // Provider-discovered Threads have no trustworthy placement metadata.
         const stream = this.createStream({ workspaceId: experiments.id });
-        this.bindThread({
+        this.#bindThread({
           ...identity,
           streamId: stream.id,
           projectRoot: entry.projectRoot,
@@ -1601,11 +1691,14 @@ export class WorkspaceCatalogStore {
     if (!current) throw new Error(`thread not found: ${providerThreadKey(identity)}`);
     const targetWorkspaceId = safeIdentifier(workspaceId, "workspace id");
     return this.#transaction(() => {
+      this.#threadHighWater(current.streamId);
+      this.#supersedeThreadNaming(identity);
       const stream = this.createStream({ workspaceId: targetWorkspaceId, name: streamName });
+      const position = this.#allocateThreadPosition(stream.id, null);
       this.#database.prepare(`
-        UPDATE hub_threads SET stream_id = ?, position = 1, updated_at_ms = ?
+        UPDATE hub_threads SET stream_id = ?, position = ?, updated_at_ms = ?
         WHERE provider = ? AND provider_thread_id = ?
-      `).run(stream.id, this.#nowMs(), identity.provider, identity.threadId);
+      `).run(stream.id, position, this.#nowMs(), identity.provider, identity.threadId);
       this.#removeEmptyStream(current.streamId);
       return this.resolveThread(identity);
     });

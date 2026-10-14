@@ -5,7 +5,7 @@ import { createServer } from "node:http";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { pipeline } from "node:stream/promises";
-import { gzipSync } from "node:zlib";
+import { gzip } from "node:zlib";
 import { agentHubRuntimeHealth } from "../../application/runtime-health.mjs";
 import { clientCommandAckTraceSpan } from "../../application/client-command-trace.mjs";
 import { clientPerformanceTraceSpans } from "../../application/client-performance-trace.mjs";
@@ -423,31 +423,58 @@ function varyHeader(...values) {
     .join(", ");
 }
 
-function json(response, statusCode, value, method = "GET", options = {}) {
-  const { acceptEncoding = "", headers = {}, ...sendOptions } = options;
-  const body = Buffer.from(`${JSON.stringify(value)}\n`, "utf8");
-  const compressed = body.length >= JSON_GZIP_MIN_BYTES
-    && acceptedEncodingQuality(acceptEncoding, "gzip") > 0;
-  const responseBody = compressed ? gzipSync(body) : body;
-  send(
-    response,
-    statusCode,
-    "application/json; charset=utf-8",
-    responseBody,
-    method,
-    {
-      ...sendOptions,
-      headers: {
-        ...headers,
-        "Content-Length": String(responseBody.length),
-        ...(compressed ? {
-          "Content-Encoding": "gzip",
-          Vary: varyHeader(response.getHeader("Vary"), headers.Vary, "Accept-Encoding"),
-        } : {}),
-      },
-    },
-  );
+export function createJsonResponder({ compress = gzip, maxConcurrentCompressions = 2 } = {}) {
+  let activeCompressions = 0;
+  return function json(response, statusCode, value, method = "GET", options = {}) {
+    const { acceptEncoding = "", headers = {}, ...sendOptions } = options;
+    const body = Buffer.from(`${JSON.stringify(value)}\n`, "utf8");
+    const wantsGzip = body.length >= JSON_GZIP_MIN_BYTES
+      && acceptedEncodingQuality(acceptEncoding, "gzip") > 0;
+    const deliver = (responseBody, compressed) => {
+      if (response.destroyed || response.writableEnded) return;
+      send(response, statusCode, "application/json; charset=utf-8", responseBody, method, {
+        ...sendOptions,
+        headers: {
+          ...headers,
+          "Content-Length": String(responseBody.length),
+          ...(wantsGzip ? {
+            Vary: varyHeader(response.getHeader("Vary"), headers.Vary, "Accept-Encoding"),
+          } : {}),
+          ...(compressed ? {
+            "Content-Encoding": "gzip",
+          } : {}),
+        },
+      });
+    };
+    if (!wantsGzip || activeCompressions >= maxConcurrentCompressions) {
+      // HTTP permits an uncompressed representation even when gzip is accepted.
+      // Do not queue more whole snapshot buffers behind the compression workers.
+      deliver(body, false);
+      return;
+    }
+    activeCompressions += 1;
+    let settled = false;
+    const finish = (error, compressedBody) => {
+      if (settled) return;
+      settled = true;
+      activeCompressions -= 1;
+      try {
+        deliver(error ? body : compressedBody, !error);
+      } catch {
+        // The compression callback runs outside the route's synchronous catch.
+        // A broken/disconnected socket must not take down the Hub process.
+        response.destroy();
+      }
+    };
+    try {
+      compress(body, finish);
+    } catch (error) {
+      finish(error);
+    }
+  };
 }
+
+const json = createJsonResponder();
 
 async function sendBoundedFile(
   response,

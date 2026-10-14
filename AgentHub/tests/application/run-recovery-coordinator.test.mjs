@@ -3,13 +3,13 @@ import test from "node:test";
 
 import { RunRecoveryCoordinator } from "../../src/application/run-recovery-coordinator.mjs";
 
-function coordinatorHarness(runs) {
+function coordinatorHarness(runs, recoverySnapshot = { active: true, turnId: "turn-1" }) {
   const events = [];
   const providers = {
     get: () => ({ name: "Codex" }),
     call: async (_provider, operation) => {
       events.push(operation);
-      if (operation === "readRecoverySnapshot") return { active: true, turnId: "turn-1" };
+      if (operation === "readRecoverySnapshot") return recoverySnapshot;
       return null;
     },
   };
@@ -18,7 +18,8 @@ function coordinatorHarness(runs) {
     runCoordinator: { recoverProviderRun: async () => events.push("recover-provider") },
     observer: {
       update: () => events.push("observe-update"), schedule: () => events.push("observe-schedule"),
-      finish: async () => events.push("observe-finish"), finishUnknown: async () => events.push("observe-unknown"),
+      finish: async () => events.push("observe-finish"),
+      finishUnknown: async () => { events.push("observe-unknown"); return { retained: true }; },
     },
     progress: {
       replace: async () => events.push("progress-replace"), clear: async () => events.push("progress-clear"),
@@ -41,9 +42,55 @@ test("run recovery coordinator restores a displayed observed run", async () => {
   ]);
 });
 
+test("run recovery keeps an unknown exact Codex observer scheduled after restart", async () => {
+  const run = { id: "run-1", provider: "codex", observer: true,
+    threadId: "thread-1", turnId: "turn-1" };
+  const { coordinator, events } = coordinatorHarness([run], { activityUnknown: true });
+  await coordinator.recover(run);
+  assert.deepEqual(events, ["readRecoverySnapshot", "observe-unknown", "observe-schedule", "save"]);
+});
+
 test("run recovery coordinator closes one interrupted managed run", async () => {
   const run = { id: "run-1", provider: "codex", threadId: "thread-1" };
   const { coordinator, events } = coordinatorHarness([run]);
   await coordinator.finishInterrupted(run);
   assert.deepEqual(events, ["progress-finish", "message", "complete"]);
+  assert.equal(run.providerTerminalStatus, undefined);
+});
+
+test("run recovery coordinator preserves an active run when provider recovery read fails", async () => {
+  const run = {
+    id: "run-1",
+    provider: "claude",
+    threadId: "thread-1",
+    turnId: "turn-1",
+    observer: true,
+  };
+  const events = [];
+  const failing = new RunRecoveryCoordinator({
+    taskRuns: { values: () => [run] },
+    providers: {
+      get: () => ({ name: "Claude" }),
+      call: async (_provider, operation) => {
+        events.push(operation);
+        if (operation === "readRecoverySnapshot") throw new Error("temporary provider read failure");
+        return null;
+      },
+    },
+    runCoordinator: { recoverProviderRun: async () => events.push("recover-provider") },
+    observer: {
+      update: () => events.push("observe-update"), schedule: () => events.push("observe-schedule"),
+      finish: async () => events.push("observe-finish"), finishUnknown: async () => events.push("observe-unknown"),
+    },
+    progress: {
+      replace: async () => events.push("progress-replace"), clear: async () => events.push("progress-clear"),
+      finish: async () => events.push("progress-finish"),
+    },
+    startTyping: () => events.push("typing"), saveState: async () => events.push("save"),
+    safeDeliver: async (_run, send) => send(), sendRunMessage: async () => events.push("message"),
+    completeRun: async () => events.push("complete"), logError: () => events.push("error"),
+  });
+  await failing.recoverAll();
+  assert.deepEqual(events, ["prepareRecovery", "readRecoverySnapshot", "error", "message"]);
+  assert.equal(run.providerTerminalStatus, undefined);
 });

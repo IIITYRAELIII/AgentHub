@@ -1,12 +1,15 @@
 import assert from "node:assert/strict";
+import { appendFile, mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 import {
   CodexTaskSnapshotService,
   codexTurnSnapshot,
   describeCodexItem,
 } from "../../../src/providers/codex/codex-task-snapshot-service.mjs";
-import { CODEX_CONTEXT_PROBE_PROMPT } from "../../../src/domain/codex-context-probe.mjs";
-import { codexRolloutTurnState } from "../../../src/providers/codex/codex-rollout-activity.mjs";
+import { codexRolloutTurnState, readCodexRolloutActivity } from "../../../src/providers/codex/codex-rollout-activity.mjs";
+import { CodexRecoveryService } from "../../../src/providers/provider-recovery-services.mjs";
 
 test("active commentary stays in its trace and never becomes an answer or final", () => {
   const snapshot = codexTurnSnapshot({
@@ -73,6 +76,7 @@ test("managed snapshot never adopts a dangling historical turn before provider a
     startedAtMsByTurnId: { "old-turn": Date.parse("2026-08-24T07:24:23.359Z") },
     completedAtMsByTurnId: { "new-turn": Date.parse("2026-09-09T11:16:16.277Z") },
     finalMessages: { "new-turn": "Current answer" },
+    terminalStatusesByTurnId: { "new-turn": "completed" },
   };
   const service = new CodexTaskSnapshotService({
     knownRolloutPath: async () => "rollout.jsonl",
@@ -83,7 +87,8 @@ test("managed snapshot never adopts a dangling historical turn before provider a
     resolveOwner: async () => "agent-hub",
     readThread: async () => {
       reads += 1;
-      return { thread: { path: "rollout.jsonl", turns: [], status: { type: "idle" } } };
+      return { thread: { path: "rollout.jsonl",
+        turns: [{ id: "old-turn", status: "interrupted", items: [] }], status: { type: "idle" } } };
     },
     selectTurn: () => null,
     turnSnapshot: codexTurnSnapshot,
@@ -107,6 +112,88 @@ test("managed snapshot never adopts a dangling historical turn before provider a
   assert.equal(snapshot.active, false);
   assert.equal(snapshot.completed, true);
   assert.equal(snapshot.answer, "Current answer");
+});
+
+test("cold exact snapshot recovers an old terminal beyond 16 MiB while another turn stays unknown", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "hub-cold-terminal-"));
+  const file = path.join(directory, "rollout.jsonl");
+  const completedTurnId = "01a0ecf9-094f-7390-aed5-b979128ff553";
+  const pendingTurnId = "01a0ecfb-d1fa-7e20-a64e-02cf4902e19b";
+  const laterTurnId = "01a0ed07-704f-7f93-b2d6-5c1ab1732f92";
+  const row = (type, turnId, extra = {}) => JSON.stringify({
+    timestamp: "2026-09-29T11:45:00.000Z", type: "event_msg",
+    payload: { type, turn_id: turnId, ...extra },
+  });
+  try {
+    await writeFile(file, [
+      JSON.stringify({ timestamp: "2026-09-29T11:40:00.000Z", type: "session_meta",
+        payload: { id: "01a07cd5-d039-7fd3-95c4-71f3672f8d52" } }),
+      row("task_started", completedTurnId),
+      row("task_complete", completedTurnId, { last_agent_message: "Точный финал" }),
+      row("task_started", pendingTurnId),
+      ...Array.from({ length: 4_200 }, () => row("unrelated", laterTurnId, { padding: "x".repeat(4_096) })),
+      ...Array.from({ length: 130 }, (_, index) => row("task_complete", `later-${index}`,
+        { last_agent_message: `Later final ${index}` })),
+    ].join("\n") + "\n", "utf8");
+    const service = new CodexTaskSnapshotService({
+      knownRolloutPath: async () => file,
+      readRolloutActivity: readCodexRolloutActivity,
+      rolloutTurnState: codexRolloutTurnState,
+      capturedOwner: () => null, runtimeActive: async () => true, resolveOwner: async () => "agent-hub",
+      readThread: async () => ({ thread: { path: file, status: { type: "idle" },
+        turns: [{ id: laterTurnId, status: "interrupted", items: [] }] } }),
+      selectTurn: (turns, { requestedTurnId }) => turns.find((turn) => turn.id === requestedTurnId) ?? null,
+      turnSnapshot: codexTurnSnapshot, turnStartedAt: () => null, describeItem: () => "stage",
+      hubOwner: () => "agent-hub", agentHubPid: () => 1,
+      modelLabel: (value) => value, runtimeLabel: (value) => value,
+      delay: async () => {}, reindexRun: () => {},
+    });
+    const completed = await service.read({ provider: "codex", threadId: "thread-1",
+      turnId: completedTurnId, observer: false });
+    assert.equal(completed?.completed, true);
+    assert.equal(completed?.status, "completed");
+    assert.equal(completed?.answer, "Точный финал");
+    const recoveryEvents = [];
+    const recovery = new CodexRecoveryService({
+      transportRunning: () => true,
+      readTaskSnapshot: (run, options) => service.read(run, options),
+      startTransport: async () => {}, initialize: async () => {}, isCodex: () => true,
+      finishInterrupted: async () => assert.fail("Cold terminal cannot be inferred as interruption"),
+      readThread: async (_threadId, { applySnapshot }) => applySnapshot({
+        thread: { path: file, status: { type: "idle" },
+          turns: [{ id: laterTurnId, status: "interrupted", items: [] }] },
+      }),
+      autoApprove: () => false, restartRequested: () => false,
+      finishProgress: async () => recoveryEvents.push("finish"),
+      completeRun: async () => assert.fail("Only terminal owner may complete"),
+      recoveredAnswer: () => "", setProgressStage: () => recoveryEvents.push("unknown"),
+      launchTurn: async () => assert.fail("Recovery cannot resend the input"), reindexRun: () => {},
+      scheduleObservedRun: () => recoveryEvents.push("observe"), startTyping: () => {},
+      saveState: async () => recoveryEvents.push("save"), telegram: async () => {},
+      consumeTracker: () => null,
+      finalizeDelivery: async (_run, terminal) => recoveryEvents.push([
+        "terminal", terminal.turnId, terminal.status, terminal.answer,
+      ]),
+      turnTokenUsage: new Map(),
+    });
+    await recovery.recover({ provider: "codex", threadId: "thread-1", turnId: completedTurnId,
+      status: "running", responseText: "", progressMessageIds: [] });
+    assert.deepEqual(recoveryEvents, ["finish",
+      ["terminal", completedTurnId, "completed", "Точный финал"]]);
+    for (const _ of [0, 1]) {
+      const pending = await service.read({ provider: "codex", threadId: "thread-1",
+        turnId: pendingTurnId, observer: false });
+      assert.equal(pending?.completed, false);
+      assert.equal(pending?.activityUnknown, true);
+    }
+    await appendFile(file, `${row("turn_aborted", pendingTurnId)}\n`, "utf8");
+    const aborted = await service.read({ provider: "codex", threadId: "thread-1",
+      turnId: pendingTurnId, observer: false });
+    assert.equal(aborted?.completed, true);
+    assert.equal(aborted?.status, "aborted");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("Codex turn snapshot preserves the actual completion time", () => {
@@ -280,63 +367,6 @@ test("Codex snapshot service preserves complete App Server users while increment
   ]);
 });
 
-test("Codex snapshot service never selects a context probe from thread reads", async () => {
-  const selected = [];
-  const readOptions = [];
-  const userTurn = { id: "user-turn", status: "completed", items: [] };
-  const probeTurn = {
-    id: "probe-turn",
-    status: "inProgress",
-    items: [{
-      type: "userMessage",
-      clientId: "agent-hub-context-probe:probe-1",
-      content: [{ type: "text", text: CODEX_CONTEXT_PROBE_PROMPT }],
-    }],
-  };
-  const service = new CodexTaskSnapshotService({
-    knownRolloutPath: async () => "",
-    readRolloutActivity: async () => ({
-      activeTurnIds: ["probe-turn"],
-      activityAtMsByTurnId: {},
-      completedAtMsByTurnId: {},
-      startedAtMsByTurnId: {},
-      lastActivityAtMs: 0,
-    }),
-    rolloutTurnState: () => ({}),
-    capturedOwner: () => null,
-    runtimeActive: async () => true,
-    resolveOwner: async () => "agent-hub",
-    readThread: async (_threadId, options) => {
-      readOptions.push(options);
-      return { thread: { turns: [userTurn, probeTurn] } };
-    },
-    selectTurn: (turns) => {
-      selected.push(...turns);
-      return turns[0];
-    },
-    turnSnapshot: () => ({ completed: true, active: false, status: "completed" }),
-    turnStartedAt: () => null,
-    describeItem: () => "stage",
-    hubOwner: () => "agent-hub",
-    agentHubPid: () => 42,
-    modelLabel: (value) => value,
-    runtimeLabel: (value) => value,
-    delay: async () => {},
-    reasoningLabels: {},
-    logger: { warn() {} },
-    reindexRun: () => {},
-  });
-
-  const snapshot = await service.read({
-    observer: false,
-    threadId: "thread-1",
-    turnId: "user-turn",
-  });
-
-  assert.equal(snapshot.turnId, "user-turn");
-  assert.deepEqual(selected.map((turn) => turn.id), ["user-turn"]);
-  assert.equal(readOptions[0].priority, "interactive");
-});
 
 test("Codex snapshot service reads a delayed final answer and applies runtime projection", async () => {
   let reads = 0;
@@ -368,9 +398,11 @@ test("Codex snapshot service reads a delayed final answer and applies runtime pr
 
 test("Codex snapshot service does not freeze a partial turn completed payload", async () => {
   let rolloutReads = 0;
+  let completedReads = 0;
   const delays = [];
   const service = new CodexTaskSnapshotService({
     knownRolloutPath: async () => "rollout.jsonl",
+    readCompletedTurnAnswer: async () => { completedReads += 1; return ""; },
     readRolloutActivity: async () => ({
       finalMessages: rolloutReads++ >= 2
         ? { "turn-1": "Полный финальный ответ после materialization" }
@@ -401,6 +433,7 @@ test("Codex snapshot service does not freeze a partial turn completed payload", 
   );
 
   assert.equal(answer, "Полный финальный ответ после materialization");
+  assert.equal(completedReads, 1);
   assert.deepEqual(delays, [100]);
 });
 
@@ -458,6 +491,7 @@ test("Codex snapshot service prefers the exact rollout answer for an interrupted
   let threadReads = 0;
   const service = new CodexTaskSnapshotService({
     knownRolloutPath: async () => "rotated-rollout.jsonl",
+    readCompletedTurnAnswer: async () => { throw new Error("completed reader entered for interrupted turn"); },
     readRolloutActivity: async () => ({
       finalMessages: {},
       latestMessages: { "turn-rotated": "Аудит остановлен после анализа архитектуры" },

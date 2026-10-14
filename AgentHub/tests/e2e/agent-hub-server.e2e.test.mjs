@@ -5,11 +5,19 @@ import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
+import { modelCallbackAction } from "../../src/interfaces/telegram/callback-context.mjs";
 import { JournalDatabase } from "../../src/infrastructure/persistence/journal-database.mjs";
-import { runtimeDatabasePath } from "../../src/infrastructure/persistence/runtime-state-store.mjs";
+import {
+  readRuntimeState,
+  runtimeDatabasePath,
+} from "../../src/infrastructure/persistence/runtime-state-store.mjs";
 import {
   CHAT_ID,
+  captureE2eFailure,
+  cleanupE2eTemporaryRoot,
   delay,
+  diagnosticTail,
+  E2eChildProcessOwner,
   e2eTimeoutMs,
   FakeTelegramApi,
   readJson,
@@ -18,6 +26,7 @@ import {
   USER_ID,
   waitFor,
 } from "../../e2e/telegram-harness.mjs";
+import { readMessageBindings } from "../../src/infrastructure/persistence/message-bindings.mjs";
 
 const AGENT_HUB_ROOT = path.resolve(import.meta.dirname, "..", "..");
 const BOT_FILE = path.join(AGENT_HUB_ROOT, "agent-hub-main.mjs");
@@ -87,12 +96,15 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   let stderr = "";
   let currentStdout = "";
   let currentStderr = "";
+  let diagnosticStage = "initialization";
+  let diagnosticTelegramMark = 0;
+  const botOwner = new E2eChildProcessOwner({ label: "Telegram Agent Hub" });
 
   async function startBot() {
     const pollingMark = telegram.calls.length;
     currentStdout = "";
     currentStderr = "";
-    bot = spawn(process.execPath, [BOT_FILE], {
+    bot = botOwner.start(() => spawn(process.execPath, [BOT_FILE], {
       cwd: AGENT_HUB_ROOT,
       env: {
         ...process.env,
@@ -103,30 +115,29 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
       },
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
-    });
+    }));
     bot.stdout.setEncoding("utf8");
     bot.stderr.setEncoding("utf8");
-    bot.stdout.on("data", (chunk) => { stdout += chunk; currentStdout += chunk; });
-    bot.stderr.on("data", (chunk) => { stderr += chunk; currentStderr += chunk; });
+    bot.stdout.on("data", (chunk) => {
+      stdout += chunk;
+      currentStdout = diagnosticTail(`${currentStdout}${chunk}`);
+    });
+    bot.stderr.on("data", (chunk) => {
+      stderr += chunk;
+      currentStderr = diagnosticTail(`${currentStderr}${chunk}`);
+    });
     await waitForRestartPolling(pollingMark, "process startup");
     return bot;
   }
 
   async function stopBot() {
     const stoppingBot = bot;
-    if (stoppingBot && stoppingBot.exitCode == null) {
-      stoppingBot.kill("SIGTERM");
-      const exited = await Promise.race([
-        new Promise((resolve) => stoppingBot.once("exit", () => resolve(true))),
-        delay(2_000).then(() => false),
-      ]);
-      if (!exited && stoppingBot.exitCode == null) await stopPid(stoppingBot.pid);
-    }
+    if (stoppingBot) await botOwner.stop();
     try {
       const replacementPid = await readLockPid(lockPath);
       if (replacementPid !== stoppingBot?.pid) await stopPid(replacementPid);
     } catch {}
-    bot = null;
+    if (bot === stoppingBot) bot = null;
   }
 
   async function waitForRestartPolling(after, description = "restarted Telegram polling") {
@@ -164,9 +175,10 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
     journalDatabase.close();
     await telegram.stop();
     await delay(200);
-    await rm(temporaryRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    await cleanupE2eTemporaryRoot(temporaryRoot);
   });
 
+  try {
   await writeFile(configPath, `${JSON.stringify({
     components: { telegram: true, miniApp: false, androidApp: false },
     telegramBotToken: "123:test-token",
@@ -246,7 +258,7 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   const secondThreadId = secondThreadState.threadIds.codex;
   assert.notEqual(secondThreadId, firstThreadId);
   assert.equal((await readJson(codexStatePath)).threads
-    .find((thread) => thread.id === secondThreadId)?.name, "New Workspace — Поток 1");
+    .find((thread) => thread.id === secondThreadId)?.name, "New Workspace - Поток 1 1");
 
   mark = telegram.calls.length;
   telegram.pushMessage("/streams");
@@ -303,7 +315,7 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   telegram.pushMessage("/model");
   const modelPicker = await telegram.waitForText("Current Codex model", { after: mark });
   mark = telegram.calls.length;
-  telegram.pushCallback(callbackButton(modelPicker, "codex-model:gpt-e2e").callback_data, modelPicker.result);
+  telegram.pushCallback(callbackButton(modelPicker, modelCallbackAction("codex", "gpt-e2e")).callback_data, modelPicker.result);
   await telegram.waitForText("Codex model: GPT-E2E", { after: mark });
   await waitFor(async () => (await readJson(statePath)).codexModel === "gpt-e2e", "model switch");
 
@@ -333,7 +345,7 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   const renamedProviderThreads = (await readJson(codexStatePath)).threads;
   assert.equal(renamedProviderThreads.find((thread) => thread.id === firstThreadId)?.name, "E2E основная");
   assert.equal(renamedProviderThreads.find((thread) => thread.id === secondThreadId)?.name,
-    "New Workspace — Поток 1", "renaming another Thread must preserve the canonical Workspace/Stream name");
+    "New Workspace - Поток 1 1", "renaming another Thread must preserve the canonical Workspace/Stream name");
   assert.equal(
     renamedState.clientTaskSelections.find(([clientId]) => clientId === `telegram:${CHAT_ID}`)?.[1]?.taskTitle,
     "E2E основная",
@@ -363,6 +375,8 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   }, "forward bundle restore after restart");
 
   const bundleEditMark = telegram.calls.length;
+  diagnosticStage = "forward bundle third-message edit after restart";
+  diagnosticTelegramMark = bundleEditMark;
   telegram.pushMessage("Вторая реплика клиента", {
     forward_origin: {
       type: "hidden_user",
@@ -376,6 +390,7 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
     (call) => String(call.body.text).includes("Сообщений: 3 · переслано: 2 · ваших: 1"),
     { after: bundleEditMark },
   );
+  diagnosticStage = "after forward bundle third-message edit";
   savedBundleState = await readJson(statePath);
   assert.equal(savedBundleState.forwardBundles[0].items.length, 3);
 
@@ -1307,4 +1322,42 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
 
   assert.equal(stderr.includes("Unhandled asynchronous error"), false, stderr);
   assert.equal(stdout.includes("Agent Hub ready"), true, stdout);
+  } catch (error) {
+    const evidenceDirectory = `${temporaryRoot}-failure-evidence`;
+    const [state, bindings, botLock, journalLock, journalSnapshot, journalLedger] = await Promise.all([
+      readRuntimeState(dataDir, { legacyFile: statePath })
+        .catch((readError) => ({ error: readError.message })),
+      readMessageBindings(dataDir).catch((readError) => ({ error: readError.message })),
+      readFile(lockPath, "utf8").catch((readError) => readError.message),
+      readInterprocessLockOwner(`${journalDatabaseFile}.lock`).catch((readError) => readError.message),
+      journalDatabase.snapshot().catch((readError) => ({ error: readError.message })),
+      journalDatabase.loadLedger().catch((readError) => ({ error: readError.message })),
+    ]);
+    throw await captureE2eFailure({
+      owner: botOwner,
+      error,
+      evidenceDirectory,
+      stage: diagnosticStage,
+      stdout: currentStdout,
+      summary: {
+        botLock,
+        journalLock,
+        recentTelegramCalls: telegram.recentCalls(diagnosticTelegramMark, 24),
+      },
+      evidence: {
+        state,
+        messageBindings: bindings,
+        botLock,
+        journalLock,
+        journalSnapshot,
+        journalLedger,
+        telegramFixture: {
+          nextUpdateId: telegram.nextUpdateId,
+          pendingUpdates: telegram.updates.slice(-24),
+          recentCalls: telegram.recentCalls(diagnosticTelegramMark, 24),
+        },
+        stdout: currentStdout,
+      },
+    });
+  }
 });

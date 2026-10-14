@@ -83,6 +83,7 @@ export function createProviderOperationComposition({
   startTyping,
   telegram,
   codexContextMaintenance,
+  streamContextMaintenance,
   contextCompactions,
   resolvedExplicitSkillNames,
   taskExternalActivity,
@@ -92,7 +93,6 @@ export function createProviderOperationComposition({
   applyCodexThreadSettings,
   trackTurnTokenUsage,
   latestContextUsage,
-  completeContextTurn,
   setLatestDiff,
   requestApproval,
   formatCommandApproval,
@@ -103,7 +103,17 @@ export function createProviderOperationComposition({
   discardContextCompactionRun,
   wakeDeferredInputs,
 }) {
+  const pendingCreatedThread = ({ provider, streamId }) => {
+    if (!streamId) return null;
+    const binding = workspaceCatalogStore.activeThread(streamId);
+    return binding?.provider === provider && workspaceCatalogStore.threadNaming(binding)?.status === "pending"
+      ? binding : null;
+  };
+  const bindCreatedThread = ({ provider, threadId, streamId, projectRoot }) => streamId
+    ? workspaceCatalogStore.bindThread({ provider, threadId, streamId, projectRoot, source: "created" })
+    : workspaceCatalogStore.assignUnknownThread({ provider, threadId, projectRoot }, { source: "created" });
   const codexProviderTasks = new CodexProviderTaskService({
+    pendingCreatedThread,
     nameCreatedThread,
     transportRunning: codexTransportRunning,
     startTransport: startCodexTransport,
@@ -112,16 +122,7 @@ export function createProviderOperationComposition({
     discoverLocalTasks: discoverCodexRollouts,
     logWarn: (...args) => console.warn(...args),
     selection: selectionStore,
-    bindCreatedThread: ({ provider, threadId, streamId, projectRoot }) => (
-      streamId
-        ? workspaceCatalogStore.bindThread({
-          provider, threadId, streamId, projectRoot, source: "created",
-        })
-        : workspaceCatalogStore.assignUnknownThread(
-          { provider, threadId, projectRoot },
-          { source: "created" },
-        )
-    ),
+    bindCreatedThread,
     activeProjectRoot,
     sandboxMode: codexSandboxMode,
     model: codexModel,
@@ -132,6 +133,7 @@ export function createProviderOperationComposition({
     saveState,
   });
   const claudeProviderTasks = new ClaudeProviderTaskService({
+    pendingCreatedThread, bindCreatedThread, nameCreatedThread,
     selection: selectionStore,
     activeProjectRoot,
     clearLatestDiff,
@@ -213,6 +215,7 @@ export function createProviderOperationComposition({
     turnTokenUsage,
   });
   const codexTurnService = new CodexTurnService({
+    ensureThreadNamed: (reference) => nameCreatedThread({ ...reference, recovering: true }),
     sendRpc,
     sandboxMode: codexSandboxMode,
     compactionRecycle: () => codexContextMaintenance.recycleInFlight,
@@ -224,9 +227,6 @@ export function createProviderOperationComposition({
     finishProgress: (...args) => taskProgress().finish(...args),
     completeRun: (run) => managedRunLifecycle.complete(run),
     readThread: readCodexThread,
-    isContextProbeTurn: (threadId, turnId) => (
-      contextCompactions.get(threadId)?.probeTurnIds?.includes(String(turnId ?? "").trim()) === true
-    ),
     developerInstructions: ({ provider, threadId, streamId }) => resolveHubDeveloperInstructions({
       provider,
       threadId,
@@ -274,7 +274,7 @@ export function createProviderOperationComposition({
     applyThreadSettings: applyCodexThreadSettings,
     saveState,
     trackTokenUsage: trackTurnTokenUsage,
-    completeTurn: completeContextTurn,
+    mutateCompaction: (threadId, operation) => contextCompactions.mutate(threadId, operation),
     taskKey: taskRunKey,
     isSelectedRun,
     setSelectedDiff: setLatestDiff,
@@ -289,6 +289,12 @@ export function createProviderOperationComposition({
     contextUsage: latestContextUsage,
     beginCompaction: (threadId, details) => contextCompactions.mutate(threadId, () => contextCompactions.begin(threadId, details)),
     getCompaction: (providerTaskId) => contextCompactions.get(providerTaskId),
+    recordContextEstimate: ({ operationId, threadId, turnId, accepted }) => commandTrace?.recordBestEffort?.({
+      commandId: operationId, stage: "context-estimate-received", transport: "codex-context",
+      outcome: accepted ? "succeeded" : "unknown",
+      metadata: { threadId, turnId, accepted },
+    }),
+    completeUnregisteredTurn: (identity) => streamContextMaintenance.completeUnregisteredTurn(identity),
     settleCompactionTurn: (threadId, details) => contextCompactions.mutate(threadId, () => contextCompactions.settleProviderTurn(threadId, details)),
     rememberRawCompactionItem: (...args) => contextCompactions.rememberRawItem(...args),
     beginCompactionCleanup: (threadId, details) => contextCompactions.mutate(threadId, () => codexContextMaintenance.beginCompactionCleanup(threadId, details)),

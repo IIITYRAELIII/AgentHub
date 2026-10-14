@@ -31,7 +31,7 @@ test("captured pending and historical rollout audit stays evidence without any r
     persistProgress: async () => { persists++; },
   });
   const thread = { id: "captured-thread", path: source, cwd: path.join(root, "source-project") };
-  audit.restore({ version: 18, completedThrough: "2026-01-01T00:00:00.000Z", subagentBackfillPending: true,
+  audit.restore({ version: 20, completedThrough: "2026-01-01T00:00:00.000Z", subagentBackfillPending: true,
     positions: [[thread.id, { path: source, offset: 4, backlog: true }]],
     pendingTurns: [[thread.id, { thread, turns: [{ turnId: "captured-turn", startedAt: "2026-01-01T00:00:00.000Z" }], nextStatusCheckAt: "2026-01-01T00:00:00.000Z" }]],
     historicalSubagentBackfill: { pending: true, initialized: true, prepared: true, totalFiles: 1,

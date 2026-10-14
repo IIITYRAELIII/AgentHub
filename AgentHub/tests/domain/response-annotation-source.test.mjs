@@ -14,6 +14,30 @@ const HASH_A = `sha256:${"a".repeat(64)}`;
 const HASH_B = `sha256:${"b".repeat(64)}`;
 const HASH_C = `sha256:${"c".repeat(64)}`;
 
+test("trace group locators survive preview eviction without weakening exact content identity", async () => {
+  const context = vm.createContext({ crypto: webcrypto, TextEncoder });
+  context.window = context;
+  vm.runInContext(await readFile(new URL("../../assets/web-app/messages/disclosure.js", import.meta.url), "utf8"), context);
+  const api = context.AgentHubMessageDisclosure;
+  const locator = source({ surfaceKind: "trace-reasoning", traceGroupId: "reasoning:exact" });
+  assert.deepEqual(normalizedResponseAnnotationSource(locator), locator);
+  assert.deepEqual(JSON.parse(JSON.stringify(api.normalizedResponseAnnotationSource(locator))), locator);
+  const group = { id: locator.traceGroupId, reasoning: "Полный исходный текст", activities: [] };
+  const message = { ...locator, activityGroups: [group], text: "Answer" };
+  const content = api.responseAnnotationSourceContent(message, locator);
+  assert.equal(api.responseAnnotationSourceContent({ ...message, text: "New answer",
+    activityGroups: [{ id: "other", reasoning: "other" }, group] }, locator), content);
+  assert.notEqual(api.responseAnnotationSourceContent({ ...message,
+    activityGroups: [{ ...group, reasoning: "Changed" }] }, locator), content);
+  for (const activityGroups of [[], [group, group]]) {
+    assert.equal(api.responseAnnotationSourceContent({ ...message, activityGroups }, locator), "");
+  }
+  for (const invalid of [{ ...locator, role: "user" }, { ...locator, surfaceKind: "message-body" }]) {
+    assert.equal(normalizedResponseAnnotationSource(invalid), null);
+    assert.equal(api.normalizedResponseAnnotationSource(invalid), null);
+  }
+});
+
 function source(overrides = {}) {
   const identity = {
     provider: "codex",

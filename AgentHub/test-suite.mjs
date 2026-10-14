@@ -1,14 +1,21 @@
 import { spawn } from "node:child_process";
-import { readFile, readdir } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { fingerprintTestInputs } from "./src/infrastructure/persistence/test-input-fingerprint.mjs";
+import {
+  explainTestInputFingerprint,
+  fingerprintTestInputs,
+  parallelTestExecution,
+} from "./src/infrastructure/persistence/test-input-fingerprint.mjs";
 
 import {
   runCheckpointedTestFiles,
   testFileCheckpointStore,
 } from "./src/infrastructure/persistence/test-file-checkpoint.mjs";
 import { clearInheritedPublicationOwnership } from "./src/infrastructure/process/publication-lock.mjs";
+import { prepareTaskWorktreeDependencies } from "./src/infrastructure/filesystem/task-worktree-dependencies.mjs";
+import { runTaskGitCommand } from "./src/infrastructure/filesystem/task-git-workspace.mjs";
 
 const ROOT = import.meta.dirname;
 const TEST_RUNNER_FILE = fileURLToPath(import.meta.url);
@@ -22,6 +29,7 @@ export const E2E_FILES = [
   "tests/e2e/agent-hub-server.journal.e2e.test.mjs",
   "tests/e2e/agent-hub-server.recording-contour.e2e.test.mjs",
   "tests/e2e/test-contour-recording-refresh.e2e.test.mjs",
+  "tests/e2e/test-contour-model-catalog.e2e.test.mjs",
   // Измерено 2026-09-10: 1.4 с, 5 из 5 проверок пройдено. Дешёвая проверка
   // владения Thread и восстановления MCP-моста, ранее не выполнялась ни одной
   // группой. Стоимость обычного выпуска практически не меняется.
@@ -108,11 +116,34 @@ export async function runWindowsTestFile(file, {
   const args = ["--test", "--test-concurrency=1", ...(isolation ? ["--test-isolation=none"] : []), file];
   // A failed assertion and an OS failure share exit code 1. Neither proves a
   // transient failure; retries require a new explicit run and reuse successes.
-  await execute(process.execPath, args, { cwd, env });
+  // Keep the disposable owner short: deep Git refs in Windows fixtures still
+  // have to fit below MAX_PATH when they create repositories under os.tmpdir().
+  const childRoot = await mkdtemp(path.join(os.tmpdir(), "ah-"));
+  try {
+    await execute(process.execPath, args, {
+      cwd,
+      env: {
+        ...env,
+        LOCALAPPDATA: childRoot,
+        TEMP: childRoot,
+        TMP: childRoot,
+        TMPDIR: childRoot,
+      },
+    });
+  } finally {
+    await rm(childRoot, { recursive: true, force: true });
+  }
 }
 
-async function declaredFingerprint(file, cwd) {
+async function testManifest() {
   const manifest = JSON.parse(await readFile(path.join(ROOT, "tests/test-cache-inputs.json"), "utf8"));
+  if (manifest.version !== 2 || !manifest.files || typeof manifest.files !== "object") {
+    throw new Error("tests/test-cache-inputs.json must use version 2");
+  }
+  return manifest;
+}
+
+async function declaredFingerprint(file, cwd, manifest) {
   const key = path.relative(ROOT, path.resolve(cwd, file)).split(path.sep).join("/");
   const declaration = manifest.version === 2 ? manifest.files[key] ?? null : null;
   let browserFile = "";
@@ -124,7 +155,50 @@ async function declaredFingerprint(file, cwd) {
       browserFile = chromium.executablePath();
     }
   }
-  return testFingerprint(file, { cwd, root: ROOT, declaration, browserFile });
+  return explainTestInputFingerprint(file, {
+    cwd, root: ROOT, declaration, browserFile, runnerFile: TEST_RUNNER_FILE,
+  });
+}
+
+export function boundedTestFileConcurrency({
+  availableParallelism = os.availableParallelism(),
+  freeMemory = os.freemem(),
+} = {}) {
+  return availableParallelism >= 4 && freeMemory >= 4 * 1024 ** 3 ? 2 : 1;
+}
+
+function executionPolicy(file, cwd, manifest) {
+  const key = path.relative(ROOT, path.resolve(cwd, file)).split(path.sep).join("/");
+  return parallelTestExecution(manifest.files[key]) ?? { parallel: false, shared: [] };
+}
+
+export async function prepareTestDependencies({
+  root = ROOT,
+  execute = runTaskGitCommand,
+} = {}) {
+  const projectRoot = path.resolve(root);
+  return prepareTaskWorktreeDependencies({
+    projectRoot,
+    lockfiles: [path.join(projectRoot, "package-lock.json")],
+    lockPath: path.join(projectRoot, "WIP", "test-dependencies"),
+    verify: false,
+    runNpm: async (args, { cwd, lease, signal }) => {
+      await lease.assertOwned();
+      const environment = { ...process.env };
+      clearInheritedPublicationOwnership(environment);
+      // The shared process runner merges its environment over the parent.
+      // Undefined entries explicitly remove inherited publication capabilities.
+      const env = Object.fromEntries(Object.keys(process.env).map((key) => [key, environment[key]]));
+      const windows = process.platform === "win32";
+      await execute(windows ? ["/d", "/s", "/c", "npm.cmd", ...args] : args, {
+        cwd, signal, env,
+        executable: windows ? process.env.ComSpec || "cmd.exe" : "npm",
+        commandLabel: "npm",
+        timeoutMs: 10 * 60_000,
+      });
+      await lease.assertOwned();
+    },
+  });
 }
 
 export async function runTestSuite(mode, {
@@ -132,9 +206,14 @@ export async function runTestSuite(mode, {
   checkpoint = checkpointIdentity ? testFileCheckpointStore() : null,
   execute = run,
   discover = discoverTestFiles,
+  testConcurrency = boundedTestFileConcurrency(),
+  prepareDependencies = prepareTestDependencies,
 } = {}) {
-  const options = { checkpointIdentity, checkpoint, execute, discover };
+  const options = { checkpointIdentity, checkpoint, execute, discover, testConcurrency };
   if (mode === "all") {
+    // Frozen generation clones contain tracked inputs, not node_modules.
+    // The existing dependency owner installs once and reuses verified markers.
+    await prepareDependencies();
     const failures = [];
     const stages = [
       ["syntax", () => runCheckpointedTestFiles(["syntax-check.mjs"], {
@@ -198,12 +277,15 @@ export async function runTestSuite(mode, {
   if (!selected) throw new Error(`Неизвестная группа тестов: ${mode}.`);
   if (selected.files.length === 0) throw new Error(`Группа тестов ${mode} пуста.`);
 
+  const manifest = await testManifest();
   if (checkpointIdentity) {
     await runCheckpointedTestFiles(selected.files, {
       suite: mode,
       identity: checkpointIdentity,
       checkpoint,
-      fingerprint: (file) => declaredFingerprint(file, selected.cwd),
+      fingerprint: (file) => declaredFingerprint(file, selected.cwd, manifest),
+      concurrency: testConcurrency,
+      execution: (file) => executionPolicy(file, selected.cwd, manifest),
       run: (file) => runWindowsTestFile(file, { ...selected, execute }),
     });
     return;
@@ -216,6 +298,8 @@ export async function runTestSuite(mode, {
     // file handle briefly even with test concurrency set to one.
     await runCheckpointedTestFiles(selected.files, {
       suite: mode,
+      concurrency: testConcurrency,
+      execution: (file) => executionPolicy(file, selected.cwd, manifest),
       run: (file) => runWindowsTestFile(file, { ...selected, execute }),
     });
     return;

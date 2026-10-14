@@ -2,6 +2,7 @@ import path from "node:path";
 
 import { defaultTestContourRoot } from "../infrastructure/filesystem/runtime-layout.mjs";
 import { CODEX_REASONING_EFFORTS } from "../providers/codex/codex-settings.mjs";
+import { orderCodexModels } from "../domain/codex-model-order.mjs";
 import {
   CLAUDE_MODEL_ALIASES,
   CLAUDE_MODEL_LABELS,
@@ -13,20 +14,27 @@ import {
 const AGENT_ICONS = ["👾", "🦉", "🐙", "🕶️", "🚀", "⚡", "💻", "🔮", "🛰️", "🔥", "✨"];
 
 export function createHubStaticSettings(config, agentHubRoot) {
-  const claudeModels = CLAUDE_MODEL_ALIASES;
+  const claudeModels = [...CLAUDE_MODEL_ALIASES];
   const claudeModelLabels = CLAUDE_MODEL_LABELS;
-  const codexModels = config.codexModels;
-  const codexModelAliases = new Map(codexModels.flatMap((model) => ([
-    [String(model.value).toLowerCase(), model.value],
-    [String(model.label).toLowerCase(), model.value],
-  ])));
-  const normalizeCodexModel = (value) => (
-    codexModelAliases.get(String(value ?? "").toLowerCase()) ?? codexModels[0].value
-  );
+  const codexModels = orderCodexModels(config.codexModels);
+  if (!codexModels.length) codexModels.push({ value: "gpt-5.6-terra", label: "GPT-5.6 Terra" });
+  const normalizeCodexModel = (value) => {
+    const requested = String(value ?? "").toLowerCase();
+    const codexModelAliases = new Map(codexModels.flatMap((model) => ([
+      [String(model.value).toLowerCase(), model.value],
+      [String(model.label).toLowerCase(), model.value],
+    ])));
+    // A saved provider ID may precede this startup's asynchronous discovery.
+    // Preserve it verbatim; only the live picker grants new selections.
+    return codexModelAliases.get(requested)
+      ?? ((/^[a-z0-9][a-z0-9._-]{0,127}$/u.test(requested))
+        ? requested : codexModels[0].value);
+  };
   const codexModelLabel = (value) => (
     codexModels.find((model) => model.value === value)?.label ?? value
   );
-  const defaultCodexModel = normalizeCodexModel(config.codexModel);
+  const defaultCodexModel = codexModels.some((model) => model.value === config.codexModel)
+    ? config.codexModel : codexModels[0].value;
   const defaultCodexReasoningEffort = CODEX_REASONING_EFFORTS.includes(config.codexReasoningEffort)
     ? config.codexReasoningEffort
     : "high";

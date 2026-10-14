@@ -66,12 +66,12 @@ import {
 } from "./test-contour-operation-state.mjs";
 
 export const TEST_CONTOUR_SPARK_MODEL = "gpt-5.3-codex-spark";
-export const TEST_CONTOUR_TERRA_MODEL = "gpt-5.6-terra";
+export const TEST_CONTOUR_LUNA_MODEL = "gpt-5.6-luna";
 export const TEST_CONTOUR_FAKE_MODEL = "fake-codex";
 export const TEST_CONTOUR_MODEL = TEST_CONTOUR_FAKE_MODEL;
 export const TEST_CONTOUR_MODELS = Object.freeze([
   Object.freeze({ value: TEST_CONTOUR_SPARK_MODEL, label: "GPT-5.3-Codex-Spark" }),
-  Object.freeze({ value: TEST_CONTOUR_TERRA_MODEL, label: "GPT-5.6-Terra" }),
+  Object.freeze({ value: TEST_CONTOUR_LUNA_MODEL, label: "GPT-5.6-Luna" }),
   Object.freeze({ value: TEST_CONTOUR_FAKE_MODEL, label: "Fake Codex · Принято" }),
 ]);
 export const TEST_CONTOUR_COMPONENT = "testContour";
@@ -108,11 +108,15 @@ export function testContourPaths(root = defaultTestContourRoot()) {
     configFile: path.join(resolved, CONFIG_FILE),
     sourceFile: path.join(resolved, SOURCE_FILE),
     taskGitDataDirectory: path.join(resolved, "task-git"),
+    detachedGitDirectory: path.join(resolved, "detached-git"),
     projectRoot: path.join(resolved, "project"),
     codexHome: path.join(resolved, "codex-home"),
-    fakeCodexExecutable: path.join(resolved, "providers", "fake-codex-app-server.mjs"),
-    codexMultiplexerExecutable: path.join(resolved, "providers", "test-contour-codex-multiplexer.mjs"),
+    providersDirectory: path.join(resolved, "providers"),
+    fakeCodexExecutable: path.join(resolved, "providers", "e2e", "fake-codex-app-server.mjs"),
+    codexMultiplexerExecutable: path.join(resolved, "providers", "e2e", "test-contour-codex-multiplexer.mjs"),
+    fakeClaudeExecutable: path.join(resolved, "providers", "e2e", "test-contour-claude-cli.mjs"),
     fakeCodexStateFile: path.join(resolved, "data", "fake-codex-state.json"),
+    fakeClaudeStateFile: path.join(resolved, "data", "fake-claude-auth-state.json"),
     codexMultiplexerStateFile: path.join(resolved, "data", "codex-multiplexer-state.json"),
     dataDir: path.join(resolved, "data"),
     dataBackupsDirectory: path.join(resolved, "backups", "data-clones"),
@@ -181,11 +185,15 @@ export function testContourOperationLockTarget(root = defaultTestContourRoot()) 
 
 export function withTestContourOperationLock(root, operation, {
   lock = withInterprocessLocks,
+  timeoutMs = 10 * 60_000,
+  retryDelayMs = 100,
+  ...lockOptions
 } = {}) {
   if (typeof operation !== "function") throw new TypeError("operation is required");
   return lock([testContourOperationLockTarget(root)], operation, {
-    timeoutMs: 10 * 60_000,
-    retryDelayMs: 100,
+    timeoutMs,
+    retryDelayMs,
+    ...lockOptions,
   });
 }
 
@@ -615,6 +623,11 @@ export function testContourConfig({
       "--routing-state",
       paths.codexMultiplexerStateFile,
     ],
+    // The contour's Claude sign-in runs the synthetic CLI, never the real one.
+    ...(recording ? {} : {
+      claudeExecutable: process.execPath,
+      claudeExecutableArgs: [paths.fakeClaudeExecutable, "--state", paths.fakeClaudeStateFile],
+    }),
     codexRateLimitPolling: false,
     claudeRateLimitPolling: false,
     createInitialThreadOnStartup: false,
@@ -673,6 +686,8 @@ export function testContourEnvironment({
     "AGENT_HUB_PROFILE",
     "CODEX_EXECUTABLE",
     "CODEX_EXECUTABLE_ARGS",
+    // CLAUDE_EXECUTABLE would override the contour's synthetic Claude CLI.
+    "CLAUDE_EXECUTABLE",
     "AGENT_HUB_RECORDING_PROVIDER_ROOT",
   ]) delete result[key];
   if (recording) delete result.CODEX_PROJECT_ROOT;
@@ -699,6 +714,44 @@ export function testContourEnvironment({
   };
 }
 
+const TEST_CONTOUR_PROVIDER_ENTRIES = [
+  path.join("e2e", "fake-codex-app-server.mjs"),
+  path.join("e2e", "test-contour-codex-multiplexer.mjs"),
+  path.join("e2e", "test-contour-claude-cli.mjs"),
+];
+const STATIC_MODULE_SPECIFIER = /\b(?:import|export)\s+(?:[^'";]*?\s+from\s+)?["']([^"']+)["']|\bimport\s*\(\s*["']([^"']+)["']\s*\)/gu;
+const DYNAMIC_MODULE_EXPRESSION = /\bimport\s*\(\s*(?!["'])/u;
+
+// Source-relative paths of the entries and every module they import
+// transitively. Only node: builtins may stay outside the installed tree.
+export async function providerModuleClosure(sourceRoot, entries) {
+  const root = path.resolve(sourceRoot);
+  const pending = entries.map((entry) => path.resolve(root, entry));
+  const closure = new Set();
+  while (pending.length) {
+    const file = pending.pop();
+    const relative = path.relative(root, file);
+    if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {
+      throw new Error(`Test Contour provider module is outside the candidate source: ${file}`);
+    }
+    if (closure.has(relative)) continue;
+    closure.add(relative);
+    const text = await readFile(file, "utf8");
+    if (DYNAMIC_MODULE_EXPRESSION.test(text)) {
+      throw new Error(`Test Contour provider module has a non-literal dynamic import: ${relative}`);
+    }
+    for (const match of text.matchAll(STATIC_MODULE_SPECIFIER)) {
+      const specifier = match[1] ?? match[2];
+      if (specifier.startsWith("node:")) continue;
+      if (!specifier.startsWith(".")) {
+        throw new Error(`Test Contour provider module ${relative} imports a non-installable module: ${specifier}`);
+      }
+      pending.push(path.resolve(path.dirname(file), specifier));
+    }
+  }
+  return [...closure].sort();
+}
+
 export async function prepareTestContourCodexProviders({
   root = defaultTestContourRoot(),
   sourceRoot = path.resolve(import.meta.dirname, "..", ".."),
@@ -706,17 +759,20 @@ export async function prepareTestContourCodexProviders({
   const isolatedRoot = assertIsolatedTestContourRoot(root, { sourceRoot });
   await requireMarker(isolatedRoot);
   const paths = testContourPaths(isolatedRoot);
-  const sources = [
-    [path.join(sourceRoot, "e2e", "fake-codex-app-server.mjs"), paths.fakeCodexExecutable],
-    [path.join(sourceRoot, "e2e", "test-contour-codex-multiplexer.mjs"), paths.codexMultiplexerExecutable],
-  ];
-  await mkdir(path.dirname(paths.fakeCodexExecutable), { recursive: true });
-  await Promise.all(sources.map(async ([sourceFile, targetFile]) => {
-    await writeTextAtomic(targetFile, await readFile(sourceFile, "utf8"));
-  }));
+  // Provider scripts run from the installed tree, so their relative imports
+  // must resolve there: install the exact transitive closure from the candidate
+  // source with its layout. Nothing is deleted: the still-running contour may
+  // restart providers from paths in its own config until it is replaced.
+  const files = await providerModuleClosure(sourceRoot, TEST_CONTOUR_PROVIDER_ENTRIES);
+  for (const file of files) {
+    const targetFile = path.join(paths.providersDirectory, file);
+    await mkdir(path.dirname(targetFile), { recursive: true });
+    await writeTextAtomic(targetFile, await readFile(path.join(sourceRoot, file), "utf8"));
+  }
   return {
     fakeCodexExecutable: paths.fakeCodexExecutable,
     codexMultiplexerExecutable: paths.codexMultiplexerExecutable,
+    fakeClaudeExecutable: paths.fakeClaudeExecutable,
   };
 }
 
@@ -1397,6 +1453,7 @@ async function cloneProductionDataToTestContourUnlocked({
     destinationDatabaseFile: path.join(paths.dataDir, "journal.sqlite"),
     backupRoot: paths.dataBackupsDirectory,
     projectRoot: paths.projectRoot,
+    detachedGitRoot: paths.detachedGitDirectory,
     model,
     now,
   });
@@ -1918,6 +1975,27 @@ export function testContourSmokeAgentPolicy({ withAgent = true, recording = null
   return { withAgent: Boolean(withAgent), agentProbeSkipped: null };
 }
 
+export function testContourSmokeJournalMatches(record, {
+  model,
+  probe,
+  probeResponse,
+  startedAt,
+  smoke,
+} = {}) {
+  const exactThreadId = String(smoke?.threadId ?? "").trim();
+  const exactTurnId = String(smoke?.turnId ?? "").trim();
+  const exactClientUserMessageId = String(smoke?.clientUserMessageId ?? "").trim();
+  if (!exactThreadId || !exactTurnId || !exactClientUserMessageId) return false;
+  return record?.provider === "codex"
+    && record.model === model
+    && record.prompt === probe
+    && record.body === probeResponse
+    && String(record.threadId ?? "").trim() === exactThreadId
+    && String(record.turnId ?? "").trim() === exactTurnId
+    && String(record.clientUserMessageId ?? "").trim() === exactClientUserMessageId
+    && Date.parse(record.completedAt) >= Date.parse(startedAt);
+}
+
 async function verifyTestContourUnlocked({
   root = defaultTestContourRoot(),
   entryFile,
@@ -1958,6 +2036,7 @@ async function verifyTestContourUnlocked({
     withAgent: smokePolicy.withAgent,
     model: state.model,
     probeResponse,
+    isolatedFakeProvider: !recording && state.model === TEST_CONTOUR_FAKE_MODEL,
 
   });
   let journal = null;
@@ -1966,17 +2045,19 @@ async function verifyTestContourUnlocked({
       const database = new JournalDatabase(path.join(paths.dataDir, "journal.sqlite"));
       try {
         const ledger = await database.loadLedger();
-        const record = Object.values(ledger.turns).find((item) => (
-          item.provider === "codex"
-          && item.model === state.model
-          && item.prompt === TEST_CONTOUR_PROBE
-          && item.body === probeResponse
-          && Date.parse(item.completedAt) >= Date.parse(state.startedAt)
-        ));
+        const record = Object.values(ledger.turns).find((item) => testContourSmokeJournalMatches(item, {
+          model: state.model,
+          probe: TEST_CONTOUR_PROBE,
+          probeResponse,
+          startedAt: state.startedAt,
+          smoke,
+        }));
         return record ? {
           provider: record.provider,
+          threadId: record.threadId,
           model: record.model,
           turnId: record.turnId,
+          clientUserMessageId: record.clientUserMessageId,
           completedAt: record.completedAt,
         } : null;
       } finally {

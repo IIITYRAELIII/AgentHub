@@ -348,7 +348,12 @@ export async function runCodexAppServerCompatibilityCanary(candidate, {
         ...(model ? { model } : {}),
         effort: "low",
         additionalContext: buildCodexApplicationContext(
-          `For the isolated hub_canary_read verification, use context_token ${canaryContextToken}.`,
+          [
+            "Synthetic Guide context. ".repeat(300),
+            `For the isolated hub_canary_read verification, use context_token ${canaryContextToken}.`,
+            "Synthetic Workspace context. ".repeat(300),
+          ].join("\n\n"),
+          `${id}:${turnPhase}`,
         ),
         ...codexTurnSandboxSettings("workspace-write", projectRoot),
       }, { timeoutMs: rpcTimeoutMs });

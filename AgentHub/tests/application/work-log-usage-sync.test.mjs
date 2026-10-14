@@ -226,6 +226,26 @@ test("merge preserves conflicting limit samples and stays order-independent", ()
   assert.deepEqual(forward.limitSamples.map((sample) => sample.usedPercent), [10, 20]);
 });
 
+test("same-turn sync keeps richer cache-write and request-tier evidence in either order", () => {
+  const legacy = normalizeUsageSyncEvent(turn({
+    usage: { inputTokens: 300_000, cachedInputTokens: 100_000,
+      outputTokens: 5_000, totalTokens: 305_000 },
+  }));
+  const enriched = normalizeUsageSyncEvent(turn({
+    usage: {
+      inputTokens: 300_000, cachedInputTokens: 100_000, cacheWriteInputTokens: 50_000,
+      outputTokens: 5_000, totalTokens: 305_000,
+      longContextInputTokens: 300_000, longContextCachedInputTokens: 100_000,
+      longContextCacheWriteInputTokens: 50_000, longContextOutputTokens: 5_000,
+      longContextReasoningOutputTokens: 0,
+    },
+  }));
+  const [forward] = mergeUsageSyncEvents([legacy], [enriched]);
+  const [reverse] = mergeUsageSyncEvents([enriched], [legacy]);
+  assert.deepEqual(forward.usage, enriched.usage);
+  assert.deepEqual(reverse.usage, enriched.usage);
+});
+
 test("limit samples use canonical byte order instead of locale collation", () => {
   const event = normalizeUsageSyncEvent(turn({
     limitSamples: [

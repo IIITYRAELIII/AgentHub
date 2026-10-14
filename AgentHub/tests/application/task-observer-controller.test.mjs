@@ -53,6 +53,20 @@ test("TaskObserverController retries missing snapshots and errors", async () => 
   assert.deepEqual(failed.events, ["error"]);
 });
 
+test("unknown Codex snapshot cannot terminate observation; the later exact terminal completes once", async () => {
+  let snapshot = { activityUnknown: true, active: false, completed: false, turnId: "turn-1" };
+  const state = fixture({ readSnapshot: async () => snapshot });
+  const run = { observer: true, observerTimer: null, turnId: "turn-1" };
+  await state.controller.poll(run);
+  assert.deepEqual(state.events, ["unknown"]);
+  assert.equal(state.timers.length, 1);
+  run.observerTimer = null;
+  snapshot = { completed: true, active: false, turnId: "turn-1", terminalStatus: "completed" };
+  await state.controller.poll(run);
+  assert.deepEqual(state.events, ["unknown", "completed"]);
+  assert.equal(state.timers.length, 1);
+});
+
 test("TaskObserverController discards a snapshot when the run ended during read", async () => {
   let release;
   const pending = new Promise((resolve) => { release = resolve; });

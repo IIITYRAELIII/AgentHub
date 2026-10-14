@@ -1,6 +1,5 @@
 import { unlink } from "node:fs/promises";
 import { emptyTokenUsage } from "../../domain/token-usage.mjs";
-import { isCodexContextProbeTurn } from "../../domain/codex-context-probe.mjs";
 import {
   appendCodexAgentMessageDelta,
   completeCodexAgentMessage,
@@ -72,7 +71,9 @@ function isCompactionOnlyContextMeasurement(params, compaction) {
     last.outputTokens,
     last.reasoningOutputTokens,
   ].reduce((sum, value) => sum + Math.max(0, Number(value) || 0), 0);
-  return Math.max(0, Number(last.totalTokens) || 0) > 0 && billableTokens === 0;
+  return typeof last.totalTokens === "number"
+    && Number.isFinite(last.totalTokens) && last.totalTokens >= 0
+    && billableTokens === 0;
 }
 
 function contextUsagePercent(context) {
@@ -87,7 +88,7 @@ export class CodexEventService {
   constructor(dependencies = {}) {
     for (const name of [
       "invalidateThreadRead", "forEvent", "reindexRun", "applyThreadSettings", "saveState",
-      "trackTokenUsage", "completeTurn", "taskKey", "isSelectedRun", "setSelectedDiff", "appendActivity",
+      "trackTokenUsage", "mutateCompaction", "taskKey", "isSelectedRun", "setSelectedDiff", "appendActivity",
       "noteActivity", "scheduleProgress", "appendReasoning", "isCompactionItem",
       "upsertReasoningBlock", "replaceActivityGroups", "turnActivityGroups",
       "contextUsage", "beginCompaction", "getCompaction", "settleCompactionTurn",
@@ -105,6 +106,7 @@ export class CodexEventService {
 
   async handle(message) {
     const d = this.#d;
+    const receivedAt = Date.now();
     const { method, params = {}, id } = message;
     if (params.threadId) d.invalidateThreadRead(params.threadId);
     if (method === "rawResponseItem/completed") {
@@ -115,16 +117,13 @@ export class CodexEventService {
     }
     if (id !== undefined && method) d.logError?.(`Codex server request received: ${method}`);
     const eventTurnId = params.turn?.id ?? params.turnId ?? null;
-    const contextProbe = isCodexContextProbeTurn(params.turn, { allowTextFallback: false });
-    const run = contextProbe
-      ? null
-      : d.forEvent({
-        turnId: eventTurnId,
-        threadId: params.threadId,
-        provider: "codex",
-        allowThreadFallback: method === "turn/started",
-      });
-    if (!contextProbe && run) {
+    const run = d.forEvent({
+      turnId: eventTurnId,
+      threadId: params.threadId,
+      provider: "codex",
+      allowThreadFallback: method === "turn/started",
+    });
+    if (run) {
       // A terminal snapshot can recover an item whose individual notification
       // was lost. Both observations share the durable question identity.
       const questionItems = method === "item/completed" ? [params.item]
@@ -170,8 +169,7 @@ export class CodexEventService {
     if (method === "turn/started") {
       const pendingCompaction = d.getCompaction(params.threadId);
       if (
-        !contextProbe
-        && !run
+        !run
         && eventTurnId
         && pendingCompaction?.status === "running"
         && !String(pendingCompaction.turnId ?? "").trim()
@@ -220,13 +218,20 @@ export class CodexEventService {
       });
     }
     if (method === "thread/tokenUsage/updated") {
-      const compaction = d.getCompaction(params.threadId);
-      d.trackTokenUsage(params, {
-        // A standalone compaction reports an intermediate token count with no
-        // billable input/output. It still belongs in turn accounting, but it
-        // is not the compacted prompt size. The first ordinary model turn is
-        // the first exact post-compaction context measurement.
-        provisionalContext: isCompactionOnlyContextMeasurement(params, compaction),
+      await d.mutateCompaction(params.threadId, () => {
+        const compaction = d.getCompaction(params.threadId);
+        const provisionalContext = isCompactionOnlyContextMeasurement(params, compaction);
+        d.trackTokenUsage(params, {
+          // A standalone compaction reports an intermediate token count with no
+          // billable input/output. It still belongs in turn accounting, but it
+          // is a preliminary size estimate rather than exact model usage.
+          // The compaction owner retains it separately from later user usage.
+          provisionalContext,
+        });
+        if (provisionalContext && compaction?.id) d.recordContextEstimate?.({
+          operationId: compaction.id, threadId: params.threadId, turnId: eventTurnId,
+          accepted: d.getCompaction(params.threadId)?.measurementKind === "estimated",
+        });
       });
       saveStateBestEffort(d);
     }
@@ -313,7 +318,7 @@ export class CodexEventService {
           occurredAt: params.completedAtMs ?? Date.now(),
         });
         await d.beginCompactionCleanup(params.threadId, {
-          turnId: eventTurnId, itemId: params.item?.id, compactedAt: params.completedAtMs,
+          turnId: eventTurnId, itemId: params.item?.id, compactedAt: params.completedAtMs ?? receivedAt,
         });
       }
       if (run) {
@@ -387,7 +392,7 @@ export class CodexEventService {
       const completedCompaction = params.turn?.items?.findLast?.((item) => d.isCompactionItem(item));
       if (completedCompaction) {
         await d.beginCompactionCleanup(params.threadId, {
-          turnId: eventTurnId, itemId: completedCompaction.id, compactedAt: params.completedAtMs,
+          turnId: eventTurnId, itemId: completedCompaction.id, compactedAt: params.completedAtMs ?? receivedAt,
         });
       }
       await d.settleCompactionTurn(params.threadId, {
@@ -398,15 +403,17 @@ export class CodexEventService {
         hydrateCodexAgentMessages(run, params.turn?.items, { turnId: eventTurnId });
         d.replaceActivityGroups(run, d.turnActivityGroups(params.turn));
       }
-      d.completeTurn(eventTurnId, params.turn?.status);
       if (!run) {
         d.turnTokenUsage.delete(eventTurnId);
         d.speechButtons.delete(eventTurnId);
         const temporaryFiles = d.temporaryFiles.get(eventTurnId) ?? [];
         d.temporaryFiles.delete(eventTurnId);
         await Promise.all(temporaryFiles.map((file) => (d.removeFile ?? ((value) => unlink(value).catch(() => {})))(file)));
-        if (!contextProbe) {
-          d.logWarn?.(`Completed Codex turn ${eventTurnId ?? "unknown"} has no registered task run`);
+        d.logWarn?.(`Completed Codex turn ${eventTurnId ?? "unknown"} has no registered task run`);
+        if (params.agentHubHydrationReplay !== true && params.turn?.status === "completed") {
+          void Promise.resolve(d.completeUnregisteredTurn?.({
+            threadId: params.threadId, turnId: eventTurnId,
+          })).catch((error) => d.logWarn?.(`Post-turn context maintenance failed: ${error.message}`));
         }
         return;
       }

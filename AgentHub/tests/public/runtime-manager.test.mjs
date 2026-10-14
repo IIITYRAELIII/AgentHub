@@ -2,17 +2,181 @@ import assert from "node:assert/strict";
 import { cp, mkdtemp, mkdir, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { createRequire } from "node:module";
 import test from "node:test";
+import { pathToFileURL } from "node:url";
 
 import {
   activateRuntime,
   deployRuntime,
+  prepareRuntime,
+  installPreparedRuntime,
+  verifyInstalledRuntime,
   prepareRuntimeConfig,
   rollbackRuntime,
   runtimeStatus,
 } from "../../runtime-manager.mjs";
+import { ReleaseOperationStore } from "../../src/infrastructure/persistence/release-operation-store.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "..", "..");
+
+test("prepared runtime retains the verified deletion helper and executes its exact identity guard", async (t) => {
+  if (process.platform !== "win32") return t.skip("Handle deletion is Windows-only");
+  const { sourceRoot, runtimeRoot } = await fixture();
+  t.after(() => rm(path.dirname(runtimeRoot), { recursive: true, force: true }));
+  const helper = "src/infrastructure/persistence/windows-delete-verified-entry";
+  await mkdir(path.join(sourceRoot, "src/infrastructure/persistence"), { recursive: true });
+  await mkdir(path.join(sourceRoot, "src/infrastructure/process"), { recursive: true });
+  for (const name of [`${helper}.mjs`, `${helper}.cs`, "src/infrastructure/process/system-boot-identity.mjs"]) {
+    await cp(path.join(ROOT, name), path.join(sourceRoot, name));
+  }
+  await writeFile(path.join(sourceRoot, "src/infrastructure/persistence/unrelated.cs"), "not a runtime asset");
+  const prepared = await prepareRuntime({ sourceRoot, runtimeRoot, releaseId: "verified-delete" });
+  const manifest = JSON.parse(await readFile(path.join(prepared.releaseRoot, "runtime-manifest.json"), "utf8"));
+  assert.ok(manifest.files.find((entry) => entry.path === `${helper}.cs`));
+  assert.deepEqual(await readFile(path.join(prepared.releaseRoot, `${helper}.cs`)), await readFile(path.join(sourceRoot, `${helper}.cs`)));
+  await assert.rejects(readFile(path.join(prepared.releaseRoot, "src/infrastructure/persistence/unrelated.cs")), /ENOENT/u);
+  await assert.rejects(readFile(path.join(runtimeRoot, "current.json")), /ENOENT/u);
+  const { deleteVerifiedWindowsEntry } = await import(pathToFileURL(path.join(prepared.releaseRoot, `${helper}.mjs`)));
+  const target = path.join(path.dirname(runtimeRoot), "disposable-backup.sqlite");
+  await writeFile(target, "disposable recovery bytes");
+  const identity = await stat(target, { bigint: true });
+  await assert.rejects(deleteVerifiedWindowsEntry(target, { ...identity, ino: identity.ino + 1n }), /./u);
+  assert.equal(await readFile(target, "utf8"), "disposable recovery bytes");
+  await deleteVerifiedWindowsEntry(target, identity);
+  await assert.rejects(readFile(target), /ENOENT/u);
+});
+
+test("runtime preparation refuses a missing verified deletion asset before publishing a pointer", async (t) => {
+  const { sourceRoot, runtimeRoot } = await fixture();
+  t.after(() => rm(path.dirname(runtimeRoot), { recursive: true, force: true }));
+  const relative = "src/infrastructure/persistence/windows-delete-verified-entry.mjs";
+  await mkdir(path.dirname(path.join(sourceRoot, relative)), { recursive: true });
+  await writeFile(path.join(sourceRoot, relative), "export const deletionOwner = true;\n");
+  await assert.rejects(prepareRuntime({ sourceRoot, runtimeRoot, releaseId: "missing-delete-source" }), /Runtime module asset is missing/u);
+  await assert.rejects(readFile(path.join(runtimeRoot, "current.json")), /ENOENT/u);
+});
+
+test("preparing a runtime leaves the current installation intact; applying consumes exact prepared bytes", async (t) => {
+  const { sourceRoot, runtimeRoot } = await fixture();
+  t.after(() => rm(path.dirname(runtimeRoot), { recursive: true, force: true }));
+  await deployRuntime({ sourceRoot, runtimeRoot, releaseId: "old" });
+  const pointer = await readFile(path.join(runtimeRoot, "current.json"));
+  const launcher = await readFile(path.join(runtimeRoot, "codex-stop-hook-launcher.mjs"));
+  await writeFile(path.join(sourceRoot, "helper.mjs"), "export const value = 2;\n");
+  const prepared = await prepareRuntime({ sourceRoot, runtimeRoot, releaseId: "prepared", publicationRevision: "a".repeat(40) });
+  assert.deepEqual(await readFile(path.join(runtimeRoot, "current.json")), pointer);
+  assert.deepEqual(await readFile(path.join(runtimeRoot, "codex-stop-hook-launcher.mjs")), launcher);
+  assert.equal(await verifyInstalledRuntime({ runtimeRoot, ...prepared }), false);
+  await writeFile(path.join(sourceRoot, "helper.mjs"), "export const value = 3;\n");
+  await installPreparedRuntime({ runtimeRoot, ...prepared });
+  assert.equal(await readFile(path.join(prepared.releaseRoot, "helper.mjs"), "utf8"), "export const value = 2;\n");
+  assert.equal(await verifyInstalledRuntime({ runtimeRoot, ...prepared }), true);
+  const installedPointer = await readFile(path.join(runtimeRoot, "current.json"));
+  const repeated = await installPreparedRuntime({ runtimeRoot, ...prepared, beforePointerCommit: () => assert.fail("no duplicate pointer write") });
+  assert.equal(repeated.reused, true);
+  assert.deepEqual(await readFile(path.join(runtimeRoot, "current.json")), installedPointer);
+  await writeFile(path.join(prepared.releaseRoot, "helper.mjs"), "damaged");
+  await assert.rejects(installPreparedRuntime({ runtimeRoot, ...prepared }), /mismatch/);
+});
+
+test("prepared runtime manifests locked production modules and resolves them from its own release", async (t) => {
+  const { sourceRoot, runtimeRoot } = await fixture();
+  t.after(() => rm(path.dirname(runtimeRoot), { recursive: true, force: true }));
+  await writeFile(path.join(sourceRoot, "package.json"), JSON.stringify({
+    name: "agent-hub", version: "2026.8.23", dependencies: { "example-runtime": "1.0.0" },
+  }));
+  await writeFile(path.join(sourceRoot, "package-lock.json"), JSON.stringify({
+    name: "agent-hub", lockfileVersion: 3, packages: { "": {
+      dependencies: { "example-runtime": "1.0.0" },
+    } },
+  }));
+  const prepared = await prepareRuntime({
+    sourceRoot, runtimeRoot, releaseId: "locked-production-dependency",
+    installProductionDependencies: async (stagingRoot) => {
+      const modules = path.join(stagingRoot, "node_modules");
+      const dependency = path.join(modules, "example-runtime");
+      await mkdir(dependency, { recursive: true });
+      await writeFile(path.join(modules, ".package-lock.json"), "{}\n");
+      await writeFile(path.join(dependency, "package.json"), JSON.stringify({
+        name: "example-runtime", version: "1.0.0", type: "module", exports: "./index.mjs",
+      }));
+      await writeFile(path.join(dependency, "index.mjs"), "export const ready = true;\n");
+    },
+  });
+  const manifest = JSON.parse(await readFile(path.join(prepared.releaseRoot, "runtime-manifest.json"), "utf8"));
+  const names = manifest.files.map((file) => file.path);
+  assert.ok(names.includes("package-lock.json"));
+  assert.ok(names.includes("node_modules/example-runtime/index.mjs"));
+  assert.ok(names.includes("node_modules/.package-lock.json"));
+  const fromInstalledModule = createRequire(path.join(prepared.releaseRoot, "src", "application", "service.mjs"));
+  assert.equal(fromInstalledModule.resolve("example-runtime"),
+    path.join(prepared.releaseRoot, "node_modules", "example-runtime", "index.mjs"));
+});
+
+test("runtime dependency admission rejects a missing lock before installation", async (t) => {
+  const { sourceRoot, runtimeRoot } = await fixture();
+  t.after(() => rm(path.dirname(runtimeRoot), { recursive: true, force: true }));
+  await writeFile(path.join(sourceRoot, "package.json"), JSON.stringify({
+    name: "agent-hub", version: "2026.8.23", dependencies: { "example-runtime": "1.0.0" },
+  }));
+  await assert.rejects(prepareRuntime({
+    sourceRoot, runtimeRoot, releaseId: "missing-lock",
+    installProductionDependencies: () => assert.fail("npm must not start without the lock"),
+  }), /pinned package-lock/u);
+  await assert.rejects(readFile(path.join(runtimeRoot, "current.json"), "utf8"), /ENOENT/u);
+});
+
+test("runner N operation remains readable across an interrupted and retried N+1 installation", async (t) => {
+  const { sourceRoot, runtimeRoot } = await fixture();
+  const root = path.dirname(runtimeRoot);
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await deployRuntime({ sourceRoot, runtimeRoot, releaseId: "runner-n" });
+  const operationData = path.join(root, "operation-data");
+  await mkdir(operationData, { recursive: true });
+  const store = new ReleaseOperationStore({ dataDir: operationData });
+  store.create({
+    operationId: "operation-runner-n",
+    requestId: "request-runner-n",
+    workspaceId: "workspace",
+    streamId: "stream",
+    threadId: "thread",
+    authorization: {
+      taskIds: ["task-a"],
+      approvedTargets: [{ targetId: "production", kind: "agent-hub-publication" }],
+      validationMode: "full",
+    },
+    runnerVersion: "runner-n",
+  });
+  store.acquire("operation-runner-n", "worker-n", { leaseMs: 60_000, processId: process.pid });
+
+  await writeFile(
+    path.join(sourceRoot, "release-operation-publication-runner.mjs"),
+    "export const durableReleaseRunner = 'runner-n+1';\n",
+    "utf8",
+  );
+  const prepared = await prepareRuntime({
+    sourceRoot, runtimeRoot, releaseId: "runner-n1", publicationRevision: "b".repeat(40),
+  });
+  await assert.rejects(installPreparedRuntime({
+    runtimeRoot,
+    ...prepared,
+    beforePointerCommit: () => { throw new Error("injected N+1 install interruption"); },
+  }), /injected N\+1 install interruption/u);
+  assert.equal(JSON.parse(await readFile(path.join(runtimeRoot, "current.json"), "utf8")).current, "runner-n");
+  assert.match(await readFile(path.join(runtimeRoot, "releases", "runner-n", "release-operation-publication-runner.mjs"), "utf8"),
+    /durableReleaseRunner = true/u);
+  assert.equal(new ReleaseOperationStore({ dataDir: operationData }).get("operation-runner-n").runnerVersion, "runner-n");
+
+  await installPreparedRuntime({ runtimeRoot, ...prepared });
+  assert.equal(JSON.parse(await readFile(path.join(runtimeRoot, "current.json"), "utf8")).current, "runner-n1");
+  assert.match(await readFile(path.join(runtimeRoot, "releases", "runner-n1", "release-operation-publication-runner.mjs"), "utf8"),
+    /runner-n\+1/u);
+  const reopened = new ReleaseOperationStore({ dataDir: operationData }).get("operation-runner-n");
+  assert.equal(reopened.runnerVersion, "runner-n");
+  assert.equal(reopened.state, "compose");
+  assert.equal(reopened.owner.ownerId, "worker-n");
+});
 
 async function fixture() {
   const root = await mkdtemp(path.join(os.tmpdir(), "telegram-runtime-"));
@@ -30,6 +194,11 @@ async function fixture() {
   );
   await writeFile(path.join(sourceRoot, "agent-hub-server.mjs"), "export const ready = true;\n", "utf8");
   await writeFile(path.join(sourceRoot, "helper.mjs"), "export const value = 1;\n", "utf8");
+  await writeFile(
+    path.join(sourceRoot, "release-operation-publication-runner.mjs"),
+    "export const durableReleaseRunner = true;\n",
+    "utf8",
+  );
   await writeFile(path.join(sourceRoot, "helper.cjs"), "module.exports = { value: 1 };\n", "utf8");
   await writeFile(path.join(sourceRoot, "helper.test.mjs"), "throw new Error('not runtime');\n", "utf8");
   await writeFile(
@@ -74,6 +243,10 @@ test("deployRuntime publishes an atomic release without tests or local config", 
   assert.equal(firstManifest.releaseVersion, "2026.8.23.1");
   assert.match(await readFile(path.join(first.releaseRoot, "agent-hub-server.mjs"), "utf8"), /ready/);
   assert.match(await readFile(path.join(first.releaseRoot, "helper.cjs"), "utf8"), /module\.exports/u);
+  assert.match(
+    await readFile(path.join(first.releaseRoot, "release-operation-publication-runner.mjs"), "utf8"),
+    /durableReleaseRunner/u,
+  );
   assert.match(
     await readFile(path.join(first.releaseRoot, "src", "application", "service.mjs"), "utf8"),
     /layered/u,

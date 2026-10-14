@@ -106,9 +106,12 @@ async function handle(message) {
       return;
     }
     if (/hub_canary_read/u.test(prompt)) {
-      const application = params.additionalContext?.["agent-hub"];
-      const instructions = application?.kind === "application" && !process.argv.includes("--ignore-application-context")
-        ? application.value : "";
+      const instructions = !process.argv.includes("--ignore-application-context")
+        ? Object.entries(params.additionalContext ?? {})
+          .filter(([key, entry]) => key.startsWith("agent-hub") && entry.kind === "application")
+          .sort(([left], [right]) => left.localeCompare(right))
+          .map(([, entry]) => entry.value.slice(entry.value.indexOf("\n\n") + 2)).join("")
+        : "";
       const contextToken = instructions.match(/context_token\s+([0-9A-Za-z_-]+)/u)?.[1] ?? "";
       if (!contextToken) {
         setImmediate(() => complete(id, "failed"));

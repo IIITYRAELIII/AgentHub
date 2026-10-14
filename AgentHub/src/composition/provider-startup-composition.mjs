@@ -1,6 +1,7 @@
 import { pathInsideOrSame } from "../infrastructure/filesystem/config.mjs";
 import { codexThreadSandboxSettings } from "../providers/codex/codex-sandbox.mjs";
 import { reconcileCodexThreadSubscriptions } from "../providers/codex/codex-thread-subscriptions.mjs";
+import { needsThreadResume } from "../providers/codex/codex-recovery.mjs";
 
 export function createProviderStartupComposition({
   config,
@@ -16,6 +17,9 @@ export function createProviderStartupComposition({
   startCodex,
   initializeCodex,
   sendRpc,
+  refreshCodexModels = async () => {},
+  refreshClaudeModels = async () => {},
+  waitForModelRetry = (ms) => new Promise((resolve) => { setTimeout(resolve, ms).unref?.(); }),
   resolveResumedCodexThreadTitle,
   applyCodexThreadSettings,
   saveState,
@@ -36,8 +40,30 @@ export function createProviderStartupComposition({
   }
 
   async function initializeProvider() {
+    // Claude discovery remains available even when Codex startup fails.
+    void Promise.resolve().then(refreshClaudeModels)
+      .catch((error) => logger.warn?.("Cannot refresh Claude models:", error.message));
+    const startAt = performance.now();
     await startCodex();
+    const initializedAt = performance.now();
     await initializeCodex({ attachSelectedThread: false });
+    try {
+      logger.info?.("Codex model catalog startup readiness", {
+        transportStartMs: Math.round(initializedAt - startAt),
+        initializeMs: Math.round(performance.now() - initializedAt),
+      });
+    } catch {
+      // Diagnostics must not affect provider startup.
+    }
+    // Discovery is best effort and must not delay Hub readiness or run recovery.
+    void Promise.resolve().then(async () => {
+      if (await refreshCodexModels({ source: "startup" }) !== false) return;
+      for (const [index, delayMs] of [10_000, 30_000].entries()) {
+        await waitForModelRetry(delayMs);
+        if (await refreshCodexModels({ source: `startup-retry-${index + 1}` }) !== false) return;
+      }
+    })
+      .catch((error) => logger.warn?.("Cannot refresh Codex models:", error.message));
     if (config.telegramEnabled && config.createInitialThreadOnStartup !== false && !getThreadId()) {
       await createThread();
     }
@@ -46,14 +72,18 @@ export function createProviderStartupComposition({
   async function attachCodexThread() {
     const threadId = getThreadId();
     if (threadId) {
+      let resumed = false;
       try {
         const result = await sendRpc("thread/resume", {
           threadId,
           ...codexThreadSandboxSettings(config.codexSandboxMode),
         });
         if (!isWorkspaceThread(result.thread ?? {})) {
-          throw new Error("saved thread belongs to another project");
+          const error = new Error("saved thread belongs to another project");
+          error.code = "HUB_THREAD_WRONG_PROJECT";
+          throw error;
         }
+        resumed = true;
         selectionStore.setTitle(await resolveResumedCodexThreadTitle(threadId, result.thread));
         applyCodexThreadSettings(threadId, result);
         await saveState();
@@ -65,6 +95,11 @@ export function createProviderStartupComposition({
         return true;
       } catch (error) {
         logger.error("Cannot resume saved thread:", error.message);
+        if (resumed || (!needsThreadResume(error) && error.code !== "HUB_THREAD_WRONG_PROJECT")) {
+          // Successful resume followed by naming failure is not missing-Thread
+          // evidence and cannot authorize a replacement Thread.
+          return false;
+        }
         const savedActiveRun = taskRuns.forTask({
           provider: "codex",
           projectRoot: getProjectRoot(),

@@ -219,12 +219,13 @@
   }
 
   const TASK_WORKFLOW_STATUSES = Object.freeze([
-    "new", "in_progress", "testing", "awaiting_implementation", "done",
+    "new", "in_progress", "blocked", "testing", "awaiting_implementation", "done",
   ]);
   const TASK_STATUS_PRESENTATION = Object.freeze({
     en: Object.freeze({
       new: Object.freeze({ short: "New", full: "New" }),
       in_progress: Object.freeze({ short: "InProg", full: "In progress" }),
+      blocked: Object.freeze({ short: "Blocked", full: "Blocked" }),
       testing: Object.freeze({ short: "Test", full: "Testing" }),
       awaiting_implementation: Object.freeze({ short: "Await", full: "Awaiting implementation" }),
       done: Object.freeze({ short: "Done", full: "Done" }),
@@ -232,6 +233,7 @@
     ru: Object.freeze({
       new: Object.freeze({ short: "Новая", full: "Новая" }),
       in_progress: Object.freeze({ short: "ВРаботе", full: "В работе" }),
+      blocked: Object.freeze({ short: "Блок", full: "Заблокирована" }),
       testing: Object.freeze({ short: "Тест", full: "Тестируется" }),
       awaiting_implementation: Object.freeze({ short: "Прим", full: "К применению" }),
       done: Object.freeze({ short: "Готово", full: "Готово" }),
@@ -456,24 +458,6 @@
       || `Stream ${Number(presentation.stream.ordinal) || ""}`.trim();
   }
 
-  function taskChangedFileGroups(task) {
-    const groups = new Map();
-    for (const item of Array.isArray(task?.changedFiles) ? task.changedFiles : []) {
-      const projectRoot = String(item?.projectRoot ?? "").trim();
-      const filePath = String(item?.path ?? "").trim();
-      const operation = String(item?.operation ?? "").trim();
-      if (!projectRoot || !filePath || !["added", "modified", "deleted"].includes(operation)) continue;
-      if (!groups.has(projectRoot)) groups.set(projectRoot, []);
-      groups.get(projectRoot).push({
-        projectRoot,
-        path: filePath,
-        operation,
-        turnId: String(item?.turnId ?? "").trim() || null,
-      });
-    }
-    return Array.from(groups, ([projectRoot, files]) => ({ projectRoot, files }));
-  }
-
   function taskWorkLogEntries(task) {
     return (Array.isArray(task?.workLog) ? task.workLog : []).flatMap((entry) => {
       const summary = String(entry?.summary ?? "").trim();
@@ -488,7 +472,8 @@
         status,
         turnId,
         createdAt,
-        changedFileCount: Array.isArray(entry?.changedFiles) ? entry.changedFiles.length : 0,
+        threadId: String(entry?.threadId ?? "").trim(),
+        taskThreadId: String(entry?.taskThreadId ?? entry?.threadId ?? "").trim(),
       }];
     });
   }
@@ -499,10 +484,6 @@
       completed: checklist.filter((item) => item?.completed === true).length,
       total: checklist.length,
     };
-  }
-
-  function changedFileOperationLabel(operation) {
-    return ({ added: "Добавлен", modified: "Изменён", deleted: "Удалён" })[operation] ?? operation;
   }
 
   function taskWorkLogStatusLabel(status) {
@@ -523,15 +504,6 @@
     });
   }
 
-  function taskChangedFileCountLabel(count) {
-    const value = Math.max(0, Number(count) || 0);
-    const mod100 = value % 100;
-    const mod10 = value % 10;
-    const noun = mod100 >= 11 && mod100 <= 14
-      ? "файлов"
-      : (mod10 === 1 ? "файл" : (mod10 >= 2 && mod10 <= 4 ? "файла" : "файлов"));
-    return `${value} ${noun}`;
-  }
 
   function orderedDashboardColumnIds(columnOrder = [], availableColumnIds = []) {
     const available = new Set(availableColumnIds);
@@ -845,7 +817,6 @@
     taskBoardScrollSnapshot,
     taskAttachmentCountLabel,
     taskAttachmentFiles,
-    taskChangedFileGroups,
     taskExecutorPresentation,
     taskExecutorStreamName,
     taskPresentationUpdate,
@@ -864,8 +835,8 @@
   const board = document.querySelector("[data-task-board]");
   const columns = document.querySelector("[data-task-board-columns]");
   const scopeStrip = document.querySelector("[data-task-board-scopes]");
-  const filterToggle = document.querySelector("[data-task-board-filter-toggle]");
-  const filterControls = document.querySelector("[data-task-board-filter-controls]");
+  const scopeSelect = document.querySelector("[data-task-board-scope-select]");
+  const statusFilter = document.querySelector("[data-task-board-status-filter]");
   const settingsToggle = document.querySelector("[data-task-board-settings-toggle]");
   const settingsPanel = document.querySelector("#task-board-settings");
   const groupingToggle = document.querySelector('[data-task-board-grouping-toggle]');
@@ -894,8 +865,8 @@
   const taskCardAttachmentInput = document.querySelector("[data-task-card-attachment-input]");
   const taskCardAttachmentHint = document.querySelector("[data-task-card-attachment-hint]");
   const taskCardExecutor = document.querySelector("[data-task-card-executor]");
-  const taskCardChangedFiles = document.querySelector("[data-task-card-changed-files]");
-  const taskCardChangedFileGroups = document.querySelector("[data-task-card-changed-file-groups]");
+  const taskCardDiff = document.querySelector("[data-task-card-diff]");
+  let diffGeneration = 0;
   const taskCardWorkLog = document.querySelector("[data-task-card-work-log]");
   const taskCardWorkLogEntries = document.querySelector("[data-task-card-work-log-entries]");
   const taskCardStatus = document.querySelector("[data-task-card-status]");
@@ -965,8 +936,9 @@
     deferredInputs: [],
     statusLanguage: storedTaskStatusLanguage(),
     completedOnly: false,
-    filtersOpen: false,
-    boardView: storedBoardPreference("view", ["statuses", "workspaces"], "statuses"),
+    statusFilter: "all",
+    boardView: storedBoardPreference("view", ["statuses", "workspaces", "list"],
+      window.matchMedia?.("(max-width: 959px)").matches ? "list" : "statuses"),
     groupByWorkspace: storedBoardPreference("group-workspaces", ["on", "off"], "on") === "on",
     collapsedBoardGroups: new Set(),
     taskOpenMode: storedBoardPreference("task-open", ["modal", "side", "both"], "both"),
@@ -1191,6 +1163,26 @@
   }
 
   const pendingBoardMoves = new Map();
+
+  function boardTaskPending(taskId) {
+    return pendingBoardMoves.has(taskId) || state.savingStatusTaskId === taskId;
+  }
+
+  function showBoardTaskPending(taskId) {
+    // Keep the authoritative position until the mutation response arrives. A
+    // pending command must still be visible immediately, even when its reply
+    // is delayed; dropping again cannot create another move of the same Task.
+    for (const card of document.querySelectorAll("[data-board-task-id]")) {
+      if (card.dataset.boardTaskId !== taskId) continue;
+      card.setAttribute("aria-busy", "true");
+      card.setAttribute("draggable", "false");
+      card.removeAttribute("data-board-task-movable");
+      if (!card.querySelector("[data-board-task-pending]")) card.append(node("span", {
+        class: "board-task-meta", "data-board-task-pending": "", role: "status",
+        text: "Сохраняется…",
+      }));
+    }
+  }
   let boardMovePromptOpen = false;
 
   function chooseMoveDestination(task, destination, status) {
@@ -1275,6 +1267,7 @@
     if (destination === destinationValue(task) && status && taskWorkflowStatus(task) !== status) {
       state.savingStatusTaskId = task.id;
       renderTaskCardSaving(task.id);
+      showBoardTaskPending(task.id);
       emit("status", { id: task.id, status });
       return;
     }
@@ -1285,6 +1278,7 @@
     const requestId = `board-move:${task.id}:${window.crypto?.randomUUID?.()
       || `${Date.now()}-${Math.random().toString(36).slice(2)}`}`;
     pendingBoardMoves.set(task.id, { requestId, destination, status, phase: "move" });
+    showBoardTaskPending(task.id);
     emit("move", { id: task.id, ...params, beforeId, requestId });
   }
 
@@ -1431,6 +1425,7 @@
     taskCardBackdrop = null;
     const openedTaskId = state.openTaskId;
     taskDeleteDialog.close();
+    diffGeneration += 1;
     state.openTaskId = null;
     state.taskCardModalRequested = false;
     state.editingTaskId = null;
@@ -1783,27 +1778,6 @@
     }
     renderTaskChecklist(task);
     renderTaskChecklistParent(task);
-    const changedFileGroups = taskChangedFileGroups(task);
-    if (taskCardChangedFiles && taskCardChangedFileGroups) {
-      taskCardChangedFiles.hidden = false;
-      taskCardChangedFileGroups.replaceChildren(...(changedFileGroups.length
-        ? changedFileGroups.map((group) => node("section", {
-          class: "task-card-changed-file-group",
-        }, [
-          node("strong", { class: "task-card-project-root", text: group.projectRoot }),
-          node("ul", {}, group.files.map((file) => node("li", {
-            class: `task-card-changed-file is-${file.operation}`,
-            title: file.turnId ? `Ход ${file.turnId}` : null,
-          }, [
-            node("span", {
-              class: "task-card-changed-file-operation",
-              text: changedFileOperationLabel(file.operation),
-            }),
-            node("code", { text: file.path }),
-          ]))),
-        ]))
-        : [node("p", { class: "task-card-detail-empty", text: "Пока нет зафиксированных изменений." })]));
-    }
     if (taskCardWorkLog && taskCardWorkLogEntries) {
       const entries = taskWorkLogEntries(task);
       taskCardWorkLog.hidden = false;
@@ -1820,11 +1794,15 @@
               text: taskWorkLogTimeLabel(entry.createdAt),
             })] : []),
           ]),
-          node("p", { text: entry.summary || "Без итогового описания." }),
-          node("span", {
-            class: "task-card-work-log-files",
-            text: taskChangedFileCountLabel(entry.changedFileCount),
-          }),
+          node("p", {}, [entry.provider && entry.threadId && entry.taskThreadId && entry.turnId ? node("a", {
+            text: entry.summary || "Без итогового описания.",
+            href: "#/chat/" + [entry.provider, entry.taskThreadId, "turn", entry.threadId, entry.turnId]
+              .map(encodeURIComponent).join("/"),
+            onclick: (event) => {
+              if (state.editDirty && !window.confirm("Закрыть без сохранения изменений?")) { event.preventDefault(); return; }
+              closeTaskCard();
+            },
+          }) : node("span", { text: entry.summary || "Без итогового описания." })]),
         ]))
         : [node("p", { class: "task-card-detail-empty", text: "Пока нет записей о выполненной работе." })]));
     }
@@ -1866,6 +1844,8 @@
     modal = state.taskOpenMode === "modal" || (modal && state.taskOpenMode === "both");
     if (modal && taskCardIsDocked()) dockedScrollTop = taskCardContent?.scrollTop ?? 0;
     state.taskCardModalRequested = modal;
+    diffGeneration += 1;
+    if (taskCardDiff) { taskCardDiff.hidden = true; taskCardDiff.replaceChildren(); }
     state.openTaskId = task.id;
     state.editingTaskId = null;
     state.editDirty = false;
@@ -1962,8 +1942,9 @@
 
   function taskCard(task, { compact = false, linked = false, movable = !compact, boardRow = false } = {}) {
     const completed = task.status === "done";
-    const movableCard = movable && !completed;
-    const attachable = !linked && !completed;
+    const pending = boardTaskPending(task.id);
+    const movableCard = movable && !completed && !pending;
+    const attachable = !linked && !completed && !pending;
     const card = node("article", {
       class: `board-task-card${task.status === "started" ? " is-started" : ""}${completed ? " is-completed" : ""}${compact ? " is-compact" : ""}`,
       draggable: attachable ? "true" : null,
@@ -1972,6 +1953,7 @@
       "aria-label": `Открыть задачу ${task.title || task.text}`,
       "data-board-task-id": task.id,
       "data-board-task-movable": movableCard ? "true" : null,
+      "aria-busy": pending ? "true" : null,
       onclick: (event) => {
         event?.stopPropagation?.();
         if (boardRow && event.detail === 1) firstBoardClick = {
@@ -1985,11 +1967,17 @@
         openTaskCard(task, { modal: boardRow && event.shiftKey });
       },
       ondragstart: attachable ? (event) => {
-        TaskReferences.beginDrag(event.dataTransfer, task);
-        setTaskDragImage(event, card);
+        window.AgentHubCommandTrace.measure("ui-interaction", "task-drag-start", () => {
+          TaskReferences.beginDrag(event.dataTransfer, task);
+          setTaskDragImage(event, card);
+        });
       } : null,
       ondragend: attachable ? () => TaskReferences.endDrag() : null,
     });
+    if (pending) card.append(node("span", {
+      class: "board-task-meta", "data-board-task-pending": "", role: "status",
+      text: "Сохраняется…",
+    }));
     if (movableCard) {
       card.addEventListener("dragover", (event) => {
         if (hasColumnDrag(event.dataTransfer)) return;
@@ -2049,6 +2037,10 @@
       }),
     ]));
     card.append(node("h3", { class: "board-task-title", text: task.title || task.text }));
+    if (taskWorkflowStatus(task) === "blocked" && task.blockedBy?.taskId) {
+      card.append(node("p", { class: "board-task-blocked-reason",
+        text: `Ожидает релиза ${task.blockedBy.taskNumber || task.blockedBy.taskId}` }));
+    }
     if (boardRow) {
       const workspaceName = task.bucket === "notes" ? "Заметки"
         : task.bucket === "backlog" ? "Бэклог"
@@ -2070,7 +2062,6 @@
   function renderCreateForm(workspace) {
     const input = node("textarea", {
       rows: "3",
-      maxlength: "20000",
       placeholder: "Что нужно сделать?",
       "aria-label": `Новая задача в ${workspace.name}`,
     });
@@ -2220,7 +2211,7 @@
     for (const id of order) {
       const groupTasks = groups.get(id);
       const workspace = id.startsWith('workspace:') ? workspaceById(id.slice(10)) : null;
-      const title = id === 'notes' ? 'Заметки' : workspace?.name || 'Workspace недоступен';
+      const title = id === 'backlog' ? 'Бэклог' : id === 'notes' ? 'Заметки' : workspace?.name || 'Workspace недоступен';
       const lane = node('details', {
         class: 'task-board-lane', 'data-task-board-group': id,
         open: state.collapsedBoardGroups.has(id) ? null : '',
@@ -2234,6 +2225,12 @@
         node('span', { text: title }),
         node('span', { class: 'task-board-count', text: String(groupTasks.length) }),
       ]);
+      summary.addEventListener('click', () => {
+        // The native `toggle` event is queued. Keep the durable collapse state in
+        // sync immediately so an intervening board snapshot cannot undo the click.
+        if (lane.open) state.collapsedBoardGroups.add(id);
+        else state.collapsedBoardGroups.delete(id);
+      });
       lane.append(summary);
       const cells = node('div', { class: 'task-board-lane-cells' });
       for (const status of statuses) {
@@ -2262,6 +2259,7 @@
   }
 
   function selectedScopeTasks(tasks) {
+    if (state.boardScope === "backlog") return tasks.filter((task) => task.bucket === "backlog");
     if (state.boardScope === "notes") return tasks.filter((task) => task.bucket === "notes");
     if (state.boardScope.startsWith("folder:")) {
       const folder = state.boardScope.slice(7);
@@ -2331,9 +2329,12 @@
 
   function renderScopeStrip() {
     if (!scopeStrip) return;
+    const workspaceCount = document.querySelector("[data-task-board-workspace-count]");
+    if (workspaceCount) workspaceCount.textContent = String(state.workspaces.length);
     const openTasks = (predicate) => tasksForMode(state.tasks, { completedOnly: state.completedOnly }).filter(predicate).length;
     const scopes = [
       { id: "all", label: "Все задачи", count: openTasks(() => true) },
+      { id: "backlog", label: "Бэклог", count: openTasks((task) => task.bucket === "backlog") },
       ...state.workspaces.map((workspace) => ({
         id: `workspace:${workspace.id}`,
         label: workspace.name,
@@ -2378,6 +2379,14 @@
       }, [node("div", { class: "task-board-folder-heading" }, [main, toggle]), memberList]));
     }
     scopeStrip.replaceChildren(...groups);
+    if (scopeSelect) {
+      const options = [
+        ...orderedScopes,
+        ...[...folders].map((folder) => ({ id: `folder:${folder}`, label: `Папка: ${folder}` })),
+      ];
+      scopeSelect.replaceChildren(...options.map((scope) => node("option", { value: scope.id, text: scope.label })));
+      scopeSelect.value = state.boardScope;
+    }
   }
 
   function renderBoard() {
@@ -2387,7 +2396,8 @@
   function renderBoardContent() {
     const scrollSnapshot = taskBoardScrollSnapshot({ workspaces: boardColumnRegions.columns });
     pointerTaskDrag.cancelForRerender();
-    const visibleTasks = tasksForMode(state.tasks, { completedOnly: state.completedOnly });
+    const visibleTasks = tasksForMode(state.tasks, { completedOnly: state.completedOnly })
+      .filter((task) => state.statusFilter === "all" || taskWorkflowStatus(task) === state.statusFilter);
     const emptyText = state.completedOnly ? "Нет закрытых задач" : "Нет задач";
     if ((state.boardScope.startsWith("workspace:") && !workspaceById(state.boardScope.slice(10)))
       || (state.boardScope.startsWith("folder:") && !state.workspaces.some((workspace) => workspaceFolder(workspace) === state.boardScope.slice(7)))) {
@@ -2396,7 +2406,10 @@
     board.classList.toggle("has-workspace-context", showsWorkspaceContext());
     board.classList.toggle("is-workspace-view", state.boardView === "workspaces");
     board.classList.toggle('is-status-view', state.boardView === 'statuses');
-    const grouped = state.boardView === 'statuses' && state.groupByWorkspace;
+    board.classList.toggle('is-list-view', state.boardView === 'list');
+    const singleStatusView = state.boardView === 'statuses' && state.statusFilter !== 'all';
+    board.classList.toggle('has-status-filter', singleStatusView);
+    const grouped = state.boardView === 'statuses' && state.groupByWorkspace && state.boardScope !== "backlog";
     board.classList.toggle('is-grouped-view', grouped);
     if (groupingToggle) groupingToggle.checked = state.groupByWorkspace;
     if (groupingSetting) groupingSetting.hidden = state.boardView !== 'statuses';
@@ -2419,16 +2432,22 @@
       );
     }
     board.classList.toggle("is-completed-only", state.completedOnly);
-    if (filterControls) filterControls.hidden = !state.filtersOpen;
-    filterToggle?.setAttribute("aria-expanded", String(state.filtersOpen));
+    if (statusFilter) {
+      statusFilter.replaceChildren(node("option", { value: "all", text: "Все статусы" }),
+        ...TASK_WORKFLOW_STATUSES.map((status) => node("option", {
+          value: status, text: taskWorkflowPresentation({ workflowStatus: status }, state.statusLanguage).full,
+        })));
+      statusFilter.value = state.statusFilter;
+    }
     renderScopeStrip();
-    const rendered = [renderColumn({
+    const rendered = singleStatusView ? [] : [renderColumn({
       id: "backlog", title: "Бэклог", subtitle: "Неразобранные входящие",
       tasks: visibleTasks.filter((task) => task.bucket === "backlog"), accent: "is-backlog", emptyText,
       acceptsTaskDrops: !state.completedOnly,
     })];
-    const scopedTasks = selectedScopeTasks(visibleTasks);
-    const statuses = state.completedOnly ? ["done"] : TASK_WORKFLOW_STATUSES.filter((status) => (
+    const scopedTasks = singleStatusView && state.boardScope === "all"
+      ? visibleTasks : selectedScopeTasks(visibleTasks);
+    const statuses = singleStatusView ? [state.statusFilter] : state.boardScope === "backlog" ? [] : state.completedOnly ? ["done"] : TASK_WORKFLOW_STATUSES.filter((status) => (
       status !== "done" || scopedTasks.some((task) => taskWorkflowStatus(task) === "done")
     ));
     if (grouped) rendered.push(renderStatusMatrix(scopedTasks, statuses, emptyText));
@@ -2447,8 +2466,9 @@
       }));
     }
     if (state.boardView === "workspaces") {
-      const workspaceColumns = new Map([["backlog", rendered[0]]]);
+      const workspaceColumns = new Map(rendered[0] ? [["backlog", rendered[0]]] : []);
       for (const workspace of state.workspaces) {
+        if (state.boardScope !== "all" && !selectedScopeTasks([{ bucket: "workspace", workspaceId: workspace.id }]).length) continue;
         const id = `workspace:${workspace.id}`;
         workspaceColumns.set(id, renderColumn({
           id, title: workspace.name, subtitle: workspace.comment ?? "",
@@ -2456,13 +2476,21 @@
           workspace, movable: !state.completedOnly, emptyText,
         }));
       }
-      workspaceColumns.set("notes", renderColumn({
+      if (["all", "notes"].includes(state.boardScope)) workspaceColumns.set("notes", renderColumn({
         id: "notes", title: "Заметки", subtitle: state.notesComment,
         tasks: visibleTasks.filter((task) => task.bucket === "notes"),
         accent: "is-notes", movable: !state.completedOnly, emptyText,
       }));
       rendered.splice(0, rendered.length, ...orderedDashboardColumnIds(state.columnOrder, workspaceColumns.keys())
         .map((id) => workspaceColumns.get(id)));
+    }
+    if (state.boardView === "list") {
+      const listTasks = state.boardScope === "all" ? visibleTasks : scopedTasks;
+      rendered.splice(0, rendered.length, renderColumn({
+        id: "task-list", title: scopeSelect?.selectedOptions?.[0]?.textContent || "Задачи",
+        tasks: listTasks, acceptsTaskDrops: false, emptyText,
+        workspace: state.boardScope.startsWith("workspace:") ? workspaceById(state.boardScope.slice(10)) : null,
+      }));
     }
     replaceBoardColumnsPreservingScroll(boardColumnRegions.columns, rendered);
     restoreTaskBoardScroll({ workspaces: boardColumnRegions.columns }, scrollSnapshot);
@@ -2502,10 +2530,16 @@
   completedToggle?.addEventListener("click", () => {
     closeTaskCard();
     state.completedOnly = !state.completedOnly;
+    state.statusFilter = "all";
     renderBoard();
   });
-  filterToggle?.addEventListener("click", () => {
-    state.filtersOpen = !state.filtersOpen;
+  scopeSelect?.addEventListener("change", () => {
+    state.boardScope = scopeSelect.value;
+    state.creatingWorkspaceId = null;
+    renderBoard();
+  });
+  statusFilter?.addEventListener("change", () => {
+    state.statusFilter = statusFilter.value;
     renderBoard();
   });
   function positionBoardSettings() {
@@ -2606,6 +2640,14 @@
     renderTaskCardSaving(task.id);
     emit("status", { id: task.id, status: taskCardStatus.value });
   });
+  document.querySelector("[data-task-card-diff-open]")?.addEventListener("click", () => {
+    const taskId = state.openTaskId;
+    if (!taskId || !taskCardDiff) return;
+    const generation = ++diffGeneration;
+    taskCardDiff.hidden = false;
+    taskCardDiff.textContent = "Читаю Git diff…";
+    emit("diff", { id: taskId, generation });
+  });
   taskCardExecutor?.addEventListener("click", (event) => {
     const task = state.tasks.find((item) => item.id === state.openTaskId);
     if (task) openTaskExecutor(task, event);
@@ -2681,6 +2723,21 @@
   });
 
   window.AgentHubTaskBoard = Object.freeze({
+    showDiff({ id, generation, result, error }) {
+      if (id !== state.openTaskId || generation !== diffGeneration || !taskCardDiff) return;
+      taskCardDiff.replaceChildren();
+      if (error) { taskCardDiff.textContent = error; return; }
+      for (const repository of result?.repositories ?? []) {
+        taskCardDiff.append(node("strong", { class: "task-card-project-root",
+          text: repository.branch + " · " + repository.projectRoot }));
+        taskCardDiff.append(node("pre", { class: "task-diff-code", tabIndex: 0,
+          text: repository.text || "Изменений нет." }));
+      }
+      if (result?.truncated) taskCardDiff.append(node("p", {
+        text: "Показана часть diff: превышен размер предпросмотра.",
+      }));
+    },
+
     setSelectedContext({ workspaceId, streamId } = {}) {
       const nextWorkspaceId = String(workspaceId ?? "").trim() || null;
       const nextStreamId = String(streamId ?? "").trim() || null;
@@ -2732,6 +2789,8 @@
         if (type === "status" && !succeeded) {
           window.AgentHub?.toast("Задача перенесена, но изменить статус не удалось. Текущий статус сохранён.");
         }
+        renderBoard();
+        renderWorkspacePanel();
       }
       if (type === "update" && state.savingTaskId === id) {
         state.savingTaskId = null;
@@ -2751,6 +2810,8 @@
       }
       if (type === "status" && state.savingStatusTaskId === id) {
         state.savingStatusTaskId = null;
+        renderBoard();
+        renderWorkspacePanel();
         renderOpenTaskCard();
         return;
       }

@@ -2,9 +2,15 @@ import { createHash } from "node:crypto";
 
 const DEFAULT_CACHE_LIMIT = 4;
 
-export function createSnapshotCollectionDelta({ keyOf, cacheLimit = DEFAULT_CACHE_LIMIT }) {
+export function createSnapshotCollectionDelta({
+  keyOf,
+  cacheLimit = DEFAULT_CACHE_LIMIT,
+  serialize = JSON.stringify,
+}) {
   if (typeof keyOf !== "function") throw new TypeError("Snapshot collection keyOf is required");
+  if (typeof serialize !== "function") throw new TypeError("Snapshot collection serializer must be a function");
   const snapshots = new Map();
+  const sourceSnapshots = new Map();
   const limit = Math.max(2, Number(cacheLimit) || DEFAULT_CACHE_LIMIT);
 
   function collect(items) {
@@ -16,7 +22,7 @@ export function createSnapshotCollectionDelta({ keyOf, cacheLimit = DEFAULT_CACH
       const key = String(keyOf(item) ?? "").trim();
       if (!key) throw new Error("Snapshot collection item has no stable key");
       if (keyed.has(key)) throw new Error(`Snapshot collection contains duplicate key: ${key}`);
-      const serialized = JSON.stringify(item);
+      const serialized = serialize(item);
       hash.update(String(serialized.length)).update(":").update(serialized);
       keyed.set(key, serialized);
       values.set(key, item);
@@ -37,9 +43,20 @@ export function createSnapshotCollectionDelta({ keyOf, cacheLimit = DEFAULT_CACH
     return snapshots.get(version);
   }
 
-  return function project(items, knownVersion = "") {
+  function rememberSource(sourceVersion, current) {
+    sourceSnapshots.delete(sourceVersion);
+    sourceSnapshots.set(sourceVersion, current);
+    while (sourceSnapshots.size > limit) sourceSnapshots.delete(sourceSnapshots.keys().next().value);
+    return current;
+  }
+
+  return function project(items, knownVersion = "", { sourceVersion = "" } = {}) {
     const values = Array.isArray(items) ? items : [];
-    const current = collect(values);
+    const exactSourceVersion = String(sourceVersion ?? "");
+    const current = exactSourceVersion
+      ? sourceSnapshots.get(exactSourceVersion)
+        ?? rememberSource(exactSourceVersion, collect(values))
+      : collect(values);
     const { version } = current;
     const previous = snapshots.get(String(knownVersion ?? ""));
     remember(version, current.keyed, current.order);

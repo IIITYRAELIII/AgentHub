@@ -209,8 +209,10 @@ export async function createClientRuntimeComposition({
     },
     onUncertain: async (item) => {
       if (!item.intent?.terminalRevision) return;
-      await terminalCommits?.markChannelUncertain(item.intent, { deliveryId: item.id });
+      if (!terminalCommits) throw new Error("terminal delivery owner is unavailable");
+      return terminalCommits.authorizeTelegramOutboxAttempt(item.intent, { deliveryId: item.id });
     },
+    attemptDelivery: (item, operation) => turnEndDelivery.withTelegramOutboxAttempt(item, operation),
     onDelivered: async (item, result) => {
       await late.telegramDeliveryService().recordDeliveredOutbox(item, result);
       if (item.intent?.final === true) {
@@ -392,6 +394,7 @@ export async function createClientRuntimeComposition({
       changedFilesForRun,
       turnEndNotifications,
       resolveTerminalAttachments: resolveCodexTerminalAttachments,
+      repairTurnEndAttachments: api.repairTurnEndAttachments,
       defaultNotificationChatId: provider.defaultNotificationChatId,
       projectTurnUsageToWorkLog,
       rememberLastTaskMessage: api.rememberLastTaskMessage,
@@ -402,6 +405,7 @@ export async function createClientRuntimeComposition({
   ports.codexLifecycle.bind(codexLifecycle);
   const { runtime: codexRuntime, transport: codexTransport, controller: codexLifecycleController } = codexLifecycle;
   ports.codexTaskSettings.bind(createCodexTaskSettingsComposition({
+    recoverThreadNaming: provider.hubThreadNaming.recoverThreadNaming,
     pinnedTaskTitle,
     readCodexThreadTitleHistory,
     sendRpc: api.sendRpc,

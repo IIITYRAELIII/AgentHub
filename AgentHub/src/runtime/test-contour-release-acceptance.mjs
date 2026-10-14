@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { execFile, spawn } from "node:child_process";
+import { realpathSync } from "node:fs";
 import { copyFile, lstat, mkdir, mkdtemp, readFile, realpath, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -20,7 +21,13 @@ const MARKER = ".agent-hub-release-acceptance.json";
 const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const executeFile = promisify(execFile);
-const normalize = (value) => path.resolve(value).toLowerCase();
+const normalize = (value) => {
+  const resolved = path.resolve(value);
+  let physical = resolved;
+  try { physical = realpathSync.native(resolved); } catch {}
+  return process.platform === "win32" ? physical.toLowerCase() : physical;
+};
+const samePath = (left, right) => normalize(left) === normalize(right);
 const inside = (value, root) => normalize(value) === normalize(root)
   || normalize(value).startsWith(`${normalize(root)}${path.sep}`);
 
@@ -47,7 +54,7 @@ export function releaseAcceptanceCoverage({ recording = false } = {}) {
 export function releaseAcceptanceConfig({ root, telegramApiBaseUrl, fakeCodexFile, nodeExecutable = process.execPath, recording = null }) {
   const url = new URL(telegramApiBaseUrl);
   if (url.protocol !== "http:" || url.hostname !== "127.0.0.1") throw new Error("Acceptance Telegram must be loopback HTTP");
-  if (recording ? recording.root !== path.join(root, "recording") : !inside(fakeCodexFile, root)) throw new Error("Acceptance provider must belong to the isolated root");
+  if (recording ? !samePath(recording.root, path.join(root, "recording")) : !inside(fakeCodexFile, root)) throw new Error("Acceptance provider must belong to the isolated root");
   return {
     components: { telegram: true, miniApp: false, androidApp: false, sharedDashboardBot: false, codexContextCleanup: false, testContour: false },
     telegramBotToken: recording ? "123:test-contour-token" : "123:release-acceptance",

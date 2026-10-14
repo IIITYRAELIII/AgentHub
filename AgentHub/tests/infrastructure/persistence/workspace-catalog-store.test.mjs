@@ -16,16 +16,11 @@ import {
   WorkspaceCatalogStore,
 } from "../../../src/infrastructure/persistence/workspace-catalog-store.mjs";
 import { TaskBoardStore } from "../../../src/infrastructure/persistence/task-board-store.mjs";
+import { RELEASE_PRIMARY_WORKSPACE_RULE } from "../../../src/domain/release-primary-workspace-policy.mjs";
 import {
-  LEGACY_TASK_BRANCH_RELEASE_WORKFLOW_DEVELOPER_RULES,
-  LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_RU_V1,
-  LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V2,
   RELEASE_WORKFLOW_DEVELOPER_RULES,
   EXPLICIT_USER_WORKFLOW_EXCEPTION,
 } from "../../../src/domain/workspace-release-workflow.mjs";
-import {
-  LEGACY_PERSISTED_AGENT_HUB_WORKSPACE_RULES_RU_V1,
-} from "../../../src/domain/editable-workspace-developer-rules.mjs";
 
 async function fixture(t) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-workspaces-"));
@@ -42,6 +37,57 @@ async function fixture(t) {
   });
   return store;
 }
+
+test("nested catalog rollback preserves outer writes and the outer transaction remains usable", async (t) => {
+  const store = await fixture(t);
+  const failure = new Error("inner operation failed");
+  await store.runMutation(() => store.transaction(() => {
+    const kept = store.createWorkspaceWithStream({ name: "Kept" });
+    assert.throws(() => store.transaction(() => {
+      store.createWorkspaceWithStream({ name: "Discarded" });
+      throw failure;
+    }), (error) => error === failure);
+    store.createStream({ workspaceId: kept.workspace.id, name: "After inner refusal" });
+  }));
+  assert.equal(store.hierarchy().some((workspace) => workspace.name === "Discarded"), false);
+  const kept = store.hierarchy().find((workspace) => workspace.name === "Kept");
+  assert.equal(kept.streams.length, 2);
+  // Depth and SQLite ownership are released after the outer commit.
+  store.createWorkspaceWithStream({ name: "Next transaction" });
+  assert.equal(store.hierarchy().some((workspace) => workspace.name === "Next transaction"), true);
+});
+
+test("outer catalog refusal rolls back completed nested mutations together", async (t) => {
+  const store = await fixture(t);
+  const before = store.hierarchy();
+  await assert.rejects(store.runMutation(() => store.transaction(() => {
+    store.createWorkspaceWithStream({ name: "Must roll back" });
+    throw new Error("outer operation failed");
+  })), /outer operation failed/u);
+  assert.deepEqual(store.hierarchy(), before);
+  store.createWorkspaceWithStream({ name: "Recovered" });
+  assert.equal(store.hierarchy().some((workspace) => workspace.name === "Recovered"), true);
+});
+
+test("preparation-only terminal receipt validator runs atomically and refusal retains original pending", async (t) => {
+  const store = await fixture(t);
+  const workspace = store.createWorkspace({ name: "Preparation" });
+  const stream = store.createStream({ workspaceId: workspace.id, displayName: "RM" });
+  store.beginMcpOperation({ requestId: "preparation", workspaceId: workspace.id, streamId: stream.id,
+    provider: "codex", threadId: "thread-1", toolName: "hub_release_prepare", argumentsHash: "a".repeat(64) });
+  assert.throws(() => store.completeMcpOperation("preparation", { tree: "b".repeat(40) },
+    { validate: () => { throw new Error("stale selected CAS"); } }), /stale selected/);
+  assert.equal(store.mcpOperation("preparation").status, "pending");
+  assert.throws(() => store.completeMcpOperation("preparation", {}, { validate: async () => {} }), /synchronous/);
+  let checks = 0;
+  const receipt = store.completeMcpOperation("preparation", { tree: "b".repeat(40) }, { validate: () => {
+    checks += 1;
+    assert.equal(store.mcpOperation("preparation").status, "pending");
+  } });
+  assert.equal(checks, 1);
+  assert.equal(receipt.status, "succeeded");
+  assert.equal(receipt.result.tree, "b".repeat(40));
+});
 
 test("Workspace mutation queue retries real SQLite contention and keeps timers responsive", async (t) => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-workspace-contention-"));
@@ -732,7 +778,7 @@ test("crash-after-begin receipt becomes explicit unknown instead of blind replay
 test("operator reconciliation terminalizes only the exact unknown receipt by CAS", async (t) => {
   const store = await fixture(t);
   const workspace = store.createWorkspace({ name: "Agent HUB" });
-  const stream = store.createStream({ workspaceId: workspace.id, name: "Architect" });
+  const stream = store.createStream({ workspaceId: workspace.id, name: "Release Manager" });
   const operation = {
     requestId: "unknown-workflow", workspaceId: workspace.id, streamId: stream.id,
     provider: "codex", threadId: "thread-1", toolName: "hub_task_status_update", argumentsHash: "hash-workflow",
@@ -773,13 +819,13 @@ test("operator reconciliation terminalizes only the exact unknown receipt by CAS
 test("MCP audit resolves only exact successful interstream message provenance", async (t) => {
   const store = await fixture(t);
   const workspace = store.createWorkspace({ name: "Agent HUB" });
-  const stream = store.createStream({ workspaceId: workspace.id, name: "Architect" });
+  const stream = store.createStream({ workspaceId: workspace.id, name: "Release Manager" });
   const operation = {
     requestId: "assignment-1",
     workspaceId: workspace.id,
     streamId: stream.id,
     provider: "codex",
-    threadId: "thread-architect",
+    threadId: "thread-release-manager",
     toolName: "hub_task_start",
     argumentsHash: "a".repeat(64),
   };
@@ -793,9 +839,9 @@ test("MCP audit resolves only exact successful interstream message provenance", 
     workspaceId: workspace.id,
     workspaceName: "Agent HUB",
     streamId: stream.id,
-    streamName: "Architect",
+    streamName: "Release Manager",
     provider: "codex",
-    sourceThreadId: "thread-architect",
+    sourceThreadId: "thread-release-manager",
     requestId: "assignment-1",
     text: "Начать работу",
   });
@@ -812,18 +858,18 @@ test("MCP audit resolves only exact successful interstream message provenance", 
     workspaceId: workspace.id,
     workspaceName: "Agent HUB",
     streamId: stream.id,
-    streamName: "Architect",
+    streamName: "Release Manager",
     provider: "codex",
-    sourceThreadId: "thread-architect",
+    sourceThreadId: "thread-release-manager",
     requestId: "assignment-1",
     origin: {
       kind: "interstream",
       workspaceId: workspace.id,
       workspaceName: "Agent HUB",
       streamId: stream.id,
-      streamName: "Architect",
+      streamName: "Release Manager",
       provider: "codex",
-      sourceThreadId: "thread-architect",
+      sourceThreadId: "thread-release-manager",
       requestId: "assignment-1",
     },
     toolName: "hub_task_start",
@@ -837,13 +883,13 @@ test("MCP audit resolves only exact successful interstream message provenance", 
 test("exact Task launch cancellation terminalizes an unknown receipt without a replay lease", async (t) => {
   const store = await fixture(t);
   const workspace = store.createWorkspace({ name: "Agent HUB" });
-  const stream = store.createStream({ workspaceId: workspace.id, name: "Architect" });
+  const stream = store.createStream({ workspaceId: workspace.id, name: "Release Manager" });
   const operation = {
     requestId: "stuck-launch",
     workspaceId: workspace.id,
     streamId: stream.id,
     provider: "codex",
-    threadId: "thread-architect",
+    threadId: "thread-release-manager",
     toolName: "hub_task_start",
     argumentsHash: "a".repeat(64),
   };
@@ -1055,7 +1101,7 @@ test("release workflow is opt-in and injects policy without changing editable ru
   const store = await fixture(t);
   const workspace = store.createWorkspace({ name: "Agent HUB" });
   const stream = store.createStream({
-    workspaceId: workspace.id, name: "Architect", settings: { architect: true },
+    workspaceId: workspace.id, name: "Release Manager", settings: { releaseManager: true },
   });
   store.bindThread({ provider: "codex", threadId: "thread", streamId: stream.id });
   assert.equal(store.developerRulesForStream(stream.id).workspace.content, "");
@@ -1078,7 +1124,7 @@ test("release workflow is opt-in and injects policy without changing editable ru
   assert.ok(injected.workspace.content.includes(RELEASE_WORKFLOW_DEVELOPER_RULES));
   assert.match(injected.workspace.content, /releaseCandidates\[\]\.releaseRoot.*standalone clone/u);
   assert.match(injected.workspace.content, /Fast Test Contour workflow\nThe registered primary Workspace/u);
-  assert.match(injected.stream.content, /Workspace release architect/u);
+  assert.match(injected.stream.content, /Workspace release manager/u);
   assert.match(injected.stream.content, /releaseCandidates\[\]\.releaseRoot.*only checkout/u);
   assert.doesNotMatch(injected.stream.content, /update local main|separate integration worktree/u);
 });
@@ -1086,7 +1132,7 @@ test("release workflow is opt-in and injects policy without changing editable ru
 test("workflow exception reaches provider context across rotation and follows both toggles", async (t) => {
   const store = await fixture(t);
   const workspace = store.createWorkspace({ name: "Policy", settings: { releaseWorkflowEnabled: true } });
-  const stream = store.createStream({ workspaceId: workspace.id, name: "Release", settings: { architect: true } });
+  const stream = store.createStream({ workspaceId: workspace.id, name: "Release", settings: { releaseManager: true } });
   store.updateWorkspaceDeveloperRules(workspace.id, "Authored Workspace policy");
   store.updateStreamDeveloperRules(stream.id, "Authored Stream policy");
   const compose = (threadId) => resolveHubDeveloperInstructions({
@@ -1101,9 +1147,9 @@ test("workflow exception reaches provider context across rotation and follows bo
     assert.match(output, /Authored Workspace policy/u);
     assert.match(output, /Authored Stream policy/u);
   }
-  store.updateStreamSettings(stream.id, { architect: false });
+  store.updateStreamSettings(stream.id, { releaseManager: false });
   assert.equal((await compose("after-rotation")).split(EXPLICIT_USER_WORKFLOW_EXCEPTION).length - 1, 1);
-  store.updateStreamSettings(stream.id, { architect: true });
+  store.updateStreamSettings(stream.id, { releaseManager: true });
   store.updateWorkspaceSettings(workspace.id, { releaseWorkflowEnabled: false });
   const disabled = await compose("after-rotation");
   assert.equal(disabled.includes(EXPLICIT_USER_WORKFLOW_EXCEPTION), false);
@@ -1156,78 +1202,52 @@ test.skip("retired destructive release registry discard", async (t) => {
   );
 });
 
-test("persisted system prefixes are removed from every editable Workspace rule", async (t) => {
-  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-release-workflow-migration-"));
+test("saving and reopening preserves copied rules without inferring checkbox settings", async (t) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-authored-rules-"));
   const databaseFile = path.join(directory, "journal.sqlite");
-  let sequence = 0;
-  let store = new WorkspaceCatalogStore({
-    databaseFile,
-    idFactory: () => `legacy-${++sequence}`,
-  });
-  await store.load();
-  const workspace = store.createWorkspace({ name: "Agent HUB" });
-  const regularWorkspace = store.createWorkspace({ name: "Regular" });
-  store.close();
-  const database = new DatabaseSync(databaseFile);
-  database.prepare("UPDATE hub_workspaces SET settings_json = ? WHERE id = ?")
-    .run(JSON.stringify({ releaseWorkflowEnabled: true }), workspace.id);
-  database.prepare("UPDATE hub_workspaces SET settings_json = ? WHERE id = ?")
-    .run(JSON.stringify({ releaseWorkflowEnabled: false }), regularWorkspace.id);
-  const revision = Number(database.prepare(`
-    SELECT COALESCE(MAX(revision), 0) + 1 AS value
-    FROM hub_developer_rule_revisions WHERE scope_type = 'workspace' AND scope_id = ?
-  `).get(workspace.id).value);
-  database.prepare(`
-    INSERT INTO hub_developer_rule_revisions
-      (scope_type, scope_id, revision, content, created_at_ms)
-    VALUES ('workspace', ?, ?, ?, ?)
-  `).run(
-    workspace.id,
-    revision,
-    [
-      LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_RU_V1,
-      LEGACY_TASK_BRANCH_RELEASE_WORKFLOW_DEVELOPER_RULES,
-      LEGACY_RELEASE_WORKFLOW_DEVELOPER_RULES_V2,
-      LEGACY_PERSISTED_AGENT_HUB_WORKSPACE_RULES_RU_V1,
-      "Agent Hub rules",
-      "Custom English rules",
-    ].join("\n\n"),
-    Date.now(),
-  );
-  database.prepare(`
-    INSERT INTO hub_developer_rule_revisions
-      (scope_type, scope_id, revision, content, created_at_ms)
-    VALUES ('workspace', ?, 2, ?, ?)
-  `).run(
-    regularWorkspace.id,
-    LEGACY_PERSISTED_AGENT_HUB_WORKSPACE_RULES_RU_V1,
-    Date.now(),
-  );
-  database.prepare(
-    "INSERT OR REPLACE INTO hub_workspace_catalog_meta (key, value) VALUES ('workspace_agent_hub_rules_migrated_v1', 'completed')",
-  ).run();
-  database.prepare(
-    "DELETE FROM hub_workspace_catalog_meta WHERE key = 'workspace_system_rules_removed_v2'",
-  ).run();
-  database.close();
-
-  store = new WorkspaceCatalogStore({ databaseFile });
+  let store = new WorkspaceCatalogStore({ databaseFile });
   await store.load();
   t.after(async () => {
     store.close();
     await rm(directory, { recursive: true, force: true });
   });
-  assert.equal(store.workspace(workspace.id).settings.releaseWorkflowEnabled, true);
-  assert.equal(
-    store.workspaceDeveloperRules(workspace.id).content,
-    "Agent Hub rules\n\nCustom English rules",
-  );
-  assert.equal(store.workspace(regularWorkspace.id).settings.releaseWorkflowEnabled, false);
-  assert.equal(store.workspaceDeveloperRules(regularWorkspace.id).content, "");
+  const copied = (RELEASE_WORKFLOW_DEVELOPER_RULES + "\n\nCustom rule").replace(/\n/gu, "\r\n");
+  const cases = [];
+  for (const enabled of [true, false, undefined]) {
+    const workspace = store.createWorkspace({ name: "Rules " + enabled });
+    const stream = store.createStream({ workspaceId: workspace.id, name: "Rules" });
+    const workspaceRules = store.updateWorkspaceDeveloperRules(workspace.id, copied);
+    const streamRules = store.updateStreamDeveloperRules(stream.id, copied);
+    assert.equal(workspaceRules.content, copied);
+    assert.equal(streamRules.content, copied);
+    assert.equal(store.updateWorkspaceDeveloperRules(workspace.id, copied).revision, workspaceRules.revision);
+    cases.push({ workspace, stream, workspaceRules, streamRules, settings: { releaseWorkflowEnabled: enabled } });
+  }
+  store.close();
+  const database = new DatabaseSync(databaseFile);
+  for (const entry of cases) {
+    database.prepare("UPDATE hub_workspaces SET settings_json = ? WHERE id = ?")
+      .run(JSON.stringify(entry.settings), entry.workspace.id);
+  }
+  database.close();
+  for (const readOnly of [false, true, false]) {
+    store = new WorkspaceCatalogStore({ databaseFile, readOnly });
+    await store.load();
+    for (const entry of cases) {
+      assert.deepEqual(store.workspace(entry.workspace.id).settings, JSON.parse(JSON.stringify(entry.settings)));
+      assert.deepEqual(store.workspaceDeveloperRules(entry.workspace.id), entry.workspaceRules);
+      assert.deepEqual(store.streamDeveloperRules(entry.stream.id), entry.streamRules);
+      const output = store.developerRulesForStream(entry.stream.id);
+      assert.equal(output.workspace.content, entry.settings.releaseWorkflowEnabled === true
+        ? RELEASE_WORKFLOW_DEVELOPER_RULES + "\n\n" + copied + "\n" + RELEASE_PRIMARY_WORKSPACE_RULE : copied);
+      assert.equal(output.stream.content, copied);
+    }
+    store.close();
+  }
 });
 
-test("Architect role migrates once from legacy role or exact name without runtime fallback", async (t) => {
-  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-architect-role-migration-"));
+test("Release Manager role migrates once from legacy role or exact name without runtime fallback", async (t) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-release-manager-role-migration-"));
   const databaseFile = path.join(directory, "journal.sqlite");
   t.after(() => rm(directory, { recursive: true, force: true }));
   let store = new WorkspaceCatalogStore({ databaseFile });
@@ -1239,20 +1259,49 @@ test("Architect role migrates once from legacy role or exact name without runtim
   store.close();
 
   const database = new DatabaseSync(databaseFile);
-  database.prepare("DELETE FROM hub_workspace_catalog_meta WHERE key = 'architect_stream_settings_migrated_v1'").run();
+  database.prepare("DELETE FROM hub_workspace_catalog_meta WHERE key IN ('architect_stream_settings_migrated_v1', 'release_manager_stream_settings_migrated_v1')").run();
   database.prepare("UPDATE hub_streams SET settings_json = ? WHERE id = ?")
     .run(JSON.stringify({ releaseRole: "architect" }), byRole.id);
   database.close();
 
   store = new WorkspaceCatalogStore({ databaseFile });
   await store.load();
-  assert.equal(store.stream(byName.id).settings.architect, true);
-  assert.equal(store.stream(byRole.id).settings.architect, true);
+  assert.equal(store.stream(byName.id).settings.releaseManager, true);
+  assert.equal(store.stream(byRole.id).settings.releaseManager, true);
+  assert.equal("architect" in store.stream(byRole.id).settings, false);
   assert.equal("releaseRole" in store.stream(byRole.id).settings, false);
-  assert.equal(store.stream(regular.id).settings.architect, undefined);
-  const laterName = store.createStream({ workspaceId: workspace.id, name: "Architect" });
-  assert.equal(laterName.settings.architect, undefined);
+  assert.equal(store.stream(regular.id).settings.releaseManager, undefined);
+  const laterName = store.createStream({ workspaceId: workspace.id, name: "Release Manager" });
+  assert.equal(laterName.settings.releaseManager, undefined);
   store.close();
+});
+
+test("role rename preserves disabled and explicit new settings across SQLite reopen", async (t) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-role-rename-"));
+  const databaseFile = path.join(directory, "journal.sqlite");
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  let store = new WorkspaceCatalogStore({ databaseFile });
+  await store.load();
+  const workspace = store.createWorkspace({ name: "Roles" });
+  const variants = [
+    [{ architect: true, model: "kept" }, { releaseManager: true, model: "kept" }],
+    [{ architect: false, teamLead: true }, { releaseManager: false, teamLead: true }],
+    [{ architect: true, releaseManager: false }, { releaseManager: false }],
+    [{ architect: false, releaseManager: true }, { releaseManager: true }],
+  ].map(([old, expected], index) => ({ old, expected,
+    id: store.createStream({ workspaceId: workspace.id, name: `Role ${index}` }).id }));
+  store.close();
+  const database = new DatabaseSync(databaseFile);
+  database.prepare("DELETE FROM hub_workspace_catalog_meta WHERE key = 'release_manager_stream_settings_migrated_v1'").run();
+  for (const item of variants) database.prepare("UPDATE hub_streams SET settings_json = ? WHERE id = ?")
+    .run(JSON.stringify(item.old), item.id);
+  database.close();
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    store = new WorkspaceCatalogStore({ databaseFile });
+    await store.load();
+    for (const item of variants) assert.deepEqual(store.stream(item.id).settings, item.expected);
+    store.close();
+  }
 });
 
 test("Workspace and Stream developer rules keep versioned revisions", async (t) => {
@@ -1278,12 +1327,9 @@ test("developer rules enforce a 32 KiB UTF-8 limit for each scope", async (t) =>
   const allowed = "я".repeat(DEVELOPER_RULES_MAX_BYTES / 2);
 
   assert.equal(store.updateWorkspaceDeveloperRules(workspace.id, allowed).content, allowed);
-  assert.equal(
-    store.updateWorkspaceDeveloperRules(
-      workspace.id,
-      `${LEGACY_PERSISTED_AGENT_HUB_WORKSPACE_RULES_RU_V1}\n\n${allowed}`,
-    ).content,
-    allowed,
+  assert.throws(
+    () => store.updateWorkspaceDeveloperRules(workspace.id, RELEASE_WORKFLOW_DEVELOPER_RULES + "\n\n" + allowed),
+    /exceed/u,
   );
   assert.throws(
     () => store.updateWorkspaceDeveloperRules(workspace.id, `${allowed}я`),

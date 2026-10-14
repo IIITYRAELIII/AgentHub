@@ -70,7 +70,7 @@ test("terminal store strips conflicting top-level and root identity", async (con
     workspaceId: "workspace-1",
     workspaceName: "Agent HUB",
     streamId: "stream-1",
-    streamName: "Architect",
+    streamName: "Release Manager",
     provider: "codex",
     sourceThreadId: "thread-source",
     requestId: "request-a",
@@ -928,7 +928,8 @@ test("v15 EOF audit migrates once and repairs delivered current ImageGen output"
   await scheduler.auditNow();
   const migratedSnapshot = migratedAudit.snapshot();
 
-  assert.equal(migratedSnapshot.version, 18);
+  const currentAuditVersion = new CodexTerminalAudit({}).snapshot().version;
+  assert.equal(migratedSnapshot.version, currentAuditVersion);
   assert.equal(migratedSnapshot.historicalSubagentBackfill.pending, false);
   assert.equal(migratedSnapshot.historicalSubagentBackfill.completedFiles, 1);
   assert.equal(historicalScans, 1);
@@ -936,7 +937,7 @@ test("v15 EOF audit migrates once and repairs delivered current ImageGen output"
   assert.equal(imports, 1);
   assert.equal(historyProjections.length, 2);
   assert.equal(persistedAuditSnapshots.length, 1);
-  assert.equal(persistedAuditSnapshots[0].version, 18);
+  assert.equal(persistedAuditSnapshots[0].version, currentAuditVersion);
   assert.equal(persistedAuditSnapshots[0].historicalSubagentBackfill.pending, false);
   assert.deepEqual(historyProjections[1].responseAttachments.map((item) => item.id), [
     "codex-generated-v15-output.png",
@@ -1161,6 +1162,8 @@ test("startup pending reconciliation repairs a command left started after termin
   assert.equal(ledger.get("message-1").state, "started");
 
   transitionUnavailable = false;
+  assert.equal((await terminal.pendingProjections()).length, 1);
+  assert.equal(ledger.get("message-1").state, "started", "projection-only enumeration cannot reconcile commands");
   await terminal.pending();
   assert.equal(ledger.get("message-1").state, "completed");
   assert.equal(ledger.get("message-1").result.terminalRevision, 1);
@@ -1187,6 +1190,7 @@ test("Telegram channel intent survives projection ACK and records uncertain then
   await terminal.acknowledge(projection);
   assert.equal((await terminal.pending())[0].channels.projection.state, "delivered");
   assert.equal((await terminal.pending())[0].channels.telegram.state, "intent");
+  assert.deepEqual(await terminal.pendingProjections(), []);
 
   const materialized = [];
   const restarted = new TurnEndDeliveryService({
@@ -1210,4 +1214,30 @@ test("Telegram channel intent survives projection ACK and records uncertain then
   const acked = await terminal.acknowledgeChannel(committed.outbox, { deliveryId: "delivery-1" });
   assert.equal(acked.channels.telegram.state, "acked");
   assert.deepEqual(await terminal.pending(), []);
+});
+
+test("a silent correction cannot revoke a pending Telegram terminal intent", async (context) => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "agent-hub-terminal-intent-correction-"));
+  context.after(() => rm(dataDir, { recursive: true, force: true }));
+  const terminal = new TerminalTurnCommitService({
+    store: new ProviderTurnTerminalStore({ dataDir }),
+  });
+  const first = await terminal.commit(completion(), {
+    channelIntents: {
+      telegram: {
+        requested: true,
+        run: { provider: "codex", threadId: "thread-1", turnId: "turn-1", chatId: 7 },
+        message: "Final answer",
+      },
+    },
+  });
+
+  const duplicate = await terminal.commit(completion());
+  assert.equal(duplicate.terminal.terminalRevision, 1);
+  assert.equal(duplicate.outbox.channels.telegram.state, "intent");
+
+  const corrected = await terminal.commit(completion({ finalAnswer: "Corrected final answer" }));
+  assert.equal(corrected.terminal.terminalRevision, 2);
+  assert.equal(corrected.outbox.channels.telegram.state, "intent");
+  assert.equal(corrected.outbox.channels.telegram.intent.message, "Corrected final answer");
 });

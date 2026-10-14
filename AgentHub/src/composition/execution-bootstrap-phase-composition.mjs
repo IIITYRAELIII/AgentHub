@@ -91,6 +91,7 @@ export function createExecutionBootstrapPhase({
       delay,
     },
     provider: {
+      hubThreadNaming: provider.hubThreadNaming,
       agentProviders: provider.agentProviders,
       claudeEventService: provider.claudeEventService,
       codexEventService: provider.codexEventService,
@@ -233,6 +234,8 @@ export function createExecutionBootstrapPhase({
       menuCommands: settings.menuCommands,
       botMenu: settings.botMenu,
       projects: settings.projects,
+      codexModels: settings.codexModels,
+      claudeModels: settings.claudeModels,
       reasoningLabels: settings.codexReasoningLabels,
       collaborationModeLabels: settings.codexCollaborationModeLabels,
       claudeModelLabels: settings.claudeModelLabels,
@@ -287,7 +290,7 @@ export function createExecutionBootstrapPhase({
       backgroundJobs: provider.backgroundJobs,
       maxSpeechJobs: settings.maxBackgroundSpeechJobs,
       currentUiContextToken: (callbackData = "") => (
-        /^(?:approval-mode:|p:\d+|engine:|codex-model:|codex-reasoning:|codex-mode:|claude-reasoning:|claude-mode:|model:)/
+        /^(?:approval-mode:|p:\d+|engine:|cm:|am:|codex-model:|codex-reasoning:|codex-mode:|claude-reasoning:|claude-mode:|model:)/
           .test(String(callbackData))
           ? api.currentUiContextToken()
           : telegramTasks.currentUiContextToken()
@@ -362,6 +365,7 @@ export function createExecutionBootstrapPhase({
       return measure("startup-pricing-backfill", () => api.backfillWorkLogPricingMetadata(threads, { signal, propagateErrors: true }));
     },
     recoverRuns: (...args) => runtime.runRecovery.recoverAll(...args),
+    retryTerminalProjections: () => api.retryPendingTurnEndProjections({ recoverProjecting: true }),
     retryNotifications: api.retryPendingTurnEndNotifications,
     restoreBackgroundJobs: () => provider.backgroundJobs.restore(),
     startRuntimeTimers: runtime.startRuntimeTimers,

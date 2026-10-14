@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
-import { mkdir, readFile } from "node:fs/promises";
+import { mkdir, readFile, mkdtemp, writeFile, rm } from "node:fs/promises";
+import os from "node:os";
+import { LocalTaskSyncStore } from "../../src/infrastructure/persistence/task-sync-store.mjs";
+import { readCodexTracePageInWorker } from "../../src/providers/codex/codex-rollout-activity-worker-client.mjs";
 import path from "node:path";
 import test from "node:test";
 
@@ -102,6 +105,149 @@ test.before(async () => {
 
 test.after(async () => {
   await browser?.close();
+});
+
+test("bounded trace archive loads only on demand and citations recover an evicted exact group", { timeout: 20_000 }, async () => {
+  const page = await browser.newPage();
+  try {
+    await openWebApp(page);
+    const message = { id: "trace-source", provider: "codex", threadId: "thread-1",
+      turnId: "turn-trace", itemId: "item-trace", role: "agent", text: "Answer",
+      activityGroups: [{ id: "reasoning:last", reasoning: "Последний этап", activities: [], omittedGroupsBefore: 600 }] };
+    await seedMessages(page, [message]);
+    await page.evaluate(() => {
+      window.__traceRequests = [];
+      window.AgentHub.on("history:trace-page", ({ identity, tracePage, resolve }) => {
+        window.__traceRequests.push({ identity, tracePage });
+        const first = !tracePage.offset;
+        resolve({ turnId: tracePage.turnId, offset: tracePage.offset || 0,
+          nextOffset: first ? 50 : null, sourceSize: 12345, generation: "generation", sourceHash: "hash",
+          groups: [{ id: first ? "reasoning:first" : "reasoning:last",
+            reasoning: first ? "Ранний точный фрагмент" : "Последний этап", activities: [] }] });
+      });
+    });
+    const article = page.locator('[data-message-id="trace-source"]');
+    await article.locator("details.turn-trace > summary").click();
+    assert.equal(await page.evaluate(() => window.__traceRequests.length), 0);
+    const archive = article.locator(".turn-trace-archive");
+    await archive.locator("summary").click();
+    await archive.getByText("Ранний точный фрагмент", { exact: true }).waitFor();
+    await archive.getByRole("button", { name: "Далее", exact: true }).click();
+    await archive.getByText("Последний этап", { exact: true }).waitFor();
+    assert.equal(await archive.getByText("Ранний точный фрагмент", { exact: true }).count(), 0);
+    const requests = await page.evaluate(() => window.__traceRequests);
+    assert.equal(requests[0].identity.streamId, "stream-1");
+    assert.equal(requests[1].tracePage.sourceHash, "hash");
+    assert.equal(requests[1].tracePage.sourceSize, 12345);
+
+    // Build a real locator for an early block which is absent from the preview.
+    const annotation = await page.evaluate(async (message) => {
+      const api = window.AgentHubMessageDisclosure;
+      const text = "Ранний точный фрагмент";
+      const group = { id: "reasoning:first", reasoning: text, activities: [] };
+      const source = { version: 1, ...api.responseAnnotationSourceIdentity(message),
+        surfaceKind: "trace-reasoning", surfaceIndex: 0, traceGroupId: group.id, start: 0, end: text.length };
+      source.contentHash = await api.responseAnnotationSha256(api.responseAnnotationSourceContent(
+        { ...message, activityGroups: [group] }, source));
+      source.surfaceHash = source.selectionHash = await api.responseAnnotationSha256(text);
+      return { text, annotation: "Источник", source };
+    }, message);
+    await seedMessages(page, [message, { id: "trace-quote", role: "user", text: "Проверить",
+      responseAnnotations: [annotation], responseAnnotationRequest: "Проверить" }]);
+    await page.locator('[data-message-id="trace-quote"] [data-response-annotation-source]').click();
+    await article.locator(".msg-source-citation-highlight").waitFor();
+    assert.equal(await article.locator(".msg-source-citation-highlight").textContent(), annotation.text);
+    assert.equal((await page.evaluate(() => window.__traceRequests)).at(-1).tracePage.groupId, "reasoning:first");
+  } finally { await page.close(); }
+});
+
+test("long trace citations survive persistence reload, shortened preview and omission", { timeout: 40_000 }, async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "hub239-citation-"));
+  const page = await browser.newPage();
+  let store;
+  try {
+    const reasoning = "Selected exact text. " + "x".repeat(100_000);
+    const group = { id: "commentary:long-analysis", reasoning, activities: [] };
+    const task = { provider: "codex", threadId: "thread-1", projectRoot: directory };
+    const filePath = path.join(directory, "task-sync.json");
+    store = new LocalTaskSyncStore({ filePath });
+    await store.load();
+    await store.recordHistory(task, [{ id: "turn-long", answer: "Answer", completed: true,
+      status: "completed", activityGroups: [group] }], {}, Date.now());
+    store.close();
+    store = new LocalTaskSyncStore({ filePath });
+    await store.load();
+    const preview = store.history(task)[0].activityGroups[0];
+    assert.equal(preview.reasoning.length, 40_000);
+    assert.equal(preview.id, group.id);
+    const rollout = path.join(directory, "rollout.jsonl");
+    const raw = [
+      { type: "session_meta", payload: { id: "thread-1" } },
+      { type: "response_item", payload: { type: "message", id: "long-analysis", role: "assistant",
+        phase: "analysis", content: [{ type: "output_text", text: reasoning }],
+        internal_chat_message_metadata_passthrough: { turn_id: "turn-long" } } },
+    ].map(value => JSON.stringify(value)).join("\n") + "\n";
+    await writeFile(rollout, raw, "utf8");
+    await page.exposeFunction("readExactTrace", params => readCodexTracePageInWorker(rollout, params));
+    await openWebApp(page);
+    await page.evaluate(() => {
+      window.__traceReads = 0;
+      window.AgentHub.on("history:trace-page", ({ tracePage, resolve, reject }) => {
+        window.__traceReads += 1;
+        window.readExactTrace(tracePage).then(resolve, reject);
+      });
+    });
+    const message = { id: "long-source", ...task, turnId: "turn-long", itemId: "long-item",
+      role: "agent", text: "Answer", activityGroups: [preview] };
+    await seedMessages(page, [message]);
+    await page.locator('[data-message-id="long-source"] details.turn-trace > summary').click();
+    await page.locator('[data-message-id="long-source"] .turn-trace-reasoning').waitFor();
+    // Execute the actual composer quote path against the persisted DOM preview.
+    const annotation = await page.evaluate(async () => {
+      const article = document.querySelector('[data-message-id="long-source"]');
+      const surface = article.querySelector(".turn-trace-reasoning");
+      return responseAnnotationFromSelection({ message: article, surface,
+        quote: "Selected exact text.", offsets: { start: 0, end: 20 } });
+    });
+    assert.ok(annotation?.source);
+    assert.equal(await page.evaluate(() => window.__traceReads), 1);
+    const quote = { id: "long-quote", role: "user", text: "Check",
+      responseAnnotations: [{ ...annotation, text: annotation.quote }] };
+    for (const activityGroups of [[preview], []]) {
+      await seedMessages(page, [{ ...message, activityGroups }, quote]);
+      const readsBefore = await page.evaluate(() => window.__traceReads);
+      await page.locator('[data-message-id="long-quote"] [data-response-annotation-source]').click();
+      const highlighted = page.locator('[data-message-id="long-source"] .msg-source-citation-highlight');
+      await highlighted.waitFor();
+      assert.equal(await highlighted.textContent(), annotation.quote);
+      assert.equal(await page.evaluate(() => window.__traceReads), readsBefore + 1);
+      assert.ok((await page.locator('[data-citation-trace] .turn-trace-reasoning').textContent()).length > 100_000);
+    }
+    // Same exact ID but changed content cannot be highlighted or silently rebound.
+    await writeFile(rollout, raw.replace("Selected exact text.", "Changed exact text."), "utf8");
+    await seedMessages(page, [{ ...message, activityGroups: [] }, quote]);
+    await page.locator('[data-message-id="long-source"]').evaluate(article => {
+      article.querySelector("[data-citation-trace]")?.remove();
+    });
+    const changedSourceAccepted = await page.locator('[data-message-id="long-quote"] [data-response-annotation-source]')
+      .evaluate(button => focusResponseCitationSource(button));
+    assert.equal(changedSourceAccepted, false);
+    assert.equal(await page.locator(".msg-source-citation-highlight").count(), 0);
+    await seedMessages(page, [message]);
+    await page.locator('[data-message-id="long-source"] details.turn-trace > summary').click();
+    await page.locator('[data-message-id="long-source"] .turn-trace-reasoning').waitFor();
+    const changedSelection = await page.evaluate(() => {
+      const article = document.querySelector('[data-message-id="long-source"]');
+      return responseAnnotationFromSelection({ message: article,
+        surface: article.querySelector(".turn-trace-reasoning"),
+        quote: "Selected exact text.", offsets: { start: 0, end: 20 } });
+    });
+    assert.equal(changedSelection, null);
+  } finally {
+    store?.close();
+    await page.close();
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("Markdown details safely render historical and new messages with native disclosure and contained JSON", { timeout: 20_000 }, async () => {
@@ -282,7 +428,7 @@ test("persisted rotation renders once after missed snapshots and page reload", a
       assert.deepEqual(repeated.messages, first.messages);
       assert.equal(repeated.writes, first.writes, "unchanged polling does not rewrite the notice");
       if (reload) assert.equal(first.writes, 0, "saved projection retains the same exact event on reload");
-      assert.equal(first.messages[0].afterPercent, null);
+      assert.equal(Object.hasOwn(first.messages[0], "afterPercent"), false);
       for (const viewport of [{ width: 1366, height: 900 }, { width: 390, height: 844 }]) {
         await page.setViewportSize(viewport);
         await seedMessages(page, [
@@ -420,12 +566,27 @@ test("compaction without provider turn renders a system marker and unknown compl
           operationId: "operation-1", status, turnId: null, origin: "automatic",
           beforePercent: 77, afterPercent: status === "completed" ? 14 : null,
           measurementStatus: status === "completed" ? "completed" : null,
+          measurementKind: status === "completed" ? "estimated" : null,
         } },
       }), status);
       await seedMessages(page, messages);
       assert.equal(await page.locator(".msg-maintenance").count(), 1);
       assert.ok((await page.locator(".msg-maintenance").textContent()).includes(expectedText));
       assert.equal(await page.locator(".msg-agent").count(), 0);
+      if (status === "completed") {
+        for (const viewport of [{ width: 1366, height: 900 }, { width: 390, height: 844 }]) {
+          await page.setViewportSize(viewport);
+          assert.match(await page.locator(".msg-maintenance").textContent(), /77% → ≈14%/u);
+          assert.match(await page.locator(".msg-maintenance").getAttribute("title"), /Предварительная оценка провайдера/u);
+        }
+        await seedMessages(page, [{ id: "answer-after-compaction", role: "agent", text: "Ответ",
+          activities: [{ id: "compaction", type: "compaction", status: "completed",
+            label: messages[0].maintenanceLabel, detail: messages[0].maintenanceDetail }],
+        }]);
+        await page.locator('.msg-agent .activity-feed > summary').click();
+        const activity = page.locator('.activity-item[data-type="compaction"]');
+        assert.match(await activity.getAttribute("title"), /≈14%.*Предварительная оценка провайдера/u);
+      }
     }
     assert.deepEqual(errors, []);
   } finally {
@@ -524,6 +685,89 @@ test("completed reasoning and tools exist only while their disclosure is open", 
     assert.equal(await trace.locator(".turn-trace-reasoning").count(), 0);
     assert.equal(await trace.locator(".activity-item").count(), 0);
     assert.equal(await trace.locator("[data-deferred-disclosure-content]").evaluate((node) => node.childElementCount), 0);
+  } finally {
+    await page.close();
+  }
+});
+
+test("triple-click quotes the last paragraph with exact source and rejects foreign selected text", { timeout: 25_000 }, async () => {
+  const page = await browser.newPage({ viewport: { width: 1366, height: 900 } });
+  const errors = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  try {
+    await openWebApp(page);
+    const message = {
+      id: "triple-source", provider: "codex", threadId: "thread-1",
+      turnId: "triple-turn", itemId: "triple-item", role: "agent",
+      text: "Заголовок\n\nСредний **абзац** сообщения.\n\nПоследний **абзац** с emoji 🦊.",
+    };
+    await seedMessages(page, [message, {
+      ...message, id: "triple-other", turnId: "other-turn", itemId: "other-item", text: "Чужой текст.",
+    }]);
+    await page.evaluate(() => {
+      window.__quoteSends = [];
+      window.AgentHub.on("message:send", (detail) => window.__quoteSends.push(detail));
+    });
+    const body = page.locator('[data-message-id="triple-source"] .msg-body');
+    const menu = page.locator("[data-annotation-context-menu]");
+    for (const [index, expected] of [[1, "Средний абзац сообщения."], [2, "Последний абзац с emoji 🦊."]]) {
+      const paragraph = body.locator("p").nth(index);
+      await paragraph.click({ clickCount: 3, position: { x: 20, y: 8 } });
+      assert.equal((await page.evaluate(() => getSelection().toString())).trim(), expected);
+      if (index === 2) assert.equal(await body.evaluate((node) => (
+        node.contains(getSelection().getRangeAt(0).endContainer)
+      )), false, "exercise the native paragraph boundary outside the source");
+      await paragraph.click({ button: "right", position: { x: 20, y: 8 } });
+      await menu.waitFor({ state: "visible" });
+      if (index === 2 && process.env.AGENT_HUB_QA_SCREENSHOT) await page.screenshot({
+        path: `${process.env.AGENT_HUB_QA_SCREENSHOT}-triple-click.png`, fullPage: false,
+      });
+      await menu.locator('[data-action="annotate-selection"]').click();
+      await page.waitForFunction((count) => document.querySelectorAll("[data-annotations] .annotation-quote").length === count, index);
+      assert.equal(await page.locator("[data-annotations] .annotation-quote").last().textContent(), expected);
+    }
+    // Neither a second source nor selected action labels may be clipped away.
+    for (const endKind of ["message", "control"]) {
+      await page.evaluate((endKind) => {
+        const start = document.querySelector('[data-message-id="triple-source"] .msg-body p:last-child');
+        const end = endKind === "message"
+          ? document.querySelector('[data-message-id="triple-other"] .msg-body p')
+          : document.querySelector('.msg-stack:has([data-message-id="triple-source"]) [data-message-copy]');
+        const range = document.createRange();
+        range.setStart(start.firstChild, 0);
+        range.setEnd(end, end.childNodes.length);
+        getSelection().removeAllRanges();
+        getSelection().addRange(range);
+      }, endKind);
+      await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      await body.dispatchEvent("contextmenu", { button: 2 });
+      assert.equal(await menu.isVisible(), false);
+      assert.equal(await page.locator("[data-annotations] .annotation-quote").count(), 2);
+    }
+    await page.locator("[data-composer-input]").fill("Проверь цитаты");
+    await page.locator("[data-composer-input]").press("Enter");
+    await page.waitForFunction(() => window.__quoteSends.length === 1);
+    const verified = await page.evaluate(async (message) => {
+      const api = window.AgentHubMessageDisclosure;
+      const surface = document.querySelector('[data-message-id="triple-source"] .msg-body');
+      return Promise.all(window.__quoteSends[0].annotations.map(async ({ quote, source }) => {
+        const range = api.domRangeFromOffsets(surface, source.start, source.end);
+        return {
+          quote, exact: range.toString() === quote,
+          identity: source.messageKey === api.responseAnnotationSourceIdentity(message).messageKey,
+          hashes: api.responseAnnotationSourceHashesMatch(source, {
+            contentHash: await api.responseAnnotationSha256(api.responseAnnotationSourceContent(message)),
+            surfaceHash: await api.responseAnnotationSha256(surface.textContent),
+            selectionHash: await api.responseAnnotationSha256(quote),
+          }),
+        };
+      }));
+    }, message);
+    assert.deepEqual(verified, ["Средний абзац сообщения.", "Последний абзац с emoji 🦊."].map((quote) => (
+      { quote, exact: true, identity: true, hashes: true }
+    )));
+    assert.match(await page.title(), /Agent Hub/iu);
+    assert.deepEqual(errors, []);
   } finally {
     await page.close();
   }

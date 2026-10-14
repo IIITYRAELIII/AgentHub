@@ -4,10 +4,12 @@ import { createDesktopControlRouter } from "./desktop-control-router.mjs";
 const MUTATION_ACTIONS = Object.freeze([
   "select-task", "send-message", "new-task", "rotate-stream", "create-stream",
   "update-setting", "rename-task", "archive-task", "cancel-run",
+  "refresh-model-catalog",
   "resolve-approval", "deferred-input", "restart-server", "retry-startup", "set-autostart",
   "update-server-configuration", "update-root-agents", "update-global-pre-turn-instructions", "compact-context", "create-device-pairing",
   "revoke-device", "submit-bug-report",
   "rename-workspace", "update-workspace-settings", "move-workspace-to-folder", "rename-workspace-folder", "update-workspace-rules", "complete-workspace-release", "create-workspace", "archive-workspace", "restore-workspace", "delete-archived-workspace", "create-workspace-from-stream", "merge-workspaces", "rename-stream",
+  "release-operation-run", "release-operation-continue",
   "archive-stream", "update-stream-settings", "update-stream-rules", "move-stream",
   "board-task-create", "board-task-ingest", "board-task-update", "board-task-checklist", "board-task-checklist-linked-action", "board-task-attachment-add", "board-task-status", "board-task-move", "board-task-complete", "board-task-remove",
   "board-task-retry-triage", "board-task-start", "board-column-move", "board-column-comment",
@@ -19,6 +21,7 @@ const MUTATION_ACTIONS = Object.freeze([
 
 const CONCURRENT_MUTATION_ACTIONS = Object.freeze([
   "send-message", "cancel-run", "deferred-input", "restart-server", "retry-startup",
+  "refresh-model-catalog",
   "usage-sync-now", "usage-sync-invite", "usage-sync-enroll", "usage-sync-device-label",
 ]);
 
@@ -33,15 +36,11 @@ const LOCAL_ONLY_ACTIONS = Object.freeze([
   "update-server-configuration",
   "start-provider-login",
   "submit-provider-login-code",
+  "refresh-model-catalog",
   "cancel-provider-login",
   "command-trace-timeline",
   "command-trace-percentiles",
   "command-trace-stats",
-  "usage-sync-status",
-  "usage-sync-now",
-  "usage-sync-invite",
-  "usage-sync-enroll",
-  "usage-sync-device-label",
 ]);
 const DEVICE_PAIRING_SOURCES = new Set(["desktop-control", "local-mini-app", "trusted-device"]);
 
@@ -75,6 +74,18 @@ export function createDesktopApplicationRouter({
     "messagePinSet", "messagePinsClear",
   ]) requiredFunction(handlers[name], name);
 
+  const releaseOperationUnavailable = () => {
+    const error = new Error("ReleaseOperation is unavailable in this runtime");
+    error.code = "RELEASE_OPERATION_UNAVAILABLE";
+    throw error;
+  };
+  const releaseOperationRun = typeof handlers.releaseOperationRun === "function"
+    ? handlers.releaseOperationRun : releaseOperationUnavailable;
+  const releaseOperationGet = typeof handlers.releaseOperationGet === "function"
+    ? handlers.releaseOperationGet : releaseOperationUnavailable;
+  const releaseOperationContinue = typeof handlers.releaseOperationContinue === "function"
+    ? handlers.releaseOperationContinue : releaseOperationUnavailable;
+
   const dispatch = (type, params, context, target) => commands.dispatch(
     type,
     params,
@@ -84,6 +95,7 @@ export function createDesktopApplicationRouter({
   return createDesktopControlRouter({
     handlers: {
       snapshot: handlers.snapshot,
+      "refresh-model-catalog": handlers.refreshModelCatalog,
       "runtime-health": handlers.runtimeHealth,
       "retry-startup": (params) => {
         if (!handlers.retryStartup) throw new Error("Повтор запуска недоступен в этой версии");
@@ -154,6 +166,9 @@ export function createDesktopApplicationRouter({
       "update-workspace-rules": (params, context) => dispatch("workspace.developer-rules.update", params, context),
       "read-workspace-release-plan": (params, context) => dispatch("workspace.release-plan.read", params, context),
       "complete-workspace-release": (params, context) => dispatch("workspace.release.complete", params, context),
+      "release-operation-run": releaseOperationRun,
+      "release-operation-get": releaseOperationGet,
+      "release-operation-continue": releaseOperationContinue,
       "create-workspace": (params, context) => dispatch("workspace.create", params, context),
       "archive-workspace": (params, context) => dispatch("workspace.archive", params, context),
       "restore-workspace": (params, context) => dispatch("workspace.restore", params, context),
@@ -169,6 +184,7 @@ export function createDesktopApplicationRouter({
       "board-task-create": handlers.boardTaskCreate,
       "board-task-ingest": handlers.boardTaskIngest,
       "board-task-update": handlers.boardTaskUpdate,
+      "board-task-diff": handlers.boardTaskDiff,
       "board-task-checklist": handlers.boardTaskChecklist,
       "board-task-checklist-linked-action": handlers.boardTaskChecklistLinkedAction,
       "board-task-attachment-add": handlers.boardTaskAttachmentAdd,

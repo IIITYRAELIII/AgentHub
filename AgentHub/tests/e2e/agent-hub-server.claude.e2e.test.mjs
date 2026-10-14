@@ -6,6 +6,7 @@ import path from "node:path";
 import test from "node:test";
 import {
   delay,
+  E2eChildProcessOwner,
   FakeTelegramApi,
   readLockPid,
   stopPid,
@@ -94,9 +95,10 @@ test("claude runs parallel tasks, survives a bot restart and ignores stale trans
   let stdout = "";
   let stderr = "";
   const claudePids = new Set();
+  const botOwner = new E2eChildProcessOwner({ label: "Claude Agent Hub" });
 
   async function startBot() {
-    bot = spawn(process.execPath, [BOT_FILE], {
+    bot = botOwner.start(() => spawn(process.execPath, [BOT_FILE], {
       cwd: AGENT_HUB_ROOT,
       env: {
         ...process.env,
@@ -112,7 +114,7 @@ test("claude runs parallel tasks, survives a bot restart and ignores stale trans
       },
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
-    });
+    }));
     bot.stdout.setEncoding("utf8");
     bot.stderr.setEncoding("utf8");
     bot.stdout.on("data", (chunk) => { stdout += chunk; });
@@ -122,19 +124,12 @@ test("claude runs parallel tasks, survives a bot restart and ignores stale trans
 
   async function stopBot() {
     const stoppingBot = bot;
-    if (stoppingBot && stoppingBot.exitCode == null) {
-      stoppingBot.kill("SIGTERM");
-      const exited = await Promise.race([
-        new Promise((resolve) => stoppingBot.once("exit", () => resolve(true))),
-        delay(2_000).then(() => false),
-      ]);
-      if (!exited && stoppingBot.exitCode == null) await stopPid(stoppingBot.pid);
-    }
+    if (stoppingBot) await botOwner.stop();
     try {
       const replacementPid = await readLockPid(lockPath);
       if (replacementPid !== stoppingBot?.pid) await stopPid(replacementPid);
     } catch {}
-    bot = null;
+    if (bot === stoppingBot) bot = null;
   }
 
   async function activeRuns() {
@@ -238,7 +233,10 @@ test("claude runs parallel tasks, survives a bot restart and ignores stale trans
   const nestedTaskButton = nestedPicker.body.reply_markup.inline_keyboard.flat()
     .find((button) => button.callback_data === `task:l:${nestedSessionId}`);
   assert.ok(nestedTaskButton, "nested Claude session must be present in the task catalog");
-  assert.match(nestedTaskButton.text, /Other - Stream 3/);
+  const nestedSnapshot = await callDesktopControl("snapshot", {}, { runtimeRoot: temporaryRoot });
+  const nestedTask = nestedSnapshot.tasks.find(task => task.provider === "claude" && task.threadId === nestedSessionId);
+  assert.ok(nestedTask?.workspaceName && (nestedTask.streamDisplayName || nestedTask.streamName));
+  assert.ok(nestedTaskButton.text.includes(`${nestedTask.workspaceName} - ${nestedTask.streamDisplayName || nestedTask.streamName}`));
   telegram.pushCallback(nestedTaskButton.callback_data, nestedPicker.result);
   await waitFor(async () => await telegramSelectedThread() === nestedSessionId,
     "select nested Claude session");
@@ -480,7 +478,52 @@ test("claude runs parallel tasks, survives a bot restart and ignores stale trans
 
   mark = telegram.calls.length;
   await releaseHold("beta");
-  await telegram.waitForText(`Claude готово: ${secondPrompt}`, { after: mark, timeoutMs: 25_000 });
+  try {
+    await telegram.waitForText(`Claude готово: ${secondPrompt}`, { after: mark, timeoutMs: 25_000 });
+  } catch (error) {
+    const state = await runtimeState().catch(() => null);
+    const runs = (state?.activeRuns ?? []).map((run) => ({
+      id: run.id,
+      pid: run.pid,
+      pidAlive: processIsAlive(run.pid),
+      claudeExited: run.claudeExited,
+      claudeSettled: run.claudeSettled,
+      claudeCleanupPending: run.claudeCleanupPending,
+      claudeOwnershipDiagnostic: run.claudeOwnershipDiagnostic,
+      claudeProcessStartedAtMs: run.claudeProcessStartedAtMs,
+      claudeProcessExitedAtMs: run.claudeProcessExitedAtMs,
+      claudeOwnedProcessTree: (run.claudeOwnedProcessTree ?? []).map((item) => ({
+        pid: item.pid,
+        parentPid: item.parentPid,
+        creationTime: item.creationTime,
+        startedAtMs: item.startedAtMs,
+        exitedAtMs: item.exitedAtMs,
+        launchLineageVerified: item.launchLineageVerified,
+      })),
+      claudeStopAttempt: run.claudeStopAttempt,
+      claudeStopUnknown: run.claudeStopUnknown,
+      claudeStopTargets: run.claudeStopTargets,
+      result: run.claudeResult,
+    }));
+    const runFiles = await Promise.all((state?.activeRuns ?? []).map(async (run) => ({
+      threadId: run.threadId,
+      output: run.claudeOutputPath
+        ? await readFile(run.claudeOutputPath, "utf8").catch((readError) => `unavailable: ${readError.message}`)
+        : "missing path",
+      error: run.claudeErrorPath
+        ? await readFile(run.claudeErrorPath, "utf8").catch((readError) => `unavailable: ${readError.message}`)
+        : "missing path",
+      owner: run.claudeProcessOwnerPath
+        ? await readFile(run.claudeProcessOwnerPath, "utf8").catch((readError) => `unavailable: ${readError.message}`)
+        : "missing path",
+    })));
+    throw new Error(
+      `${error.message}\nruns:\n${JSON.stringify(runs, null, 2)}`
+      + `\nrun files:\n${JSON.stringify(runFiles, null, 2)}`
+      + `\nstdout:\n${stdout}\nstderr:\n${stderr}`,
+      { cause: error },
+    );
+  }
   await waitFor(async () => (await activeRuns()).length === 0,
     "reattached Claude turn delivered its final answer", 20_000);
   const journalTurn = await waitFor(async () => {

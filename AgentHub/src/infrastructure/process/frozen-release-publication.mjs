@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
+import { realpathSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -8,9 +9,14 @@ import { assertReleaseCloneForPublication } from "../filesystem/release-git-work
 
 const execute = promisify(execFile);
 const sha = /^[a-f0-9]{40,64}$/u;
+function canonicalPath(value) {
+  const resolved = path.resolve(value);
+  try { return realpathSync.native(resolved); } catch { return resolved; }
+}
+
 const samePath = (a, b) => process.platform === "win32"
-  ? path.resolve(a).toLowerCase() === path.resolve(b).toLowerCase()
-  : path.resolve(a) === path.resolve(b);
+  ? canonicalPath(a).toLowerCase() === canonicalPath(b).toLowerCase()
+  : canonicalPath(a) === canonicalPath(b);
 
 async function git(args, { cwd }) {
   const { stdout } = await execute("git", args, {
@@ -30,9 +36,12 @@ export function readPublicationReleasePlan(control, workspaceId, runtimeRoot) {
 export function createFrozenReleasePublication({
   repositoryRoot, runtimeRoot, workspaceId = null,
   control = callDesktopControl, runGit = git,
-  verifyClone = assertReleaseCloneForPublication, read = readFile,
+  verifyClone = assertReleaseCloneForPublication, read = readFile, readPlan = null,
 } = {}) {
   const invoke = (args) => runGit(args, { cwd: repositoryRoot });
+  const loadPlan = readPlan ?? ((selectedWorkspace) => (
+    readPublicationReleasePlan(control, selectedWorkspace, runtimeRoot)
+  ));
   async function frozen(identity, { completing = false } = {}) {
     const marker = await verifyClone({ repositoryRoot });
     if (!samePath(marker.releaseRoot, identity.worktreeRoot)) throw new Error("publication checkout identity changed");
@@ -61,7 +70,7 @@ export function createFrozenReleasePublication({
         invoke(["rev-parse", "HEAD^{commit}"]), invoke(["status", "--porcelain=v1", "--untracked-files=all"]),
       ]);
       if (head !== identity.revision || dirty) throw new Error("release checkout changed before publication");
-      const plan = await readPublicationReleasePlan(control, selectedWorkspace, runtimeRoot);
+      const plan = await loadPlan(selectedWorkspace);
       if (plan.revision !== checkpoint.planRevision) throw new Error("release plan changed before publication");
       const roots = new Set((plan.candidates ?? []).flatMap((task) => (task.gitReferences ?? []).map((ref) => path.resolve(ref.projectRoot))));
       if (roots.size !== 1 || ![...roots].some((root) => samePath(root, marker.primaryRoot))) {

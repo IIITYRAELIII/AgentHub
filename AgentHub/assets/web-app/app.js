@@ -72,7 +72,6 @@ const themeSelect = document.querySelector("[data-theme-select]");
 const backgroundSelect = document.querySelector("[data-background-select]");
 const backgroundMotionToggle = document.querySelector("[data-background-motion-toggle]");
 const chatBackgroundToggle = document.querySelector("[data-chat-background-toggle]");
-const activityRailVisibilityToggle = document.querySelector("[data-activity-rail-visibility-toggle]");
 const journalGroupingButtons = [...document.querySelectorAll("[data-journal-grouping]")];
 const journalStreamGroupToggle = document.querySelector("[data-journal-stream-group-toggle]");
 const journalPrimaryColumn = document.querySelector("[data-journal-primary-column]");
@@ -122,14 +121,18 @@ const workspaceCardQuickMessagesCount = document.querySelector("[data-workspace-
 const workspaceCardArchive = document.querySelector("[data-workspace-card-archive]");
 const workspaceCardReleaseWorkflow = document.querySelector("[data-workspace-release-workflow]");
 const workspaceCardReleaseWorkflowTooltip = document.querySelector("[data-workspace-release-workflow-tooltip]");
+const workspaceCardAutoReview = document.querySelector("[data-workspace-auto-review]");
 const workspaceCardOrder = document.querySelector("[data-workspace-card-order]");
 const workspaceCardSubmit = document.querySelector("[data-workspace-card-submit]");
 window.AgentHubWorkspaceReleaseWorkflow?.renderTooltip(workspaceCardReleaseWorkflowTooltip);
+window.AgentHubWorkspaceReleaseWorkflow?.renderAutoReviewTooltip(document.querySelector("[data-workspace-auto-review-tooltip]"));
 
 const chatPane = document.querySelector("[data-chat-pane]");
 const streamTabs = document.querySelector("[data-stream-tabs]");
 const streamChatColumns = document.querySelector("[data-stream-chat-columns]");
 const streamChatHeader = document.querySelector("[data-stream-chat-header]");
+const streamHeaderWorkspace = document.querySelector("[data-stream-header-workspace]");
+const streamHeaderName = document.querySelector("[data-stream-header-name]");
 const streamHeaderProviderDot = document.querySelector("[data-stream-header-provider-dot]");
 const streamHeaderProvider = document.querySelector("[data-stream-header-provider]");
 const streamHeaderProviderConnection = document.querySelector("[data-provider-connection-quality]");
@@ -184,7 +187,7 @@ const dialogWorkingDirectoryNote = document.querySelector("[data-dialog-working-
 const dialogStreamRules = document.querySelector("[data-dialog-stream-rules]");
 const dialogStreamRulesCount = document.querySelector("[data-dialog-stream-rules-count]");
 const dialogStreamRulesSave = document.querySelector("[data-dialog-stream-rules-save]");
-const dialogStreamArchitect = document.querySelector("[data-dialog-stream-architect]");
+const dialogStreamReleaseManager = document.querySelector("[data-dialog-stream-release-manager]");
 const dialogStreamTeamLead = document.querySelector("[data-dialog-stream-team-lead]");
 const dialogStreamTeamLeadTooltip = document.querySelector("[data-stream-team-lead-tooltip]");
 const dialogStreamQuickMessagesEntry = document.querySelector("[data-dialog-stream-quick-messages-entry]");
@@ -492,7 +495,7 @@ if (themeSelect) {
   }));
 }
 const groupings = new Set(JournalView.GROUPINGS);
-const usageUnits = new Set(["$", "rub", "cr", "pte"]);
+const usageUnits = new Set(["$", "rub", "cr", "pte", "qu"]);
 const CREDITS_PER_USD = 25;
 const PTE_PER_CREDIT = 16_000;
 const {
@@ -757,7 +760,7 @@ function applyChatSurface(value, { persist = false } = {}) {
 }
 
 function applyActivityRailVisibility(value, { persist = false } = {}) {
-  const selected = activityRailPreference.apply(root, activityRailVisibilityToggle, value);
+  const selected = activityRailPreference.apply(root, null, value);
   if (persist) activityRailPreference.persist(localStorage, selected);
 }
 
@@ -1002,11 +1005,6 @@ backgroundMotionToggle?.addEventListener("change", () => {
 chatBackgroundToggle?.addEventListener("change", () => {
   applyChatSurface(chatBackgroundToggle.checked ? "transparent" : "themed", { persist: true });
 });
-activityRailVisibilityToggle?.addEventListener("change", () => {
-  applyActivityRailVisibility(activityRailVisibilityToggle.checked ? "visible" : "hidden", {
-    persist: true,
-  });
-});
 for (const button of journalGroupingButtons) {
   button.addEventListener("click", () => {
     const next = JournalView.normalizeGrouping(button.dataset.journalGrouping);
@@ -1022,15 +1020,25 @@ for (const button of journalGroupingButtons) {
    источник значения и событий, но показывает единый доступный listbox. */
 let themedSelectSequence = 0;
 let openThemedSelect = null;
+let modelCatalogRefreshing = false;
 
 function themedSelectOptions(select) {
-  return [...select.options].map((option, index) => ({
-    disabled: option.disabled,
+  const items = [...select.options].map((option, index) => ({
+    disabled: select.disabled || option.disabled,
     index,
     label: option.label || option.textContent || option.value,
     selected: option.selected,
     value: option.value,
   }));
+  if (select.dataset.modelCatalogRefresh === "true") {
+    items.push({
+      action: "model-catalog-refresh",
+      index: items.length,
+      label: modelCatalogRefreshing ? "Обновление моделей…" : "Обновить доступные модели",
+      disabled: modelCatalogRefreshing,
+    });
+  }
+  return items;
 }
 
 function enhanceThemedSelect(select) {
@@ -1087,7 +1095,7 @@ function enhanceThemedSelect(select) {
     const option = menu.querySelector(`[data-option-index="${index}"]`);
     option?.focus({ preventScroll: true });
     if (!option) return;
-    menu.setAttribute("aria-activedescendant", option.id);
+    if (menu.getAttribute("role") === "listbox") menu.setAttribute("aria-activedescendant", option.id);
     const optionTop = option.offsetTop;
     const optionBottom = optionTop + option.offsetHeight;
     if (optionTop < menu.scrollTop) menu.scrollTop = optionTop;
@@ -1120,33 +1128,68 @@ function enhanceThemedSelect(select) {
     if (restoreFocus) button.focus();
   };
   const choose = (index) => {
+    const item = options()[index];
+    if (item?.action) {
+      if (item.disabled) return;
+      close({ restoreFocus: true });
+      emit("model-catalog:refresh", { manual: true });
+      return;
+    }
     const option = select.options[index];
-    if (!option || option.disabled) return;
+    if (!option || select.disabled || option.disabled) return;
     select.selectedIndex = index;
     select.dispatchEvent(new Event("input", { bubbles: true }));
     select.dispatchEvent(new Event("change", { bubbles: true }));
     close({ restoreFocus: true });
   };
   const render = () => {
+    const focused = menu.contains(document.activeElement) ? document.activeElement : null;
+    const focusedAction = focused?.dataset.selectAction;
+    const focusedValue = focused?.dataset.value;
     const items = options();
-    menu.replaceChildren(...items.map((option) => {
-      const item = document.createElement("div");
-      item.className = "themed-select-option";
+    const hasActions = items.some((item) => item.action);
+    if (hasActions) menu.removeAttribute("aria-activedescendant");
+    menu.setAttribute("role", hasActions ? "dialog" : "listbox");
+    button.setAttribute("aria-haspopup", hasActions ? "dialog" : "listbox");
+    const list = hasActions ? document.createElement("div") : menu;
+    if (hasActions) {
+      list.setAttribute("role", "listbox");
+      list.setAttribute("aria-label", button.getAttribute("aria-label"));
+    }
+    menu.replaceChildren();
+    if (hasActions) menu.append(list);
+    for (const option of items) {
+      const item = document.createElement(option.action ? "button" : "div");
+      item.className = option.action ? "themed-select-option themed-select-action" : "themed-select-option";
       item.dataset.optionIndex = String(option.index);
-      item.dataset.value = option.value;
       item.id = `${menu.id}-option-${option.index}`;
       item.tabIndex = -1;
       item.textContent = option.label;
-      item.setAttribute("role", "option");
-      item.setAttribute("aria-selected", String(option.selected));
+      if (option.action) {
+        item.type = "button";
+        item.dataset.selectAction = option.action;
+        item.disabled = option.disabled;
+        item.setAttribute("aria-busy", String(option.disabled));
+      } else {
+        item.dataset.value = option.value;
+        item.setAttribute("role", "option");
+        item.setAttribute("aria-selected", String(option.selected));
+      }
       item.setAttribute("aria-disabled", String(option.disabled));
       if (option.disabled) item.dataset.disabled = "true";
-      return item;
-    }));
-    const selected = items.find((option) => option.selected) ?? items[0];
+      (option.action ? menu : list).append(item);
+    }
+    const selected = items.find((option) => option.selected) ?? items.find((option) => !option.action);
     value.textContent = selected?.label ?? "";
-    button.disabled = select.disabled;
-    if (!menu.hidden) positionMenu();
+    button.disabled = select.disabled && !hasActions;
+    if (!menu.hidden) {
+      positionMenu();
+      if (focused) {
+        const retained = items.find((item) => !item.disabled && (focusedAction
+          ? item.action === focusedAction : !item.action && item.value === focusedValue));
+        focusOption(retained?.index ?? enabledFrom(items.length - 1, 1));
+      }
+    }
   };
   const open = () => {
     if (button.disabled) return;
@@ -1160,16 +1203,24 @@ function enhanceThemedSelect(select) {
     button.setAttribute("aria-expanded", "true");
     openThemedSelect = state;
     positionMenu();
-    requestAnimationFrame(() => focusOption(Math.max(0, select.selectedIndex)));
+    const selected = options().find((item) => item.selected && !item.disabled);
+    requestAnimationFrame(() => focusOption(selected?.index ?? enabledFrom(options().length - 1, 1)));
   };
 
   button.addEventListener("click", () => (menu.hidden ? open() : close()));
   button.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !menu.hidden) {
+      event.preventDefault();
+      event.stopPropagation();
+      close({ restoreFocus: true });
+      return;
+    }
     if (!["ArrowDown", "ArrowUp", "Home", "End", "Enter", " "].includes(event.key)) return;
     event.preventDefault();
     open();
-    const last = Math.max(0, select.options.length - 1);
-    const target = ["Enter", " "].includes(event.key) ? select.selectedIndex
+    const last = Math.max(0, options().length - 1);
+    const target = ["Enter", " "].includes(event.key)
+      ? (options().find((item) => item.selected && !item.disabled)?.index ?? enabledFrom(last, 1))
       : event.key === "Home" ? enabledFrom(last, 1)
       : event.key === "End" ? enabledFrom(0, -1)
         : enabledFrom(select.selectedIndex, event.key === "ArrowUp" ? -1 : 1);
@@ -1181,8 +1232,14 @@ function enhanceThemedSelect(select) {
   });
   menu.addEventListener("keydown", (event) => {
     const current = Number(document.activeElement?.dataset?.optionIndex ?? select.selectedIndex);
-    if (event.key === "Escape" || event.key === "Tab") {
-      close({ restoreFocus: event.key === "Escape" });
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      close({ restoreFocus: true });
+      return;
+    }
+    if (event.key === "Tab") {
+      close();
       return;
     }
     if (event.key === "Enter" || event.key === " ") {
@@ -1192,7 +1249,7 @@ function enhanceThemedSelect(select) {
     }
     if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
     event.preventDefault();
-    const last = Math.max(0, select.options.length - 1);
+    const last = Math.max(0, options().length - 1);
     const target = event.key === "Home" ? enabledFrom(last, 1)
       : event.key === "End" ? enabledFrom(0, -1)
         : enabledFrom(current, event.key === "ArrowUp" ? -1 : 1);
@@ -1844,6 +1901,7 @@ function updateComposerTaskGenerations(previousTasks, nextTasks) {
   for (const id of new Set([...previous.keys(), ...next.keys()])) {
     if (previous.get(id) === next.get(id)) continue;
     composerTaskGenerations.set(id, (composerTaskGenerations.get(id) ?? 0) + 1);
+    discardAttachmentPreviews(id);
   }
 }
 
@@ -1855,6 +1913,7 @@ function removeComposerTask(taskId) {
     pendingComposerRequest = null;
   }
   composerDraftReconciliation.remove(id);
+  discardAttachmentPreviews(id);
   attachmentOperationSequences.delete(id);
   annotationOperationSequences.delete(id);
 }
@@ -1871,13 +1930,13 @@ function captureComposerTaskOperation(taskId = state.selectedId) {
   };
 }
 
-function composerTaskOperationCurrent(operation) {
+function composerTaskOperationCurrent(operation, { allowDraftEdits = false } = {}) {
   if (!operation) return false;
   const task = state.tasks.find((candidate) => candidate.id === operation.taskId);
   return Boolean(task)
     && composerTaskIdentity(task) === operation.taskIdentity
     && (composerTaskGenerations.get(operation.taskId) ?? 0) === operation.taskGeneration
-    && composerDraftReconciliation.revision(operation.taskId) === operation.editRevision;
+    && (allowDraftEdits || composerDraftReconciliation.revision(operation.taskId) === operation.editRevision);
 }
 
 function advanceComposerAsyncOperationFence(taskId) {
@@ -1885,6 +1944,7 @@ function advanceComposerAsyncOperationFence(taskId) {
   if (!id) return;
   attachmentOperationSequences.set(id, (attachmentOperationSequences.get(id) ?? 0) + 1);
   annotationOperationSequences.set(id, (annotationOperationSequences.get(id) ?? 0) + 1);
+  discardAttachmentPreviews(id);
 }
 
 function taskNavigationData(task) {
@@ -3668,12 +3728,14 @@ function setViewContent(view, { persist = true, activate = true } = {}) {
   syncMobileNav();
   if (activate) activateView(next);
   if (persist) persistNavigationTab();
+  if (next === "chat") scheduleUnderfilledHistoryLoad();
 }
 
 function setPane(pane, { persist = true } = {}) {
   root.dataset.pane = pane === "chat" ? "chat" : "tasks";
   syncMobileNav();
   if (persist) persistNavigationTab();
+  if (root.dataset.pane === "chat") scheduleUnderfilledHistoryLoad();
 }
 
 function syncMobileNav() {
@@ -3741,6 +3803,8 @@ function shortModelLabel(value) {
   const source = String(value ?? "").trim();
   if (!source) return "";
   const normalized = source.toLowerCase();
+  const versionedVariant = normalized.match(/^(?:gpt[- ]?)?(5\.6|6)[- ](sol|luna)$/u);
+  if (versionedVariant) return `${versionedVariant[1]} ${versionedVariant[2] === "sol" ? "Sol" : "Luna"}`;
   if (normalized === "gpt-6-astra" || normalized === "gpt-6 astra") return "Astra";
   if (normalized.includes("astra")) return source;
   const named = [
@@ -4355,6 +4419,7 @@ function renderStreamTabs() {
     overflowItems.push(el("button", {
       ...attributes,
       class: "stream-overflow-item",
+      draggable: window.AgentHubStreamTabs.streamsAreDraggable(streamOrderMode, surface) ? "true" : null,
       hidden: true,
     }, content()));
     return el("span", {
@@ -5017,7 +5082,14 @@ function bindTaskReferenceDrop(container, {
     const reference = TaskReferences.fromTransfer(event.dataTransfer, { intent: "context" });
     target?.classList.remove("is-task-drop-target");
     if (!targetTaskId || !reference) return;
-    attachTaskReferenceToComposer(targetTaskId, reference);
+    const trace = window.AgentHubCommandTrace;
+    const started = trace?.now();
+    const commandId = trace?.newId();
+    const attach = () => attachTaskReferenceToComposer(targetTaskId, reference);
+    if (trace) {
+      trace.measure("ui-interaction", "task-drop", attach, commandId);
+      trace.afterPaint("ui-render", "task-drop", started, commandId, { trigger: "next-paint" });
+    } else attach();
   });
 }
 
@@ -5026,6 +5098,10 @@ bindTaskReferenceDrop(activityStreamList);
 bindTaskReferenceDrop(activityRecentList);
 bindTaskReferenceDrop(chatPane, {
   targetFromEvent: () => chatPane,
+  conversationTaskId: () => String(state.selectedId ?? "").trim(),
+});
+bindTaskReferenceDrop(composer, {
+  targetFromEvent: () => composer,
   conversationTaskId: () => String(state.selectedId ?? "").trim(),
 });
 
@@ -5140,6 +5216,7 @@ function openWorkspaceCard(workspaceId) {
   workspaceCardTaskPrefix.value = String(workspace.settings?.taskPrefix ?? "");
   workspaceCardRules.value = entityAgentRules(workspace);
   workspaceCardReleaseWorkflow.checked = workspace.settings?.releaseWorkflowEnabled === true;
+  workspaceCardAutoReview.checked = workspace.settings?.autoReviewEnabled === true;
   updateAgentRulesLimit(workspaceCardRules, workspaceCardRulesCount);
   renderWorkspaceCardQuickMessages(workspace.id);
   if (workspaceCardArchive) {
@@ -5176,6 +5253,7 @@ function openNewWorkspaceCard() {
   workspaceCardTaskPrefix.value = "";
   workspaceCardRules.value = "";
   workspaceCardReleaseWorkflow.checked = false;
+  workspaceCardAutoReview.checked = false;
   updateAgentRulesLimit(workspaceCardRules, workspaceCardRulesCount);
   renderWorkspaceCardQuickMessages("");
   if (workspaceCardArchive) workspaceCardArchive.hidden = true;
@@ -5496,7 +5574,10 @@ streamTabs?.addEventListener("drop", (event) => {
   const order = orderedWorkspaceStreams(streams, workspaceId).map((stream) => stream.id)
     .filter((id) => id !== streamId);
   const targetIndex = order.indexOf(targetId);
-  const insertAfter = event.clientX > target.getBoundingClientRect().left + target.clientWidth / 2;
+  const rect = target.getBoundingClientRect();
+  const insertAfter = target.classList.contains("stream-overflow-item")
+    ? event.clientY > rect.top + rect.height / 2
+    : event.clientX > rect.left + rect.width / 2;
   order.splice(Math.max(0, targetIndex + (insertAfter ? 1 : 0)), 0, streamId);
   const beforeStreamId = order[order.indexOf(streamId) + 1] ?? null;
   emit("stream:move", { streamId, workspaceId, beforeStreamId });
@@ -5737,6 +5818,13 @@ function providerConnectionTitle(providerLabel, presentation, measurement) {
 function renderStreamChatHeader(task, now = Date.now()) {
   if (!streamChatHeader) return;
   streamChatHeader.hidden = !task;
+  const workspaceName = task ? String(task.workspaceName || task.title || "Workspace").trim() : "";
+  const streamName = task ? String(task.streamName || task.streamDisplayName || "Stream").trim() : "";
+  if (streamHeaderWorkspace) {
+    streamHeaderWorkspace.textContent = workspaceName;
+    streamHeaderWorkspace.title = workspaceName;
+  }
+  if (streamHeaderName) streamHeaderName.textContent = streamName;
   if (!task) return;
   const provider = String(task.provider ?? "none");
   const providerLabel = task.agentLabel || providerLabels[provider] || "Агент";
@@ -5870,11 +5958,12 @@ function contextMaintenancePreparing(task) {
 function renderContextUsage(task) {
   if (!contextUsageButton) return;
   const context = task?.context;
-  const available = Number(context?.modelContextWindow) > 0;
+  const known = context?.percent != null && Number.isFinite(Number(context.percent));
+  const available = Number(context?.modelContextWindow) > 0 || known;
   contextUsageButton.hidden = !available;
   if (!available) return;
-  const percent = Math.max(0, Math.min(100, Number(context.percent) || 0));
-  const used = Math.max(0, Number(context.usedTokens) || 0);
+  const percent = known ? Math.max(0, Math.min(100, Number(context.percent))) : 0;
+  const used = context.usedTokens == null ? null : Math.max(0, Number(context.usedTokens) || 0);
   const total = Math.max(0, Number(context.modelContextWindow) || 0);
   const cleaningImages = context.compaction?.stage === "cleaning-images";
   const preparing = contextMaintenancePreparing(task);
@@ -5882,7 +5971,8 @@ function renderContextUsage(task) {
     && task?.maintenance?.phase === "starting";
   contextLabel.textContent = preparing ? "подготовка…" : starting ? "запуск…" : context.compacting
     ? "свёртка…"
-    : context.usagePending ? "обновление…" : `${Math.round(percent)}% контекста`;
+    : context.usagePending ? "обновление…" : known
+      ? `${context.estimated ? "≈" : ""}${Math.round(percent)}% контекста` : "нет оценки";
   contextRing.style.setProperty("--context-percent", `${percent}%`);
   contextUsageButton.title = preparing ? "Подготовка обслуживания контекста. Проверяется завершение предыдущего хода…"
     : starting ? "Запуск обслуживания контекста…" : context.compacting
@@ -5891,7 +5981,10 @@ function renderContextUsage(task) {
       : "Контекст сворачивается…"
     : context.usagePending
       ? "Контекст свёрнут. Ожидается обновлённый объём…"
-    : `Контекст: ${used.toLocaleString("ru-RU")} из ${total.toLocaleString("ru-RU")}. Нажмите для подробностей.`;
+    : known ? used !== null && total
+      ? `Контекст: ${context.estimated ? "≈" : ""}${used.toLocaleString("ru-RU")} из ${total.toLocaleString("ru-RU")}. Нажмите для подробностей.`
+      : `Контекст: ${context.estimated ? "≈" : ""}${Math.round(percent)}%. Нажмите для подробностей.`
+      : "Оценка контекста после свёртки недоступна.";
   contextUsageButton.disabled = false;
   contextUsageButton.toggleAttribute("data-compacting", Boolean(context.compacting));
   if (contextUsageModal?.open) renderContextUsageDetails(task);
@@ -5904,12 +5997,17 @@ function contextTokens(value, estimated = false) {
 
 function renderContextUsageDetails(task) {
   const context = task?.context;
-  if (!context || !Number(context.modelContextWindow)) return;
-  const used = Math.max(0, Number(context.usedTokens) || 0);
+  if (!context) return;
+  const known = context.percent != null && Number.isFinite(Number(context.percent));
+  const used = known && context.usedTokens != null ? Math.max(0, Number(context.usedTokens) || 0) : null;
   const total = Math.max(0, Number(context.modelContextWindow) || 0);
-  const percent = Math.max(0, Math.min(100, Number(context.percent) || 0));
-  contextUsageSummary.textContent = `${used.toLocaleString("ru-RU")} из ${total.toLocaleString("ru-RU")} токенов`;
-  contextUsageSummaryPercent.textContent = `${Math.round(percent)}%`;
+  const percent = known ? Math.max(0, Math.min(100, Number(context.percent))) : 0;
+  contextUsageSummary.textContent = known
+    ? used !== null && total
+      ? `${context.estimated ? "≈" : ""}${used.toLocaleString("ru-RU")} из ${total.toLocaleString("ru-RU")} токенов`
+      : `${context.estimated ? "≈" : ""}${Math.round(percent)}% контекста`
+    : "Оценка после свёртки недоступна";
+  contextUsageSummaryPercent.textContent = known ? `${context.estimated ? "≈" : ""}${Math.round(percent)}%` : "—";
   contextUsageTotalFill.style.width = `${percent}%`;
   contextUsageCategories.replaceChildren();
   for (const category of Array.isArray(context.breakdown?.categories) ? context.breakdown.categories : []) {
@@ -5951,7 +6049,8 @@ function renderContextUsageDetails(task) {
 
 function openContextUsage() {
   const task = currentTask();
-  if (!task?.context || !Number(task.context.modelContextWindow) || !contextUsageModal) return;
+  if (!task?.context || (Number(task.context.modelContextWindow) <= 0 && task.context.percent == null)
+    || !contextUsageModal) return;
   if (contextUsageModal.open) {
     closeContextUsage();
     return;
@@ -6557,6 +6656,9 @@ function patchRenderedMessage(node, message) {
   if (!article) return;
   article.dataset.messageId = message.id ?? "";
   article.dataset.turnId = message.turnId ?? "";
+  article.dataset.provider = message.provider ?? article.dataset.provider ?? "";
+  article.dataset.threadId = message.threadId ?? "";
+  article.dataset.terminalRevision = String(Number(message.terminalRevision) || 0);
   article.dataset.itemId = message.itemId ?? "";
   article.dataset.deliveryState = message.deliveryState ?? "";
   const role = message.role === "user" ? "user" : message.role === "system" ? "system" : "agent";
@@ -6788,7 +6890,15 @@ function resetHistoryPull() {
   renderHistoryLoader();
 }
 
+function chatHistoryViewportVisible() {
+  return root.dataset.view === "chat" && !document.hidden && !chatPane.hidden
+    && chatScroll.clientHeight > 0 && chatScroll.clientWidth > 0;
+}
+
 function requestOlderHistory() {
+  // Resize/scroll callbacks can still arrive after navigation hides this pane.
+  // Zero-sized hidden history is not an empty viewport asking for more pages.
+  if (!chatHistoryViewportVisible()) return;
   const pagination = currentHistoryPagination();
   if (!state.selectedId || pagination.loading) return;
   const tail = messageTailPagination();
@@ -6804,9 +6914,10 @@ function requestOlderHistory() {
 let historyUnderfillFrame = 0;
 
 function scheduleUnderfilledHistoryLoad() {
-  if (historyUnderfillFrame) return;
+  if (historyUnderfillFrame || root.dataset.view !== "chat" || document.hidden) return;
   historyUnderfillFrame = window.requestAnimationFrame(() => {
     historyUnderfillFrame = 0;
+    if (!chatHistoryViewportVisible()) return;
     const pagination = currentHistoryPagination();
     if (shouldLoadOlderPage(chatScroll, {
       ...pagination,
@@ -7265,6 +7376,7 @@ function activityItemNode(activity) {
     class: "activity-item",
     "data-type": activity.type ?? "stage",
     "data-status": activity.status ?? "",
+    ...(activity.type === "compaction" ? { title: String(activity.detail ?? "") } : {}),
   }, [
     el("span", { class: "activity-marker", "aria-hidden": "true" }),
     el("span", { class: "activity-time", text: activity.time
@@ -7310,15 +7422,83 @@ function visibleTurnTraceGroups(groups) {
   ));
 }
 
-function turnTraceGroupsNode(values, { liveStage = "", openGroupIds = [] } = {}) {
+const traceDetailSources = new WeakMap();
+
+function traceReasoningNode(group) {
+  const node = el("div", { class: "turn-trace-reasoning", "data-trace-group-id": group.id });
+  renderMarkdown(node, group.reasoning);
+  traceDetailSources.set(node, group);
+  return node;
+}
+
+function requestTracePage(identity, tracePage) {
+  const boundIdentity = { ...identity, streamId: identity.streamId || currentTask()?.streamId };
+  return new Promise((resolve, reject) => emit("history:trace-page", { identity: boundIdentity, tracePage, resolve, reject }));
+}
+
+function traceArchiveNode(identity) {
+  const content = el("div", { class: "turn-trace-archive-content" });
+  const previous = el("button", { type: "button", text: "Назад", disabled: true });
+  const next = el("button", { type: "button", text: "Далее", disabled: true });
+  const status = el("span", { role: "status" });
+  const details = el("details", { class: "turn-trace-archive" }, [
+    el("summary", { text: "Все этапы" }), content, previous, next, status,
+  ]);
+  let page = null;
+  let pending = false;
+  const offsets = [];
+  async function load(offset, direction = "initial") {
+    if (pending) return;
+    pending = true;
+    previous.disabled = next.disabled = true;
+    status.textContent = "Загрузка…";
+    try {
+      const result = await requestTracePage(identity, {
+        turnId: identity.turnId, offset,
+        ...(page ? { generation: page.generation, sourceSize: page.sourceSize, sourceHash: page.sourceHash } : {}),
+      });
+      if (!details.isConnected) return;
+      if (direction === "next") offsets.push(page.offset);
+      if (direction === "previous") offsets.pop();
+      page = result;
+      content.replaceChildren(...page.groups.map((group) => el("section", {}, [
+        ...(group.reasoning ? [traceReasoningNode(group)] : []),
+        ...group.activities.map(activityItemNode),
+      ])));
+      status.textContent = "";
+    } catch (error) {
+      if (details.isConnected) status.textContent = error.message || "Не удалось прочитать этапы";
+    } finally {
+      pending = false;
+      previous.disabled = !offsets.length;
+      next.disabled = page?.nextOffset == null;
+    }
+  }
+  details.addEventListener("toggle", () => { if (details.open && !page) void load(0); });
+  previous.addEventListener("click", () => void load(offsets.at(-1), "previous"));
+  next.addEventListener("click", () => void load(page.nextOffset, "next"));
+  return details;
+}
+
+function traceOmissionNode(groups, identity = null) {
+  const earlierGroups = Number(groups[0]?.omittedGroupsBefore) || 0;
+  const earlierActivities = groups.reduce(
+    (count, group) => count + (Number(group?.omittedActivities) || 0), 0,
+  );
+  if (!earlierGroups && !earlierActivities) return null;
+  return identity?.provider === "codex" && identity.threadId && identity.turnId
+    ? traceArchiveNode(identity)
+    : el("div", { class: "turn-trace-omission", text: "Показаны последние этапы" });
+}
+
+function turnTraceGroupsNode(values, { liveStage = "", openGroupIds = [], identity = null } = {}) {
   const content = turnTraceContent(values);
   const blocks = content.reasoningBlocks.map((reasoning, index) => {
     const section = el("section", {
       class: "turn-trace-block",
       "data-trace-index": String(index),
     });
-    const reasoningNode = el("div", { class: "turn-trace-reasoning" });
-    renderMarkdown(reasoningNode, reasoning);
+    const reasoningNode = traceReasoningNode(values.filter((group) => String(group.reasoning ?? "").trim())[index]);
     section.append(reasoningNode);
     return section;
   });
@@ -7342,10 +7522,11 @@ function turnTraceGroupsNode(values, { liveStage = "", openGroupIds = [] } = {})
       target.replaceChildren(...content.activities.map(activityItemNode));
     }));
   }
-  return el("div", { class: "turn-trace-groups" }, blocks);
+  const omission = traceOmissionNode(values, identity);
+  return el("div", { class: "turn-trace-groups" }, omission ? [omission, ...blocks] : blocks);
 }
 
-function turnTraceNode(groups) {
+function turnTraceNode(groups, identity = null) {
   const values = visibleTurnTraceGroups(groups);
   if (!values.length) return null;
   const activityCount = values.reduce((total, group) => total + (group.activities?.length ?? 0), 0);
@@ -7354,6 +7535,7 @@ function turnTraceNode(groups) {
     reasoningCount: content.reasoningBlocks.length,
     activityCount,
   });
+  if (traceOmissionNode(values)) summary.label += " · последние";
   const expanded = el("div", {
     class: "turn-trace-groups",
     "data-deferred-disclosure-content": "",
@@ -7363,9 +7545,10 @@ function turnTraceNode(groups) {
     expanded,
   ]);
   return configureDeferredDisclosure(details, expanded, (target) => {
+    const omission = traceOmissionNode(values, identity);
+    if (omission) target.append(omission);
     content.reasoningBlocks.forEach((reasoning, index) => {
-      const reasoningNode = el("div", { class: "turn-trace-reasoning" });
-      renderMarkdown(reasoningNode, reasoning);
+      const reasoningNode = traceReasoningNode(values.filter((group) => String(group.reasoning ?? "").trim())[index]);
       target.append(el("section", {
         class: "turn-trace-block",
         "data-trace-index": String(index),
@@ -7486,10 +7669,15 @@ function renderMessage(message, { readOnly = false, task = currentTask() } = {})
     "data-role": role,
     "data-message-id": message.id ?? "",
     "data-turn-id": message.turnId ?? "",
+    "data-thread-id": message.threadId ?? "",
+    "data-terminal-revision": String(Number(message.terminalRevision) || 0),
     "data-item-id": message.itemId ?? "",
     "data-message-key": message.messageKey ?? "",
     "data-delivery-state": message.deliveryState ?? "",
     "data-provider": String(task?.provider ?? "none"),
+    ...(maintenance && message.measurementKind === "estimated"
+      ? { title: String(message.maintenanceDetail ?? "Предварительная оценка провайдера после свёртки") }
+      : {}),
     ...(subagent ? { "data-subagent-response": true } : {}),
   });
 
@@ -7561,7 +7749,7 @@ function renderMessage(message, { readOnly = false, task = currentTask() } = {})
 
   if (maintenance) article.append(body);
   else { article.append(head); if (!readOnly) syncMessageUploadActions(head, message); }
-  const trace = turnTraceNode(message.activityGroups);
+  const trace = turnTraceNode(message.activityGroups, message);
   const activity = trace ? null : activityFeedNode(message.activities);
   if (trace) article.append(trace);
   else if (activity) article.append(activity);
@@ -7783,7 +7971,7 @@ async function focusResponseCitationSource(button) {
   const target = responseCitationSources.get(button);
   const source = normalizedResponseAnnotationSource(target?.source);
   if (!source) return false;
-  const projection = sourceMessageProjection(source);
+  let projection = sourceMessageProjection(source);
   if (!projection) return false;
   const renderedKey = MessageView.messageKey(projection.message, projection.index);
   const rootNode = renderedResponseAnnotationSourceRoot(renderedKey);
@@ -7797,7 +7985,30 @@ async function focusResponseCitationSource(button) {
       syncDeferredDisclosure(details);
     }
   }
-  const surface = responseAnnotationSourceSurface(article, source);
+  let recoveredTraceSurface = null;
+  if (source.traceGroupId && article) {
+    let surface = responseAnnotationSourceSurface(article, source);
+    let group = surface && traceDetailSources.get(surface);
+    const previewContent = group && responseAnnotationSourceContent(
+      { ...projection.message, activityGroups: [group] }, source,
+    );
+    if (!previewContent || await responseAnnotationSha256(previewContent) !== source.contentHash) {
+      try {
+        const page = await requestTracePage(projection.message, { turnId: source.turnId, groupId: source.traceGroupId });
+        if (!article.isConnected) return false;
+        if (page.groups?.length !== 1 || page.groups[0].id !== source.traceGroupId) return false;
+        group = page.groups[0];
+        const candidate = { ...projection.message, activityGroups: [group] };
+        if (await responseAnnotationSha256(responseAnnotationSourceContent(candidate, source)) !== source.contentHash) return false;
+        article.querySelector("[data-citation-trace]")?.remove();
+        recoveredTraceSurface = traceReasoningNode(group);
+        const target = el("section", { "data-citation-trace": "" }, [recoveredTraceSurface]);
+        article.append(target);
+      } catch { return false; }
+    }
+    projection = { ...projection, message: { ...projection.message, activityGroups: [group] } };
+  }
+  const surface = recoveredTraceSurface || responseAnnotationSourceSurface(article, source);
   if (!article || !surface) return false;
   const range = domRangeFromOffsets(surface, source.start, source.end);
   if (!range) return false;
@@ -7920,6 +8131,7 @@ function populateLiveCard(node, live, fallbackAuthor = "Агент", task = curr
     liveTrace.replaceChildren(...(groups.length ? [turnTraceGroupsNode(groups, {
       liveStage: liveStage.detail,
       openGroupIds,
+      identity: liveMessage,
     })] : []));
   });
   liveCardRenderController.reconcile(node, "trace-summary", renderParts.traceSummary, () => {
@@ -8131,19 +8343,24 @@ function renderQueueForTask(taskId, container) {
       }
     } else {
       const steerAvailable = Boolean(task?.running && ["codex", "claude"].includes(String(task?.provider ?? "")));
-      actions.push(el("button", {
-        type: "button",
-        class: "queue-steer",
-        "data-action": "queue-steer",
-        "data-queue-id": entry.id,
-        title: steerAvailable
-          ? (task.provider === "claude"
-            ? "Прервать текущий ход и продолжить его этим сообщением"
-            : "Добавить это сообщение в текущий ход")
-          : "Доступно, пока эта задача выполняет ход",
-        disabled: !steerAvailable,
-        text: "В текущий ход",
-      }));
+      const exactSteerDecision = entry.state === "pending"
+        && entry.attentionRequired === true
+        && entry.conflictKind === "message-steer";
+      if (!exactSteerDecision) {
+        actions.push(el("button", {
+          type: "button",
+          class: "queue-steer",
+          "data-action": "queue-steer",
+          "data-queue-id": entry.id,
+          title: steerAvailable
+            ? (task.provider === "claude"
+              ? "Прервать текущий ход и продолжить его этим сообщением"
+              : "Добавить это сообщение в текущий ход")
+            : "Доступно, пока эта задача выполняет ход",
+          disabled: !steerAvailable,
+          text: "В текущий ход",
+        }));
+      }
       actions.push(el("button", {
         type: "button",
         class: "queue-edit",
@@ -8197,14 +8414,26 @@ function renderQueueForTask(taskId, container) {
         }));
       }
       if (entry.state === "pending") {
-        actions.push(el("button", {
-          type: "button",
-          class: "queue-accept",
-          "data-action": entry.lastError ? "queue-retry" : "queue-accept",
-          "data-queue-id": entry.id,
-          title: "Отправить после завершения текущего хода",
-          text: entry.lastError ? "Повторить" : "После хода",
-        }));
+        if (entry.lastError) {
+          actions.push(el("button", {
+            type: "button",
+            class: "queue-accept",
+            "data-action": "queue-retry",
+            "data-queue-id": entry.id,
+            title: "Повторить доставку в исходный ход с тем же идентификатором",
+            text: "Повторить",
+          }));
+        }
+        if (!entry.lastError || entry.queueAfterTurnAvailable === true) {
+          actions.push(el("button", {
+            type: "button",
+            class: "queue-accept",
+            "data-action": "queue-accept",
+            "data-queue-id": entry.id,
+            title: "Явно разрешить отправку после завершения текущего хода",
+            text: "После хода",
+          }));
+        }
       }
       actions.push(el("button", {
         type: "button", class: "queue-remove", "data-action": "queue-remove", "data-queue-id": entry.id,
@@ -8225,6 +8454,8 @@ function renderQueueForTask(taskId, container) {
         ? el("div", { class: "queue-status", text: "Thread удерживается другим Codex. Автоповторы остановлены; проверьте снова после закрытия задачи или отправьте сообщение в новую." })
         : entry.waitReason === "provider-temporarily-unavailable"
           ? el("div", { class: "queue-status", text: "Связь с Codex временно недоступна; сообщение сохранено и будет отправлено автоматически." })
+          : entry.waitReason === "context-maintenance" || entry.conflictKind === "context-maintenance"
+            ? el("div", { class: "queue-status", text: "Ожидает завершения свёртки или ротации контекста; сообщение сохранено в очереди." })
           : null,
       entry.lastError ? el("div", { class: "queue-error", text: entry.lastError }) : null,
       entryAnnotations.length
@@ -8332,9 +8563,10 @@ function updateSendState() {
     || currentAttachments().length > 0
     || currentTaskReferences().length > 0
     || currentAnnotations().length > 0;
-  composerSend.disabled = !draftFilled || !state.selectedId || Boolean(pendingComposerRequest);
+  const preparing = currentAttachmentPreviews().length > 0;
+  composerSend.disabled = !draftFilled || !state.selectedId || Boolean(pendingComposerRequest) || preparing;
   composerQuickMessages?.querySelectorAll("button").forEach((button) => {
-    button.disabled = !state.selectedId || Boolean(pendingComposerRequest);
+    button.disabled = !state.selectedId || Boolean(pendingComposerRequest) || preparing;
   });
 }
 
@@ -8359,6 +8591,12 @@ composerQuickMessages?.addEventListener("click", (event) => {
 });
 
 composerInput.addEventListener("keydown", (event) => {
+  if (event.isComposing) return;
+  if (event.key === "Enter" && event.ctrlKey && !event.metaKey) {
+    event.preventDefault();
+    if (!event.repeat) insertTextAtCaret(composerInput, "\n");
+    return;
+  }
   if (!slashMenu.hidden) {
     const commands = visibleSlashCommands();
     if (event.key === "ArrowDown" || event.key === "ArrowUp") {
@@ -8378,9 +8616,9 @@ composerInput.addEventListener("keydown", (event) => {
       return;
     }
   }
-  if (event.key !== "Enter" || event.shiftKey || event.isComposing || phoneComposerMode()) return;
+  if (event.key !== "Enter" || event.shiftKey || phoneComposerMode()) return;
   event.preventDefault();
-  submitComposer({ steerWhileRunning: event.ctrlKey || event.metaKey });
+  submitComposer({ steerWhileRunning: event.metaKey });
 });
 
 slashMenu.addEventListener("click", (event) => {
@@ -8405,6 +8643,10 @@ function sendComposerRequest({
   restoreOnReject = false,
 } = {}) {
   if (!state.selectedId || pendingComposerRequest) return;
+  if (currentAttachmentPreviews().length) {
+    showToast("Вложения ещё готовятся. Дождись подготовки или удали их перед отправкой.");
+    return;
+  }
   const submittedAtMs = Date.now();
   const submittedMonotonicMs = performance.now();
   const task = currentTask();
@@ -8504,7 +8746,8 @@ function submitQuickMessage(entry) {
 function insertTextAtCaret(input, text) {
   if (!input || !text) return false;
   const start = Number.isSafeInteger(input.selectionStart) ? input.selectionStart : input.value.length;
-  input.setRangeText(text, start, start, "end");
+  const end = Number.isSafeInteger(input.selectionEnd) ? input.selectionEnd : start;
+  input.setRangeText(text, start, end, "end");
   input.dispatchEvent(new Event("input", { bubbles: true }));
   input.focus({ preventScroll: true });
   return true;
@@ -8548,6 +8791,29 @@ function normalizedRecoveryAttachments(value) {
 let attachments = [];
 let taskReferences = [];
 const attachmentOperationSequences = new Map();
+let pendingAttachmentPreparations = 0;
+// Transient selection projection only: never persisted or used as send payload.
+const attachmentPreparationPreviews = new Set();
+
+function currentAttachmentPreviews(taskId = state.selectedId) {
+  return [...attachmentPreparationPreviews].filter((entry) => entry.operation.taskId === taskId)
+    .flatMap((entry) => entry.items);
+}
+
+function disposeAttachmentPreview(entry) {
+  if (!attachmentPreparationPreviews.delete(entry)) return;
+  for (const item of entry.items) if (item.url) URL.revokeObjectURL(item.url);
+}
+
+function discardAttachmentPreviews(taskId) {
+  for (const entry of attachmentPreparationPreviews) {
+    if (entry.operation.taskId === taskId) disposeAttachmentPreview(entry);
+  }
+  if (state.selectedId === taskId) {
+    renderAttachments();
+    updateSendState();
+  }
+}
 
 function currentAttachments() {
   return attachments;
@@ -8573,7 +8839,8 @@ function setTaskReferences(next) {
 
 function renderAttachments() {
   attachmentsBox.replaceChildren();
-  attachmentsBox.hidden = attachments.length === 0 && taskReferences.length === 0;
+  const previews = currentAttachmentPreviews();
+  attachmentsBox.hidden = attachments.length === 0 && taskReferences.length === 0 && previews.length === 0;
   if (taskReferences.length) {
     attachmentsBox.append(renderAttachmentStrip(taskReferences, {
       readOnly: false,
@@ -8581,6 +8848,24 @@ function renderAttachments() {
     }));
   }
   if (attachments.length) attachmentsBox.append(renderAttachmentStrip(attachments, { readOnly: false }));
+  if (previews.length) {
+    const strip = el("div", { class: "attachment-strip" });
+    for (const item of previews) {
+      strip.append(el("div", {
+        class: `attachment attachment-preparing${item.url ? " attachment-image" : " attachment-file"}`,
+        "data-attachment-preparing": "", "aria-busy": "true", title: item.name,
+      }, [
+        item.url ? el("img", { src: item.url, alt: item.name })
+          : el("span", { class: "attachment-file-card", text: item.name }),
+        el("span", { class: "attachment-preparing-label", role: "status", text: "Подготовка…" }),
+        el("button", {
+          type: "button", class: "attachment-remove", "data-attachment-preparation-remove": "",
+          title: "Отменить подготовку вложений", "aria-label": "Отменить подготовку вложений", text: "×",
+        }),
+      ]));
+    }
+    attachmentsBox.append(strip);
+  }
 }
 
 const attachmentThumbnailObserver = typeof window.IntersectionObserver === "function"
@@ -8639,6 +8924,7 @@ function renderAttachmentStrip(items, { readOnly, taskReferenceList = false }) {
       const status = ({
         new: "New",
         in_progress: "InProg",
+        blocked: "Blocked",
         testing: "Test",
         awaiting_implementation: "Await",
         done: "Done",
@@ -8739,6 +9025,10 @@ function formatAttachmentSize(value) {
 }
 
 attachmentsBox.addEventListener("click", (event) => {
+  if (event.target.closest("[data-attachment-preparation-remove]")) {
+    advanceComposerAsyncOperationFence(state.selectedId);
+    return;
+  }
   const taskReferenceRemove = event.target.closest("[data-task-reference-index]");
   if (taskReferenceRemove) {
     const index = Number(taskReferenceRemove.dataset.taskReferenceIndex);
@@ -8749,6 +9039,7 @@ attachmentsBox.addEventListener("click", (event) => {
   const remove = event.target.closest("[data-attachment-index]");
   if (!remove) return;
   const index = Number(remove.dataset.attachmentIndex);
+  advanceComposerAsyncOperationFence(state.selectedId);
   setAttachments(attachments.filter((_, i) => i !== index));
   saveDraft({ userEdited: true });
 });
@@ -8761,16 +9052,14 @@ async function readAttachmentFiles(files) {
     file && Number.isSafeInteger(file.size) && file.size > 0
   ));
   if (selected.length === 0) return;
-  const operationSequence = (attachmentOperationSequences.get(operation.taskId) ?? 0) + 1;
-  attachmentOperationSequences.set(operation.taskId, operationSequence);
-  let policy;
-  try { policy = await window.AgentHubAttachmentCapabilities(); }
-  catch (error) { showToast(error.message); return; }
-  if (!composerTaskOperationCurrent(operation)
-    || attachmentOperationSequences.get(operation.taskId) !== operationSequence) return;
+  // Selection prepares a local draft, not an upload. Network negotiation belongs
+  // to sending; it must not make clipboard bytes wait for the server.
+  const operationSequence = attachmentOperationSequences.get(operation.taskId) ?? 0;
+  const policy = { maxBytes: DRAFT_ATTACHMENT_MAX_BYTES, maxTotalBytes: DRAFT_ATTACHMENT_MAX_TOTAL_BYTES };
   const limit = 8;
-  const room = Math.max(0, limit - initialDraft.attachments.length);
-  const existingBytes = initialDraft.attachments.reduce((sum, item) => sum + (Number(item?.size) || 0), 0);
+  const reserved = [...initialDraft.attachments, ...currentAttachmentPreviews(operation.taskId)];
+  const room = Math.max(0, limit - reserved.length);
+  const existingBytes = reserved.reduce((sum, item) => sum + (Number(item?.size) || 0), 0);
   let remainingBytes = Math.max(0, policy.maxTotalBytes - existingBytes);
   let oversized = 0;
   let unsafe = 0;
@@ -8798,11 +9087,30 @@ async function readAttachmentFiles(files) {
     else if (oversized) showToast(`Общий лимит вложений: ${Math.floor(policy.maxTotalBytes / 1024 / 1024)} МБ.`);
     return;
   }
-  const settled = await Promise.allSettled(accepted.map((file) => window.AgentHubComposerFiles.prepare(file, {
+  pendingAttachmentPreparations += 1;
+  const preview = { operation, items: accepted.map((file) => {
+    let url = "";
+    if (file.type.startsWith("image/")) {
+      try { url = URL.createObjectURL(file); } catch { /* Preparation still owns file validation. */ }
+    }
+    return { name: file.name, size: file.size, url };
+  }) };
+  attachmentPreparationPreviews.add(preview);
+  renderAttachments();
+  updateSendState();
+  let settled;
+  try {
+    settled = await Promise.allSettled(accepted.map((file) => window.AgentHubComposerFiles.prepare(file, {
       name: file.name,
       type: file.type || "application/octet-stream",
       size: file.size,
     })));
+  } finally {
+    pendingAttachmentPreparations -= 1;
+    disposeAttachmentPreview(preview);
+    renderAttachments();
+    updateSendState();
+  }
   const failed = settled.find((result) => result.status === "rejected");
   if (failed) {
     window.AgentHubComposerFiles.settle(settled.filter((result) => result.status === "fulfilled").map((result) => result.value));
@@ -8822,22 +9130,33 @@ async function readAttachmentFiles(files) {
     showToast("Вложение не прошло проверку целостности.");
     return;
   }
-  if (attachmentOperationSequences.get(operation.taskId) === operationSequence
-    && composerTaskOperationCurrent(operation)) {
-    composerDraftReconciliation.save(operation.taskId, {
-      ...initialDraft,
-      attachments: [...initialDraft.attachments, ...canonical].slice(0, limit),
-    }, { userEdited: true });
-    if (state.selectedId === operation.taskId) restoreDraft();
+  if ((attachmentOperationSequences.get(operation.taskId) ?? 0) === operationSequence
+    && composerTaskOperationCurrent(operation, { allowDraftEdits: true })) {
+    // Independent pastes append to the current composition. Never replay the
+    // pre-read text/attachments over edits or another completed paste.
+    const current = composerDraftSnapshot(operation.taskId);
+    let bytes = current.attachments.reduce((sum, item) => sum + (Number(item?.size) || 0), 0);
+    const additions = [];
+    for (const item of canonical) {
+      if (current.attachments.length + additions.length >= limit) break;
+      if (bytes + item.size > policy.maxTotalBytes) { oversized += 1; continue; }
+      additions.push(item);
+      bytes += item.size;
+    }
+    if (additions.length > 0) {
+      composerDraftReconciliation.save(operation.taskId, {
+        ...current,
+        attachments: [...current.attachments, ...additions],
+      }, { userEdited: true });
+      if (state.selectedId === operation.taskId) restoreDraft();
+    }
+    if (additions.length < canonical.length && !oversized) showToast(`Можно приложить не больше ${limit} файлов.`);
   }
   window.AgentHubComposerFiles.settle(loaded);
   pruneComposerFiles();
   if (selected.length > room) showToast(`Можно приложить не больше ${limit} файлов.`);
   else if (unsafe) showToast("Часть файлов отклонена: небезопасное имя или тип.");
   else if (oversized) showToast(`Общий лимит вложений: ${Math.floor(policy.maxTotalBytes / 1024 / 1024)} МБ.`);
-  if (loaded.some((file) => !window.AgentHubComposerFiles.durable(file))) {
-    showToast("Файл доступен до закрытия страницы. Локальное хранилище недоступно; после перезагрузки выбери файл снова.");
-  }
 }
 
 document.querySelector("[data-action='attach']").addEventListener("click", () => fileInput.click());
@@ -9108,7 +9427,9 @@ function sourceMessageForSelection(selection) {
   const index = messages.findIndex((message, messageIndex) => (
     MessageView.messageKey(message, messageIndex) === renderedKey
   ));
-  return index >= 0 ? { message: messages[index], root: renderedRoot } : null;
+  if (index < 0) return null;
+  const group = traceDetailSources.get(selection.surface);
+  return { message: group ? { ...messages[index], activityGroups: [group] } : messages[index], root: renderedRoot };
 }
 
 async function responseAnnotationFromSelection(selection) {
@@ -9120,9 +9441,23 @@ async function responseAnnotationFromSelection(selection) {
   const end = Number(selection?.offsets?.end);
   if (!quote || !projection || !identity || !locator
     || !Number.isSafeInteger(start) || !Number.isSafeInteger(end)) return null;
+  let sourceMessage = projection.message;
+  let sourceSurface = selection.surface;
+  if (locator.traceGroupId && identity.provider === "codex") {
+    // Durable history is a bounded preview, including legacy rows with no
+    // truncation marker. Bind new exact-group quotes to the source, not that copy.
+    const page = await requestTracePage(sourceMessage, { turnId: identity.turnId, groupId: locator.traceGroupId });
+    if (!selection.surface.isConnected || !projection.root.isConnected
+      || page.groups?.length !== 1 || page.groups[0].id !== locator.traceGroupId) return null;
+    sourceMessage = { ...sourceMessage, activityGroups: page.groups };
+    sourceSurface = traceReasoningNode(page.groups[0]);
+    // A cut Markdown construct may render differently. Do not guess a new range.
+    if (!sourceSurface.textContent.startsWith(selection.surface.textContent.trimEnd())
+      || domRangeFromOffsets(sourceSurface, start, end)?.toString().trim() !== quote) return null;
+  }
   const [contentHash, surfaceHash, selectionHash] = await Promise.all([
-    responseAnnotationSha256(responseAnnotationSourceContent(projection.message)),
-    responseAnnotationSha256(selection.surface.textContent),
+    responseAnnotationSha256(responseAnnotationSourceContent(sourceMessage, locator)),
+    responseAnnotationSha256(sourceSurface.textContent),
     responseAnnotationSha256(quote),
   ]);
   const source = normalizedResponseAnnotationSource({
@@ -9271,7 +9606,10 @@ function closeResourceContextMenu() {
 
 function openResourceContextMenu(event, resource) {
   pendingResource = resource;
-  const actions = new Set(resourceInteractions.resourceActions(resource));
+  const actions = new Set(resourceInteractions.resourceActions(resource, {
+    localWorkspaceFilesAvailable: directoryBrowseAvailable,
+    vscode: vscodeMode,
+  }));
   for (const button of resourceContextMenu.querySelectorAll("[data-resource-action]")) {
     button.hidden = !actions.has(button.dataset.resourceAction);
   }
@@ -9337,9 +9675,14 @@ function composerDraftSnapshot(taskId) {
 
 function saveDraft({ userEdited = false } = {}) {
   if (!state.selectedId) return;
+  const draft = composerDraftSnapshot(state.selectedId);
+  if (userEdited && !window.AgentHubComposerDraftReconciliation.hasDraftContent(draft)
+    && window.AgentHubComposerDraftReconciliation.hasDraftContent(drafts.get(state.selectedId))) {
+    advanceComposerAsyncOperationFence(state.selectedId);
+  }
   composerDraftReconciliation.save(
     state.selectedId,
-    composerDraftSnapshot(state.selectedId),
+    draft,
     { userEdited },
   );
 }
@@ -9349,6 +9692,7 @@ function composerDraftState(taskId) {
 }
 
 function writeComposerDraft(taskId, draft) {
+  advanceComposerAsyncOperationFence(taskId);
   const next = composerDraftReconciliation.save(
     taskId,
     draft,
@@ -9369,7 +9713,7 @@ function prepareForRuntimeReload() {
     draftsPersisted,
     drafts: drafts.values(),
     modalOpen,
-    requestPending: Boolean(pendingComposerRequest),
+    requestPending: Boolean(pendingComposerRequest) || pendingAttachmentPreparations > 0,
     bugReportAttachments,
     bugReportSending,
   })) return false;
@@ -9433,7 +9777,8 @@ function toggleDialogSettings() {
   setDialogSettingsOpen(!dialogSettings.open);
 }
 
-dialogSettingsClose?.addEventListener("click", () => {
+dialogSettingsClose?.addEventListener("click", (event) => {
+  event.stopPropagation();
   setDialogSettingsOpen(false);
 });
 
@@ -9649,6 +9994,7 @@ workspaceCardForm?.addEventListener("submit", (event) => {
       taskPrefix: workspaceCardTaskPrefix.value.trim(),
       rules: workspaceCardRules.value,
       releaseWorkflowEnabled: workspaceCardReleaseWorkflow.checked,
+      autoReviewEnabled: workspaceCardAutoReview.checked,
       beforeColumnId: order[targetIndex] ?? null,
     });
     closeWorkspaceCard();
@@ -9669,6 +10015,7 @@ workspaceCardForm?.addEventListener("submit", (event) => {
     taskPrefix: workspaceCardTaskPrefix.value.trim(),
     rules: workspaceCardRules.value,
     releaseWorkflowEnabled,
+    autoReviewEnabled: workspaceCardAutoReview.checked,
     beforeColumnId: remaining[targetIndex] ?? null,
   });
   closeWorkspaceCard();
@@ -9940,8 +10287,10 @@ function selectTurnTimeMode(value) {
 
 function renderDialogSettings() {
   const task = currentTask();
-  const selection = task?.draftStream ? task.streamSettings : state.selection;
-  const effectiveProvider = task?.draftStream ? selection?.provider : task?.provider;
+  const selection = task?.draftStream
+    ? { provider: task?.provider, ...(task?.streamSettings ?? {}) }
+    : { ...(task?.streamSettings ?? {}), provider: task?.provider };
+  const effectiveProvider = task?.draftStream ? selection.provider : task?.provider;
   const streamId = String(task?.streamId ?? "").trim();
   const workspaceId = workspaceKey(task);
   const running = task?.running === true;
@@ -9964,10 +10313,13 @@ function renderDialogSettings() {
   for (const [group, values] of Object.entries(optionGroups)) {
     const container = dialogSettings.querySelector(`[data-dialog-options='${group}']`);
     if (!container) continue;
+    if (group === "model") container.dataset.modelCatalogRefresh = String(effectiveProvider === "codex");
     container.replaceChildren();
+    const saved = String(selection?.[group] ?? "").trim();
     if (!Array.isArray(values) || values.length === 0) {
       if (container instanceof HTMLSelectElement) {
-        container.append(el("option", { value: "", selected: true, text: "—" }));
+        container.append(el("option", { value: "", selected: true,
+          text: saved ? `Сохранено: ${saved} (каталог недоступен)` : "Наследуется" }));
         container.disabled = true;
       } else {
         container.append(el("span", { class: "setting-empty", text: "—" }));
@@ -9975,6 +10327,14 @@ function renderDialogSettings() {
       continue;
     }
     if (container instanceof HTMLSelectElement) container.disabled = false;
+    if (container instanceof HTMLSelectElement && group !== "provider") {
+      if (!saved) {
+        container.append(el("option", { value: "", selected: true, text: "Наследуется" }));
+      } else if (!values.some((option) => (typeof option === "string" ? option : option.value) === saved)) {
+        container.append(el("option", { value: "", selected: true, disabled: true,
+          text: `Сохранено: ${saved} (сейчас недоступно)` }));
+      }
+    }
     for (const option of values) {
       const value = typeof option === "string" ? option : option.value;
       const label = typeof option === "string" ? option : (option.label ?? option.value);
@@ -10012,9 +10372,9 @@ function renderDialogSettings() {
     }
     streamWorkingDirectoryField?.refresh();
   }
-  if (dialogStreamArchitect) {
-    dialogStreamArchitect.checked = streamRoleSettings.architectEnabled(task?.streamSettings);
-    dialogStreamArchitect.disabled = !task?.streamId;
+  if (dialogStreamReleaseManager) {
+    dialogStreamReleaseManager.checked = streamRoleSettings.releaseManagerEnabled(task?.streamSettings);
+    dialogStreamReleaseManager.disabled = !task?.streamId;
   }
   if (dialogStreamTeamLead) {
     dialogStreamTeamLead.checked = streamRoleSettings.teamLeadEnabled(task?.streamSettings);
@@ -10088,8 +10448,8 @@ function selectDialogSetting(group, value) {
     }
     emit("stream:settings-save", { streamId: task.streamId, settings: { ...task.streamSettings } });
   } else {
-    state.selection[group] = value;
-    emit("selection:set", { key: group, value });
+    task.streamSettings = { ...(task.streamSettings ?? {}), [group]: value };
+    emit("stream:settings-save", { streamId: task.streamId, settings: { ...task.streamSettings } });
   }
   renderOptions();
 }
@@ -10114,16 +10474,12 @@ settingsGlobalQuickMessagesEntry?.addEventListener("click", () => {
   openPromptTemplates("global");
 });
 
-settingsPanel?.addEventListener("change", (event) => {
-  const actionMode = event.target.closest("[data-quick-message-action-mode]");
-  if (actionMode) {
-    const value = actionMode.value === "send" ? "send" : "insert";
-    state.selection = { ...state.selection, quickMessageActionMode: value };
-    renderQuickMessageActionModeSetting();
-    renderComposerQuickMessages();
-    emit("selection:set", { key: "quickMessageActionMode", value });
-    return;
-  }
+quickMessageActionModeSelect?.addEventListener("change", () => {
+  const value = quickMessageActionModeSelect.value === "send" ? "send" : "insert";
+  state.selection = { ...state.selection, quickMessageActionMode: value };
+  renderQuickMessageActionModeSetting();
+  renderComposerQuickMessages();
+  emit("selection:set", { key: "quickMessageActionMode", value });
 });
 
 dialogSettings.addEventListener("click", (event) => {
@@ -10206,11 +10562,11 @@ dialogSettings.addEventListener("change", (event) => {
     selectDialogSetting(setting.dataset.dialogOptions, setting.value);
     return;
   }
-  const architect = event.target.closest("[data-dialog-stream-architect]");
-  if (architect) {
+  const releaseManager = event.target.closest("[data-dialog-stream-release-manager]");
+  if (releaseManager) {
     const task = currentTask();
     if (!task?.streamId) return;
-    task.streamSettings = streamRoleSettings.withArchitect(task.streamSettings, architect.checked);
+    task.streamSettings = streamRoleSettings.withReleaseManager(task.streamSettings, releaseManager.checked);
     emit("stream:settings-save", { streamId: task.streamId, settings: { ...task.streamSettings } });
     renderOptions();
     return;
@@ -10232,8 +10588,8 @@ dialogSettings.addEventListener("change", (event) => {
     task.streamSettings[key] = toggle.checked;
     emit("stream:settings-save", { streamId: task.streamId, settings: { ...task.streamSettings } });
   } else {
-    state.selection[key] = toggle.checked;
-    emit("selection:set", { key, value: toggle.checked });
+    task.streamSettings = { ...(task.streamSettings ?? {}), [key]: toggle.checked };
+    emit("stream:settings-save", { streamId: task.streamId, settings: { ...task.streamSettings } });
   }
 });
 
@@ -10255,6 +10611,7 @@ modalOverlays?.installDismissibleOverlay({
   close: () => setDialogSettingsOpen(false),
 });
 dialogSettings.addEventListener("close", () => {
+  if (dialogSettings.open) return;
   const returnFocus = streamCardReturnFocus;
   streamCardReturnFocus = null;
   dialogSettings.hidden = true;
@@ -10471,6 +10828,7 @@ function renderServerAccounts(accounts) {
     return el("div", { class: "server-component server-account", "data-status": view.status }, [
       el("span", { class: "server-component-name", text: view.label }),
       el("span", { class: "server-component-status", text: view.statusText }),
+      view.loginStatusText ? el("small", { text: view.loginStatusText }) : null,
       view.error ? el("small", { text: view.error }) : null,
       el("div", { class: "server-account-actions" }, [start, open, cancel].filter(Boolean)),
       codeRow,
@@ -11398,6 +11756,10 @@ const AgentHub = {
     state.options = next;
     renderOptions();
   },
+  setModelCatalogRefreshing(refreshing) {
+    modelCatalogRefreshing = Boolean(refreshing);
+    dialogSettings.querySelector('select[data-dialog-options="model"]')?.__themedSelect?.render();
+  },
   /** Текущий выбор: { model, reasoning, mode, project, autoApprove,
    *  includeClaudeUsage, activityRecentMinutes, streamOrderMode,
    *  streamCardWidthMode, streamCardFixedWidth, streamCardGapEnabled,
@@ -11712,6 +12074,8 @@ document.addEventListener("agenthub:stream-view-settings-change", (event) => {
     applyStreamStatusStyle(value, { persist: true });
   } else if (key === "activityStreamDetailedCards") {
     applyActivityStreamDetailedCards(value, { persist: true });
+  } else if (key === "activityRailVisibility") {
+    applyActivityRailVisibility(value, { persist: true });
   }
 });
 
@@ -12956,6 +13320,7 @@ function formatScaledUsage(value, suffix) {
 
 function formatUsageValue(credits, unit = usageUnit) {
   const value = Math.max(0, Number(credits) || 0);
+  if (unit === "qu") return formatScaledUsage(value, "QU");
   if (unit === "$") {
     const dollars = value / CREDITS_PER_USD;
     return `$${spacedNumber(dollars, dollars < 1 ? 2 : 1)}`;
@@ -12969,6 +13334,42 @@ function formatUsageValue(credits, unit = usageUnit) {
   return formatScaledUsage(value, "cr");
 }
 
+function selectedUsagePayload(payload) {
+  if (usageUnit !== "qu" || !payload || typeof payload !== "object") return payload;
+  const selectedDevice = (device) => ({
+    ...device,
+    credits: Number(device?.quotaUnits) || 0,
+    timedCredits: Number(device?.timedQuotaUnits) || 0,
+  });
+  const selectedPoint = (point) => ({
+    ...point,
+    credits: Number(point?.quotaUnits) || 0,
+    tokenCredits: Number(point?.quotaUnits) || 0,
+    timedCredits: Number(point?.timedQuotaUnits) || 0,
+    localCredits: Number(point?.localQuotaUnits) || 0,
+    otherDeviceCredits: Number(point?.otherDeviceQuotaUnits) || 0,
+    devices: (point?.devices ?? []).map(selectedDevice),
+  });
+  return {
+    ...payload,
+    credits: Number(payload.totalQuotaUnits) || 0,
+    totalCredits: Number(payload.totalQuotaUnits) || 0,
+    totalTokenCredits: Number(payload.totalQuotaUnits) || 0,
+    totalTimedCredits: Number(payload.totalTimedQuotaUnits) || 0,
+    timedCredits: Number(payload.totalTimedQuotaUnits) || 0,
+    localCredits: Number(payload.localQuotaUnits) || 0,
+    localTimedCredits: Number(payload.localTimedQuotaUnits) || 0,
+    otherDeviceCredits: Number(payload.otherDeviceQuotaUnits) || 0,
+    otherDeviceTimedCredits: Number(payload.otherDeviceTimedQuotaUnits) || 0,
+    devices: (payload.devices ?? []).map(selectedDevice),
+    points: (payload.points ?? []).map(selectedPoint),
+    reconstruction: payload.reconstruction ? {
+      ...payload.reconstruction,
+      points: (payload.reconstruction.points ?? []).map(selectedPoint),
+    } : undefined,
+  };
+}
+
 function refreshUsageUnits(scope = document) {
   for (const node of scope.querySelectorAll(
     "[data-kilo-usage], [data-mega-usage], [data-high-usage]",
@@ -12978,7 +13379,16 @@ function refreshUsageUnits(scope = document) {
       if (Number.isFinite(credits)) node.dataset.usageCredits = String(credits);
     }
     const credits = Number(node.dataset.usageCredits);
-    if (Number.isFinite(credits)) node.textContent = formatUsageValue(credits);
+    if (usageUnit === "qu") {
+      const quota = Number(node.dataset.usageQu);
+      const incomplete = node.dataset.usageQuIncomplete === "1";
+      node.textContent = node.dataset.usageQu !== undefined
+        ? incomplete && quota <= 0 ? "— QU" : formatUsageValue(quota, "qu")
+        : "— QU";
+    } else if (Number.isFinite(credits)) node.textContent = formatUsageValue(credits);
+  }
+  for (const node of scope.querySelectorAll("[data-usage-percent]")) {
+    node.hidden = usageUnit === "qu";
   }
 }
 
@@ -13554,7 +13964,7 @@ function renderUsageHistoryContent() {
   if (status === "error") {
     usageErrorText.textContent = usageState.error || "Не удалось загрузить учётный расход.";
   }
-  const payload = usageState.payload;
+  const payload = selectedUsagePayload(usageState.payload);
   const rate = usageState.mode === "rate";
   const intensity = usageState.mode === "intensity";
   const burnAnalysis = intensity && payload && !payload.error ? usageBurnRateAnalysis(payload) : null;
@@ -13606,9 +14016,18 @@ function renderUsageHistoryContent() {
           `${device.label} — ${formatUsageValue(device.credits)}`
         )).join("; ")}.`);
       }
-      if (unpriced) notes.push(`Без тарифа и вне суммы: ${unpriced}.`);
+      if (unpriced) notes.push(usageUnit === "qu"
+        ? `Без модели или API-тарифа для токенного QU: ${unpriced}.`
+        : `Без тарифа и вне суммы: ${unpriced}.`);
       if (rate && usageState.rateBasis === "task" && untimed) {
         notes.push(`Без длительности и вне скорости по времени задач: ${untimed}.`);
+      }
+      if (usageUnit === "qu") {
+        const incomplete = Math.max(0, Number(payload.uncalibratedCount) || 0);
+        notes.push(`Калибровка ${payload.quotaCalibrationVersion || "предварительная"}; без подтверждённого QU-коэффициента: ${incomplete} ход(ов).`);
+        if (payload.totalApiEstimateCredits > 0) {
+          notes.push(`Для моделей без эмпирической QU-ставки учтена предварительная оценка по опоре GPT-6 Sol; API-основа: ${formatUsageValue(payload.totalApiEstimateCredits, "cr")}. Это не подтверждённый коэффициент подписочной квоты.`);
+        }
       }
       usageNote.textContent = `${scopeNote} ${notes.join(" ") || "Все показанные ходы тарифицированы и имеют длительность."}`;
     }
@@ -13758,8 +14177,8 @@ function comparisonBuckets(payload, extent) {
     .map((point) => ({
       at: point.at,
       time: Date.parse(point.at),
-      credits: Math.max(0, Number(point.credits) || 0),
-      tokenCredits: Math.max(0, Number(point.tokenCredits ?? point.credits) || 0),
+      credits: Math.max(0, Number(usageUnit === "qu" ? point.quotaUnits : point.credits) || 0),
+      tokenCredits: Math.max(0, Number(usageUnit === "qu" ? point.quotaUnits : point.tokenCredits ?? point.credits) || 0),
     }))
     .filter((point) => Number.isFinite(point.time))
     .sort((left, right) => left.time - right.time);
@@ -13806,8 +14225,8 @@ function comparisonReconstructionBuckets(payload, extent) {
     return {
       start,
       end: start + step,
-      credits: Math.max(0, Number(point?.credits) || 0),
-      tokenCredits: Math.max(0, Number(point?.tokenCredits ?? point?.credits) || 0),
+      credits: Math.max(0, Number(usageUnit === "qu" ? point?.quotaUnits : point?.credits) || 0),
+      tokenCredits: Math.max(0, Number(usageUnit === "qu" ? point?.quotaUnits : point?.tokenCredits ?? point?.credits) || 0),
     };
   }).filter((bucket) => (
     Number.isFinite(bucket.start)
@@ -13944,7 +14363,7 @@ function correlationStrength(value) {
 function comparisonTooltipText(info) {
   if (info.detail) return `${info.name}. ${formatLimitsDateTime(info.at)}: ${info.detail}`;
   if (info.kind === "cost") {
-    return `${info.name}. ${formatLimitsDateTime(info.at)}: ${formatComparisonNumber(info.raw, 2)} п.п./kcr`;
+    return `${info.name}. ${formatLimitsDateTime(info.at)}: ${formatComparisonNumber(info.raw, 2)} п.п./${usageUnit === "qu" ? "kQU" : "kcr"}`;
   }
   const value = `${Math.round(info.value)}% пика`;
   const raw = info.kind === "local"
@@ -14072,7 +14491,7 @@ function buildUsageComparisonChart(model) {
     y: padT - 3,
     class: "limits-axis-label limits-axis-y comparison-cost-axis",
     "text-anchor": "end",
-  }, ["п.п./kcr"]));
+  }, [`п.п./${usageUnit === "qu" ? "kQU" : "kcr"}`]));
   const dayMs = 24 * 60 * 60_000;
   if (span > dayMs * 1.5) {
     const first = new Date(model.extent.from);
@@ -14164,7 +14583,7 @@ function buildUsageComparisonChart(model) {
       Number.isFinite(model.deviation) ? `${formatComparisonNumber(model.deviation, 1, true)} процентного пункта` : "не рассчитано"
     }; средняя цена ${
       Number.isFinite(model.price.overall?.value)
-        ? `${formatComparisonNumber(model.price.overall.value, 2)} процентного пункта на kcr`
+        ? `${formatComparisonNumber(model.price.overall.value, 2)} процентного пункта на ${usageUnit === "qu" ? "kQU" : "kcr"}`
         : "не рассчитана"
     }; расчётный недельный лимит ${
       Number.isFinite(model.price.weeklyCredits)
@@ -14180,7 +14599,7 @@ function buildUsageComparisonChart(model) {
 }
 
 function comparisonUsageUnitLabel() {
-  return usageUnit === "pte" ? "ПТЭ" : usageUnit === "rub" ? "₽" : usageUnit;
+  return usageUnit === "pte" ? "ПТЭ" : usageUnit === "rub" ? "₽" : usageUnit === "qu" ? "QU" : usageUnit;
 }
 
 function comparisonNumericAxisMax(values) {
@@ -14536,7 +14955,7 @@ function comparisonSeriesPicker(model) {
 
 function comparisonPriceText(price) {
   if (!Number.isFinite(price?.overall?.value)) return "недостаточно данных";
-  const average = `${formatComparisonNumber(price.overall.value, 2)} п.п./kcr в среднем`;
+  const average = `${formatComparisonNumber(price.overall.value, 2)} п.п./${usageUnit === "qu" ? "kQU" : "kcr"} в среднем`;
   if (!Number.isFinite(price?.early?.value) || !Number.isFinite(price?.late?.value)) return average;
   const change = Number.isFinite(price.changePercent)
     ? ` · ${formatComparisonNumber(price.changePercent, 0, true)}%`
@@ -14570,7 +14989,7 @@ function renderComparisonSummary(model) {
     : "—";
   const deviation = Number.isFinite(model?.deviation) ? `${formatComparisonNumber(model.deviation, 1, true)} п.п.` : "—";
   const averagePrice = Number.isFinite(model?.price?.overall?.value)
-    ? `${formatComparisonNumber(model.price.overall.value, 2)} п.п./kcr`
+    ? `${formatComparisonNumber(model.price.overall.value, 2)} п.п./${usageUnit === "qu" ? "kQU" : "kcr"}`
     : "—";
   const weeklyLimit = Number.isFinite(model?.price?.weeklyCredits)
     ? `≈ ${formatUsageValue(model.price.weeklyCredits)}/нед.`
@@ -15061,13 +15480,20 @@ function formatTaskDuration(value) {
 /* Тот же цветовой код, что в журнале по датам: cr — «kilo», kcr — «mega»,
    всё крупнее — «high». Разметка совпадает, поэтому бейдж выглядит одинаково
    в обоих режимах. */
-function usageBadge(text, credits = Number.NaN) {
+function usageBadge(text, credits = Number.NaN, quotaUnits = Number.NaN, incomplete = false) {
   const unit = /\b(Gcr|Mcr|kcr|cr)$/u.exec(String(text))?.[1] ?? "cr";
   const level = unit === "cr" ? "kilo" : unit === "kcr" ? "mega" : "high";
   const badge = document.createElement("span");
   badge.setAttribute(`data-${level}-usage`, "");
   if (Number.isFinite(Number(credits))) badge.dataset.usageCredits = String(Number(credits));
-  badge.textContent = text;
+  if (quotaUnits !== null && Number.isFinite(Number(quotaUnits))) {
+    badge.dataset.usageQu = String(Number(quotaUnits));
+    if (incomplete) badge.dataset.usageQuIncomplete = "1";
+  }
+  badge.textContent = usageUnit === "qu"
+    ? quotaUnits === null || !Number.isFinite(Number(quotaUnits)) ? "— QU"
+      : incomplete && Number(quotaUnits) <= 0 ? "— QU" : formatUsageValue(quotaUnits, "qu")
+    : text;
   return badge;
 }
 
@@ -15107,7 +15533,15 @@ function groupedTurn(entry, date) {
     const cost = document.createElement("span");
     cost.dataset.journalTurnCost = "";
     const credits = JournalView.turnDisplayCredits(copy.dataset);
-    if (credits !== null) cost.append(usageBadge(formatUsageValue(credits), credits));
+    const quotaEntries = [copy, ...copy.querySelectorAll("[data-work-log-turn-entry]")];
+    const quotaKnown = quotaEntries.every((node) => node.dataset.workLogTurnQuotaUnits !== undefined);
+    const quotaUnits = quotaKnown ? quotaEntries.reduce((sum, node) => (
+      sum + Math.max(0, Number(node.dataset.workLogTurnQuotaUnits) || 0)
+    ), 0) : null;
+    const quotaIncomplete = quotaEntries.some((node) => (
+      node.dataset.workLogTurnQuotaIncomplete === "1"
+    )) || !quotaKnown;
+    if (credits !== null) cost.append(usageBadge(formatUsageValue(credits), credits, quotaUnits, quotaIncomplete));
     else cost.textContent = "—";
     const share = copy.querySelector("[data-work-log-turn-share]")?.cloneNode(true);
     meta.replaceChildren(when, cost, ...(share ? [share] : []));
@@ -15199,13 +15633,23 @@ function decorateLegacyStreamTurns(scope = journal) {
 function creditsFromEntries(entries) {
   let total = 0;
   let known = 0;
+  let quotaUnits = 0;
+  let quotaKnown = 0;
+  let quotaIncomplete = false;
   for (const entry of entries) {
+    const quotaValue = entry.dataset.workLogTurnQuotaUnits;
+    const quota = quotaValue === undefined ? Number.NaN : Number(quotaValue);
+    if (Number.isFinite(quota) && quota >= 0) {
+      quotaUnits += quota;
+      quotaKnown += 1;
+    } else quotaIncomplete = true;
+    if (entry.dataset.workLogTurnQuotaIncomplete === "1") quotaIncomplete = true;
     const value = Number(entry.dataset.workLogTurnCredits);
     if (!Number.isFinite(value) || value < 0) continue;
     total += value;
     known += 1;
   }
-  return { total, known };
+  return { total, known, quotaUnits: quotaKnown ? quotaUnits : null, quotaIncomplete };
 }
 
 function replaceCollapsedTurnList(list, entries) {
@@ -15292,7 +15736,8 @@ function groupClaudeRowsInDay(day) {
       summary.append(
         el("span", { "data-usage-label": "", text: "Итого" }),
         " ",
-        usageBadge(formatUsageValue(totals.total), totals.total),
+        usageBadge(formatUsageValue(totals.total), totals.total,
+          totals.quotaUnits, totals.quotaIncomplete),
       );
       details.append(summary);
       const collapse = document.createElement("button");
@@ -15729,6 +16174,10 @@ function taskGroupsFrom(source, { workspace = null, hierarchy = "" } = {}) {
           credits: 0,
           knownCredits: 0,
           unknownCredits: 0,
+          quotaUnits: 0,
+          knownQuotaUnits: 0,
+          unknownQuotaUnits: 0,
+          uncalibratedCount: 0,
           latestAt: 0,
           fileTouches: 0,
           knownFileTouches: 0,
@@ -15778,6 +16227,15 @@ function taskGroupsFrom(source, { workspace = null, hierarchy = "" } = {}) {
           } else {
             group.unknownCredits += 1;
           }
+          const quotaValue = entry.dataset.workLogTurnQuotaUnits;
+          const quota = quotaValue === undefined ? Number.NaN : Number(quotaValue);
+          if (Number.isFinite(quota) && quota >= 0) {
+            group.quotaUnits += quota;
+            group.knownQuotaUnits += 1;
+          } else {
+            group.unknownQuotaUnits += 1;
+          }
+          if (entry.dataset.workLogTurnQuotaIncomplete === "1") group.uncalibratedCount += 1;
         }
         const completedAt = Date.parse(entry.dataset.workLogTurnCompletedAt ?? "");
         if (Number.isFinite(completedAt)) group.latestAt = Math.max(group.latestAt, completedAt);
@@ -15834,6 +16292,7 @@ function taskGroupsFrom(source, { workspace = null, hierarchy = "" } = {}) {
       ...group,
       turnCount: group.turnCount,
       credits: group.knownCredits ? group.credits : null,
+      quotaUnits: group.knownQuotaUnits ? group.quotaUnits : null,
       durationSeconds: group.knownDurations ? group.durationSeconds : null,
       fileTouches: group.knownFileTouches ? group.fileTouches : null,
       changedLines: group.knownChangedLines ? group.changedLines : null,
@@ -15883,6 +16342,7 @@ function combinedJournalGroup(groups, { provider = "period", threadId = "period"
       - (Date.parse(left.dataset.workLogTurnCompletedAt ?? "") || 0)
   ));
   const knownCredits = values.reduce((sum, group) => sum + (Number(group.knownCredits) || 0), 0);
+  const knownQuotaUnits = values.reduce((sum, group) => sum + (Number(group.knownQuotaUnits) || 0), 0);
   const knownDurations = values.reduce((sum, group) => sum + (Number(group.knownDurations) || 0), 0);
   const knownFileTouches = values.reduce((sum, group) => sum + (Number(group.knownFileTouches) || 0), 0);
   const knownChangedLines = values.reduce((sum, group) => sum + (Number(group.knownChangedLines) || 0), 0);
@@ -15900,6 +16360,12 @@ function combinedJournalGroup(groups, { provider = "period", threadId = "period"
       : null,
     knownCredits,
     unknownCredits: values.reduce((sum, group) => sum + (Number(group.unknownCredits) || 0), 0),
+    quotaUnits: knownQuotaUnits
+      ? values.reduce((sum, group) => sum + (Number(group.quotaUnits) || 0), 0)
+      : null,
+    knownQuotaUnits,
+    unknownQuotaUnits: values.reduce((sum, group) => sum + (Number(group.unknownQuotaUnits) || 0), 0),
+    uncalibratedCount: values.reduce((sum, group) => sum + (Number(group.uncalibratedCount) || 0), 0),
     durationSeconds: knownDurations
       ? values.reduce((sum, group) => sum + (Number(group.durationSeconds) || 0), 0)
       : null,
@@ -15973,7 +16439,8 @@ function journalLedgerSummary(group, { label = "", showStreams = true } = {}) {
     text: group.lazy ? "—" : String(Math.max(0, Number(group.turnCount) || 0)),
   });
   const credits = el("span", { "data-journal-ledger-metric": "credits" });
-  if (group.knownCredits) credits.append(usageBadge(formatUsageValue(group.credits), group.credits));
+  if (group.knownCredits) credits.append(usageBadge(formatUsageValue(group.credits),
+    group.credits, group.quotaUnits, group.uncalibratedCount > 0 || group.unknownQuotaUnits > 0));
   else credits.textContent = "—";
   const duration = el("span", {
     "data-journal-ledger-metric": "duration",
@@ -16088,10 +16555,13 @@ function dayGroupingContent(source) {
       const creditsValue = sourceSummary?.querySelector(
         "[data-day-usage] [data-usage-credits]",
       )?.dataset.usageCredits;
+      const quotaNode = sourceSummary?.querySelector("[data-day-usage] [data-usage-qu]");
+      const quotaValue = quotaNode?.dataset.usageQu;
       const durationValue = sourceSummary?.querySelector(
         "[data-work-log-day-duration]",
       )?.dataset.workLogDurationSeconds;
       const credits = Number(creditsValue);
+      const quotaUnits = quotaValue === undefined ? Number.NaN : Number(quotaValue);
       const durationSeconds = Number(durationValue);
       const total = {
         provider: "day",
@@ -16100,6 +16570,10 @@ function dayGroupingContent(source) {
         credits: Number.isFinite(credits) ? credits : null,
         knownCredits: Number.isFinite(credits) ? 1 : 0,
         unknownCredits: 0,
+        quotaUnits: Number.isFinite(quotaUnits) ? quotaUnits : null,
+        knownQuotaUnits: Number.isFinite(quotaUnits) ? 1 : 0,
+        unknownQuotaUnits: Number.isFinite(quotaUnits) ? 0 : 1,
+        uncalibratedCount: quotaNode?.dataset.usageQuIncomplete === "1" ? 1 : 0,
         durationSeconds: Number.isFinite(durationSeconds) ? durationSeconds : null,
         knownDurations: Number.isFinite(durationSeconds) ? 1 : 0,
         lazy: true,
@@ -16167,7 +16641,8 @@ function dayGroupingContent(source) {
       if (group.title) title.append(group.title.cloneNode(true));
       else title.textContent = `${group.provider} · ${group.threadId}`;
       const credits = el("span", { "data-journal-day-picker-credits": "" });
-      if (group.knownCredits) credits.append(usageBadge(formatUsageValue(group.credits), group.credits));
+      if (group.knownCredits) credits.append(usageBadge(formatUsageValue(group.credits),
+        group.credits, group.quotaUnits, group.uncalibratedCount > 0 || group.unknownQuotaUnits > 0));
       else credits.textContent = "—";
       const turns = el("span", {
         "data-journal-day-picker-turns": "",
@@ -16237,6 +16712,9 @@ function summarizedLazyDays(source) {
   );
   if (!lazyDays.length || state.selection.includeClaudeUsage === false) return null;
   let credits = 0;
+  let quotaUnits = 0;
+  let quotaKnown = 0;
+  let quotaIncomplete = false;
   let durationSeconds = 0;
   let knownCredits = 0;
   let knownDurations = 0;
@@ -16245,6 +16723,9 @@ function summarizedLazyDays(source) {
     const creditValue = Number(summary?.querySelector(
       "[data-day-usage] [data-usage-credits]",
     )?.dataset.usageCredits);
+    const quotaNode = summary?.querySelector("[data-day-usage] [data-usage-qu]");
+    const quotaValue = quotaNode?.dataset.usageQu;
+    const quota = quotaValue === undefined ? Number.NaN : Number(quotaValue);
     const durationValue = Number(summary?.querySelector(
       "[data-work-log-day-duration]",
     )?.dataset.workLogDurationSeconds);
@@ -16252,12 +16733,18 @@ function summarizedLazyDays(source) {
       credits += creditValue;
       knownCredits += 1;
     }
+    if (Number.isFinite(quota)) {
+      quotaUnits += quota;
+      quotaKnown += 1;
+    } else quotaIncomplete = true;
+    if (quotaNode?.dataset.usageQuIncomplete === "1") quotaIncomplete = true;
     if (Number.isFinite(durationValue)) {
       durationSeconds += durationValue;
       knownDurations += 1;
     }
   }
-  return { credits, durationSeconds, knownCredits, knownDurations };
+  return { credits, quotaUnits: quotaKnown ? quotaUnits : null, quotaIncomplete,
+    durationSeconds, knownCredits, knownDurations };
 }
 
 function updateJournalStreamCount() {
@@ -16273,7 +16760,8 @@ function updateJournalSummary(source) {
     if (journalTotalCredits) {
       journalTotalCredits.replaceChildren(
         lazyTotals.knownCredits
-          ? usageBadge(formatUsageValue(lazyTotals.credits), lazyTotals.credits)
+          ? usageBadge(formatUsageValue(lazyTotals.credits), lazyTotals.credits,
+            lazyTotals.quotaUnits, lazyTotals.quotaIncomplete)
           : document.createTextNode("—"),
       );
     }
@@ -16290,7 +16778,8 @@ function updateJournalSummary(source) {
   if (journalTotalCredits) {
     journalTotalCredits.replaceChildren(
       totals.knownCredits
-        ? usageBadge(formatUsageValue(totals.credits), totals.credits)
+        ? usageBadge(formatUsageValue(totals.credits), totals.credits,
+          totals.quotaUnits, totals.uncalibratedCount > 0 || totals.unknownQuotaUnits > 0)
         : document.createTextNode("—"),
     );
   }
@@ -16373,13 +16862,20 @@ function decorateAccountPanel(scope = journal) {
   }
   for (const value of panel.querySelectorAll("[data-work-log-account-period-value]")) {
     const credits = Number(value.dataset.accountCredits);
+    const incomplete = usageUnit === "qu" && value.dataset.accountQuIncomplete === "1";
+    const selected = usageUnit === "qu" ? Number(value.dataset.accountQu) : credits;
     const { amount, unit } = JournalAccountPanel.splitUsageAmount(
-      Number.isFinite(credits) ? formatUsageValue(credits) : "",
+      Number.isFinite(selected)
+        ? incomplete && selected <= 0 ? "— QU" : formatUsageValue(selected)
+        : "",
     );
     const amountNode = value.querySelector("[data-work-log-account-period-amount]");
     const unitNode = value.querySelector("[data-work-log-account-period-unit]");
     if (amountNode) amountNode.textContent = amount;
     if (unitNode) unitNode.textContent = unit;
+  }
+  for (const node of panel.querySelectorAll("[data-work-log-account-share], [data-work-log-account-bar]")) {
+    node.hidden = usageUnit === "qu";
   }
   applyAccountPanelState(panel);
 }
@@ -16448,9 +16944,13 @@ function virtualUsageShare(value, total, known = true) {
 function virtualStreamUsage(stream, workspace) {
   const usage = document.createElement("span");
   usage.dataset.workLogStreamUsage = "";
-  const creditShare = stream.knownCredits
-    ? virtualUsageShare(stream.credits, workspace.credits, workspace.knownCredits)
-    : "";
+  const quotaComplete = stream.knownQuotaUnits && workspace.knownQuotaUnits
+    && !stream.uncalibratedCount && !workspace.uncalibratedCount
+    && !stream.unknownQuotaUnits && !workspace.unknownQuotaUnits;
+  const creditShare = usageUnit === "qu"
+    ? quotaComplete ? virtualUsageShare(stream.quotaUnits, workspace.quotaUnits) : ""
+    : stream.knownCredits
+      ? virtualUsageShare(stream.credits, workspace.credits, workspace.knownCredits) : "";
   usage.append(
     stream.knownDurations
       ? el("span", {
@@ -16464,7 +16964,8 @@ function virtualStreamUsage(stream, workspace) {
       : el("span", { "data-work-log-stream-duration": "", text: "время —" }),
     stream.knownCredits
       ? el("span", { "data-work-log-stream-credits": "" }, [
-        usageBadge(formatUsageValue(stream.credits), stream.credits),
+        usageBadge(formatUsageValue(stream.credits), stream.credits,
+          stream.quotaUnits, stream.uncalibratedCount > 0 || stream.unknownQuotaUnits > 0),
       ])
       : el("span", { text: "расход —" }),
     el("span", { "data-work-log-stream-credit-share": "", text: creditShare }),
@@ -16581,10 +17082,16 @@ function virtualTemporalContent(scope) {
     const credits = el("span", { "data-journal-day-picker-credits": "" });
     if (workspace.knownCredits) {
       credits.append(
-        usageBadge(formatUsageValue(workspace.credits), workspace.credits),
+        usageBadge(formatUsageValue(workspace.credits), workspace.credits,
+          workspace.quotaUnits, workspace.uncalibratedCount > 0 || workspace.unknownQuotaUnits > 0),
         el("span", {
           "data-journal-day-picker-share": "",
-          text: virtualUsageShare(workspace.credits, scope.credits, scope.knownCredits),
+          text: usageUnit === "qu"
+            ? workspace.knownQuotaUnits && scope.knownQuotaUnits
+              && !workspace.uncalibratedCount && !scope.uncalibratedCount
+              && !workspace.unknownQuotaUnits && !scope.unknownQuotaUnits
+                ? virtualUsageShare(workspace.quotaUnits, scope.quotaUnits) : ""
+            : virtualUsageShare(workspace.credits, scope.credits, scope.knownCredits),
         }),
       );
     } else {
@@ -16773,7 +17280,8 @@ function updateVirtualJournalSummary() {
   if (journalTotalCredits) {
     journalTotalCredits.replaceChildren(
       totals.knownCredits
-        ? usageBadge(formatUsageValue(totals.credits), totals.credits)
+        ? usageBadge(formatUsageValue(totals.credits), totals.credits,
+          totals.quotaUnits, totals.uncalibratedCount > 0 || totals.unknownQuotaUnits > 0)
         : document.createTextNode("—"),
     );
   }
@@ -17525,6 +18033,7 @@ window.addEventListener("pagehide", () => {
 }, { once: true });
 window.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "hidden") saveDraft();
+  else scheduleUnderfilledHistoryLoad();
 });
 renderTasks();
 renderChat();

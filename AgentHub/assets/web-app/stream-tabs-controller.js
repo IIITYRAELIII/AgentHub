@@ -426,6 +426,7 @@
         // Только записанный замер после свёртки. Текущее использование Thread —
         // живое значение, под видом исторического этапа его показывать нельзя.
         beforePercent: normalizedContextPercent(sourceCompaction?.afterPercent),
+        measurementKind: sourceCompaction?.measurementKind ?? null,
         time: sourceCompaction?.completedAt ?? new Date().toISOString(),
       });
     }
@@ -447,9 +448,9 @@
       // живое использование нового Thread показывается отдельно и растёт.
       const compactionBeforePercent = normalizedContextPercent(compaction.beforePercent);
       const beforePercent = normalizedContextPercent(compaction.afterPercent);
-      const afterPercent = normalizedContextPercent(compaction.rotationAfterPercent);
-      const presentation = rotationMaintenancePresentation(beforePercent, afterPercent, {
+      const presentation = rotationMaintenancePresentation(beforePercent, {
         compactionBeforePercent,
+        measurementKind: compaction.measurementKind,
       });
       const id = `maintenance:rotation:${streamId}:${provider}:${sourceThreadId}:${operationId}`;
       messages.set(id, {
@@ -461,7 +462,8 @@
         maintenanceLabel: presentation.maintenanceLabel,
         maintenanceDetail: presentation.maintenanceDetail,
         placement: "after-source-turn",
-        beforePercent, afterPercent, compactionBeforePercent,
+        beforePercent, compactionBeforePercent,
+        measurementKind: compaction.measurementKind ?? null,
         text: presentation.text,
         time: compaction.rotationCompletedAt ?? compaction.completedAt ?? null,
       });
@@ -469,23 +471,20 @@
     return [...messages.values()];
   }
 
-  /* Этапы ротации называются явно: до свёртки и после неё — замеры исходного
-     Thread, «сразу после переноса» — проба нового. Отсутствующий замер не
-     достраивается и не выдаётся за результат. */
-  function rotationMaintenancePresentation(beforeValue, afterValue, {
+  // Ротация подтверждает перенос; использование нового Thread приходит отдельно.
+  function rotationMaintenancePresentation(beforeValue, {
     compactionBeforePercent: compactionValue = null,
+    measurementKind = null,
   } = {}) {
     const compactionBeforePercent = normalizedContextPercent(compactionValue);
     const beforePercent = normalizedContextPercent(beforeValue);
-    const afterPercent = normalizedContextPercent(afterValue);
+    const estimated = measurementKind === "estimated";
     const stages = [
       compactionBeforePercent === null ? "" : `до свёртки ${compactionBeforePercent}%`,
-      beforePercent === null ? "" : `после свёртки ${beforePercent}%`,
-      afterPercent === null
-        ? "новый Thread создан, его замер не сохранён"
-        : `новый Thread сразу после переноса ${afterPercent}%`,
+      beforePercent === null ? "" : `после свёртки ${estimated ? "≈" : ""}${beforePercent}%`,
+      "новый Thread создан",
     ].filter(Boolean);
-    const detail = `Использование контекста: ${stages.join(" → ")}`;
+    const detail = `Использование контекста: ${stages.join(" → ")}${estimated ? " · Предварительная оценка провайдера после свёртки" : ""}`;
     return {
       maintenanceLabel: "Ротация завершена",
       maintenanceDetail: detail,
@@ -521,9 +520,10 @@
       !turnId
       || String(run?.operationKind ?? "").trim() !== "user-turn"
       || String(run?.projectionState ?? "").trim() !== "active"
+      || Number(run?.terminalRevision) > 0
     ) return false;
     const final = task?.latestFinal;
-    if (!final) return true;
+    if (!final || !Number.isSafeInteger(Number(final.revision)) || Number(final.revision) <= 0) return true;
     return !(
       String(final.provider ?? "").trim().toLowerCase()
         === String(task.provider ?? "").trim().toLowerCase()
@@ -634,6 +634,20 @@
     return exact;
   }
 
+  function streamModelLabel(task, stream, settings = {}) {
+    // A running turn keeps its captured model. Idle Stream controls describe
+    // the next turn, not the model cached when its Thread was first discovered.
+    const active = isExactActiveUserTurn(task);
+    const provider = String(task?.provider ?? "");
+    const configured = !active && stream?.settings?.provider === provider
+      ? String(stream.settings.model ?? "").trim() : "";
+    const model = active
+      ? String(task.run?.model ?? task.model ?? "").trim()
+      : configured || String(task?.model ?? "").trim();
+    const options = settings.modelOptionsByProvider?.[provider] ?? [];
+    return options.find((option) => option.value === model)?.label ?? model;
+  }
+
   function workspaceGroupLastActivity(group) {
     return Math.max(0, ...(group?.tasks ?? []).map((task) => (
       Date.parse(task?.lastActivity || 0) || 0
@@ -686,12 +700,14 @@
     workingDirectory = "",
     taskPrefix = "",
     releaseWorkflowEnabled = false,
+    autoReviewEnabled = false,
     folderName = "",
   } = {}) {
     const settings = {
       workingDirectory: String(workingDirectory ?? "").trim(),
       taskPrefix: String(taskPrefix ?? "").trim(),
       releaseWorkflowEnabled: releaseWorkflowEnabled === true,
+      autoReviewEnabled: autoReviewEnabled === true,
     };
     const normalizedFolderName = normalizeWorkspaceFolderName(folderName);
     if (normalizedFolderName) settings.catalogFolder = normalizedFolderName;
@@ -1045,6 +1061,7 @@
         this.rootObserver.observe(this.root, {
           attributes: true,
           attributeFilter: [
+            "data-activity-rail-visibility",
             "data-activity-stream-cards",
             "data-activity-tasks-auto-separate",
             "data-activity-tasks-always-separate",
@@ -1206,7 +1223,15 @@
             </div>
           </section>
           <section class="stream-card-settings-group" aria-labelledby="stream-settings-right-title">
-            <h3 class="stream-card-settings-group-title" id="stream-settings-right-title">Правая панель</h3>
+            <div class="stream-card-settings-group-head">
+              <h3 class="stream-card-settings-group-title" id="stream-settings-right-title">Правая панель</h3>
+              <button type="button" class="stream-card-gap-toggle stream-card-settings-switch"
+                role="switch" aria-checked="true" aria-label="Отображать правую панель" title="Отображать"
+                data-activity-rail-visibility-toggle>
+                <span class="switch-track" aria-hidden="true"></span>
+              </button>
+            </div>
+            <div class="stream-card-settings-options" data-activity-rail-settings>
             <div class="stream-card-settings-section stream-card-settings-recent-section">
               <span class="stream-card-settings-kicker">Показывать недавние за</span>
               <span class="stream-card-settings-duration">
@@ -1244,6 +1269,7 @@
                 data-activity-task-always-separate-toggle>
                 <span class="switch-track" aria-hidden="true"></span>
               </button>
+            </div>
             </div>
           </section>
         </div>`;
@@ -1302,6 +1328,13 @@
         this.update(wrapper);
       };
       wrapper.querySelector("[data-stream-recent-hours]").addEventListener("change", updateRecentPeriod);
+      wrapper.querySelector("[data-activity-rail-visibility-toggle]").addEventListener("click", () => {
+        this.applyViewSetting(
+          "activityRailVisibility",
+          this.root.dataset.activityRailVisibility === "hidden" ? "visible" : "hidden",
+        );
+        this.update(wrapper);
+      });
       wrapper.querySelector("[data-stream-detailed-toggle]").addEventListener("click", () => {
         this.applyViewSetting(
           "activityStreamDetailedCards",
@@ -1389,7 +1422,9 @@
         this.emitViewSetting(key, value);
         return;
       }
-      if (key === "activityStreamDetailedCards") {
+      if (key === "activityRailVisibility") {
+        this.root.dataset.activityRailVisibility = value === "hidden" ? "hidden" : "visible";
+      } else if (key === "activityStreamDetailedCards") {
         const detailed = Boolean(value);
         if (detailed) this.root.dataset.activityStreamCards = "detailed";
         else delete this.root.dataset.activityStreamCards;
@@ -1437,6 +1472,11 @@
       this.tabs.dataset.streamCardGapMode = this.gapEnabled ? "on" : "off";
       wrapper.querySelector("[data-stream-gap-toggle]")
         ?.setAttribute("aria-checked", String(this.gapEnabled));
+      const railVisible = this.root.dataset.activityRailVisibility !== "hidden";
+      wrapper.querySelector("[data-activity-rail-visibility-toggle]")
+        ?.setAttribute("aria-checked", String(railVisible));
+      const railSettings = wrapper.querySelector("[data-activity-rail-settings]");
+      if (railSettings) railSettings.hidden = !railVisible;
       const recentHours = Math.round(this.activityRecentMinutes / 30) / 2;
       const recentHoursInput = wrapper.querySelector("[data-stream-recent-hours]");
       if (recentHoursInput) recentHoursInput.value = String(recentHours);
@@ -1614,6 +1654,7 @@
     workspaceArchivePresentation,
     normalizeWorkspaceFolderName,
     resolveTaskHierarchy,
+    streamModelLabel,
     STREAM_CARD_MAX_WIDTH,
     STREAM_CARD_MIN_WIDTH,
     STREAM_CARD_SETTINGS_CHANGE_EVENT,

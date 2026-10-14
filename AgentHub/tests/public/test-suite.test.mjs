@@ -1,11 +1,93 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { testFingerprint, runWindowsTestFile, runTestSuite } from "../../test-suite.mjs";
+import {
+  boundedTestFileConcurrency,
+  testFingerprint,
+  runWindowsTestFile,
+  runTestSuite,
+  prepareTestDependencies,
+} from "../../test-suite.mjs";
+import {
+  explainTestInputFingerprint,
+  parallelTestExecution,
+} from "../../src/infrastructure/persistence/test-input-fingerprint.mjs";
 import { withPublicationLock } from "../../src/infrastructure/process/publication-lock.mjs";
+
+test("cold full-test checkout installs locked development dependencies once before every suite", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "ah-test-deps-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const packageJson = { name: "cold-generation", version: "1.0.0", devDependencies: { "browser-fixture": "1.0.0" } };
+  const entry = { version: "1.0.0", resolved: "https://registry.example.invalid/browser-fixture.tgz", integrity: "sha512-fixture", dev: true };
+  const lock = { name: packageJson.name, lockfileVersion: 3, packages: { "": packageJson, "node_modules/browser-fixture": entry } };
+  await writeFile(path.join(root, "package.json"), JSON.stringify(packageJson));
+  await writeFile(path.join(root, "package-lock.json"), JSON.stringify(lock));
+  const capabilityKeys = ["AGENT_HUB_PUBLICATION_SESSION", "AGENT_HUB_PUBLICATION_STAGE_DELEGATION"];
+  const precedingCapabilities = Object.fromEntries(capabilityKeys.map((key) => [key, process.env[key]]));
+  for (const key of capabilityKeys) process.env[key] = "fixture-publisher-capability";
+  t.after(() => {
+    for (const key of capabilityKeys) {
+      if (precedingCapabilities[key] === undefined) delete process.env[key];
+      else process.env[key] = precedingCapabilities[key];
+    }
+  });
+  const packageFile = path.join(root, "node_modules", "browser-fixture", "package.json");
+  await assert.rejects(readFile(packageFile), { code: "ENOENT" });
+  let installs = 0;
+  const prepare = () => prepareTestDependencies({ root, execute: async (args, options) => {
+    installs += 1;
+    assert.ok(args.includes("--include=dev"));
+    assert.ok(args.includes("--include=optional"));
+    assert.equal(options.cwd, root);
+    assert.equal(options.commandLabel, "npm");
+    assert.equal(options.env.AGENT_HUB_PUBLICATION_SESSION, undefined);
+    assert.equal(options.env.AGENT_HUB_PUBLICATION_STAGE_DELEGATION, undefined);
+    for (const key of capabilityKeys) assert.equal(Object.hasOwn(options.env, key), true);
+    assert.ok(options.signal instanceof AbortSignal);
+    await access(path.join(root, "WIP", "test-dependencies.lock"));
+    await mkdir(path.dirname(packageFile), { recursive: true });
+    await writeFile(packageFile, JSON.stringify({ name: "browser-fixture", version: entry.version }));
+    await writeFile(path.join(root, "node_modules", ".package-lock.json"), JSON.stringify({
+      lockfileVersion: 3, packages: { "node_modules/browser-fixture": entry },
+    }));
+  } });
+  let validationCalls = 0;
+  const validate = async () => {
+    assert.equal(JSON.parse(await readFile(packageFile, "utf8")).version, "1.0.0");
+    validationCalls += 1;
+  };
+  await runTestSuite("all", {
+    checkpointIdentity: "", checkpoint: null,
+    prepareDependencies: prepare,
+    discover: async () => ["tests/composition/example.test.mjs", "tests/domain/example.test.mjs"],
+    execute: validate,
+  });
+  assert.ok(validationCalls > 1);
+  assert.equal(installs, 1);
+  assert.equal((await prepare())[0].prepared, false);
+  assert.equal(installs, 1);
+  await assert.rejects(access(path.join(root, "WIP", "test-dependencies.lock")), { code: "ENOENT" });
+
+  // A changed lock cannot reuse the preceding successful dependency marker.
+  const marker = path.join(root, "node_modules", ".agent-hub-task-dependencies.json");
+  const priorMarker = await readFile(marker);
+  entry.version = "2.0.0";
+  packageJson.devDependencies["browser-fixture"] = "2.0.0";
+  await writeFile(path.join(root, "package.json"), JSON.stringify(packageJson));
+  await writeFile(path.join(root, "package-lock.json"), JSON.stringify(lock));
+  const failure = new Error("dependency process failed");
+  validationCalls = 0;
+  await assert.rejects(runTestSuite("all", {
+    prepareDependencies: () => prepareTestDependencies({ root, execute: async () => { throw failure; } }),
+    execute: validate,
+  }), (error) => error === failure);
+  assert.equal(validationCalls, 0);
+  assert.deepEqual(await readFile(marker), priorMarker);
+  await assert.rejects(access(path.join(root, "WIP", "test-dependencies.lock")), { code: "ENOENT" });
+});
 
 test("test checkpoint fingerprints only transitive module dependencies", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-test-fingerprint-"));
@@ -40,6 +122,64 @@ test("test execution never retries an assertion or an unclassified OS error", as
     }), (error) => error === failure);
     assert.equal(calls, 1);
   }
+});
+
+test("test process concurrency requires both CPU and memory headroom", () => {
+  const gib = 1024 ** 3;
+  assert.equal(boundedTestFileConcurrency({ availableParallelism: 8, freeMemory: 8 * gib }), 2);
+  assert.equal(boundedTestFileConcurrency({ availableParallelism: 3, freeMemory: 8 * gib }), 1);
+  assert.equal(boundedTestFileConcurrency({ availableParallelism: 8, freeMemory: 3 * gib }), 1);
+});
+
+test("parallel admission requires a complete valid isolation declaration", () => {
+  assert.equal(parallelTestExecution({ execution: { parallel: true } }), null);
+  assert.equal(parallelTestExecution({
+    execution: {
+      parallel: true,
+      isolation: {
+        filesystem: "per-child-temp", locks: "per-test-temp", git: "none",
+        ports: "none", browerProfile: "none",
+      },
+    },
+  }), null);
+  assert.equal(parallelTestExecution({
+    execution: {
+      parallel: true,
+      isolation: {
+        filesystem: "none", locks: "per-test-temp", git: "none",
+        ports: "none", browserProfile: "none",
+      },
+    },
+  }), null);
+  assert.deepEqual(parallelTestExecution({
+    execution: {
+      parallel: true,
+      isolation: {
+        filesystem: "per-child-temp", locks: "per-test-temp", git: "none",
+        ports: "none", browserProfile: "none",
+      },
+      shared: ["fixture-a"],
+    },
+  }), { parallel: true, shared: ["fixture-a"] });
+});
+
+test("each test process receives a disposable environment root", async () => {
+  const roots = [];
+  for (let index = 0; index < 2; index += 1) {
+    await runWindowsTestFile("environment.test.mjs", {
+      env: { LOCALAPPDATA: "must-not-be-inherited", TEMP: "must-not-be-inherited" },
+      execute: async (_command, _args, { env }) => {
+        assert.notEqual(env.LOCALAPPDATA, "must-not-be-inherited");
+        assert.equal(env.LOCALAPPDATA, env.TEMP);
+        assert.equal(env.TEMP, env.TMP);
+        assert.ok(path.basename(env.LOCALAPPDATA).length <= 10);
+        await access(env.LOCALAPPDATA);
+        roots.push(env.LOCALAPPDATA);
+      },
+    });
+  }
+  assert.notEqual(roots[0], roots[1]);
+  for (const root of roots) await assert.rejects(access(root), { code: "ENOENT" });
 });
 
 test("test child processes never inherit publication mutation ownership", async () => {
@@ -101,6 +241,7 @@ test("visual matrices run explicitly and exactly once in all, never in the unit 
     const files = [];
     await runTestSuite(mode, {
       checkpointIdentity: "", checkpoint: null,
+      prepareDependencies: async () => [],
       discover: async () => discovery,
       execute: async (_command, args) => { files.push(...args.filter((argument) => argument.endsWith(".test.mjs"))); },
     });
@@ -108,9 +249,45 @@ test("visual matrices run explicitly and exactly once in all, never in the unit 
   }
   const unit = await invoked("unit");
   assert.deepEqual(unit, ["tests/domain/example.test.mjs", "tests/public/message-behavior.test.mjs"]);
-  assert.deepEqual(await invoked("visual"), visual);
+  assert.deepEqual((await invoked("visual")).toSorted(), visual.toSorted());
   const all = await invoked("all");
   for (const file of discovery) assert.equal(all.filter((actual) => actual === file).length, 1, file);
+});
+
+test("sequential and bounded isolated runners execute the same declared file set", async () => {
+  const discovery = [
+    "tests/infrastructure/filesystem/task-git-workspace.test.mjs",
+    "tests/infrastructure/filesystem/release-git-workspace.test.mjs",
+    "tests/infrastructure/filesystem/release-task-net-projection.test.mjs",
+    "tests/public/stream-tabs-controller.test.mjs",
+  ];
+  async function observed(testConcurrency) {
+    const files = [];
+    let active = 0;
+    let maximumActive = 0;
+    await runTestSuite("unit", {
+      checkpointIdentity: "",
+      checkpoint: null,
+      discover: async () => discovery,
+      testConcurrency,
+      execute: async (_command, args) => {
+        const file = args.find((argument) => argument.endsWith(".test.mjs"));
+        files.push(file);
+        active += 1;
+        maximumActive = Math.max(maximumActive, active);
+        await new Promise((resolve) => setTimeout(resolve, 15));
+        active -= 1;
+      },
+    });
+    return { files: files.toSorted(), maximumActive };
+  }
+
+  const sequential = await observed(1);
+  const bounded = await observed(2);
+  assert.deepEqual(sequential.files, discovery.toSorted());
+  assert.deepEqual(bounded.files, sequential.files);
+  assert.equal(sequential.maximumActive, 1);
+  assert.equal(bounded.maximumActive, 2);
 });
 
 test("fingerprints cover locks, declared fixtures, environment and toolchain without unrelated contour input", async () => {
@@ -160,6 +337,20 @@ test("undeclared IO, computed imports and missing browser identity cannot reuse 
     const before = await testFingerprint("test.mjs", options);
     await writeFile(binary, "browser-version-2");
     assert.notEqual(await testFingerprint("test.mjs", options), before);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("fingerprint diagnostics explain misses without exposing input contents", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-fingerprint-reason-"));
+  try {
+    await writeFile(path.join(root, "test.mjs"), "const token = process.env.SECRET; await fetch('https://example.invalid');");
+    const result = await explainTestInputFingerprint("test.mjs", {
+      cwd: root,
+      environment: { SECRET: "sensitive-value" },
+    });
+    assert.equal(result.fingerprint, null);
+    assert.deepEqual(result.missReasons, ["undeclared-global:process", "undeclared-network-fetch"]);
+    assert.equal(JSON.stringify(result).includes("sensitive-value"), false);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 

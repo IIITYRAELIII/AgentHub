@@ -1,0 +1,50 @@
+import path from "node:path";
+
+import { TaskReleasePlanService } from "../application/task-release-plan-service.mjs";
+import { loadConfig } from "../infrastructure/filesystem/config.mjs";
+import { TaskGitWorkspaceService } from "../infrastructure/filesystem/task-git-workspace.mjs";
+import { TaskBoardStore } from "../infrastructure/persistence/task-board-store.mjs";
+
+export async function readCandidatePublicationReleasePlan(workspaceId, {
+  load = loadConfig,
+  createStore = (options) => new TaskBoardStore(options),
+  createTaskGitWorkspaces = (options) => new TaskGitWorkspaceService(options),
+} = {}) {
+  const selectedWorkspace = String(workspaceId ?? "").trim();
+  if (!selectedWorkspace) throw new Error("Publication release plan requires a Workspace");
+  const config = await load();
+  const store = createStore({
+    databaseFile: path.join(config.dataDir, "journal.sqlite"),
+    readOnly: true,
+  });
+  let tasks;
+  const selectedProofs = new Map();
+  try {
+    tasks = store.releaseTasksSnapshot(selectedWorkspace);
+    for (const task of tasks.filter((item) => item.status !== "done"
+      && item.workflowStatus === "awaiting_implementation")) {
+      for (const reference of task.gitReferences ?? []) {
+        selectedProofs.set(`${task.id}\0${reference.projectRoot}\0${reference.resultCommit}`,
+          store.selectedCompositionForRelease({ taskId: task.id, ...reference }));
+      }
+    }
+  } finally {
+    store.close();
+  }
+  const taskBoard = {
+    selectedCompositionForRelease({ taskId, projectRoot, resultCommit }) {
+      return selectedProofs.get(`${taskId}\0${projectRoot}\0${resultCommit}`) ?? null;
+    },
+    releaseTasks(requestedWorkspace) {
+      if (String(requestedWorkspace) !== selectedWorkspace) {
+        throw new Error("Publication release plan Workspace changed");
+      }
+      return tasks;
+    },
+  };
+  const planner = new TaskReleasePlanService({
+    taskBoard,
+    taskGitWorkspaces: createTaskGitWorkspaces({ dataDir: config.dataDir }),
+  });
+  return planner.plan(selectedWorkspace);
+}

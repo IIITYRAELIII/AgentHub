@@ -154,7 +154,7 @@ test("Claude Work virtual grouping keeps a provider-bounded lazy query", async (
     workspaceName: "Agent HUB",
     workspaceKind: "catalog",
     streamId: "stream-1",
-    streamDisplayName: "Architect",
+    streamDisplayName: "Release Manager",
     provider: "claude",
     turnCount: 1,
     credits: 12,
@@ -337,8 +337,10 @@ test("journal periods use Monday weeks and calendar months", async () => {
 test("journal summary counts only missing-credit gaps", async () => {
   const api = await journalViewApi();
   const summary = api.summarizeGroups([
-    { credits: 10, durationSeconds: 60, turnCount: 2, unknownCredits: 1, unknownDurations: 2 },
-    { credits: 5, durationSeconds: 30, turnCount: 1, unknownCredits: 0, unknownDurations: 4 },
+    { credits: 10, quotaUnits: 12, durationSeconds: 60, turnCount: 2,
+      unknownCredits: 1, unknownQuotaUnits: 0, uncalibratedCount: 1, unknownDurations: 2 },
+    { credits: 5, quotaUnits: 3, durationSeconds: 30, turnCount: 1,
+      unknownCredits: 0, unknownQuotaUnits: 0, uncalibratedCount: 0, unknownDurations: 4 },
   ]);
   assert.deepEqual(
     { ...summary },
@@ -346,6 +348,10 @@ test("journal summary counts only missing-credit gaps", async () => {
       count: 2,
       credits: 15,
       knownCredits: 2,
+      quotaUnits: 15,
+      knownQuotaUnits: 2,
+      unknownQuotaUnits: 0,
+      uncalibratedCount: 1,
       durationSeconds: 90,
       knownDurations: 2,
       gaps: 1,

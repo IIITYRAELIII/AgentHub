@@ -150,6 +150,7 @@ export function createDesktopReadSystemWiring({
       restart: {
         request: state.restartRequest,
         blockingRuns: services.restartBlockingRuns,
+        failure: services.recentRestartFailure,
         compactionCount: services.compactionCount,
         mediaJobCount: services.mediaJobCount,
         speechJobCount: services.speechJobCount,
@@ -162,6 +163,7 @@ export function createDesktopReadSystemWiring({
     },
     readModel: {
       readStateStore: services.readStateStore,
+      commandTrace: services.commandTrace,
       trustedDeviceUserId: system.trustedDeviceUserId,
       hasAllowedUsers: services.hasAllowedUsers,
       androidEnabled: services.androidEnabled,
@@ -180,6 +182,7 @@ export function createDesktopReadSystemWiring({
       },
       historyReader: {
         read: services.readCachedHistory,
+        readTurn: services.readExactHistoryTurn,
         readPage: services.readHistoryPage,
         refresh: services.refreshHistory,
       },
@@ -187,6 +190,7 @@ export function createDesktopReadSystemWiring({
         forTask: services.runForTask,
       },
       latestMessage: services.lastTaskMessage,
+      forgetLastMessage: services.forgetLastTaskMessage,
       historyMerger: {
         mergeActive: mergeActiveTaskHistory,
         mergeCompleted: mergeCompletedTaskHistory,

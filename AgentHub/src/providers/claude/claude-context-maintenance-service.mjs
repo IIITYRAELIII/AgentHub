@@ -47,7 +47,7 @@ export class ClaudeContextMaintenanceService {
     });
   }
 
-  // Провайдер сам сообщает точный контекст после свёртки, скрытый замер не нужен.
+  // Провайдер сам сообщает точный контекст после свёртки.
   get measuresContextItself() {
     return true;
   }
@@ -137,10 +137,6 @@ export class ClaudeContextMaintenanceService {
 
   discardCompactionTransfer() {
     return false;
-  }
-
-  probeContext() {
-    throw new Error("Claude сообщает контекст после свёртки сам, скрытый замер не выполняется");
   }
 
   rotate() {

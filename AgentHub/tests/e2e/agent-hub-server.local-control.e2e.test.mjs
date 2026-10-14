@@ -14,6 +14,7 @@ import { readRuntimeState } from "../../src/infrastructure/persistence/runtime-s
 import {
   CHAT_ID,
   delay,
+  E2eChildProcessOwner,
   FakeTelegramApi,
   stopPid,
   USER_ID,
@@ -39,6 +40,7 @@ test("local control client survives App Server exit during delayed startup and s
   const projectRoot = path.join(runtimeRoot, "project");
   const configPath = path.join(runtimeRoot, "config.json");
   const codexStatePath = path.join(runtimeRoot, "fake-codex-state.json");
+  const autoCompactionReleaseFile = path.join(runtimeRoot, "release-auto-compaction");
   const codexPidPath = path.join(runtimeRoot, "fake-codex.pid");
   const savedThreadId = "10000000-0000-4000-8000-000000000001";
   await Promise.all([mkdir(dataDir, { recursive: true }), mkdir(projectRoot, { recursive: true })]);
@@ -80,6 +82,7 @@ test("local control client survives App Server exit during delayed startup and s
     // Keep the manual compaction observable long enough for the settings guard
     // assertion even on a loaded Windows host.
     manualCompactionDelayMs: 1_500,
+    autoCompactionReleaseFile,
     threads: [{
       id: savedThreadId,
       cwd: projectRoot,
@@ -118,8 +121,10 @@ test("local control client survives App Server exit during delayed startup and s
 
   let stderr = "";
   let bot = null;
+  let testCompleted = false;
+  const botOwner = new E2eChildProcessOwner({ label: "local-control Agent Hub" });
   const startBot = () => {
-    bot = spawn(process.execPath, [BOT_FILE], {
+    bot = botOwner.start(() => spawn(process.execPath, [BOT_FILE], {
       cwd: ROOT,
       env: {
         ...process.env,
@@ -130,7 +135,7 @@ test("local control client survives App Server exit during delayed startup and s
       },
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
-    });
+    }));
     bot.stderr.setEncoding("utf8");
     bot.stderr.on("data", (chunk) => { stderr += chunk; });
     return bot;
@@ -138,28 +143,44 @@ test("local control client survives App Server exit during delayed startup and s
   const stopBot = async () => {
     const current = bot;
     if (!current) return;
-    if (current.exitCode == null) {
-      current.kill("SIGTERM");
-      await Promise.race([new Promise((resolve) => current.once("exit", resolve)), delay(2_000)]);
-    }
-    if (current.exitCode == null) {
-      await stopPid(current.pid);
-      await Promise.race([new Promise((resolve) => current.once("exit", resolve)), delay(2_000)]);
-    }
+    await botOwner.stop();
     if (bot === current) bot = null;
+  };
+  const waitForControl = async (label) => {
+    try {
+      const snapshot = await waitFor(
+        () => callDesktopControl("snapshot", {}, { runtimeRoot }).catch(() => null),
+        label,
+        8_000,
+      );
+      botOwner.recordEndpointOwner(snapshot.server?.process ?? null);
+      return snapshot;
+    } catch (error) {
+      throw botOwner.failure(error, { stage: label });
+    }
   };
   startBot();
   t.after(async () => {
-    await stopBot();
-    journalDatabase.close();
-    await telegram.stop();
-    await rm(runtimeRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    let cleanupError = null;
+    try {
+      await stopBot();
+    } catch (error) {
+      cleanupError = error;
+    } finally {
+      journalDatabase.close();
+      await telegram.stop();
+    }
+    if (testCompleted) {
+      await rm(runtimeRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    } else {
+      const diagnosticPath = path.join(runtimeRoot, "e2e-process-diagnostics.json");
+      await writeFile(diagnosticPath, `${JSON.stringify(botOwner.diagnostics(), null, 2)}\n`, "utf8");
+      t.diagnostic(`Preserved local-control failure diagnostics: ${diagnosticPath}`);
+    }
+    if (cleanupError) throw cleanupError;
   });
 
-  const initial = await waitFor(
-    () => callDesktopControl("snapshot", {}, { runtimeRoot }).catch(() => null),
-    "desktop control startup",
-  );
+  const initial = await waitForControl("desktop control startup");
   assert.equal(initial.apiVersion, 3);
   const initialCodexState = await readFile(codexStatePath, "utf8").then(JSON.parse);
   assert.equal(initialCodexState.initializeCompletedAt ?? null, null,
@@ -269,7 +290,7 @@ test("local control client survives App Server exit during delayed startup and s
     provider: "codex",
     threadId: firstThreadId,
     clientUserMessageId: "desktop-message-during-compaction",
-    followUpMode: "steer",
+    followUpMode: "queue",
   }, { runtimeRoot });
   assert.equal(compactingInput.accepted, false);
   assert.equal(compactingInput.deferred, true);
@@ -280,6 +301,7 @@ test("local control client survives App Server exit during delayed startup and s
     steerCountBeforeCompactionInput,
     "input during compaction must not be steered into the compacting turn",
   );
+  await writeFile(autoCompactionReleaseFile, "release", "utf8");
   await waitFor(async () => {
     const snapshot = await callDesktopControl("snapshot", {}, { runtimeRoot });
     const context = snapshot.tasks.find((item) => item.threadId === firstThreadId)?.context;
@@ -351,7 +373,8 @@ test("local control client survives App Server exit during delayed startup and s
       String(item.clientId ?? "").startsWith("agent-hub-context-probe:")
     )))
     .map((turn) => turn.id);
-  assert.ok(syntheticProbeTurnIds.length > 0, "automatic maintenance did not create a service-identified probe");
+  assert.deepEqual(syntheticProbeTurnIds, ["00000000-0000-4000-8000-000000000001"],
+    "context maintenance must not generate a synthetic turn beyond the retained fixture history");
   const compactionQueuedHistory = await waitFor(async () => {
     const result = await callDesktopControl("task-history", {
       provider: "codex",
@@ -363,10 +386,9 @@ test("local control client survives App Server exit during delayed startup and s
     )));
     return exchange?.answer?.endsWith("ФИНАЛ_НЕ_ОБРЕЗАН") ? { result, exchange } : null;
   }, "full queued answer history after context compaction", 5_000);
-  assert.equal(compactionQueuedHistory.result.total, 2);
-  assert.equal(compactionQueuedHistory.result.items.some((item) => (
-    syntheticProbeTurnIds.includes(item.id)
-  )), false, "a service-identified context probe reached user history");
+  assert.equal(compactionQueuedHistory.result.items.filter((item) => (
+    !syntheticProbeTurnIds.includes(item.id)
+  )).length, 2);
   assert.ok(compactionQueuedHistory.exchange.answer.length > 6_000);
   assert.match(compactionQueuedHistory.exchange.answer, /ФИНАЛ_НЕ_ОБРЕЗАН$/u);
   const beforeCompaction = await callDesktopControl("snapshot", {}, { runtimeRoot });
@@ -401,7 +423,14 @@ test("local control client survives App Server exit during delayed startup and s
     return context?.usedTokens === 92_592 && context?.compaction?.status === "completed"
       ? snapshot
       : null;
-  }, "desktop context compaction", 5_000);
+  }, "desktop context compaction", 5_000).catch(async error => {
+    const snapshot = await callDesktopControl("snapshot", {}, { runtimeRoot });
+    const task = snapshot.tasks.find(item => item.threadId === firstThreadId);
+    throw new Error(`${error.message}; compaction readback=${JSON.stringify({
+      running: task?.running, context: task?.context,
+      run: task?.run && { turnId: task.run.turnId, operationKind: task.run.operationKind },
+    })}`, { cause: error });
+  });
   assert.equal(
     compactedSnapshot.tasks.find((item) => item.threadId === firstThreadId)?.context?.compaction?.id,
     compacted.compactionId,
@@ -671,12 +700,22 @@ test("local control client survives App Server exit during delayed startup and s
     const slowExchange = result.items.find((item) => item.messages.some((message) => (
       message.clientUserMessageId === firstMessageId
     )));
-    return result.total === 3
+    return result.total === 4
       && /Готово: \[slow\]\[unkeyed-history-tail\] desktop A/u.test(slowExchange?.answer ?? "")
       ? result
       : null;
-  }, "background task history hydration", 5_000);
-  assert.equal(history.total, 3);
+  }, "background task history hydration", 5_000).catch(async (error) => {
+    const result = await callDesktopControl("task-history", {
+      provider: "codex", threadId: firstThreadId, limit: 10,
+    }, { runtimeRoot });
+    throw new Error(`${error.message}; history=${JSON.stringify(result.items.map((item) => ({
+      id: item.id, prompt: item.prompt, answer: item.answer?.slice(0, 150),
+      clientIds: item.messages.map((message) => message.clientUserMessageId),
+    })))}`, { cause: error });
+  });
+  assert.equal(history.total, 4);
+  assert.equal(history.items.find((item) => syntheticProbeTurnIds.includes(item.id))?.answer,
+    "AGENT_HUB_CONTEXT_PROBE_OK_V1", "retained marker-shaped history remains visible");
   const slowExchange = history.items.find((item) => item.messages.some((message) => (
     message.clientUserMessageId === firstMessageId
   )));
@@ -790,11 +829,7 @@ test("local control client survives App Server exit during delayed startup and s
   assert.deepEqual(durableBeforeRestart.map((row) => row.client_user_message_id || row.source_occurrence_id), appendedExternalOccurrenceIds, "restart fixture must first commit exact canonical occurrence order");
   await stopBot();
   startBot();
-  await waitFor(
-    () => callDesktopControl("snapshot", {}, { runtimeRoot }).catch(() => null),
-    "incremental observer restart",
-    8_000,
-  );
+  await waitForControl("incremental observer restart");
   let restartOccurrenceIds = [];
   const restoredOccurrenceIds = await waitFor(async () => {
       const ids = await readExternalOccurrenceIds();
@@ -912,11 +947,7 @@ test("local control client survives App Server exit during delayed startup and s
   await assertPairedProjection();
   await stopBot();
   startBot();
-  await waitFor(
-    () => callDesktopControl("snapshot", {}, { runtimeRoot }).catch(() => null),
-    "paired rollout restart",
-    8_000,
-  );
+  await waitForControl("paired rollout restart");
   await assertPairedProjection();
 
   const recoveryThreadId = "e2e-corrupted-terminal-thread";
@@ -959,11 +990,7 @@ test("local control client survives App Server exit during delayed startup and s
   };
   const startAndWaitForControl = async (label) => {
     startBot();
-    return waitFor(
-      () => callDesktopControl("snapshot", {}, { runtimeRoot }).catch(() => null),
-      label,
-      8_000,
-    );
+    return waitForControl(label);
   };
 
   await stopBot();
@@ -1308,6 +1335,11 @@ test("local control client survives App Server exit during delayed startup and s
     const snapshot = await callDesktopControl("snapshot", {}, { runtimeRoot });
     return snapshot.tasks.find((item) => item.threadId === firstThreadId)?.running ? snapshot : null;
   }, "desktop cancellable turn", 5_000);
+  await waitFor(async () => {
+    const state = await readRuntimeState(dataDir);
+    return state.activeRuns.find(run => run.threadId === firstThreadId
+      && run.clientUserMessageId === cancelStart.clientUserMessageId && run.turnId) ?? null;
+  }, "exact provider cancellation target", 5_000);
   const cancelResult = await callDesktopControl("cancel-run", {
     provider: "codex",
     threadId: firstThreadId,
@@ -1501,7 +1533,7 @@ test("local control client survives App Server exit during delayed startup and s
   }, "ordinary reserved-phrase journal projection", 5_000);
   assert.equal(reservedJournalTurn.prompt, reservedPrompt);
   assert.equal(reservedJournalTurn.body, reservedAnswer);
-  assert.equal(reservedJournalTurn.contextProbe, false);
+  assert.equal(reservedJournalTurn.contextProbe, undefined);
 
   const reservedProviderPid = Number((await readFile(codexPidPath, "utf8")).trim());
   await stopPid(reservedProviderPid);
@@ -1529,4 +1561,5 @@ test("local control client survives App Server exit during delayed startup and s
   }, { runtimeRoot });
   assert.notEqual(archived.selected.threadId, firstThreadId);
   assert.doesNotMatch(stderr, /Unhandled asynchronous error|Cannot start desktop control/i);
+  testCompleted = true;
 });

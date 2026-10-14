@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { TelegramSettingsCallbackService } from "../../../src/interfaces/telegram/telegram-settings-callbacks.mjs";
+import { TelegramSettingsMenu } from "../../../src/interfaces/telegram/telegram-settings-menu.mjs";
+import { contextualCallback, modelCallbackAction } from "../../../src/interfaces/telegram/callback-context.mjs";
+import { routeTelegramCallback } from "../../../src/interfaces/telegram/telegram-callback-router.mjs";
 
-function service(events, changed = true) {
+function service(events, changed = true, models = {}) {
   const getter = (value) => () => value;
   return new TelegramSettingsCallbackService({
     telegram: async (method, body) => events.push({ method, body }),
@@ -29,10 +32,12 @@ function service(events, changed = true) {
     callbackContext: () => ({ clientId: "telegram:1" }),
     autoApprove: getter(true),
     codexModel: getter("sol"),
+    codexModels: models.codex ?? [{ value: "sol", label: "Sol" }],
     codexModelLabel: (value) => value.toUpperCase(),
     codexReasoningEffort: getter("high"),
     codexCollaborationMode: getter("work"),
     claudeModel: getter("opus"),
+    claudeModels: models.claude ?? ["opus"],
     claudeReasoningEffort: getter("high"),
     claudeCollaborationMode: getter("work"),
     projects: [{ name: "Workspace", path: "D:/workspace" }],
@@ -71,4 +76,50 @@ test("settings callback service keeps the new task binding after provider switch
 
 test("settings callback service declines unrelated routes", async () => {
   assert.equal(await service([]).handle(callback, { kind: "task-view" }), false);
+});
+
+test("long live Codex and Claude model IDs round-trip through Telegram's 64-byte callbacks", async () => {
+  const codexId = `gpt-${"x".repeat(40)}`;
+  const claudeId = `claude-${"long-model-".repeat(9)}`;
+  const context = "aaaaaaaaaaaa";
+  const sent = [];
+  const events = [];
+  const menu = new TelegramSettingsMenu({
+    codexModels: [{ value: codexId, label: "Long Codex" }],
+    claudeModels: [claudeId],
+    claudeModelLabels: { [claudeId]: "Long Claude" },
+    callbackData: (action) => contextualCallback(action, context),
+    sendMessage: async (_text, options) => sent.push(options),
+  });
+  const callbacks = service(events, true, {
+    codex: [{ value: codexId, label: "Long Codex" }], claude: [claudeId],
+  });
+  await menu.modelPicker({ provider: "codex", codexModel: codexId, codexModelLabel: "Long Codex" });
+  await menu.modelPicker({ provider: "claude", claudeModel: claudeId });
+  for (const [index, expected] of [codexId, claudeId].entries()) {
+    const data = sent[index].reply_markup.inline_keyboard[0][0].callback_data;
+    assert.ok(Buffer.byteLength(data, "utf8") <= 64);
+    const route = routeTelegramCallback(data, context);
+    assert.equal(route.kind, index === 0 ? "codex-model" : "claude-model");
+    assert.equal(await callbacks.handle(callback, route), true);
+    assert.ok(events.some((event) => event.name === "model" && event.value === expected));
+    assert.equal(routeTelegramCallback(data, "bbbbbbbbbbbb").kind, "stale");
+  }
+});
+
+test("a retired Codex button cannot reselect its model after catalog refresh and another selection", async () => {
+  const codexId = `gpt-${"x".repeat(40)}`;
+  const replacement = "gpt-current";
+  const events = [];
+  const codexModels = [{ value: codexId, label: "Long Codex" }];
+  const callbacks = service(events, true, { codex: codexModels });
+  const oldData = contextualCallback(modelCallbackAction("codex", codexId), "aaaaaaaaaaaa");
+  codexModels.splice(0, codexModels.length, { value: replacement, label: "Current" });
+  const newData = contextualCallback(modelCallbackAction("codex", replacement), "aaaaaaaaaaaa");
+  await callbacks.handle(callback, routeTelegramCallback(newData, "aaaaaaaaaaaa"));
+  await callbacks.handle(callback, routeTelegramCallback(oldData, "aaaaaaaaaaaa"));
+  assert.ok(events.some((event) => event.name === "model" && event.value === replacement));
+  assert.equal(events.some((event) => event.name === "model" && event.value === codexId), false);
+  assert.ok(events.some((event) => event.method === "answerCallbackQuery"
+    && /устарело/.test(event.body.text)));
 });

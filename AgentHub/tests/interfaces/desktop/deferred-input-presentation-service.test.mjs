@@ -46,6 +46,39 @@ test("started deferred input becomes one accepted receipt with preserved attachm
   assert.equal(setup.updates[0].result.runId, "run-1");
   assert.equal(setup.updates[0].result.deliveredAt, "2026-08-13T01:31:00.000Z");
   assert.deepEqual(setup.updates[0].result.attachments, [{ path: "shot.png" }]);
+  assert.equal(setup.updates[0].result.providerAccepted, false);
+  assert.equal(setup.updates[0].result.reason, null);
+});
+
+test("maintenance receipt clears its queue reason only after an exact provider acceptance", () => {
+  const receipts = new MessageReceiptRegistry();
+  const maintenance = { ...item, conflictKind: "context-maintenance" };
+  const identity = {
+    provider: item.provider, threadId: item.threadId,
+    clientUserMessageId: item.clientUserMessageId,
+  };
+  receipts.reserve(identity, "fingerprint", {
+    accepted: false, deferred: true, queued: true,
+    providerAccepted: false, reason: "context-maintenance",
+  });
+  const service = new DeferredInputPresentationService({
+    telegram: async () => {}, receipts, describeAttachments: () => [],
+  });
+  service.updateDesktopReceipt(maintenance, "started", {
+    id: "run-1", turnId: "turn-1",
+    providerStart: { state: "accepted-awaiting-first-event", turnId: "turn-1" },
+  });
+  assert.deepEqual(((result) => ({
+    queued: result.queued, reason: result.reason,
+    providerAccepted: result.providerAccepted, turnId: result.turnId,
+  }))(receipts.get(identity).result), {
+    queued: false, reason: null, providerAccepted: true, turnId: "turn-1",
+  });
+  service.updateDesktopReceipt(maintenance, "started", {
+    id: "run-2", turnId: "turn-2",
+    providerStart: { state: "accepted-awaiting-first-event", turnId: "wrong-turn" },
+  });
+  assert.equal(receipts.get(identity).result.providerAccepted, false);
 });
 
 test("deferred state transitions never regress an existing durable acceptance", () => {

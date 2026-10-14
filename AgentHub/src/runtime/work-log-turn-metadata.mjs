@@ -24,8 +24,9 @@ export async function readTurnMetadataCandidates(journal, payload) {
     if (!record) continue;
     const missing = payload.kind === "pricing"
       ? !record.model || !record.pricingMetadataResolved
-      : normalizeEstimatedCredits(record.estimatedCredits) === 0
-        && looksLikeImageGenerationPrompt(record.prompt);
+      : payload.allUnestimated === true
+        || (normalizeEstimatedCredits(record.estimatedCredits) === 0
+          && looksLikeImageGenerationPrompt(record.prompt));
     if (missing) candidates.push({
       provider: record.provider, threadId: record.threadId, turnId: record.turnId,
       projectRoot: record.projectRoot, startedAt: record.startedAt,

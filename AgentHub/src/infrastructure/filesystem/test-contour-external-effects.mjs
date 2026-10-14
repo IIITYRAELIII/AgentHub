@@ -1,6 +1,16 @@
-import { appendFileSync, lstatSync, readFileSync } from "node:fs";
+import { appendFileSync, lstatSync, readFileSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { createContourExternalEffectsPort } from "../../ports/contour-external-effects.mjs";
+
+function samePath(left, right) {
+  const canonical = (value) => {
+    const resolved = path.resolve(value);
+    try { return realpathSync.native(resolved); } catch { return resolved; }
+  };
+  const a = canonical(left);
+  const b = canonical(right);
+  return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
+}
 
 export function assertContourOwnedPath(file, root, { optional = false } = {}) {
   const resolvedRoot = path.resolve(root);
@@ -26,7 +36,7 @@ export function createContourExternalEffects({ root }) {
   root = assertContourOwnedPath(root, root);
   const markerFile = assertContourOwnedPath(path.join(root, "recording-provider.json"), root);
   const marker = JSON.parse(readFileSync(markerFile, "utf8"));
-  if (marker.schemaVersion !== 1 || marker.kind !== "literal-recording-provider" || marker.root !== root || marker.externalEffects !== "deny") throw new Error("Invalid recording exclusion marker");
+  if (marker.schemaVersion !== 1 || marker.kind !== "literal-recording-provider" || !samePath(marker.root, root) || marker.externalEffects !== "deny") throw new Error("Invalid recording exclusion marker");
   const file = path.join(root, "external-effects.jsonl");
   return createContourExternalEffectsPort((record) => {
     assertContourOwnedPath(file, root, { optional: true });

@@ -88,12 +88,12 @@ export function usageSyncEventFromLedgerRecord(record, {
       estimatedCredits: record?.estimatedCredits,
       estimateKind: record?.estimateKind,
       imageGenerationCount: record?.imageGenerationCount,
-      contextProbe: record?.contextProbe,
       limitSamples: record?.limitSamples,
       usage: record?.usage,
       usageReported: record?.usageReported,
       model: record?.model,
       serviceTier: record?.serviceTier,
+      serviceUsageKind: record?.serviceUsageKind,
       deviceLabel: record?.deviceLabel,
       observedAt: record?.observedAt || record?.completedAt,
     });
@@ -113,12 +113,12 @@ export function usageSyncEventFromLedgerRecord(record, {
     estimatedCredits: record?.estimatedCredits,
     estimateKind: record?.estimateKind,
     imageGenerationCount: record?.imageGenerationCount,
-    contextProbe: record?.contextProbe,
     limitSamples: record?.limitSamples,
     usage: record?.usage,
     usageReported: record?.usageReported,
     model: record?.model,
     serviceTier: record?.serviceTier,
+    serviceUsageKind: record?.serviceUsageKind,
     deviceLabel: record?.deviceLabel,
     observedAt: record?.observedAt || record?.completedAt,
   });
@@ -132,8 +132,17 @@ function eventRank(event) {
     Array.isArray(event.limitSamples) ? event.limitSamples.length : 0,
     event.usageReported ? 1 : 0,
     event.usage?.totalTokens || 0,
+    [
+      "cacheWriteInputTokens",
+      "longContextInputTokens",
+      "longContextCachedInputTokens",
+      "longContextCacheWriteInputTokens",
+      "longContextOutputTokens",
+      "longContextReasoningOutputTokens",
+    ].reduce((count, field) => count + Number((event.usage?.[field] ?? 0) > 0), 0),
+    event.serviceUsageKind ? 1 : 0,
     positiveNumber(event.estimatedCredits) > 0 ? 1 : 0,
-    event.estimateKind || event.imageGenerationCount > 0 || event.contextProbe ? 1 : 0,
+    event.estimateKind || event.imageGenerationCount > 0 ? 1 : 0,
   ];
 }
 
@@ -164,6 +173,7 @@ export function strongerUsageSyncEvent(left, right) {
     .sort((a, b) => (Date.parse(a) || 0) - (Date.parse(b) || 0))[0] || winner.observedAt;
   return {
     ...winner,
+    serviceUsageKind: winner.serviceUsageKind || loser.serviceUsageKind,
     observedAt,
     limitSamples: mergeUsageLimitSamples(loser.limitSamples, winner.limitSamples),
   };
@@ -238,7 +248,6 @@ export function syncedUsageEventsToTurns(events = []) {
       estimatedCredits: event.estimatedCredits,
       estimateKind: event.estimateKind,
       imageGenerationCount: event.imageGenerationCount,
-      contextProbe: event.contextProbe,
       runtimeHomeId: event.runtimeHomeId,
       limitSamples: event.limitSamples,
       usage: event.usage,

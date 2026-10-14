@@ -5,9 +5,19 @@ const TOKEN_USAGE_FIELDS = [
   "reasoningOutputTokens",
   "totalTokens",
 ];
+const PRICING_USAGE_FIELDS = [
+  "cacheWriteInputTokens",
+  "longContextInputTokens",
+  "longContextCachedInputTokens",
+  "longContextCacheWriteInputTokens",
+  "longContextOutputTokens",
+  "longContextReasoningOutputTokens",
+];
 
 export const MODEL_PRICE_CHANGE_EFFECTIVE_FROM = "2026-09-08T00:00:00.000Z";
 export const CREDITS_PER_USD = 25;
+// Advance when a shipped price changes the derived journal projection.
+export const WORK_LOG_PRICING_PROJECTION_VERSION = "2026.10.1.2";
 
 function priceVersion(effectiveFrom, usdPerMillion) {
   return Object.freeze({
@@ -20,12 +30,24 @@ function priceHistory(...versions) {
   return Object.freeze(versions);
 }
 
-// USD per 1M tokens. Historical versions remain immutable so rebuilding an old
-// turn never applies today's price. Astra has one verified price; no earlier
-// official tariff is known.
+// USD per 1M tokens at the Standard short-context rate. Historical versions
+// remain immutable so rebuilding an old turn never applies today's price.
+// Astra has one verified price; no earlier official tariff is known. The
+// per-turn aggregate cannot identify long-context requests within that turn.
 const MODEL_PRICE_REGISTRY = new Map([
   ["gpt-6-astra", priceHistory(
     priceVersion(null, { input: 10, cachedInput: 1, output: 50 }),
+  )],
+  ["gpt-6-sol", priceHistory(
+    priceVersion(null, { input: 2, cachedInput: 0.2, output: 10 }),
+  )],
+  ["gpt-6.1-sol", priceHistory(
+    priceVersion("2026-09-29T00:00:00.000Z", {
+      input: 2, cachedInput: 0.1, cacheWriteInput: 2.5, output: 10,
+    }),
+  )],
+  ["gpt-6-luna", priceHistory(
+    priceVersion(null, { input: 0.1, cachedInput: 0.01, output: 0.5 }),
   )],
   ["gpt-5.6-sol", priceHistory(
     priceVersion(null, { input: 5, cachedInput: 0.5, output: 30 }),
@@ -53,7 +75,7 @@ const MODEL_PRICE_REGISTRY = new Map([
   )],
 ]);
 
-const CREDIT_FIELDS = ["input", "cache", "output", "reasoning", "estimate", "total"];
+const CREDIT_FIELDS = ["input", "cache", "cacheWrite", "output", "reasoning", "estimate", "total"];
 const SCALED_CREDIT_FORMATTER = new Intl.NumberFormat("ru-RU", {
   minimumFractionDigits: 1,
   maximumFractionDigits: 1,
@@ -136,6 +158,7 @@ export function fastModeCreditMultiplier(model, serviceTier) {
   const id = normalizedModel(model);
   if (id.startsWith("gpt-5.5") || id.startsWith("gpt-5.6")) return 2.5;
   if (id.startsWith("gpt-5.4") && !id.startsWith("gpt-5.4-mini")) return 2;
+  if (id === "gpt-6-sol" || id === "gpt-6.1-sol" || id === "gpt-6-luna") return 2;
   return 1;
 }
 
@@ -182,6 +205,7 @@ export function emptyCreditBreakdown() {
   return {
     input: 0,
     cache: 0,
+    cacheWrite: 0,
     output: 0,
     reasoning: 0,
     estimate: 0,
@@ -221,21 +245,58 @@ export function turnCreditBreakdown(usage, {
     };
   }
   const multiplier = fastModeCreditMultiplier(model, serviceTier);
-  const uncachedInput = Math.max(0, normalized.inputTokens - normalized.cachedInputTokens);
+  const cacheReadTokens = Math.min(normalized.inputTokens, normalized.cachedInputTokens);
+  const cacheWriteTokens = Math.min(
+    Math.max(0, normalized.inputTokens - cacheReadTokens),
+    normalized.cacheWriteInputTokens ?? 0,
+  );
+  const uncachedInput = normalized.inputTokens - cacheReadTokens - cacheWriteTokens;
   const reasoningTokens = Math.min(normalized.outputTokens, normalized.reasoningOutputTokens);
   const outputTokens = normalized.outputTokens - reasoningTokens;
   const perMillion = 1_000_000;
-  const input = uncachedInput * rates.input / perMillion * multiplier;
-  const cache = normalized.cachedInputTokens * rates.cachedInput / perMillion * multiplier;
-  const output = outputTokens * rates.output / perMillion * multiplier;
-  const reasoning = reasoningTokens * rates.output / perMillion * multiplier;
+  const pricedModel = canonicalPricedModel(model);
+  // OpenAI charges cache writes at 1.25x uncached input for GPT-5.6 and later.
+  // Older models keep their prior uncached estimate when no write tariff exists.
+  const cacheWriteRate = rates.cacheWriteInput ?? (
+    /^(?:gpt-5\.6|gpt-6(?:\.|-))/u.test(pricedModel) ? rates.input * 1.25 : rates.input
+  );
+  // The published >272K tier applies to an individual request, never to the
+  // aggregate of several requests in one Codex turn. The rollout scanner
+  // supplies these counters only from per-request last_token_usage events.
+  const longContext = normalizedModel(model) === "gpt-6.1-sol";
+  const longInput = longContext
+    ? Math.min(normalized.longContextInputTokens ?? 0, normalized.inputTokens) : 0;
+  const longCacheRead = Math.min(
+    longInput, cacheReadTokens, normalized.longContextCachedInputTokens ?? 0,
+  );
+  const longCacheWrite = Math.min(
+    Math.max(0, longInput - longCacheRead),
+    cacheWriteTokens,
+    normalized.longContextCacheWriteInputTokens ?? 0,
+  );
+  const longUncached = Math.min(
+    uncachedInput, Math.max(0, longInput - longCacheRead - longCacheWrite),
+  );
+  const longOutput = longContext
+    ? Math.min(normalized.outputTokens, normalized.longContextOutputTokens ?? 0) : 0;
+  const longReasoning = Math.min(
+    reasoningTokens, longOutput, normalized.longContextReasoningOutputTokens ?? 0,
+  );
+  const input = (uncachedInput + longUncached) * rates.input / perMillion * multiplier;
+  const cache = (cacheReadTokens + longCacheRead) * rates.cachedInput / perMillion * multiplier;
+  const cacheWrite = (cacheWriteTokens + longCacheWrite) * cacheWriteRate / perMillion * multiplier;
+  const output = (outputTokens + (longOutput - longReasoning) / 2)
+    * rates.output / perMillion * multiplier;
+  const reasoning = (reasoningTokens + longReasoning / 2)
+    * rates.output / perMillion * multiplier;
   return {
     input,
     cache,
+    cacheWrite,
     output,
     reasoning,
     estimate,
-    total: input + cache + output + reasoning + estimate,
+    total: input + cache + cacheWrite + output + reasoning + estimate,
     priced: true,
   };
 }
@@ -249,12 +310,14 @@ function formatCreditBreakdown(breakdown) {
   const [
     inputPercent,
     cachePercent,
+    cacheWritePercent,
     outputPercent,
     reasoningPercent,
     estimatePercent,
   ] = percentagesAddingUpToHundred([
     breakdown.input,
     breakdown.cache,
+    breakdown.cacheWrite,
     breakdown.output,
     breakdown.reasoning,
     breakdown.estimate,
@@ -264,6 +327,7 @@ function formatCreditBreakdown(breakdown) {
     `📊 За поток: ${formatCredits(breakdown.total)}`,
     `Вход: ${creditWithPercent(breakdown.input, inputPercent)}`,
     `Кэш: ${creditWithPercent(breakdown.cache, cachePercent)}`,
+    `Запись кэша: ${creditWithPercent(breakdown.cacheWrite, cacheWritePercent)}`,
     `Выход: ${creditWithPercent(breakdown.output, outputPercent)}`,
     `Думы: ${creditWithPercent(breakdown.reasoning, reasoningPercent)}`,
   ];
@@ -292,22 +356,35 @@ export function emptyTokenUsage() {
 
 export function normalizeTokenUsage(usage) {
   const normalized = emptyTokenUsage();
-  for (const field of TOKEN_USAGE_FIELDS) {
+  for (const field of [...TOKEN_USAGE_FIELDS, ...PRICING_USAGE_FIELDS]) {
     const value = Number(usage?.[field]);
-    if (Number.isFinite(value) && value >= 0) normalized[field] = Math.trunc(value);
+    if (Number.isFinite(value) && value >= 0
+      && (TOKEN_USAGE_FIELDS.includes(field) || Math.trunc(value) > 0)) {
+      normalized[field] = Math.trunc(value);
+    }
   }
   return normalized;
 }
 
 export function tokenUsageDelta(current, previous, fallback) {
-  if (!previous || TOKEN_USAGE_FIELDS.some((field) => current[field] < previous[field])) {
+  if (!previous || [...TOKEN_USAGE_FIELDS, ...PRICING_USAGE_FIELDS].some(
+    (field) => (current[field] ?? 0) < (previous[field] ?? 0),
+  )) {
     return normalizeTokenUsage(fallback);
   }
-  return Object.fromEntries(TOKEN_USAGE_FIELDS.map((field) => [field, current[field] - previous[field]]));
+  return normalizeTokenUsage(Object.fromEntries(
+    [...TOKEN_USAGE_FIELDS, ...PRICING_USAGE_FIELDS].map((field) => [
+      field, (current[field] ?? 0) - (previous[field] ?? 0),
+    ]),
+  ));
 }
 
 export function addTokenUsage(total, addition) {
-  return Object.fromEntries(TOKEN_USAGE_FIELDS.map((field) => [field, total[field] + addition[field]]));
+  return normalizeTokenUsage(Object.fromEntries(
+    [...TOKEN_USAGE_FIELDS, ...PRICING_USAGE_FIELDS].map((field) => [
+      field, (total?.[field] ?? 0) + (addition?.[field] ?? 0),
+    ]),
+  ));
 }
 
 export function formatTurnTokenUsage(tracker) {

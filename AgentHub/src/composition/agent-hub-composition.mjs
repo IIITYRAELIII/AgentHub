@@ -18,6 +18,7 @@ import { createHubStaticSettings } from "./hub-static-settings.mjs";
 import { createHubInfrastructure } from "./infrastructure-composition.mjs";
 import { measureStartupBeforeTrace } from "./command-trace-composition.mjs";
 import { createStateComposition } from "./state-composition.mjs";
+import { ProviderModelCatalogService } from "../application/provider-model-catalog-service.mjs";
 import { createAgentHubDeferredPorts } from "./agent-hub-deferred-ports.mjs";
 import { createProviderApplicationComposition } from "./provider-application-composition.mjs";
 import { createClientRuntimeComposition } from "./client-runtime-composition.mjs";
@@ -127,6 +128,11 @@ const { taskMetadata, selectionStore, agentPreferences } = createStateCompositio
   defaultCodexModel,
   defaultCodexReasoningEffort,
   normalizeCodexModel,
+});
+const providerModelCatalog = new ProviderModelCatalogService({
+  codexModels: CODEX_MODELS,
+  claudeModels: CLAUDE_MODELS,
+  agentPreferences,
 });
 function selectedProvider() { return selectionStore.activeProvider; }
 function selectedProjectRoot() { return selectionStore.activeProjectRoot; } function selectedStreamId() { return selectionStore.streamId; }
@@ -249,6 +255,7 @@ const providerApplication = await createProviderApplicationComposition({
     codexReasoningLabels: CODEX_REASONING_LABELS,
     globalWorkLogProjectRoots,
     journalDatabaseFile,
+    providerModelCatalog,
   },
   state: {
     hostState,
@@ -441,6 +448,7 @@ const clientRuntime = await createClientRuntimeComposition({
   },
   provider: {
     runtimeTimers,
+    hubThreadNaming: providerApplication.hubThreadNaming,
     resolveClaudeInvocation,
     spawnCapture,
     taskRuns,
@@ -549,6 +557,10 @@ const interactionShell = createInteractionShellPhase({
     maxBackgroundSpeechJobs: MAX_BACKGROUND_SPEECH_JOBS,
     maxDeferredInputs: MAX_DEFERRED_INPUTS,
     codexModels: CODEX_MODELS, codexModelLabel,
+    modelCatalogRevision: () => providerModelCatalog.revision,
+    refreshCodexModels: () => providerModelCatalog.refreshCodex(sendRpc, saveState, {
+      source: "on-demand",
+    }),
     claudeModels: CLAUDE_MODELS, claudeModelLabels: CLAUDE_MODEL_LABELS, claudeModelLabel,
     codexReasoningEfforts: CODEX_REASONING_EFFORTS, codexReasoningLabels: CODEX_REASONING_LABELS,
     claudeReasoningEfforts: CLAUDE_REASONING_EFFORTS, claudeReasoningLabels: CLAUDE_REASONING_LABELS,
@@ -599,6 +611,8 @@ const executionBootstrap = createExecutionBootstrapPhase({
     botCommands: BOT_COMMANDS,
     menuCommands: MENU_COMMANDS,
     projects: PROJECTS,
+    codexModels: CODEX_MODELS,
+    claudeModels: CLAUDE_MODELS,
     taskPickerPageSize: TASK_PICKER_PAGE_SIZE,
     maxBackgroundSpeechJobs: MAX_BACKGROUND_SPEECH_JOBS,
     codexModelLabel,

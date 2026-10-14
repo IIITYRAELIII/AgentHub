@@ -15,16 +15,10 @@ import {
 } from "./publish-all.mjs";
 import { ensureWrangler } from "./wrangler-runner.mjs";
 import { defaultRuntimeRoot } from "./src/infrastructure/filesystem/runtime-layout.mjs";
-import { prepareCommittedAgentHubReleaseVersion } from "./src/infrastructure/filesystem/release-version.mjs";
 import { assertReleaseCloneForPublication, ReleaseGitWorkspaceService } from "./src/infrastructure/filesystem/release-git-workspace.mjs";
 import { withPublicationLock } from "./src/infrastructure/process/publication-lock.mjs";
-import { createFrozenReleasePublication, readPublicationReleasePlan } from "./src/infrastructure/process/frozen-release-publication.mjs";
-import { createBootstrapReleasePlanControl } from "./src/infrastructure/process/bootstrap-release-plan-control.mjs";
-import {
-  publicationCheckpointStore,
-  runPublicationSteps,
-} from "./src/infrastructure/persistence/publication-checkpoint.mjs";
-import { publicationRunStore } from "./src/infrastructure/persistence/publication-run-store.mjs";
+import { readCandidatePublicationReleasePlan } from "./src/composition/publication-release-plan-composition.mjs";
+import { runPublicationSteps } from "./src/infrastructure/persistence/publication-checkpoint.mjs";
 import { completePublication } from "./src/infrastructure/persistence/publication-completion.mjs";
 import {
   assertCleanPublicationTree,
@@ -38,6 +32,11 @@ import {
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const REPOSITORY_ROOT = path.resolve(ROOT, "..");
 export const RELEASE_CANDIDATE_CONTOUR_LABEL = "Проверка release candidate в изолированном контуре";
+
+function invocationRepositoryRoot() {
+  const cwd = path.resolve(process.cwd());
+  return path.basename(cwd).toLowerCase() === "agenthub" ? path.dirname(cwd) : cwd;
+}
 
 const emptyPlan = () => ({
   runtime: false,
@@ -204,12 +203,12 @@ export function needsVisualPublicationTests(files) {
   });
 }
 
-async function contentFingerprint(namespace, files) {
+async function contentFingerprint(namespace, files, repositoryRoot = REPOSITORY_ROOT) {
   const hash = createHash("sha256").update(`publication-step-v1\0${namespace}\0`);
   for (const file of files.toSorted()) {
     hash.update(file).update("\0");
     try {
-      hash.update(await readFile(path.resolve(REPOSITORY_ROOT, file)));
+      hash.update(await readFile(path.resolve(repositoryRoot, file)));
     } catch (error) {
       if (error.code !== "ENOENT") throw error;
       hash.update("<deleted>");
@@ -257,25 +256,29 @@ function filesForStep(label, files) {
   return files;
 }
 
-async function withStepFingerprints(steps, files) {
+async function withStepFingerprints(steps, files, repositoryRoot = REPOSITORY_ROOT) {
   return Promise.all(steps.map(async (step) => ({
     ...step,
     fingerprint: await contentFingerprint(
       JSON.stringify({ label: step.label, command: step.command, args: step.args, env: step.env ?? {} }),
       filesForStep(step.label, files),
+      repositoryRoot,
     ),
   })));
 }
 
-export function parseChangedArguments(args) {
+export function parseChangedArguments(args, { requireOperationId = false } = {}) {
   let from = "";
   let skipRestart = false;
   let fullTests = false;
   let testContour = false;
   let quick = false;
   let resume = false;
+  let status = false;
+  let operationId = "";
   let workspaceId = "";
-  let bootstrapMcpContext = "";
+  let streamId = "";
+  let threadId = "";
   for (let index = 0; index < args.length; index += 1) {
     if (args[index] === "--skip-restart") skipRestart = true;
     else if (args[index] === "--full-tests") fullTests = true;
@@ -284,15 +287,25 @@ export function parseChangedArguments(args) {
     else if (args[index] === "--validation=full") fullTests = true;
     else if (args[index] === "--validation=focused") { /* default validation */ }
     else if (args[index] === "--resume") resume = true;
+    else if (args[index] === "--status") status = true;
+    else if (args[index] === "--operation" && args[index + 1]) operationId = args[++index];
     else if (args[index] === "--workspace" && args[index + 1]) workspaceId = args[++index];
-    else if (args[index] === "--bootstrap-mcp-context" && args[index + 1] && !args[index + 1].startsWith("--")) bootstrapMcpContext = args[++index];
+    else if (args[index] === "--stream" && args[index + 1]) streamId = args[++index];
+    else if (args[index] === "--thread" && args[index + 1]) threadId = args[++index];
+    else if (args[index] === "--bootstrap-mcp-context") {
+      throw new Error("--bootstrap-mcp-context is obsolete; publication reads the release plan from the candidate runtime");
+    }
     else if (args[index] === "--from" && args[index + 1]) from = args[++index];
     else throw new Error(`Неизвестный аргумент: ${args[index]}`);
   }
   if (quick && fullTests) throw new Error("Choose either quick or full validation");
-  return { from, skipRestart, fullTests, testContour, quick, resume, workspaceId,
-    ...(bootstrapMcpContext ? { bootstrapMcpContext } : {}),
-  };
+  if (resume && status) throw new Error("Choose either --resume or --status");
+  if (requireOperationId && (resume || status) && !operationId) {
+    throw new Error("--resume and --status require the original --operation id");
+  }
+  if (operationId && !resume && !status) throw new Error("--operation requires --resume or --status");
+  return { from, skipRestart, fullTests, testContour, quick, resume, status, operationId,
+    workspaceId, streamId, threadId };
 }
 
 export async function publishChanged(args = process.argv.slice(2), {
@@ -314,7 +327,11 @@ export async function publishChanged(args = process.argv.slice(2), {
   publishGit = null,
   finalizePublication = null,
   preparePublication = null,
+  prepareArtifactSteps = async (steps) => steps,
+  verifyArtifacts = async () => {},
+  repositoryRoot = process.cwd(),
 } = {}) {
+  const publicationRoot = path.resolve(repositoryRoot);
   return exclusive(async () => {
     const options = parseChangedArguments(args);
     // Finalization may synchronize repository refs before its reply reaches the
@@ -323,7 +340,7 @@ export async function publishChanged(args = process.argv.slice(2), {
     const pending = options.resume ? await journal?.read?.() : null;
     if (pending?.progress?.publicationState) {
       const identity = pending.identity;
-      if (identity?.worktreeRoot !== REPOSITORY_ROOT || identity?.runtimeRoot !== runtimeRoot) {
+      if (identity?.worktreeRoot !== publicationRoot || identity?.runtimeRoot !== runtimeRoot) {
         throw new Error("No matching publication candidate to resume");
       }
       if (options.from && options.from !== identity.from) throw new Error("Resume source revision differs from the saved publication");
@@ -336,6 +353,7 @@ export async function publishChanged(args = process.argv.slice(2), {
       }
       if (preparePublication) await preparePublication(identity, { completionOnly: true });
       if (["succeeded", "published"].includes(pending.status)) {
+        await verifyArtifacts(identity);
         const recorded = await readState();
         if (recorded?.revision !== identity.revision
           || recorded?.generation !== pending.progress.publicationState.generation) {
@@ -353,6 +371,7 @@ export async function publishChanged(args = process.argv.slice(2), {
       if (identity.release && !finalizePublication) throw new Error("Pending Workspace release requires its finalization adapter");
       await journal.start(identity, []);
       try {
+        await verifyArtifacts(identity);
         const completion = await completePublication({
           identity, publicationState: pending.progress.publicationState,
           journal, checkpoint, needsRestart: Boolean(pending.progress.publicationState.plan?.runtimeRestart),
@@ -367,10 +386,10 @@ export async function publishChanged(args = process.argv.slice(2), {
     }
     await before();
     await prepareVersion();
-    const head = await revision({ cwd: REPOSITORY_ROOT });
+    const head = await revision({ cwd: publicationRoot });
     const saved = await journal?.read?.() ?? await checkpoint?.read?.();
     const savedIdentity = saved?.identity;
-    const sameCandidate = savedIdentity?.revision === head && savedIdentity?.worktreeRoot === REPOSITORY_ROOT
+    const sameCandidate = savedIdentity?.revision === head && savedIdentity?.worktreeRoot === publicationRoot
       && savedIdentity?.runtimeRoot === runtimeRoot;
     if (options.resume && !sameCandidate) throw new Error("No matching publication candidate to resume");
     if (options.resume && options.from && options.from !== savedIdentity.from) {
@@ -390,6 +409,7 @@ export async function publishChanged(args = process.argv.slice(2), {
       && savedIdentity.workspaceId === options.workspaceId
       && savedIdentity.testContour === options.testContour
       && (!options.from || options.from === savedIdentity.from)) {
+      await verifyArtifacts(savedIdentity);
       if (saved.progress?.expectedReleaseId) {
         await verifyRestart({ runtimeRoot, expectedReleaseId: saved.progress.expectedReleaseId, readStatus: readRuntimeStatus });
       }
@@ -398,7 +418,7 @@ export async function publishChanged(args = process.argv.slice(2), {
     }
     const from = options.from || (sameCandidate ? savedIdentity.from : null) || state?.revision;
     if (!from) throw new Error("Нет исходной точки публикации. Сначала выполните npm run publish:all или укажите --from <commit>.");
-    const files = await diff(from, { cwd: REPOSITORY_ROOT });
+    const files = await diff(from, { cwd: publicationRoot });
     const plan = classifyPublicationChanges(files);
     if (options.fullTests) plan.fullTests = true;
     if (plan.unknown.length && !options.quick) plan.fullTests = true;
@@ -409,22 +429,26 @@ export async function publishChanged(args = process.argv.slice(2), {
       .digest("hex");
     const workerChangedFiles = files.filter((file) => workerDeploymentFile(file)
       || file === "AgentHub/cloudflare-worker/verify-deployment.mjs");
-    const steps = await withStepFingerprints(focusedSteps(plan, {
+    let steps = await withStepFingerprints(focusedSteps(plan, {
       fullTestCheckpointId,
       testContour: options.testContour,
       workerChangedFiles,
       quick: options.quick,
       visualTests: needsVisualPublicationTests(files),
-    }), files);
+    }), files, publicationRoot);
+    const candidateRoot = path.join(publicationRoot, "AgentHub");
+    steps = steps.map((step) => ({ ...step, cwd: step.cwd ?? candidateRoot }));
     const identity = {
-      mode: "changed", from, revision: head, worktreeRoot: REPOSITORY_ROOT, runtimeRoot, files,
+      mode: "changed", from, revision: head, worktreeRoot: publicationRoot, runtimeRoot, files,
       validationMode: plan.fullTests ? "full" : options.quick ? "quick" : "focused",
       testContour: options.testContour,
       workspaceId: options.workspaceId,
       labels: steps.map((step) => step.label),
     };
+    steps = await prepareArtifactSteps(steps, identity);
+    identity.labels = steps.map((step) => step.label);
     if (publishGit) {
-      const firstDeployment = steps.findIndex((step) => ["Сборка runtime-релиза", "Развёртывание Mini App Worker", "Активация runtime-релиза", "Установка расширения VS Code"].includes(step.label));
+      const firstDeployment = steps.findIndex((step) => ["Сборка runtime-релиза", "Установка runtime-релиза", "Развёртывание Mini App Worker", "Активация runtime-релиза", "Установка расширения VS Code"].includes(step.label));
       steps.splice(firstDeployment < 0 ? steps.length : firstDeployment, 0, {
         label: "Публикация Git", reusable: false, execute: () => publishGit(identity),
       });
@@ -455,6 +479,7 @@ export async function publishChanged(args = process.argv.slice(2), {
         identity,
         journal,
       });
+      await verifyArtifacts(identity);
       const completion = await completePublication({
         identity, publicationState: {
           revision: head,
@@ -468,6 +493,9 @@ export async function publishChanged(args = process.argv.slice(2), {
         requestRestart: (verification) => restartRuntimeAndVerify(restart, verifyRestart, runtimeRoot, verification),
       });
       console.log(`\nПубликация: ${completion.status}; ${files.length} изменённых файлов.`);
+      if (completion.handoff?.action === "yield_current_turn") {
+        console.log("Safe restart подготовлен: завершите текущий агентский ход без новых операций.");
+      }
       return { files, plan, revision: head, ...completion };
     } catch (error) {
       await journal?.finish("failed", error);
@@ -476,48 +504,184 @@ export async function publishChanged(args = process.argv.slice(2), {
   });
 }
 
+export async function freezePreparedPublication({
+  workspaceId = "",
+  repositoryRoot = REPOSITORY_ROOT,
+  readPlan = readCandidatePublicationReleasePlan,
+  read = readFile,
+  assertClone = assertReleaseCloneForPublication,
+  assertCleanTree = assertCleanPublicationTree,
+  assertCurrentRevision = assertCurrentPublicationRevision,
+  createReleaseWorkspace = (options) => new ReleaseGitWorkspaceService(options),
+} = {}) {
+  const marker = await assertClone({ repositoryRoot });
+  const checkpoint = JSON.parse(await read(path.join(repositoryRoot, "..", "checkpoint.json"), "utf8"));
+  if (!/^[a-f0-9]{64}$/u.test(checkpoint.manifestHash ?? "")) throw new Error("invalid prepared manifest hash");
+  const manifest = JSON.parse(await read(
+    path.join(repositoryRoot, "..", "evidence", `${checkpoint.manifestHash}.json`),
+    "utf8",
+  ));
+  const selectedWorkspace = String(workspaceId || manifest.workspaceId || "").trim();
+  if (!selectedWorkspace) throw new Error("publication freeze requires its Workspace");
+  const reusePersistedChangelog = ["freezing", "frozen"].includes(checkpoint.phase);
+  const changelogContent = reusePersistedChangelog
+    ? undefined
+    : await read(path.join(repositoryRoot, "CHANGELOG.md")).catch((error) => {
+      if (error.code === "ENOENT") return null;
+      throw error;
+    });
+  const releaseWorkspace = createReleaseWorkspace({ dataDir: path.dirname(marker.managedRoot) });
+  const frozen = await releaseWorkspace.freezePublicationCandidate({
+    projectRoot: marker.primaryRoot, workspaceId: selectedWorkspace,
+    expectedPlanRevision: checkpoint.planRevision, expectedPreparedHead: checkpoint.preReleaseHead,
+    changelogContent, reusePersistedChangelog,
+    validateBeforeCommit: async () => {
+      const plan = await readPlan(selectedWorkspace);
+      if (plan.revision !== checkpoint.planRevision) {
+        throw new Error("release plan changed before publication freeze");
+      }
+    },
+  });
+  const frozenManifest = JSON.parse(await read(frozen.manifestFile, "utf8"));
+  const releaseVersion = String(frozenManifest.publication?.releaseVersion ?? "");
+  if (!releaseVersion) throw new Error("frozen release version is missing from the immutable manifest");
+  await assertCleanTree({ cwd: repositoryRoot });
+  await assertCurrentRevision({ cwd: repositoryRoot });
+  return releaseVersion;
+}
+
+export async function runReleaseOperationCli(args = process.argv.slice(2), {
+  repositoryRoot = invocationRepositoryRoot(),
+  runtimeRoot = defaultRuntimeRoot(),
+  control = callDesktopControl,
+  read = readFile,
+  assertClone = assertReleaseCloneForPublication,
+  wait = (delayMs) => new Promise((resolve) => setTimeout(resolve, delayMs)),
+  pollMs = 1_000,
+} = {}) {
+  const options = parseChangedArguments(args, { requireOperationId: true });
+  if (options.skipRestart || options.testContour) {
+    throw new Error("ReleaseOperation owns restart and contour policy; legacy publication overrides are not supported");
+  }
+  const root = path.resolve(repositoryRoot);
+  const marker = await assertClone({ repositoryRoot: root });
+  if (options.resume || options.status) {
+    const snapshot = await control("release-operation-get", { operationId: options.operationId }, { runtimeRoot });
+    const operation = snapshot?.operation;
+    if (!operation || operation.operationId !== options.operationId) {
+      throw new Error("release operation readback identity changed");
+    }
+    const publicationTarget = operation.authorization?.approvedTargets?.find((target) => (
+      target.kind === "agent-hub-publication"
+      && path.resolve(String(target.repositoryRoot ?? "")) === path.resolve(marker.primaryRoot)
+    ));
+    if (!publicationTarget || (options.workspaceId && operation.workspaceId !== options.workspaceId)
+      || (options.streamId && operation.streamId !== options.streamId)
+      || (options.threadId && operation.threadId !== options.threadId)) {
+      throw new Error("release operation does not belong to this release clone or initiator");
+    }
+    if (options.status || operation.state === "done") return snapshot;
+    if (operation.state === "failed") {
+      const error = new Error(operation.lastError?.message ?? "release operation failed");
+      error.code = operation.lastError?.code ?? "RELEASE_OPERATION_FAILED";
+      throw error;
+    }
+    await control("release-operation-continue", { operationId: options.operationId }, { runtimeRoot });
+    let lastRevision = -1;
+    for (;;) {
+      const current = await control("release-operation-get", { operationId: options.operationId }, { runtimeRoot });
+      const value = current?.operation;
+      if (!value || value.operationId !== options.operationId) {
+        throw new Error("release operation readback identity changed");
+      }
+      if (value.revision !== lastRevision) {
+        console.log(`Release operation ${options.operationId}: ${value.state}${value.currentStep ? `/${value.currentStep}` : ""}`);
+        lastRevision = value.revision;
+      }
+      if (value.state === "done") return current;
+      if (value.state === "failed") {
+        const error = new Error(value.lastError?.message ?? "release operation failed");
+        error.code = value.lastError?.code ?? "RELEASE_OPERATION_FAILED";
+        throw error;
+      }
+      await wait(Math.max(100, Number(pollMs) || 1_000));
+    }
+  }
+  const checkpoint = JSON.parse(await read(path.join(root, "..", "checkpoint.json"), "utf8"));
+  if (!/^[a-f0-9]{64}$/u.test(String(checkpoint.manifestHash ?? ""))) {
+    throw new Error("prepared release manifest is missing");
+  }
+  const manifest = JSON.parse(await read(
+    path.join(root, "..", "evidence", `${checkpoint.manifestHash}.json`),
+    "utf8",
+  ));
+  const workspaceId = String(options.workspaceId || manifest.workspaceId || "").trim();
+  if (!workspaceId) throw new Error("release operation requires its Workspace");
+  const streamId = String(options.streamId || "").trim();
+  const threadId = String(options.threadId || "").trim();
+  if (!streamId || !threadId) throw new Error("release operation requires --stream and --thread initiator identity");
+  if (options.from && options.from !== manifest.baseCommit) {
+    throw new Error("release operation source revision differs from the prepared candidate");
+  }
+  const taskIds = [...new Set((manifest.tasks ?? []).map((task) => String(task?.taskId ?? "").trim()))]
+    .filter(Boolean).sort();
+  if (!taskIds.length) throw new Error("prepared release has no selected Tasks");
+  const target = {
+    targetId: `agent-hub-publication-${createHash("sha256").update(path.resolve(marker.primaryRoot)).digest("hex").slice(0, 16)}`,
+    kind: "agent-hub-publication",
+    repositoryRoot: marker.primaryRoot,
+    ...(manifest.baseProvenance?.approvedLocalMainCommit
+      ? { approvedLocalMainCommit: manifest.baseProvenance.approvedLocalMainCommit } : {}),
+    ...(manifest.baseProvenance?.approvedOriginMainCommit
+      ? { approvedOriginMainCommit: manifest.baseProvenance.approvedOriginMainCommit } : {}),
+  };
+  const validationMode = options.fullTests ? "full" : options.quick ? "quick" : "focused";
+  const changelogBytes = await read(path.join(root, "CHANGELOG.md"));
+  const changelogBuffer = Buffer.isBuffer(changelogBytes) ? changelogBytes : Buffer.from(changelogBytes);
+  const releaseMetadata = {
+    sourcePath: path.join(root, "CHANGELOG.md"),
+    byteLength: changelogBuffer.length,
+    rawSha256: createHash("sha256").update(changelogBuffer).digest("hex"),
+    canonicalSha256: createHash("sha256").update(changelogBuffer.toString("utf8").replace(/\r\n/gu, "\n")).digest("hex"),
+  };
+  const requestIdentity = {
+    workspaceId, streamId, threadId,
+    planRevision: manifest.planRevision,
+    taskIds,
+    target,
+    validationMode,
+    releaseMetadata,
+  };
+  const requestId = `release-cli-${createHash("sha256").update(JSON.stringify(requestIdentity)).digest("hex")}`;
+  const acknowledgement = await control("release-operation-run", {
+    requestId, workspaceId, streamId, threadId, taskIds, approvedTargets: [target], validationMode, releaseMetadata,
+  }, { runtimeRoot, commandId: requestId });
+  const operationId = String(acknowledgement?.operationId ?? "").trim();
+  if (!operationId) throw new Error("release operation acknowledgement has no operation id");
+  let lastRevision = -1;
+  for (;;) {
+    const snapshot = await control("release-operation-get", { operationId }, { runtimeRoot });
+    const operation = snapshot?.operation;
+    if (!operation || operation.operationId !== operationId) {
+      throw new Error("release operation readback identity changed");
+    }
+    if (operation.revision !== lastRevision) {
+      console.log(`Release operation ${operationId}: ${operation.state}${operation.currentStep ? `/${operation.currentStep}` : ""}`);
+      lastRevision = operation.revision;
+    }
+    if (operation.state === "done") return snapshot;
+    if (operation.state === "failed") {
+      const error = new Error(operation.lastError?.message ?? "release operation failed");
+      error.code = operation.lastError?.code ?? "RELEASE_OPERATION_FAILED";
+      throw error;
+    }
+    await wait(Math.max(100, Number(pollMs) || 1_000));
+  }
+}
+
 const invokedFile = process.argv[1] ? path.resolve(process.argv[1]) : "";
 if (invokedFile === fileURLToPath(import.meta.url)) {
-  let frozenReleaseVersion = "";
-  const control = createBootstrapReleasePlanControl({
-    contextFile: parseChangedArguments(process.argv.slice(2)).bootstrapMcpContext,
-    control: callDesktopControl, readState: readPublicationState,
-  });
-  const adapter = createFrozenReleasePublication({ repositoryRoot: REPOSITORY_ROOT, runtimeRoot: defaultRuntimeRoot(), control });
-  publishChanged(process.argv.slice(2), {
-    preparePublication: adapter.prepare,
-    publishGit: adapter.publishGit,
-    finalizePublication: adapter.finalizePublication,
-    checkpoint: publicationCheckpointStore(),
-    journal: publicationRunStore(),
-    before: async () => {
-      const marker = await assertReleaseCloneForPublication({ repositoryRoot: REPOSITORY_ROOT });
-      const checkpoint = JSON.parse(await readFile(path.join(REPOSITORY_ROOT, "..", "checkpoint.json"), "utf8"));
-      if (!/^[a-f0-9]{64}$/u.test(checkpoint.manifestHash ?? "")) throw new Error("invalid prepared manifest hash");
-      const manifest = JSON.parse(await readFile(path.join(REPOSITORY_ROOT, "..", "evidence", `${checkpoint.manifestHash}.json`), "utf8"));
-      const workspaceId = parseChangedArguments(process.argv.slice(2)).workspaceId || manifest.workspaceId;
-      const changelogContent = await readFile(path.join(REPOSITORY_ROOT, "CHANGELOG.md")).catch((error) => {
-        if (error.code === "ENOENT") return null;
-        throw error;
-      });
-      const workspace = new ReleaseGitWorkspaceService({ dataDir: path.dirname(marker.managedRoot) });
-      const frozen = await workspace.freezePublicationCandidate({
-        projectRoot: marker.primaryRoot, workspaceId,
-        expectedPlanRevision: checkpoint.planRevision, expectedPreparedHead: checkpoint.preReleaseHead,
-        changelogContent,
-        validateBeforeCommit: async () => {
-          const plan = await readPublicationReleasePlan(control, workspaceId, defaultRuntimeRoot());
-          if (plan.revision !== checkpoint.planRevision) throw new Error("release plan changed before publication freeze");
-        },
-      });
-      const frozenManifest = JSON.parse(await readFile(frozen.manifestFile, "utf8"));
-      frozenReleaseVersion = String(frozenManifest.publication?.releaseVersion ?? "");
-      if (!frozenReleaseVersion) throw new Error("frozen release version is missing from the immutable manifest");
-      await assertCleanPublicationTree({ cwd: REPOSITORY_ROOT });
-      await assertCurrentPublicationRevision({ cwd: REPOSITORY_ROOT });
-    },
-    prepareVersion: () => prepareCommittedAgentHubReleaseVersion({ expectedVersion: frozenReleaseVersion }),
-  }).catch((error) => {
+  runReleaseOperationCli(process.argv.slice(2)).catch((error) => {
     console.error(`\nПубликация остановлена: ${error.message}`);
     process.exitCode = 1;
   });

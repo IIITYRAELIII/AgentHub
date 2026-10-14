@@ -76,3 +76,6 @@ export function recoverCodexRolloutSubagents(rolloutPath, candidates) {
   return requestWorker("recover-subagents", { rolloutPath, candidates });
 }
 
+export function readCodexTracePageInWorker(rolloutPath, options) {
+  return requestWorker("trace-page", { rolloutPath, options });
+}

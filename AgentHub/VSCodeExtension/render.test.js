@@ -66,6 +66,16 @@ function loadJournalView() {
   return window.AgentHubJournalView;
 }
 
+function functionSource(source, name, nextMarker) {
+  let start = source.indexOf(`function ${name}`);
+  if (source.slice(Math.max(0, start - 6), start) === "async ") start -= 6;
+  const closing = /\r?\n\}\r?\n/u.exec(source.slice(start));
+  const end = name === "applyOpened" ? start + closing.index + closing[0].length : source.indexOf(nextMarker, start);
+  assert.notEqual(start, -1, `${name} source start`);
+  assert.notEqual(end, -1, `${name} source end`);
+  return source.slice(start, end);
+}
+
 function loadVscodeBootstrap({ animations = [], hidden = false } = {}) {
   const source = fs.readFileSync(path.join(__dirname, "vscode-bootstrap.js"), "utf8");
   const listeners = new Map();
@@ -813,7 +823,7 @@ test("Magma packages three Obsidian Forge scenes without legacy lava textures", 
   assert.equal(theme.resources.some((resource) => resource.pathname.endsWith("/magma-flow.jpg")), false);
 });
 
-test("general settings and current-dialog settings stay separate", () => {
+test("general settings and current-dialog settings stay separate", async () => {
   const html = fs.readFileSync(require.resolve("../assets/web-app/index.html"), "utf8");
   const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
   assert.doesNotMatch(html, /data-panel-open="view"/u);
@@ -840,12 +850,9 @@ test("general settings and current-dialog settings stay separate", () => {
   assert.match(html, /до 08\.09\.2026: Sol — \$5 \/ \$0,50 \/ \$30/u);
   assert.match(html, /с 08\.09\.2026: GPT-6 Astra — \$10 \/ \$1 \/ \$50/u);
   assert.match(html, /цены указаны за 1 млн входных \/ кэшированных входных \/ выходных токенов/u);
-  /* fastModeCreditMultiplier не трогает 5.4-mini, поэтому подсказка называет
-     обе ставки Fast и исключение. */
-  assert.match(
-    html,
-    /режим Fast дополнительно увеличивает расход в 2,5 раза для GPT-5\.5 и всех\s+GPT-5\.6 и в 2 раза для GPT-5\.4; на GPT-5\.4-mini не влияет;/u,
-  );
+  const { fastModeCreditMultiplier } = await import("../src/domain/token-usage.mjs");
+  assert.equal(fastModeCreditMultiplier("gpt-6.1-sol", "fast"), 2);
+  assert.equal(fastModeCreditMultiplier("gpt-5.4-mini", "fast"), 1);
   /* Порядок чипов повторяет порядок строк справки: ПТЭ → cr → $ → ₽. */
   assert.match(
     html,
@@ -886,6 +893,93 @@ test("the active Agent Hub tab survives a page reload", () => {
   }
 });
 
+test("VS Code shared WebView applies deferred task history and requests the exact v4 snapshot delta", () => {
+  const clientSource = fs.readFileSync(path.join(WEB_APP_ROOT, "hub-client.js"), "utf8");
+  const transportSource = fs.readFileSync(path.join(WEB_APP_ROOT, "snapshot-transport.js"), "utf8");
+  const applied = [];
+  const snapshotApplications = [];
+  const selected = [];
+  const refreshRequests = [];
+  const lastSnapshot = {
+    version: "snapshot-v7",
+    collectionVersions: {
+      conversations: "conversations-v4",
+      workspaces: "workspaces-v3",
+      boardTasks: "board-v9",
+      messageReceipts: "receipts-v5",
+      messagePins: "pins-v2",
+    },
+    tasks: [{ streamId: "stream-b", provider: "codex", threadId: "thread-b" }],
+  };
+  const window = { requestAnimationFrame: (callback) => callback() };
+  vm.runInNewContext(transportSource, { window });
+  const sandbox = vm.createContext({
+    Map,
+    window,
+    lastSnapshot,
+    selectedTaskId: "stream-b",
+    historyPageByTask: new Map(),
+    historyWindowByTask: new Map(),
+    liveCardsByTask: new Map(),
+    snapshotResponseIsStale: () => false,
+    traceHistoryCard: () => {},
+    commandTrace: { objectId: () => "", newId: () => "fixture-open" },
+    taskId: (_provider, _threadId, streamId) => streamId,
+    historyMessages: (history) => history.items,
+    setHistoryWindow: (id, items) => applied.push([id, ...items.map((item) => item.id)]),
+    clearDurablyCompletedLiveCard: () => {},
+    setFocusedHistoryWindow: () => {},
+    mergeNewestHistory: (_previous, newest) => newest,
+    rememberSelectedTaskId: (id) => selected.push(`remember:${id}`),
+    refresh: async () => {
+      refreshRequests.push(window.AgentHubSnapshotTransport.requestParams(lastSnapshot));
+    },
+    applySnapshot: (snapshot) => snapshotApplications.push(snapshot),
+    agentHub: { selectTask: (id) => selected.push(`select:${id}`) },
+    syncHistoryPagination: () => {},
+    renderTaskMessages: () => [],
+    renderTaskQueue: () => {},
+    displayedFinalAcknowledgement: () => false,
+    settleOpenedTaskHistory: async () => {},
+    updateHistoryCatchUp: () => {},
+  });
+  vm.runInContext(
+    `${functionSource(clientSource, "applyOpened", "function acknowledgeDisplayedFinal")};`
+      + "globalThis.applyDeferredOpen = applyOpened;",
+    sandbox,
+  );
+
+  sandbox.applyDeferredOpen({
+    snapshot: null,
+    snapshotDeferred: true,
+    history: {
+      streamId: "stream-b",
+      provider: "codex",
+      threadId: "thread-b",
+      start: 0,
+      end: 1,
+      total: 1,
+      messageTotal: 1,
+      version: "history-v1",
+      items: [{ id: "turn-b" }],
+    },
+  });
+
+  assert.deepEqual(applied, [["stream-b", "turn-b"]]);
+  assert.deepEqual(snapshotApplications, [null]);
+  assert.deepEqual(selected, ["remember:stream-b", "select:stream-b"]);
+  assert.deepEqual(JSON.parse(JSON.stringify(refreshRequests)), [{
+    knownVersion: "snapshot-v7",
+    compactSnapshot: true,
+    snapshotProtocol: 4,
+    conversationsVersion: "conversations-v4",
+    workspacesVersion: "workspaces-v3",
+    boardTasksVersion: "board-v9",
+    messageReceiptsVersion: "receipts-v5",
+    messagePinsVersion: "pins-v2",
+  }]);
+});
+
 test("task list keeps active duration live and metadata badges readable", () => {
   const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
   const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
@@ -900,10 +994,16 @@ test("task list keeps active duration live and metadata badges readable", () => 
   assert.match(app, /\["terra", "Terra"\][\s\S]*\["sonnet", "Sonnet"\]/u);
   assert.match(app, /\["spark", "Spark"\]/u);
   assert.match(app, /class: "task-agent task-model"[\s\S]*text: shortModelLabel\(task\.modelLabel\)/u);
-  assert.match(
-    client,
-    /modelLabel:\s*task\.run\?\.model\s*\?\?\s*task\.model\s*\?\?\s*\(serverSelected\s*\?\s*snapshot\.selected\?\.model\s*:\s*""\)/u,
-  );
+  const window = {};
+  vm.runInNewContext(fs.readFileSync(path.join(WEB_APP_ROOT, "stream-tabs-controller.js"), "utf8"), { window });
+  const task = { provider: "codex", model: "old-model", running: false };
+  const stream = { settings: { provider: "codex", model: "next-model" } };
+  assert.equal(window.AgentHubStreamTabs.streamModelLabel(task, stream), "next-model");
+  task.running = true;
+  task.run = { turnId: "turn", operationKind: "user-turn", projectionState: "active", model: "captured-model" };
+  assert.equal(window.AgentHubStreamTabs.streamModelLabel(task, stream), "captured-model");
+  task.run.projectionState = "completed";
+  assert.equal(window.AgentHubStreamTabs.streamModelLabel(task, stream), "next-model");
   assert.match(app, /task\.statusLabel[\s\S]*task\.runtimeLabel/u);
   assert.match(styles, /\.task-meta\s*\{[^}]*flex:\s*1 1 auto;/su);
   assert.match(styles, /\.task-runtime\s*\{[^}]*margin-left:\s*auto;/su);
@@ -1593,21 +1693,9 @@ test("background history refresh cannot switch the task or reorder a completed t
   assert.match(client, /time: run\.lastActivityAt \?\? run\.startedAt \?\? null/u);
 });
 
-test("chat sends with Enter on desktop and keeps Enter as a newline on phones", () => {
-  const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
-  const html = fs.readFileSync(require.resolve("../assets/web-app/index.html"), "utf8");
-  assert.match(
-    app,
-    /event\.key !== "Enter" \|\| event\.shiftKey \|\| event\.isComposing \|\| phoneComposerMode\(\)/u,
-  );
-  assert.match(app, /event\.preventDefault\(\);\s*submitComposer\(\);/u);
-  assert.match(app, /mobileTelegramPlatforms\.has\(telegramPlatform\)/u);
-  assert.match(app, /matchMedia\?\.\("\(pointer: coarse\)"\)/u);
-  assert.match(html, /placeholder="Сообщение агенту…"/u);
-  assert.doesNotMatch(html, /Enter —|Shift\+Enter|Отправить \(Enter\)/u);
-  assert.doesNotMatch(app, /Enter —|Shift\+Enter|Отправить \(Enter\)/u);
-  assert.doesNotMatch(html, /Ctrl\+Enter/u);
-});
+// Keyboard submission/newline behavior is exercised against the shipped app
+// in tests/public/composer-keyboard-dom.test.mjs (HUB-278). Its Ctrl+Enter
+// contract supersedes the old implementation-text snapshot here.
 
   test("chat reconciles optimistic and accepted history by exact identity", () => {
     const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
@@ -1698,13 +1786,13 @@ test("message attachments keep timestamps, previews and an explicit open action"
   assert.match(client, /agentHub\.on\("attachment:load"/u);
   assert.match(client, /bridgeCall\("resolve-attachment", \{ id \}\)/u);
   assert.match(extension, /action === "resolve-attachment"/u);
-  assert.match(html, /data-resource-context-menu[\s\S]*data-resource-action="open"[\s\S]*data-resource-action="copy"[\s\S]*data-resource-action="save"/u);
+  assert.match(html, /data-resource-context-menu[\s\S]*data-resource-action="save"[\s\S]*data-resource-action="open"[\s\S]*data-resource-action="copy"/u);
   assert.match(client, /agentHub\.on\("resource:copy"[\s\S]*agentHub\.on\("resource:save"/u);
   assert.match(client, /value\.url = `\/api\/message-attachment\/\$\{encodeURIComponent\(id\)\}`/u);
   assert.doesNotMatch(client, /window\.open\(url, "_blank"/u);
 });
 
-test("background navigation is empty and settings expose the bug report flow", () => {
+test("background navigation is empty and settings expose the bug report flow", async () => {
   const html = fs.readFileSync(require.resolve("../assets/web-app/index.html"), "utf8");
   const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
   const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
@@ -1721,8 +1809,20 @@ test("background navigation is empty and settings expose the bug report flow", (
   assert.match(client, /control\("submit-bug-report"/u);
   assert.match(app, /if \(bugReportForm\) bugReportForm\.hidden = next\.formHidden/u);
   assert.match(app, /bugReportToggle\?\.setAttribute\("aria-expanded", String\(next\.expanded\)\)/u);
-  assert.match(client, /LONG_CONTROL_ACTIONS = new Set\(\["rotate-stream", "submit-bug-report"\]\)/u);
-  assert.match(client, /LONG_CONTROL_ACTIONS\.has\(action\) \? LONG_CONTROL_TIMEOUT_MS/u);
+  const pending = new Map(), delays = [];
+  const sandbox = vm.createContext({ bridgeSequence: 0, pendingBridgeCalls: pending,
+    performance: { now: () => 0 }, vscode: { postMessage: () => {} },
+    window: { setTimeout: (_, delay) => { delays.push(delay); return delays.length; } } });
+  const constants = client.slice(client.indexOf("const DEFAULT_CONTROL_TIMEOUT_MS"),
+    client.indexOf("const VSCODE_MESSAGE_RETRY_DELAYS_MS"));
+  vm.runInContext(constants + "\n" + functionSource(client, "bridgeCallOnce", "function bridgeCall(")
+    + "\nglobalThis.call = bridgeCallOnce;", sandbox);
+  for (const action of ["submit-bug-report", "refresh-model-catalog", "ordinary-read"]) {
+    const result = sandbox.call(action);
+    [...pending.values()].at(-1).resolve("received");
+    assert.equal(await result, "received");
+  }
+  assert.deepEqual(delays, [180_000, 180_000, 45_000]);
 });
 
 test("Codex file citations render as compact local links", () => {

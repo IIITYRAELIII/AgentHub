@@ -78,13 +78,17 @@ or ambiguous legacy identity remains fail closed; token-file release semantics
 are never applied to the legacy path. Multi-step Git
 operations pass the lease AbortSignal into the process owner and recheck durable
 ownership before and after each irreversible command, before protective ref
-updates and before the DB commit. Before every lease-protected Git process,
-the process owner atomically persists a per-Task/repository in-flight guard
-containing the lease owner, command and canonical repository identity. A later
-owner cannot enter prepare, snapshot, merge, cleanup, ref or DB follow-up while
-that guard remains, even after the lease expires. Natural completion or a
+updates and before the DB commit. Before every lease-protected Git process, the
+process owner atomically persists a per-Task/repository in-flight guard
+containing the lease owner, command and canonical repository identity.
+Repository-scoped guarded work holds the common dev lease across the
+foreign-guard check and child completion. A later live owner waits for that
+lease; only a guard still present after acquisition is an unresolved blocker for
+prepare, snapshot, merge, cleanup, ref or DB follow-up. Natural completion or a
 successful bounded whole-tree stop clears it; `TASK_GIT_TREE_UNPROVEN` leaves it
 durable. Only explicit operator proof that no descendants remain can recover it.
+ADR-0052 defines the bounded no-effect claim receipt consequence and legacy
+receipt compatibility boundary.
 The low-level Git mutation boundary rejects a missing or non-guard-capable lease.
 Public Task prepare/start/claim acquires the Task lease and then the repository
 dev lease before calling private owned methods; lifecycle callers already holding

@@ -1,18 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { CodexUsageTracker } from "../../../src/providers/codex/codex-usage-tracker.mjs";
 import { CodexEventService } from "../../../src/providers/codex/codex-event-service.mjs";
 import { ContextCompactionTracker, isContextCompactionItem } from "../../../src/providers/codex/context-compaction-tracker.mjs";
-import {
-  CODEX_CONTEXT_PROBE_PROMPT,
-  CODEX_CONTEXT_PROBE_RESPONSE,
-} from "../../../src/domain/codex-context-probe.mjs";
 
 function createService(run, overrides = {}) {
   const noop = () => {};
   return new CodexEventService({
+    mutateCompaction: (_threadId, operation) => operation(),
     invalidateThreadRead: noop, forEvent: () => run, reindexRun: noop,
     applyThreadSettings: noop, saveState: async () => {}, trackTokenUsage: noop,
-    completeTurn: noop,
     taskKey: () => "task", isSelectedRun: () => false, setSelectedDiff: noop,
     appendActivity: noop, noteActivity: noop, scheduleProgress: noop, appendReasoning: noop,
     upsertReasoningBlock: noop, replaceActivityGroups: noop, turnActivityGroups: () => [],
@@ -56,6 +53,25 @@ test("terminal turn recovers its exact compaction item when the separate complet
     } });
     assert.equal(tracker.get("thread-recover").status, "running");
     assert.equal(tracker.get("thread-recover").turnId, "new-turn");
+  } finally { tracker.dispose(); }
+});
+
+test("an unregistered live turn offers its completed compaction to post-turn rotation", async () => {
+  const tracker = new ContextCompactionTracker();
+  const offered = [];
+  tracker.begin("thread-external", { origin: "automatic", turnId: "turn-external", itemId: "compact-external" });
+  const service = createService(null, {
+    isCompactionItem: isContextCompactionItem,
+    getCompaction: (id) => tracker.get(id),
+    beginCompactionCleanup: (id, details) => tracker.mutate(id, () => tracker.complete(id, details)),
+    settleCompactionTurn: (id, details) => tracker.mutate(id, () => tracker.settleProviderTurn(id, details)),
+    completeUnregisteredTurn: (identity) => offered.push(identity),
+  });
+  try {
+    const params = { threadId: "thread-external", turn: { id: "turn-external", status: "completed",
+      items: [{ id: "compact-external", type: "contextCompaction" }] } };
+    await service.handle({ method: "turn/completed", params });
+    assert.deepEqual(offered, [{ threadId: "thread-external", turnId: "turn-external" }]);
   } finally { tracker.dispose(); }
 });
 
@@ -268,62 +284,6 @@ test("Codex event service binds a promptless provider turn before its compaction
   }]]);
 });
 
-test("Codex event service never rebinds an existing run to a context probe", async () => {
-  const run = {
-    threadId: "thread-1",
-    turnId: "user-turn",
-    responseText: "",
-    status: "running",
-    observer: false,
-  };
-  const reindexed = [];
-  const completed = [];
-  const contextCompletions = [];
-  const warnings = [];
-  const probeTurn = {
-    id: "probe-turn",
-    status: "inProgress",
-    items: [{
-      type: "userMessage",
-      clientId: "agent-hub-context-probe:probe-1",
-      content: [{ type: "text", text: CODEX_CONTEXT_PROBE_PROMPT }],
-    }],
-  };
-  const service = createService(run, {
-    forEvent: ({ turnId, threadId, allowThreadFallback }) => (
-      turnId === run.turnId || (allowThreadFallback && threadId === run.threadId) ? run : null
-    ),
-    reindexRun: (...args) => reindexed.push(args),
-    completeManaged: async (...args) => completed.push(args),
-    completeTurn: (...args) => contextCompletions.push(args),
-    logWarn: (...args) => warnings.push(args),
-  });
-
-  await service.handle({
-    method: "turn/started",
-    params: { threadId: "thread-1", turn: probeTurn },
-  });
-  await service.handle({
-    method: "turn/completed",
-    params: {
-      threadId: "thread-1",
-      turn: {
-        ...probeTurn,
-        status: "completed",
-        items: [
-          ...probeTurn.items,
-          { type: "agentMessage", text: CODEX_CONTEXT_PROBE_RESPONSE },
-        ],
-      },
-    },
-  });
-
-  assert.equal(run.turnId, "user-turn");
-  assert.deepEqual(reindexed, []);
-  assert.deepEqual(completed, []);
-  assert.deepEqual(contextCompletions, [["probe-turn", "completed"]]);
-  assert.deepEqual(warnings, []);
-});
 
 test("Codex event service completes a real user turn equal to probe text", async () => {
   const run = { responseText: "", status: "running", observer: false };
@@ -340,10 +300,10 @@ test("Codex event service completes a real user turn equal to probe text", async
         status: "completed",
         items: [{
           type: "userMessage",
-          content: [{ type: "text", text: CODEX_CONTEXT_PROBE_PROMPT }],
+          content: [{ type: "text", text: "Ответь строго: AGENT_HUB_CONTEXT_PROBE_OK_V1" }],
         }, {
           type: "agentMessage",
-          text: CODEX_CONTEXT_PROBE_RESPONSE,
+          text: "AGENT_HUB_CONTEXT_PROBE_OK_V1",
         }],
       },
     },
@@ -458,4 +418,117 @@ test("Codex event service contains background state persistence failures", async
   await new Promise((resolve) => setImmediate(resolve));
 
   assert.deepEqual(errors, [["Cannot persist Codex event state:", "state unavailable"]]);
+});
+
+
+test("native post-compaction token event records the preliminary estimate once", async (t) => {
+  let now = Date.parse("2026-09-17T10:00:00.000Z");
+  const compactions = new ContextCompactionTracker({ clock: () => now });
+  t.after(() => compactions.dispose());
+  const usage = new CodexUsageTracker({
+    now: () => new Date(now),
+    onContext: (context) => compactions.observeContext(context),
+  });
+  const service = createService(null, {
+    isCompactionItem: isContextCompactionItem,
+    contextUsage: (threadId) => usage.latestExactContext(threadId),
+    getCompaction: (threadId) => compactions.get(threadId),
+    beginCompaction: (...args) => compactions.begin(...args),
+    beginCompactionCleanup: (threadId, details) => {
+      compactions.beginCleanup(threadId, details);
+      compactions.complete(threadId, details);
+    },
+    trackTokenUsage: (...args) => usage.track(...args),
+  });
+  const identity = { threadId: "thread-estimate", turnId: "turn-compact" };
+  const item = { type: "contextCompaction", id: "compact-item" };
+  await service.handle({ method: "item/started", params: { ...identity, item } });
+  now += 100;
+  await service.handle({ method: "item/completed", params: { ...identity, item, completedAtMs: now } });
+  const operationId = compactions.get(identity.threadId).id;
+  now += 100;
+  await service.handle({ method: "thread/tokenUsage/updated", params: {
+    ...identity,
+    tokenUsage: {
+      modelContextWindow: 1000,
+      last: { totalTokens: 180, inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0 },
+    },
+  } });
+  assert.equal(usage.latestContext(identity.threadId).provisional, true);
+  assert.equal(compactions.get(identity.threadId).id, operationId);
+  assert.equal(compactions.get(identity.threadId).afterPercent, 18);
+  assert.equal(compactions.get(identity.threadId).measurementKind, "estimated");
+  now += 100;
+  await service.handle({ method: "thread/tokenUsage/updated", params: {
+    ...identity,
+    tokenUsage: { modelContextWindow: 1000, last: { totalTokens: 470, inputTokens: 450, outputTokens: 20 } },
+  } });
+  assert.equal(usage.latestExactContext(identity.threadId).usedTokens, 470);
+  assert.equal(compactions.get(identity.threadId).afterPercent, 18);
+  assert.equal(compactions.get(identity.threadId).measurementKind, "estimated");
+});
+test("native zero estimate is valid but absent usage is unknown", async (t) => {
+  const compactions = new ContextCompactionTracker();
+  t.after(() => compactions.dispose());
+  const identity = { threadId: "zero-thread", turnId: "zero-turn" };
+  compactions.begin(identity.threadId, { turnId: identity.turnId });
+  compactions.complete(identity.threadId, { turnId: identity.turnId });
+  const usage = new CodexUsageTracker({ onContext: (context) => compactions.observeContext(context) });
+  const service = createService(null, {
+    getCompaction: (threadId) => compactions.get(threadId),
+    trackTokenUsage: (...args) => usage.track(...args),
+  });
+  for (const totalTokens of [undefined, null, NaN, Infinity, -1]) {
+    await service.handle({ method: "thread/tokenUsage/updated", params: {
+      ...identity, tokenUsage: { modelContextWindow: 1000, last: { totalTokens } },
+    } });
+    assert.equal(compactions.get(identity.threadId).afterPercent, undefined);
+    assert.equal(usage.latestContext(identity.threadId), null);
+  }
+  await service.handle({ method: "thread/tokenUsage/updated", params: {
+    ...identity, tokenUsage: { modelContextWindow: 1000,
+      last: { totalTokens: 0, inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, reasoningOutputTokens: 0 } },
+  } });
+  assert.equal(compactions.get(identity.threadId).afterPercent, 0);
+  assert.equal(compactions.get(identity.threadId).measurementKind, "estimated");
+});
+test("concurrent compaction notifications retain the estimate through the owning mutation queue", async (t) => {
+  const compactions = new ContextCompactionTracker();
+  t.after(() => compactions.dispose());
+  const usage = new CodexUsageTracker({ onContext: (context) => compactions.observeContext(context) });
+  let release;
+  const blocked = new Promise((resolve) => { release = resolve; });
+  const identity = { threadId: "concurrent-thread", turnId: "concurrent-turn" };
+  const pending = compactions.mutate(identity.threadId, () => blocked);
+  const service = createService(null, {
+    isCompactionItem: isContextCompactionItem,
+    getCompaction: (threadId) => compactions.get(threadId),
+    contextUsage: (threadId) => usage.latestExactContext(threadId),
+    mutateCompaction: (threadId, operation) => compactions.mutate(threadId, operation),
+    beginCompaction: (threadId, details) => compactions.mutate(threadId, () => compactions.begin(threadId, details)),
+    beginCompactionCleanup: (threadId, details) => compactions.mutate(threadId, () => {
+      compactions.beginCleanup(threadId, details);
+      compactions.complete(threadId, details);
+    }),
+    trackTokenUsage: (...args) => usage.track(...args),
+  });
+  const item = { type: "contextCompaction", id: "concurrent-compaction" };
+  const arrivals = [
+    service.handle({ method: "item/started", params: { ...identity, item } }),
+    service.handle({ method: "item/completed", params: { ...identity, item } }),
+    service.handle({ method: "thread/tokenUsage/updated", params: {
+      ...identity, tokenUsage: { modelContextWindow: 1000,
+        last: { totalTokens: 300, inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, reasoningOutputTokens: 0 } },
+    } }),
+    service.handle({ method: "thread/tokenUsage/updated", params: {
+      ...identity, tokenUsage: { modelContextWindow: 1000, last: { totalTokens: 600, inputTokens: 600 } },
+    } }),
+  ];
+  assert.equal(compactions.get(identity.threadId), null);
+  release();
+  await Promise.all([pending, ...arrivals]);
+  assert.equal(compactions.get(identity.threadId).status, "completed");
+  assert.equal(compactions.get(identity.threadId).measurementKind, "estimated");
+  assert.equal(compactions.get(identity.threadId).afterPercent, 30);
+  assert.equal(usage.latestExactContext(identity.threadId).usedTokens, 600);
 });

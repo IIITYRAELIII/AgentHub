@@ -131,6 +131,8 @@ export function createInteractionShellPhase({
     },
     models: {
       codexModels: settings.codexModels,
+      modelCatalogRevision: settings.modelCatalogRevision,
+      refreshCodexModels: settings.refreshCodexModels,
       codexModelLabel: settings.codexModelLabel,
       claudeModels: settings.claudeModels,
       claudeModelLabels: settings.claudeModelLabels,
@@ -184,6 +186,7 @@ export function createInteractionShellPhase({
       workspaceCatalogStore: infrastructure.workspaceCatalogStore,
       taskReleasePlanner: infrastructure.taskReleasePlanner,
       workspaceReleaseService: infrastructure.workspaceReleaseService,
+      releaseOperationCommands: infrastructure.releaseOperationCommands,
       streamHandoff: infrastructure.streamHandoff,
       runtimeStateStore,
       taskBoard: infrastructure.taskBoard,
@@ -333,6 +336,7 @@ export function createInteractionShellPhase({
     },
     admission: {
       config,
+      runtimeStateStore: infrastructure.runtimeStateStore,
       samePath,
       sendRpc: api.sendRpc,
       contextCompactions: provider.contextCompactions,

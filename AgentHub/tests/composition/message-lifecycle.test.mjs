@@ -55,7 +55,9 @@ const codexContextMaintenanceSource = await readFile(
 function clientFunctionSource(name, nextMarker) {
   let start = hubClientSource.indexOf(`function ${name}`);
   if (hubClientSource.slice(Math.max(0, start - 6), start) === "async ") start -= 6;
-  const end = hubClientSource.indexOf(nextMarker, start);
+  const closing = /\r?\n\}\r?\n/u.exec(hubClientSource.slice(start));
+  const end = name === "applyOpened" || !nextMarker
+    ? start + closing.index + closing[0].length : hubClientSource.indexOf(nextMarker, start);
   assert.notEqual(start, -1, `${name} source start`);
   assert.notEqual(end, -1, `${name} source end`);
   return hubClientSource.slice(start, end);
@@ -126,6 +128,10 @@ async function pagedActiveHistoryHarness(durableTurnCount) {
     optimisticDeferredClientUserMessageIds: new Set(), deferredClientUserMessageIds: new Set(),
     selectedTaskId: identity.streamId,
     lastSnapshot: { tasks: [] },
+    liveCardsByTask: new Map(),
+    snapshotResponseIsStale: () => false,
+    traceHistoryCard: () => {},
+    commandTrace: { objectId: () => "", newId: () => "fixture-open" },
     taskId: (provider, threadId, streamId) => streamId || `${provider}:${threadId}`,
     taskIdentity: () => identity,
     attachmentViews: (values) => values ?? [],
@@ -864,11 +870,12 @@ test("subagent messages never fall back to the user author", () => {
 });
 
 test("desktop running state ignores a retained completed run object", () => {
-  assert.match(
-    hubClientSource,
-    /agentHub\.setRunning\(stableTaskId, Boolean\(task\.running\)\)/u,
-  );
-  assert.doesNotMatch(hubClientSource, /Boolean\(task\.run \|\| task\.running\)/u);
+  const window = {};
+  vm.runInNewContext(streamTabsSource, { window });
+  const task = { running: false, run: { operationKind: "user-turn", projectionState: "completed" } };
+  assert.equal(window.AgentHubStreamTabs.isExactActiveUserTurn(task), false);
+  assert.equal(window.AgentHubStreamTabs.isExactActiveUserTurn({ running: true,
+    run: { operationKind: "user-turn", projectionState: "active", turnId: "turn-active" } }), true);
 });
 
 test("response annotation envelopes become structured user messages", () => {
@@ -911,20 +918,20 @@ test("message lifecycle removes a replayed server echo before optimistic reconci
 
 test("history identity accepts only the requested Stream", () => {
   assert.equal(lifecycle.historyMatchesIdentity({
-    streamId: "stream-architect",
+    streamId: "stream-release-manager",
     provider: "codex",
     threadId: "thread-new",
   }, {
-    streamId: "stream-architect",
+    streamId: "stream-release-manager",
     provider: "codex",
     threadId: "thread-old",
   }), true);
   assert.equal(lifecycle.historyMatchesIdentity({
-    streamId: "stream-architect",
+    streamId: "stream-release-manager",
     provider: "claude",
     threadId: "thread-resolved",
   }, {
-    streamId: "stream-architect",
+    streamId: "stream-release-manager",
     provider: "codex",
     threadId: "thread-stale-request",
   }), true);
@@ -933,7 +940,7 @@ test("history identity accepts only the requested Stream", () => {
     provider: "codex",
     threadId: "thread-old",
   }, {
-    streamId: "stream-architect",
+    streamId: "stream-release-manager",
     provider: "codex",
     threadId: "thread-old",
   }), false);
@@ -1743,7 +1750,7 @@ test("empty projected messages never render as blank chat cards", () => {
   assert.deepEqual(visible.map((message) => message.id), ["attachment-only", "answer"]);
 });
 
-test("internal context probe messages never reach the rendered conversation", () => {
+test("former context marker text and identifiers remain in the conversation", () => {
   const visible = lifecycle.visibleConversationMessages([
     {
       provider: "codex",
@@ -1773,7 +1780,7 @@ test("internal context probe messages never reach the rendered conversation", ()
     },
   ]);
 
-  assert.deepEqual(visible.map((message) => message.turnId), ["ordinary-turn"]);
+  assert.deepEqual(visible.map((message) => message.turnId), ["probe-turn", "probe-turn", "ordinary-turn"]);
 });
 
 test("the reserved context probe phrase stays visible for a normal client operation", () => {
@@ -1803,13 +1810,7 @@ test("the reserved context probe phrase stays visible for a normal client operat
     ["user", "Ответь строго: AGENT_HUB_CONTEXT_PROBE_OK_V1"],
     ["agent", "AGENT_HUB_CONTEXT_PROBE_OK_V1"],
   ]);
-  assert.equal(lifecycle.contextProbeRun({
-    clientUserMessageId: "client-manual-probe",
-    prompt: "Ответь строго: AGENT_HUB_CONTEXT_PROBE_OK_V1",
-  }), false);
-  assert.equal(lifecycle.contextProbeRun({
-    clientUserMessageId: "agent-hub-context-probe:automatic",
-  }), true);
+
 });
 
 test("accepted browser messages refresh immediately without waiting for idle polling", () => {
@@ -1827,7 +1828,7 @@ test("accepted browser messages refresh immediately without waiting for idle pol
   );
 });
 
-test("a partial streamed context probe answer never becomes a message card", () => {
+test("partial former marker text remains visible", () => {
   const visible = lifecycle.visibleConversationMessages([{
     provider: "codex",
     threadId: "thread-1",
@@ -1837,7 +1838,7 @@ test("a partial streamed context probe answer never becomes a message card", () 
     text: "AGENT_HUB_CONTEXT_PROBE",
   }]);
 
-  assert.deepEqual(visible, []);
+  assert.equal(visible[0].text, "AGENT_HUB_CONTEXT_PROBE");
 });
 
 test("active agent response is rendered only by the live card after task switching", () => {
@@ -1926,7 +1927,7 @@ test("an external live turn contributes its missing VSC user messages", () => {
 });
 
 test("live inter-Stream messages preserve the source agent author", () => {
-  const author = "Agent HUB - Architect (Codex)";
+  const author = "Agent HUB - Release Manager (Codex)";
   const fromUserMessages = lifecycle.mergeLiveUserMessages([], {
     provider: "codex",
     threadId: "thread-1",
@@ -1967,7 +1968,7 @@ test("inter-Stream rollout aliases the receipt without replacing the root user",
     turnUserSlot: "root",
   };
   const receipt = {
-    ...message("receipt-item", "Themes → Architect. Принято."),
+    ...message("receipt-item", "Themes → Release Manager. Принято."),
     turnId: "active-turn",
     clientUserMessageId: "mcp:themes-ack-1",
     turnUserSlot: "steer",
@@ -1984,7 +1985,7 @@ test("inter-Stream rollout aliases the receipt without replacing the root user",
     userMessages: [{
       itemId: "rollout-user:1",
       clientUserMessageId: "",
-      text: "Themes → Architect. Принято.",
+      text: "Themes → Release Manager. Принято.",
       author: "Agent HUB - Themes (Sol)",
       origin,
     }],
@@ -1999,7 +2000,7 @@ test("inter-Stream rollout aliases the receipt without replacing the root user",
 test("unattributed live updates do not overwrite a durable inter-Stream author", () => {
   const merged = lifecycle.mergeLiveUserMessages([{
     ...message("server-user", "Сообщение из другого Stream"),
-    author: "Agent HUB - Architect (Codex)",
+    author: "Agent HUB - Release Manager (Codex)",
   }], {
     provider: "codex",
     threadId: "thread-1",
@@ -2011,7 +2012,7 @@ test("unattributed live updates do not overwrite a durable inter-Stream author",
     }],
   });
 
-  assert.equal(merged[0].author, "Agent HUB - Architect (Codex)");
+  assert.equal(merged[0].author, "Agent HUB - Release Manager (Codex)");
 });
 
 test("live VSC user messages do not duplicate official task history", () => {
@@ -3251,38 +3252,12 @@ test("rotation completion waits for maintenance and keeps its post-answer positi
 });
 
 test("context compaction start identifies the task and completion stays in chat", () => {
-  assert.match(hubClientSource, /function taskDisplayTitle\(task\)/u);
-  assert.match(hubClientSource, /displayTitle = String\(task\?\.displayTitle/u);
-  assert.match(hubClientSource, /workspaceName = String\(task\?\.workspaceName/u);
-  assert.match(hubClientSource, /streamName = String\(task\?\.streamName/u);
-  assert.match(hubClientSource, /return `\$\{workspaceName\} - \$\{streamName\}`/u);
-  assert.match(
-    hubClientSource,
-    /Началась автосвёртка контекста · \$\{taskDisplayTitle\(task\)\}/u,
-  );
-  assert.doesNotMatch(miniAppSource, /task\.threadTitle \|\| task\.title/u);
-  assert.match(
-    hubClientSource,
-    /measurementKnown = beforePercent !== null && afterPercent !== null;[\s\S]*"Свёртка завершена; замер контекста не получен"/u,
-  );
-  assert.match(hubClientSource, /maintenanceEventStorageKey/u);
-  assert.match(hubClientSource, /rememberMaintenanceEvent\(stableTaskId/u);
-  assert.match(
-    hubClientSource,
-    /id: `maintenance:compaction:\$\{compactionId\}:active`[\s\S]*turnId: compaction\.turnId \?\? null/u,
-  );
-  assert.match(hubClientSource, /syncActiveMaintenanceMessages\(representativeTasks\)/u);
-  assert.doesNotMatch(hubClientSource, /syncActiveMaintenanceMessages\(snapshot\.tasks\)/u);
-  assert.match(
-    hubClientSource,
-    /invalidZeroAfter[\s\S]*id\.startsWith\("maintenance:compaction:"\)[\s\S]*replace\(\/>0%\$\/u, ">\?%"\)/u,
-  );
-  assert.match(hubClientSource, /position === 2 && percent === 0 \? null : percent/u);
-  assert.match(hubClientSource, /explicitAfterPercent = contextPercent\(compaction\.afterPercent\) \|\| null/u);
-  assert.match(
-    hubClientSource,
-    /explicitAfterPercent = contextPercent\(compaction\.afterPercent\)[\s\S]*measurementStatus === "completed"[\s\S]*\? explicitAfterPercent[\s\S]*previous\.afterPercent[\s\S]*storedMaintenancePercent\(existingEvent, 2\)[\s\S]*explicitAfterPercent/u,
-  );
+  const sandbox = vm.createContext({});
+  vm.runInContext(clientFunctionSource("taskDisplayTitle"), sandbox);
+  assert.equal(sandbox.taskDisplayTitle({ workspaceName: "Workspace", streamName: "S2" }), "Workspace - S2");
+  assert.equal(sandbox.taskDisplayTitle({ displayTitle: "Exact Task", title: "Historical Thread" }), "Exact Task");
+  // Exact completion identity and unknown measurement projection are exercised
+  // by the executable compaction observer cases below.
 });
 
 test("compaction markers keep exact operation identity before provider turn acceptance", () => {
@@ -3313,6 +3288,7 @@ test("unknown and legacy timeout compaction replace false failure and settle by 
     latestMaintenanceMessages: (values) => values,
     persistMaintenanceEvents: () => {},
     agentHub: { toast: () => {} },
+    window: {},
   });
   vm.runInContext(clientFunctionSource("rememberMaintenanceEvent", "function taskIdentity"), sandbox);
   vm.runInContext(clientFunctionSource("observeContextCompactions", "function observeStreamRotations"), sandbox);
@@ -3341,6 +3317,39 @@ test("unknown and legacy timeout compaction replace false failure and settle by 
   observe({ status: "completed", measurementStatus: "completed", afterPercent: 14 });
   assert.equal(events.get("task-1").length, 1);
   assert.equal(events.get("task-1")[0].maintenanceStatus, "completed");
+
+  observe({ status: "completed", measurementStatus: "completed", measurementKind: "estimated", afterPercent: 14 });
+  const estimated = events.get("task-1")[0];
+  assert.equal(estimated.measurementKind, "estimated");
+  assert.match(estimated.text, /77% → ≈14%/u);
+  assert.match(estimated.maintenanceDetail, /Предварительная оценка провайдера/u);
+
+  sandbox.observeContextCompactions([{
+    provider: "codex", threadId: "thread-1", streamId: "stream-1",
+    context: { compaction: { ...compaction, status: "completed", measurementStatus: "completed",
+      measurementKind: "estimated", afterPercent: 14,
+      rotationStatus: "failed", rotationMessage: "Целевой Thread недоступен",
+    } },
+  }]);
+  const rotationFailure = events.get("task-1").find((item) => item.maintenanceType === "rotation");
+  assert.equal(rotationFailure.maintenanceStatus, "failed");
+  assert.match(rotationFailure.text, /Исходный Thread сохранён/u);
+  assert.match(rotationFailure.maintenanceDetail, /Целевой Thread недоступен/u);
+  assert.equal(events.get("task-1").find((item) => item.maintenanceType === "compaction").maintenanceStatus, "completed");
+  events.set("task-1", events.get("task-1").filter((item) => item.maintenanceType === "compaction"));
+
+  // Neither a previous marker nor a current usage value proves a new measurement.
+  for (const details of [
+    { measurementStatus: "completed", measurementKind: "estimated", afterPercent: null },
+    { measurementStatus: "failed", afterPercent: 14 },
+    { afterPercent: 14 },
+  ]) {
+    observe({ status: "completed", ...details });
+    const missing = events.get("task-1")[0];
+    assert.equal(missing.afterPercent, null);
+    assert.doesNotMatch(missing.text, /(?:≈14%|успешно)/u);
+    assert.ok(missing.maintenanceDetail);
+  }
 });
 
 test("workspace task panel follows the effective local Stream selection", () => {
@@ -3491,6 +3500,7 @@ test("terminal history clears a pre-turn live card by exact client identity", ()
     liveUserMessagesByTask,
     historyByTask: new Map([[taskId, history]]),
     completedLiveTurnIdentity: lifecycle.completedLiveTurnIdentity,
+    lastSnapshot: { tasks: [] },
     agentHub: { setLive: (...args) => cleared.push(args) },
   });
   const clearSource = clientFunctionSource(
@@ -3525,6 +3535,7 @@ test("an inactive snapshot clears a retained user live card after queued turns d
   const sandbox = vm.createContext({
     activeTaskRun: lifecycle.activeTaskRun,
     isUserRunningProjection: projection.isUserRunningProjection,
+    projectedActiveUserRun: (_id, task) => lifecycle.activeTaskRun(task),
     promoteLiveCompletion: () => false,
     rememberSnapshotCompletion: () => false,
     clearInternalContextProbe: () => {},
@@ -3601,6 +3612,7 @@ test("live snapshot projects generated response attachments into the current car
   const sandbox = vm.createContext({
     activeTaskRun: lifecycle.activeTaskRun,
     isUserRunningProjection: () => true,
+    projectedActiveUserRun: (_id, task) => lifecycle.activeTaskRun(task),
     promoteLiveCompletion: () => false,
     rememberSnapshotCompletion: () => false,
     clearInternalContextProbe: () => {},

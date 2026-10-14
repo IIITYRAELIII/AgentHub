@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="300" height="180" viewBox="0 0 300 180" fill="none">
+  <defs>
+    <linearGradient id="plate" x1="0" y1="0" x2="110" y2="190" gradientUnits="userSpaceOnUse"><stop stop-color="#efede4"/><stop offset=".3" stop-color="#a4a7a1"/><stop offset=".65" stop-color="#cecdc5"/><stop offset="1" stop-color="#bcbab2"/></linearGradient>
+  </defs>
+  <path d="M31 2H276L299 25V156L277 178H25L1 150V31Z M39 18H267L281 36V144L266 160H40L24 143V36Z" fill="#111516" fill-rule="evenodd" stroke="#737973"/>
+  <path d="M34 7H170L180 15H270L291 34V150L272 170H33L10 147V34Z M39 18H267L281 36V144L266 160H40L24 143V36Z" fill="url(#plate)" fill-rule="evenodd" stroke="#e8e5db"/>
+  <path d="M39 18H267L281 36V144L266 160H40L24 143V36Z" stroke="#737a75"/>
+  <path d="M41 21H265L277 37V141L263 155H43L29 141V38Z" stroke="#2d3433" stroke-width="2"/>
+  <path d="M12 43L35 12H159M15 49V143L36 165H190M201 165H269L285 148V125" stroke="#f6f1e4" stroke-opacity=".65"/>
+  <path d="M5 45V148L27 174H228L234 178H275L297 154V48" stroke="#626963" stroke-width="2"/>
+  <path d="M258 11H272L289 27M11 47L15 42M20 143L23 147M271 161L275 157" stroke="#81877f"/>
+</svg>

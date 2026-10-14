@@ -17,6 +17,34 @@ function plain(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
+test("board mutation response preserves chat state and invalidates only changed delta baselines", async () => {
+  const api = await transport();
+  const previous = {
+    apiVersion: 4, version: "old",
+    tasks: [{ threadId: "live", running: true }],
+    settings: { model: "gpt-6-sol" },
+    messageReceipts: [{ id: "accepted" }],
+    boardTasks: [{ id: "task", bucket: "backlog" }],
+    collectionVersions: { conversations: "c1", boardTasks: "b1", workspaces: "w1", messageReceipts: "r1" },
+  };
+  const next = api.materialize(previous, {
+    view: "task-board",
+    boardTasks: [{ id: "task", bucket: "notes" }],
+    workspaces: [{ id: "workspace" }],
+    boardLayout: { columnOrder: ["notes"] },
+  });
+  assert.equal(next.tasks, previous.tasks);
+  assert.equal(next.settings, previous.settings);
+  assert.equal(next.messageReceipts, previous.messageReceipts);
+  assert.equal(next.boardTasks[0].bucket, "notes");
+  assert.equal(previous.boardTasks[0].bucket, "backlog");
+  assert.equal(next.version, "");
+  assert.deepEqual(plain(next.collectionVersions), {
+    conversations: "c1", boardTasks: "", workspaces: "", messageReceipts: "r1",
+  });
+  assert.throws(() => api.materialize(null, { view: "task-board" }), /baseline/);
+});
+
 test("snapshot transport materializes bootstrap resets and conversation naming", async () => {
   const api = await transport();
   const snapshot = api.materialize(null, {
@@ -50,6 +78,24 @@ test("snapshot transport materializes bootstrap resets and conversation naming",
   assert.equal(snapshot.conversations, undefined);
   assert.equal(snapshot.collectionDeltas, undefined);
   assert.deepEqual({ ...api.requestParams(snapshot) }, {
+    knownVersion: "snapshot-1",
+    compactSnapshot: true,
+    snapshotProtocol: 4,
+    conversationsVersion: "conversations-1",
+    workspacesVersion: "workspaces-1",
+    boardTasksVersion: "board-1",
+    messageReceiptsVersion: "receipts-1",
+    messagePinsVersion: "pins-1",
+  });
+  assert.deepEqual(plain(api.openTaskRequestParams(snapshot, {
+    streamId: "stream-1",
+    provider: "codex",
+    threadId: "thread-1",
+  }, { limit: 20 })), {
+    streamId: "stream-1",
+    provider: "codex",
+    threadId: "thread-1",
+    limit: 20,
     knownVersion: "snapshot-1",
     compactSnapshot: true,
     snapshotProtocol: 4,
@@ -111,6 +157,8 @@ test("snapshot transport applies ordered upserts and removals", async () => {
   assert.deepEqual(plain(snapshot.boardTasks), previous.boardTasks);
   assert.deepEqual(plain(snapshot.messageReceipts), previous.messageReceipts);
   assert.deepEqual(plain(snapshot.messagePins), [{ id: "pin-new" }]);
+  assert.equal(snapshot.boardTasks, previous.boardTasks);
+  assert.equal(snapshot.messageReceipts, previous.messageReceipts);
 });
 
 test("snapshot transport rejects a delta without a local baseline", async () => {
@@ -182,10 +230,10 @@ test("snapshot transport maps persisted stream UI settings into selection", asyn
     streamCardFixedWidth: 240,
     streamCardGapEnabled: true,
     quickMessageActionMode: "send",
-    pinnedWorkspaceStreams: { "workspace-1": ["stream-architect"] },
+    pinnedWorkspaceStreams: { "workspace-1": ["stream-release-manager"] },
     quickMessages: {
       global: [{ label: "Пинг", text: "пинг" }],
-      streams: { "stream-architect": [{ label: "Релиз", text: "релизь" }] },
+      streams: { "stream-release-manager": [{ label: "Релиз", text: "релизь" }] },
       workspaces: {},
     },
   }, {
@@ -203,10 +251,10 @@ test("snapshot transport maps persisted stream UI settings into selection", asyn
     streamCardFixedWidth: 240,
     streamCardGapEnabled: true,
     quickMessageActionMode: "send",
-    pinnedWorkspaceStreams: { "workspace-1": ["stream-architect"] },
+    pinnedWorkspaceStreams: { "workspace-1": ["stream-release-manager"] },
     quickMessages: {
       global: [{ label: "Пинг", text: "пинг" }],
-      streams: { "stream-architect": [{ label: "Релиз", text: "релизь" }] },
+      streams: { "stream-release-manager": [{ label: "Релиз", text: "релизь" }] },
       workspaces: {},
     },
   });

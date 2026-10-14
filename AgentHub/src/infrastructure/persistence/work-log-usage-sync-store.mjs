@@ -20,9 +20,11 @@ import {
   usageSyncSnapshotFromLedger,
   USAGE_SYNC_SNAPSHOT_VERSION,
 } from "../../domain/work-log-usage-sync.mjs";
+import { mergeUsageLimitSamples } from "../../domain/usage-facts.mjs";
 
 const SQLITE_BUSY_TIMEOUT_MS = 3_935;
 const UPSERT_CHUNK = 400;
+const PROJECTION_FACT_CACHE_BYTE_LIMIT = 32 * 1024 * 1024;
 
 function configureUsageSyncDatabase(database) {
   database.exec(`
@@ -47,11 +49,16 @@ function configureUsageSyncDatabase(database) {
       estimated_credits REAL NOT NULL DEFAULT 0,
       estimate_kind TEXT NOT NULL DEFAULT '',
       image_generation_count INTEGER NOT NULL DEFAULT 0,
-      context_probe INTEGER NOT NULL DEFAULT 0,
       input_tokens INTEGER NOT NULL DEFAULT 0,
       cached_input_tokens INTEGER NOT NULL DEFAULT 0,
+      cache_write_input_tokens INTEGER NOT NULL DEFAULT 0,
+      long_context_input_tokens INTEGER NOT NULL DEFAULT 0,
+      long_context_cached_input_tokens INTEGER NOT NULL DEFAULT 0,
+      long_context_cache_write_input_tokens INTEGER NOT NULL DEFAULT 0,
       output_tokens INTEGER NOT NULL DEFAULT 0,
+      long_context_output_tokens INTEGER NOT NULL DEFAULT 0,
       reasoning_output_tokens INTEGER NOT NULL DEFAULT 0,
+      long_context_reasoning_output_tokens INTEGER NOT NULL DEFAULT 0,
       total_tokens INTEGER NOT NULL DEFAULT 0,
       usage_reported INTEGER NOT NULL DEFAULT 1,
       model TEXT NOT NULL DEFAULT '',
@@ -101,12 +108,28 @@ function configureUsageSyncDatabase(database) {
     ["device_label", "TEXT NOT NULL DEFAULT ''"],
     ["estimate_kind", "TEXT NOT NULL DEFAULT ''"],
     ["image_generation_count", "INTEGER NOT NULL DEFAULT 0"],
-    ["context_probe", "INTEGER NOT NULL DEFAULT 0"],
+    ["cache_write_input_tokens", "INTEGER NOT NULL DEFAULT 0"],
+    ["long_context_input_tokens", "INTEGER NOT NULL DEFAULT 0"],
+    ["long_context_cached_input_tokens", "INTEGER NOT NULL DEFAULT 0"],
+    ["long_context_cache_write_input_tokens", "INTEGER NOT NULL DEFAULT 0"],
+    ["long_context_output_tokens", "INTEGER NOT NULL DEFAULT 0"],
+    ["long_context_reasoning_output_tokens", "INTEGER NOT NULL DEFAULT 0"],
     ["schema_version", "INTEGER NOT NULL DEFAULT 1"],
     ["runtime_home_id", "TEXT NOT NULL DEFAULT ''"],
     ["limit_samples_json", "TEXT NOT NULL DEFAULT '[]'"],
   ]) {
     if (!columns.has(name)) database.exec(`ALTER TABLE usage_sync_events ADD COLUMN ${name} ${definition}`);
+  }
+  database.exec(`
+    INSERT OR IGNORE INTO usage_sync_meta (key, value) VALUES ('facts_revision', '0');
+  `);
+  for (const table of ["usage_sync_events", "usage_auth_observations", "usage_limit_observations"]) {
+    for (const operation of ["INSERT", "UPDATE", "DELETE"]) {
+      database.exec(`CREATE TRIGGER IF NOT EXISTS ${table}_facts_${operation.toLowerCase()}
+        AFTER ${operation} ON ${table} BEGIN
+          UPDATE usage_sync_meta SET value = CAST(value AS INTEGER) + 1 WHERE key = 'facts_revision';
+        END`);
+    }
   }
   database.exec(`
     UPDATE usage_sync_events
@@ -115,8 +138,10 @@ function configureUsageSyncDatabase(database) {
         account_type = '',
         account_plan = '',
         account_attribution = 'inferred'
-    WHERE lower(trim(account_attribution)) <> 'exact'
-       OR trim(account_key) = ''
+    WHERE (lower(trim(account_attribution)) <> 'exact'
+       OR trim(account_key) = '')
+      AND (account_key <> '' OR account_label <> '' OR account_type <> ''
+        OR account_plan <> '' OR account_attribution <> 'inferred')
   `);
   const generation = database.prepare(`
     SELECT value FROM usage_sync_meta WHERE key = 'local_store_generation'
@@ -161,12 +186,17 @@ function rowToEvent(row) {
     estimatedCredits: row.estimated_credits,
     estimateKind: row.estimate_kind,
     imageGenerationCount: row.image_generation_count,
-    contextProbe: row.context_probe !== 0,
     usage: {
       inputTokens: row.input_tokens,
       cachedInputTokens: row.cached_input_tokens,
+      cacheWriteInputTokens: row.cache_write_input_tokens,
+      longContextInputTokens: row.long_context_input_tokens,
+      longContextCachedInputTokens: row.long_context_cached_input_tokens,
+      longContextCacheWriteInputTokens: row.long_context_cache_write_input_tokens,
       outputTokens: row.output_tokens,
+      longContextOutputTokens: row.long_context_output_tokens,
       reasoningOutputTokens: row.reasoning_output_tokens,
+      longContextReasoningOutputTokens: row.long_context_reasoning_output_tokens,
       totalTokens: row.total_tokens,
     },
     usageReported: row.usage_reported !== 0,
@@ -199,11 +229,16 @@ function eventParameters(event) {
     event.estimatedCredits,
     event.estimateKind,
     event.imageGenerationCount,
-    event.contextProbe ? 1 : 0,
     event.usage.inputTokens,
     event.usage.cachedInputTokens,
+    event.usage.cacheWriteInputTokens ?? 0,
+    event.usage.longContextInputTokens ?? 0,
+    event.usage.longContextCachedInputTokens ?? 0,
+    event.usage.longContextCacheWriteInputTokens ?? 0,
     event.usage.outputTokens,
+    event.usage.longContextOutputTokens ?? 0,
     event.usage.reasoningOutputTokens,
+    event.usage.longContextReasoningOutputTokens ?? 0,
     event.usage.totalTokens,
     event.usageReported ? 1 : 0,
     event.model,
@@ -237,6 +272,19 @@ function strongerStoreEvent(current, incoming, localDeviceId) {
   return winner;
 }
 
+function authoritativeLocalEvent(current, incoming, localDeviceId) {
+  if (!current || !localDeviceId
+    || current.deviceId !== localDeviceId || incoming.deviceId !== localDeviceId) return null;
+  return normalizeUsageSyncEvent({
+    ...incoming,
+    source: incoming.source || current.source,
+    deviceLabel: incoming.deviceLabel || current.deviceLabel,
+    observedAt: [current.observedAt, incoming.observedAt]
+      .filter(Boolean).sort((left, right) => (Date.parse(left) || 0) - (Date.parse(right) || 0))[0],
+    limitSamples: mergeUsageLimitSamples(current.limitSamples, incoming.limitSamples),
+  });
+}
+
 /**
  * Durable store of usage sync events, local and remote. Events are addressed by
  * their turn identity, so an event that arrives twice updates the existing row
@@ -248,6 +296,7 @@ export class WorkLogUsageSyncStore {
   #deviceId;
   #defaultRuntimeHomeIds;
   #database = null;
+  #projectionFactsCache = null;
   #closed = false;
   #tail = Promise.resolve();
   #mutations = new AsyncSqliteMutationQueue();
@@ -427,7 +476,7 @@ export class WorkLogUsageSyncStore {
   }
 
   /** Applies the domain merge rule and writes only rows that actually change. */
-  #upsert(database, events, { transaction = true } = {}) {
+  #upsert(database, events, { transaction = true, authoritativeLocal = false } = {}) {
     const byId = new Map();
     for (const value of Array.isArray(events) ? events : []) {
       const event = normalizeUsageSyncEvent(value);
@@ -449,7 +498,10 @@ export class WorkLogUsageSyncStore {
         changes.push(event);
         continue;
       }
-      const winner = strongerStoreEvent(current, event, this.#deviceId);
+      const winner = authoritativeLocal
+        ? authoritativeLocalEvent(current, event, this.#deviceId)
+          ?? strongerStoreEvent(current, event, this.#deviceId)
+        : strongerStoreEvent(current, event, this.#deviceId);
       if (JSON.stringify(winner) !== JSON.stringify(current)) changes.push(winner);
     }
     if (!changes.length) return { added: 0, updated: 0 };
@@ -458,11 +510,14 @@ export class WorkLogUsageSyncStore {
         schema_version, event_id, device_id, source, provider, thread_key, task_key,
         completed_at, completed_ms, started_at, runtime_home_id, limit_samples_json, account_key,
         account_label, account_type, account_plan, account_attribution,
-        estimated_credits, estimate_kind, image_generation_count, context_probe,
-        input_tokens, cached_input_tokens, output_tokens,
-        reasoning_output_tokens, total_tokens, usage_reported, model, service_tier,
+        estimated_credits, estimate_kind, image_generation_count,
+        input_tokens, cached_input_tokens, cache_write_input_tokens,
+        long_context_input_tokens, long_context_cached_input_tokens,
+        long_context_cache_write_input_tokens, output_tokens, long_context_output_tokens,
+        reasoning_output_tokens, long_context_reasoning_output_tokens,
+        total_tokens, usage_reported, model, service_tier,
         device_label, observed_at
-      ) VALUES (${new Array(31).fill("?").join(", ")})
+      ) VALUES (${new Array(36).fill("?").join(", ")})
       ON CONFLICT(event_id) DO UPDATE SET
         schema_version = excluded.schema_version,
         device_id = excluded.device_id,
@@ -483,11 +538,16 @@ export class WorkLogUsageSyncStore {
         estimated_credits = excluded.estimated_credits,
         estimate_kind = excluded.estimate_kind,
         image_generation_count = excluded.image_generation_count,
-        context_probe = excluded.context_probe,
         input_tokens = excluded.input_tokens,
         cached_input_tokens = excluded.cached_input_tokens,
+        cache_write_input_tokens = excluded.cache_write_input_tokens,
+        long_context_input_tokens = excluded.long_context_input_tokens,
+        long_context_cached_input_tokens = excluded.long_context_cached_input_tokens,
+        long_context_cache_write_input_tokens = excluded.long_context_cache_write_input_tokens,
         output_tokens = excluded.output_tokens,
+        long_context_output_tokens = excluded.long_context_output_tokens,
         reasoning_output_tokens = excluded.reasoning_output_tokens,
+        long_context_reasoning_output_tokens = excluded.long_context_reasoning_output_tokens,
         total_tokens = excluded.total_tokens,
         usage_reported = excluded.usage_reported,
         model = excluded.model,
@@ -663,6 +723,50 @@ export class WorkLogUsageSyncStore {
     ]);
   }
 
+  // Disposable read model for repeated journal projections. The revision is
+  // maintained by SQLite triggers, so writes from another connection are
+  // observed without rereading every fact after an unrelated journal edit.
+  projectionFactsIdentity() {
+    return this.#enqueue(database => {
+      const values = Object.fromEntries(database.prepare(`
+        SELECT key, value FROM usage_sync_meta
+        WHERE key IN ('facts_revision', 'local_store_generation')
+      `).all().map(row => [row.key, String(row.value ?? "")]));
+      return { revision: values.facts_revision ?? "", generation: values.local_store_generation ?? "" };
+    });
+  }
+
+  projectionFacts() {
+    return this.#enqueue((database) => {
+      database.exec("BEGIN");
+      try {
+        const revision = String(database.prepare(`
+          SELECT value FROM usage_sync_meta WHERE key = 'facts_revision'
+        `).get()?.value ?? "");
+        const generation = this.#localStoreGeneration(database);
+        if (revision && this.#projectionFactsCache?.revision === revision
+          && this.#projectionFactsCache?.generation === generation) {
+          database.exec("COMMIT");
+          return { facts: this.#projectionFactsCache.facts, sourceRead: false,
+            cacheBytes: this.#projectionFactsCache.cacheBytes, cacheRetained: true, revision, generation };
+        }
+        const facts = [
+          ...this.#readAll(database),
+          ...this.#readAuthObservations(database),
+          ...this.#readLimitObservations(database),
+        ];
+        const cacheBytes = Buffer.byteLength(JSON.stringify(facts));
+        const cacheRetained = cacheBytes <= PROJECTION_FACT_CACHE_BYTE_LIMIT;
+        database.exec("COMMIT");
+        this.#projectionFactsCache = cacheRetained ? { revision, generation, facts, cacheBytes } : null;
+        return { facts, sourceRead: true, cacheBytes, cacheRetained, revision, generation };
+      } catch (error) {
+        if (database.isTransaction) database.exec("ROLLBACK");
+        throw error;
+      }
+    });
+  }
+
   usageSyncState() {
     return this.#enqueue((database) => {
       const facts = [
@@ -695,7 +799,9 @@ export class WorkLogUsageSyncStore {
         afterObservedAt: delta.revisionCursor ? "" : afterObservedAt,
         defaultRuntimeHomeIds: this.#defaultRuntimeHomeIds,
       });
-      const storeTurns = this.#readAll(database)
+      // A cursor snapshot exports only its journal delta, so stored sync events are
+      // not read for it; auth and limit facts are exported in every snapshot.
+      const storeTurns = (afterObservedAt || afterJournalRevision) ? [] : this.#readAll(database)
         .filter((event) => !ownFactsOnly || event.deviceId === this.#deviceId);
       const authObservations = this.#readAuthObservations(database)
         .filter((fact) => !ownFactsOnly || fact.deviceId === this.#deviceId);
@@ -704,7 +810,7 @@ export class WorkLogUsageSyncStore {
       return {
         ...snapshot,
         events: [
-          ...mergeUsageSyncEvents((afterObservedAt || afterJournalRevision) ? [] : storeTurns, snapshot.events),
+          ...mergeUsageSyncEvents(storeTurns, snapshot.events),
           ...authObservations,
           ...limitObservations,
         ],
@@ -729,6 +835,17 @@ export class WorkLogUsageSyncStore {
         updated: result.updated,
         file: this.#databaseFile,
       };
+    });
+  }
+
+  ensureTurnFact(value) {
+    const event = normalizeUsageSyncEvent(value);
+    if (!event || !this.#deviceId || event.deviceId !== this.#deviceId) {
+      throw new Error("local usage turn fact identity is required");
+    }
+    return this.#enqueue((database) => {
+      const result = this.#upsert(database, [event], { authoritativeLocal: true });
+      return { ensured: true, added: result.added, updated: result.updated, file: this.#databaseFile };
     });
   }
 

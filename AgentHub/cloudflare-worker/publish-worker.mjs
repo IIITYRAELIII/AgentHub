@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { setTimeout as wait } from "node:timers/promises";
 
 import { buildWorkerAssets } from "./build-assets.mjs";
 import { deployWorker } from "./deploy-worker.mjs";
@@ -16,6 +17,47 @@ import {
 
 const root = path.resolve(import.meta.dirname, "..");
 const repositoryRoot = path.resolve(root, "..");
+export const WORKER_VERIFY_CONVERGENCE_TIMEOUT_MS = 60_000;
+export const WORKER_VERIFY_CONVERGENCE_ATTEMPTS = 6;
+
+export async function verifyWorkerConvergence(verify, {
+  timeoutMs = WORKER_VERIFY_CONVERGENCE_TIMEOUT_MS,
+  attempts = WORKER_VERIFY_CONVERGENCE_ATTEMPTS,
+  now = Date.now,
+  pause = wait,
+  log = console.log,
+} = {}) {
+  const startedAt = now();
+  const deadline = startedAt + timeoutMs;
+  let lastError = null;
+  let attempted = 0;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    const remainingMs = deadline - now();
+    if (remainingMs <= 0) break;
+    attempted = attempt;
+    try {
+      return await verify({ indexDeadline: deadline, attempt });
+    } catch (error) {
+      if (error?.code !== "WORKER_DEPLOYMENT_NOT_CONVERGED") throw error;
+      lastError = error;
+      const retryRemainingMs = deadline - now();
+      if (attempt >= attempts || retryRemainingMs <= 0) break;
+      const delayMs = Math.min(1_000 * (2 ** (attempt - 1)), 8_000, retryRemainingMs);
+      log(`[Worker verify] published bytes not converged; retry ${attempt + 1}/${attempts} in ${delayMs} ms`);
+      await pause(delayMs);
+    }
+  }
+  const elapsedMs = Math.max(0, now() - startedAt);
+  const terminal = new Error(
+    `Published Worker bytes did not converge after ${elapsedMs} ms: ${lastError?.message ?? "deadline exceeded"}`,
+    { cause: lastError ?? undefined },
+  );
+  terminal.code = "WORKER_DEPLOYMENT_MISMATCH";
+  terminal.attempts = attempted;
+  terminal.elapsedMs = elapsedMs;
+  terminal.details = lastError?.details ?? {};
+  throw terminal;
+}
 
 export function workerRouteBaseUrl(config) {
   const route = config.routes?.find((item) => typeof item === "string" || item?.pattern);
@@ -70,6 +112,12 @@ export async function verifyWorkerRelease({
   exclusive = withPublicationLock,
   changedFiles = null,
   verificationCheckpoint = workerVerificationCheckpointStore(),
+  converge = verifyWorkerConvergence,
+  convergenceTimeoutMs = WORKER_VERIFY_CONVERGENCE_TIMEOUT_MS,
+  convergenceAttempts = WORKER_VERIFY_CONVERGENCE_ATTEMPTS,
+  now = Date.now,
+  pause = wait,
+  log = console.log,
   readConfig = async () => JSON.parse(await readFile(
     path.join(import.meta.dirname, "wrangler.jsonc"),
     "utf8",
@@ -77,11 +125,23 @@ export async function verifyWorkerRelease({
 } = {}) {
   return exclusive(async () => {
     await before();
-    return verify({
-      baseUrl: workerRouteBaseUrl(await readConfig()),
-      changedFiles,
-      checkpoint: verificationCheckpoint,
-    });
+    const baseUrl = workerRouteBaseUrl(await readConfig());
+    return converge(
+      ({ indexDeadline }) => verify({
+        baseUrl,
+        changedFiles,
+        checkpoint: verificationCheckpoint,
+        indexDeadline,
+        log,
+      }),
+      {
+        timeoutMs: convergenceTimeoutMs,
+        attempts: convergenceAttempts,
+        now,
+        pause,
+        log,
+      },
+    );
   });
 }
 

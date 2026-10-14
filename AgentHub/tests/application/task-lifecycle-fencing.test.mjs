@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { TaskLifecycleService } from "../../src/application/task-lifecycle-service.mjs";
+import { taskReleasePlanRevision } from "../../src/domain/task-release-snapshot.mjs";
+import { normalizedTaskSquashTransfer } from "../../src/domain/task-squash-transfer.mjs";
 
-function lifecycleFixture({ synchronousFence = false } = {}) {
+function lifecycleFixture({ synchronousFence = false, stableFence = false } = {}) {
   const task = {
     id: "task-fenced", title: "Fenced", taskNumber: "HUB-159", revision: 1,
     workspaceId: "workspace-1", streamId: "stream-1", workflowStatus: "done",
@@ -13,7 +15,7 @@ function lifecycleFixture({ synchronousFence = false } = {}) {
   const asyncAssertOwned = async () => {
     calls.assertions += 1;
     await Promise.resolve();
-    if (calls.assertions > 1) throw new Error("lease ownership was lost asynchronously");
+    if (!stableFence && calls.assertions > 1) throw new Error("lease ownership was lost asynchronously");
   };
   const lease = {
     signal: new AbortController().signal,
@@ -118,7 +120,220 @@ test("Task lifecycle rejects a synchronous assertOwned contract before mutation"
   });
 });
 
-test("Await accepts the Test-owned result without eager PreRelease composition", async () => {
+test("Complete and Delete retain squash absorption evidence through cleanup", async (t) => {
+  for (const action of ["complete", "delete"]) await t.test(action, async () => {
+    const { service, calls, task } = lifecycleFixture({ stableFence: true });
+    const reference = {
+      projectRoot: "D:/project", branch: "HUB-224", resultCommit: "a".repeat(40),
+    };
+    const squashAbsorbedBy = { transferHash: "b".repeat(64) };
+    Object.assign(task, { gitReferences: [reference], squashAbsorbedBy });
+    const cleanup = {
+      workspaces: [], gitReferences: [{ ...reference, published: true }],
+      dirty: false, unpublished: [], deleting: [],
+    };
+    service.taskGitWorkspaces.cleanupPreview = async (_taskId, options) => {
+      assert.equal(options.squashAbsorbedBy, squashAbsorbedBy);
+      return cleanup;
+    };
+    service.taskGitWorkspaces.cleanupOwned = async (_taskId, options) => {
+      assert.equal(options.squashAbsorbedBy, squashAbsorbedBy);
+      assert.equal(options.expectedPreview, cleanup);
+      calls.cleanup += 1;
+      return { removed: 0 };
+    };
+
+    const request = { taskId: task.id, operationId: `${action}-absorbed` };
+    const preview = await service[action](request);
+    await service[action]({
+      ...request, confirmCleanup: true, expectedCleanupToken: preview.cleanupToken,
+    });
+
+    assert.equal(calls.cleanup, 1);
+    assert.equal(calls.complete, action === "complete" ? 1 : 0);
+    assert.equal(calls.delete, action === "delete" ? 1 : 0);
+  });
+});
+
+test("absorption validates under Await then Task and dev ownership and binds confirmation to composition", async () => {
+  const { service, calls, task } = lifecycleFixture();
+  Object.assign(task, { workflowStatus: "in_progress", status: "open" });
+  const target = { ...task, id: "survivor", revision: 5, workflowStatus: "testing" };
+  service.taskBoard.task = (id) => structuredClone(id === target.id ? target : task);
+  const held = [];
+  const taskLease = { async assertOwned() {} };
+  const devLease = { ...taskLease, repositoryLockKeys: new Set(["repo"]) };
+  const scope = async (name, operation) => {
+    held.push(name);
+    try { return await operation(); } finally { assert.equal(held.pop(), name); }
+  };
+  service.releasePreflight.withAwaitTransition = async (_id, operation, options) => {
+    assert.equal(await options.changesAwait(), true);
+    return scope("Await", operation);
+  };
+  service.taskGitWorkspaces.withTaskLocks = (_ids, operation) => {
+    assert.deepEqual(held, ["Await"]);
+    return scope("Tasks", () => operation(taskLease));
+  };
+  service.taskGitWorkspaces.withAbsorptionEvidenceOwned = (options, operation) => {
+    if (held.at(-1) === "dev") {
+      assert.equal(options.lease, devLease);
+      return operation({ taskId: target.id, repositories: [] }, devLease);
+    }
+    assert.deepEqual(held, ["Await", "Tasks"]);
+    return scope("dev", () => operation({ taskId: target.id, repositories: [] }, devLease));
+  };
+  let planRevision = "first-plan";
+  service.releasePreflight.prepareAwaitSet = async (options) => {
+    assert.deepEqual(held, ["Await", "Tasks", "dev"]);
+    assert.equal(options.lease, devLease);
+    assert.equal(options.validateOnly, true);
+    assert.deepEqual(options.acceptingTask, { id: target.id, revision: target.revision });
+    return { planRevision, taskIds: [target.id], releaseCandidates: [{ baseCommit: "base", tree: "tree" }] };
+  };
+  const request = { taskId: task.id, absorbedIntoTaskId: target.id, operationId: "absorb" };
+  const preview = await service.complete(request);
+  assert.equal(calls.begin, 0);
+  assert.equal(target.workflowStatus, "testing");
+  planRevision = "changed-selection";
+  await assert.rejects(service.complete({ ...request, confirmCleanup: true,
+    expectedCleanupToken: preview.cleanupToken }), /confirmation is stale/);
+  assert.equal(calls.begin, 0);
+  const currentPreview = await service.complete(request);
+  await service.complete({ ...request, confirmCleanup: true, expectedCleanupToken: currentPreview.cleanupToken });
+  assert.equal(calls.begin, 1);
+  assert.equal(calls.complete, 1);
+  assert.deepEqual(held, []);
+  const uncertain = new Error("closure reply lost after admission");
+  service.taskBoard.finalizeCleanupTransition = () => { throw uncertain; };
+  await assert.rejects(service.complete({ ...request, operationId: "uncertain-closure", confirmCleanup: true,
+    expectedCleanupToken: currentPreview.cleanupToken }), (error) => error === uncertain);
+});
+
+test("published duplicate closure binds Done publication proof, preserves Git and retries finalization", async () => {
+  const source = {
+    id: "published-duplicate", taskNumber: "HUB-241", revision: 6, status: "started",
+    workspaceId: "workspace-1", streamId: "stream-1", workflowStatus: "in_progress",
+    gitReferences: [], gitAdoptions: [],
+  };
+  const survivor = {
+    ...source, id: "published-survivor", taskNumber: "HUB-217", revision: 93,
+    status: "done", workflowStatus: "done",
+    gitReferences: [{ projectRoot: "D:/project", branch: "HUB-217", resultCommit: "a".repeat(40) }],
+  };
+  const lease = { async assertOwned() {} };
+  let generation = "release-1";
+  let finalizeAttempts = 0;
+  let transition = null;
+  let outcome = null;
+  let publicationDrift = false;
+  const calls = [];
+  const taskBoard = {
+    task: (id) => structuredClone(id === survivor.id ? survivor : source),
+    lifecycleTransition: (operationId) => transition?.operationId === operationId ? transition : null,
+    lifecycleOutcome: (operationId) => outcome?.operationId === operationId ? outcome : null,
+    beginLifecycleTransition: (options) => {
+      calls.push(["begin", options.evidence.absorbedInto]);
+      if (transition) return { replayed: true, phase: transition.phase };
+      transition = {
+        operationId: options.operationId,
+        taskId: source.id,
+        kind: "complete",
+        phase: "cleanup",
+        expectedRevision: source.revision,
+        priorTask: structuredClone(source),
+        evidence: options.evidence,
+      };
+      return { replayed: false, phase: "cleanup" };
+    },
+    commitWorkflowTransition() {},
+    rollbackWorkflowOutcome() {},
+    failLifecycleTransition() { throw new Error("published duplicate retry must retain cleanup transition"); },
+    finalizeCleanupTransition: (_operationId, options) => {
+      finalizeAttempts += 1;
+      calls.push(["finalize", options.receiptEvidence]);
+      if (finalizeAttempts === 1) throw new Error("database reply unavailable before commit");
+      const result = { ...source, status: "done" };
+      outcome = {
+        operationId: _operationId,
+        taskId: source.id,
+        kind: "complete",
+        result: { result, evidence: options.receiptEvidence },
+      };
+      transition = null;
+      return result;
+    },
+  };
+  const evidence = () => ({
+    version: 1, mode: "published_duplicate",
+    source: { taskId: source.id, taskRevision: source.revision },
+    survivor: { taskId: survivor.id, taskRevision: survivor.revision },
+    publicationGeneration: generation,
+    cleanupPlan: { strategy: "preserve_managed_source", deleting: [] },
+    repositories: [{
+      projectRoot: "D:/project", sourceBranch: "HUB-241", sourceBaseCommit: "b".repeat(40),
+      sourceHead: "c".repeat(40), survivorBranch: "HUB-217",
+      survivorResult: "a".repeat(40), publishedRevision: "c".repeat(40),
+    }],
+  });
+  const taskGitWorkspaces = {
+    withTaskLock: (_id, operation) => operation(lease),
+    withTaskLocks: (_ids, operation) => operation(lease),
+    withPublishedDuplicateEvidenceOwned: (_options, operation) => {
+      if (publicationDrift) throw new Error("current publication advanced beyond preserved source");
+      return operation(evidence(), lease);
+    },
+    prepareOwned() {}, snapshotAndMergeOwned() {}, cleanupOwned() {},
+    cleanupPreview: async () => ({ workspaces: [], gitReferences: [], dirty: false, unpublished: [], deleting: [] }),
+  };
+  const service = new TaskLifecycleService({
+    taskBoard,
+    taskGitWorkspaces,
+    workspaceCatalog: {
+      workspace: () => ({ id: "workspace-1", settings: { releaseWorkflowEnabled: true } }),
+      stream: () => ({ id: "stream-1", workspaceId: "workspace-1", settings: {} }),
+    },
+    releasePreflight: { withAwaitTransition: (_id, operation) => operation() },
+  });
+  const request = {
+    taskId: source.id, absorbedIntoTaskId: survivor.id, absorptionMode: "published_duplicate",
+    operationId: "published-duplicate-close",
+  };
+  const preview = await service.complete(request);
+  assert.deepEqual(preview.preview.deleting, []);
+  assert.deepEqual(preview.preview.preserving, [{
+    kind: "managed_source", projectRoot: "D:/project", branch: "HUB-241", headCommit: "c".repeat(40),
+  }]);
+  generation = "release-2";
+  await assert.rejects(service.complete({ ...request, confirmCleanup: true,
+    expectedCleanupToken: preview.cleanupToken }), /confirmation is stale/u);
+  assert.equal(transition, null);
+  const current = await service.complete(request);
+  await assert.rejects(service.complete({ ...request, confirmCleanup: true,
+    expectedCleanupToken: current.cleanupToken }), /database reply unavailable/u);
+  assert.equal(transition.phase, "cleanup");
+  generation = "release-3";
+  publicationDrift = true;
+  await assert.rejects(service.complete({ ...request, operationId: "different-operation" }),
+    /current publication advanced/u);
+  await assert.rejects(service.complete({ ...request, absorbedIntoTaskId: "different-survivor",
+    confirmCleanup: true, expectedCleanupToken: current.cleanupToken }), /does not match this published duplicate closure/u);
+  const completed = await service.complete({ ...request, confirmCleanup: true,
+    expectedCleanupToken: current.cleanupToken });
+  assert.equal(completed.status, "done");
+  assert.equal(finalizeAttempts, 2);
+  assert.equal(calls.filter(([name]) => name === "begin").length, 1);
+  assert.equal(calls.some(([, value]) => value?.cleanupPlan?.strategy === "preserve_managed_source"), true);
+  assert.equal((await service.complete({ ...request, confirmCleanup: true,
+    expectedCleanupToken: current.cleanupToken })).status, "done");
+  assert.equal(finalizeAttempts, 2);
+
+  survivor.workspaceId = "workspace-2";
+  outcome = null;
+  await assert.rejects(service.complete({ ...request, operationId: "wrong-workspace" }), /same Workspace/u);
+});
+
+test("Await composes PreRelease before it commits acceptance and keeps the prior candidate on refusal", async () => {
   const previousReference = {
     projectRoot: "D:/project", branch: "HUB-159", resultCommit: "a".repeat(40),
   };
@@ -128,6 +343,12 @@ test("Await accepts the Test-owned result without eager PreRelease composition",
     gitReferences: [previousReference],
   };
   const calls = [];
+  const candidateBytes = { head: "old-candidate", tree: "old-tree" };
+  const existingAwait = {
+    id: "existing-await", revision: 3, releaseRevision: 3,
+    gitReferences: [{ projectRoot: "D:/project", branch: "HUB-100", resultCommit: "b".repeat(40) }],
+  };
+  const oldCandidatePlanRevision = taskReleasePlanRevision("workspace-1", [existingAwait]);
   const taskBoard = {
     task: () => task,
     lifecycleTransition: () => null,
@@ -136,6 +357,7 @@ test("Await accepts the Test-owned result without eager PreRelease composition",
       calls.push("commit");
       Object.assign(task, {
         revision: 5,
+        releaseRevision: 5,
         workflowStatus: "awaiting_implementation",
         gitReferences: [previousReference],
       });
@@ -157,6 +379,12 @@ test("Await accepts the Test-owned result without eager PreRelease composition",
     },
     taskGitWorkspaces: {
       withTaskLock: (_taskId, operation) => operation(lease),
+      withTaskRepositoryRecoveryLock: (_taskId, projectRoot, taskLease, operation) => {
+        calls.push("repo");
+        assert.equal(projectRoot, "D:/project");
+        assert.equal(taskLease, lease);
+        return operation(lease);
+      },
       prepareOwned: async () => ({ projectRoot: "D:/managed/task", branch: "HUB-174" }),
       snapshotAndMergeOwned: async () => { throw new Error("Await must not ingest bytes after Test"); },
       cleanupOwned: async () => ({ removed: 0 }),
@@ -169,9 +397,31 @@ test("Await accepts the Test-owned result without eager PreRelease composition",
         calls.push(`lock:${workspaceId}`);
         return operation();
       },
-      prepareAwaitSet: async () => { throw new Error("eager Await composition must not run"); },
+      prepareAwaitAcceptance: async (options) => {
+        calls.push("validate");
+        if (calls.filter((name) => name === "validate").length === 2) {
+          throw new Error("exact dev integration changed");
+        }
+        calls.push("prepare");
+        assert.equal(task.workflowStatus, "testing", "composition precedes the acceptance CAS");
+        assert.deepEqual(options.acceptingTask, { id: task.id, revision: task.revision });
+        assert.equal(options.operationId === "await-transition" || options.operationId === "retry-await-transition", true);
+        assert.equal(options.lease, lease);
+        const prepared = {
+          workspaceId: "workspace-1",
+          planRevision: "prospective-plan",
+          taskIds: [task.id],
+          task: { taskId: task.id, resultCommit: previousReference.resultCommit },
+          releaseCandidates: [{ preReleaseHead: "new-candidate", manifestHash: "new-manifest" }],
+        };
+        const committed = await options.commitPrepared(prepared);
+        candidateBytes.head = "new-candidate";
+        candidateBytes.tree = "new-tree";
+        return committed;
+      },
     },
   });
+  service.setReleaseOperationWake((taskId) => calls.push(`wake:${taskId}`));
 
   const result = await service.updateWorkflowStatus({
     taskId: task.id,
@@ -179,20 +429,36 @@ test("Await accepts the Test-owned result without eager PreRelease composition",
     operationId: "await-transition",
     projectRoot: "D:/project",
   });
-  const sameAwaitResult = await service.updateWorkflowStatus({
+  task.workflowStatus = "testing";
+  await assert.rejects(service.updateWorkflowStatus({
     taskId: task.id,
     status: "awaiting_implementation",
     operationId: "same-await-transition",
     projectRoot: "D:/project",
+  }), /exact dev integration changed/u);
+  const retry = await service.updateWorkflowStatus({
+    taskId: task.id,
+    status: "awaiting_implementation",
+    operationId: "retry-await-transition",
+    projectRoot: "D:/project",
   });
 
   assert.deepEqual(calls, [
-    "lock:workspace-1", "begin", "commit",
-    "lock:workspace-1", "begin", "commit",
+    "lock:workspace-1", "begin", "repo", "validate", "prepare", "commit", "wake:task-await",
+    "lock:workspace-1", "begin", "repo", "validate", "fail",
+    "lock:workspace-1", "begin", "repo", "validate", "prepare", "commit", "wake:task-await",
   ]);
   assert.equal(task.workflowStatus, "awaiting_implementation");
-  assert.equal(result.releaseCandidate.status, "invalidated");
-  assert.equal(sameAwaitResult.releaseCandidate.status, "invalidated");
+  assert.equal(result.releaseCandidate.status, "prepared");
+  assert.equal(result.releaseCandidate.planRevision, "prospective-plan");
+  assert.equal(retry.releaseCandidate.status, "prepared");
+  assert.equal(result.releaseIntegration.resultCommit, previousReference.resultCommit);
+  // The refused attempt never composed, so its candidate bytes stayed put.
+  assert.deepEqual(candidateBytes, { head: "new-candidate", tree: "new-tree" });
+  assert.notEqual(
+    taskReleasePlanRevision("workspace-1", [existingAwait, task]),
+    oldCandidatePlanRevision,
+  );
   assert.deepEqual(task.gitReferences, [previousReference]);
 });
 
@@ -266,6 +532,166 @@ test("cross-Task cutover rejects missing, mismatched or ambiguous source authori
   }
 });
 
++test("squash bootstrap rejects stale source, survivor, main, dev and proof before effects", async (t) => {
+  const projectRoot = process.platform === "win32" ? "C:\\repo" : "/repo";
+  const commits = Object.fromEntries("abcdefgh".split("").map((name, index) => [name, String(index + 1).repeat(40)]));
+  const artifacts = {
+    sourceZipSha256: "a".repeat(64), bundleSha256: "b".repeat(64),
+    manifestSha256: "c".repeat(64), filesSha256: "d".repeat(64),
+  };
+  const authority = {
+    workspaceId: "workspace-1", streamId: "stream-1", provider: "codex",
+    threadId: "thread-1", proofRequestId: "bootstrap-preview",
+  };
+  const transfer = normalizedTaskSquashTransfer({
+    version: 1, kind: "task-squash-transfer-v1", projectRoot,
+    previousResultCommit: commits.a, baselineResultCommit: commits.b,
+    devBeforeCommit: commits.d, devAfterTree: commits.e,
+    survivor: { taskId: "survivor", revision: 8, releaseRevision: 6,
+      resultCommit: commits.c, baseCommit: commits.a, branch: "HUB-235" },
+    source: { taskId: "source", revision: 4, releaseRevision: 4,
+      resultCommit: commits.f, baseCommit: commits.a, branch: "HUB-224" },
+    sourceWitnesses: [{ path: "source.txt", source: { mode: "100644", object: commits.g },
+      survivor: { mode: "100644", object: commits.g } }],
+    ownerWitnesses: [{ path: "owner.txt", baseline: null, beforeDev: null,
+      newResult: { mode: "100644", object: commits.h },
+      afterDev: { mode: "100644", object: commits.h } }],
+    authority,
+  });
+  const baseTasks = {
+    survivor: { id: "survivor", taskNumber: "HUB-235", revision: 8, releaseRevision: 6,
+      workspaceId: "workspace-1", streamId: "stream-1", workflowStatus: "in_progress",
+      gitReferences: [{ projectRoot, branch: "HUB-235", resultCommit: commits.a }] },
+    source: { id: "source", taskNumber: "HUB-224", revision: 4, releaseRevision: 4,
+      workspaceId: "workspace-1", streamId: "stream-1", workflowStatus: "testing",
+      gitReferences: [{ projectRoot, branch: "HUB-224", resultCommit: commits.f }] },
+  };
+  const request = {
+    taskId: "survivor", sourceTaskId: "source", operationId: "bootstrap-confirm",
+    expectedTaskRevision: 8, expectedSourceTaskRevision: 4,
+    baselineResultCommit: commits.b, newResultCommit: commits.c, devAfterTree: commits.e,
+    authority, projectRoot, reviewedSourceTree: commits.h,
+    expectedMainCommit: commits.b, expectedDevCommit: commits.d,
+    expectedPreservedTree: commits.g, projectorSha256: "e".repeat(64), artifacts,
+    verifySource: async () => ({ sourceRoot: projectRoot, headCommit: commits.c,
+      headTree: commits.h, projectorSha256: "e".repeat(64), artifacts }),
+  };
+  const scenarios = [
+    { name: "source", mutate: (tasks) => { tasks.source.revision += 1; }, error: /revisions or statuses/u },
+    { name: "survivor", mutate: (tasks) => { tasks.survivor.revision += 1; }, error: /revisions or statuses/u },
+    { name: "main", previewError: new Error("Squash cutover main identity changed"), error: /main identity changed/u },
+    { name: "dev", preview: { ...transfer, transferHash: undefined,
+      devBeforeCommit: commits.f }, error: /dev identity changed/u },
+    { name: "proof", expectedHashes: true, error: /confirmation hash changed/u },
+  ];
+  for (const scenario of scenarios) await t.test(scenario.name, async () => {
+    const tasks = structuredClone(baseTasks);
+    scenario.mutate?.(tasks);
+    let begin = 0;
+    let apply = 0;
+    const lease = { signal: null, async assertOwned() {} };
+    const service = new TaskLifecycleService({
+      taskBoard: {
+        task: (id) => structuredClone(tasks[id]),
+        beginLifecycleTransition: () => { begin += 1; },
+        commitWorkflowTransition: () => { throw new Error("unexpected workflow commit"); },
+        commitSquashTransferTransition: () => { throw new Error("unexpected commit"); },
+        failLifecycleTransition: () => true,
+        rollbackWorkflowOutcome: () => {},
+        finalizeCleanupTransition: () => {},
+      },
+      taskGitWorkspaces: {
+        withTaskLock: (_id, operation) => operation(lease),
+        withTaskLocks: (_ids, operation) => operation(lease),
+        prepareOwned: async () => { throw new Error("unexpected prepare"); },
+        snapshotAndMergeOwned: async () => { throw new Error("unexpected snapshot"); },
+        cleanupOwned: async () => {},
+        cleanupPreview: async () => ({}),
+        previewSquashCutoverOwned: async () => {
+          if (scenario.previewError) throw scenario.previewError;
+          return scenario.preview ? normalizedTaskSquashTransfer(scenario.preview) : transfer;
+        },
+        applySquashCutoverOwned: async () => { apply += 1; throw new Error("unexpected apply"); },
+        readSquashCutoverOwned: async () => ({ status: "unknown" }),
+      },
+      workspaceCatalog: {
+        workspace: () => ({ id: "workspace-1", settings: { workingDirectory: projectRoot,
+          releaseWorkflowEnabled: true } }),
+        stream: () => ({ id: "stream-1", workspaceId: "workspace-1", settings: {} }),
+      },
+      releasePreflight: { withAwaitTransition: (_id, operation) => operation() },
+    });
+    await assert.rejects(service.squashTransferCutover({ ...request,
+      ...(scenario.expectedHashes ? { expectedTransferHash: "f".repeat(64),
+        expectedCutoverHash: "0".repeat(64) } : {}) }), scenario.error);
+    assert.equal(begin, 0);
+    assert.equal(apply, 0);
+  });
+});
+
+test("published release service closure binds the selected Done set and preserves its worktree", async () => {
+  const selectedId = "11111111-1111-4111-8111-111111111111";
+  const source = {
+    id: "service-release", revision: 7, status: "started", workflowStatus: "in_progress",
+    workspaceId: "workspace-1", streamId: "stream-1", gitReferences: [],
+    checklist: [{ text: `[Selected](agent-hub://task/${selectedId})`, completed: true,
+      linkedTaskId: selectedId }],
+  };
+  const selected = { id: selectedId, revision: 3, status: "done", workflowStatus: "done",
+    workspaceId: source.workspaceId, gitReferences: [{ projectRoot: "D:/project", resultCommit: "a".repeat(40) }] };
+  let generation = "generation-1";
+  let transition = null;
+  let outcome = null;
+  let cleanupCalls = 0;
+  const evidence = () => ({ version: 1, mode: "published_release_service",
+    publicationGeneration: generation, selectedResults: [{ taskId: selectedId, resultCommit: "a".repeat(40) }],
+    preserving: [{ kind: "managed_source", headCommit: "b".repeat(40) }] });
+  const service = new TaskLifecycleService({
+    taskBoard: {
+      task: (id) => id === source.id ? source : id === selectedId ? selected : null,
+      lifecycleOutcome: () => outcome,
+      lifecycleTransition: () => transition,
+      beginLifecycleTransition: (input) => { transition = { ...input, taskId: source.id, phase: "cleanup" }; return transition; },
+      finalizeCleanupTransition: (_id, input) => {
+        source.status = "done"; source.workflowStatus = "done";
+        outcome = { taskId: source.id, kind: "complete", result: { result: source,
+          evidence: input.receiptEvidence } };
+        return source;
+      },
+      commitWorkflowTransition: () => {}, failLifecycleTransition: () => {}, rollbackWorkflowOutcome: () => {},
+    },
+    workspaceCatalog: {
+      workspace: () => ({ id: source.workspaceId }), stream: () => ({ id: source.streamId }),
+    },
+    taskGitWorkspaces: {
+      withTaskLock: (_id, operation) => operation({ async assertOwned() {} }),
+      publishedReleaseServiceEvidenceOwned: async ({ source: observed, selectedTasks }) => {
+        assert.equal(observed, source); assert.deepEqual(selectedTasks, [selected]); return evidence();
+      },
+      prepareOwned: async () => {}, snapshotAndMergeOwned: async () => {},
+      cleanupOwned: async () => { cleanupCalls += 1; }, cleanupPreview: async () => ({}),
+    },
+  });
+  const request = { taskId: source.id, operationId: "service-close", completionMode: "published_release_service" };
+  source.checklist[0].text = `[Selected](agent-hub://task/${selectedId}) [Other](agent-hub://task/22222222-2222-4222-8222-222222222222)`;
+  await assert.rejects(service.complete(request), /no unique Task identity/u);
+  source.checklist[0].text = `[Selected](agent-hub://task/${selectedId})`;
+  const preview = await service.complete(request);
+  assert.equal(preview.confirmationRequired, true);
+  assert.equal(preview.preview.deleting.length, 0);
+  generation = "generation-2";
+  await assert.rejects(service.complete({ ...request, confirmCleanup: true,
+    expectedCleanupToken: preview.cleanupToken }), /confirmation is stale/u);
+  assert.equal(source.status, "started");
+  const refreshed = await service.complete(request);
+  const completed = await service.complete({ ...request, confirmCleanup: true,
+    expectedCleanupToken: refreshed.cleanupToken });
+  assert.equal(completed.status, "done");
+  assert.equal(cleanupCalls, 0);
+  assert.equal((await service.complete({ ...request, confirmCleanup: true,
+    expectedCleanupToken: refreshed.cleanupToken })).status, "done");
+});
+
 test("unknown workflow recovery retains the repository lease through Git continuation", async () => {
   const projectRoot = "D:/project";
   const task = {
@@ -301,8 +727,14 @@ test("unknown workflow recovery retains the repository lease through Git continu
     withTaskRecoveryLock: (_taskId, operation) => operation(taskLease),
     withTaskRepositoryRecoveryLock: (_taskId, root, ownedTaskLease, operation) => {
       assert.equal(root, projectRoot);
-      assert.equal(ownedTaskLease, taskLease);
-      calls.push("repository-lock");
+      if (ownedTaskLease.repositoryLockKeys) {
+        assert.equal(ownedTaskLease, repositoryLease);
+        assert.deepEqual([...ownedTaskLease.repositoryLockKeys], ["owned-repository"]);
+        calls.push("repository-lock-reused");
+      } else {
+        assert.equal(ownedTaskLease, taskLease);
+        calls.push("repository-lock");
+      }
       return operation(repositoryLease);
     },
     recoverProcessTreeGuard: async (_taskId, options) => {
@@ -341,7 +773,20 @@ test("unknown workflow recovery retains the repository lease through Git continu
     },
     releasePreflight: {
       withAwaitTransition: (_workspaceId, operation) => operation(),
-      prepareAwaitSet: async () => { calls.push("rebuild"); return { headCommit: "c".repeat(40) }; },
+      validateAwaitAcceptance: async () => {
+        calls.push("validate");
+        return {
+          planRevision: "recovered-plan",
+          task: { taskId: task.id, resultCommit: task.gitReferences[0].resultCommit },
+        };
+      },
+      prepareAwaitAcceptance: async (options) => {
+        calls.push("rebuild");
+        const prepared = { planRevision: "recovered-plan", task: {
+          taskId: task.id, resultCommit: task.gitReferences[0].resultCommit,
+        } };
+        return options.commitPrepared(prepared);
+      },
     },
   });
 
@@ -353,5 +798,9 @@ test("unknown workflow recovery retains the repository lease through Git continu
     proof: { kind: "system-restart-after-guard", confirmed: true, summary: "boot proof" },
   });
   assert.equal(result.result.task.workflowStatus, "awaiting_implementation");
-  assert.deepEqual(calls, ["repository-lock", "recover", "begin", "commit"]);
+  // Recovery reuses the held repository lease and still composes PreRelease
+  // before the recovered acceptance commits.
+  assert.deepEqual(calls, [
+    "repository-lock", "recover", "begin", "repository-lock-reused", "rebuild", "commit",
+  ]);
 });

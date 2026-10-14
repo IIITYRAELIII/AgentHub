@@ -10,8 +10,12 @@ import {
 } from "../../application/task-history.mjs";
 import { TASK_EXECUTION_OWNERS } from "../../domain/task-execution-owner.mjs";
 import {
-  isCodexContextProbeTurn,
-} from "../../domain/codex-context-probe.mjs";
+  CODEX_TRACE_GROUP_LIMIT,
+  CODEX_TRACE_ACTIVITIES_PER_GROUP_LIMIT,
+  CODEX_TRACE_ACTIVITIES_PER_TURN_LIMIT,
+  CODEX_TRACE_REASONING_TOTAL_CHARS,
+  boundedTraceId,
+} from "../../domain/codex-trace-budget.mjs";
 import {
   codexAssistantResponseProjection,
   visibleCodexAssistantText,
@@ -26,12 +30,16 @@ import {
 const CODEX_ACTIVE_FRESHNESS_MS = 10 * 60 * 1000;
 const CODEX_PROMPTLESS_TURN_GRACE_MS = 15 * 1000;
 const CODEX_ROLLOUT_TAIL_BYTES = 16 * 1024 * 1024;
+const CODEX_TERMINAL_STATUS_CACHE_LIMIT = 128;
+const CODEX_EXACT_TERMINAL_COLD_SCAN_MAX_BYTES = 256 * 1024 * 1024;
 const CODEX_ROLLOUT_LINE_BYTES = 4 * 1024 * 1024;
 const CODEX_ROLLOUT_PROVENANCE_BYTES = 256 * 1024;
 const CODEX_ROLLOUT_OCCURRENCE_CACHE_LIMIT = 512;
 const CODEX_AGENT_MESSAGE_CHARS = 200_000;
 const CODEX_ACTIVITY_CACHE_LIMIT = 200;
 const CODEX_ACTIVE_ACTIVITY_CACHE_LIMIT = 16;
+const CODEX_ACTIVITY_CACHE_BYTE_LIMIT = 32 * 1024 * 1024;
+const CODEX_ACTIVE_ACTIVITY_CACHE_BYTE_LIMIT = 16 * 1024 * 1024;
 const GENERATED_IMAGE_CALL_OWNER_LIMIT = 128;
 const AMBIGUOUS_GENERATED_IMAGE_CALL_OWNER = Object.freeze({ state: "ambiguous" });
 const LEGACY_TURN_ID = "__legacy__";
@@ -39,32 +47,43 @@ const codexActivityCache = new Map();
 const codexActiveActivityCache = new Map();
 const codexActivityReadsInFlight = new Map();
 
-function retainCachedActivity(cache, key, value, limit) {
+function retainCachedActivity(cache, key, value, limit, byteLimit) {
   cache.delete(key);
   cache.set(key, value);
-  while (cache.size > limit) cache.delete(cache.keys().next().value);
+  let bytes = [...cache.values()].reduce((sum, entry) => sum + entry.cacheBytes, 0);
+  while (cache.size > limit || bytes > byteLimit) {
+    const oldest = cache.keys().next().value;
+    bytes -= cache.get(oldest).cacheBytes;
+    cache.delete(oldest);
+  }
   return value;
 }
 
 function cachedActivity(key, pinCache) {
   const active = codexActiveActivityCache.get(key);
   if (active) {
-    retainCachedActivity(codexActiveActivityCache, key, active, CODEX_ACTIVE_ACTIVITY_CACHE_LIMIT);
+    retainCachedActivity(codexActiveActivityCache, key, active, CODEX_ACTIVE_ACTIVITY_CACHE_LIMIT,
+      CODEX_ACTIVE_ACTIVITY_CACHE_BYTE_LIMIT);
     return active;
   }
   const cached = codexActivityCache.get(key);
   if (!cached) return null;
-  retainCachedActivity(codexActivityCache, key, cached, CODEX_ACTIVITY_CACHE_LIMIT);
+  retainCachedActivity(codexActivityCache, key, cached, CODEX_ACTIVITY_CACHE_LIMIT,
+    CODEX_ACTIVITY_CACHE_BYTE_LIMIT);
   if (pinCache) {
-    retainCachedActivity(codexActiveActivityCache, key, cached, CODEX_ACTIVE_ACTIVITY_CACHE_LIMIT);
+    retainCachedActivity(codexActiveActivityCache, key, cached, CODEX_ACTIVE_ACTIVITY_CACHE_LIMIT,
+      CODEX_ACTIVE_ACTIVITY_CACHE_BYTE_LIMIT);
   }
   return cached;
 }
 
 function cacheActivity(key, value, pinCache) {
-  retainCachedActivity(codexActivityCache, key, value, CODEX_ACTIVITY_CACHE_LIMIT);
+  value.cacheBytes = Buffer.byteLength(JSON.stringify(value));
+  retainCachedActivity(codexActivityCache, key, value, CODEX_ACTIVITY_CACHE_LIMIT,
+    CODEX_ACTIVITY_CACHE_BYTE_LIMIT);
   if (pinCache || codexActiveActivityCache.has(key)) {
-    retainCachedActivity(codexActiveActivityCache, key, value, CODEX_ACTIVE_ACTIVITY_CACHE_LIMIT);
+    retainCachedActivity(codexActiveActivityCache, key, value, CODEX_ACTIVE_ACTIVITY_CACHE_LIMIT,
+      CODEX_ACTIVE_ACTIVITY_CACHE_BYTE_LIMIT);
   }
 }
 
@@ -247,6 +266,25 @@ function applyCodexLifecycleEntry(activeTurnIds, entry) {
     activeTurnIds.add(turnId);
   } else {
     activeTurnIds.delete(turnId);
+  }
+}
+
+function rememberCodexTerminalLifecycle(metadata, entry) {
+  if (entry?.type !== "event_msg") return;
+  const kind = String(entry.payload?.type ?? "");
+  const turnId = codexEntryTurnId(entry);
+  if (!turnId) return;
+  if (kind === "task_started") {
+    metadata.terminalStatusesByTurnId.delete(turnId);
+  } else if (kind === "task_complete") {
+    metadata.terminalStatusesByTurnId.set(turnId, entry.payload?.error ? "failed" : "completed");
+  } else if (kind === "turn_aborted") {
+    metadata.terminalStatusesByTurnId.set(turnId, "aborted");
+  }
+  while (metadata.terminalStatusesByTurnId.size > CODEX_TERMINAL_STATUS_CACHE_LIMIT) {
+    const removable = [...metadata.terminalStatusesByTurnId.keys()]
+      .find((candidate) => candidate !== metadata.requestedTerminalTurnId);
+    metadata.terminalStatusesByTurnId.delete(removable ?? metadata.terminalStatusesByTurnId.keys().next().value);
   }
 }
 
@@ -690,7 +728,7 @@ function rolloutToolActivity(entry) {
   if (!payloadType.endsWith("_call") || payloadType.endsWith("_call_output")) return null;
   const input = String(payload.input ?? payload.arguments ?? "");
   const nestedTool = /\btools\.([A-Za-z0-9_]+)/u.exec(input)?.[1] ?? "";
-  const tool = nestedTool || String(payload.name ?? payload.tool ?? payloadType).trim();
+  const tool = (nestedTool || String(payload.name ?? payload.tool ?? payloadType).trim()).slice(0, 200);
   const type = tool === "shell_command" ? "command" : tool === "apply_patch" ? "file" : "tool";
   const completed = !["in_progress", "running", "started"].includes(String(payload.status ?? "").toLowerCase());
   const labels = {
@@ -698,7 +736,7 @@ function rolloutToolActivity(entry) {
     file: completed ? "Файлы изменены" : "Изменяются файлы",
     tool: completed ? "Инструмент завершён" : "Используется инструмент",
   };
-  const id = String(payload.id ?? payload.call_id ?? `${payloadType}:${tool}`).trim();
+  const id = boundedTraceId(payload.id ?? payload.call_id ?? `${payloadType}:${tool}`);
   return {
     id: `item:${id}`,
     type,
@@ -729,11 +767,9 @@ function codexActivityIndex(index, group) {
   return activities;
 }
 
-function rememberCodexTraceEntry(metadata, turnId, entry) {
-  if (entry?.type !== "response_item" || !turnId) return;
+export function codexTraceEntry(entry, sequence = 0) {
+  if (entry?.type !== "response_item") return null;
   const payload = entry.payload ?? {};
-  const groups = metadata.activityGroups.get(turnId) ?? [];
-  const index = codexActivityGroupIndex(metadata, turnId, groups);
   const phase = String(payload.phase ?? "").trim();
   const reasoning = payload.type === "message"
     && payload.role === "assistant"
@@ -742,38 +778,87 @@ function rememberCodexTraceEntry(metadata, turnId, entry) {
     : payload.type === "reasoning"
       ? rolloutReasoningSummary(payload)
       : "";
+  const activity = reasoning ? null : rolloutToolActivity(entry);
+  if (!reasoning && !activity) return null;
+  return reasoning ? {
+    id: `${payload.type === "message" ? "commentary" : "reasoning"}:${boundedTraceId(payload.id ?? sequence)}`,
+    reasoning, activities: [],
+  } : { id: `activity:${activity.id}`, reasoning: "", activities: [activity] };
+}
+
+function rememberCodexTraceEntry(metadata, turnId, entry) {
+  if (!turnId) return;
+  const sequence = metadata.activityGroupSequenceByTurnId.get(turnId) ?? 0;
+  const projected = codexTraceEntry(entry, sequence);
+  if (!projected) return;
+  const reasoning = projected.reasoning;
+  const activity = projected.activities[0];
+  if (!reasoning && !activity) return;
+  let groups = metadata.activityGroups.get(turnId) ?? [];
+  if (metadata.sharedActivityGroups?.has(turnId)) {
+    groups = groups.slice();
+    metadata.activityGroups.set(turnId, groups);
+    metadata.sharedActivityGroups.delete(turnId);
+  }
+  const index = codexActivityGroupIndex(metadata, turnId, groups);
+  const mutableGroup = (group) => {
+    if (!metadata.sharedTraceGroups?.has(group)) return group;
+    const copy = { ...group, activities: [...group.activities] };
+    groups[groups.indexOf(group)] = copy;
+    index.byId.set(copy.id, copy);
+    return copy;
+  };
   if (reasoning) {
-    const id = `${payload.type === "message" ? "commentary" : "reasoning"}:${String(payload.id ?? groups.length)}`;
+    metadata.activityGroupSequenceByTurnId.set(turnId, sequence + 1);
+    const id = projected.id;
     const current = index.byId.get(id);
-    if (current) current.reasoning = reasoning;
+    if (current) mutableGroup(current).reasoning = reasoning;
     else {
       const group = { id, reasoning, activities: [] };
       groups.push(group);
       index.byId.set(id, group);
     }
   } else {
-    const activity = rolloutToolActivity(entry);
-    if (activity) {
-      if (!groups.length) {
-        const group = { id: `activity:${activity.id}`, reasoning: "", activities: [] };
-        groups.push(group);
-        index.byId.set(group.id, group);
-      }
-      const current = groups.at(-1);
-      const activities = codexActivityIndex(index, current);
-      const existing = activities.get(activity.id) ?? -1;
-      if (existing >= 0) current.activities[existing] = activity;
-      else {
-        activities.set(activity.id, current.activities.length);
-        current.activities.push(activity);
+    if (!groups.length) {
+      const group = { id: `activity:${activity.id}`, reasoning: "", activities: [] };
+      groups.push(group);
+      index.byId.set(group.id, group);
+    }
+    const current = mutableGroup(groups.at(-1));
+    const activities = codexActivityIndex(index, current);
+    const existing = activities.get(activity.id) ?? -1;
+    if (existing >= 0) current.activities[existing] = activity;
+    else {
+      activities.set(activity.id, current.activities.length);
+      current.activities.push(activity);
+      if (current.activities.length > CODEX_TRACE_ACTIVITIES_PER_GROUP_LIMIT) {
+        current.activities.shift();
+        current.omittedActivities = (current.omittedActivities ?? 0) + 1;
+        index.activitiesByGroup.delete(current);
       }
     }
+    let totalActivities = groups.reduce((count, group) => count + group.activities.length, 0);
+    while (totalActivities > CODEX_TRACE_ACTIVITIES_PER_TURN_LIMIT) {
+      const oldest = mutableGroup(groups.find((group) => group.activities.length));
+      oldest.activities.shift();
+      oldest.omittedActivities = (oldest.omittedActivities ?? 0) + 1;
+      index.activitiesByGroup.delete(oldest);
+      totalActivities -= 1;
+    }
+  }
+  while (groups.length > CODEX_TRACE_GROUP_LIMIT || (groups.length > 1
+    && groups.reduce((count, group) => count + group.reasoning.length, 0) > CODEX_TRACE_REASONING_TOTAL_CHARS)) {
+    const removed = groups.shift();
+    if (index.byId.get(removed.id) === removed) index.byId.delete(removed.id);
+    const first = mutableGroup(groups[0]);
+    first.omittedGroupsBefore = (removed.omittedGroupsBefore ?? 0) + 1;
   }
   if (groups.length) metadata.activityGroups.set(turnId, groups);
   while (metadata.activityGroups.size > 8) {
     const oldestTurnId = metadata.activityGroups.keys().next().value;
     metadata.activityGroups.delete(oldestTurnId);
     metadata.activityGroupIndexes.delete(oldestTurnId);
+    metadata.activityGroupSequenceByTurnId.delete(oldestTurnId);
   }
 }
 
@@ -1038,7 +1123,9 @@ function observeCodexEntry(
         metadata.responseAnnotationReferences.set(turnId, projection.responseAnnotationReferences);
       }
       while (metadata.finalMessages.size > 8) {
-        metadata.finalMessages.delete(metadata.finalMessages.keys().next().value);
+        const removable = [...metadata.finalMessages.keys()]
+          .find((candidate) => candidate !== metadata.requestedTerminalTurnId);
+        metadata.finalMessages.delete(removable ?? metadata.finalMessages.keys().next().value);
       }
     }
   }
@@ -1090,6 +1177,7 @@ function observeCodexEntry(
     metadata.startedAtMsByTurnId.set(turnId, timestamp);
   }
   if (turnId && Number.isFinite(timestamp)) lastSeenAtByTurnId.set(turnId, timestamp);
+  rememberCodexTerminalLifecycle(metadata, entry);
   applyCodexLifecycleEntry(activeTurnIds, entry);
 }
 
@@ -1137,60 +1225,6 @@ function codexCompletedAtMsByTurnId(finalMessages, lastSeenAtByTurnId) {
     .map((turnId) => [turnId, timestamps.get(turnId)]));
 }
 
-function withoutCodexContextProbeTurns(activity) {
-  const candidateTurnIds = new Set([
-    ...Object.keys(activity.userMessages ?? {}),
-    ...Object.keys(activity.latestMessages ?? {}),
-    ...Object.keys(activity.finalMessages ?? {}),
-  ]);
-  const hidden = new Set([...candidateTurnIds].filter((turnId) => (
-    isCodexContextProbeTurn({
-      userMessages: activity.userMessages?.[turnId] ?? [],
-      finalAnswer: activity.finalMessages?.[turnId] ?? activity.latestMessages?.[turnId] ?? "",
-    })
-  )));
-  if (!hidden.size) return activity;
-  const withoutHiddenKeys = (value) => Object.fromEntries(
-    Object.entries(value ?? {}).filter(([turnId]) => !hidden.has(turnId)),
-  );
-  const activeTurnIds = (activity.activeTurnIds ?? []).filter((turnId) => !hidden.has(turnId));
-  const activeVscodeTurnIds = (activity.activeVscodeTurnIds ?? [])
-    .filter((turnId) => !hidden.has(turnId));
-  const knownTurnIds = [
-    ...Object.keys(activity.userMessages ?? {}),
-    ...Object.keys(activity.latestMessages ?? {}),
-    ...Object.keys(activity.finalMessages ?? {}),
-  ].filter((turnId) => !hidden.has(turnId));
-  return {
-    ...activity,
-    running: activeTurnIds.length > 0,
-    activeTurnIds,
-    activeVscodeTurnIds,
-    internalTurnIds: [...new Set([...(activity.internalTurnIds ?? []), ...hidden])],
-    activityAtMsByTurnId: withoutHiddenKeys(activity.activityAtMsByTurnId),
-    startedAtMsByTurnId: withoutHiddenKeys(activity.startedAtMsByTurnId),
-    completedAtMsByTurnId: withoutHiddenKeys(activity.completedAtMsByTurnId),
-    latestTurnId: hidden.has(String(activity.latestTurnId ?? "")) ? knownTurnIds.at(-1) ?? null : activity.latestTurnId,
-    latestMessages: withoutHiddenKeys(activity.latestMessages),
-    finalMessages: withoutHiddenKeys(activity.finalMessages),
-    ...(activity.responseAnnotationReferences
-      ? { responseAnnotationReferences: withoutHiddenKeys(activity.responseAnnotationReferences) }
-      : {}),
-    userMessages: withoutHiddenKeys(activity.userMessages),
-    generatedImageSources: withoutHiddenKeys(activity.generatedImageSources),
-    ...(activity.activityGroups
-      ? { activityGroups: withoutHiddenKeys(activity.activityGroups) }
-      : {}),
-    ...(activity.userMessageSnapshotAuthorityByTurnId
-      ? {
-        userMessageSnapshotAuthorityByTurnId: withoutHiddenKeys(
-          activity.userMessageSnapshotAuthorityByTurnId,
-        ),
-      }
-      : {}),
-    unscopedLatestMessage: activity.unscopedLatestMessage,
-  };
-}
 
 function withoutStalePromptlessTurns(activity, userMessages, latestMessages, nowMs) {
   const messages = userMessages instanceof Map ? userMessages : new Map();
@@ -1230,11 +1264,13 @@ export function parseCodexRolloutActivity(text, options = {}) {
     reasoningEffort: "",
     latestMessages: new Map(),
     finalMessages: new Map(),
+    terminalStatusesByTurnId: new Map(),
     responseAnnotationReferences: new Map(),
     userMessages: new Map(),
     generatedImageSources: new Map(),
     activityGroups: new Map(),
     activityGroupIndexes: new Map(),
+    activityGroupSequenceByTurnId: new Map(),
     pendingViewImageCalls: new Map(),
     pendingGeneratedImageCalls: new Map(),
     pendingUserMessages: [],
@@ -1272,7 +1308,7 @@ export function parseCodexRolloutActivity(text, options = {}) {
     }
   }
   const snapshotAuthority = codexUserSnapshotAuthority(metadata, { sourceComplete: true });
-  return withoutCodexContextProbeTurns({
+  return ({
     ...snapshotAuthority,
     ...codexActivity(activeTurnIds, lastSeenAtByTurnId, {
       ...options,
@@ -1285,6 +1321,7 @@ export function parseCodexRolloutActivity(text, options = {}) {
     ...(metadata.parentThreadId ? { parentThreadId: metadata.parentThreadId } : {}),
     latestMessages: Object.fromEntries(metadata.latestMessages),
     finalMessages: Object.fromEntries(metadata.finalMessages),
+    terminalStatusesByTurnId: Object.fromEntries(metadata.terminalStatusesByTurnId),
     ...(metadata.responseAnnotationReferences.size
       ? { responseAnnotationReferences: Object.fromEntries(metadata.responseAnnotationReferences) }
       : {}),
@@ -1304,6 +1341,50 @@ export function parseCodexRolloutRunning(text) {
   return parseCodexRolloutActivity(text).running;
 }
 
+export async function readCodexCompletedTurnAnswer(rolloutPath, threadId, turnId, {
+  tailBytes = CODEX_ROLLOUT_TAIL_BYTES,
+  maximumLineBytes = CODEX_ROLLOUT_LINE_BYTES,
+} = {}) {
+  assertCodexRolloutReadAllowed("readCodexCompletedTurnAnswer");
+  if (!rolloutPath || !threadId || !turnId) return "";
+  const handle = await open(rolloutPath, "r");
+  try {
+    const { size } = await handle.stat();
+    const head = Buffer.alloc(Math.min(size, CODEX_ROLLOUT_PROVENANCE_BYTES));
+    const headRead = await handle.read(head, 0, head.length, 0);
+    const session = rolloutSessionMeta(completeJsonlLines(
+      head.subarray(0, headRead.bytesRead), { startsAtZero: true },
+    ));
+    if (session?.sessionId !== threadId) return "";
+    const start = Math.max(0, size - Math.max(1, Number(tailBytes) || CODEX_ROLLOUT_TAIL_BYTES));
+    const preceding = Buffer.alloc(start ? 1 : 0);
+    if (start) await handle.read(preceding, 0, 1, start - 1);
+    const tail = Buffer.alloc(size - start);
+    let read = 0;
+    while (read < tail.length) {
+      const result = await handle.read(tail, read, tail.length - read, start + read);
+      if (!result.bytesRead) break;
+      read += result.bytesRead;
+    }
+    const lines = completeJsonlLines(tail.subarray(0, read), {
+      startsAtZero: start === 0 || preceding[0] === 0x0a,
+    });
+    for (let index = lines.length - 1; index >= 0; index -= 1) {
+      const line = lines[index];
+      if (!line.length || line.length > maximumLineBytes) continue;
+      let entry;
+      try { entry = JSON.parse(line.toString("utf8")); } catch { continue; }
+      if (entry?.type !== "event_msg" || entry.payload?.type !== "task_complete"
+        || entry.payload?.turn_id !== turnId) continue;
+      if (entry.payload.error) return "";
+      return codexAssistantResponseProjection(entry.payload.last_agent_message).text.trim();
+    }
+    return "";
+  } finally {
+    await handle.close();
+  }
+}
+
 export async function readCodexRolloutActivityOnCurrentThread(
   rolloutPath,
   {
@@ -1314,13 +1395,15 @@ export async function readCodexRolloutActivityOnCurrentThread(
     pinCache = false,
     reparseTail = false,
     pinCacheState = null,
+    exactTerminalTurnId = "",
   } = {},
 ) {
   if (String(rolloutPath ?? "").trim()) assertCodexRolloutReadAllowed("readCodexRolloutActivityOnCurrentThread");
   const normalized = String(rolloutPath ?? "").trim();
+  const requestedTerminalTurnId = String(exactTerminalTurnId ?? "").trim();
   const shouldPinCache = () => pinCache === true || pinCacheState?.requested === true;
   if (!normalized) {
-    return withoutCodexContextProbeTurns({
+    return ({
       running: false,
       activeTurnIds: [],
       activeVscodeTurnIds: [],
@@ -1371,7 +1454,7 @@ export async function readCodexRolloutActivityOnCurrentThread(
   }
   if (nowMs - info.mtimeMs > freshnessMs) {
     const cached = cachedActivity(normalized, shouldPinCache());
-    return withoutCodexContextProbeTurns({
+    return ({
       running: false,
       activeTurnIds: [],
       activeVscodeTurnIds: [],
@@ -1388,6 +1471,7 @@ export async function readCodexRolloutActivityOnCurrentThread(
       latestTurnId: cached?.latestTurnId || null,
       latestMessages: Object.fromEntries(cached?.latestMessages ?? []),
       finalMessages: Object.fromEntries(cached?.finalMessages ?? []),
+      terminalStatusesByTurnId: Object.fromEntries(cached?.terminalStatusesByTurnId ?? []),
       ...((cached?.responseAnnotationReferences ?? []).length
         ? { responseAnnotationReferences: Object.fromEntries(cached.responseAnnotationReferences) }
         : {}),
@@ -1404,7 +1488,11 @@ export async function readCodexRolloutActivityOnCurrentThread(
   }
   const identityCached = cachedActivity(normalized, shouldPinCache());
   const cached = reparseTail ? null : identityCached;
-  if (cached?.size === info.size && cached?.mtimeMs === info.mtimeMs) {
+  const cachedExactTerminalKnown = !requestedTerminalTurnId
+    || (cached?.terminalStatusesByTurnId ?? []).some(([turnId]) => turnId === requestedTerminalTurnId)
+    || (cached?.scannedTerminalTurnIds ?? []).includes(requestedTerminalTurnId);
+  if (cached?.size === info.size && cached?.mtimeMs === info.mtimeMs
+    && cachedExactTerminalKnown) {
     const activity = codexActivity(
         new Set(cached.activeTurnIds),
         new Map(cached.lastSeenAtByTurnId),
@@ -1415,7 +1503,7 @@ export async function readCodexRolloutActivityOnCurrentThread(
           startedAtMsByTurnId: new Map(cached.startedAtMsByTurnId ?? []),
         },
       );
-    return withoutCodexContextProbeTurns({
+    return ({
       ...withoutStalePromptlessTurns(
         activity,
         new Map(cached.userMessages ?? []),
@@ -1428,6 +1516,7 @@ export async function readCodexRolloutActivityOnCurrentThread(
       latestTurnId: cached.latestTurnId || null,
       latestMessages: Object.fromEntries(cached.latestMessages ?? []),
       finalMessages: Object.fromEntries(cached.finalMessages ?? []),
+      terminalStatusesByTurnId: Object.fromEntries(cached.terminalStatusesByTurnId ?? []),
       ...((cached.responseAnnotationReferences ?? []).length
         ? { responseAnnotationReferences: Object.fromEntries(cached.responseAnnotationReferences) }
         : {}),
@@ -1454,7 +1543,7 @@ export async function readCodexRolloutActivityOnCurrentThread(
       && identityCached.suffix === await rolloutSuffix(normalized, identityCached.size)
       && identityCached.sourceObservationGeneration === sourceObservationGeneration,
   );
-  const appendOnly = Boolean(cached && sourceExtendsCached);
+  const appendOnly = Boolean(cached && sourceExtendsCached && cachedExactTerminalKnown);
   const generatedImageCacheReusable = Boolean(
     identityCached
       && info.size === identityCached.size
@@ -1477,6 +1566,8 @@ export async function readCodexRolloutActivityOnCurrentThread(
     reasoningEffort: appendOnly ? String(cached.reasoningEffort ?? "") : "",
     latestMessages: new Map(appendOnly ? cached.latestMessages ?? [] : []),
     finalMessages: new Map(appendOnly ? cached.finalMessages ?? [] : []),
+    requestedTerminalTurnId,
+    terminalStatusesByTurnId: new Map(appendOnly ? cached.terminalStatusesByTurnId ?? [] : []),
     responseAnnotationReferences: new Map(
       appendOnly ? cached.responseAnnotationReferences ?? [] : [],
     ),
@@ -1486,10 +1577,11 @@ export async function readCodexRolloutActivityOnCurrentThread(
         ? (appendOnly ? cached : identityCached).generatedImageSources ?? []
         : [],
     ),
-    activityGroups: new Map((appendOnly ? cached.activityGroups ?? [] : []).map(([turnId, groups]) => (
-      [turnId, structuredClone(groups)]
-    ))),
+    activityGroups: new Map(appendOnly ? cached.activityGroups ?? [] : []),
     activityGroupIndexes: new Map(),
+    activityGroupSequenceByTurnId: new Map(appendOnly ? cached.activityGroupSequenceByTurnId ?? [] : []),
+    sharedActivityGroups: new Set((appendOnly ? cached.activityGroups ?? [] : []).map(([turnId]) => turnId)),
+    sharedTraceGroups: new WeakSet((appendOnly ? cached.activityGroups ?? [] : []).flatMap(([, groups]) => groups)),
     pendingViewImageCalls: new Map(appendOnly ? cached.pendingViewImageCalls ?? [] : []),
     pendingGeneratedImageCalls: new Map(
       appendOnly || generatedImageCacheReusable
@@ -1515,9 +1607,13 @@ export async function readCodexRolloutActivityOnCurrentThread(
   const scanGeneratedImagesBeforeTail = !appendOnly
     && !generatedImageCacheReusable
     && observationStart > 0;
+  const scanExactTerminalBeforeTail = !appendOnly
+    && Boolean(requestedTerminalTurnId)
+    && observationStart > 0
+    && info.size <= CODEX_EXACT_TERMINAL_COLD_SCAN_MAX_BYTES;
   const inputStart = appendOnly
     ? cached.size
-    : scanGeneratedImagesBeforeTail ? 0 : observationStart;
+    : scanGeneratedImagesBeforeTail || scanExactTerminalBeforeTail ? 0 : observationStart;
   const input = createReadStream(normalized, {
     ...(inputStart > 0 ? { start: inputStart } : {}),
     end: Math.max(0, info.size - 1),
@@ -1609,7 +1705,14 @@ export async function readCodexRolloutActivityOnCurrentThread(
           entry,
           sourceOccurrenceIdForEntry(entry, lineOffset),
         );
-      } else if (scanGeneratedImagesBeforeTail) observeCodexGeneratedImageEntry(metadata, entry);
+      } else {
+        if (scanGeneratedImagesBeforeTail) observeCodexGeneratedImageEntry(metadata, entry);
+        if (scanExactTerminalBeforeTail && codexEntryTurnId(entry) === requestedTerminalTurnId
+          && entry.type === "event_msg"
+          && ["task_started", "task_complete", "turn_aborted"].includes(entry.payload?.type)) {
+          observeCodexEntry(activeTurnIds, lastSeenAtByTurnId, metadata, entry);
+        }
+      }
     } catch {
       if (selected) {
         metadata.pendingUserResponseProjection = null;
@@ -1689,7 +1792,14 @@ export async function readCodexRolloutActivityOnCurrentThread(
           entry,
           sourceOccurrenceIdForEntry(entry, pendingStartOffset),
         );
-      } else if (scanGeneratedImagesBeforeTail) observeCodexGeneratedImageEntry(metadata, entry);
+      } else {
+        if (scanGeneratedImagesBeforeTail) observeCodexGeneratedImageEntry(metadata, entry);
+        if (scanExactTerminalBeforeTail && codexEntryTurnId(entry) === requestedTerminalTurnId
+          && entry.type === "event_msg"
+          && ["task_started", "task_complete", "turn_aborted"].includes(entry.payload?.type)) {
+          observeCodexEntry(activeTurnIds, lastSeenAtByTurnId, metadata, entry);
+        }
+      }
       trailingBuffer = Buffer.alloc(0);
     } catch {
       // Preserve a line caught in the middle of an append for the next read.
@@ -1723,10 +1833,19 @@ export async function readCodexRolloutActivityOnCurrentThread(
     reasoningEffort: metadata.reasoningEffort,
     latestMessages: [...metadata.latestMessages],
     finalMessages: [...metadata.finalMessages],
+    terminalStatusesByTurnId: [...metadata.terminalStatusesByTurnId],
+    scannedTerminalTurnIds: [...new Set([
+      ...(appendOnly ? cached.scannedTerminalTurnIds ?? [] : []),
+      ...(requestedTerminalTurnId && (observationStart === 0 || scanExactTerminalBeforeTail)
+        && !metadata.terminalStatusesByTurnId.has(requestedTerminalTurnId)
+        ? [requestedTerminalTurnId] : []),
+    ])].filter((turnId) => !metadata.terminalStatusesByTurnId.has(turnId))
+      .slice(-CODEX_TERMINAL_STATUS_CACHE_LIMIT),
     responseAnnotationReferences: [...metadata.responseAnnotationReferences],
     userMessages: [...metadata.userMessages],
     generatedImageSources: [...metadata.generatedImageSources],
     activityGroups: [...metadata.activityGroups],
+    activityGroupSequenceByTurnId: [...metadata.activityGroupSequenceByTurnId],
     pendingViewImageCalls: [...metadata.pendingViewImageCalls],
     pendingGeneratedImageCalls: [...metadata.pendingGeneratedImageCalls],
     pendingUserMessages: metadata.pendingUserMessages.map((message) => ({ ...message })),
@@ -1744,7 +1863,7 @@ export async function readCodexRolloutActivityOnCurrentThread(
     discardUntilNewline,
     suffix: await rolloutSuffix(normalized, info.size),
   }, shouldPinCache());
-  return withoutCodexContextProbeTurns({
+  return ({
     ...withoutStalePromptlessTurns(
       activity,
       metadata.userMessages,
@@ -1758,6 +1877,7 @@ export async function readCodexRolloutActivityOnCurrentThread(
     ...(metadata.parentThreadId ? { parentThreadId: metadata.parentThreadId } : {}),
     latestMessages: Object.fromEntries(metadata.latestMessages),
     finalMessages: Object.fromEntries(metadata.finalMessages),
+    terminalStatusesByTurnId: Object.fromEntries(metadata.terminalStatusesByTurnId),
     ...(metadata.responseAnnotationReferences.size
       ? { responseAnnotationReferences: Object.fromEntries(metadata.responseAnnotationReferences) }
       : {}),
@@ -1788,6 +1908,7 @@ function codexActivityReadKey(rolloutPath, {
   tailBytes,
   maximumLineBytes,
   reparseTail,
+  exactTerminalTurnId,
 }) {
   return [
     codexActivityReadPathKey(rolloutPath),
@@ -1795,6 +1916,7 @@ function codexActivityReadKey(rolloutPath, {
     `tail:${String(tailBytes)}`,
     `line:${String(maximumLineBytes)}`,
     `reparse:${reparseTail === true}`,
+    `terminal:${String(exactTerminalTurnId ?? "").trim()}`,
   ].join("\u0000");
 }
 
@@ -1810,6 +1932,7 @@ export function readCodexRolloutActivity(rolloutPath, options = {}) {
     maximumLineBytes = CODEX_ROLLOUT_LINE_BYTES,
     pinCache = false,
     reparseTail = false,
+    exactTerminalTurnId = "",
   } = options;
   if (!normalized) {
     return readCodexRolloutActivityOnCurrentThread(normalized, {
@@ -1819,6 +1942,7 @@ export function readCodexRolloutActivity(rolloutPath, options = {}) {
       maximumLineBytes,
       pinCache,
       reparseTail,
+      exactTerminalTurnId,
     });
   }
   const key = codexActivityReadKey(normalized, {
@@ -1826,6 +1950,7 @@ export function readCodexRolloutActivity(rolloutPath, options = {}) {
     tailBytes,
     maximumLineBytes,
     reparseTail,
+    exactTerminalTurnId,
   });
   const active = codexActivityReadsInFlight.get(key);
   if (active) {
@@ -1844,6 +1969,7 @@ export function readCodexRolloutActivity(rolloutPath, options = {}) {
     maximumLineBytes,
     pinCache: initiallyPinned,
     reparseTail,
+    exactTerminalTurnId,
   }).then(async (activity) => {
     if (pinCacheState.requested && !initiallyPinned) {
       await pinCodexRolloutActivityCacheInWorker(normalized);
@@ -1926,6 +2052,7 @@ export function codexRolloutTurnState(
   const active = exact
     ? requestedActive
     : Boolean(activeTurnId) || Boolean(threadActive);
+  const terminalStatus = String(activity.terminalStatusesByTurnId?.[turnId] ?? "").trim();
   const latestAnswer = turnId
     ? String(activity.latestMessages?.[turnId] ?? "").trim()
     : String(activity.unscopedLatestMessage ?? "").trim();
@@ -1944,7 +2071,8 @@ export function codexRolloutTurnState(
   return {
     turnId,
     active,
-    completed: !active,
+    completed: !active && Boolean(terminalStatus),
+    terminalStatus,
     userMessageSnapshotAuthority: turnId
       ? activity.userMessageSnapshotAuthorityByTurnId?.[turnId]
         ?? activity.userMessageSnapshotAuthority

@@ -5,16 +5,17 @@ const DEFAULT_MAX_PENDING_REQUESTS = 32;
 const DEFAULT_CLOSE_TIMEOUT_MS = 2_000;
 const TRACE_MEASUREMENTS = [
   "queueWaitMs", "durationMs", "recordCount", "invalidRecordCount", "eventCount", "factCount",
-  "workerThreadId", "inspected", "candidateCount", "updated", "revisionReadMs", "projectionReadMs", "ledgerReadMs", "normalizeMs",
+  "workerThreadId", "accountingRecordsRead", "changedDayCount", "inspected", "candidateCount", "updated", "revisionReadMs", "projectionReadMs", "ledgerReadMs", "normalizeMs",
   "metadataReadMs", "recordReadMs",
   "workspaceResolveMs", "workspaceReadMs", "factsReadMs", "accountCatalogReadMs", "renderMs",
-  "lazyBuildMs", "commitMs", "aggregateMs",
+  "lazyBuildMs", "commitMs", "aggregateMs", "reuseCheckMs", "reuseWindowMs", "factsRevisionReadMs", "reuseReceiptFailed",
   "expectedRevision", "revision",
 ];
 
 function workerError(value) {
   const error = new Error(String(value?.message ?? "usage sync worker failed"));
   error.code = value?.code;
+  error.errcode = value?.errcode;
   if (value?.stack) error.stack = value.stack;
   return error;
 }
@@ -95,7 +96,7 @@ export class WorkLogUsageSyncWorkerStore {
           ...Object.fromEntries(TRACE_MEASUREMENTS
             .filter((key) => Number.isFinite(source?.[key]) && source[key] >= 0)
             .map((key) => [key, source[key]])),
-          ...Object.fromEntries(["conflict", "projectionDeferred"]
+          ...Object.fromEntries(["conflict", "projectionDeferred", "projectionReused"]
             .filter((key) => typeof value?.[key] === "boolean")
             .map((key) => [key, value[key]])),
         },
@@ -119,6 +120,10 @@ export class WorkLogUsageSyncWorkerStore {
 
   importSnapshot(snapshot) {
     return this.#request("import-snapshot", { snapshot });
+  }
+
+  ensureTurnFact(fact) {
+    return this.#request("ensure-turn-fact", { fact });
   }
 
   reconcileSnapshot(snapshot) {

@@ -2,7 +2,6 @@ import { createHash } from "node:crypto";
 import { stat } from "node:fs/promises";
 
 import { legacyTaskRunKeys, taskRunKey } from "../domain/task-runs.mjs";
-import { isCodexContextProbeTurn } from "../domain/codex-context-probe.mjs";
 import { normalizeInterstreamClientUserMessageId } from "../domain/interstream-message.mjs";
 import { displayUserPrompt } from "./task-history.mjs";
 import { conciseTurnTitle } from "./turn-title.mjs";
@@ -66,14 +65,19 @@ export class RunJournalService {
     this.lastTaskMessages = new Map();
   }
 
-  rememberLastMessage(run, text, { updatedAt = null, terminalRevision = null } = {}) {
+  rememberLastMessage(run, text, { updatedAt = null, terminalRevision = null, removeTurnId = false } = {}) {
     const value = String(text ?? "").trim();
-    if (!run?.threadId || !value) return false;
-    if (String(run.provider ?? "").trim().toLowerCase() === "codex"
-      && isCodexContextProbeTurn({ ...run, finalAnswer: value })) return false;
+    if (!run?.threadId) return false;
     const key = taskRunKey(run);
     const current = this.lastMessageRecord(run);
     const turnId = String(run.turnId ?? "").trim() || null;
+    if (!value && removeTurnId === true) {
+      if (!turnId || current?.turnId !== turnId) return false;
+      this.lastTaskMessages.delete(key);
+      this.#revision += 1;
+      return true;
+    }
+    if (!value) return false;
     const authoritativeUpdatedAt = normalizedIsoTimestamp(updatedAt);
     const startedAt = normalizedIsoTimestamp(run.startedAt);
     const sameTurn = Boolean(turnId) && current?.turnId === turnId;
@@ -102,8 +106,7 @@ export class RunJournalService {
       turnId,
       terminalRevision: Number(terminalRevision) || (sameTurn ? current?.terminalRevision : null) || null,
       operationKind: String(run.operationKind ?? "").trim()
-        || (run.contextProbe === true ? "probe" : "user-turn"),
-      contextProbe: run.contextProbe === true,
+        || "user-turn",
       clientUserMessageId: normalizeInterstreamClientUserMessageId(run.clientUserMessageId),
     };
     if (
@@ -116,7 +119,6 @@ export class RunJournalService {
       && current.turnId === next.turnId
       && current.terminalRevision === next.terminalRevision
       && current.operationKind === next.operationKind
-      && current.contextProbe === next.contextProbe
       && current.clientUserMessageId === next.clientUserMessageId
     ) return false;
     this.lastTaskMessages.delete(key);
@@ -160,8 +162,6 @@ export class RunJournalService {
       if (!Array.isArray(entry) || typeof entry[0] !== "string" || typeof entry[1]?.text !== "string") {
         continue;
       }
-      if (String(entry[1].provider ?? "").trim().toLowerCase() === "codex"
-        && isCodexContextProbeTurn({ ...entry[1], finalAnswer: entry[1].text })) continue;
       this.lastTaskMessages.set(entry[0], { ...entry[1] });
       restored += 1;
     }
@@ -188,7 +188,6 @@ export class RunJournalService {
       estimatedCredits: completion.estimatedCredits,
       estimateKind: completion.estimateKind,
       imageGenerationCount: completion.imageGenerationCount,
-      contextProbe: completion.contextProbe,
       limitSamples: completion.limitSamples,
       resolveAccount: completion.resolveAccount,
       model: completion.model,
@@ -197,6 +196,7 @@ export class RunJournalService {
       parentThreadId: completion.parentThreadId,
       parentTurnId: completion.parentTurnId,
       aggregateOnly: completion.aggregateOnly,
+      serviceUsageKind: completion.serviceUsageKind,
       provisional: completion.provisional,
       taskTitle: completion.taskTitle,
       title: title || (body ? conciseTurnTitle(body, completion.status) : ""),
@@ -224,7 +224,7 @@ export class RunJournalService {
         provider: completion.provider,
         threadId: completion.threadId,
       });
-      if (resolved) {
+      if (resolved && !completion.serviceUsageKind) {
         await this.workspaceCatalogStore.recordWorkspaceEvent?.({
           workspaceId: resolved.workspaceId,
           streamId: resolved.streamId,
@@ -260,6 +260,14 @@ export class RunJournalService {
       projectRoot: this.defaultProjectRoot,
       projectionProjectRoots: projectRoots,
     });
+  }
+
+  ensureTurnUsageFact(completion) {
+    return this.usageStore.ensureTurnUsageFact?.(completion) ?? Promise.resolve({ supported: false });
+  }
+
+  turnProjectionStatus(completion) {
+    return this.usageStore.turnProjectionStatus?.(completion) ?? Promise.resolve(null);
   }
 
   async initialize(restoredTurnEndSnapshot = {}) {

@@ -7,7 +7,6 @@ import {
 import { codexTurnAnswer } from "./codex-turn-answers.mjs";
 import { codexThreadHistory } from "../../application/task-history.mjs";
 import { codexThreadWaitingOnApproval } from "./codex-approvals.mjs";
-import { isCodexContextProbeTurn } from "../../domain/codex-context-probe.mjs";
 import {
   mergeCanonicalUserMessages,
   mergedUserMessageSnapshotAuthority,
@@ -154,6 +153,19 @@ export class CodexTaskSnapshotService {
   async read(run, { threadResult = null, fresh = false } = {}) {
     const d = this.#d;
     if (run.observer !== true && !String(run.turnId ?? "").trim()) return null;
+    if (d.readRecordingTurn) {
+      if (!String(run.turnId ?? "").trim()) return null;
+      const turn = await d.readRecordingTurn(run);
+      if (!turn) return null;
+      if (turn.id !== run.turnId) throw new Error("Recording snapshot changed the exact turn");
+      const snapshot = d.turnSnapshot(turn);
+      return {
+        ...snapshot, turnId: turn.id,
+        status: turn.status === "interrupted" ? "aborted" : turn.status,
+        activeTurnCount: snapshot.active ? 1 : 0,
+        executionOwner: d.hubOwner(),
+      };
+    }
     if (run.observer === true) {
       const rolloutPath = String(
         threadResult?.thread?.path
@@ -168,6 +180,7 @@ export class CodexTaskSnapshotService {
           {
             ...(exact ? { freshnessMs: Number.POSITIVE_INFINITY } : {}),
             pinCache: true,
+            ...(exact ? { exactTerminalTurnId: run.turnId } : {}),
           },
         );
         const state = await this.#hydrateSubagentMessages(d.rolloutTurnState(activity, run.turnId, {
@@ -185,8 +198,9 @@ export class CodexTaskSnapshotService {
         });
         return this.#rolloutSnapshot(state, activity, {
           active,
-          completed: state.completed || interrupted,
-          status: interrupted ? "interrupted" : state.completed ? "completed" : active ? "inProgress" : "stopped",
+          completed: state.completed,
+          activityUnknown: interrupted || (!active && !state.completed),
+          status: state.completed ? state.terminalStatus : active ? "inProgress" : "unknown",
           stage: active
             ? "Выполняется следующий этап…"
             : interrupted
@@ -202,17 +216,22 @@ export class CodexTaskSnapshotService {
       includeTurns: false,
       priority: "interactive",
     });
-    const turns = (Array.isArray(result.thread?.turns) ? result.thread.turns : [])
-      .filter((turn) => !isCodexContextProbeTurn(turn));
+    const turns = Array.isArray(result.thread?.turns) ? result.thread.turns : [];
     const exact = run.observer !== true || run.exactTurnObserver === true;
     const activity = await d.readRolloutActivity(
       result.thread?.path,
       {
         ...(exact ? { freshnessMs: Number.POSITIVE_INFINITY } : {}),
         pinCache: run.observer === true,
+        ...(exact ? { exactTerminalTurnId: run.turnId } : {}),
       },
     );
-    if (!turns.length) {
+    const turn = turns.length ? d.selectTurn(turns, {
+      requestedTurnId: run.turnId,
+      rolloutActiveTurnIds: activity.activeTurnIds,
+      strictRequested: exact || run.observer !== true,
+    }) : null;
+    if (!turn) {
       const state = await this.#hydrateSubagentMessages(d.rolloutTurnState(activity, run.turnId, {
         exact,
         threadActive: result.thread?.status?.type === "active",
@@ -228,7 +247,8 @@ export class CodexTaskSnapshotService {
       return this.#rolloutSnapshot(state, activity, {
         active: state.active,
         completed: state.completed,
-        status: state.completed ? "completed" : state.active ? "inProgress" : "stopped",
+        activityUnknown: !state.active && !state.completed,
+        status: state.completed ? state.terminalStatus : state.active ? "inProgress" : "unknown",
         stage: state.active
           ? "Выполняется следующий этап…"
           : state.finalAnswer ? "Поток завершён." : "Поток остановлен или неактивен.",
@@ -236,12 +256,6 @@ export class CodexTaskSnapshotService {
       });
     }
 
-    const turn = d.selectTurn(turns, {
-      requestedTurnId: run.turnId,
-      rolloutActiveTurnIds: activity.activeTurnIds,
-      strictRequested: exact || run.observer !== true,
-    });
-    if (!turn) return null;
     const rolloutState = await this.#hydrateSubagentMessages(d.rolloutTurnState(activity, turn.id, {
       exact: true,
       threadActive: result.thread?.status?.type === "active",
@@ -273,10 +287,20 @@ export class CodexTaskSnapshotService {
         })
         : d.hubOwner(),
     };
-    if (!snapshot.active && activity.activeTurnIds.includes(turn.id)) {
+    if (activity.activeTurnIds.includes(turn.id)) {
       return { ...snapshot, completed: false, active: true, stage: d.describeItem(turn.items?.at(-1), false) };
     }
-    return snapshot;
+    if (!rolloutState.completed) {
+      return {
+        ...snapshot,
+        completed: false,
+        active: false,
+        activityUnknown: true,
+        status: "unknown",
+        stage: "Ожидаю подтверждения завершения хода провайдером…",
+      };
+    }
+    return { ...snapshot, completed: true, active: false, status: rolloutState.terminalStatus };
   }
 
   async completedAnswer(run, completedTurnId, eventTurn = null) {
@@ -302,6 +326,20 @@ export class CodexTaskSnapshotService {
       }
     };
 
+    if (eventStatus === "completed" && turnId
+      && typeof this.#d.readCompletedTurnAnswer === "function") {
+      try {
+        rolloutPath = await this.#d.knownRolloutPath(run.threadId);
+        const completed = rolloutPath
+          ? await this.#d.readCompletedTurnAnswer(rolloutPath, run.threadId, turnId)
+          : "";
+        if (completed) return completed;
+      } catch (error) {
+        this.#d.logger?.warn?.(
+          `Cannot read Codex completed rollout answer ${turnId}: ${error.message}`,
+        );
+      }
+    }
     let answer = await rolloutAnswer({ includeLatest: interrupted });
     if (answer) return answer;
     let fallbackAnswer = codexExplicitFinalTurnAnswer(eventTurn);
@@ -379,6 +417,7 @@ export class CodexTaskSnapshotService {
       completedAt: state.completedAt,
       completed: overrides.completed,
       active: overrides.active,
+      ...(overrides.activityUnknown ? { activityUnknown: true } : {}),
       status: overrides.status,
       waitingOnApproval: false,
       stage: overrides.stage,

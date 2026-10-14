@@ -268,7 +268,7 @@ test("recorded verification rejects redirected paths even with identical bytes",
     await assert.rejects(verifyRecordedCodexExecutable(recorded, {
       ...inspectionOptions(calls), environment, platform: "win32",
       realpathImpl: async (file) => file === recorded.path ? destination : file,
-    }), /canonical path changed/);
+    }), /canonical path changed|escapes its official install root/);
     assert.deepEqual(calls, []);
   }
 });
@@ -295,7 +295,7 @@ test("recorded verification checks source, official filename and full layout", a
     }
     await assert.rejects(verifyRecordedCodexExecutable({ ...recorded, source: source === "desktop" ? "vscode" : "desktop" }, {
       ...inspectionOptions([]), environment, platform: "win32",
-    }), /official install root/);
+    }), /official install (?:root|layout)/);
   }
 });
 

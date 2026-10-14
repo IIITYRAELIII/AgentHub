@@ -53,6 +53,12 @@
   function responseAnnotationSourceContent(message, source = null) {
     const identity = responseAnnotationSourceIdentity(message, source);
     if (!identity) return "";
+    if (source?.traceGroupId) {
+      const matches = (message.activityGroups ?? []).filter((group) => group.id === source.traceGroupId);
+      if (matches.length !== 1) return "";
+      return JSON.stringify({ version: 1, ...identity, traceGroupId: source.traceGroupId,
+        reasoning: String(matches[0].reasoning ?? "") });
+    }
     return JSON.stringify({
       version: RESPONSE_ANNOTATION_SOURCE_VERSION,
       ...identity,
@@ -75,6 +81,8 @@
     const clientUserMessageId = cleanSourceIdentity(value.clientUserMessageId);
     if (value.clientUserMessageId && (!clientUserMessageId || role !== "user" || turnId || itemId)) return null;
     const surfaceKind = String(value.surfaceKind ?? "").trim();
+    const traceGroupId = cleanSourceIdentity(value.traceGroupId);
+    if (value.traceGroupId && (!traceGroupId || surfaceKind !== "trace-reasoning" || role !== "agent")) return null;
     const surfaceIndex = Number(value.surfaceIndex);
     const start = Number(value.start);
     const end = Number(value.end);
@@ -100,6 +108,7 @@
       messageKey,
       ...(clientUserMessageId ? { clientUserMessageId } : {}),
       surfaceKind,
+      ...(traceGroupId ? { traceGroupId } : {}),
       surfaceIndex,
       start,
       end,
@@ -159,7 +168,36 @@
     }
   }
 
-  function domRangeOffsets(surface, range) {
+  function domRangeWithinSurface(surface, range) {
+    if (!surface || !range) return null;
+    if (surface.contains(range.startContainer) && surface.contains(range.endContainer)) return range;
+    try {
+      if (!range.intersectsNode(surface)) return null;
+      const contents = surface.ownerDocument.createRange();
+      contents.selectNodeContents(surface);
+      const bounded = range.cloneRange();
+      // Triple-click can include a paragraph separator outside the surface.
+      // Trim that empty boundary, never text belonging to another source/control.
+      if (range.compareBoundaryPoints(0, contents) < 0) {
+        const before = range.cloneRange();
+        before.setEnd(contents.startContainer, contents.startOffset);
+        if (before.toString().trim()) return null;
+        bounded.setStart(contents.startContainer, contents.startOffset);
+      }
+      if (range.compareBoundaryPoints(2, contents) > 0) {
+        const after = range.cloneRange();
+        after.setStart(contents.endContainer, contents.endOffset);
+        if (after.toString().trim()) return null;
+        bounded.setEnd(contents.endContainer, contents.endOffset);
+      }
+      return bounded;
+    } catch {
+      return null;
+    }
+  }
+
+  function domRangeOffsets(surface, selectedRange) {
+    const range = domRangeWithinSurface(surface, selectedRange);
     const start = domTextOffset(surface, range?.startContainer, range?.startOffset);
     const end = domTextOffset(surface, range?.endContainer, range?.endOffset);
     if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || end <= start) return null;
@@ -207,6 +245,15 @@
   function responseAnnotationSourceSurface(root, source) {
     const normalized = normalizedResponseAnnotationSource(source);
     if (!root || !normalized) return null;
+    if (normalized.traceGroupId) {
+      const matches = Array.from(root.querySelectorAll(".turn-trace-reasoning"))
+        .filter((node) => node.dataset.traceGroupId === normalized.traceGroupId);
+      // The preview and an explicit detail page may display the same source.
+      // Prefer one presentation only when their rendered content agrees; the
+      // caller still verifies the exact source, surface and selection hashes.
+      return matches.length && matches.every((node) => node.textContent === matches[0].textContent)
+        ? matches.find((node) => node.closest("[data-citation-trace]")) ?? matches[0] : null;
+    }
     if (normalized.surfaceKind === "message-body") {
       return Array.from(root.querySelectorAll(".msg-body"))[normalized.surfaceIndex] ?? null;
     }
@@ -218,6 +265,9 @@
 
   function responseAnnotationSurfaceLocator(root, surface) {
     if (!root || !surface) return null;
+    if (surface.matches?.(".turn-trace-reasoning") && surface.dataset.traceGroupId) {
+      return { surfaceKind: "trace-reasoning", surfaceIndex: 0, traceGroupId: surface.dataset.traceGroupId };
+    }
     const candidates = [
       ["message-body", ".msg-body"],
       ["trace-reasoning", ".turn-trace-reasoning"],

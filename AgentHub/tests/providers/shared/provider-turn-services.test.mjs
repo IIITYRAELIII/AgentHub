@@ -35,6 +35,27 @@ function codexTurnService(overrides = {}) {
   });
 }
 
+test("pending naming failure is a pre-provider rejection, preserving the exact run and message", async () => {
+  const failure = new Error("native name unconfirmed");
+  failure.code = "HUB_THREAD_NAMING_PENDING";
+  let effects = 0;
+  let completed = 0;
+  const service = codexTurnService({
+    ensureThreadNamed: async (reference) => {
+      assert.deepEqual(reference, { provider: "codex", threadId: "exact-thread" }); throw failure;
+    },
+    sendRpc: async () => { effects += 1; },
+    completeRun: async () => { completed += 1; },
+  });
+  const run = { threadId: "exact-thread", clientUserMessageId: "original-message", collaborationMode: "default" };
+  await assert.rejects(service.launch(run, '{"kind":"interstream"}'), (error) => error === failure);
+  assert.equal(effects, 0);
+  assert.equal(completed, 1);
+  assert.equal(run.threadId, "exact-thread");
+  assert.equal(run.clientUserMessageId, "original-message");
+  assert.equal(run.turnId, undefined);
+});
+
 test("Codex turn service steers one exact active turn", async () => {
   const calls = [];
   const service = codexTurnService({
@@ -113,74 +134,9 @@ test("Codex turn service steers a registered managed turn despite a stale Thread
   assert.deepEqual(calls, ["turn/steer"]);
 });
 
-test("Codex turn service never steers user input into a context probe", async () => {
-  let steerCalls = 0;
-  const service = codexTurnService({
-    readThread: async () => ({
-      thread: {
-        turns: [{
-          id: "probe-turn",
-          status: "inProgress",
-          items: [{
-            type: "userMessage",
-            clientId: "agent-hub-context-probe:test",
-          }],
-        }],
-      },
-    }),
-    sendRpc: async () => {
-      steerCalls += 1;
-      return { turnId: "probe-turn" };
-    },
-  });
 
-  await assert.rejects(
-    service.steer({
-      run: {
-        turnId: "probe-turn",
-        clientUserMessageId: "agent-hub-context-probe:test",
-      },
-      target: { threadId: "thread-1" },
-      input: "Обычное пользовательское сообщение",
-      clientUserMessageId: "message-user",
-    }),
-    /сообщение осталось в очереди/u,
-  );
-  assert.equal(steerCalls, 0);
-});
 
-test("Codex turn service recognizes the tracked probe turn when Thread read omits its client id", async () => {
-  let steerCalls = 0;
-  const service = codexTurnService({
-    isContextProbeTurn: (threadId, turnId) => threadId === "thread-1" && turnId === "probe-turn",
-    readThread: async () => ({
-      thread: {
-        turns: [{
-          id: "probe-turn",
-          status: "inProgress",
-          items: [{ type: "userMessage" }],
-        }],
-      },
-    }),
-    sendRpc: async () => {
-      steerCalls += 1;
-      return { turnId: "probe-turn" };
-    },
-  });
-
-  await assert.rejects(
-    service.steer({
-      run: { turnId: "probe-turn" },
-      target: { threadId: "thread-1" },
-      input: "Обычное пользовательское сообщение",
-      clientUserMessageId: "message-user",
-    }),
-    /сообщение осталось в очереди/u,
-  );
-  assert.equal(steerCalls, 0);
-});
-
-test("Codex turn service recognizes probe text when Thread read omits its client id", async () => {
+test("Codex turn service steers a live user turn containing marker-shaped text", async () => {
   let steerCalls = 0;
   const service = codexTurnService({
     readThread: async () => ({
@@ -204,22 +160,19 @@ test("Codex turn service recognizes probe text when Thread read omits its client
     },
   });
 
-  await assert.rejects(
-    service.steer({
+  const result = await service.steer({
       run: { turnId: "probe-turn" },
       target: { threadId: "thread-1" },
       input: "Обычное пользовательское сообщение",
       clientUserMessageId: "message-user",
-    }),
-    /сообщение осталось в очереди/u,
-  );
-  assert.equal(steerCalls, 0);
+    });
+  assert.deepEqual(result, { turnId: "probe-turn" });
+  assert.equal(steerCalls, 1);
 });
 
-test("Codex turn service steers the user turn while a tracked context probe is also active", async () => {
+test("Codex turn service steers the registered user turn while another turn is active", async () => {
   const steerRequests = [];
   const service = codexTurnService({
-    isContextProbeTurn: (threadId, turnId) => threadId === "thread-1" && turnId === "probe-turn",
     readThread: async () => ({
       thread: {
         turns: [{
@@ -694,7 +647,7 @@ test("Codex turn service updates application instructions without changing user 
   await service.launch(run, "Second");
 
   assert.deepEqual(starts.map((call) => (
-    call.additionalContext["agent-hub"].value
+    call.additionalContext["agent-hub"].value.split("\n\n").slice(1).join("\n\n")
   )), ["Workspace rules", "Updated rules"]);
   assert.deepEqual(starts.map((call) => call.additionalContext["agent-hub"].kind), ["application", "application"]);
   assert.deepEqual(starts.map((call) => call.collaborationMode.settings.developer_instructions), [null, null]);

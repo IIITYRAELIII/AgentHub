@@ -2,9 +2,10 @@
 
 ## Status
 
-Accepted for HUB-222. Supersedes the SYS-002 rule that rotation binds and names
-the new Thread before its hidden context probe, and the accepted behaviour that
-a failed post-rotation probe keeps the new Thread bound and retargets the queue.
+Accepted with the 2026-09-17 revision below. The original probe-based readiness,
+measurement and title-repair mechanism is superseded and removed. The bounded
+transfer and readiness-before-binding decisions remain in force. The incident
+narrative below records the historical behaviour, not current requirements.
 
 ## Context
 
@@ -34,39 +35,45 @@ and omitted the before-compaction value.
    replacement history carries that item. Items before it are not transferred.
    An empty suffix is valid. An absent or non-unique boundary refuses the
    transfer before `thread/start`.
-2. Readiness before switching. The new Thread is probed while unbound. Binding,
-   selection, client selections, deferred inputs and the rotation annotation
-   change only after a completed probe with an exact measurement, and the
-   annotation records the probe turn identity and measurement time.
-3. Failure handling. A definite failure deletes the new Thread: its probe turn
-   ended unsuccessfully, or every accepted probe attempt that did not
-   materialize was afterwards observed terminal in the Thread. A successful
-   `turn/interrupt` response alone does not prove the turn stopped. An unknown
-   outcome (an accepted probe could not be interrupted or its stop was not
-   observed, the probe did not settle, remained active, or produced no exact
-   measurement) stops without another attempt and leaves the new Thread
-   untouched and records `rotationStatus: unknown` with the quarantined Thread
-   on the source compaction record, the existing owner of rotation state. The
-   source stays authoritative and its queue is woken. A compaction whose rotation
-   settled as failed or unknown is not rotated again.
-4. Naming. The unbound target is named from the source Thread's Workspace and
-   Stream before its probe, without pinning; the `rebirth` binding after
-   readiness owns the managed title.
-5. Presentation. A rotation marker shows used context per named stage — before
-   compaction, after compaction, immediately after transfer — only for exact
-   values, states a missing target measurement as not saved, and never uses the
-   Thread's current usage as a transfer measurement.
+   A process-local index counts every matching boundary across the rollout and
+   keeps its exact byte offset. Its first proof reads the full source once;
+   subsequent checks of the same file generation read only appended complete
+   JSONL records and a bounded tail, or the suffix from the recorded offset
+   when that suffix exceeds the tail. A restart rebuilds the proof. Observed
+   replacement, truncation, rewrite or incomplete final record invalidates it.
+   Reuse relies on the [native Codex recorder's append-only write path](https://github.com/openai/codex/blob/a933dd77dbe101d7bd746ea3c7d1f8174eca4a05/codex-rs/rollout/src/recorder.rs), plus
+   file generation, metadata and prefix/cursor anchors. These bounded checks
+   do not prove the absence of an external interior rewrite that also forges
+   those signals; that stronger guarantee requires a full prefix verification
+   or an authoritative writer-owned index.
+2. Readiness before switching. Create the unbound target, inject the exact
+   transfer, then freshly read that same Thread and require `status.type=idle`.
+   No model turn or synthetic user message is started. Only successful readiness
+   allows catalog binding, selection, deferred-input retargeting and the rotation
+   annotation.
+3. Failure handling. A failed creation/injection/readiness path leaves the
+   source authoritative and attempts cleanup of the unbound target. The existing
+   maintenance owner releases admission and wakes the appropriate queue. Failed
+   automatic rotation is not repeated for the same compaction.
+4. Naming. The successful `rebirth` binding owns the managed title through the
+   ordinary Workspace/Stream naming path. Measurement-specific title repair and
+   historical instruction isolation are removed.
+5. Presentation. Retain the first preliminary provider estimate for the same
+   exact compaction and turn, with a finite timestamp at or after its boundary.
+   Label it `estimated`; do not substitute later ordinary usage. Missing evidence
+   remains unknown. Rotation generates no target measurement and does not treat
+   current target usage as historical after-transfer usage.
 
 ## Consequences
 
-- A slow or failed readiness probe keeps the Stream on the source Thread; the
-  user continues there instead of on a Thread that cannot answer.
-- The quarantine record lives in the source compaction record held in runtime
-  state. A later compaction of the same source replaces that record, as it
-  already replaces the recorded rotation target; the quarantined Thread itself
-  remains in the provider.
-- Automatic rotation attempts are bounded to one per compaction, so a persistent
-  readiness failure cannot create Threads in a loop.
+- Context maintenance performs no synthetic generation, classification,
+  suppression or terminal reclassification of measurement turns.
+- Existing history and measured usage remain intact without a live migration.
+  Old measurement-shaped text has no special runtime meaning.
+- Automatic rotation remains bounded to one attempt per compaction. A readiness
+  failure keeps selection on the source; missing context usage does not require
+  another model call.
+
 - Replacement history user messages retained by the provider in the source are
   still not transferred. No data loss has been demonstrated for that boundary,
   so this decision does not change it.

@@ -1,0 +1,35 @@
+import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
+import { mkdtemp, readFile, realpath, rm, writeFile, access } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { promisify } from "node:util";
+import test from "node:test";
+import { TaskGitWorkspaceService } from "../../../src/infrastructure/filesystem/task-git-workspace.mjs";
+import { initializeTaskGitRepository } from "../../helpers/task-git-unproven-process.mjs";
+
+const exec = promisify(execFile);
+test("readDev observes existing refs without creating worktrees or touching dirty files", async (context) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "hub-dev-read-"));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  const repo = path.join(directory, "repo");
+  const data = path.join(directory, "data");
+  await initializeTaskGitRepository(repo);
+  const git = async (...args) => (await exec("git", args, { cwd: repo, windowsHide: true })).stdout.trim();
+  const service = new TaskGitWorkspaceService({ dataDir: data });
+  await assert.rejects(service.readDev(repo));
+  await git("branch", "dev");
+  const before = await git("show-ref");
+  const first = await service.readDev(repo);
+  assert.equal(first.headCommit, await git("rev-parse", "dev"));
+  assert.equal(first.projectRoot, null);
+  await assert.rejects(access(data));
+  const dev = path.join(directory, "dev");
+  await git("worktree", "add", dev, "dev");
+  await writeFile(path.join(dev, "app.txt"), "uncommitted\n");
+  const second = await service.readDev(repo);
+  assert.equal(second.projectRoot.toLowerCase(), (await realpath(dev)).toLowerCase());
+  assert.equal(await readFile(path.join(dev, "app.txt"), "utf8"), "uncommitted\n");
+  assert.equal(await git("show-ref"), before);
+  await assert.rejects(access(data));
+});

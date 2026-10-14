@@ -5,10 +5,10 @@ import {
 } from "../domain/deferred-input.mjs";
 import { DeferredInputController } from "../application/deferred-input-controller.mjs";
 import { activeTurnNotSteerable } from "../application/run-coordinator.mjs";
-import { isCodexContextProbeTurn } from "../domain/codex-context-probe.mjs";
 import { prependStreamHandoff } from "../domain/stream-handoff.mjs";
 import { isClaudeCompactionRun } from "../domain/claude-context-maintenance.mjs";
 import { markProviderTurnAccepted } from "../domain/task-runs.mjs";
+import { messageCommandMatchesRun } from "../domain/message-command-expiry.mjs";
 
 function explicitSkillCandidatesFromInput(input) {
   const text = typeof input === "string"
@@ -26,15 +26,11 @@ function explicitSkillCandidatesFromInput(input) {
 export function contextCompactionRunIsInternal(run, compaction, turnId = run?.turnId) {
   const normalizedTurnId = String(turnId ?? "").trim();
   const compactionTurnId = String(compaction?.turnId ?? "").trim();
-  const probeTurnIds = (Array.isArray(compaction?.probeTurnIds) ? compaction.probeTurnIds : [])
-    .map((value) => String(value ?? "").trim())
-    .filter(Boolean);
   if (
     !run
     || !normalizedTurnId
-    || (compactionTurnId !== normalizedTurnId && !probeTurnIds.includes(normalizedTurnId))
+    || compactionTurnId !== normalizedTurnId
   ) return false;
-  if (probeTurnIds.includes(normalizedTurnId)) return true;
   if (compaction?.origin === "manual") return true;
   const hasUserInput = Boolean(
     String(run.promptPreview ?? "").trim()
@@ -77,6 +73,7 @@ export function createRunAdmissionComposition({
   abortLaunchAdmission,
   logger = console,
   commandTrace = null,
+  runtimeStateStore = null,
 }) {
   const removeRuntimeFile = createRuntimeFileRemoval(config);
   if (typeof stageLaunchAdmission !== "function") {
@@ -130,13 +127,11 @@ export function createRunAdmissionComposition({
     }
   }
 
-  // Internal probe turns carry no user intent, so they must not consume the
-  // package that the first real turn of the receiving Thread is waiting for.
   // Свёртка контекста Claude — служебная команда CLI: любой префикс превратил
   // бы её в обычный текст и команда не выполнилась бы.
   async function streamHandoffPrefix(run) {
     if (!streamHandoff || !run?.streamId) return "";
-    if (isCodexContextProbeTurn(run) || isClaudeCompactionRun(run)) return "";
+    if (isClaudeCompactionRun(run)) return "";
     try {
       return await streamHandoff.consume({
         streamId: run.streamId,
@@ -259,6 +254,7 @@ export function createRunAdmissionComposition({
       collaborationMode: item.collaborationMode,
       steerTargetRunId: item.steerTargetRunId,
       steerTargetTurnId: item.steerTargetTurnId,
+      ...(item.messageOrigin ? { messageOrigin: item.messageOrigin } : {}),
     };
   }
 
@@ -329,6 +325,9 @@ export function createRunAdmissionComposition({
         clientUserMessageId: item.clientUserMessageId,
       };
     },
+    isSteerDispatchBlocked: (item) => Boolean(
+      runCoordinator.admissionBarrier(deferredTarget(item)),
+    ),
     steer: async (item) => {
       const target = deferredTarget(item);
       const existingRun = runCoordinator.activeRun(target);
@@ -377,8 +376,31 @@ export function createRunAdmissionComposition({
       );
     },
     maxAgeMs: config.deferredInputTtlHours * 60 * 60 * 1000,
+    expireCommands: runtimeStateStore ? () => runtimeStateStore.expireMessageCommands() : null,
     commandTrace,
   });
+
+  if (runtimeStateStore) {
+    runtimeStateStore.configureMessageCommandExpiry({
+      isProtected: (record) => (
+        runCoordinator.dispatchingClientMessageIds.has(record.clientUserMessageId)
+        || [...pendingInputs.values(), ...queuedInputs.values()].some((item) => (
+          item.clientUserMessageId === record.clientUserMessageId
+          && deferredInputController.isProcessing(item.id)
+        ))
+        || taskRuns.values().some((run) => messageCommandMatchesRun(record, run))
+      ),
+      onExpired: (record) => deferredInputController.removeExpiredCommand(record),
+    });
+    runCoordinator.beforeDeferredDispatch = (item) => {
+      runtimeStateStore.expireMessageCommands();
+      if (item && runtimeStateStore.messageCommand(item.clientUserMessageId)?.result?.expired === true) {
+        throw Object.assign(new Error("Срок жизни команды истёк (72 часа)."), {
+          code: "MESSAGE_COMMAND_EXPIRED",
+        });
+      }
+    };
+  }
 
   function scheduleQueuedInput(item, delayMs = 2000) {
     deferredInputController.schedule(item, delayMs);

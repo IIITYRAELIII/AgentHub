@@ -1,4 +1,5 @@
 export const IMAGE_GENERATION_ESTIMATE_CREDITS = 90;
+export const WORK_LOG_IMAGE_BACKFILL_VERSION = "2026.9.29.1";
 
 const IMAGE_GENERATION_PROMPT_PATTERNS = [
   /\bimagegen\b/iu,

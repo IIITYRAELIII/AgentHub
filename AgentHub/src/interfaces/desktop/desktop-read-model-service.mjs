@@ -7,6 +7,7 @@ export class DesktopReadModelService {
     androidEnabled = () => false,
     lastTaskMessage,
     hasUnread,
+    commandTrace = null,
   } = {}) {
     if (typeof snapshot !== "function") throw new TypeError("snapshot is required");
     if (!readStateStore || typeof readStateStore.markRead !== "function") {
@@ -27,6 +28,7 @@ export class DesktopReadModelService {
       androidEnabled,
       lastTaskMessage,
       hasUnread,
+      commandTrace,
     });
   }
 
@@ -101,6 +103,8 @@ export class DesktopReadModelService {
       activityUnknown: task?.activityUnknown === true || (task?.running === true && operation.kind === "unknown"),
       lastAnswerRevision: latestFinal?.revision ?? null,
       latestFinal,
+      readCursor: cursor ? { answerAtMs: cursor.answerAtMs, answerTurnId: cursor.answerTurnId,
+        answerRevision: cursor.answerRevision } : null,
       unread,
       run: userRunning ? {
         ...run,
@@ -113,14 +117,11 @@ export class DesktopReadModelService {
 
   projectedOperation(run, context) {
     const explicit = String(run?.operationKind ?? "").trim().toLowerCase();
-    if (["user-turn", "probe", "compaction", "measurement", "maintenance"].includes(explicit)) {
+    if (explicit) {
       return { kind: explicit };
     }
     if (!run) return { kind: "unknown" };
     const clientId = String(run.clientUserMessageId ?? "").trim();
-    if (run.contextProbe === true || clientId.startsWith("agent-hub-context-probe:")) {
-      return { kind: "probe", migrationGuard: "legacy-context-probe" };
-    }
     if (context?.compaction?.status === "running"
       && String(context.compaction.turnId ?? "") === String(run.turnId ?? "")) {
       return { kind: "compaction", migrationGuard: "legacy-compaction-observer" };
@@ -140,19 +141,30 @@ export class DesktopReadModelService {
   async markTaskRead(params, context = null) {
     const requested = params?.final ?? params;
     const accountId = this.accountId(context);
-    const snapshot = await this.snapshotImpl({ accountId });
+    const commandId = /^[A-Za-z0-9][A-Za-z0-9:._-]{0,199}$/u.test(params?.clientTraceId ?? "")
+      ? params.clientTraceId : "";
+    const resolve = () => this.snapshotImpl({ accountId });
+    const snapshot = this.commandTrace?.measureBestEffort
+      ? await this.commandTrace.measureBestEffort({ commandId, stage: "read-final-resolve", transport: "server" }, resolve)
+      : await resolve();
     const task = (Array.isArray(snapshot?.tasks) ? snapshot.tasks : []).find((entry) => (
       String(entry?.provider ?? "").trim().toLowerCase()
         === String(requested?.provider ?? "").trim().toLowerCase()
       && String(entry?.threadId ?? "").trim() === String(requested?.threadId ?? "").trim()
     ));
     const current = this.latestFinal(task);
-    if (!current) return { marked: false, reason: "no-final" };
+    const recordDecision = (decision) => this.commandTrace?.recordBestEffort?.({
+      commandId, stage: "read-final-decision", transport: "server", outcome: "succeeded",
+      metadata: { decision, ...(current ? { provider: current.provider, threadId: current.threadId,
+        turnId: current.turnId, terminalRevision: current.revision } : {}) },
+    });
+    if (!current) { recordDecision("no-final"); return { marked: false, reason: "no-final" }; }
     const exact = String(requested?.provider ?? "").trim().toLowerCase() === current.provider
       && String(requested?.threadId ?? "").trim() === current.threadId
       && String(requested?.turnId ?? "").trim() === current.turnId
       && Number(requested?.revision) === current.revision;
-    if (!exact) return { marked: false, reason: "stale-final", latestFinal: current };
+    if (!exact) { recordDecision("stale-final"); return { marked: false, reason: "stale-final", latestFinal: current }; }
+    recordDecision("exact");
     const cursor = await this.readStateStore.markRead({
       accountId,
       provider: current.provider,
@@ -160,7 +172,15 @@ export class DesktopReadModelService {
       answerAt: current.completedAt,
       answerTurnId: current.turnId,
       answerRevision: current.revision,
-    });
+    }, { commandId, commandTrace: this.commandTrace });
+    this.commandTrace?.recordBestEffort?.({ commandId, stage: "read-cursor-confirmed", transport: "server",
+      outcome: "succeeded", metadata: { provider: current.provider, threadId: current.threadId,
+        turnId: current.turnId, terminalRevision: current.revision, streamId: task?.streamId ?? null } });
+    const projected = this.projectTask(task, accountId);
+    this.commandTrace?.recordBestEffort?.({ commandId, stage: "read-cursor-projected", transport: "server",
+      outcome: "succeeded", metadata: { provider: projected.latestFinal?.provider,
+        threadId: projected.latestFinal?.threadId, turnId: projected.latestFinal?.turnId,
+        terminalRevision: projected.latestFinal?.revision, unread: projected.unread } });
     return { marked: true, final: current, cursor };
   }
 }

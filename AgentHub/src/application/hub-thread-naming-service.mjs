@@ -1,86 +1,110 @@
-import { isCodexContextProbeText } from "../domain/codex-context-probe.mjs";
-
-const normalized = (value) => String(value ?? "").replace(/\s+/gu, " ").trim().slice(0, 80);
-const ownedSources = new Set(["created", "rebirth"]);
-const TITLE_RPC_TIMEOUT_MS = 1_000;
-
-export function isAutomaticHubThreadTitle(value) {
-  const title = normalized(value);
-  return !title || isCodexContextProbeText(title) || /^Telegram · /u.test(title)
-    || /^(?:Codex|Claude) · [\da-f-]{8,}$/iu.test(title);
-}
-
-export function workspaceProviderThreadTitle(workspace, stream) {
-  const workspaceName = normalized(workspace?.name);
-  if (!workspaceName || !stream?.id) return "";
-  const streamName = normalized(stream.name) || `Поток ${Math.max(1, Number(stream.ordinal) || 1)}`;
-  const suffix = ` — ${streamName}`;
-  return `${workspaceName.slice(0, Math.max(1, 80 - suffix.length))}${suffix}`.slice(0, 80);
-}
+export { workspaceProviderThreadTitle } from "../domain/workspace-stream-identity.mjs";
+import { workspaceProviderThreadTitle, normalizedThreadIdentity } from "../domain/workspace-stream-identity.mjs";
 
 export function createHubThreadNamingService({
   workspaceCatalog, taskMetadata, sendRpc, saveTitles, saveState,
 }) {
-  function context(reference) {
+  const inFlight = new Map();
+
+  function assertCurrentIntent(reference, intent, status = "pending") {
     const binding = workspaceCatalog.thread(reference);
-    const stream = binding ? workspaceCatalog.stream(binding.streamId) : null;
-    const workspace = stream ? workspaceCatalog.workspace(stream.workspaceId) : null;
-    return binding && stream && workspace ? { binding, stream, workspace } : null;
+    const current = workspaceCatalog.threadNaming(reference);
+    if (!binding || !current || current.status !== status
+      || binding.streamId !== intent.streamId || binding.position !== intent.position
+      || current.streamId !== intent.streamId || current.position !== intent.position
+      || current.title !== intent.title) {
+      const error = new Error("Hub Thread naming authority was superseded");
+      error.code = "HUB_THREAD_NAMING_SUPERSEDED";
+      error.thread = { ...reference };
+      throw error;
+    }
   }
 
-  async function apply(reference, title, currentTitle = "", rpcOptions = {}) {
-    reference = { provider: reference.provider, threadId: reference.threadId };
-    const name = normalized(title);
-    if (!name) throw new Error("Workspace and Stream are required to name a Hub Thread");
-    if (taskMetadata.pinnedTitle(reference) !== name || normalized(currentTitle) !== name) {
+  async function apply(reference, intent, observedThread) {
+    const name = intent.title;
+    try {
+      assertCurrentIntent(reference, intent);
+      if (reference.provider === "codex") {
+        let writeError;
+        let observed = observedThread;
+        if (!observed && intent.recovering) {
+          observed = (await sendRpc("thread/read", { threadId: reference.threadId, includeTurns: false })).thread;
+        }
+        // Synchronous catalog reads and the next dispatch have no local await gap.
+        // Never hold a SQLite transaction across a provider RPC.
+        assertCurrentIntent(reference, intent);
+        if (observed && observed.id !== reference.threadId) throw new Error("Provider Thread identity mismatch");
+        if (observed?.id !== reference.threadId || observed?.name !== name) {
+          try { await sendRpc("thread/name/set", { threadId: reference.threadId, name }); }
+          catch (error) { writeError = error; }
+          assertCurrentIntent(reference, intent);
+        }
+        let confirmed;
+        try {
+          confirmed = (await sendRpc("thread/read", { threadId: reference.threadId, includeTurns: false })).thread;
+        } catch (error) { throw writeError ?? error; }
+        assertCurrentIntent(reference, intent);
+        if (confirmed?.id !== reference.threadId || confirmed.name !== name) {
+          throw writeError ?? new Error("Provider Thread name is not confirmed");
+        }
+      }
+      assertCurrentIntent(reference, intent);
       taskMetadata.pinTitle(reference, name);
       taskMetadata.expectTitle(reference, name);
       await saveTitles();
+      assertCurrentIntent(reference, intent);
       await saveState();
+      assertCurrentIntent(reference, intent);
+      await workspaceCatalog.completeThreadNaming(reference, name);
+      assertCurrentIntent(reference, intent, "complete");
+      return name;
+    } catch (cause) {
+      if (cause.code === "HUB_THREAD_NAMING_SUPERSEDED") throw cause;
+      assertCurrentIntent(reference, intent);
+      const error = new Error(`Hub Thread naming remains pending: ${cause.message}`, { cause });
+      error.code = "HUB_THREAD_NAMING_PENDING";
+      error.thread = { ...reference };
+      throw error;
     }
-    if (reference.provider === "codex" && normalized(currentTitle) !== name) {
-      await sendRpc("thread/name/set", { threadId: reference.threadId, name }, rpcOptions);
+  }
+
+  async function name(reference, { recovery = false, observedThread } = {}) {
+    reference = { provider: reference.provider, threadId: reference.threadId };
+    const binding = workspaceCatalog.thread(reference);
+    const intent = workspaceCatalog.threadNaming(reference);
+    if (!binding || !intent) {
+      if (recovery) return null;
+      throw new Error("Created Hub Thread has no durable naming intent");
     }
-    return name;
+    if (intent.streamId !== binding.streamId || intent.position !== binding.position
+      || intent.status === "superseded") return null;
+    if (intent.status === "complete") return recovery ? null : intent.title;
+    const key = JSON.stringify(reference);
+    if (inFlight.has(key)) return inFlight.get(key);
+    const pending = apply(reference, { ...intent, recovering: recovery }, observedThread);
+    inFlight.set(key, pending);
+    try { return await pending; } finally { inFlight.delete(key); }
   }
 
-  async function nameCreatedThread(reference) {
-    const resolved = context(reference);
-    if (!resolved) throw new Error("Created Hub Thread has no Workspace/Stream binding");
-    return apply({ provider: reference.provider, threadId: reference.threadId },
-      workspaceProviderThreadTitle(resolved.workspace, resolved.stream));
-  }
-
-  /* Новый Thread ротации проверяется пробой ещё до привязки к Stream. Имя
-     ему даётся из привязки исходного Thread, чтобы текст пробы не стал его
-     заголовком. Закрепление имени остаётся за обычной привязкой после
-     подтверждённой готовности: у неготового Thread не должно появиться
-     собственного сохранённого состояния. */
-  async function nameRotationTarget(reference, target) {
-    const sourceThreadId = String(target?.titleSourceThreadId ?? "").trim();
-    if (!sourceThreadId || sourceThreadId === reference.threadId) return "";
-    const source = context({ provider: "codex", threadId: sourceThreadId });
-    if (!source) return "";
-    const name = normalized(workspaceProviderThreadTitle(source.workspace, source.stream));
-    if (!name) return "";
-    await sendRpc("thread/name/set", { threadId: reference.threadId, name }, { timeoutMs: TITLE_RPC_TIMEOUT_MS });
-    return name;
-  }
-
-  async function preserveProbeTitle(target) {
-    const reference = { provider: "codex", threadId: String(target?.threadId ?? "").trim() };
-    const resolved = context(reference);
-    if (!resolved) return nameRotationTarget(reference, target);
-    if (!ownedSources.has(resolved.binding.source)) return "";
-    const rpcOptions = { timeoutMs: TITLE_RPC_TIMEOUT_MS };
-    const result = await sendRpc("thread/read", { threadId: reference.threadId, includeTurns: false }, rpcOptions);
-    const current = normalized(result?.thread?.name);
-    const pending = taskMetadata.pendingTitle(reference);
-    const pinned = taskMetadata.pinnedTitle(reference);
-    const title = [pending, current, pinned].find((value) => !isAutomaticHubThreadTitle(value))
-      || workspaceProviderThreadTitle(resolved.workspace, resolved.stream);
-    return apply(reference, title, current, rpcOptions);
-  }
-
-  return { nameCreatedThread, preserveProbeTitle };
+  return {
+    previewThreadNaming: (references) => {
+      if (!Array.isArray(references) || references.length > 20) throw new Error("Naming preview is limited to 20 exact Threads");
+      return references.map((value) => {
+        const reference = normalizedThreadIdentity(value);
+        const binding = workspaceCatalog.thread(reference);
+        if (!binding) throw new Error("Preview Thread has no catalog binding");
+        const stream = workspaceCatalog.stream(binding.streamId);
+        const workspace = stream && workspaceCatalog.workspace(stream.workspaceId);
+        const title = workspaceProviderThreadTitle(workspace, stream, binding.position);
+        return { ...reference, streamId: stream.id, position: binding.position, title,
+          numberAuthority: "confirmed-catalog-position; unknown prior history not recovered",
+          nativeTitle: null, nativeTitleVerified: false,
+          providerRename: reference.provider === "codex" ? "supported" : "unsupported",
+          command: { name: "task.rename", params: { ...reference, streamId: stream.id, title } },
+          requiresApproval: true };
+      });
+    },
+    nameCreatedThread: (reference) => name(reference, { recovery: reference.recovering === true }),
+    recoverThreadNaming: (reference, observedThread) => name(reference, { recovery: true, observedThread }),
+  };
 }

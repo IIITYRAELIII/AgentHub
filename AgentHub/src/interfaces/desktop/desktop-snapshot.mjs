@@ -6,7 +6,6 @@ import {
   userTaskReferencePromptDetails,
 } from "../../application/task-history.mjs";
 import { isClaudeCompactionRun } from "../../domain/claude-context-maintenance.mjs";
-import { isCodexContextProbeTurn } from "../../domain/codex-context-probe.mjs";
 import {
   confirmedInterstreamOrigin,
   interstreamOriginAuthor,
@@ -23,6 +22,11 @@ import { createSnapshotCollectionDelta } from "./snapshot-collection-delta.mjs";
 import { deferredInputAttachments } from "./deferred-input-presentation-service.mjs";
 
 const MAX_COMPACT_ACTIVITY_DETAIL_CHARS = 1_200;
+const TRACE_ID = /^[A-Za-z0-9][A-Za-z0-9:._-]{0,199}$/u;
+const traceId = (value) => {
+  const text = String(value ?? "").trim();
+  return TRACE_ID.test(text) ? text : "";
+};
 
 function deferredWaitProjection(item) {
   const waitReason = item.waitReason ?? deferredLaunchWaitReason(item.lastError);
@@ -87,6 +91,33 @@ function deferredMessageProjection(item, deferred, receipts) {
   };
 }
 
+export function deferredPendingInputSnapshot(item, deferred, receipts, taskTitle = item?.taskTitle ?? null) {
+  const waitProjection = deferredWaitProjection(item);
+  return {
+    id: item.id,
+    state: item.manualAction === "steer" ? "steering" : "pending",
+    ...(item.manualAction !== "steer" && waitProjection.lastError ? { attentionRequired: true } : {}),
+    provider: item.provider,
+    threadId: item.threadId,
+    streamId: item.streamId ?? null,
+    taskTitle,
+    clientUserMessageId: item.clientUserMessageId ?? null,
+    ...(item.clientProjectionIntent ? { clientProjectionIntent: item.clientProjectionIntent } : {}),
+    ...deferredMessageProjection(item, deferred, receipts),
+    annotations: deferred.responseAnnotations?.(item.input) ?? [],
+    allowForce: item.allowForce === true,
+    conflictKind: item.conflictKind ?? null,
+    ...(item.conflictKind === "message-steer"
+      && item.lastErrorCode === "ERR_PROVIDER_STEER_NOT_DELIVERED"
+      ? { queueAfterTurnAvailable: true }
+      : {}),
+    ...waitProjection,
+    attempts: Number(item.attempts) || 0,
+    createdAt: item.createdAt ?? null,
+    attachments: deferredInputAttachments(item, deferred.describeAttachments),
+  };
+}
+
 export function createDesktopSnapshotFactory({
   clock,
   context,
@@ -121,6 +152,37 @@ export function createDesktopSnapshotFactory({
   });
   const messagePinDelta = createSnapshotCollectionDelta({ keyOf: (item) => item?.id });
   let catalogRefresh = null;
+  let boardStateCache = null;
+
+  function boardRevision() {
+    try {
+      const value = board.snapshotRevision;
+      return value == null ? "" : String(value);
+    } catch (error) {
+      warn?.("Cannot read TaskBoard snapshot revision:", error.message);
+      return "";
+    }
+  }
+
+  function boardSnapshotState() {
+    const beforeRevision = boardRevision();
+    if (beforeRevision && boardStateCache?.sourceVersion === beforeRevision) {
+      return boardStateCache;
+    }
+    const state = {
+      workspaces: board.workspaces?.() ?? catalog.hierarchy?.() ?? [],
+      archivedWorkspaces: board.archivedWorkspaces?.() ?? [],
+      boardTasks: board.snapshot?.() ?? [],
+      boardLayout: board.layout?.() ?? { columnOrder: [], notesComment: "" },
+      sourceVersion: "",
+    };
+    const afterRevision = boardRevision();
+    if (beforeRevision && beforeRevision === afterRevision) {
+      state.sourceVersion = afterRevision;
+      boardStateCache = state;
+    }
+    return state;
+  }
 
   function catalogActiveRun(entry, lastMessage) {
     if (entry?.running !== true) return null;
@@ -219,6 +281,9 @@ export function createDesktopSnapshotFactory({
         provider,
         threadId,
         clientUserMessageId,
+        ...(String(result.streamId ?? "").trim()
+          ? { streamId: String(result.streamId).trim() }
+          : {}),
         ...(String(result.clientProjectionIntent ?? "").trim()
           ? { clientProjectionIntent: String(result.clientProjectionIntent).trim() }
           : {}),
@@ -269,28 +334,41 @@ export function createDesktopSnapshotFactory({
     const compaction = context.compactionFor(String(thread ?? "")) ?? null;
     if (!usage && !compaction) return null;
     const windowTokens = Math.max(0, Number(usage?.modelContextWindow) || 0);
-    const usedTokens = Math.max(0, Number(usage?.usedTokens) || 0);
     const compactionStartedAtMs = Date.parse(String(compaction?.startedAt ?? "")) || 0;
     const usageUpdatedAtMs = Date.parse(String(usage?.updatedAt ?? "")) || 0;
+    const boundaryMs = Date.parse(String(compaction?.compactedAt ?? compaction?.completedAt ?? "")) || compactionStartedAtMs;
+    const completedCompaction = compaction?.status === "completed";
+    const freshExact = usage?.provisional !== true && usageUpdatedAtMs > boundaryMs;
+    const estimatedAfter = completedCompaction && !freshExact
+      && compaction?.measurementStatus === "completed" && compaction?.measurementKind === "estimated"
+      && compaction.afterPercent != null && Number.isFinite(Number(compaction.afterPercent));
+    const staleUsage = completedCompaction && !freshExact && !estimatedAfter;
+    const usedTokens = estimatedAfter && windowTokens
+      ? Math.round((Number(compaction.afterPercent) / 100) * windowTokens)
+      : staleUsage ? null : usage?.usedTokens ?? null;
+    const percent = estimatedAfter ? Number(compaction.afterPercent)
+      : usedTokens !== null && windowTokens ? Math.min(100, (Number(usedTokens) / windowTokens) * 100) : null;
     return {
       usedTokens,
       modelContextWindow: windowTokens,
-      percent: windowTokens ? Math.min(100, (usedTokens / windowTokens) * 100) : null,
+      percent,
+      estimated: estimatedAfter || (!completedCompaction && usage?.provisional === true),
       turnId: usage?.turnId ?? compaction?.turnId ?? null,
       updatedAt: usage?.updatedAt ?? null,
       compacting: context.isCompacting(String(thread ?? "")),
       compaction,
-      usagePending: !usage || usage?.provisional === true || (
-        compaction?.status === "completed"
-        && compactionStartedAtMs > 0
-        && usageUpdatedAtMs < compactionStartedAtMs
-      ),
-      breakdown: presentContextUsageBreakdown({
-        breakdown: usage?.breakdown,
-        provider: usage?.provider,
-        usedTokens,
-        modelContextWindow: windowTokens,
-      }),
+      usagePending: !completedCompaction && (!usage || usage?.provisional === true),
+      breakdown: staleUsage ? null : (() => {
+        const breakdown = presentContextUsageBreakdown({
+          breakdown: estimatedAfter ? null : usage?.breakdown,
+          provider: usage?.provider,
+          usedTokens: usedTokens ?? 0,
+          modelContextWindow: windowTokens,
+        });
+        return estimatedAfter && breakdown
+          ? { ...breakdown, note: "Предварительная оценка провайдера после свёртки." }
+          : breakdown;
+      })(),
     };
   }
 
@@ -505,53 +583,15 @@ export function createDesktopSnapshotFactory({
       && !String(run.responseText ?? "").trim();
   }
 
-  function isPostCompactionMeasurementObserver(run, context) {
-    if (run?.observer !== true || context?.compaction?.status !== "completed") return false;
-    const hasVisibleContent = Boolean(
-      String(run.promptPreview ?? "").trim()
-      || String(run.responseText ?? "").trim()
-      || String(run.progressReasoning ?? "").trim()
-      || (Array.isArray(run.userMessages) && run.userMessages.some((message) => (
-        String(message?.text ?? "").trim()
-        || (Array.isArray(message?.attachments) && message.attachments.length)
-      )))
-      || (Array.isArray(run.messageAttachments) && run.messageAttachments.length)
-      || (Array.isArray(run.activities) && run.activities.length)
-      || (Array.isArray(run.activityGroups) && run.activityGroups.length)
-    );
-    if (hasVisibleContent) return false;
-    if (context.usagePending === true) return true;
-    const runTurnId = String(run.turnId ?? "").trim();
-    const usageTurnId = String(context.turnId ?? "").trim();
-    const compactionTurnId = String(context.compaction.turnId ?? "").trim();
-    return Boolean(
-      runTurnId
-      && runTurnId === usageTurnId
-      && runTurnId !== compactionTurnId
-    );
-  }
-
   function isInternalMaintenanceObserver(run, context) {
     if (!run) return false;
-    const turnId = String(run.turnId ?? "").trim();
-    const probeTurnIds = new Set(
-      (context?.compaction?.probeTurnIds ?? [])
-        .map((value) => String(value ?? "").trim())
-        .filter(Boolean),
-    );
     return isCompactionOnlyObserver(run, context)
-      || isPostCompactionMeasurementObserver(run, context)
-      || (turnId && probeTurnIds.has(turnId))
-      || isClaudeCompactionRun(run)
-      || (run.provider === "codex" && isCodexContextProbeTurn({
-        prompt: run.promptPreview,
-        finalAnswer: run.responseText,
-        clientUserMessageId: run.clientUserMessageId,
-        userMessages: run.userMessages,
-      }, { allowTextFallback: false }));
+      || isClaudeCompactionRun(run);
   }
 
-  function desktopTaskSnapshot(entry, { accountId = "", compactSnapshot = false, computeUnread = true } = {}) {
+  function desktopTaskSnapshot(entry, {
+    accountId = "", compactSnapshot = false, computeUnread = true, onProjection = null,
+  } = {}) {
     const displayTitle = taskDisplayTitle(entry);
     const task = {
       streamId: entry.streamId ?? null,
@@ -585,6 +625,21 @@ export function createDesktopSnapshotFactory({
     const visibleRun = internalMaintenanceObserver || !runActive || savedCompletionMatchesRun
       ? null
       : run;
+    const selected = tasks.entryIsSelected(entry, selection.selectedTask());
+    if (selected && typeof onProjection === "function") {
+      onProjection({
+        source: boundRun ? "registry-bound" : run ? "catalog-fallback" : "none",
+        gate: internalMaintenanceObserver ? "maintenance"
+          : !runActive ? "inactive" : savedCompletionMatchesRun ? "saved-same-turn" : "visible",
+        provider: traceId(entry.provider),
+        threadId: traceId(entry.threadId),
+        streamId: traceId(entry.streamId),
+        turnId: traceId(runTurnId || entry.turnId),
+        clientUserMessageId: traceId(run?.clientUserMessageId),
+        entryRunning: entry.running === true,
+        providerStartPresent: Boolean(visibleRun?.providerStart),
+      });
+    }
     const unread = Boolean(
       computeUnread
       && accountId
@@ -615,7 +670,7 @@ export function createDesktopSnapshotFactory({
       displayTitle,
       threadTitle: entry.title,
       model: visibleRun?.model ?? entry.model ?? null,
-      selected: tasks.entryIsSelected(entry, selection.selectedTask()),
+      selected,
       running: Boolean(visibleRun),
       activityUnknown: entry.activityUnknown === true,
       executionOwner: visibleRun?.executionOwner ?? entry.executionOwner ?? null,
@@ -701,7 +756,8 @@ export function createDesktopSnapshotFactory({
       return finishTiming({ notModified: true, version: knownVersion }, true);
     }
     phaseStartedAt = monotonicNow();
-    const workspaces = board.workspaces?.() ?? catalog.hierarchy?.() ?? [];
+    const boardState = boardSnapshotState();
+    const { workspaces } = boardState;
     let entries = catalog.entries();
     if (
       !entries.some((entry) => tasks.entryIsSelected(entry, selection.selectedTask()))
@@ -722,7 +778,10 @@ export function createDesktopSnapshotFactory({
       }]);
     }
     const taskSnapshots = entries.map((entry) => {
-      const task = desktopTaskSnapshot(entry, { accountId, compactSnapshot, computeUnread: !projectTask });
+      const task = desktopTaskSnapshot(entry, {
+        accountId, compactSnapshot, computeUnread: !projectTask,
+        onProjection: (diagnostic) => { snapshotTiming.selectedProjection = diagnostic; },
+      });
       return projectTask ? projectTask(task) : task;
     });
     snapshotTiming.taskProjectionMs = Math.round((monotonicNow() - phaseStartedAt) * 10) / 10;
@@ -781,16 +840,18 @@ export function createDesktopSnapshotFactory({
       : null;
     snapshotTiming.serverStateMs = Math.round((monotonicNow() - phaseStartedAt) * 10) / 10;
     phaseStartedAt = monotonicNow();
-    const boardTasks = board.snapshot?.() ?? [];
-    const archivedWorkspaces = board.archivedWorkspaces?.() ?? [];
+    const { boardTasks, archivedWorkspaces, boardLayout } = boardState;
     const messageReceipts = desktopMessageReceiptSnapshot();
     const messagePins = pins.snapshot?.() ?? [];
+    const codexModelOptions = current.codexModels.map((model) => ({
+      value: model.value, label: model.label,
+    }));
     const snapshot = {
       apiVersion: protocol,
       workspaces,
       archivedWorkspaces,
       boardTasks,
-      boardLayout: board.layout?.() ?? { columnOrder: [], notesComment: "" },
+      boardLayout,
       selected: {
         ...selectedIdentity,
         workspaceId: selectedTaskSnapshot?.workspaceId ?? selectedIdentity.workspaceId ?? null,
@@ -833,11 +894,9 @@ export function createDesktopSnapshotFactory({
         pinnedWorkspaceStreams: current.pinnedWorkspaceStreams ?? {},
         quickMessages: current.quickMessages ?? { global: [], streams: {}, workspaces: {} },
         quickMessageActionMode: current.quickMessageActionMode === "send" ? "send" : "insert",
-        models: activeProvider === "codex"
-          ? current.codexModels.map((model) => ({ value: model.value, label: model.label }))
-          : claudeOptions,
+        models: activeProvider === "codex" ? codexModelOptions : claudeOptions,
         modelOptionsByProvider: {
-          codex: current.codexModels.map((model) => ({ value: model.value, label: model.label })),
+          codex: codexModelOptions,
           claude: claudeOptions,
         },
         reasoningOptions: reasoningEfforts.map((value) => ({
@@ -868,28 +927,9 @@ export function createDesktopSnapshotFactory({
       messageReceipts,
       messagePins,
       deferredInputs: [
-        ...deferred.pendingValues().map((item) => {
-          const waitProjection = deferredWaitProjection(item);
-          return {
-            id: item.id,
-            state: item.manualAction === "steer" ? "steering" : "pending",
-            ...(item.manualAction !== "steer" && waitProjection.lastError ? { attentionRequired: true } : {}),
-            provider: item.provider,
-            threadId: item.threadId,
-            streamId: item.streamId ?? null,
-            taskTitle: deferredTaskTitle(item),
-            clientUserMessageId: item.clientUserMessageId ?? null,
-            ...(item.clientProjectionIntent ? { clientProjectionIntent: item.clientProjectionIntent } : {}),
-            ...deferredMessageProjection(item, deferred, receipts),
-            annotations: deferred.responseAnnotations?.(item.input) ?? [],
-            allowForce: item.allowForce === true,
-            conflictKind: item.conflictKind ?? null,
-            ...waitProjection,
-            attempts: Number(item.attempts) || 0,
-            createdAt: item.createdAt ?? null,
-            attachments: deferredInputAttachments(item, deferred.describeAttachments),
-          };
-        }),
+        ...deferred.pendingValues().map((item) => (
+          deferredPendingInputSnapshot(item, deferred, receipts, deferredTaskTitle(item))
+        )),
         ...deferred.queuedValues().map((item) => ({
           id: item.id,
           state: item.dispatchingAt
@@ -922,6 +962,7 @@ export function createDesktopSnapshotFactory({
       restartPending: restartProjection.pending,
       restartWaiting,
       restartBlockingCount,
+      restartFailure: restart.failure?.() ?? null,
       exchangeRates: exchangeRates?.snapshot?.() ?? null,
       activeCount,
       server: serverSnapshot,
@@ -931,8 +972,12 @@ export function createDesktopSnapshotFactory({
     phaseStartedAt = monotonicNow();
     const collectionDeltas = protocol >= 4 ? {
       conversations: conversationDelta(taskSnapshots, conversationsVersion),
-      workspaces: workspaceDelta(workspaces, workspacesVersion),
-      boardTasks: boardTaskDelta(boardTasks, boardTasksVersion),
+      workspaces: workspaceDelta(workspaces, workspacesVersion, {
+        sourceVersion: boardState.sourceVersion,
+      }),
+      boardTasks: boardTaskDelta(boardTasks, boardTasksVersion, {
+        sourceVersion: boardState.sourceVersion,
+      }),
       messageReceipts: messageReceiptDelta(messageReceipts, messageReceiptsVersion),
       messagePins: messagePinDelta(messagePins, messagePinsVersion),
     } : null;

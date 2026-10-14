@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { DeferredInputController } from "../../src/application/deferred-input-controller.mjs";
+import { deferredPendingInputSnapshot } from "../../src/interfaces/desktop/desktop-snapshot.mjs";
 import {
   task,
   snapshot,
@@ -15,6 +17,64 @@ import {
   selectMessageText,
   attachTaskReference
 } from "./composer-production.fixture.mjs";
+
+test("production Stream header follows saved model while idle and keeps active turn model", { timeout: 30_000 }, async () => {
+  const browser = await launchBrowser();
+  try {
+    const page = await browser.newPage();
+    const current = snapshot();
+    current.tasks[0].model = "gpt-5.6-sol";
+    current.workspaces[0].streams[0].settings = { provider: "codex", model: "gpt-6-sol" };
+    current.settings.modelOptionsByProvider.codex = [
+      { value: "gpt-5.6-sol", label: "GPT-5.6 Sol" },
+      { value: "gpt-6-sol", label: "GPT-6 Sol" },
+      { value: "gpt-6-luna", label: "GPT-6 Luna" },
+    ];
+    await openFixture(page, { fixtureSnapshot: current });
+    const header = page.locator("[data-stream-header-model]");
+    assert.equal(await header.textContent(), "6 Sol");
+    assert.equal(await header.getAttribute("title"), "GPT-6 Sol");
+    current.version = "active-model";
+    current.tasks[0].running = true;
+    current.tasks[0].run = {
+      turnId: "active-turn", operationKind: "user-turn", projectionState: "active",
+      model: "gpt-5.6-sol",
+    };
+    current.workspaces[0].streams[0].settings.model = "gpt-6-luna";
+    await applyFixtureSnapshot(page, current);
+    assert.equal(await header.textContent(), "5.6 Sol");
+    current.version = "idle-new-model";
+    current.tasks[0].running = false;
+    current.tasks[0].run = null;
+    await applyFixtureSnapshot(page, current);
+    assert.equal(await header.textContent(), "6 Luna");
+  } finally { await browser.close(); }
+});
+
+test("successful message admission renders the receipt without an acceptance toast", { timeout: 30_000 }, async () => {
+  const browser = await launchBrowser();
+  try {
+    const page = await browser.newPage();
+    await openFixture(page);
+    await page.evaluate(() => {
+      localStorage.setItem("fixture:send-mode", "accept");
+      window.__toastHistory.length = 0;
+      const run = window.AgentHubMessageSendTransaction.run;
+      window.AgentHubMessageSendTransaction.run = async (options) => {
+        const result = await run(options);
+        window.__finishedSendReceipt = result;
+        return result;
+      };
+    });
+    await submit(page, { text: "quiet acceptance" });
+    await page.waitForFunction(() => window.__finishedSendReceipt?.accepted === true);
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    assert.equal((await bridgeCalls(page, "send-message")).length, 1);
+    assert.equal(await page.locator("[data-composer-input]").inputValue(), "");
+    assert.match(await page.locator("[data-chat-pane]").textContent(), /quiet acceptance/u);
+    assert.deepEqual(await page.evaluate(() => window.__toastHistory), []);
+  } finally { await browser.close(); }
+});
 
 test("cold unbound snapshot cancels before transport and restores the exact submitted draft", {
   timeout: 30_000,
@@ -177,6 +237,7 @@ for (const { now, expectedTime } of [
     const initial = snapshot();
     initial.tasks[0] = { ...initial.tasks[0], running: true, run: {
       id: "run-live", turnId: "turn-live", operationKind: "user-turn",
+      projectionState: "active",
       providerStart: { state: "observed", turnId: "turn-live" },
       clientUserMessageId: "root", prompt: "Root question",
       startedAt: "2026-09-09T15:51:11.165Z", submittedAt: "2026-09-09T15:51:10.190Z",
@@ -257,6 +318,107 @@ test("production queue corrects stale idle placement and survives receipt evicti
     await page.locator(".msg-body").filter({ hasText: text }).waitFor({ state: "visible" });
     assert.equal(await page.locator(".msg-body").filter({ hasText: text }).count(), 1);
     assert.deepEqual(diagnostics, []);
+  } finally {
+    await browser.close();
+  }
+});
+
+test("attention-required exact steer exposes explicit retry and queue decisions", {
+  timeout: 90_000,
+}, async () => {
+  const pendingInputs = new Map();
+  const queuedInputs = new Map();
+  const item = {
+    id: "exact-steer-decision",
+    provider: "codex",
+    threadId: "thread-a",
+    streamId: "stream-a",
+    taskTitle: "Agent HUB - Sirius",
+    clientUserMessageId: "exact-steer-client",
+    clientProjectionIntent: "conversation",
+    input: "Exact steer retained",
+    conflictKind: "message-steer",
+    steerTargetRunId: "run-a",
+    steerTargetTurnId: "turn-a",
+    createdAt: "2026-09-13T22:00:00.000Z",
+  };
+  queuedInputs.set(item.id, item);
+  let providerCalls = 0;
+  const controller = new DeferredInputController({
+    pendingInputs,
+    queuedInputs,
+    isBlocked: async () => false,
+    occupancy: async () => ({ occupied: false, run: null }),
+    steer: async () => { providerCalls += 1; return null; },
+    start: async () => {},
+    persist: async () => {},
+    updateMessage: async () => {},
+    pendingKeyboard: () => ({ inline_keyboard: [] }),
+    notifyReturned: async () => {},
+    now: () => Date.parse("2026-09-13T22:00:01.000Z"),
+  });
+  await controller.process(item.id);
+  assert.equal(providerCalls, 0);
+  const deferred = deferredPendingInputSnapshot(pendingInputs.get(item.id), {
+    editableText: (input) => input,
+    inputPreview: (input) => input,
+    responseAnnotations: () => [],
+    describeAttachments: () => [],
+  }, { forMessage: () => null });
+  assert.equal(deferred.queueAfterTurnAvailable, true);
+  assert.equal(deferred.attentionRequired, true);
+
+  for (const [selector, expectedAction] of [
+    ["queue-retry", "retry"],
+    ["queue-accept", "queue"],
+  ]) {
+    const browser = await launchBrowser();
+    const page = await browser.newPage();
+    try {
+      const fixtureSnapshot = snapshot();
+      fixtureSnapshot.version = `exact-steer-${expectedAction}`;
+      fixtureSnapshot.deferredInputs = [deferred];
+      await openFixture(page, { fixtureSnapshot });
+      await page.reload();
+      const row = page.locator(".queue-item[data-queue-id='exact-steer-decision']");
+      await row.waitFor({ state: "visible" });
+      assert.equal(await row.locator("[data-action='queue-retry']").count(), 1);
+      assert.equal(await row.locator("[data-action='queue-accept']").count(), 1);
+      assert.equal(await row.locator("[data-action='queue-steer']").count(), 0);
+      assert.equal((await bridgeCalls(page, "deferred-input")).length, 0);
+      await row.locator(`[data-action='${selector}']`).click();
+      await page.waitForFunction((action) => {
+        const log = JSON.parse(localStorage.getItem("fixture:bridge-log") ?? "[]");
+        return log.some((entry) => entry.action === "deferred-input"
+          && entry.params.id === "exact-steer-decision"
+          && entry.params.action === action);
+      }, expectedAction);
+      const calls = await bridgeCalls(page, "deferred-input");
+      assert.equal(calls.length, 1);
+      assert.equal(calls[0].params.id, "exact-steer-decision");
+      assert.equal(calls[0].params.action, expectedAction);
+    } finally {
+      await browser.close();
+    }
+  }
+
+  const browser = await launchBrowser();
+  const page = await browser.newPage();
+  try {
+    const fixtureSnapshot = snapshot();
+    fixtureSnapshot.version = "exact-steer-unknown";
+    fixtureSnapshot.deferredInputs = [{
+      ...deferred,
+      queueAfterTurnAvailable: false,
+      lastError: "Провайдер не подтвердил уточнение; автоматический повтор не выполнялся.",
+    }];
+    await openFixture(page, { fixtureSnapshot });
+    const row = page.locator(".queue-item[data-queue-id='exact-steer-decision']");
+    await row.waitFor({ state: "visible" });
+    assert.equal(await row.locator("[data-action='queue-retry']").count(), 1);
+    assert.equal(await row.locator("[data-action='queue-accept']").count(), 0);
+    assert.equal(await row.locator("[data-action='queue-steer']").count(), 0);
+    assert.equal((await bridgeCalls(page, "deferred-input")).length, 0);
   } finally {
     await browser.close();
   }
@@ -517,7 +679,9 @@ test("production attachment add and remove invalidate old recovery before late a
     assert.equal(await addPage.locator("[data-attachment-index]").count(), 0);
     await setSelectedTask(addPage, "stream-a");
     await addPage.waitForFunction(() => document.querySelectorAll("[data-attachment-index]").length === 1);
-    assert.equal(await addPage.locator("[data-composer-input]").inputValue(), "attachment add survives");
+    // The receipt cleared the accepted text while the new file was preparing.
+    // Appending the new file must not resurrect the old submitted draft.
+    assert.equal(await addPage.locator("[data-composer-input]").inputValue(), "");
     assert.equal(await addPage.locator("[data-attachment-index]").count(), 1);
     await addPage.close();
 
@@ -695,6 +859,17 @@ test("production attachment recovery blocks managed reload when the attachment s
     // since the chunked upload change. Here the attachment database fails to
     // open, and the product treats that as a non-durable attachment.
     await openFixture(page, { attachmentStorageOpenFailure: true });
+    await page.locator("[data-file-input]").setInputFiles({
+      name: "screenshot.png", mimeType: "image/png", buffer: Buffer.from("screenshot-bytes"),
+    });
+    await page.locator("[data-attachment-index]").waitFor();
+    assert.equal(await page.locator("[data-attachment-storage-warning]").count(), 0);
+    assert.equal(await page.evaluate(() => window.__toastHistory.some((message) => (
+      /Вложение добавлено|Копия черновика не сохранена|локальное хранилище/iu.test(message)
+    ))), false);
+    assert.equal(await page.evaluate(() => window.AgentHub.prepareForRuntimeReload()), false);
+    // Remove this draft before exercising the existing rejected-send recovery.
+    await page.locator("[data-attachments] .attachment-remove").click();
     await submit(page, {
       text: "large attachment",
       attachment: {
@@ -808,7 +983,7 @@ test("production receipt without streamId completes only one exact provider Thre
   }
 });
 
-test("production accepted send invalidates a held Blob preparation draft operation", {
+test("production send waits for a held Blob preparation without losing the selected file", {
   timeout: 120_000,
 }, async () => {
   const browser = await launchBrowser();
@@ -833,22 +1008,24 @@ test("production accepted send invalidates a held Blob preparation draft operati
     });
     await page.waitForFunction(() => Boolean(window.__heldSendRead));
     await page.locator("[data-composer]").evaluate((form) => form.requestSubmit());
-    await page.waitForFunction(() => {
-      const log = JSON.parse(localStorage.getItem("fixture:bridge-log") ?? "[]");
-      return log.some((entry) => entry.action === "send-message")
-        && document.querySelector("[data-composer-input]")?.value === "";
-    });
+    assert.equal((await bridgeCalls(page, "send-message")).length, 0);
+    assert.equal(await page.locator("[data-composer-input]").inputValue(), "accepted while file read is pending");
     await page.evaluate(() => window.__releaseSendRead());
-    await page.waitForTimeout(100);
+    await page.waitForFunction(() => document.querySelectorAll("[data-attachment-index]").length === 1);
+    assert.equal((await bridgeCalls(page, "send-message")).length, 0);
+    await page.locator("[data-composer]").evaluate((form) => form.requestSubmit());
+    await page.waitForFunction(() => JSON.parse(localStorage.getItem("fixture:bridge-log") ?? "[]")
+      .some((entry) => entry.action === "send-message"));
     assert.equal(await page.locator("[data-composer-input]").inputValue(), "");
     assert.equal(await page.locator("[data-attachment-index]").count(), 0);
     assert.equal((await bridgeCalls(page, "send-message")).at(-1).params.text, "accepted while file read is pending");
+    assert.equal((await bridgeCalls(page, "send-message")).at(-1).params.attachments.length, 1);
   } finally {
     await browser.close();
   }
 });
 
-test("production attachment reads are Task-scoped, generation-fenced and latest-operation wins", {
+test("production attachment reads append independently and remain Task generation-fenced", {
   timeout: 120_000,
 }, async () => {
   const browser = await launchBrowser();
@@ -873,11 +1050,14 @@ test("production attachment reads are Task-scoped, generation-fenced and latest-
       name: "second.png", mimeType: "image/png", buffer: Buffer.from([2]),
     });
     await overlap.waitForFunction(() => window.__heldReads?.length === 2);
+    await overlap.locator("[data-composer-input]").fill("Text typed while both screenshots are being prepared");
     await overlap.evaluate(() => window.__releaseRead(1));
     await overlap.waitForFunction(() => document.querySelectorAll("[data-attachment-index]").length === 1);
     await overlap.evaluate(() => window.__releaseRead(0));
-    await overlap.waitForTimeout(50);
-    assert.equal(await overlap.locator("[data-attachment-index]").count(), 1);
+    await overlap.waitForFunction(() => document.querySelectorAll("[data-attachment-index]").length === 2, null, { timeout: 3000 });
+    assert.equal(await overlap.locator("[data-composer-input]").inputValue(), "Text typed while both screenshots are being prepared");
+    assert.equal(await overlap.locator("[data-attachment-index]").count(), 2);
+    assert.equal(await overlap.locator("[data-attachments] img[alt='first.png']").count(), 1);
     assert.equal(await overlap.locator("[data-attachments] img[alt='second.png']").count(), 1);
     await overlap.close();
 
@@ -934,6 +1114,192 @@ test("production attachment reads are Task-scoped, generation-fenced and latest-
   }
 });
 
+test("production screenshot paste stays local while network capability negotiation is unavailable", {
+  timeout: 30_000,
+}, async (context) => {
+  const browser = await launchBrowser();
+  const page = await browser.newPage();
+  try {
+    await openFixture(page);
+    await page.evaluate(() => {
+      window.__capabilityCalls = 0;
+      window.AgentHubAttachmentCapabilities = () => {
+        window.__capabilityCalls += 1;
+        return new Promise(() => {});
+      };
+      const input = document.querySelector("[data-composer-input]");
+      window.__pasteStartedAt = performance.now();
+      const observer = new MutationObserver(() => {
+        if (document.querySelectorAll("[data-attachment-index]").length !== 5) return;
+        window.__pasteElapsedMs = performance.now() - window.__pasteStartedAt;
+        observer.disconnect();
+      });
+      observer.observe(document.querySelector("[data-attachments]"), { childList: true, subtree: true });
+      for (let index = 0; index < 5; index += 1) {
+        const transfer = new DataTransfer();
+        transfer.items.add(new File([new Uint8Array(256 * 1024).fill(index + 1)], `screen-${index}.png`, { type: "image/png" }));
+        input.dispatchEvent(new ClipboardEvent("paste", { bubbles: true, cancelable: true, clipboardData: transfer }));
+      }
+      input.value = "Keep this newly typed text";
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await page.waitForFunction(() => document.querySelectorAll("[data-attachment-index]").length === 5, null, { timeout: 3000 });
+    context.diagnostic(`Five 256 KiB clipboard files visible in ${Math.round(await page.evaluate(() => window.__pasteElapsedMs))} ms; no network capability request`);
+    assert.equal(await page.evaluate(() => window.__capabilityCalls), 0);
+    assert.equal(await page.locator("[data-composer-input]").inputValue(), "Keep this newly typed text");
+    await page.reload({ waitUntil: "load" });
+    await page.waitForFunction(() => document.querySelectorAll("[data-attachment-index]").length === 5);
+    assert.equal(await page.locator("[data-composer-input]").inputValue(), "Keep this newly typed text");
+  } finally {
+    await browser.close();
+  }
+});
+
+test("production negotiated batch refusal restores the exact draft before any upload or message", {
+  timeout: 30_000,
+}, async () => {
+  const browser = await launchBrowser();
+  const page = await browser.newPage();
+  try {
+    await openFixture(page, { chunkedUpload: true });
+    const requests = [];
+    await page.route("**/api/attachment-upload**", async (route) => {
+      requests.push(route.request().method());
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
+        protocol: "agent-hub-attachment-upload-v1", chunkBytes: 1024 * 1024, maxBytes: 3, maxTotalBytes: 3,
+      }) });
+    });
+    await page.locator("[data-composer-input]").fill("Keep text and both screenshots");
+    await page.locator("[data-file-input]").setInputFiles([
+      { name: "quota-a.png", mimeType: "image/png", buffer: Buffer.from([1, 2]) },
+      { name: "quota-b.png", mimeType: "image/png", buffer: Buffer.from([3, 4]) },
+    ]);
+    await page.waitForFunction(() => document.querySelectorAll("[data-attachment-index]").length === 2);
+    const readDraft = () => page.evaluate(() => JSON.parse(localStorage.getItem("agent-hub:composer-drafts:v1:vscode"))[0]);
+    const before = await readDraft();
+    await page.locator("[data-composer]").evaluate((form) => form.requestSubmit());
+    await page.waitForFunction(() => document.querySelector("[data-composer-input]")?.value === "Keep text and both screenshots"
+      && JSON.parse(localStorage.getItem("agent-hub:composer-drafts:v1:vscode"))[0]?.recoveryRequestId);
+    const rejected = await readDraft();
+    assert.ok(rejected.recoveryRequestId);
+    assert.deepEqual(rejected.attachments.map((file) => file.uploadId), before.attachments.map((file) => file.uploadId));
+    assert.deepEqual(requests, ["GET"]);
+    assert.equal((await bridgeCalls(page, "send-message")).length, 0);
+    await page.locator("[data-composer]").evaluate((form) => form.requestSubmit());
+    await page.waitForFunction(() => document.querySelector("[data-composer-input]")?.value === "Keep text and both screenshots");
+    assert.equal((await readDraft()).recoveryRequestId, rejected.recoveryRequestId);
+    assert.deepEqual(requests, ["GET"]);
+    assert.equal((await bridgeCalls(page, "send-message")).length, 0);
+  } finally {
+    await browser.close();
+  }
+});
+
+test("production cancelling held capability negotiation restores the unsent attachment draft", {
+  timeout: 30_000,
+}, async () => {
+  const browser = await launchBrowser();
+  const page = await browser.newPage();
+  let heldRoute;
+  try {
+    await openFixture(page, { chunkedUpload: true });
+    const requests = [];
+    await page.route("**/api/attachment-upload**", (route) => {
+      requests.push(route.request().method());
+      heldRoute = route;
+    });
+    await page.locator("[data-composer-input]").fill("Cancel this preparation");
+    await page.locator("[data-file-input]").setInputFiles({ name: "cancel.png", mimeType: "image/png", buffer: Buffer.from([1]) });
+    await page.waitForFunction(() => document.querySelectorAll("[data-attachment-index]").length === 1);
+    const capabilityStarted = page.waitForRequest((request) => new URL(request.url()).pathname === "/api/attachment-upload");
+    await page.locator("[data-composer]").evaluate((form) => form.requestSubmit());
+    await capabilityStarted;
+    await page.locator("[data-upload-cancel]").click({ timeout: 3000 });
+    await page.waitForFunction(() => document.querySelector("[data-composer-input]")?.value === "Cancel this preparation"
+      && document.querySelectorAll("[data-attachment-index]").length === 1, null, { timeout: 3000 });
+    assert.deepEqual(requests, ["GET"]);
+    assert.equal((await bridgeCalls(page, "send-message")).length, 0);
+    assert.equal(await page.locator("[data-upload-cancel]").count(), 0);
+  } finally {
+    await heldRoute?.abort().catch(() => {});
+    await browser.close();
+  }
+});
+
+test("production concurrent pastes enforce the final count and preserve explicit removal", {
+  timeout: 30_000,
+}, async () => {
+  const browser = await launchBrowser();
+  const page = await browser.newPage();
+  try {
+    await openFixture(page);
+    await page.evaluate(() => {
+      const original = window.AgentHubComposerFiles;
+      window.__pasteReads = [];
+      window.AgentHubComposerFiles = { ...original, prepare: (file, metadata) => new Promise((resolve, reject) => {
+        window.__pasteReads.push(() => original.prepare(file, metadata).then(resolve, reject));
+      }) };
+      window.__releasePastes = () => Promise.all(window.__pasteReads.splice(0).map((release) => release()));
+      window.__pasteScreenshots = (count) => {
+        const input = document.querySelector("[data-composer-input]");
+        for (let index = 0; index < count; index += 1) {
+          const transfer = new DataTransfer();
+          transfer.items.add(new File([new Uint8Array([index + 1])], `screen-${index}.png`, { type: "image/png" }));
+          input.dispatchEvent(new ClipboardEvent("paste", { bubbles: true, cancelable: true, clipboardData: transfer }));
+        }
+      };
+      window.__pasteScreenshots(9);
+    });
+    await page.waitForFunction(() => window.__pasteReads.length === 8);
+    assert.equal(await page.evaluate(() => window.AgentHub.prepareForRuntimeReload()), false);
+    await page.evaluate(() => window.__releasePastes());
+    await page.waitForFunction(() => document.querySelectorAll("[data-attachment-index]").length === 8);
+    await page.locator("[data-attachment-index]").first().click();
+    await page.evaluate(() => window.__pasteScreenshots(1));
+    await page.waitForFunction(() => window.__pasteReads.length === 1);
+    await page.locator("[data-attachment-index]").first().click();
+    await page.evaluate(() => window.__releasePastes());
+    assert.equal(await page.locator("[data-attachment-index]").count(), 6);
+  } finally {
+    await browser.close();
+  }
+});
+
+test("production pending screenshot cannot survive composer clear or Thread rebinding", {
+  timeout: 30_000,
+}, async () => {
+  const browser = await launchBrowser();
+  try {
+    for (const boundary of ["clear", "rebind"]) {
+      const page = await browser.newPage();
+      await openFixture(page);
+      await page.locator("[data-composer-input]").fill("old draft");
+      await page.evaluate(() => {
+        const original = window.AgentHubComposerFiles;
+        window.AgentHubComposerFiles = { ...original, prepare: (file, metadata) => new Promise((resolve, reject) => {
+          window.__releasePendingPaste = () => original.prepare(file, metadata).then(resolve, reject);
+        }) };
+      });
+      await page.locator("[data-file-input]").setInputFiles({ name: "late.png", mimeType: "image/png", buffer: Buffer.from([1]) });
+      await page.waitForFunction(() => Boolean(window.__releasePendingPaste));
+      if (boundary === "clear") await page.locator("[data-composer-input]").fill("");
+      else {
+        const next = snapshot();
+        next.version = "new-thread-binding";
+        next.tasks[0].threadId = "thread-rebound";
+        next.workspaces[0].streams[0].threads = [{ id: "thread-rebound" }];
+        next.selected.threadId = "thread-rebound";
+        await applyFixtureSnapshot(page, next);
+      }
+      await page.evaluate(() => window.__releasePendingPaste());
+      assert.equal(await page.locator("[data-attachment-index]").count(), 0, boundary);
+      await page.close();
+    }
+  } finally {
+    await browser.close();
+  }
+});
+
 test("production refused attachment selections preserve the exact retry identity", {
   timeout: 120_000,
 }, async () => {
@@ -942,7 +1308,9 @@ test("production refused attachment selections preserve the exact retry identity
     const scenarios = [
       async (page) => page.evaluate(() => {
         const file = new File([new Uint8Array([1])], "too-large.bin", { type: "application/octet-stream" });
-        Object.defineProperty(file, "size", { value: 128 * 1024 * 1024 + 1 });
+        // Local preparation has its own 256 MiB limit; the negotiated upload
+        // limit is validated on send, without holding the clipboard event.
+        Object.defineProperty(file, "size", { value: 256 * 1024 * 1024 + 1 });
         const input = document.querySelector("[data-file-input]");
         Object.defineProperty(input, "files", { configurable: true, value: [file] });
         input.dispatchEvent(new Event("change", { bubbles: true }));
@@ -1669,6 +2037,30 @@ test("production attachment boundary rejects unsafe names and accepts more than 
     const uploads = await maximum.evaluate(() => JSON.parse(localStorage.getItem("fixture:upload-log") ?? "[]"));
     assert.equal(uploads.filter(item => item.method === "PUT").length, 21);
     assert.equal(diagnostics.some((message) => /RangeError|Maximum call stack/iu.test(message)), false);
+  } finally {
+    await browser.close();
+  }
+});
+
+test("shipped queue explains a real context-maintenance wait without a new toast", {
+  timeout: 30_000,
+}, async () => {
+  const browser = await launchBrowser();
+  const page = await browser.newPage();
+  try {
+    const fixtureSnapshot = snapshot();
+    fixtureSnapshot.deferredInputs = [{
+      id: "waiting-for-compaction", state: "queued", provider: "codex",
+      streamId: "stream-a", threadId: "thread-a",
+      clientUserMessageId: "queued-user-1", text: "Продолжай",
+      conflictKind: "context-maintenance", waitReason: "context-maintenance",
+      createdAt: "2026-09-29T11:51:57.201Z", attachments: [],
+    }];
+    await openFixture(page, { fixtureSnapshot });
+    const row = page.locator(".queue-item[data-queue-id='waiting-for-compaction']");
+    await row.waitFor({ state: "visible" });
+    assert.match(await row.locator(".queue-status").textContent(), /свёртки или ротации контекста/u);
+    assert.equal(await page.locator(".queue-toast").count(), 0);
   } finally {
     await browser.close();
   }

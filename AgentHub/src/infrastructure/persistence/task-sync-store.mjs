@@ -105,6 +105,10 @@ function cleanActivityGroups(groups) {
       id: cleanText(group?.id, 200) || `group:${index}`,
       reasoning,
       activities,
+      ...(Number(group?.omittedGroupsBefore) > 0
+        ? { omittedGroupsBefore: Math.min(1_000_000, Math.floor(Number(group.omittedGroupsBefore))) } : {}),
+      ...(Number(group?.omittedActivities) > 0
+        ? { omittedActivities: Math.min(1_000_000, Math.floor(Number(group.omittedActivities))) } : {}),
     }];
   });
 }
@@ -143,7 +147,6 @@ function withoutRepeatedClientMessages(history) {
 function withoutInternalContextTurns(history) {
   return history.filter((turn) => (
     !String(turn?.prompt ?? "").trim().startsWith("<codex_internal_context")
-    && turn?.operationKind !== "probe" && turn?.contextProbe !== true
   ));
 }
 
@@ -177,7 +180,6 @@ function cleanHistory(history, limit, { provider = "" } = {}) {
       return {
         id: cleanText(item?.id, 100),
         ...(item?.operationKind ? { operationKind: cleanText(item.operationKind, 40) } : {}),
-        ...(item?.contextProbe === true ? { contextProbe: true } : {}),
         prompt: cleanText(item?.prompt, 12_000),
         ...(promptAuthor ? { promptAuthor } : {}),
         ...(promptOrigin ? { promptOrigin } : {}),
@@ -1907,7 +1909,6 @@ export class LocalTaskSyncStore {
     for (const turn of turns) {
       if (!turn.id) continue;
       removeTurn.run(provider, threadId, turn.id);
-      if (turn.operationKind === "probe" || turn.contextProbe === true) continue;
       const messages = (Array.isArray(turn?.messages) ? turn.messages : []).flatMap((message) => {
         const role = String(message?.role ?? "").trim() === "assistant"
           ? "agent"
@@ -2529,6 +2530,19 @@ export class LocalTaskSyncStore {
 
   history(task, { limit = this.#historyLimit } = {}) {
     return cleanHistory(this.#readHistory(task, limit), limit, { provider: task.provider });
+  }
+
+  historyTurn({ provider, threadId, turnId } = {}) {
+    const exactProvider = cleanText(provider, 20).toLowerCase();
+    const exactThreadId = cleanText(threadId, 100);
+    const exactTurnId = cleanText(turnId, 200);
+    if (!exactProvider || !exactThreadId || !exactTurnId) return null;
+    const row = this.#database.prepare(`
+      SELECT * FROM task_read_model_turns
+      WHERE provider = ? AND thread_id = ? AND id = ?
+      LIMIT 1
+    `).get(exactProvider, exactThreadId, exactTurnId);
+    return row ? this.#hydrateHistoryRows([row])[0] ?? null : null;
   }
 
   async readHistoryPage(references, options = {}) {

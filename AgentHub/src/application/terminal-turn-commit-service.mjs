@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
 
-import { isCodexContextProbeClientId } from "../domain/codex-context-probe.mjs";
 import {
   consistentInterstreamRecordIdentity,
   normalizeInterstreamClientUserMessageId,
@@ -22,21 +21,6 @@ function terminalKey(value) {
   return [value?.provider, value?.threadId, value?.turnId]
     .map((part) => String(part ?? "").trim())
     .join("\0");
-}
-
-function hasOrdinaryClientIdentity(value) {
-  if (!value || typeof value !== "object") return false;
-  return Object.entries(value).some(([key, entry]) => {
-    if (["clientUserMessageId", "clientId", "client_user_message_id"].includes(key)) {
-      return Boolean(String(entry ?? "").trim()) && !isCodexContextProbeClientId(entry);
-    }
-    if (key === "clientUserMessageIds" && Array.isArray(entry)) {
-      return entry.some((clientId) => (
-        Boolean(String(clientId ?? "").trim()) && !isCodexContextProbeClientId(clientId)
-      ));
-    }
-    return hasOrdinaryClientIdentity(entry);
-  });
 }
 
 function responseAttachments(value) {
@@ -118,7 +102,6 @@ function historySnapshot(run, completion) {
     threadId: completion.threadId,
     turnId: completion.turnId,
     operationKind: completion.operationKind ?? source.operationKind,
-    contextProbe: completion.contextProbe ?? source.contextProbe,
     taskTitle: completion.taskTitle,
     promptPreview: String(source.rawPrompt ?? source.promptPreview ?? completion.prompt ?? ""),
     responseText: String(completion.finalAnswer ?? source.responseText ?? ""),
@@ -257,58 +240,55 @@ export class TerminalTurnCommitService {
     return result;
   }
 
-  async reclassifyContextProbe(identity, evidence) {
-    const exactIdentity = ["provider", "threadId", "turnId"].every((field) => (
-      String(identity?.[field] ?? "").trim()
-      && String(identity[field]).trim() === String(evidence?.[field] ?? "").trim()
-    ));
-    const operationKind = String(evidence?.operationKind ?? "").trim();
-    if (!exactIdentity || identity.provider !== "codex"
-      || (operationKind && operationKind !== "probe")
-      || (operationKind !== "probe" && evidence?.contextProbe !== true)
-      || evidence?.contextProbe === false) {
-      return { reclassified: false, terminal: null, outbox: null };
+  async correctFromExactProviderTerminal(identity, {
+    status,
+    completedAt,
+    finalAnswer = "",
+  } = {}) {
+    if (identity?.provider !== "codex" || !identity.threadId || !identity.turnId) {
+      throw new Error("exact Codex terminal identity is required for correction");
     }
-    if (hasOrdinaryClientIdentity(evidence)) {
-      return { reclassified: false, terminal: null, outbox: null, rejected: "ordinary-client-identity" };
+    if (!["completed", "failed", "aborted", "cancelled"].includes(status)
+      || !Number.isFinite(Date.parse(String(completedAt ?? "")))) {
+      throw new Error("exact provider terminal status and time are required for correction");
     }
-    for (let attempt = 0; attempt < 4; attempt += 1) {
-      const terminal = await this.store.get(identity);
-      if (!terminal) return { reclassified: false, terminal: null, outbox: null };
-      if (hasOrdinaryClientIdentity(terminal.payload)) {
-        return { reclassified: false, terminal, outbox: null, rejected: "ordinary-client-identity" };
-      }
-      const status = ["completed", "failed", "aborted", "cancelled"].includes(evidence.status)
-        ? evidence.status : terminal.status;
-      const result = await this.store.commit({
-        provider: terminal.provider,
-        threadId: terminal.threadId,
-        turnId: terminal.turnId,
-        status,
-        finalAnswer: terminal.finalAnswer,
-        usageIdentity: terminal.usageIdentity,
-        lastMessage: null,
-        payload: {
-          ...structuredClone(terminal.payload),
-          completion: {
-            ...structuredClone(terminal.payload?.completion ?? {}),
-            status,
-            operationKind: "probe",
-            contextProbe: true,
-          },
-          history: {
-            ...structuredClone(terminal.payload?.history ?? {}),
-            operationKind: "probe",
-            contextProbe: true,
-          },
-        },
-        expectedTerminalRevision: terminal.terminalRevision,
-      });
-      if (result.conflict) continue;
+    const current = await this.get(identity);
+    if (!current || current.status === status) {
+      return { corrected: false, terminal: current, outbox: null };
+    }
+    const previousAt = Date.parse(String(current.payload?.completion?.completedAt ?? ""));
+    if (!Number.isFinite(previousAt) || Date.parse(completedAt) <= previousAt) {
+      return { corrected: false, stale: true, terminal: current, outbox: null };
+    }
+    const answer = String(finalAnswer ?? "").trim();
+    const completion = {
+      ...structuredClone(current.payload?.completion ?? {}),
+      status,
+      completedAt,
+      finalAnswer: answer,
+      message: answer ? { text: answer } : null,
+    };
+    const history = {
+      ...structuredClone(current.payload?.history ?? {}),
+      responseText: answer,
+    };
+    const result = await this.store.commit({
+      ...identity,
+      status,
+      finalAnswer: answer,
+      usageIdentity: current.usageIdentity,
+      lastMessage: answer ? { text: answer, updatedAt: completedAt,
+        startedAt: completion.startedAt ?? null } : null,
+      payload: { ...structuredClone(current.payload), completion, history },
+      expectedTerminalRevision: current.terminalRevision,
+      terminalStatusCorrection: true,
+    });
+    if (result.conflict) return { corrected: false, conflict: true, ...result };
+    if (result.created) {
       this.terminals.set(terminalKey(identity), result.terminal);
-      return { ...result, reclassified: result.created === true };
+      result.commandReconciled = await this.#reconcileTerminal(result.terminal);
     }
-    throw new Error(`terminal probe reclassification did not settle for ${terminalKey(identity)}`);
+    return { ...result, corrected: result.created === true };
   }
 
   async enrichResponseAttachments(identity, {
@@ -421,6 +401,10 @@ export class TerminalTurnCommitService {
     return items;
   }
 
+  pendingProjections(options) {
+    return this.store.pendingProjections(options);
+  }
+
   recoverProjecting() {
     return this.store.recoverProjecting();
   }
@@ -439,6 +423,13 @@ export class TerminalTurnCommitService {
 
   markChannelUncertain(identity, options) {
     return this.store.updateChannel(identity, "telegram", "uncertain", options);
+  }
+
+  async authorizeTelegramOutboxAttempt(identity, { deliveryId } = {}) {
+    const current = await this.get(identity);
+    if (current?.terminalRevision !== identity?.terminalRevision) return false;
+    const channel = await this.markChannelUncertain(identity, { deliveryId });
+    return channel?.channels?.telegram?.state === "uncertain";
   }
 
   acknowledgeChannel(identity, options) {

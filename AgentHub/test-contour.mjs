@@ -6,6 +6,11 @@ import { fileURLToPath } from "node:url";
 import { isMainModule } from "./src/infrastructure/process/main-module.mjs";
 import { acceptReleaseArtifact } from "./src/runtime/test-contour-release-acceptance.mjs";
 import {
+  holdManualTestContourLock,
+  readManualTestContourLockStatus,
+  releaseManualTestContourLock,
+} from "./src/runtime/test-contour-manual-lock.mjs";
+import {
   defaultTestContourRoot,
   adoptRecordingTestContour,
   cloneProductionDataToTestContour,
@@ -39,6 +44,15 @@ function parseArguments(args) {
     sourceHeadCommit: undefined,
     expectedOperationId: undefined,
     expectedHeadCommit: undefined,
+    expectedReleaseId: undefined,
+    owner: undefined,
+    ownerProvider: undefined,
+    ownerThreadId: undefined,
+    ownerTurnId: undefined,
+    ownerRuntimeDataDir: undefined,
+    requestId: undefined,
+    acquisitionId: undefined,
+    releaseToken: undefined,
   };
   for (let index = 1; index < args.length; index += 1) {
     const argument = args[index];
@@ -57,6 +71,15 @@ function parseArguments(args) {
     else if (argument === "--protected-runtime-root" && args[index + 1]) options.protectedRuntimeRoot = args[++index];
     else if (argument === "--expected-operation" && args[index + 1]) options.expectedOperationId = args[++index];
     else if (argument === "--expected-head" && args[index + 1]) options.expectedHeadCommit = args[++index];
+    else if (argument === "--expected-release" && args[index + 1]) options.expectedReleaseId = args[++index];
+    else if (argument === "--owner" && args[index + 1]) options.owner = args[++index];
+    else if (argument === "--owner-provider" && args[index + 1]) options.ownerProvider = args[++index];
+    else if (argument === "--owner-thread" && args[index + 1]) options.ownerThreadId = args[++index];
+    else if (argument === "--owner-turn" && args[index + 1]) options.ownerTurnId = args[++index];
+    else if (argument === "--owner-runtime-data" && args[index + 1]) options.ownerRuntimeDataDir = path.resolve(args[++index]);
+    else if (argument === "--request-id" && args[index + 1]) options.requestId = args[++index];
+    else if (argument === "--acquisition" && args[index + 1]) options.acquisitionId = args[++index];
+    else if (argument === "--release-token" && args[index + 1]) options.releaseToken = args[++index];
     else if (argument === "--json") options.json = true;
     else if (argument === "--artifact" && args[index + 1]) options.artifactRoot = path.resolve(args[++index]);
     else if (argument === "--previous-artifact" && args[index + 1]) options.previousArtifactRoot = path.resolve(args[++index]);
@@ -138,6 +161,50 @@ export async function main(args = process.argv.slice(2)) {
       ...common,
       expectedOperationId: options.expectedOperationId,
       expectedHeadCommit: options.expectedHeadCommit,
+    });
+    print(result, options.json);
+    return result;
+  }
+  if (options.command === "lock-status") {
+    const result = await readManualTestContourLockStatus(common);
+    print(result, options.json);
+    return result;
+  }
+  if (options.command === "lock") {
+    const controller = new AbortController();
+    const abort = (signal) => controller.abort(new Error(`Manual Test Contour lock cancelled by ${signal}`));
+    const onSigint = () => abort("SIGINT");
+    const onSigterm = () => abort("SIGTERM");
+    process.once("SIGINT", onSigint);
+    process.once("SIGTERM", onSigterm);
+    try {
+      const result = await holdManualTestContourLock({
+        ...common,
+        owner: options.owner,
+        requestId: options.requestId,
+        ownerProvider: options.ownerProvider,
+        ownerThreadId: options.ownerThreadId,
+        ownerTurnId: options.ownerTurnId,
+        ownerRuntimeDataDir: options.ownerRuntimeDataDir,
+        expectedOperationId: options.expectedOperationId,
+        expectedHeadCommit: options.expectedHeadCommit,
+        expectedReleaseId: options.expectedReleaseId,
+        signal: controller.signal,
+        onAcquired: (acquired) => print(acquired, options.json),
+      });
+      if (result.status === "released") print(result, options.json);
+      return result;
+    } finally {
+      process.off("SIGINT", onSigint);
+      process.off("SIGTERM", onSigterm);
+    }
+  }
+  if (options.command === "unlock") {
+    const result = await releaseManualTestContourLock({
+      ...common,
+      requestId: options.requestId,
+      acquisitionId: options.acquisitionId,
+      releaseToken: options.releaseToken,
     });
     print(result, options.json);
     return result;

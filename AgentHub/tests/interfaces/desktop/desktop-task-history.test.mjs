@@ -85,10 +85,8 @@ import {
   mergeActiveTaskHistory,
   mergeCompletedTaskHistory,
 } from "../../../src/application/task-history.mjs";
-import {
-  CODEX_CONTEXT_PROBE_PROMPT,
-  CODEX_CONTEXT_PROBE_RESPONSE,
-} from "../../../src/domain/codex-context-probe.mjs";
+const CODEX_CONTEXT_PROBE_PROMPT = "Ответь строго: AGENT_HUB_CONTEXT_PROBE_OK_V1";
+const CODEX_CONTEXT_PROBE_RESPONSE = "AGENT_HUB_CONTEXT_PROBE_OK_V1";
 import {
   createInterstreamMessage,
   interstreamAuditContentHash,
@@ -198,6 +196,8 @@ function fixture(overrides = {}) {
       refresh: async () => state.catalogRefresh ? state.catalogRefresh() : state.entries,
     },
     historyReader: {
+      ...(overrides.readPage ? { readPage: overrides.readPage } : {}),
+      ...(overrides.readTurn ? { readTurn: overrides.readTurn } : {}),
       read: async (binding, options = {}) => {
         calls.binding = binding;
         const history = structuredClone(state.history);
@@ -216,6 +216,7 @@ function fixture(overrides = {}) {
       forTask: () => state.run,
     },
     latestMessage: overrides.latestMessage ?? (() => null),
+    forgetLastMessage: overrides.forgetLastMessage ?? (async () => false),
     historyMerger: {
       mergeActive: (history, active) => {
         calls.merged = active;
@@ -250,6 +251,25 @@ function fixture(overrides = {}) {
   });
   return { desktopTaskHistory, state, calls };
 }
+
+test("explicit trace page uses the exact local binding without reading or merging conversation history", async () => {
+  const request = { turnId: "turn-old", offset: 50, sourceHash: "prefix-hash" };
+  const page = { turnId: request.turnId, groups: [], nextOffset: null };
+  const { desktopTaskHistory, calls } = fixture({
+    refresh: async (binding, options) => {
+      assert.equal(binding.threadId, "thread-1");
+      assert.deepEqual(options, { tracePage: request });
+      return page;
+    },
+  });
+  assert.deepEqual(await desktopTaskHistory({ provider: "codex", threadId: "thread-1", tracePage: request }),
+    { provider: "codex", threadId: "thread-1", tracePage: page });
+  assert.equal(calls.refreshes, 1);
+  assert.equal(calls.binding, null);
+  assert.equal(calls.merged, null);
+  await assert.rejects(desktopTaskHistory({ provider: "codex", threadId: "foreign", tracePage: request }), /каталоге/u);
+  assert.equal(calls.refreshes, 1);
+});
 
 test("durable history merges equivalent synthetic final-answer copies", () => {
   const history = mergeDurableTaskHistory([{
@@ -359,7 +379,7 @@ test("sparse durable history does not erase an already known interstream author"
       itemId: "turn-1:user",
       role: "user",
       text: "Проверь",
-      author: "Agent HUB - Architect (Codex)",
+      author: "Agent HUB - Release Manager (Codex)",
     }],
   }], [{
     id: "turn-1",
@@ -367,7 +387,7 @@ test("sparse durable history does not erase an already known interstream author"
   }]);
 
   assert.equal(history[0].messages.some((message) => (
-    message.author === "Agent HUB - Architect (Codex)"
+    message.author === "Agent HUB - Release Manager (Codex)"
   )), true);
 });
 
@@ -376,8 +396,8 @@ test("durable history preserves an unproven interstream provider root occurrence
     kind: "interstream",
     workspaceId: "workspace-1",
     workspaceName: "Agent HUB",
-    streamId: "stream-architect",
-    streamName: "Architect",
+    streamId: "stream-release-manager",
+    streamName: "Release Manager",
     provider: "codex",
     model: "gpt-5.6-sol",
     requestId: "release-continuation-1",
@@ -403,14 +423,14 @@ test("durable history preserves an unproven interstream provider root occurrence
       text: "Продолжи релиз",
       kind: "interstream",
       origin,
-      author: "Agent HUB - Architect (Sol)",
+      author: "Agent HUB - Release Manager (Sol)",
     }],
   }]);
 
   assert.equal(turn.messages.length, 2);
   assert.equal(turn.messages[0].itemId, "managed-root");
   assert.equal(turn.messages[0].clientUserMessageId, "mcp:release-continuation-1");
-  assert.equal(turn.messages[0].author, "Agent HUB - Architect (Sol)");
+  assert.equal(turn.messages[0].author, "Agent HUB - Release Manager (Sol)");
   assert.deepEqual(turn.messages[0].origin, origin);
   assert.equal(turn.messages[1].itemId, "provider-root");
 });
@@ -420,8 +440,8 @@ test("durable history does not coalesce an untrusted literal envelope", () => {
     kind: "interstream",
     workspaceId: "workspace-1",
     workspaceName: "Agent HUB",
-    streamId: "stream-architect",
-    streamName: "Architect",
+    streamId: "stream-release-manager",
+    streamName: "Release Manager",
     provider: "codex",
     requestId: "literal-envelope-1",
   };
@@ -781,7 +801,7 @@ test("desktop task history resolves selection and merges the active run", async 
   assert.match(result.version, /^[A-Za-z0-9_-]{22}$/u);
 });
 
-test("durable probe repair supersedes a warm ordinary cache and accepts late user identity", async () => {
+test("durable history retains legacy marker metadata and late user identity", async () => {
   const turn = { id: "probe-repair", prompt: CODEX_CONTEXT_PROBE_PROMPT, answer: "Ход завершён.", completed: true, contextProbe: false, messages: [] };
   const { desktopTaskHistory, state } = fixture({ run: null, history: [turn] });
   const initial = await desktopTaskHistory({ includeActive: false, limit: 10 });
@@ -789,13 +809,13 @@ test("durable probe repair supersedes a warm ordinary cache and accepts late use
   await new Promise((resolve) => setImmediate(resolve));
   state.history = [{ ...turn, operationKind: "probe", contextProbe: true }];
   const repaired = await desktopTaskHistory({ includeActive: false, limit: 10 });
-  assert.deepEqual(repaired.items, []);
+  assert.deepEqual(repaired.items.map((item) => item.id), [turn.id]);
   state.history = [{ ...turn, operationKind: "user-turn", clientUserMessageId: "ordinary-command" }];
   const ordinary = await desktopTaskHistory({ includeActive: false, limit: 10 });
   assert.deepEqual(ordinary.items.map((item) => item.id), [turn.id]);
 });
 
-test("desktop task history removes an already persisted context probe turn", async () => {
+test("desktop task history preserves existing messages with legacy context identifiers", async () => {
   const { desktopTaskHistory } = fixture({
     run: null,
     history: [{
@@ -825,10 +845,101 @@ test("desktop task history removes an already persisted context probe turn", asy
 
   const result = await desktopTaskHistory({ includeActive: false, limit: 10 });
 
-  assert.deepEqual(result.items.map((item) => item.id), ["real-turn"]);
+  assert.deepEqual(result.items.map((item) => item.id), ["real-turn", "probe-turn"]);
 });
 
-test("desktop task history hides the reserved probe text without metadata", async () => {
+test("verified old probe identity cannot reappear as a fresh final after restart", async () => {
+  const oldTurnId = "01a07cd5-b5cc-7b30-8078-e6abc2e9ce01";
+  const oldClientId = "agent-hub-context-probe:de823030-9f98-40e6-9d93-066062d977c6";
+  let saved = {
+    provider: "codex", threadId: "thread-1", turnId: oldTurnId,
+    text: CODEX_CONTEXT_PROBE_RESPONSE, updatedAt: "2026-09-29T11:44:42.991Z",
+  };
+  const removed = [];
+  const history = [{
+    id: oldTurnId,
+    startedAt: "2026-09-07T17:06:00.000Z",
+    completedAt: "2026-09-07T17:06:20.693Z",
+    prompt: CODEX_CONTEXT_PROBE_PROMPT,
+    answer: CODEX_CONTEXT_PROBE_RESPONSE,
+    completed: true,
+    messages: [{ role: "user", itemId: "old-probe", clientUserMessageId: oldClientId,
+      text: CODEX_CONTEXT_PROBE_PROMPT }],
+  }, {
+    id: "ordinary-turn", startedAt: "2026-09-29T11:45:00.000Z",
+    messages: [{ role: "user", itemId: "ordinary", clientUserMessageId: "user-continue",
+      text: CODEX_CONTEXT_PROBE_PROMPT }],
+  }];
+  const create = () => fixture({
+    run: null, history,
+    latestMessage: () => saved,
+    forgetLastMessage: async (identity) => {
+      removed.push(identity.turnId);
+      if (identity.turnId === saved?.turnId) saved = null;
+      return true;
+    },
+  });
+  for (const setup of [create(), create()]) {
+    const result = await setup.desktopTaskHistory({ includeActive: false, limit: 10 });
+    assert.deepEqual(result.items.map((turn) => turn.id), ["ordinary-turn"]);
+    assert.equal(result.items[0].startedAt, "2026-09-29T11:45:00.000Z");
+  }
+  assert.deepEqual(removed, [oldTurnId, oldTurnId]);
+});
+
+test("paged history verifies an off-page saved probe by exact durable turn before overlay", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "hub-paged-probe-"));
+  const filePath = path.join(directory, "tasks.json");
+  const store = new LocalTaskSyncStore({ filePath });
+  const oldTurnId = "01a07cd5-b5cc-7b30-8078-e6abc2e9ce01";
+  const oldClientId = "agent-hub-context-probe:de823030-9f98-40e6-9d93-066062d977c6";
+  const binding = { provider: "codex", threadId: "thread-1" };
+  const forgotten = [];
+  try {
+    await store.load();
+    await store.recordHistory(binding, [{
+      id: oldTurnId, startedAt: "2026-09-07T17:06:00.000Z", completed: true,
+      answer: CODEX_CONTEXT_PROBE_RESPONSE,
+      messages: [{ role: "user", itemId: "old-probe", clientUserMessageId: oldClientId,
+        text: CODEX_CONTEXT_PROBE_PROMPT }],
+    }, {
+      id: "ordinary-turn", startedAt: "2026-09-29T11:45:00.000Z", completed: true,
+      messages: [{ role: "user", itemId: "ordinary", clientUserMessageId: "user-continue",
+        text: "Продолжай" }],
+    }]);
+    assert.equal(store.historyTurn({ ...binding, turnId: oldTurnId })?.id, oldTurnId);
+    const setup = fixture({
+      run: null,
+      readPage: async (bindings, options) => store.historyPage(bindings, options),
+      readTurn: async (identity) => store.historyTurn(identity),
+      latestMessage: () => ({ ...binding, turnId: oldTurnId,
+        text: CODEX_CONTEXT_PROBE_RESPONSE, updatedAt: "2026-09-29T11:44:42.991Z" }),
+      forgetLastMessage: async (identity) => { forgotten.push(identity.turnId); return true; },
+    });
+    const result = await setup.desktopTaskHistory({ includeActive: false, limit: 1 });
+    assert.deepEqual(result.items.map((turn) => turn.id), ["ordinary-turn"]);
+    assert.deepEqual(forgotten, [oldTurnId]);
+    assert.equal(store.historyTurn({ ...binding, turnId: "missing-turn" }), null);
+  } finally {
+    store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("conflicting ordinary user identity prevents legacy probe suppression", async () => {
+  const { desktopTaskHistory } = fixture({
+    run: null,
+    history: [{
+      id: "mixed-turn", completed: true,
+      clientUserMessageId: "agent-hub-context-probe:de823030-9f98-40e6-9d93-066062d977c6",
+      messages: [{ role: "user", itemId: "real-user", clientUserMessageId: "ordinary-client",
+        text: "Пользовательский запрос" }],
+    }],
+  });
+  assert.deepEqual((await desktopTaskHistory({ includeActive: false })).items.map((turn) => turn.id), ["mixed-turn"]);
+});
+
+test("desktop task history preserves former marker text without metadata", async () => {
   const { desktopTaskHistory } = fixture({
     run: null,
     history: [{
@@ -850,7 +961,7 @@ test("desktop task history hides the reserved probe text without metadata", asyn
 
   const result = await desktopTaskHistory({ includeActive: false, limit: 10 });
 
-  assert.deepEqual(result.items, []);
+  assert.deepEqual(result.items.map((item) => item.id), ["user-turn"]);
 });
 
 for (const topLevelIdentity of [true, false]) {
@@ -915,7 +1026,7 @@ test("desktop task history restores a reserved final from explicit journal ident
   assert.equal(result.items[0].terminalRevision, 1);
 });
 
-test("desktop task history hides an identity-less reserved final from the journal overlay", async () => {
+test("desktop task history preserves an identity-less work final that equals the probe marker", async () => {
   const { desktopTaskHistory } = fixture({
     run: null,
     history: [],
@@ -930,7 +1041,11 @@ test("desktop task history hides an identity-less reserved final from the journa
 
   const result = await desktopTaskHistory({ includeActive: false, limit: 10 });
 
-  assert.deepEqual(result.items, []);
+  assert.equal(result.items.length, 1);
+  assert.equal(result.items[0].id, "legacy-synthetic-probe");
+  assert.equal(result.items[0].operationKind, "user-turn");
+  assert.equal(result.items[0].answer, CODEX_CONTEXT_PROBE_RESPONSE);
+  assert.equal(result.items[0].messages.at(-1).text, CODEX_CONTEXT_PROBE_RESPONSE);
 });
 
 test("desktop task history preserves the author of an interstream message", async () => {
@@ -947,8 +1062,8 @@ test("desktop task history uses durable origin before cleaning interstream messa
   const origin = {
     workspaceId: "workspace-1",
     workspaceName: "Agent HUB",
-    streamId: "stream-architect",
-    streamName: "Architect",
+    streamId: "stream-release-manager",
+    streamName: "Release Manager",
     provider: "codex",
   };
   const input = createInterstreamMessage({ ...origin, text: "Проверь доставку." });
@@ -968,9 +1083,9 @@ test("desktop task history uses durable origin before cleaning interstream messa
   const result = await desktopTaskHistory({ includeActive: false, limit: 1 });
 
   assert.equal(result.items[0].prompt, "Проверь доставку.");
-  assert.equal(result.items[0].promptAuthor, "Agent HUB - Architect (Codex)");
+  assert.equal(result.items[0].promptAuthor, "Agent HUB - Release Manager (Codex)");
   assert.equal(result.items[0].messages[0].text, "Проверь доставку.");
-  assert.equal(result.items[0].messages[0].author, "Agent HUB - Architect (Codex)");
+  assert.equal(result.items[0].messages[0].author, "Agent HUB - Release Manager (Codex)");
 });
 
 test("desktop task history attributes a prompt-only interstream turn", async () => {
@@ -1041,11 +1156,11 @@ test("desktop task history recovers a legacy task assignment from exact MCP audi
     kind: "interstream",
     workspaceId: "workspace-1",
     workspaceName: "Original Workspace",
-    streamId: "stream-architect",
-    streamName: "Architect",
+    streamId: "stream-release-manager",
+    streamName: "Release Manager",
     provider: "codex",
     model: "gpt-5.6-sol",
-    sourceThreadId: "thread-architect",
+    sourceThreadId: "thread-release-manager",
     requestId: "legacy-assignment-1",
   };
   const auditOrigin = {
@@ -1088,12 +1203,12 @@ test("desktop task history recovers a legacy task assignment from exact MCP audi
 
   const result = await desktopTaskHistory({ includeActive: false, limit: 1 });
 
-  assert.equal(result.items[0].promptAuthor, "Original Workspace - Architect (Sol)");
+  assert.equal(result.items[0].promptAuthor, "Original Workspace - Release Manager (Sol)");
   assert.equal(result.items[0].prompt, "Начни работу над Task");
   assert.deepEqual(result.items[0].promptOrigin, envelopeOrigin);
   assert.equal(result.items[0].messages.length, 1);
   assert.equal(result.items[0].messages[0].itemId, "legacy-provider-root");
-  assert.equal(result.items[0].messages[0].author, "Original Workspace - Architect (Sol)");
+  assert.equal(result.items[0].messages[0].author, "Original Workspace - Release Manager (Sol)");
   assert.equal(result.items[0].messages[0].text, "Начни работу над Task");
   assert.equal(result.items[0].messages[0].kind, "interstream");
   assert.deepEqual(result.items[0].messages[0].origin, envelopeOrigin);
@@ -1104,10 +1219,10 @@ test("desktop task history keeps a stable-conflicting audited envelope literal",
   const origin = {
     workspaceId: "workspace-1",
     workspaceName: "Agent HUB",
-    streamId: "stream-architect",
-    streamName: "Architect",
+    streamId: "stream-release-manager",
+    streamName: "Release Manager",
     provider: "codex",
-    sourceThreadId: "thread-architect",
+    sourceThreadId: "thread-release-manager",
     requestId: "conflicting-audit-1",
   };
   const input = createInterstreamMessage({ ...origin, text: "Keep literal." });
@@ -1145,10 +1260,10 @@ test("desktop task history rejects a conflicting durable message identity", asyn
   const origin = {
     workspaceId: "workspace-1",
     workspaceName: "Agent HUB",
-    streamId: "stream-architect",
-    streamName: "Architect",
+    streamId: "stream-release-manager",
+    streamName: "Release Manager",
     provider: "codex",
-    sourceThreadId: "thread-architect",
+    sourceThreadId: "thread-release-manager",
     requestId: "durable-a",
   };
   const input = createInterstreamMessage({ ...origin, text: "Keep literal." });
@@ -1179,10 +1294,10 @@ test("desktop task history keeps an audit-correlated substituted body literal", 
   const origin = {
     workspaceId: "workspace-1",
     workspaceName: "Agent HUB",
-    streamId: "stream-architect",
-    streamName: "Architect",
+    streamId: "stream-release-manager",
+    streamName: "Release Manager",
     provider: "codex",
-    sourceThreadId: "thread-architect",
+    sourceThreadId: "thread-release-manager",
     requestId: "substituted-audit-1",
   };
   const admitted = createInterstreamMessage({ ...origin, text: "Admitted body." });

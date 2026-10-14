@@ -9,14 +9,20 @@ import { promisify } from "node:util";
 
 import { RunJournalService } from "../application/run-journal-service.mjs";
 import { HubMcpService } from "../application/hub-mcp-service.mjs";
+import { measureTaskOperation } from "../infrastructure/process/task-operation-timing.mjs";
 import { TaskLifecycleService } from "../application/task-lifecycle-service.mjs";
+import { createNativeMergeReviewVerifier } from "../application/native-merge-review.mjs";
 import { McpAdmissionCoordinator } from "../application/mcp-admission-coordinator.mjs";
 import { TurnEndNotificationRegistry } from "../application/turn-end-notifications.mjs";
 import { createWorkLogUsageStore } from "../application/work-log-usage-store.mjs";
 import { TaskBoardService } from "../application/task-board-service.mjs";
 import { TaskReleasePlanService } from "../application/task-release-plan-service.mjs";
 import { WorkspaceReleasePreflightService } from "../application/workspace-release-preflight-service.mjs";
-import { WorkspaceReleaseService } from "../application/workspace-release-service.mjs";
+import { ReleaseOperationService } from "../application/release-operation-service.mjs";
+import { ReleaseOperationCommandService } from "../application/release-operation-command-service.mjs";
+import { ReleaseOperationFinalization } from "../application/release-operation-finalization.mjs";
+import { importLegacyReleaseOperations } from "../infrastructure/persistence/release-operation-legacy-import.mjs";
+import { WorkspaceReleaseOperationAdapter } from "../application/workspace-release-operation-adapter.mjs";
 import { StreamHandoffService } from "../application/stream-handoff-service.mjs";
 import { AGENT_HUB_VERSION } from "../infrastructure/filesystem/agent-hub-package.mjs";
 import { samePath } from "../infrastructure/filesystem/config.mjs";
@@ -28,8 +34,10 @@ import { UsdRubRateStore } from "../infrastructure/network/exchange-rate.mjs";
 import { migrateMessageBindings } from "../infrastructure/persistence/message-bindings.mjs";
 import { RateLimitHistoryStore } from "../infrastructure/persistence/rate-limit-history.mjs";
 import { ProviderTurnTelemetryStore } from "../infrastructure/persistence/provider-turn-telemetry-store.mjs";
+import { ReleaseOperationStore } from "../infrastructure/persistence/release-operation-store.mjs";
 import { PreTurnInstructionStore } from "../infrastructure/persistence/pre-turn-instruction-store.mjs";
 import { installRotatingConsole } from "../infrastructure/persistence/rotating-log.mjs";
+import { createTaskOperationTimingLogRecorder } from "../infrastructure/persistence/task-operation-timing-log.mjs";
 import { RuntimeStateStore } from "../infrastructure/persistence/runtime-state-store.mjs";
 import { SharedSqliteRecoveryCoordinator } from "../infrastructure/persistence/shared-sqlite-recovery.mjs";
 import { TaskReadStateStore } from "../infrastructure/persistence/task-read-state-store.mjs";
@@ -41,11 +49,12 @@ import { WorkLogUsageSyncWorkerStore } from "../runtime/work-log-usage-sync-work
 import { UsageSyncIdentityStore } from "../infrastructure/persistence/usage-sync-identity-store.mjs";
 import { UsageSyncRemoteConfigStore } from "../infrastructure/persistence/usage-sync-remote-config-store.mjs";
 import { defaultUsageSyncServerUrl } from "../domain/default-usage-sync-server.mjs";
-import { verifyWorkspaceReleasePublication } from "../infrastructure/persistence/release-publication-verifier.mjs";
 import { SingleInstanceGuard } from "../infrastructure/process/instance-lock.mjs";
 import { captureProcess } from "../infrastructure/process/process-capture.mjs";
 import { RuntimeCommandServer } from "../infrastructure/process/runtime-command.mjs";
 import { createRepositoryProductionValidationAdapter } from "../infrastructure/process/repository-production-validation.mjs";
+import { ReleaseOperationPublication } from "../infrastructure/process/release-operation-publication.mjs";
+import { processIsAlive } from "../infrastructure/process/process-liveness.mjs";
 import {
   copyWindowsFileObject,
   revealWindowsFile,
@@ -65,7 +74,6 @@ import {
   ensureDashBotTerraStream,
 } from "../providers/codex/codex-terra-voice-transcriber.mjs";
 import { RuntimeNotificationController } from "../runtime/runtime-notification-controller.mjs";
-import { readTestContourStatus, startTestContour } from "../runtime/test-contour-manager.mjs";
 import { sentryDiagnostics } from "../infrastructure/diagnostics/sentry-diagnostics.mjs";
 import { readPublicationState } from "../infrastructure/persistence/publication-state.mjs";
 import { createCommandTraceComposition, measureStartupBeforeTrace } from "./command-trace-composition.mjs";
@@ -104,6 +112,41 @@ function testContourRuntimeIdentity(environment = process.env) {
     throw new Error("Test Contour runtime identity environment is incomplete");
   }
   return identity;
+}
+
+export function createReleaseCorrectionRequester({ taskBoard, taskLifecycle } = {}) {
+  if (typeof taskBoard?.task !== "function") throw new TypeError("taskBoard.task is required");
+  if (typeof taskLifecycle?.updateWorkflowStatus !== "function") {
+    throw new TypeError("taskLifecycle.updateWorkflowStatus is required");
+  }
+  return async ({ operation, error }) => {
+    const taskId = String(error?.taskId ?? "").trim();
+    if (!taskId || !operation.authorization.taskIds.includes(taskId)) {
+      throw new Error("release correction does not identify an authorized selected Task");
+    }
+    const operationId = `release-${operation.operationId}-correction-${taskId}-${String(error.resultCommit).slice(0, 12)}`;
+    const task = taskBoard.task(taskId);
+    if (!task) throw new Error("selected correction Task no longer exists");
+    if (task.workflowStatus === "in_progress") return { operationId, task };
+    if (task.workflowStatus !== "awaiting_implementation") {
+      throw new Error("selected correction Task is no longer awaiting its accepted result");
+    }
+    const result = await taskLifecycle.updateWorkflowStatus({
+      taskId,
+      status: "in_progress",
+      operationId,
+      expectedRevision: task.revision,
+      expectedWorkflowStatus: task.workflowStatus,
+      operationEvidence: {
+        releaseCorrection: {
+          releaseOperationId: operation.operationId,
+          priorResultCommit: error.priorResultCommit,
+          rejectedResultCommit: error.resultCommit,
+        },
+      },
+    });
+    return { operationId, task: result.task };
+  };
 }
 
 export async function recoverTaskBoardStartup(taskBoard) {
@@ -199,12 +242,12 @@ function usageSyncRuntimeHomeIds(identityStore) {
   };
 }
 
-async function resolveReleaseTestContourSource(repositories) {
+export async function resolveReleaseValidationSource(repositories) {
   for (const repository of repositories) {
     const sourceRoot = path.join(repository.worktreeRoot, "AgentHub");
     try {
-      await access(path.join(sourceRoot, "test-contour.mjs"));
-      return { kind: "agent-hub-test-contour", ...repository, sourceRoot };
+      await access(path.join(sourceRoot, "publish-changed.mjs"));
+      return { kind: "workspace-release-pipeline", ...repository, sourceRoot };
     } catch {}
   }
   return {
@@ -385,8 +428,14 @@ export async function createHubInfrastructure({
   const contourExternalEffects = config.testContourRecording
     ? createContourExternalEffects({ root: config.testContourRecording.root })
     : null;
-  const taskGitWorkspaces = new TaskGitWorkspaceService({ dataDir: config.dataDir, contourExternalEffects });
-  const releaseGitWorkspaces = new ReleaseGitWorkspaceService({ dataDir: config.dataDir, contourExternalEffects });
+  const recordTaskTiming = createTaskOperationTimingLogRecorder({
+    logFile: path.join(logDirectory, "agent-hub.log"), maxBytes: config.logMaxBytes,
+    maxFiles: config.logMaxFiles, mirror: process.stdout.isTTY || process.stderr.isTTY,
+  });
+  const verifyNativeResolutionReview = createNativeMergeReviewVerifier({ workspaceCatalog: workspaceCatalogStore, taskBoard });
+  const taskGitWorkspaces = new TaskGitWorkspaceService({ dataDir: config.dataDir,
+    contourExternalEffects, recordTiming: recordTaskTiming, verifyNativeResolutionReview });
+  const releaseGitWorkspaces = new ReleaseGitWorkspaceService({ dataDir: config.dataDir, contourExternalEffects, verifyNativeResolutionReview });
   const registeredReleaseProjectRoots = workspaceCatalogStore.hierarchy()
     .filter((workspace) => workspace.settings?.releaseWorkflowEnabled === true)
     .map((workspace) => ({
@@ -411,17 +460,11 @@ export async function createHubInfrastructure({
   }
   const taskReleasePlanner = new TaskReleasePlanService({ taskBoard, taskGitWorkspaces });
   const workspaceReleasePreflight = new WorkspaceReleasePreflightService({
+    measureOperation: measureTaskOperation,
     releasePlanner: taskReleasePlanner,
     taskGitWorkspaces,
     releaseGitWorkspaces,
-    resolveTestContourSource: resolveReleaseTestContourSource,
-    refreshTestContour: ({ sourceRoot, ...options }) => startTestContour({
-      refresh: true,
-      sourceRoot,
-      entryFile: path.join(sourceRoot, "test-contour.mjs"),
-      ...options,
-    }),
-    readTestContourStatus,
+    resolveReleaseValidationSource,
     readPublicationState,
     validateProductionCandidate: createRepositoryProductionValidationAdapter({
       policies: config.releaseValidation?.repositories ?? [],
@@ -434,15 +477,56 @@ export async function createHubInfrastructure({
     taskGitWorkspaces,
     releasePreflight: workspaceReleasePreflight,
   });
-  const workspaceReleaseService = new WorkspaceReleaseService({
-    store: taskBoardStore,
-    releasePlanner: taskReleasePlanner,
+  const workspaceReleaseService = {
+    completeRelease() {
+      const error = new Error("legacy release completion was removed; use the durable ReleaseOperation owner");
+      error.code = "RELEASE_OPERATION_REQUIRED";
+      throw error;
+    },
+  };
+  const releaseOperationStore = new ReleaseOperationStore({ dataDir: config.dataDir });
+  await startupStep("release-operation-legacy-import", () => importLegacyReleaseOperations({
+    store: releaseOperationStore,
+    dataDir: config.dataDir,
+    runnerVersion: AGENT_HUB_VERSION,
+  }));
+  const releaseOperationPublication = new ReleaseOperationPublication({
+    dataDir: config.dataDir,
+    runtimeRoot: runtimeCommandRoot,
+  });
+  const releaseOperationFinalization = new ReleaseOperationFinalization({
+    taskBoard,
     releaseGitWorkspaces,
     taskGitWorkspaces,
-    releasePreflight: workspaceReleasePreflight,
-    verifyPublication: verifyWorkspaceReleasePublication,
   });
+  const releaseOperationAdapter = new WorkspaceReleaseOperationAdapter({
+    releasePreflight: workspaceReleasePreflight,
+    publication: releaseOperationPublication,
+    finalization: releaseOperationFinalization,
+  });
+  const releaseOperations = new ReleaseOperationService({
+    store: releaseOperationStore,
+    compose: (input) => releaseOperationAdapter.compose(input),
+    validate: (input) => releaseOperationAdapter.validate(input),
+    publishTarget: (input) => releaseOperationAdapter.publishTarget(input),
+    readTarget: (input) => releaseOperationAdapter.readTarget(input),
+    finalize: (input) => releaseOperationAdapter.finalize(input),
+    reservePublication: (input) => releaseOperationAdapter.reservePublication(input),
+    requestCorrection: createReleaseCorrectionRequester({ taskBoard, taskLifecycle }),
+    cleanupGeneration: (input) => releaseOperationAdapter.cleanupGeneration(input),
+    processAlive: processIsAlive,
+    runnerVersion: AGENT_HUB_VERSION,
+  });
+  const releaseOperationCommands = new ReleaseOperationCommandService({
+    releaseOperations,
+    workspaceCatalog: workspaceCatalogStore,
+    taskBoard,
+  });
+  taskLifecycle.setReleaseOperationWake((taskId) => releaseOperations.wakeForTask(taskId));
+  taskLifecycle.setReleaseOperationPrepare((taskId) => releaseOperations.prepareForTaskAcceptance(taskId));
+  releaseOperations.recover();
   const hubMcpService = new HubMcpService({
+    measureOperation: measureTaskOperation,
     workspaceCatalog: workspaceCatalogStore,
     taskBoard,
     taskLifecycle,
@@ -452,6 +536,7 @@ export async function createHubInfrastructure({
     releasePlanner: taskReleasePlanner,
     releasePreflight: workspaceReleasePreflight,
     releaseCompleter: workspaceReleaseService,
+    releaseOperations,
     taskGitWorkspaces,
     releaseGitWorkspaces,
   });
@@ -593,6 +678,8 @@ export async function createHubInfrastructure({
     taskReleasePlanner,
     workspaceReleasePreflight,
     workspaceReleaseService,
+    releaseOperations,
+    releaseOperationCommands,
     streamHandoff,
     preTurnInstructions,
     taskBoard,

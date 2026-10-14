@@ -209,6 +209,84 @@ test("virtual Stream mode preserves overview profile and default-open semantics"
   }
 });
 
+test("QU keeps values and missing-data dashes without disclaimers in totals, turns and breakdowns", async () => {
+  const { chromium } = await import("playwright");
+  const browser = await chromium.launch(process.platform === "win32"
+    ? { channel: "msedge", headless: true } : { headless: true });
+  try {
+    for (const grouping of ["stream", "workspace", "date"]) {
+      const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+      const errors = [];
+      page.on("pageerror", (error) => errors.push(error.message));
+      const breakdown = [
+        ["Вход", 1.25], ["Кэш", 2.5], ["Запись кэша", 0],
+        ["Выход", null], ["Думы", 4],
+      ].map(([label, quota]) => `<span data-task-usage-part>${label}: `
+        + `<span data-kilo-usage data-usage-credits="6" data-usage-qu-incomplete="1"`
+        + `${quota === null ? "" : ` data-usage-qu="${quota}"`}>6 cr</span></span>`).join("");
+      await openProductionJournal(page, { grouping, summaryBuckets: [
+        bucket({ quotaUnits: 45, knownQuotaUnits: 1, unknownQuotaUnits: 0, uncalibratedCount: 0 }),
+        bucket({ streamId: "stream-low", streamDisplayName: "Low", credits: 10,
+          quotaUnits: 0, knownQuotaUnits: 1, unknownQuotaUnits: 0, uncalibratedCount: 1 }),
+      ], turnPageResponse: ({ payload }) => ({ payload: { ...payload, turns: [{
+        ...payload.turns[0],
+        html: payload.turns[0].html
+          .replace('data-work-log-turn-credits="30"', 'data-work-log-turn-credits="30"'
+            + ' data-work-log-turn-quota-units="45" data-work-log-turn-quota-incomplete="1"')
+          .replace(' data-lazy-turn-id="turn-ref-high"', "")
+          .replace('</summary>', '<span data-work-log-turn-meta></span></summary>')
+          .replace('<div data-lazy-turn-content></div>', `<div data-task-usage-breakdown>${breakdown}</div>`),
+      }] } }) });
+      await page.locator(`[data-journal-virtual-mode="${grouping}"]`).first()
+        .evaluate((details) => { details.open = true; });
+      if (grouping === "stream") {
+        await page.locator('[data-work-log-turn-entry]').first().waitFor();
+        await page.locator('[data-work-log-turn-details]').first()
+          .evaluate((details) => { details.open = true; });
+      }
+      await page.locator('[data-usage-unit="qu"]').first().evaluate((button) => button.click());
+      await page.waitForFunction(() => document.querySelector('[data-journal-total-credits]')
+        ?.textContent?.includes('45 QU'));
+      assert.equal(await page.locator('[data-journal-total-credits]').innerText(), "45 QU");
+      if (grouping === "stream") {
+        const groups = page.locator('[data-journal-virtual-mode="stream"]');
+        assert.match(await groups.nth(0).locator('[data-journal-ledger-metric="credits"]').innerText(), /45 QU/u);
+        assert.equal(await groups.nth(1).locator('[data-usage-qu]').textContent(), "— QU");
+        assert.equal(await groups.nth(1).locator('[data-usage-qu]').getAttribute('data-usage-qu-incomplete'), "1");
+      } else {
+        const metric = grouping === "workspace" ? '[data-journal-ledger-metric="credits"]'
+          : '[data-journal-day-picker-credits]';
+        assert.equal(await page.locator(metric).first().locator('[data-usage-qu]').textContent(), "45 QU");
+      }
+      const turn = page.locator('[data-work-log-turn-entry]').first();
+      const parts = turn.locator('[data-task-usage-part] [data-kilo-usage]');
+      if (grouping === "stream") {
+        await parts.last().waitFor({ state: "attached" });
+        assert.equal(await turn.locator('[data-journal-turn-cost]').textContent(), "45 QU");
+        assert.equal(await turn.locator('[data-journal-turn-cost] [data-usage-qu]')
+          .getAttribute('data-usage-qu-incomplete'), "1");
+        assert.deepEqual(await parts.allTextContents(), ["1,3 QU", "2,5 QU", "— QU", "— QU", "4 QU"]);
+        assert.deepEqual(await parts.evaluateAll((nodes) => nodes.map((node) => node.dataset.usageQu)),
+          ["1.25", "2.5", "0", undefined, "4"]);
+      }
+      assert.doesNotMatch(await page.locator('[data-journal]').textContent(), /неполно|≈/u);
+      await page.locator('[data-usage-unit="cr"]').first().evaluate((button) => button.click());
+      await page.waitForFunction(() => document.querySelector('[data-journal-total-credits]')
+        ?.textContent?.includes('40 cr'));
+      assert.match(await page.locator('[data-journal-total-credits]').innerText(), /40 cr/u);
+      if (grouping === "stream") {
+        await parts.last().waitFor({ state: "attached" });
+        assert.deepEqual(await parts.allTextContents(), Array(5).fill("6 cr"));
+        await page.locator('[data-usage-unit="qu"]').first().evaluate((button) => button.click());
+        await parts.last().waitFor({ state: "attached" });
+        assert.deepEqual(await parts.allTextContents(), ["1,3 QU", "2,5 QU", "— QU", "— QU", "4 QU"]);
+      }
+      assert.deepEqual(errors, []);
+      await page.close();
+    }
+  } finally { await browser.close(); }
+});
+
 test("journal version conflict refreshes once and restores the open Stream without an error", async () => {
   const { chromium } = await import("playwright");
   const browser = await chromium.launch(process.platform === "win32"

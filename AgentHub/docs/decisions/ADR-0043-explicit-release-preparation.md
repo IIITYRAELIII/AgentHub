@@ -2,6 +2,10 @@
 
 ## Status
 
+Superseded by ADR-0045 and then ADR-0055: an ordinary Await transition composes
+`PreRelease` before it commits. The historical decision below is preserved as
+context and is not the operative rule.
+
 Accepted for the HUB-216 release workflow simplification. Reaffirms ADR-0013
 and supersedes the eager Await/post-publication materialization portions of
 ADR-0024 and ADR-0034.

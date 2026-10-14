@@ -8,10 +8,7 @@ import { setImmediate } from "node:timers/promises";
 
 import { uuidV7TimestampMs } from "./codex-subagent-accounting.mjs";
 import { IMAGE_GENERATION_ESTIMATE_CREDITS } from "../../domain/codex-usage-estimate.mjs";
-import {
-  isCodexContextProbeClientId,
-  isCodexContextProbeTurn,
-} from "../../domain/codex-context-probe.mjs";
+import { isCodexContextProbeClientId } from "../../domain/codex-service-usage-identity.mjs";
 import {
   codexAssistantResponseProjection,
 } from "../../domain/codex-response-annotation.mjs";
@@ -315,14 +312,70 @@ function generatedImageOutputPaths(entry) {
     .join("\n"));
 }
 
-function normalizedRolloutUsage(value) {
-  return normalizeTokenUsage({
+function completedImageGenerationId(entry) {
+  const payload = entry?.payload ?? {};
+  if (entry?.type !== "event_msg") return "";
+  if (payload.type === "item_completed") {
+    const item = payload.item;
+    if (item?.type !== "Extension" || item.kind !== "image_gen.generation"
+      || item.status !== "completed" || item.failure != null) return "";
+    const id = String(item.id ?? "").trim();
+    return id;
+  }
+  if (payload.type !== "image_generation_end" || payload.status !== "completed") return "";
+  const callId = String(payload.call_id ?? "").trim();
+  return callId;
+}
+
+const LONG_CONTEXT_USAGE_FIELDS = [
+  "longContextInputTokens",
+  "longContextCachedInputTokens",
+  "longContextCacheWriteInputTokens",
+  "longContextOutputTokens",
+  "longContextReasoningOutputTokens",
+];
+const GPT_6_1_LONG_CONTEXT_THRESHOLD = 272_000;
+
+function normalizedRolloutUsage(value, { request = false } = {}) {
+  const usage = normalizeTokenUsage({
     inputTokens: value?.input_tokens,
     cachedInputTokens: value?.cached_input_tokens,
+    cacheWriteInputTokens: value?.cache_write_input_tokens,
     outputTokens: value?.output_tokens,
     reasoningOutputTokens: value?.reasoning_output_tokens,
     totalTokens: value?.total_tokens,
   });
+  if (request && usage.inputTokens > GPT_6_1_LONG_CONTEXT_THRESHOLD) {
+    usage.longContextInputTokens = usage.inputTokens;
+    usage.longContextCachedInputTokens = usage.cachedInputTokens;
+    usage.longContextCacheWriteInputTokens = usage.cacheWriteInputTokens;
+    usage.longContextOutputTokens = usage.outputTokens;
+    usage.longContextReasoningOutputTokens = usage.reasoningOutputTokens;
+  }
+  return usage;
+}
+
+function preserveRequestPricingUsage(exact, previous) {
+  const merged = { ...exact };
+  if (!merged.cacheWriteInputTokens && (previous?.cacheWriteInputTokens ?? 0) > 0) {
+    merged.cacheWriteInputTokens = previous.cacheWriteInputTokens;
+  }
+  for (const field of LONG_CONTEXT_USAGE_FIELDS) {
+    if ((previous?.[field] ?? 0) > 0) merged[field] = previous[field];
+  }
+  return merged;
+}
+
+function addRequestPricingUsage(exact, request, { includeCacheWrite = false } = {}) {
+  const merged = { ...exact };
+  if (includeCacheWrite && (request?.cacheWriteInputTokens ?? 0) > 0) {
+    merged.cacheWriteInputTokens = (merged.cacheWriteInputTokens ?? 0)
+      + request.cacheWriteInputTokens;
+  }
+  for (const field of LONG_CONTEXT_USAGE_FIELDS) {
+    if ((request?.[field] ?? 0) > 0) merged[field] = (merged[field] ?? 0) + request[field];
+  }
+  return merged;
 }
 
 function exactTurnTokenUsage(entry) {
@@ -410,10 +463,6 @@ function acceptUserOperationIdentity(turn, entry) {
   if (entry?.type === "response_item" && payload?.type === "message" && payload?.role === "user") {
     turn.prompt ||= displayUserPrompt(messageText(payload));
   }
-  turn.contextProbe = isCodexContextProbeTurn({
-    clientUserMessageId: turn.clientUserMessageId,
-    prompt: turn.prompt,
-  });
 }
 
 function patchInputFiles(value, workspaceRoot = "") {
@@ -541,6 +590,7 @@ function createTurnAccumulator(turnId) {
   let latestResponseTurnId = "";
   let usage = emptyTokenUsage();
   let exactUsageReported = false;
+  let exactCacheWriteReported = false;
   let reported = false;
   let started = false;
   let terminal = false;
@@ -621,8 +671,9 @@ function createTurnAccumulator(turnId) {
     if (exactTurnId === requestedTurnId) acceptUserOperationIdentity(userOperation, entry);
     const exactUsage = exactTurnTokenUsage(entry);
     if (exactUsage && exactTurnId === requestedTurnId) {
-      usage = exactUsage;
+      usage = preserveRequestPricingUsage(exactUsage, usage);
       exactUsageReported = true;
+      exactCacheWriteReported = (exactUsage.cacheWriteInputTokens ?? 0) > 0;
       reported = true;
       finalTokenIndex = index;
       latestResponseTurnId = exactTurnId;
@@ -639,14 +690,13 @@ function createTurnAccumulator(turnId) {
     if (imageCallId && exactTurnId) {
       rememberImageGenerationCallOwner(imageGenerationCalls, imageCallId, exactTurnId);
     }
-    if (entry?.type === "event_msg"
-      && entry.payload?.type === "image_generation_end"
-      && entry.payload?.status === "completed") {
+    const completedImageId = completedImageGenerationId(entry);
+    if (completedImageId) {
       const callId = String(entry.payload?.call_id ?? "").trim();
       const attributedTurnId = exactTurnId
         || imageGenerationCallOwnerTurnId(imageGenerationCalls, callId);
-      if (callId && attributedTurnId === requestedTurnId) {
-        completedImageGenerationCalls.add(callId);
+      if (attributedTurnId === requestedTurnId) {
+        completedImageGenerationCalls.add(completedImageId);
       }
     }
     const generatedPaths = generatedImageOutputPaths(entry);
@@ -706,8 +756,15 @@ function createTurnAccumulator(turnId) {
     const attributedTurnId = latestResponseTurnId
       || (activeTurnIds.size === 1 ? [...activeTurnIds][0] : "");
     if (attributedTurnId === requestedTurnId) {
+      const requestUsage = normalizedRolloutUsage(entry.payload?.info?.last_token_usage, {
+        request: true,
+      });
       if (!exactUsageReported) {
-        usage = addTokenUsage(usage, normalizedRolloutUsage(entry.payload?.info?.last_token_usage));
+        usage = addTokenUsage(usage, requestUsage);
+      } else {
+        usage = addRequestPricingUsage(usage, requestUsage, {
+          includeCacheWrite: !exactCacheWriteReported,
+        });
       }
       limitSamples = mergeUsageLimitSamples(limitSamples, codexLimitSamplesFromTokenEvent(entry));
       reported = true;
@@ -721,7 +778,8 @@ function createTurnAccumulator(turnId) {
     return {
       turnId: requestedTurnId,
       ...(userOperation.clientUserMessageId ? { clientUserMessageId: userOperation.clientUserMessageId } : {}),
-      ...(userOperation.contextProbe ? { contextProbe: true } : {}),
+      serviceUsageKind: isCodexContextProbeClientId(userOperation.clientUserMessageId)
+        ? "context-probe" : "",
       usage,
       reported,
       started,
@@ -956,7 +1014,6 @@ export async function scanCodexTerminalEventsFromOffset(transcriptPath, {
       lastActivityAt: String(turn?.lastActivityAt ?? turn?.startedAt ?? ""),
       ...(turn?.prompt ? { prompt: turn.prompt } : {}),
       ...(turn?.clientUserMessageId ? { clientUserMessageId: turn.clientUserMessageId } : {}),
-      ...(turn?.contextProbe === true ? { contextProbe: true } : {}),
     }]] : [];
   }));
   const start = Math.max(0, Number(startOffset) || 0);
@@ -1002,7 +1059,6 @@ export async function scanCodexTerminalEventsFromOffset(transcriptPath, {
       turnId,
       status,
       completedAt: String(entry?.timestamp ?? ""),
-      ...(active?.contextProbe === true ? { contextProbe: true } : {}),
     });
   }
 
@@ -1054,6 +1110,7 @@ function createHistoricalTurn(turnId) {
   return {
     turnId,
     usage: emptyTokenUsage(),
+    exactCacheWriteReported: false,
     reported: false,
     started: false,
     terminal: false,
@@ -1146,6 +1203,9 @@ function historicalTurnResult(turn, latestModel, latestServiceTier) {
     model: turn.model || latestModel,
     serviceTier: turn.serviceTier || latestServiceTier,
     compactionOnly,
+    serviceUsageKind: compactionOnly ? "context-compaction"
+      : isCodexContextProbeClientId(turn.clientUserMessageId)
+        ? "context-probe" : "",
   };
 }
 
@@ -1233,9 +1293,6 @@ export async function scanCodexHistoricalRollout(transcriptPath, {
       turn.status = lifecycleTerminalStatus(lifecycle, entry.payload);
       touch(turn, timestamp);
     }
-    if (lifecycleTurnId && isCodexContextProbeClientId(entry?.payload?.client_id)) {
-      ensureTurn(lifecycleTurnId).contextProbe = true;
-    }
     if (lifecycle === "patch_apply_end" && lifecycleTurnId) {
       const turn = ensureTurn(lifecycleTurnId);
       for (const file of Object.keys(entry.payload?.changes ?? {})) {
@@ -1262,8 +1319,9 @@ export async function scanCodexHistoricalRollout(transcriptPath, {
     acceptUserOperationIdentity(exactTurn, entry);
     const exactUsage = exactTurnTokenUsage(entry);
     if (exactUsage && exactTurn) {
-      exactTurn.usage = exactUsage;
+      exactTurn.usage = preserveRequestPricingUsage(exactUsage, exactTurn.usage);
       exactTurn.exactUsageReported = true;
+      exactTurn.exactCacheWriteReported = (exactUsage.cacheWriteInputTokens ?? 0) > 0;
       exactTurn.reported = true;
       latestResponseTurnId = exactTurnId;
       touch(exactTurn, timestamp);
@@ -1271,7 +1329,7 @@ export async function scanCodexHistoricalRollout(transcriptPath, {
     if (exactTurnId && ["response_item", "turn_context"].includes(String(entry?.type ?? ""))) {
       latestResponseTurnId = exactTurnId;
       exactTurn.started = true;
-      exactTurn.hasOwnTurnContent = true;
+      if (entry.type === "response_item") exactTurn.hasOwnTurnContent = true;
       touch(exactTurn, timestamp);
     }
     if (entry?.type === "turn_context" && exactTurn) {
@@ -1284,14 +1342,13 @@ export async function scanCodexHistoricalRollout(transcriptPath, {
     if (imageCallId && exactTurnId) {
       rememberImageGenerationCallOwner(imageGenerationCalls, imageCallId, exactTurnId);
     }
-    if (entry?.type === "event_msg"
-      && entry.payload?.type === "image_generation_end"
-      && entry.payload?.status === "completed") {
+    const completedImageId = completedImageGenerationId(entry);
+    if (completedImageId) {
       const callId = String(entry.payload?.call_id ?? "").trim();
       const attributedTurnId = exactTurnId
         || imageGenerationCallOwnerTurnId(imageGenerationCalls, callId);
       const turn = turns.get(attributedTurnId) ?? (exactTurnId ? ensureTurn(exactTurnId) : null);
-      if (turn && callId) turn.imageGenerationCalls.add(callId);
+      if (turn) turn.imageGenerationCalls.add(completedImageId);
       touch(turn, timestamp);
     }
     const generatedPaths = generatedImageOutputPaths(entry);
@@ -1366,11 +1423,18 @@ export async function scanCodexHistoricalRollout(transcriptPath, {
       || (activeTurnIds.size === 1 ? [...activeTurnIds][0] : "");
     const attributedTurn = ensureTurn(attributedTurnId);
     if (attributedTurn) {
+      const requestUsage = normalizedRolloutUsage(entry.payload?.info?.last_token_usage, {
+        request: true,
+      });
       if (!attributedTurn.exactUsageReported) {
         attributedTurn.usage = addTokenUsage(
           attributedTurn.usage,
-          normalizedRolloutUsage(entry.payload?.info?.last_token_usage),
+          requestUsage,
         );
+      } else {
+        attributedTurn.usage = addRequestPricingUsage(attributedTurn.usage, requestUsage, {
+          includeCacheWrite: !attributedTurn.exactCacheWriteReported,
+        });
       }
       attributedTurn.limitSamples = mergeUsageLimitSamples(
         attributedTurn.limitSamples,

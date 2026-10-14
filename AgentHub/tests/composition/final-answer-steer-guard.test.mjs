@@ -11,13 +11,13 @@ import { CodexEventService } from "../../src/providers/codex/codex-event-service
 function eventService(run) {
   const noop = () => {};
   return new CodexEventService({
+    mutateCompaction: (_threadId, operation) => operation(),
     invalidateThreadRead: noop,
     forEvent: ({ turnId }) => turnId === run.turnId ? run : null,
     reindexRun: noop,
     applyThreadSettings: noop,
     saveState: async () => {},
     trackTokenUsage: noop,
-    completeTurn: noop,
     taskKey: () => "task",
     isSelectedRun: () => false,
     setSelectedDiff: noop,

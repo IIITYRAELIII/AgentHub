@@ -55,13 +55,12 @@ export class CodexUsageTracker {
     this.turns = new Map();
     this.contexts = new Map();
     this.contextWaiters = new Map();
-    this.completedTurns = new Map();
-    this.turnCompletionWaiters = new Map();
   }
 
   rememberContext(params, { provisional = false } = {}) {
     const modelContextWindow = Math.max(0, Number(params?.tokenUsage?.modelContextWindow) || 0);
-    const usedTokens = Math.max(0, Number(params?.tokenUsage?.last?.totalTokens) || 0);
+    const usedTokens = params?.tokenUsage?.last?.totalTokens;
+    if (typeof usedTokens !== "number" || !Number.isFinite(usedTokens) || usedTokens < 0) return false;
     const threadId = String(params?.threadId ?? "").trim();
     const turnId = String(params?.turnId ?? "").trim();
     const provider = String(params?.provider ?? "codex").trim().toLowerCase() || "codex";
@@ -163,41 +162,6 @@ export class CodexUsageTracker {
       const waiters = this.contextWaiters.get(key) ?? [];
       waiters.push(waiter);
       this.contextWaiters.set(key, waiters);
-    });
-  }
-
-  markTurnCompleted(turnId, status = "completed") {
-    const key = String(turnId ?? "").trim();
-    if (!key) return null;
-    const completion = { turnId: key, status: String(status ?? "").trim() || "completed" };
-    setBoundedMapValue(this.completedTurns, key, completion, this.turnLimit);
-    const waiters = this.turnCompletionWaiters.get(key) ?? [];
-    this.turnCompletionWaiters.delete(key);
-    for (const waiter of waiters) {
-      clearTimeout(waiter.timer);
-      waiter.resolve(completion);
-    }
-    return completion;
-  }
-
-  waitForTurnCompletion(turnId, { timeoutMs = 60_000 } = {}) {
-    const key = String(turnId ?? "").trim();
-    if (!key) return Promise.resolve(null);
-    const completed = this.completedTurns.get(key);
-    if (completed) return Promise.resolve(completed);
-    return new Promise((resolve) => {
-      const waiter = { resolve, timer: null };
-      waiter.timer = setTimeout(() => {
-        const current = this.turnCompletionWaiters.get(key) ?? [];
-        const remaining = current.filter((candidate) => candidate !== waiter);
-        if (remaining.length) this.turnCompletionWaiters.set(key, remaining);
-        else this.turnCompletionWaiters.delete(key);
-        resolve(null);
-      }, Math.max(1, Number(timeoutMs) || 60_000));
-      waiter.timer.unref?.();
-      const waiters = this.turnCompletionWaiters.get(key) ?? [];
-      waiters.push(waiter);
-      this.turnCompletionWaiters.set(key, waiters);
     });
   }
 

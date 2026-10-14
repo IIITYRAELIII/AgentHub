@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { access, mkdir, mkdtemp, readFile, readdir, rm, unlink, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -18,8 +19,321 @@ import {
 } from "../../../src/infrastructure/filesystem/task-git-workspace.mjs";
 import { prepareTaskWorktreeDependencies } from "../../../src/infrastructure/filesystem/task-worktree-dependencies.mjs";
 import { canonicalPath } from "../../../src/infrastructure/filesystem/config.mjs";
+import { taskRepositoryKey } from "../../../src/domain/task-git-reference.mjs";
 
 const execFileAsync = promisify(execFile);
+
+for (const advancedRemote of [false, true]) test(`combined Tasks accept published ancestry with advanced remote=${advancedRemote} and reject unproven history`, { timeout: 90_000 }, async (context) => {
+  const root = await repository(context);
+  const originalMain = await git(root, "rev-parse", "main");
+  const dataDir = path.join(root, "..", `${path.basename(root)}-published-history`);
+  context.after(() => rm(dataDir, { recursive: true, force: true }));
+  let publication = null;
+  const service = new TaskGitWorkspaceService({ dataDir, readPublication: async () => publication });
+  const a = await service.prepare({ taskId: "14141414-1414-4414-8414-141414141414", projectRoot: root });
+  const b = await service.prepare({ taskId: "15151515-1515-4515-8515-151515151515", projectRoot: root });
+  const commit = async (cwd, message) => {
+    await git(cwd, "add", ".");
+    await git(cwd, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", message);
+  };
+  await git(root, "checkout", "-b", "published-feature");
+  await writeFile(path.join(root, "published.txt"), "already published\n");
+  await commit(root, "published feature");
+  await git(root, "checkout", "-b", "publication", "main");
+  await git(root, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+    "merge", "--no-ff", "published-feature", "-m", "publication");
+  const published = await git(root, "rev-parse", "HEAD");
+  await git(root, "checkout", "main");
+  await git(root, "update-ref", "refs/remotes/origin/main", published);
+  for (const workspace of [a, b]) await git(workspace.projectRoot, "merge", "--ff-only", published);
+  await writeFile(path.join(a.projectRoot, "a.txt"), "A\n");
+  await commit(a.projectRoot, "A result");
+  await writeFile(path.join(b.projectRoot, "b.txt"), "B\n");
+  await commit(b.projectRoot, "B result");
+  await git(b.projectRoot, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+    "merge", "--no-ff", a.branch, "-m", "combine A");
+  const snapshot = await service.snapshot({ taskId: b.taskId, projectRoot: b.projectRoot });
+  const devBefore = (await service.prepareDev(root)).headCommit;
+  for (const invalid of [null, { revision: published },
+    { generation: "g", repositories: [{ root: path.join(root, "foreign"), revision: published }] },
+    { generation: "g", repositories: [{ root, revision: originalMain }] }]) {
+    publication = invalid;
+    await assert.rejects(service.mergeIntoDev(snapshot), (error) => error.code === "RELEASE_NATIVE_HISTORY_REQUIRED");
+    assert.equal(await git(root, "rev-parse", "dev"), devBefore);
+  }
+  publication = { generation: "published-generation", repositories: [{ root, revision: published }] };
+  await git(root, "update-ref", "refs/remotes/origin/main", originalMain);
+  await assert.rejects(service.mergeIntoDev(snapshot), (error) => error.code === "RELEASE_NATIVE_HISTORY_REQUIRED");
+  assert.equal(await git(root, "rev-parse", "dev"), devBefore);
+  await git(root, "update-ref", "refs/remotes/origin/main", published);
+  if (advancedRemote) {
+    await git(root, "checkout", "-b", "remote-advance", published);
+    await writeFile(path.join(root, "remote-only.txt"), "unapproved newer remote\n");
+    await commit(root, "remote advanced after publication");
+    await git(root, "update-ref", "refs/remotes/origin/main", "HEAD");
+    await git(root, "checkout", "main");
+  }
+  await assert.rejects(service.mergeIntoDev(snapshot), { code: "RELEASE_NATIVE_HISTORY_REQUIRED" });
+  assert.equal(await git(root, "rev-parse", "dev"), devBefore);
+  assert.equal(await git(root, "rev-parse", "main"), originalMain);
+  assert.equal(await git(root, "status", "--porcelain"), "");
+  const acceptedDev = await git(root, "rev-parse", "dev");
+  await git(root, "checkout", "-b", "unpublished-foreign", published);
+  await writeFile(path.join(root, "foreign.txt"), "not published\n");
+  await commit(root, "unpublished foreign change");
+  await git(root, "checkout", "main");
+  await git(b.projectRoot, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+    "merge", "--no-ff", "unpublished-foreign", "-m", "unapproved adoption");
+  await git(root, "update-ref", "refs/remotes/origin/main", "unpublished-foreign");
+  const changed = await service.snapshot({ taskId: b.taskId, projectRoot: b.projectRoot });
+  await assert.rejects(service.mergeIntoDev(changed), (error) => error.code === "RELEASE_NATIVE_HISTORY_REQUIRED");
+  assert.equal(await git(root, "rev-parse", "dev"), acceptedDev);
+  assert.equal(await git(root, "rev-parse", "main"), originalMain);
+});
+
+test("combined Task rejects unpublished remote fast-forward inside its first-parent history", { timeout: 90_000 }, async (context) => {
+  const root = await repository(context);
+  const originalMain = await git(root, "rev-parse", "main");
+  const dataDir = path.join(root, "..", `${path.basename(root)}-published-fast-forward`);
+  context.after(() => rm(dataDir, { recursive: true, force: true }));
+  let publication = null;
+  const service = new TaskGitWorkspaceService({ dataDir, readPublication: async () => publication });
+  const a = await service.prepare({ taskId: "14141414-1414-4414-8414-141414141414", projectRoot: root });
+  const b = await service.prepare({ taskId: "15151515-1515-4515-8515-151515151515", projectRoot: root });
+  const commit = async (cwd, message) => {
+    await git(cwd, "add", ".");
+    await git(cwd, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", message);
+  };
+  await git(root, "checkout", "-b", "published-feature");
+  await writeFile(path.join(root, "published.txt"), "published\n");
+  await commit(root, "published feature");
+  await git(root, "checkout", "-b", "publication", "main");
+  await git(root, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+    "merge", "--no-ff", "published-feature", "-m", "publication");
+  const published = await git(root, "rev-parse", "HEAD");
+  await git(root, "checkout", "main");
+  await git(root, "checkout", "-b", "remote-advance", published);
+  await writeFile(path.join(root, "remote-only.txt"), "unpublished remote\n");
+  await commit(root, "remote advance");
+  const remote = await git(root, "rev-parse", "HEAD");
+  await git(root, "update-ref", "refs/remotes/origin/main", remote);
+  await git(root, "checkout", "main");
+  await git(a.projectRoot, "merge", "--ff-only", published);
+  await git(b.projectRoot, "merge", "--ff-only", remote);
+  await writeFile(path.join(a.projectRoot, "a.txt"), "A\n");
+  await commit(a.projectRoot, "A result");
+  await writeFile(path.join(b.projectRoot, "b.txt"), "B\n");
+  await commit(b.projectRoot, "B result");
+  await git(b.projectRoot, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+    "merge", "--no-ff", a.branch, "-m", "combine A");
+  const snapshot = await service.snapshot({ taskId: b.taskId, projectRoot: b.projectRoot });
+  publication = { generation: "published-generation", repositories: [{ root, revision: published }] };
+  const devBefore = (await service.prepareDev(root)).headCommit;
+  await assert.rejects(service.mergeIntoDev(snapshot), { code: "RELEASE_NATIVE_HISTORY_REQUIRED" });
+  assert.equal(await git(root, "rev-parse", "dev"), devBefore);
+  assert.equal(await git(root, "rev-parse", "main"), originalMain);
+  await assert.rejects(access(path.join((await service.prepareDev(root)).projectRoot, "remote-only.txt")));
+});
+
+for (const coversRemote of [false, true]) test(`published ancestry validates exact receipt coverage of fast-forward remote: ${coversRemote}`, { timeout: 90_000 }, async (context) => {
+  const root = await repository(context);
+  const originalMain = await git(root, "rev-parse", "main");
+  const dataDir = path.join(root, "..", `${path.basename(root)}-receipt-coverage`);
+  context.after(() => rm(dataDir, { recursive: true, force: true }));
+  let publication = null;
+  const service = new TaskGitWorkspaceService({ dataDir, readPublication: async () => publication });
+  const b = await service.prepare({ taskId: "16161616-1616-4616-8616-161616161616", projectRoot: root });
+  const commit = async (cwd, message) => {
+    await git(cwd, "add", ".");
+    await git(cwd, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", message);
+  };
+  await git(root, "checkout", "-b", "published-feature");
+  await writeFile(path.join(root, "published.txt"), "published\n");
+  await commit(root, "published feature");
+  await git(root, "checkout", "-b", "publication", "main");
+  await git(root, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+    "merge", "--no-ff", "published-feature", "-m", "publication");
+  const published = await git(root, "rev-parse", "HEAD");
+  await git(root, "checkout", "-b", "remote-advance", published);
+  await writeFile(path.join(root, "remote-only.txt"), "remote\n");
+  await commit(root, "remote advance");
+  const remote = await git(root, "rev-parse", "HEAD");
+  await git(root, "update-ref", "refs/remotes/origin/main", remote);
+  await git(root, "checkout", "-b", "adopted-side", coversRemote ? remote : originalMain);
+  await writeFile(path.join(root, "adopted.txt"), "approved side\n");
+  await commit(root, "adopted side");
+  const adopted = await git(root, "rev-parse", "HEAD");
+  await git(root, "checkout", "main");
+  await git(b.projectRoot, "merge", "--ff-only", remote);
+  await writeFile(path.join(b.projectRoot, "b.txt"), "B\n");
+  await commit(b.projectRoot, "B result");
+  await git(b.projectRoot, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+    "merge", "--no-ff", adopted, "-m", "adopt approved side");
+  const snapshot = await service.snapshot({ taskId: b.taskId, projectRoot: b.projectRoot });
+  const input = { taskId: b.taskId, projectRoot: root, branch: snapshot.branch,
+    taskBaseCommit: snapshot.baseCommit, acceptedLocalMainCommit: originalMain,
+    adoptedCommit: adopted, snapshotCommit: snapshot.headCommit, requestId: "exact-receipt-coverage" };
+  // A previously stored exact receipt must be revalidated when publication is known.
+  const receipt = await service.recordExplicitUpstreamAdoption(input);
+  publication = { generation: "published-generation", repositories: [{ root, revision: published }] };
+  const dev = await service.prepareDev(root);
+  if (coversRemote) {
+    assert.equal((await service.recordExplicitUpstreamAdoption(input)).recordHash, receipt.recordHash);
+    await assert.rejects(service.mergeIntoDev(snapshot), { code: "RELEASE_NATIVE_HISTORY_REQUIRED" });
+  } else {
+    await assert.rejects(service.recordExplicitUpstreamAdoption(input), /unpublished tracked remote history/u);
+    await assert.rejects(service.mergeIntoDev(snapshot), { code: "RELEASE_NATIVE_HISTORY_REQUIRED" });
+    assert.equal(await git(root, "rev-parse", "dev"), dev.headCommit);
+    await assert.rejects(access(path.join(dev.projectRoot, "remote-only.txt")));
+  }
+  assert.equal(await git(root, "rev-parse", "main"), originalMain);
+});
+
+async function withdrawalFixture(context, { dependent = false } = {}) {
+  const root = await repository(context);
+  const dataDir = path.join(root, "..", `${path.basename(root)}-withdrawal-data`);
+  context.after(() => rm(dataDir, { recursive: true, force: true }));
+  let publication = null;
+  const service = new TaskGitWorkspaceService({ dataDir, readPublication: async () => publication });
+  const a = await service.prepare({ taskId: "abababab-abab-4bab-8bab-abababababab", taskNumber: "HUB-801", projectRoot: root });
+  await writeFile(path.join(a.projectRoot, "a.txt"), "first A\n", "utf8");
+  const firstA = await service.snapshotAndMerge({ taskId: a.taskId, taskNumber: "HUB-801", projectRoot: a.projectRoot });
+  const b = await service.prepare({ taskId: "bcbcbcbc-bcbc-4cbc-8cbc-bcbcbcbcbcbc", taskNumber: "HUB-802", projectRoot: root });
+  if (dependent) await git(b.projectRoot, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "merge", dependent === "first-parent" ? "--ff-only" : "--no-ff", firstA.snapshot.headCommit, "-m", "B uses A");
+  await writeFile(path.join(b.projectRoot, "b.txt"), "B\n", "utf8");
+  const firstB = await service.snapshotAndMerge({ taskId: b.taskId, taskNumber: "HUB-802", projectRoot: b.projectRoot });
+  const tasks = [
+    { taskId: a.taskId, branch: a.branch, resultCommit: firstA.snapshot.headCommit },
+    { taskId: b.taskId, branch: b.branch, resultCommit: firstB.snapshot.headCommit },
+  ];
+  const withdraw = (workspace, extra = {}) => service.withTaskLock(workspace.taskId, (lease) => service.withdrawResultOwned({
+    taskId: workspace.taskId, taskNumber: workspace === a ? "HUB-801" : "HUB-802", projectRoot: root,
+    resultCommit: workspace === a ? firstA.snapshot.headCommit : firstB.snapshot.headCommit,
+    operationId: `withdraw-${workspace.taskId}`, tasks, lease,
+    readWorkflowOutcome: async () => ({ status: "not_committed" }),
+    commitWorkflow: async (evidence) => ({ workflowStatus: "in_progress", evidence }),
+    ...extra,
+  }));
+  return { root, service, a, b, firstA, firstB, tasks, withdraw, publish(value) { publication = value; } };
+}
+
+test("withdrawal removes only its Task and ordinary Test reintegrates its full result", { timeout: 90_000 }, async (context) => {
+  const { root, service, a, b, firstA, firstB, withdraw } = await withdrawalFixture(context);
+  await writeFile(path.join(a.projectRoot, "unfinished.txt"), "keep my edits\n", "utf8");
+  const result = await withdraw(a);
+  assert.equal(result.withdrawal.outcome, "withdrawn");
+  assert.equal(result.withdrawal.removedIntegrations.length, 1);
+  const dev = await service.prepareDev(root);
+  await assert.rejects(access(path.join(dev.projectRoot, "a.txt")));
+  assert.equal(await readFile(path.join(dev.projectRoot, "b.txt"), "utf8"), "B\n");
+  await assert.rejects(git(root, "merge-base", "--is-ancestor", firstA.snapshot.headCommit, "dev"));
+  await git(root, "merge-base", "--is-ancestor", firstB.snapshot.headCommit, "dev");
+  assert.equal(await readFile(path.join(a.projectRoot, "unfinished.txt"), "utf8"), "keep my edits\n");
+  assert.equal(await git(a.projectRoot, "rev-parse", "HEAD"), firstA.snapshot.headCommit);
+  assert.equal(await git(b.projectRoot, "rev-parse", "HEAD"), firstB.snapshot.headCommit);
+  const tested = await service.snapshotAndMerge({ taskId: a.taskId, taskNumber: "HUB-801", projectRoot: a.projectRoot });
+  assert.equal(tested.integration.integrated, true);
+  assert.equal(await readFile(path.join(dev.projectRoot, "a.txt"), "utf8"), "first A\n");
+  assert.equal(await readFile(path.join(dev.projectRoot, "unfinished.txt"), "utf8"), "keep my edits\n");
+  assert.equal(await git(root, "symbolic-ref", "HEAD"), "refs/heads/main");
+});
+
+test("withdrawal proves rollback after a rejected lifecycle commit", { timeout: 90_000 }, async (context) => {
+  const { root, service, a, b, firstA, withdraw } = await withdrawalFixture(context);
+  const before = await git(root, "rev-parse", "dev");
+  await assert.rejects(withdraw(a, { commitWorkflow: async () => { throw new Error("CAS rejected"); } }), /CAS rejected/u);
+  const dev = await service.prepareDev(root);
+  assert.equal(dev.headCommit, before);
+  assert.equal(await readFile(path.join(dev.projectRoot, "a.txt"), "utf8"), "first A\n");
+  await assert.rejects(withdraw(b, {
+    blockedBy: { taskId: a.taskId, resultCommit: firstA.snapshot.headCommit },
+    commitWorkflow: async () => { throw new Error("wait CAS rejected"); },
+  }), /wait CAS rejected/u);
+  await service.prepare({ taskId: b.taskId, taskNumber: "HUB-802", projectRoot: root });
+  await withdraw(a);
+  const repeated = await service.snapshotAndMerge({ taskId: a.taskId, taskNumber: "HUB-801", projectRoot: a.projectRoot, operationId: "test-after-acknowledged-withdrawal" });
+  assert.equal(repeated.snapshot.headCommit, firstA.snapshot.headCommit);
+  assert.equal(repeated.integration.integrated, true);
+});
+
+test("withdrawal retains ambiguous intent and resumes the same lifecycle without replaying Git", { timeout: 90_000 }, async (context) => {
+  const { root, service, a, withdraw } = await withdrawalFixture(context);
+  let unknown = false;
+  await assert.rejects(withdraw(a, {
+    readWorkflowOutcome: async () => ({ status: unknown ? "unknown" : "not_committed" }),
+    commitWorkflow: async () => { unknown = true; throw new Error("lost database reply"); },
+  }), (error) => error.code === "TASK_WITHDRAWAL_UNKNOWN");
+  const changed = await git(root, "rev-parse", "dev");
+  assert.equal(await service.pendingWithdrawal({ projectRoot: root, taskId: a.taskId, operationId: `withdraw-${a.taskId}` }), true);
+  await assert.rejects(service.pendingWithdrawal({ projectRoot: root, taskId: a.taskId, operationId: "foreign-operation" }), /identity does not match/u);
+  await assert.rejects(service.prepareDev(root), /withdrawal .* requires exact lifecycle reconciliation/u);
+  const resumed = await withdraw(a, {
+    readWorkflowOutcome: async () => ({ status: "committed", result: { workflowStatus: "in_progress" } }),
+    commitWorkflow: async () => { throw new Error("must not replay committed lifecycle"); },
+  });
+  assert.equal(resumed.workflow.workflowStatus, "in_progress");
+  assert.equal((await service.prepareDev(root)).headCommit, changed);
+  assert.equal(await service.pendingWithdrawal({ projectRoot: root, taskId: a.taskId, operationId: `withdraw-${a.taskId}` }), false);
+});
+
+test("withdrawal does not discard unidentified dev contributions", { timeout: 90_000 }, async (context) => {
+  const { root, service, a, withdraw } = await withdrawalFixture(context);
+  const before = await git(root, "rev-parse", "dev");
+  await assert.rejects(withdraw(a, { tasks: [] }), /no unique Task owner/u);
+  assert.equal(await git(root, "rev-parse", "dev"), before);
+  const dev = await service.prepareDev(root);
+  await writeFile(path.join(dev.projectRoot, "unknown.txt"), "unknown contribution\n", "utf8");
+  await git(dev.projectRoot, "add", "unknown.txt");
+  await git(dev.projectRoot, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "unowned direct change");
+  const unknownHead = await git(root, "rev-parse", "dev");
+  await assert.rejects(withdraw(a), /cannot attribute non-Task integration/u);
+  assert.equal(await git(root, "rev-parse", "dev"), unknownHead);
+  assert.equal(await readFile(path.join(dev.projectRoot, "unknown.txt"), "utf8"), "unknown contribution\n");
+});
+
+test("an unseparable manual integration is not misreported as a dependent Task to withdraw", { timeout: 90_000 }, async (context) => {
+  const { root, service, a, withdraw } = await withdrawalFixture(context);
+  const dev = await service.prepareDev(root);
+  await writeFile(path.join(dev.projectRoot, "manual.txt"), "preserve manual resolution\n", "utf8");
+  await git(dev.projectRoot, "add", "manual.txt");
+  await git(dev.projectRoot, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--amend", "--no-edit");
+  const before = await git(root, "rev-parse", "dev");
+  await assert.rejects(withdraw(a), (error) => /manual dev resolution/u.test(error.message)
+    && error.code !== "TASK_WITHDRAWAL_DEPENDENCY");
+  assert.equal(await git(root, "rev-parse", "dev"), before);
+  assert.equal(await readFile(path.join(dev.projectRoot, "manual.txt"), "utf8"), "preserve manual resolution\n");
+});
+
+test("withdrawing a Task based on another result preserves that ancestor Task", { timeout: 90_000 }, async (context) => {
+  const { root, service, a, b, firstA, withdraw } = await withdrawalFixture(context, { dependent: "first-parent" });
+  await withdraw(b, { blockedBy: { taskId: a.taskId, resultCommit: firstA.snapshot.headCommit } });
+  const dev = await service.prepareDev(root);
+  assert.equal(await readFile(path.join(dev.projectRoot, "a.txt"), "utf8"), "first A\n");
+  await assert.rejects(access(path.join(dev.projectRoot, "b.txt")));
+  await git(root, "merge-base", "--is-ancestor", firstA.snapshot.headCommit, "dev");
+});
+
+test("dependent Task withdraws first and waits for proven publication before claim or Test", { timeout: 90_000 }, async (context) => {
+  const { root, service, a, b, firstA, tasks, withdraw, publish } = await withdrawalFixture(context, { dependent: "first-parent" });
+  const before = await git(root, "rev-parse", "dev");
+  await assert.rejects(withdraw(a), (error) => error.code === "TASK_WITHDRAWAL_DEPENDENCY" && error.blockedTaskIds[0] === b.taskId);
+  assert.equal(await git(root, "rev-parse", "dev"), before);
+  await withdraw(b, { blockedBy: { taskId: a.taskId, resultCommit: firstA.snapshot.headCommit } });
+  await withdraw(a, { tasks: tasks.filter((item) => item.taskId !== b.taskId) });
+  await assert.rejects(service.prepare({ taskId: b.taskId, taskNumber: "HUB-802", projectRoot: root }), (error) => error.code === "TASK_AWAITING_DEPENDENCY_RELEASE");
+  await assert.rejects(service.snapshotAndMerge({ taskId: b.taskId, taskNumber: "HUB-802", projectRoot: b.projectRoot }), (error) => error.code === "TASK_AWAITING_DEPENDENCY_RELEASE");
+  await git(root, "update-ref", "refs/remotes/origin/main", firstA.snapshot.headCommit);
+  await assert.rejects(service.prepare({ taskId: b.taskId, taskNumber: "HUB-802", projectRoot: root }), (error) => error.code === "TASK_AWAITING_DEPENDENCY_RELEASE");
+  publish({ generation: "publication-A", revision: firstA.snapshot.headCommit });
+  await assert.rejects(service.prepare({ taskId: b.taskId, taskNumber: "HUB-802", projectRoot: root }), (error) => error.code === "TASK_AWAITING_DEPENDENCY_RELEASE");
+  publish({ generation: "publication-A", revision: firstA.snapshot.headCommit, repositories: [{ root, revision: firstA.snapshot.headCommit }] });
+  const prepared = await service.prepare({ taskId: b.taskId, taskNumber: "HUB-802", projectRoot: root });
+  assert.equal(prepared.taskId, b.taskId);
+  const preview = await service.cleanupPreview(b.taskId);
+  assert.equal(preview.deleting.some((item) => item.kind === "release_wait_ref"), true);
+  await service.cleanup(b.taskId);
+  assert.equal(await git(root, "for-each-ref", "--format=%(refname)", `refs/agent-hub/task-release-waits/${b.taskId}`), "");
+});
 
 async function git(cwd, ...args) {
   return String((await execFileAsync("git", args, { cwd, windowsHide: true })).stdout).trim();
@@ -46,6 +360,158 @@ async function repositoryWithOrigin(context) {
   await git(origin, "symbolic-ref", "HEAD", "refs/heads/main");
   return { root, origin };
 }
+
+test("Task Git preview includes committed, staged and untracked work without changing refs or index", { timeout: 60_000 }, async (context) => {
+  const root = await repository(context);
+  const dataDir = path.join(root, "..", path.basename(root) + "-review-data");
+  context.after(() => rm(dataDir, { recursive: true, force: true }));
+  const service = new TaskGitWorkspaceService({ dataDir });
+  const taskId = "bcbcbcbc-bcbc-4cbc-8cbc-bcbcbcbcbcbc";
+  const taskNumber = "HUB-955";
+  const workspace = await service.prepare({ taskId, taskNumber, projectRoot: root });
+  await writeFile(path.join(workspace.projectRoot, "committed.txt"), "committed\n");
+  await git(workspace.projectRoot, "add", "committed.txt");
+  await git(workspace.projectRoot, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "work");
+  await writeFile(path.join(workspace.projectRoot, "app.txt"), "staged\n");
+  await git(workspace.projectRoot, "add", "app.txt");
+  await writeFile(path.join(workspace.projectRoot, "new file.txt"), "untracked\n");
+  const before = await git(root, "show-ref");
+  const index = await git(workspace.projectRoot, "write-tree");
+  const preview = await service.reviewDiff({ taskId, taskNumber });
+  assert.equal(preview.truncated, false);
+  const text = preview.repositories[0].text;
+  assert.match(text, /committed\.txt/u);
+  assert.match(text, /\+staged/u);
+  assert.match(text, /new file\.txt/u);
+  assert.match(text, /\+untracked/u);
+  assert.equal(await git(root, "show-ref"), before);
+  assert.equal(await git(workspace.projectRoot, "write-tree"), index);
+  await assert.rejects(service.reviewDiff({ taskId, taskNumber: "HUB-999" }), /не принадлежит/u);
+  await writeFile(path.join(workspace.projectRoot, "app.txt"), "x".repeat(100_000));
+  const large = await service.reviewDiff({ taskId, taskNumber });
+  assert.equal(large.truncated, true);
+  assert.ok(Buffer.byteLength(large.repositories[0].text) <= 64 * 1024);
+});
+
+test("release service closure proves exact published manifest and Done result without deleting its worktree", { timeout: 90_000 }, async (context) => {
+  const { root } = await repositoryWithOrigin(context);
+  const dataDir = path.join(root, "..", `${path.basename(root)}-release-service-data`);
+  context.after(() => rm(dataDir, { recursive: true, force: true }));
+  let publication = null;
+  const service = new TaskGitWorkspaceService({ dataDir, readPublication: async () => publication });
+  const source = await service.prepare({
+    taskId: "11111111-1111-4111-8111-111111111111", taskNumber: "HUB-252", projectRoot: root,
+  });
+  const selectedWorkspace = await service.prepare({
+    taskId: "22222222-2222-4222-8222-222222222222", taskNumber: "HUB-245", projectRoot: root,
+  });
+  await writeFile(path.join(selectedWorkspace.projectRoot, "release.txt"), "published\n", "utf8");
+  const selectedResult = await service.snapshotAndMerge({ taskId: selectedWorkspace.taskId,
+    taskNumber: "HUB-245", projectRoot: selectedWorkspace.projectRoot });
+  await git(root, "merge", "--ff-only", selectedResult.snapshot.headCommit);
+  await git(root, "push", "origin", "main");
+  await git(root, "update-ref", "refs/remotes/origin/main", selectedResult.snapshot.headCommit);
+  const repositoryKey = taskRepositoryKey(root);
+  const manifest = { workspaceId: "workspace-1", planRevision: "plan-1", tasks: [{
+    taskId: selectedWorkspace.taskId, resultCommit: selectedResult.snapshot.headCommit,
+  }] };
+  const manifestBytes = Buffer.from(`${JSON.stringify(manifest)}\n`);
+  const manifestHash = createHash("sha256").update(manifestBytes).digest("hex");
+  const evidenceRoot = path.join(dataDir, "release-repositories", repositoryKey, "evidence");
+  await mkdir(evidenceRoot, { recursive: true });
+  await writeFile(path.join(evidenceRoot, `${manifestHash}.json`), manifestBytes);
+  publication = { generation: "published-generation", repositories: [{ root,
+    revision: selectedResult.snapshot.headCommit, planRevision: "plan-1", manifestHash }] };
+  const sourceTask = { id: source.taskId, taskNumber: "HUB-252", revision: 4,
+    workspaceId: "workspace-1", gitReferences: [] };
+  const selectedTask = { id: selectedWorkspace.taskId, revision: 5, workspaceId: "workspace-1",
+    status: "done", workflowStatus: "done", gitReferences: [{ projectRoot: root,
+      resultCommit: selectedResult.snapshot.headCommit }] };
+  const proof = await service.withTaskLock(source.taskId, (lease) => (
+    service.publishedReleaseServiceEvidenceOwned({ source: sourceTask, selectedTasks: [selectedTask], lease })
+  ));
+  assert.equal(proof.publishedRevision, selectedResult.snapshot.headCommit);
+  assert.equal(proof.manifestHash, manifestHash);
+  assert.deepEqual(proof.cleanupPlan.deleting, []);
+  assert.equal((await service.describe(source.taskId)).length, 1);
+
+  await assert.rejects(service.withTaskLock(source.taskId, (lease) => (
+    service.publishedReleaseServiceEvidenceOwned({ source: sourceTask,
+      selectedTasks: [{ ...selectedTask, gitReferences: [{ projectRoot: root,
+        resultCommit: "f".repeat(40) }] }], lease })
+  )), /does not match exact published Done results/u);
+  await writeFile(path.join(source.projectRoot, "valuable.txt"), "preserve\n", "utf8");
+  await assert.rejects(service.withTaskLock(source.taskId, (lease) => (
+    service.publishedReleaseServiceEvidenceOwned({ source: sourceTask, selectedTasks: [selectedTask], lease })
+  )), /clean managed worktree/u);
+});
+
+test("published duplicate proof requires exact clean published main and survivor lineage", { timeout: 90_000 }, async (context) => {
+  const { root } = await repositoryWithOrigin(context);
+  const dataDir = path.join(root, "..", `${path.basename(root)}-published-duplicate-data`);
+  context.after(() => rm(dataDir, { recursive: true, force: true }));
+  let publication = null;
+  const service = new TaskGitWorkspaceService({ dataDir, readPublication: async () => publication });
+  const source = await service.prepare({
+    taskId: "11111111-1111-4111-8111-111111111111", taskNumber: "HUB-241", projectRoot: root,
+  });
+  const survivorWorkspace = await service.prepare({
+    taskId: "22222222-2222-4222-8222-222222222222", taskNumber: "HUB-217", projectRoot: root,
+  });
+  await writeFile(path.join(survivorWorkspace.projectRoot, "published.txt"), "published fix\n", "utf8");
+  const tested = await service.snapshotAndMerge({
+    taskId: survivorWorkspace.taskId, taskNumber: "HUB-217", projectRoot: survivorWorkspace.projectRoot,
+  });
+  await git(root, "merge", "--ff-only", tested.snapshot.headCommit);
+  await git(root, "push", "origin", "main");
+  await git(root, "update-ref", "refs/remotes/origin/main", tested.snapshot.headCommit);
+  await git(source.projectRoot, "merge", "--ff-only", tested.snapshot.headCommit);
+  publication = {
+    generation: "release-published-duplicate",
+    repositories: [{ root, revision: tested.snapshot.headCommit }],
+  };
+  const sourceTask = {
+    id: source.taskId, taskNumber: "HUB-241", revision: 6,
+    gitReferences: [], gitAdoptions: [],
+  };
+  const targetTask = {
+    id: survivorWorkspace.taskId, taskNumber: "HUB-217", revision: 93,
+    gitReferences: [{
+      projectRoot: root,
+      branch: survivorWorkspace.branch,
+      resultCommit: tested.snapshot.headCommit,
+    }],
+  };
+  const proof = await service.withTaskLocks([source.taskId, survivorWorkspace.taskId], (lease) => (
+    service.withPublishedDuplicateEvidenceOwned({ source: sourceTask, target: targetTask, lease },
+      async (evidence) => evidence)
+  ));
+  assert.equal(proof.mode, "published_duplicate");
+  assert.equal(proof.repositories[0].sourceHead, tested.snapshot.headCommit);
+  assert.equal(proof.repositories[0].survivorResult, tested.snapshot.headCommit);
+  assert.deepEqual(proof.cleanupPlan, { strategy: "preserve_managed_source", deleting: [] });
+
+  await writeFile(path.join(source.projectRoot, "valuable-untracked.txt"), "preserve\n", "utf8");
+  await assert.rejects(service.withTaskLocks([source.taskId, survivorWorkspace.taskId], (lease) => (
+    service.withPublishedDuplicateEvidenceOwned({ source: sourceTask, target: targetTask, lease }, async () => null)
+  )), /clean source Task worktree/u);
+  await rm(path.join(source.projectRoot, "valuable-untracked.txt"));
+
+  const unpublishedTarget = { ...targetTask, gitReferences: [{
+    ...targetTask.gitReferences[0], resultCommit: "f".repeat(40),
+  }] };
+  await assert.rejects(service.withTaskLocks([source.taskId, survivorWorkspace.taskId], (lease) => (
+    service.withPublishedDuplicateEvidenceOwned({ source: sourceTask, target: unpublishedTarget, lease }, async () => null)
+  )), /not contained in published main/u);
+
+  await writeFile(path.join(source.projectRoot, "unique.txt"), "unique\n", "utf8");
+  await git(source.projectRoot, "add", "unique.txt");
+  await git(source.projectRoot, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+    "commit", "-m", "unique source work");
+  await assert.rejects(service.withTaskLocks([source.taskId, survivorWorkspace.taskId], (lease) => (
+    service.withPublishedDuplicateEvidenceOwned({ source: sourceTask, target: targetTask, lease }, async () => null)
+  )), /HEAD must equal exact durable local and origin published main/u);
+});
 
 async function advanceOriginMain(context, origin, files) {
   const clone = await mkdtemp(path.join(os.tmpdir(), "agent-hub-task-origin-clone-"));
@@ -96,7 +562,7 @@ async function reviewedDevBootstrapFixture(context, {
   await writeFile(path.join(workspace.projectRoot, "dev-only.txt"), "dev only\n", "utf8");
   await writeFile(path.join(workspace.projectRoot, "task-only.txt"), "task only\n", "utf8");
   await writeFile(path.join(workspace.projectRoot, "CHANGELOG.md"), "base entry\ndev entry\n", "utf8");
-  await git(workspace.projectRoot, "add", "app.txt", "dev-only.txt", "task-only.txt", "CHANGELOG.md");
+  await git(workspace.projectRoot, "add", "--sparse", "app.txt", "dev-only.txt", "task-only.txt", "CHANGELOG.md");
   if (modeMismatch) await git(workspace.projectRoot, "update-index", "--chmod=+x", "app.txt");
   await git(workspace.projectRoot, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "Task union basis");
   const taskParent = await git(workspace.projectRoot, "rev-parse", "HEAD^{commit}");
@@ -107,7 +573,7 @@ async function reviewedDevBootstrapFixture(context, {
     "base entry\ndev entry\nmain entry\n",
     "utf8",
   );
-  await git(workspace.projectRoot, "add", "app.txt", "CHANGELOG.md");
+  await git(workspace.projectRoot, "add", "--sparse", "app.txt", "CHANGELOG.md");
   if (modeMismatch) await git(workspace.projectRoot, "update-index", "--chmod=-x", "app.txt");
   const reviewedTree = await git(workspace.projectRoot, "write-tree");
   await git(workspace.projectRoot, "merge", "--abort");
@@ -168,6 +634,75 @@ test("Test Contour source refuses a repository without dev", async (context) => 
     prepareTaskContourSource({ sourceRoot: agentHubRoot, integrationRoot: path.join(root, "data") }),
     /requires branch dev/u,
   );
+});
+
+test("repeated Test reuses only the clean exact result still integrated into dev", async (context) => {
+  const root = await repository(context);
+  const dataDir = path.join(root, "..", `${path.basename(root)}-repeat-data`);
+  context.after(() => rm(dataDir, { recursive: true, force: true }));
+  const service = new TaskGitWorkspaceService({ dataDir });
+  const taskId = "31313131-3131-4131-8131-313131313131";
+  const workspace = await service.prepare({ taskId, projectRoot: root });
+  await writeFile(path.join(workspace.projectRoot, "app.txt"), "tested\n", "utf8");
+  const firstStarted = performance.now();
+  const first = await service.snapshotAndMerge({ taskId, projectRoot: workspace.projectRoot });
+  const firstDuration = performance.now() - firstStarted;
+  let snapshots = 0;
+  let merges = 0;
+  const snapshotOwned = service.snapshotOwned.bind(service);
+  const mergeIntoDevOwned = service.mergeIntoDevOwned.bind(service);
+  service.snapshotOwned = (...args) => { snapshots += 1; return snapshotOwned(...args); };
+  service.mergeIntoDevOwned = (...args) => { merges += 1; return mergeIntoDevOwned(...args); };
+  const nestedRoot = path.join(workspace.projectRoot, "nested");
+  await mkdir(nestedRoot);
+  const repeatInput = { taskId, projectRoot: nestedRoot,
+    expectedResultReferences: [{ projectRoot: root, resultCommit: first.snapshot.headCommit }] };
+
+  const repeatStarted = performance.now();
+  const repeated = await service.snapshotAndMerge(repeatInput);
+  context.diagnostic(`First Test ${Math.round(firstDuration)} ms; unchanged repeat ${Math.round(performance.now() - repeatStarted)} ms`);
+  assert.equal(repeated.integration.reusedResult, true);
+  assert.equal(repeated.integration.resultProved, true);
+  assert.deepEqual(repeated.snapshot, { ...first.snapshot, projectRoot: nestedRoot });
+  assert.equal(repeated.integration.dev.headCommit, first.integration.dev.headCommit);
+  assert.equal(snapshots, 0);
+  assert.equal(merges, 0);
+
+  // A lost dev integration cannot be reused merely because the Task's HEAD is unchanged.
+  await git(first.integration.dev.projectRoot, "reset", "--hard", workspace.baseCommit);
+  const restored = await service.snapshotAndMerge(repeatInput);
+  assert.notEqual(restored.integration.reusedResult, true);
+  assert.equal(restored.integration.integrated, true);
+  assert.equal(snapshots, 1);
+  assert.equal(merges, 1);
+  assert.equal(await readFile(path.join(restored.integration.dev.projectRoot, "app.txt"), "utf8"), "tested\n");
+});
+
+test("repeated Test snapshots new staged, unstaged, untracked and committed work", async (context) => {
+  const root = await repository(context);
+  const dataDir = path.join(root, "..", `${path.basename(root)}-repeat-dirty-data`);
+  context.after(() => rm(dataDir, { recursive: true, force: true }));
+  const service = new TaskGitWorkspaceService({ dataDir });
+  const taskId = "32323232-3232-4232-8232-323232323232";
+  const workspace = await service.prepare({ taskId, projectRoot: root });
+  await writeFile(path.join(workspace.projectRoot, "app.txt"), "tested\n", "utf8");
+  let prior = await service.snapshotAndMerge({ taskId, projectRoot: workspace.projectRoot });
+  for (const kind of ["unstaged", "staged", "untracked", "committed"]) {
+    const file = kind === "untracked" ? "new.txt" : "app.txt";
+    await writeFile(path.join(workspace.projectRoot, file), `${kind}\n`, "utf8");
+    if (kind === "staged" || kind === "committed") await git(workspace.projectRoot, "add", file);
+    if (kind === "committed") {
+      await git(workspace.projectRoot, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", kind);
+    }
+    const result = await service.snapshotAndMerge({
+      taskId, projectRoot: workspace.projectRoot, expectedResultCommit: prior.snapshot.headCommit,
+    });
+    assert.notEqual(result.integration.reusedResult, true, kind);
+    assert.notEqual(result.snapshot.headCommit, prior.snapshot.headCommit, kind);
+    assert.equal(result.integration.integrated, true, kind);
+    assert.equal(await readFile(path.join(result.integration.dev.projectRoot, file), "utf8"), `${kind}\n`, kind);
+    prior = result;
+  }
 });
 
 test("Task Git workspace commits one Task branch and merges it into dev", async (context) => {
@@ -265,6 +800,93 @@ test("Task Git workspace commits one Task branch and merges it into dev", async 
   } finally {
     await git(root, "worktree", "remove", "--force", releaseRoot);
   }
+});
+
+test("a foreign live repository guard waits for the shared dev lock and then admits", async (context) => {
+  const root = await repository(context);
+  const dataDir = path.join(root, "..", `${path.basename(root)}-live-guard-data`);
+  context.after(() => rm(dataDir, { recursive: true, force: true }));
+  let releaseOwner;
+  const ownerReleased = new Promise((resolve) => { releaseOwner = resolve; });
+  let reportOwnerEntered;
+  const ownerEntered = new Promise((resolve) => { reportOwnerEntered = resolve; });
+  let held = false;
+  const owner = new TaskGitWorkspaceService({
+    dataDir,
+    runCommand: async (args, options) => {
+      if (!held && args[0] === "update-ref" && args[1] === "--stdin") {
+        held = true;
+        reportOwnerEntered();
+        await ownerReleased;
+      }
+      return runTaskGitCommand(args, options);
+    },
+  });
+  const contender = new TaskGitWorkspaceService({ dataDir });
+  const ownerTaskId = "31313131-3131-4131-8131-313131313131";
+  const contenderTaskId = "32323232-3232-4232-8232-323232323232";
+  const ownerPrepare = owner.prepare({ taskId: ownerTaskId, projectRoot: root });
+  await ownerEntered;
+  const guardDirectory = path.join(dataDir, "task-process-tree-guards", ownerTaskId);
+  assert.equal((await readdir(guardDirectory)).length, 1);
+
+  let contenderSettled = false;
+  const contenderPrepare = contender.prepare({ taskId: contenderTaskId, projectRoot: root })
+    .finally(() => { contenderSettled = true; });
+  await wait(100);
+  assert.equal(contenderSettled, false);
+
+  releaseOwner();
+  const [first, second] = await Promise.all([ownerPrepare, contenderPrepare]);
+  assert.equal(first.repositoryRoot, canonicalPath(root));
+  assert.equal(second.repositoryRoot, canonicalPath(root));
+  assert.equal(await access(guardDirectory).then(() => true, () => false), true);
+  assert.deepEqual(await readdir(guardDirectory), []);
+});
+
+test("an orphan foreign repository guard remains blocked and yields bounded claim no-effect evidence", async (context) => {
+  const root = await repository(context);
+  const otherRoot = await repository(context);
+  const dataDir = path.join(root, "..", `${path.basename(root)}-orphan-guard-data`);
+  context.after(() => rm(dataDir, { recursive: true, force: true }));
+  const taskId = "41414141-4141-4141-8141-414141414141";
+  const foreignTaskId = "42424242-4242-4242-8242-424242424242";
+  const repositoryKey = taskRepositoryKey(root);
+  const guardPath = path.join(
+    dataDir, "task-process-tree-guards", foreignTaskId, `${repositoryKey}.json`,
+  );
+  await mkdir(path.dirname(guardPath), { recursive: true });
+  await writeFile(guardPath, `${JSON.stringify({ version: 1, repositoryRoot: canonicalPath(root) })}\n`, "utf8");
+  const service = new TaskGitWorkspaceService({ dataDir });
+  let admissionError;
+  await assert.rejects(
+    service.prepare({ taskId, projectRoot: root }),
+    (error) => {
+      admissionError = error;
+      assert.equal(error.code, "TASK_GIT_REPOSITORY_GUARD_ADMISSION_NO_EFFECT");
+      return /unresolved process-tree guard requires operator proof/u.test(error.message);
+    },
+  );
+  const currentEvidence = await service.claimAdmissionNoEffectEvidence({
+    taskId, projectRoot: root, error: admissionError,
+  });
+  assert.equal(currentEvidence.version, "task-git-repository-guard-under-dev-lock-v2");
+  assert.equal(currentEvidence.guardTaskId, foreignTaskId);
+  const legacyEvidence = await service.claimAdmissionNoEffectEvidence({
+    taskId,
+    projectRoot: root,
+    error: `mutation effect is not authoritatively disproved: ${admissionError.message}`,
+  });
+  assert.deepEqual(legacyEvidence, {
+    ...currentEvidence,
+    version: "task-git-repository-guard-before-dev-lock-v1",
+  });
+  assert.equal(await service.claimAdmissionNoEffectEvidence({
+    taskId, projectRoot: otherRoot, error: `mutation effect is not authoritatively disproved: ${admissionError.message}`,
+  }), null);
+  assert.equal(await service.claimAdmissionNoEffectEvidence({
+    taskId, projectRoot: root, error: admissionError.message,
+  }), null);
 });
 
 test("timed-out Task Git commands terminate their Windows process tree before rejection", {
@@ -413,6 +1035,81 @@ test("cleanup publication authority requires durable evidence matching origin ma
   preview = await service.cleanupPreview(taskId, { gitReferences: [reference] });
   assert.equal(preview.gitReferences[0].published, false);
   assert.ok(preview.deleting.some((item) => item.kind === "branch" && item.name === "HUB-159"));
+});
+
+for (const keepWorktree of [true, false]) test(`published cleanup preserves a later branch commit with worktree=${keepWorktree}`, async (context) => {
+  const root = await repository(context);
+  const published = await git(root, "rev-parse", "HEAD");
+  const dataDir = path.join(root, "..", `${path.basename(root)}-cleanup-data`);
+  context.after(() => rm(dataDir, { recursive: true, force: true }));
+  const service = new TaskGitWorkspaceService({ dataDir,
+    readPublication: async () => ({ revision: published, generation: "published" }) });
+  const taskId = "30303030-3030-4030-8030-303030303031";
+  const workspace = await service.prepare({ taskId, taskNumber: "HUB-903", projectRoot: root });
+  await git(root, "update-ref", "refs/remotes/origin/main", published);
+  await writeFile(path.join(workspace.projectRoot, "later.txt"), "retain this later commit\n", "utf8");
+  await git(workspace.projectRoot, "add", "later.txt");
+  await git(workspace.projectRoot, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "Later unpublished work");
+  const later = await git(workspace.projectRoot, "rev-parse", "HEAD");
+  if (!keepWorktree) await git(root, "worktree", "remove", workspace.projectRoot);
+  const references = [{ projectRoot: root, branch: workspace.branch, resultCommit: published }];
+  await assert.rejects(service.cleanup(taskId, { requirePublished: true, gitReferences: references }), /not contained in published main/u);
+  assert.equal(await git(root, "rev-parse", `refs/heads/${workspace.branch}`), later);
+  if (keepWorktree) assert.equal(await readFile(path.join(workspace.projectRoot, "later.txt"), "utf8"), "retain this later commit\n");
+});
+
+for (const race of ["none", "branch", "files"]) test(`published cleanup rechecks Git deletion boundaries: ${race}`, async (context) => {
+  const root = await repository(context);
+  const published = await git(root, "rev-parse", "HEAD");
+  const dataDir = path.join(root, "..", `${path.basename(root)}-cleanup-race-data`);
+  context.after(() => rm(dataDir, { recursive: true, force: true }));
+  let workspace;
+  let injected = false;
+  let later = null;
+  const service = new TaskGitWorkspaceService({ dataDir,
+    readPublication: async () => ({ revision: published, generation: "published" }),
+    runCommand: async (args, options) => {
+      if (!injected && workspace && args[0] === "worktree" && args[1] === "remove" && race !== "none") {
+        injected = true;
+        await writeFile(path.join(workspace.projectRoot, "late.txt"), "preserve external edit\n", "utf8");
+        if (race === "branch") {
+          await git(workspace.projectRoot, "add", "late.txt");
+          await git(workspace.projectRoot, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "Late commit");
+          later = await git(workspace.projectRoot, "rev-parse", "HEAD");
+        }
+      }
+      return runTaskGitCommand(args, options);
+    } });
+  const taskId = "30303030-3030-4030-8030-303030303032";
+  workspace = await service.prepare({ taskId, taskNumber: "HUB-904", projectRoot: root });
+  await git(root, "update-ref", "refs/remotes/origin/main", published);
+  const references = [{ projectRoot: root, branch: workspace.branch, resultCommit: published }];
+  const preview = await service.cleanupPreview(taskId, { gitReferences: references });
+  const cleanup = () => service.cleanup(taskId, { requirePublished: true, gitReferences: references, expectedPreview: preview });
+  if (race === "none") {
+    await cleanup();
+    await assert.rejects(access(workspace.projectRoot));
+    await assert.rejects(git(root, "rev-parse", "--verify", `refs/heads/${workspace.branch}`));
+  } else {
+    await assert.rejects(cleanup());
+    assert.equal(await git(root, "rev-parse", `refs/heads/${workspace.branch}`), later ?? published);
+    if (race === "files") assert.equal(await readFile(path.join(workspace.projectRoot, "late.txt"), "utf8"), "preserve external edit\n");
+    else assert.equal(await git(root, "show", `${later}:late.txt`), "preserve external edit");
+  }
+});
+
+test("cleanup preserves unrecognized files in the managed Task parent", async (context) => {
+  const root = await repository(context);
+  const dataDir = path.join(root, "..", `${path.basename(root)}-cleanup-parent-data`);
+  context.after(() => rm(dataDir, { recursive: true, force: true }));
+  const service = new TaskGitWorkspaceService({ dataDir, readPublication: async () => null });
+  const taskId = "30303030-3030-4030-8030-303030303033";
+  const parent = path.join(service.taskWorktreesRoot, taskId);
+  await mkdir(parent, { recursive: true });
+  const file = path.join(parent, "unexpected.txt");
+  await writeFile(file, "keep", "utf8");
+  await assert.rejects(service.cleanup(taskId), /ENOTEMPTY/u);
+  assert.equal(await readFile(file, "utf8"), "keep");
 });
 
 test("unproven merge process-tree termination persistently blocks the integration root", async (context) => {
@@ -782,7 +1479,7 @@ test("Task result merge rejects a supplied snapshot that no longer matches its e
       ...workspace,
       headCommit: "1111111111111111111111111111111111111111",
     }),
-    /Task snapshot changed/u,
+    (error) => error.code === "RELEASE_NATIVE_HISTORY_REQUIRED",
   );
   assert.equal(await git(dev.projectRoot, "rev-parse", "HEAD^{commit}"), dev.headCommit);
   assert.equal(
@@ -791,7 +1488,7 @@ test("Task result merge rejects a supplied snapshot that no longer matches its e
   );
 });
 
-test("Task result merge throws when abort leaves partial worktree state", async (context) => {
+test("isolated native merge does not inherit a primary custom merge driver", async (context) => {
   const root = await repository(context);
   const dataDir = path.join(root, "..", `${path.basename(root)}-data`);
   context.after(() => rm(dataDir, { recursive: true, force: true }));
@@ -836,23 +1533,14 @@ test("Task result merge throws when abort leaves partial worktree state", async 
     projectRoot: second.projectRoot,
   });
 
-  await assert.rejects(
-    service.mergeIntoDev(secondSnapshot),
-    new RegExp(`could not restore managed dev ${firstResult.integration.dev.headCommit}`, "u"),
-  );
-  assert.equal(
-    await git(firstResult.integration.dev.projectRoot, "rev-parse", "HEAD^{commit}"),
-    firstResult.integration.dev.headCommit,
-  );
-  assert.match(
-    await git(
-      firstResult.integration.dev.projectRoot,
-      "status",
-      "--porcelain=v1",
-      "--untracked-files=all",
-    ),
-    /abort-survivor\.txt/u,
-  );
+  const conflict = await service.mergeIntoDev(secondSnapshot);
+  assert.equal(conflict.integrated, false);
+  assert.deepEqual(conflict.conflicts, ["app.txt"]);
+  assert.equal(conflict.devRestored, true);
+  assert.equal(await git(firstResult.integration.dev.projectRoot, "rev-parse", "HEAD"),
+    firstResult.integration.dev.headCommit);
+  assert.equal(await git(firstResult.integration.dev.projectRoot, "status", "--porcelain"), "");
+  await assert.rejects(access(path.join(conflict.nativeConflictRoot, "abort-survivor.txt")));
 });
 
 test("startup reconciles MERGE_HEAD, blocks index.lock and clears the block only after repair", async (context) => {
@@ -1003,7 +1691,13 @@ test("release adoption requires a selected Task result and stays pinned when ori
     }],
   }), /requires explicit adoption/u);
 
-  await assert.rejects(fixture.service.mergeIntoDev(fixture.snapshot), /durable explicit adoption receipt/u);
+  await assert.rejects(fixture.service.mergeIntoDev(fixture.snapshot), { code: "RELEASE_NATIVE_HISTORY_REQUIRED" });
+  // Materialize retained historical dev data for the adoption readback, not fresh native admission.
+  await git(fixture.devRoot, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+    "merge", "--no-ff", "--no-edit", fixture.snapshot.headCommit);
+  const baseRequest = { projectRoot: fixture.root, publishedBaseCommit: localMain,
+    tasks: [{ taskId: fixture.snapshot.taskId, resultCommit: fixture.snapshot.headCommit }] };
+  assert.equal((await fixture.service.releaseBaseEvidence(baseRequest)).baseCommit, localMain);
   const input = {
     taskId: fixture.snapshot.taskId,
     projectRoot: fixture.root,
@@ -1026,8 +1720,7 @@ test("release adoption requires a selected Task result and stays pinned when ori
     /already has different content/u,
   );
 
-  const integration = await fixture.service.mergeIntoDev(fixture.snapshot);
-  assert.equal(integration.integrated, true);
+  await assert.rejects(fixture.service.mergeIntoDev(fixture.snapshot), { code: "RELEASE_NATIVE_HISTORY_REQUIRED" });
   const adopted = await fixture.service.assertExplicitUpstreamAdoption({
     projectRoot: fixture.root,
     acceptedLocalMainCommit: localMain,
@@ -1040,10 +1733,17 @@ test("release adoption requires a selected Task result and stays pinned when ori
   });
   assert.equal(adopted.approvedUpstream, fixture.mainCommit);
   assert.equal(adopted.adoptedByResultCommit, fixture.snapshot.headCommit);
+  const acceptedBase = await fixture.service.releaseBaseEvidence(baseRequest);
+  assert.equal(acceptedBase.baseCommit, localMain);
+  assert.deepEqual(acceptedBase.adoptions, []);
+  assert.equal(acceptedBase.compositionPolicy, "main-selected-git-merge-v1");
+  assert.equal(await git(fixture.root, "rev-parse", recorded.recordRef), recorded.recordHash);
+  assert.equal((await fixture.service.releaseBaseEvidence({ ...baseRequest, tasks: [] })).baseCommit, localMain);
 
   const origin = await git(fixture.root, "remote", "get-url", "origin");
   const nextOrigin = await advanceOriginMain(context, origin, { "later-origin.txt": "later\n" });
   await git(fixture.root, "fetch", "--no-tags", "origin", "+refs/heads/main:refs/remotes/origin/main");
+  assert.deepEqual(await fixture.service.releaseBaseEvidence(baseRequest), acceptedBase);
   await assert.rejects(fixture.service.assertExplicitUpstreamAdoption({
     projectRoot: fixture.root,
     acceptedLocalMainCommit: localMain,
@@ -1055,6 +1755,10 @@ test("release adoption requires a selected Task result and stays pinned when ori
     }],
   }), /requires explicit adoption/u);
   const cleanupPreview = await fixture.service.cleanupPreview(fixture.snapshot.taskId);
+  await git(fixture.root, "merge", "--ff-only", fixture.mainCommit);
+  const publishedBase = await fixture.service.releaseBaseEvidence({ ...baseRequest, publishedBaseCommit: fixture.mainCommit });
+  assert.equal(publishedBase.baseCommit, fixture.mainCommit);
+  assert.deepEqual(publishedBase.adoptions, []);
   assert.equal(cleanupPreview.deleting.some((item) => (
     item.kind === "upstream_adoption_ref" && item.name === recorded.recordRef
   )), true);
@@ -1073,7 +1777,7 @@ test("explicit upstream adoption fences Task snapshot and local-main drift befor
     await git(fixture.root, "update-ref", `refs/heads/${fixture.snapshot.branch}`, movedSnapshot,
       fixture.snapshot.headCommit);
 
-    await assert.rejects(fixture.service.mergeIntoDev(fixture.snapshot), /Task snapshot changed/u);
+    await assert.rejects(fixture.service.mergeIntoDev(fixture.snapshot), { code: "RELEASE_NATIVE_HISTORY_REQUIRED" });
     assert.equal(await git(fixture.root, "rev-parse", "refs/heads/dev^{commit}"), fixture.oldDev);
   });
 
@@ -1088,7 +1792,7 @@ test("explicit upstream adoption fences Task snapshot and local-main drift befor
     );
     await git(fixture.root, "update-ref", "refs/heads/main", movedMain, localMain);
 
-    await assert.rejects(fixture.service.mergeIntoDev(fixture.snapshot), /accepted local main changed/u);
+    await assert.rejects(fixture.service.mergeIntoDev(fixture.snapshot), /does not contain accepted local main/u);
     assert.equal(await git(fixture.root, "rev-parse", "refs/heads/dev^{commit}"), fixture.oldDev);
   });
 });
@@ -1106,7 +1810,7 @@ test("missing local main and zero-argument synchronization fail closed", async (
   }), /refs\/heads\/main/u);
 });
 
-test("a Task merge snapshot bootstraps divergent main and managed dev without mutating primary", async (context) => {
+test("a historical Task union cannot bootstrap divergent main and managed dev implicitly", async (context) => {
   const root = await repository(context);
   const dataDir = path.join(root, "..", `${path.basename(root)}-data`);
   context.after(() => rm(dataDir, { recursive: true, force: true }));
@@ -1172,35 +1876,9 @@ test("a Task merge snapshot bootstraps divergent main and managed dev without mu
   )).split(/\s+/u);
   assert.deepEqual(parents, [snapshot.headCommit, proofCommit, devHead]);
 
-  const integration = await service.mergeIntoDev(snapshot);
-  assert.equal(integration.integrated, true);
-  const integrationParents = (await git(
-    integration.dev.projectRoot,
-    "rev-list", "--parents", "-n", "1", integration.dev.headCommit,
-  )).split(/\s+/u);
-  assert.deepEqual(integrationParents, [
-    integration.dev.headCommit,
-    integration.bootstrapCommit,
-    snapshot.headCommit,
-  ]);
-  const bootstrapParents = (await git(
-    integration.dev.projectRoot,
-    "rev-list", "--parents", "-n", "1", integration.bootstrapCommit,
-  )).split(/\s+/u);
-  assert.deepEqual(bootstrapParents, [integration.bootstrapCommit, devHead, mainHead]);
-  assert.equal(
-    await git(integration.dev.projectRoot, "show", `${integration.bootstrapCommit}:task-only.txt`)
-      .then(() => "present", () => "absent"),
-    "absent",
-  );
-  assert.equal(await readFile(path.join(integration.dev.projectRoot, "task-only.txt"), "utf8"), "Task-only work\n");
-  await git(integration.dev.projectRoot, "merge-base", "--is-ancestor", mainHead, integration.dev.headCommit);
-  await git(integration.dev.projectRoot, "merge-base", "--is-ancestor", devHead, integration.dev.headCommit);
-  await git(
-    integration.dev.projectRoot,
-    "merge-base", "--is-ancestor", snapshot.headCommit, integration.dev.headCommit,
-  );
-  assert.equal(await git(root, "rev-parse", "HEAD^{commit}"), mainHead);
+  await assert.rejects(service.mergeIntoDev(snapshot), /does not contain accepted local main/u);
+  assert.equal(await git(root, "rev-parse", "dev"), devHead);
+  assert.equal(await git(root, "rev-parse", "HEAD"), mainHead);
   assert.equal(await git(root, "status", "--porcelain=v1", "--untracked-files=all"), primaryStatus);
 });
 
@@ -1236,7 +1914,7 @@ test("ordinary Task integration cannot bypass a divergent accepted local-main ba
 
   await assert.rejects(
     service.mergeIntoDev(snapshot),
-    /does not contain accepted local main.*does not prove the exact main\/dev bootstrap/u,
+    /does not contain accepted local main.*explicit adoption required/u,
   );
   assert.equal(await git(root, "rev-parse", "refs/heads/dev^{commit}"), devHeadBefore);
   await assert.rejects(git(root, "merge-base", "--is-ancestor", localMain, devHeadBefore));
@@ -1244,140 +1922,54 @@ test("ordinary Task integration cannot bypass a divergent accepted local-main ba
   assert.equal(await git(dev.projectRoot, "status", "--porcelain=v1", "--untracked-files=all"), "");
 });
 
-test("reviewed conflict bootstrap publishes B and C through one exact dev CAS", async (context) => {
-  const fixture = await reviewedDevBootstrapFixture(context);
-
-  const integration = await fixture.service.mergeIntoDev(fixture.snapshot);
-
-  assert.equal(integration.integrated, true);
-  assert.deepEqual((await git(
-    integration.dev.projectRoot, "rev-list", "--parents", "-n", "1", integration.bootstrapCommit,
-  )).split(/\s+/u), [integration.bootstrapCommit, fixture.oldDev, fixture.mainCommit]);
-  assert.deepEqual((await git(
-    integration.dev.projectRoot, "rev-list", "--parents", "-n", "1", integration.dev.headCommit,
-  )).split(/\s+/u), [integration.dev.headCommit, integration.bootstrapCommit, fixture.snapshot.headCommit]);
-  assert.equal(await git(integration.dev.projectRoot, "rev-parse", `${integration.bootstrapCommit}^{tree}`) === fixture.reviewedTree, false);
-  assert.equal(await git(integration.dev.projectRoot, "rev-parse", `${integration.dev.headCommit}^{tree}`), fixture.reviewedTree);
-  assert.equal(
-    await git(integration.dev.projectRoot, "show", `${integration.bootstrapCommit}:task-only.txt`)
-      .then(() => "present", () => "absent"),
-    "absent",
-  );
-  assert.equal(await readFile(path.join(integration.dev.projectRoot, "app.txt"), "utf8"), "reviewed union\n");
-  assert.equal(
-    await readFile(path.join(integration.dev.projectRoot, "CHANGELOG.md"), "utf8"),
-    "base entry\ndev entry\nmain entry\n",
-  );
-});
-
-test("reviewed conflict bootstrap rejects missing ambiguous and mode-mismatched proofs", async (context) => {
-  for (const variant of [
-    { missingProof: true, expected: /invalid explicit upstream adoption/u, throws: true },
-    { ambiguousProof: true, expected: /ambiguous explicit upstream adoption/u, throws: true },
-    { modeMismatch: true, expected: /found 0/u },
-  ]) {
+test("historical reviewed bootstrap does not authorize a fresh native result", async (context) => {
+  for (const variant of [{}, { missingProof: true }, { ambiguousProof: true }, { modeMismatch: true }]) {
     await context.test(JSON.stringify(variant), async (child) => {
       const fixture = await reviewedDevBootstrapFixture(child, variant);
-      if (variant.throws) {
-        await assert.rejects(fixture.service.mergeIntoDev(fixture.snapshot), variant.expected);
-        assert.equal(await git(fixture.root, "rev-parse", "refs/heads/dev^{commit}"), fixture.oldDev);
-        assert.equal(await git(fixture.devRoot, "status", "--porcelain=v1", "--untracked-files=all"), "");
-        return;
-      }
-      const integration = await fixture.service.mergeIntoDev(fixture.snapshot);
-      assert.equal(integration.integrated, false);
-      assert.match(integration.error, variant.expected);
-      assert.equal(await git(fixture.root, "rev-parse", "refs/heads/dev^{commit}"), fixture.oldDev);
-      assert.equal(await git(fixture.devRoot, "status", "--porcelain=v1", "--untracked-files=all"), "");
+      await assert.rejects(fixture.service.mergeIntoDev(fixture.snapshot), {
+        code: "RELEASE_NATIVE_HISTORY_REQUIRED",
+      });
+      assert.equal(await git(fixture.root, "rev-parse", "dev"), fixture.oldDev);
+      assert.equal(await git(fixture.devRoot, "status", "--porcelain"), "");
     });
   }
 });
 
-test("reviewed conflict bootstrap restores old dev before CAS and recovers an exact committed CAS", async (context) => {
-  await context.test("second merge failure", async (child) => {
-    const fixture = await reviewedDevBootstrapFixture(child);
-    const service = new TaskGitWorkspaceService({
-      dataDir: fixture.dataDir,
-      runCommand: async (args, options) => {
-        if (args[0] === "merge-tree") throw new Error("injected second merge failure");
-        return runTaskGitCommand(args, options);
-      },
-    });
-    const integration = await service.mergeIntoDev(fixture.snapshot);
-    assert.equal(integration.integrated, false);
-    assert.match(integration.error, /injected second merge failure/u);
-    assert.equal(await git(fixture.root, "rev-parse", "refs/heads/dev^{commit}"), fixture.oldDev);
-  });
-
-  await context.test("before CAS", async (child) => {
-    const fixture = await reviewedDevBootstrapFixture(child);
-    const service = new TaskGitWorkspaceService({
-      dataDir: fixture.dataDir,
-      runCommand: async (args, options) => {
-        if (args[0] === "update-ref" && args[1] === "refs/heads/dev") {
-          throw new Error("injected before dev CAS");
+test("native Test retains its original across interrupted dev CAS", { timeout: 120_000 }, async (context) => {
+  for (const interruption of ["before CAS", "after CAS", "merge"]) {
+    await context.test(interruption, async (child) => {
+      const root = await repository(child);
+      const dataDir = path.join(root, "..", `${path.basename(root)}-native-cas`);
+      child.after(() => rm(dataDir, { recursive: true, force: true }));
+      const setup = new TaskGitWorkspaceService({ dataDir });
+      const task = await setup.prepare({ taskId: "51515151-5151-4151-8151-515151515151", projectRoot: root });
+      await writeFile(path.join(task.projectRoot, "task-only.txt"), "exact Task\n");
+      const snapshot = await setup.snapshot({ taskId: task.taskId, projectRoot: task.projectRoot });
+      const before = (await setup.prepareDev(root)).headCommit;
+      let injected = false;
+      const service = new TaskGitWorkspaceService({ dataDir, runCommand: async (args, options) => {
+        if (!injected && ((interruption === "before CAS" && args[0] === "update-ref" && args[1] === "refs/heads/dev")
+            || (interruption === "after CAS" && args[0] === "symbolic-ref" && args[1] === "HEAD")
+            || (interruption === "merge" && args.includes("merge") && args.includes("--no-ff")))) {
+          injected = true;
+          throw new Error(`injected ${interruption}`);
         }
         return runTaskGitCommand(args, options);
-      },
+      } });
+      const params = { operationId: `native-interruption-${interruption}` };
+      const merge = owner => owner.withTaskLock(task.taskId,
+        lease => owner.mergeIntoDevOwned(snapshot, { ...params, lease }));
+      await assert.rejects(merge(service), /injected/u);
+      assert.equal(injected, true);
+      if (interruption !== "after CAS") assert.equal(await git(root, "rev-parse", "dev"), before);
+      const repeated = await merge(setup);
+      assert.equal(repeated.integrated, true);
+      assert.equal(await readFile(path.join(repeated.dev.projectRoot, "task-only.txt"), "utf8"), "exact Task\n");
+      const head = repeated.dev.headCommit;
+      assert.equal((await merge(setup)).dev.headCommit, head);
+      assert.equal(await git(repeated.dev.projectRoot, "status", "--porcelain"), "");
     });
-    const integration = await service.mergeIntoDev(fixture.snapshot);
-    assert.equal(integration.integrated, false);
-    assert.match(integration.error, /injected before dev CAS/u);
-    assert.equal(await git(fixture.root, "rev-parse", "refs/heads/dev^{commit}"), fixture.oldDev);
-  });
-
-  await context.test("remote tracking drift before CAS does not replace the pinned Task adoption", async (child) => {
-    const fixture = await reviewedDevBootstrapFixture(child);
-    const mainTree = await git(fixture.root, "rev-parse", `${fixture.mainCommit}^{tree}`);
-    const movedMain = await git(
-      fixture.root,
-      "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
-      "commit-tree", mainTree, "-p", fixture.mainCommit, "-m", "concurrent main movement",
-    );
-    let commitTreeCount = 0;
-    const service = new TaskGitWorkspaceService({
-      dataDir: fixture.dataDir,
-      runCommand: async (args, options) => {
-        const result = await runTaskGitCommand(args, options);
-        if (args.includes("commit-tree") && ++commitTreeCount === 2) {
-          await runTaskGitCommand([
-            "update-ref", "refs/remotes/origin/main", movedMain, fixture.mainCommit,
-          ], options);
-        }
-        return result;
-      },
-    });
-    const integration = await service.mergeIntoDev(fixture.snapshot);
-    assert.equal(integration.integrated, true);
-    assert.equal(integration.bootstrapCommit !== null, true);
-    assert.equal(await git(fixture.root, "rev-parse", "refs/heads/dev^{commit}"), integration.dev.headCommit);
-    await git(fixture.root, "merge-base", "--is-ancestor", fixture.mainCommit, integration.dev.headCommit);
-    await assert.rejects(git(fixture.root, "merge-base", "--is-ancestor", movedMain, integration.dev.headCommit));
-    assert.equal(await git(fixture.devRoot, "status", "--porcelain=v1", "--untracked-files=all"), "");
-  });
-
-  await context.test("after CAS", async (child) => {
-    const fixture = await reviewedDevBootstrapFixture(child);
-    let casCompleted = false;
-    let resetFailed = false;
-    const service = new TaskGitWorkspaceService({
-      dataDir: fixture.dataDir,
-      runCommand: async (args, options) => {
-        const result = await runTaskGitCommand(args, options);
-        if (args[0] === "update-ref" && args[1] === "refs/heads/dev") casCompleted = true;
-        if (casCompleted && !resetFailed && args[0] === "reset" && args[1] === "--hard") {
-          resetFailed = true;
-          throw new Error("injected after dev CAS");
-        }
-        return result;
-      },
-    });
-    const integration = await service.mergeIntoDev(fixture.snapshot);
-    assert.equal(integration.integrated, true);
-    assert.equal(integration.dev.recovered, true);
-    assert.equal(await git(fixture.root, "rev-parse", "refs/heads/dev^{commit}"), integration.dev.headCommit);
-    assert.equal(await git(integration.dev.projectRoot, "status", "--porcelain=v1", "--untracked-files=all"), "");
-  });
+  }
 });
 
 test("explicit published main to dev conflict aborts exactly while new Task creation stays independent", async (context) => {
@@ -1440,7 +2032,9 @@ test("a new Task worktree sparsely materializes only its selected project subtre
   await mkdir(path.join(root, "Other"));
   await writeFile(path.join(root, "AgentHub", "package.json"), "{}\n", "utf8");
   await writeFile(path.join(root, "Other", "clean.txt"), "other\n", "utf8");
-  await git(root, "add", "AgentHub/package.json", "Other/clean.txt");
+  await writeFile(path.join(root, "CHANGELOG.md"), "root release history\n", "utf8");
+  await writeFile(path.join(root, "AgentHub", "CHANGELOG.md"), "project release history\n", "utf8");
+  await git(root, "add", "AgentHub/package.json", "Other/clean.txt", "CHANGELOG.md", "AgentHub/CHANGELOG.md");
   await git(root, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "projects");
   const dataDir = path.join(root, "..", `${path.basename(root)}-data`);
   context.after(() => rm(dataDir, { recursive: true, force: true }));
@@ -1461,8 +2055,11 @@ test("a new Task worktree sparsely materializes only its selected project subtre
     }),
     canonicalPath(root),
   );
-  assert.equal(await git(taskRoot, "sparse-checkout", "list"), "AgentHub");
+  assert.equal(await git(taskRoot, "sparse-checkout", "list"), "/*\n!/*/\n/AgentHub/\n!CHANGELOG.md");
   assert.equal(await readFile(path.join(workspace.projectRoot, "package.json"), "utf8"), "{}\n");
+  assert.equal(await readFile(path.join(taskRoot, "app.txt"), "utf8"), "main\n");
+  await assert.rejects(readFile(path.join(taskRoot, "CHANGELOG.md")), /ENOENT/u);
+  await assert.rejects(readFile(path.join(workspace.projectRoot, "CHANGELOG.md")), /ENOENT/u);
   await assert.rejects(() => readFile(path.join(taskRoot, "Other", "clean.txt"), "utf8"), /ENOENT/u);
   await assert.rejects(() => git(root, "sparse-checkout", "list"), /not sparse/u);
   const dev = await service.prepareDev(root);
@@ -1475,7 +2072,141 @@ test("a new Task worktree sparsely materializes only its selected project subtre
   });
   assert.equal(repeated.projectRoot, workspace.projectRoot);
   assert.equal(repeated.branch, workspace.branch);
-  assert.equal(await git(taskRoot, "sparse-checkout", "list"), "AgentHub");
+  assert.equal(await git(taskRoot, "sparse-checkout", "list"), "/*\n!/*/\n/AgentHub/\n!CHANGELOG.md");
+});
+
+test("a legacy cone Task can finish an existing dev merge before sparse migration", { timeout: 90000 }, async (context) => {
+  const root = await repository(context);
+  await mkdir(path.join(root, "AgentHub"));
+  await writeFile(path.join(root, "AgentHub", "app.txt"), "base\n");
+  await git(root, "add", ".");
+  await git(root, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "project");
+  const dataDir = path.join(root, "..", `${path.basename(root)}-legacy-merge`);
+  context.after(() => rm(dataDir, { recursive: true, force: true }));
+  const service = new TaskGitWorkspaceService({ dataDir });
+  const options = { taskId: "91919191-9191-4191-8191-919191919191", taskNumber: "HUB-901", projectRoot: path.join(root, "AgentHub") };
+  const workspace = await service.prepare(options);
+  await git(path.dirname(workspace.projectRoot), "sparse-checkout", "set", "--cone", "AgentHub");
+  const dev = await service.prepareDev(root);
+  await writeFile(path.join(dev.projectRoot, "AgentHub", "dev.txt"), "dev\n");
+  await git(dev.projectRoot, "add", ".");
+  await git(dev.projectRoot, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "dev change");
+  await git(workspace.projectRoot, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "merge", "--no-ff", "--no-commit", "dev");
+  const statusBefore = await git(workspace.projectRoot, "status", "--porcelain=v1");
+  const headBefore = await git(workspace.projectRoot, "rev-parse", "HEAD");
+  await service.prepare(options);
+  assert.equal(await git(workspace.projectRoot, "status", "--porcelain=v1"), statusBefore);
+  assert.equal(await git(workspace.projectRoot, "rev-parse", "HEAD"), headBefore);
+  assert.equal(await git(workspace.projectRoot, "sparse-checkout", "list"), "AgentHub");
+  await git(workspace.projectRoot, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "finish merge");
+  await service.prepare(options);
+  assert.equal(await git(workspace.projectRoot, "config", "--bool", "core.sparseCheckoutCone"), "false");
+  assert.equal(await readFile(path.join(workspace.projectRoot, "dev.txt"), "utf8"), "dev\n");
+});
+
+test("ordinary repeated preparation skips dependencies and sparse mutations while preserving edits", async (context) => {
+  const root = await repository(context);
+  await writeFile(path.join(root, "package.json"), "{}\n");
+  await writeFile(path.join(root, "package-lock.json"), "{}\n");
+  await git(root, "add", "package.json", "package-lock.json");
+  await git(root, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "manifest");
+  const dataDir = path.join(root, "..", `${path.basename(root)}-data`);
+  context.after(() => rm(dataDir, { recursive: true, force: true }));
+  let sparseWrites = 0;
+  let dependencyCalls = 0;
+  const service = new TaskGitWorkspaceService({
+    dataDir,
+    prepareDependencies: async () => { dependencyCalls += 1; throw new Error("unexpected installation"); },
+    runCommand: async (args, options) => {
+      if (args[0] === "sparse-checkout" && args[1] === "set") sparseWrites += 1;
+      return runTaskGitCommand(args, options);
+    },
+  });
+  const input = { taskId: "93939393-9393-4393-8393-939393939393", projectRoot: root };
+  const first = await service.prepare(input);
+  await writeFile(path.join(first.projectRoot, "app.txt"), "unfinished edit\n", "utf8");
+  const repeated = await service.prepare({ ...input, projectRoot: first.projectRoot });
+  assert.equal(dependencyCalls, 0);
+  assert.equal(sparseWrites, 1);
+  assert.equal(repeated.projectRoot, first.projectRoot);
+  assert.equal(await readFile(path.join(first.projectRoot, "app.txt"), "utf8"), "unfinished edit\n");
+});
+
+test("an unreviewed sibling Task merge is refused while unrelated dev work is preserved", { timeout: 90000 }, async (context) => {
+  const root = await repository(context);
+  const dataDir = path.join(root, "..", `${path.basename(root)}-conflict-data`);
+  context.after(() => rm(dataDir, { recursive: true, force: true }));
+  const service = new TaskGitWorkspaceService({ dataDir });
+  const a = await service.prepare({ taskId: "11111111-1111-4111-8111-111111111111", projectRoot: root });
+  const b = await service.prepare({ taskId: "22222222-2222-4222-8222-222222222222", projectRoot: root });
+  await writeFile(path.join(a.projectRoot, "app.txt"), "A\n");
+  await writeFile(path.join(b.projectRoot, "app.txt"), "B\n");
+  const testedA = await service.snapshotAndMerge({ taskId: a.taskId, projectRoot: root });
+  const conflict = await service.snapshotAndMerge({ taskId: b.taskId, projectRoot: root });
+  assert.equal(conflict.integration.devRestored, true);
+  assert.deepEqual(conflict.integration.conflicts, ["app.txt"]);
+  await assert.rejects(git(b.projectRoot, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+    "merge", "--no-commit", testedA.snapshot.headCommit));
+  await writeFile(path.join(b.projectRoot, "app.txt"), "A and B\n");
+  await git(b.projectRoot, "add", "app.txt");
+  await git(b.projectRoot, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "Combine A and B");
+  const combined = await git(b.projectRoot, "rev-parse", "HEAD");
+  const c = await service.prepare({ taskId: "33333333-3333-4333-8333-333333333333", projectRoot: root });
+  await writeFile(path.join(c.projectRoot, "c.txt"), "C\n");
+  await service.snapshotAndMerge({ taskId: c.taskId, projectRoot: root });
+  const before = await git(root, "rev-parse", "dev");
+  await assert.rejects(service.snapshotAndMerge({ taskId: b.taskId, projectRoot: root }), {
+    code: "RELEASE_NATIVE_HISTORY_REQUIRED",
+  });
+  assert.equal(await git(root, "rev-parse", "dev"), before);
+  const currentDev = await service.prepareDev(root);
+  assert.equal(await readFile(path.join(currentDev.projectRoot, "app.txt"), "utf8"), "A\n");
+  assert.equal(await readFile(path.join(currentDev.projectRoot, "c.txt"), "utf8"), "C\n");
+  const parents = (await git(root, "show", "-s", "--format=%P", combined)).split(" ");
+  assert.equal(parents[1], testedA.snapshot.headCommit);
+});
+
+test("npm holds its Task while another Task can integrate into dev", { timeout: 30_000 }, async (context) => {
+  const root = await repository(context);
+  await writeFile(path.join(root, "package.json"), '{"name":"parallel","private":true}\n');
+  await writeFile(path.join(root, "package-lock.json"), '{"lockfileVersion":3,"packages":{}}\n');
+  await git(root, "add", "package.json", "package-lock.json");
+  await git(root, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "manifest");
+  const dataDir = path.join(root, "..", `${path.basename(root)}-data`);
+  context.after(() => rm(dataDir, { recursive: true, force: true }));
+  let enteredNpm;
+  let releaseNpm;
+  const entered = new Promise((resolve) => { enteredNpm = resolve; });
+  const released = new Promise((resolve) => { releaseNpm = resolve; });
+  const service = new TaskGitWorkspaceService({
+    dataDir,
+    runCommand: async (args, options) => {
+      if (options.commandLabel === "npm") {
+        enteredNpm();
+        await released;
+        await mkdir(path.join(options.cwd, "node_modules"), { recursive: true });
+        await writeFile(path.join(options.cwd, "node_modules", ".package-lock.json"), '{"lockfileVersion":3,"packages":{}}');
+        return "";
+      }
+      return runTaskGitCommand(args, options);
+    },
+  });
+  const firstInput = { taskId: "94949494-9494-4494-8494-949494949494", projectRoot: root };
+  const secondInput = { taskId: "95959595-9595-4595-8595-959595959595", projectRoot: root };
+  const second = await service.prepare(secondInput);
+  const first = service.prepare({ ...firstInput, dependencyMode: "ensure" });
+  await entered;
+  let sameTaskReturned = false;
+  const sameTask = service.prepare(firstInput).then((result) => { sameTaskReturned = true; return result; });
+  try {
+    await writeFile(path.join(second.projectRoot, "second.txt"), "independent change\n", "utf8");
+    const integration = await service.snapshotAndMerge({ ...secondInput, projectRoot: second.projectRoot });
+    assert.equal(integration.integration.integrated, true);
+    assert.equal(sameTaskReturned, false);
+  } finally {
+    releaseNpm();
+    await Promise.all([first, sameTask]);
+  }
 });
 
 test("a clean managed Task worktree resolves its declared test dependency locally", async (context) => {
@@ -1552,6 +2283,7 @@ test("a clean managed Task worktree resolves its declared test dependency locall
     taskId: "89898989-8989-4989-8989-898989898989",
     taskNumber: "HUB-163",
     projectRoot: agentHubRoot,
+    dependencyMode: "ensure",
   });
   assert.equal(installCount, 2);
   await assert.rejects(() => readFile(path.join(agentHubRoot, "node_modules", "playwright", "package.json"), "utf8"), /ENOENT/u);
@@ -1568,6 +2300,7 @@ test("a clean managed Task worktree resolves its declared test dependency locall
     taskId: workspace.taskId,
     taskNumber: "HUB-163",
     projectRoot: workspace.projectRoot,
+    dependencyMode: "ensure",
   });
   assert.equal(repeated.projectRoot, workspace.projectRoot);
   assert.equal(installCount, 2);
@@ -1607,6 +2340,7 @@ test("Task worktree preparation does not return when dependency bounds fail", as
     taskId: "90909090-9090-4090-8090-909090909090",
     taskNumber: "HUB-163",
     projectRoot: agentHubRoot,
+    dependencyMode: "ensure",
   }), /maxPackageRoots=1/u);
   assert.equal(npmInvoked, false);
 });
@@ -1651,6 +2385,7 @@ test("unproven owned npm tree stop fences dependency preparation and the next ow
     taskId,
     taskNumber: "HUB-163",
     projectRoot: agentHubRoot,
+    dependencyMode: "ensure",
   }), /descendant survived.*unproven/u);
   const guardDirectory = path.join(dataDir, "task-process-tree-guards", taskId);
   const guardFiles = await readdir(guardDirectory);
@@ -1671,7 +2406,9 @@ test("repository-root Tasks use explicit all-path scope without guessing a proje
   const root = await repository(context);
   await mkdir(path.join(root, "AgentHub"));
   await writeFile(path.join(root, "AgentHub", "package.json"), "{}\n", "utf8");
-  await git(root, "add", "AgentHub/package.json");
+  await writeFile(path.join(root, "CHANGELOG.md"), "root release history\n", "utf8");
+  await writeFile(path.join(root, "AgentHub", "CHANGELOG.md"), "project release history\n", "utf8");
+  await git(root, "add", "AgentHub/package.json", "CHANGELOG.md", "AgentHub/CHANGELOG.md");
   await git(root, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "project");
   const dataDir = path.join(root, "..", `${path.basename(root)}-data`);
   context.after(() => rm(dataDir, { recursive: true, force: true }));
@@ -1683,8 +2420,54 @@ test("repository-root Tasks use explicit all-path scope without guessing a proje
   });
 
   assert.equal(workspace.projectRoot, canonicalPath(await git(workspace.projectRoot, "rev-parse", "--show-toplevel")));
-  assert.equal(await git(workspace.projectRoot, "sparse-checkout", "list"), "/*");
+  assert.equal(await git(workspace.projectRoot, "sparse-checkout", "list"), "/*\n!CHANGELOG.md");
   assert.equal(await readFile(path.join(workspace.projectRoot, "AgentHub", "package.json"), "utf8"), "{}\n");
+  await assert.rejects(readFile(path.join(workspace.projectRoot, "CHANGELOG.md")), /ENOENT/u);
+  await assert.rejects(readFile(path.join(workspace.projectRoot, "AgentHub", "CHANGELOG.md")), /ENOENT/u);
+  await git(workspace.projectRoot, "sparse-checkout", "disable");
+  await service.prepare({ taskId: workspace.taskId, projectRoot: workspace.projectRoot });
+  await assert.rejects(readFile(path.join(workspace.projectRoot, "CHANGELOG.md")), /ENOENT/u);
+  await writeFile(path.join(workspace.projectRoot, "CHANGELOG.md"), "root release history\n", "utf8");
+  await service.prepare({ taskId: workspace.taskId, projectRoot: workspace.projectRoot });
+  await assert.rejects(readFile(path.join(workspace.projectRoot, "CHANGELOG.md")), /ENOENT/u);
+});
+
+test("Task changelog exclusion preserves dirty files and rejects recreated changelog snapshots", async (context) => {
+  const root = await repository(context);
+  await writeFile(path.join(root, "CHANGELOG.md"), "published history\n", "utf8");
+  await git(root, "add", "CHANGELOG.md");
+  await git(root, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "release history");
+  const dataDir = path.join(root, "..", `${path.basename(root)}-changelog-data`);
+  context.after(() => rm(dataDir, { recursive: true, force: true }));
+  const service = new TaskGitWorkspaceService({ dataDir });
+  const taskId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+  const workspace = await service.prepare({ taskId, projectRoot: root });
+  const input = { taskId, projectRoot: workspace.projectRoot };
+  const changelog = path.join(workspace.projectRoot, "CHANGELOG.md");
+  await mkdir(path.join(workspace.projectRoot, "new-directory"));
+  const untrackedChangelog = path.join(workspace.projectRoot, "new-directory", "CHANGELOG.md");
+  await writeFile(untrackedChangelog, "untracked release history\n", "utf8");
+  await assert.rejects(service.snapshot(input), /exclude CHANGELOG.md/u);
+  assert.equal(await readFile(untrackedChangelog, "utf8"), "untracked release history\n");
+  await unlink(untrackedChangelog);
+  await git(workspace.projectRoot, "sparse-checkout", "disable");
+  await writeFile(changelog, "preserve existing edits\n", "utf8");
+  await assert.rejects(service.prepare(input), /exclude CHANGELOG.md/u);
+  assert.equal(await readFile(changelog, "utf8"), "preserve existing edits\n");
+  await assert.rejects(git(workspace.projectRoot, "sparse-checkout", "list"), /not sparse/u);
+
+  await writeFile(changelog, "published history\n", "utf8");
+  await service.prepare(input);
+  await assert.rejects(readFile(changelog), /ENOENT/u);
+  await writeFile(changelog, "recreated edits\n", "utf8");
+  await writeFile(path.join(workspace.projectRoot, "app.txt"), "new task work\n", "utf8");
+  await git(workspace.projectRoot, "add", "--sparse", "CHANGELOG.md");
+  const priorStatus = await git(workspace.projectRoot, "status", "--porcelain=v1", "--untracked-files=all");
+  await assert.rejects(service.snapshot(input), /exclude CHANGELOG.md/u);
+  assert.equal(await git(workspace.projectRoot, "rev-parse", "HEAD^{commit}"), workspace.headCommit);
+  assert.equal(await git(workspace.projectRoot, "status", "--porcelain=v1", "--untracked-files=all"), priorStatus);
+  assert.equal(await readFile(changelog, "utf8"), "recreated edits\n");
+  assert.equal(await readFile(path.join(workspace.projectRoot, "app.txt"), "utf8"), "new task work\n");
 });
 
 test("existing managed worktree migration preserves dirty paths branch base and repeatability", async (context) => {
@@ -1716,7 +2499,7 @@ test("existing managed worktree migration preserves dirty paths branch base and 
     taskNumber: "HUB-142",
     projectRoot: path.join(root, "AgentHub"),
   });
-  assert.equal(await git(taskRoot, "sparse-checkout", "list"), "AgentHub");
+  assert.equal(await git(taskRoot, "sparse-checkout", "list"), "/*\n!/*/\n/AgentHub/\n!CHANGELOG.md");
   assert.equal(await git(taskRoot, "status", "--porcelain=v1", "--untracked-files=all"), statusBefore);
   assert.equal(await git(taskRoot, "branch", "--show-current"), branchBefore);
   assert.equal(await git(taskRoot, "rev-parse", "HEAD^{commit}"), headBefore);
@@ -1750,14 +2533,16 @@ test("sparse scope normalizes Windows paths and rejects repository escape", () =
   const root = process.platform === "win32" ? "C:\\work\\repo" : "/work/repo";
   const child = path.join(root, "AgentHub", "src");
   assert.deepEqual(taskSparseCheckoutSelection(root, child), {
-    cone: true,
+    cone: false,
     relativePath: path.join("AgentHub", "src"),
     scope: "AgentHub/src",
+    patterns: ["/*", "!/*/", "/AgentHub/", "!/AgentHub/*/", "/AgentHub/src/", "!CHANGELOG.md"],
   });
   assert.deepEqual(taskSparseCheckoutSelection(root, root), {
     cone: false,
     relativePath: "",
     scope: "/*",
+    patterns: ["/*", "!CHANGELOG.md"],
   });
   assert.throws(
     () => taskSparseCheckoutSelection(root, path.resolve(root, "..", "escape")),

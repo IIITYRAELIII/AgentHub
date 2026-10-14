@@ -112,6 +112,54 @@ test("a newer terminal revision supersedes every queued chunk of the older revis
   }
 });
 
+test("an uncertain superseded Telegram file is retained as evidence but never resent after reopen", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "telegram-outbox-superseded-"));
+  let sends = 0;
+  try {
+    const first = new PersistentDeliveryOutbox({
+      directoryPath: directory,
+      deliver: async () => {
+        sends += 1;
+        const error = new Error("unknown external outcome");
+        error.retryable = true;
+        error.uncertain = true;
+        throw error;
+      },
+      retryDelay: () => 0,
+    });
+    await first.enqueue({ method: "sendMessage", body: { text: "wrong old answer" },
+      supersedeKey: "turn-1:telegram", intent: { terminalRevision: 1 } });
+    await first.flush();
+    assert.equal(sends, 1);
+    await first.discard({ supersedeKey: "turn-1:telegram" });
+    const [name] = (await readdir(directory)).filter((entry) => entry.endsWith(".json"));
+    assert.equal(JSON.parse(await readFile(path.join(directory, name), "utf8")).discardRequested, true);
+
+    const reopened = new PersistentDeliveryOutbox({ directoryPath: directory,
+      deliver: async () => { sends += 1; return {}; } });
+    assert.deepEqual(await reopened.flush(), { delivered: 0, remaining: 0 });
+    assert.equal(sends, 1);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("a stale terminal revision is denied by the delivery authorization before Telegram", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "telegram-outbox-stale-terminal-"));
+  let sends = 0;
+  try {
+    const first = new PersistentDeliveryOutbox({ directoryPath: directory,
+      deliver: async () => { sends += 1; return {}; },
+      onUncertain: async (item) => item.intent.terminalRevision === 2 });
+    await first.enqueue({ method: "sendMessage", body: { text: "wrong old answer" },
+      intent: { terminalRevision: 1 } });
+    assert.deepEqual(await first.flush(), { delivered: 0, remaining: 0 });
+    assert.equal(sends, 0);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("PersistentDeliveryOutbox retains a temporary failure for a later retry", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "telegram-outbox-retry-"));
   const outboxDirectory = path.join(directory, "outbox");

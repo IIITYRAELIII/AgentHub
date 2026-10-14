@@ -487,6 +487,8 @@ test("local task sync preserves durable message metadata and attachments", async
     activityGroups: [{
       id: "reasoning-1",
       reasoning: "Проверяю входные данные.",
+      omittedGroupsBefore: 12,
+      omittedActivities: 3,
       activities: [{ id: "tool-1", type: "tool", label: "Проверка", status: "completed" }],
     }],
     messages: [{
@@ -494,7 +496,7 @@ test("local task sync preserves durable message metadata and attachments", async
       clientUserMessageId: "client-1",
       role: "user",
       text: "Посмотри скриншот",
-      author: "Agent Hub - Architect",
+      author: "Agent Hub - Release Manager",
       responseAnnotations: [
         { text: "Цитата из ответа", annotation: "Почему так?", source: ANNOTATION_SOURCE },
         { text: "Цитата пользователя", annotation: "Сверить", source: USER_ANNOTATION_SOURCE },
@@ -534,7 +536,7 @@ test("local task sync preserves durable message metadata and attachments", async
   assert.equal(entry.completedAt, "2026-07-31T12:01:00.000Z");
   assert.equal(entry.messages[0].clientUserMessageId, "client-1");
   assert.equal(entry.messages[0].time, "2026-07-31T12:00:00.000Z");
-  assert.equal(entry.messages[0].author, "Agent Hub - Architect");
+  assert.equal(entry.messages[0].author, "Agent Hub - Release Manager");
   assert.deepEqual(entry.promptAnnotations, [
     { text: "Цитата из ответа", annotation: "Почему так?", source: ANNOTATION_SOURCE },
     { text: "Цитата пользователя", annotation: "Сверить", source: USER_ANNOTATION_SOURCE },
@@ -560,11 +562,13 @@ test("local task sync preserves durable message metadata and attachments", async
   assert.equal(entry.activities[0].label, "Проверка");
   assert.equal(entry.activityGroups[0].reasoning, "Проверяю входные данные.");
   assert.equal(entry.activityGroups[0].activities[0].label, "Проверка");
+  assert.equal(entry.activityGroups[0].omittedGroupsBefore, 12);
+  assert.equal(entry.activityGroups[0].omittedActivities, 3);
   const search = restored.searchMessages({
     references: [{ provider: task.provider, threadId: task.threadId }],
     query: "посмотри скриншот",
   });
-  assert.equal(search.results[0].author, "Agent Hub - Architect");
+  assert.equal(search.results[0].author, "Agent Hub - Release Manager");
 
   await restored.recordHistory(task, [{
     ...entry,

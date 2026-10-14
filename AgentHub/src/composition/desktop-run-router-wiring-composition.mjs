@@ -233,6 +233,7 @@ export function createDesktopRunRouterWiring({
   });
   const taskBoardController = new DesktopTaskBoardController({
     taskBoard: services.taskBoard,
+    taskGitWorkspaces: services.taskGitWorkspaces,
     voiceTranscriber: services.taskVoiceTranscriber,
     workspaceCatalog: services.workspaceCatalog,
     taskLauncher: taskBoardLauncher,
@@ -244,6 +245,7 @@ export function createDesktopRunRouterWiring({
     canonicalizeRequest: services.contourCommandMapping?.request,
     handlers: {
       snapshot: desktop.snapshot,
+      refreshModelCatalog: desktop.refreshModelCatalog,
       runtimeHealth: desktop.runtimeHealth,
       retryStartup: desktop.retryStartup,
       taskHistory: desktop.taskHistory,
@@ -284,6 +286,7 @@ export function createDesktopRunRouterWiring({
       boardTaskCreate: (params) => taskBoardController.create(params),
       boardTaskIngest: (params) => taskBoardController.ingest(params),
       boardTaskUpdate: (params) => taskBoardController.update(params),
+      boardTaskDiff: (params) => taskBoardController.diff(params),
       boardTaskChecklist: (params) => taskBoardController.checklist(params),
       boardTaskChecklistLinkedAction: (params) => taskBoardController.checklistLinkedTaskAction(params),
       boardTaskAttachmentAdd: (params) => taskBoardController.addAttachments(params),
@@ -308,6 +311,9 @@ export function createDesktopRunRouterWiring({
       ),
       commandTracePercentiles: (params) => services.commandTrace.readStagePercentiles(params),
       commandTraceStats: () => services.commandTrace.backpressureStats(),
+      releaseOperationRun: (params) => services.releaseOperationCommands.start(params),
+      releaseOperationGet: (params) => services.releaseOperationCommands.get(params),
+      releaseOperationContinue: (params) => services.releaseOperationCommands.continue(params),
     },
     commands: desktop.applicationCommands,
     receiptFile: path.join(config.dataDir, "desktop-control-receipts.sqlite"),

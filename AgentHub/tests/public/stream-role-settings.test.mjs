@@ -13,19 +13,19 @@ async function roleSettingsApi() {
   return window.AgentHubStreamRoleSettings;
 }
 
-test("Stream Architect is an independent persisted boolean", async () => {
+test("Stream Release Manager is an independent persisted boolean", async () => {
   const settings = await roleSettingsApi();
 
-  assert.equal(settings.architectEnabled({ architect: true }), true);
-  assert.equal(settings.architectEnabled({ architect: false }), false);
-  assert.equal(settings.architectEnabled({ releaseRole: "architect" }), false);
+  assert.equal(settings.releaseManagerEnabled({ releaseManager: true }), true);
+  assert.equal(settings.releaseManagerEnabled({ releaseManager: false }), false);
+  assert.equal(settings.releaseManagerEnabled({ releaseRole: "releaseManager" }), false);
   assert.deepEqual(
-    { ...settings.withArchitect({ provider: "codex", model: "gpt-5.6" }, true) },
-    { provider: "codex", model: "gpt-5.6", architect: true },
+    { ...settings.withReleaseManager({ provider: "codex", model: "gpt-5.6" }, true) },
+    { provider: "codex", model: "gpt-5.6", releaseManager: true },
   );
   assert.deepEqual(
-    { ...settings.withArchitect({ provider: "claude", architect: true }, false) },
-    { provider: "claude", architect: false },
+    { ...settings.withReleaseManager({ provider: "claude", releaseManager: true }, false) },
+    { provider: "claude", releaseManager: false },
   );
 });
 
@@ -36,8 +36,8 @@ test("Stream Team Lead is an independent persisted boolean", async () => {
   assert.equal(settings.teamLeadEnabled({ teamLead: false }), false);
   assert.equal(settings.teamLeadEnabled({ role: "team-lead" }), false);
   assert.deepEqual(
-    { ...settings.withTeamLead({ provider: "codex", architect: true }, true) },
-    { provider: "codex", architect: true, teamLead: true },
+    { ...settings.withTeamLead({ provider: "codex", releaseManager: true }, true) },
+    { provider: "codex", releaseManager: true, teamLead: true },
   );
   assert.deepEqual(
     { ...settings.withTeamLead({ provider: "claude", teamLead: true }, false) },

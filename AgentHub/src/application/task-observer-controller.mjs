@@ -42,6 +42,7 @@ export class TaskObserverController {
       if (!this.canObserve(run)) return;
       if (snapshot?.activityUnknown) {
         await this.onUnknown(run, snapshot);
+        this.schedule(run);
         return;
       }
       if (!snapshot) {

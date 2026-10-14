@@ -3,14 +3,19 @@ import test from "node:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { Readable } from "node:stream";
 
 import { CodexTerminalReconciliationService } from "../../../src/providers/codex/codex-terminal-reconciliation-service.mjs";
-import { CODEX_CONTEXT_PROBE_CLIENT_ID_PREFIX } from "../../../src/domain/codex-context-probe.mjs";
+import { codexTurnUsageFromJsonl } from "../../../src/providers/codex/codex-turn-usage.mjs";
 import { createRunAccountingComposition } from "../../../src/composition/run-accounting-composition.mjs";
 import { RunJournalService } from "../../../src/application/run-journal-service.mjs";
 import { createWorkLogUsageStore } from "../../../src/application/work-log-usage-store.mjs";
 import { CodexTerminalAudit } from "../../../src/providers/codex/codex-terminal-audit.mjs";
+import { scanCodexHistoricalRollout } from "../../../src/providers/codex/codex-turn-usage.mjs";
 import { MaintenanceOperationStore } from "../../../src/infrastructure/persistence/maintenance-operation-store.mjs";
+import { TerminalTurnCommitService } from "../../../src/application/terminal-turn-commit-service.mjs";
+import { TurnEndDeliveryService } from "../../../src/application/turn-end-delivery-service.mjs";
+import { ProviderTurnTerminalStore } from "../../../src/infrastructure/persistence/provider-turn-terminal-store.mjs";
 
 function usage(overrides = {}) {
   return {
@@ -118,6 +123,82 @@ test("persisted dedicated compaction terminal is accounted without completion ca
   }
 });
 
+test("live context probe service usage keeps its measurement identity and no marker body", async () => {
+  const { service, calls, completions } = harness();
+  const marker = "AGENT_HUB_CONTEXT_PROBE_OK_V1";
+  assert.equal(await service.reconcile(thread, project, {
+    turnId: "live-context-probe",
+    status: "completed",
+    completedAt: "2026-08-04T10:00:00.000Z",
+    historical: false,
+    usageResult: usage({
+      clientUserMessageId: "agent-hub-context-probe:de823030-9f98-40e6-9d93-066062d977c6",
+      serviceUsageKind: "context-probe",
+      finalAnswer: marker,
+      usage: { totalTokens: 120 },
+    }),
+  }), true);
+  const projection = calls.find(([name]) => name === "project");
+  assert.ok(projection);
+  assert.equal(projection[1].operationKind, "context-measurement");
+  assert.equal(projection[1].serviceUsageKind, "context-probe");
+  assert.equal(projection[1].usage.totalTokens, 120);
+  assert.equal(projection[1].accountAttribution, "unknown");
+  assert.equal(projection[1].resolveAccount, false);
+  assert.equal(projection[2].title, "Измерение контекста");
+  assert.equal(projection[2].body, "");
+  assert.deepEqual(completions, []);
+  assert.equal(calls.some(([name]) => ["deliver", "seen"].includes(name)), false);
+  assert.equal(calls.some(([name, , , options]) => name === "remember" && options?.removeTurnId !== true), false);
+});
+
+test("invalid and foreign probe identities retain an ordinary final in live and historical recovery", async () => {
+  for (const clientId of [
+    "agent-hub-context-probe:not-a-uuid",
+    "foreign-context-probe:de823030-9f98-40e6-9d93-066062d977c6",
+  ]) {
+    const turnId = "ordinary-probe-shaped-turn";
+    const records = [
+      { type: "event_msg", payload: { type: "task_started", turn_id: turnId } },
+      { type: "response_item", payload: {
+        type: "message", role: "user", client_id: clientId,
+        content: [{ type: "input_text", text: "Ordinary prompt" }],
+        internal_chat_message_metadata_passthrough: { turn_id: turnId },
+      } },
+      { type: "response_item", payload: {
+        type: "message", role: "assistant",
+        content: [{ type: "output_text", text: "REAL_USER_FINAL" }],
+        internal_chat_message_metadata_passthrough: { turn_id: turnId },
+      } },
+      { type: "event_msg", payload: { type: "task_complete", turn_id: turnId } },
+    ].map((record) => JSON.stringify(record)).join("\n");
+    const scanned = codexTurnUsageFromJsonl(records, turnId);
+    assert.equal(scanned.serviceUsageKind, "", clientId);
+    for (const historical of [false, true]) {
+      const { service, calls, completions } = harness();
+      assert.equal(await service.reconcile(thread, project, {
+        turnId,
+        status: "completed",
+        completedAt: "2026-08-04T10:00:00.000Z",
+        historical,
+        usageResult: usage({
+          ...scanned,
+          finalAnswer: "REAL_USER_FINAL",
+          completedAt: "2026-08-04T10:00:00.000Z",
+        }),
+      }), true);
+      if (historical) {
+        const projection = calls.find(([name]) => name === "project");
+        assert.equal(projection[1].operationKind, "user-turn");
+        assert.equal(projection[2].body, "REAL_USER_FINAL");
+      } else {
+        assert.equal(completions.length, 1);
+        assert.equal(completions[0].finalAnswer, "REAL_USER_FINAL");
+      }
+    }
+  }
+});
+
 test("inline, legacy markerless and foreign compactions cannot suppress an ordinary provider final", async (t) => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-inline-compaction-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
@@ -140,6 +221,33 @@ test("inline, legacy markerless and foreign compactions cannot suppress an ordin
     assert.equal(completions[0].finalAnswer, answer);
     assert.equal(calls.some(([name]) => name === "deliver"), true);
   }
+});
+
+test("historical reserved client identity restores original measurement time without a new user completion", async () => {
+  const oldClientId = "agent-hub-context-probe:de823030-9f98-40e6-9d93-066062d977c6";
+  const oldTurnId = "01a07cd5-b5cc-7b30-8078-e6abc2e9ce01";
+  const oldStartedAt = "2026-09-07T17:06:00.000Z";
+  const oldCompletedAt = "2026-09-07T17:06:20.693Z";
+  const { service, calls, completions } = harness({
+    now: () => Date.parse("2026-09-29T11:45:00.000Z"),
+  });
+  assert.equal(await service.reconcile(thread, project, {
+    turnId: oldTurnId, status: "completed", completedAt: oldCompletedAt,
+    historical: true,
+    usageResult: usage({
+      clientUserMessageId: oldClientId, startedAt: oldStartedAt,
+      completedAt: oldCompletedAt, finalAnswer: "AGENT_HUB_CONTEXT_PROBE_OK_V1",
+    }),
+  }), true);
+  const projection = calls.find(([kind]) => kind === "project");
+  assert.equal(projection[1].operationKind, "context-measurement");
+  assert.equal(projection[1].clientUserMessageId, oldClientId);
+  assert.equal(projection[1].startedAt, oldStartedAt);
+  assert.equal(projection[1].completedAt, oldCompletedAt);
+  assert.equal(projection[2].body, "");
+  assert.deepEqual(completions, []);
+  assert.equal(calls.some(([kind]) => kind === "deliver"), false);
+  assert.deepEqual(calls.find(([kind]) => kind === "remember")[3], { removeTurnId: true });
 });
 
 test("audit persists eight corrected turns through accounting without loading the ledger and flushes once", async () => {
@@ -282,6 +390,101 @@ test("delivered correction outside an audit retains immediate projection", async
   assert.equal(calls.find(([name]) => name === "project")[2].deferProjection, false);
 });
 
+test("delivered status correction requires an exact rollout terminal, never an idle snapshot", async () => {
+  const corrections = [];
+  const { service, delivered } = harness({
+    correctCommittedTerminal: async (...args) => corrections.push(args),
+  });
+  delivered.add("turn-1");
+  const aborted = usage({ status: "aborted", finalAnswer: "", completedAt: "2026-08-04T11:00:00.000Z" });
+  const rollout = [
+    { timestamp: "2026-08-04T10:00:00.000Z", type: "event_msg",
+      payload: { type: "task_started", turn_id: "turn-1" } },
+    { timestamp: aborted.completedAt, type: "event_msg",
+      payload: { type: "turn_aborted", turn_id: "turn-1" } },
+  ].map((entry) => JSON.stringify(entry)).join("\n") + "\n";
+  let scanCalls = 0;
+  const audit = new CodexTerminalAudit({
+    now: () => Date.parse("2026-08-04T11:05:00.000Z"),
+    listPage: async () => ({ data: [], nextCursor: null }),
+    discoverHistoricalThreads: async () => [{ ...thread, cwd: project.path,
+      updatedAt: "2026-08-04T11:00:00.000Z" }],
+    resolveProject: () => project,
+    statFile: async () => ({ size: Buffer.byteLength(rollout), mtimeMs: Date.parse(aborted.completedAt) }),
+    scanFile: async (_path, options) => {
+      scanCalls += 1;
+      return scanCodexHistoricalRollout("rollout.jsonl", {
+        ...options, createReadStreamImpl: () => Readable.from([rollout]),
+      });
+    },
+    reconcile: (...args) => service.reconcile(...args),
+  });
+  await audit.run();
+  assert.equal(scanCalls, 1, JSON.stringify(audit.snapshot().lastRun));
+  assert.deepEqual(corrections, [[
+    { provider: "codex", threadId: thread.id, turnId: "turn-1" },
+    { status: "aborted", completedAt: aborted.completedAt, finalAnswer: "" },
+  ]]);
+  await service.reconcile(thread, project, {
+    turnId: "turn-1", status: "aborted", completedAt: aborted.completedAt,
+    usageResult: { ...aborted, terminal: false }, historical: true,
+  });
+  assert.equal(corrections.length, 1);
+});
+
+test("an exact rollout terminal reaches the correction owner before a pending notification is marked delivered", async () => {
+  const corrections = [];
+  const { service, pending, completions } = harness({
+    correctCommittedTerminal: async (...args) => { corrections.push(args); return { corrected: true }; },
+  });
+  pending.set("turn-1", { status: "completed", usageReported: true });
+  const aborted = usage({ status: "aborted", finalAnswer: "", completedAt: "2026-08-04T11:00:00.000Z" });
+  assert.equal(await service.reconcile(thread, project, {
+    turnId: "turn-1", status: "aborted", completedAt: aborted.completedAt, usageResult: aborted,
+  }), true);
+  assert.deepEqual(corrections, [[
+    { provider: "codex", threadId: thread.id, turnId: "turn-1" },
+    { status: "aborted", completedAt: aborted.completedAt, finalAnswer: "" },
+  ]]);
+  assert.equal(completions.at(-1)?.status, "aborted");
+});
+
+test("exact aborted rollout corrects a committed turn once even when notification delivery is pending", async (t) => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "hub-codex-correct-pending-"));
+  t.after(() => rm(dataDir, { recursive: true, force: true }));
+  const identity = { provider: "codex", threadId: thread.id, turnId: "turn-1" };
+  const store = new ProviderTurnTerminalStore({ dataDir });
+  const commits = new TerminalTurnCommitService({ store });
+  await commits.commit({ ...identity, status: "completed",
+    completedAt: "2026-08-04T10:00:00.000Z", finalAnswer: "Wrong answer" });
+  const projected = [];
+  const delivery = new TurnEndDeliveryService({
+    terminalCommits: commits,
+    taskRuns: { forEvent: () => null },
+    notifications: { markDelivered: () => {} },
+    persistHistory: async () => {}, projectTurn: async (...args) => { projected.push(args); return {}; },
+    rememberLastMessage: () => {}, rememberSeenTurn: () => {}, saveState: async () => {},
+  });
+  const { service, completions, calls } = harness({
+    correctCommittedTerminal: (...args) => delivery.correctFromExactProviderTerminal(...args),
+  });
+  const aborted = usage({ status: "aborted", finalAnswer: "", completedAt: "2026-08-04T11:00:00.000Z" });
+  assert.equal(await service.reconcile(thread, project, {
+    ...identity, status: "aborted", completedAt: aborted.completedAt,
+    usageResult: aborted, historical: true,
+  }), true);
+  assert.equal((await commits.get(identity)).terminalRevision, 2);
+  assert.equal((await commits.get(identity)).status, "aborted");
+  assert.equal(projected.length, 1);
+  assert.equal(completions.length, 0);
+  assert.equal(calls.some(([kind]) => kind === "deliver"), false);
+  assert.equal(await service.reconcile(thread, project, {
+    ...identity, status: "aborted", completedAt: aborted.completedAt,
+    usageResult: aborted, historical: true,
+  }), true);
+  assert.equal((await commits.get(identity)).terminalRevision, 2);
+});
+
 test("recent completed Codex turns keep their grace period before reconciliation", async () => {
   const { service, completions } = harness({
     now: () => Date.parse("2026-08-04T10:00:05.000Z"),
@@ -295,55 +498,8 @@ test("recent completed Codex turns keep their grace period before reconciliation
   assert.deepEqual(completions, []);
 });
 
-test("terminal reconciliation ignores a context probe before any recovery", async () => {
-  const { service, calls, completions } = harness();
-  const result = await service.reconcile(thread, project, {
-    turnId: "probe-turn",
-    status: "completed",
-    completedAt: "2026-08-04T10:00:00.000Z",
-    clientUserMessageId: `${CODEX_CONTEXT_PROBE_CLIENT_ID_PREFIX}test`,
-  });
 
-  assert.equal(result, true);
-  assert.deepEqual(calls, []);
-  assert.deepEqual(completions, []);
-});
 
-test("an unclassified live terminal resolved to a probe only produces accounting", async () => {
-  const { service, calls, completions } = harness();
-  const result = await service.reconcile(thread, project, {
-    turnId: "probe-turn",
-    status: "failed",
-    completedAt: "2026-08-04T10:00:00.000Z",
-    usageResult: usage({ contextProbe: true, status: "failed" }),
-  });
-  assert.equal(result, true);
-  assert.deepEqual(completions, []);
-  assert.equal(calls.find(([name]) => name === "project")[1].contextProbe, true);
-  assert.equal(calls.some(([name]) => name === "deliver"), false);
-});
-
-test("historical context probe is projected for accounting without notification", async () => {
-  const { service, calls, completions } = harness();
-  const result = await service.reconcile(thread, project, {
-    turnId: "probe-turn",
-    status: "completed",
-    completedAt: "2026-08-04T10:00:00.000Z",
-    clientUserMessageId: `${CODEX_CONTEXT_PROBE_CLIENT_ID_PREFIX}historical`,
-    historical: true,
-    usageResult: usage({
-      clientUserMessageId: `${CODEX_CONTEXT_PROBE_CLIENT_ID_PREFIX}historical`,
-    }),
-  });
-
-  assert.equal(result, true);
-  assert.deepEqual(completions, []);
-  const projection = calls.find(([name]) => name === "project");
-  assert.equal(projection[1].contextProbe, true);
-  assert.equal(projection[1].usageReported, true);
-  assert.equal(projection[2].deferProjection, true);
-  assert.equal(calls.some(([name]) => name === "deliver"), false);
-});
 
 test("historical reconciliation refreshes an existing turn when rollout usage changed", async () => {
   const { service, calls } = harness({

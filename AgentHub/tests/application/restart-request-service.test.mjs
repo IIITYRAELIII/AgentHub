@@ -236,3 +236,15 @@ test("scheduled restart contains failure to read its durable admission state", a
   assert.equal(state.events.includes("restart"), false);
   assert.equal(diagnostics.length, 1);
 });
+
+test("a desktop restart without any selected Stream and Thread uses the runtime scope", async () => {
+  const state = fixture({ blockingCount: 1 });
+  state.service.desktopTarget = () => ({ provider: "codex", projectRoot: "D:/Work", streamId: null, threadId: null });
+  await state.service.fromDesktop();
+  assert.equal(state.request().streamId, "agent-hub-runtime");
+  assert.equal(state.request().threadId, "agent-hub-runtime");
+
+  const halfSelected = fixture({ blockingCount: 1 });
+  halfSelected.service.desktopTarget = () => ({ streamId: "stream-only", threadId: null });
+  await assert.rejects(halfSelected.service.fromDesktop(), /exact Stream and Thread/);
+});

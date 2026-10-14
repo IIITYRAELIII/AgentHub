@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { constants, createReadStream } from "node:fs";
-import { copyFile, mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, readFile, realpath, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { COHORT_FILES } from "./sqlite-cohort-snapshot.mjs";
@@ -73,7 +73,7 @@ export async function prepareRecordingContourCohort({ captureManifestFile, outpu
   assertContourOwnedPath(output, output, { optional: true });
   try { await mkdir(output); } catch (error) { if (error.code !== "EEXIST") throw error; }
   assertContourOwnedPath(output, output);
-  const root = await mkdtemp(path.join(output, "prepared-"));
+  const root = await realpath(await mkdtemp(path.join(output, "prepared-")));
   const manifestFile = path.join(root, "contour-preparation.json");
   const manifest = { schemaVersion: 1, kind: "owned-contour-preparation", root, phase: "preparing", bootable: false,
     sourceCaptureId: raw.id, sourceManifestSha256: createHash("sha256").update(rawBytes).digest("hex"),

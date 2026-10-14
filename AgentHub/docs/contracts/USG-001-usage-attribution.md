@@ -56,10 +56,15 @@ same digest regardless of local presentation state.
 | `threadKey`, `taskKey` | yes | existing thread pseudonyms, unchanged |
 | `startedAt`, `completedAt` | yes | ISO 8601 |
 | `usage`, `usageReported`, `model`, `serviceTier` | yes | unchanged semantics |
-| `estimatedCredits`, `estimateKind`, `imageGenerationCount`, `contextProbe` | no | unchanged semantics |
+| `estimatedCredits`, `estimateKind`, `imageGenerationCount` | no | unchanged semantics |
 | `limitSamples[]` | no | inline provider evidence, below |
 | `deviceLabel` | no | display only, never attribution input |
 | `observedAt` | yes | ingest ordering |
+
+Retired context-measurement flags are not part of normalized usage facts. Existing
+rows, turn identities and measured usage remain intact; no historical deletion or
+database rewrite is required. An unused legacy SQLite column may remain on disk
+without being read, written or recreated by the current schema.
 
 A `turn` carries **no** `accountKey`, `accountLabel`, `accountType`,
 `accountPlan` or `accountAttribution`. Producing those fields on a `turn` is a
@@ -120,6 +125,12 @@ still a verifier for guessing it, so hashing is not a sanitizer here.
 
 Re-observing an unchanged fact is idempotent. Merge of two records with one id
 keeps the earlier `observedAt` and never widens attribution.
+Terminal projection recovery may recreate a missing deterministic `turn` fact
+from the exact durable journal record under the configured local device and
+runtime-home identities. It does not copy account fields into that fact and
+does not use the current ambient account to re-attribute a historical terminal;
+independently evidenced historical attribution remains owned by the existing
+observation and correlation rules.
 `installationInstanceId` is part of `auth_observation` identity so a copied
 profile cannot collapse the collision evidence before projection sees it.
 `auth_observation` and `limit_observation` ids are canonical derived identities:
@@ -221,6 +232,15 @@ field yields **no observation at all**. A partial or synthesized key is never
 emitted, and a device with an unreadable auth store publishes nothing rather
 than a placeholder.
 
+Automatic terminal journal records resolve the current account separately per
+provider before entering the journal mutation lane. Only overlapping reads for
+the same provider share one in-flight result. The result is not retained after
+settlement: a later terminal observes an account switch, and a failed or timed
+out read leaves that record unattributed while the next terminal retries a fresh
+read. Replacing the account resolver invalidates in-flight sharing for subsequent
+terminals without rewriting already observed records. This local journal metadata
+does not add account fields to synchronized `turn` facts.
+
 `api-key` and `amazon-bedrock`, as used by the current
 `codexAccountDimension`, are **not** account keys — they name a credential
 class, and two unrelated API keys or Bedrock profiles collapse into one billing
@@ -297,11 +317,84 @@ backfill, restart and sync import must preserve the durable completion timestamp
 and therefore reproduce the same total. The projection must not introduce a
 second surface-specific multiplier or rewrite synchronized usage facts.
 
+For GPT-6.1 Sol from 2026-09-29, Standard short-context API-equivalent rates
+per million are USD `2` uncached input, `0.10` cached input, `2.50` cache
+writes and `10` output. Cache-write tokens are a subset of input, billed as
+their own category rather than in addition to ordinary uncached input. Fast
+mode doubles each rate. A *single request* with more than 272,000 input tokens
+has 2× input/cache rates and 1.5× output rates for the entire request.
+Only per-request provider evidence may classify tokens into that long-context
+tier; the aggregate token count of a turn never establishes the threshold.
+For other GPT-5.6-or-later API estimates, the documented cache-write rate is
+1.25× that model's uncached input rate; empirical QU calibration remains
+unchanged and simply displays observed write tokens separately.
+The Codex rollout's optional `cache_write_input_tokens` and per-request
+`last_token_usage` enrich the same normalized usage fact without changing
+the turn identity or attribution. Missing cache-write or request-level evidence
+does not justify inventing a positive counter. The credit and provisional QU
+breakdowns expose cache writes separately in every presentation; the agreed
+GPT-6 Sol reference remains 8 QU per API-equivalent cr, not an official
+subscription conversion. Advancing the accounting projection marker recalculates
+costs from existing facts. The rollout-audit snapshot v20 migration separately
+replays retained rollouts through its existing idle, resumable historical
+backfill so newly observed cache writes and per-request long-context counters
+enrich old facts. Missing or unavailable rollouts cannot supply those optional
+counters; their prior token facts remain usable without invented writes.
+
 The unscoped accounting chart includes every local turn regardless of account.
 A synchronized turn is included only when its attributed account has an exact
 local Codex account-activity interval containing the configured turn timestamp.
 Missing local activity evidence excludes that synchronized turn. The account
 selector used by API-limit and comparison views must not narrow this chart.
+
+## Local account-backfill recovery copies
+
+Scheduled usage sync must not run the legacy ambient account backfill, scan the
+whole journal for inferred account hints, copy the full SQLite database, or
+prune its recovery copies. Auth observations and schema-2 facts remain with the
+existing worker/transaction owners. Unknown service/compaction attribution is
+not replaced with the current account. Removing that competing periodic writer
+does not change fact identity, remote cursor admission, atomic import/rollback
+or journal recovery through SQLite transactions and WAL (ADR-0089).
+
+The explicit legacy account-backfill CLI is an operator migration tool, not a
+startup, timer or automatic recovery step. Its existing snapshots and receipt
+guards remain available; this change does not run that tool or remove its pins.
+
+Local account-backfill snapshots are recovery material, not synchronized usage
+facts. The journal database owns a receipt for each new pre-update SQLite copy:
+pending until the backup completes and its corresponding record update commits
+atomically, committed thereafter; a caught failure becomes failed while a process
+death can leave a pending receipt. Explicit CLI backfill uses the journal's
+interprocess write lock. Only after a committed update may that owner prune older
+receipt-backed copies, retaining the latest three committed copies and every
+explicitly held one. Pending, failed or unreceipted legacy copies are never
+automatically removed. Pruning is resumable after restart and its errors are
+reported separately; a committed account update is not replayed because cleanup
+failed. Only exact receipt-bound files and directories in this backup namespace
+are eligible. On Windows, the owner compares the stored volume/file IDs with an
+open OS handle and marks that handle for deletion; it never unlinks a pathname
+after checking it. A replaced junction or changed identity leaves the copy
+unresolved, and unavailable handle deletion fails closed without a pathname
+fallback. Each explicit prune pass attempts at most three eligible receipts and stops starting
+helpers after a 20-second prune budget; one helper has its own 20-second bound.
+Durable attempt counts rotate failed receipts across subsequent explicit passes, while
+unprocessed receipts remain eligible. Remote usage push/pull cannot wait behind
+an unbounded retention backlog. Bounded content-free backup, commit and prune
+timings and failure kinds go to the existing command trace worker; they carry
+no journal records or account secrets.
+
+Scheduled sync reports paired started/terminal child measurements for config,
+state, worker snapshot, push, push cursor, pull, import/projection, summary,
+reconcile and pull cursor under one original sync operation identity. Concurrent
+callers share the existing in-flight promise. Telemetry failure cannot change
+fact/cursor outcomes or introduce another sync, retry or maintenance lane.
+Production stalls require correlated measured evidence; a cumulative loop
+percentile or an isolated fixture is not causal production latency proof.
+
+The prepared runtime includes the exact handle-deletion source alongside its
+owning module in the hashed release manifest. Missing source refuses preparation
+before cutover; unrelated native sources are not runtime assets.
 
 ## Legacy ingest
 

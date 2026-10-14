@@ -124,6 +124,7 @@ let connectionTimer = 0;
 let stopped = false;
 let lastStartupStartedAtMs = 0;
 let restartExpected = false;
+let waitingSinceMs = 0;
 
 const ACTIVE_POLL_MS = 500;
 const READY_POLL_MS = 1_500;
@@ -302,8 +303,13 @@ function clearConnectionTimer() {
   connectionTimer = 0;
 }
 
-function showDisconnectedState({ force = false } = {}) {
-  const disconnectedModel = createStartupDisconnectedModel(currentModel, { restarting: restartExpected });
+function showDisconnectedState({ force = false, responding = false } = {}) {
+  waitingSinceMs ||= Date.now();
+  const disconnectedModel = createStartupDisconnectedModel(currentModel, {
+    restarting: restartExpected,
+    responding,
+    sinceMs: waitingSinceMs,
+  });
   if (disconnectedModel && (force || !screen.hidden)) showModel(disconnectedModel);
 }
 
@@ -322,8 +328,9 @@ async function refresh() {
       && lastStartupStartedAtMs > 0
       && Number(model.startedAtMs) !== Number(lastStartupStartedAtMs);
     if (replacementStartup) restartExpected = false;
+    if (!restartExpected) waitingSinceMs = 0;
     if (restartExpected) {
-      showDisconnectedState({ force: true });
+      showDisconnectedState({ force: true, responding: true });
     } else if (!model.available) {
       hideScreen();
       hadStartup = false;
@@ -372,14 +379,18 @@ window.addEventListener("agenthub:connection-state", (event) => {
   }
   if (status === "online" && restartExpected) {
     restartExpected = false;
+    waitingSinceMs = 0;
     scheduleRefresh(0);
   }
 });
 
 function updateTimer() {
-  if (currentModel && !currentModel.finished && !currentModel.connectionLost && !screen.hidden) {
-    timer.textContent = formatStartupElapsed(currentModel.startedAtMs);
+  if (!currentModel || screen.hidden) return;
+  if (currentModel.connectionLost) {
+    if (currentModel.waitingSinceMs) timer.textContent = formatStartupElapsed(currentModel.waitingSinceMs);
+    return;
   }
+  if (!currentModel.finished) timer.textContent = formatStartupElapsed(currentModel.startedAtMs);
 }
 
 function resizeCanvas() {

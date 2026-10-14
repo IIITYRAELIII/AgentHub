@@ -2,6 +2,7 @@ import { mkdir, open, readFile, readdir, rename, rm, rmdir, stat } from "node:fs
 import { createHash, randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import path from "node:path";
+import { measureTaskOperationAwait } from "./task-operation-timing.mjs";
 
 const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 const RELEASE_RETRY_DELAYS_MS = [0, 10, 25, 50, 100, 200];
@@ -61,14 +62,15 @@ function ownerPayload(value, extra = {}) {
 
 async function readOwner(lockPath) {
   try {
-    const entries = await readdir(lockPath);
+    const entries = await measureTaskOperationAwait("lock-owner-readdir-await", () => readdir(lockPath));
     const candidates = entries.filter((entry) => entry === "owner.json" || /^owner-[a-f0-9]{64}\.json$/u.test(entry));
     if (candidates.length === 0) {
       return entries.length === 0 ? null : { unresolved: true };
     }
     if (candidates.length !== 1) return { unresolved: true };
     const fileName = candidates[0];
-    const value = JSON.parse(await readFile(path.join(lockPath, fileName), "utf8"));
+    const value = JSON.parse(await measureTaskOperationAwait("lock-owner-read-await",
+      () => readFile(path.join(lockPath, fileName), "utf8")));
     const token = String(value?.token ?? "");
     const format = fileName === "owner.json" ? "legacy" : "token";
     if (!token || (format === "token" && ownerFileName(token) !== fileName)) {
@@ -177,6 +179,26 @@ async function processIdentityState(owner, {
   // A live PID whose exact start identity cannot be inspected is deliberately
   // treated as live/unknown. Age or a missed heartbeat can never steal it.
   return "alive";
+}
+
+export async function readInterprocessLockStatus(target, options = {}) {
+  const lockPath = `${target}.lock`;
+  const owner = await readOwner(lockPath);
+  if (!owner) return { target, lockPath, status: "available", owner: null };
+  if (owner.unresolved) return { target, lockPath, status: "unknown", owner: null };
+  const identityState = await processIdentityState(owner, options);
+  return {
+    target,
+    lockPath,
+    status: ["dead", "mismatch", "released"].includes(identityState) ? "recoverable" : "held",
+    owner: {
+      pid: owner.pid,
+      processInstanceId: owner.processInstanceId,
+      createdAt: owner.createdAt,
+      identityState,
+      ownerIdHash: createHash("sha256").update(`${lockPath}:${owner.token}`).digest("hex"),
+    },
+  };
 }
 
 async function createOwnership(lockPath, token, staleMs, processInstanceId) {

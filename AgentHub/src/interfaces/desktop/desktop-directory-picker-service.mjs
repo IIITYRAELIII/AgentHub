@@ -16,7 +16,7 @@ export class DesktopDirectoryPickerService {
   }
 
   async browse(params = {}, context = {}) {
-    const source = String(context?.source ?? "desktop-control").trim();
+    const source = String(context?.source ?? "").trim();
     if (!LOCAL_PICKER_SOURCES.has(source)) {
       const error = new Error("Выбор каталога через Проводник доступен только в локальном Agent Hub");
       error.code = "directory-picker-unavailable";

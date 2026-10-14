@@ -1,12 +1,15 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { execFile, spawn } from "node:child_process";
+import { cp, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
+import { promisify } from "node:util";
 
+import { taskRepositoryKey } from "../../src/domain/task-git-reference.mjs";
 import { canonicalPath } from "../../src/infrastructure/filesystem/config.mjs";
+import { TaskGitWorkspaceService } from "../../src/infrastructure/filesystem/task-git-workspace.mjs";
 import { LoopbackTelegramApi } from "../../src/infrastructure/network/loopback-telegram-api.mjs";
 import { WorkLogUsageSyncStore } from "../../src/infrastructure/persistence/work-log-usage-sync-store.mjs";
 import { MessageCommandLedgerStore } from "../../src/infrastructure/persistence/message-command-ledger-store.mjs";
@@ -27,7 +30,7 @@ import {
   TEST_CONTOUR_MODEL,
   TEST_CONTOUR_MODELS,
   TEST_CONTOUR_SPARK_MODEL,
-  TEST_CONTOUR_TERRA_MODEL,
+  TEST_CONTOUR_LUNA_MODEL,
   TEST_CONTOUR_FAKE_MODEL,
   TEST_CONTOUR_WEB_HOST,
   testContourComponentEnabled,
@@ -77,7 +80,7 @@ test("Test Contour aligns cloned Stream settings with the requested provider mod
       verified.close();
     }
   } finally {
-    await rm(root, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
 
@@ -118,7 +121,7 @@ test("Test Contour retries transient SQLite I/O while production releases its re
     assert.equal(attempts, 2);
     assert.equal(waits, 1);
   } finally {
-    await rm(root, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
 
@@ -263,7 +266,11 @@ test("Test Contour defaults to Fake Codex while exposing optional real models", 
   });
   assert.equal(config.codexModel, TEST_CONTOUR_MODEL);
   assert.deepEqual(config.codexModels, TEST_CONTOUR_MODELS);
-  assert.ok(config.codexModels.some((item) => item.value === TEST_CONTOUR_TERRA_MODEL));
+  assert.deepEqual(config.codexModels.find((item) => item.value === TEST_CONTOUR_LUNA_MODEL), {
+    value: "gpt-5.6-luna",
+    label: "GPT-5.6-Luna",
+  });
+  assert.equal(config.codexModels.some((item) => item.value === "gpt-5.6-terra"), false);
   assert.ok(config.codexModels.some((item) => item.value === TEST_CONTOUR_FAKE_MODEL));
   assert.equal(config.codexExecutable, process.execPath);
   assert.deepEqual(config.codexExecutableArgs, [
@@ -277,6 +284,9 @@ test("Test Contour defaults to Fake Codex while exposing optional real models", 
     "--routing-state",
     paths.codexMultiplexerStateFile,
   ]);
+  assert.equal(config.claudeExecutable, process.execPath, "Claude sign-in in the contour never runs the real CLI");
+  assert.deepEqual(config.claudeExecutableArgs, [paths.fakeClaudeExecutable, "--state", paths.fakeClaudeStateFile]);
+  assert.equal(path.dirname(paths.fakeClaudeStateFile), paths.dataDir);
   assert.equal(config.codexSandboxMode, "workspace-write");
   assert.equal(config.projectRoot, paths.projectRoot);
   assert.equal(config.diagnostics.sentry.enabled, false);
@@ -310,6 +320,7 @@ test("Test Contour defaults to Fake Codex while exposing optional real models", 
       TELEGRAM_API_BASE_URL: "https://api.telegram.org",
       SENTRY_DSN: "production-dsn",
       CODEX_EXECUTABLE: "fake-codex",
+      CLAUDE_EXECUTABLE: "real-claude",
       AGENT_HUB_RELEASE_ID: "production-release",
       PATH: "safe-path",
     },
@@ -318,6 +329,7 @@ test("Test Contour defaults to Fake Codex while exposing optional real models", 
   assert.equal(environment.TELEGRAM_API_BASE_URL, "http://127.0.0.1:43210");
   assert.equal(environment.SENTRY_DSN, "");
   assert.equal(environment.CODEX_EXECUTABLE, undefined);
+  assert.equal(environment.CLAUDE_EXECUTABLE, undefined, "a host Claude override cannot replace the synthetic CLI");
   assert.equal(environment.CODEX_MODEL, TEST_CONTOUR_MODEL);
   assert.equal(environment.CODEX_HOME, paths.codexHome);
   assert.equal(environment.AGENT_HUB_RELEASE_ID, "candidate-1");
@@ -339,20 +351,156 @@ test("Codex test providers are copied only into the marker-owned Test Contour ro
       "export const multiplexer = true;\n",
       "utf8",
     );
+    await writeFile(path.join(sourceRoot, "e2e", "test-contour-claude-cli.mjs"), "export const claude = true;\n", "utf8");
     await installTestContour({ root, run: async () => null });
     const copied = await prepareTestContourCodexProviders({ root, sourceRoot });
     assert.equal(copied.fakeCodexExecutable, testContourPaths(root).fakeCodexExecutable);
     assert.equal(copied.codexMultiplexerExecutable, testContourPaths(root).codexMultiplexerExecutable);
+    assert.equal(copied.fakeClaudeExecutable, testContourPaths(root).fakeClaudeExecutable);
     assert.equal(await readFile(copied.fakeCodexExecutable, "utf8"), "export const fake = true;\n");
     assert.equal(
       await readFile(copied.codexMultiplexerExecutable, "utf8"),
       "export const multiplexer = true;\n",
     );
+    assert.equal(await readFile(copied.fakeClaudeExecutable, "utf8"), "export const claude = true;\n");
   } finally {
     await Promise.all([
       rm(root, { recursive: true, force: true }),
       rm(sourceRoot, { recursive: true, force: true }),
     ]);
+  }
+});
+
+const AGENT_HUB_SOURCE_ROOT = path.resolve(import.meta.dirname, "..", "..");
+const REAL_CODEX_STUB = `
+import { appendFileSync } from "node:fs";
+import { createInterface } from "node:readline";
+appendFileSync(process.env.STUB_PID_LOG, process.pid + "\\n");
+createInterface({ input: process.stdin }).on("line", (line) => {
+  const message = JSON.parse(line);
+  if (message.id !== undefined) process.stdout.write(JSON.stringify({ id: message.id, result: { backend: "real-stub" } }) + "\\n");
+});
+`;
+
+async function installedFiles(directory, prefix = "") {
+  const entries = await readdir(directory, { withFileTypes: true });
+  const nested = await Promise.all(entries.map((entry) => (entry.isDirectory()
+    ? installedFiles(path.join(directory, entry.name), path.join(prefix, entry.name))
+    : [path.join(prefix, entry.name)])));
+  return nested.flat().sort();
+}
+
+// Runs the installed multiplexer exactly as the contour config does, with the
+// installed Fake Codex and a stub only in place of the real Codex executable.
+async function runInstalledProviders(root) {
+  const paths = testContourPaths(root);
+  const stub = path.join(root, "temp", "real-codex-stub.mjs");
+  const pidLog = path.join(root, "temp", "real-codex-stub.pids");
+  await mkdir(path.dirname(stub), { recursive: true });
+  await mkdir(paths.dataDir, { recursive: true });
+  await writeFile(stub, REAL_CODEX_STUB, "utf8");
+  await writeFile(pidLog, "", "utf8");
+  const environment = { ...process.env, AGENT_HUB_TEST_CONTOUR: "1", AGENT_HUB_RUNTIME_ROOT: root, STUB_PID_LOG: pidLog };
+  const multiplexer = spawn(process.execPath, [
+    paths.codexMultiplexerExecutable,
+    "--real-executable", process.execPath,
+    "--fake-executable", paths.fakeCodexExecutable,
+    "--fake-state", paths.fakeCodexStateFile,
+    "--routing-state", paths.codexMultiplexerStateFile,
+    stub,
+  ], { cwd: root, env: environment, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
+  let stderr = "";
+  let stdout = "";
+  multiplexer.stderr.setEncoding("utf8").on("data", (chunk) => { stderr += chunk; });
+  multiplexer.stdout.setEncoding("utf8").on("data", (chunk) => { stdout += chunk; });
+  const closed = new Promise((resolve) => multiplexer.once("close", (code) => resolve(code)));
+  multiplexer.stdin.write(`${JSON.stringify({ id: 1, method: "initialize", params: { clientInfo: { name: "contour-test", version: "1" } } })}\n`);
+  const deadline = Date.now() + 20_000;
+  while (!stdout.includes("\"id\":1") && multiplexer.exitCode === null && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  const initialized = stdout.split(/\r?\n/u).filter(Boolean).map((line) => JSON.parse(line)).find((message) => message.id === 1);
+  multiplexer.stdin.end();
+  const exitCode = await closed;
+  const stubPids = (await readFile(pidLog, "utf8")).trim().split(/\r?\n/u).filter(Boolean).map(Number);
+  const claude = await promisify(execFile)(process.execPath, [paths.fakeClaudeExecutable, "--state", paths.fakeClaudeStateFile, "auth", "status", "--json"], {
+    cwd: root,
+    env: environment,
+    windowsHide: true,
+  }).then(({ stdout: output }) => ({ code: 0, output }), (error) => ({ code: error.code, output: String(error.stderr ?? error.message) }));
+  return { initialized, exitCode, stderr, stubPids, claude };
+}
+
+test("installed Test Contour providers run with their full module closure outside the source tree", async () => {
+  const sourceRoot = await mkdtemp(path.join(os.tmpdir(), "agent-hub-test-contour-candidate-"));
+  const freshRoot = await mkdtemp(path.join(os.tmpdir(), "agent-hub-test-contour-providers-"));
+  const upgradedRoot = await mkdtemp(path.join(os.tmpdir(), "agent-hub-test-contour-providers-old-"));
+  try {
+    // A candidate source snapshot that is deleted before the installed copies run.
+    await cp(path.join(AGENT_HUB_SOURCE_ROOT, "e2e"), path.join(sourceRoot, "e2e"), { recursive: true });
+    await cp(path.join(AGENT_HUB_SOURCE_ROOT, "src"), path.join(sourceRoot, "src"), { recursive: true });
+    const expected = [
+      path.join("e2e", "fake-codex-app-server.mjs"),
+      path.join("e2e", "test-contour-claude-cli.mjs"),
+      path.join("e2e", "test-contour-codex-multiplexer.mjs"),
+      path.join("src", "infrastructure", "process", "process-liveness.mjs"),
+      path.join("src", "infrastructure", "process", "process-tree.mjs"),
+      path.join("src", "providers", "claude", "claude-run-io.mjs"),
+    ];
+    await installTestContour({ root: freshRoot, run: async () => null });
+    await installTestContour({ root: upgradedRoot, run: async () => null });
+    // An earlier release installed only the three entry scripts directly under
+    // providers/; its still-running runtime restarts providers from those paths.
+    const oldProviders = path.join(upgradedRoot, "providers");
+    const legacyEntries = ["fake-codex-app-server.mjs", "test-contour-claude-cli.mjs", "test-contour-codex-multiplexer.mjs"];
+    await mkdir(path.join(oldProviders, "e2e"), { recursive: true });
+    for (const entry of legacyEntries) await writeFile(path.join(oldProviders, entry), `// legacy ${entry}\n`, "utf8");
+    // A stale copy from an earlier installation in the current layout is replaced.
+    await writeFile(path.join(oldProviders, "e2e", "test-contour-codex-multiplexer.mjs"), "// stale multiplexer\n", "utf8");
+    const outsideProviders = async (root) => Promise.all((await installedFiles(root))
+      .filter((file) => !file.startsWith(`providers${path.sep}`))
+      .map(async (file) => [file, await readFile(path.join(root, file), "utf8")]));
+
+    for (const root of [freshRoot, upgradedRoot]) {
+      const before = await outsideProviders(root);
+      const copied = await prepareTestContourCodexProviders({ root, sourceRoot });
+      assert.equal(copied.codexMultiplexerExecutable, testContourPaths(root).codexMultiplexerExecutable);
+      assert.deepEqual(await outsideProviders(root), before, "preparation changes nothing outside providers/");
+    }
+    await rm(sourceRoot, { recursive: true, force: true });
+
+    for (const root of [freshRoot, upgradedRoot]) {
+      const run = await runInstalledProviders(root);
+      assert.doesNotMatch(run.stderr, /ERR_MODULE_NOT_FOUND/u);
+      assert.deepEqual(run.initialized?.result, { backend: "real-stub" }, `initialize answered: ${run.stderr}`);
+      assert.equal(run.exitCode, 0, `the multiplexer confirmed every owned child tree stopped: ${run.stderr}`);
+      assert.equal(run.stubPids.length, 1);
+      assert.equal(run.stubPids.some((pid) => processIsAlive(pid)), false);
+      assert.equal(run.claude.code, 0, run.claude.output);
+      assert.equal(JSON.parse(run.claude.output).loggedIn, false);
+
+      const providers = path.join(root, "providers");
+      assert.deepEqual(await installedFiles(providers), root === freshRoot ? expected : [...legacyEntries, ...expected].sort(),
+        "the closure is installed and only the legacy entry scripts remain beside it");
+      for (const file of expected) {
+        assert.equal(
+          await readFile(path.join(providers, file), "utf8"),
+          await readFile(path.join(AGENT_HUB_SOURCE_ROOT, file), "utf8"),
+          `${file} is installed byte-for-byte from the candidate`,
+        );
+      }
+    }
+    for (const entry of legacyEntries) {
+      assert.equal(await readFile(path.join(oldProviders, entry), "utf8"), `// legacy ${entry}\n`,
+        "paths in the running contour's config keep resolving until it is replaced");
+    }
+  } finally {
+    await Promise.all([sourceRoot, freshRoot, upgradedRoot].map((directory) => rm(directory, {
+      recursive: true,
+      force: true,
+      maxRetries: 100,
+      retryDelay: 50,
+    })));
   }
 });
 
@@ -373,7 +521,7 @@ test("Fake Codex recovery initializes a missing Test Contour data directory", as
     );
     assert.equal(await readFile(paths.markerFile, "utf8"), markerBefore);
   } finally {
-    await rm(root, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
 
@@ -496,7 +644,7 @@ test("Fake Codex recovery recreates the exact Thread and preserves five FIFO com
   } finally {
     catalog?.close();
     ledger?.close();
-    await rm(root, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
 
@@ -516,7 +664,14 @@ test("production data clone keeps history but detaches live threads and forces F
     const sourceFile = path.join(productionData, "journal.sqlite");
     const source = new DatabaseSync(sourceFile);
     source.exec(`
-      CREATE TABLE hub_workspaces (id TEXT PRIMARY KEY) WITHOUT ROWID;
+      CREATE TABLE hub_workspaces (
+        id TEXT PRIMARY KEY, settings_json TEXT NOT NULL DEFAULT '{}'
+      ) WITHOUT ROWID;
+      CREATE TABLE hub_task_git_references (
+        task_id TEXT NOT NULL, project_root TEXT NOT NULL, branch TEXT NOT NULL,
+        result_commit TEXT NOT NULL, updated_at_ms INTEGER NOT NULL,
+        PRIMARY KEY (task_id, project_root)
+      ) WITHOUT ROWID;
       CREATE TABLE hub_streams (
         id TEXT PRIMARY KEY, settings_json TEXT NOT NULL, updated_at_ms INTEGER NOT NULL
       ) WITHOUT ROWID;
@@ -539,7 +694,14 @@ test("production data clone keeps history but detaches live threads and forces F
         task_thread_id TEXT, completed_at_ms INTEGER, record_json TEXT,
         PRIMARY KEY (provider, thread_id, turn_id)
       );
-      INSERT INTO hub_workspaces VALUES ('workspace-1');
+      INSERT INTO hub_workspaces VALUES (
+        'workspace-1',
+        '{"workingDirectory":"D:/production","releaseWorkflowEnabled":true,"taskPrefix":"HUB"}'
+      );
+      INSERT INTO hub_task_git_references VALUES
+        ('task-1', 'D:/production', 'HUB-1', '${"a".repeat(40)}', 11),
+        ('task-2', 'D:/production', 'HUB-2', '${"b".repeat(40)}', 12),
+        ('task-2', 'D:/other-repository', 'HUB-2', '${"c".repeat(40)}', 13);
       INSERT INTO hub_streams VALUES (
         'stream-1', '{"provider":"claude","model":"claude-opus","custom":true}', 1
       );
@@ -642,6 +804,44 @@ test("production data clone keeps history but detaches live threads and forces F
       assert.equal(settings.project, contourPaths.projectRoot);
       assert.equal(settings.custom, true);
       assert.equal(clone.prepare("SELECT updated_at_ms FROM hub_streams").get().updated_at_ms, 1);
+      assert.deepEqual(JSON.parse(clone.prepare(
+        "SELECT settings_json FROM hub_workspaces WHERE id = 'workspace-1'",
+      ).get().settings_json), {
+        workingDirectory: contourPaths.projectRoot,
+        releaseWorkflowEnabled: false,
+        taskPrefix: "HUB",
+      });
+      assert.equal(result.isolatedWorkspaces, 1);
+      const detached = (projectRoot) => path.join(contourPaths.detachedGitDirectory, taskRepositoryKey(projectRoot));
+      assert.deepEqual(clone.prepare(`
+        SELECT task_id, project_root, branch, result_commit, updated_at_ms
+        FROM hub_task_git_references ORDER BY task_id, updated_at_ms
+      `).all().map((row) => ({ ...row })), [
+        { task_id: "task-1", project_root: detached("D:/production"), branch: "HUB-1",
+          result_commit: "a".repeat(40), updated_at_ms: 11 },
+        { task_id: "task-2", project_root: detached("D:/production"), branch: "HUB-2",
+          result_commit: "b".repeat(40), updated_at_ms: 12 },
+        { task_id: "task-2", project_root: detached("D:/other-repository"), branch: "HUB-2",
+          result_commit: "c".repeat(40), updated_at_ms: 13 },
+      ]);
+      assert.notEqual(detached("D:/production"), detached("D:/other-repository"));
+      assert.deepEqual(
+        result.detachedGitReferences.map((item) => item.originalProjectRoot).sort(),
+        ["D:/other-repository", "D:/production"],
+      );
+      // Mapped roots are deliberately never created, so Git cannot resolve them.
+      await assert.rejects(stat(contourPaths.detachedGitDirectory), { code: "ENOENT" });
+      const production = new DatabaseSync(sourceFile, { readOnly: true });
+      try {
+        assert.equal(JSON.parse(production.prepare(
+          "SELECT settings_json FROM hub_workspaces WHERE id = 'workspace-1'",
+        ).get().settings_json).workingDirectory, "D:/production");
+        assert.deepEqual(production.prepare(`
+          SELECT DISTINCT project_root FROM hub_task_git_references ORDER BY project_root
+        `).all().map((row) => row.project_root), ["D:/other-repository", "D:/production"]);
+      } finally {
+        production.close();
+      }
       assert.deepEqual({ ...clone.prepare(`
         SELECT project_root, detached_at_ms FROM hub_threads
       `).get() }, {
@@ -725,6 +925,79 @@ test("production data clone keeps history but detaches live threads and forces F
       rm(productionRoot, { recursive: true, force: true }),
     ]);
   }
+});
+
+test("cloned Task Git references cannot delete production branches through Task cleanup", async (context) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-test-contour-git-clone-"));
+  const productionRoot = await mkdtemp(path.join(os.tmpdir(), "agent-hub-production-git-clone-"));
+  const repository = await mkdtemp(path.join(os.tmpdir(), "agent-hub-production-repository-"));
+  context.after(() => Promise.all([root, productionRoot, repository].map((item) => (
+    rm(item, { recursive: true, force: true })
+  ))));
+  const git = async (...args) => (await promisify(execFile)("git", args, {
+    cwd: repository, encoding: "utf8", windowsHide: true,
+  })).stdout.trim();
+  await git("init", "-b", "main");
+  await writeFile(path.join(repository, "file.txt"), "production\n", "utf8");
+  await git("add", "file.txt");
+  await git("-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "production");
+  const head = await git("rev-parse", "HEAD");
+  // A Task branch without a checked-out worktree is exactly what cleanup deletes.
+  await git("branch", "HUB-900", head);
+  const refs = () => git("for-each-ref", "--format=%(refname) %(objectname)");
+  const productionRefs = await refs();
+  assert.match(productionRefs, /refs\/heads\/HUB-900 /u);
+
+  const { paths: contourPaths } = await installTestContour({ root, run: async () => null });
+  const productionData = path.join(productionRoot, "data");
+  await mkdir(productionData, { recursive: true });
+  const source = new DatabaseSync(path.join(productionData, "journal.sqlite"));
+  source.exec(`
+    CREATE TABLE hub_streams (id TEXT PRIMARY KEY, settings_json TEXT NOT NULL) WITHOUT ROWID;
+    CREATE TABLE hub_threads (provider TEXT, stream_id TEXT, project_root TEXT);
+    CREATE TABLE hub_task_git_references (
+      task_id TEXT NOT NULL, project_root TEXT NOT NULL, branch TEXT NOT NULL,
+      result_commit TEXT NOT NULL, updated_at_ms INTEGER NOT NULL,
+      PRIMARY KEY (task_id, project_root)
+    ) WITHOUT ROWID;
+  `);
+  source.prepare("INSERT INTO hub_task_git_references VALUES (?, ?, ?, ?, ?)")
+    .run("task-900", repository, "HUB-900", head, 1);
+  source.close();
+
+  const result = await cloneProductionDataToTestContour({ root, productionRoot });
+  const clone = new DatabaseSync(result.destinationDatabaseFile, { readOnly: true });
+  let cloned;
+  try {
+    cloned = { ...clone.prepare(`
+      SELECT project_root AS projectRoot, branch, result_commit AS resultCommit
+      FROM hub_task_git_references WHERE task_id = 'task-900'
+    `).get() };
+  } finally {
+    clone.close();
+  }
+  assert.equal(cloned.branch, "HUB-900");
+  assert.equal(cloned.resultCommit, head);
+  assert.notEqual(canonicalPath(cloned.projectRoot), canonicalPath(repository));
+
+  const service = new TaskGitWorkspaceService({
+    dataDir: contourPaths.dataDir,
+    readPublication: async () => ({ revision: head, generation: "production" }),
+  });
+  // Task Delete uses allowDirty=true/requirePublished=false; it must not reach Git.
+  await assert.rejects(service.cleanup("task-900", {
+    allowDirty: true, requirePublished: false, gitReferences: [cloned],
+  }));
+  assert.equal(await refs(), productionRefs);
+
+  // Control: the unremapped production reference does delete the branch, so
+  // the assertion above proves the isolation rather than an inert cleanup.
+  await service.cleanup("task-900", {
+    allowDirty: true,
+    requirePublished: false,
+    gitReferences: [{ projectRoot: repository, branch: "HUB-900", resultCommit: head }],
+  });
+  assert.doesNotMatch(await refs(), /refs\/heads\/HUB-900 /u);
 });
 
 test("Test Contour component is default-off and read from production config", async () => {

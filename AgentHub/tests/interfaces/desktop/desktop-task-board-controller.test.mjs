@@ -9,6 +9,39 @@ import { TaskBoardStore } from "../../../src/infrastructure/persistence/task-boa
 import { WorkspaceCatalogStore } from "../../../src/infrastructure/persistence/workspace-catalog-store.mjs";
 import { DesktopTaskBoardController } from "../../../src/interfaces/desktop/desktop-task-board-controller.mjs";
 
+test("board move and status acknowledge committed state without unrelated snapshot reads", async () => {
+  let releaseMove;
+  let committed = false;
+  let fullReads = 0;
+  const gate = new Promise((resolve) => { releaseMove = resolve; });
+  const boardTasks = [{ id: "task-1", revision: 2, bucket: "notes" }];
+  const controller = new DesktopTaskBoardController({
+    taskLauncher: {},
+    taskBoard: {
+      move: async () => { await gate; committed = true; },
+      snapshot: () => { assert.equal(committed, true); return boardTasks; },
+      workspaces: () => [],
+      layout: () => ({ columnOrder: ["notes"] }),
+    },
+    taskLifecycle: { updateWorkflowStatus: async () => ({ status: "done" }) },
+    snapshot: () => { fullReads += 1; return new Promise(() => {}); },
+  });
+  let acknowledged = false;
+  const pending = controller.move({ id: "task-1", responseView: "task-board" })
+    .then((value) => { acknowledged = true; return value; });
+  await Promise.resolve();
+  assert.equal(acknowledged, false, "no ACK before the durable mutation");
+  releaseMove();
+  const result = await pending;
+  assert.equal(result.view, "task-board");
+  assert.deepEqual(result.boardTasks, boardTasks);
+  const status = await controller.status({ id: "task-1", status: "done", responseView: "task-board" });
+  assert.deepEqual(status.lifecycleResult, { status: "done" });
+  assert.equal(fullReads, 0);
+  controller.taskBoard.move = async () => { throw new Error("definite refusal"); };
+  await assert.rejects(controller.move({ responseView: "task-board" }), /definite refusal/);
+});
+
 function fixture({ activeThread = null, sourceDetails = undefined, voiceTranscriber = null, attachmentDirectory = null } = {}) {
   const calls = [];
   const task = {
@@ -132,6 +165,26 @@ function fixture({ activeThread = null, sourceDetails = undefined, voiceTranscri
   return { controller, calls };
 }
 
+test("Dashboard diff resolves only the requested persisted Task identity", async () => {
+  const calls = [];
+  const controller = new DesktopTaskBoardController({
+    taskBoard: { task(id) {
+      if (id !== "exact-task") throw new Error("Task не найден");
+      return { id, taskNumber: "HUB-235" };
+    } },
+    taskLauncher: {},
+    taskGitWorkspaces: { async reviewDiff(input) {
+      calls.push(input);
+      return { repositories: [], truncated: false };
+    } },
+  });
+  assert.deepEqual(await controller.diff({ id: "exact-task", projectRoot: "untrusted-path" }),
+    { taskId: "exact-task", repositories: [], truncated: false });
+  assert.deepEqual(calls, [{ taskId: "exact-task", taskNumber: "HUB-235" }]);
+  await assert.rejects(controller.diff({ id: "missing-task" }), /Task не найден/u);
+  assert.equal(calls.length, 1);
+});
+
 test("dashboard attachment mutation accepts only files from the runtime attachment directory", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-task-attachments-"));
   const attachmentDirectory = path.join(root, "attachments");
@@ -223,11 +276,12 @@ test("a screenshot reply augments the existing dashboard Task", async () => {
 
 test("shared Telegram bot adds a Terra-refined voice transcript and keeps the audio attachment", async () => {
   const transcribed = [];
+  const transcript = "Нужно исправить фильтр до пятницы. ".repeat(1_000).trim();
   const { controller, calls } = fixture({
     voiceTranscriber: {
       transcribe: async (file) => {
         transcribed.push(file);
-        return "Нужно исправить фильтр до пятницы.";
+        return transcript;
       },
     },
   });
@@ -239,6 +293,7 @@ test("shared Telegram bot adds a Terra-refined voice transcript and keeps the au
   });
   assert.deepEqual(transcribed, ["D:/runtime/attachments/voice.ogg"]);
   assert.match(calls[0][1].text, /Расшифровка голосового сообщения 1[\s\S]*исправить фильтр/u);
+  assert.ok(calls[0][1].text.endsWith(transcript));
   assert.deepEqual(calls[0][1].sourceDetails.attachments, ["D:/runtime/attachments/voice.ogg"]);
 });
 
@@ -400,6 +455,22 @@ test("starting a Task in an existing Stream sends a uniquely identified referenc
     requestId: "board-task:board-1:launch-2", expectedRevision: 3,
   });
   assert.match(calls[2][1].attemptId, /^[0-9a-f-]{36}$/u);
+});
+
+test("starting a Task accepts the former context namespace as an ordinary identity", async () => {
+  let launchCalls = 0;
+  const controller = new DesktopTaskBoardController({
+    taskLauncher: {
+      start: async () => { launchCalls += 1; return {}; },
+    },
+    snapshot: async () => ({}),
+  });
+
+  await controller.start({
+    id: "board-1",
+    clientUserMessageId: "agent-hub-context-probe:7583805f-6338-47f0-bc45-539530666ca3",
+  });
+  assert.equal(launchCalls, 1);
 });
 
 test("starting a Task can create a new Stream before sending", async () => {

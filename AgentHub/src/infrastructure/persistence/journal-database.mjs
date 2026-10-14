@@ -9,6 +9,7 @@ import {
   profileCohortVirtualJournalSummary,
   virtualJournalDaySections,
 } from "../../domain/journal-virtual-projection.mjs";
+import { usageTurnFactId } from "../../domain/usage-facts.mjs";
 import { applyLedgerDelta } from "./incremental-ledger.mjs";
 import { readJsonWithBackup } from "./state-store.mjs";
 
@@ -137,6 +138,22 @@ function configure(database) {
         ON journal_records(changed_revision, provider, thread_id, turn_id);
     `);
     if (virtualProjectionMigration) migrateStoredVirtualProjection(database);
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS journal_projection_dirty (
+        completed_at_ms INTEGER PRIMARY KEY
+      );
+      CREATE INDEX IF NOT EXISTS journal_records_completed_idx ON journal_records(completed_at_ms);
+      CREATE TRIGGER IF NOT EXISTS journal_projection_insert AFTER INSERT ON journal_records BEGIN
+        INSERT INTO journal_projection_dirty VALUES (COALESCE(NEW.completed_at_ms, -9007199254740991)) ON CONFLICT DO NOTHING;
+      END;
+      CREATE TRIGGER IF NOT EXISTS journal_projection_update AFTER UPDATE ON journal_records BEGIN
+        INSERT INTO journal_projection_dirty VALUES (COALESCE(OLD.completed_at_ms, -9007199254740991)) ON CONFLICT DO NOTHING;
+        INSERT INTO journal_projection_dirty VALUES (COALESCE(NEW.completed_at_ms, -9007199254740991)) ON CONFLICT DO NOTHING;
+      END;
+      CREATE TRIGGER IF NOT EXISTS journal_projection_delete AFTER DELETE ON journal_records BEGIN
+        INSERT INTO journal_projection_dirty VALUES (COALESCE(OLD.completed_at_ms, -9007199254740991)) ON CONFLICT DO NOTHING;
+      END;
+    `);
     database.exec("COMMIT");
   } catch (error) {
     try {
@@ -400,7 +417,7 @@ function writeProjection(database, payload, {
       buckets: [
         ...currentSummary.buckets.filter((bucket) => !replacedDates.has(String(bucket?.date ?? ""))),
         ...(Array.isArray(summary.buckets) ? summary.buckets : []),
-      ],
+      ].sort((left, right) => right.dayMs - left.dayMs),
     };
   }
   /* Ленивая оболочка не несёт содержимого: фрагмент дня уже лежит в базе.
@@ -423,6 +440,11 @@ function writeProjection(database, payload, {
     database.exec("DELETE FROM journal_turn_index;");
   } else if (virtualDates.length) {
     const placeholders = virtualDates.map(() => "?").join(", ");
+    // Removed or moved turns must not retain stale lazy bodies after a partial
+    // day replacement. Other dates' bodies remain byte-for-byte unchanged.
+    database.prepare(`DELETE FROM journal_turns WHERE id IN (
+      SELECT turn_ref FROM journal_turn_index WHERE date IN (${placeholders}))`)
+      .run(...virtualDates);
     database.prepare(`DELETE FROM journal_turn_index WHERE date IN (${placeholders})`)
       .run(...virtualDates);
   }
@@ -530,6 +552,8 @@ async function readStableLegacyLedger(target) {
 
 export class JournalDatabase {
   #database = null;
+  #projectionAccounting = new Map();
+  #projectionAccountingScope = null;
   #file;
   #opening = null;
   #listeners = new Set();
@@ -634,6 +658,28 @@ export class JournalDatabase {
     return revisionOf(await this.#open());
   }
 
+  // One SQLite snapshot fences all inputs after the asynchronous Workspace
+  // callbacks. Facts or version-marker writes need not advance journal revision.
+  async projectionReuseFence({ revision, factsRevision, factsGeneration,
+    pricingProjectionVersion, imageBackfillVersion }) {
+    const database = await this.#open();
+    database.exec("BEGIN");
+    try {
+      const matches = revisionOf(database) === revision
+        && String(database.prepare("SELECT value FROM usage_sync_meta WHERE key = 'facts_revision'").get()?.value ?? "") === factsRevision
+        && String(database.prepare("SELECT value FROM usage_sync_meta WHERE key = 'local_store_generation'").get()?.value ?? "") === factsGeneration
+        && storeMetadataValue(database, "pricing_projection_version") === pricingProjectionVersion
+        && (imageBackfillVersion == null
+          || storeMetadataValue(database, "image_backfill_version") === imageBackfillVersion)
+        && !database.prepare("SELECT 1 FROM journal_projection_dirty LIMIT 1").get();
+      database.exec("COMMIT");
+      return matches;
+    } catch (error) {
+      if (database.isTransaction) database.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
   async ledgerStatus() {
     const database = await this.#open();
     return {
@@ -670,6 +716,93 @@ export class JournalDatabase {
     return { version, turns };
   }
 
+  // Snapshot the dirty dates and scalar accounting input together. Retained
+  // content is read for dirty dates and accounting cache misses, never on each
+  // warm projection for all retained records.
+  async projectionInput({
+    full = false, scope = null, selectRecord = () => true,
+    accountingProjector = record => record,
+  } = {}) {
+    const database = await this.#open();
+    database.exec("BEGIN");
+    try {
+      const revision = revisionOf(database);
+      const source = JSON.parse(storeMetadataValue(database, "journal_projection_source") || "null");
+      const current = publicIndex(database.prepare("SELECT * FROM journal_meta WHERE id = 1").get(), revision);
+      full ||= scope !== null && (source?.incrementalVersion !== 1 || source?.scope !== scope);
+      const dirtyDates = new Set();
+      for (const row of database.prepare("SELECT completed_at_ms FROM journal_projection_dirty").all()) {
+        const date = new Date(row.completed_at_ms);
+        if (Number.isFinite(date.getTime())) dirtyDates.add(date.toLocaleDateString("ru-RU"));
+      }
+      const turns = {};
+      const insert = (row, target) => {
+        try {
+          const record = normalizedRecord(JSON.parse(row.record_json), ledgerKey({
+            provider: row.provider, threadId: row.thread_id, turnId: row.turn_id,
+          }));
+          if (record) target[ledgerKey(record)] = record;
+        } catch { /* Invalid source bytes remain available for repair. */ }
+      };
+      const accounting = {};
+      if (this.#projectionAccountingScope !== scope) {
+        this.#projectionAccounting.clear();
+        this.#projectionAccountingScope = scope;
+      }
+      const retained = new Set();
+      const readRecord = database.prepare(`SELECT record_json FROM journal_records
+        WHERE provider = ? AND thread_id = ? AND turn_id = ?`);
+      let accountingRecordsRead = 0;
+      // Scan identities/revisions only. A cold worker reads each source once;
+      // later calls read changed payloads. The identity set observes deletions
+      // even if another projector already cleared the durable dirty dates.
+      for (const row of database.prepare(`SELECT provider, thread_id, turn_id, changed_revision
+        FROM journal_records INDEXED BY journal_records_changed_idx
+        ORDER BY provider, thread_id, turn_id`).iterate()) {
+        const key = ledgerKey({ provider: row.provider, threadId: row.thread_id, turnId: row.turn_id });
+        retained.add(key);
+        let cached = this.#projectionAccounting.get(key);
+        if (!cached || cached.revision !== row.changed_revision) {
+          const parsed = {};
+          insert({ ...row, ...readRecord.get(row.provider, row.thread_id, row.turn_id) }, parsed);
+          cached = { revision: row.changed_revision, record: parsed[key] ? accountingProjector(parsed[key]) : null };
+          this.#projectionAccounting.set(key, cached);
+          accountingRecordsRead += 1;
+        }
+        if (cached.record) accounting[key] = cached.record;
+      }
+      for (const key of this.#projectionAccounting.keys()) if (!retained.has(key)) this.#projectionAccounting.delete(key);
+      const dates = [...new Set(Object.values(accounting).filter(selectRecord).map(record => {
+        const value = new Date(String(record.completedAt ?? ''));
+        return Number.isFinite(value.getTime()) ? value.toLocaleDateString("ru-RU") : null;
+      }).filter(Boolean))].sort((a, b) => {
+        const time = date => { const [d, m, y] = date.split('.').map(Number); return Date.UTC(y,m-1,d); };
+        return time(b)-time(a);
+      });
+      const today = new Date().toLocaleDateString("ru-RU");
+      const openDate = dates.includes(today) ? today : dates[0] ?? '';
+      if (source?.openDate !== openDate) {
+        if (source?.openDate) dirtyDates.add(source.openDate);
+        if (openDate) dirtyDates.add(openDate);
+      }
+      if (full) {
+        for (const row of database.prepare("SELECT * FROM journal_records ORDER BY provider, thread_id, turn_id").iterate()) insert(row, turns);
+      } else {
+        const readDay = database.prepare(`SELECT * FROM journal_records
+          WHERE completed_at_ms >= ? AND completed_at_ms < ? ORDER BY provider, thread_id, turn_id`);
+        for (const date of dirtyDates) {
+          const [day, month, year] = date.split(".").map(Number);
+          for (const row of readDay.iterate(new Date(year, month - 1, day).getTime(), new Date(year, month - 1, day + 1).getTime())) insert(row, turns);
+        }
+      }
+      database.exec("COMMIT");
+      return { revision, dirtyDates: [...dirtyDates], turns, accounting, accountingRecordsRead, source, current, full, openDate };
+    } catch (error) {
+      database.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
   async getRecord({ provider = "codex", threadId, turnId } = {}) {
     const identity = normalizedIdentity({ provider, threadId, turnId });
     if (!identity) return null;
@@ -682,6 +815,87 @@ export class JournalDatabase {
       return normalizedRecord(JSON.parse(row.record_json), ledgerKey(identity));
     } catch {
       return null;
+    }
+  }
+
+  async turnProjectionStatus({ provider = "codex", threadId, turnId } = {}) {
+    const identity = normalizedIdentity({ provider, threadId, turnId });
+    if (!identity) return { record: null, recordRevision: null, indexed: false, usageFact: false, projectionSource: null };
+    const database = await this.#open();
+    database.exec("BEGIN");
+    try {
+      const row = database.prepare(`
+        SELECT record_json, changed_revision FROM journal_records
+        WHERE provider = ? AND thread_id = ? AND turn_id = ?
+      `).get(identity.provider, identity.threadId, identity.turnId);
+      let record = null;
+      try {
+        record = row ? normalizedRecord(JSON.parse(row.record_json), ledgerKey(identity)) : null;
+      } catch {}
+      const indexRow = database.prepare(`
+        SELECT turn_ref AS turnRef, completed_at_ms AS completedAtMs
+        FROM journal_turn_index
+        WHERE provider = ? AND thread_id = ? AND turn_id = ? LIMIT 1
+      `).get(identity.provider, identity.threadId, identity.turnId);
+      const usageRow = tableExists(database, "usage_sync_events") ? database.prepare(`
+        SELECT * FROM usage_sync_events WHERE event_id = ? LIMIT 1
+      `).get(usageTurnFactId(identity)) : null;
+      let limitSamples = [];
+      try { limitSamples = JSON.parse(usageRow?.limit_samples_json ?? "[]"); } catch {}
+      const usageFact = usageRow ? {
+        schemaVersion: Number(usageRow.schema_version ?? 1),
+        type: "turn",
+        eventId: usageRow.event_id,
+        deviceId: usageRow.device_id,
+        source: usageRow.source,
+        provider: usageRow.provider,
+        threadKey: usageRow.thread_key,
+        taskKey: usageRow.task_key,
+        completedAt: usageRow.completed_at,
+        startedAt: usageRow.started_at,
+        runtimeHomeId: usageRow.runtime_home_id,
+        limitSamples,
+        estimatedCredits: Number(usageRow.estimated_credits) || 0,
+        estimateKind: usageRow.estimate_kind,
+        imageGenerationCount: Number(usageRow.image_generation_count) || 0,
+        usage: {
+          inputTokens: Number(usageRow.input_tokens) || 0,
+          cachedInputTokens: Number(usageRow.cached_input_tokens) || 0,
+          cacheWriteInputTokens: Number(usageRow.cache_write_input_tokens) || 0,
+          longContextInputTokens: Number(usageRow.long_context_input_tokens) || 0,
+          longContextCachedInputTokens: Number(usageRow.long_context_cached_input_tokens) || 0,
+          longContextCacheWriteInputTokens:
+            Number(usageRow.long_context_cache_write_input_tokens) || 0,
+          outputTokens: Number(usageRow.output_tokens) || 0,
+          longContextOutputTokens: Number(usageRow.long_context_output_tokens) || 0,
+          reasoningOutputTokens: Number(usageRow.reasoning_output_tokens) || 0,
+          longContextReasoningOutputTokens:
+            Number(usageRow.long_context_reasoning_output_tokens) || 0,
+          totalTokens: Number(usageRow.total_tokens) || 0,
+        },
+        usageReported: Number(usageRow.usage_reported) !== 0,
+        model: usageRow.model,
+        serviceTier: usageRow.service_tier,
+        deviceLabel: usageRow.device_label,
+        observedAt: usageRow.observed_at,
+      } : null;
+      const sourceValue = database.prepare(
+        "SELECT value FROM journal_store_meta WHERE key = 'journal_projection_source'",
+      ).get()?.value;
+      let projectionSource = null;
+      try { projectionSource = sourceValue ? JSON.parse(sourceValue) : null; } catch {}
+      database.exec("COMMIT");
+      return {
+        record,
+        recordRevision: row ? Number(row.changed_revision) : null,
+        indexed: Boolean(indexRow),
+        index: indexRow ? { ...indexRow, completedAtMs: Number(indexRow.completedAtMs) } : null,
+        usageFact,
+        projectionSource,
+      };
+    } catch (error) {
+      database.exec("ROLLBACK");
+      throw error;
     }
   }
 
@@ -1060,8 +1274,17 @@ export class JournalDatabase {
         };
       }
       version = writeProjection(database, normalized, options);
+      if (options.incrementalSource) {
+        database.exec("DELETE FROM journal_projection_dirty");
+      }
       writeStoreMetadataValue(database, "journal_projection_source", options.projectionSource
         ? JSON.stringify(options.projectionSource) : "");
+      if (options.pricingProjectionVersion != null) {
+        writeStoreMetadataValue(database, "pricing_projection_version", options.pricingProjectionVersion);
+      }
+      if (options.imageBackfillVersion != null) {
+        writeStoreMetadataValue(database, "image_backfill_version", options.imageBackfillVersion);
+      }
       revision = advanceRevision(database);
       database.exec("COMMIT");
     } catch (error) {
@@ -1149,6 +1372,14 @@ export class JournalDatabase {
       await this.#open(),
       ACCOUNT_USAGE_PROJECTION_VERSION_KEY,
     );
+  }
+
+  async pricingProjectionVersion() {
+    return storeMetadataValue(await this.#open(), "pricing_projection_version");
+  }
+
+  async imageBackfillVersion() {
+    return storeMetadataValue(await this.#open(), "image_backfill_version");
   }
 
   async snapshot() {
@@ -1361,5 +1592,7 @@ export class JournalDatabase {
     this.#subscribers.clear();
     this.#database?.close();
     this.#database = null;
+    this.#projectionAccounting.clear();
+    this.#projectionAccountingScope = null;
   }
 }

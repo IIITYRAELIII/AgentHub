@@ -1,6 +1,75 @@
 # PERF-001 — Local command latency
 
+Repeated journal projection may reuse a verified rendering only within the
+existing usage worker lifetime. Its bounded scalar receipt is not source
+authority: the current SQLite journal revision/index, clean dirty set, exact
+scope/version/device settings, freshly resolved Workspace bindings, freshly read
+account catalog and generation-fenced facts revision must still match. Workspace
+resolution and unknown-Thread assignment are never skipped. A single SQLite
+read snapshot rechecks journal/facts/dirty and pricing/image markers after
+asynchronous callbacks, both when consuming and establishing a reuse receipt.
+Marker drift requires a canonical full rebuild with the original revision CAS;
+pre-callback version observations never authorize reuse.
+Rolling-window future-record/24h boundaries and local midnight expire reuse;
+backward or invalid clocks fail closed. Restart, a failed/stale render and changed
+inputs reconstruct through the canonical renderer and existing revision CAS.
+The receipt retains hashes/scalars only, not another HTML or facts cache.
+Matching facts are checked through their indexed revision/generation metadata;
+no facts are hydrated on this path, including when the existing facts payload
+cache declined retention at its byte limit. A miss still uses that bounded cache
+and the canonical renderer. Content-free retained byte/count scalars are not
+payloads and do not widen its retention limit.
+Content-free reuse-check/window and render measurements distinguish eliminated
+render work from preserved ledger reads, callbacks and queue waits. A no-dirty
+result alone never establishes unchanged projection inputs.
+
+## Bounded Codex trace and fact projections
+
+Codex rollout preview retains at most 256 groups, 128 activities per group,
+1,024 activities per turn and one million reasoning characters in aggregate;
+an individual retained reasoning block is never cut. Earlier omitted groups or
+activities are explicit projection metadata, not deletion from the transcript.
+Append copies only the groups it mutates. Serialized rollout-cache budgets are
+32 MiB ordinary and 16 MiB active; these are not total process-heap limits.
+Desktop paged history clones only each selected cached turn.
+
+Explicit “All stages” reads use the existing history owner and rollout worker,
+without provider calls, history writes or automatic polling. They stream a fixed
+source prefix in 64 KiB chunks, cap a record at 4 MiB and return at most 50 groups
+and 512 KiB per page. An oversized block fails visibly, without truncation.
+Canonical source generation, prefix byte length and SHA-256 bind subsequent
+pages; append does not shift that snapshot, and changed prefixes fail closed.
+The browser retains only the displayed page. This is an explicit detail-read
+exception to the automatic 16 MiB tail policy: each page scans its fixed prefix,
+so time is proportional to source size, not promised constant time (ADR-0077).
+
+The usage worker's disposable fact cache holds at most 32 MiB of serialized
+facts. SQLite insert/update/delete triggers on all three fact tables maintain
+its revision. Revision and facts are read in one SQLite snapshot; external
+writes invalidate the next read, rollbacks do not, and restart reconstructs it.
+Oversized projections use uncached reads. Pricing, attribution, projection CAS,
+terminal/outbox durability and full scalar aggregation retain their owners.
+
 ## Trace contract
+
+Task-card Git previews run only on explicit request and retain at most 64 KiB of
+diff text per response, with visible truncation. Board snapshots never run Git
+for previews. Task journal projection joins exact bindings to indexed journal
+identities and reads summary scalars, not full prompts, bodies or stored diffs.
+The journal revision participates in Task-board cache invalidation (ADR-0051).
+
+The shared UI requests a board-only response for Dashboard move/status mutations.
+The owner still awaits durable mutation/lifecycle completion, then returns the
+authoritative board tasks, workspaces and layout without waiting for conversation,
+telemetry or server-health snapshots. Clients preserve unrelated chat/receipt
+state and invalidate changed collection delta baselines. Clients without the
+opt-in retain the full snapshot response during rolling deployment.
+Pending feedback is not mutation success and cannot move a card authoritatively.
+Local Task-reference drops and clipboard preparation do not await remote reads.
+Native Task drag preparation and Task-reference drops into chat/composer record
+content-free interaction spans; the drop also measures the next paint. The
+composer accepts the same Task reference transfer as the chat history pane,
+without initiating a send or changing the command identity.
 
 The root trace identity is the command ID. Required stages are client submit,
 transport start, Hub HTTP callback or Desktop IPC accept, authenticated control
@@ -12,6 +81,14 @@ Cross-process timestamps use UTC epoch; durations inside one process use a
 monotonic clock. Every blocking span reports outcome, queue depth and relevant
 lock or SQLite wait.
 
+Managed-run admission reports content-free child spans for provider preparation,
+Task-diff persistence, detached task-sync enqueue and runtime-state persistence.
+The task-sync span covers only its synchronous enqueue boundary; diagnostics do
+not add an await or change launch ordering. An unchanged most-recent Task diff
+shares the already scheduled durable write instead of serializing and fsyncing
+the complete bounded cache again. A changed value or eviction-order change is
+still persisted, and a failed write remains retryable with the same content.
+
 ## Unified performance evidence
 
 Client interactions, navigation, control ACKs, request and rendering durations,
@@ -22,6 +99,17 @@ telemetry accepts bounded batches with allowlisted content-free fields through
 the existing authenticated transport; it cannot persist message bodies, DOM
 text, request URLs or arbitrary error text. Telemetry requests do not trace
 themselves. Backpressure drops diagnostics, never application commands.
+
+Selected-Stream visibility diagnostics retain the original snapshot request
+identity across the server's bounded run-source/gate observation, the client's
+accepted or rejected snapshot decision, and its later rendered viewport state.
+The client records only document identity and predecessor, selected provider,
+Thread, Stream, turn and command IDs, run/provider-start presence, exact final
+revision, model-link state, and whether the live card is in view, offscreen or
+absent. A code marker identifies a loaded client path only when release evidence
+maps it to one reviewed immutable asset digest; a server release ID alone is
+not evidence of client bytes. A missing trace can mean a page close, failed
+transport or diagnostic backpressure, not an idle provider.
 
 A blocking operation records a started marker before awaiting and a terminal
 measurement with the same `operationSpanId`. Missing terminal measurements are
@@ -72,6 +160,13 @@ The VS Code WebView does not open a direct `/events` stream: journal changes are
 already delivered by the extension subscription, so a retained panel cannot
 consume a long-lived Chromium HTTP socket for duplicate notifications.
 
+Large Mini App JSON responses use asynchronous gzip so snapshot compression
+cannot block local command admission on the Hub event loop. At most two
+compressions run concurrently; excess responses use the valid uncompressed
+representation rather than retaining a queue of complete snapshot bodies.
+Aborted responses are not written after compression finishes, and compression
+failure falls back to the unchanged JSON body without a false gzip header.
+
 Provider transcript maintenance does not run on the command, snapshot or task
 catalog critical path. Active append-only transcripts are never historically
 rescanned. Historical full scans are bounded to 16 MiB; larger transcripts use
@@ -80,9 +175,31 @@ unbounded worker memory and event-loop GC pressure.
 
 Provider turn start and completion do not snapshot Git repositories. Test owns
 the Task Git snapshot and `dev` integration outside provider admission and
-terminal-delivery latency. Await changes acceptance metadata without composing
-the Workspace-wide candidate; expensive selected-set projection runs only in
-the explicit release prepare operation.
+terminal-delivery latency. Await prepares PreRelease before committing acceptance
+under the existing Workspace Await and Task ownership boundaries. A failed
+preparation leaves the Task in Test (ADR-0055). It does not run release tests,
+builds or deployment. Active release generations never delay later Task work or
+Await acceptance.
+
+`hub_release_run` measures and persists only bounded admission before returning
+its ACK. Candidate composition, validation, Git/network publication, deployment
+and finalization run after the response under the durable operation owner. Short
+SQLite and identity CAS sections do not enclose tests, child processes, network
+requests or repository publication. Queue/lease time, stage duration, retries,
+waiting reason and per-target effect are separate measurements; transport timeout
+is not operation latency and cannot create a second operation.
+
+Release validation may run at most two test-file processes concurrently, and
+only when the host reports at least four logical CPUs and 4 GiB of free memory.
+A file is parallel-eligible only when its reviewed v2 input declaration proves
+disposable filesystem, lock, Git, port and browser-profile ownership; every
+child receives a unique temporary environment root. Undeclared files remain
+exclusive, and matching shared-resource tags serialize only the files that name
+that resource. This bound protects Hub CPU and memory headroom while allowing
+independent Git and browser fixtures to overlap. Cache decisions report a
+stable content-free reason (`absent`, `fingerprint changed`, or the exact
+uncacheable policy reason); they never print environment values or fabricate
+reusable evidence.
 
 Codex rollout activity fallback runs outside the main Hub event loop. Concurrent
 reads of the same rollout and read options share one in-flight operation. A cold
@@ -100,6 +217,18 @@ migration exception is removed with the legacy author repair (UI-001).
 Exact App Server state and managed run identity remain preferred over JSONL
 fallback; reducing the projection window must not truncate the terminal answer
 retained by TURN-001.
+For an already-owned exact Codex turn whose lifecycle event precedes the 16 MiB
+tail, restart/observer recovery may make a worker-side cold terminal scan of
+at most 256 MiB for that exact turn. Only matching lifecycle records contribute
+terminal authority; positive or negative results are retained in the bounded
+per-process source cache while its entry survives, and append-only reads resume
+from the byte cursor rather than rescanning on every poll. The requested turn's
+terminal status and final answer survive the ordinary recent-final eviction in
+that cached observation; later turns cannot replace its exact final.
+Larger sources remain unknown to this fallback and require existing exact
+terminal/audit evidence; no age or App Server status substitutes for it. This
+exception never expands ordinary activity projection or runs on an active
+command path.
 
 Codex `thread/read` coalescing is single-flight only: a completed read retains no
 Thread payload in Hub memory. Rollout session discovery incrementally parses at
@@ -133,14 +262,34 @@ Incomplete passes that make progress continue after one second; idle or failed
 passes retain the 30-second interval. Durable fair continuation prevents a slow
 thread or a long discovery prefix from permanently starving later threads.
 Automatic terminal writes use point reads/upserts, not a reload of the complete
-ledger. Production full journal projection reads, normalizes, renders and writes
-the retained ledger in the existing usage worker. Only bounded workspace identity
+ledger. Ordinary journal projection renders and replaces only dirty local-calendar
+days in the existing usage worker (ADR-0076). Durable SQLite triggers mark both
+old and new completion timestamps for record insert/update/delete. The successful
+revision-fenced projection transaction replaces those days, virtual rows, lazy
+turn bodies and summary buckets, then clears the dirty set. Conflicts and failures
+retain the dirty set. Deleted/moved records leave no stale body or totals.
+Initial migration, semantic-scope changes and existing Thread rebindings retain
+one canonical full rebuild. A worker's compact accounting cache reads indexed
+identities/revisions, loads only changed source records and removes deleted
+identities. It normalizes the full source before omitting content; legacy empty
+compaction filtering and image estimates cannot be inferred from stripped input.
+Restart reconstructs this disposable cache from authoritative records once.
+Rolling account totals still use the canonical full scalar/fact calculation;
+this change does not promise constant-time account aggregation.
+Only bounded workspace identity
 batches cross back to the runtime; full journal bodies do not. Projection commits
 are revision-fenced, and a failed or stale batch cannot clear pending audit work.
 Terminal-outbox recovery likewise stages bounded batches before requesting a
 shared journal projection. It must not rebuild the entire retained journal for
 each recovered completion. Exact revisions are acknowledged only after the
 shared projection succeeds; live completion adds no batching delay.
+Concurrent projection requests share work only forward and only within one
+exact scope: the ordered project roots and Claude-usage inclusion. A projection
+answers requests made before it started; every request arriving while it runs
+joins a single trailing projection that starts after it settles. An in-flight
+projection never acknowledges a later terminal revision, different scopes never
+share a run, and a failed or conflicting trailing run leaves each of its exact
+revisions pending.
 Unchanged canonical merged records do not request a new projection; an existing
 pending projection still survives an unchanged replay. Provisional retraction
 checks only the exact turn before mutation. Missing or non-provisional turns
@@ -159,6 +308,14 @@ historical batches read only their exact turn identities, merge repeated
 identities within the batch and commit changed records in one transaction before
 requesting the existing worker projection. Unrelated retained answers and diffs
 do not enter the Hub event loop for these operations.
+Canonical terminal-outbox readback confirms the exact journal record, matching
+immutable accounting fields in the deterministic usage fact and a current turn
+index. Recovery drains at most 100 projection-pending revisions per listing and
+projects batches of at most 16. Attempts use durable least-recently-attempted
+order, so permanent failures cannot starve a later page and a full page never
+creates a zero-delay loop. Transient contention uses one runtime-scoped
+single-flight retry with capped exponential backoff; a bounded low-frequency
+pass retains eventual recovery after that fast budget or an enumeration failure.
 Usage-history aggregation and pricing/image-estimate metadata scans also execute
 in that existing worker. After legacy-read readiness is established, statistics
 reads do not wait on the runtime mutation FIFO or materialize its ledger. They
@@ -181,6 +338,19 @@ lane through the exact metadata-mutation handshake. Export, import and account
 projection perform worker I/O outside the lane; journal commits re-enter it
 with the existing revision fence. The handshake acquires the lane only when
 the worker reaches that mutation and releases it before any further request.
+Automatic terminal provider-account resolution likewise runs before the journal
+mutation lane. Concurrent records for one provider share only the in-flight
+account read; each exact record still commits independently with that observed
+account identity. A settled or failed read is not cached, so a later terminal
+observes an account change and a failed read remains retryable. Replacing the
+account resolver invalidates every in-flight sharing slot for subsequent reads.
+Runtime journal repository writes follow the same contention protocol as worker
+journal commits. Each leaf database write that meets a foreign SQLite write lock
+waits within the existing mutation window and is repeated only when its
+transaction never started or was rolled back, so no committed change or change
+notification repeats. The window is not a delivery timeout: when it is exhausted
+the terminal revision stays pending and neither the repository revision nor the
+record fingerprint advances. Repository close waits for every accepted write.
 
 When the Codex transport is offline or reconnecting, versioned historical
 maintenance resolves subagent accounting roots only from retained rollout files.
@@ -201,7 +371,9 @@ update remains visible even when its `observedAt` shares or predates the prior
 millisecond watermark. Upgrades without a revision cursor perform one full
 export before persisting the new cursor. The legacy timestamp fallback replays
 the acknowledged millisecond and relies on exact event-id merge rather than
-dropping equal-timestamp rows.
+dropping equal-timestamp rows. A cursor snapshot does not read stored sync
+events, which only a full export merges; auth and limit observations are
+exported by both.
 Exact-turn and bounded Thread reads use SQLite primary/index queries and do not
 materialize the complete ledger after durable point-read readiness is known.
 The first read imports and normalizes legacy JSON only when it is newly imported
@@ -297,6 +469,21 @@ insertion is excluded from body-wide themed-select and VS Code motion subtree
 scans. Periodic external history refresh runs only while chat is visible, and
 unchanged Dashboard collections retain their snapshot identity so they do not
 incur stringify comparison or card rebuild.
+The Desktop snapshot owner may reuse Dashboard workspaces, tasks and layout only
+under the TaskBoard's exact authoritative snapshot revision, including mutations
+committed by another supported SQLite owner or connection. Unrelated live-run
+revisions must not rebuild or reserialize those collections. A changed or
+unavailable TaskBoard revision invalidates that reuse atomically and preserves
+the existing content-derived collection versions and delta recovery behavior.
+The TaskBoard snapshot revision deliberately includes its own mutation counter,
+the durable `journal_store_meta` revision and SQLite's external data version, so
+a journal-only write invalidates a cached board even when no Task row changed.
+Opening a Task carries the client's exact snapshot and collection versions into
+the selection command. The ordered selection mutation and its exact local
+history read run concurrently; the first response contains the history page and
+explicitly defers the authoritative snapshot to the ordinary version-fenced
+refresh. A missing or stale baseline still receives the existing authoritative
+reset, and no provider hydration enters this critical path.
 
 A lazy Journal version conflict supersedes that read. The client requests at
 most one refresh per displayed version through the existing refresh owner,
@@ -335,6 +522,10 @@ so a busy transition does not serialize unrelated Thread processing.
 
 ## Navigation responsiveness
 
+Leaving Chat for Dashboard must not expand the hidden conversation's DOM. A
+zero-sized history viewport is not underfilled; automatic paging rechecks the
+currently visible owner before each page and resumes when Chat becomes visible.
+
 Message reconciliation identifies legacy turn-root candidates in one pass over
 the retained history. It does not copy and rescan every earlier message for each
 user item. The temporary identity fallback retains UI-001's exact provider,
@@ -347,3 +538,15 @@ paint p95 is at most 200 ms and no navigation-owned main-thread task exceeds
 50 ms. A hidden startup screen owns no animation frame; its canvas animation is
 scheduled only while that screen is visible. The shared invariant applies to
 the browser shell and the VS Code WebView, which execute the same client assets.
+
+Exact squash absorption is an explicit release operation, not an interactive
+read path. Its Git witness work is bounded by the changed paths in the source
+result and survivor replacement delta. It performs one repository-lock phase,
+one expected-old `dev` ref update and one two-Task SQLite commit; it does not scan
+arbitrary Workspace history or add background work to ordinary Task reads.
+
+Published-duplicate absorption is likewise explicit and outside snapshot,
+message and provider critical paths. It inspects only the source Task's bounded
+managed repository set and the survivor's exact stored result references while
+holding existing Await, Task and repository leases. It introduces no startup
+scan, background reconciliation, provider request or second lifecycle owner.

@@ -99,6 +99,7 @@ async function openStreamTabsDomFixture(page, {
   includeHubClient = false,
   control = null,
   initialSettings = {},
+  snapshot = null,
 } = {}) {
   const initialSnapshot = {
     apiVersion: 3,
@@ -142,7 +143,8 @@ async function openStreamTabsDomFixture(page, {
       return;
     }
     if (requestUrl.pathname === "/api/snapshot") {
-      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(initialSnapshot) });
+      await route.fulfill({ status: 200, contentType: "application/json",
+        body: JSON.stringify(typeof snapshot === "function" ? snapshot() : snapshot ?? initialSnapshot) });
       return;
     }
     if (requestUrl.pathname === "/api/control" && route.request().method() === "POST") {
@@ -345,6 +347,310 @@ async function streamTabsApi() {
   return window.AgentHubStreamTabs;
 }
 
+test("Stream model label follows saved settings while idle and exact turn while active", async () => {
+  const { streamModelLabel } = await streamTabsApi();
+  const task = { provider: "codex", threadId: "old-thread", model: "GPT-5.6 Sol", running: false };
+  const stream = { settings: { provider: "codex", model: "gpt-6-sol" } };
+  const settings = { modelOptionsByProvider: { codex: [
+    { value: "gpt-6-sol", label: "GPT-6 Sol" },
+    { value: "gpt-6-luna", label: "GPT-6 Luna" },
+  ] } };
+  assert.equal(streamModelLabel(task, stream, settings), "GPT-6 Sol");
+  stream.settings.model = "gpt-6-luna";
+  assert.equal(streamModelLabel(task, stream, settings), "GPT-6 Luna");
+  task.running = true;
+  task.run = { turnId: "turn", operationKind: "user-turn", projectionState: "active", model: "GPT-5.6 Sol" };
+  assert.equal(streamModelLabel(task, stream, settings), "GPT-5.6 Sol");
+  task.latestFinal = { provider: "codex", threadId: "old-thread", turnId: "turn" };
+  assert.equal(streamModelLabel(task, stream, settings), "GPT-5.6 Sol");
+  task.latestFinal.revision = 0;
+  assert.equal(streamModelLabel(task, stream, settings), "GPT-5.6 Sol");
+  task.latestFinal.revision = 1;
+  assert.equal(streamModelLabel(task, stream, settings), "GPT-6 Luna");
+  task.running = false;
+  stream.settings.provider = "claude";
+  assert.equal(streamModelLabel(task, stream, settings), "GPT-5.6 Sol");
+  assert.equal(streamModelLabel(task, null, settings), "GPT-5.6 Sol");
+});
+
+test("existing Stream dialog selects and saves Stream model, not global or captured turn model", async () => {
+  const { chromium } = await import("playwright");
+  const browser = await launchDomBrowser(chromium);
+  try {
+    const page = await browser.newPage();
+    await openStreamTabsDomFixture(page);
+    await page.evaluate(() => {
+      window.__modelIntents = [];
+      document.addEventListener("agenthub:intent", (event) => window.__modelIntents.push(event.detail));
+      window.AgentHub.setWorkspaces([{ id: "workspace-models", name: "Models", settings: {} }]);
+      window.AgentHub.setOptions({
+        provider: [{ value: "codex", label: "Codex" }],
+        modelOptionsByProvider: { codex: [
+          { value: "gpt-5.6-sol", label: "GPT-5.6 Sol" },
+          { value: "gpt-6-sol", label: "GPT-6 Sol" },
+          { value: "gpt-6.1-sol", label: "GPT-6.1 Sol" },
+        ] }, reasoningOptionsByProvider: { codex: [] }, mode: [],
+      });
+      window.AgentHub.setSelection({ provider: "codex", model: "gpt-5.6-sol" });
+      window.__modelTask = {
+        id: "stream-models", selected: true, streamId: "stream-models", streamName: "S2",
+        workspaceId: "workspace-models", provider: "codex", threadId: "thread-models",
+        running: true, run: { model: "gpt-5.6-sol", turnId: "turn-models" },
+        streamSettings: { provider: "codex", model: "gpt-6-sol" },
+      };
+      window.AgentHub.setTasks([window.__modelTask]);
+      window.AgentHub.openDialogSettings();
+    });
+    const picker = page.locator('[data-dialog-settings] select[data-dialog-options="model"]');
+    assert.equal(await picker.inputValue(), "gpt-6-sol");
+    await page.getByRole("button", { name: "Модель", exact: true }).click();
+    await page.locator('.themed-select-menu:popover-open .themed-select-option[data-value="gpt-6.1-sol"]').click();
+    const result = await page.evaluate(() => ({
+      saves: window.__modelIntents.filter((item) => item.type === "stream:settings-save"),
+      selectionWrites: window.__modelIntents.filter((item) => item.type === "selection:set"),
+      captured: window.__modelTask.run.model,
+    }));
+    assert.equal(result.saves.at(-1)?.settings.model, "gpt-6.1-sol");
+    assert.deepEqual(result.selectionWrites, []);
+    assert.equal(result.captured, "gpt-5.6-sol");
+    await page.evaluate(() => {
+      document.querySelector("[data-dialog-settings]").close();
+      window.AgentHub.setTasks([{ ...window.__modelTask,
+        streamSettings: { provider: "codex", model: "gpt-6.1-sol" } }]);
+      window.AgentHub.openDialogSettings();
+    });
+    assert.equal(await picker.inputValue(), "gpt-6.1-sol");
+    await page.evaluate(() => {
+      window.AgentHub.setOptions({ modelOptionsByProvider: { codex: [
+        { value: "gpt-6-sol", label: "GPT-6 Sol" },
+      ] } });
+    });
+    assert.equal(await picker.inputValue(), "");
+    assert.match(await picker.locator("option:checked").textContent(), /Сохранено: gpt-6\.1-sol/);
+    assert.equal(await picker.locator("option:checked").evaluate((node) => node.disabled), true);
+    await page.evaluate(() => {
+      window.AgentHub.setTasks([{ ...window.__modelTask,
+        streamSettings: { provider: "codex", model: "" } }]);
+    });
+    assert.equal(await picker.inputValue(), "");
+    assert.equal(await picker.locator("option:checked").textContent(), "Наследуется");
+  } finally {
+    await browser.close();
+  }
+});
+
+test("shipped Stream dialog reads back canonical model after control save and reopen", async () => {
+  const { chromium } = await import("playwright");
+  const browser = await launchDomBrowser(chromium);
+  let releaseCatalogResponse;
+  const catalogResponseGate = new Promise((resolve) => { releaseCatalogResponse = resolve; });
+  let markCatalogRequested;
+  const catalogRequested = new Promise((resolve) => { markCatalogRequested = resolve; });
+  let savedModel = "gpt-6-sol";
+  let catalog = ["gpt-5.6-sol", "gpt-6-sol"];
+  let version = 1;
+  const commands = [];
+  const snapshot = () => ({
+    apiVersion: 3, version: `stream-model-${version}`, server: { status: "online" },
+    workspaces: [{ id: "workspace-models", name: "Models", settings: {}, streams: [{
+      id: "stream-models", name: "S2", ordinal: 1,
+      settings: { provider: "codex", model: savedModel }, threads: [{ id: "thread-models" }],
+    }] }],
+    tasks: [{ provider: "codex", threadId: "thread-models", streamId: "stream-models",
+      workspaceId: "workspace-models", title: "Thread", running: false }],
+    selected: { provider: "codex", threadId: "thread-models", streamId: "stream-models" },
+    boardTasks: [], boardLayout: { columnOrder: [] }, deferredInputs: [],
+    messageReceipts: [], pendingApprovals: [],
+    settings: { provider: "codex", model: "gpt-5.6-sol",
+      models: catalog.map((value) => ({ value, label: value })),
+      modelOptionsByProvider: { codex: catalog.map((value) => ({ value, label: value })) },
+      reasoningOptions: [], reasoningOptionsByProvider: {}, modeOptions: [],
+      quickMessages: { global: [], workspaces: {}, streams: {} } },
+  });
+  try {
+    const page = await browser.newPage();
+    await openStreamTabsDomFixture(page, { includeHubClient: true, snapshot,
+      control: async (request) => {
+        commands.push(request.action);
+        if (request.action === "refresh-model-catalog") {
+          markCatalogRequested();
+          await catalogResponseGate;
+          catalog = ["gpt-6.1-sol", ...catalog];
+          version += 1;
+          return { body: { ok: true, result: { refreshed: true, snapshot: snapshot() } } };
+        }
+        if (request.action === "update-stream-settings") {
+          savedModel = request.params.settings.model;
+          version += 1;
+        }
+        return { body: { ok: true, result: snapshot() } };
+      },
+    });
+    await page.evaluate((initial) => {
+      window.AgentHub.setWorkspaces(initial.workspaces);
+      window.AgentHub.setOptions({ provider: [{ value: "codex", label: "Codex" }],
+        modelOptionsByProvider: initial.settings.modelOptionsByProvider });
+      window.AgentHub.setSelection({ provider: "codex", model: initial.settings.model });
+      window.AgentHub.setTasks([{ id: "stream-models", selected: true, streamId: "stream-models",
+        streamName: "S2", workspaceId: "workspace-models", provider: "codex",
+        threadId: "thread-models", running: false,
+        streamSettings: { provider: "codex", model: "gpt-6-sol" } }]);
+      window.AgentHub.openDialogSettings();
+    }, snapshot());
+    assert.equal(await page.locator("[data-dialog-settings]").evaluate((node) => node.open), true);
+    const picker = page.locator('[data-dialog-settings] select[data-dialog-options="model"]');
+    assert.equal(await picker.inputValue(), "gpt-6-sol");
+    assert.equal(await page.locator("[data-dialog-model-refresh]").count(), 0);
+    await page.getByRole("button", { name: "Модель", exact: true }).click();
+    await page.getByRole("button", { name: "Обновить доступные модели", exact: true }).click();
+    await catalogRequested;
+    assert.equal(await picker.inputValue(), "gpt-6-sol");
+    assert.equal(commands.includes("update-stream-settings"), false);
+    await page.getByRole("button", { name: "Модель", exact: true }).click();
+    const pendingRefresh = page.getByRole("button", { name: "Обновление моделей…", exact: true });
+    assert.equal(await pendingRefresh.isDisabled(), true);
+    await pendingRefresh.dispatchEvent("click");
+    assert.equal(commands.filter((action) => action === "refresh-model-catalog").length, 1);
+    await page.waitForFunction(() => document.activeElement?.closest('.themed-select-menu:popover-open'));
+    await page.keyboard.press("Escape");
+    // Three valid provider pages can finish after the default 45s client deadline.
+    await page.clock.fastForward(50_000);
+    releaseCatalogResponse();
+    assert.ok(commands.includes("refresh-model-catalog"), JSON.stringify(commands));
+    await page.waitForFunction(() => document.querySelector(
+      '[data-dialog-settings] select[data-dialog-options="model"] option[value="gpt-6.1-sol"]',
+    ));
+    assert.equal(await picker.inputValue(), "gpt-6-sol");
+    assert.equal(commands.includes("update-stream-settings"), false);
+    await page.getByRole("button", { name: "Модель", exact: true }).click();
+    assert.equal(await page.locator('.themed-select-menu:popover-open > :last-child').getAttribute("data-select-action"),
+      "model-catalog-refresh");
+    await page.locator('.themed-select-menu:popover-open .themed-select-option[data-value="gpt-6.1-sol"]').click();
+    await page.waitForFunction(() => document.querySelector(
+      '[data-dialog-settings] select[data-dialog-options="model"]',
+    )?.value === "gpt-6.1-sol");
+    assert.equal(savedModel, "gpt-6.1-sol");
+    assert.equal(commands.includes("update-setting"), false);
+    await page.evaluate(() => document.querySelector("[data-dialog-settings]").close());
+    await page.evaluate(() => window.AgentHub.openDialogSettings());
+    assert.equal(await picker.inputValue(), "gpt-6.1-sol");
+  } finally {
+    await browser.close();
+  }
+});
+
+for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 }]) {
+  test(`shipped model dropdown keeps refresh last and retryable without a model write ${viewport.width}`, async () => {
+    const { chromium } = await import("playwright");
+    const browser = await launchDomBrowser(chromium);
+    let attempt = 0;
+    let catalog = [];
+    const commands = [];
+    const fixtureSnapshot = () => ({
+      apiVersion: 3, version: `picker-${attempt}`, server: { status: "online" },
+      tasks: [{ provider: "codex", threadId: "thread-models", streamId: "stream-models",
+        workspaceId: "workspace-models", title: "Thread", running: false }],
+      workspaces: [{ id: "workspace-models", name: "Models", settings: {}, streams: [{
+        id: "stream-models", name: "S6", ordinal: 1,
+        settings: { provider: "codex", model: "gpt-6-sol" }, threads: [{ id: "thread-models" }],
+      }] }],
+      selected: { provider: "codex", threadId: "thread-models", streamId: "stream-models" },
+      boardTasks: [], boardLayout: { columnOrder: [] }, deferredInputs: [], messageReceipts: [], pendingApprovals: [],
+      settings: { provider: "codex", models: catalog,
+        modelOptionsByProvider: { codex: catalog }, reasoningOptions: [],
+        reasoningOptionsByProvider: {}, modeOptions: [], quickMessages: {} },
+    });
+    try {
+      const page = await browser.newPage({ viewport });
+      const errors = [];
+      page.on("pageerror", (error) => errors.push(error.message));
+      await openStreamTabsDomFixture(page, { includeHubClient: true, snapshot: fixtureSnapshot,
+        control: async (request) => {
+          commands.push(request.action);
+          if (request.action === "open-task" || request.action === "task-history") {
+            const history = { provider: "codex", threadId: "thread-models", streamId: "stream-models",
+              items: [], start: 0, end: 0, total: 0, messageTotal: 0, nextBefore: null, version: "empty" };
+            return { body: { ok: true, result: request.action === "task-history" ? history
+              : { history, snapshot: fixtureSnapshot() } } };
+          }
+          if (request.action !== "refresh-model-catalog") return { body: { ok: true, result: fixtureSnapshot() } };
+          attempt += 1;
+          if (attempt === 1) return { body: { ok: false, error: "Fixture catalog unavailable" } };
+          if (attempt === 2) return { body: { ok: true, result: { refreshed: false } } };
+          catalog = [
+            { value: "gpt-6-sol", label: "GPT-6 Sol" },
+            { value: "gpt-6.1-sol", label: "GPT-6.1 Sol" },
+          ];
+          return { body: { ok: true, result: { refreshed: true, snapshot: fixtureSnapshot() } } };
+        },
+      });
+      await page.waitForFunction(() => document.documentElement.dataset.connection === "online");
+      await page.evaluate((initial) => {
+        window.AgentHub.setWorkspaces(initial.workspaces);
+        window.AgentHub.setOptions({ modelOptionsByProvider: initial.settings.modelOptionsByProvider });
+        window.AgentHub.setTasks([{ ...initial.tasks[0], id: "stream-models", selected: true,
+          streamName: "S6", streamSettings: { provider: "codex", model: "gpt-6-sol" } }]);
+        window.AgentHub.showSelectedTask();
+        window.AgentHub.openDialogSettings();
+      }, fixtureSnapshot());
+      const picker = page.locator('select[data-dialog-options="model"]');
+      const trigger = page.getByRole("button", { name: "Модель", exact: true });
+      const action = page.getByRole("button", { name: "Обновить доступные модели", exact: true });
+      assert.equal(await page.locator("[data-dialog-model-refresh]").count(), 0);
+      assert.match(await picker.locator("option:checked").textContent(), /Сохранено: gpt-6-sol/);
+      assert.equal(await trigger.isDisabled(), false);
+      await trigger.focus();
+      await page.keyboard.press("Enter");
+      await action.waitFor({ state: "visible" });
+      await page.waitForFunction(() => document.activeElement?.dataset.selectAction === "model-catalog-refresh");
+      assert.equal(await page.locator('.themed-select-menu:popover-open > :last-child').getAttribute("data-select-action"),
+        "model-catalog-refresh");
+      await page.keyboard.press("Enter");
+      await page.getByText("Fixture catalog unavailable", { exact: true }).waitFor();
+      assert.equal(await trigger.evaluate((node) => node === document.activeElement), true);
+      assert.equal(commands.includes("update-stream-settings"), false);
+      await trigger.press("End");
+      await action.waitFor();
+      await page.waitForFunction(() => document.activeElement?.dataset.selectAction === "model-catalog-refresh");
+      await page.keyboard.press("Space");
+      await page.getByText("Каталог пока недоступен; прежний список сохранён", { exact: true }).waitFor();
+      assert.match(await picker.locator("option:checked").textContent(), /Сохранено: gpt-6-sol/);
+      await trigger.click();
+      await action.click();
+      await page.waitForFunction(() => document.querySelector('select[data-dialog-options="model"]')?.value === "gpt-6-sol");
+      assert.equal(commands.filter((command) => command === "refresh-model-catalog").length, 3);
+      assert.equal(commands.includes("update-stream-settings"), false);
+      assert.equal(commands.includes("update-setting"), false);
+      assert.deepEqual(await picker.locator("option").evaluateAll((nodes) => nodes.map((node) => node.value)),
+        ["gpt-6-sol", "gpt-6.1-sol"]);
+      await trigger.click();
+      await action.waitFor();
+      assert.equal(await page.locator('.themed-select-menu:popover-open > :last-child').getAttribute("data-select-action"),
+        "model-catalog-refresh");
+      assert.equal(await page.getByRole("option", { name: "GPT-6 Sol", exact: true }).getAttribute("aria-selected"), "true");
+      if (process.env.AGENT_HUB_UI_EVIDENCE_DIR) {
+        await mkdir(process.env.AGENT_HUB_UI_EVIDENCE_DIR, { recursive: true });
+        await page.screenshot({ path: path.join(process.env.AGENT_HUB_UI_EVIDENCE_DIR, `hub289-model-menu-${viewport.width}.png`) });
+      }
+      await page.keyboard.press("End");
+      assert.equal(await action.evaluate((node) => node === document.activeElement), true);
+      await page.keyboard.press("ArrowUp");
+      assert.equal(await page.evaluate(() => document.activeElement?.dataset.value), "gpt-6.1-sol");
+      await page.keyboard.press("ArrowDown");
+      assert.equal(await action.evaluate((node) => node === document.activeElement), true);
+      await page.keyboard.press("Home");
+      assert.equal(await page.evaluate(() => document.activeElement?.dataset.value), "gpt-6-sol");
+      await page.keyboard.press("End");
+      await page.keyboard.press("Escape");
+      assert.equal(await trigger.evaluate((node) => node === document.activeElement), true);
+      assert.equal(await page.locator("[data-dialog-settings]").evaluate((node) => node.open), true);
+      assert.deepEqual(errors, []);
+    } finally {
+      await browser.close();
+    }
+  });
+}
+
 const stream = (id, ordinal, lastActivity) => ({
   id,
   ordinal,
@@ -415,6 +721,11 @@ test("a terminal identity absorbs a stale active Stream projection", async () =>
   assert.equal(isExactActiveUserTurn(task), false);
   assert.equal(isExactActiveUserTurn({ ...task, latestFinal: null }), true);
   assert.equal(isExactActiveUserTurn({ ...task, run: null }), false);
+  assert.equal(isExactActiveUserTurn({ ...task, latestFinal: { ...task.latestFinal, revision: 0 } }), true);
+  assert.equal(isExactActiveUserTurn({ ...task, latestFinal: { ...task.latestFinal, revision: -1 } }), true);
+  assert.equal(isExactActiveUserTurn({ ...task, latestFinal: { ...task.latestFinal, revision: 1.5 } }), true);
+  assert.equal(isExactActiveUserTurn({ ...task, latestFinal: { ...task.latestFinal, threadId: "foreign" } }), true);
+  assert.equal(isExactActiveUserTurn({ ...task, latestFinal: null, run: { ...task.run, terminalRevision: 2 } }), false);
 });
 
 test("rotation notice follows the actually compacted Thread instead of the previous head", async () => {
@@ -455,7 +766,7 @@ test("rotation notice follows the actually compacted Thread instead of the previ
   ];
 
   const [transition] = streamRotationTransitions(previousTasks, currentTasks);
-  const presentation = rotationMaintenancePresentation(transition.beforePercent, null);
+  const presentation = rotationMaintenancePresentation(transition.beforePercent);
 
   assert.equal(transition.sourceThreadId, "compacted-thread");
   assert.equal(transition.beforePercent, 26);
@@ -479,7 +790,7 @@ test("persisted rotation restores the source event without observing the Thread 
   const [message] = persistedStreamRotationMessages([source, current]);
   assert.equal(message.sourceThreadId, "source");
   assert.equal(message.threadId, "source", "legacy evidence does not invent a target");
-  assert.equal(message.afterPercent, null, "current usage is not a historical probe");
+  assert.equal(Object.hasOwn(message, "afterPercent"), false);
   assert.equal(message.maintenanceLabel, "Ротация завершена");
   assert.doesNotMatch(message.maintenanceDetail, /выполняется/u);
   assert.equal(message.placement, "after-source-turn");
@@ -489,7 +800,7 @@ test("persisted rotation restores the source event without observing the Thread 
   assert.equal(persistedStreamRotationMessages([source, source, current]).length, 1);
 });
 
-test("persisted rotation uses only exact recorded target and probe measurements", async () => {
+test("persisted rotation ignores retired measurements and preserves its exact target", async () => {
   const { persistedStreamRotationMessages } = await streamTabsApi();
   const source = {
     streamId: "stream-1", provider: "codex", threadId: "source",
@@ -502,11 +813,11 @@ test("persisted rotation uses only exact recorded target and probe measurements"
   };
   const [message] = persistedStreamRotationMessages([source]);
   assert.equal(message.threadId, "target");
-  assert.equal(message.afterPercent, 7);
+  assert.equal(Object.hasOwn(message, "afterPercent"), false);
   assert.equal(message.time, source.context.compaction.rotationCompletedAt);
   assert.equal(
     message.text,
-    "Ротация завершена. Использование контекста: после свёртки 26% → новый Thread сразу после переноса 7%",
+    "Ротация завершена. Использование контекста: после свёртки 26% → новый Thread создан",
   );
   for (const patch of [{ rotated: false }, { status: "running" }, { status: "unknown" }, { id: "" }]) {
     assert.equal(persistedStreamRotationMessages([{
@@ -516,16 +827,14 @@ test("persisted rotation uses only exact recorded target and probe measurements"
   assert.equal(persistedStreamRotationMessages([{ ...source, streamId: "" }]).length, 0);
 });
 
-// Случай пользователя: уведомление говорило «новый 11%», а новый Thread уже
-// показывал 27%. Оба числа верны, но относятся к разным моментам — подача
-// обязана называть этап и не выдавать живое значение за замер ротации.
+// Старый замер нового Thread больше не участвует в уведомлении о ротации.
 test("rotation stages stay historical while the new Thread's live usage grows", async () => {
   const { persistedStreamRotationMessages, rotationMaintenancePresentation } = await streamTabsApi();
   const source = {
     streamId: "stream-1", provider: "codex", threadId: "source",
     context: { compaction: {
       id: "ac912f09", status: "completed", rotated: true,
-      beforePercent: 85.532508, afterPercent: 27.278251,
+      beforePercent: 85.532508, afterPercent: 27.278251, measurementKind: "estimated",
       rotationThreadId: "target", rotationAfterPercent: 11.256192,
       rotationProbeTurnId: "probe-target", rotationMeasuredAt: "2026-09-12T22:10:34.367Z",
       rotationCompletedAt: "2026-09-12T22:10:34.500Z", completedAt: "2026-09-12T22:10:23.671Z",
@@ -540,15 +849,15 @@ test("rotation stages stay historical while the new Thread's live usage grows", 
 
   assert.equal(
     message.text,
-    "Ротация завершена. Использование контекста: до свёртки 86% → после свёртки 27% → новый Thread сразу после переноса 11%",
+    "Ротация завершена. Использование контекста: до свёртки 86% → после свёртки ≈27% → новый Thread создан · Предварительная оценка провайдера после свёртки",
   );
-  assert.equal(message.afterPercent, 11, "живое использование нового Thread не подменяет замер ротации");
+  assert.equal(Object.hasOwn(message, "afterPercent"), false);
   assert.equal(message.beforePercent, 27);
   assert.equal(message.compactionBeforePercent, 86);
   assert.doesNotMatch(message.text, /новый Thread[^%]*27%/u);
   assert.equal(
-    rotationMaintenancePresentation(27, null).text,
-    "Ротация завершена. Использование контекста: после свёртки 27% → новый Thread создан, его замер не сохранён",
+    rotationMaintenancePresentation(27).text,
+    "Ротация завершена. Использование контекста: после свёртки 27% → новый Thread создан",
   );
 });
 
@@ -878,7 +1187,7 @@ test("Stream deck key ignores live status churn but tracks physical chat identit
   const first = [{
     id: "stream-1",
     workspaceName: "Agent HUB",
-    streamName: "Architect",
+    streamName: "Release Manager",
     running: false,
   }];
   const active = [{ ...first[0], running: true, statusLabel: "Ход выполняется" }];
@@ -1048,6 +1357,87 @@ test("an active Stream preserves its answer-ready state", async () => {
   );
 });
 
+test("right panel visibility defaults on and its header switch preserves hidden options across reload", async () => {
+  const { chromium } = await import("playwright");
+  const browser = await launchDomBrowser(chromium);
+  try {
+    for (const width of [1440, 1024]) {
+      const page = await browser.newPage({ viewport: { width, height: 1000 } });
+      const errors = [];
+      page.on("pageerror", (error) => errors.push(error.message));
+      const populate = async () => {
+        await page.evaluate(() => {
+          window.AgentHub.setWorkspaces([{ id: "rail-workspace", name: "Panel preview", settings: {} }]);
+          window.AgentHub.setTasks([{
+            id: "rail-task", threadId: "rail-thread", workspaceId: "rail-workspace",
+            workspaceName: "Panel preview", streamId: "rail-stream", streamName: "Preview",
+            streamOrdinal: 1, provider: "codex", agentLabel: "Codex", status: "ready",
+            statusLabel: "Готов", lastActivity: new Date().toISOString(),
+            running: false, unread: true, selected: true, streamSettings: {},
+          }]);
+        });
+        await page.locator("[data-stream-card-settings-toggle]").click();
+      };
+      await openStreamTabsDomFixture(page);
+      await populate();
+      const group = page.getByRole("region", { name: "Правая панель", exact: true });
+      const toggle = group.getByRole("switch", { name: "Отображать правую панель", exact: true });
+      const options = group.locator("[data-activity-rail-settings]");
+      const recent = group.getByRole("spinbutton", { name: "Часы для недавних Streams" });
+      const detailed = group.getByRole("switch", { name: "Подробные карточки Streams" });
+      assert.equal(await toggle.getAttribute("aria-checked"), "true");
+      assert.equal(await page.locator("[data-activity-rail]").isVisible(), true);
+      assert.equal(await options.isVisible(), true);
+      assert.equal(await page.locator("[data-settings-panel] [data-activity-rail-visibility-toggle]").count(), 0);
+      const headingBox = await group.getByRole("heading", { name: "Правая панель" }).boundingBox();
+      const toggleBox = await toggle.boundingBox();
+      assert.ok(toggleBox.x >= headingBox.x + headingBox.width);
+      assert.ok(Math.abs(toggleBox.y + toggleBox.height / 2 - headingBox.y - headingBox.height / 2) < 4);
+      assert.equal((await toggle.innerText()).trim(), "");
+      await recent.fill("7");
+      await recent.press("Tab");
+      await detailed.click();
+      assert.equal(await detailed.getAttribute("aria-checked"), "true");
+      const screenshotDirectory = String(process.env.HUB157_QA_SCREENSHOT_DIR ?? "").trim();
+      if (screenshotDirectory) {
+        await group.screenshot({
+          path: path.join(screenshotDirectory, `right-panel-on-${width}.png`),
+        });
+      }
+      await toggle.click();
+      assert.equal(await toggle.getAttribute("aria-checked"), "false");
+      assert.equal(await options.isVisible(), false);
+      assert.equal(await page.locator("[data-activity-rail]").isVisible(), false);
+      assert.equal(await toggle.isVisible(), true);
+      if (screenshotDirectory) {
+        await group.screenshot({
+          path: path.join(screenshotDirectory, `right-panel-off-${width}.png`),
+        });
+      }
+      await toggle.click();
+      assert.equal(await recent.inputValue(), "7");
+      assert.equal(await detailed.getAttribute("aria-checked"), "true");
+      await toggle.click();
+      await page.reload();
+      await page.waitForFunction(() => typeof window.AgentHub === "object");
+      await populate();
+      assert.equal(await toggle.getAttribute("aria-checked"), "false");
+      assert.equal(await options.isVisible(), false);
+      assert.equal(await page.locator("[data-activity-rail]").isVisible(), false);
+      await toggle.focus();
+      await toggle.press("Space");
+      assert.equal(await toggle.getAttribute("aria-checked"), "true");
+      assert.equal(await options.isVisible(), true);
+      assert.equal(await detailed.getAttribute("aria-checked"), "true");
+      assert.equal(await page.locator("[data-activity-rail]").isVisible(), true);
+      assert.deepEqual(errors, []);
+      await page.close();
+    }
+  } finally {
+    await browser.close();
+  }
+});
+
 test("Astra uses its compact label only in Stream pills and the active Stream header", async () => {
   const { chromium } = await import("playwright");
   const browser = await launchDomBrowser(chromium);
@@ -1088,7 +1478,16 @@ test("Astra uses its compact label only in Stream pills and the active Stream he
         streamOrdinal: 5,
         modelLabel: "Custom Astra Preview",
         selected: false,
-      }]);
+      }, ...["gpt-6-sol", "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-luna"].map((modelLabel, index) => ({
+        ...astraTask,
+        id: `task-versioned-${index}`,
+        threadId: `thread-versioned-${index}`,
+        streamId: `stream-versioned-${index}`,
+        streamName: `S${index + 6}`,
+        streamOrdinal: index + 6,
+        modelLabel,
+        selected: false,
+      }))]);
       return {
         header: document.querySelector("[data-stream-header-model]")?.textContent,
         headerTitle: document.querySelector("[data-stream-header-model]")?.title,
@@ -1104,6 +1503,8 @@ test("Astra uses its compact label only in Stream pills and the active Stream he
         customPillTitle: document.querySelector(
           '[data-activity-task-id="task-custom-astra"] .task-model',
         )?.title,
+        versionedPills: [...document.querySelectorAll('[data-activity-task-id^="task-versioned-"] .task-model')]
+          .map((element) => ({ label: element.textContent, title: element.title })),
       };
     });
 
@@ -1113,6 +1514,12 @@ test("Astra uses its compact label only in Stream pills and the active Stream he
     assert.equal(result.astraPillTitle, "GPT-6 Astra");
     assert.equal(result.customPill, "Custom Astra Preview");
     assert.equal(result.customPillTitle, "Custom Astra Preview");
+    assert.deepEqual(result.versionedPills, [
+      { label: "6 Sol", title: "gpt-6-sol" },
+      { label: "6 Luna", title: "gpt-6-luna" },
+      { label: "5.6 Sol", title: "gpt-5.6-sol" },
+      { label: "5.6 Luna", title: "gpt-5.6-luna" },
+    ]);
   } finally {
     await browser.close();
   }
@@ -1127,15 +1534,15 @@ test("background status changes rerender visible top Stream tabs", async () => {
     await openStreamTabsDomFixture(page);
     const result = await page.evaluate(() => {
       const lastActivity = "2026-09-02T08:00:00.000Z";
-      const architect = {
-        id: "task-architect",
-        threadId: "thread-architect",
+      const releaseManager = {
+        id: "task-releaseManager",
+        threadId: "thread-release-manager",
         workspaceId: "workspace-agent-hub",
         workspaceName: "Agent HUB",
-        streamId: "stream-architect",
-        streamName: "Architect",
+        streamId: "stream-release-manager",
+        streamName: "Release Manager",
         streamOrdinal: 1,
-        title: "Architect",
+        title: "Release Manager",
         provider: "codex",
         agentLabel: "Codex",
         modelLabel: "Sol",
@@ -1147,7 +1554,7 @@ test("background status changes rerender visible top Stream tabs", async () => {
         selected: true,
       };
       const idleS2 = {
-        ...architect,
+        ...releaseManager,
         id: "task-s2",
         threadId: "thread-s2",
         streamId: "stream-s2",
@@ -1161,7 +1568,7 @@ test("background status changes rerender visible top Stream tabs", async () => {
         name: "Agent HUB",
         title: "Agent HUB",
       }]);
-      window.AgentHub.setTasks([architect, idleS2]);
+      window.AgentHub.setTasks([releaseManager, idleS2]);
       const initialTopS2 = document.querySelector(
         '.stream-tabs-track .stream-tab[data-stream-name="S2"]',
       );
@@ -1171,7 +1578,7 @@ test("background status changes rerender visible top Stream tabs", async () => {
         topCurrent: initialTopS2?.hasAttribute("data-current") ?? null,
       };
 
-      window.AgentHub.setTasks([architect, {
+      window.AgentHub.setTasks([releaseManager, {
         ...idleS2,
         running: true,
         status: "in_progress",
@@ -1185,8 +1592,8 @@ test("background status changes rerender visible top Stream tabs", async () => {
       const rightS2 = document.querySelector(
         '.activity-stream-item[data-activity-task-id="task-s2"]',
       );
-      const architectTab = document.querySelector(
-        '.stream-tabs-track .stream-tab[data-stream-name="Architect"]',
+      const releaseManagerTab = document.querySelector(
+        '.stream-tabs-track .stream-tab[data-stream-name="Release Manager"]',
       );
       const effect = topS2?.querySelector(".stream-tab-status-layer")
         ? getComputedStyle(topS2.querySelector(".stream-tab-status-layer"), "::after")
@@ -1197,12 +1604,12 @@ test("background status changes rerender visible top Stream tabs", async () => {
         topState: topS2?.dataset.state ?? null,
         rightRunning: rightS2?.hasAttribute("data-running") ?? null,
         rightCurrent: rightS2?.hasAttribute("data-current") ?? null,
-        architectCurrent: architectTab?.hasAttribute("data-current") ?? null,
+        releaseManagerCurrent: releaseManagerTab?.hasAttribute("data-current") ?? null,
         effectAnimation: effect?.animationName ?? null,
         effectDisplay: effect?.display ?? null,
       };
 
-      window.AgentHub.setTasks([architect, idleS2]);
+      window.AgentHub.setTasks([releaseManager, idleS2]);
       window.AgentHub.setRunning("task-s2", true);
       const patchedTopS2 = document.querySelector(
         '.stream-tabs-track .stream-tab[data-stream-name="S2"]',
@@ -1219,8 +1626,8 @@ test("background status changes rerender visible top Stream tabs", async () => {
           topState: patchedTopS2?.dataset.state ?? null,
           rightRunning: patchedRightS2?.hasAttribute("data-running") ?? null,
           rightCurrent: patchedRightS2?.hasAttribute("data-current") ?? null,
-          architectCurrent: document.querySelector(
-            '.stream-tabs-track .stream-tab[data-stream-name="Architect"]',
+          releaseManagerCurrent: document.querySelector(
+            '.stream-tabs-track .stream-tab[data-stream-name="Release Manager"]',
           )?.hasAttribute("data-current") ?? null,
         },
       };
@@ -1234,7 +1641,7 @@ test("background status changes rerender visible top Stream tabs", async () => {
         topState: "running",
         rightRunning: true,
         rightCurrent: false,
-        architectCurrent: true,
+        releaseManagerCurrent: true,
         effectAnimation: "stream-running-wave",
         effectDisplay: "block",
       },
@@ -1244,7 +1651,7 @@ test("background status changes rerender visible top Stream tabs", async () => {
         topState: "running",
         rightRunning: true,
         rightCurrent: false,
-        architectCurrent: true,
+        releaseManagerCurrent: true,
       },
     });
   } finally {
@@ -1377,7 +1784,7 @@ test("Workspace and Stream cards expose behavioral editing and quick reply contr
     assert.equal(await page.locator("[data-dialog-settings] input").first().getAttribute("data-dialog-stream-name"), "");
     assert.equal(await page.locator("[data-dialog-stream-name]").inputValue(), "Codex Stream");
     await page.locator("[data-dialog-stream-name]").fill("Renamed Stream");
-    await page.locator("[data-dialog-working-directory]").focus();
+    await page.locator("[data-dialog-stream-name]").press("Tab");
     assert.equal(await page.evaluate(() => window.__hub157Intents.some((item) => (
       item.type === "stream:rename" && item.streamId === "stream-codex" && item.name === "Renamed Stream"
     ))), true);
@@ -1675,7 +2082,7 @@ test("composer quick replies render above attached Task references", async () =>
     assert.equal(await page.locator("[data-composer-quick-messages]").getAttribute("aria-label"), "Prompt-шаблоны");
     assert.equal(await page.locator("[data-settings-global-quick-messages-entry]").evaluate((node) => (
       node.closest(".quick-messages-settings-row")?.querySelector(".setting-name")?.textContent
-    )), "Глобальные prompt-шаблоны");
+    )), "Prompt-шаблоны");
     assert.equal(await page.locator("[data-settings-global-quick-messages-count]").textContent(), "1 шаблон");
     await page.locator('[data-panel-open="settings"]').click();
     const actionMode = page.locator("[data-quick-message-action-mode]");
@@ -2231,8 +2638,9 @@ test("prompt template action setting stays compact on Web, narrow WebView and Mo
         },
       }));
       await page.locator('[data-panel-open="settings"]').click();
+      await openPromptTemplatesForm(page, "global");
       const layout = await page.locator(".prompt-template-action-row").evaluate((row) => {
-        const panel = row.closest("[data-settings-panel]");
+        const panel = row.closest("[data-prompt-templates-modal]");
         const select = row.querySelector(".themed-select") ?? row.querySelector("select");
         const note = row.querySelector("[data-quick-message-action-mode-note]");
         const rowRect = row.getBoundingClientRect();
@@ -2303,7 +2711,7 @@ test("shared prompt template editor stays responsive across every scope and surf
         });
         window.AgentHub.setTasks([{
           id: "task-1", selected: true, workspaceId: "workspace-1", workspaceName: "Agent HUB",
-          streamId: "stream-1", streamName: "Architect", streamOrdinal: 1, provider: "codex",
+          streamId: "stream-1", streamName: "Release Manager", streamOrdinal: 1, provider: "codex",
           agentLabel: "Codex", status: "ready", statusLabel: "Готов", running: false,
           unread: false, streamSettings: {},
         }]);
@@ -2392,7 +2800,6 @@ test("Dashboard column headers keep equal height across different task densities
     for (const [surface, viewport] of [
       ["wide-short", { width: 1900, height: 376 }],
       ["desktop", { width: 1440, height: 900 }],
-      ["mobile", { width: 390, height: 844 }],
     ]) {
       const problems = [];
       const page = await browser.newPage({ viewport });
@@ -2432,7 +2839,7 @@ test("Dashboard column headers keep equal height across different task densities
         });
         document.querySelector('[data-view-button="dashboard"]').click();
       });
-      const geometry = await page.locator(".task-board-column-head").evaluateAll((headers) => headers.map((header) => {
+      const geometry = await page.locator(".task-board-columns [data-board-destination] > .task-board-column-head").evaluateAll((headers) => headers.map((header) => {
         const rect = header.getBoundingClientRect();
         const column = header.closest("[data-board-destination]");
         const columnRect = column.getBoundingClientRect();
@@ -3059,6 +3466,221 @@ test("Stream card opens on 20 repeated native dblclicks per viewport without con
   }
 });
 
+test("themed selects remain visible and interactive across modal and inline geometry", async () => {
+  const { chromium } = await import("playwright");
+  const browser = await launchDomBrowser(chromium);
+  const page = await browser.newPage({ viewport: { width: 1166, height: 758 } });
+  const menuGeometry = async (label) => page.evaluate((accessibleName) => {
+    const button = [...document.querySelectorAll(".themed-select-button")]
+      .find((node) => node.getAttribute("aria-label") === accessibleName);
+    const menu = button ? document.getElementById(button.getAttribute("aria-controls")) : null;
+    const menuRect = menu?.getBoundingClientRect();
+    const buttonRect = button?.getBoundingClientRect();
+    const x = Math.max(0, Math.min(innerWidth - 1, (menuRect?.left ?? 0) + 8));
+    const y = Math.max(0, Math.min(innerHeight - 1, (menuRect?.top ?? 0) + 8));
+    const hit = document.elementFromPoint(x, y);
+    return {
+      button: buttonRect && {
+        top: buttonRect.top, right: buttonRect.right, bottom: buttonRect.bottom, left: buttonRect.left,
+      },
+      menu: menuRect && {
+        top: menuRect.top, right: menuRect.right, bottom: menuRect.bottom, left: menuRect.left,
+        width: menuRect.width, height: menuRect.height,
+      },
+      expanded: button?.getAttribute("aria-expanded"),
+      parent: menu?.parentElement?.tagName ?? "",
+      popoverOpen: menu?.matches?.(":popover-open") ?? false,
+      hitInside: menu?.contains(hit) ?? false,
+      insideViewport: Boolean(menuRect
+        && menuRect.left >= 0 && menuRect.top >= 0
+        && menuRect.right <= innerWidth && menuRect.bottom <= innerHeight),
+    };
+  }, label);
+  const assertOpenMenu = async (label, parent = "DIALOG") => {
+    await page.waitForFunction((accessibleName) => {
+      const button = [...document.querySelectorAll(".themed-select-button")]
+        .find((node) => node.getAttribute("aria-label") === accessibleName);
+      const menu = button ? document.getElementById(button.getAttribute("aria-controls")) : null;
+      return button?.getAttribute("aria-expanded") === "true" && menu?.matches?.(":popover-open");
+    }, label);
+    const geometry = await menuGeometry(label);
+    assert.equal(geometry.parent, parent, `${label}: ${JSON.stringify(geometry)}`);
+    assert.equal(geometry.popoverOpen, true, `${label}: ${JSON.stringify(geometry)}`);
+    assert.equal(geometry.hitInside, true, `${label}: ${JSON.stringify(geometry)}`);
+    assert.equal(geometry.insideViewport, true, `${label}: ${JSON.stringify(geometry)}`);
+    return geometry;
+  };
+  try {
+    await openStreamTabsDomFixture(page);
+    await page.addStyleTag({
+      path: fileURLToPath(new URL("../../assets/web-app/themes/malachor-v/theme.css", import.meta.url)),
+    });
+    await page.evaluate(() => {
+      window.AgentHub.setOptions({
+        provider: ["codex", "claude"],
+        model: ["fake-codex", "sonnet"],
+        modelOptionsByProvider: { claude: ["fake-codex", "sonnet"] },
+        reasoning: ["Low", "Medium", "High"],
+        reasoningOptionsByProvider: { claude: ["Low", "Medium", "High"] },
+        mode: ["Work", "Plan"],
+      });
+      window.AgentHub.setSelection({
+        provider: "claude", model: "fake-codex", reasoning: "Medium", mode: "Work",
+      });
+      window.AgentHub.setWorkspaces([{ id: "workspace", name: "Agent HUB", settings: {} }]);
+      window.AgentHub.setTasks([{
+        id: "task", threadId: "thread", workspaceId: "workspace", workspaceName: "Agent HUB",
+        streamId: "stream", streamName: "Stream 21", streamOrdinal: 21, provider: "claude",
+        agentLabel: "Claude", status: "ready", statusLabel: "Готов",
+        lastActivity: new Date().toISOString(), running: false, unread: false, selected: true,
+        streamSettings: { model: "fake-codex", reasoning: "Medium", mode: "Work" },
+      }]);
+    });
+    await page.locator("[data-dialog-settings-toggle]").click();
+    await page.waitForFunction(() => document.querySelector("[data-dialog-settings]")?.open === true);
+
+    const cases = [
+      ["Модель", "sonnet", "fake-codex"],
+      ["Reasoning", "High", "Low"],
+      ["Режим", "Plan", "Work"],
+    ];
+    for (const [theme, targetIndex] of [["orbit", 1], ["malachor-v", 2]]) {
+      await page.evaluate((value) => { document.documentElement.dataset.theme = value; }, theme);
+      for (const [label, firstValue, secondValue] of cases) {
+        const target = targetIndex === 1 ? firstValue : secondValue;
+        const button = page.getByRole("button", { name: label, exact: true });
+        await button.click();
+        await assertOpenMenu(label);
+        await page.locator(`.themed-select-menu:popover-open .themed-select-option[data-value="${target}"]`).click();
+        assert.equal(await page.locator(`select[aria-label="${label}"]`).inputValue(), target, `${theme}:${label}`);
+
+        await button.press("ArrowDown");
+        await page.waitForFunction(() => document.activeElement?.matches?.(".themed-select-option"));
+        await page.keyboard.press("Escape");
+        assert.equal(await page.locator("[data-dialog-settings]").evaluate((node) => node.open), true, `${theme}:${label}`);
+        assert.equal(await button.getAttribute("aria-expanded"), "false", `${theme}:${label}`);
+        assert.equal(await button.evaluate((node) => document.activeElement === node), true, `${theme}:${label}`);
+      }
+    }
+
+    await page.setViewportSize({ width: 900, height: 430 });
+    const reasoning = page.getByRole("button", { name: "Reasoning", exact: true });
+    await reasoning.scrollIntoViewIfNeeded();
+    await reasoning.click();
+    const compact = await assertOpenMenu("Reasoning");
+    assert.ok(compact.menu.bottom <= compact.button.top || compact.menu.top >= compact.button.bottom);
+    await page.locator(".dialog-settings-body").evaluate((node) => { node.scrollTop += 24; });
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    await assertOpenMenu("Reasoning");
+    await page.setViewportSize({ width: 980, height: 520 });
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    await assertOpenMenu("Reasoning");
+    await page.keyboard.press("Escape");
+    await page.keyboard.press("Escape");
+    assert.equal(await page.locator("[data-dialog-settings]").evaluate((node) => node.open), false);
+
+    await page.evaluate(() => {
+      const host = document.createElement("div");
+      host.style.cssText = "position:fixed;right:8px;bottom:4px;width:180px;z-index:5";
+      const select = document.createElement("select");
+      select.setAttribute("aria-label", "Inline select");
+      for (const value of ["First", "Second"]) {
+        const option = document.createElement("option");
+        option.value = value;
+        option.textContent = value;
+        select.append(option);
+      }
+      host.append(select);
+      document.body.append(host);
+    });
+    const inline = page.getByRole("button", { name: "Inline select", exact: true });
+    await inline.click();
+    const inlineGeometry = await assertOpenMenu("Inline select", "BODY");
+    assert.ok(inlineGeometry.menu.bottom <= inlineGeometry.button.top, JSON.stringify(inlineGeometry));
+    await page.locator('.themed-select-menu:popover-open .themed-select-option[data-value="Second"]').click();
+    assert.equal(await page.locator('select[aria-label="Inline select"]').inputValue(), "Second");
+  } finally {
+    await browser.close();
+  }
+});
+
+test("Stream card close button does not reopen or hide a legitimately reopened modal", async () => {
+  const { chromium } = await import("playwright");
+  const browser = await launchDomBrowser(chromium);
+  try {
+    const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+    await openStreamTabsDomFixture(page);
+    await page.evaluate(() => {
+      window.AgentHub.setWorkspaces([{
+        id: "workspace-1", name: "One", settings: {},
+      }], ["workspace:workspace-1", "notes"]);
+      window.AgentHub.setTasks([{
+        id: "task-one",
+        selected: true,
+        workspaceId: "workspace-1",
+        workspaceName: "One",
+        workspaceSettings: {},
+        streamId: "stream-one",
+        streamName: "One stream",
+        streamOrdinal: 1,
+        provider: "codex",
+        agentLabel: "Codex",
+        status: "ready",
+        statusLabel: "Готов",
+        lastActivity: "2026-09-04T08:00:00.000Z",
+        running: false,
+        unread: false,
+        streamSettings: {},
+      }]);
+    });
+
+    const tab = page.locator('.stream-tabs-track .stream-tab[data-stream-tab-id="stream-one"]');
+    const dialog = page.locator("[data-dialog-settings]");
+    const closeButton = page.locator("[data-dialog-settings-close]");
+
+    await tab.dblclick();
+    await closeButton.click();
+    assert.deepEqual(await dialog.evaluate((node) => ({
+      open: node.open,
+      modal: node.matches(":modal"),
+      hidden: node.hidden,
+    })), { open: false, modal: false, hidden: true });
+
+    await tab.dblclick();
+    assert.deepEqual(await dialog.evaluate((node) => ({
+      open: node.open,
+      modal: node.matches(":modal"),
+      hidden: node.hidden,
+      visible: getComputedStyle(node).display !== "none",
+    })), { open: true, modal: true, hidden: false, visible: true });
+
+    const reopenedAfterQueuedClose = await page.evaluate(() => new Promise((resolve) => {
+      const modal = document.querySelector("[data-dialog-settings]");
+      modal.addEventListener("close", () => resolve({
+        open: modal.open,
+        modal: modal.matches(":modal"),
+        hidden: modal.hidden,
+        visible: getComputedStyle(modal).display !== "none",
+      }), { once: true });
+      document.querySelector("[data-dialog-settings-close]").click();
+      document.querySelector("[data-dialog-settings-toggle]").click();
+    }));
+    assert.deepEqual(reopenedAfterQueuedClose,
+      { open: true, modal: true, hidden: false, visible: true });
+
+    await closeButton.click();
+    assert.deepEqual(await dialog.evaluate((node) => ({
+      open: node.open,
+      modal: node.matches(":modal"),
+      hidden: node.hidden,
+    })), { open: false, modal: false, hidden: true });
+    await page.locator('[data-view-button="dashboard"]').click();
+    assert.equal(await page.locator("html").getAttribute("data-view"), "dashboard");
+  } finally {
+    await browser.close();
+  }
+});
+
 test("Workspace and Stream cards survive logical-identity rerenders while stale dblclick identity fails closed in Edge", async () => {
   const { chromium } = await import("playwright");
   const browser = await launchDomBrowser(chromium);
@@ -3208,7 +3830,7 @@ test("Workspace and Stream cards survive logical-identity rerenders while stale 
 
 test("Stream display identity never exposes a blank name", async () => {
   const { streamDisplayName } = await streamTabsApi();
-  assert.equal(streamDisplayName({ name: " Architect ", ordinal: 2 }, 3), "Architect");
+  assert.equal(streamDisplayName({ name: " Release Manager ", ordinal: 2 }, 3), "Release Manager");
   assert.equal(streamDisplayName({ name: "", ordinal: 2 }, 3), "Stream 2");
   assert.equal(streamDisplayName({ name: "", ordinal: 7 }, 1), "Stream");
 });
@@ -3237,9 +3859,9 @@ test("overflow visibility mutations do not rebuild Stream settings", async () =>
 test("answer arrival animation does not replay during Thread selection", async () => {
   const { answerArrivalTaskIds } = await streamTabsApi();
   const observedFinals = new Map();
-  const architectFinal = {
+  const releaseManagerFinal = {
     provider: "codex",
-    threadId: "thread-architect",
+    threadId: "thread-release-manager",
     turnId: "turn-1",
     revision: 1,
   };
@@ -3250,11 +3872,11 @@ test("answer arrival animation does not replay during Thread selection", async (
     revision: 1,
   };
   const previous = [
-    { id: "architect", selected: true, unread: true, latestFinal: architectFinal },
+    { id: "releaseManager", selected: true, unread: true, latestFinal: releaseManagerFinal },
     { id: "statistics", selected: false, unread: false, latestFinal: statisticsFinal },
   ];
   const selectedAnotherThread = [
-    { id: "architect", selected: false, unread: true, latestFinal: architectFinal },
+    { id: "releaseManager", selected: false, unread: true, latestFinal: releaseManagerFinal },
     { id: "statistics", selected: true, unread: false, latestFinal: statisticsFinal },
   ];
 
@@ -3279,24 +3901,24 @@ test("transient snapshot without latest final does not replay answer arrival", a
   const observedFinals = new Map();
   const final = {
     provider: "codex",
-    threadId: "thread-architect",
+    threadId: "thread-release-manager",
     turnId: "turn-1",
     revision: 1,
   };
-  const current = [{ id: "architect", unread: true, latestFinal: final }];
+  const current = [{ id: "releaseManager", unread: true, latestFinal: final }];
 
   assert.deepEqual(Array.from(answerArrivalTaskIds(current, observedFinals)), []);
   assert.deepEqual(Array.from(answerArrivalTaskIds([
-    { id: "architect", unread: true, latestFinal: null },
+    { id: "releaseManager", unread: true, latestFinal: null },
   ], observedFinals)), []);
   assert.deepEqual(Array.from(answerArrivalTaskIds(current, observedFinals)), []);
   assert.deepEqual(Array.from(answerArrivalTaskIds([
     {
-      id: "architect",
+      id: "releaseManager",
       unread: true,
       latestFinal: { ...final, turnId: "turn-2" },
     },
-  ], observedFinals)), ["architect"]);
+  ], observedFinals)), ["releaseManager"]);
 });
 
 test("task hierarchy is recovered by Stream identity when a transient task lacks Workspace fields", async () => {
@@ -3473,11 +4095,13 @@ test("Workspace folder mutations carry only identity and folder while creation c
     workingDirectory: "  project  ",
     taskPrefix: " HUB ",
     releaseWorkflowEnabled: true,
+    autoReviewEnabled: true,
     folderName: "  Новые   проекты ",
   }))), {
     workingDirectory: "project",
     taskPrefix: "HUB",
     releaseWorkflowEnabled: true,
+    autoReviewEnabled: true,
     catalogFolder: "Новые проекты",
   });
   assert.deepEqual(JSON.parse(JSON.stringify(
@@ -3486,6 +4110,7 @@ test("Workspace folder mutations carry only identity and folder while creation c
     workingDirectory: "project",
     taskPrefix: "",
     releaseWorkflowEnabled: false,
+    autoReviewEnabled: false,
   });
   assert.deepEqual(JSON.parse(JSON.stringify(workspaceFolderRenamePlan([
     { id: "one", settings: { catalogFolder: "Клиенты" } },

@@ -123,6 +123,51 @@ test("DeferredInputController keeps the observed 13.429 second provider steer be
   assert.deepEqual(state.transitions.map((entry) => entry.state), ["dispatching", "steered"]);
 });
 
+test("DeferredInputController keeps exact steer behind a managed barrier without retargeting", async () => {
+  let barrierActive = true;
+  let targetActive = true;
+  let providerEffects = 0;
+  let laterTurnStarts = 0;
+  const state = fixture({
+    isSteerDispatchBlocked: async () => barrierActive,
+    occupancy: async () => targetActive
+      ? { occupied: true, run: { id: "run-old", turnId: "turn-old" } }
+      : { occupied: false, run: null },
+    steer: async () => { providerEffects += 1; return null; },
+    start: async () => { laterTurnStarts += 1; },
+  });
+  const item = {
+    id: "steer-behind-managed-barrier",
+    clientUserMessageId: "mcp:steer-behind-managed-barrier",
+    conflictKind: "message-steer",
+    steerTargetRunId: "run-old",
+    steerTargetTurnId: "turn-old",
+    streamId: "stream-1",
+    provider: "codex",
+    threadId: "thread-1",
+    taskTitle: "Task",
+  };
+  state.queuedInputs.set(item.id, item);
+
+  await state.controller.process(item.id);
+  assert.equal(state.queuedInputs.get(item.id), item);
+  assert.equal(providerEffects, 0);
+  assert.equal(laterTurnStarts, 0);
+
+  barrierActive = false;
+  targetActive = false;
+  await state.controller.process(item.id);
+
+  assert.equal(state.queuedInputs.has(item.id), false);
+  assert.equal(state.pendingInputs.get(item.id), item);
+  assert.equal(item.conflictKind, "message-steer");
+  assert.equal(item.steerTargetRunId, "run-old");
+  assert.equal(item.steerTargetTurnId, "turn-old");
+  assert.equal(item.lastErrorCode, "ERR_PROVIDER_STEER_NOT_DELIVERED");
+  assert.equal(providerEffects, 0);
+  assert.equal(laterTurnStarts, 0);
+});
+
 test("DeferredInputController recovers a dispatched steer without a second provider effect", async () => {
   let providerEffects = 0;
   const state = fixture({
@@ -572,17 +617,17 @@ test("DeferredInputController preserves exact-lane reorder after restart", async
 test("DeferredInputController preempts polling backoff in every lane after terminal release", () => {
   const cleared = [];
   const state = fixture({ clearTimeoutImpl: (timer) => cleared.push(timer) });
-  const architect = {
-    id: "architect", streamId: "stream-architect", provider: "codex",
-    threadId: "thread-architect", queueOrder: 1,
+  const releaseManager = {
+    id: "releaseManager", streamId: "stream-release-manager", provider: "codex",
+    threadId: "thread-release-manager", queueOrder: 1,
   };
   const themes = {
     id: "themes", streamId: "stream-themes", provider: "codex",
     threadId: "thread-themes", queueOrder: 1,
   };
-  state.queuedInputs.set(architect.id, architect);
+  state.queuedInputs.set(releaseManager.id, releaseManager);
   state.queuedInputs.set(themes.id, themes);
-  state.controller.schedule(architect, 30_000);
+  state.controller.schedule(releaseManager, 30_000);
   state.controller.schedule(themes, 30_000);
 
   assert.equal(state.controller.wakeAll(), 2);
@@ -590,11 +635,11 @@ test("DeferredInputController preempts polling backoff in every lane after termi
   assert.deepEqual(cleared, [1, 2]);
   assert.equal(state.timers.at(-1).delay, 0);
   assert.equal(state.controller.timers.size, 2);
-  assert.equal(state.controller.timers.has(architect.id), true);
+  assert.equal(state.controller.timers.has(releaseManager.id), true);
   assert.equal(state.controller.timers.has(themes.id), true);
 });
 
-test("DeferredInputController restores ordinary FIFO when a steer misses its turn", async () => {
+test("DeferredInputController preserves exact steer intent when its target turn has changed", async () => {
   const started = [];
   let steers = 0;
   const state = fixture({
@@ -603,32 +648,49 @@ test("DeferredInputController restores ordinary FIFO when a steer misses its tur
     steer: async () => { steers += 1; return null; },
   });
   const lane = { streamId: "stream-1", provider: "codex", threadId: "thread-1" };
-  state.pendingInputs.set("user", {
-    ...lane,
-    id: "user",
-    queueOrder: 1,
-    conflictKind: "task-running",
-  });
+  const origin = { kind: "interstream", requestId: "request-1", sourceThreadId: "thread-source" };
   state.queuedInputs.set("themes", {
     ...lane,
     id: "themes",
-    queueOrder: 2,
+    queueOrder: 1,
     conflictKind: "message-steer",
+    clientUserMessageId: "mcp:request-1",
     steerTargetRunId: "run-old",
     steerTargetTurnId: "turn-old",
+    messageOrigin: origin,
+    temporaryFiles: ["stored.png"],
+  });
+  state.queuedInputs.set("later", {
+    ...lane,
+    id: "later",
+    queueOrder: 2,
+    conflictKind: "message-intake",
   });
 
   await state.controller.process("themes");
   assert.equal(steers, 0);
-  assert.equal(state.queuedInputs.get("themes").conflictKind, "message-intake");
-  assert.equal(state.pendingInputs.has("user"), false);
+  assert.equal(state.queuedInputs.has("themes"), false);
+  const retained = state.pendingInputs.get("themes");
+  assert.equal(retained.conflictKind, "message-steer");
+  assert.equal(retained.clientUserMessageId, "mcp:request-1");
+  assert.equal(retained.steerTargetRunId, "run-old");
+  assert.equal(retained.steerTargetTurnId, "turn-old");
+  assert.deepEqual(retained.messageOrigin, origin);
+  assert.deepEqual(retained.temporaryFiles, ["stored.png"]);
+  assert.equal(retained.laneReleased, true);
+  assert.equal(retained.lastErrorCode, "ERR_PROVIDER_STEER_NOT_DELIVERED");
+  assert.equal(state.transitions.at(-1).state, "pending");
+  assert.match(state.updates.at(-1)[1], /не доставлено в исходный ход/iu);
+  assert.deepEqual(state.notifications, ["themes"]);
+  assert.equal(state.controller.timers.has("later"), true);
 
-  await state.controller.process("user");
   await state.controller.process("themes");
-  assert.deepEqual(started, ["user", "themes"]);
+  await state.controller.process("later");
+  assert.equal(steers, 0);
+  assert.deepEqual(started, ["later"]);
 });
 
-test("DeferredInputController converts one provider-rejected steer into the same queued item", async () => {
+test("DeferredInputController returns one provider-rejected steer for an explicit decision", async () => {
   let steerCalls = 0;
   const state = fixture({
     occupancy: async () => ({
@@ -647,16 +709,58 @@ test("DeferredInputController converts one provider-rejected steer into the same
     conflictKind: "message-steer",
     steerTargetRunId: "run-1",
     steerTargetTurnId: "turn-1",
+    messageOrigin: { kind: "interstream", requestId: "request-provider-rejected" },
   };
   state.queuedInputs.set(item.id, item);
 
   await state.controller.process(item.id);
 
   assert.equal(steerCalls, 1);
-  assert.equal(state.queuedInputs.size, 1);
-  assert.equal(state.queuedInputs.get(item.id), item);
-  assert.equal(item.conflictKind, "message-intake");
+  assert.equal(state.queuedInputs.size, 0);
+  assert.equal(state.pendingInputs.get(item.id), item);
+  assert.equal(item.conflictKind, "message-steer");
+  assert.equal(item.steerTargetRunId, "run-1");
+  assert.equal(item.steerTargetTurnId, "turn-1");
+  assert.deepEqual(item.messageOrigin, { kind: "interstream", requestId: "request-provider-rejected" });
+  assert.equal(item.laneReleased, true);
+  assert.equal(item.lastErrorCode, "ERR_PROVIDER_STEER_NOT_DELIVERED");
   assert.equal(item.dispatchingAt, undefined);
+  await state.controller.process(item.id);
+  assert.equal(steerCalls, 1);
+});
+
+test("DeferredInputController restores exact steer when its attention state cannot persist", async () => {
+  let persistCalls = 0;
+  const state = fixture({
+    occupancy: async () => ({ occupied: false, waitReason: null }),
+    persist: async () => {
+      persistCalls += 1;
+      if (persistCalls === 1) throw new Error("disk busy");
+    },
+  });
+  const item = {
+    id: "steer-persist-failure",
+    streamId: "stream-1",
+    provider: "codex",
+    threadId: "thread-1",
+    conflictKind: "message-steer",
+    clientUserMessageId: "mcp:request-persist-failure",
+    steerTargetRunId: "run-original",
+    steerTargetTurnId: "turn-original",
+  };
+  const original = structuredClone(item);
+  state.queuedInputs.set(item.id, item);
+
+  await assert.rejects(state.controller.process(item.id), /disk busy/u);
+
+  assert.equal(state.queuedInputs.get(item.id), item);
+  assert.equal(state.pendingInputs.has(item.id), false);
+  assert.deepEqual(item, original);
+
+  await state.controller.process(item.id);
+  assert.equal(state.queuedInputs.has(item.id), false);
+  assert.equal(state.pendingInputs.get(item.id), item);
+  assert.equal(item.conflictKind, "message-steer");
 });
 
 test("DeferredInputController steers the exact active turn ahead of later-turn FIFO", async () => {
@@ -833,7 +937,7 @@ test("DeferredInputController claims dispatch before awaits so concurrent wake c
     provider: "codex",
     threadId: "thread-1",
     projectRoot: "D:\\Work",
-    conflictKind: "message-steer",
+    conflictKind: "message-intake",
     createdAt: "2026-07-30T08:00:00.000Z",
     temporaryFiles: ["screen.png"],
   };

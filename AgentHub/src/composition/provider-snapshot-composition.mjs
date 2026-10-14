@@ -1,4 +1,5 @@
 import { appendRunActivity } from "../domain/run-activity.mjs";
+import { readRecordingContourCodexTurn } from "../providers/recording-contour-provider.mjs";
 import { providerThreadKey } from "../domain/workspace-stream-identity.mjs";
 import { ClaudeEventService } from "../providers/claude/claude-event-service.mjs";
 import { ClaudeTaskSnapshotService } from "../providers/claude/claude-task-snapshot-service.mjs";
@@ -14,6 +15,7 @@ import {
 } from "../providers/codex/codex-task-snapshot-service.mjs";
 import {
   codexRolloutTurnState,
+  readCodexCompletedTurnAnswer,
   readCodexRolloutActivity,
   selectCodexTurn,
 } from "../providers/codex/codex-rollout-activity.mjs";
@@ -27,6 +29,7 @@ import {
 } from "../domain/task-execution-owner.mjs";
 
 export function createProviderSnapshotComposition({
+  recordingContourRoot = null,
   readClaudeSessionSnapshot,
   findProject,
   saveState,
@@ -107,7 +110,11 @@ export function createProviderSnapshotComposition({
     logError: (...args) => console.error(...args),
   });
   const codexTaskSnapshots = new CodexTaskSnapshotService({
+    ...(recordingContourRoot ? {
+      readRecordingTurn: (run) => readRecordingContourCodexTurn(recordingContourRoot, run),
+    } : {}),
     knownRolloutPath: knownCodexRolloutPath,
+    readCompletedTurnAnswer: readCodexCompletedTurnAnswer,
     readRolloutActivity: readCodexRolloutActivity,
     rolloutTurnState: codexRolloutTurnState,
     capturedOwner: capturedCodexExecutionOwner,
