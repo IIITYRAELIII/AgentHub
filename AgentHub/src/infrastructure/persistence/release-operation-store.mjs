@@ -9,6 +9,7 @@ import {
   createReleaseOperation,
   RELEASE_OPERATION_STATES,
   releaseIdentitySha256,
+  unpublishedStartupRetryOrigin,
   releaseOperationIsTerminal,
   restoreReleaseOperation,
   transitionReleaseOperation,
@@ -33,7 +34,7 @@ export function readNativePublishedSelectedComposition({ dataDir, preview, remot
       FROM release_operations o
       JOIN release_operation_tasks t ON t.operation_id = o.operation_id
       JOIN release_candidate_generations g ON g.operation_id = o.operation_id
-      WHERE t.task_id = ? AND o.state IN ('publish', 'waiting')
+      WHERE t.task_id = ? AND o.state IN ('publish', 'waiting', 'failed')
       ORDER BY o.updated_at DESC, g.generation DESC LIMIT 65
     `).all(preview.taskId);
     if (rows.length > 64) throw new Error("Published selected proof history exceeds its bound");
@@ -46,16 +47,29 @@ export function readNativePublishedSelectedComposition({ dataDir, preview, remot
       if (operation.authorization?.nativeOwnerCutover?.kind !== "native-publication-owner-v1"
           || operation.authorization.nativeOwnerCutover.schemaVersion !== 1
           || operation.workspaceId !== preview.authority?.workspaceId
-          || !(operation.state === "publish" || (operation.state === "waiting" && operation.resumeState === "publish"))
-          || generation.operationId !== operation.operationId
-          || generation.generation !== operation.currentGeneration) continue;
+          || generation.operationId !== operation.operationId) continue;
+      const currentPublication = (operation.state === "publish"
+        || (operation.state === "waiting" && operation.resumeState === "publish"))
+        && generation.generation === operation.currentGeneration
+        && JSON.stringify(operation.selectedResults) === JSON.stringify(generation.selectedResults);
+      let terminalCorrection = false;
+      if (operation.state === "failed" && operation.nativeStartupCorrection) {
+        const generations = database.prepare("SELECT generation_json FROM release_candidate_generations WHERE operation_id=? ORDER BY generation")
+          .all(operation.operationId).map(item => JSON.parse(item.generation_json));
+        const receipts = database.prepare("SELECT receipt_json FROM release_step_receipts WHERE operation_id=? ORDER BY generation, step_id, attempt")
+          .all(operation.operationId).map(item => JSON.parse(item.receipt_json));
+        const retry = unpublishedStartupRetryOrigin({ operation, generations, receipts });
+        terminalCorrection = Boolean(retry && generation.generation === retry.priorGeneration
+          && generation.identitySha256 === operation.nativeStartupCorrection.scope.priorIdentitySha256
+          && remoteCommit === retry.priorPublishedHead);
+      }
+      if (!currentPublication && !terminalCorrection) continue;
       const { identitySha256, ...contents } = generation;
       if (identitySha256 !== row.identity_sha256 || releaseIdentitySha256(contents) !== identitySha256) {
         throw new Error("Published native generation identity changed");
       }
       if (JSON.stringify([...operation.authorization.taskIds].sort())
-          !== JSON.stringify(generation.selectedResults.map(task => task.taskId).sort())
-          || JSON.stringify(operation.selectedResults) !== JSON.stringify(generation.selectedResults)) continue;
+          !== JSON.stringify(generation.selectedResults.map(task => task.taskId).sort())) continue;
       const selected = generation.selectedResults.find(task => task.taskId === preview.taskId);
       if (!selected || selected.resultCommit !== preview.taskCommit
           || selectedCompositionIdentity(selected) !== identity) continue;
@@ -73,7 +87,8 @@ export function readNativePublishedSelectedComposition({ dataDir, preview, remot
         ORDER BY attempt DESC LIMIT 1`).get(operation.operationId, generation.generation);
       if (validated?.status !== "applied") continue;
       matches.push({ operationId: operation.operationId, generation: generation.generation,
-        identitySha256, publishedCommit: remoteCommit, selectedCompositionIdentity: identity });
+        identitySha256, publishedCommit: remoteCommit, selectedCompositionIdentity: identity,
+        ...(terminalCorrection ? { startupCorrectionRecordHash: operation.nativeStartupCorrection.recordHash } : {}) });
     }
     if (matches.length > 1) throw new Error("Published selected proof is ambiguous");
     return matches[0] ?? null;

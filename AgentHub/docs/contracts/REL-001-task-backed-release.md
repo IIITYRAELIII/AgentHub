@@ -12,6 +12,16 @@ operation, generations and partial effects remain unchanged. This is historical
 proof reuse, not runtime readiness, effect reconciliation or permission to adopt
 a new main base. Current explicit main/preflight and publication gates remain.
 
+The same read-only descriptor witness also recognizes terminal failed native
+startup-correction history when its independently reviewed immutable record
+proves the exact prior OWN publication and an unpublished reserved successor.
+Original authority, recovery and correction binding hashes, prior candidate and
+validation, applied PARTIAL startup readback, successor composition and selected
+set must agree; successor publication/finalization effects refuse this boundary.
+The terminal operation is never resumed or changed. This interpretation exists
+only while these retained historical Test descriptors require normal correction
+acceptance; remove it when those originals no longer participate in release.
+
 Native cutover after completed historical freeze abandonment verifies its
 existing recovery outcome, immutable evidence/hash and exact restored prepared
 ref. It retains frozen-original and recovery bytes in the new manifest; changed

@@ -60,6 +60,101 @@ export function releaseIdentitySha256(value) {
   return createHash("sha256").update(JSON.stringify(stable(value))).digest("hex");
 }
 
+// Read-only interpretation of the external native owner's immutable history.
+// It grants no capability to this installed store or to ordinary operation writes.
+function restorePublishedStartupHistory(value) {
+  if (!restoreReleaseOperation(value)) return null;
+  const original = value.authorization?.nativeOwnerCutover;
+  const recovery = value.nativeOwnerRecovery;
+  const correction = value.nativeStartupCorrection;
+  const validBinding = binding => {
+    const retry = binding?.frozenRetry;
+    return binding?.schemaVersion === 1 && binding.kind === "native-publication-owner-v1"
+      && /^[a-f0-9]{64}$/u.test(binding.admissionSha256 ?? "")
+      && /^[a-f0-9]{40}$/u.test(binding.source?.commit ?? "")
+      && /^[a-f0-9]{40}$/u.test(binding.source?.tree ?? "")
+      && [binding.source?.root, binding.source?.branch,
+        ...["provider", "threadId", "turnId", "serviceTaskId", "repositoryRoot"].map(key => binding.intake?.[key])]
+        .every(item => typeof item === "string" && item.trim())
+      && Number.isSafeInteger(binding.intake?.taskRevision) && binding.intake.taskRevision > 0
+      && (!retry || (retry.kind === "native-frozen-release-retry-v1"
+        && typeof retry.operationId === "string" && retry.operationId.trim()
+        && Number.isSafeInteger(retry.generation) && retry.generation > 0
+        && /^\d{4}\.\d{1,2}\.\d{1,2}$/u.test(retry.releaseVersion ?? "")
+        && ["identitySha256", "manifestHash", "terminalSha256"].every(key => /^[a-f0-9]{64}$/u.test(retry[key] ?? ""))));
+  };
+  const validRecord = (record, kind) => record?.schemaVersion === 1 && record.kind === kind
+    && validBinding(record.binding)
+    && releaseIdentitySha256(record.binding) === record.executionBindingHash
+    && ["preservedSha256", "recordHash", "executionBindingHash"].every(key => /^[a-f0-9]{64}$/u.test(record[key] ?? ""))
+    && releaseIdentitySha256({ ...record, recordHash: undefined }) === record.recordHash;
+  const { fingerprint, ...authorization } = value.authorization;
+  if (!validBinding(original) || releaseIdentitySha256(authorization) !== fingerprint
+      || !validRecord(recovery, "reviewed-native-owner-recovery-v1")
+      || releaseIdentitySha256(recovery.originalBinding) !== releaseIdentitySha256(original)
+      || recovery.binding.source.commit === original.source.commit
+      || !validRecord(correction, "reviewed-native-startup-correction-v1")
+      || !validBinding(correction.previousExecutionBinding)
+      || releaseIdentitySha256(correction.previousExecutionBinding) !== recovery.executionBindingHash
+      || !Number.isSafeInteger(correction.scope?.priorGeneration) || correction.scope.priorGeneration < 1
+      || correction.scope.nextGeneration !== correction.scope.priorGeneration + 1) return null;
+  return value;
+}
+
+export function releaseSelectionSha256(results) {
+  return releaseIdentitySha256(normalizedResults(results).map(({ tree, ...result }) => result));
+}
+
+export function unpublishedStartupRetryOrigin({ operation, generations, receipts } = {}) {
+  const restored = restorePublishedStartupHistory(operation);
+  const record = restored?.nativeStartupCorrection;
+  if (!record || restored.state !== "failed" || !restored.completedAt || restored.owner) return null;
+  const scope = record.scope;
+  const prior = generations?.find(item => item.generation === scope.priorGeneration);
+  const next = generations?.find(item => item.generation === scope.nextGeneration);
+  const effect = scope.effects?.length === 1 ? scope.effects[0] : null;
+  const latest = step => receipts?.filter(item => item.generation === scope.priorGeneration && item.stepId === step)
+    .sort((a, b) => b.attempt - a.attempt)[0];
+  const composed = receipts?.filter(item => item.generation === scope.nextGeneration && item.stepId === "compose")
+    .sort((a, b) => b.attempt - a.attempt)[0];
+  const validGeneration = value => {
+    if (!value || value.operationId !== restored.operationId) return false;
+    const { identitySha256, ...contents } = value;
+    return releaseIdentitySha256(contents) === identitySha256;
+  };
+  if (restored.currentGeneration !== scope.nextGeneration || !validGeneration(prior) || !validGeneration(next)
+      || prior.identitySha256 !== scope.priorIdentitySha256
+      || prior.candidates.length !== 1 || prior.candidates[0].commit !== scope.priorCommit
+      || releaseSelectionSha256(next.selectedResults) !== scope.selectionSha256
+      || releaseSelectionSha256(restored.selectedResults) !== scope.selectionSha256
+      || composed?.status !== "applied" || composed.effect?.identitySha256 !== next.identitySha256
+      || !effect || effect.status !== "partial" || effect.revision !== scope.priorCommit
+      || effect.releaseVersion !== scope.releaseVersion || effect.publicationStatus !== "awaiting_restart"
+      || latest(`startup-readback:${effect.targetId}`)?.status !== "applied"
+      || releaseIdentitySha256(latest(`startup-readback:${effect.targetId}`).effect) !== releaseIdentitySha256(effect)
+      || latest("validate")?.status !== "applied"
+      || receipts.some(item => item.stepId === "finalize"
+        || (item.generation === scope.nextGeneration && item.stepId !== "compose" && item.stepId !== "validate"))
+      || restored.publicationEffects.generation !== scope.nextGeneration
+      || restored.publicationEffects.publishStarted
+      || Object.keys(restored.publicationEffects.targets ?? {}).length
+      || Object.keys(restored.publicationEffects).some(key => !["generation", "targets", "priorGenerations"].includes(key))
+      || Object.keys(restored.publicationEffects.priorGenerations ?? {}).length !== 1
+      || releaseIdentitySha256(restored.publicationEffects.priorGenerations[scope.priorGeneration])
+        !== releaseIdentitySha256(record.previousPublicationEffects)) return null;
+  const targets = restored.authorization.approvedTargets;
+  if (targets.length !== 1 || targets[0].targetId !== effect.targetId || targets[0].kind !== "agent-hub-publication") return null;
+  // Older failed generations are known not_applied; the interrupted published
+  // generation has the explicit applied PARTIAL readback above, not a waiver.
+  if (receipts.some(item => item.stepId.startsWith("publish:")
+    && (item.stepId !== `publish:${effect.targetId}` || item.generation > scope.priorGeneration
+      || (item.generation < scope.priorGeneration && (item.status !== "failed"
+        || item.effect?.status !== "not_applied" || item.effect.revision !== targets[0].approvedOriginMainCommit))))) return null;
+  return { priorGeneration: scope.priorGeneration, priorPublishedHead: scope.priorCommit,
+    releaseVersion: scope.releaseVersion, selectionSha256: scope.selectionSha256,
+    approvedTargets: targets.map(target => ({ ...target, approvedOriginMainCommit: scope.priorCommit })) };
+}
+
 function uniqueTextList(value, name) {
   const values = [...new Set((Array.isArray(value) ? value : [])
     .map((item) => String(item ?? "").trim()).filter(Boolean))].sort();

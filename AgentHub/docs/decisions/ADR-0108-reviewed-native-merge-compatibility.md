@@ -46,6 +46,12 @@ Test descriptors retain their existing integration proof. Regression exercises
 the public filesystem owner with real Git publication and SQLite, including
 foreign origin, stale generation/scope and before/after row preservation.
 
+The same bounded witness interprets terminal failed startup-correction history
+only when immutable original/recovery/correction bindings, prior PARTIAL readback
+and validation, and the unpublished composed successor agree exactly. It does
+not resume the terminal operation or treat old effects as successor readiness.
+Foreign authority, altered history and any successor publication effects refuse.
+
 Real isolated public Test and Await owners must accept a reviewed cleanup of two
 automatically merged duplicate test files and retain its exact resulting tree.
 Missing review, stale parents/selection and post-review changes must refuse

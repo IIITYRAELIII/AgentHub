@@ -7,6 +7,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
+import { releaseIdentitySha256, releaseSelectionSha256 } from "../../../src/domain/release-operation.mjs";
 import { ReleaseOperationStore } from "../../../src/infrastructure/persistence/release-operation-store.mjs";
 import { runtimeDatabasePath } from "../../../src/infrastructure/persistence/runtime-state-store.mjs";
 import { TaskGitWorkspaceService, runTaskGitCommand } from "../../../src/infrastructure/filesystem/task-git-workspace.mjs";
@@ -74,6 +75,93 @@ test("retained selected Test proof survives its exact partial native publication
   await git(f.root, "switch", "-q", "main");
   await assert.rejects(evidence(), /remote advanced/u);
   assert.equal(rows(), before);
+});
+
+test("retained selected acceptance recognizes exact terminal startup history without replaying effects", { timeout: 90000 }, async t => {
+  const f = await fixture(t);
+  const preview = await retainedLegacySelectedPreview(f, { taskId: TASK_ID, expectedTaskRevision: 1,
+    authority: { workspaceId: "workspace", streamId: "rm", provider: "codex", threadId: "thread", proofRequestId: "terminal-published" } });
+  await retainLegacySelectedOriginal(f, preview, "terminal-published");
+  await f.service.withTaskLock(TASK_ID, lease => f.service.applySelectedCompositionOwned(preview, { operationId: "terminal-published", lease }));
+  const tasks = [{ taskId: TASK_ID, taskRevision: 2, projectRoot: f.root, branch: f.taskWorkspace.branch,
+    resultCommit: f.task, selectedCompositionRequired: true, selectedComposition: preview }];
+  const evidence = () => f.service.releaseIntegrationEvidence({ projectRoot: f.root, tasks });
+  await git(f.root, "push", "-q", "origin", `${f.proof}:refs/heads/main`);
+  await assert.rejects(evidence(), /remote advanced/u);
+  const store = new ReleaseOperationStore({ dataDir: f.dataDir });
+  const operation = store.create({ operationId: "terminal-native", requestId: "terminal-native", workspaceId: "workspace", streamId: "rm", threadId: "thread",
+    authorization: { taskIds: [TASK_ID], approvedTargets: [{ targetId: "production", kind: "agent-hub-publication",
+      repositoryRoot: f.root, approvedOriginMainCommit: f.published }], validationMode: "full" }, runnerVersion: "test" }).operation;
+  const makeGeneration = (generation, commit) => store.putGeneration({ operationId: operation.operationId, generation,
+    repositoryBases: [{ repositoryRoot: f.root, baseCommit: f.local }], selectedResults: tasks,
+    candidates: [{ repositoryRoot: f.root, releaseRoot: f.root, commit, tree: f.tree, manifestHash: "a".repeat(64),
+      manifest: { workspaceId: "workspace", compositionPolicy: "main-selected-git-merge-v1",
+        baseProvenance: { publishedBaseCommit: f.published }, tasks } }], runnerVersion: "test" }).generation;
+  const prior = makeGeneration(1, f.proof);
+  const next = makeGeneration(2, f.task);
+  const applied = (generation, stepId, effect = null) => {
+    const receipt = store.beginStep({ operationId: operation.operationId, generation, stepId, input: { fixture: stepId } }).receipt;
+    store.finishStep(receipt, { status: "applied", effect });
+  };
+  const effect = { targetId: "production", status: "partial", revision: f.proof,
+    releaseVersion: "2026.10.12", publicationStatus: "awaiting_restart" };
+  applied(1, "validate"); applied(1, "startup-readback:production", effect);
+  applied(2, "compose", { identitySha256: next.identitySha256 });
+  const binding = commit => ({ schemaVersion: 1, kind: "native-publication-owner-v1", admissionSha256: "b".repeat(64),
+    source: { root: f.root, branch: "native-fixture", commit, tree: f.tree },
+    intake: { taskRevision: 1, provider: "codex", threadId: "thread", turnId: "turn", serviceTaskId: "service", repositoryRoot: f.root } });
+  const seal = record => ({ ...record, recordHash: releaseIdentitySha256(record) });
+  const original = binding(f.local), recovered = binding(f.task), corrected = binding(f.proof);
+  const recovery = seal({ schemaVersion: 1, kind: "reviewed-native-owner-recovery-v1", originalBinding: original,
+    binding: recovered, executionBindingHash: releaseIdentitySha256(recovered), preservedSha256: "c".repeat(64) });
+  const oldEffects = { generation: 1, publishStarted: true, targets: { production: effect } };
+  const correction = seal({ schemaVersion: 1, kind: "reviewed-native-startup-correction-v1",
+    binding: corrected, executionBindingHash: releaseIdentitySha256(corrected), preservedSha256: "d".repeat(64),
+    previousExecutionBinding: recovered, previousPublicationEffects: oldEffects,
+    scope: { priorGeneration: 1, nextGeneration: 2, priorIdentitySha256: prior.identitySha256, priorCommit: f.proof,
+      releaseVersion: "2026.10.12", selectionSha256: releaseSelectionSha256(next.selectedResults), effects: [effect] } });
+  const { fingerprint, ...oldAuthorization } = operation.authorization;
+  const authorization = { ...oldAuthorization, nativeOwnerCutover: original };
+  const persisted = { ...operation, state: "failed", currentGeneration: 2, completedAt: new Date().toISOString(), owner: null,
+    selectedResults: next.selectedResults, authorization: { ...authorization, fingerprint: releaseIdentitySha256(authorization) },
+    nativeOwnerRecovery: recovery, nativeStartupCorrection: correction,
+    publicationEffects: { generation: 2, targets: {}, priorGenerations: { 1: oldEffects } } };
+  const database = new DatabaseSync(runtimeDatabasePath(f.dataDir));
+  f.closeResources.push(() => database.close());
+  // A private external-owner terminal shape; public acceptance performs only reads.
+  const save = value => database.prepare("UPDATE release_operations SET state=?, operation_json=? WHERE operation_id=?")
+    .run(value.state, JSON.stringify(value), operation.operationId);
+  const rows = () => JSON.stringify({ operation: database.prepare("SELECT * FROM release_operations").all(),
+    generations: database.prepare("SELECT * FROM release_candidate_generations").all(), receipts: database.prepare("SELECT * FROM release_step_receipts").all() });
+  save(persisted); const before = rows();
+  assert.equal((await evidence()).tasks[0].selectedComposition.previewHash, preview.previewHash);
+  assert.equal(rows(), before);
+  for (const mutate of [value => { value.workspaceId = "foreign"; }, value => { value.owner = { ownerId: "live" }; },
+    value => { value.state = "done"; }, value => { value.nativeStartupCorrection.recordHash = "f".repeat(64); },
+    value => { value.authorization.nativeOwnerCutover.admissionSha256 = "f".repeat(64); },
+    value => { value.nativeOwnerRecovery.executionBindingHash = "f".repeat(64); },
+    value => { value.nativeStartupCorrection.scope.priorIdentitySha256 = "f".repeat(64);
+      value.nativeStartupCorrection = seal({ ...value.nativeStartupCorrection, recordHash: undefined }); },
+    value => { value.nativeStartupCorrection.scope.selectionSha256 = "f".repeat(64);
+      value.nativeStartupCorrection = seal({ ...value.nativeStartupCorrection, recordHash: undefined }); },
+    value => { value.nativeStartupCorrection.previousExecutionBinding = original;
+      value.nativeStartupCorrection = seal({ ...value.nativeStartupCorrection, recordHash: undefined }); },
+    value => { value.nativeStartupCorrection.scope.effects[0].publicationStatus = "ready";
+      value.nativeStartupCorrection = seal({ ...value.nativeStartupCorrection, recordHash: undefined }); },
+    value => { value.publicationEffects.targets.production = effect; },
+    value => { value.selectedResults = []; }, value => { value.currentGeneration = 1; }]) {
+    const changed = structuredClone(persisted); mutate(changed); save(changed);
+    const negativeBefore = rows(); await assert.rejects(evidence(), /remote advanced/u); assert.equal(rows(), negativeBefore);
+  }
+  save(persisted);
+  const readback = database.prepare("SELECT receipt_json FROM release_step_receipts WHERE step_id='startup-readback:production'").get();
+  database.prepare("UPDATE release_step_receipts SET status='failed', receipt_json=? WHERE step_id='startup-readback:production'")
+    .run(JSON.stringify({ ...JSON.parse(readback.receipt_json), status: "failed" }));
+  const refused = rows(); await assert.rejects(evidence(), /remote advanced/u); assert.equal(rows(), refused);
+  database.prepare("UPDATE release_step_receipts SET status='applied', receipt_json=? WHERE step_id='startup-readback:production'").run(readback.receipt_json);
+  assert.equal(rows(), before);
+  await git(f.root, "push", "-q", "--force", "origin", `${f.task}:refs/heads/main`);
+  await assert.rejects(evidence(), /remote advanced/u); assert.equal(rows(), before);
 });
 
 async function git(cwd, ...args) {
