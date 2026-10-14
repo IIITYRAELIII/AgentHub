@@ -658,6 +658,28 @@ export class JournalDatabase {
     return revisionOf(await this.#open());
   }
 
+  // One SQLite snapshot fences all inputs after the asynchronous Workspace
+  // callbacks. Facts or version-marker writes need not advance journal revision.
+  async projectionReuseFence({ revision, factsRevision, factsGeneration,
+    pricingProjectionVersion, imageBackfillVersion }) {
+    const database = await this.#open();
+    database.exec("BEGIN");
+    try {
+      const matches = revisionOf(database) === revision
+        && String(database.prepare("SELECT value FROM usage_sync_meta WHERE key = 'facts_revision'").get()?.value ?? "") === factsRevision
+        && String(database.prepare("SELECT value FROM usage_sync_meta WHERE key = 'local_store_generation'").get()?.value ?? "") === factsGeneration
+        && storeMetadataValue(database, "pricing_projection_version") === pricingProjectionVersion
+        && (imageBackfillVersion == null
+          || storeMetadataValue(database, "image_backfill_version") === imageBackfillVersion)
+        && !database.prepare("SELECT 1 FROM journal_projection_dirty LIMIT 1").get();
+      database.exec("COMMIT");
+      return matches;
+    } catch (error) {
+      if (database.isTransaction) database.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
   async ledgerStatus() {
     const database = await this.#open();
     return {
