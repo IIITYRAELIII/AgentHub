@@ -3,9 +3,7 @@ import { retargetTelegramClientSelections } from "../application/client-task-sel
 import { StreamContextMaintenanceService } from "../application/stream-context-maintenance-service.mjs";
 import { UsageSyncAutoService } from "../application/usage-sync-auto-service.mjs";
 import { UsageSyncRemoteClient } from "../infrastructure/http/usage-sync-remote-client.mjs";
-import { applyWorkLogAccountBackfill } from "../infrastructure/persistence/work-log-account-backfill.mjs";
 import { MaintenanceOperationStore } from "../infrastructure/persistence/maintenance-operation-store.mjs";
-import { readClaudeAccount } from "../providers/claude/claude-account.mjs";
 import { ClaudeContextMaintenanceService } from "../providers/claude/claude-context-maintenance-service.mjs";
 import { processIsAlive } from "../providers/claude/claude-run-io.mjs";
 import { readClaudeSessionSnapshot } from "../providers/claude/claude-session-reader.mjs";
@@ -146,13 +144,7 @@ export async function createProviderApplicationComposition({
     projectRoot: config.projectRoot,
     projectionProjectRoots: globalWorkLogProjectRoots,
     suggestedDeviceLabel: suggestUsageSyncDeviceLabel,
-    accountBackfill: async () => {
-      const claudeAccount = await readClaudeAccount();
-      return applyWorkLogAccountBackfill({
-        databaseFile: journalDatabaseFile,
-        providerAccounts: claudeAccount ? [{ provider: "claude", ...claudeAccount }] : [],
-      });
-    },
+    trace: commandTraceService,
     isStopping: () => hostState.stopping,
   });
 

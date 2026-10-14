@@ -347,6 +347,55 @@ local Codex account-activity interval containing the configured turn timestamp.
 Missing local activity evidence excludes that synchronized turn. The account
 selector used by API-limit and comparison views must not narrow this chart.
 
+## Local account-backfill recovery copies
+
+Scheduled usage sync must not run the legacy ambient account backfill, scan the
+whole journal for inferred account hints, copy the full SQLite database, or
+prune its recovery copies. Auth observations and schema-2 facts remain with the
+existing worker/transaction owners. Unknown service/compaction attribution is
+not replaced with the current account. Removing that competing periodic writer
+does not change fact identity, remote cursor admission, atomic import/rollback
+or journal recovery through SQLite transactions and WAL (ADR-0089).
+
+The explicit legacy account-backfill CLI is an operator migration tool, not a
+startup, timer or automatic recovery step. Its existing snapshots and receipt
+guards remain available; this change does not run that tool or remove its pins.
+
+Local account-backfill snapshots are recovery material, not synchronized usage
+facts. The journal database owns a receipt for each new pre-update SQLite copy:
+pending until the backup completes and its corresponding record update commits
+atomically, committed thereafter; a caught failure becomes failed while a process
+death can leave a pending receipt. Explicit CLI backfill uses the journal's
+interprocess write lock. Only after a committed update may that owner prune older
+receipt-backed copies, retaining the latest three committed copies and every
+explicitly held one. Pending, failed or unreceipted legacy copies are never
+automatically removed. Pruning is resumable after restart and its errors are
+reported separately; a committed account update is not replayed because cleanup
+failed. Only exact receipt-bound files and directories in this backup namespace
+are eligible. On Windows, the owner compares the stored volume/file IDs with an
+open OS handle and marks that handle for deletion; it never unlinks a pathname
+after checking it. A replaced junction or changed identity leaves the copy
+unresolved, and unavailable handle deletion fails closed without a pathname
+fallback. Each explicit prune pass attempts at most three eligible receipts and stops starting
+helpers after a 20-second prune budget; one helper has its own 20-second bound.
+Durable attempt counts rotate failed receipts across subsequent explicit passes, while
+unprocessed receipts remain eligible. Remote usage push/pull cannot wait behind
+an unbounded retention backlog. Bounded content-free backup, commit and prune
+timings and failure kinds go to the existing command trace worker; they carry
+no journal records or account secrets.
+
+Scheduled sync reports paired started/terminal child measurements for config,
+state, worker snapshot, push, push cursor, pull, import/projection, summary,
+reconcile and pull cursor under one original sync operation identity. Concurrent
+callers share the existing in-flight promise. Telemetry failure cannot change
+fact/cursor outcomes or introduce another sync, retry or maintenance lane.
+Production stalls require correlated measured evidence; a cumulative loop
+percentile or an isolated fixture is not causal production latency proof.
+
+The prepared runtime includes the exact handle-deletion source alongside its
+owning module in the hashed release manifest. Missing source refuses preparation
+before cutover; unrelated native sources are not runtime assets.
+
 ## Legacy ingest
 
 - A schema `1` usage event is accepted so that an installation that never
