@@ -186,6 +186,7 @@ export function createRuntimeOrchestrationComposition({
 
   const providerRuntimeWiring = ports.providerRuntime.bind(createProviderRuntimeWiring({
     observation: {
+      ensureThreadNamed: provider.hubThreadNaming.recoverThreadNaming,
       dataDir: config.dataDir,
       recordingContourRoot: config.testContourRecording?.root ?? null,
       claudeOutputPollIntervalMs,

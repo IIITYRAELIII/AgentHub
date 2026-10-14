@@ -124,6 +124,7 @@ function fixture({
     stream: (id) => id === "stream-1" ? { id, workspaceId: "workspace-1" } : null,
     workspace: (id) => id === "workspace-1" ? { id, name: "Workspace" } : null,
     bindThread: (value) => events.push(["bind", value]),
+    threadNaming: () => ({ title: "Workspace - S8 2" }),
   };
   const service = new StreamContextMaintenanceService({
     registry,
@@ -141,6 +142,7 @@ function fixture({
       } : null;
     },
     workspaceCatalog,
+    nameCreatedThread: async (reference) => { events.push(["name", reference]); return "Workspace - S8 2"; },
     selectionStore,
     deferredInputs,
     invalidateCatalog: () => events.push(["invalidate"]),
