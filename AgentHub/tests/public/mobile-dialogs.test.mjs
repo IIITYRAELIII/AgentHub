@@ -100,14 +100,14 @@ async function drawerContrast(page) {
     const drawer = document.querySelector("[data-mobile-workspace-drawer]");
     const selectors = [".mobile-navigation-head strong", ".task-rail-title > span:first-child",
       ".task-count", "[data-task-filter]", ".task-workspace-name", ".task-workspace-folder-name",
-      ".task-workspace-folder-count", "[data-mobile-workspace-menu]", "[data-mobile-folder-menu]",
+      ".task-workspace-folder-count", "[data-mobile-workspace-edit]", "[data-mobile-folder-rename]",
       ".mobile-workspace-footer button", ".mobile-workspace-footer svg", ".mobile-navigation-head button", ".task-workspace-folder-glyph"];
     const results = [];
     for (const selector of selectors) for (const node of drawer.querySelectorAll(selector)) {
       if (!node.getClientRects().length || node.closest("[hidden]")) continue;
       const style = getComputedStyle(node);
       const color = rgba(style.color); color[3] *= Number(style.opacity);
-      results.push({ selector, minimum: selector.includes("menu]") || selector.includes("glyph") || selector.includes("svg") ? 3 : 4.5,
+      results.push({ selector, minimum: selector.includes("edit]") || selector.includes("rename]") || selector.includes("glyph") || selector.includes("svg") ? 3 : 4.5,
         foreground: style.color, background: bg(node), ratio: ratio(over(color, bg(node)), bg(node)) });
       if (node.matches("input")) {
         const placeholder = getComputedStyle(node, "::placeholder");
@@ -118,7 +118,7 @@ async function drawerContrast(page) {
       }
     }
     const focused = document.activeElement;
-    if (drawer.contains(focused) || document.querySelector("[data-mobile-drawer-menu]").contains(focused)) {
+    if (drawer.contains(focused)) {
       const s = getComputedStyle(focused);
       results.push({ selector: "focus-indicator", minimum: 3, width: parseFloat(s.outlineWidth),
         ratio: ratio(over(rgba(s.outlineColor), bg(focused)), bg(focused)) });
@@ -127,18 +127,15 @@ async function drawerContrast(page) {
     if (selected) results.push({ selector: "selected-marker", minimum: 3,
       ratio: ratio(over(rgba(getComputedStyle(selected).borderLeftColor), bg(selected)), bg(selected)) });
     const scrim = rgba(getComputedStyle(drawer, "::backdrop").backgroundColor);
-    const menu = document.querySelector("[data-mobile-drawer-menu]");
-    if (menu.open) for (const node of menu.querySelectorAll("[role='menuitem']")) {
-      const style = getComputedStyle(node);
-      results.push({ selector: "context-menu-action", minimum: 4.5,
-        foreground: style.color, background: bg(node), ratio: ratio(over(rgba(style.color), bg(node)), bg(node)) });
-    }
     const geometry = [...drawer.querySelectorAll(".task-workspace-item, .task-workspace-folder-summary")]
       .filter((node) => node.getClientRects().length).map((node) => {
-        const box = node.getBoundingClientRect(); const glyph = node.querySelector("[data-mobile-workspace-menu], [data-mobile-folder-menu]");
-        const button = glyph?.getBoundingClientRect();
+        const box = node.getBoundingClientRect(); const glyph = node.matches("summary")
+          ? node.closest("[data-mobile-folder-row]")?.querySelector("[data-mobile-folder-rename]") : node.querySelector("[data-mobile-workspace-edit]");
+        const button = glyph?.getBoundingClientRect(), svg = glyph?.querySelector("svg")?.getBoundingClientRect();
+        const badge = node.querySelector(".task-workspace-folder-count")?.getBoundingClientRect();
         return { folder: node.matches("summary"), height: box.height,
           target: button ? [button.width, button.height] : null,
+          glyph: svg ? [svg.width, svg.height] : null, badgeClear: !badge || !button || badge.right <= button.left,
           sameLine: !button || (button.top >= box.top && button.bottom <= box.bottom),
           image: getComputedStyle(node).backgroundImage, shadow: getComputedStyle(node).boxShadow };
       });
@@ -151,7 +148,7 @@ async function drawerContrast(page) {
 test("Mobile Workspace drawer contrast survives every shipped theme and background", async () => {
   const registry = loadThemeRegistry(fileURLToPath(assets));
   const baseline = process.env.HUB111_DRAWER_BASELINE === "1";
-  const directory = new URL("../../WIP/mobile-drawer-theme-captures/", import.meta.url);
+  const directory = new URL("../../WIP/mobile-drawer-pencil-captures/", import.meta.url);
   await mkdir(directory, { recursive: true });
   const browser = await chromium.launch({ channel: process.platform === "win32" ? "msedge" : undefined, headless: true });
   const failures = [], measurements = [];
@@ -189,7 +186,8 @@ test("Mobile Workspace drawer contrast survives every shipped theme and backgrou
           failures.push({ width, theme, backgroundId: background, state, ...metric });
         }
         if (!baseline) for (const row of result.geometry) {
-          if (row.height < 44 || row.height > (row.folder ? 44 : 48) || !row.sameLine || row.target?.some((value) => value < 44) || row.image !== "none") failures.push({ width, theme, backgroundId: background, state, geometry: row });
+          if (row.height < 44 || row.height > (row.folder ? 44 : 48) || !row.sameLine || !row.badgeClear || row.target?.some((value) => value < 44)
+            || row.glyph?.some((value) => value < 20 || value > 22) || row.image !== "none") failures.push({ width, theme, backgroundId: background, state, geometry: row });
         }
       };
       for (const theme of registry.themes.filter((theme) => !baseline || theme.id === "orange")) {
@@ -213,21 +211,24 @@ test("Mobile Workspace drawer contrast survives every shipped theme and backgrou
           await page.locator('[data-workspace-select="b"]').hover();
           await check("hover", theme.id, background.id);
           await page.keyboard.press("Tab");
-          await page.locator('[data-workspace-select="a"] [data-mobile-workspace-menu]').focus();
+          await page.locator('[data-workspace-select="a"] [data-mobile-workspace-edit]').focus();
           await check("keyboard-focus", theme.id, background.id);
           if (!baseline) {
-            await page.locator('[data-workspace-select="a"] [data-mobile-workspace-menu]').click();
-            await check("workspace-menu", theme.id, background.id);
+            await page.locator('[data-mobile-folder-row] [data-mobile-folder-rename]').focus();
+            await check("folder-keyboard-focus", theme.id, background.id);
+            await page.locator('[data-workspace-select="a"] [data-mobile-workspace-edit]').click();
+            await check("workspace-edit", theme.id, background.id);
             assert.equal(await page.locator("[data-mobile-workspace-drawer]").evaluate((d) => d.open), true);
             await page.keyboard.press("Escape");
-            await page.waitForFunction(() => !document.querySelector("[data-mobile-drawer-menu]").open);
-            assert.equal(await page.locator('[data-workspace-select="a"] [data-mobile-workspace-menu]').evaluate((n) => document.activeElement === n), true);
-            await page.locator('[data-workspace-folder-kind="folder"] [data-mobile-folder-menu]').click();
-            await check("folder-menu", theme.id, background.id);
+            await page.waitForFunction(() => !document.querySelector("[data-workspace-card-modal]").open);
+            await page.waitForFunction(() => document.activeElement?.matches('[data-workspace-select="a"] [data-mobile-workspace-edit]'));
+            assert.equal(await page.locator('[data-workspace-select="a"] [data-mobile-workspace-edit]').evaluate((n) => document.activeElement === n), true);
+            await page.locator('[data-mobile-folder-row] [data-mobile-folder-rename]').click();
+            await check("folder-rename", theme.id, background.id);
             await page.evaluate(() => AgentHub.navigateBack());
-            await page.waitForFunction(() => !document.querySelector("[data-mobile-drawer-menu]").open);
+            await page.waitForFunction(() => !document.querySelector("[data-mobile-drawer-rename]").open && document.activeElement?.matches('[data-mobile-folder-rename]'));
             assert.equal(await page.locator("[data-mobile-workspace-drawer]").evaluate((d) => d.open), true);
-            assert.equal(await page.locator('[data-workspace-folder-kind="folder"] [data-mobile-folder-menu]').evaluate((n) => document.activeElement === n), true);
+            assert.equal(await page.locator('[data-mobile-folder-row] [data-mobile-folder-rename]').evaluate((n) => document.activeElement === n), true);
           }
           if (width === 390 && background.id === theme.id && ["orange", "orbit"].includes(theme.id)) {
             await page.screenshot({ path: fileURLToPath(new URL(`${theme.id}-${baseline ? "before" : "after"}-390.png`, directory)) });
@@ -320,24 +321,22 @@ test("mobile parity paths expose Workspace/archive, Stream actions and readable 
     await page.locator("[data-mobile-workspaces-open]").click();
     assert.match(await page.locator('[data-mobile-workspace-action="workspace-archive-open"]').innerText(), /\(1\)/u);
     await save("drawer-parity-390.png");
-    await page.locator('[data-workspace-select="a"] [data-mobile-workspace-menu]').click();
-    await save("workspace-menu-390.png");
-    await page.getByRole("menuitem", { name: "Редактировать…", exact: true }).click();
+    await page.locator('[data-workspace-select="a"] [data-mobile-workspace-edit]').click();
+    await save("workspace-edit-390.png");
     assert.equal(await page.locator("[data-workspace-card-modal]").evaluate((d) => d.open), true);
     await page.evaluate(() => AgentHub.navigateBack());
-    await page.waitForFunction(() => document.querySelector("[data-mobile-workspace-drawer]").open);
-    assert.equal(await page.locator('[data-workspace-select="a"] [data-mobile-workspace-menu]').evaluate((node) => document.activeElement === node), true);
-    await page.locator('[data-workspace-folder-kind="folder"] [data-mobile-folder-menu]').click();
-    await save("folder-menu-390.png");
+    await page.waitForFunction(() => !document.querySelector("[data-workspace-card-modal]").open && document.activeElement?.matches('[data-mobile-workspace-edit]'));
+    assert.equal(await page.locator('[data-workspace-select="a"] [data-mobile-workspace-edit]').evaluate((node) => document.activeElement === node), true);
+    await page.locator('[data-mobile-folder-row] [data-mobile-folder-rename]').click();
+    await save("folder-rename-390.png");
     await page.evaluate(() => AgentHub.navigateBack());
-    await page.waitForFunction(() => document.querySelector("[data-mobile-workspace-drawer]").open);
-    assert.equal(await page.locator('[data-workspace-folder-kind="folder"] [data-mobile-folder-menu]').evaluate((node) => document.activeElement === node), true);
-    await page.locator('[data-workspace-folder-kind="folder"] [data-mobile-folder-menu]').click();
-    await page.getByRole("menuitem", { name: "Переименовать папку…", exact: true }).click();
+    await page.waitForFunction(() => !document.querySelector("[data-mobile-drawer-rename]").open && document.activeElement?.matches('[data-mobile-folder-rename]'));
+    assert.equal(await page.locator('[data-mobile-folder-row] [data-mobile-folder-rename]').evaluate((node) => document.activeElement === node), true);
+    await page.locator('[data-mobile-folder-row] [data-mobile-folder-rename]').click();
     assert.equal(await page.locator("[data-text-dialog]").isVisible(), true);
     await page.evaluate(() => AgentHub.navigateBack());
-    await page.waitForFunction(() => document.querySelector("[data-mobile-workspace-drawer]").open);
-    assert.equal(await page.locator('[data-workspace-folder-kind="folder"] [data-mobile-folder-menu]').evaluate((node) => document.activeElement === node), true);
+    await page.waitForFunction(() => !document.querySelector("[data-mobile-drawer-rename]").open && document.activeElement?.matches('[data-mobile-folder-rename]'));
+    assert.equal(await page.locator('[data-mobile-folder-row] [data-mobile-folder-rename]').evaluate((node) => document.activeElement === node), true);
     await page.locator('[data-mobile-workspace-action="workspace-archive-open"]').click();
     assert.equal(await page.getByRole("button", { name: "Восстановить", exact: true }).isVisible(), true);
     assert.equal(await page.getByRole("button", { name: "Удалить окончательно", exact: true }).isVisible(), true);
@@ -419,9 +418,9 @@ test("mobile parity paths expose Workspace/archive, Stream actions and readable 
   } finally { await context.close(); await browser.close(); }
 });
 
-test("drawer menu layers keep compact navigation visible through pointer, Back, edit and rename", async () => {
+test("drawer pencils open existing edit and rename directly without selecting or collapsing", async () => {
   const registry = loadThemeRegistry(fileURLToPath(assets));
-  const directory = new URL("../../WIP/mobile-drawer-theme-captures/", import.meta.url);
+  const directory = new URL("../../WIP/mobile-drawer-pencil-captures/", import.meta.url);
   await mkdir(directory, { recursive: true });
   const browser = await chromium.launch({ channel: process.platform === "win32" ? "msedge" : undefined, headless: true });
   try {
@@ -439,71 +438,129 @@ test("drawer menu layers keep compact navigation visible through pointer, Back, 
         if ([320, 390].includes(width)) await page.screenshot({ path: fileURLToPath(new URL(`${theme}-${state}-${width}.png`, directory)) });
       };
       const drawer = page.locator("[data-mobile-workspace-drawer]");
-      const menu = page.locator("[data-mobile-drawer-menu]");
-      const workspaceOpener = page.locator('[data-workspace-select="b"] [data-mobile-workspace-menu]');
-      const folderOpener = page.locator('[data-workspace-folder-kind="folder"] [data-mobile-folder-menu]');
+      const workspaceModal = page.locator("[data-workspace-card-modal]");
+      const renameModal = page.locator("[data-mobile-drawer-rename]");
+      const workspaceOpener = page.locator('[data-workspace-select="b"] [data-mobile-workspace-edit]');
+      const folderOpener = page.locator('[data-mobile-folder-rename]');
+      const settledFocus = async (selector) => page.waitForFunction((selector) => document.activeElement?.matches(selector)
+        && !document.querySelector("[data-workspace-card-modal]").open && !document.querySelector("[data-mobile-drawer-rename]").open, selector, { timeout: 5000 })
+        .catch(async (error) => { throw new Error(JSON.stringify(await page.evaluate(() => ({ focus: document.activeElement?.outerHTML,
+          folders: [...document.querySelectorAll('[data-workspace-folder-kind="folder"]')].map((n) => ({ id: n.dataset.workspaceFolderName,
+            label: n.querySelector('[data-mobile-folder-rename]')?.getAttribute('aria-label') })) }))), { cause: error }); });
       await page.locator("[data-mobile-workspaces-open]").click();
-      await page.locator('[data-workspace-select="a"] [data-mobile-workspace-menu]').focus();
-      await save("matched-after");
-      await workspaceOpener.click();
-      assert.equal(await drawer.evaluate((d) => d.open), true);
-      assert.equal(await menu.evaluate((d) => d.matches(":modal")), true);
-      assert.equal(await page.locator('[data-workspace-select="a"] [data-mobile-workspace-select]').getAttribute("aria-pressed"), "true");
-      for (let index = 0; index < 3; index++) {
-        await page.keyboard.press("Tab");
-        assert.equal(await menu.evaluate((d) => d.contains(document.activeElement)), true);
+      await save("default");
+      assert.equal(await page.locator("[data-mobile-drawer-menu], [data-mobile-workspace-menu], [data-mobile-folder-menu]").count(), 0);
+      for (const [opener, name] of [[workspaceOpener, "Редактировать Workspace «Utilities»"], [folderOpener, "Переименовать папку «РАБОТА»"]]) {
+        assert.equal(await opener.getAttribute("aria-label"), name);
+        assert.equal(await opener.getAttribute("title"), name);
+        assert.equal(await opener.getAttribute("aria-haspopup"), "dialog");
+        assert.deepEqual(await opener.evaluate((n) => ({ glyph: n.querySelector("svg").dataset.phosphorIcon,
+          target: [n.getBoundingClientRect().width, n.getBoundingClientRect().height],
+          size: [n.querySelector("svg").getBoundingClientRect().width, n.querySelector("svg").getBoundingClientRect().height],
+          nested: !!n.parentElement.closest("button, summary") })), { glyph: "pencil-simple", target: [44, 44], size: [22, 22], nested: false });
+        assert.deepEqual(await opener.evaluate((n) => {
+          const menu = new MouseEvent("contextmenu", { bubbles: true, cancelable: true });
+          n.dispatchEvent(menu);
+          const key = new KeyboardEvent("keydown", { key: "F10", shiftKey: true, bubbles: true, cancelable: true });
+          n.dispatchEvent(key);
+          return { contextPrevented: menu.defaultPrevented, keyPrevented: key.defaultPrevented,
+            customMenu: !!document.querySelector('.workspace-context-menu:not([hidden])') };
+        }), { contextPrevented: false, keyPrevented: false, customMenu: false });
       }
-      await save("workspace-menu");
-      await page.evaluate(() => history.back());
-      await page.waitForFunction(() => !document.querySelector("[data-mobile-drawer-menu]").open);
-      assert.equal(await workspaceOpener.evaluate((n) => document.activeElement === n), true);
-      assert.equal(await page.evaluate(() => window.drawerClosedCount), 0);
-      await workspaceOpener.click();
-      await page.mouse.click(4, 100);
-      assert.equal(await menu.evaluate((d) => d.open), false);
-      assert.equal(await drawer.evaluate((d) => d.open), true);
-      assert.equal(await page.evaluate(() => window.drawerClosedCount), 0);
-      await workspaceOpener.focus(); await page.keyboard.press("Enter");
-      assert.equal(await menu.evaluate((d) => d.open), true);
-      assert.equal(await page.locator('[data-workspace-select="a"] [data-mobile-workspace-select]').getAttribute("aria-pressed"), "true");
-      await page.keyboard.press("Escape");
-      await workspaceOpener.focus(); await page.keyboard.press("Shift+F10");
-      assert.equal(await menu.evaluate((d) => d.open), true);
-      await page.keyboard.press("Escape");
-      assert.equal(await workspaceOpener.evaluate((n) => n.parentElement.querySelector("[data-mobile-workspace-select]")?.parentElement === n.parentElement && n.parentElement.getAttribute("role") !== "button"), true);
-      await workspaceOpener.click();
-      await page.getByRole("menuitem", { name: "Редактировать…", exact: true }).click();
+      assert.equal(await workspaceOpener.evaluate((n) => n.parentElement.querySelector("[data-mobile-workspace-select]")?.parentElement === n.parentElement
+        && n.parentElement.getAttribute("role") !== "button"), true);
+      await workspaceOpener.focus(); await page.keyboard.press("Tab"); await workspaceOpener.focus();
+      await save("workspace-keyboard-focus");
+      await page.keyboard.press("Enter");
+      assert.equal(await workspaceModal.evaluate((d) => d.matches(":modal")), true);
       assert.equal(await page.locator("[data-workspace-card-name]").inputValue(), "Utilities");
       assert.equal(await drawer.evaluate((d) => d.open), true);
-      await save("edit-layer");
-      await page.evaluate(() => AgentHub.navigateBack());
-      await page.waitForFunction(() => !document.querySelector("[data-workspace-card-modal]").open);
-      assert.equal(await workspaceOpener.evaluate((n) => document.activeElement === n), true);
-      await folderOpener.click(); await save("folder-menu");
-      await page.getByRole("menuitem", { name: "Переименовать папку…", exact: true }).click();
+      assert.equal(await page.locator('[data-workspace-select="a"] [data-mobile-workspace-select]').getAttribute("aria-pressed"), "true");
+      await save("workspace-edit");
+      await page.evaluate(() => history.back());
+      await settledFocus('[data-workspace-select="b"] [data-mobile-workspace-edit]');
+      assert.equal(await page.evaluate(() => window.drawerClosedCount), 0);
+      await workspaceOpener.click();
+      await page.locator("[data-workspace-card-cancel]").click();
+      await settledFocus('[data-workspace-select="b"] [data-mobile-workspace-edit]');
+      await workspaceOpener.focus(); await page.keyboard.press("Space");
+      assert.equal(await workspaceModal.evaluate((d) => d.open), true);
+      await page.keyboard.press("Escape");
+      await settledFocus('[data-workspace-select="b"] [data-mobile-workspace-edit]');
+
+      // The pencil is outside summary, stays visible when collapsed and cannot toggle it.
+      const folder = page.locator('[data-workspace-folder-kind="folder"] details');
+      await folder.locator("summary").click();
+      assert.equal(await folder.evaluate((d) => d.open), false);
+      assert.equal(await folderOpener.isVisible(), true);
+      await folderOpener.focus(); await page.keyboard.press("Tab"); await folderOpener.focus();
+      await save("folder-keyboard-focus");
+      await page.keyboard.press("Space");
+      assert.equal(await renameModal.evaluate((d) => d.matches(":modal")), true);
+      assert.equal(await folder.evaluate((d) => d.open), false);
       assert.equal(await page.locator("[data-text-dialog-input]").inputValue(), "РАБОТА");
       assert.equal(await drawer.evaluate((d) => d.open), true);
-      assert.equal(await menu.evaluate((d) => d.matches(":modal")), true);
-      await save("rename-layer");
+      assert.equal(await renameModal.evaluate((d) => {
+        const box = d.getBoundingClientRect(), style = getComputedStyle(d), inner = getComputedStyle(d.querySelector(".text-dialog"));
+        return box.left >= 16 && innerWidth - box.right >= 16 && box.width <= 356
+          && parseFloat(style.borderTopWidth) === 1 && parseFloat(style.borderRadius) === 12
+          && inner.backgroundColor === "rgba(0, 0, 0, 0)" && parseFloat(inner.borderTopWidth) === 0 && inner.boxShadow === "none"
+          && [...d.querySelectorAll("input:not([hidden]), button:not([hidden])")].filter((n) => n.getClientRects().length).every((n) => n.getBoundingClientRect().height >= 44);
+      }), true);
+      await save("folder-rename");
+      for (let index = 0; index < 5; index++) {
+        await page.keyboard.press(index % 2 ? "Shift+Tab" : "Tab");
+        assert.equal(await renameModal.evaluate((d) => d.contains(document.activeElement)), true);
+      }
       await page.keyboard.press("Escape");
-      await page.waitForFunction(() => !document.querySelector("[data-mobile-drawer-menu]").open);
-      assert.equal(await folderOpener.evaluate((n) => document.activeElement === n), true);
+      await settledFocus("[data-mobile-folder-rename]");
+      await folderOpener.focus(); await page.keyboard.press("Enter");
+      await page.locator("[data-text-dialog-cancel]").click();
+      await settledFocus("[data-mobile-folder-rename]");
+      await folderOpener.click();
+      await page.evaluate(() => AgentHub.navigateBack());
+      await settledFocus("[data-mobile-folder-rename]");
+      await folderOpener.click();
+      await page.mouse.click(4, 100);
+      await settledFocus("[data-mobile-folder-rename]");
+      assert.equal(await drawer.evaluate((d) => d.open), true);
       assert.equal(await page.evaluate(() => window.drawerClosedCount), 0);
+      await folder.locator("summary").click();
+
+      // Existing mutation owner still addresses the explicit row, not selection A.
+      await workspaceOpener.click();
+      await page.locator("[data-workspace-card-name]").fill("Utilities renamed");
+      await page.locator("[data-workspace-card-form]").evaluate((form) => form.requestSubmit());
+      await settledFocus('[data-workspace-select="b"] [data-mobile-workspace-edit]');
+      assert.equal(await page.evaluate(() => window.testIntents.find((i) => i.type === "workspace:update")?.workspaceId), "b");
+      await folderOpener.click();
+      await page.locator("[data-text-dialog-input]").fill("ДРУГАЯ");
+      await page.locator("[data-text-dialog-form]").evaluate((form) => form.requestSubmit());
+      await settledFocus("[data-mobile-folder-rename]");
+      assert.equal(await page.evaluate(() => window.testIntents.filter((i) => i.type === "workspace:folder-rename").length), 1);
+
+      await folderOpener.click();
+      await page.evaluate((tasks) => {
+        AgentHub.setWorkspaces([{ id: "a", name: "AgentHub", settings: { catalogFolder: "НОВАЯ" } },
+          { id: "b", name: "Utilities", settings: { catalogFolder: "НОВАЯ" } }]);
+        AgentHub.setTasks(tasks.map((task) => ({ ...task, workspaceSettings: { catalogFolder: "НОВАЯ" } })));
+        AgentHub.renameWorkspaceFolderCatalog("РАБОТА", "НОВАЯ");
+      }, tasks);
+      await page.keyboard.press("Escape");
+      await settledFocus('[data-mobile-folder-rename][aria-label="Переименовать папку «НОВАЯ»"]');
       await workspaceOpener.click();
       await page.evaluate((tasks) => {
         AgentHub.setWorkspaces([{ id: "a", name: "AgentHub", settings: { catalogFolder: "РАБОТА" } }]);
         AgentHub.setTasks(tasks.filter((task) => task.workspaceId === "a"));
       }, tasks);
       await page.keyboard.press("Escape");
-      await page.waitForFunction(() => !document.querySelector("[data-mobile-drawer-menu]").open);
-      assert.equal(await page.locator('[data-workspace-select="a"] [data-mobile-workspace-menu]').evaluate((n) => document.activeElement === n), true);
+      await settledFocus('[data-workspace-select="a"] [data-mobile-workspace-edit]');
       await page.evaluate(() => AgentHub.navigateBack());
       await page.waitForFunction(() => !document.querySelector("[data-mobile-workspace-drawer]").open && window.drawerClosedCount === 1);
-      assert.equal(await page.evaluate(() => window.drawerClosedCount), 1);
       if (width === 430 && theme === "orbit") {
         await page.setViewportSize({ width: 1280, height: 844 });
         await page.waitForFunction(() => !document.documentElement.hasAttribute("data-mobile-dialogs-enabled"));
-        assert.equal(await page.locator("[data-mobile-workspace-select]").count(), 0);
+        assert.equal(await page.locator("[data-mobile-workspace-select], [data-mobile-workspace-edit], [data-mobile-folder-row], [data-mobile-folder-rename]").count(), 0);
         assert.equal(await page.locator('[data-workspace-select="a"]').getAttribute("role"), "button");
       }
       assert.deepEqual(errors, []);
@@ -603,6 +660,21 @@ test("Desktop and narrow VS Code host retain existing navigation and composer", 
       assert.equal(await page.locator("[data-mobile-dialogs-nav]").isVisible(), false);
       assert.equal(await page.locator("[data-mobile-stream-switch]").isVisible(), false);
       assert.equal(await page.locator("[data-mobile-conversation-back]").isVisible(), false);
+      assert.equal(await page.locator("[data-mobile-workspace-edit], [data-mobile-folder-rename], [data-mobile-folder-row]").count(), 0);
+      assert.equal(await page.locator('[data-workspace-select="a"]').evaluate((row) => {
+        const event = new KeyboardEvent("keydown", { key: "F10", shiftKey: true, bubbles: true, cancelable: true });
+        row.dispatchEvent(event); return event.defaultPrevented;
+      }), true);
+      await page.getByRole("menuitem", { name: "Редактировать…", exact: true }).click();
+      assert.equal(await page.locator("[data-workspace-card-name]").inputValue(), "AgentHub");
+      await page.keyboard.press("Escape");
+      assert.equal(await page.locator('[data-workspace-folder-kind="folder"] summary').evaluate((summary) => {
+        const event = new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 100, clientY: 100 });
+        summary.dispatchEvent(event); return event.defaultPrevented;
+      }), true);
+      await page.getByRole("menuitem", { name: "Переименовать папку…", exact: true }).click();
+      assert.equal(await page.locator("[data-text-dialog-input]").inputValue(), "РАБОТА");
+      await page.locator("[data-text-dialog-cancel]").click();
       await page.evaluate(() => AgentHub.showSelectedTask());
       assert.equal(await page.locator("[data-composer-input]").isVisible(), true);
       await page.screenshot({ path: new URL(`host-${vscode ? "webview" : "web"}-${width}.png`, captures).pathname.replace(/^\/(?:([A-Z]:))/u, "$1") });
