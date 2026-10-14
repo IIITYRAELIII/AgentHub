@@ -5,7 +5,7 @@
   // only the mobile list/overlay route, never messages, drafts or unread state.
   function create({ root, state, currentTask, workspaceKey, workspaceStreams,
     representativeStreamTask, selectTask, setView, setPane, openSearch,
-    openSettings, openWorkspaceCard, workspaceMenu, folderMenu, closeWorkspaceMenus,
+    openSettings, openWorkspaceCard, workspaceDialog, renameWorkspaceFolder,
     textDialog, cancelTextDialog,
     createStream, retryConnection, closeTransient, closeNative, isMobile, formatTime, shortModel }) {
     const doc = root.ownerDocument;
@@ -22,11 +22,9 @@
     let historyInstalled = false;
     let lastModel = "";
     let loaded = false;
-    let menuOpener = null;
-    let menuIdentity = null;
-    let menuRowIndex = 0;
-    let menuContent = null;
-    let menuHome = null;
+    let editOpener = null;
+    let editIdentity = null;
+    let editRowIndex = 0;
     let renameHome = null;
     const dialogStack = [];
     doc.addEventListener("beforetoggle", (event) => {
@@ -111,36 +109,18 @@
       close(drawer); openWorkspaceCard(workspaceId);
     }));
     drawer.append(drawerFooter);
-    const menuLayer = dialog("Действия Workspace", "mobile-drawer-menu-layer", "data-mobile-drawer-menu", closeNavigationMenu, resolveMenuOpener);
-    menuLayer.querySelector("header").hidden = true;
-    menuLayer.addEventListener("keydown", (event) => {
+    const renameLayer = dialog("Новое название папки", "mobile-drawer-rename-layer", "data-mobile-drawer-rename", closeRename, resolveEditOpener);
+    renameLayer.querySelector("header").hidden = true;
+    renameLayer.addEventListener("keydown", (event) => {
       if (event.key !== "Tab" || event.ctrlKey || event.altKey || event.metaKey) return;
-      const controls = [...menuLayer.querySelectorAll("button, input, textarea, select, [tabindex]")]
+      const controls = [...renameLayer.querySelectorAll("button, input, textarea, select, [tabindex]")]
         .filter((item) => !item.disabled && item.tabIndex >= 0 && item.getClientRects().length && !item.closest("[hidden]"));
       if (!controls.length) return;
       event.preventDefault();
       const index = controls.indexOf(doc.activeElement);
       controls[(index + (event.shiftKey ? -1 : 1) + controls.length) % controls.length].focus({ preventScroll: true });
     });
-    menuLayer.addEventListener("click", (event) => {
-      const action = event.target.closest("[role='menuitem']");
-      if (!action) return;
-      if (action.hasAttribute("data-workspace-folder-menu-action")) {
-        renameHome = { parent: textDialog.parentNode, next: textDialog.nextSibling,
-          role: textDialog.getAttribute("role"), modal: textDialog.getAttribute("aria-modal") };
-        menuHome.parent.insertBefore(menuContent, menuHome.next);
-        menuLayer.append(textDialog);
-        textDialog.setAttribute("role", "presentation"); textDialog.removeAttribute("aria-modal");
-        menuLayer.dataset.rename = "";
-        menuLayer.style.left = "50%"; menuLayer.style.top = "50%";
-      } else {
-        // Preserve the owner's dataset until its existing bubble handler reads
-        // the exact identity. Focus the drawer opener before it opens a card.
-        menuLayer.close();
-        resolveMenuOpener()?.focus({ preventScroll: true });
-      }
-    }, true);
-    menuLayer.addEventListener("close", () => {
+    function restoreRenameForm() {
       if (renameHome) {
         if (!textDialog.hidden) cancelTextDialog();
         renameHome.parent.insertBefore(textDialog, renameHome.next);
@@ -149,17 +129,20 @@
         if (renameHome.modal !== null) textDialog.setAttribute("aria-modal", renameHome.modal);
         renameHome = null;
       }
-      if (menuContent && menuHome) menuHome.parent.insertBefore(menuContent, menuHome.next);
-      closeWorkspaceMenus(); menuContent = menuHome = null;
-      menuLayer.removeAttribute("data-rename");
-      if (drawer.open && !doc.querySelector("dialog[open]:not([data-mobile-workspace-drawer])")) resolveMenuOpener()?.focus({ preventScroll: true });
+    }
+    renameLayer.addEventListener("close", () => {
+      if (renameLayer.open) return;
+      restoreRenameForm(); restoreEditFocus();
+    });
+    workspaceDialog.addEventListener("close", () => {
+      if (!workspaceDialog.open && editIdentity?.kind === "workspace") restoreEditFocus();
     });
     new MutationObserver(() => {
       if (!renameHome) return;
-      if (textDialog.hidden) close(menuLayer);
+      if (textDialog.hidden) closeRename();
       else {
-        menuLayer.setAttribute("aria-label", textDialog.querySelector("[data-text-dialog-title]").textContent);
-        window.AgentHubModalOverlays.activateOverlay(menuLayer, menuOpener);
+        renameLayer.setAttribute("aria-label", textDialog.querySelector("[data-text-dialog-title]").textContent);
+        window.AgentHubModalOverlays.activateOverlay(renameLayer, editOpener);
       }
     }).observe(textDialog, { attributes: true, attributeFilter: ["hidden"] });
     const switcher = dialog("Потоки Workspace", "mobile-stream-switcher", "data-mobile-stream-switcher");
@@ -218,39 +201,39 @@
       installHistory();
     }
     function close(target) { if (target.open) target.close(); }
-    function closeNavigationMenu() {
-      if (renameHome && !textDialog.hidden) cancelTextDialog();
-      closeWorkspaceMenus();
-      close(menuLayer);
+    function closeRename() {
+      restoreRenameForm();
+      close(renameLayer);
+      restoreEditFocus();
     }
-    function resolveMenuOpener() {
-      if (menuOpener?.isConnected && !menuOpener.disabled && menuOpener.getClientRects().length) return menuOpener;
-      const rows = [...rail.querySelectorAll(menuIdentity?.kind === "folder"
-        ? '[data-workspace-folder-kind="folder"]' : "[data-workspace-select]")];
-      const exact = rows.find((row) => menuIdentity?.kind === "folder"
-        ? row.dataset.workspaceFolderName === menuIdentity.id : row.dataset.workspaceSelect === menuIdentity?.id);
+    function resolveEditOpener() {
+      if (editOpener?.isConnected && !editOpener.disabled && editOpener.getClientRects().length) return editOpener;
+      const rows = [...rail.querySelectorAll(editIdentity?.kind === "folder"
+        ? '[data-workspace-folder-kind="folder"]' : "[data-workspace-select]")].filter((row) => row.getClientRects().length);
+      const exact = rows.find((row) => editIdentity?.kind === "folder"
+        ? row.dataset.workspaceFolderName === editIdentity.id : row.dataset.workspaceSelect === editIdentity?.id);
       // Removed row: keep focus in this navigation owner at the nearest row,
       // or its close/heading control if there are no remaining candidates.
-      const row = exact || rows[Math.min(menuRowIndex, rows.length - 1)];
-      return row?.querySelector("[data-mobile-workspace-menu], [data-mobile-folder-menu]") || drawer.querySelector("button");
+      const row = exact || rows[Math.min(editRowIndex, rows.length - 1)];
+      return row?.querySelector(editIdentity?.kind === "folder" ? "[data-mobile-folder-rename]" : "[data-mobile-workspace-edit]") || drawer.querySelector("button");
     }
-    function openNavigationMenu(event, identity, kind) {
-      menuOpener = event.currentTarget;
-      menuIdentity = { kind, id: identity };
-      menuLayer.setAttribute("aria-label", kind === "folder" ? "Действия папки" : "Действия Workspace");
+    function restoreEditFocus() {
+      if (active && drawer.open && !doc.querySelector("dialog[open]:not([data-mobile-workspace-drawer])")) resolveEditOpener()?.focus({ preventScroll: true });
+    }
+    function openDirectEdit(event, identity, kind) {
+      editOpener = event.currentTarget;
+      editIdentity = { kind, id: identity };
       const rows = [...rail.querySelectorAll(kind === "folder" ? '[data-workspace-folder-kind="folder"]' : "[data-workspace-select]")];
-      menuRowIndex = Math.max(0, rows.indexOf(menuOpener.closest(kind === "folder" ? "[data-workspace-folder-name]" : "[data-workspace-select]")));
-      menuContent = (kind === "folder" ? folderMenu : workspaceMenu)(event, identity);
-      menuHome = { parent: menuContent.parentNode, next: menuContent.nextSibling };
-      menuLayer.append(menuContent);
-      const anchor = menuOpener.getBoundingClientRect();
-      menuLayer.style.left = `${anchor.left}px`;
-      menuLayer.style.top = `${anchor.bottom}px`;
-      open(menuLayer);
-      const rect = menuLayer.getBoundingClientRect();
-      menuLayer.style.left = `${Math.min(Math.max(8, anchor.left), innerWidth - rect.width - 8)}px`;
-      menuLayer.style.top = `${Math.min(Math.max(8, anchor.bottom), innerHeight - rect.height - 8)}px`;
-      menuContent.querySelector("button")?.focus({ preventScroll: true });
+      editRowIndex = Math.max(0, rows.findIndex((row) => kind === "folder" ? row.dataset.workspaceFolderName === identity : row.dataset.workspaceSelect === identity));
+      editOpener.focus({ preventScroll: true });
+      if (kind === "workspace") { openWorkspaceCard(identity); return; }
+      renameHome = { parent: textDialog.parentNode, next: textDialog.nextSibling,
+        role: textDialog.getAttribute("role"), modal: textDialog.getAttribute("aria-modal") };
+      renameLayer.append(textDialog);
+      textDialog.setAttribute("role", "presentation"); textDialog.removeAttribute("aria-modal");
+      renameWorkspaceFolder(identity);
+      open(renameLayer);
+      window.AgentHubModalOverlays.activateOverlay(renameLayer, editOpener);
     }
     function search() {
       // Existing Workspace search is inside the chat shell. Keep that owner,
@@ -362,41 +345,35 @@
           primary = node("button", { type: "button", class: "mobile-workspace-select", "data-mobile-workspace-select": "" });
           primary.append(...item.childNodes); item.prepend(primary);
         }
-        // Selection and overflow are sibling controls, not nested buttons/roles.
+        // Selection and direct edit are sibling controls, not nested buttons/roles.
         item.removeAttribute("role"); item.removeAttribute("tabindex"); item.removeAttribute("aria-pressed");
         primary.setAttribute("aria-pressed", String(item.dataset.workspaceSelect === workspaceId));
-        if (item.querySelector("[data-mobile-workspace-menu]")) continue;
+        if (item.querySelector("[data-mobile-workspace-edit]")) continue;
         const id = item.dataset.workspaceSelect;
-        const menu = button("Действия Workspace", "dots-three", (event) => {
-          event.stopPropagation(); openNavigationMenu(event, id, "workspace");
-        }, { "data-mobile-workspace-menu": "" });
-        menu.addEventListener("keydown", (event) => { if (["Enter", " "].includes(event.key)) event.stopPropagation(); });
-        item.append(menu);
+        const name = state.workspaces?.find((workspace) => workspace.id === id)?.name || item.querySelector(".task-workspace-name")?.textContent || "";
+        const edit = button(`Редактировать Workspace «${name}»`, "pencil-simple", (event) => {
+          event.stopPropagation(); openDirectEdit(event, id, "workspace");
+        }, { "data-mobile-workspace-edit": "", "aria-haspopup": "dialog" });
+        edit.addEventListener("keydown", (event) => { if (["Enter", " "].includes(event.key)) event.stopPropagation(); });
+        item.append(edit);
       }
       for (const item of rail.querySelectorAll('[data-workspace-folder-kind="folder"]')) {
         const summary = item.querySelector("summary");
-        if (!summary || summary.querySelector("[data-mobile-folder-menu]")) continue;
-        const menu = button("Действия папки", "dots-three", (event) => {
-          event.preventDefault(); event.stopPropagation(); openNavigationMenu(event, item.dataset.workspaceFolderName, "folder");
-        }, { "data-mobile-folder-menu": "" });
-        menu.addEventListener("keydown", (event) => { if (["Enter", " "].includes(event.key)) event.stopPropagation(); });
-        summary.append(menu);
+        if (!summary || summary.closest("[data-mobile-folder-row]")) continue;
+        // Keep the pencil outside native summary/details, so it never toggles
+        // disclosure and remains available even when the folder is collapsed.
+        const row = node("div", { class: "mobile-folder-row", "data-mobile-folder-row": "" });
+        const details = summary.parentElement;
+        details.replaceWith(row); row.append(details);
+        const edit = button(`Переименовать папку «${item.dataset.workspaceFolderName}»`, "pencil-simple", (event) => {
+          event.stopPropagation(); openDirectEdit(event, item.dataset.workspaceFolderName, "folder");
+        }, { "data-mobile-folder-rename": "", "aria-haspopup": "dialog" });
+        edit.addEventListener("keydown", (event) => { if (["Enter", " "].includes(event.key)) event.stopPropagation(); });
+        row.append(edit);
       }
     }
-    function rowContext(event) {
-      if (!active) return;
-      if (event.type === "keydown" && !(event.key === "ContextMenu" || (event.shiftKey && event.key === "F10"))) return;
-      const workspace = event.target.closest("[data-workspace-select]");
-      const folder = event.target.closest('[data-workspace-folder-kind="folder"]');
-      const opener = workspace?.querySelector("[data-mobile-workspace-menu]") || folder?.querySelector("[data-mobile-folder-menu]");
-      if (!opener) return;
-      event.preventDefault(); event.stopPropagation();
-      openNavigationMenu({ currentTarget: opener }, workspace ? workspace.dataset.workspaceSelect : folder.dataset.workspaceFolderName, workspace ? "workspace" : "folder");
-    }
-    rail.addEventListener("contextmenu", rowContext, true);
-    rail.addEventListener("keydown", rowContext, true);
     rail.addEventListener("click", (event) => {
-      if (!active || event.target.closest("[data-mobile-workspace-menu], [data-mobile-folder-menu]")) return;
+      if (!active || event.target.closest("[data-mobile-workspace-edit], [data-mobile-folder-rename]")) return;
       if (event.target.closest("[data-action]")) { close(drawer); return; }
       const item = event.target.closest("[data-workspace-select]");
       if (!item) return;
@@ -406,7 +383,7 @@
     });
     rail.addEventListener("keydown", (event) => {
       if (!active || !["Enter", " "].includes(event.key)
-        || event.target.closest("[data-mobile-workspace-menu]")) return;
+        || event.target.closest("[data-mobile-workspace-edit]")) return;
       const item = event.target.closest("[data-workspace-select]");
       if (!item) return;
       workspaceId = item.dataset.workspaceSelect;
@@ -415,7 +392,7 @@
     });
     function handleBack() {
       if (!active) return false;
-      if (menuLayer.open) { closeNavigationMenu(); return true; }
+      if (renameLayer.open) { closeRename(); return true; }
       if (closeTransient()) return true;
       const opened = dialogStack.filter((item) => item.open).at(-1);
       if (opened) {
@@ -455,7 +432,8 @@
             item.setAttribute("role", "button"); item.setAttribute("tabindex", "0");
             item.setAttribute("aria-pressed", String(item.hasAttribute("data-selected")));
           }
-          rail.querySelectorAll("[data-mobile-workspace-menu], [data-mobile-folder-menu]").forEach((item) => item.remove());
+          rail.querySelectorAll("[data-mobile-workspace-edit], [data-mobile-folder-rename]").forEach((item) => item.remove());
+          rail.querySelectorAll("[data-mobile-folder-row]").forEach((row) => row.replaceWith(...row.childNodes));
           root.removeAttribute("data-mobile-conversation");
         }
       }

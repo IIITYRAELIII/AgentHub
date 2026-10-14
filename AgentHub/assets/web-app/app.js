@@ -4770,6 +4770,7 @@ taskList.addEventListener("dblclick", (event) => {
 });
 taskList.addEventListener("keydown", (event) => {
   if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) {
+    if (surface === "mobile" && !vscodeMode) return;
     const workspace = event.target.closest("[data-workspace-select]");
     if (workspace) {
       event.preventDefault();
@@ -5354,22 +5355,25 @@ function ensureWorkspaceFolderContextMenu() {
     const currentName = String(workspaceFolderContextMenu.dataset.folderName ?? "");
     closeWorkspaceFolderContextMenu();
     if (action.dataset.workspaceFolderMenuAction !== "rename") return;
-    const requestedName = await askText({ title: "Новое название папки", value: currentName });
-    if (requestedName == null) return;
-    const plan = window.AgentHubStreamTabs.workspaceFolderRenamePlan(
-      state.workspaces,
-      currentName,
-      requestedName,
-      workspaceFolderCatalogNames(),
-    );
-    if (!plan) return;
-    if (plan.duplicateFolderName) {
-      showToast(`Папка «${plan.duplicateFolderName}» уже существует`);
-      return;
-    }
-    emit("workspace:folder-rename", plan);
+    await renameWorkspaceFolder(currentName);
   });
   return workspaceFolderContextMenu;
+}
+
+async function renameWorkspaceFolder(folderName) {
+  const currentName = window.AgentHubStreamTabs.normalizeWorkspaceFolderName(folderName);
+  if (!currentName) return;
+  const requestedName = await askText({ title: "Новое название папки", value: currentName });
+  if (requestedName == null) return;
+  const plan = window.AgentHubStreamTabs.workspaceFolderRenamePlan(
+    state.workspaces, currentName, requestedName, workspaceFolderCatalogNames(),
+  );
+  if (!plan) return;
+  if (plan.duplicateFolderName) {
+    showToast(`Папка «${plan.duplicateFolderName}» уже существует`);
+    return;
+  }
+  emit("workspace:folder-rename", plan);
 }
 
 function openWorkspaceFolderContextMenu(event, folderName) {
@@ -9910,6 +9914,7 @@ bugReportToggle?.addEventListener("click", () => {
 });
 document.addEventListener("contextmenu", (event) => {
   if (event.defaultPrevented) return;
+  if (surface === "mobile" && !vscodeMode && event.target.closest("[data-mobile-workspace-drawer]")) return;
   const workspace = event.target.closest("[data-workspace-heading], [data-board-workspace-id]");
   if (workspace) {
     event.preventDefault();
@@ -18064,10 +18069,7 @@ mobileDialogs = window.AgentHubMobileDialogs.create({
   isMobile: () => surface === "mobile" && !vscodeMode,
   formatTime: (value) => formatRelativeTime(activityTimestamp(value)), shortModel: shortModelLabel,
   openSearch: openWorkspaceMessageSearch, openSettings: openPanel,
-  openWorkspaceCard,
-  workspaceMenu: (event, id) => { openWorkspaceContextMenu(event, id); return workspaceContextMenu; },
-  folderMenu: (event, name) => { openWorkspaceFolderContextMenu(event, name); return workspaceFolderContextMenu; },
-  closeWorkspaceMenus: () => { closeWorkspaceContextMenu(); closeWorkspaceFolderContextMenu(); },
+  openWorkspaceCard, workspaceDialog: workspaceCardModal, renameWorkspaceFolder,
   textDialog: dialog, cancelTextDialog: () => closeDialog(null),
   createStream: (workspaceId) => emit("stream:new", { workspaceId }),
   retryConnection: () => emit("connection:retry", { taskId: state.selectedId }),
