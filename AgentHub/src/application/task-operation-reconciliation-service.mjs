@@ -6,6 +6,8 @@ import { normalizedTaskGitReferences } from "../domain/task-git-reference.mjs";
 import { taskProjectRoot } from "../domain/task-project-root.mjs";
 import { normalizedTaskSquashTransfer } from "../domain/task-squash-transfer.mjs";
 import { normalizedTaskSquashCutover } from "../domain/task-squash-cutover.mjs";
+import { normalizePublishedResolution } from "../infrastructure/filesystem/selected-composition-proof.mjs";
+import { selectedAbsorptionHandoff } from "../domain/task-selected-composition.mjs";
 
 function requiredMethod(value, name) {
   if (typeof value?.[name] !== "function") throw new TypeError(`${name} is required`);
@@ -96,9 +98,10 @@ function workflowCasArguments({ expectedTaskRevision, expectedWorkflowStatus } =
 }
 
 function selectedCompositionArguments(options = {}) {
+  if (supplied(options.selectedAbsorptionHandoff)) selectedAbsorptionHandoff(options.selectedAbsorptionHandoff);
   const values = [options.selectedBundlePath, options.selectedBundleSha256,
     options.selectedProofCommit, options.selectedPreviewRequestId,
-    options.expectedSelectedPreviewHash];
+    options.expectedSelectedPreviewHash, options.selectedPublishedResolution, options.selectedAbsorptionHandoff];
   if (values.every((value) => !supplied(value))) return null;
   const revision = Number(options.expectedTaskRevision);
   const bundlePath = String(options.selectedBundlePath ?? "").trim();
@@ -121,6 +124,10 @@ function selectedCompositionArguments(options = {}) {
     selected_proof_commit: proofCommit,
     selected_preview_request_id: previewRequestId,
     expected_selected_preview_hash: previewHash,
+    ...(supplied(options.selectedPublishedResolution)
+      ? { selected_published_resolution: options.selectedPublishedResolution } : {}),
+    ...(supplied(options.selectedAbsorptionHandoff)
+      ? { selected_absorption_handoff: options.selectedAbsorptionHandoff } : {}),
   };
 }
 
@@ -381,6 +388,11 @@ export class TaskOperationReconciliationService {
         && selectedProof?.proofCommit === selected.selected_proof_commit
         && selectedProof?.bundleSha256 === selected.selected_proof_bundle_sha256
         && selectedProof?.bundlePath === path.resolve(selected.selected_proof_bundle_path)
+        && JSON.stringify(normalizePublishedResolution(selectedProof?.publishedResolutionInput))
+          === JSON.stringify(normalizePublishedResolution(selected.selected_published_resolution))
+        && JSON.stringify(selectedProof?.absorptionInput
+          ? { requestId: selectedProof.absorptionInput.requestId, text: selectedProof.absorptionInput.text } : null)
+          === JSON.stringify(selected.selected_absorption_handoff ?? null)
         && samePath(selectedProof?.repositoryRoot, root);
     }
     let squashSourceTask = null;
@@ -479,7 +491,8 @@ export class TaskOperationReconciliationService {
       guardId: exactGuardId,
       squash,
       selected,
-      sourceTaskId: squash?.squash_source_task_id ?? null,
+      sourceTaskId: squash?.squash_source_task_id
+        ?? selectedAbsorptionHandoff(selected?.selected_absorption_handoff)?.declaration.sourceTaskId ?? null,
       withdrawal: state === "succeeded" && outcome?.result?.evidence?.outcome === "withdrawn_result"
         || state === "pending" && ["new", "in_progress", "blocked"].includes(targetWorkflowStatus)
           && ["testing", "awaiting_implementation"].includes(task.workflowStatus)
@@ -545,7 +558,8 @@ export class TaskOperationReconciliationService {
       taskId: requiredText(options.taskId, "task id", 200),
       sourceTaskId: options.squashSourceTaskId
         ? requiredText(options.squashSourceTaskId, "squash source task id", 200)
-        : null,
+        : selectedAbsorptionHandoff(options.selectedAbsorptionHandoff)?.declaration.sourceTaskId ?? null,
+      operationId: requiredText(options.operationRequestId, "operation request id", 300),
       projectRoot: path.resolve(requiredText(options.projectRoot, "project root")),
     }, async (lease) => {
       let identity = this.#identity(options);

@@ -3,6 +3,9 @@ import { taskReleasePlan } from "../domain/task-release-snapshot.mjs";
 export class TaskReleasePlanService {
   constructor({ taskBoard, taskGitWorkspaces } = {}) {
     if (typeof taskBoard?.releaseTasks !== "function") throw new TypeError("taskBoard.releaseTasks is required");
+    if (typeof taskBoard?.selectedCompositionForRelease !== "function") {
+      throw new TypeError("taskBoard.selectedCompositionForRelease is required");
+    }
     if (typeof taskGitWorkspaces?.releaseEvidence !== "function") {
       throw new TypeError("taskGitWorkspaces.releaseEvidence is required");
     }
@@ -39,6 +42,7 @@ export class TaskReleasePlanService {
     const resolved = [];
     for (const task of tasks) {
       const changedFiles = [];
+      const selectedCompositions = [];
       let gitError = null;
       // Metadata remains available for draft/legacy audit projections, but only
       // the prospective Await set needs live Git evidence. Archived branches
@@ -49,6 +53,10 @@ export class TaskReleasePlanService {
       }
       try {
         for (const reference of task.gitReferences ?? []) {
+          const selected = this.taskBoard.selectedCompositionForRelease({
+            taskId: task.id, ...reference,
+          });
+          if (selected) selectedCompositions.push({ projectRoot: reference.projectRoot, ...selected });
           const evidence = await this.taskGitWorkspaces.releaseEvidence({
             taskId: task.id,
             ...(task.taskNumber ? { taskNumber: task.taskNumber } : {}),
@@ -59,7 +67,8 @@ export class TaskReleasePlanService {
       } catch (error) {
         gitError = error.message;
       }
-      resolved.push({ ...task, changedFiles, gitError });
+      resolved.push({ ...task, changedFiles, gitError,
+        ...(selectedCompositions.length ? { selectedCompositions } : {}) });
     }
     return taskReleasePlan(workspaceId, resolved);
   }

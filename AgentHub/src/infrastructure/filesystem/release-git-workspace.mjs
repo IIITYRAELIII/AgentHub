@@ -15,6 +15,7 @@ import {
   releaseBaseProvenanceApprovedBase,
 } from "../../domain/release-base-provenance.mjs";
 import { normalizedTaskSquashTransfer } from "../../domain/task-squash-transfer.mjs";
+import { selectedCompositionFields, selectedCompositionIdentity } from "../../domain/task-selected-composition.mjs";
 import { canonicalPath } from "./config.mjs";
 import { withInterprocessLocks } from "../process/interprocess-lock.mjs";
 import { withPublicationLock } from "../process/publication-lock.mjs";
@@ -32,6 +33,10 @@ import {
   resolveExactTaskBaseMerge,
 } from "./release-order-preserving-union.mjs";
 import { releaseTaskNetProjections } from "./release-task-net-projection.mjs";
+import { assertPreparationCheckpoint, assertPreparationTree } from "./release-preparation-guard.mjs";
+import { measureTaskOperation, recordTaskOperationTiming } from "../process/task-operation-timing.mjs";
+import { performance } from "node:perf_hooks";
+import { ReleasePreparationRejectedError } from "../../domain/release-preparation.mjs";
 
 const RELEASE_MARKER = "agent-hub-release-clone.json";
 const RELEASE_BRANCH = "PreRelease";
@@ -445,6 +450,7 @@ function normalizedFrozenTasks(tasks = []) {
       taskId, taskRevision,
       ...(resultReleaseRevision != null ? { resultReleaseRevision } : {}),
       ...(baseCommit ? { baseCommit } : {}), resultCommit, integrations,
+      ...selectedCompositionFields(task),
       ...(task?.squashTransfer ? {
         squashTransfer: normalizedTaskSquashTransfer(task.squashTransfer),
       } : {}),
@@ -502,6 +508,7 @@ async function selectedResultSuccessorReuse({ checkpoint, clone, tasks, baseComm
       const current = currentById.get(prior.taskId);
       if (!current || prior.baseCommit !== current.baseCommit
           || prior.resultCommit !== current.resultCommit
+          || selectedCompositionIdentity(prior) !== selectedCompositionIdentity(current)
           || String(prior.squashTransfer?.transferHash ?? "")
             !== String(current.squashTransfer?.transferHash ?? "")) return null;
     }
@@ -516,6 +523,21 @@ async function selectedResultSuccessorReuse({ checkpoint, clone, tasks, baseComm
     if (await gitMaybe(["merge-base", "--is-ancestor", correction.baseCommit, correctionBaseCommit], {
       cwd: clone.releaseRoot,
     }) === null) return null;
+    // A single-parent correction is incremental only when the retained
+    // candidate already represents its entire Task-owned parent snapshot.
+    // Commit ancestry alone cannot prove this for an aggregate PreRelease;
+    // compare every changed entry, including deletions, by mode and blob.
+    const priorChangedPaths = (await runGit([
+      "diff", "--no-renames", "--name-only", "-z", correction.baseCommit, correctionBaseCommit, "--",
+    ], { cwd: clone.releaseRoot, rawOutput: true })).toString("utf8").split("\0").filter(Boolean);
+    for (let index = 0; index < priorChangedPaths.length; index += 100) {
+      const pathspecs = priorChangedPaths.slice(index, index + 100)
+        .map((relativePath) => `:(literal)${relativePath}`);
+      if (await gitMaybe([
+        "diff", "--quiet", "--no-ext-diff", correctionBaseCommit, checkpoint.preReleaseHead,
+        "--", ...pathspecs,
+      ], { cwd: clone.releaseRoot }) === null) return null;
+    }
     const changedPaths = (await runGit([
       "diff", "--name-only", correctionBaseCommit, correction.resultCommit, "--",
     ], { cwd: clone.releaseRoot })).split("\n").filter(Boolean);
@@ -542,6 +564,7 @@ async function selectedResultSuccessorReuse({ checkpoint, clone, tasks, baseComm
   for (const current of tasks) {
     const prior = priorById.get(current.taskId);
     if (!prior || prior.baseCommit !== current.baseCommit
+        || selectedCompositionIdentity(prior) !== selectedCompositionIdentity(current)
         || String(prior.squashTransfer?.transferHash ?? "")
           !== String(current.squashTransfer?.transferHash ?? "")) return null;
     if (prior.resultCommit !== current.resultCommit) changed.push({ prior, current });
@@ -1183,9 +1206,14 @@ export class ReleaseGitWorkspaceService {
   async assertSelectedResultLineage({ candidate, previousSelectedResults = [] } = {}) {
     this.#assertAvailable("assertSelectedResultLineage");
     const previous = new Map((Array.isArray(previousSelectedResults) ? previousSelectedResults : [])
-      .map((item) => [String(item?.taskId ?? ""), String(item?.resultCommit ?? "")]));
+      .map((item) => [String(item?.taskId ?? ""), item]));
     for (const task of candidate?.frozenTasks ?? []) {
-      const priorResultCommit = previous.get(String(task.taskId));
+      const prior = previous.get(String(task.taskId));
+      const priorResultCommit = String(prior?.resultCommit ?? "");
+      if (priorResultCommit === task.resultCommit && prior
+          && selectedCompositionIdentity(prior) !== selectedCompositionIdentity(task)) {
+        throw new Error(`PreRelease selected proof lineage changed for Task ${task.taskId}`);
+      }
       if (!priorResultCommit || priorResultCommit === task.resultCommit) continue;
       const related = await gitMaybe(["merge-base", "--is-ancestor", priorResultCommit, task.resultCommit], {
         cwd: candidate.releaseRoot,
@@ -1301,7 +1329,7 @@ export class ReleaseGitWorkspaceService {
   async prepareCandidate({
     planRevision, projectRoot, workspaceId = null, preflightRequestId = null,
     frozenTasks = [], approvedBaseCommit = null, baseProvenance = null, validateBeforeCommit = null,
-    preserveFrozen = false, commitPrepared = null,
+    preserveFrozen = false, commitPrepared = null, preparationGuard = null,
   } = {}) {
     this.#assertAvailable("prepareCandidate");
     const revision = String(planRevision ?? "").trim();
@@ -1322,7 +1350,11 @@ export class ReleaseGitWorkspaceService {
     });
     const layout = this.#layout(initial.root);
     const lock = path.join(this.dataDir, "locks", `release-git-${layout.repositoryKey}`);
+    const preparationLockStarted = preparationGuard ? performance.now() : null;
     return withInterprocessLocks([lock], async () => {
+      if (preparationGuard) recordTaskOperationTiming("preparation:candidate-lock-wait", {
+        durationMs: performance.now() - preparationLockStarted,
+      });
       const clone = await this.#ensureClone(initial);
       const dirty = await runGit(["status", "--porcelain=v1", "--untracked-files=all"], { cwd: clone.releaseRoot });
       if (dirty) throw new Error(`Agent Hub-owned release clone is dirty: ${clone.releaseRoot}: ${dirty}`);
@@ -1331,6 +1363,23 @@ export class ReleaseGitWorkspaceService {
         timeoutMs: 300_000,
       });
       const checkpoint = await readJson(clone.checkpointFile);
+      const preparationGit = (args, options = {}) => measureTaskOperation("preparation:git-io", () => (
+        runGit(args, { ...options, cwd: clone.releaseRoot, timeoutMs: 300_000 })
+      ), { detail: true });
+      const validatePreparationMain = async () => {
+        if (!preparationGuard) return;
+        const current = await primarySnapshot(initial.root);
+        const remote = await preparationGit(["ls-remote", "origin", "refs/heads/main"]);
+        if (current.mainCommit !== preparationGuard.primaryMainCommit
+            || current.headCommit !== initial.headCommit || current.branchRef !== initial.branchRef
+            || remote.split(/\s/u)[0] !== preparationGuard.originMainCommit) {
+          throw new ReleasePreparationRejectedError("Preparation current main or remote changed");
+        }
+      };
+      await validatePreparationMain();
+      await measureTaskOperation("preparation:checkpoint", () => assertPreparationCheckpoint({
+        guard: preparationGuard, clone, initial, checkpoint, git: preparationGit,
+      }));
       const acceptanceBefore = commitPrepared ? {
         head: await runGit(["rev-parse", "HEAD^{commit}"], { cwd: clone.releaseRoot }),
         checkout: await gitMaybe(["symbolic-ref", "-q", "HEAD"], { cwd: clone.releaseRoot }),
@@ -1444,6 +1493,12 @@ export class ReleaseGitWorkspaceService {
         ].join("+"),
         ...(workspaceId ? { workspaceId: String(workspaceId) } : {}),
         ...(preflightRequestId ? { preflightRequestId: String(preflightRequestId) } : {}),
+        ...(preparationGuard ? { preparationIdentity: {
+          argumentsHash: preparationGuard.argumentsHash, sourceCommit: preparationGuard.sourceCommit,
+          sourceTree: preparationGuard.sourceTree, sourceClosureHash: preparationGuard.sourceClosureHash,
+          publicationHash: preparationGuard.publicationHash, approvedTree: preparationGuard.approvedTree,
+          previousCheckpointHash: preparationGuard.checkpointHash,
+        } } : {}),
         planRevision: revision,
         primaryRoot: initial.root,
         primaryGitCommonDir: initial.commonDir,
@@ -1664,6 +1719,10 @@ export class ReleaseGitWorkspaceService {
           if (staged || candidateReuse) {
             const tree = await runGit(["write-tree"], { cwd: clone.releaseRoot });
             preparedCompositionTree = tree;
+            await measureTaskOperation("preparation:full-tree", () => assertPreparationTree({
+              guard: preparationGuard, tree, baseCommit, tasks, git: preparationGit,
+            }));
+            await validatePreparationMain();
             if (typeof validateBeforeCommit === "function") await validateBeforeCommit();
             const parents = [candidateReuse?.sourceHead ?? baseCommit, ...new Set(tasks.map((task) => task.resultCommit))]
               .flatMap((commit) => ["-p", commit]);
@@ -1681,8 +1740,11 @@ export class ReleaseGitWorkspaceService {
           } else {
             preReleaseHead = baseCommit;
             preparedCompositionTree = await runGit(["rev-parse", `${baseCommit}^{tree}`], { cwd: clone.releaseRoot });
+            await assertPreparationTree({ guard: preparationGuard, tree: preparedCompositionTree,
+              baseCommit, tasks, git: preparationGit });
           }
           if (typeof validateBeforeCommit === "function") await validateBeforeCommit();
+          await validatePreparationMain();
           await validateReviewedMain();
           const finalIndexTree = await runGit(["write-tree"], { cwd: clone.releaseRoot });
           const finalCommitTree = await runGit(["rev-parse", `${preReleaseHead}^{tree}`], { cwd: clone.releaseRoot });
@@ -1700,6 +1762,7 @@ export class ReleaseGitWorkspaceService {
             netProjectedTaskIds,
             planRevision: revision,
             ...(preflightRequestId ? { preflightRequestId: String(preflightRequestId) } : {}),
+            ...(preparationGuard ? { preparationIdentity: manifest.preparationIdentity } : {}),
             manifestHash,
             manifestFile,
             baseCommit,
@@ -1730,6 +1793,10 @@ export class ReleaseGitWorkspaceService {
       }
 
       if (reused) {
+        await validatePreparationMain();
+        await assertPreparationTree({ guard: preparationGuard,
+          tree: await preparationGit(["rev-parse", `${preReleaseHead}^{tree}`]),
+          baseCommit, tasks, git: preparationGit });
         if (typeof validateBeforeCommit === "function") await validateBeforeCommit();
         await validateReviewedMain();
       }
@@ -1764,6 +1831,7 @@ export class ReleaseGitWorkspaceService {
       if (commitPrepared) {
         try {
           await verifyPrimary();
+          await validatePreparationMain();
           await commitPrepared(result);
         } catch (error) {
           // An unknown Task acceptance outcome must never roll the candidate
@@ -2097,6 +2165,7 @@ export class ReleaseGitWorkspaceService {
         taskId: task.taskId,
         taskRevision: task.taskRevision,
         resultCommit: task.resultCommit,
+        ...selectedCompositionFields(task),
         integrations: task.integrations,
       })),
       originMain,
@@ -2272,6 +2341,7 @@ export class ReleaseGitWorkspaceService {
       preparedManifestHash,
       frozenTasks: normalizedFrozenTasks(manifest.tasks ?? []).map((task) => ({
         taskId: task.taskId, taskRevision: task.taskRevision, resultCommit: task.resultCommit,
+        ...selectedCompositionFields(task),
       })),
     };
     const resolved = await resolver({ request, candidate });
@@ -2744,6 +2814,11 @@ export class ReleaseGitWorkspaceService {
       throw new Error("release checkpoint Workspace identity disagrees with the immutable manifest");
     }
     const manifestTasks = normalizedFrozenTasks(manifest.tasks ?? []);
+    const selectedTasks = manifestTasks.filter((task) => task.selectedCompositionRequired);
+    if (String(manifest.projectionPolicy ?? "").includes("mandatory-selected-v1") !== Boolean(selectedTasks.length)
+        || selectedTasks.some((task) => !checkpoint.netProjectedTaskIds?.includes(task.taskId))) {
+      throw new Error("release checkpoint mandatory selected proof identity is incomplete");
+    }
     return {
       repositoryRoot: primary.root,
       releaseRoot: layout.releaseRoot,
@@ -2770,6 +2845,7 @@ export class ReleaseGitWorkspaceService {
             : {}),
           ...(task.baseCommit ? { baseCommit: task.baseCommit } : {}),
           resultCommit: task.resultCommit,
+          ...selectedCompositionFields(task),
           ...(task.squashTransfer ? { squashTransfer: task.squashTransfer } : {}),
         })),
         taskIds: manifestTasks.map((task) => task.taskId).sort(),

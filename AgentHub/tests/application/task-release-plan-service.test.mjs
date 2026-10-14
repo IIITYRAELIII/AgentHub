@@ -27,7 +27,7 @@ function task(overrides = {}) {
 test("release planner derives ready files from the accepted Git result commit", async () => {
   const calls = [];
   const service = new TaskReleasePlanService({
-    taskBoard: { releaseTasks: () => [task()] },
+    taskBoard: { releaseTasks: () => [task()], selectedCompositionForRelease: () => null },
     taskGitWorkspaces: {
       releaseEvidence: async (value) => {
         calls.push(value);
@@ -57,7 +57,7 @@ test("release planner reads Git only for the prospective Await set, independent 
   const calls = [];
   const changedFiles = [{ projectRoot: reference.projectRoot, path: "app.txt", operation: "modified" }];
   const service = new TaskReleasePlanService({
-    taskBoard: { releaseTasks: () => rows },
+    taskBoard: { releaseTasks: () => rows, selectedCompositionForRelease: () => null },
     taskGitWorkspaces: { releaseEvidence: async ({ taskId }) => {
       calls.push(taskId);
       if (!["task-1", "draft"].includes(taskId)) throw new Error("archive Git must not be read");
@@ -86,7 +86,7 @@ test("release planner reads Git only for the prospective Await set, independent 
 
 test("release planner keeps an invalid or missing Git result visible as blocked", async () => {
   const service = new TaskReleasePlanService({
-    taskBoard: { releaseTasks: () => [task()] },
+    taskBoard: { releaseTasks: () => [task()], selectedCompositionForRelease: () => null },
     taskGitWorkspaces: { releaseEvidence: async () => { throw new Error("result commit is missing"); } },
   });
 
@@ -98,7 +98,7 @@ test("release planner keeps an invalid or missing Git result visible as blocked"
 test("prospective Await plan predicts only the accepting Task CAS without mutating stored status", async () => {
   const current = task({ workflowStatus: "testing", revision: 20, releaseRevision: 3 });
   const service = new TaskReleasePlanService({
-    taskBoard: { releaseTasks: () => [current] },
+    taskBoard: { releaseTasks: () => [current], selectedCompositionForRelease: () => null },
     taskGitWorkspaces: { releaseEvidence: async () => ({
       changedFiles: [{ projectRoot: reference.projectRoot, path: "app.txt", operation: "modified" }],
     }) },
