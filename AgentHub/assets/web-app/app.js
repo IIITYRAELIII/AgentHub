@@ -8533,6 +8533,12 @@ composerQuickMessages?.addEventListener("click", (event) => {
 });
 
 composerInput.addEventListener("keydown", (event) => {
+  if (event.isComposing) return;
+  if (event.key === "Enter" && event.ctrlKey && !event.metaKey) {
+    event.preventDefault();
+    if (!event.repeat) insertTextAtCaret(composerInput, "\n");
+    return;
+  }
   if (!slashMenu.hidden) {
     const commands = visibleSlashCommands();
     if (event.key === "ArrowDown" || event.key === "ArrowUp") {
@@ -8552,9 +8558,9 @@ composerInput.addEventListener("keydown", (event) => {
       return;
     }
   }
-  if (event.key !== "Enter" || event.shiftKey || event.isComposing || phoneComposerMode()) return;
+  if (event.key !== "Enter" || event.shiftKey || phoneComposerMode()) return;
   event.preventDefault();
-  submitComposer({ steerWhileRunning: event.ctrlKey || event.metaKey });
+  submitComposer({ steerWhileRunning: event.metaKey });
 });
 
 slashMenu.addEventListener("click", (event) => {
@@ -8682,7 +8688,8 @@ function submitQuickMessage(entry) {
 function insertTextAtCaret(input, text) {
   if (!input || !text) return false;
   const start = Number.isSafeInteger(input.selectionStart) ? input.selectionStart : input.value.length;
-  input.setRangeText(text, start, start, "end");
+  const end = Number.isSafeInteger(input.selectionEnd) ? input.selectionEnd : start;
+  input.setRangeText(text, start, end, "end");
   input.dispatchEvent(new Event("input", { bubbles: true }));
   input.focus({ preventScroll: true });
   return true;
