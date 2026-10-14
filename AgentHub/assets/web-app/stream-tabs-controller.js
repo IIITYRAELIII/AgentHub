@@ -520,9 +520,10 @@
       !turnId
       || String(run?.operationKind ?? "").trim() !== "user-turn"
       || String(run?.projectionState ?? "").trim() !== "active"
+      || Number(run?.terminalRevision) > 0
     ) return false;
     const final = task?.latestFinal;
-    if (!final) return true;
+    if (!final || !Number.isSafeInteger(Number(final.revision)) || Number(final.revision) <= 0) return true;
     return !(
       String(final.provider ?? "").trim().toLowerCase()
         === String(task.provider ?? "").trim().toLowerCase()

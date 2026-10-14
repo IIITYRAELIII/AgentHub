@@ -407,6 +407,12 @@ also absorbs later legacy revision `0`, while a positive revision may upgrade
 legacy revision `0`. At the same revision, the durable canonical projection wins
 over a temporary terminal overlay; a higher overlay revision still wins over
 older durable history. `unknown` is a distinct state and is never projected as active.
+The live card and Stream/composer running state use that same exact terminal
+fence: canonical terminal history cannot be revived by a later raw active
+snapshot for its provider/Thread/turn. A snapshot final reference requires a
+positive safe-integer revision before it absorbs a run; a foreign or missing
+identity and revision `0` alone do not prove terminal state. A new exact turn
+remains active even while the previous turn's final is visible.
 The client considers final content caught up only on exact text equality for the
 exact provider turn. Prefix equality never proves that a complete final was
 rendered and cannot stop history refresh or remove a completion overlay.

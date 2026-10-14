@@ -189,6 +189,7 @@ async function launchBrowser() {
 async function openFixture(page, {
   persistedDrafts = null,
   fixtureSnapshot = snapshot(),
+  fixtureHistory = null,
   expectedTaskId = "stream-a",
   recoveryAuthorityAvailable = true,
   holdRecoveryAuthority = false,
@@ -201,7 +202,7 @@ async function openFixture(page, {
     if (message.type() === "error") diagnostics.push(message.text());
   });
   await page.addInitScript(({
-    initialSnapshot, initialDrafts, authorityAvailable, holdAuthority, attachmentOpenFailure,
+    initialSnapshot, initialHistory, initialDrafts, authorityAvailable, holdAuthority, attachmentOpenFailure,
   }) => {
     // Opening the attachment database fails. This covers only the open step:
     // the product treats that rejection as "not durable". The error code is set
@@ -296,6 +297,7 @@ async function openFixture(page, {
     const write = (key, value) => localStorage.setItem(key, JSON.stringify(value));
     window.__agentHubFixture = {
       snapshot: read("fixture:snapshot", initialSnapshot),
+      history: initialHistory,
       mode: localStorage.getItem("fixture:send-mode") || "reject",
       log: read("fixture:bridge-log", []),
       uploadSequence: Number(localStorage.getItem("fixture:upload-sequence")) || 0,
@@ -348,7 +350,10 @@ async function openFixture(page, {
             || fixture.snapshot.tasks.find((entry) => entry.provider === message.params.provider
               && entry.threadId === message.params.threadId)?.streamId
             || null;
-          const history = {
+          const fixtureHistoryMatches = fixture.history?.provider === message.params.provider
+            && fixture.history?.threadId === message.params.threadId
+            && fixture.history?.streamId === streamId;
+          const history = fixtureHistoryMatches ? fixture.history : {
             provider: message.params.provider,
             threadId: message.params.threadId,
             streamId,
@@ -398,6 +403,7 @@ async function openFixture(page, {
     };
   }, {
     initialSnapshot: fixtureSnapshot,
+    initialHistory: fixtureHistory,
     initialDrafts: persistedDrafts,
     authorityAvailable: recoveryAuthorityAvailable,
     holdAuthority: holdRecoveryAuthority,
