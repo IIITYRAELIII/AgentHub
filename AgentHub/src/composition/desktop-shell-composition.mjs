@@ -234,6 +234,7 @@ export function createDesktopShellComposition({
         taskReadStateStore,
         desktopMessageReceipts,
         messagePins,
+        messageCommandRevision: () => runtimeStateStore.messageCommandRevision ?? 0,
         taskSyncStore,
         usdRubRateStore,
         serverControlController,
@@ -256,8 +257,9 @@ export function createDesktopShellComposition({
       pendingValues: () => [...pendingInputs.values()],
       queuedValues: () => [...queuedInputs.values()],
       describeAttachments: desktopAttachmentDescriptors,
-      receiptForMessage: (identity) => desktopMessageReceipts.get(identity),
-      recentReceipts: () => desktopMessageReceipts.snapshot(),
+      receiptForMessage: (identity) => runtimeStateStore.projectMessageReceipt(desktopMessageReceipts.get(identity)),
+      recentReceipts: () => desktopMessageReceipts.snapshot().slice(-100)
+        .map((receipt) => runtimeStateStore.projectMessageReceipt(receipt)),
       messagePinsSnapshot: () => streamMessagePins.snapshot(),
       receiptsForTurn: (identity) => desktopMessageReceipts.findAllByTurn(identity),
       interstreamOriginForClientMessage: (clientUserMessageId) => (

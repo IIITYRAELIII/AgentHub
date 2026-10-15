@@ -69,7 +69,11 @@ provider/process completion owner may commit the exact terminal outcome.
   to ordinary and deferred admission, not only define an unused coordinator hook.
 - One durable restart launches one owned RuntimeHost tree. Windows restart never
   submits an escaping WMI start, retries an ownership timeout or adds a fallback
-  launch. Legacy `--spawn-independent` is an owned synchronous launcher alias.
+  launch. The controlled path uses a direct detached host and retains exact
+  cleanup ownership until lock/ready proof. Cold `--spawn-independent` uses
+  synchronous native process creation with explicit job breakaway; denied
+  breakaway fails visibly, with no WMI fallback or delayed launch. Cold start
+  cannot carry a managed restart operation identity.
   The expected release is persisted before launch; exact operation/release/PID/
   instance evidence fences readiness. The old owner recovers only after confirmed
   cleanup of its owned replacement. See ADR-0114.

@@ -2533,7 +2533,7 @@ test("dispatching, rejected and ambiguous starts remain queue-only", () => {
         reason: "provider-start-unconfirmed",
         clientProjectionIntent: "conversation",
       },
-      deliveryState: "deferred",
+      deliveryState: "unconfirmed",
     },
   ]) {
     const clientUserMessageId = `client-${scenario.state}-${scenario.receipt.reason ?? "active"}`;
@@ -2810,7 +2810,7 @@ test("authoritative provider acceptance moves one exact command into conversatio
   const projection = lifecycle.queueHistoryReceiptProjection(receipt);
   assert.equal(projection.providerAccepted, true);
   assert.equal(projection.ownsDeferredQueue, false);
-  assert.equal(projection.deliveryState, "accepted");
+  assert.equal(projection.deliveryState, "running");
   assert.equal(lifecycle.queuedCommandUsesQueue(deferredInput, [receipt]), false);
   assert.deepEqual(
     lifecycle.queuedCommandClientUserMessageIds([deferredInput], [receipt]),
@@ -3857,6 +3857,9 @@ test("an active run is authoritative acceptance evidence for its client message"
     submittedAt: "2026-08-25T22:14:00.000Z",
     startedAt: "2026-08-25T22:15:28.000Z",
     deliveredAt: "2026-08-25T22:15:28.000Z",
+    started: true,
+    unknown: false,
+    providerConnection: null,
     attachments: [{ id: "attachment-1" }],
   }]);
 });

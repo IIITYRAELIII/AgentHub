@@ -300,7 +300,7 @@
 
   function attentionStreamCount(tasks) {
     return (tasks ?? []).reduce((count, task) => (
-      count + (task?.running || task?.unread ? 1 : 0)
+      count + (task?.running || task?.activityUnknown || task?.unread ? 1 : 0)
     ), 0);
   }
 
@@ -308,7 +308,7 @@
     const active = [];
     const recent = [];
     for (const task of tasks ?? []) {
-      if (task?.running || task?.unread) active.push(task);
+      if (task?.running || task?.activityUnknown || task?.unread) active.push(task);
       else recent.push(task);
     }
     return { active, recent };
@@ -506,6 +506,7 @@
     const running = Boolean(task?.running);
     const answerReady = Boolean(task?.unread);
     const statusLabel = [
+      task?.activityUnknown ? "Состояние уточняется · поток занят" : "",
       running ? "Ход выполняется" : "",
       answerReady ? "Ответ готов" : "",
     ].filter(Boolean).join(" · ") || String(task?.statusLabel ?? "");
@@ -603,7 +604,7 @@
 
   function includeTaskInActivityRail(task, kind) {
     const workspaceName = String(task?.workspaceName ?? "").trim();
-    return workspaceName !== "Other" || kind === "running" || kind === "completed";
+    return workspaceName !== "Other" || kind === "running" || kind === "unknown" || kind === "completed";
   }
 
   function resolveTaskHierarchy(task, workspaces) {

@@ -1,6 +1,7 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
@@ -40,6 +41,28 @@ namespace AgentHub.RuntimeHost
         private static extern IntPtr GetCurrentProcess();
 
         [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool IsProcessInJob(IntPtr process, IntPtr job, out bool inJob);
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern bool CreateProcess(string application, StringBuilder commandLine,
+            IntPtr processAttributes, IntPtr threadAttributes, bool inheritHandles, uint flags,
+            IntPtr environment, string directory, ref StartupInfo startup, out ProcessInformation information);
+
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        private struct StartupInfo
+        {
+            public uint Size; public string Reserved, Desktop, Title;
+            public uint X, Y, XSize, YSize, XCountChars, YCountChars, FillAttribute, Flags;
+            public short ShowWindow, ReservedSize; public IntPtr ReservedPointer, Input, Output, Error;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct ProcessInformation
+        {
+            public IntPtr Process, Thread; public uint ProcessId, ThreadId;
+        }
+
+        [DllImport("kernel32.dll", SetLastError = true)]
         private static extern bool CloseHandle(IntPtr handle);
 
         [DllImport("kernel32.dll", SetLastError = true)]
@@ -67,6 +90,12 @@ namespace AgentHub.RuntimeHost
                 Path.AltDirectorySeparatorChar);
             try
             {
+                if (!(args.Length == 1 && args[0] == "--check"))
+                {
+                    bool inheritedJob;
+                    IsProcessInJob(GetCurrentProcess(), IntPtr.Zero, out inheritedJob);
+                    WriteLifetime(runtimeRoot, "host-entry", 0, null, inheritedJob);
+                }
                 if (args.Length == 1 && args[0] == "--close-release-acceptance")
                 {
                     CloseReleaseAcceptance(runtimeRoot);
@@ -79,9 +108,7 @@ namespace AgentHub.RuntimeHost
                 }
                 if (args.Length == 1 && args[0] == "--spawn-independent")
                 {
-                    // Legacy callers keep this launcher as the owned process.
-                    // WMI escaped the helper tree and could start after rollback.
-                    return Run(runtimeRoot, false);
+                    return StartIndependent(runtimeRoot);
                 }
 
                 bool checkOnly = args.Length == 1 && args[0] == "--check";
@@ -93,6 +120,9 @@ namespace AgentHub.RuntimeHost
             }
             catch (Exception error)
             {
+                bool inJob;
+                IsProcessInJob(GetCurrentProcess(), IntPtr.Zero, out inJob);
+                WriteLifetime(runtimeRoot, "host-failed", 0, 1, inJob);
                 WriteFailure(runtimeRoot, error);
                 return 1;
             }
@@ -163,9 +193,13 @@ namespace AgentHub.RuntimeHost
                     {
                         throw new InvalidOperationException("Node.js did not start");
                     }
+                    bool inJob;
+                    IsProcessInJob(GetCurrentProcess(), IntPtr.Zero, out inJob);
+                    WriteLifetime(runtimeRoot, "node-start", process.Id, null, inJob);
                     LeaveAcceptanceGate(ref acceptanceGate);
                     DeleteLegacyLaunchers(runtimeRoot);
                     process.WaitForExit();
+                    WriteLifetime(runtimeRoot, "node-exit", process.Id, process.ExitCode, inJob);
                     return process.ExitCode;
                 }
             }
@@ -174,6 +208,47 @@ namespace AgentHub.RuntimeHost
                 LeaveAcceptanceGate(ref acceptanceGate);
                 if (runtimeJob != IntPtr.Zero) CloseHandle(runtimeJob);
             }
+        }
+
+        private static int StartIndependent(string runtimeRoot)
+        {
+            // Cold start only. Controlled replacements must remain owned until
+            // their exact lock/ready proof, using the direct detached invocation.
+            if (!String.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("AGENT_HUB_RESTART_OPERATION_ID")))
+                throw new InvalidOperationException("Independent cold start cannot replace a managed restart operation");
+            StartupInfo startup = new StartupInfo();
+            startup.Size = (uint)Marshal.SizeOf(typeof(StartupInfo));
+            startup.Flags = 1; startup.ShowWindow = 0;
+            ProcessInformation child;
+            string executable = Assembly.GetExecutingAssembly().Location;
+            // Explicit job breakaway; denied breakaway is a visible failure,
+            // never a WMI fallback or an unbounded delayed launch.
+            if (!CreateProcess(executable, new StringBuilder(QuoteArgument(executable)),
+                IntPtr.Zero, IntPtr.Zero, false, 0x01000000 | 0x08000000 | 0x00000200,
+                IntPtr.Zero, runtimeRoot, ref startup, out child))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "Independent RuntimeHost creation failed");
+            bool inJob;
+            IsProcessInJob(GetCurrentProcess(), IntPtr.Zero, out inJob);
+            try { WriteLifetime(runtimeRoot, "independent-created", (int)child.ProcessId, null, inJob); }
+            finally { CloseHandle(child.Thread); CloseHandle(child.Process); }
+            return 0;
+        }
+
+        private static void WriteLifetime(string runtimeRoot, string stage, int childPid, int? exitCode, bool inJob)
+        {
+            try
+            {
+                string directory = Path.Combine(runtimeRoot, "data");
+                Directory.CreateDirectory(directory);
+                var record = new Dictionary<string, object> {
+                    { "at", DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture) },
+                    { "stage", stage }, { "hostPid", Process.GetCurrentProcess().Id },
+                    { "childPid", childPid }, { "exitCode", exitCode }, { "hostInJob", inJob }
+                };
+                File.AppendAllText(Path.Combine(directory, "runtime-host-lifetime.jsonl"),
+                    new JavaScriptSerializer().Serialize(record) + Environment.NewLine, new UTF8Encoding(false));
+            }
+            catch { /* Diagnostics must not change runtime ownership or outcome. */ }
         }
 
         // WMI replacement does not inherit the caller's environment. Persist the

@@ -288,6 +288,12 @@ export function createDesktopSnapshotFactory({
           ? { clientProjectionIntent: String(result.clientProjectionIntent).trim() }
           : {}),
         createdAt: receipt.createdAt ?? null,
+        commandState: result.commandState ?? null,
+        submittedAt: result.submittedAt ?? receipt.createdAt ?? null,
+        startedAt: result.startedAt ?? result.deliveredAt ?? null,
+        completedAt: result.completedAt ?? null,
+        terminalRevision: result.terminalRevision ?? null,
+        providerAccepted: result.providerAccepted === true,
         accepted: result.accepted === true,
         deferred: result.deferred === true,
         queued: result.queued === true,
@@ -554,6 +560,7 @@ export function createDesktopSnapshotFactory({
       submittedAt: run.submittedAt ?? runUserMessages[0]?.submittedAt ?? runUserMessages[0]?.time ?? run.startedAt ?? null,
       responseItemId: run.responseItemId ?? null,
       startedAt: run.startedAt ?? null,
+      providerConnection: run.providerStart?.connection ?? null,
       lastActivityAt: run.lastMeaningfulProgressAt ?? run.progressHeartbeatAt ?? run.startedAt ?? null,
       activities,
       ...(activityGroups.length

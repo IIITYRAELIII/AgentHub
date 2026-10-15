@@ -472,6 +472,8 @@ export class TerminalTurnCommitService {
           terminalRevision: terminal.terminalRevision,
           status: terminal.status,
           runId: history.id ?? null,
+          startedAt: completion.startedAt ?? history.startedAt ?? null,
+          completedAt: completion.completedAt ?? null,
         },
       });
       if (outcome?.conflict) {

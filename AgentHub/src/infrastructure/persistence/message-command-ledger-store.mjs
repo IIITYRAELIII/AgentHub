@@ -422,6 +422,12 @@ function projectedReceipt(record) {
     ...(record.receipt?.result ?? {}),
     ...(record.result ?? {}),
   };
+  result.commandState = record.state;
+  result.provider ??= identity.provider;
+  result.submittedAt = identity.createdAt;
+  result.startedAt ??= result.deliveredAt ?? null;
+  result.completedAt = record.terminalAtMs == null ? null : new Date(record.terminalAtMs).toISOString();
+  result.terminalRevision = Number(record.result?.terminalRevision) || 0;
   result.pending = false;
   if (["queued", "dispatching"].includes(record.state)) {
     result.accepted = record.item?.conflictKind === "message-intake" || result.accepted === true;
@@ -452,11 +458,23 @@ function projectedReceipt(record) {
     result.accepted = false;
     result.pending = false;
     result.rejected = true;
+    result.failed = true;
   } else if (record.state === "unknown") {
     result.accepted = false;
     result.deferred = true;
     result.queued = false;
     result.unknown = true;
+  }
+  if (TERMINAL_STATES.has(record.state) || record.state === "unknown") {
+    result.deferred = record.state === "unknown";
+    result.queued = false;
+    result.dispatching = false;
+    result.attentionRequired = false;
+    result.paused = false;
+    result.completed = record.state === "completed";
+    result.failed = record.state === "failed";
+    result.cancelled = record.state === "cancelled";
+    result.unknown = record.state === "unknown";
   }
   return { ...identity, result };
 }
@@ -1037,6 +1055,11 @@ export class MessageCommandLedgerStore {
     return recordFromRow(this.#database.prepare(`
       SELECT * FROM message_commands WHERE client_user_message_id = ?
     `).get(String(id ?? "").trim()));
+  }
+
+  projectReceipt(receipt) {
+    const record = this.get(receipt?.clientUserMessageId);
+    return record ? projectedReceipt(record) ?? receipt : receipt;
   }
 
   records() {

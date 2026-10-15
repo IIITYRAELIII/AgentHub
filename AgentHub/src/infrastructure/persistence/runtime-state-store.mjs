@@ -389,7 +389,13 @@ export class RuntimeStateStore {
   }
 
   transitionMessageCommand(transition) {
-    return Promise.resolve(this.#messageCommands.transition(transition));
+    const outcome = this.#messageCommands.transition(transition);
+    if (outcome.changed) this.messageCommandRevision = (this.messageCommandRevision ?? 0) + 1;
+    return Promise.resolve(outcome);
+  }
+
+  projectMessageReceipt(receipt) {
+    return this.#messageCommands.projectReceipt(receipt);
   }
 
   configureMessageCommandExpiry(options) {

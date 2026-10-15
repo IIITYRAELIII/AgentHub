@@ -2399,6 +2399,16 @@ test("hub_stream_history projects active content and deterministic lifecycle sta
   assert.equal(repeated.cursor, first.cursor);
   assert.equal(repeated.revision, first.revision);
 
+  firstRun.activityUnknown = true;
+  const unknown = await service.call("hub_stream_history", {
+    context_token: token, stream_id: "stream-3", cursor: first.cursor,
+  });
+  assert.equal(unknown.state, "unknown");
+  assert.equal(unknown.turns[0].active, false);
+  assert.equal(unknown.turns[0].status, "unknown");
+  assert.equal(unknown.turns[0].canStop, true);
+  firstRun.activityUnknown = false;
+
   historyRecordsByThread.set("thread-3", [{
     provider: "codex", threadId: "thread-3", turnId: "turn-foreign-1",
     title: "Persisted too early", prompt: "Inspect foreign state", body: "Persisted partial",
