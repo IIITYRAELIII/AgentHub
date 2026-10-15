@@ -2556,3 +2556,24 @@ test("unconfirmed recovery is unknown in the snapshot while original run ownersh
   assert.equal(snapshot.run.id, setup.state.run.id);
   assert.equal(setup.state.run.status, "running");
 });
+
+test("authoritative live run clears stale catalog unknown while real and catalog-only uncertainty remain", () => {
+  const setup = fixture();
+  setup.entry.activityUnknown = true;
+  let snapshot = setup.desktopTaskSnapshot(setup.entry);
+  assert.equal(snapshot.running, true);
+  assert.equal(snapshot.activityUnknown, false);
+  setup.state.run.activityUnknown = true;
+  setup.entry.activityUnknown = false;
+  snapshot = setup.desktopTaskSnapshot(setup.entry);
+  assert.equal(snapshot.running, false);
+  assert.equal(snapshot.activityUnknown, true);
+  assert.equal(snapshot.run.id, setup.state.run.id);
+  setup.state.run = null;
+  setup.entry.activityUnknown = true;
+  setup.entry.turnId = "catalog-uncertain-turn";
+  snapshot = setup.desktopTaskSnapshot(setup.entry);
+  assert.equal(snapshot.running, false);
+  assert.equal(snapshot.activityUnknown, true);
+  assert.equal(snapshot.run.activityUnknown, true);
+});

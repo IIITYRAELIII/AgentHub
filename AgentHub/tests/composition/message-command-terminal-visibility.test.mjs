@@ -39,4 +39,7 @@ test('unknown retained occupancy stays visible in activity rail and keeps Stop w
  assert.equal(sections.active[0].id,'retained');assert.equal(sections.recent.length,0);
  assert.equal(context.AgentHubStreamTabs.includeTaskInActivityRail({workspaceName:'Other'},'unknown'),true);
  assert.match(context.AgentHubStreamTabs.streamStatusPresentation(task).statusLabel,/Состояние уточняется/);
+ const contradictory=context.AgentHubStreamTabs.streamStatusPresentation({...task,running:true});
+ assert.equal(contradictory.running,false);
+ assert.equal(contradictory.statusLabel.includes('Ход выполняется'),false);
 });

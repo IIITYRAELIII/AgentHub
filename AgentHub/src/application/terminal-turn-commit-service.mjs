@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { normalizeProviderRunTerminalStatus } from "../domain/provider-run-terminal.mjs";
 
 import {
   consistentInterstreamRecordIdentity,
@@ -166,6 +167,7 @@ export class TerminalTurnCommitService {
     }
     const finalAnswer = String(completion.finalAnswer ?? "").trim();
     const durableCompletion = structuredClone(completion);
+    durableCompletion.status = normalizeProviderRunTerminalStatus(completion.status) ?? completion.status;
     const completionRootMessage = (Array.isArray(durableCompletion.userMessages)
       ? durableCompletion.userMessages
       : []).find((message) => message?.role === "user") ?? null;
@@ -195,6 +197,7 @@ export class TerminalTurnCommitService {
       text: body,
       updatedAt: completion.completedAt,
       startedAt: completion.startedAt || null,
+      status: durableCompletion.status,
     };
     const commandId = normalizeInterstreamClientUserMessageId(
       run?.clientUserMessageId ?? completion.clientUserMessageId,
@@ -211,7 +214,7 @@ export class TerminalTurnCommitService {
         provider: completion.provider,
         threadId: completion.threadId,
         turnId: completion.turnId,
-        status: completion.status,
+        status: durableCompletion.status,
         finalAnswer,
         usageIdentity: usageIdentity(completion),
         lastMessage,
@@ -277,7 +280,7 @@ export class TerminalTurnCommitService {
       status,
       finalAnswer: answer,
       usageIdentity: current.usageIdentity,
-      lastMessage: answer ? { text: answer, updatedAt: completedAt,
+      lastMessage: answer ? { text: answer, updatedAt: completedAt, status,
         startedAt: completion.startedAt ?? null } : null,
       payload: { ...structuredClone(current.payload), completion, history },
       expectedTerminalRevision: current.terminalRevision,
@@ -448,7 +451,8 @@ export class TerminalTurnCommitService {
       history.clientUserMessageId ?? completion.clientUserMessageId ?? "",
     );
     if (!clientUserMessageId) return false;
-    const normalizedStatus = String(terminal.status ?? completion.status ?? "completed").trim().toLowerCase();
+    const normalizedStatus = normalizeProviderRunTerminalStatus(terminal.status ?? completion.status)
+      ?? String(terminal.status ?? completion.status ?? "completed").trim().toLowerCase();
     const commandState = normalizedStatus === "completed"
       ? "completed"
       : normalizedStatus.includes("cancel") || normalizedStatus === "aborted" ? "cancelled" : "failed";

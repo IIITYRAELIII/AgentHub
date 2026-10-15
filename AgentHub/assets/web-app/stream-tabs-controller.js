@@ -503,7 +503,7 @@
   }
 
   function streamStatusPresentation(task) {
-    const running = Boolean(task?.running);
+    const running = Boolean(task?.running) && task?.activityUnknown !== true;
     const answerReady = Boolean(task?.unread);
     const statusLabel = [
       task?.activityUnknown ? "Состояние уточняется · поток занят" : "",
