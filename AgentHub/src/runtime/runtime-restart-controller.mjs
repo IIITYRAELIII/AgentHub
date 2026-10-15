@@ -40,6 +40,7 @@ export class RuntimeRestartController {
     finishSuccessfulReplacement,
     isStopping = () => false,
     logger = console,
+    measure = (_id, _stage, action) => action(),
     captureException = () => false,
   } = {}) {
     for (const [name, value] of Object.entries({
@@ -54,7 +55,7 @@ export class RuntimeRestartController {
       getRequest, updateOffset, hasBlockingWork, setWaiting, updateMessage, saveState,
       resources, beginStopping, stopTimers, stopMedia, resumeAfterAbort, launchReplacement,
       recoverPrevious, abortRestart, finishSuccessfulReplacement, isStopping, logger,
-      captureException,
+      captureException, measure,
     });
   }
 
@@ -67,6 +68,7 @@ export class RuntimeRestartController {
 
   async #perform() {
     const request = this.getRequest();
+    const measure = (stage, action) => this.measure(request?.operationId, stage, action);
     if (this.isStopping() || !request) return { status: "ignored" };
     if (this.updateOffset() < Number(request.minimumUpdateOffset ?? 0)) {
       return { status: "waiting-for-update" };
@@ -90,10 +92,10 @@ export class RuntimeRestartController {
     }
     await this.updateMessage("🔄 Перезапускаю Agent Hub…").catch(() => {});
     try {
-      const quiesce = await this.resources.quiesce({
+      const quiesce = await measure("quiesce", () => this.resources.quiesce({
         label: "Restart quiesce failed",
         timeoutMs: 60_000,
-      });
+      }));
       if (failed(quiesce)) throw lifecycleFailure("quiesce", quiesce);
     } catch (error) {
       if (timedOut(error)) return this.#halt(error, error?.phase ?? "quiesce");
@@ -103,8 +105,8 @@ export class RuntimeRestartController {
     this.stopTimers();
     this.stopMedia();
     try {
-      await this.saveState();
-      const drain = await this.resources.drain({ label: "Restart drain failed" });
+      await measure("save-state", () => this.saveState());
+      const drain = await measure("drain", () => this.resources.drain({ label: "Restart drain failed" }));
       if (failed(drain)) throw lifecycleFailure("drain", drain);
     } catch (error) {
       if (timedOut(error)) return this.#halt(error, error?.phase ?? "prepare");
@@ -113,12 +115,12 @@ export class RuntimeRestartController {
 
     let lockReleased = false;
     try {
-      const close = await this.resources.close({
+      const close = await measure("close", () => this.resources.close({
         label: "Restart close failed",
         reason: "restart",
-      });
+      }));
       if (failed(close)) throw lifecycleFailure("close", close);
-      const release = await this.resources.releaseLock({ label: "Restart lock release failed" });
+      const release = await measure("release-lock", () => this.resources.releaseLock({ label: "Restart lock release failed" }));
       if (failed(release)) throw lifecycleFailure("releaseLock", release);
       lockReleased = true;
     } catch (error) {

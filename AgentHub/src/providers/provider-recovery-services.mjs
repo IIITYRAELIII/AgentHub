@@ -63,6 +63,7 @@ export class CodexRecoveryService {
 
   async recover(run, { observerSnapshot = null } = {}) {
     const d = this.#d;
+    run.activityUnknown = true;
     const initialAction = resolveTaskRecoveryAction({
       run,
       observerSnapshot,
@@ -136,13 +137,17 @@ export class CodexRecoveryService {
       return;
     }
     if (!exactTerminal && recoveryAction === TASK_RECOVERY_ACTIONS.ATTACH_CODEX) {
+      run.activityUnknown = !(terminalSnapshot?.running === true
+        && String(terminalSnapshot.turnId ?? "").trim() === exactTurnId);
       const previousTurnId = run.turnId;
       run.turnId = turn.id;
       d.reindexRun(run, { turnId: previousTurnId });
       if (!d.turnTokenUsage.has(run.turnId)) {
         rememberBounded(d.turnTokenUsage, run.turnId, { usage: emptyTokenUsage(), reported: false }, 200);
       }
-      d.setProgressStage(run, "Подключено к продолжающемуся потоку.");
+      d.setProgressStage(run, run.activityUnknown
+        ? "Исходный ход сохранён; выполнение Codex пока не подтверждено."
+        : "Подключено к продолжающемуся потоку.");
       d.scheduleObservedRun(run);
       if (run.displayRequested) d.startTyping();
       await d.saveState();

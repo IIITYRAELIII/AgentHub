@@ -3,6 +3,7 @@ import { retargetTelegramClientSelections } from "../application/client-task-sel
 import { StreamContextMaintenanceService } from "../application/stream-context-maintenance-service.mjs";
 import { UsageSyncAutoService } from "../application/usage-sync-auto-service.mjs";
 import { UsageSyncRemoteClient } from "../infrastructure/http/usage-sync-remote-client.mjs";
+import { agentHubRuntimeHealth } from "../application/runtime-health.mjs";
 import { MaintenanceOperationStore } from "../infrastructure/persistence/maintenance-operation-store.mjs";
 import { ClaudeContextMaintenanceService } from "../providers/claude/claude-context-maintenance-service.mjs";
 import { processIsAlive } from "../providers/claude/claude-run-io.mjs";
@@ -174,6 +175,11 @@ export async function createProviderApplicationComposition({
     canonicalizeProjectRoots,
   });
   const maintenanceOperations = new MaintenanceOperationStore({ dataDir: config.dataDir });
+  agentHubRuntimeHealth.setDiagnosticSource("restart", () => {
+    const settled = maintenanceOperations.latestSettledRestart();
+    return settled ? { operationId: settled.operationId, status: settled.status,
+      completedAt: settled.completedAt } : null;
+  });
   hubMcpService.setActiveRuns(() => runtimeData.taskRuns.values());
   hubMcpService.setDeferredInputs(() => runtimeData.deferredInputs.diagnostics());
 

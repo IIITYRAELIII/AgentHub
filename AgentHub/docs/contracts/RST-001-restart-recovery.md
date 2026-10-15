@@ -65,7 +65,14 @@ provider/process completion owner may commit the exact terminal outcome.
 - A restart requested with no selected Stream and Thread is persisted under the
   explicit runtime scope; a target naming only one of them is rejected.
 - Restart is a barrier over durable finals, command receipts, delivery outbox and
-  maintenance reconciliation.
+  maintenance reconciliation. The real input factory must pass that reservation
+  to ordinary and deferred admission, not only define an unused coordinator hook.
+- One durable restart launches one owned RuntimeHost tree. Windows restart never
+  submits an escaping WMI start, retries an ownership timeout or adds a fallback
+  launch. Legacy `--spawn-independent` is an owned synchronous launcher alias.
+  The expected release is persisted before launch; exact operation/release/PID/
+  instance evidence fences readiness. The old owner recovers only after confirmed
+  cleanup of its owned replacement. See ADR-0114.
 - Once a restart operation is persisted, new durable commands remain queued in
   their exact lanes. The old runtime cannot admit them after the run that the
   restart is draining reaches terminal state.
@@ -98,6 +105,9 @@ provider/process completion owner may commit the exact terminal outcome.
   Concurrent Thread checks share one bounded process snapshot per runtime
   cadence. Queue retries use capped exponential backoff with jitter; an exact
   completion or wake cancels that delay and rechecks the lane head immediately.
+- Retained uncertain run ownership is projected as unknown while preserving the
+  exact Stop target and replay fence. Only an exact fresh active snapshot clears
+  that uncertainty; no terminal is manufactured from reconnect failure.
 - Process death does not preserve local `running` as fact. Recovery reconciles
   provider state or records an honest terminal timeout/unknown result.
 - An exact Codex turn whose rollout has only `task_started` remains unknown
@@ -130,9 +140,9 @@ provider/process completion owner may commit the exact terminal outcome.
   measured time since the wait began and says the previous process still
   answers only after a successful health response. A snapshot served after a
   failed restart carries its recent persisted reason, shown once per operation,
-  until a later restart settles successfully; that reason is part of the
-  snapshot source revision, so neither a failure, a later success nor the end
-  of its notice window can be hidden by a cached unchanged snapshot. Known failed
+  until a later restart settles successfully; elapsed time is not delivery and
+  cannot expire this terminal reason. It is part of the snapshot source revision,
+  so neither a failure nor a later success can be hidden by an unchanged cache. Known failed
   startup details remain available during ordinary connection loss. Fresh
   health and the canonical connection state remain the reconnect authority.
 - The startup screen retains failed-stage details and exposes authenticated

@@ -104,6 +104,7 @@ export class SingleInstanceGuard {
   #lockFile;
   #isAlive;
   #releaseId;
+  #restartOperationId;
   #server = null;
   #handle = null;
   #token = randomUUID();
@@ -114,11 +115,13 @@ export class SingleInstanceGuard {
     lockFile = path.join(dataDir, "bot.lock"),
     isAlive = processIsAlive,
     releaseId = process.env.AGENT_HUB_RELEASE_ID,
+    restartOperationId = process.env.AGENT_HUB_RESTART_OPERATION_ID,
   }) {
     this.#dataDir = dataDir;
     this.#lockFile = lockFile;
     this.#isAlive = isAlive;
     this.#releaseId = String(releaseId ?? "").trim() || null;
+    this.#restartOperationId = String(restartOperationId ?? "").trim() || null;
   }
 
   get instanceToken() {
@@ -187,6 +190,7 @@ export class SingleInstanceGuard {
         startedAt: this.#startedAt,
         endpoint: pipeName(this.#dataDir),
         releaseId: this.#releaseId,
+        restartOperationId: this.#restartOperationId,
         ready,
       })}\n`;
     await this.#handle.truncate(0);

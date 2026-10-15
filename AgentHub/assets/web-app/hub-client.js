@@ -1830,8 +1830,9 @@ function modelTask(task, snapshot, effectiveSelectedId, serverSelectedId) {
   const streamId = String(task.streamId ?? "").trim()
     || `legacy:${String(task.provider ?? "").trim()}:${String(task.threadId ?? "").trim()}`;
   const answerAt = Date.parse(task.lastAnswerAt ?? "") || 0;
-  const running = Boolean(projectedActiveUserRun(id, task));
-  const unknown = task.activityUnknown === true;
+  const activity = window.AgentHubMessageProjection.userRunActivity(projectedActiveUserRun(id, task));
+  const running = activity.running;
+  const unknown = activity.unknown || task.activityUnknown === true;
   const unread = task.unread === true && !readMarker.cursorCovers(
     task.latestFinal, confirmedReadCursorByThread.get(readMarker.threadIdentity(task.latestFinal)),
   );
@@ -1867,6 +1868,7 @@ function modelTask(task, snapshot, effectiveSelectedId, serverSelectedId) {
     runtimeLabel: runtimeShortLabels[executionOwner] ?? (runtimeTitle ? "EXT" : ""),
     runtimeTitle,
     project: task.projectName || "",
+    canStop: activity.canStop,
     status: running ? "running" : unknown ? "unknown" : unread ? "ready" : "idle",
     statusLabel: running ? "Выполняется" : unknown ? "Статус неизвестен" : unread ? "Ответ готов" : "",
     lastActivity: task.orderingActivityAtMs
@@ -2573,7 +2575,8 @@ function applySnapshotContent(snapshot, { materialized = false } = {}) {
     for (const task of representativeTasks) {
       const stableTaskId = taskId(task.provider, task.threadId, task.streamId);
       agentHub.setLive(stableTaskId, updateLiveMessage(stableTaskId, task));
-      agentHub.setRunning(stableTaskId, Boolean(projectedActiveUserRun(stableTaskId, task)));
+      agentHub.setRunning(stableTaskId, window.AgentHubMessageProjection.userRunActivity(
+        projectedActiveUserRun(stableTaskId, task)).running);
     }
     for (const task of representativeTasks) {
       renderTaskQueue(taskId(task.provider, task.threadId, task.streamId), snapshot);

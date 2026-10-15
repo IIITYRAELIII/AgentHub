@@ -2465,7 +2465,7 @@ test("a receipt reaches the client only with an origin its own message confirms"
   assert.equal(benignReceipt.origin?.streamName, origin.streamName);
 });
 
-test("a settled restart failure invalidates a cached snapshot, a later success clears it and expiry drops it", async (t) => {
+test("a restart failure invalidates the cache and survives disconnect until a later success", async (t) => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-restart-failure-cache-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   let clock = Date.parse("2026-09-13T20:00:00.000Z");
@@ -2513,8 +2513,8 @@ test("a settled restart failure invalidates a cached snapshot, a later success c
   assert.equal(expiring.restartFailure?.operationId, expiringId);
   clock += RESTART_FAILURE_NOTICE_WINDOW_MS + 1_000;
   const expired = await desktopSnapshot({ knownVersion: expiring.version });
-  assert.notEqual(expired.notModified, true);
-  assert.equal(expired.restartFailure, null);
+  assert.equal(expired.notModified, true);
+  assert.equal(expiring.restartFailure?.operationId, expiringId);
 });
 
 test("a restart failure that expires between snapshot reads never leaves a stale cached version", async () => {
@@ -2538,4 +2538,14 @@ test("a restart failure that expires between snapshot reads never leaves a stale
   const next = await desktopSnapshot({ knownVersion: boundary.version });
   assert.notEqual(next.notModified, true, "the version built across the boundary was not cached");
   assert.equal(next.restartFailure, null);
+});
+
+test("unconfirmed recovery is unknown in the snapshot while original run ownership remains", () => {
+  const setup = fixture();
+  setup.state.run.activityUnknown = true;
+  const snapshot = setup.desktopTaskSnapshot(setup.entry);
+  assert.equal(snapshot.running, false);
+  assert.equal(snapshot.activityUnknown, true);
+  assert.equal(snapshot.run.id, setup.state.run.id);
+  assert.equal(setup.state.run.status, "running");
 });

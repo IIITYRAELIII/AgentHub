@@ -219,7 +219,14 @@
     return operationKind(value) === "user-turn" && projectionState(value) === "active" && !isTerminal(value);
   }
 
+  function userRunActivity(run) {
+    const owned = Boolean(run) && isUserRunningProjection(run);
+    const unknown = owned && run.activityUnknown === true;
+    return { running: owned && !unknown, canStop: owned, unknown };
+  }
+
   global.AgentHubMessageProjection = Object.freeze({
+    userRunActivity,
     canonicalEntityIdentity,
     isUserRunningProjection,
     legacyOperationKindMigrationGuard,

@@ -5925,7 +5925,7 @@ function renderChatContent({ preserveStreamTabs = false } = {}) {
   renderMessagePinShelf();
   for (const stop of chatStops) {
     const preparing = contextMaintenancePreparing(task);
-    stop.hidden = !task.running && !preparing;
+    stop.hidden = !task.running && !task.canStop && !preparing;
     stop.title = preparing ? "Отменить подготовку обслуживания контекста" : "Остановить ход";
     stop.setAttribute("aria-label", stop.title);
   }

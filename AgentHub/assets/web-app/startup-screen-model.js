@@ -155,3 +155,10 @@ export function createVisibilityBoundAnimation({
 
   return Object.freeze({ start: schedule, stop, destroy });
 }
+
+// A responding restored process can terminate the wait without claiming cutover.
+export function restartWaitFailed(snapshot, waitingSinceMs) {
+  const operation = snapshot?.diagnostics?.restart;
+  return operation?.status === "failed"
+    && Date.parse(operation.completedAt ?? "") >= Number(waitingSinceMs);
+}

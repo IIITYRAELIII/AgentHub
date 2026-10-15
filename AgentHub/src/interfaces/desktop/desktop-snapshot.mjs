@@ -420,6 +420,7 @@ export function createDesktopSnapshotFactory({
       threadId: run.threadId,
       taskTitle: runs.titleFor(run),
       status: run.status,
+      ...(run.activityUnknown === true ? { activityUnknown: true } : {}),
       ...(operationKind ? { operationKind } : {}),
       observer: run.observer === true,
       executionOwner: run.executionOwner ?? null,
@@ -671,8 +672,8 @@ export function createDesktopSnapshotFactory({
       threadTitle: entry.title,
       model: visibleRun?.model ?? entry.model ?? null,
       selected,
-      running: Boolean(visibleRun),
-      activityUnknown: entry.activityUnknown === true,
+      running: Boolean(visibleRun) && visibleRun.activityUnknown !== true,
+      activityUnknown: visibleRun?.activityUnknown === true || entry.activityUnknown === true,
       executionOwner: visibleRun?.executionOwner ?? entry.executionOwner ?? null,
       runtime: visibleRun?.appServer ?? (entry.executionOwner
         ? tasks.executionRuntimeLabel(entry.executionOwner)

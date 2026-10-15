@@ -2,6 +2,7 @@ import {
   createVisibilityBoundAnimation,
   createStartupDisconnectedModel,
   createStartupScreenModel,
+  restartWaitFailed,
   formatStartupElapsed,
   shouldShowStartupScreen,
 } from "./startup-screen-model.js";
@@ -322,7 +323,14 @@ async function refresh() {
     const response = await fetch("/health", { cache: "no-store" });
     clearConnectionTimer();
     if (!response.ok) throw new Error(`health ${response.status}`);
-    const model = createStartupScreenModel(await response.json());
+    const health = await response.json();
+    if (restartExpected && restartWaitFailed(health, waitingSinceMs)) {
+      restartExpected = false;
+      waitingSinceMs = 0;
+      hideScreen();
+      hadStartup = false;
+    }
+    const model = createStartupScreenModel(health);
     const replacementStartup = restartExpected
       && !model.ready
       && lastStartupStartedAtMs > 0

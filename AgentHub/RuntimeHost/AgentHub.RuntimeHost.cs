@@ -4,7 +4,6 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
-using System.Management;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
@@ -80,8 +79,9 @@ namespace AgentHub.RuntimeHost
                 }
                 if (args.Length == 1 && args[0] == "--spawn-independent")
                 {
-                    SpawnIndependent(runtimeRoot);
-                    return 0;
+                    // Legacy callers keep this launcher as the owned process.
+                    // WMI escaped the helper tree and could start after rollback.
+                    return Run(runtimeRoot, false);
                 }
 
                 bool checkOnly = args.Length == 1 && args[0] == "--check";
@@ -672,25 +672,6 @@ namespace AgentHub.RuntimeHost
             {
                 string target = Path.Combine(runtimeRoot, legacy);
                 if (File.Exists(target)) File.Delete(target);
-            }
-        }
-
-        private static void SpawnIndependent(string runtimeRoot)
-        {
-            string executable = Assembly.GetExecutingAssembly().Location;
-            using (ManagementClass processClass = new ManagementClass("Win32_Process"))
-            using (ManagementBaseObject input = processClass.GetMethodParameters("Create"))
-            {
-                input["CommandLine"] = QuoteArgument(executable);
-                input["CurrentDirectory"] = runtimeRoot;
-                using (ManagementBaseObject output = processClass.InvokeMethod("Create", input, null))
-                {
-                    uint returnValue = Convert.ToUInt32(output["ReturnValue"], CultureInfo.InvariantCulture);
-                    if (returnValue != 0)
-                    {
-                        throw new InvalidOperationException("Win32_Process.Create failed: " + returnValue);
-                    }
-                }
             }
         }
 
