@@ -419,6 +419,7 @@ function phoneComposerMode() {
 }
 
 function syncComposerInputMode() {
+  root.toggleAttribute("data-phone-composer", phoneComposerMode());
   composerInput.placeholder = "Сообщение агенту…";
   composerInput.removeAttribute("title");
   composerSend.title = "Отправить";
@@ -972,6 +973,9 @@ applyBackgroundMotion(backgroundMotionPreference.stored(localStorage));
 applyTheme(savedTheme());
 applyChatSurface(chatSurfacePreference.stored(localStorage));
 applyActivityRailVisibility(activityRailPreference.stored(localStorage));
+const composerShortcuts = window.AgentHubComposerShortcuts.createSettings({
+  document, storage: () => globalThis.localStorage, overlays: modalOverlays,
+});
 applyStreamStatusStyle(savedStreamStatusStyle());
 applyStreamStatusEffect(savedStreamStatusEffect());
 applyActivityStreamDetailedCards(savedActivityStreamDetailedCards());
@@ -1042,6 +1046,7 @@ function themedSelectOptions(select) {
 }
 
 function enhanceThemedSelect(select) {
+  if (select?.matches?.("[data-composer-shortcut]")) return;
   if (!(select instanceof HTMLSelectElement) || select.multiple || select.dataset.themedSelectReady) return;
   select.dataset.themedSelectReady = "true";
   select.classList.add("themed-select-native");
@@ -6329,6 +6334,7 @@ function closeAttachmentViewer() {
 }
 
 function navigateBack() {
+  if (composerShortcuts.handleBack()) return true;
   saveDraft();
   if (closeAttachmentViewer()) return true;
   if (settingsPanel?.classList.contains("open")) {
@@ -8590,8 +8596,28 @@ composerQuickMessages?.addEventListener("click", (event) => {
   else insertQuickMessage(entry);
 });
 
+let composerCompositionActive = false;
+let composerIMEConfirmation = false;
+composerInput.addEventListener("compositionstart", () => { composerCompositionActive = true; });
+composerInput.addEventListener("compositionend", () => { composerCompositionActive = false; composerIMEConfirmation = true; });
+composerInput.addEventListener("keyup", () => { composerIMEConfirmation = false; });
 composerInput.addEventListener("keydown", (event) => {
-  if (event.isComposing) return;
+  if (event.isComposing || composerCompositionActive || event.keyCode === 229
+    || (event.key === "Enter" && composerIMEConfirmation)) return;
+  if (event.key !== "Enter") composerIMEConfirmation = false;
+  const chord = window.AgentHubComposerShortcuts.chord(event);
+  const applyShortcut = () => {
+    const action = composerShortcuts.preference().mapping[chord];
+    event.preventDefault();
+    if (action === "newline") {
+      if (!event.repeat || chord !== "ctrlEnter") insertTextAtCaret(composerInput, "\n");
+    } else if (!event.repeat) {
+      if (action === "queue") submitComposer();
+      else submitComposer({ steerWhileRunning: true });
+    }
+  };
+  if (chord === "ctrlEnter" || chord === "shiftEnter") { applyShortcut(); return; }
+  if (chord === "enter" && phoneComposerMode()) return;
   if (event.key === "Enter" && event.ctrlKey && !event.metaKey) {
     event.preventDefault();
     if (!event.repeat) insertTextAtCaret(composerInput, "\n");
@@ -8612,13 +8638,14 @@ composerInput.addEventListener("keydown", (event) => {
     }
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
-      runSlashCommand(commands[slashSelection]?.command);
+      if (!event.repeat) runSlashCommand(commands[slashSelection]?.command);
       return;
     }
   }
+  if (chord === "enter" && !phoneComposerMode()) { applyShortcut(); return; }
   if (event.key !== "Enter" || event.shiftKey || phoneComposerMode()) return;
   event.preventDefault();
-  submitComposer({ steerWhileRunning: event.metaKey });
+  if (!event.repeat) submitComposer({ steerWhileRunning: event.metaKey });
 });
 
 slashMenu.addEventListener("click", (event) => {

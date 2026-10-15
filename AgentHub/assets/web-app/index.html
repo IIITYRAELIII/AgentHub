@@ -28,6 +28,7 @@
   <script src="/message-view-controller.js" defer></script>
   <script src="/chat-scroll-controller.js" defer></script>
   <script src="/chat-surface-preference.js" defer></script>
+  <script src="/composer-shortcuts.js" defer></script>
   <script src="/background-motion-preference.js" defer></script>
   <script src="/activity-rail-preference.js" defer></script>
   <script src="/background-image-resolver.js" defer></script>
@@ -1981,6 +1982,14 @@
             <span class="setting-value" data-settings-global-quick-messages-count>0 шаблонов</span>
           </button>
         </div>
+        <div class="quick-messages-editor prompt-template-editor-card quick-messages-settings-row">
+          <button type="button" class="quick-message-editor-header prompt-template-entry-heading"
+            data-composer-shortcuts-open aria-haspopup="dialog">
+            <span class="setting-name">Сочетания клавиш</span>
+            <span class="setting-value" data-composer-shortcuts-summary>Стандартные</span>
+          </button>
+        </div>
+        <p class="switch-note composer-shortcuts-saved" data-composer-shortcuts-saved role="status" aria-live="polite"></p>
       </section>
       <section class="settings-section">
         <h3 class="settings-section-title">Интерфейс</h3>
@@ -2051,6 +2060,60 @@
       <div class="setting-status" data-status-slot hidden></div>
     </div>
   </aside>
+
+  <dialog class="composer-shortcuts-modal prompt-templates-modal" data-composer-shortcuts-dialog aria-labelledby="composer-shortcuts-title" aria-describedby="composer-shortcuts-intro">
+    <header>
+      <div><p class="eyebrow">Диалоги</p><h2 id="composer-shortcuts-title">Сочетания клавиш</h2></div>
+      <button type="button" class="icon-button" data-composer-shortcuts-cancel aria-label="Закрыть">
+        <svg data-phosphor-icon="x" viewBox="0 0 256 256" aria-hidden="true"><path d="M200 56 56 200M56 56l144 144" fill="none" stroke="currentColor" stroke-width="16" stroke-linecap="round"></path></svg>
+      </button>
+    </header>
+    <form>
+      <section class="composer-shortcuts-fields">
+        <p class="switch-note" id="composer-shortcuts-intro">Настройте действия клавиш Enter в поле ввода. Изменения сохраняются только в этом браузере или WebView.</p>
+        <div class="settings-card">
+          <label class="setting-row setting-field composer-shortcut-row" for="composer-shortcut-enter">
+            <span><kbd>Enter</kbd><small class="composer-shortcuts-mobile-helper switch-note">В мобильном режиме: перенос строки</small></span>
+            <select id="composer-shortcut-enter" data-composer-shortcut="enter" aria-label="Действие для Enter">
+              <option value="queue">Отправить в очередь</option><option value="steer">Отправить в текущий ход</option><option value="newline">Вставить перенос строки</option>
+            </select>
+          </label>
+          <label class="setting-row setting-field composer-shortcut-row" for="composer-shortcut-ctrl">
+            <span><kbd>Ctrl</kbd> + <kbd>Enter</kbd></span>
+            <select id="composer-shortcut-ctrl" data-composer-shortcut="ctrlEnter" aria-label="Действие для Control + Enter">
+              <option value="queue">Отправить в очередь</option><option value="steer">Отправить в текущий ход</option><option value="newline" selected>Вставить перенос строки</option>
+            </select>
+          </label>
+          <label class="setting-row setting-field composer-shortcut-row" for="composer-shortcut-shift">
+            <span><kbd>Shift</kbd> + <kbd>Enter</kbd></span>
+            <select id="composer-shortcut-shift" data-composer-shortcut="shiftEnter" aria-label="Действие для Shift + Enter">
+              <option value="queue">Отправить в очередь</option><option value="steer">Отправить в текущий ход</option><option value="newline" selected>Вставить перенос строки</option>
+            </select>
+          </label>
+        </div>
+        <div class="switch-note" id="composer-shortcuts-helper">
+          <p>«В очередь» отправляет сообщение отдельным запросом.</p>
+          <p>«В текущий ход» использует существующее действие продолжения активного хода.</p>
+          <p>«Перенос строки» добавляет новую строку, не отправляя сообщение.</p>
+          <p>Другие сочетания клавиш сохраняют текущее поведение и здесь не настраиваются.</p>
+        </div>
+        <p class="switch-note composer-shortcuts-mobile-note">В мобильной версии Enter всегда вставляет перенос строки. Ctrl+Enter и Shift+Enter работают с аппаратной клавиатурой; отправить сообщение можно кнопкой.</p>
+        <p class="composer-shortcuts-feedback composer-shortcuts-warning" data-composer-shortcuts-warning role="status" aria-live="polite" hidden>Перенос строки не назначен ни одному сочетанию.</p>
+        <p class="composer-shortcuts-feedback composer-shortcuts-error" data-composer-shortcuts-error role="alert" hidden>Не удалось сохранить сочетания. Попробуйте ещё раз.</p>
+      </section>
+      <footer>
+        <button type="button" class="chip-button" data-composer-shortcuts-restore>Восстановить стандартные</button>
+        <button type="button" class="chip-button" data-composer-shortcuts-cancel>Отмена</button>
+        <button type="submit" class="board-task-primary">Сохранить</button>
+      </footer>
+    </form>
+  </dialog>
+  <dialog class="composer-shortcuts-discard" data-composer-shortcuts-discard aria-labelledby="composer-shortcuts-discard-title" aria-describedby="composer-shortcuts-discard-description">
+    <h2 id="composer-shortcuts-discard-title">Закрыть без сохранения?</h2>
+    <p id="composer-shortcuts-discard-description">Изменения сочетаний будут потеряны.</p>
+    <footer><button type="button" class="chip-button" data-composer-shortcuts-keep>Продолжить настройку</button>
+      <button type="button" class="chip-button danger" data-composer-shortcuts-discard-confirm>Закрыть без сохранения</button></footer>
+  </dialog>
 
   <!-- Диалог переименования/новой задачи без window.prompt (CSP-safe). -->
   <div class="dialog-scrim" data-dialog-scrim hidden></div>
