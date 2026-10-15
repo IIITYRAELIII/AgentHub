@@ -244,6 +244,134 @@ test("Mobile Workspace drawer contrast survives every shipped theme and backgrou
   assert.equal(failures.length, 0, JSON.stringify(failures.slice(0, 12)));
 });
 
+test("user corrections keep themed drawers, low FAB, direct Stream creation and five mobile destinations", async () => {
+  const registry = loadThemeRegistry(fileURLToPath(assets));
+  const directory = new URL("../../WIP/mobile-user-corrective-captures/", import.meta.url);
+  await mkdir(directory, { recursive: true });
+  const browser = await chromium.launch({ channel: process.platform === "win32" ? "msedge" : undefined, headless: true });
+  const measurements = [];
+  try {
+    for (const width of [320, 390, 430]) for (const theme of ["nebula", "orange"]) {
+      const context = await browser.newContext({ viewport: { width, height: 844 }, isMobile: true, hasTouch: true });
+      const page = await context.newPage();
+      page.setDefaultTimeout(5_000);
+      const errors = await open(page, { themeRegistry: registry });
+      // Real browser env(safe-area-inset-*) values, not replacement CSS rules.
+      const session = await context.newCDPSession(page);
+      const zeroSafeGap = await page.evaluate(() => {
+        const nav = document.querySelector("[data-mobile-nav]").getBoundingClientRect();
+        const fab = document.querySelector("[data-mobile-stream-create]").getBoundingClientRect();
+        return nav.top - fab.bottom;
+      });
+      assert.ok(zeroSafeGap >= 6 && zeroSafeGap <= 10, `zero safe-area gap ${zeroSafeGap}`);
+      await session.send("Emulation.setSafeAreaInsetsOverride", { insets: { top: 20, bottom: 34, left: 0, right: 0 } });
+      await page.locator("[data-theme-select]").evaluate((select, id) => {
+        select.value = id; select.dispatchEvent(new Event("change", { bubbles: true }));
+      }, theme);
+      const definition = registry.themes.find((entry) => entry.id === theme);
+      const background = definition.backgrounds.find((entry) => entry.id === theme) ?? definition.backgrounds[0];
+      await page.locator("[data-background-select]").evaluate((select, id) => {
+        select.value = id; select.dispatchEvent(new Event("change", { bubbles: true }));
+      }, background.id);
+      await page.waitForFunction((theme) => document.documentElement.dataset.theme === theme, theme);
+      const save = (state) => page.screenshot({ path: fileURLToPath(new URL(`${theme}-${state}-${width}.png`, directory)), animations: "disabled" });
+      const geometry = await page.evaluate(() => {
+        const nav = document.querySelector("[data-mobile-nav]").getBoundingClientRect();
+        const fab = document.querySelector("[data-mobile-stream-create]").getBoundingClientRect();
+        const probe = document.createElement("i"); probe.style.paddingBottom = "env(safe-area-inset-bottom)"; document.body.append(probe);
+        const safe = parseFloat(getComputedStyle(probe).paddingBottom); probe.remove();
+        return { safe, gap: nav.top - fab.bottom, fab: [fab.width, fab.height],
+          viewport: [fab.left >= 0, fab.right <= innerWidth, fab.top >= 0], overflow: document.documentElement.scrollWidth - innerWidth,
+          labels: [...document.querySelectorAll("[data-mobile-dialogs-tab] span")].map((n) => n.textContent),
+          tabs: [...document.querySelectorAll("[data-mobile-dialogs-tab]")].map((n) => {
+            const r = n.getBoundingClientRect(), label = n.querySelector("span");
+            return { width: r.width, height: r.height, fits: label.scrollWidth <= r.width };
+          }) };
+      });
+      assert.equal(geometry.safe, 34);
+      assert.ok(geometry.gap >= 7 && geometry.gap <= 10, JSON.stringify(geometry));
+      assert.ok(geometry.fab.every((n) => n >= 44) && geometry.viewport.every(Boolean));
+      assert.ok(geometry.tabs.every((t) => t.width >= 44 && t.height >= 44 && t.fits));
+      assert.ok(geometry.overflow <= 1);
+      assert.deepEqual(geometry.labels, ["Диалоги", "Задачи", "Журнал", "Статистика", "Ещё"]);
+      await save("list");
+      if (width === 390 && theme === "nebula") {
+        await page.evaluate((tasks) => {
+          AgentHub.setTasks([...tasks, ...Array.from({ length: 12 }, (_, i) => ({
+            ...tasks[1], id: `extra-${i}`, streamId: `extra-${i}`, streamName: `Extra ${i}`, unread: false,
+          }))]);
+          const list = document.querySelector("[data-mobile-stream-list]"); list.scrollTop = list.scrollHeight;
+        }, tasks);
+        assert.equal(await page.evaluate(() => {
+          const rows = document.querySelectorAll("[data-mobile-stream-list] .mobile-stream-row");
+          return rows[rows.length - 1].getBoundingClientRect().bottom
+            <= document.querySelector("[data-mobile-stream-create]").getBoundingClientRect().top;
+        }), true, "last Stream remains above FAB at list end");
+        await page.evaluate((tasks) => AgentHub.setTasks(tasks), tasks);
+      }
+      await page.locator("[data-mobile-workspaces-open]").click();
+      await page.locator("[data-task-filter]").focus();
+      const contrast = await drawerContrast(page);
+      for (const metric of contrast.results) assert.ok(metric.ratio >= metric.minimum, JSON.stringify({ width, theme, metric }));
+      assert.equal(contrast.opaque, 1);
+      assert.ok(contrast.overflow <= 1);
+      const palette = await page.evaluate(() => {
+        const root = document.documentElement, drawer = document.querySelector("[data-mobile-workspace-drawer]");
+        const probe = document.createElement("i"); root.append(probe);
+        probe.style.backgroundColor = "var(--bg)";
+        const expected = getComputedStyle(probe).backgroundColor;
+        probe.style.backgroundColor = "color-mix(in srgb, var(--bg) 65%, transparent)";
+        const backdrop = getComputedStyle(probe).backgroundColor; probe.remove();
+        return { expected, background: getComputedStyle(drawer).backgroundColor,
+          backdrop, actualBackdrop: getComputedStyle(drawer, "::backdrop").backgroundColor };
+      });
+      assert.equal(palette.background, palette.expected);
+      assert.equal(palette.actualBackdrop, palette.backdrop);
+      measurements.push({ width, theme, zeroSafeGap, geometry, palette, contrast });
+      await save("drawer");
+      await page.evaluate(() => history.back());
+      await page.waitForFunction(() => !document.querySelector("[data-mobile-workspace-drawer]").open);
+      await page.waitForFunction(() => document.activeElement?.matches("[data-mobile-workspaces-open]"));
+      await page.locator('[data-mobile-stream-list] [data-mobile-stream-id="s1"]').first().click();
+      const create = page.locator("[data-mobile-chat-stream-create]");
+      assert.equal(await create.isVisible(), true);
+      assert.equal(await create.getAttribute("aria-label"), "Новый Stream");
+      assert.equal(await create.evaluate((n) => {
+        const r = n.getBoundingClientRect(), switcher = document.querySelector("[data-mobile-stream-switch]").getBoundingClientRect();
+        const actions = document.querySelector(".chat-overlay-actions").getBoundingClientRect();
+        return r.width >= 44 && r.height >= 44 && r.right <= innerWidth && switcher.right <= r.left && r.right <= actions.left;
+      }), true);
+      await page.locator("[data-composer-input]").fill("Сохранённый черновик");
+      const before = await page.evaluate(() => window.testIntents.filter((i) => i.type === "stream:new").length);
+      await create.click();
+      assert.deepEqual(await page.evaluate(() => window.testIntents.filter((i) => i.type === "stream:new").map((i) => i.workspaceId)), Array(before + 1).fill("a"));
+      assert.equal(await page.locator("[data-mobile-stream-switcher]").evaluate((d) => d.open), false);
+      await page.locator("[data-mobile-stream-switch]").click();
+      await page.evaluate(() => history.back());
+      await page.waitForFunction(() => !document.querySelector("[data-mobile-stream-switcher]").open);
+      await page.waitForFunction(() => document.activeElement?.matches("[data-mobile-stream-switch]"));
+      assert.equal(await page.locator("[data-composer-input]").inputValue(), "Сохранённый черновик");
+      await save("stream");
+      await page.locator('[data-mobile-dialogs-tab="statistics"]').click();
+      assert.equal(await page.locator("html").getAttribute("data-view"), "statistics");
+      assert.equal(await page.locator('[data-mobile-dialogs-tab="statistics"]').getAttribute("aria-pressed"), "true");
+      assert.equal(await page.locator('[data-mobile-dialogs-tab="more"]').getAttribute("aria-pressed"), "false");
+      await page.locator('[data-mobile-dialogs-tab="more"]').click();
+      assert.deepEqual(await page.locator(".mobile-more-entry span").allTextContents(), ["Оформление", "Сервер", "Настройки AgentHub"]);
+      if (width === 390) await save("more");
+      await page.evaluate(() => history.back());
+      await page.waitForFunction(() => !document.querySelector("[data-mobile-more-sheet]").open);
+      assert.equal(await page.locator("html").getAttribute("data-view"), "statistics");
+      await page.evaluate(() => history.back());
+      await page.waitForFunction(() => document.documentElement.dataset.view === "chat" && !document.documentElement.hasAttribute("data-mobile-conversation"));
+      assert.deepEqual(errors, []);
+      await page.unrouteAll({ behavior: "ignoreErrors" });
+      await context.close();
+    }
+    await writeFile(new URL("measurements.json", directory), JSON.stringify(measurements, null, 2));
+  } finally { await browser.close(); }
+});
+
 test("Mobile dialogs scope, modal navigation, Back, drafts and responsive parity", async () => {
   const browser = await chromium.launch({ channel: process.platform === "win32" ? "msedge" : undefined, headless: true });
   await mkdir(captures, { recursive: true });
@@ -287,7 +415,7 @@ test("Mobile dialogs scope, modal navigation, Back, drafts and responsive parity
       await page.locator('[data-mobile-stream-list] [data-mobile-stream-id="s1"]').first().click();
       assert.equal(await page.locator("[data-composer-input]").inputValue(), "Черновик сохраняется");
       await page.locator('[data-mobile-dialogs-tab="more"]').click();
-      assert.deepEqual(await page.locator(".mobile-more-entry span").allTextContents(), ["Статистика", "Оформление", "Сервер", "Настройки AgentHub"]);
+      assert.deepEqual(await page.locator(".mobile-more-entry span").allTextContents(), ["Оформление", "Сервер", "Настройки AgentHub"]);
       if (width === 390) await page.screenshot({ path: new URL("more-390.png", captures).pathname.replace(/^\/(?:([A-Z]:))/u, "$1") });
       await page.evaluate(() => history.back());
       await page.waitForFunction(() => !document.querySelector("[data-mobile-more-sheet]").open);
@@ -660,6 +788,7 @@ test("Desktop and narrow VS Code host retain existing navigation and composer", 
       assert.equal(await page.locator("[data-mobile-dialogs-nav]").isVisible(), false);
       assert.equal(await page.locator("[data-mobile-stream-switch]").isVisible(), false);
       assert.equal(await page.locator("[data-mobile-conversation-back]").isVisible(), false);
+      assert.equal(await page.locator("[data-mobile-chat-stream-create]").isVisible(), false);
       assert.equal(await page.locator("[data-mobile-workspace-edit], [data-mobile-folder-rename], [data-mobile-folder-row]").count(), 0);
       assert.equal(await page.locator('[data-workspace-select="a"]').evaluate((row) => {
         const event = new KeyboardEvent("keydown", { key: "F10", shiftKey: true, bubbles: true, cancelable: true });
