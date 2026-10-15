@@ -88,7 +88,9 @@
       renderSwitcher(); open(switcher);
     }, { class: "mobile-dialog-button mobile-conversation-switch", "data-mobile-stream-switch": "",
       "aria-haspopup": "dialog" });
-    chatHeader.prepend(back, switchButton);
+    const chatCreate = button("Новый Stream", "plus", () => createStream(workspaceId),
+      { class: "mobile-dialog-button mobile-conversation-create", "data-mobile-chat-stream-create": "" });
+    chatHeader.prepend(back, switchButton, chatCreate);
     switchButton.append(switchButton.querySelector("svg"));
     const currentStatus = node("span", { class: "mobile-current-status", "data-mobile-current-status": "" });
     const currentRuntime = node("span", { class: "mobile-current-runtime", "data-mobile-current-runtime": "" });
@@ -150,7 +152,6 @@
     switcher.append(switchList);
     const more = dialog("Ещё", "mobile-more-sheet", "data-mobile-more-sheet");
     for (const [label, glyph, view] of [
-      ["Статистика", "chart-line-up", "statistics"],
       ["Оформление", "image-square", "background"],
       ["Сервер", "hard-drives", "server"],
       ["Настройки AgentHub", "sliders-horizontal", "settings"],
@@ -162,7 +163,8 @@
     const mobileNav = node("div", { class: "mobile-dialogs-nav", "data-mobile-dialogs-nav": "" });
     for (const [label, glyph, view] of [
       ["Диалоги", "chats-circle", "chat"], ["Задачи", "squares-four", "dashboard"],
-      ["Журнал", "notebook", "journal"], ["Ещё", "dots-three", "more"],
+      ["Журнал", "notebook", "journal"], ["Статистика", "chart-line-up", "statistics"],
+      ["Ещё", "dots-three", "more"],
     ]) mobileNav.append(textButton(label, glyph, () => {
       if (view === "more") open(more);
       else if (view === "chat") showList();
@@ -453,9 +455,10 @@
       currentStatus.textContent = state.connection === "offline" ? "Нет связи" : state.connection !== "online"
         ? "Подключение…" : selected?.running ? "Ход выполняется" : "";
       currentStatus.hidden = !currentStatus.textContent;
-      back.hidden = switchButton.hidden = !conversation;
+      back.hidden = switchButton.hidden = chatCreate.hidden = !conversation;
+      chatCreate.disabled = !workspaceId;
       for (const item of mobileNav.children) item.setAttribute("aria-pressed", String(
-        item.dataset.mobileDialogsTab === (view === "chat" ? "chat" : ["dashboard", "journal"].includes(view) ? view : "more")));
+        item.dataset.mobileDialogsTab === (view === "chat" ? "chat" : ["dashboard", "journal", "statistics"].includes(view) ? view : "more")));
       const model = JSON.stringify([workspaceId, state.tasks.map((task) => [
         task.id, task.streamId, task.streamName, task.streamDisplayName, task.workspaceId,
         task.running, task.unread, task.lastActivity, task.lastAnswer, task.agentLabel, task.modelLabel,
