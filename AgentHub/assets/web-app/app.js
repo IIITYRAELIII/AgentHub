@@ -6668,6 +6668,7 @@ function patchRenderedMessage(node, message) {
   const author = renderedMessageAuthor(message, role);
   const head = article.querySelector(".msg-head");
   syncMessageUploadActions(head, message);
+  MessageView.syncTurnStatus(head, message);
   const authorNode = head?.querySelector(".msg-author");
   if (authorNode) authorNode.textContent = author;
   let time = head?.querySelector(".msg-time");
@@ -7720,6 +7721,8 @@ function renderMessage(message, { readOnly = false, task = currentTask() } = {})
         })
       : null,
   ]);
+
+  MessageView.syncTurnStatus(head, message);
 
   const body = el("div", {
     class: "msg-body",

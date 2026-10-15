@@ -480,6 +480,24 @@
     return Math.max(loaded, total);
   }
 
+  function syncTurnStatus(head, message) {
+    const stopped = message?.role === "agent" && message?.kind !== "subagent"
+      && message?.projectionState === "cancelled";
+    let label = head?.querySelector("[data-turn-status]");
+    if (!stopped) {
+      label?.remove();
+      return;
+    }
+    if (!head) return;
+    if (!label) {
+      label = head.ownerDocument.createElement("span");
+      label.className = "msg-turn-status";
+      label.setAttribute("data-turn-status", "cancelled");
+      head.append(label);
+    }
+    label.textContent = "Остановлен";
+  }
+
   function sameRenderedMessage(left, right) {
     if (left === right) return true;
     if (messageContentSignature(left) !== messageContentSignature(right)) return false;
@@ -495,6 +513,7 @@
       "provider",
       "threadId",
       "terminalRevision",
+      "projectionState",
       "model",
       "agentThreadId",
     ].every((field) => left?.[field] === right?.[field]);
@@ -635,6 +654,7 @@
     resolvedMessageCount,
     reconcileKeyedChildren,
     standaloneInlineCode,
+    syncTurnStatus,
     turnDurationLabel,
     withoutResponseCitationFallbacks,
   });
