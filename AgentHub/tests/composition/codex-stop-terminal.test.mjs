@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, readFile } from "node:fs/promises";
+import vm from "node:vm";
 import os from "node:os";
 import path from "node:path";
 import { CodexCompletionService } from "../../src/providers/provider-completion-services.mjs";
@@ -60,6 +61,12 @@ test("Codex interrupted event remains cancelled through terminal, receipt, last-
   assert.equal(history[0].status, "aborted"); assert.equal(history[0].active, false);
   mergeCompletedTaskHistory(history, { turnId: run.turnId, answer: last.text });
   assert.equal(history[0].status, "aborted", "a legacy text-only last answer cannot imply success");
+  const browser = vm.createContext({});
+  vm.runInContext(await readFile(new URL("../../assets/web-app/messages/projection.js", import.meta.url), "utf8"), browser);
+  assert.equal(browser.AgentHubMessageProjection.projectionState({
+    status: history[0].status, terminalRevision: committed.terminal.terminalRevision,
+    running: history[0].active, operationKind: "user-turn",
+  }), "cancelled", "reload of canonical aborted history keeps the stopped UI state");
   ledger.close(); ledger = new MessageCommandLedgerStore({ dataDir });
   assert.equal(ledger.projectReceipt(command.receipt).result.commandState, "cancelled");
   assert.equal((await terminal.get(run)).status, "aborted");

@@ -203,7 +203,7 @@ function retainReadMarker(map, key, value) {
   map.delete(key);
   map.set(key, value);
 }
-const { isUserRunningProjection, projectCanonicalMessages } = window.AgentHubMessageProjection;
+const { isUserRunningProjection, projectCanonicalMessages, projectionState: canonicalProjectionState } = window.AgentHubMessageProjection;
 const {
   activeRunSubmissionTiming,
   activeRunMessageReceipts,
@@ -2728,11 +2728,12 @@ function historyMessages(history, focusedTurn = null) {
         ? { operationKindMigrationGuard: String(item.operationKindMigrationGuard) }
         : {}),
       projectionAuthority: "canonical",
-      projectionState: item.completed === true
-        ? (["failed", "cancelled"].includes(String(item.status ?? "").toLowerCase())
-          ? String(item.status).toLowerCase()
-          : "completed")
-        : item.active === true ? "active" : "unknown",
+      projectionState: canonicalProjectionState({
+        status: item.status,
+        terminalRevision: item.completed === true ? Number(item.terminalRevision) || 1 : 0,
+        running: item.active === true,
+        operationKind: "user-turn",
+      }),
       terminalRevision: item.completed === true ? Number(item.terminalRevision) || 1 : 0,
       ...(item.completed === true && !Number(item.terminalRevision)
         ? { terminalRevisionMigrationGuard: "legacy-terminal-revision" }
