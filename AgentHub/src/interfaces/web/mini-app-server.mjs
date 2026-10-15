@@ -10,6 +10,7 @@ import { agentHubRuntimeHealth } from "../../application/runtime-health.mjs";
 import { clientCommandAckTraceSpan } from "../../application/client-command-trace.mjs";
 import { clientPerformanceTraceSpans } from "../../application/client-performance-trace.mjs";
 import { WorkspaceFileTransferTickets } from "../../application/workspace-file-transfer-tickets.mjs";
+import { FileTransferRoutes } from "./file-transfer-routes.mjs";
 
 import {
   attachmentContentType,
@@ -577,6 +578,7 @@ export class MiniAppServer {
   #heartbeatTimer = null;
   #host;
   #health;
+  #fileTransferRoutes;
   #handlerCloseTimeoutMs;
   #journalCache = null;
   #journalDatabase;
@@ -629,6 +631,8 @@ export class MiniAppServer {
     usageSyncService = null,
     workspaceFileRoots = [],
     workspaceFileTransferTickets = null,
+    fileTransferService = null,
+    fileTransferPolicy = null,
     health = agentHubRuntimeHealth,
     testContourRuntimeIdentity = null,
     handlerCloseTimeoutMs = 1_000,
@@ -655,6 +659,12 @@ export class MiniAppServer {
       ? onControlResultDelivered
       : null;
     this.#deviceStore = deviceStore;
+    this.#fileTransferRoutes = new FileTransferRoutes({
+      assetsDirectory,
+      assetBundleProvider: () => this.#activeAssetBundle(),
+      policy: fileTransferPolicy,
+      service: fileTransferService,
+    });
     this.#assetBundle = staticAssetBundle({ assetsDirectory, workLogCssFile });
     this.#assetBundleProvider = typeof assetBundleProvider === "function" ? assetBundleProvider : null;
     this.#assetBundleRefreshMs = Math.max(0, Number(assetBundleRefreshMs) || 0);
@@ -959,6 +969,7 @@ export class MiniAppServer {
   async #handle(request, response, transportReceivedAtMs = Date.now()) {
     const method = String(request.method ?? "GET").toUpperCase();
     const url = new URL(request.url ?? "/", `http://${this.#host}`);
+    if (await this.#fileTransferRoutes.handlePublic(request, response, method, url)) return;
     const webviewCors = applyVscodeWebviewCors(
       request,
       response,
@@ -973,6 +984,7 @@ export class MiniAppServer {
           "X-Agent-Hub-Attachment-Name",
           "X-Agent-Hub-File-Name",
           "X-Agent-Hub-Chunk-Sha256",
+          "X-Agent-Hub-Transfer-CSRF",
         ].join(", "),
         "Access-Control-Allow-Methods": "GET, HEAD, POST, PUT, DELETE, OPTIONS",
         "Access-Control-Max-Age": "600",
@@ -980,6 +992,13 @@ export class MiniAppServer {
       response.end();
       return;
     }
+    if (await this.#fileTransferRoutes.handleOwner(
+      request,
+      response,
+      method,
+      url,
+      () => this.#authorize(request, response),
+    )) return;
     if (url.pathname === "/api/local-session") {
       if (method === "HEAD" && !this.#requireTelegramAuth && loopbackRequest(request)) {
         const cookie = cookieValue(request, LOCAL_SESSION_COOKIE);

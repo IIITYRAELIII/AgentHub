@@ -93,7 +93,7 @@ const { value: {
   turnEndNotifications,
   runtimeNotificationController, runJournal,
   runtimeCommandServer,
-  rateLimitHistoryStore, providerTurnTelemetryStore, commandTrace, commandTraceService,
+  rateLimitHistoryStore, providerTurnTelemetryStore, fileTransferService, commandTrace, commandTraceService,
   sqliteRecovery, acknowledgeSqliteRecovery,
 }, record: recordInfrastructure } = await measureStartupBeforeTrace("infrastructure", () => createHubInfrastructure({
   config,
@@ -633,7 +633,7 @@ const executionBootstrap = createExecutionBootstrapPhase({
     providerTitle,
   },
   infrastructure: {
-    instanceGuard, runtimeCommandServer,
+    instanceGuard, runtimeCommandServer, fileTransferService,
     runtimeStateStore, taskReadStateStore,
     workLogUsageStore, rateLimitHistoryStore, providerTurnTelemetryStore, taskBoard, hubMcpServer, hubMcpService, sqliteRecovery, acknowledgeSqliteRecovery,
     preTurnInstructions, commandTrace, commandTraceService,

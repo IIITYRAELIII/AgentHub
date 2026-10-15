@@ -7037,14 +7037,29 @@ function currentFileLinkContext(task = currentTask()) {
 }
 
 function desktopFileLink(raw, fileContext = currentFileLinkContext()) {
-  if (!(vscodeMode || surface === "desktop")) return null;
   const resolved = resourceInteractions.resolveFileReference(raw, fileContext);
   if (!resolved?.localPath) return null;
   return {
     candidates: resolved.candidates,
-    href: vscodeMode ? "#" : `vscode://file/${encodeURI(resolved.localPath)}`,
+    href: vscodeMode || surface !== "desktop" ? "#" : `vscode://file/${encodeURI(resolved.localPath)}`,
     localPath: resolved.localPath,
   };
+}
+
+function appendLocalResourceOverflow(target, link, targetLink, name) {
+  if (!targetLink?.localPath) return;
+  const control = el("button", {
+    class: "local-resource-overflow",
+    type: "button",
+    title: "Действия с файлом",
+    "aria-label": `Действия с файлом ${name || ""}`.trim(),
+  });
+  control.dataset.agentHubResourceAction = "menu";
+  control.dataset.agentHubLocalLink = targetLink.localPath;
+  control.dataset.agentHubResourceHref = link.href;
+  control.dataset.agentHubResourceName = name || targetLink.localPath;
+  control.textContent = "⋯";
+  target.append(control);
 }
 
 function markdownLink(raw, fileContext = currentFileLinkContext()) {
@@ -7100,6 +7115,7 @@ function appendInlineMarkdown(target, source, fileContext = currentFileLinkConte
         });
         if (targetLink.localPath) link.dataset.agentHubLocalLink = targetLink.localPath;
         target.append(link);
+        appendLocalResourceOverflow(target, link, targetLink, citation?.label);
       } else {
         target.append(el("span", attributes));
       }
@@ -7117,6 +7133,7 @@ function appendInlineMarkdown(target, source, fileContext = currentFileLinkConte
         }, [code]);
         link.dataset.agentHubLocalLink = targetLink.localPath;
         target.append(link);
+        appendLocalResourceOverflow(target, link, targetLink, value);
       } else {
         target.append(code);
       }
@@ -7143,6 +7160,7 @@ function appendInlineMarkdown(target, source, fileContext = currentFileLinkConte
         if (targetLink.taskId) link.dataset.agentHubTaskReference = targetLink.taskId;
         if (targetLink.localPath) link.dataset.agentHubLocalLink = targetLink.localPath;
         target.append(link);
+        appendLocalResourceOverflow(target, link, targetLink, parts[1]);
       } else {
         target.append(document.createTextNode(token));
       }
@@ -7839,6 +7857,15 @@ document.addEventListener("click", (event) => {
   if (resourceActionButton) {
     event.preventDefault();
     event.stopPropagation();
+    if (resourceActionButton.dataset.agentHubResourceAction === "menu") {
+      const rect = resourceActionButton.getBoundingClientRect();
+      openResourceContextMenu({ clientX: rect.right, clientY: rect.bottom, target: resourceActionButton }, resourceInteractions.linkResource({
+        href: resourceActionButton.dataset.agentHubResourceHref,
+        localPath: resourceActionButton.dataset.agentHubLocalLink,
+        name: resourceActionButton.dataset.agentHubResourceName,
+      }));
+      return;
+    }
     emit(`resource:${resourceActionButton.dataset.agentHubResourceAction}`, {
       resource: resourceInteractions.linkResource({
         href: resourceActionButton.dataset.agentHubResourceHref,
@@ -9655,20 +9682,35 @@ document.addEventListener("keydown", (event) => {
 window.addEventListener("scroll", closeAnnotationContextMenu, true);
 
 let pendingResource = null;
+let pendingResourceOpener = null;
 
 function closeResourceContextMenu() {
   pendingResource = null;
+  pendingResourceOpener = null;
   resourceContextMenu.hidden = true;
 }
 
 function openResourceContextMenu(event, resource) {
   pendingResource = resource;
+  pendingResourceOpener = event?.target?.closest?.("button, a") ?? document.activeElement;
   const actions = new Set(resourceInteractions.resourceActions(resource, {
     localWorkspaceFilesAvailable: directoryBrowseAvailable,
     vscode: vscodeMode,
   }));
   for (const button of resourceContextMenu.querySelectorAll("[data-resource-action]")) {
     button.hidden = !actions.has(button.dataset.resourceAction);
+  }
+  for (const divider of resourceContextMenu.querySelectorAll("[data-resource-action-divider]")) {
+    divider.hidden = !actions.has(divider.dataset.resourceActionDivider);
+  }
+  const shareAction = resourceContextMenu.querySelector('[data-resource-action="external-share"]');
+  if (shareAction && actions.has("external-share")) {
+    const sharePath = resourceInteractions.workspaceFilePath(resource.localPath);
+    shareAction.textContent = window.AgentHubFileTransferOwner?.actionLabel(sharePath)
+      ?? "Создать внешнюю ссылку…";
+    void window.AgentHubFileTransferOwner?.probe(sharePath).then((label) => {
+      if (pendingResource?.localPath === resource.localPath) shareAction.textContent = label;
+    });
   }
   resourceContextMenu.hidden = false;
   const rect = resourceContextMenu.getBoundingClientRect();
@@ -9699,9 +9741,10 @@ resourceContextMenu.addEventListener("click", (event) => {
   const button = event.target.closest("[data-resource-action]");
   if (!button || !pendingResource) return;
   const resource = pendingResource;
+  const trigger = pendingResourceOpener;
   const action = button.dataset.resourceAction;
   closeResourceContextMenu();
-  emit(`resource:${action}`, { resource });
+  emit(`resource:${action}`, { resource, trigger });
 });
 
 document.addEventListener("pointerdown", (event) => {
