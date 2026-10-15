@@ -37,6 +37,7 @@ export function createDesktopRunInputComposition({
   });
   const desktopDeferredInputService = new DesktopDeferredInputService({
     ...desktopDeferredInput,
+    startDeferred: (item) => runCoordinator.startDeferred(item),
     composerTransfers,
     steerActiveInput: (payload) => desktopMessageController.steerActiveInput(payload),
   });

@@ -115,7 +115,7 @@ export class DesktopDeferredInputService {
       const previous = this.#itemState(item);
       const wasScheduled = d.cancelSchedule(id);
       item.paused = true;
-      delete item.dispatchingAt;
+      item.manualPaused = true;
       delete item.lastError;
       delete item.lastErrorCode;
       delete item.recheckRequested;
@@ -131,6 +131,7 @@ export class DesktopDeferredInputService {
     if (action === "resume") {
       if (!d.queuedInputs.has(id)) throw new Error("Сообщение не находится в очереди");
       delete item.paused;
+      delete item.manualPaused;
       delete item.lastError;
       delete item.lastErrorCode;
       if (item.waitReason === "provider-thread-active") item.recheckRequested = true;
@@ -210,6 +211,7 @@ export class DesktopDeferredInputService {
         item.conflictKind = "message-intake";
       }
       delete item.paused;
+      delete item.manualPaused;
       delete item.lastError;
       delete item.lastErrorCode;
       delete item.waitReason;
@@ -242,6 +244,7 @@ export class DesktopDeferredInputService {
       d.queuedInputs.delete(id);
       item.manualAction = "new";
       delete item.paused;
+      delete item.manualPaused;
       delete item.recheckRequested;
       d.pendingInputs.set(id, item);
       await d.saveState();
