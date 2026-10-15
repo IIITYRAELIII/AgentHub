@@ -2828,3 +2828,13 @@ test("HubMcpService rejects non-file attachment sources", async (context) => {
     /regular file/u,
   );
 });
+
+test("HubMcpService exposes unconfirmed managed ownership as unknown and keeps the Stream reserved", async context => {
+  const { service, token } = await fixture(context);
+  service.setActiveRuns(() => [{ id: "uncertain", provider: "codex", threadId: "thread-1", status: "running", activityUnknown: true }]);
+  const active = await service.call("hub_active_runs_list", { context_token: token });
+  assert.equal(active.runs[0].status, "unknown");
+  assert.equal(active.runs[0].activityUnknown, true);
+  const streams = await service.call("hub_parallel_streams_list", { context_token: token });
+  assert.equal(streams.streams.find(s => s.id === "stream-1").available, false);
+});
