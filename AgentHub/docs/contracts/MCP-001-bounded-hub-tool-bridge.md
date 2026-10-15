@@ -276,6 +276,19 @@ change the arguments hash and fail closed. An already failed transition or
 authoritative outcome settles only the original receipt without Git replay;
 pending Git work still requires its existing process-tree guard and owner.
 
+An ordinary original native Test whose merge is already exactly applied may
+finish after a metadata-only Task revision advance. Its original argument hash
+must contain no explicit CAS, cutover, absorption or review family. Recovery
+compares the unchanged Task/Workspace/executor/status/workflow/result state,
+the original native intent, ordered merge parents, source and dev trees and
+clean indexes under their existing leases. A retained process guard refuses.
+Immediately before the owning terminal transaction it repeats that readback
+and CASes the current row revision, preserving current metadata. It commits the
+original outcome/references/status and settles the same receipt; it never
+prepares, snapshots or merges again. Concurrent metadata edits fail the CAS;
+other state or Git drift remains unknown. An already settled matching original
+is a read-only result. See [ADR-0113](../decisions/ADR-0113-native-test-metadata-terminal.md).
+
 The local Await cutover uses the same canonical `hub_task_status_update` receipt.
 When its projector source is a separate Task, the receipt includes that source
 Task's exact ID, Test revision, result commit and projector hash. Both Task locks

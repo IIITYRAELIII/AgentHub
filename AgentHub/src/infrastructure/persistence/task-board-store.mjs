@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { nativeTestMetadataDrift } from "../../domain/native-test-terminal-recovery.mjs";
 import { AsyncSqliteMutationQueue } from "./async-sqlite-mutation-queue.mjs";
 
 import {
@@ -3095,6 +3096,7 @@ export class TaskBoardStore {
   commitWorkflowTransition({
     operationId, provider = null, threadId = null, turnId = null, bindingOperationId = null,
     gitReferences = [], evidence = null, replaceGitReferences = true,
+    metadataRecovery = null,
   } = {}) {
     const operation = String(operationId ?? "").trim();
     return this.#withDatabase((database) => {
@@ -3106,7 +3108,27 @@ export class TaskBoardStore {
         `).get(operation);
         if (!transition) throw new Error("Task workflow transition is not pending");
         const current = this.#taskRow(database, transition.task_id);
-        if (Number(current.row_revision) !== Number(transition.expected_task_revision)) {
+        const expectedRevision = metadataRecovery?.expectedCurrentRevision ?? transition.expected_task_revision;
+        if (metadataRecovery) {
+          const prior = JSON.parse(transition.prior_state_json);
+          if (metadataRecovery.kind !== "native-test-metadata-terminal-v1"
+              || !Number.isSafeInteger(metadataRecovery.expectedCurrentRevision)
+              || metadataRecovery.originalExpectedRevision !== transition.expected_task_revision
+              || !nativeTestMetadataDrift(this.#taskWithRelease(database, current), {
+                taskId: transition.task_id, kind: transition.kind, phase: transition.phase,
+                targetWorkflowStatus: transition.target_workflow_status,
+                expectedRevision: transition.expected_task_revision, priorTask: prior.task ?? prior,
+                evidence: JSON.parse(transition.evidence_json),
+              })
+              || JSON.stringify(evidence?.nativeTerminalRecovery) !== JSON.stringify(metadataRecovery)
+              || evidence.resultCommit !== metadataRecovery.sourceCommit
+              || evidence.devHeadCommit !== metadataRecovery.devCommit
+              || gitReferences.length !== 1 || gitReferences[0].resultCommit !== metadataRecovery.sourceCommit
+              || evidence.response?.gitIntegration?.alreadyIntegrated !== true) {
+            throw new Error("Native Test metadata terminal proof changed");
+          }
+        }
+        if (Number(current.row_revision) !== Number(expectedRevision)) {
           throw new Error("Task changed while Git evidence was prepared");
         }
         const initialNativeTest = JSON.parse(transition.evidence_json ?? "{}")?.initialNativeTest;
@@ -3194,7 +3216,7 @@ export class TaskBoardStore {
             ? blockedByJson(evidence?.blockedBy ?? (current.workflow_status === "blocked" ? parseJson(current.blocked_by_json) : null))
             : null,
           transition.task_id,
-          transition.expected_task_revision,
+          expectedRevision,
         );
         if (!Number(changed.changes)) throw new Error("Task workflow CAS failed");
         if (transition.target_workflow_status !== "awaiting_implementation") {

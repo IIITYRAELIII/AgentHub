@@ -8,6 +8,7 @@ import { taskProjectRoot } from "../domain/task-project-root.mjs";
 import { TaskAbsorptionCompositionError } from "../domain/task-board-task.mjs";
 import { normalizedTaskSquashCutover } from "../domain/task-squash-cutover.mjs";
 import { TaskGitHistoryRejectedError, normalizedInitialNativeTest } from "../domain/task-git-reference.mjs";
+import { nativeTestMetadataDrift } from "../domain/native-test-terminal-recovery.mjs";
 
 export class TaskIntegrationRejectedError extends Error {
   constructor(cause) {
@@ -1210,12 +1211,14 @@ export class TaskLifecycleService {
       }
   }
 
-  async pendingNativeWorkflowOwned({ taskId, operationId, projectRoot, lease } = {}) {
+  async pendingNativeWorkflowOwned({ taskId, operationId, projectRoot, lease, allowMetadataRecovery = false } = {}) {
     const transition = this.taskBoard.lifecycleTransition(operationId);
     const task = this.#task(taskId);
     if (transition?.taskId !== task.id || transition.operationId !== operationId
         || transition.kind !== "workflow" || transition.phase !== "pending_git"
-        || transition.targetWorkflowStatus !== "testing" || transition.expectedRevision !== task.revision
+        || transition.targetWorkflowStatus !== "testing"
+        || (transition.expectedRevision !== task.revision
+          && !(allowMetadataRecovery && nativeTestMetadataDrift(task, transition)))
         || !this.taskGitWorkspaces?.pendingNativeIntegrationOwned) return false;
     return Boolean(await this.taskGitWorkspaces.pendingNativeIntegrationOwned({ taskId, operationId, projectRoot, lease }));
   }
@@ -1254,10 +1257,38 @@ export class TaskLifecycleService {
   async reconcileUnknownWorkflowStatusOwned({
     taskId, operationId, projectRoot, guardId, proof, lease, finalizeCommittedWithdrawal = false,
     verifyInitialNativeTest = null,
+    allowMetadataRecovery = false,
   } = {}) {
     await this.#assertOwned(lease);
     const current = this.#task(taskId);
     const transition = this.taskBoard.lifecycleTransition?.(operationId);
+    if (allowMetadataRecovery) {
+      if (guardId || !nativeTestMetadataDrift(current, transition)) throw new Error("Native Test metadata recovery state changed");
+      return this.taskGitWorkspaces.withAppliedNativeTerminalOwned({ taskId, operationId, projectRoot, lease },
+        async (native, verify) => {
+          const fresh = this.#task(taskId);
+          if (!nativeTestMetadataDrift(fresh, this.taskBoard.lifecycleTransition(operationId))) {
+            throw new Error("Native Test metadata recovery state changed");
+          }
+          const nativeTerminalRecovery = { kind: "native-test-metadata-terminal-v1",
+            expectedCurrentRevision: fresh.revision, sourceCommit: native.snapshot.headCommit,
+            devCommit: native.target, originalExpectedRevision: transition.expectedRevision };
+          const result = await this.#mutation(async () => {
+            await verify();
+            return this.taskBoard.commitWorkflowTransition({ operationId, metadataRecovery: nativeTerminalRecovery,
+              gitReferences: [{ projectRoot: native.snapshot.repositoryRoot, branch: native.snapshot.branch,
+                resultCommit: native.snapshot.headCommit }],
+              evidence: { outcome: "integrated", resultCommit: native.snapshot.headCommit,
+                devHeadCommit: native.target, nativeTerminalRecovery,
+                response: { gitWorkspace: { branch: native.snapshot.branch, projectRoot: native.snapshot.projectRoot,
+                  baseCommit: native.snapshot.baseCommit, headCommit: native.snapshot.headCommit },
+                gitIntegration: { outcome: "integrated", integrated: true, alreadyIntegrated: true,
+                  devBranch: "dev", devHeadCommit: native.target, conflicts: [], error: null } } },
+            });
+          }, operationId);
+          return { result: { task: result }, recovery: null };
+        });
+    }
     const selectedComposition = transition?.evidence?.selectedComposition ?? null;
     if (transition?.evidence?.selectedCompositionRequired || selectedComposition) {
       selectedCompositionFields({ taskId, resultCommit: selectedComposition?.taskCommit,
