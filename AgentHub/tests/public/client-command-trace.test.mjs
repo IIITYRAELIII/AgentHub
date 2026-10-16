@@ -136,6 +136,30 @@ test("a hidden surface cancels pending paint measurements and late frames cannot
   assert.equal(events[0].metadata.operationSpanId, events[1].metadata.operationSpanId);
 });
 
+test("paint completion rechecks its owner and a throwing diagnostic guard fails closed", async () => {
+  for (const mode of ["current", "superseded", "throws"]) {
+    const { trace, frames } = fixture();
+    const events = [];
+    trace.bindReporter(async (batch) => events.push(...batch.events));
+    let current = true;
+    trace.afterPaint("ui-render", "history-terminal-paint", 10, "root-command", {}, () => {
+      if (mode === "throws") throw new Error("private diagnostic error");
+      return current;
+    });
+    frames.shift()();
+    current = mode === "current";
+    frames.shift()();
+    await trace.flush();
+    const converted = clientPerformanceTraceSpans({ events });
+    assert.deepEqual(converted.map((event) => event.outcome), ["started", mode === "current" ? "succeeded" : "cancelled"]);
+    assert.equal(converted[0].metadata.operationSpanId, converted[1].metadata.operationSpanId);
+    assert.equal(converted[1].commandId, "root-command");
+    if (mode !== "current") assert.equal(converted[1].metadata.failureKind, "superseded");
+    assert.equal(trace.diagnostics().paintPending, 0);
+    assert.equal(JSON.stringify(converted).includes("private diagnostic error"), false);
+  }
+});
+
 test("shipped UI measures navigation, message ACK, rendering and long main-thread work through one batch endpoint", { timeout: 30_000 }, async () => {
   const browser = await launchBrowser();
   try {

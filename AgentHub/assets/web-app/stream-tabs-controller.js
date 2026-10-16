@@ -321,6 +321,11 @@
   }
 
   function snapshotTaskPreferred(candidate, current) {
+    // Thread position is assigned by the durable Stream lineage owner.
+    // Historical selection (or a retained old run) must not hide the new head.
+    const candidatePosition = Number(candidate?.threadPosition) || 0;
+    const currentPosition = Number(current?.threadPosition) || 0;
+    if (candidatePosition !== currentPosition) return candidatePosition > currentPosition;
     const rank = (task) => task?.selected
       ? 3
       : task?.running && String(task?.run?.turnId ?? "").trim()
@@ -336,9 +341,6 @@
       const currentStartedAt = Date.parse(current?.run?.startedAt ?? current?.startedAt ?? "") || 0;
       if (candidateStartedAt !== currentStartedAt) return candidateStartedAt > currentStartedAt;
     }
-    const candidatePosition = Number(candidate?.threadPosition) || 0;
-    const currentPosition = Number(current?.threadPosition) || 0;
-    if (candidatePosition !== currentPosition) return candidatePosition > currentPosition;
     return snapshotTaskActivityAtMs(candidate) > snapshotTaskActivityAtMs(current);
   }
 
