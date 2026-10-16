@@ -249,6 +249,7 @@ export function createDesktopShellComposition({
       workspaceHierarchy: () => workspaceCatalogStore.hierarchy(),
       archivedWorkspaces: () => workspaceCatalogStore.archivedWorkspaces(),
       taskBoardSnapshot: () => taskBoard.snapshot(),
+      taskBoardSnapshotRevision: () => taskBoard.snapshotRevision,
       taskBoardWorkspaces: () => taskBoard.workspaces(),
       taskBoardLayout: () => taskBoard.layout(),
       catalogStale: () => taskCatalogService.stale,
