@@ -11,6 +11,14 @@ import { createHash } from "node:crypto";
 export const EXPLICIT_REVIEWED_MAIN_PROVENANCE = "explicit-reviewed-main-v1";
 export const SELECTED_TASK_ADOPTION_PROVENANCE = "selected-task-adoption-v1";
 export const NATIVE_MAIN_PROVENANCE = "agreed-main-native-git-v1";
+export const LOCAL_SOURCE_BASELINE_PROVENANCE = "installed-local-source-v1";
+
+export function localSourceSelectionHash(tasks) {
+  const selected = tasks.map(({ taskId, taskRevision, baseCommit, resultCommit }) => (
+    { taskId, taskRevision, baseCommit, resultCommit }
+  )).sort((a, b) => a.taskId.localeCompare(b.taskId));
+  return createHash("sha256").update(JSON.stringify(selected)).digest("hex");
+}
 
 const COMMIT = /^[0-9a-f]{40}$/u;
 const ADOPTION_REF_PREFIX = "refs/agent-hub/upstream-adoptions/";
@@ -46,6 +54,24 @@ function normalizedAdoption(value) {
 export function normalizedReleaseBaseProvenance(value, expectedBaseCommit = null) {
   if (value == null) return null;
   const kind = text(value?.kind);
+  if (kind === LOCAL_SOURCE_BASELINE_PROVENANCE) {
+    const fields = ["schemaVersion", "kind", "publishedBaseCommit", "agreedMainCommit", "sourceBaseCommit",
+      "sourceBaseTree", "sourcePatchSha256", "installedReleaseId", "installedManifestSha256", "planRevision", "selectionHash"];
+    if (Object.keys(value).some(key => !fields.includes(key)) || fields.some(key => !Object.hasOwn(value, key))) {
+      throw new Error("Invalid exact installed local source provenance");
+    }
+    const normalized = Object.fromEntries(fields.map(key => [key, key === "schemaVersion" ? value[key] : text(value[key])]));
+    if (normalized.schemaVersion !== 1
+        || !["publishedBaseCommit", "agreedMainCommit", "sourceBaseCommit", "sourceBaseTree"].every(key => COMMIT.test(normalized[key]))
+        || !["sourcePatchSha256", "installedManifestSha256", "selectionHash"].every(key => /^[a-f0-9]{64}$/u.test(normalized[key]))
+        || !/^[A-Za-z0-9._-]{1,200}$/u.test(normalized.installedReleaseId) || normalized.installedReleaseId.includes("..")
+        || !normalized.planRevision || normalized.planRevision.length > 128
+        || normalized.sourceBaseCommit === normalized.publishedBaseCommit
+        || expectedBaseCommit && normalized.sourceBaseCommit !== expectedBaseCommit) {
+      throw new Error("Invalid installed local source provenance pins");
+    }
+    return normalized;
+  }
   if (kind === NATIVE_MAIN_PROVENANCE) {
     const normalized = { schemaVersion: Number(value?.schemaVersion), kind,
       publishedBaseCommit: text(value?.publishedBaseCommit), agreedMainCommit: text(value?.agreedMainCommit) };
@@ -107,6 +133,7 @@ export function normalizedReleaseBaseProvenance(value, expectedBaseCommit = null
 // exact approved origin main that the operator expects.
 export function releaseBaseProvenanceApprovedBase(provenance) {
   if (!provenance) return null;
+  if (provenance.kind === LOCAL_SOURCE_BASELINE_PROVENANCE) return provenance.sourceBaseCommit;
   if (provenance.kind === NATIVE_MAIN_PROVENANCE) return provenance.agreedMainCommit;
   return provenance.kind === SELECTED_TASK_ADOPTION_PROVENANCE
     ? provenance.adoptedBaseCommit

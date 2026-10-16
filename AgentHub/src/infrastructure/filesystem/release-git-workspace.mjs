@@ -6,6 +6,8 @@ import path from "node:path";
 import { ReleaseCandidateFrozenError } from "../../domain/task-board-task.mjs";
 import { ReleasePreparationRejectedError } from "../../domain/release-preparation.mjs";
 import { assertPreparationCheckpoint } from "./release-preparation-guard.mjs";
+import { assertInstalledLocalSourceBaseline } from "./local-source-baseline.mjs";
+import { defaultRuntimeRoot } from "./runtime-layout.mjs";
 import process from "node:process";
 import { assertContourExternalEffects, assertContourGitAvailable } from "../../ports/contour-external-effects.mjs";
 
@@ -14,6 +16,7 @@ import {
   assertReleaseBaseProvenance,
   EXPLICIT_REVIEWED_MAIN_PROVENANCE,
   NATIVE_MAIN_PROVENANCE,
+  LOCAL_SOURCE_BASELINE_PROVENANCE,
   normalizedReleaseBaseProvenance,
   releaseBaseProvenanceApprovedBase,
 } from "../../domain/release-base-provenance.mjs";
@@ -360,6 +363,7 @@ async function assertFreezeBaseProvenance(layout, publishedBaseCommit) {
   assertReleaseBaseProvenance({
     publishedBaseCommit, baseCommit: manifest.baseCommit, provenance: manifestProvenance, phase: "publication freeze",
   });
+  return { provenance: manifestProvenance, planRevision: manifest.planRevision, tasks: manifest.tasks };
 }
 
 async function durablePublishedRevision(environment, primaryRoot) {
@@ -897,7 +901,9 @@ export class ReleaseGitWorkspaceService {
           || source.planRevision !== planRevision || source.baseCommit !== approvedBaseCommit
           || String(manifest.workspaceId ?? "") !== String(workspaceId ?? "")
           || stableManifest(normalizedFrozenTasks(manifest.tasks)) !== stableManifest(tasks)
-          || (manifest.baseProvenance?.publishedBaseCommit ?? null) !== (baseProvenance?.publishedBaseCommit ?? null)) {
+          || (manifest.baseProvenance?.publishedBaseCommit ?? null) !== (baseProvenance?.publishedBaseCommit ?? null)
+          || ([manifest.baseProvenance?.kind, baseProvenance?.kind].includes(LOCAL_SOURCE_BASELINE_PROVENANCE)
+            && stableManifest(manifest.baseProvenance) !== stableManifest(baseProvenance))) {
         throw stale("Prepared PreRelease selection, base or evidence is stale");
       }
       const git = (args, options = {}) => runGit(args, { ...options, cwd: source.releaseRoot });
@@ -1403,6 +1409,17 @@ export class ReleaseGitWorkspaceService {
     });
   }
 
+  async validateLocalSourceBaseline({ projectRoot, provenance, planRevision, tasks }) {
+    const initial = await primarySnapshot(projectRoot);
+    await this.assertPrimaryInvariant(initial.root, { phase: "local source baseline verification" });
+    return assertInstalledLocalSourceBaseline({ provenance, planRevision, tasks,
+      primaryMainCommit: initial.mainCommit,
+      publishedRevision: await durablePublishedRevision(this.#environment, initial.root),
+      runtimeRoot: defaultRuntimeRoot({ environment: this.#environment }),
+      git: (args, options = {}) => runGit(args, { ...options, cwd: initial.root, timeoutMs: 300_000 }),
+    });
+  }
+
   async prepareCandidate({
     planRevision, projectRoot, workspaceId = null, preflightRequestId = null,
     frozenTasks = [], approvedBaseCommit = null, baseProvenance = null,
@@ -1414,7 +1431,10 @@ export class ReleaseGitWorkspaceService {
     const initial = await primarySnapshot(projectRoot);
     await this.assertPrimaryInvariant(initial.root, { phase: "native release preparation" });
     const baseCommit = String(approvedBaseCommit ?? "").trim();
-    if (!revision || !/^[a-f0-9]{40}$/u.test(baseCommit) || baseCommit !== initial.mainCommit) {
+    const localSource = baseProvenance?.kind === LOCAL_SOURCE_BASELINE_PROVENANCE
+      ? normalizedBaseProvenance(baseProvenance, baseCommit) : null;
+    if (!revision || !/^[a-f0-9]{40}$/u.test(baseCommit)
+        || (localSource ? localSource.agreedMainCommit !== initial.mainCommit : baseCommit !== initial.mainCommit)) {
       throw new Error("native release requires the exact agreed local main and plan revision");
     }
     const published = await durablePublishedRevision(this.#environment, initial.root);
@@ -1453,6 +1473,14 @@ export class ReleaseGitWorkspaceService {
           await git(["fetch", "workspace", commit]);
         }
       }
+      const validateLocalSource = async () => {
+        if (localSource) await assertInstalledLocalSourceBaseline({ provenance: localSource, git,
+          primaryMainCommit: (await primarySnapshot(initial.root)).mainCommit,
+          publishedRevision: await durablePublishedRevision(this.#environment, initial.root),
+          planRevision: revision, tasks, runtimeRoot: defaultRuntimeRoot({ environment: this.#environment }),
+        });
+      };
+      await validateLocalSource();
       await assertNativeTaskHistories({ git, baseCommit, tasks });
       const identity = { policy: NATIVE_RELEASE_POLICY, workspaceId, planRevision: revision, baseCommit, tasks };
       const mergeRoot = path.join(layout.root, "native-merges", sha256(stableManifest(identity)).slice(0, 24));
@@ -1501,7 +1529,7 @@ export class ReleaseGitWorkspaceService {
         await validatePreparationMain();
         const current = await primarySnapshot(initial.root);
         await this.assertPrimaryInvariant(initial.root, { phase: "native release promotion" });
-        if (current.mainCommit !== baseCommit || current.headCommit !== initial.headCommit
+        if (current.mainCommit !== (localSource?.agreedMainCommit ?? baseCommit) || current.headCommit !== initial.headCommit
             || current.branchRef !== initial.branchRef
             || current.dirty.indexFingerprint !== initial.dirty.indexFingerprint
             || current.dirty.fingerprint !== initial.dirty.fingerprint) {
@@ -1517,6 +1545,7 @@ export class ReleaseGitWorkspaceService {
         if (await durablePublishedRevision(this.#environment, initial.root) !== published) {
           throw new Error("Publication authority changed during native release preparation");
         }
+        await validateLocalSource();
         await assertNativeTaskHistories({ git, baseCommit, tasks });
       };
       const requireCheckout = async (head) => {
@@ -1656,9 +1685,19 @@ export class ReleaseGitWorkspaceService {
       return withInterprocessLocks([lock], async () => {
         const marker = await assertReleaseCloneForPublication({ repositoryRoot: layout.releaseRoot });
         if (!samePath(marker.primaryRoot, initial.projectRoot)) throw new Error("publication freeze clone belongs to another primary");
-        await assertFreezeBaseProvenance(layout,
+        const baseBinding = await assertFreezeBaseProvenance(layout,
           await durablePublishedRevision(this.#environment, marker.primaryRoot));
-        const result = await freezePreparedPublicationCandidate({ ...options, layout, marker, workspaceId });
+        if (baseBinding.provenance?.kind === LOCAL_SOURCE_BASELINE_PROVENANCE) {
+          await this.validateLocalSourceBaseline({ projectRoot: marker.primaryRoot, ...baseBinding });
+        }
+        const result = await freezePreparedPublicationCandidate({ ...options, layout, marker, workspaceId,
+          validateBeforeCommit: async () => {
+            await options.validateBeforeCommit?.();
+            if (baseBinding.provenance?.kind === LOCAL_SOURCE_BASELINE_PROVENANCE) {
+              await this.validateLocalSourceBaseline({ projectRoot: marker.primaryRoot, ...baseBinding });
+            }
+          },
+        });
         const final = await this.assertPrimaryInvariant(projectRoot, { phase: "publication freeze completion" });
         if (initial.headCommit !== final.headCommit || initial.indexFingerprint !== final.indexFingerprint
           || initial.dirtyFingerprint !== final.dirtyFingerprint) throw new Error("primary Workspace changed during publication freeze");

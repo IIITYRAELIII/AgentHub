@@ -12,8 +12,93 @@ import { ReleaseGitWorkspaceService } from "../../src/infrastructure/filesystem/
 import { createRepositoryProductionValidationAdapter } from "../../src/infrastructure/process/repository-production-validation.mjs";
 import { preparationEnvelope } from "../helpers/release-preparation-envelope.mjs";
 import { preparationHash } from "../../src/application/release-preparation-admission.mjs";
+import { localSourceSelectionHash } from "../../src/domain/release-base-provenance.mjs";
 
 const execFileAsync = promisify(execFile);
+
+function localSourceFixture() {
+  const f = fixture({ planRevision: "local-plan", publishedRevision: "f".repeat(40) });
+  const envelope = preparationEnvelope(f.projectRoot);
+  envelope.planRevision = f.plan.revision;
+  f.plan.ready = envelope.tasks.map(({ rowRevision, ...item }) => item);
+  const publication = { repositories: [{ root: f.projectRoot, revision: "f".repeat(40) }] };
+  envelope.publicationHash = preparationHash(publication);
+  const repository = envelope.repositories[0];
+  repository.approvedBaseCommit = "c".repeat(40);
+  repository.localSourceBaseline = { schemaVersion: 1, kind: "installed-local-source-v1",
+    publishedBaseCommit: "f".repeat(40), agreedMainCommit: "f".repeat(40), sourceBaseCommit: "c".repeat(40),
+    sourceBaseTree: "b".repeat(40), sourcePatchSha256: "d".repeat(64), installedReleaseId: "installed-repair",
+    installedManifestSha256: "e".repeat(64), planRevision: f.plan.revision,
+    selectionHash: localSourceSelectionHash(f.plan.ready) };
+  const p = repository.localSourceBaseline;
+  f.service.readPublicationState = async () => publication;
+  f.service.taskGitWorkspaces.releaseBaseEvidence = async () => ({ baseCommit: p.agreedMainCommit, publishedBaseCommit: p.publishedBaseCommit });
+  f.service.taskGitWorkspaces.releaseIntegrationEvidence = async () => ({ tasks: f.plan.ready });
+  f.service.taskGitWorkspaces.withTaskLocks = async (_ids, operation) => operation({ assertOwned: async () => {} });
+  f.service.taskGitWorkspaces.withTaskRepositoryRecoveryLock = async (_id, _root, lease, operation) => operation(lease);
+  let verified = 0;
+  f.service.releaseGitWorkspaces.validateLocalSourceBaseline = async request => {
+    assert.equal(request.provenance.sourceBaseCommit, p.sourceBaseCommit);
+    assert.equal(request.planRevision, f.plan.revision);
+    assert.deepEqual(request.tasks, f.plan.ready);
+    verified += 1;
+    return { provenance: request.provenance };
+  };
+  const candidate = { repositoryRoot: f.projectRoot, releaseRoot: path.resolve("D:/release-clone"),
+    checkpointPhase: "prepared", planRevision: f.plan.revision, baseCommit: p.sourceBaseCommit,
+    preReleaseHead: "a".repeat(40), tree: "b".repeat(40), manifestHash: "d".repeat(64),
+    manifest: { workspaceId: "workspace-1", planRevision: f.plan.revision,
+      compositionPolicy: "main-selected-git-merge-v1", baseCommit: p.sourceBaseCommit,
+      baseProvenance: p, tasks: f.plan.ready } };
+  f.service.releaseGitWorkspaces.frozenCandidate = async () => candidate;
+  f.service.releaseGitWorkspaces.assertPrimaryInvariant = async () => ({ projectRoot: f.projectRoot, headCommit: p.agreedMainCommit });
+  f.service.releaseGitWorkspaces.inspectMainChanges = async () => ({ projectRoot: f.projectRoot,
+    publishedRevision: p.publishedBaseCommit, localMain: p.agreedMainCommit, originMain: p.publishedBaseCommit,
+    approvalRequired: false, approved: false });
+  return { ...f, envelope, candidate, p, verified: () => verified };
+}
+
+test("installed local source preparation forwards exact baseline/review and rechecks before terminal", async () => {
+  const f = localSourceFixture();
+  const review = { requestId: "review-original", text: "Exact independent ACCEPT" };
+  f.envelope.repositories[0].nativeResolutionReview = review;
+  f.service.releaseGitWorkspaces.prepareCandidate = async request => {
+    assert.equal(request.approvedBaseCommit, f.p.sourceBaseCommit);
+    assert.deepEqual(request.baseProvenance, f.p);
+    assert.deepEqual(request.nativeResolutionReview, review);
+    await request.validateBeforeCommit();
+    await request.commitPrepared(f.candidate);
+  };
+  const result = await f.service.prepareCurrentAwaitSet({ workspaceId: "workspace-1", envelope: f.envelope,
+    requestId: "migration-original", argumentsHash: "a".repeat(64), validate: async () => {},
+    commitPrepared: async value => ({ tasks: value.taskIds }) });
+  assert.deepEqual(result.tasks, ["task-current"]);
+  assert.ok(f.verified() >= 3);
+});
+
+test("installed local source generation reuses the sealed exact selection without changing agreed main", async () => {
+  const f = localSourceFixture();
+  f.service.releaseGitWorkspaces.prepareGeneration = async request => {
+    assert.equal(request.approvedBaseCommit, f.p.sourceBaseCommit);
+    assert.equal(request.baseProvenance.agreedMainCommit, f.p.agreedMainCommit);
+    await request.validateBeforeCommit();
+    return f.candidate;
+  };
+  const result = await f.service.prepareOperationGeneration({ workspaceId: "workspace-1",
+    operationId: "release-original", generation: 1, taskIds: ["task-current"] });
+  assert.equal(result.releaseCandidates[0].baseCommit, f.p.sourceBaseCommit);
+  f.candidate.manifest.tasks = [{ ...f.plan.ready[0], resultCommit: "0".repeat(40) }];
+  await assert.rejects(f.service.prepareOperationGeneration({ workspaceId: "workspace-1",
+    operationId: "release-other", generation: 1, taskIds: ["task-current"] }), /selection changed/);
+});
+
+test("installed local source preflight verifies the sealed source base rather than silently using main", async () => {
+  const f = localSourceFixture();
+  const result = await f.service.preflight({ workspaceId: "workspace-1", expectedPlanRevision: f.plan.revision });
+  assert.equal(result.releaseCandidates[0].baseCommit, f.p.sourceBaseCommit);
+  assert.ok(f.verified() >= 1);
+  assert.equal(f.calls.some(([name]) => name === "verify-upstream-adoption"), false);
+});
 
 async function git(cwd, ...args) {
   return String((await execFileAsync("git", args, { cwd, windowsHide: true })).stdout).trim();

@@ -2,6 +2,7 @@ import {
   assertReleaseBaseProvenance,
   EXPLICIT_REVIEWED_MAIN_PROVENANCE,
   NATIVE_MAIN_PROVENANCE,
+  LOCAL_SOURCE_BASELINE_PROVENANCE,
   normalizedReleaseBaseProvenance,
   SELECTED_TASK_ADOPTION_PROVENANCE,
 } from "../domain/release-base-provenance.mjs";
@@ -599,6 +600,7 @@ export class WorkspaceReleasePreflightService {
       return [canonicalRoot(repository.projectRoot), approval];
     }));
     const baseChecks = [];
+    const localSourceChecks = [];
     const validateBases = async () => {
       const currentPublication = await this.readPublicationState();
       for (const { repository, base, reviewed } of baseChecks) {
@@ -623,6 +625,8 @@ export class WorkspaceReleasePreflightService {
           }
         }
       }
+      for (const request of localSourceChecks) await this.measureOperation("preparation:local-source-baseline",
+        () => this.releaseGitWorkspaces.validateLocalSourceBaseline(request));
     };
     const result = () => ({
       workspaceId: String(workspaceId), planRevision: plan.revision,
@@ -696,15 +700,33 @@ export class WorkspaceReleasePreflightService {
       if (reviewed && reviewed.provenance.approvedLocalMainCommit !== base.baseCommit) {
         throw new Error("Native release agreed main changed after its explicit approval");
       }
-      const approvedBaseCommit = base.baseCommit;
       const preparationRepository = preparation?.envelope.repositories.find((item) => (
         canonicalRoot(item.projectRoot) === canonicalRoot(repository.projectRoot)
       ));
+      let localSource = preparationRepository?.localSourceBaseline ?? null;
+      if (!preparation && generationIdentity) {
+        const prepared = await this.releaseGitWorkspaces.frozenCandidate(repository.projectRoot);
+        if (prepared.manifest?.baseProvenance?.kind === LOCAL_SOURCE_BASELINE_PROVENANCE) {
+          if (prepared.planRevision !== plan.revision || !sameFrozenTasks(prepared.manifest.tasks, evidence.tasks)) {
+            throw new ReleasePreparationRejectedError("Installed local source selection changed");
+          }
+          localSource = prepared.manifest.baseProvenance;
+        }
+      }
+      if (localSource) {
+        const request = { projectRoot: repository.projectRoot, provenance: localSource,
+          planRevision: plan.revision, tasks: evidence.tasks };
+        const verified = await this.measureOperation("preparation:local-source-baseline",
+          () => this.releaseGitWorkspaces.validateLocalSourceBaseline(request));
+        localSource = verified.provenance;
+        localSourceChecks.push(request);
+      }
+      const approvedBaseCommit = localSource?.sourceBaseCommit ?? base.baseCommit;
       if (preparation && (preparationRepository?.approvedBaseCommit !== approvedBaseCommit
           || preparationRepository?.publishedRevision !== base.publishedBaseCommit)) {
         throw new ReleasePreparationRejectedError("Approved preparation base changed");
       }
-      const baseProvenance = { schemaVersion: 1, kind: NATIVE_MAIN_PROVENANCE,
+      const baseProvenance = localSource ?? { schemaVersion: 1, kind: NATIVE_MAIN_PROVENANCE,
         publishedBaseCommit: base.publishedBaseCommit, agreedMainCommit: base.baseCommit,
         ...(reviewed ? { approvedLocalMainCommit: reviewed.provenance.approvedLocalMainCommit,
           approvedOriginMainCommit: reviewed.provenance.approvedOriginMainCommit } : {}) };
@@ -729,7 +751,7 @@ export class WorkspaceReleasePreflightService {
         approvedBaseCommit,
         ...(baseProvenance ? { baseProvenance } : {}),
         preserveFrozen,
-        nativeResolutionReview,
+        nativeResolutionReview: preparationRepository?.nativeResolutionReview ?? nativeResolutionReview,
         ...(preparation ? { preflightRequestId: preparation.requestId, preparationGuard: {
           ...preparationRepository, argumentsHash: preparation.argumentsHash,
           sourceCommit: preparation.envelope.sourceCommit, sourceTree: preparation.envelope.sourceTree,
@@ -929,7 +951,15 @@ export class WorkspaceReleasePreflightService {
         projectRoot: repository.projectRoot, acceptedLocalMainCommit: audit.localMain,
         approvedUpstreamCommit: audit.originMain, frozenTasks: repository.frozenTasks,
       });
-      const reviewedBase = native ? audit.localMain : audit.originMain;
+      const localSource = candidate.manifest?.baseProvenance?.kind === LOCAL_SOURCE_BASELINE_PROVENANCE
+        ? candidate.manifest.baseProvenance : null;
+      if (localSource) await this.releaseGitWorkspaces.validateLocalSourceBaseline({
+        projectRoot: repository.projectRoot, provenance: localSource,
+        // The plan's display projection omits registered Task bases. Membership
+        // was compared above; the sealed native manifest retains those pins.
+        planRevision: plan.revision, tasks: candidate.manifest.tasks,
+      });
+      const reviewedBase = localSource?.sourceBaseCommit ?? (native ? audit.localMain : audit.originMain);
       if (candidate.baseCommit !== reviewedBase || candidate.manifest?.baseCommit !== candidate.baseCommit) {
         throw new Error(`prepared PreRelease base does not match reviewed main for ${repository.projectRoot}; integrate the reviewed changes through a Task`);
       }

@@ -80,6 +80,47 @@ fails the full-test stage before artifact or publication effects. This does not
 change the prescribed pipeline, stage contract, frozen tracked content, version
 or original operation; subsequent validation still runs every required suite.
 
+## Installed local source baseline (ADR-0115)
+
+The user's authorization of a local repair and its release includes a one-time
+transparent migration of already installed local source. It does not authorize
+new external origin code. `installed-local-source-v1` retains agreed local main
+and the durable OWN publication as separate identities; it never moves primary.
+The exact source base/tree/binary patch, current installed release/manifest,
+plan revision and selected Task IDs/revisions/registered bases/results are pinned.
+Origin must still equal that OWN publication, which must be an ancestor of the
+source base. Missing, substituted or changed pins refuse before promotion.
+
+The existing RM-only `hub_release_prepare` repository envelope may carry
+`localSourceBaseline` and `nativeResolutionReview`. Both participate in its
+original argument hash, source closure and existing terminal receipt. The
+former has exactly schemaVersion=1, kind=installed-local-source-v1,
+publishedBaseCommit, agreedMainCommit, sourceBaseCommit, sourceBaseTree,
+sourcePatchSha256, installedReleaseId, installedManifestSha256, planRevision,
+selectionHash. The latter has only requestId/text and uses the existing exact
+authenticated native merge review verifier; it supplies no caller approval flag.
+Ordinary Await still accepts the exact reviewed Task through its existing owner;
+this preparation replaces its candidate baseline before release admission.
+
+The candidate owner verifies changed runtime paths against actual immutable
+installed bytes and Git source, allowing only built-in CRLF/LF text serialization
+and exact Git LFS object identities. Documentation/tests are non-runtime source.
+Compiled Host provenance additionally retains and verifies its original build
+inputs. Uninstalled executable changes, absent provenance, foreign components,
+unsupported deletions or missing retained Host inputs refuse this bounded route.
+The bound is 512 changed paths, a 4 MiB binary patch and bounded regular files.
+No installed-file overlay, selected Task expansion or rolling-dev import occurs.
+
+Native selected merges, complete tree checks, existing locks/CAS and rollback
+remain authoritative. The baseline is rechecked at preparation precommit and
+inside freeze before ref CAS. Generation capture retains the complete provenance
+without replacing it; changed plan/selection rejects reuse. Preflight verifies
+the sealed native manifest, whose registered Task bases are not present in the
+plan's display projection. Unknown outcomes remain on their original receipts.
+No extra writer, recovery registry, Task transition or publication is introduced.
+The migration is unnecessary after verified publication/main synchronization
+contains that source; it grants no authority to future selections or origin code.
+
 ## Explicit preparation-only recovery (ADR-0104)
 
 `hub_release_prepare` is an authenticated Release Manager-only preparation

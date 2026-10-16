@@ -5,6 +5,32 @@ import path from "node:path";
 import test from "node:test";
 import { preparationEnvelope } from "../helpers/release-preparation-envelope.mjs";
 import { readPreparationSourceClosure, validatePreparationEnvelope } from "../../src/application/release-preparation-admission.mjs";
+import { localSourceSelectionHash } from "../../src/domain/release-base-provenance.mjs";
+
+test("preparation-only local source binding is exact and keeps native review bounded", () => {
+  const value = preparationEnvelope();
+  const repository = value.repositories[0];
+  repository.approvedBaseCommit = "c".repeat(40);
+  repository.localSourceBaseline = { schemaVersion: 1, kind: "installed-local-source-v1",
+    publishedBaseCommit: repository.publishedRevision, agreedMainCommit: repository.primaryMainCommit,
+    sourceBaseCommit: repository.approvedBaseCommit, sourceBaseTree: "b".repeat(40),
+    sourcePatchSha256: "d".repeat(64), installedReleaseId: "installed-repair",
+    installedManifestSha256: "e".repeat(64), planRevision: value.planRevision,
+    selectionHash: localSourceSelectionHash(value.tasks) };
+  repository.originMainCommit = repository.publishedRevision;
+  repository.nativeResolutionReview = { requestId: "exact-review", text: "Exact independently authenticated verdict" };
+  assert.deepEqual(validatePreparationEnvelope(value), value);
+  for (const mutate of [
+    v => { v.repositories[0].localSourceBaseline.skipIntegrity = true; },
+    v => { v.repositories[0].localSourceBaseline.sourceBaseCommit = "a".repeat(40); },
+    v => { v.repositories[0].localSourceBaseline.planRevision = "changed"; },
+    v => { v.repositories[0].originMainCommit = "a".repeat(40); },
+    v => { v.repositories[0].nativeResolutionReview.approved = true; },
+  ]) {
+    const changed = structuredClone(value); mutate(changed);
+    assert.throws(() => validatePreparationEnvelope(changed), { code: "RELEASE_PREPARATION_REJECTED" });
+  }
+});
 
 test("preparation-only input requires exact bounded sets and no publication/selection arguments", () => {
   const value = preparationEnvelope();

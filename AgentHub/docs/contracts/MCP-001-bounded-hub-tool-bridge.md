@@ -43,6 +43,13 @@ it does not falsify old receipts or claim the main logical release complete.
 
 ## Preparation-only release admission
 
+The repository envelope also admits the bounded optional localSourceBaseline
+and nativeResolutionReview fields specified by REL-001/ADR-0115. They remain
+inside the same genuine RM authority, exact original argument hash, complete
+selected-row CAS, source closure, existing candidate rollback and terminal
+receipt. No new public command, approval flag, status writer or retry route is
+created. Other unknown fields still reject; old receipts retain their old hashes.
+
 The explicit exception `hub_release_prepare` and original-addressed
 `hub_release_prepare_get` follow REL-001 and ADR-0104. Both require genuine RM
 context; non-RM fails before mutation intake. The preparation original is
