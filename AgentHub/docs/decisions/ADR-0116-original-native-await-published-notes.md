@@ -38,6 +38,33 @@ No alternate writer, SQL repair, ref/index repair, reset, clean, live runtime
 overlay, new public approval flag or selected-set expansion is introduced.
 Current installed source migration and publication validation remain separate.
 
+## Definite failure after archive and a new ordinary operation
+
+A real Git clone can refuse a configured source core.hooksPath. The ordinary
+clone owner now transports objects/refs through a private Git bundle, as its
+existing validation/generation paths already do. Clone protection stays enabled;
+source hooks/configuration remain unchanged and are never executed or copied.
+The new clone retains its ordinary workspace remote and agreed-main checks.
+
+If the original definitively failed after the whole archive completed but before
+candidate effects, the historical failed receipt is immutable. A NEW ordinary
+Await may consume that retained archive only through the same lifecycle, Task/
+repository leases, preflight and candidate owner. The lifecycle reads the actual
+failed receipt and failed transition, recomputes its ordinary CAS argument hash,
+requires unchanged Task/workspace/executor/workflow/revision/result, no outcome
+and no process guard. An UNKNOWN/pending predecessor cannot authorize this path.
+The Git owner independently verifies the exact physical archive, original origin
+pin/publication/selection and fresh clean main clone with no candidate ref.
+
+The existing native journal binds the new original and its predecessor; old
+archive evidence and raw index remain byte-exact. Unknown continuation resumes
+only the new original, rechecking the failed predecessor and current authority
+before terminal Task CAS. Completed candidate cutover evidence carries forward
+normally; unrelated later operations do not acquire the old migration. No failed
+receipt is turned into success, and no new public replay/adoption capability is
+introduced. This compatibility boundary is removable once the one archived
+failed Await has a normal accepted successor.
+
 ## Evidence and removal
 
 Real Git tests cover the old dirty refusal, whole-clone/index/private preservation,

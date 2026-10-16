@@ -96,6 +96,48 @@ test("same original Await archives published notes and whole prior clone before 
   assert.deepEqual(await readFile(path.join(archive, "repository/.git/index")), retainedIndex);
 });
 
+test("archived failure hands exact physical evidence to a new Await and resumes its own journal", { timeout: 90000 }, async t => {
+  const f = await fixture(t);
+  const layout = { root: f.ownerRoot, primaryRoot: f.primary, releaseRoot: f.prior.releaseRoot,
+    evidenceRoot: path.join(f.ownerRoot, "evidence"), checkpointFile: f.checkpointFile };
+  const { assertReleaseCloneForPublication } = await import("../../../src/infrastructure/filesystem/release-git-workspace.mjs");
+  const archived = await archivePublishedNotesCheckout({ layout, original: f.original, frozenTasks: [f.selected], publishedRevision: f.published,
+    gitAt: async (cwd, args, options = {}) => {
+      const response = await execute("git", args, { cwd, windowsHide: true, encoding: options.rawOutput ? "buffer" : "utf8" });
+      return options.rawOutput ? response.stdout : response.stdout.trim();
+    },
+    assertClone: repositoryRoot => assertReleaseCloneForPublication({ repositoryRoot }),
+    readJson: file => readFile(file, "utf8").then(JSON.parse), validate: async () => {},
+    writeJson: (file, value) => writeFile(file, JSON.stringify(value)),
+  });
+  const evidence = await readFile(path.join(archived.descriptor.archiveRoot, "evidence.json"));
+  assert.deepEqual(await f.service.archivedNativeAwaitOriginal({ projectRoot: f.primary }), f.original);
+  const successor = { ...f.original, operationId: "new-ordinary-await", argumentsHash: "b".repeat(64), predecessor: f.original };
+  await assert.rejects(f.service.prepareCandidate({ ...f.request(f.selected),
+    nativeAwaitRecovery: { ...successor, resultCommit: "c".repeat(40) } }), /successor selection/u);
+  let callbacks = 0;
+  await assert.rejects(f.service.prepareCandidate({ ...f.request(f.selected), nativeAwaitRecovery: successor,
+    commitPrepared: async () => { callbacks++; throw Object.assign(new Error("Task terminal unknown"), { code: "AWAIT_ACCEPTANCE_UNKNOWN" }); },
+  }), { code: "AWAIT_ACCEPTANCE_UNKNOWN" });
+  const journalFile = path.join(f.ownerRoot, "native-preparation.json");
+  const pending = JSON.parse(await readFile(journalFile, "utf8"));
+  assert.equal(pending.requestId, successor.operationId);
+  assert.equal(pending.awaitSuccessor.operationId, successor.operationId);
+  assert.equal(pending.publishedNotesArchive.original.operationId, f.original.operationId);
+  await assert.rejects(f.service.prepareCandidate({ ...f.request(f.selected),
+    nativeAwaitRecovery: { ...successor, operationId: "different-successor" } }), /archive journal owner/u);
+  const candidate = await f.service.prepareCandidate({ ...f.request(f.selected), nativeAwaitRecovery: successor,
+    commitPrepared: async () => { callbacks++; } });
+  assert.equal(callbacks, 2);
+  assert.equal(candidate.manifest.cutover.originalOperationId, f.original.operationId);
+  assert.equal(JSON.parse(await readFile(journalFile, "utf8")).phase, "completed");
+  assert.equal(await f.service.archivedNativeAwaitOriginal({ projectRoot: f.primary, operationId: "later-unrelated-await" }), null);
+  assert.equal((await f.service.prepareCandidate({ ...f.request(f.selected), nativeAwaitRecovery: successor })).preReleaseHead, candidate.preReleaseHead);
+  assert.deepEqual(await readFile(path.join(archived.descriptor.archiveRoot, "evidence.json")), evidence);
+  assert.deepEqual(await readFile(path.join(archived.descriptor.archiveRoot, "repository/.git/index")), f.index);
+  assert.equal(await git(f.primary, "status", "--porcelain"), "");
+});
+
 test("postarchive origin drift refuses promotion and Task callback while retaining archive", { timeout: 90000 }, async t => {
   const f = await fixture(t);
   let changed = false, committed = 0;

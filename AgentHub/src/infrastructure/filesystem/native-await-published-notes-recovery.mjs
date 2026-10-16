@@ -47,8 +47,11 @@ async function immutable(file, bytes) {
 
 // Called by the existing candidate owner under its release Git lease. No Git
 // ref/index writes, cleanup or custom checkout serialization occurs here.
-export async function inspectPublishedNotesArchive({ layout, original, publishedRevision, frozenTasks = [], gitAt, assertClone, readJson }) {
+export async function inspectPublishedNotesArchive({ layout, original, successor = null, publishedRevision, frozenTasks = [], gitAt, assertClone, readJson }) {
   const identity = originalIdentity(original);
+  const next = successor ? originalIdentity(successor) : null;
+  if (next && (next.operationId === identity.operationId || ["taskId", "workspaceId", "resultCommit", "taskRevision", "originMainCommit"]
+    .some(key => next[key] !== identity[key]))) refuse("successor selection or original pin changed");
   const selection = frozenTasks.map(task => ({ taskId: task.taskId, taskRevision: task.taskRevision,
     baseCommit: task.baseCommit, resultCommit: task.resultCommit }));
   if (!/^[a-f0-9]{40}$/u.test(publishedRevision) || selection.length !== 1
@@ -60,7 +63,9 @@ export async function inspectPublishedNotesArchive({ layout, original, published
     if (encode(retained.original) !== encode(identity) || retained.publishedRevision !== publishedRevision) refuse("original or publication changed");
     const archiveRoot = path.join(layout.root, "await-archives", retained.archiveKey);
     if (!/^[a-f0-9]{64}$/u.test(retained.archiveKey) || !samePath(archiveRoot, retained.archiveRoot)) refuse("archive path changed");
-    if (retained.kind !== PUBLISHED_NOTES_ARCHIVE || journal.requestId !== identity.operationId) refuse("archive journal owner changed");
+    const successorOwned = next && encode(journal.awaitSuccessor) === encode(next) && journal.requestId === next.operationId;
+    if (retained.kind !== PUBLISHED_NOTES_ARCHIVE || (journal.requestId !== identity.operationId && !successorOwned)) refuse("archive journal owner changed");
+    if (next && journal.requestId === identity.operationId && journal.phase !== "published-notes-archived") refuse("predecessor has unfinished candidate effects");
     await physical(path.dirname(archiveRoot)); await physical(archiveRoot);
     const evidenceBytes = await regular(path.join(archiveRoot, "evidence.json"));
     if (sha(evidenceBytes) !== retained.evidenceSha256) refuse("archive evidence digest changed");

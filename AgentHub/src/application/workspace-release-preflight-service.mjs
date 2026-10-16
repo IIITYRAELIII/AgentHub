@@ -406,6 +406,10 @@ export class WorkspaceReleasePreflightService {
       frozenTasks: [prospective.task] });
   }
 
+  async archivedNativeAwaitOriginal({ projectRoot, operationId }) {
+    return this.releaseGitWorkspaces.archivedNativeAwaitOriginal?.({ projectRoot, operationId }) ?? null;
+  }
+
   async prepareAwaitAcceptance({
     workspaceId, acceptingTask, projectRoot, lease = null, operationId, commitPrepared,
     nativeResolutionReview = null, nativeAwaitRecovery = null,

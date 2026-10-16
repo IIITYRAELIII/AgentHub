@@ -9,6 +9,7 @@ import { TaskAbsorptionCompositionError } from "../domain/task-board-task.mjs";
 import { normalizedTaskSquashCutover } from "../domain/task-squash-cutover.mjs";
 import { TaskGitHistoryRejectedError, normalizedInitialNativeTest } from "../domain/task-git-reference.mjs";
 import { nativeTestMetadataDrift, sameTaskWorkflowState } from "../domain/native-test-terminal-recovery.mjs";
+import { mcpArgumentsHash } from "../domain/mcp-arguments-hash.mjs";
 
 export class TaskIntegrationRejectedError extends Error {
   constructor(cause) {
@@ -997,6 +998,8 @@ export class TaskLifecycleService {
               selectedProjectRoot,
               lease,
               async (repositoryLease) => {
+                nativeAwaitRecovery ??= await this.#failedArchivedAwaitSuccessor({ task, operationId,
+                  projectRoot: selectedProjectRoot, lease: repositoryLease });
                 return this.releasePreflight.prepareAwaitAcceptance({
                   workspaceId: task.workspaceId,
                   acceptingTask: { id: task.id, revision: task.revision },
@@ -1016,6 +1019,7 @@ export class TaskLifecycleService {
                         if (nativeAwaitRecovery) {
                           if (typeof prepared.verifyNativeAwaitAuthority !== "function") throw new Error("Original Await terminal authority recheck is unavailable");
                           await prepared.verifyNativeAwaitAuthority();
+                          if (nativeAwaitRecovery.predecessor) this.#assertFailedAwaitPredecessor(task, nativeAwaitRecovery.predecessor, selectedProjectRoot);
                           await this.taskGitWorkspaces.assertNoProcessTreeGuardOwned(task.id, { lease: repositoryLease });
                           await this.#assertOwned(repositoryLease);
                         }
@@ -1253,11 +1257,45 @@ export class TaskLifecycleService {
     await this.taskGitWorkspaces.assertNoProcessTreeGuardOwned(task.id, { lease });
     const references = task.gitReferences.filter(reference => samePath(reference.projectRoot, projectRoot));
     if (references.length !== 1) throw new Error("Original native Await requires its unique result");
-    const original = { operationId, taskId: task.id, workspaceId: task.workspaceId,
+    const original = await this.#failedArchivedAwaitSuccessor({ task, operationId, projectRoot, lease }) ?? { operationId, taskId: task.id, workspaceId: task.workspaceId,
       argumentsHash: receipt.argumentsHash, taskRevision: task.revision, resultCommit: references[0].resultCommit };
     const proof = await this.releasePreflight.pendingNativeAwaitRecovery({ workspaceId: task.workspaceId,
       acceptingTask: { id: task.id, revision: task.revision }, projectRoot, lease, original });
     return { ...original, originMainCommit: proof.original.originMainCommit };
+  }
+
+  #assertFailedAwaitPredecessor(task, original, projectRoot) {
+    const receipt = this.workspaceCatalog.mcpOperation(original.operationId);
+    const failed = this.taskBoard.lifecycleTransition(original.operationId);
+    const references = (task.gitReferences ?? []).filter(ref => samePath(ref.projectRoot, projectRoot));
+    const hash = mcpArgumentsHash({ request_id: original.operationId, task_id: task.id,
+      status: "awaiting_implementation", expected_task_revision: original.taskRevision,
+      expected_workflow_status: "testing" });
+    if (original.taskId !== task.id || original.workspaceId !== task.workspaceId || original.taskRevision !== task.revision
+        || references.length !== 1 || references[0].resultCommit !== original.resultCommit
+        || receipt?.operationStatus !== "failed" || receipt.receiptState !== "failed"
+        || receipt.workspaceId !== task.workspaceId || receipt.toolName !== "hub_task_status_update"
+        || receipt.argumentsHash !== original.argumentsHash || hash !== original.argumentsHash
+        || failed?.phase !== "failed" || failed.kind !== "workflow" || failed.taskId !== task.id
+        || failed.targetWorkflowStatus !== "awaiting_implementation" || failed.expectedRevision !== task.revision
+        || !sameTaskWorkflowState(this.#task(task.id), failed.priorTask)
+        || this.taskBoard.lifecycleOutcome(original.operationId)) {
+      throw new Error("Archived Await predecessor is not an exact terminal failed ordinary operation");
+    }
+  }
+
+  async #failedArchivedAwaitSuccessor({ task, operationId, projectRoot, lease }) {
+    const original = await this.releasePreflight.archivedNativeAwaitOriginal?.({ projectRoot, operationId });
+    if (!original || original.operationId === operationId) return null;
+    await this.#assertOwned(lease);
+    await this.taskGitWorkspaces.assertNoProcessTreeGuardOwned(task.id, { lease });
+    this.#assertFailedAwaitPredecessor(task, original, projectRoot);
+    const receipt = this.workspaceCatalog.mcpOperation(operationId);
+    if (receipt?.operationStatus !== "pending" || receipt.workspaceId !== task.workspaceId
+        || receipt.toolName !== "hub_task_status_update") throw new Error("New ordinary Await receipt is unavailable");
+    return { operationId, taskId: task.id, workspaceId: task.workspaceId, taskRevision: task.revision,
+      resultCommit: original.resultCommit, argumentsHash: receipt.argumentsHash,
+      originMainCommit: original.originMainCommit, predecessor: original };
   }
 
   withUnknownWorkflowReconciliationLock({ taskId, sourceTaskId = null, projectRoot, operationId } = {}, operation) {
