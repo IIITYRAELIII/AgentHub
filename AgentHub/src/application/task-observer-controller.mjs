@@ -41,11 +41,13 @@ export class TaskObserverController {
       // Устаревший результат нельзя применять к уже удалённому run.
       if (!this.canObserve(run)) return;
       if (snapshot?.activityUnknown) {
+        run.activityUnknown = true;
         await this.onUnknown(run, snapshot);
         this.schedule(run);
         return;
       }
       if (!snapshot) {
+        run.activityUnknown = true;
         await this.onMissing(run);
         this.schedule(run);
         return;
@@ -58,10 +60,12 @@ export class TaskObserverController {
         await this.onCompleted(run, snapshot);
         return;
       }
+      if (snapshot.running === true && snapshot.turnId === run.turnId) run.activityUnknown = false;
       await this.onActive(run, snapshot);
       this.schedule(run);
     } catch (error) {
       if (!this.canObserve(run)) return;
+      run.activityUnknown = true;
       await this.onError(run, error);
       this.schedule(run);
     }

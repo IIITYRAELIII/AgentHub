@@ -338,8 +338,10 @@ function boundedActiveTurn(run, { includeBody, maximumActivities }) {
     })), 2_000),
     startedAt: run?.startedAt ?? null,
     completedAt: null,
-    status: "active",
-    active: true,
+    status: run?.activityUnknown === true ? "unknown" : "active",
+    active: run?.activityUnknown !== true,
+    activityUnknown: run?.activityUnknown === true,
+    canStop: true,
     stage: compactText(run?.progressStage ?? "Выполняется…", 500),
     ...(includeBody ? {
       body: compactText(run?.responseText ?? "", 6_000),
@@ -2220,7 +2222,8 @@ export class HubMcpService {
         turnId: run.turnId ?? null,
         streamId: resolved.streamId,
         streamName: resolved.streamDisplayName,
-        status: run.status,
+        status: run.activityUnknown === true ? "unknown" : run.status,
+        ...(run.activityUnknown === true ? { activityUnknown: true } : {}),
         stage: compactText(run.progressStage, 500),
         startedAt: run.startedAt,
         lastMeaningfulProgressAt: run.lastMeaningfulProgressAt,
@@ -2338,7 +2341,8 @@ export class HubMcpService {
       : null;
     const selectedRun = cursorRun ?? activeRuns[0] ?? null;
     let state = "idle";
-    if (selectedRun) state = !parsedCursor || cursorRun ? "active" : "replaced";
+    if (selectedRun) state = !parsedCursor || cursorRun
+      ? selectedRun.activityUnknown === true ? "unknown" : "active" : "replaced";
     else if (parsedCursor) {
       const cursorIdentities = turnIdentityAliases(parsedCursor);
       state = completedTurns.some((turn) => (

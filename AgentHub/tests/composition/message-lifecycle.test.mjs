@@ -118,6 +118,7 @@ async function pagedActiveHistoryHarness(durableTurnCount) {
     ...run.userMessages[0], submittedAt: startedAt }]]);
   const sandbox = vm.createContext({
     ...lifecycle,
+    canonicalProjectionState: projection.projectionState,
     ...projection,
     Map, Set,
     historyByTask: new Map(), historyWindowByTask: new Map(), focusedHistoryWindowByTask: new Map(),
@@ -366,6 +367,7 @@ test("aggregated Stream history preserves each item's provider and Thread", () =
     conversationMessageAuthor: (_message, provider) => provider,
     focusedTurnAlreadyVisible: () => true,
     focusedTurnTaskThreadId: () => "",
+    canonicalProjectionState: projection.projectionState,
     historicalMessagesForDisplay: (item) => item.messages,
   });
   vm.runInContext(`${source}; globalThis.mapHistory = historyMessages;`, sandbox);
@@ -395,6 +397,7 @@ test("Web history mapping preserves canonical citation references", () => {
     conversationMessageAuthor: () => "Codex",
     focusedTurnAlreadyVisible: () => true,
     focusedTurnTaskThreadId: (turn) => turn.threadId,
+    canonicalProjectionState: projection.projectionState,
     historicalMessagesForDisplay: (item) => item.messages,
   });
   vm.runInContext(`${source}; globalThis.mapHistory = historyMessages;`, sandbox);
@@ -432,6 +435,7 @@ test("focused completed turn cannot append commentary after its durable final", 
     conversationMessageAuthor: (_message, provider) => provider,
     focusedTurnAlreadyVisible: lifecycle.focusedTurnAlreadyVisible,
     focusedTurnTaskThreadId: lifecycle.focusedTurnTaskThreadId,
+    canonicalProjectionState: projection.projectionState,
     historicalMessagesForDisplay: lifecycle.historicalMessagesForDisplay,
   });
   vm.runInContext(`${source}; globalThis.mapHistory = historyMessages;`, sandbox);
@@ -605,6 +609,7 @@ test("history and focused steers never inherit a parent turn timestamp", () => {
     conversationMessageAuthor: (_message, provider) => provider,
     focusedTurnAlreadyVisible: () => true,
     focusedTurnTaskThreadId: (turn) => turn.threadId,
+    canonicalProjectionState: projection.projectionState,
     historicalMessagesForDisplay: (item) => item.messages,
   });
   vm.runInContext(`${source}; globalThis.mapHistory = historyMessages;`, sandbox);
@@ -630,6 +635,7 @@ test("focused turn without message times keeps its startedAt chronology", () => 
     conversationMessageAuthor: (_message, provider) => provider,
     focusedTurnAlreadyVisible: () => false,
     focusedTurnTaskThreadId: (turn) => turn.threadId,
+    canonicalProjectionState: projection.projectionState,
     historicalMessagesForDisplay: (item) => item.messages,
   });
   vm.runInContext(`${source}; globalThis.mapHistory = historyMessages;`, sandbox);
@@ -2102,6 +2108,7 @@ test("focused history item identity includes its provider Thread", () => {
     conversationMessageAuthor: (_message, provider) => provider,
     focusedTurnAlreadyVisible: () => true,
     focusedTurnTaskThreadId: (turn) => turn.threadId,
+    canonicalProjectionState: projection.projectionState,
     historicalMessagesForDisplay: (item) => item.messages,
   });
   vm.runInContext(`${source}; globalThis.mapHistory = historyMessages;`, sandbox);
@@ -2533,7 +2540,7 @@ test("dispatching, rejected and ambiguous starts remain queue-only", () => {
         reason: "provider-start-unconfirmed",
         clientProjectionIntent: "conversation",
       },
-      deliveryState: "deferred",
+      deliveryState: "unconfirmed",
     },
   ]) {
     const clientUserMessageId = `client-${scenario.state}-${scenario.receipt.reason ?? "active"}`;
@@ -2810,7 +2817,7 @@ test("authoritative provider acceptance moves one exact command into conversatio
   const projection = lifecycle.queueHistoryReceiptProjection(receipt);
   assert.equal(projection.providerAccepted, true);
   assert.equal(projection.ownsDeferredQueue, false);
-  assert.equal(projection.deliveryState, "accepted");
+  assert.equal(projection.deliveryState, "running");
   assert.equal(lifecycle.queuedCommandUsesQueue(deferredInput, [receipt]), false);
   assert.deepEqual(
     lifecycle.queuedCommandClientUserMessageIds([deferredInput], [receipt]),
@@ -3370,6 +3377,7 @@ test("completed history attaches the turn trace to its visible final answer", ()
     conversationMessageAuthor: (_message, provider) => provider,
     focusedTurnAlreadyVisible: () => true,
     focusedTurnTaskThreadId: () => "",
+    canonicalProjectionState: projection.projectionState,
     historicalMessagesForDisplay: lifecycle.historicalMessagesForDisplay,
   });
   vm.runInContext(`${source}; globalThis.mapHistory = historyMessages;`, sandbox);
@@ -3857,6 +3865,9 @@ test("an active run is authoritative acceptance evidence for its client message"
     submittedAt: "2026-08-25T22:14:00.000Z",
     startedAt: "2026-08-25T22:15:28.000Z",
     deliveredAt: "2026-08-25T22:15:28.000Z",
+    started: true,
+    unknown: false,
+    providerConnection: null,
     attachments: [{ id: "attachment-1" }],
   }]);
 });
@@ -3966,6 +3977,7 @@ function interstreamCardSandbox() {
   const outgoing = new Map();
   const sandbox = vm.createContext({
     ...lifecycle,
+    canonicalProjectionState: projection.projectionState,
     Map,
     Set,
     optimisticDeferredClientUserMessageIds: new Set(),
@@ -4105,6 +4117,7 @@ function receiptCardSandbox() {
   const outgoing = new Map();
   const sandbox = vm.createContext({
     ...lifecycle,
+    canonicalProjectionState: projection.projectionState,
     Map, Set,
     optimisticDeferredClientUserMessageIds: new Set(),
     deferredClientUserMessageIds: new Set(),

@@ -203,7 +203,7 @@ function retainReadMarker(map, key, value) {
   map.delete(key);
   map.set(key, value);
 }
-const { isUserRunningProjection, projectCanonicalMessages } = window.AgentHubMessageProjection;
+const { isUserRunningProjection, projectCanonicalMessages, projectionState: canonicalProjectionState } = window.AgentHubMessageProjection;
 const {
   activeRunSubmissionTiming,
   activeRunMessageReceipts,
@@ -633,12 +633,25 @@ function rememberOutgoing(taskIdValue, message) {
   );
 }
 
-function deliveryPatch(stateName) {
+function deliveryPatch(stateName, projection = null) {
+  if (projection?.delivery) return {
+    deliveryState: stateName,
+    delivery: projection.delivery,
+    failed: projection.failed === true,
+    terminalRevision: projection.terminalRevision ?? null,
+    completedAt: projection.completedAt ?? null,
+  };
   const states = {
     preparing: { deliveryState: "preparing", delivery: "Подготовка…", failed: false },
     sending: { deliveryState: "sending", delivery: "Отправляется…", failed: false },
     steering: { deliveryState: "steering", delivery: "В текущем ходе", failed: false },
-    accepted: { deliveryState: "accepted", delivery: "Принято", failed: false },
+    accepted: { deliveryState: "accepted", delivery: "Сохранено в Hub", failed: false },
+    running: { deliveryState: "running", delivery: "Ход выполняется", failed: false },
+    retrying: { deliveryState: "retrying", delivery: "Связь потеряна; повтор запроса Codex", failed: false },
+    "connection-lost": { deliveryState: "connection-lost", delivery: "Связь потеряна; исход уточняется", failed: false },
+    failed: { deliveryState: "failed", delivery: "Ход завершился ошибкой; проверь соединение и ответ", failed: true },
+    completed: { deliveryState: "completed", delivery: "Ход завершён", failed: false },
+    cancelled: { deliveryState: "cancelled", delivery: "Ход остановлен", failed: false },
     deferred: { deliveryState: "deferred", delivery: "Отложено", failed: false },
     queued: { deliveryState: "queued", delivery: "В очереди", failed: false },
     relaying: { deliveryState: "relaying", delivery: "Доставляется в Hub…", failed: false },
@@ -917,7 +930,7 @@ function restoreImmediateIntakeMessage(deferred, messageReceipts = []) {
       origin: deferredOrigin ?? null,
       kind: deferredOrigin ? "interstream" : null,
       author: (deferredOrigin && String(deferred.author ?? "").trim()) || "Вы",
-      ...deliveryPatch(projection.deliveryState),
+      ...deliveryPatch(projection.deliveryState, projection),
       ...(!existing.submittedAt && projection.submittedAt
         ? { submittedAt: projection.submittedAt }
         : {}),
@@ -947,7 +960,7 @@ function restoreImmediateIntakeMessage(deferred, messageReceipts = []) {
       submittedAt: projection.submittedAt,
       time: projection.submittedAt,
       attachments,
-      ...deliveryPatch(projection.deliveryState),
+      ...deliveryPatch(projection.deliveryState, projection),
     });
   }
   return true;
@@ -1012,7 +1025,7 @@ function applyMessageReceipts(snapshot) {
       outgoingMessages(stableTaskId).delete(clientUserMessageId);
       continue;
     }
-    const patch = projection.deliveryState ? deliveryPatch(projection.deliveryState) : null;
+    const patch = projection.deliveryState ? deliveryPatch(projection.deliveryState, projection) : null;
     if (!patch) continue;
     const restoredText = String(receipt.displayText ?? "");
     // Same reason as the deferred card: the receipt owns the origin of its exact
@@ -1619,7 +1632,7 @@ function observeQueuedRemoteMessage(commandId, params) {
           remoteQueued: false,
           remoteCommandId: commandId,
           providerAccepted: projection.providerAccepted,
-          ...deliveryPatch(projection.deliveryState ?? "rejected"),
+          ...deliveryPatch(projection.deliveryState ?? "rejected", projection),
         });
         if (resolvedTaskId) renderTaskMessages(resolvedTaskId);
       }
@@ -1830,8 +1843,9 @@ function modelTask(task, snapshot, effectiveSelectedId, serverSelectedId) {
   const streamId = String(task.streamId ?? "").trim()
     || `legacy:${String(task.provider ?? "").trim()}:${String(task.threadId ?? "").trim()}`;
   const answerAt = Date.parse(task.lastAnswerAt ?? "") || 0;
-  const running = Boolean(projectedActiveUserRun(id, task));
-  const unknown = task.activityUnknown === true;
+  const activity = window.AgentHubMessageProjection.userRunActivity(projectedActiveUserRun(id, task));
+  const running = activity.running;
+  const unknown = activity.unknown || task.activityUnknown === true;
   const unread = task.unread === true && !readMarker.cursorCovers(
     task.latestFinal, confirmedReadCursorByThread.get(readMarker.threadIdentity(task.latestFinal)),
   );
@@ -1867,8 +1881,10 @@ function modelTask(task, snapshot, effectiveSelectedId, serverSelectedId) {
     runtimeLabel: runtimeShortLabels[executionOwner] ?? (runtimeTitle ? "EXT" : ""),
     runtimeTitle,
     project: task.projectName || "",
+    canStop: activity.canStop,
+    activityUnknown: unknown,
     status: running ? "running" : unknown ? "unknown" : unread ? "ready" : "idle",
-    statusLabel: running ? "Выполняется" : unknown ? "Статус неизвестен" : unread ? "Ответ готов" : "",
+    statusLabel: running ? "Выполняется" : unknown ? "Состояние уточняется · поток занят" : unread ? "Ответ готов" : "",
     lastActivity: task.orderingActivityAtMs
       ? new Date(task.orderingActivityAtMs).toISOString()
       : task.lastAnswerAt,
@@ -2573,7 +2589,8 @@ function applySnapshotContent(snapshot, { materialized = false } = {}) {
     for (const task of representativeTasks) {
       const stableTaskId = taskId(task.provider, task.threadId, task.streamId);
       agentHub.setLive(stableTaskId, updateLiveMessage(stableTaskId, task));
-      agentHub.setRunning(stableTaskId, Boolean(projectedActiveUserRun(stableTaskId, task)));
+      agentHub.setRunning(stableTaskId, window.AgentHubMessageProjection.userRunActivity(
+        projectedActiveUserRun(stableTaskId, task)).running);
     }
     for (const task of representativeTasks) {
       renderTaskQueue(taskId(task.provider, task.threadId, task.streamId), snapshot);
@@ -2711,11 +2728,12 @@ function historyMessages(history, focusedTurn = null) {
         ? { operationKindMigrationGuard: String(item.operationKindMigrationGuard) }
         : {}),
       projectionAuthority: "canonical",
-      projectionState: item.completed === true
-        ? (["failed", "cancelled"].includes(String(item.status ?? "").toLowerCase())
-          ? String(item.status).toLowerCase()
-          : "completed")
-        : item.active === true ? "active" : "unknown",
+      projectionState: canonicalProjectionState({
+        status: item.status,
+        terminalRevision: item.completed === true ? Number(item.terminalRevision) || 1 : 0,
+        running: item.active === true,
+        operationKind: "user-turn",
+      }),
       terminalRevision: item.completed === true ? Number(item.terminalRevision) || 1 : 0,
       ...(item.completed === true && !Number(item.terminalRevision)
         ? { terminalRevisionMigrationGuard: "legacy-terminal-revision" }
@@ -3728,7 +3746,7 @@ function sendUserMessage(request, frozenParams = null) {
         ...(result?.accepted && !result?.steered ? { turnUserSlot: "root" } : {}),
         ...(result?.remoteQueued
           ? deliveryPatch("relaying")
-          : deliveryPatch(projection.deliveryState ?? "rejected")),
+          : deliveryPatch(projection.deliveryState ?? "rejected", projection)),
       });
       renderOutgoingWithoutBlockingSend(request.taskId, { queue: true });
       commandTrace.afterPaint("ui-render", "message-ack-projection", projectionStarted, request.requestId);
@@ -5490,7 +5508,7 @@ async function refresh({ reportError = false } = {}) {
       return;
     }
     const active = Boolean(lastSnapshot?.tasks?.some(
-      (task) => task.running || task.context?.compacting || task.maintenance,
+      (task) => task.running || task.activityUnknown || task.context?.compacting || task.maintenance,
     )) || [...visibleStreamTaskIds].some(historyNeedsCatchUp) || historyNeedsCatchUp(selectedTaskId);
     refreshTimer = window.setTimeout(refresh, active ? 1_200 : 5_000);
   }

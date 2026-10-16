@@ -4057,7 +4057,7 @@ function representativeStreamTask(stream) {
   // Порядок обязан совпадать с attentionRank рельса: там готовый ответ идёт
   // впереди идущего хода. Обратный порядок давал разные ветки одного потока
   // в полосе и в панели, и они показывали разные состояния одновременно.
-  const attention = (task) => (task?.unread && !task?.running ? 0 : task?.running ? 1 : 2);
+  const attention = (task) => (task?.unread && !task?.running ? 0 : task?.running || task?.activityUnknown ? 1 : 2);
   return stream.tasks.find((task) => task.id === state.selectedId)
     ?? [...stream.tasks].sort((left, right) => (
       attention(left) - attention(right)
@@ -4071,6 +4071,7 @@ function streamActivityTime(task) {
 }
 
 function streamAttentionKind(task, now = Date.now()) {
+  if (task?.activityUnknown) return "unknown";
   if (task?.unread && !task?.running) return "completed";
   if (task?.running) return "running";
   const activityTime = streamActivityTime(task);
@@ -4091,7 +4092,7 @@ function activityStreamEntries(tasks) {
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(task);
   }
-  const attentionRank = (task) => ({ completed: 0, running: 1, recent: 2 }[
+  const attentionRank = (task) => ({ completed: 0, running: 1, unknown: 1, recent: 2 }[
     streamAttentionKind(task, now)
   ] ?? 3);
   return [...groups.values()]
@@ -4135,6 +4136,8 @@ function renderStreamStatusCard(task, title, presentation) {
         }),
       ]),
       el("span", { class: "stream-tab-meta" }, [
+        task?.activityUnknown
+          ? el("span", { class: "task-runtime", text: presentation.statusLabel }) : null,
         el("span", { class: "task-agent", text: presentation.agentLabel }),
         task?.modelLabel
           ? el("span", {
@@ -5925,7 +5928,7 @@ function renderChatContent({ preserveStreamTabs = false } = {}) {
   renderMessagePinShelf();
   for (const stop of chatStops) {
     const preparing = contextMaintenancePreparing(task);
-    stop.hidden = !task.running && !preparing;
+    stop.hidden = !task.running && !task.canStop && !preparing;
     stop.title = preparing ? "Отменить подготовку обслуживания контекста" : "Остановить ход";
     stop.setAttribute("aria-label", stop.title);
   }
@@ -6665,6 +6668,7 @@ function patchRenderedMessage(node, message) {
   const author = renderedMessageAuthor(message, role);
   const head = article.querySelector(".msg-head");
   syncMessageUploadActions(head, message);
+  MessageView.syncTurnStatus(head, message);
   const authorNode = head?.querySelector(".msg-author");
   if (authorNode) authorNode.textContent = author;
   let time = head?.querySelector(".msg-time");
@@ -7718,6 +7722,8 @@ function renderMessage(message, { readOnly = false, task = currentTask() } = {})
       : null,
   ]);
 
+  MessageView.syncTurnStatus(head, message);
+
   const body = el("div", {
     class: "msg-body",
     ...(role === "user" ? { "data-user-message-disclosure": "" } : {}),
@@ -8450,6 +8456,8 @@ function renderQueueForTask(taskId, container) {
     const content = el("div", { class: "queue-content" }, [
       entry.author ? el("strong", { class: "queue-author", text: entry.author }) : null,
       visibleText ? el("div", { class: "queue-text", text: visibleText }) : null,
+      task?.activityUnknown && [entry.waitReason, entry.conflictKind].includes("task-running")
+        ? el("div", { class: "queue-status", text: "Поток занят исходным ходом: состояние уточняется после потери связи. Доступен Stop; сообщение повторно не отправляется." }) : null,
       entry.waitReason === "provider-thread-active"
         ? el("div", { class: "queue-status", text: "Thread удерживается другим Codex. Автоповторы остановлены; проверьте снова после закрытия задачи или отправьте сообщение в новую." })
         : entry.waitReason === "provider-temporarily-unavailable"

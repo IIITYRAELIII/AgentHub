@@ -83,6 +83,7 @@
 
   function projectionState(value) {
     const explicit = text(value?.projectionState ?? value?.status).toLowerCase();
+    if (["aborted", "interrupted", "canceled", "stopped"].includes(explicit)) return "cancelled";
     if (STATE_RANK.has(explicit)) return explicit;
     if (Number(value?.terminalRevision) > 0) return "completed";
     if (["final", "final_answer", "finalanswer"].includes(text(value?.phase ?? value?.responsePhase).toLowerCase())) {
@@ -219,7 +220,15 @@
     return operationKind(value) === "user-turn" && projectionState(value) === "active" && !isTerminal(value);
   }
 
+  function userRunActivity(run) {
+    const owned = Boolean(run) && operationKind(run) === "user-turn" && !isTerminal(run)
+      && (isUserRunningProjection(run) || run.activityUnknown === true);
+    const unknown = owned && run.activityUnknown === true;
+    return { running: owned && !unknown, canStop: owned, unknown };
+  }
+
   global.AgentHubMessageProjection = Object.freeze({
+    userRunActivity,
     canonicalEntityIdentity,
     isUserRunningProjection,
     legacyOperationKindMigrationGuard,

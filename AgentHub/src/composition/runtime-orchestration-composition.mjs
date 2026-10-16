@@ -342,6 +342,7 @@ export function createRuntimeOrchestrationComposition({
       getRestartRequest: () => hostState.restartRequest,
       setRestartRequest: (value) => hostState.setRestartRequest(value),
       completeRestartOperation: (operationId) => restartRequestService.complete(operationId),
+      checkpointRestartOperation: (...args) => restartRequestService.checkpoint(...args),
       failRestartOperation: (error) => restartRequestService.fail(undefined, error),
       isStopping: () => hostState.stopping,
       setStopping: (value) => hostState.setStopping(value),

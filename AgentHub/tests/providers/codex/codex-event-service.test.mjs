@@ -30,6 +30,19 @@ function createService(run, overrides = {}) {
   });
 }
 
+test("exact structured retry is persisted and cleared by response or terminal, foreign turn cannot alter it", async () => {
+  const run = { status: "running", turnId: "turn-network", threadId: "thread-network", providerStart: { turnId: "turn-network" } };
+  let saves = 0;
+  const service = createService(run, { saveState: async () => { saves++; } });
+  await service.handle({ method: "error", params: { threadId: run.threadId, turnId: run.turnId, willRetry: true, error: { message: "private provider detail" } } });
+  assert.equal(run.providerStart.connection.state, "retrying");
+  assert.ok(run.providerStart.connection.sinceAt); assert.equal(JSON.stringify(run.providerStart).includes("private"), false);
+  await service.handle({ method: "error", params: { threadId: run.threadId, turnId: "foreign", willRetry: false } });
+  assert.equal(run.providerStart.connection.state, "retrying");
+  await service.handle({ method: "turn/completed", params: { threadId: run.threadId, turn: { id: run.turnId, status: "failed", items: [] } } });
+  assert.equal(run.providerStart.connection, null); assert.ok(saves >= 2);
+});
+
 test("terminal turn recovers its exact compaction item when the separate completion event was lost", async () => {
   const tracker = new ContextCompactionTracker();
   tracker.begin("thread-recover", { turnId: "turn-recover", itemId: "compaction-recover" });

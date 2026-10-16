@@ -1,5 +1,14 @@
 # UI-001 — Canonical message projection
 
+Durable command state and terminal revision override the original intake receipt
+on live refresh, SSE reconnect and reload. Historical provider acceptance does
+not imply current execution. Known saved/queued/starting/running, structured
+provider retry, terminal error and unknown outcomes remain distinct; durations
+use observed timestamps and never establish an outcome. No failed input is
+automatically resubmitted. Retained unknown occupancy stays visible in the
+activity rail with its exact Stop target and queue reason, without a running
+animation or an active claim in Stream history.
+
 ## Explicit Codex trace details
 
 A shortened rollout preview exposes “All stages” only on explicit expansion.
@@ -73,7 +82,9 @@ navigation. Legacy citations already bound to shortened content are not rewritte
   complete per-turn projection. The App Server adapter retains its exact source
   occurrence when `clientUserMessageId` arrives later; this same-source evidence
   replaces the earlier unkeyed entity and preserves Hub payload/origin.
-- `unknown` is displayed as unknown and never inferred as running.
+- `unknown` is displayed as unknown and never inferred as running. A retained
+  uncertain managed run still exposes Stop for its original identity; the
+  presentation flag never releases admission or removes its live content.
 - Successful message intake updates the existing message or queue projection
   without a separate acceptance toast. A refresh failure after acceptance cannot
   duplicate the send or produce an acceptance toast; errors remain diagnostic
