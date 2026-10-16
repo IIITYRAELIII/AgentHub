@@ -3365,6 +3365,58 @@ export class TaskGitWorkspaceService {
     return record.phase === "failed" ? null : record;
   }
 
+  async withAppliedNativeTerminalOwned({ taskId, projectRoot, operationId, lease } = {}, commit) {
+    this.#assertAvailable("withAppliedNativeTerminalOwned");
+    const repoRoot = await repositoryRoot(projectRoot);
+    return this.#withClearDevLock(repoRoot, lease, async (ownedLease) => {
+      const original = await this.pendingNativeIntegrationOwned({ taskId, projectRoot, operationId, lease: ownedLease });
+      if (!original?.target || original.nativeAbsorptionInput || original.nativeAbsorptionHistory
+          || original.initialNativeTest || original.nativeResolutionReview) {
+        throw new Error("Applied ordinary native Test intent is required");
+      }
+      const verify = async () => {
+        await ownedLease.assertOwned();
+        await this.#assertNoProcessTreeGuard(taskId);
+        const record = await this.pendingNativeIntegrationOwned({ taskId, projectRoot, operationId, lease: ownedLease });
+        if (JSON.stringify(record) !== JSON.stringify(original)) throw new Error("Native Test original intent changed");
+        const s = record.snapshot;
+        const managedRoot = await this.managedRepositoryRoot(s.projectRoot, { taskId, taskNumber: s.branch });
+        if (!managedRoot || !samePath(managedRoot, repoRoot)) {
+          throw new Error("Native Test managed source binding changed");
+        }
+        const git = (args, cwd = repoRoot) => this.#runOwned(["--no-optional-locks", ...args], { cwd, lease: ownedLease });
+        const { root, identity } = this.#nativeIntegrationStaging(record);
+        const capture = JSON.parse(await readFile(path.join(root, "merge.json"), "utf8"));
+        if (!samePath(record.stageRoot, path.join(root, "repository"))
+            || JSON.stringify(capture.identity) !== JSON.stringify(identity)
+            || capture.next !== 1 || capture.head !== record.target || capture.conflict || capture.merging
+            || capture.merges?.length !== 1 || capture.merges[0].taskId !== taskId
+            || capture.merges[0].resultCommit !== s.headCommit || capture.merges[0].commit !== record.target
+            || await git(["rev-parse", "refs/heads/main^{commit}"]) !== record.mainCommit
+            || await git(["rev-parse", `${s.baseRef}^{commit}`]) !== s.baseCommit
+            || await git(["show", "-s", "--format=%P", record.target]) !== `${record.before} ${s.headCommit}`
+            || await git(["rev-parse", `${record.target}^{tree}`]) !== record.targetTree
+            || await git(["rev-parse", "refs/heads/dev^{commit}"]) !== record.target
+            || await git(["symbolic-ref", "-q", "HEAD"], s.projectRoot) !== `refs/heads/${s.branch}`
+            || await git(["rev-parse", "HEAD^{commit}"], s.projectRoot) !== s.headCommit
+            || await git(["status", "--porcelain=v1", "-z", "--untracked-files=all"], s.projectRoot)
+            || await git(["symbolic-ref", "-q", "HEAD"], record.devRoot) !== "refs/heads/dev") {
+          throw new Error("Applied native Test Git binding changed");
+        }
+        for (const cwd of [record.devRoot, record.stageRoot]) {
+          if (await git(["rev-parse", "HEAD^{commit}"], cwd) !== record.target
+              || await git(["rev-parse", "HEAD^{tree}"], cwd) !== record.targetTree
+              || await git(["status", "--porcelain=v1", "-z", "--untracked-files=all"], cwd)) {
+            throw new Error("Applied native Test materialization changed");
+          }
+        }
+        await ownedLease.assertOwned();
+      };
+      await verify();
+      return commit(original, verify);
+    });
+  }
+
   async assertNativeIntegrationOwned(snapshot, { operationId, lease, nativeAbsorptionInput = null,
     nativeAbsorptionHistory = null, validateAbsorption = null } = {}) {
     this.#assertAvailable("assertNativeIntegrationOwned");
