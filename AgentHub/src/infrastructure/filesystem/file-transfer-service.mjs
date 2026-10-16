@@ -267,6 +267,11 @@ export class FileTransferService {
     const preparation = this.#copy({ artifact, owner: String(owner), source, sourceIdentity: identity(sourceInfo) })
       .finally(() => this.#preparations.delete(artifact.id));
     this.#preparations.set(artifact.id, preparation);
+    // prepare() returns an intake receipt while #copy owns durable failure and
+    // cleanup. Observe that background rejection immediately even when the
+    // HTTP caller only polls status. Keep the original rejected promise for
+    // an explicit waiter and the existing shutdown drain.
+    void preparation.catch(() => {});
     return artifact;
   }
 
