@@ -114,6 +114,65 @@ test("failed local preparation keeps both selected files and retries only failed
   } finally { await browser.close(); }
 });
 
+test("removing a ready file preserves failed originals and prepared siblings for same-ID retry", { timeout: 30_000 }, async () => {
+  const browser = await launchBrowser();
+  try {
+    // No text: removing the sole ready file also crosses the empty-draft path.
+    for (const keepSibling of [false, true]) {
+      const page = await browser.newPage();
+      page.setDefaultTimeout(3000);
+      const errors = await openFixture(page, { chunkedUpload: true });
+      const file = (name) => ({ name, mimeType: "application/octet-stream", buffer: Buffer.alloc(16, 7) });
+      await page.locator("[data-file-input]").setInputFiles([
+        file("ready.bin"), ...(keepSibling ? [file("sibling.bin")] : []),
+      ]);
+      await page.waitForFunction((count) => document.querySelectorAll("[data-attachment-index]").length === count,
+        keepSibling ? 2 : 1);
+      const readDraft = () => page.evaluate(() => JSON.parse(localStorage.getItem("agent-hub:composer-drafts:v1:vscode") ?? "[]")[0]);
+      const before = await readDraft();
+      await page.evaluate(() => {
+        const files = window.AgentHubComposerFiles;
+        window.__retryAttempts = [];
+        window.AgentHubComposerFiles = { ...files, prepare: (...args) => {
+          window.__retryAttempts.push(args[2]?.uploadId);
+          return files.prepare(...args);
+        } };
+        const digest = crypto.subtle.digest.bind(crypto.subtle);
+        let fail = true;
+        crypto.subtle.digest = (...args) => {
+          if (fail) { fail = false; return Promise.reject(new DOMException("Synthetic read timeout", "TimeoutError")); }
+          return digest(...args);
+        };
+      });
+      await page.locator("[data-file-input]").setInputFiles(file("failed.bin"));
+      const retry = page.locator("[data-attachment-preparation-retry]");
+      await retry.waitFor({ state: "visible" });
+      const originalId = await retry.getAttribute("data-attachment-preparation-retry");
+      const preview = await page.locator("[data-attachment-preparing]").getAttribute("data-attachment-preparation-id");
+      assert.equal(preview, originalId);
+      await page.locator('[data-attachment-index="0"]').click();
+      assert.equal(await page.locator("[data-attachment-preparing]").count(), 1);
+      assert.equal(await retry.getAttribute("data-attachment-preparation-retry"), originalId);
+      assert.equal(await retry.isVisible(), true);
+      assert.equal(await page.locator("[data-composer-send]").isDisabled(), true);
+      if (process.env.AGENT_HUB_UPLOAD_QA_DIR) await page.screenshot({ path: path.join(process.env.AGENT_HUB_UPLOAD_QA_DIR,
+        `ready-remove-retained-${keepSibling}.png`) });
+      await retry.click();
+      await page.waitForFunction((count) => document.querySelectorAll("[data-attachment-index]").length === count
+        && !document.querySelector("[data-attachment-preparing]"), keepSibling ? 2 : 1);
+      const after = await readDraft();
+      assert.deepEqual(after.attachments.map((item) => item.name), [...(keepSibling ? ["sibling.bin"] : []), "failed.bin"]);
+      assert.deepEqual(after.attachments.map((item) => item.uploadId), [
+        ...(keepSibling ? [before.attachments[1].uploadId] : []), originalId,
+      ]);
+      assert.deepEqual(await page.evaluate(() => window.__retryAttempts), [originalId, originalId]);
+      assert.equal((await bridgeCalls(page, "send-message")).length, 0);
+      assert.deepEqual(errors, []);
+      await page.close();
+    }
+  } finally { await browser.close(); }
+});
+
 test("removing a failed live preview preserves its prepared sibling without sending", { timeout: 20_000 }, async () => {
   const browser = await launchBrowser();
   const page = await browser.newPage({ viewport: { width: 390, height: 844 } });

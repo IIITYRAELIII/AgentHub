@@ -9000,9 +9000,10 @@ attachmentsBox.addEventListener("click", (event) => {
   const remove = event.target.closest("[data-attachment-index]");
   if (!remove) return;
   const index = Number(remove.dataset.attachmentIndex);
-  advanceComposerAsyncOperationFence(state.selectedId);
   setAttachments(attachments.filter((_, i) => i !== index));
-  saveDraft({ userEdited: true });
+  // Removing one ready file is not a cancellation of other selected Files.
+  // The edit revision still invalidates recovery of the old complete draft.
+  saveDraft({ userEdited: true, preserveAttachmentPreviews: true });
 });
 
 async function readAttachmentFiles(files) {
@@ -9656,10 +9657,10 @@ function composerDraftSnapshot(taskId) {
   );
 }
 
-function saveDraft({ userEdited = false } = {}) {
+function saveDraft({ userEdited = false, preserveAttachmentPreviews = false } = {}) {
   if (!state.selectedId) return;
   const draft = composerDraftSnapshot(state.selectedId);
-  if (userEdited && !window.AgentHubComposerDraftReconciliation.hasDraftContent(draft)
+  if (userEdited && !preserveAttachmentPreviews && !window.AgentHubComposerDraftReconciliation.hasDraftContent(draft)
     && window.AgentHubComposerDraftReconciliation.hasDraftContent(drafts.get(state.selectedId))) {
     advanceComposerAsyncOperationFence(state.selectedId);
   }
