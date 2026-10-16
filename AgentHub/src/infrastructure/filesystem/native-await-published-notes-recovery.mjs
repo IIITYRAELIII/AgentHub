@@ -110,6 +110,9 @@ export async function inspectPublishedNotesArchive({ layout, original, published
   const differences = String(await git(["diff", "--name-only", "--no-renames", "-z", head, publishedRevision])).split("\0").filter(Boolean);
   if (differences.some(file => !["CHANGELOG.md", "AgentHub/package.json", "AgentHub/package-lock.json"].includes(file))) refuse("unpublished source differs");
   for (const file of ["AgentHub/package.json", "AgentHub/package-lock.json"]) {
+    for (const revision of [head, publishedRevision]) {
+      if (!String(await git(["ls-tree", revision, "--", file])).startsWith("100644 blob ")) refuse("package mode changed");
+    }
     const old = Buffer.from(await git(["show", `${head}:${file}`], true)), published = Buffer.from(await git(["show", `${publishedRevision}:${file}`], true));
     if (packageWithoutVersion(old, file.endsWith("package-lock.json")) !== packageWithoutVersion(published, file.endsWith("package-lock.json"))) refuse("unpublished package content differs");
   }
