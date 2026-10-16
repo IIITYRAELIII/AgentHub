@@ -383,7 +383,16 @@ export class FileTransferService {
     const persistedKey = this.#keyring.keys.get(share.kid);
     if (!persistedKey) throw transferError("transfer-unavailable", 410);
     const secret = derivedSecret(persistedKey, "share", ownerId, artifactKey, requestKey, ttlMs);
-    return { ...share, url: `${this.#policy.publicBaseUrl}/transfer/#v1.${share.kid}.${share.id}.${secret}` };
+    const expected = transferMac(persistedKey, "share", secret);
+    if (!equalTransferDigest(expected, share.secretHash)) throw transferError("transfer-unavailable", 410);
+    const result = { ...share };
+    delete result.kid;
+    delete result.requestId;
+    delete result.secretHash;
+    if (result.state === "ready") {
+      result.url = `${this.#policy.publicBaseUrl}/transfer/#v1.${share.kid}.${share.id}.${secret}`;
+    }
+    return result;
   }
 
   inspect({ kid, shareId, secret }) {

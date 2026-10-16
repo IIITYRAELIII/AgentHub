@@ -130,10 +130,16 @@ test("file transfer preparation creates an immutable managed snapshot and explic
 
   const share = await value.service.createShare({ owner: "device:one", artifactId: preparing.id,
     requestId: "share-1", ttlMs: 3_600_000 });
+  assert.equal(share.state, "ready");
+  assert.equal(share.name, "пример.bin");
+  assert.equal(share.size, bytes.length);
+  assert.equal(share.sha256, ready.sha256);
+  assert.equal(share.bytesServed, 0);
+  assert.equal(share.claimedAt, null);
   assert.match(share.url, /^https:\/\/files\.example\.test\/transfer\/#v1\.test-v1\.[0-9a-f-]{36}\.[A-Za-z0-9_-]{43}$/u);
   const ownerStatus = await value.service.ownerStatus("device:one", source);
-  assert.equal(ownerStatus.share.url, share.url,
-    "owner status must recover the persisted capability derivation including its issuance TTL");
+  assert.deepEqual(ownerStatus.share, share,
+    "create must return the same complete persisted view and capability as owner status");
   const [, , kid, shareId, secret] = /^https:\/\/[^/]+\/transfer\/#(v1)\.([^.]+)\.([^.]+)\.(.+)$/u.exec(share.url);
   const inspected = await value.service.inspect({ kid, shareId, secret });
   assert.equal(inspected.name, "пример.bin");
@@ -212,7 +218,8 @@ test("lost create and claim responses replay byte-identically across key rotatio
   });
   const replayedShare = await rotated.createShare({ owner: "device:rotation", artifactId: artifact.id,
     requestId: "rotation:share", ttlMs: 3_600_000 });
-  assert.equal(replayedShare.url, firstShare.url);
+  assert.deepEqual(replayedShare, firstShare,
+    "lost create response replay must recover the byte-equivalent canonical share view");
 
   const { privateKey, publicKey } = await generateKeyPair("ES256", { extractable: true });
   const publicJwk = await exportJWK(publicKey);
