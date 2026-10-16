@@ -1288,39 +1288,68 @@ function el(tag, props = {}, children = []) {
    полоса активности не успевает пройти свой цикл. Узел с тем же ключом
    переиспользуется, а его анимации продолжаются с накопленного времени. */
 const STREAM_STATUS_LAYER_SELECTOR = ".stream-tab-status-layer";
-const STREAM_STATUS_ANIMATION_PREFIX = "stream-";
+const STREAM_STATUS_ANIMATION_NAME = /(?:^|-)stream-/u;
 let reusableWorkspaceCards = new Map();
 let reusableStreamTabs = new Map();
 let adoptedCardAnimations = [];
+const renderedCardAnswerIdentities = new WeakMap();
 
 function statusAnimationKey(animation) {
   return `${animation.animationName} ${animation.effect?.pseudoElement ?? ""}`;
 }
 
-function statusAnimationTimes(node) {
+function statusAnimationSnapshot(node) {
   const times = new Map();
+  const answerKeys = new Set();
+  let answerAnimating = false;
   for (const animation of node.getAnimations?.({ subtree: true }) ?? []) {
-    if (!String(animation.animationName ?? "").startsWith(STREAM_STATUS_ANIMATION_PREFIX)) continue;
+    if (!STREAM_STATUS_ANIMATION_NAME.test(String(animation.animationName ?? ""))) continue;
     const time = Number(animation.currentTime);
     if (Number.isFinite(time)) times.set(statusAnimationKey(animation), time);
+    if (Number.isFinite(animation.effect?.getTiming().iterations)) {
+      answerKeys.add(statusAnimationKey(animation));
+      if (node.hasAttribute("data-answer-arrived")
+        && ["running", "paused"].includes(animation.playState)) answerAnimating = true;
+    }
   }
-  return times;
+  return { times, answerKeys, answerAnimating };
+}
+
+function cardAnswerIdentity(tasks) {
+  const unread = tasks.filter((task) => task?.unread);
+  if (!unread.length) return "";
+  const identities = unread.map((task) => [task.id, observedAnswerFinalIdentityByTaskId.get(task.id)]);
+  if (identities.some(([, identity]) => !identity)) return "";
+  return JSON.stringify(identities.sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0));
 }
 
 function indexRenderedCards(container, selector, attribute) {
   const index = new Map();
   for (const node of container?.querySelectorAll(selector) ?? []) {
     const key = node.getAttribute(attribute);
-    if (key && !index.has(key)) index.set(key, { node, times: statusAnimationTimes(node) });
+    if (key && !index.has(key)) index.set(key, {
+      node,
+      ...statusAnimationSnapshot(node),
+      answerIdentity: renderedCardAnswerIdentities.get(node) ?? "",
+    });
   }
   return index;
 }
 
-function adoptRenderedCard(index, key, next) {
+function adoptRenderedCard(index, key, next, answerIdentity = "") {
   const previous = index.get(key);
+  renderedCardAnswerIdentities.set(next, answerIdentity);
   if (!previous || previous.node.tagName !== next.tagName) return next;
   index.delete(key);
   const node = previous.node;
+  const sameAnswer = Boolean(answerIdentity) && previous.answerIdentity === answerIdentity;
+  // Обновление той же непрочитанной ревизии не обрывает конечную вспышку.
+  // После её завершения, чтения или смены final прежний эффект не переносится.
+  if (sameAnswer && previous.answerAnimating && !next.hasAttribute("data-running")
+    && (next.hasAttribute("data-unread") || next.hasAttribute("data-answer-ready"))) {
+    next.setAttribute("data-answer-arrived", "");
+  }
+  renderedCardAnswerIdentities.set(node, answerIdentity);
   /* Наблюдатель видимости помечает карточку своим атрибутом, и рендер им не
      владеет: при обновлении он сохраняется. */
   for (const attribute of [...node.attributes]) {
@@ -1338,7 +1367,10 @@ function adoptRenderedCard(index, key, next) {
   const nextLayer = next.querySelector(STREAM_STATUS_LAYER_SELECTOR);
   if (keptLayer && nextLayer) nextLayer.replaceWith(keptLayer);
   node.replaceChildren(...next.childNodes);
-  if (previous.times.size) adoptedCardAnimations.push(previous);
+  const times = next.hasAttribute("data-answer-arrived") && !sameAnswer
+    ? new Map([...previous.times].filter(([key]) => !previous.answerKeys.has(key)))
+    : previous.times;
+  if (times.size) adoptedCardAnimations.push({ node, times });
   return node;
 }
 
@@ -3990,7 +4022,7 @@ function renderTaskWorkspaceItem({ id, name, kind, tasks }, { folderMember = fal
       text: formatRelativeTime(lastActivity),
       title: lastActivity ? new Date(lastActivity).toLocaleString("ru-RU") : "",
     }),
-  ]));
+  ]), cardAnswerIdentity(tasks));
 }
 
 function representativeStreamTask(stream) {
@@ -4143,6 +4175,7 @@ function renderActivityRail() {
     streamId: String(selectedTask?.streamId ?? "").trim() || null,
   });
   const entries = activityStreamEntries(state.tasks);
+  const reusableActivityCards = indexRenderedCards(activityRail, ".activity-stream-item", "data-activity-task-id");
   const sections = window.AgentHubStreamTabs.activityStreamSections(entries);
   activityRailCount.textContent = "Активно";
   if (activityStreamHeading) {
@@ -4166,7 +4199,7 @@ function renderActivityRail() {
       modelLabel: task?.modelLabel,
     });
     const title = `${presentation.statusLabel ? `${presentation.statusLabel}. ` : ""}${activityTitle}. ${providerModelTitle}`;
-    return el("button", {
+    return adoptRenderedCard(reusableActivityCards, task.id, el("button", {
       type: "button",
       class: "stream-tab activity-stream-item",
       "data-activity-task-id": task.id,
@@ -4187,10 +4220,11 @@ function renderActivityRail() {
     }, [
       el("span", { class: "stream-tab-status-layer", "aria-hidden": "true" }),
       renderStreamStatusCard(task, activityTitle, presentation),
-    ]);
+    ]), cardAnswerIdentity([task]));
   };
   activityStreamList.replaceChildren(...sections.active.map(renderEntry));
   activityRecentList.replaceChildren(...sections.recent.map(renderEntry));
+  resumeAdoptedCardAnimations();
   applyActivityRailState();
 }
 
@@ -4362,7 +4396,7 @@ function renderStreamTabs() {
     }, [
       el("span", { class: "stream-tab-status-layer", "aria-hidden": "true" }),
       el("span", { class: "stream-tab-card" }, content()),
-    ]));
+    ]), cardAnswerIdentity(task ? [task] : []));
     overflowItems.push(el("button", {
       ...attributes,
       class: "stream-overflow-item",
