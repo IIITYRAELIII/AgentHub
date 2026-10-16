@@ -1982,7 +1982,7 @@ test("left-edge swipe uses in-app back and prevents browser history navigation",
   assert.match(app, /\.markdown-table-scroll/u);
   assert.match(app, /touchmove[\s\S]*swipeStart\?\.fromLeftEdge[\s\S]*event\.preventDefault\(\)/u);
   assert.match(app, /if \(!fromLeftEdge \|\| dx < EDGE_SWIPE_DISTANCE[\s\S]*navigateBack\(\);/u);
-  assert.match(app, /function navigateBack\(\) \{\s*saveDraft\(\);[\s\S]*root\.dataset\.view !== "chat"[\s\S]*setPane\("tasks"\)/u);
+  assert.match(app, /function navigateBack\(\) \{\s*if \(composerShortcuts\.handleBack\(\)\) return true;\s*saveDraft\(\);[\s\S]*root\.dataset\.view !== "chat"[\s\S]*setPane\("tasks"\)/u);
 });
 
 test("task list no longer exposes legacy Project groups", () => {

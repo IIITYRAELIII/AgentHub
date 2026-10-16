@@ -380,6 +380,7 @@ const localSessionReady = Promise.all([
 ]).then(() => undefined);
 window.AgentHubLocalSessionReady = localSessionReady;
 const vscodeMode = Boolean(window.__agentHubVscode);
+let mobileDialogs = null;
 const telegramPlatform = String(telegram?.platform ?? "").toLowerCase();
 const mobileTelegramPlatforms = new Set(["android", "ios"]);
 const compactSurfaceWidth = 860;
@@ -419,6 +420,7 @@ function phoneComposerMode() {
 }
 
 function syncComposerInputMode() {
+  root.toggleAttribute("data-phone-composer", phoneComposerMode());
   composerInput.placeholder = "Сообщение агенту…";
   composerInput.removeAttribute("title");
   composerSend.title = "Отправить";
@@ -972,6 +974,9 @@ applyBackgroundMotion(backgroundMotionPreference.stored(localStorage));
 applyTheme(savedTheme());
 applyChatSurface(chatSurfacePreference.stored(localStorage));
 applyActivityRailVisibility(activityRailPreference.stored(localStorage));
+const composerShortcuts = window.AgentHubComposerShortcuts.createSettings({
+  document, storage: () => globalThis.localStorage, overlays: modalOverlays,
+});
 applyStreamStatusStyle(savedStreamStatusStyle());
 applyStreamStatusEffect(savedStreamStatusEffect());
 applyActivityStreamDetailedCards(savedActivityStreamDetailedCards());
@@ -1042,6 +1047,7 @@ function themedSelectOptions(select) {
 }
 
 function enhanceThemedSelect(select) {
+  if (select?.matches?.("[data-composer-shortcut]")) return;
   if (!(select instanceof HTMLSelectElement) || select.multiple || select.dataset.themedSelectReady) return;
   select.dataset.themedSelectReady = "true";
   select.classList.add("themed-select-native");
@@ -3739,6 +3745,7 @@ function setPane(pane, { persist = true } = {}) {
 }
 
 function syncMobileNav() {
+  mobileDialogs?.sync();
   const active = navigationTabs.isStandaloneNavigationTab(root.dataset.view)
     ? root.dataset.view
     : (root.dataset.pane === "chat" ? "chat" : "tasks");
@@ -3857,7 +3864,8 @@ function renderTasksContent() {
   taskList.replaceChildren();
   let visibleCount = visible.length;
   const { workspaceTasks, unassignedTasks } = window.AgentHubStreamTabs.taskListSections(visible);
-  const hasWorkspace = workspaceTasks.length > 0;
+  const hasWorkspace = workspaceTasks.length > 0
+    || (surface === "mobile" && !vscodeMode && state.workspaces.length > 0);
   if (hasWorkspace) {
     const groups = new Map();
     for (const task of workspaceTasks) {
@@ -3870,6 +3878,14 @@ function renderTasksContent() {
         tasks: [],
       });
       groups.get(key).tasks.push(task);
+    }
+    if (surface === "mobile" && !vscodeMode) {
+      for (const workspace of state.workspaces) {
+        if (!groups.has(workspace.id) && (!filter || workspace.name.toLowerCase().includes(filter))) {
+          groups.set(workspace.id, { id: workspace.id, name: workspace.name,
+            kind: workspace.kind ?? "user", folderName: workspace.settings?.catalogFolder ?? "", tasks: [] });
+        }
+      }
     }
     visibleCount = groups.size + unassignedTasks.length;
     /* Поиск ищет по всему списку сразу, поэтому при фильтре деление на ленту
@@ -3910,6 +3926,7 @@ function renderTasksContent() {
   reusableWorkspaceCards = new Map();
   resumeAdoptedCardAnimations();
   renderActivityRail();
+  mobileDialogs?.sync();
 }
 
 function workspaceStreams(tasks) {
@@ -4761,6 +4778,7 @@ taskList.addEventListener("dblclick", (event) => {
 });
 taskList.addEventListener("keydown", (event) => {
   if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) {
+    if (surface === "mobile" && !vscodeMode) return;
     const workspace = event.target.closest("[data-workspace-select]");
     if (workspace) {
       event.preventDefault();
@@ -4908,14 +4926,16 @@ function renderWorkspaceMessageSearch() {
   workspaceMessageSearchMore.hidden = search.nextOffset == null || search.loading;
 }
 
-function openWorkspaceMessageSearch() {
+function openWorkspaceMessageSearch(requestedWorkspaceId = "") {
   const task = currentTask();
-  const workspaceId = String(task?.workspaceId ?? "").trim();
+  const workspaceId = String(typeof requestedWorkspaceId === "string" && requestedWorkspaceId
+    || task?.workspaceId || "").trim();
   if (!workspaceId) return showToast("Сначала выберите Workspace");
   const search = state.workspaceMessageSearch;
   search.open = true;
   search.workspaceId = workspaceId;
-  workspaceMessageSearchTitle.textContent = `Поиск в «${task.workspaceName || task.title || "Workspace"}»`;
+  const name = workspaceCatalogItem(workspaceId)?.name || task?.workspaceName || task?.title || "Workspace";
+  workspaceMessageSearchTitle.textContent = `Поиск в «${name}»`;
   renderWorkspaceMessageSearch();
   window.requestAnimationFrame(() => workspaceMessageSearchInput?.focus());
 }
@@ -5343,22 +5363,25 @@ function ensureWorkspaceFolderContextMenu() {
     const currentName = String(workspaceFolderContextMenu.dataset.folderName ?? "");
     closeWorkspaceFolderContextMenu();
     if (action.dataset.workspaceFolderMenuAction !== "rename") return;
-    const requestedName = await askText({ title: "Новое название папки", value: currentName });
-    if (requestedName == null) return;
-    const plan = window.AgentHubStreamTabs.workspaceFolderRenamePlan(
-      state.workspaces,
-      currentName,
-      requestedName,
-      workspaceFolderCatalogNames(),
-    );
-    if (!plan) return;
-    if (plan.duplicateFolderName) {
-      showToast(`Папка «${plan.duplicateFolderName}» уже существует`);
-      return;
-    }
-    emit("workspace:folder-rename", plan);
+    await renameWorkspaceFolder(currentName);
   });
   return workspaceFolderContextMenu;
+}
+
+async function renameWorkspaceFolder(folderName) {
+  const currentName = window.AgentHubStreamTabs.normalizeWorkspaceFolderName(folderName);
+  if (!currentName) return;
+  const requestedName = await askText({ title: "Новое название папки", value: currentName });
+  if (requestedName == null) return;
+  const plan = window.AgentHubStreamTabs.workspaceFolderRenamePlan(
+    state.workspaces, currentName, requestedName, workspaceFolderCatalogNames(),
+  );
+  if (!plan) return;
+  if (plan.duplicateFolderName) {
+    showToast(`Папка «${plan.duplicateFolderName}» уже существует`);
+    return;
+  }
+  emit("workspace:folder-rename", plan);
 }
 
 function openWorkspaceFolderContextMenu(event, folderName) {
@@ -5819,6 +5842,7 @@ function providerConnectionTitle(providerLabel, presentation, measurement) {
 }
 
 function renderStreamChatHeader(task, now = Date.now()) {
+  mobileDialogs?.sync();
   if (!streamChatHeader) return;
   streamChatHeader.hidden = !task;
   const workspaceName = task ? String(task.workspaceName || task.title || "Workspace").trim() : "";
@@ -6050,6 +6074,7 @@ function renderContextUsageDetails(task) {
   contextUsageCompact.textContent = context.compacting ? "Контекст сворачивается…" : "Свернуть контекст";
 }
 
+let contextMobileDismissCleanup = null;
 function openContextUsage() {
   const task = currentTask();
   if (!task?.context || (Number(task.context.modelContextWindow) <= 0 && task.context.percent == null)
@@ -6059,7 +6084,16 @@ function openContextUsage() {
     return;
   }
   renderContextUsageDetails(task);
-  contextUsageModal.show();
+  if (surface === "mobile" && !vscodeMode) {
+    contextMobileDismissCleanup ??= modalOverlays?.installDismissibleOverlay({
+      dialog: contextUsageModal, close: closeContextUsage, fallbackFocus: contextUsageButton,
+    });
+    contextUsageModal.showModal();
+  } else {
+    contextMobileDismissCleanup?.();
+    contextMobileDismissCleanup = null;
+    contextUsageModal.show();
+  }
   contextUsageButton.setAttribute("aria-expanded", "true");
   positionContextUsage();
 }
@@ -6332,7 +6366,9 @@ function closeAttachmentViewer() {
 }
 
 function navigateBack() {
+  if (composerShortcuts.handleBack()) return true;
   saveDraft();
+  if (mobileDialogs?.handleBack()) return true;
   if (closeAttachmentViewer()) return true;
   if (settingsPanel?.classList.contains("open")) {
     closePanel();
@@ -8598,8 +8634,28 @@ composerQuickMessages?.addEventListener("click", (event) => {
   else insertQuickMessage(entry);
 });
 
+let composerCompositionActive = false;
+let composerIMEConfirmation = false;
+composerInput.addEventListener("compositionstart", () => { composerCompositionActive = true; });
+composerInput.addEventListener("compositionend", () => { composerCompositionActive = false; composerIMEConfirmation = true; });
+composerInput.addEventListener("keyup", () => { composerIMEConfirmation = false; });
 composerInput.addEventListener("keydown", (event) => {
-  if (event.isComposing) return;
+  if (event.isComposing || composerCompositionActive || event.keyCode === 229
+    || (event.key === "Enter" && composerIMEConfirmation)) return;
+  if (event.key !== "Enter") composerIMEConfirmation = false;
+  const chord = window.AgentHubComposerShortcuts.chord(event);
+  const applyShortcut = () => {
+    const action = composerShortcuts.preference().mapping[chord];
+    event.preventDefault();
+    if (action === "newline") {
+      if (!event.repeat || chord !== "ctrlEnter") insertTextAtCaret(composerInput, "\n");
+    } else if (!event.repeat) {
+      if (action === "queue") submitComposer();
+      else submitComposer({ steerWhileRunning: true });
+    }
+  };
+  if (chord === "ctrlEnter" || chord === "shiftEnter") { applyShortcut(); return; }
+  if (chord === "enter" && phoneComposerMode()) return;
   if (event.key === "Enter" && event.ctrlKey && !event.metaKey) {
     event.preventDefault();
     if (!event.repeat) insertTextAtCaret(composerInput, "\n");
@@ -8620,13 +8676,14 @@ composerInput.addEventListener("keydown", (event) => {
     }
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
-      runSlashCommand(commands[slashSelection]?.command);
+      if (!event.repeat) runSlashCommand(commands[slashSelection]?.command);
       return;
     }
   }
+  if (chord === "enter" && !phoneComposerMode()) { applyShortcut(); return; }
   if (event.key !== "Enter" || event.shiftKey || phoneComposerMode()) return;
   event.preventDefault();
-  submitComposer({ steerWhileRunning: event.metaKey });
+  if (!event.repeat) submitComposer({ steerWhileRunning: event.metaKey });
 });
 
 slashMenu.addEventListener("click", (event) => {
@@ -9892,6 +9949,7 @@ bugReportToggle?.addEventListener("click", () => {
 });
 document.addEventListener("contextmenu", (event) => {
   if (event.defaultPrevented) return;
+  if (surface === "mobile" && !vscodeMode && event.target.closest("[data-mobile-workspace-drawer]")) return;
   const workspace = event.target.closest("[data-workspace-heading], [data-board-workspace-id]");
   if (workspace) {
     event.preventDefault();
@@ -11306,6 +11364,7 @@ async function handleAction(action, trigger) {
 
 document.addEventListener("pointerdown", (event) => {
   if (!contextUsageModal?.open) return;
+  if (surface === "mobile" && !vscodeMode) return;
   if (contextUsageModal.contains(event.target) || contextUsageButton?.contains(event.target)) return;
   closeContextUsage();
 });
@@ -11457,6 +11516,7 @@ const AgentHub = {
       && sameData(state.workspaceColumnOrder, nextColumnOrder)) return;
     state.workspaces = nextWorkspaces;
     state.workspaceColumnOrder = nextColumnOrder;
+    mobileDialogs?.sync();
     if (journalRendered) updateJournalStreamCount();
   },
   setArchivedWorkspaces(workspaces) {
@@ -11464,6 +11524,7 @@ const AgentHub = {
     if (sameData(state.archivedWorkspaces, next)) return;
     state.archivedWorkspaces = next;
     renderWorkspaceArchive();
+    mobileDialogs?.sync();
   },
   renameWorkspaceFolderCatalog,
   openDialogSettings,
@@ -11906,6 +11967,7 @@ const AgentHub = {
   showSelectedTask() {
     setView("chat");
     setPane("chat");
+    mobileDialogs?.showSelected();
   },
   addSelectedAnnotation() {
     return addAnnotation(selectedQuotableSelection() || lastAnnotationSelection);
@@ -18033,6 +18095,41 @@ if (vscodeMode) {
 /* ------------------------------------------------------------- инициализация */
 
 AgentHub.setConnection(telegramMode ? "online" : "connecting");
+
+mobileDialogs = window.AgentHubMobileDialogs.create({
+  root, state, currentTask, workspaceKey,
+  workspaceStreams: (tasks) => orderedWorkspaceStreams(workspaceStreams(tasks), tasks[0] ? workspaceKey(tasks[0]) : ""),
+  representativeStreamTask,
+  selectTask: (id) => selectTaskFromUi(id), setView, setPane,
+  isMobile: () => surface === "mobile" && !vscodeMode,
+  formatTime: (value) => formatRelativeTime(activityTimestamp(value)), shortModel: shortModelLabel,
+  openSearch: openWorkspaceMessageSearch, openSettings: openPanel,
+  openWorkspaceCard, workspaceDialog: workspaceCardModal, renameWorkspaceFolder,
+  textDialog: dialog, cancelTextDialog: () => closeDialog(null),
+  createStream: (workspaceId) => emit("stream:new", { workspaceId }),
+  retryConnection: () => emit("connection:retry", { taskId: state.selectedId }),
+  closeNative: (opened) => {
+    if (opened === attachmentViewer || opened === attachmentViewerStage) { closeAttachmentViewer(); return true; }
+    if (opened === contextUsageModal) { closeContextUsage(); return true; }
+    return false;
+  },
+  closeTransient: () => {
+    const menus = [streamContextMenu, workspaceContextMenu, workspaceFolderContextMenu,
+      annotationContextMenu, resourceContextMenu];
+    const shown = menus.find((menu) => menu && !menu.hidden);
+    if (shown) {
+      closeStreamContextMenu(); closeWorkspaceContextMenu(); closeWorkspaceFolderContextMenu();
+      closeAnnotationContextMenu(); closeResourceContextMenu(); return true;
+    }
+    if (!document.querySelector("dialog[open]")) {
+      if (!dialog.hidden) { closeDialog(null); return true; }
+      if (state.workspaceMessageSearch.open) { closeWorkspaceMessageSearch(); return true; }
+      if (!settingsPanel.hidden) { closePanel(); return true; }
+    }
+    return false;
+  },
+});
+mobileDialogs.sync();
 const taskDurationTimer = window.setInterval(refreshTaskDurations, 1_000);
 void ensureComposerDraftsRestored();
 window.addEventListener("pagehide", () => {

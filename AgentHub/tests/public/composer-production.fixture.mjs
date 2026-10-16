@@ -176,7 +176,10 @@ async function launchBrowser() {
         closed = true;
         closing = (async () => {
           await Promise.allSettled([...creating]);
-          const results = await Promise.allSettled([...contexts].map(async (context) => context.close()));
+          const results = await Promise.allSettled([...contexts].map(async (context) => {
+            for (const page of context.pages()) await page.unrouteAll({ behavior: "ignoreErrors" });
+            await context.close();
+          }));
           const failure = results.find((result) => result.status === "rejected");
           if (failure) throw failure.reason;
         })();
@@ -195,6 +198,8 @@ async function openFixture(page, {
   holdRecoveryAuthority = false,
   chunkedUpload = false,
   attachmentStorageOpenFailure = false,
+  surface = "vscode",
+  directTransport = false,
 } = {}) {
   const diagnostics = [];
   page.on("pageerror", (error) => diagnostics.push(error.message));
@@ -203,6 +208,7 @@ async function openFixture(page, {
   });
   await page.addInitScript(({
     initialSnapshot, initialHistory, initialDrafts, authorityAvailable, holdAuthority, attachmentOpenFailure,
+    transportSurface, direct,
   }) => {
     // Opening the attachment database fails. This covers only the open step:
     // the product treats that rejection as "not durable". The error code is set
@@ -288,7 +294,7 @@ async function openFixture(page, {
       if (message && window.__toastHistory.at(-1) !== message) window.__toastHistory.push(message);
     }).observe(document, { childList: true, characterData: true, subtree: true });
     if (initialDrafts) localStorage.setItem(
-      "agent-hub:composer-drafts:v1:vscode",
+      `agent-hub:composer-drafts:v1:${transportSurface === "vscode" ? "vscode" : "web"}`,
       JSON.stringify(initialDrafts),
     );
     const read = (key, fallback) => {
@@ -326,11 +332,11 @@ async function openFixture(page, {
     };
     window.__agentHubIpcRuntimeHealth = async () => ({ ok: true });
     window.__agentHubDirectTransport = {
-      ready: () => false,
+      ready: () => direct,
       available: async () => true,
       warmup() {},
     };
-    window.__agentHubVscode = {
+    window.__fixtureBridge = {
       postMessage(message) {
         const fixture = window.__agentHubFixture;
         const recorded = structuredClone(message);
@@ -401,6 +407,7 @@ async function openFixture(page, {
         respond({ id: message.id, ok, result, error });
       },
     };
+    if (transportSurface === "vscode") window.__agentHubVscode = window.__fixtureBridge;
   }, {
     initialSnapshot: fixtureSnapshot,
     initialHistory: fixtureHistory,
@@ -408,6 +415,7 @@ async function openFixture(page, {
     authorityAvailable: recoveryAuthorityAvailable,
     holdAuthority: holdRecoveryAuthority,
     attachmentOpenFailure: attachmentStorageOpenFailure,
+    transportSurface: surface, direct: directTransport,
   });
   const uploads = new Map();
   await page.route("**/*", async (route) => {
@@ -470,6 +478,28 @@ async function openFixture(page, {
         return fixture.uploadSequence;
       }, { name, size });
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ path: `C:\\fixture-upload\\${sequence}-${name}` }) });
+      return;
+    }
+    if (requestUrl.pathname === "/api/snapshot") {
+      const value = await page.evaluate(() => window.__agentHubFixture.snapshot);
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(value) });
+      return;
+    }
+    if (requestUrl.pathname === "/api/control") {
+      const message = route.request().postDataJSON();
+      const outcome = await page.evaluate((request) => new Promise((resolve) => {
+        const listener = (event) => {
+          if (event.data?.type !== "agenthub:control-result" || event.data.id !== request.commandId) return;
+          window.removeEventListener("message", listener); resolve(event.data);
+        };
+        window.addEventListener("message", listener);
+        window.__fixtureBridge.postMessage({ ...request, id: request.commandId, transport: "http" });
+      }), message);
+      await route.fulfill({ status: outcome.ok === false ? 400 : 200, contentType: "application/json", body: JSON.stringify(outcome) });
+      return;
+    }
+    if (requestUrl.pathname === "/events") {
+      await route.fulfill({ status: 200, contentType: "text/event-stream", body: ": fixture\n\n" });
       return;
     }
     if (requestUrl.pathname.startsWith("/api/")) {
