@@ -40,9 +40,9 @@
       return value;
     }
 
-    async function validateBatch(attachments, { signal } = {}) {
+    async function validateBatch(attachments, { signal, traceRequestId } = {}) {
       if (!attachments?.length) return;
-      const policy = await capabilities({ signal });
+      const policy = await capabilities({ signal, traceUploadId: attachments[0]?.uploadId, traceRequestId });
       let total = 0;
       for (const attachment of attachments) {
         const size = Number(attachment?.size);
@@ -78,17 +78,19 @@
         return value.path;
       }
       const path = `/api/attachment-upload?id=${encodeURIComponent(file.uploadId)}`;
+      let status;
       if (!file.uploadStarted) {
         // Commit the attempt before begin: a lost begin response must never
         // silently recreate an expired lease under a retained retry identity.
         await trace("attempt-persist", () => globalThis.AgentHubComposerFiles.markUploadStarted(file), identity);
-        await json("/api/attachment-upload", { method: "POST", signal,
+        status = await json("/api/attachment-upload", { method: "POST", signal,
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ uploadId: file.uploadId, name: file.name, type: file.type, size: file.size,
             attemptedAtMs: file.uploadAttemptedAt }) }, "begin", identity);
       }
-      let status;
-      try { status = await json(path, { method: "GET", signal }, "status", identity); }
+      // An acknowledged begin already supplies the owner's exact receipt.
+      // Only an existing/lost attempt needs a separate status read.
+      try { status ??= await json(path, { method: "GET", signal }, "status", identity); }
       catch (error) {
         // An upgraded owner distinguishes never-created from expired/cancelled.
         // A generic 404 (including an old server) is not permission to re-begin.

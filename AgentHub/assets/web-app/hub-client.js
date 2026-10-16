@@ -3326,7 +3326,9 @@ function sendUserMessage(request, frozenParams = null) {
           // Draft preparation is local; negotiate server limits once here,
           // before the first upload or provider command can have an effect.
           if (requestAttachments.length) project("uploading", "Проверка лимитов вложений…");
-          await attachmentUploader.validateBatch(requestAttachments, { signal: session.controller.signal });
+          await attachmentUploader.validateBatch(requestAttachments, {
+            signal: session.controller.signal, traceRequestId: request.requestId,
+          });
           session.controller.signal.throwIfAborted();
           assertCurrentSendTaskOperation(sendTaskOperation);
           for (const attachment of requestAttachments) {

@@ -15,8 +15,9 @@
   let database;
   let openingDatabase;
 
-  function measurePreparation(action, operation) {
+  function measurePreparation(action, operation, uploadId) {
     const trace = globalThis.AgentHubCommandTrace;
+    if (uploadId && trace?.upload) return trace.upload(action, operation, { uploadId });
     return trace ? trace.measure("ui-interaction", action, operation) : operation();
   }
 
@@ -164,7 +165,7 @@
 
   async function storeFile(record) {
     const deadline = Date.now() + STORAGE_TIMEOUT_MS;
-    const db = await measurePreparation("attachment-storage-open", () => openDatabase());
+    const db = await measurePreparation("attachment-storage-open", () => openDatabase(), record.uploadId);
     await measurePreparation("attachment-storage-write", () => storageTransaction(db, "readwrite", (store, _setResult, abort) => {
       const cursor = store.openCursor();
       let retainedBytes = 0;
@@ -186,15 +187,15 @@
         } catch (error) { abort(error); }
       };
       cursor.onerror = () => abort(cursor.error ?? storageError("failed"));
-    }, deadline));
-    const stored = await measurePreparation("attachment-storage-read", () => readStoredRecord(db, record.blobId, deadline));
+    }, deadline), record.uploadId);
+    const stored = await measurePreparation("attachment-storage-read", () => readStoredRecord(db, record.blobId, deadline), record.uploadId);
     await measurePreparation("attachment-storage-verify", async () => {
       if (!await verifiedRecord(stored, descriptor(record))
         || Boolean(stored.uploadStarted) !== Boolean(record.uploadStarted)
         || (stored.uploadAttemptedAt ?? null) !== (record.uploadAttemptedAt ?? null)) {
         throw storageError("verification");
       }
-    });
+    }, record.uploadId);
     // The committed read has already finished inside its storage deadline.
     // Hashing the returned Blob may be delayed by a suspended/busy page; elapsed
     // wall time cannot invalidate the now verified durable bytes.
@@ -206,18 +207,18 @@
     return value;
   }
 
-  async function prepare(file, metadata) {
+  async function prepare(file, metadata, { uploadId = crypto.randomUUID() } = {}) {
+    if (!UUID.test(uploadId)) throw new TypeError("Invalid upload identity");
     const retainedBytes = [...entries.values()].reduce((total, record) => total + record.size, 0);
     if (retainedBytes + preparingBytes + file.size > STORE_MAX_BYTES || entries.size + preparingFiles >= STORE_MAX_FILES) throw new Error("Локальный лимит вложений исчерпан. Удали ненужные вложения из черновиков.");
     preparingBytes += file.size;
     preparingFiles += 1;
     try {
-      const uploadId = crypto.randomUUID();
       const record = { ...metadata, uploadId, blobId: uploadId, chunkBytes: CHUNK_BYTES,
-        chunkHashes: await measurePreparation("attachment-hash", () => hashesFor(file)), blob: file, storedAt: Date.now() };
+        chunkHashes: await measurePreparation("attachment-hash", () => hashesFor(file), uploadId), blob: file, storedAt: Date.now() };
       let durable = true;
       let failure = null;
-      try { await measurePreparation("attachment-local-save", () => storeFile(record)); }
+      try { await measurePreparation("attachment-local-save", () => storeFile(record), uploadId); }
       catch (error) { durable = false; failure = storageFailureFrom(error); }
       staged.add(uploadId);
       return remember(record, durable, failure);

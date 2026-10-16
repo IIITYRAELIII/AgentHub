@@ -38,6 +38,15 @@ with bounded working memory, and atomically publishes the existing attachment
 descriptor. No partial file is command-readable. Duplicate completion returns
 the same final identity and hash.
 
+A successful begin response is that same authoritative upload receipt. A fresh
+upload uses it directly; only an existing or lost attempt needs a status request.
+Local preparation and the initial capabilities/auth request carry the original
+upload ID, joined to the message ID when sending starts. A failed local read keeps
+its original File and preview in the live draft, alongside successful files in
+the batch. Explicit retry retains the ID and repeats only failed preparation;
+explicit removal or Task invalidation disposes that preview. This is memory
+retention for the current page, not a promise of recovery after closing it.
+
 Admission reserves declared bytes before accepting parts. Defaults are 128 MiB
 per file, 256 MiB per authenticated owner's uploads, at most 32 uploads and a
 fixed 30-minute lifetime. `AGENT_HUB_ATTACHMENT_MAX_BYTES` and

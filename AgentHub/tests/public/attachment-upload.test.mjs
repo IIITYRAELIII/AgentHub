@@ -317,7 +317,10 @@ test("chunk uploader resumes a lost acknowledgement under the same upload ID wit
   const uploader = context.AgentHubAttachmentUpload.create({ request: async (path, init) => {
     const url = new URL(path, "http://fixture");
     if (init.method === "GET" && !url.search) return response({ protocol, chunkBytes: CHUNK, maxBytes: 128 * CHUNK, maxTotalBytes: 256 * CHUNK });
-    if (init.method === "POST" && !url.search) { begins.push(JSON.parse(init.body)); return response({}); }
+    if (init.method === "POST" && !url.search) {
+      begins.push(JSON.parse(init.body));
+      return response({ protocol, uploadId: file.uploadId, status: "uploading", received: [...received.values()] });
+    }
     assert.equal(url.searchParams.get("id"), file.uploadId);
     if (init.method === "GET") return response({ protocol, uploadId: file.uploadId, received: [...received.values()] });
     if (init.method === "PUT") {
@@ -416,7 +419,7 @@ test("lost complete acknowledgement reuses the ready receipt without repeating c
     const url = new URL(path, "http://fixture");
     if (init.method === "GET" && !url.search) return response({ protocol, chunkBytes: CHUNK, maxBytes: 128 * CHUNK,
       maxTotalBytes: 256 * CHUNK });
-    if (init.method === "POST" && !url.search) return response({});
+    if (init.method === "POST" && !url.search) return response({ protocol, uploadId: file.uploadId, status: "uploading", received: [] });
     if (init.method === "GET") return response(ready
       ? { protocol, uploadId: file.uploadId, status: "ready", path: "/attachment/ready", sha256: "a".repeat(64), received: [] }
       : { protocol, uploadId: file.uploadId, status: "uploading", received: [] });
@@ -453,7 +456,8 @@ test("chunk uploader rejects mismatched stored hashes and exposes expired IDs as
   const uploader = context.AgentHubAttachmentUpload.create({ request: async (path, init) => {
     const url = new URL(path, "http://fixture");
     if (!url.search && init.method === "GET") return response({ protocol, chunkBytes: CHUNK, maxBytes: 128 * CHUNK, maxTotalBytes: 256 * CHUNK });
-    if (!url.search) return response({});
+    if (!url.search) return response({ protocol, uploadId: file.uploadId,
+      received: [{ index: 0, size: 3, sha256: "b".repeat(64) }] });
     assert.equal(init.method, "GET");
     return expired ? response({ error: "expired" }, 410)
       : response({ protocol, uploadId: file.uploadId, received: [{ index: 0, size: 3, sha256: "b".repeat(64) }] });
