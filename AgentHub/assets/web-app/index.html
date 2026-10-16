@@ -50,6 +50,7 @@
   <script src="/journal-polling-policy.js" defer></script>
   <script src="/statistics-controls.js" defer></script>
   <script src="/attachments/interactions.js" defer></script>
+  <script src="/file-transfer-owner.js" defer></script>
   <script src="/attachments/composer-files.js" defer></script>
   <script src="/attachments/upload.js" defer></script>
   <script src="/modal-overlays.js" defer></script>
@@ -2172,6 +2173,8 @@
     <button type="button" role="menuitem" data-resource-action="copy">Копировать</button>
     <button type="button" role="menuitem" data-resource-action="copy-path">Копировать путь</button>
     <button type="button" role="menuitem" data-resource-action="copy-object">Скопировать файл</button>
+    <span class="resource-context-menu-divider" data-resource-action-divider="external-share" hidden aria-hidden="true"></span>
+    <button type="button" role="menuitem" data-resource-action="external-share">Создать внешнюю ссылку…</button>
   </div>
 
   <div class="toast" data-toast hidden role="status" aria-live="polite"></div>

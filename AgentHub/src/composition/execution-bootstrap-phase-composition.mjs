@@ -155,6 +155,7 @@ export function createExecutionBootstrapPhase({
       workLogUsageStore: infrastructure.workLogUsageStore,
       rateLimitHistoryStore: infrastructure.rateLimitHistoryStore,
       providerTurnTelemetryStore: infrastructure.providerTurnTelemetryStore,
+      fileTransferService: infrastructure.fileTransferService,
       taskReadStateStore: infrastructure.taskReadStateStore,
       runtimeStateStore: infrastructure.runtimeStateStore,
       commandTrace: infrastructure.commandTrace,
