@@ -282,9 +282,10 @@
     }
     function streamRow(stream, count) {
       const task = representativeStreamTask(stream);
+      const activity = window.AgentHubStreamTabs.streamStatusPresentation(task);
       const name = window.AgentHubStreamTabs.streamDisplayName(stream, count);
       const row = node("button", { type: "button", class: "mobile-stream-row",
-        "data-mobile-stream-id": stream.id, "data-state": window.AgentHubStreamTabs.streamStatusState(task),
+        "data-mobile-stream-id": stream.id, "data-state": task?.activityUnknown ? "unknown" : window.AgentHubStreamTabs.streamStatusState(task),
         "aria-label": `${name}${task?.unread ? ", Новое" : ""}` });
       row.append(node("span", { class: "provider-dot", "data-state": row.dataset.state,
         "data-provider": task?.provider || "", "aria-hidden": "true" }),
@@ -295,7 +296,7 @@
             .replace(/\s+/gu, " ").trim() || "Пока нет ответа" }),
         ]), node("span", { class: "mobile-stream-tail" }, [
           node("time", { text: formatTime(task?.lastActivity) }),
-          ...(task?.running ? [node("span", { class: "mobile-stream-running", text: "Ход выполняется" })]
+          ...(task?.running || task?.activityUnknown ? [node("span", { class: "mobile-stream-running", text: activity.statusLabel })]
             : task?.unread ? [node("span", { class: "mobile-stream-new", text: "Новое" })] : []),
         ]));
       row.addEventListener("click", () => openStream(task));
@@ -315,7 +316,7 @@
           ? "Не удалось загрузить Диалоги. Повторите подключение." : "Загрузка Диалогов…" }));
       } else {
         list.removeAttribute("aria-busy");
-      const attention = shown.filter((s) => s.tasks.some((t) => t.running || t.unread));
+      const attention = shown.filter((s) => s.tasks.some((t) => t.running || t.activityUnknown || t.unread));
       if (attention.length) {
         const section = node("details", { class: "mobile-attention" }, [
           node("summary", { text: "Требуют внимания" }), ...attention.map((stream) => streamRow(stream, available.length)),
@@ -453,7 +454,8 @@
       currentRuntime.title = selected?.runtimeTitle || "";
       currentRuntime.hidden = !currentRuntime.textContent;
       currentStatus.textContent = state.connection === "offline" ? "Нет связи" : state.connection !== "online"
-        ? "Подключение…" : selected?.running ? "Ход выполняется" : "";
+        ? "Подключение…" : selected?.running || selected?.activityUnknown
+          ? window.AgentHubStreamTabs.streamStatusPresentation(selected).statusLabel : "";
       currentStatus.hidden = !currentStatus.textContent;
       back.hidden = switchButton.hidden = chatCreate.hidden = !conversation;
       chatCreate.disabled = !workspaceId;
@@ -461,7 +463,7 @@
         item.dataset.mobileDialogsTab === (view === "chat" ? "chat" : ["dashboard", "journal", "statistics"].includes(view) ? view : "more")));
       const model = JSON.stringify([workspaceId, state.tasks.map((task) => [
         task.id, task.streamId, task.streamName, task.streamDisplayName, task.workspaceId,
-        task.running, task.unread, task.lastActivity, task.lastAnswer, task.agentLabel, task.modelLabel,
+        task.running, task.activityUnknown, task.unread, task.lastActivity, task.lastAnswer, task.agentLabel, task.modelLabel,
       ]), streams().map((stream) => stream.id), state.connection]);
       if (model !== lastModel) { lastModel = model; renderList(); }
       enhanceRail(); syncViewport();

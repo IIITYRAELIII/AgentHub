@@ -372,6 +372,25 @@ test("user corrections keep themed drawers, low FAB, direct Stream creation and 
   } finally { await browser.close(); }
 });
 
+test("mobile unknown occupancy stays visible and a known live turn clears it", async () => {
+  const browser = await chromium.launch({ channel: process.platform === "win32" ? "msedge" : undefined, headless: true });
+  const context = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+  const page = await context.newPage();
+  try {
+    const errors = await open(page);
+    const unknown = tasks.map(task => task.id === "a1" ? { ...task, running: false, activityUnknown: true, canStop: true } : task);
+    await page.evaluate(tasks => AgentHub.setTasks(tasks), unknown);
+    const occupied = page.locator('.mobile-attention [data-mobile-stream-id="s1"]');
+    assert.equal(await occupied.count(), 1);
+    assert.match(await occupied.innerText(), /Состояние уточняется · поток занят/u);
+    await occupied.click();
+    assert.equal(await page.locator("[data-mobile-current-status]").innerText(), "Состояние уточняется · поток занят");
+    await page.evaluate(tasks => AgentHub.setTasks(tasks), tasks);
+    assert.equal(await page.locator("[data-mobile-current-status]").innerText(), "Ход выполняется");
+    assert.deepEqual(errors, []);
+  } finally { await context.close(); await browser.close(); }
+});
+
 test("Mobile dialogs scope, modal navigation, Back, drafts and responsive parity", async () => {
   const browser = await chromium.launch({ channel: process.platform === "win32" ? "msedge" : undefined, headless: true });
   await mkdir(captures, { recursive: true });
