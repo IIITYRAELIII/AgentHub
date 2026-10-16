@@ -9,6 +9,14 @@ const assets = new URL("../../assets/web-app/", import.meta.url);
 const evidence = new URL("../../WIP/composer-shortcuts-captures/", import.meta.url);
 const { loadThemeRegistry, renderThemeHtml } = createRequire(import.meta.url)("../../theme-registry.cjs");
 const registry = loadThemeRegistry(fileURLToPath(assets));
+async function openShortcutSettings(page) {
+  if (await page.locator("html").evaluate((root) => root.hasAttribute("data-mobile-dialogs-enabled"))) {
+    await page.locator('[data-mobile-dialogs-tab="more"]').click();
+    await page.locator("[data-mobile-more-sheet]").getByRole("button", { name: "Настройки AgentHub", exact: true }).click();
+  } else await page.getByRole("button", { name: "Настройки Agent Hub", exact: true }).click();
+  await page.locator("[data-composer-shortcuts-open]").click();
+}
+
 async function open(page, { vscode = false } = {}) {
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
@@ -29,8 +37,7 @@ async function open(page, { vscode = false } = {}) {
   });
   await page.goto("https://agent-hub.test/");
   await page.waitForFunction(() => window.AgentHub && window.AgentHubComposerShortcuts);
-  await page.locator('[data-panel-open="settings"]').click();
-  await page.locator("[data-composer-shortcuts-open]").click();
+  await openShortcutSettings(page);
   return errors;
 }
 
@@ -76,7 +83,7 @@ test("personal shortcut modal saves atomically, confirms discard and retains fai
     assert.equal(await page.locator("[data-composer-shortcuts-saved]").innerText(), "Сочетания сохранены");
     await page.screenshot({ path: fileURLToPath(new URL("web-saved-entry-1280.png", evidence)) });
     await page.reload();
-    await page.locator('[data-panel-open="settings"]').click(); await page.locator("[data-composer-shortcuts-open]").click();
+    await openShortcutSettings(page);
     assert.deepEqual(await values(), ["queue", "steer", "newline"]);
     await modal.getByRole("button", { name: "Восстановить стандартные", exact: true }).click();
     assert.deepEqual(await values(), ["queue", "newline", "newline"]);
