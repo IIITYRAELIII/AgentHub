@@ -7,10 +7,10 @@ const LABELS = new Set(["action", "surface", "view", "trigger", "render", "decis
   "beforeRun", "afterRun", "beforeProviderStart", "afterProviderStart", "providerLink",
   "clientAssetRevision"]);
 const IDENTIFIERS = new Set(["documentInstanceId", "previousDocumentInstanceId", "serverReleaseId", "snapshotVersion",
-  "requestTraceId", "turnId", "beforeTurnId", "afterTurnId", "provider", "threadId", "streamId",
+  "requestTraceId", "turnId", "beforeTurnId", "afterTurnId", "threadId", "streamId",
   "finalTurnId", "finalRevision"]);
 const NUMBERS = new Set(["count", "longTaskCount", "maxLongTaskMs", "totalLongTaskMs", "droppedEvents", "droppedCount", "queueDepth"]);
-const FAILURE_KINDS = new Set(["aborted", "timeout", "error", "hidden"]);
+const FAILURE_KINDS = new Set(["aborted", "timeout", "error", "hidden", "superseded"]);
 const READ_IDS = new Set(["streamId", "threadId", "turnId", "instanceId", "releaseId", "documentId"]);
 const READ_FLAGS = new Set(["viewport", "tabReady", "cardReady", "tabPresent", "cardPresent"]);
 
@@ -39,6 +39,8 @@ export function clientPerformanceTraceSpans(body, { now = Date.now() } = {}) {
       if (IDENTIFIERS.has(key) && typeof value === "string" && ID.test(value)) metadata[key] = value;
       if (NUMBERS.has(key) && Number.isFinite(value) && value >= 0 && value <= 1_000_000_000) metadata[key] = value;
       if (key === "operationSpanId" && typeof value === "string" && ID.test(value)) metadata[key] = value;
+      if (key === "terminalRevision" && Number.isSafeInteger(value) && value > 0) metadata[key] = value;
+      if (key === "provider" && ["codex", "claude"].includes(value)) metadata[key] = value;
       if (key === "startedAtMs" && Number.isSafeInteger(value)
         && value >= now - 86_400_000 && value <= at) metadata[key] = value;
       if (key === "statusCode" && Number.isInteger(value) && value >= 0 && value <= 599) metadata[key] = value;

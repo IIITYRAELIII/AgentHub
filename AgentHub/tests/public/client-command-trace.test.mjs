@@ -45,6 +45,28 @@ test("after-paint observer cancels an obsolete display and read metadata remains
   assert.doesNotMatch(JSON.stringify(spans), /PRIVATE/u);
 });
 
+test("paint ownership guard preserves the existing observer protocol and error outcome", async () => {
+  for (const mode of ["current", "superseded", "observer-error"]) {
+    const { trace, frames } = fixture();
+    const events = [];
+    let observations = 0;
+    trace.bindReporter(async (batch) => events.push(...batch.events));
+    trace.afterPaint("ui-render", "read-marker-clear", 10, "original-read", {}, () => {
+      observations += 1;
+      if (mode === "observer-error") throw new Error("PRIVATE");
+      return { outcome: "cancelled", metadata: { render: "pending" } };
+    }, () => mode !== "superseded");
+    frames.shift()(); frames.shift()();
+    await trace.flush();
+    const spans = clientPerformanceTraceSpans({ events });
+    assert.equal(spans.at(-1).outcome, mode === "observer-error" ? "failed" : "cancelled");
+    assert.equal(observations, mode === "superseded" ? 0 : 1);
+    if (mode === "current") assert.equal(spans.at(-1).metadata.render, "pending");
+    if (mode === "observer-error") assert.equal(spans.at(-1).metadata.failureKind, "error");
+    assert.doesNotMatch(JSON.stringify(spans), /PRIVATE/u);
+  }
+});
+
 test("client trace batches are bounded and do not hold the measured result behind a stalled reporter", async () => {
   const { trace, advance } = fixture();
   let release;
@@ -176,6 +198,30 @@ test("a hidden surface cancels pending paint measurements and late frames cannot
   assert.equal(events[1].metadata.failureKind, "hidden");
   assert.equal(events[1].monotonicDurationMs, 19);
   assert.equal(events[0].metadata.operationSpanId, events[1].metadata.operationSpanId);
+});
+
+test("paint completion rechecks its owner and a throwing diagnostic guard fails closed", async () => {
+  for (const mode of ["current", "superseded", "throws"]) {
+    const { trace, frames } = fixture();
+    const events = [];
+    trace.bindReporter(async (batch) => events.push(...batch.events));
+    let current = true;
+    trace.afterPaint("ui-render", "history-terminal-paint", 10, "root-command", {}, null, () => {
+      if (mode === "throws") throw new Error("private diagnostic error");
+      return current;
+    });
+    frames.shift()();
+    current = mode === "current";
+    frames.shift()();
+    await trace.flush();
+    const converted = clientPerformanceTraceSpans({ events });
+    assert.deepEqual(converted.map((event) => event.outcome), ["started", mode === "current" ? "succeeded" : "cancelled"]);
+    assert.equal(converted[0].metadata.operationSpanId, converted[1].metadata.operationSpanId);
+    assert.equal(converted[1].commandId, "root-command");
+    if (mode !== "current") assert.equal(converted[1].metadata.failureKind, "superseded");
+    assert.equal(trace.diagnostics().paintPending, 0);
+    assert.equal(JSON.stringify(converted).includes("private diagnostic error"), false);
+  }
 });
 
 test("shipped UI measures navigation, message ACK, rendering and long main-thread work through one batch endpoint", { timeout: 30_000 }, async () => {

@@ -89,6 +89,7 @@ function createLatestIntentController() {
   let generation = 0;
   return Object.freeze({
     begin: () => ++generation,
+    capture: () => generation,
     current: (candidate) => candidate === generation,
   });
 }
@@ -579,9 +580,15 @@ function beginHistoryRequest(id, identity) {
   return { id, identity: stableIdentity(identity), generation };
 }
 
+function historyRequestIdentity(id) {
+  return id === selectedTaskId && directChatRoute()
+    ? historyPageByTask.get(id)?.identity ?? taskIdentity(id)
+    : taskIdentity(id);
+}
+
 function currentHistoryRequest(request) {
   return historyRequestGenerationByTask.get(request.id) === request.generation
-    && sameIdentity(taskIdentity(request.id), request.identity);
+    && sameIdentity(historyRequestIdentity(request.id), request.identity);
 }
 
 function invalidateHistoryRequests(id) {
@@ -3023,6 +3030,8 @@ function applyOpened(result, {
   selectTask = true,
   exactNavigation = null,
 } = {}) {
+  const historyReceivedAtMs = Date.now();
+  const historyProjectionStarted = commandTrace.now();
   const history = result?.history;
   if (!history) {
     applySnapshot(result?.snapshot);
@@ -3067,6 +3076,7 @@ function applyOpened(result, {
   const liveCleared = clearDurablyCompletedLiveCard(id);
   if (!retainsPinnedFocus || !previousPage) {
     historyPageByTask.set(id, {
+      identity: stableIdentity(history),
       start: preserveOlder ? previousPage.start : history.start,
       end: history.end,
       total: history.total,
@@ -3094,6 +3104,38 @@ function applyOpened(result, {
     cleared: liveCleared,
     commandId: commandTrace.objectId(result) || commandTrace.objectId(history) || commandTrace.newId(),
   });
+  // Join the existing server terminal-history span using the original durable
+  // client identity, not this background read's unrelated control request ID.
+  // Retrieval and a visible paint opportunity are distinct diagnostic facts.
+  const finalMessage = newest.findLast((message) => message.role === "agent"
+    && ["completed", "failed", "cancelled"].includes(message.projectionState));
+  const rootUser = finalMessage && newest.find((message) => message.role === "user"
+    && message.turnUserSlot === "root" && message.provider === finalMessage.provider
+    && message.threadId === finalMessage.threadId && message.turnId === finalMessage.turnId);
+  if (rootUser?.clientUserMessageId) {
+    const metadata = { streamId: history.streamId, provider: finalMessage.provider,
+      threadId: finalMessage.threadId, turnId: finalMessage.turnId,
+      terminalRevision: finalMessage.terminalRevision };
+    commandTrace.record("ui-control", "history-retrieved", 0, rootUser.clientUserMessageId,
+      metadata, historyReceivedAtMs);
+    if (selectedTaskId === id && document.documentElement.dataset.view === "chat"
+      && renderedMessages?.some((message) => message.id === finalMessage.id)) {
+      const navigationGeneration = navigationIntents.capture();
+      const page = historyPageByTask.get(id);
+      const route = window.location.hash;
+      const terminalNode = Array.from(document.querySelectorAll("[data-chat-pane] [data-message-id]"))
+        .find((node) => node.dataset.messageId === finalMessage.id);
+      commandTrace.afterPaint("ui-render", "history-terminal-paint", historyProjectionStarted,
+        rootUser.clientUserMessageId, metadata, null, () => navigationIntents.current(navigationGeneration)
+          && selectedTaskId === id && document.documentElement.dataset.view === "chat"
+          && window.location.hash === route && historyPageByTask.get(id) === page
+          && terminalNode?.isConnected === true && terminalNode.getClientRects().length > 0
+          && historyWindowByTask.get(id)?.some((message) => message.id === finalMessage.id
+            && message.provider === finalMessage.provider && message.threadId === finalMessage.threadId
+            && message.turnId === finalMessage.turnId && message.terminalRevision === finalMessage.terminalRevision
+            && message.projectionState === finalMessage.projectionState));
+    }
+  }
   renderTaskQueue(id, lastSnapshot);
   if (result.focusedMessage && !exactNavigation) {
     window.requestAnimationFrame(() => agentHub.focusMessage?.({
@@ -3376,6 +3418,7 @@ function enqueueTaskHistoryLoad(id, identity, {
             knownVersion: historyPageByTask.get(id)?.version ?? "",
           }),
         ));
+        if (id === selectedTaskId && directChatRoute()) continue;
         if (settled.status === "rejected" || !currentHistoryRequest(pending.request)) continue;
         const history = verifiedTaskHistory(settled.value, pending.identity);
         if (!sameIdentity(taskIdentity(id), history)) continue;
@@ -3458,7 +3501,7 @@ agentHub.on("history:trace-page", ({ identity, tracePage, resolve, reject }) => 
 });
 
 agentHub.on("history:load-older", ({ taskId: id }) => runAction(async () => {
-  const identity = taskIdentity(id);
+  const identity = historyRequestIdentity(id);
   const page = historyPageByTask.get(id);
   if (!identity || !page || page.nextBefore == null || page.loading) return;
   const requestedBefore = Number(page.nextBefore);
@@ -3472,7 +3515,7 @@ agentHub.on("history:load-older", ({ taskId: id }) => runAction(async () => {
       before: requestedBefore,
       limit: 20,
     }), identity);
-    if (!currentHistoryRequest(request) || !sameIdentity(taskIdentity(id), history)) {
+    if (!currentHistoryRequest(request) || !sameIdentity(historyRequestIdentity(id), history)) {
       page.loading = false;
       syncHistoryPagination(id);
       return;
@@ -5391,6 +5434,10 @@ async function refreshVisibleTaskHistories(previousSnapshot, snapshot) {
   if (selectedTaskId) visibleIds.add(selectedTaskId);
   const chatVisible = document.documentElement.dataset.view === "chat";
   await Promise.all([...visibleIds].map(async (id) => {
+    // An exact turn route is intentional historical navigation, not a live
+    // Stream route. Keep its page while the head evolves; clicking the Stream
+    // again explicitly returns to the existing head-history path.
+    if (id === selectedTaskId && directChatRoute()) return;
     const previousTask = snapshotTask(previousSnapshot, id);
     const currentTask = snapshotTask(snapshot, id);
     if (!currentTask) return;

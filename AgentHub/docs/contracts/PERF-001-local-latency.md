@@ -124,6 +124,20 @@ errors without changing the response; complete action-handler spans include
 the subsequent awaited processing. Aborted requests and paint measurements
 cancelled by a hidden surface have explicit diagnostic outcomes. They never
 claim that a Hub command was cancelled or that hidden content became visible.
+For a materialized terminal history page carrying an exact root-user
+`clientUserMessageId`, `history-retrieved` and `history-terminal-paint` join the
+existing server `terminal-history` span under that original command identity.
+Only bounded Stream/provider/Thread/turn identity and terminal revision pass the
+client telemetry allowlist. Retrieval is not paint; paint is recorded only for
+the selected visible chat after the exact terminal message has been rendered,
+using the existing two-frame paint opportunity (not a compositor guarantee).
+At completion it revalidates the existing navigation generation, selected chat,
+route, materialized page and exact connected visible terminal/revision. Stream,
+view, historical navigation or revision supersession cancels the paired
+diagnostic with `failureKind=superseded`, never claiming an old successful paint.
+Unknown original identity emits no invented command correlation. UTC endpoints
+permit cross-process correlation with clock-skew limitations; the client render
+duration remains monotonic. No history polling or delivery authority is added.
 Configuration and infrastructure construction precede the trace worker. Their
 monotonic durations and original UTC endpoints are captured before the work and
 submitted to that same worker once it exists, marked `bufferedUntilTraceReady`.
