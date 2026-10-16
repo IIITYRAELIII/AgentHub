@@ -639,3 +639,11 @@ hydration starts strictly as background work and is never awaited by mark-read.
   and jump only to their annotation card. This guard is removed only if a future
   authoritative provider export supplies exact item and range identity; local
   text matching is not a migration path.
+
+A successful health response with authoritative `ready=true` opens the working
+interface even when an optional integration failed. Failed integrations remain
+in a separate non-blocking diagnostic with the existing generation-fenced retry.
+A slow or failed health read after readiness does not reopen the startup overlay;
+the connection owner retains its own diagnostic. An authoritative `ready=false`
+response still opens startup, including a replacement runtime with no stage
+metadata yet. A queued restart request alone does not prove replacement began.

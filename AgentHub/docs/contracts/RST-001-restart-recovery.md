@@ -239,3 +239,16 @@ hash remains unknown without cleanup. The final SQLite commit still waits for
 the ordinary squash Git proof and records both hashes in the existing lifecycle
 outcome. No bootstrap-specific registry or direct database/ref recovery path is
 introduced.
+
+The frontend startup overlay follows authoritative health readiness. A ready
+runtime with a failed optional capability remains usable and exposes that
+failure separately with the existing targeted retry. Failed or delayed health
+reads do not turn an already-ready runtime into an asserted startup/restart;
+connection diagnostics remain owned by the ordinary banner. A fresh unready
+health response still blocks, including before startup stages are available.
+Queued restart intent is waiting, not evidence that replacement started.
+Telegram transport failures retain bounded allowlisted cause codes in their
+existing error/health diagnostic; messages, credential-bearing URLs, tokens and
+request bodies never contribute to that summary. An old generic fetch failure
+without retained cause codes cannot be retrospectively diagnosed by a later
+successful request.
