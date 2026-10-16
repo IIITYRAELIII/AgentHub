@@ -571,11 +571,16 @@ revision cache without re-projecting conversations.
 Snapshot receipt alone is not display evidence: acknowledgement is emitted only
 after `applyOpened` rendered a terminal card with the same exact identity and
 revision. Startup snapshot-before-history therefore cannot clear unread state.
-The persisted cursor is monotonic even when an older request finishes last:
-`answerAtMs` orders different completion times, a higher revision orders the same
-turn at an equal time, and the exact `turnId` is the deterministic tie-break for
-different turns completed at the same millisecond. A lower canonical tuple cannot
-replace the stored cursor.
+The persisted cursor is monotonic even when an older request finishes last.
+Within the exact provider/Thread/turn identity, revision orders reads before
+completion timestamps: enrichment of the timestamp cannot resurrect the same
+read revision or cover an unseen higher revision. A lower revision cannot replace
+a higher one even with a later timestamp; a higher revision may advance its own
+turn despite an earlier timestamp. Across different turns, `answerAtMs` retains
+the existing chronology and exact `turnId` breaks equal-millisecond ties.
+The browser mirrors that same ordering only for server-confirmed receipts.
+No new cursor table, timestamp rewrite or background reconciliation is introduced
+(ADR-0112). Existing legacy-revision migration guards remain narrowly scoped.
 Cached history may be returned with the open response, but provider/history
 hydration starts strictly as background work and is never awaited by mark-read.
 

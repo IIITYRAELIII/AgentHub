@@ -32,6 +32,11 @@ function marker(value) {
 }
 
 function compareCanonicalFinal(left, right) {
+  // Completion timestamps may be enriched by another projection of the same
+  // terminal. Only its revision orders reads within that exact turn.
+  if (left.turnId && left.turnId === right.turnId && left.revision > 0 && right.revision > 0) {
+    return left.revision === right.revision ? 0 : left.revision > right.revision ? 1 : -1;
+  }
   if (left.atMs !== right.atMs) return left.atMs > right.atMs ? 1 : -1;
   const leftExact = Boolean(left.turnId && left.revision > 0);
   const rightExact = Boolean(right.turnId && right.revision > 0);
@@ -65,7 +70,6 @@ export function taskHasUnreadAnswer(task, cursor) {
   if (!read) return true;
   if (
     task?.migrationGuard === "legacy-terminal-revision"
-    && current.atMs === read.atMs
     && current.turnId
     && current.turnId === read.turnId
     && current.revision === 1
@@ -172,24 +176,22 @@ export class TaskReadStateStore {
         excluded.answer_turn_id = task_read_state.answer_turn_id
         AND excluded.answer_revision = task_read_state.answer_revision
       ) AND (
-        excluded.answer_at_ms > task_read_state.answer_at_ms
+        (
+          excluded.answer_turn_id <> ''
+          AND excluded.answer_turn_id = task_read_state.answer_turn_id
+          AND excluded.answer_revision > task_read_state.answer_revision
+        )
         OR (
-          excluded.answer_at_ms = task_read_state.answer_at_ms
+          (excluded.answer_turn_id = '' OR excluded.answer_turn_id <> task_read_state.answer_turn_id)
           AND (
-            (
-              excluded.answer_turn_id <> ''
-              AND excluded.answer_revision > 0
+            excluded.answer_at_ms > task_read_state.answer_at_ms
+            OR (
+              excluded.answer_at_ms = task_read_state.answer_at_ms
+              AND excluded.answer_turn_id <> '' AND excluded.answer_revision > 0
               AND (
                 task_read_state.answer_turn_id = ''
                 OR task_read_state.answer_revision <= 0
-                OR (
-                  excluded.answer_turn_id = task_read_state.answer_turn_id
-                  AND excluded.answer_revision > task_read_state.answer_revision
-                )
-                OR (
-                  excluded.answer_turn_id <> task_read_state.answer_turn_id
-                  AND excluded.answer_turn_id > task_read_state.answer_turn_id
-                )
+                OR excluded.answer_turn_id > task_read_state.answer_turn_id
               )
             )
           )
