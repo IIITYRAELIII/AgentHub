@@ -145,11 +145,23 @@ async function expiredPreviewSend(lostAdmission = false) {
     assert.ok(sends[0].params.attachments[0].includes(begins[0]));
     assert.ok(sends[0].params.attachments[1].includes(ids[1]));
     assert.equal(await page.locator("[data-attachment-index]").count(), 0);
-    for (let batch = 0; batch < 8; batch += 1) {
-      await page.waitForFunction(() => !AgentHubCommandTrace.diagnostics().flushing);
-      await page.evaluate(() => AgentHubCommandTrace.flush());
-      if (await page.evaluate(() => !AgentHubCommandTrace.diagnostics().pending)) break;
-    }
+    const drainDeadline = performance.now() + 10_000;
+    let drainBatches = 0;
+    let drainFailure = null;
+    const waitForTraceIdle = () => page.waitForFunction(() => !AgentHubCommandTrace.diagnostics().flushing,
+      null, { timeout: Math.max(1, drainDeadline - performance.now()) }).then(handle => handle.dispose());
+    try {
+      while (drainBatches < 32 && performance.now() < drainDeadline) {
+        await waitForTraceIdle();
+        await page.evaluate(() => { void AgentHubCommandTrace.flush(); });
+        drainBatches += 1;
+        await waitForTraceIdle();
+        if (await page.evaluate(() => !AgentHubCommandTrace.diagnostics().pending)) break;
+      }
+    } catch (error) { drainFailure = error.name; }
+    const drainState = await page.evaluate(() => AgentHubCommandTrace.diagnostics());
+    assert.ok(!drainFailure && !drainState.pending && !drainState.retainedUpload && !drainState.flushing,
+      `upload trace drain incomplete: ${JSON.stringify({ batches: drainBatches, failure: drainFailure, ...drainState })}`);
     const uploadTraces = traces.filter(span => span.stage === "attachment-upload");
     assert.ok(uploadTraces.some(span => span.metadata.uploadState === "expired" && span.commandId === ids[0]
       && span.metadata.uploadAttemptId === ids[0]));
