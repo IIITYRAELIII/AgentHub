@@ -65,7 +65,7 @@ async function fixture(t) {
   const ownerRoot = path.dirname(prior.releaseRoot), checkpointFile = path.join(ownerRoot, "checkpoint.json");
   const checkpoint = await readFile(checkpointFile), index = await readFile(path.join(prior.releaseRoot, ".git/index"));
   const original = { operationId: "original-await", taskId: selected.taskId, taskRevision: 8,
-    workspaceId: "workspace", resultCommit: selected.resultCommit, argumentsHash: "a".repeat(64) };
+    workspaceId: "workspace", resultCommit: selected.resultCommit, argumentsHash: "a".repeat(64), originMainCommit: published };
   return { root, primary, origin, service, selected, request, prior, published, ownerRoot, checkpointFile,
     checkpoint, index, privateBytes, original, recovery: { ...request(selected), nativeAwaitRecovery: original } };
 }
@@ -110,7 +110,7 @@ test("unpublished/staged/selection/original/publication drift refuse before arch
   await assert.rejects(f.service.inspectNativeAwaitRecovery({ projectRoot: f.primary,
     original: f.original, frozenTasks: [f.selected, f.selected] }), /single original/u);
   await git(f.primary, "push", "--force", "origin", f.selected.baseCommit + ":refs/heads/main");
-  await assert.rejects(inspect(f.original), /publication or origin/u);
+  await assert.rejects(inspect(f.original), /origin pin/u);
   assert.equal(await git(f.prior.releaseRoot, "rev-parse", "HEAD"), f.prior.preReleaseHead);
   assert.deepEqual(await readFile(f.checkpointFile), f.checkpoint);
 });

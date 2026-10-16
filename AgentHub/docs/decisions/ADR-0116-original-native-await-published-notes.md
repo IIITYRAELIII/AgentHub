@@ -16,8 +16,9 @@ original identity or evidence.
 Extend the existing reconciliation/lifecycle/preflight/release Git owners with a
 bounded, original-bound migration. Require exact pending receipt/CAS and Task
 state, one clean Test result, no process guard, completed native checkpoint/
-manifest/journal, and exact old refs/index/physical notes. Durable OWN publication
-must match origin/main. Old source may differ only in root CHANGELOG and package
+manifest/journal, and exact old refs/index/physical notes. Independently pin and
+recheck current origin/main without including it in source. Old source may
+differ from durable OWN publication only in root CHANGELOG and package
 version fields; all executable/dependency bytes must be published.
 
 Persist an archive intent in native-preparation.json, then rename the entire old

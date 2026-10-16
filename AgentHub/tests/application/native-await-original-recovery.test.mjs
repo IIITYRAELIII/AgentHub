@@ -55,6 +55,7 @@ test("original Await uses existing SQLite lifecycle/CAS/receipt and terminal ret
       inspections++;
       assert.equal(original.operationId, operationId);
       assert.equal(original.resultCommit, source);
+      return { original: { ...original, originMainCommit: "d".repeat(40) } };
     },
     prepareAwaitAcceptance: async ({ operationId: actual, nativeAwaitRecovery, commitPrepared }) => {
       effects++;

@@ -1429,8 +1429,10 @@ export class ReleaseGitWorkspaceService {
       const publishedRevision = await durablePublishedRevision(this.#environment, primary.root);
       if (!publishedRevision) throw new Error("Original Await has no OWN publication");
       const remote = await runGit(["ls-remote", "origin", "refs/heads/main"], { cwd: primary.root });
-      if (remote.split(/\s/u)[0] !== publishedRevision) throw new Error("Original Await publication or origin changed");
-      return inspectPublishedNotesArchive({ layout, original, frozenTasks, publishedRevision,
+      const originMainCommit = remote.split(/\s/u)[0];
+      if (!/^[a-f0-9]{40}$/u.test(originMainCommit) || (original.originMainCommit
+          && original.originMainCommit !== originMainCommit)) throw new Error("Original Await origin pin changed");
+      return inspectPublishedNotesArchive({ layout, original: { ...original, originMainCommit }, frozenTasks, publishedRevision,
         gitAt: (cwd, args, options) => runGit(args, { ...options, cwd }),
         assertClone: repositoryRoot => assertReleaseCloneForPublication({ repositoryRoot }), readJson });
     });
@@ -1477,7 +1479,7 @@ export class ReleaseGitWorkspaceService {
             || current.dirty.indexFingerprint !== initial.dirty.indexFingerprint
             || current.dirty.fingerprint !== initial.dirty.fingerprint
             || await durablePublishedRevision(this.#environment, initial.root) !== published
-            || remote.split(/\s/u)[0] !== published) throw new Error("Original Await archive authority changed");
+            || remote.split(/\s/u)[0] !== nativeAwaitRecovery.originMainCommit) throw new Error("Original Await archive authority changed");
       };
       const archive = nativeAwaitRecovery ? await archivePublishedNotesCheckout({
         layout: { ...layout, primaryRoot: initial.root }, original: nativeAwaitRecovery,

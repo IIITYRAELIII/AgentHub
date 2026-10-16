@@ -33,9 +33,10 @@ function packageWithoutVersion(bytes, lock) {
   return encode(value);
 }
 function originalIdentity(original) {
-  const fields = ["operationId", "taskId", "workspaceId", "argumentsHash", "resultCommit"];
+  const fields = ["operationId", "taskId", "workspaceId", "argumentsHash", "resultCommit", "originMainCommit"];
   if (!original || fields.some(key => typeof original[key] !== "string" || !original[key] || original[key].length > 300)
       || !/^[a-f0-9]{64}$/u.test(original.argumentsHash) || !/^[a-f0-9]{40}$/u.test(original.resultCommit)
+      || !/^[a-f0-9]{40}$/u.test(original.originMainCommit)
       || !Number.isSafeInteger(original.taskRevision) || original.taskRevision < 1) refuse("original identity absent");
   return Object.fromEntries([...fields, "taskRevision"].map(key => [key, original[key]]));
 }

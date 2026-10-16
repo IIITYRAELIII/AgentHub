@@ -1247,9 +1247,9 @@ export class TaskLifecycleService {
     if (references.length !== 1) throw new Error("Original native Await requires its unique result");
     const original = { operationId, taskId: task.id, workspaceId: task.workspaceId,
       argumentsHash: receipt.argumentsHash, taskRevision: task.revision, resultCommit: references[0].resultCommit };
-    await this.releasePreflight.pendingNativeAwaitRecovery({ workspaceId: task.workspaceId,
+    const proof = await this.releasePreflight.pendingNativeAwaitRecovery({ workspaceId: task.workspaceId,
       acceptingTask: { id: task.id, revision: task.revision }, projectRoot, lease, original });
-    return original;
+    return { ...original, originMainCommit: proof.original.originMainCommit };
   }
 
   withUnknownWorkflowReconciliationLock({ taskId, sourceTaskId = null, projectRoot, operationId } = {}, operation) {

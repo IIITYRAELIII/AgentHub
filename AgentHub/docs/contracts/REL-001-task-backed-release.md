@@ -2425,9 +2425,13 @@ through the existing reconciliation, lifecycle, preflight and release Git owners
 references, clean Test source and absence of a process guard remain mandatory.
 The sole prospective result must be the original result. This exception admits
 only a completed native prior candidate whose source equals durable OWN
-publication and current origin/main, allowing only package version fields and
+publication, allowing only package version fields and
 root CHANGELOG to differ. Its only dirty path must be regular staged CHANGELOG,
-exactly the published blob with supported LF/CRLF physical text.
+exactly the published blob with supported LF/CRLF physical text. Current
+origin/main is independently pinned and rechecked; its later commits are fetched
+as objects by ordinary clone creation but never become a composition base or
+selected source through this recovery. Approval of external incoming remains a
+separate publication boundary.
 
 The release Git owner journals the original-bound move before archiving its
 entire standalone clone and checkpoint inside its own root. Ref/index/worktree,
