@@ -7,6 +7,7 @@ import { ReleaseCandidateFrozenError } from "../../domain/task-board-task.mjs";
 import { ReleasePreparationRejectedError } from "../../domain/release-preparation.mjs";
 import { assertPreparationCheckpoint } from "./release-preparation-guard.mjs";
 import { assertInstalledLocalSourceBaseline } from "./local-source-baseline.mjs";
+import { inspectPublishedNotesArchive, archivePublishedNotesCheckout } from "./native-await-published-notes-recovery.mjs";
 import { defaultRuntimeRoot } from "./runtime-layout.mjs";
 import process from "node:process";
 import { assertContourExternalEffects, assertContourGitAvailable } from "../../ports/contour-external-effects.mjs";
@@ -1420,11 +1421,26 @@ export class ReleaseGitWorkspaceService {
     });
   }
 
+  async inspectNativeAwaitRecovery({ projectRoot, original, frozenTasks }) {
+    const primary = await primarySnapshot(projectRoot);
+    const layout = { ...this.#layout(primary.root), primaryRoot: primary.root };
+    return withInterprocessLocks([path.join(this.dataDir, "locks", `release-git-${layout.repositoryKey}`)], async () => {
+      await this.assertPrimaryInvariant(primary.root, { phase: "original native Await inspection" });
+      const publishedRevision = await durablePublishedRevision(this.#environment, primary.root);
+      if (!publishedRevision) throw new Error("Original Await has no OWN publication");
+      const remote = await runGit(["ls-remote", "origin", "refs/heads/main"], { cwd: primary.root });
+      if (remote.split(/\s/u)[0] !== publishedRevision) throw new Error("Original Await publication or origin changed");
+      return inspectPublishedNotesArchive({ layout, original, frozenTasks, publishedRevision,
+        gitAt: (cwd, args, options) => runGit(args, { ...options, cwd }),
+        assertClone: repositoryRoot => assertReleaseCloneForPublication({ repositoryRoot }), readJson });
+    });
+  }
+
   async prepareCandidate({
     planRevision, projectRoot, workspaceId = null, preflightRequestId = null,
     frozenTasks = [], approvedBaseCommit = null, baseProvenance = null,
     validateBeforeCommit = null, preserveFrozen = false, commitPrepared = null, preparationGuard = null,
-    nativeResolutionReview = null,
+    nativeResolutionReview = null, nativeAwaitRecovery = null,
   } = {}) {
     this.#assertAvailable("prepareCandidate");
     const revision = String(planRevision ?? "").trim();
@@ -1451,6 +1467,25 @@ export class ReleaseGitWorkspaceService {
       if (preparationGuard) recordTaskOperationTiming("preparation:candidate-lock-wait", {
         durationMs: performance.now() - preparationLockStarted,
       });
+      const validateArchive = async () => {
+        if (validateBeforeCommit) await validateBeforeCommit();
+        await this.assertPrimaryInvariant(initial.root, { phase: "original Await archive" });
+        const current = await primarySnapshot(initial.root);
+        const remote = await runGit(["ls-remote", "origin", "refs/heads/main"], { cwd: initial.root });
+        if (current.mainCommit !== initial.mainCommit || current.headCommit !== initial.headCommit
+            || current.branchRef !== initial.branchRef
+            || current.dirty.indexFingerprint !== initial.dirty.indexFingerprint
+            || current.dirty.fingerprint !== initial.dirty.fingerprint
+            || await durablePublishedRevision(this.#environment, initial.root) !== published
+            || remote.split(/\s/u)[0] !== published) throw new Error("Original Await archive authority changed");
+      };
+      const archive = nativeAwaitRecovery ? await archivePublishedNotesCheckout({
+        layout: { ...layout, primaryRoot: initial.root }, original: nativeAwaitRecovery,
+        frozenTasks: tasks, publishedRevision: published, validate: validateArchive,
+        gitAt: (cwd, args, options) => runGit(args, { ...options, cwd }),
+        assertClone: repositoryRoot => assertReleaseCloneForPublication({ repositoryRoot }),
+        readJson, writeJson: writeJsonAtomic,
+      }) : null;
       const clone = await this.#ensureClone(initial);
       const git = (args, options = {}) => runGit(args, { ...options, cwd: clone.releaseRoot, timeoutMs: 300_000 });
       const checkpoint = await readJson(clone.checkpointFile);
@@ -1506,7 +1541,7 @@ export class ReleaseGitWorkspaceService {
           || baseCommit !== preparationGuard.approvedBaseCommit)) {
         throw new ReleasePreparationRejectedError("Full selected/joint preparation tree differs from the reviewed tree");
       }
-      const cutover = await this.#nativeCutover(clone, checkpoint);
+      const cutover = archive?.cutover ?? await this.#nativeCutover(clone, checkpoint);
       const manifest = {
         schemaVersion: 2, compositionPolicy: NATIVE_RELEASE_POLICY,
         ...(workspaceId ? { workspaceId: String(workspaceId) } : {}),
@@ -1529,6 +1564,7 @@ export class ReleaseGitWorkspaceService {
       const branchRef = `refs/heads/${RELEASE_BRANCH}`;
       const journalFile = path.join(layout.root, "native-preparation.json");
       let journal = await readJson(journalFile);
+      if (archive && journal?.phase === "published-notes-archived") journal = null;
       if (journal && journal.phase !== "completed" && journal.phase !== "rolled_back"
           && journal.manifestHash !== manifestHash) {
         throw Object.assign(new Error("A different native preparation remains unresolved"), { code: "AWAIT_PREPARATION_UNKNOWN" });
@@ -1585,7 +1621,8 @@ export class ReleaseGitWorkspaceService {
           await requireCheckout(before.head);
           journal = { version: 1, policy: NATIVE_RELEASE_POLICY, phase: "prepared",
             manifestHash, target: composition.head, targetTree: composition.tree, before,
-            ...(preflightRequestId ? { requestId: String(preflightRequestId) } : {}) };
+            ...(preflightRequestId ? { requestId: String(preflightRequestId) } : {}),
+            ...(archive ? { requestId: nativeAwaitRecovery.operationId, publishedNotesArchive: archive.descriptor } : {}) };
           await writeJsonAtomic(journalFile, journal);
         }
         if (journal.version !== 1 || journal.policy !== NATIVE_RELEASE_POLICY

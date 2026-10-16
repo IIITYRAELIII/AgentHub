@@ -618,3 +618,11 @@ includes exact Stream/provider/Thread and command identity, queue state, wait
 reason, state age and a stalled marker after sixty seconds in `dispatching` or
 `reconciling`. A deferred command never
 becomes a synthetic live run merely to make blocked admission observable.
+
+Original native Await recovery (ADR-0116) uses the existing RM reconciliation
+operation/CLI and the exact original arguments hash and workflow CAS. It adds no
+public approval flag, second receipt or replay identity. An owning proof of the
+bounded already-published-notes archive can substitute for a nonexistent process
+guard; every real guard still refuses. Drift remains UNKNOWN. The same durable
+workflow outcome settles the same receipt; repeated terminal reconciliation
+performs a read without re-composing or re-archiving.

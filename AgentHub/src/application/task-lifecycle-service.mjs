@@ -8,7 +8,7 @@ import { taskProjectRoot } from "../domain/task-project-root.mjs";
 import { TaskAbsorptionCompositionError } from "../domain/task-board-task.mjs";
 import { normalizedTaskSquashCutover } from "../domain/task-squash-cutover.mjs";
 import { TaskGitHistoryRejectedError, normalizedInitialNativeTest } from "../domain/task-git-reference.mjs";
-import { nativeTestMetadataDrift } from "../domain/native-test-terminal-recovery.mjs";
+import { nativeTestMetadataDrift, sameTaskWorkflowState } from "../domain/native-test-terminal-recovery.mjs";
 
 export class TaskIntegrationRejectedError extends Error {
   constructor(cause) {
@@ -852,7 +852,7 @@ export class TaskLifecycleService {
   async #updateWorkflowStatusWithLease({
     taskId, status, operationId, binding = {}, projectRoot = null,
     expectedRevision = null, expectedWorkflowStatus = null, operationEvidence = null,
-    initialNativeTestSource = null, initialNativeTestRecovery = false,
+    initialNativeTestSource = null, initialNativeTestRecovery = false, nativeAwaitRecovery = null,
   } = {}, { releaseWorkflow = false, lease = {} } = {}) {
       const task = this.#task(taskId);
       const workflowStatus = String(status ?? "").trim();
@@ -1003,6 +1003,7 @@ export class TaskLifecycleService {
                   projectRoot: selectedProjectRoot,
                   lease: repositoryLease,
                   operationId,
+                  nativeAwaitRecovery,
                   nativeResolutionReview: operationEvidence?.nativeResolutionReview ?? null,
                   commitPrepared: async (prepared) => {
                     if (prepared.task.resultCommit !== acceptedReference.resultCommit) {
@@ -1015,6 +1016,7 @@ export class TaskLifecycleService {
                         operationId, gitReferences: [], replaceGitReferences: false, ...binding,
                         evidence: {
                           ...(operationEvidence ?? {}), outcome: "accepted_existing_result",
+                          ...(nativeAwaitRecovery ? { nativeAwaitRecovery } : {}),
                           resultCommit: acceptedReference.resultCommit,
                           releaseIntegration: prepared.task,
                           response: { releaseCandidate: {
@@ -1214,6 +1216,10 @@ export class TaskLifecycleService {
   async pendingNativeWorkflowOwned({ taskId, operationId, projectRoot, lease, allowMetadataRecovery = false } = {}) {
     const transition = this.taskBoard.lifecycleTransition(operationId);
     const task = this.#task(taskId);
+    if (transition?.targetWorkflowStatus === "awaiting_implementation"
+        && typeof this.releasePreflight?.pendingNativeAwaitRecovery === "function") {
+      return Boolean(await this.#pendingNativeAwaitRecovery({ taskId, operationId, projectRoot, lease }));
+    }
     if (transition?.taskId !== task.id || transition.operationId !== operationId
         || transition.kind !== "workflow" || transition.phase !== "pending_git"
         || transition.targetWorkflowStatus !== "testing"
@@ -1221,6 +1227,29 @@ export class TaskLifecycleService {
           && !(allowMetadataRecovery && nativeTestMetadataDrift(task, transition)))
         || !this.taskGitWorkspaces?.pendingNativeIntegrationOwned) return false;
     return Boolean(await this.taskGitWorkspaces.pendingNativeIntegrationOwned({ taskId, operationId, projectRoot, lease }));
+  }
+
+  async #pendingNativeAwaitRecovery({ taskId, operationId, projectRoot, lease }) {
+    await this.#assertOwned(lease);
+    const task = this.#task(taskId), transition = this.taskBoard.lifecycleTransition(operationId);
+    const receipt = this.workspaceCatalog.mcpOperation(operationId);
+    if (transition?.taskId !== task.id || transition.operationId !== operationId
+        || transition.kind !== "workflow" || transition.phase !== "pending_git"
+        || transition.targetWorkflowStatus !== "awaiting_implementation"
+        || task.workflowStatus !== "testing" || task.revision !== transition.expectedRevision
+        || !sameTaskWorkflowState(task, transition.priorTask)
+        || receipt?.operationStatus !== "pending" || receipt.receiptState !== "unknown"
+        || receipt.toolName !== "hub_task_status_update" || receipt.workspaceId !== task.workspaceId) {
+      throw new Error("Original native Await identity or Task state changed");
+    }
+    await this.taskGitWorkspaces.assertNoProcessTreeGuardOwned(task.id, { lease });
+    const references = task.gitReferences.filter(reference => samePath(reference.projectRoot, projectRoot));
+    if (references.length !== 1) throw new Error("Original native Await requires its unique result");
+    const original = { operationId, taskId: task.id, workspaceId: task.workspaceId,
+      argumentsHash: receipt.argumentsHash, taskRevision: task.revision, resultCommit: references[0].resultCommit };
+    await this.releasePreflight.pendingNativeAwaitRecovery({ workspaceId: task.workspaceId,
+      acceptingTask: { id: task.id, revision: task.revision }, projectRoot, lease, original });
+    return original;
   }
 
   withUnknownWorkflowReconciliationLock({ taskId, sourceTaskId = null, projectRoot, operationId } = {}, operation) {
@@ -1457,7 +1486,10 @@ export class TaskLifecycleService {
     ) {
       throw new Error("Unknown workflow reconciliation identity or Task CAS does not match");
     }
-    if (!pendingWithdrawal && !guardId) throw new Error("Pending Await recovery requires its process-tree guard");
+    const nativeAwaitRecovery = !pendingWithdrawal && !guardId
+      && typeof this.releasePreflight?.pendingNativeAwaitRecovery === "function"
+      ? await this.#pendingNativeAwaitRecovery({ taskId, operationId, projectRoot, lease }) : null;
+    if (!pendingWithdrawal && !guardId && !nativeAwaitRecovery) throw new Error("Pending Await recovery requires its process-tree guard");
     const recovery = guardId ? await this.taskGitWorkspaces.recoverProcessTreeGuard(current.id, {
       repositoryRoot: projectRoot,
       guardId,
@@ -1470,6 +1502,7 @@ export class TaskLifecycleService {
       operationId,
       projectRoot,
       operationEvidence: transition.evidence,
+      nativeAwaitRecovery,
     }, { releaseWorkflow: true, lease });
     return {
       result: result?.releaseCandidate?.status === "invalidated"
