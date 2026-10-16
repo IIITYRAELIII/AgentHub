@@ -1419,6 +1419,7 @@ async function hubFetchResponse(input, init, retrySession = true, traceId) {
   try {
     const measured = (action, operation) => traceId?.traceUploadId
       ? commandTrace.upload(action, operation, { uploadId: traceId.traceUploadId,
+        uploadAttemptId: traceId.traceAttemptId,
         messageRequestId: traceId.traceRequestId, chunkIndex: traceId.traceChunkIndex }) : operation();
     // Refreshing the session re-issues the HttpOnly cookie that the request below
     // carries automatically as a same-origin request.
@@ -2929,15 +2930,16 @@ function dataUrlBody(dataUrl) {
 
 const attachmentUploader = window.AgentHubAttachmentUpload.create({
   request: async (path, init) => {
-    const { traceUploadId, traceRequestId, traceChunkIndex, ...wireInit } = init ?? {};
-    const identity = { traceUploadId, traceRequestId, traceChunkIndex };
+    const { traceUploadId, traceAttemptId, traceRequestId, traceChunkIndex, ...wireInit } = init ?? {};
+    const identity = { traceUploadId, traceAttemptId, traceRequestId, traceChunkIndex };
     await commandTrace.upload("local-session", () => localSessionReady,
-      { uploadId: traceUploadId, messageRequestId: traceRequestId, chunkIndex: traceChunkIndex });
+      { uploadId: traceUploadId, uploadAttemptId: traceAttemptId, messageRequestId: traceRequestId, chunkIndex: traceChunkIndex });
     const signal = AbortSignal.any([...(wireInit.signal ? [wireInit.signal] : []), AbortSignal.timeout(30_000)]);
     return hubFetch(path, { ...wireInit, signal, headers: { ...authorizationHeaders(), ...wireInit.headers } }, true, identity);
   },
-  trace: (action, operation, { traceUploadId, traceRequestId, traceChunkIndex } = {}) =>
-    commandTrace.upload(action, operation, { uploadId: traceUploadId, messageRequestId: traceRequestId, chunkIndex: traceChunkIndex }),
+  trace: (action, operation, { traceUploadId, traceAttemptId, traceRequestId, traceChunkIndex } = {}) =>
+    commandTrace.upload(action, operation, { uploadId: traceUploadId, uploadAttemptId: traceAttemptId,
+      messageRequestId: traceRequestId, chunkIndex: traceChunkIndex }),
 });
 window.AgentHubAttachmentCapabilities = () => attachmentUploader.capabilities();
 
@@ -3341,7 +3343,10 @@ function sendUserMessage(request, frozenParams = null) {
                 path = await uploadAttachment(attachment, {
                   signal: session.controller.signal,
                   traceRequestId: request.requestId,
-                  progress: (bytes) => project("uploading", `Загрузка файлов: ${Math.floor((uploaded + bytes) / Math.max(1, total) * 100)}%`),
+                  progress: (bytes, _total, recovery) => project("uploading", recovery?.restarted
+                    ? recovery.reason === "expired" ? "Срок прежней загрузки истёк. Загружаю сохранённый файл заново…"
+                      : "Восстанавливаю загрузку сохранённого файла…"
+                    : `Загрузка файлов: ${Math.floor((uploaded + bytes) / Math.max(1, total) * 100)}%`),
                 });
                 session.controller.signal.throwIfAborted();
               } catch (error) {

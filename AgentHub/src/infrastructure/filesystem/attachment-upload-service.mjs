@@ -8,8 +8,8 @@ import { attachmentUploadLimits } from "../../domain/attachment-upload-policy.mj
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/u;
 const HASH = /^[a-f0-9]{64}$/u;
 const TOMBSTONE_MS = 7 * 24 * 60 * 60 * 1000;
-function failure(message, statusCode = 400) {
-  return Object.assign(new Error(message), { statusCode });
+function failure(message, statusCode = 400, state = null) {
+  return Object.assign(new Error(message), { statusCode, ...(state ? { state } : {}) });
 }
 const digest = (body) => createHash("sha256").update(body).digest("hex");
 const owners = new Map();
@@ -160,7 +160,7 @@ export class AttachmentUploadService {
     const records = await this.#expire(user, await this.#load(user));
     const record = records.find((item) => item.uploadId === id);
     if (!record) throw failure("Upload not found or expired", 404);
-    if (record.status === "expired") throw failure("Upload expired", 410);
+    if (record.status === "expired") throw failure("Upload expired", 410, "expired");
     return { records, record };
   }
   begin(userId, metadata) {
@@ -179,12 +179,12 @@ export class AttachmentUploadService {
       const records = await this.#expire(user, await this.#load(user));
       const previous = records.find((record) => record.uploadId === uploadId);
       if (previous) {
-        if (["expired", "cancelled"].includes(previous.status)) throw failure("Upload no longer available", 410);
+        if (["expired", "cancelled"].includes(previous.status)) throw failure("Upload no longer available", 410, previous.status);
         if (previous.name !== name || previous.type !== type || previous.size !== size) throw failure("Upload metadata conflict", 409);
         if (previous.attemptedAtMs !== attemptedAtMs) throw failure("Upload attempt conflict", 409);
         return this.#verifiedView(user, previous);
       }
-      if (attemptedAtMs !== undefined && now >= attemptedAtMs + this.#limits.ttlMs) throw failure("Upload attempt expired", 410);
+      if (attemptedAtMs !== undefined && now >= attemptedAtMs + this.#limits.ttlMs) throw failure("Upload attempt expired", 410, "expired");
       const active = records.filter((item) => item.status === "uploading" || item.status === "ready");
       if (active.length >= this.#limits.maxUploads || active.reduce((total, item) => total + item.size, 0) + size > this.#limits.maxTotalBytes) {
         throw failure("Upload quota exceeded", 429);

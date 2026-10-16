@@ -32,7 +32,8 @@ export function clientPerformanceTraceSpans(body, { now = Date.now() } = {}) {
       if (LABELS.has(key) && typeof value === "string" && TOKEN.test(value)) metadata[key] = value;
       if (NUMBERS.has(key) && Number.isFinite(value) && value >= 0 && value <= 1_000_000_000) metadata[key] = value;
       if (key === "operationSpanId" && typeof value === "string" && ID.test(value)) metadata[key] = value;
-      if (["uploadId", "messageRequestId"].includes(key) && typeof value === "string" && ID.test(value)) metadata[key] = value;
+      if (["uploadId", "uploadAttemptId", "messageRequestId"].includes(key) && typeof value === "string" && ID.test(value)) metadata[key] = value;
+      if (key === "uploadState" && ["absent", "expired", "cancelled"].includes(value)) metadata[key] = value;
       if (key === "startedAtMs" && Number.isSafeInteger(value)
         && value >= now - 86_400_000 && value <= at) metadata[key] = value;
       if (key === "statusCode" && Number.isInteger(value) && value >= 0 && value <= 599) metadata[key] = value;

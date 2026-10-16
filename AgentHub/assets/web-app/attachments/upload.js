@@ -29,15 +29,17 @@
     async function json(path, init, action = "request", identity = {}) {
       const response = await trace(action, () => request(path, { ...init, ...identity }), identity);
       const value = await trace("response-json", () => response.json().catch(() => ({})), identity);
-      if (!response.ok) {
-        const message = value.error ?? `Загрузка: HTTP ${response.status}`;
-        const error = new Error([404, 410].includes(response.status) ? `${message}. Выбери файл снова.` : message);
-        error.attachmentUploadTerminal = [400, 404, 409, 410, 413, 422].includes(response.status);
-        error.attachmentUploadStatus = response.status;
-        error.attachmentUploadState = value.state;
-        throw error;
-      }
-      return value;
+      return trace("receipt", () => {
+        if (!response.ok) {
+          const message = value.error ?? `Загрузка: HTTP ${response.status}`;
+          const error = new Error(message);
+          error.attachmentUploadTerminal = [400, 404, 409, 410, 413, 422].includes(response.status);
+          error.attachmentUploadStatus = response.status;
+          error.attachmentUploadState = value.state;
+          throw error;
+        }
+        return value;
+      }, identity);
     }
 
     async function validateBatch(attachments, { signal, traceRequestId } = {}) {
@@ -77,65 +79,102 @@
         progress(file.size, file.size);
         return value.path;
       }
-      const path = `/api/attachment-upload?id=${encodeURIComponent(file.uploadId)}`;
-      let status;
-      if (!file.uploadStarted) {
-        // Commit the attempt before begin: a lost begin response must never
-        // silently recreate an expired lease under a retained retry identity.
-        await trace("attempt-persist", () => globalThis.AgentHubComposerFiles.markUploadStarted(file), identity);
-        status = await json("/api/attachment-upload", { method: "POST", signal,
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ uploadId: file.uploadId, name: file.name, type: file.type, size: file.size,
-            attemptedAtMs: file.uploadAttemptedAt }) }, "begin", identity);
-      }
-      // An acknowledged begin already supplies the owner's exact receipt.
-      // Only an existing/lost attempt needs a separate status read.
-      try { status ??= await json(path, { method: "GET", signal }, "status", identity); }
-      catch (error) {
-        // An upgraded owner distinguishes never-created from expired/cancelled.
-        // A generic 404 (including an old server) is not permission to re-begin.
-        const expiryMs = Number(policy.expiresInMs ?? policy.ttlMs);
-        if (error.attachmentUploadStatus !== 404 || error.attachmentUploadState !== "absent"
-          || policy.supportsBeginRecovery !== true || !Number.isSafeInteger(expiryMs)
-          || expiryMs < 1 || !Number.isSafeInteger(file.uploadAttemptedAt)
-          || Date.now() < file.uploadAttemptedAt || Date.now() - file.uploadAttemptedAt >= expiryMs) throw error;
-        status = await json("/api/attachment-upload", { method: "POST", signal,
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ uploadId: file.uploadId, name: file.name, type: file.type, size: file.size,
-            attemptedAtMs: file.uploadAttemptedAt }) }, "begin-recovery", identity);
-      }
-      if (status.uploadId !== file.uploadId || status.protocol !== PROTOCOL) throw new Error("Несовпадение загрузки файла");
-      if (status.status === "cancelled") {
-        const error = new Error("Загрузка удалена. Выбери файл снова.");
-        error.attachmentUploadTerminal = true;
-        throw error;
-      }
-      const received = new Map((status.received ?? []).map((chunk) => [chunk.index, chunk]));
-      let acknowledged = 0;
-      for (let index = 0; index < file.chunkHashes.length; index += 1) {
+      async function transfer(forceBegin = false) {
         signal?.throwIfAborted();
-        const chunk = file.blob.slice(index * CHUNK_BYTES, (index + 1) * CHUNK_BYTES);
-        const previous = received.get(index);
-        if (previous && (previous.sha256 !== file.chunkHashes[index] || previous.size !== chunk.size)) {
-          throw new Error("Контрольная сумма сохранённой части не совпадает");
+        const needsBegin = forceBegin || !file.uploadStarted || Boolean(file.pendingUploadAttempt);
+        if (!file.uploadStarted || file.pendingUploadAttempt) {
+          await trace("attempt-persist", () => globalThis.AgentHubComposerFiles.markUploadStarted(file), identity);
         }
-        if (!previous) await json(`${path}&index=${index}`, { method: "PUT", signal,
-          headers: { "Content-Type": "application/octet-stream", "X-Agent-Hub-Chunk-Sha256": file.chunkHashes[index] }, body: chunk },
-        "chunk", { ...identity, traceChunkIndex: index });
-        acknowledged += chunk.size;
-        progress(acknowledged, file.size);
+        signal?.throwIfAborted();
+        const attemptId = file.uploadAttemptId ?? file.uploadId;
+        const attemptIdentity = { ...identity, traceAttemptId: attemptId };
+        const path = `/api/attachment-upload?id=${encodeURIComponent(attemptId)}`;
+        let status;
+        if (needsBegin) {
+          // Commit the attempt before begin: a lost begin response must never
+          // silently recreate an expired lease under a retained retry identity.
+          status = await json("/api/attachment-upload", { method: "POST", signal,
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ uploadId: attemptId, name: file.name, type: file.type, size: file.size,
+              attemptedAtMs: file.uploadAttemptedAt }) }, "begin", attemptIdentity);
+        }
+        // An acknowledged begin already supplies the owner's exact receipt.
+        // Only an existing/lost attempt needs a separate status read.
+        try { status ??= await json(path, { method: "GET", signal }, "status", attemptIdentity); }
+        catch (error) {
+          // An upgraded owner distinguishes never-created from expired/cancelled.
+          // A generic 404 (including an old server) is not permission to re-begin.
+          const expiryMs = Number(policy.expiresInMs ?? policy.ttlMs);
+          if (error.attachmentUploadStatus !== 404 || error.attachmentUploadState !== "absent"
+            || policy.supportsBeginRecovery !== true || !Number.isSafeInteger(expiryMs)
+            || expiryMs < 1 || !Number.isSafeInteger(file.uploadAttemptedAt)
+            || Date.now() < file.uploadAttemptedAt || Date.now() - file.uploadAttemptedAt >= expiryMs) throw error;
+          status = await json("/api/attachment-upload", { method: "POST", signal,
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ uploadId: attemptId, name: file.name, type: file.type, size: file.size,
+              attemptedAtMs: file.uploadAttemptedAt }) }, "begin-recovery", attemptIdentity);
+        }
+        if (status.uploadId !== attemptId || status.protocol !== PROTOCOL) throw new Error("Несовпадение загрузки файла");
+        if (status.status === "cancelled") {
+          const error = new Error("Загрузка удалена. Исходный файл сохранён в черновике.");
+          error.attachmentUploadTerminal = true;
+          throw error;
+        }
+        const received = new Map((status.received ?? []).map((chunk) => [chunk.index, chunk]));
+        let acknowledged = 0;
+        for (let index = 0; index < file.chunkHashes.length; index += 1) {
+          signal?.throwIfAborted();
+          const chunk = file.blob.slice(index * CHUNK_BYTES, (index + 1) * CHUNK_BYTES);
+          const previous = received.get(index);
+          if (previous && (previous.sha256 !== file.chunkHashes[index] || previous.size !== chunk.size)) {
+            throw new Error("Контрольная сумма сохранённой части не совпадает");
+          }
+          if (!previous) await json(`${path}&index=${index}`, { method: "PUT", signal,
+            headers: { "Content-Type": "application/octet-stream", "X-Agent-Hub-Chunk-Sha256": file.chunkHashes[index] }, body: chunk },
+          "chunk", { ...attemptIdentity, traceChunkIndex: index });
+          acknowledged += chunk.size;
+          progress(acknowledged, file.size);
+        }
+        if (status.status === "ready" && status.path && /^[0-9a-f]{64}$/u.test(status.sha256 ?? "")) return status.path;
+        const complete = await json(`${path}&complete=1`, { method: "POST", signal }, "complete", attemptIdentity);
+        if (complete.uploadId !== attemptId || complete.status !== "ready" || !complete.path
+          || !/^[0-9a-f]{64}$/u.test(complete.sha256 ?? "")) throw new Error("Загрузка файла не подтверждена");
+        return complete.path;
       }
-      if (status.status === "ready" && status.path && /^[0-9a-f]{64}$/u.test(status.sha256 ?? "")) return status.path;
-      const complete = await json(`${path}&complete=1`, { method: "POST", signal }, "complete", identity);
-      if (complete.uploadId !== file.uploadId || complete.status !== "ready" || !complete.path
-        || !/^[0-9a-f]{64}$/u.test(complete.sha256 ?? "")) throw new Error("Загрузка файла не подтверждена");
-      return complete.path;
+      const retainedFailure = (error) => {
+        if ([404, 410].includes(error.attachmentUploadStatus)) {
+          error.message += ". Исходный файл сохранён в черновике для повтора.";
+        }
+        throw error;
+      };
+      try { return await transfer(); }
+      catch (error) {
+        const now = Date.now();
+        const expiryMs = Number(policy.expiresInMs ?? policy.ttlMs);
+        const attempted = file.uploadAttemptedAt;
+        const absent = error.attachmentUploadStatus === 404 && error.attachmentUploadState === "absent";
+        const expired = error.attachmentUploadStatus === 410 && error.attachmentUploadState === "expired";
+        const oldOrUnknownAttempt = !Number.isSafeInteger(attempted)
+          || Number.isSafeInteger(expiryMs) && expiryMs > 0 && now >= attempted + expiryMs;
+        if (policy.supportsBeginRecovery !== true || signal?.aborted
+          || !(expired || absent && oldOrUnknownAttempt)
+          || Number.isSafeInteger(attempted) && now < attempted) return retainedFailure(error);
+        const attemptId = file.uploadAttemptId ?? file.uploadId;
+        await trace("attempt-renewal", () => globalThis.AgentHubComposerFiles.restartUploadAttempt(file, attemptId),
+          { ...identity, traceAttemptId: attemptId });
+        progress(0, file.size, { restarted: true, reason: expired ? "expired" : "absent" });
+        // One fresh transport attempt per explicit upload call, never a loop or
+        // extension of the expired ID. A lost response resumes this saved ID.
+        return transfer(true).catch(retainedFailure);
+      }
     }
 
     async function cancel(attachment) {
       if (!attachment?.uploadId || limits?.protocol !== PROTOCOL) return;
-      await json(`/api/attachment-upload?id=${encodeURIComponent(attachment.uploadId)}`, { method: "DELETE" }, "cancel",
-        { traceUploadId: attachment.uploadId });
+      const file = globalThis.AgentHubComposerFiles.resolve(attachment);
+      const attemptId = file?.uploadAttemptId ?? attachment.uploadId;
+      await json(`/api/attachment-upload?id=${encodeURIComponent(attemptId)}`, { method: "DELETE" }, "cancel",
+        { traceUploadId: attachment.uploadId, traceAttemptId: attemptId });
     }
     return Object.freeze({ capabilities, validateBatch, upload, cancel });
   }

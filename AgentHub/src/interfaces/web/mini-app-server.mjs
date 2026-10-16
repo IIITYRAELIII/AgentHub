@@ -1472,7 +1472,7 @@ export class MiniAppServer {
         timedJson(200, { ok: true, ...result });
       } catch (error) {
         timedJson(error.statusCode ?? 400, { ok: false, error: String(error?.message ?? error),
-          ...(error.statusCode === 404 ? { state: "absent" } : {}) });
+          ...(error.state ? { state: error.state } : error.statusCode === 404 ? { state: "absent" } : {}) });
       }
       return;
     }

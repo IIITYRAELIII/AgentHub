@@ -186,9 +186,10 @@
     finally { activeId = previous; }
   }
 
-  function upload(action, operation, { uploadId, messageRequestId, chunkIndex } = {}) {
+  function upload(action, operation, { uploadId, uploadAttemptId, messageRequestId, chunkIndex } = {}) {
     if (typeof uploadId !== "string" || !uploadId) return operation();
-    const identity = { uploadId, ...(typeof messageRequestId === "string" ? { messageRequestId } : {}),
+    const identity = { uploadId, ...(typeof uploadAttemptId === "string" ? { uploadAttemptId } : {}),
+      ...(typeof messageRequestId === "string" ? { messageRequestId } : {}),
       ...(Number.isSafeInteger(chunkIndex) && chunkIndex >= 0 ? { chunkIndex } : {}) };
     let finish;
     try { finish = begin("attachment-upload", action, uploadId, now(), identity); }
@@ -211,6 +212,8 @@
     };
     const failed = (error) => {
       safeFinish(error?.name === "AbortError" ? "cancelled" : "failed", {
+        ...(["absent", "expired", "cancelled"].includes(error?.attachmentUploadState)
+          ? { uploadState: error.attachmentUploadState } : {}),
         failureKind: error?.name === "AbortError" ? "aborted"
           : error?.name === "TimeoutError" ? "timeout" : "error",
       });

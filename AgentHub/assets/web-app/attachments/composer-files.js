@@ -192,6 +192,7 @@
     await measurePreparation("attachment-storage-verify", async () => {
       if (!await verifiedRecord(stored, descriptor(record))
         || Boolean(stored.uploadStarted) !== Boolean(record.uploadStarted)
+        || (stored.uploadAttemptId ?? stored.uploadId) !== (record.uploadAttemptId ?? record.uploadId)
         || (stored.uploadAttemptedAt ?? null) !== (record.uploadAttemptedAt ?? null)) {
         throw storageError("verification");
       }
@@ -261,33 +262,53 @@
       entries.delete(id);
     }
   }
+  async function persistUploadAttempt(record, attempt) {
+    if (record.uploadAttemptWrite) return record.uploadAttemptWrite;
+    record.pendingUploadAttempt = attempt;
+    const write = async () => {
+      if (!record.durable && !record.uploadAttemptPersistenceFailed) {
+        // Memory-only bytes can still be sent, but never claim reload recovery.
+        Object.assign(record, attempt);
+        delete record.pendingUploadAttempt;
+        return;
+      }
+      try {
+        await storeFile({ ...record, ...attempt, dataUrl: undefined, durable: undefined,
+          storageFailure: undefined, pendingUploadAttempt: undefined, uploadAttemptWrite: undefined });
+      } catch (error) {
+        record.durable = false;
+        record.uploadAttemptPersistenceFailed = true;
+        record.storageFailure = storageFailureFrom(error);
+        throw error; // No begin may leave without its durable original-attempt deadline.
+      }
+      record.durable = true;
+      delete record.uploadAttemptPersistenceFailed;
+      record.storageFailure = null;
+      Object.assign(record, attempt);
+      delete record.pendingUploadAttempt;
+    };
+    record.uploadAttemptWrite = write();
+    try { await record.uploadAttemptWrite; }
+    finally { delete record.uploadAttemptWrite; }
+  }
   async function markUploadStarted(value) {
     const record = resolve(value);
-    if (!record || record.uploadStarted) return;
-    const uploadAttemptedAt = Date.now();
-    if (!record.durable && !record.uploadAttemptPersistenceFailed) {
-      // Memory-only bytes can still be sent, but never claim reload recovery.
-      record.uploadStarted = true;
-      record.uploadAttemptedAt = uploadAttemptedAt;
-      return;
+    if (!record || record.uploadStarted && !record.pendingUploadAttempt) return;
+    await persistUploadAttempt(record, record.pendingUploadAttempt ?? {
+      uploadStarted: true, uploadAttemptId: record.uploadAttemptId ?? record.uploadId, uploadAttemptedAt: Date.now(),
+    });
+  }
+  async function restartUploadAttempt(value, expectedAttemptId) {
+    const record = resolve(value);
+    if (!record || !record.uploadStarted || (record.uploadAttemptId ?? record.uploadId) !== expectedAttemptId) {
+      throw new Error("Попытка загрузки изменилась. Исходный файл не отправлен повторно.");
     }
-    try {
-      await storeFile({ ...record, uploadStarted: true, uploadAttemptedAt, dataUrl: undefined, durable: undefined,
-        storageFailure: undefined });
-    } catch (error) {
-      record.durable = false;
-      record.uploadAttemptPersistenceFailed = true;
-      record.storageFailure = storageFailureFrom(error);
-      throw error; // No begin may leave without its durable original-attempt deadline.
-    }
-    record.durable = true;
-    delete record.uploadAttemptPersistenceFailed;
-    record.storageFailure = null;
-    record.uploadStarted = true;
-    record.uploadAttemptedAt = uploadAttemptedAt;
+    await persistUploadAttempt(record, record.pendingUploadAttempt ?? {
+      uploadStarted: true, uploadAttemptId: crypto.randomUUID(), uploadAttemptedAt: Date.now(),
+    });
   }
   function storageFailure(value) { return resolve(value)?.storageFailure ?? null; }
 
   globalThis.AgentHubComposerFiles = Object.freeze({ prepare, resolve, hydrate, serialized, durable, storageFailure,
-    hashesFor, markUploadStarted, settle, prune });
+    hashesFor, markUploadStarted, restartUploadAttempt, settle, prune });
 })();

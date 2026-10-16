@@ -54,6 +54,22 @@ test("failed upload telemetry survives reporter outage and reload without retain
   assert.equal(clientPerformanceTraceSpans({ events: batches })[1].metadata.uploadId, uploadId);
 });
 
+test("upload receipt traces retain logical and transport identities and only explicit expiry state", async () => {
+  const { trace } = fixture(); const events = [];
+  trace.bindReporter(async batch => events.push(...batch.events));
+  for (const state of ["expired", "absent", "cancelled", "PRIVATE_ERROR"]) {
+    const error = Object.assign(new Error("PRIVATE file and token"), { attachmentUploadState: state });
+    await assert.rejects(async () => trace.upload("receipt", () => { throw error; },
+      { uploadId: "logical-upload", uploadAttemptId: "transport-attempt", messageRequestId: "original-message" }));
+  }
+  await trace.flush(); const spans = clientPerformanceTraceSpans({ events });
+  assert.ok(spans.every(span => span.commandId === "logical-upload" && span.metadata.uploadAttemptId === "transport-attempt"
+    && span.metadata.messageRequestId === "original-message"));
+  assert.deepEqual(spans.filter(span => span.outcome === "failed").map(span => span.metadata.uploadState),
+    ["expired", "absent", "cancelled", undefined]);
+  assert.doesNotMatch(JSON.stringify(spans), /PRIVATE/u);
+});
+
 test("expired upload traces cannot poison fresh traces after a same-page outage", async () => {
   const { trace, storage, advanceWall, wallNow } = fixture();
   const staleId = "123e4567-e89b-12d3-a456-426614174010";

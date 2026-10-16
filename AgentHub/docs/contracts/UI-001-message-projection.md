@@ -385,6 +385,11 @@ the live draft with an explicit retry action. Retry repeats only failed work,
 keeps its upload identity and does not admit a message. Successful siblings are
 not discarded because another file failed. Unresolved preparation still blocks
 send and managed reload until successful preparation or explicit removal.
+If retained bytes outlive a transport receipt, explicit send/resume may recover
+under MSG-002 with one saved fresh transport attempt, preserving the logical
+attachment and request identities, text and sibling files. Recovery is visible;
+an expired session is never extended. A preview without original bytes cannot
+claim recovery after reload. Receipt uncertainty cannot admit another message.
 An explicit retry of the unchanged restored payload reuses the original request
 identity and uploads recovered attachments again. If browser privacy or quota
 policy, serialization normalization or a configured bound prevents exact atomic

@@ -61,8 +61,24 @@ cannot delete an accepted command's files. Final local files remain under the
 existing attachment/history lifetime, not a staging timer. In the Worker,
 command linkage and cancellation are transactionally fenced. New-protocol ready
 bytes survive terminal command unlink until their original upload expiry, so an
-explicit rejected retry may reuse the same upload. An expired identity fails
-visibly and is never silently substituted.
+explicit rejected retry may reuse the same upload. An expired transport identity
+is never reused or extended. If the original bytes remain available, an explicit
+send/resume may persist one fresh transport UUID and original-attempt timestamp
+before begin, retaining the logical attachment/Blob and message identities.
+An upgraded owner must explicitly report expired state, or absent state after
+the old deadline (or for a legacy attempt without a saved timestamp). A generic
+404, cancellation, hash conflict or unknown outcome does not authorize renewal.
+The new attempt is visible as recovery, resumes its own lost response and can
+survive reload only with a verified saved Blob and attempt record. Persistence
+failure blocks begin; one invocation cannot loop through fresh attempts.
+Without original bytes a preview is insufficient and selection is required.
+See ADR-0110. Server receipts and tombstones remain the transport authority.
+The browser's prepared uploadId/blobId remains the logical attachment identity;
+its separate saved uploadAttemptId is the current protocol UUID and initially
+equals uploadId. Receipt uploadId still names the transport UUID. Changing an
+attempt does not rewrite the prepared descriptor or local draft recovery
+fingerprint. An already frozen message submission retains its original final
+attachment paths on unknown retry; renewal never replaces an admitted payload.
 
 ## Memory, storage and recovery
 
@@ -148,7 +164,9 @@ available, `Server-Timing` separates server authentication, body read and owner
 work (including storage); the remaining network/queue time is not attributed
 to a specific hop. Upload/message IDs and bounded durations/status/failure kinds
 are allowlisted; file bytes, names, text, URLs, tokens and raw errors are not.
-Failed upload spans survive a reporting outage in a 24-hour, 256-event browser
+Receipt measurements retain explicit absent/expired/cancelled state, never infer
+it from error text. The original logical upload ID and message ID join each
+transport uploadAttemptId, including after renewal. Failed upload spans survive a reporting outage in a 24-hour, 256-event browser
 ring and retry without affecting upload results. Local runtime traces use
 `command-traces.sqlite`; public Worker traces are retained separately in the
 authenticated Journal Durable Object for 24 hours, at most 64 upload IDs per
