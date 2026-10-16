@@ -66,6 +66,17 @@ shares the already scheduled durable write instead of serializing and fsyncing
 the complete bounded cache again. A changed value or eviction-order change is
 still persisted, and a failed write remains retryable with the same content.
 
+Admission resets an absent or already-empty diff without promoting an empty
+cache entry or evicting another Stream's diff. This reset still awaits the
+existing write fence and persists any dirty remembered updates; a real stale
+diff is cleared durably. Ordinary cache set/eviction ordering is unchanged.
+The existing restart drain flushes remembered diffs. Persistence errors propagate
+through admission instead of becoming successful diagnostics.
+Content-free child spans retain the original command ID through diff encoding,
+queue wait, open/write/fsync/rename, settlement and an unchanged persistence
+fence; eligibility and the pre-dispatch durable save have separate spans.
+These elapsed spans do not classify filesystem or callback wait as CPU work.
+
 ## Unified performance evidence
 
 Client interactions, navigation, control ACKs, request and rendering durations,
