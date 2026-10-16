@@ -88,6 +88,36 @@ async function assertOwnerDialogGeometry(page, { bodyControl, expectScrollable =
   return geometry;
 }
 
+async function assertOwnerState(page, expectedHeading) {
+  assert.deepEqual(await page.evaluate(() => {
+    const dialog = document.querySelector(".file-transfer-owner-dialog");
+    const body = dialog.querySelector(".file-transfer-owner-body");
+    const sections = body.querySelectorAll(":scope > .file-transfer-owner-state");
+    const headings = body.querySelectorAll(":scope > .file-transfer-owner-state > h3");
+    const section = sections[0];
+    const heading = headings[0];
+    return {
+      chips: dialog.querySelectorAll(".file-transfer-owner-chip").length,
+      sections: sections.length,
+      headings: headings.length,
+      heading: heading?.textContent,
+      labelledBy: section?.getAttribute("aria-labelledby"),
+      headingId: heading?.id,
+      sectionPosition: section ? getComputedStyle(section).position : null,
+      headingPosition: heading ? getComputedStyle(heading).position : null,
+    };
+  }), {
+    chips: 0,
+    sections: 1,
+    headings: 1,
+    heading: expectedHeading,
+    labelledBy: "file-transfer-owner-state-title",
+    headingId: "file-transfer-owner-state-title",
+    sectionPosition: "static",
+    headingPosition: "static",
+  });
+}
+
 test("owner dialog performs no publication before explicit create and renders a recoverable ready state", { timeout: 30_000 }, async (t) => {
   await withBrowser(async (browser) => {
     const page = await browser.newPage({ viewport: { width: 390, height: 720 } });
@@ -111,7 +141,8 @@ test("owner dialog performs no publication before explicit create and renders a 
         if (action === "create") {
           state.share = { id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", artifactId: state.artifact.id,
             state: "ready", name: state.file.name, size: state.file.size, sha256: "a".repeat(64),
-            expiresAt: Date.now() + 3_600_000, url: "https://downloads.example.test/transfer/#secret" };
+            createdAt: Date.now(), expiresAt: Date.now() + 3_600_000, claimedAt: null, completedAt: null,
+            bytesServed: 0, firstByteAt: null, url: "https://downloads.example.test/transfer/#secret" };
           return { share: state.share };
         }
         throw new Error("unexpected action");
@@ -141,8 +172,9 @@ test("owner dialog performs no publication before explicit create and renders a 
       throw error;
     }
     assert.deepEqual((await page.evaluate(() => window.__calls)).map(([action]) => action), ["status", "prepare", "status", "create"]);
-    assert.equal(await page.getByText("Готова", { exact: true }).count(), 1);
+    assert.equal(await page.getByRole("heading", { name: "Ссылка готова" }).count(), 1);
     assert.equal(await page.locator("input[data-transfer-url]").inputValue(), "https://downloads.example.test/transfer/#secret");
+    await assertOwnerState(page, "Ссылка готова");
     await capture(page, "owner-mobile-ready-390-dark");
     await page.setViewportSize({ width: 320, height: 640 });
     await assertOwnerDialogGeometry(page, { bodyControl: "[data-transfer-url]" });
@@ -162,6 +194,7 @@ test("owner dialog performs no publication before explicit create and renders a 
       const body = document.querySelector(".file-transfer-owner-body");
       body.scrollTop = body.scrollHeight;
     });
+    await assertOwnerDialogGeometry(page, { expectScrollable: true });
     await capture(page, "owner-mobile-ready-short-height-scrolled-390-dark");
   });
 });
@@ -460,21 +493,22 @@ test("owner production assets capture the complete authoritative state matrix", 
       name: file.name, size: file.size, sha256: artifact.sha256, createdAt: Date.now(), expiresAt: Date.now() + 86_400_000,
       claimedAt: Date.now() - 30_000, bytesServed: 240 * 1024 * 1024 };
     const cases = [
-      ["owner-web-preparing-1280-dark", { file, artifact: { ...artifact, state: "preparing", preparedBytes: 311 * 1024 * 1024 }, share: null }],
-      ["owner-web-ready-1280-dark", { file, artifact, share: { ...baseShare, state: "ready", url: "https://downloads.example.test/transfer/#v1.hidden-capability" } }],
-      ["owner-web-claimed-1280-dark", { file, artifact, share: { ...baseShare, state: "claimed" } }],
-      ["owner-web-downloading-1280-dark", { file, artifact, share: { ...baseShare, state: "downloading" } }],
-      ["owner-web-completed-1280-dark", { file, artifact, share: { ...baseShare, state: "completed", completedAt: Date.now() } }],
-      ["owner-web-expired-1280-dark", { file, artifact, share: { ...baseShare, state: "expired" } }],
-      ["owner-web-revoked-1280-dark", { file, artifact, share: { ...baseShare, state: "revoked" } }],
-      ["owner-web-failed-1280-dark", { file, artifact, share: { ...baseShare, state: "failed" } }],
+      ["owner-web-preparing-1280-dark", "Подготовка файла", { file, artifact: { ...artifact, state: "preparing", preparedBytes: 311 * 1024 * 1024 }, share: null }],
+      ["owner-web-ready-1280-dark", "Ссылка готова", { file, artifact, share: { ...baseShare, state: "ready", url: "https://downloads.example.test/transfer/#v1.hidden-capability" } }],
+      ["owner-web-claimed-1280-dark", "Ссылка использована", { file, artifact, share: { ...baseShare, state: "claimed" } }],
+      ["owner-web-downloading-1280-dark", "Файл передаётся", { file, artifact, share: { ...baseShare, state: "downloading" } }],
+      ["owner-web-completed-1280-dark", "Передача завершена", { file, artifact, share: { ...baseShare, state: "completed", completedAt: Date.now() } }],
+      ["owner-web-expired-1280-dark", "Срок ссылки истёк", { file, artifact, share: { ...baseShare, state: "expired" } }],
+      ["owner-web-revoked-1280-dark", "Ссылка отозвана", { file, artifact, share: { ...baseShare, state: "revoked" } }],
+      ["owner-web-failed-1280-dark", "Ошибка передачи", { file, artifact, share: { ...baseShare, state: "failed" } }],
     ];
-    for (const [name, value] of cases) {
+    for (const [name, heading, value] of cases) {
       await page.evaluate(async (snapshot) => {
         window.__snapshot = { ...snapshot, ttlOptions: [3_600_000, 86_400_000] };
         window.__statusFails = false;
         await window.AgentHubFileTransferOwner.open({ path: "D:/work/file.bin", trigger: document.querySelector("#open") });
       }, value);
+      await assertOwnerState(page, heading);
       await capture(page, name);
       await page.evaluate(() => document.querySelector(".file-transfer-owner-dialog").close());
     }
@@ -483,6 +517,7 @@ test("owner production assets capture the complete authoritative state matrix", 
       window.__statusFails = true;
       await window.AgentHubFileTransferOwner.open({ path: "D:/work/file.bin", trigger: document.querySelector("#open") });
     }, { file, artifact, share: null });
+    await assertOwnerState(page, "Не удалось получить актуальный статус");
     await capture(page, "owner-web-unknown-1280-dark");
   });
 });

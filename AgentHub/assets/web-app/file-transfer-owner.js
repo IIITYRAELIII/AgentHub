@@ -94,9 +94,6 @@
     stopPolling();
     if (dialog.open) pollTimer = setTimeout(() => void refresh({ quiet: true }), 900);
   }
-  function statusChip(label, tone = "") {
-    return `<span class="file-transfer-owner-chip ${tone}">${escapeHtml(label)}</span>`;
-  }
   function renderCreate() {
     const options = snapshot.ttlOptions || [];
     if (!options.includes(selectedTtl)) selectedTtl = options[0] ?? null;
@@ -115,28 +112,32 @@
     const processed = Number(artifact?.preparedBytes) || 0;
     const total = Number(snapshot.file?.size) || Number(artifact?.size) || 0;
     const determinate = total > 0 && processed >= 0;
-    body.innerHTML = `${statusChip("Подготовка")}${fileSummary()}
-      <h3>Подготавливаем файл</h3>
-      <p>Создаём неизменяемую копию и вычисляем SHA-256.</p>
-      <div class="file-transfer-owner-progress" role="progressbar"${determinate ? ` aria-valuemin="0" aria-valuemax="${total}" aria-valuenow="${Math.min(processed, total)}"` : ""}>
-        <span style="--progress:${determinate ? Math.min(100, processed / total * 100) : 35}%"></span>
-      </div>
-      <p class="file-transfer-owner-helper">${determinate ? `${formatBytes(processed)} из ${formatBytes(total)}. ` : ""}Можно закрыть окно: подготовка сохранится на сервере.</p>`;
+    body.innerHTML = `${fileSummary()}
+      <section class="file-transfer-owner-state" aria-labelledby="file-transfer-owner-state-title">
+        <h3 id="file-transfer-owner-state-title">Подготовка файла</h3>
+        <p>Создаём неизменяемую копию и вычисляем SHA-256.</p>
+        <div class="file-transfer-owner-progress" role="progressbar"${determinate ? ` aria-valuemin="0" aria-valuemax="${total}" aria-valuenow="${Math.min(processed, total)}"` : ""}>
+          <span style="--progress:${determinate ? Math.min(100, processed / total * 100) : 35}%"></span>
+        </div>
+        <p class="file-transfer-owner-helper">${determinate ? `${formatBytes(processed)} из ${formatBytes(total)}. ` : ""}Можно закрыть окно: подготовка сохранится на сервере.</p>
+      </section>`;
     setActions(button("Закрыть", () => dialog.close()));
     schedulePoll();
   }
   function renderReady(share) {
-    body.innerHTML = `${statusChip("Готова", "success")}${fileSummary()}
-      <h3>Ссылка готова</h3>
-      <label class="file-transfer-owner-field"><span>Внешняя ссылка</span>
-        <input type="text" readonly value="${escapeHtml(share.url)}" data-transfer-url>
-      </label>
-      <p class="file-transfer-copy-status" data-transfer-copy-status aria-live="polite"></p>
-      <dl class="file-transfer-owner-details">
-        <div><dt>Доступна до</dt><dd>${formatDate(share.expiresAt)}</dd></div>
-        <div><dt>Размер</dt><dd>${formatBytes(share.size)}</dd></div>
-        <div><dt>SHA-256</dt><dd><code>${escapeHtml(share.sha256 || "—")}</code></dd></div>
-      </dl>`;
+    body.innerHTML = `${fileSummary()}
+      <section class="file-transfer-owner-state" aria-labelledby="file-transfer-owner-state-title">
+        <h3 id="file-transfer-owner-state-title">Ссылка готова</h3>
+        <label class="file-transfer-owner-field"><span>Внешняя ссылка</span>
+          <input type="text" readonly value="${escapeHtml(share.url)}" data-transfer-url>
+        </label>
+        <p class="file-transfer-copy-status" data-transfer-copy-status aria-live="polite"></p>
+        <dl class="file-transfer-owner-details">
+          <div><dt>Доступна до</dt><dd>${formatDate(share.expiresAt)}</dd></div>
+          <div><dt>Размер</dt><dd>${formatBytes(share.size)}</dd></div>
+          <div><dt>SHA-256</dt><dd><code>${escapeHtml(share.sha256 || "—")}</code></dd></div>
+        </dl>
+      </section>`;
     const copy = button("Копировать ссылку", async () => {
       const status = body.querySelector("[data-transfer-copy-status]");
       try {
@@ -152,12 +153,12 @@
   function renderShare(share) {
     const states = {
       claimed: ["Ссылка использована", "Защищённая загрузка закреплена за браузером получателя."],
-      downloading: ["Передача файла", `${formatBytes(share.bytesServed)} из ${formatBytes(share.size)}`],
+      downloading: ["Файл передаётся", `${formatBytes(share.bytesServed)} из ${formatBytes(share.size)}`],
       completed: ["Передача завершена", "Сервер передал файл целиком. Это не подтверждает, что файл сохранён получателем."],
-      expired: ["Срок истёк", "Ссылка больше недоступна."],
-      revoked: ["Отозвана", "Передача по этой ссылке прекращена."],
-      failed: ["Ошибка", "Не удалось безопасно продолжить передачу."],
-      ambiguous_terminal: ["Ошибка", "Результат передачи неоднозначен. Ссылка закрыта без возможности возобновления."],
+      expired: ["Срок ссылки истёк", "Ссылка больше недоступна."],
+      revoked: ["Ссылка отозвана", "Передача по этой ссылке прекращена."],
+      failed: ["Ошибка передачи", "Не удалось безопасно продолжить передачу."],
+      ambiguous_terminal: ["Ошибка передачи", "Результат передачи неоднозначен. Ссылка закрыта без возможности возобновления."],
       revoking: ["Отзываем ссылку", "Новые блоки больше не будут разрешены."],
       expiring: ["Срок истёк", "Ссылка закрывается."],
     };
@@ -167,8 +168,11 @@
         <span style="--progress:${Math.min(100, share.bytesServed / share.size * 100)}%"></span>
       </div>` : "";
     const claimed = share.claimedAt ? `<p class="file-transfer-owner-helper">Начало: ${formatDate(share.claimedAt)}</p>` : "";
-    body.innerHTML = `${statusChip(heading, ["completed"].includes(share.state) ? "success" : "")}${fileSummary()}
-      <h3>${escapeHtml(heading)}</h3><p>${escapeHtml(copy)}</p>${progress}${claimed}`;
+    body.innerHTML = `${fileSummary()}
+      <section class="file-transfer-owner-state" aria-labelledby="file-transfer-owner-state-title">
+        <h3 id="file-transfer-owner-state-title">${escapeHtml(heading)}</h3>
+        <p>${escapeHtml(copy)}</p>${progress}${claimed}
+      </section>`;
     const terminal = ["completed", "expired", "revoked", "failed", "ambiguous_terminal"].includes(share.state);
     setActions(
       terminal ? button("Создать новую ссылку", renderCreate, "primary") : null,
@@ -178,10 +182,10 @@
     if (["claimed", "downloading", "revoking", "expiring"].includes(share.state)) schedulePoll();
   }
   function renderUnknown() {
-    body.innerHTML = `${fileSummary(snapshot?.file)}<div role="alert" class="file-transfer-owner-error">
-      <h3>Не удалось получить актуальный статус</h3>
+    body.innerHTML = `${fileSummary(snapshot?.file)}<section role="alert" class="file-transfer-owner-state file-transfer-owner-error" aria-labelledby="file-transfer-owner-state-title">
+      <h3 id="file-transfer-owner-state-title">Не удалось получить актуальный статус</h3>
       <p>Не создавайте новую ссылку, пока статус не обновится.</p>
-    </div>`;
+    </section>`;
     setActions(button("Обновить статус", () => void refresh(), "primary"), button("Закрыть", () => dialog.close()));
   }
   function render() {

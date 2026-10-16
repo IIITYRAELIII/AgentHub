@@ -319,10 +319,22 @@ export class FileTransferStore {
       if (!TRANSFER_TTLS.includes(ttlMs)) throw transferError("transfer-invalid-expiry", 400);
       const requestHash = transferHash(JSON.stringify(["agenthub-transfer-create-v1", owner, artifactId,
         requestId, ttlMs]));
-      const old = db.prepare("SELECT id,request_hash,expires_at,kid FROM transfer_shares WHERE owner=? AND request_id=?").get(owner, requestId);
+      const persistedView = (shareId) => {
+        const row = db.prepare(`SELECT t.*,a.name,a.size,a.sha256,s.bytes_served,s.first_byte_at
+          FROM transfer_shares t JOIN transfer_artifacts a ON a.id=t.artifact_id
+          LEFT JOIN transfer_sessions s ON s.share_id=t.id WHERE t.id=?`).get(shareId);
+        return {
+          ...shareView(row),
+          kid: row.kid,
+          requestId: row.request_id,
+          secretHash: row.secret_hash,
+        };
+      };
+      const old = db.prepare("SELECT * FROM transfer_shares WHERE owner=? AND request_id=?").get(owner, requestId);
       if (old) {
         if (old.request_hash !== requestHash) throw transferError("transfer-request-conflict", 409);
-        return { id: old.id, expiresAt: old.expires_at, kid: old.kid, replay: true };
+        this.#expire(db, now, old);
+        return persistedView(old.id);
       }
       const artifact = db.prepare("SELECT * FROM transfer_artifacts WHERE id=? AND owner=? AND state='ready' AND expires_at>?").get(artifactId, owner, now);
       if (!artifact) throw transferError("transfer-artifact-unavailable", 409);
@@ -332,7 +344,7 @@ export class FileTransferStore {
       db.prepare("INSERT INTO transfer_shares(id,artifact_id,owner,request_id,request_hash,kid,secret_hash,state,created_at,expires_at) VALUES(?,?,?,?,?,?,?,'ready',?,?)")
         .run(id, artifactId, owner, requestId, requestHash, kid, secretHash, now, now + ttlMs);
       this.#audit(db, now, "created", { shareId: id, artifactId });
-      return { id, expiresAt: now + ttlMs, kid };
+      return persistedView(id);
     });
   }
   #expire(db, now, row) {

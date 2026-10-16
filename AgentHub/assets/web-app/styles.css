@@ -9930,8 +9930,10 @@ html[data-surface="mobile"] .chat-history-loader[data-armed] .chat-history-load 
 .file-transfer-owner-kicker { color: var(--text-faint); font-size: 0.72rem; font-weight: 700; letter-spacing: 0.08em; margin: 0 0 0.3rem; text-transform: uppercase; }
 .file-transfer-owner-close { align-items: center; background: transparent; border: 0; border-radius: 50%; color: var(--text-faint); cursor: pointer; display: flex; flex: 0 0 44px; font-size: 1.5rem; height: 44px; justify-content: center; }
 .file-transfer-owner-body { min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 1.15rem 1.35rem; }
-.file-transfer-owner-body h3 { font-size: 1.05rem; margin: 1rem 0 0.45rem; }
+.file-transfer-owner-body h3 { font-size: 1.05rem; }
 .file-transfer-owner-body p { line-height: 1.5; }
+.file-transfer-owner-state { display: grid; gap: 0.45rem; margin-top: 1rem; }
+.file-transfer-owner-state > h3, .file-transfer-owner-state > p { margin: 0; }
 .file-transfer-owner-file { background: color-mix(in srgb, var(--accent) 7%, transparent); border: 1px solid var(--line); border-radius: var(--radius-sm); display: grid; gap: 0.3rem; margin-bottom: 1rem; padding: 0.85rem; }
 .file-transfer-owner-file strong { overflow-wrap: anywhere; }
 .file-transfer-owner-file span, .file-transfer-owner-helper { color: var(--text-faint); font-size: 0.82rem; }
@@ -9939,8 +9941,6 @@ html[data-surface="mobile"] .chat-history-loader[data-armed] .chat-history-load 
 .file-transfer-owner-field > span { color: var(--text-faint); font-size: 0.78rem; }
 .file-transfer-owner-field select, .file-transfer-owner-field input { background: var(--input-bg, var(--bg)); border: 1px solid var(--line); border-radius: var(--radius-sm); color: var(--text); font: inherit; min-height: 44px; padding: 0.65rem 0.75rem; width: 100%; }
 .file-transfer-owner-warning { background: color-mix(in srgb, #d99018 15%, transparent); border-left: 3px solid #d99018; border-radius: 0 var(--radius-sm) var(--radius-sm) 0; padding: 0.75rem; }
-.file-transfer-owner-chip { border: 1px solid var(--accent-line); border-radius: 999px; color: var(--text-faint); display: inline-flex; font-size: 0.75rem; padding: 0.25rem 0.55rem; }
-.file-transfer-owner-chip.success { color: #55c985; }
 .file-transfer-owner-progress { background: var(--line); border-radius: 999px; height: 0.65rem; margin-top: 0.9rem; overflow: hidden; }
 .file-transfer-owner-progress span { background: var(--accent); display: block; height: 100%; width: var(--progress); }
 .file-transfer-owner-details { display: grid; gap: 0.65rem; }

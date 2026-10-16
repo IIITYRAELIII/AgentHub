@@ -382,10 +382,30 @@ test("real HTTP disconnect during activation aborts before output and releases t
 
 test("owner mutations require authenticated server identity and CSRF", async () => {
   const calls = [];
+  const artifactId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+  const canonicalShare = {
+    id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+    artifactId,
+    state: "ready",
+    name: "report.bin",
+    size: 7,
+    sha256: "a".repeat(64),
+    createdAt: 1_800_000_000_000,
+    expiresAt: 1_800_003_600_000,
+    claimedAt: null,
+    completedAt: null,
+    bytesServed: 0,
+    firstByteAt: null,
+    url: "https://downloads.example.test/transfer/#secret",
+  };
   const service = {
     ownerStatus: async (owner, sourcePath) => {
       calls.push([owner, sourcePath]);
       return { file: { name: "report.bin", size: 7 }, artifact: null, share: null };
+    },
+    createShare: async (input) => {
+      calls.push(["create", input]);
+      return canonicalShare;
     },
   };
   await withRoutes(service, async (base) => {
@@ -410,5 +430,20 @@ test("owner mutations require authenticated server identity and CSRF", async () 
     const value = await ok.json();
     assert.equal(value.file.name, "report.bin");
     assert.equal(value.ttlOptions.length, 4);
+
+    const requestId = randomBytes(32).toString("base64url");
+    const created = await fetch(`${base}/api/file-transfer/owner/create`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Origin: base,
+        "Sec-Fetch-Site": "same-origin",
+        "X-Agent-Hub-Transfer-CSRF": "1",
+      },
+      body: JSON.stringify({ artifactId, requestId, ttlMs: 3_600_000 }),
+    });
+    assert.equal(created.status, 201);
+    assert.deepEqual(await created.json(), { ok: true, share: canonicalShare });
+    assert.deepEqual(calls.at(-1), ["create", { owner: "local", artifactId, requestId, ttlMs: 3_600_000 }]);
   });
 });
