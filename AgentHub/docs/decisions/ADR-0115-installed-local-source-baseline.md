@@ -12,12 +12,18 @@ Use one discriminated immutable provenance envelope in the existing preparation,
 candidate, generation, freeze and preflight owners. It binds the actual installed
 manifest and source reconstruction to the exact selected results. Verification
 checks current OWN origin/publication, unchanged primary, source tree/patch and
-installed runtime bytes, including original compiled Host inputs. Retained text
-EOL and Git LFS representations are explicit; unproved executable bytes refuse.
+installed runtime bytes, including original compiled Host inputs and the actual
+bounded regular Host executable against its required manifest record. Only the
+four supported Host build inputs use compiled provenance; unknown Host sources
+refuse migration. Retained text EOL and Git LFS representations are explicit;
+unproved executable bytes refuse.
 
 The source base is merged with exact selected Task results using native Git.
 Conflicts and necessary compatibility changes use the existing isolated checkout
-and independently authenticated native review. Preparation rechecks under its
+and independently authenticated native review. The existing preparation owner
+classifies a private pre-promotion merge conflict as a definite
+refusal and retains the issued resolution checkout, rather than leaving a
+non-resumable preparation receipt unknown. Preparation rechecks under its
 existing leases before promotion; freeze independently repeats the pins before
 ref CAS. The current primary stays attached and untouched. One original receipt
 and expected-old rollback own unknown outcomes. A sealed candidate can be reused

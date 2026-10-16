@@ -1490,6 +1490,15 @@ export class ReleaseGitWorkspaceService {
         deliveredHead: checkpoint?.preReleaseHead ?? null,
         gitAt: (cwd, args, options = {}) => runGit(args, { ...options, cwd, timeoutMs: 300_000 }),
         readJson, writeJson: writeJsonAtomic,
+      }).catch(error => {
+        // Only private native staging has changed at this boundary. Keep its
+        // issued checkout for resolution without making a definite conflict
+        // an unrecoverable unknown preparation receipt.
+        if (preparationGuard && error.code === "RELEASE_NATIVE_MERGE_CONFLICT") {
+          throw Object.assign(new ReleasePreparationRejectedError(error.message, { cause: error }),
+            { conflictRoot: error.conflictRoot, conflicts: error.conflicts });
+        }
+        throw error;
       });
       // Exact approved tree follows the verified native ordered merge history.
       // Legacy per-file owned-union projection is not a native authority.

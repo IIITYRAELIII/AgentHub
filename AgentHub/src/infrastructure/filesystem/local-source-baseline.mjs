@@ -11,9 +11,14 @@ const reject = message => { throw new ReleasePreparationRejectedError(`Installed
 const normalized = bytes => Buffer.from(Buffer.from(bytes).toString("utf8").replace(/\r\n/gu, "\n"));
 const metadata = name => /^(?:docs|tests)\//u.test(name)
   || /(?:^|\/)[^/]+\.test\.(?:mjs|cjs|js)$/u.test(name) || /^(?:README|AGENTS)\.md$/u.test(name);
+const hostInputs = new Set(["RuntimeHost/AgentHub.RuntimeHost.cs", "RuntimeHost/AgentHub.IconBuilder.cs",
+  "RuntimeHost/app.manifest", "VSCodeExtension/media/agent-hub-mark.png"]);
 
 async function regular(file) {
-  const info = await lstat(file);
+  const info = await lstat(file).catch(error => {
+    if (error.code === "ENOENT") reject("required source or installed artifact is absent");
+    throw error;
+  });
   if (!info.isFile() || info.isSymbolicLink() || info.size > 16 * 1024 * 1024) reject("source evidence must be a bounded regular file");
   return readFile(file);
 }
@@ -69,9 +74,10 @@ export async function assertInstalledLocalSourceBaseline({
   for (const file of changed) {
     if (!file.startsWith("AgentHub/")) reject("carry contains another component");
     const relative = file.slice("AgentHub/".length);
+    if (relative.startsWith("RuntimeHost/") && !hostInputs.has(relative)) reject(`unsupported Host source: ${relative}`);
     if (metadata(relative)) continue;
     if (modes.get(file) !== "100644") reject("carry requires regular non-executable Git source entries");
-    if (relative.startsWith("RuntimeHost/")) { hostChanged = true; continue; }
+    if (hostInputs.has(relative)) { hostChanged = true; continue; }
     const installed = files.get(relative);
     // Non-runtime executable/source changes cannot hide in a carry envelope.
     if (!installed) reject(`carry path is absent from the installed runtime: ${relative}`);
@@ -83,12 +89,14 @@ export async function assertInstalledLocalSourceBaseline({
   }
   if (hostChanged) {
     const expected = files.get("AgentHub.RuntimeHost.source.sha256");
-    if (!expected || !manifest.sourceRoot) reject("compiled Host provenance is absent");
+    const artifact = files.get("AgentHub.RuntimeHost.exe");
+    if (!expected || !artifact || !manifest.sourceRoot) reject("compiled Host provenance or artifact manifest is absent");
+    const binary = await regular(path.join(releaseRoot, artifact.path));
+    if (sha(binary) !== artifact.sha256 || binary.length !== artifact.bytes) reject("compiled Host installed bytes changed");
     const bytes = await regular(path.join(releaseRoot, expected.path));
     if (sha(bytes) !== expected.sha256 || bytes.length !== expected.bytes
         || (await runtimeHostSourceHash(manifest.sourceRoot)) !== bytes.toString("utf8").trim()) reject("compiled Host source changed");
-    for (const relative of ["RuntimeHost/AgentHub.RuntimeHost.cs", "RuntimeHost/AgentHub.IconBuilder.cs",
-      "RuntimeHost/app.manifest", "VSCodeExtension/media/agent-hub-mark.png"]) {
+    for (const relative of hostInputs) {
       const source = Buffer.from(await git(["show", `${p.sourceBaseCommit}:AgentHub/${relative}`], { rawOutput: true }));
       if (!sourceMatches(source, await regular(path.join(manifest.sourceRoot, relative)), relative)) reject("Host Git source differs from compiled inputs");
     }

@@ -105,14 +105,21 @@ this preparation replaces its candidate baseline before release admission.
 The candidate owner verifies changed runtime paths against actual immutable
 installed bytes and Git source, allowing only built-in CRLF/LF text serialization
 and exact Git LFS object identities. Documentation/tests are non-runtime source.
-Compiled Host provenance additionally retains and verifies its original build
-inputs. Uninstalled executable changes, absent provenance, foreign components,
+Compiled Host provenance applies only to its four exact supported build inputs
+and verifies both retained originals and the physical bounded regular Host
+executable against its required manifest record. Other RuntimeHost paths refuse.
+Uninstalled executable changes, absent provenance or compiled artifact, foreign components,
 unsupported deletions or missing retained Host inputs refuse this bounded route.
 The bound is 512 changed paths, a 4 MiB binary patch and bounded regular files.
 No installed-file overlay, selected Task expansion or rolling-dev import occurs.
 
 Native selected merges, complete tree checks, existing locks/CAS and rollback
-remain authoritative. The baseline is rechecked at preparation precommit and
+remain authoritative. An unresolved native conflict in the preparation owner's
+private checkout is a
+definite pre-promotion refusal, retaining its issued root and paths for exact
+reviewed resolution. It does not change the prior candidate/checkpoint or turn
+an uncertain post-effect failure into rejection. The baseline is rechecked at
+preparation precommit and
 inside freeze before ref CAS. Generation capture retains the complete provenance
 without replacing it; changed plan/selection rejects reuse. Preflight verifies
 the sealed native manifest, whose registered Task bases are not present in the
