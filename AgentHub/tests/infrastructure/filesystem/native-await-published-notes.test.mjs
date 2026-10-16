@@ -96,6 +96,39 @@ test("same original Await archives published notes and whole prior clone before 
   assert.deepEqual(await readFile(path.join(archive, "repository/.git/index")), retainedIndex);
 });
 
+test("postarchive origin drift refuses promotion and Task callback while retaining archive", { timeout: 90000 }, async t => {
+  const f = await fixture(t);
+  let changed = false, committed = 0;
+  const proof = await f.service.inspectNativeAwaitRecovery({ projectRoot: f.primary, original: f.original, frozenTasks: [f.selected] });
+  await assert.rejects(f.service.prepareCandidate({ ...f.recovery,
+    validateBeforeCommit: async () => {
+      if (!changed && await git(f.prior.releaseRoot, "symbolic-ref", "HEAD") === "refs/heads/main") {
+        changed = true;
+        await git(f.primary, "push", "--force", "origin", f.selected.baseCommit + ":refs/heads/main");
+      }
+    },
+    commitPrepared: async () => { committed++; },
+  }), { code: "AWAIT_PREPARATION_UNKNOWN" });
+  assert.equal(changed, true); assert.equal(committed, 0);
+  assert.deepEqual(await readFile(path.join(proof.archiveRoot, "repository/.git/index")), f.index);
+  assert.deepEqual(await readFile(path.join(proof.archiveRoot, "checkpoint.json")), f.checkpoint);
+  // Reopen the same archive after restoring only this disposable origin. A
+  // drift in the application callback must fail its final authority read too.
+  await git(f.primary, "fetch", path.join(proof.archiveRoot, "repository"), f.published);
+  await git(f.primary, "push", "--force", "origin", f.published + ":refs/heads/main");
+  let callbacks = 0;
+  await assert.rejects(f.service.prepareCandidate({ ...f.recovery,
+    commitPrepared: async prepared => {
+      callbacks++;
+      await git(f.primary, "push", "--force", "origin", f.selected.baseCommit + ":refs/heads/main");
+      await prepared.verifyNativeAwaitAuthority();
+      committed++;
+    },
+  }), { code: "AWAIT_PREPARATION_UNKNOWN" });
+  assert.equal(callbacks, 1); assert.equal(committed, 0);
+  assert.deepEqual(await readFile(path.join(proof.archiveRoot, "repository/.git/index")), f.index);
+});
+
 test("unpublished/staged/selection/original/publication drift refuse before archiving", { timeout: 90000 }, async t => {
   const f = await fixture(t);
   const inspect = original => f.service.inspectNativeAwaitRecovery({ projectRoot: f.primary,

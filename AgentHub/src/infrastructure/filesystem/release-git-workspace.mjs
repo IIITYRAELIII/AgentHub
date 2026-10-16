@@ -1594,6 +1594,12 @@ export class ReleaseGitWorkspaceService {
         }
         await validateLocalSource();
         await assertNativeTaskHistories({ git, baseCommit, tasks });
+        if (nativeAwaitRecovery) {
+          const remote = await git(["ls-remote", "origin", "refs/heads/main"]);
+          if (remote.split(/\s/u)[0] !== nativeAwaitRecovery.originMainCommit) {
+            throw Object.assign(new Error("Original Await origin changed after archive"), { code: "AWAIT_PREPARATION_UNKNOWN" });
+          }
+        }
       };
       const requireCheckout = async (head) => {
         if (await git(["rev-parse", "HEAD^{commit}"]) !== head
@@ -1683,6 +1689,7 @@ export class ReleaseGitWorkspaceService {
         independentGitCommonDir: !samePath(clone.releaseGitCommonDir, initial.commonDir),
         releaseGitCommonDir: clone.releaseGitCommonDir, primaryGitCommonDir: initial.commonDir,
         primaryPreserved: true, legacyLinkedHolders: initial.legacyLinkedHolders,
+        ...(nativeAwaitRecovery ? { verifyNativeAwaitAuthority: validate } : {}),
       };
       try {
         await validate();

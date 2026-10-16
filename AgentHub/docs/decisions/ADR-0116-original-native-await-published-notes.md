@@ -29,6 +29,10 @@ move resumes only under the same original and proof. The archive is evidence,
 not an authorized release checkout. Ordinary clone creation, native composition,
 candidate promotion and Task CAS/rollback then continue the same Await and settle
 the same receipt. A definite new-candidate failure cannot destroy the archive.
+The original origin pin is rechecked by ordinary candidate validation after
+awaited caller checks, on reuse/resume and by the lifecycle's final authority
+callback before its SQLite mutation. Archive completion alone never authorizes
+a later candidate promotion or Task CAS after origin drift.
 
 No alternate writer, SQL repair, ref/index repair, reset, clean, live runtime
 overlay, new public approval flag or selected-set expansion is introduced.

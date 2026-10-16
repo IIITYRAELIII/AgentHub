@@ -1012,7 +1012,14 @@ export class TaskLifecycleService {
                     await this.#assertOwned(repositoryLease);
                     let current;
                     try {
-                      current = await this.#mutation(() => this.taskBoard.commitWorkflowTransition({
+                      current = await this.#mutation(async () => {
+                        if (nativeAwaitRecovery) {
+                          if (typeof prepared.verifyNativeAwaitAuthority !== "function") throw new Error("Original Await terminal authority recheck is unavailable");
+                          await prepared.verifyNativeAwaitAuthority();
+                          await this.taskGitWorkspaces.assertNoProcessTreeGuardOwned(task.id, { lease: repositoryLease });
+                          await this.#assertOwned(repositoryLease);
+                        }
+                        return this.taskBoard.commitWorkflowTransition({
                         operationId, gitReferences: [], replaceGitReferences: false, ...binding,
                         evidence: {
                           ...(operationEvidence ?? {}), outcome: "accepted_existing_result",
@@ -1024,7 +1031,8 @@ export class TaskLifecycleService {
                             planRevision: prepared.planRevision,
                           } },
                         },
-                      }), operationId);
+                        });
+                      }, operationId);
                     } catch (error) {
                       try {
                         const outcome = this.taskBoard.lifecycleOutcome(operationId);

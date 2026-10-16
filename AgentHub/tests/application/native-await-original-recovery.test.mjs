@@ -60,8 +60,11 @@ test("original Await uses existing SQLite lifecycle/CAS/receipt and terminal ret
     prepareAwaitAcceptance: async ({ operationId: actual, nativeAwaitRecovery, commitPrepared }) => {
       effects++;
       assert.equal(actual, operationId); assert.equal(nativeAwaitRecovery.operationId, operationId);
-      if (failCAS) throw Object.assign(new Error("candidate outcome unknown"), { code: "AWAIT_PREPARATION_UNKNOWN" });
-      return commitPrepared({ planRevision: "plan", task: { taskId: created.id, resultCommit: source } });
+      return commitPrepared({ planRevision: "plan", task: { taskId: created.id, resultCommit: source },
+        verifyNativeAwaitAuthority: async () => {
+          inspections++;
+          if (failCAS) throw Object.assign(new Error("terminal origin pin changed"), { code: "AWAIT_PREPARATION_UNKNOWN" });
+        } });
     },
   };
   const lifecycle = new TaskLifecycleService({ taskBoard: board, workspaceCatalog: catalog,

@@ -425,7 +425,13 @@ export class WorkspaceReleasePreflightService {
             : []
         ));
         if (matches.length !== 1) throw new Error("Task has no unique prepared Await result to accept");
-        return commitPrepared({ ...prepared, task: matches[0] });
+        const recoveredCandidate = nativeAwaitRecovery ? prepared.releaseCandidates.find(candidate =>
+          canonicalRoot(candidate.repositoryRoot) === canonicalRoot(root)) : null;
+        if (nativeAwaitRecovery && typeof recoveredCandidate?.verifyNativeAwaitAuthority !== "function") {
+          throw new Error("Original Await candidate authority recheck is unavailable");
+        }
+        return commitPrepared({ ...prepared, task: matches[0],
+          ...(nativeAwaitRecovery ? { verifyNativeAwaitAuthority: recoveredCandidate.verifyNativeAwaitAuthority } : {}) });
       },
     });
   }
