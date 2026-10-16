@@ -29,7 +29,9 @@ async function open(page, { vscode = false } = {}) {
   });
   await page.goto("https://agent-hub.test/");
   await page.waitForFunction(() => window.AgentHub && window.AgentHubComposerShortcuts);
-  await page.locator('[data-panel-open="settings"]').click();
+  const mobile = await page.locator("html").getAttribute("data-mobile-dialogs-enabled") !== null;
+  if (mobile) await page.locator(".mobile-dialogs-top").getByRole("button", { name: "Настройки AgentHub", exact: true }).click();
+  else await page.locator('[data-panel-open="settings"]').click();
   await page.locator("[data-composer-shortcuts-open]").click();
   return errors;
 }

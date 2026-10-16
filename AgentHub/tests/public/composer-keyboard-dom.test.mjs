@@ -46,7 +46,7 @@ test("production left-edge Back saves composer and shortcut dirty-close owns onl
       const page = await browser.newPage({ viewport: { width: surface.width, height: 844 },
         ...(surface.mobile ? { isMobile: true, hasTouch: true } : {}) });
       await openFixture(page, { surface: surface.surface });
-      if (surface.mobile) await page.locator('[data-mobile-button="chat"]').click();
+      if (surface.mobile) await page.locator('[data-mobile-dialogs-tab="chat"]').click();
       await page.evaluate(() => window.AgentHub.showSelectedTask());
       const input = page.locator("[data-composer-input]");
       await input.fill("Draft retained by left-edge Back");
