@@ -101,8 +101,14 @@ publishedBaseCommit, agreedMainCommit, sourceBaseCommit, sourceBaseTree,
 sourcePatchSha256, installedReleaseId, installedManifestSha256, planRevision,
 selectionHash. The latter has only requestId/text and uses the existing exact
 authenticated native merge review verifier; it supplies no caller approval flag.
-Ordinary Await still accepts the exact reviewed Task through its existing owner;
-this preparation replaces its candidate baseline before release admission.
+Ordinary Await still accepts the exact reviewed Task through its existing owner.
+When selected ordinary adoption receipts coexist with installed local source,
+the existing Task owner returns their exact historical pins and the candidate
+owner derives the same full installed-source proof before composition. Await
+passes that sealed provenance through its existing base and terminal CAS checks;
+it does not depend on a later preparation that requires Tasks already in Await.
+Historical pins do not authorize promotion after origin drift. Explicit
+preparation and generation reuse retain their existing bound-envelope rules.
 
 When approved incoming and installed local source coexist, the same envelope
 additionally binds both `approvedOriginMainCommit` and `adoptions`. Each adoption

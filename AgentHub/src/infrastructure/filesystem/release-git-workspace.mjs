@@ -6,7 +6,7 @@ import path from "node:path";
 import { ReleaseCandidateFrozenError } from "../../domain/task-board-task.mjs";
 import { ReleasePreparationRejectedError } from "../../domain/release-preparation.mjs";
 import { assertPreparationCheckpoint } from "./release-preparation-guard.mjs";
-import { assertInstalledLocalSourceBaseline } from "./local-source-baseline.mjs";
+import { assertInstalledLocalSourceBaseline, installedNativeHistoryBaseline } from "./local-source-baseline.mjs";
 import { readNativeUpstreamAdoptions, assertNativeUpstreamOrigin } from "./native-upstream-adoption.mjs";
 import { inspectPublishedNotesArchive, archivePublishedNotesCheckout } from "./native-await-published-notes-recovery.mjs";
 import { defaultRuntimeRoot } from "./runtime-layout.mjs";
@@ -1430,6 +1430,29 @@ export class ReleaseGitWorkspaceService {
         throw error;
       }
     });
+  }
+
+  async deriveInstalledLocalSourceBaselineForSelection({ projectRoot, planRevision, tasks,
+    publishedRevision, adoptions }) {
+    const initial = await primarySnapshot(projectRoot);
+    await this.assertPrimaryInvariant(initial.root, { phase: "ordinary Await installed source binding" });
+    if (publishedRevision !== await durablePublishedRevision(this.#environment, initial.root)) {
+      throw new Error("Ordinary Await published baseline changed");
+    }
+    const git = (args, options = {}) => runGit(args, { ...options, cwd: initial.root, timeoutMs: 300_000 });
+    const actual = await readNativeUpstreamAdoptions({ git, tasks, repositoryRoot: initial.root,
+      localMainCommit: initial.mainCommit });
+    const pins = actual.map(({ taskId, resultCommit, recordRef, recordHash, adoptedCommit, acceptedLocalMainCommit }) =>
+      ({ taskId, resultCommit, recordRef, recordHash, adoptedCommit, acceptedLocalMainCommit }));
+    if (!pins.length || JSON.stringify(pins) !== JSON.stringify(adoptions)) {
+      throw new Error("Ordinary Await selected adoption evidence changed");
+    }
+    const provenance = await installedNativeHistoryBaseline({ git,
+      sourceGit: (cwd, args) => runGit(args, { cwd, timeoutMs: 300_000 }),
+      repositoryRoot: initial.root, primaryMainCommit: initial.mainCommit, publishedRevision,
+      runtimeRoot: defaultRuntimeRoot({ environment: this.#environment }), planRevision, tasks, adoptions: actual });
+    if (!provenance) throw new Error("Ordinary adopted Await has no verified installed source baseline");
+    return provenance;
   }
 
   async validateLocalSourceBaseline({ projectRoot, provenance, planRevision, tasks }) {

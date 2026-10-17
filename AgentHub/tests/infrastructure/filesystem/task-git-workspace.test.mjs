@@ -1735,7 +1735,9 @@ test("release adoption requires a selected Task result and stays pinned when ori
   assert.equal(adopted.adoptedByResultCommit, fixture.snapshot.headCommit);
   const acceptedBase = await fixture.service.releaseBaseEvidence(baseRequest);
   assert.equal(acceptedBase.baseCommit, localMain);
-  assert.deepEqual(acceptedBase.adoptions, []);
+  assert.deepEqual(acceptedBase.adoptions, [{ taskId: fixture.snapshot.taskId,
+    resultCommit: fixture.snapshot.headCommit, recordRef: recorded.recordRef, recordHash: recorded.recordHash,
+    adoptedCommit: fixture.mainCommit, acceptedLocalMainCommit: localMain }]);
   assert.equal(acceptedBase.compositionPolicy, "main-selected-git-merge-v1");
   assert.equal(await git(fixture.root, "rev-parse", recorded.recordRef), recorded.recordHash);
   assert.equal((await fixture.service.releaseBaseEvidence({ ...baseRequest, tasks: [] })).baseCommit, localMain);
@@ -1777,7 +1779,8 @@ test("explicit upstream adoption fences Task snapshot and local-main drift befor
     await git(fixture.root, "update-ref", `refs/heads/${fixture.snapshot.branch}`, movedSnapshot,
       fixture.snapshot.headCommit);
 
-    await assert.rejects(fixture.service.mergeIntoDev(fixture.snapshot), { code: "RELEASE_NATIVE_HISTORY_REQUIRED" });
+    await assert.rejects(fixture.service.mergeIntoDev(fixture.snapshot),
+      /Native upstream adoption receipt or current Git identity changed/u);
     assert.equal(await git(fixture.root, "rev-parse", "refs/heads/dev^{commit}"), fixture.oldDev);
   });
 
