@@ -1412,8 +1412,8 @@ test("right panel visibility defaults on and its header switch preserves hidden 
       const group = page.getByRole("region", { name: "Правая панель", exact: true });
       const toggle = group.getByRole("switch", { name: "Отображать правую панель", exact: true });
       const options = group.locator("[data-activity-rail-settings]");
-      const recent = group.getByRole("spinbutton", { name: "Часы для недавних диалогов" });
-      const detailed = group.getByRole("switch", { name: "Подробные карточки диалогов" });
+      const recent = group.getByRole("spinbutton", { name: "Часы для недавних потоков" });
+      const detailed = group.getByRole("switch", { name: "Подробные карточки потоков" });
       assert.equal(await toggle.getAttribute("aria-checked"), "true");
       assert.equal(await page.locator("[data-activity-rail]").isVisible(), true);
       assert.equal(await options.isVisible(), true);
@@ -1808,8 +1808,8 @@ test("Workspace and Stream cards expose behavioral editing and quick reply contr
     await codexTab.focus();
     await codexTab.dblclick();
     assert.equal(await page.locator("[data-dialog-settings]").evaluate((node) => node.open), true);
-    assert.equal(await page.locator("[data-dialog-settings]").getAttribute("aria-label"), "Карточка диалога");
-    assert.equal(await page.getByText("Карточка диалога", { exact: true }).count(), 0);
+    assert.equal(await page.locator("[data-dialog-settings]").getAttribute("aria-label"), "Карточка потока");
+    assert.equal(await page.getByText("Карточка потока", { exact: true }).count(), 0);
     assert.equal(await page.locator("[data-dialog-settings] input").first().getAttribute("data-dialog-stream-name"), "");
     assert.equal(await page.locator("[data-dialog-stream-name]").inputValue(), "Codex Stream");
     await page.locator("[data-dialog-stream-name]").fill("Renamed Stream");
@@ -2168,7 +2168,7 @@ test("composer quick replies render above attached Task references", async () =>
 
     const stream = page.locator('.stream-tabs-track [data-stream-tab-id="stream-1"]');
     await stream.dblclick();
-    assert.equal(await page.getByText("Prompt-шаблоны диалога", { exact: true }).isVisible(), true);
+    assert.equal(await page.getByText("Prompt-шаблоны потока", { exact: true }).isVisible(), true);
     assert.equal(await page.locator("[data-dialog-stream-quick-messages-count]").textContent(), "1 шаблон");
     const streamEditor = await openPromptTemplatesForm(page, "stream");
     assert.equal(await streamEditor.locator("[data-quick-message-add]").textContent(), "Добавить шаблон");
@@ -3876,8 +3876,8 @@ test("Workspace and Stream cards survive logical-identity rerenders while stale 
 test("Stream display identity never exposes a blank name", async () => {
   const { streamDisplayName } = await streamTabsApi();
   assert.equal(streamDisplayName({ name: " Release Manager ", ordinal: 2 }, 3), "Release Manager");
-  assert.equal(streamDisplayName({ name: "", ordinal: 2 }, 3), "Диалог 2");
-  assert.equal(streamDisplayName({ name: "", ordinal: 7 }, 1), "Диалог");
+  assert.equal(streamDisplayName({ name: "", ordinal: 2 }, 3), "Поток 2");
+  assert.equal(streamDisplayName({ name: "", ordinal: 7 }, 1), "Поток");
 });
 
 test("overflow visibility mutations do not rebuild Stream settings", async () => {

@@ -5,7 +5,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { launchBrowser, openFixture, snapshot, bridgeCalls } from "./composer-production.fixture.mjs";
 
-const captures = fileURLToPath(new URL("../../WIP/dialogs-context-captures/", import.meta.url));
+const captures = fileURLToPath(new URL("../../WIP/streams-context-captures/", import.meta.url));
 const longName = "ДлинноеНазваниеДиалогаБезПробелов🛰".repeat(4);
 const workspaceName = "Hysteria · Рабочее пространство 🛰";
 const surfaces = [
@@ -49,7 +49,7 @@ async function assertDialogAccessibleCopy(page) {
   for (const { attribute, value } of attributes) {
     const frameworkCopy = [workspaceName, longName, "Stream пользователя"]
       .reduce((text, authoredName) => text.replaceAll(authoredName, ""), value);
-    assert.doesNotMatch(frameworkCopy, /Stream|Thread|[Пп]оток|Пока нет ответа|Ход выполняется/u,
+    assert.doesNotMatch(frameworkCopy, /Stream|Thread|диалог|Пока нет ответа|Ход выполняется/iu,
       `${attribute}: ${value}`);
   }
   return attributes;
@@ -65,9 +65,20 @@ async function geometry(page, mobile) {
       return { name: node.getAttribute("aria-label"), width: box.width, height: box.height };
     });
     const rows = [...document.querySelectorAll("[data-mobile-stream-list] .mobile-stream-row")].filter(visible);
+    const heading = document.querySelector(".mobile-dialogs h1");
+    const workspace = document.querySelector("[data-mobile-workspace-name]");
+    const label = workspace.previousElementSibling;
+    const caret = document.querySelector("[data-mobile-workspace-label] > svg");
+    const font = (node) => {
+      const style = getComputedStyle(node);
+      return { size: parseFloat(style.fontSize), lineHeight: parseFloat(style.lineHeight), weight: style.fontWeight };
+    };
     return {
       overflow: Math.max(0, document.documentElement.scrollWidth - innerWidth),
       targets,
+      typography: { heading: font(heading), workspace: font(workspace), label: font(label),
+        oneLineWorkspace: workspace.getBoundingClientRect().height <= parseFloat(getComputedStyle(workspace).lineHeight) + 1,
+        clearCaret: workspace.getBoundingClientRect().right <= caret.getBoundingClientRect().left },
       collisions: rows.filter((row) => {
         const title = row.querySelector("strong").getBoundingClientRect();
         const provider = row.querySelector(".mobile-stream-line > span").getBoundingClientRect();
@@ -96,11 +107,13 @@ for (const surface of surfaces) {
         assert.equal(await scope.getAttribute("aria-label"), `Сменить Workspace: ${workspaceName}`);
         assert.equal(await scope.locator("small").innerText(), "Workspace");
         assert.equal(await scope.locator("strong").innerText(), workspaceName);
-        assert.equal(await page.locator("[data-mobile-stream-filter]").getAttribute("placeholder"), "Поиск по диалогам");
-        assert.equal(await page.locator("[data-mobile-stream-create]").innerText(), "Новый диалог");
+        assert.equal(await scope.locator("svg").getAttribute("aria-hidden"), "true");
+        assert.equal(await page.locator(".mobile-dialogs h1").innerText(), "Потоки");
+        assert.equal(await page.locator("[data-mobile-stream-filter]").getAttribute("placeholder"), "Поиск по потокам");
+        assert.equal(await page.locator("[data-mobile-stream-create]").innerText(), "Новый поток");
         const empty = page.locator('[data-mobile-stream-list] [data-mobile-stream-id="stream-a"]').first();
         assert.equal(await empty.locator(".mobile-stream-preview, .provider-dot, .mobile-stream-running").count(), 0);
-        assert.equal(await empty.locator("strong").innerText(), "Диалог 1");
+        assert.equal(await empty.locator("strong").innerText(), "Поток 1");
         await capture(page, `${surface.name}-empty`);
 
         data.version = "mixed";
@@ -137,63 +150,71 @@ for (const surface of surfaces) {
         }));
         assert.equal(await row("stream-c").locator(".mobile-stream-running").innerText(), "Отвечает");
         assert.equal(await row("stream-c").locator(".mobile-stream-preview").innerText(), "Вы: Текущий вопрос");
-        assert.doesNotMatch((await page.locator("body").innerText()).replaceAll("Stream пользователя", ""),
-          /Stream|[Пп]оток|Пока нет ответа|Ход выполняется/u);
+        assert.doesNotMatch((await page.locator("body").innerText()).replaceAll("Stream пользователя", "").replaceAll(longName, "").replaceAll(workspaceName, ""),
+          /Stream|диалог|Пока нет ответа|Ход выполняется/iu);
         await capture(page, `${surface.name}-running`);
         const metrics = await geometry(page, true);
         assert.equal(metrics.overflow, 0);
         assert.equal(metrics.collisions, 0);
         assert.equal(metrics.multiline, 0);
+        assert.deepEqual(metrics.typography, {
+          heading: { size: 16, lineHeight: 20, weight: "600" },
+          workspace: { size: 17.6, lineHeight: 22, weight: "600" },
+          label: { size: 11.2, lineHeight: 14, weight: "500" },
+          oneLineWorkspace: true, clearCaret: true,
+        });
         for (const target of metrics.targets) assert.ok(target.width >= 44 && target.height >= 44, JSON.stringify(target));
         await writeFile(path.join(captures, `${surface.name}-metrics.json`), JSON.stringify(metrics, null, 2));
-        await page.locator("[data-mobile-stream-filter]").fill("Диалог 1");
+        await page.locator("[data-mobile-stream-filter]").fill("Поток 1");
         assert.equal(await page.locator("[data-mobile-stream-list] .mobile-stream-row").count(), 1);
         await page.locator("[data-mobile-stream-filter]").fill("");
         await row("stream-f").click();
       } else {
-        assert.equal(await page.locator('[data-action="stream-create"]').getAttribute("aria-label"), "Новый диалог");
-        assert.equal(await page.locator('[data-stream-tab-id="stream-a"]').first().locator(".stream-tab-title").innerText(), "Диалог 1");
+        assert.equal(await page.locator('[data-action="stream-create"]').getAttribute("aria-label"), "Новый поток");
+        assert.equal(await page.locator('[data-stream-tab-id="stream-a"]').first().locator(".stream-tab-title").innerText(), "Поток 1");
         await page.evaluate(() => AgentHub.showSelectedTask());
         await page.locator(".stream-tabs-track .stream-tab:visible").first().dispatchEvent("contextmenu", { clientX: 100, clientY: 100 });
         const rotate = page.locator('.stream-context-menu:not([hidden]) [data-stream-menu-action="replace-thread"]');
         assert.equal(await rotate.isVisible(), true);
         const menuTitle = await rotate.getAttribute("title");
-        assert.equal(menuTitle, "Завершить текущую работу агента и продолжить диалог в новом контексте Codex");
+        assert.equal(menuTitle, "Завершить текущую работу агента и продолжить поток в новом контексте Codex");
         await writeFile(path.join(captures, `${surface.name}-menu.json`), JSON.stringify({ title: menuTitle, visible: true }, null, 2));
         await capture(page, `${surface.name}-menu`);
         await page.keyboard.press("Escape");
+        await page.locator("[data-composer-input]").click();
+        assert.equal(await page.locator('.stream-context-menu:not(.workspace-context-menu)').isVisible(), false);
       }
       const header = page.locator("[data-stream-chat-header]");
       assert.equal(await header.locator(".stream-chat-workspace-label").isVisible(), true);
       assert.equal(await header.locator(".stream-chat-workspace-label").innerText(), "Workspace");
       assert.equal(await header.locator("[data-stream-header-workspace]").innerText(), workspaceName);
       assert.equal(await header.locator("[data-stream-header-workspace]").isVisible(), true);
-      if (!surface.mobile) assert.equal(await header.locator("[data-stream-header-name]").innerText(), "Диалог 1");
-      assert.doesNotMatch((await page.locator("body").innerText()).replaceAll("Stream пользователя", ""),
-        /Stream|[Пп]оток|Пока нет ответа|Ход выполняется/u);
+      if (!surface.mobile) assert.equal(await header.locator("[data-stream-header-name]").innerText(), "Поток 1");
+      assert.doesNotMatch((await page.locator("body").innerText()).replaceAll("Stream пользователя", "").replaceAll(longName, "").replaceAll(workspaceName, ""),
+        /Stream|диалог|Пока нет ответа|Ход выполняется/iu);
       await capture(page, `${surface.name}-opened`);
       const create = surface.mobile ? page.locator("[data-mobile-chat-stream-create]")
         : page.locator('[data-action="stream-create"]');
-      assert.equal(await create.getAttribute("aria-label"), "Новый диалог");
+      assert.equal(await create.getAttribute("aria-label"), "Новый поток");
       if (surface.mobile) {
-        assert.equal(await page.locator("[data-mobile-stream-switch]").getAttribute("title"), `Переключить диалог: ${longName}`);
-        assert.equal(await page.locator("[data-mobile-stream-switch]").getAttribute("aria-label"), `Переключить диалог: ${longName}`);
+        assert.equal(await page.locator("[data-mobile-stream-switch]").getAttribute("title"), `Переключить поток: ${longName}`);
+        assert.equal(await page.locator("[data-mobile-stream-switch]").getAttribute("aria-label"), `Переключить поток: ${longName}`);
         await page.locator("[data-mobile-stream-switch]").click();
-        assert.equal(await page.locator("[data-mobile-stream-switcher]").getAttribute("aria-label"), "Диалоги Workspace");
+        assert.equal(await page.locator("[data-mobile-stream-switcher]").getAttribute("aria-label"), "Потоки Workspace");
         await page.keyboard.press("Escape");
       }
       await page.locator("[data-dialog-settings-toggle]").click();
       const settings = page.locator("[data-dialog-settings]");
-      assert.equal(await settings.getAttribute("aria-label"), "Карточка диалога");
-      assert.doesNotMatch(await settings.innerText(), /Stream|Thread|Поток|поток|Пока нет ответа|Ход выполняется/u);
+      assert.equal(await settings.getAttribute("aria-label"), "Карточка потока");
+      assert.doesNotMatch(await settings.innerText(), /Stream|Thread|диалог|Пока нет ответа|Ход выполняется/iu);
       assert.equal(await settings.locator("[data-dialog-working-directory-note]").innerText(),
         "Новая директория начнёт использоваться после следующего запуска агента. Текущая работа продолжится в прежней директории.");
       assert.doesNotMatch(await settings.locator("[data-stream-card-rotate]").getAttribute("title"), /Thread/u);
-      assert.equal(await settings.locator("[data-dialog-stream-rules]").getAttribute("placeholder"), "Дополнительные инструкции для этого диалога");
+      assert.equal(await settings.locator("[data-dialog-stream-rules]").getAttribute("placeholder"), "Дополнительные инструкции для этого потока");
       const attributes = await assertDialogAccessibleCopy(page);
       const gapToggle = page.locator("[data-stream-gap-toggle]");
       if (surface.width >= 860 && surface.surface === "web") {
-        assert.equal(await gapToggle.getAttribute("aria-label"), "Отступ между карточками диалогов");
+        assert.equal(await gapToggle.getAttribute("aria-label"), "Отступ между карточками потоков");
       } else {
         assert.equal(await gapToggle.count(), 0);
       }

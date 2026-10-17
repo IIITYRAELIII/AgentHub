@@ -2515,7 +2515,7 @@
     streamPanelList.replaceChildren();
     workspacePanelList.replaceChildren();
     if (!sections.streamTasks.length) {
-      streamPanelList.append(node("p", { class: "workspace-task-empty", text: "Нет задач диалога" }));
+      streamPanelList.append(node("p", { class: "workspace-task-empty", text: "Нет задач потока" }));
     } else {
       for (const task of sections.streamTasks) streamPanelList.append(taskCard(task, { compact: true }));
     }

@@ -2634,7 +2634,7 @@ function currentQuickMessageContext() {
   if (!task) return null;
   return {
     streamId: streamKey(task),
-    streamName: String(task.streamName ?? task.streamDisplayName ?? "Диалог").trim() || "Диалог",
+    streamName: String(task.streamName ?? task.streamDisplayName ?? "Поток").trim() || "Поток",
     workspaceId: workspaceKey(task),
     workspaceName: String(task.workspaceName ?? task.title ?? "Workspace").trim() || "Workspace",
   };
@@ -3116,9 +3116,9 @@ function settleQuickMessagesSelection(mutationId = "") {
    заменяет, поэтому и запись идёт единственным прежним путём. */
 const PROMPT_TEMPLATE_SCOPES = ["global", "workspace", "stream"];
 const PROMPT_TEMPLATE_SCOPE_NOTES = {
-  global: "Видны во всех Workspace и диалогах.",
-  workspace: "Видны во всех диалогах этого Workspace.",
-  stream: "Видны только в этом диалоге.",
+  global: "Видны во всех Workspace и потоках.",
+  workspace: "Видны во всех потоках этого Workspace.",
+  stream: "Видны только в этом потоке.",
 };
 
 let promptTemplatesScope = "global";
@@ -3145,7 +3145,7 @@ function promptTemplateScopeAvailable(scope) {
 function promptTemplateScopeName(scope) {
   if (scope === "global") return "Глобальные";
   if (scope === "workspace") return promptTemplatesContext.workspaceName || "Workspace";
-  return promptTemplatesContext.streamName || "Диалог";
+  return promptTemplatesContext.streamName || "Поток";
 }
 
 function promptTemplateScopeEntries(scope) {
@@ -3496,7 +3496,7 @@ function toggleOpenStream(workspaceId, streamId, streams, { additive = false, pr
     .filter((id) => available.has(id));
   const selection = window.AgentHubStreamTabs.applyOpenStreamSelection(selected, streamId, { additive });
   if (selection.limitReached) {
-    showToast("Одновременно можно открыть не больше четырёх диалогов.");
+    showToast("Одновременно можно открыть не больше четырёх потоков.");
     return;
   }
   const next = selection.ids;
@@ -3729,7 +3729,7 @@ function setViewContent(view, { persist = true, activate = true } = {}) {
           ? "Null"
           : next === "server"
             ? "Server"
-            : "Диалоги";
+            : "Потоки";
   }
   syncMobileNav();
   if (activate) activateView(next);
@@ -4195,8 +4195,8 @@ function applyActivityRailState({ persist = false } = {}) {
   activityRailToggle?.setAttribute("aria-expanded", String(!activityRailCollapsed));
   if (activityRailToggle) {
     activityRailToggle.title = activityRailCollapsed
-      ? "Развернуть активные диалоги"
-      : "Свернуть активные диалоги";
+      ? "Развернуть активные потоки"
+      : "Свернуть активные потоки";
   }
   if (!persist) return;
   try {
@@ -4224,7 +4224,7 @@ function renderActivityRail() {
   activityRailCount.textContent = "Активно";
   if (activityStreamHeading) {
     activityStreamHeading.textContent = window.AgentHubActivityRailLayout.countedActivityHeading(
-      "Диалоги",
+      "Потоки",
       sections.active.length,
     );
   }
@@ -4233,7 +4233,7 @@ function renderActivityRail() {
   const renderEntry = (task) => {
     const presentation = streamPresentation(task);
     const streamName = String(task.streamName || task.streamDisplayName || "").trim()
-      || `Диалог ${Math.max(1, Number(task.streamOrdinal) || 1)}`;
+      || `Поток ${Math.max(1, Number(task.streamOrdinal) || 1)}`;
     const workspaceName = String(task.workspaceName || task.title || "Workspace").trim();
     const activityTitle = `${workspaceName} — ${streamName}`;
     const provider = String(task?.provider ?? "none");
@@ -4373,8 +4373,8 @@ function renderStreamTabs() {
     class: "stream-tab-utility stream-tab-create",
     "data-action": "stream-create",
     "data-workspace-id": workspaceId,
-    title: "Создать диалог и настроить будущий чат",
-    "aria-label": "Новый диалог",
+    title: "Создать поток и настроить будущий чат",
+    "aria-label": "Новый поток",
   }, [window.AgentHubStreamTabs.createPhosphorIcon(document, "plus", "stream-tab-create-mark")]);
   const overflowItems = [];
   const groups = ordered.map((stream, index) => {
@@ -4389,7 +4389,7 @@ function renderStreamTabs() {
       : task?.running && task.startedAt
         ? formatRunningDuration(task.startedAt)
         : formatRelativeTime(task?.lastActivity);
-    const title = `${statusLabel ? `${statusLabel}. ` : ""}${streamProviderModelTitle({ provider, agentLabel, modelLabel: task?.modelLabel })}. Нажмите, чтобы переключиться. Ctrl+click — добавить или убрать колонку. ${streamOrderMode === "manual" ? "Перетащите, чтобы изменить порядок." : ""} ПКМ — управление диалогом.`;
+    const title = `${statusLabel ? `${statusLabel}. ` : ""}${streamProviderModelTitle({ provider, agentLabel, modelLabel: task?.modelLabel })}. Нажмите, чтобы переключиться. Ctrl+click — добавить или убрать колонку. ${streamOrderMode === "manual" ? "Перетащите, чтобы изменить порядок." : ""} ПКМ — управление потоком.`;
     const pinned = pinnedIds.includes(stream.id);
     const attributes = {
       type: "button",
@@ -4461,7 +4461,7 @@ function renderStreamTabs() {
     class: "stream-tabs-more",
     "data-stream-overflow-toggle": "",
     "aria-expanded": String(overflowMenuOpen),
-    title: "Остальные диалоги",
+    title: "Остальные потоки",
   }, [
     el("span", { text: "ещё " }),
     el("span", { "data-stream-tabs-overflow-count": "", text: "0" }),
@@ -4552,7 +4552,7 @@ function renderStreamChatPreview(task) {
     selectTaskFromUi(task.id);
   });
   const workspaceName = String(task.workspaceName || task.title || "Workspace").trim();
-  const streamName = String(task.streamName || task.streamDisplayName || "Диалог").trim();
+  const streamName = String(task.streamName || task.streamDisplayName || "Поток").trim();
   const head = el("header", { class: "stream-chat-preview-head" }, [
     el("strong", { class: "stream-chat-preview-title", text: streamName }),
     el("span", { class: "stream-chat-preview-workspace", text: workspaceName }),
@@ -4562,7 +4562,7 @@ function renderStreamChatPreview(task) {
   if (!messages) {
     log.append(el("p", { class: "stream-chat-preview-empty", text: "Загрузка истории…" }));
   } else if (!messages.length) {
-    log.append(el("p", { class: "stream-chat-preview-empty", text: "В этом диалоге пока нет сообщений." }));
+    log.append(el("p", { class: "stream-chat-preview-empty", text: "В этом потоке пока нет сообщений." }));
   } else {
     for (const message of MessageView.conversationSurfaceMessages(messages).slice(-20)) {
       log.append(renderMessage(message, { readOnly: true, task }));
@@ -4660,7 +4660,7 @@ function renderStreamChatDeck() {
   const hasVisible = shown.length > 0;
   streamChatColumns.hidden = !hasVisible;
   chatEmpty.hidden = hasVisible;
-  if (!hasVisible && chatEmptyText) chatEmptyText.textContent = "Выберите диалог в полосе сверху.";
+  if (!hasVisible && chatEmptyText) chatEmptyText.textContent = "Выберите поток в полосе сверху.";
   streamChatColumns.toggleAttribute("data-multi-stream", shown.length > 1);
   streamChatColumns.style.setProperty("--stream-chat-count", String(Math.max(1, shown.length)));
   renderedStreamChatDeckKey = deckKey;
@@ -4887,7 +4887,7 @@ function renderWorkspaceMessageSearch() {
     const first = values[0];
     const group = el("section", { class: "workspace-message-search-group" }, [
       el("header", { class: "workspace-message-search-group-head" }, [
-        el("strong", { text: first.streamName || `Диалог ${first.streamOrdinal || 1}` }),
+        el("strong", { text: first.streamName || `Поток ${first.streamOrdinal || 1}` }),
         el("span", { text: String(values.length) }),
       ]),
     ]);
@@ -4921,11 +4921,11 @@ function renderWorkspaceMessageSearch() {
     && !search.loading && !search.error && !indexingActive && !indexingPartial;
   workspaceMessageSearchStatus.textContent = search.error
     || (shortQuery ? "Введите минимум два символа."
-      : search.loading ? "Ищем во всех диалогах…"
+      : search.loading ? "Ищем во всех потоках…"
         : indexingActive
-          ? `Индексируем историю: ${indexing.completedThreads ?? 0} из ${indexing.totalThreads ?? 0} диалогов.`
+          ? `Индексируем историю: ${indexing.completedThreads ?? 0} из ${indexing.totalThreads ?? 0} потоков.`
           : indexingPartial
-            ? `Индекс готов частично: ${indexing.failedThreads ?? 0} диалогов пока недоступно.`
+            ? `Индекс готов частично: ${indexing.failedThreads ?? 0} потоков пока недоступно.`
         : search.results.length ? "" : "Ничего не найдено.");
   workspaceMessageSearchMore.hidden = search.nextOffset == null || search.loading;
 }
@@ -5418,7 +5418,7 @@ function ensureStreamContextMenu() {
   streamContextMenu = el("div", {
     class: "stream-context-menu",
     role: "menu",
-    "aria-label": "Управление диалогом",
+    "aria-label": "Управление потоком",
     hidden: true,
   });
   document.body.append(streamContextMenu);
@@ -5479,7 +5479,7 @@ function openStreamContextMenu(event, tab) {
         ? "Сначала завершите текущий ход"
         : !["codex", "claude"].includes(provider)
           ? "Ротация доступна для Codex и Claude"
-          : `Завершить текущую работу агента и продолжить диалог в новом контексте ${provider === "claude" ? "Claude" : "Codex"}`,
+          : `Завершить текущую работу агента и продолжить поток в новом контексте ${provider === "claude" ? "Claude" : "Codex"}`,
     }),
     el("button", {
       type: "button", role: "menuitem", class: "stream-context-action",
@@ -5490,8 +5490,8 @@ function openStreamContextMenu(event, tab) {
       title: tab.hasAttribute("data-running")
         ? "Сначала завершите текущий ход"
         : oppositeProvider
-          ? `Продолжить диалог в новом контексте ${oppositeLabel} и передать накопленный контекст`
-          : "Провайдер диалога не определён",
+          ? `Продолжить поток в новом контексте ${oppositeLabel} и передать накопленный контекст`
+          : "Провайдер потока не определён",
     }),
   );
   menu.hidden = false;
@@ -5928,7 +5928,7 @@ function renderChatContent({ preserveStreamTabs = false } = {}) {
   const hasTask = Boolean(task);
   if (!hasTask) {
     chatEmpty.hidden = false;
-    if (chatEmptyText) chatEmptyText.textContent = "Выберите Workspace слева, чтобы открыть его диалоги.";
+    if (chatEmptyText) chatEmptyText.textContent = "Выберите Workspace слева, чтобы открыть его потоки.";
     streamTabs.hidden = true;
     streamTabs.replaceChildren();
     chatPane.hidden = true;
@@ -10477,7 +10477,7 @@ function renderDialogSettings() {
       : currentDirectory ? `Текущая: ${currentDirectory}` : "Наследуется от Workspace";
     if (dialogWorkingDirectoryNote) {
       dialogWorkingDirectoryNote.textContent = task?.draftStream
-        ? "Будет использована после создания диалога; пустое значение наследуется от Workspace."
+        ? "Будет использована после создания потока; пустое значение наследуется от Workspace."
         : "Новая директория начнёт использоваться после следующего запуска агента. Текущая работа продолжится в прежней директории.";
     }
     streamWorkingDirectoryField?.refresh();
@@ -10503,7 +10503,7 @@ function renderDialogSettings() {
   }
   if (streamCardRotate) {
     streamCardRotate.disabled = !streamId || running || !["codex", "claude"].includes(provider);
-    streamCardRotate.title = running ? "Сначала завершите текущий ход" : "Продолжить диалог в новом контексте текущего провайдера";
+    streamCardRotate.title = running ? "Сначала завершите текущий ход" : "Продолжить поток в новом контексте текущего провайдера";
   }
   if (streamCardContinueProvider) {
     streamCardContinueProvider.textContent = oppositeProvider
@@ -10513,7 +10513,7 @@ function renderDialogSettings() {
     streamCardContinueProvider.disabled = !streamId || running || !oppositeProvider;
     streamCardContinueProvider.title = running
       ? "Сначала завершите текущий ход"
-      : oppositeProvider ? "Продолжить диалог в противоположном провайдере" : "Провайдер диалога не определён";
+      : oppositeProvider ? "Продолжить поток в противоположном провайдере" : "Провайдер потока не определён";
   }
   const moveOptions = workspaceMenuOptions(workspaceId);
   if (streamCardMoveMenu) {
@@ -10529,12 +10529,12 @@ function renderDialogSettings() {
     streamCardMove.disabled = !streamId || moveOptions.length === 0
       || typeof streamCardMoveMenu?.showPopover !== "function";
     streamCardMove.title = moveOptions.length
-      ? "Выбрать Workspace и сразу перенести диалог"
+      ? "Выбрать Workspace и сразу перенести поток"
       : "Нет доступных Workspace для переноса";
   }
   if (streamCardArchive) {
     streamCardArchive.disabled = !streamId || running;
-    streamCardArchive.title = running ? "Сначала завершите активный ход в этом диалоге" : "Архивировать диалог";
+    streamCardArchive.title = running ? "Сначала завершите активный ход в этом потоке" : "Архивировать поток";
   }
   renderStreamRulesPreview();
   renderStreamQuickMessagesSettings();
@@ -12006,7 +12006,7 @@ const AgentHub = {
     const stream = streams.find((candidate) => candidate.id === normalizedStreamId);
     const target = representativeStreamTask(stream);
     if (!target) {
-      showToast("Диалог недоступен");
+      showToast("Поток недоступен");
       return false;
     }
     state.openStreamsByWorkspace.set(normalizedWorkspaceId, [normalizedStreamId]);

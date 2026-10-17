@@ -62,14 +62,14 @@
       return result;
     };
     const host = node("section", { class: "mobile-dialogs", "data-mobile-dialogs": "",
-      "aria-label": "Диалоги выбранного Workspace", hidden: "" });
+      "aria-label": "Потоки выбранного Workspace", hidden: "" });
     const drawerButton = button("Выбрать Workspace", "list", () => open(drawer),
       { "data-mobile-workspaces-open": "", "aria-haspopup": "dialog" });
     const top = node("header", { class: "mobile-dialogs-top" }, [drawerButton,
       node("strong", { text: "AgentHub" }),
       button("Поиск по сообщениям Workspace", "magnifying-glass", search),
       button("Настройки AgentHub", "sliders-horizontal", openSettings)]);
-    const heading = node("h1", { text: "Диалоги" });
+    const heading = node("h1", { text: "Потоки" });
     const workspaceName = node("strong", { "data-mobile-workspace-name": "" });
     const workspaceLabel = node("button", { type: "button", class: "mobile-dialogs-workspace",
       "data-mobile-workspace-label": "", "aria-haspopup": "dialog" }, [
@@ -78,22 +78,22 @@
       ]), icon("caret-down"),
     ]);
     workspaceLabel.addEventListener("click", () => open(drawer));
-    const filter = node("input", { type: "search", placeholder: "Поиск по диалогам",
-      "aria-label": "Поиск по диалогам", "data-mobile-stream-filter": "" });
+    const filter = node("input", { type: "search", placeholder: "Поиск по потокам",
+      "aria-label": "Поиск по потокам", "data-mobile-stream-filter": "" });
     const status = node("p", { class: "mobile-dialogs-status", role: "status" });
     const list = node("div", { class: "mobile-dialogs-list", "data-mobile-stream-list": "" });
-    const fab = textButton("Новый диалог", "plus", () => createStream(workspaceId),
+    const fab = textButton("Новый поток", "plus", () => createStream(workspaceId),
       { class: "mobile-dialogs-fab", "data-mobile-stream-create": "" });
     host.append(top, heading, workspaceLabel, filter, status, list, fab);
     railHome.prepend(host);
     const chatHeader = doc.querySelector("[data-stream-chat-header]");
-    const back = button("К списку диалогов", "caret-left", showList,
+    const back = button("К списку потоков", "caret-left", showList,
       { class: "mobile-dialog-button mobile-conversation-back", "data-mobile-conversation-back": "" });
-    const switchButton = textButton("Переключить диалог", "caret-down", () => {
+    const switchButton = textButton("Переключить поток", "caret-down", () => {
       renderSwitcher(); open(switcher);
     }, { class: "mobile-dialog-button mobile-conversation-switch", "data-mobile-stream-switch": "",
       "aria-haspopup": "dialog" });
-    const chatCreate = button("Новый диалог", "plus", () => createStream(workspaceId),
+    const chatCreate = button("Новый поток", "plus", () => createStream(workspaceId),
       { class: "mobile-dialog-button mobile-conversation-create", "data-mobile-chat-stream-create": "" });
     chatHeader.prepend(back, switchButton, chatCreate);
     switchButton.append(switchButton.querySelector("svg"));
@@ -152,7 +152,7 @@
         window.AgentHubModalOverlays.activateOverlay(renameLayer, editOpener);
       }
     }).observe(textDialog, { attributes: true, attributeFilter: ["hidden"] });
-    const switcher = dialog("Диалоги Workspace", "mobile-stream-switcher", "data-mobile-stream-switcher");
+    const switcher = dialog("Потоки Workspace", "mobile-stream-switcher", "data-mobile-stream-switcher");
     const switchList = node("div", { class: "mobile-switcher-list" });
     switcher.append(switchList);
     const more = dialog("Ещё", "mobile-more-sheet", "data-mobile-more-sheet");
@@ -167,7 +167,7 @@
     }, { class: "mobile-more-entry" }));
     const mobileNav = node("div", { class: "mobile-dialogs-nav", "data-mobile-dialogs-nav": "" });
     for (const [label, glyph, view] of [
-      ["Диалоги", "chats-circle", "chat"], ["Задачи", "squares-four", "dashboard"],
+      ["Потоки", "chats-circle", "chat"], ["Задачи", "squares-four", "dashboard"],
       ["Журнал", "notebook", "journal"], ["Статистика", "chart-line-up", "statistics"],
       ["Ещё", "dots-three", "more"],
     ]) mobileNav.append(textButton(label, glyph, () => {
@@ -325,7 +325,7 @@
       if (!loaded && !state.tasks.length) {
         list.setAttribute("aria-busy", String(state.connection !== "offline"));
         list.append(node("p", { class: "mobile-dialogs-empty", text: state.connection === "offline"
-          ? "Не удалось загрузить диалоги. Повторите подключение." : "Загрузка диалогов…" }));
+          ? "Не удалось загрузить потоки. Повторите подключение." : "Загрузка потоков…" }));
       } else {
         list.removeAttribute("aria-busy");
       const attention = shown.filter((s) => s.tasks.some((t) => t.running || t.unread));
@@ -336,9 +336,9 @@
         section.open = attentionOpen;
         list.append(section);
       }
-      list.append(node("h2", { text: "Все диалоги" }), ...shown.map((stream) => streamRow(stream, available.length)));
+      list.append(node("h2", { text: "Все потоки" }), ...shown.map((stream) => streamRow(stream, available.length)));
       if (!shown.length) list.append(node("p", { class: "mobile-dialogs-empty",
-        text: query ? "Ничего не найдено" : "В этом Workspace пока нет диалогов" }));
+        text: query ? "Ничего не найдено" : "В этом Workspace пока нет потоков" }));
       }
       list.scrollTop = scrollTop;
       fab.disabled = !workspaceId;
@@ -466,7 +466,7 @@
       switchButton.querySelector("span").textContent = window.AgentHubStreamTabs.streamDisplayName({
         name: selected?.streamName || selected?.streamDisplayName, ordinal: selected?.streamOrdinal,
       }, streams().length);
-      const switchLabel = `Переключить диалог: ${switchButton.querySelector("span").textContent}`;
+      const switchLabel = `Переключить поток: ${switchButton.querySelector("span").textContent}`;
       switchButton.title = switchLabel;
       switchButton.setAttribute("aria-label", switchLabel);
       currentRuntime.textContent = selected?.runtimeLabel || "";

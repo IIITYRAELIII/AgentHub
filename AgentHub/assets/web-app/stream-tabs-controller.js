@@ -280,8 +280,8 @@
     const name = String(stream?.name ?? "").trim();
     if (name) return name;
     return Number(streamCount) > 1
-      ? `Диалог ${Math.max(1, Number(stream?.ordinal) || 1)}`
-      : "Диалог";
+      ? `Поток ${Math.max(1, Number(stream?.ordinal) || 1)}`
+      : "Поток";
   }
 
   // Missing history/answer is not evidence of an empty, queued or failed dialog.
@@ -913,13 +913,13 @@
   }
 
   function pinnedStreamActionLabel(pinned) {
-    return pinned ? "Открепить диалог" : "Закрепить диалог";
+    return pinned ? "Открепить поток" : "Закрепить поток";
   }
 
   function pinnedStreamActionTitle(pinned) {
     return pinned
-      ? "Вернуть диалог в обычный порядок вкладок"
-      : "Показывать диалог первым во вкладках этого Workspace";
+      ? "Вернуть поток в обычный порядок вкладок"
+      : "Показывать поток первым во вкладках этого Workspace";
   }
 
   function reconcileOpenStreamIds(previousIds, availableIds, fallbackId, limit = 4) {
@@ -1114,8 +1114,8 @@
       button.className = "icon-button dialog-settings-close";
       button.dataset.action = "task-settings";
       button.dataset.dialogSettingsClose = "";
-      button.title = "Закрыть настройки диалога";
-      button.setAttribute("aria-label", "Закрыть настройки диалога");
+      button.title = "Закрыть настройки потока";
+      button.setAttribute("aria-label", "Закрыть настройки потока");
       button.innerHTML = `
         <svg data-phosphor-icon="x" viewBox="0 0 256 256" aria-hidden="true">
           <line x1="200" y1="56" x2="56" y2="200" fill="none" stroke="currentColor"
@@ -1193,15 +1193,15 @@
       wrapper.dataset.streamCardSettings = "true";
       wrapper.innerHTML = `
         <button type="button" class="stream-card-settings-toggle" data-stream-card-settings-toggle
-          aria-label="Настройки диалогов" aria-expanded="false" title="Настройки диалогов"></button>
+          aria-label="Настройки потоков" aria-expanded="false" title="Настройки потоков"></button>
         <div class="stream-card-settings-menu" data-stream-card-settings-menu role="dialog"
-          aria-label="Настройки диалогов" hidden>
+          aria-label="Настройки потоков" hidden>
           <section class="stream-card-settings-group" aria-labelledby="stream-settings-status-title">
-            <h3 class="stream-card-settings-group-title" id="stream-settings-status-title">Диалоги</h3>
+            <h3 class="stream-card-settings-group-title" id="stream-settings-status-title">Потоки</h3>
             <div class="stream-card-settings-section stream-card-settings-inline-section">
               <span class="stream-card-settings-kicker">Эффект</span>
               <select data-stream-status-effect-select
-                aria-label="Эффект активности и готового ответа диалога">
+                aria-label="Эффект активности и готового ответа потока">
                 <option value="calm">Спокойный</option>
                 <option value="impulse">Импульс</option>
                 <option value="scanner">Сканер</option>
@@ -1217,7 +1217,7 @@
               title="Использовать всю поверхность панели вместо одной границы.">
               <span class="stream-card-settings-kicker">Подсвечивать целиком</span>
               <button type="button" class="stream-card-gap-toggle stream-card-settings-switch"
-                role="switch" aria-checked="false" aria-label="Подсвечивать панели диалогов целиком"
+                role="switch" aria-checked="false" aria-label="Подсвечивать панели потоков целиком"
                 data-stream-status-fill-toggle>
                 <span class="switch-track" aria-hidden="true"></span>
               </button>
@@ -1227,28 +1227,28 @@
             <h3 class="stream-card-settings-group-title" id="stream-settings-top-title">Верхняя панель</h3>
             <div class="stream-card-settings-section stream-card-settings-inline-section">
               <span class="stream-card-settings-kicker">Порядок</span>
-              <span class="stream-card-settings-segmented" role="group" aria-label="Порядок диалогов">
+              <span class="stream-card-settings-segmented" role="group" aria-label="Порядок потоков">
                 <button type="button" data-stream-order-mode="activity" title="По последней активности">Авто</button>
                 <button type="button" data-stream-order-mode="manual">Фикс</button>
               </span>
             </div>
             <div class="stream-card-settings-section stream-card-settings-inline-section">
               <span class="stream-card-settings-kicker">Ширина</span>
-              <span class="stream-card-settings-segmented" role="group" aria-label="Режим ширины карточек диалогов">
+              <span class="stream-card-settings-segmented" role="group" aria-label="Режим ширины карточек потоков">
                 <button type="button" data-stream-width-mode="auto" aria-pressed="true">Авто</button>
                 <button type="button" data-stream-width-mode="fixed" aria-pressed="false">Фикс</button>
               </span>
               <label class="stream-card-settings-range" data-stream-card-range hidden>
                 <span><span data-stream-card-width-value>${this.fixedWidth}</span> px</span>
                 <input type="range" min="${STREAM_CARD_MIN_WIDTH}" max="${STREAM_CARD_MAX_WIDTH}" step="1"
-                  value="${this.fixedWidth}" data-stream-card-width aria-label="Ширина карточек диалогов">
+                  value="${this.fixedWidth}" data-stream-card-width aria-label="Ширина карточек потоков">
                 <small>${STREAM_CARD_MIN_WIDTH} — ${STREAM_CARD_MAX_WIDTH} px</small>
               </label>
             </div>
             <div class="stream-card-settings-section stream-card-settings-gap-section">
               <span class="stream-card-settings-kicker">Отступ</span>
               <button type="button" class="stream-card-gap-toggle" role="switch" aria-checked="false"
-                aria-label="Отступ между карточками диалогов" data-stream-gap-toggle>
+                aria-label="Отступ между карточками потоков" data-stream-gap-toggle>
                 <span class="switch-track" aria-hidden="true"></span>
               </button>
             </div>
@@ -1268,7 +1268,7 @@
               <span class="stream-card-settings-duration">
                 <label>
                   <input type="number" min="0" max="720" step="0.5" inputmode="decimal"
-                    data-stream-recent-hours aria-label="Часы для недавних диалогов">
+                    data-stream-recent-hours aria-label="Часы для недавних потоков">
                   <span>ч</span>
                 </label>
               </span>
@@ -1277,13 +1277,13 @@
               title="Показывать агента, модель и среду в правой панели.">
               <span class="stream-card-settings-kicker">Подробные карточки</span>
               <button type="button" class="stream-card-gap-toggle stream-card-settings-switch"
-                role="switch" aria-checked="false" aria-label="Подробные карточки диалогов"
+                role="switch" aria-checked="false" aria-label="Подробные карточки потоков"
                 data-stream-detailed-toggle>
                 <span class="switch-track" aria-hidden="true"></span>
               </button>
             </div>
             <div class="stream-card-settings-section stream-card-settings-gap-section"
-              title="Когда в одну колонку не помещаются и диалоги и задачи">
+              title="Когда в одну колонку не помещаются и потоки и задачи">
               <span class="stream-card-settings-kicker">Переносить задачи в отдельную колонку</span>
               <button type="button" class="stream-card-gap-toggle stream-card-settings-switch"
                 role="switch" aria-checked="true" aria-label="Переносить задачи в отдельную колонку"
@@ -1292,7 +1292,7 @@
               </button>
             </div>
             <div class="stream-card-settings-section stream-card-settings-gap-section"
-              title="Всегда показывать задачи и диалоги в двух колонках"
+              title="Всегда показывать задачи и потоки в двух колонках"
               data-activity-task-always-separate-setting hidden>
               <span class="stream-card-settings-kicker">Задачи всегда в отдельной колонке</span>
               <button type="button" class="stream-card-gap-toggle stream-card-settings-switch"

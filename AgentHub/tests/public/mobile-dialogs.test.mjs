@@ -293,7 +293,7 @@ test("user corrections keep themed drawers, low FAB, direct Stream creation and 
       assert.ok(geometry.fab.every((n) => n >= 44) && geometry.viewport.every(Boolean));
       assert.ok(geometry.tabs.every((t) => t.width >= 44 && t.height >= 44 && t.fits));
       assert.ok(geometry.overflow <= 1);
-      assert.deepEqual(geometry.labels, ["Диалоги", "Задачи", "Журнал", "Статистика", "Ещё"]);
+      assert.deepEqual(geometry.labels, ["Потоки", "Задачи", "Журнал", "Статистика", "Ещё"]);
       await save("list");
       if (width === 390 && theme === "nebula") {
         await page.evaluate((tasks) => {
@@ -335,7 +335,7 @@ test("user corrections keep themed drawers, low FAB, direct Stream creation and 
       await page.locator('[data-mobile-stream-list] [data-mobile-stream-id="s1"]').first().click();
       const create = page.locator("[data-mobile-chat-stream-create]");
       assert.equal(await create.isVisible(), true);
-      assert.equal(await create.getAttribute("aria-label"), "Новый диалог");
+      assert.equal(await create.getAttribute("aria-label"), "Новый поток");
       assert.equal(await create.evaluate((n) => {
         const r = n.getBoundingClientRect(), switcher = document.querySelector("[data-mobile-stream-switch]").getBoundingClientRect();
         const actions = document.querySelector(".chat-overlay-actions").getBoundingClientRect();
@@ -381,7 +381,7 @@ test("Mobile dialogs scope, modal navigation, Back, drafts and responsive parity
       const page = await context.newPage();
       const errors = await open(page);
       assert.equal(await page.locator("html").getAttribute("data-mobile-dialogs-enabled"), "");
-      assert.deepEqual(await page.locator('[data-mobile-stream-list] h2').allTextContents(), ["Все диалоги"]);
+      assert.deepEqual(await page.locator('[data-mobile-stream-list] h2').allTextContents(), ["Все потоки"]);
       assert.equal(await page.locator('[data-mobile-stream-list] [data-mobile-stream-id="s3"]').count(), 0);
       await page.screenshot({ path: path.join(captures.pathname.replace(/^\/(?:([A-Z]:))/u, "$1"), `list-${width}.png`) });
       await page.locator("[data-mobile-workspaces-open]").click();
@@ -831,7 +831,7 @@ test("Mobile empty scope, long names, offline retry, focus containment and viewp
     await page.keyboard.press("Tab");
     assert.equal(await page.evaluate(() => document.activeElement.closest("[data-mobile-workspace-drawer]") !== null), true);
     await page.locator('[data-workspace-select="empty"] .task-workspace-name').click();
-    assert.match(await page.locator("[data-mobile-stream-list]").innerText(), /пока нет диалогов/u);
+    assert.match(await page.locator("[data-mobile-stream-list]").innerText(), /пока нет потоков/u);
     await page.locator("[data-mobile-stream-create]").click();
     assert.equal(await page.evaluate(() => window.testIntents.at(-1).workspaceId), "empty");
     await page.evaluate(() => AgentHub.setConnection("offline"));
