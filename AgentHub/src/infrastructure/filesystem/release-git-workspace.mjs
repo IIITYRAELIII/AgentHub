@@ -7,6 +7,7 @@ import { ReleaseCandidateFrozenError } from "../../domain/task-board-task.mjs";
 import { ReleasePreparationRejectedError } from "../../domain/release-preparation.mjs";
 import { assertPreparationCheckpoint } from "./release-preparation-guard.mjs";
 import { assertInstalledLocalSourceBaseline } from "./local-source-baseline.mjs";
+import { readNativeUpstreamAdoptions, assertNativeUpstreamOrigin } from "./native-upstream-adoption.mjs";
 import { inspectPublishedNotesArchive, archivePublishedNotesCheckout } from "./native-await-published-notes-recovery.mjs";
 import { defaultRuntimeRoot } from "./runtime-layout.mjs";
 import process from "node:process";
@@ -923,10 +924,16 @@ export class ReleaseGitWorkspaceService {
         throw stale("Prepared PreRelease selection, base or evidence is stale");
       }
       const git = (args, options = {}) => runGit(args, { ...options, cwd: source.releaseRoot });
+      const historyAuthority = await this.#nativeHistoryAuthority({ projectRoot, provenance: manifest.baseProvenance,
+        planRevision, tasks });
       await assertNativePreparedComposition({ git, baseCommit: source.baseCommit, tasks,
+        historyAuthority,
         merges: manifest.merges, head: source.preReleaseHead, tree: source.tree,
         identity: { policy: NATIVE_RELEASE_POLICY, workspaceId, planRevision, baseCommit: source.baseCommit, tasks },
         verifyReview: this.verifyNativeResolutionReview });
+      if (historyAuthority?.adoptions.length) await assertNativeUpstreamOrigin({
+        git: (args, options = {}) => runGit(args, { ...options, cwd: projectRoot }),
+        adoptions: historyAuthority.adoptions, originCommit: manifest.baseProvenance.approvedOriginMainCommit });
       const binding = { kind: "native-prepared-release-v1", releaseRoot: source.releaseRoot,
         commit: source.preReleaseHead, tree: source.tree, manifestHash: source.manifestHash,
         checkpointSha256: sha256(await readFile(source.checkpointFile)),
@@ -1429,11 +1436,28 @@ export class ReleaseGitWorkspaceService {
     const initial = await primarySnapshot(projectRoot);
     await this.assertPrimaryInvariant(initial.root, { phase: "local source baseline verification" });
     return assertInstalledLocalSourceBaseline({ provenance, planRevision, tasks,
+      repositoryRoot: initial.root,
       primaryMainCommit: initial.mainCommit,
       publishedRevision: await durablePublishedRevision(this.#environment, initial.root),
       runtimeRoot: defaultRuntimeRoot({ environment: this.#environment }),
       git: (args, options = {}) => runGit(args, { ...options, cwd: initial.root, timeoutMs: 300_000 }),
     });
+  }
+
+  async #nativeHistoryAuthority({ projectRoot, provenance, planRevision, tasks }) {
+    if (provenance?.kind === LOCAL_SOURCE_BASELINE_PROVENANCE) {
+      const verified = await this.validateLocalSourceBaseline({ projectRoot, provenance, planRevision, tasks });
+      return { bases: [verified.provenance.sourceBaseCommit], metadataBases: [verified.provenance.sourceBaseCommit],
+        adoptions: verified.adoptions ?? [] };
+    }
+    const initial = await primarySnapshot(projectRoot);
+    const adoptions = await readNativeUpstreamAdoptions({
+      git: (args, options = {}) => runGit(args, { ...options, cwd: initial.root }), tasks,
+      repositoryRoot: initial.root, localMainCommit: initial.mainCommit });
+    // New incoming plus an installed carry must be sealed together in the
+    // existing exact local-source envelope, not inferred from a moving origin.
+    if (adoptions.length) throw new Error("Native adopted history requires its exact installed-source preparation binding");
+    return null;
   }
 
   async inspectNativeAwaitRecovery({ projectRoot, original, frozenTasks }) {
@@ -1551,13 +1575,17 @@ export class ReleaseGitWorkspaceService {
       }
       const validateLocalSource = async () => {
         if (localSource) await assertInstalledLocalSourceBaseline({ provenance: localSource, git,
+          repositoryRoot: initial.root,
+          adoptionGit: (args, options = {}) => runGit(args, { ...options, cwd: initial.root }),
           primaryMainCommit: (await primarySnapshot(initial.root)).mainCommit,
           publishedRevision: await durablePublishedRevision(this.#environment, initial.root),
           planRevision: revision, tasks, runtimeRoot: defaultRuntimeRoot({ environment: this.#environment }),
         });
       };
       await validateLocalSource();
-      await assertNativeTaskHistories({ git, baseCommit, tasks });
+      const historyRequest = { projectRoot: initial.root, provenance, planRevision: revision, tasks };
+      let historyAuthority = await this.#nativeHistoryAuthority(historyRequest);
+      await assertNativeTaskHistories({ git, baseCommit, tasks, historyAuthority });
       const identity = { policy: NATIVE_RELEASE_POLICY, workspaceId, planRevision: revision, baseCommit, tasks };
       const mergeRoot = path.join(layout.root, "native-merges", sha256(stableManifest(identity)).slice(0, 24));
       const composition = await mergeSelectedResults({
@@ -1621,7 +1649,7 @@ export class ReleaseGitWorkspaceService {
             || current.dirty.fingerprint !== initial.dirty.fingerprint) {
           throw new Error("Registered primary changed during native release preparation");
         }
-        if (provenance?.approvedLocalMainCommit || provenance?.approvedOriginMainCommit) {
+        if (!localSource && (provenance?.approvedLocalMainCommit || provenance?.approvedOriginMainCommit)) {
           const remote = await git(["ls-remote", "origin", "refs/heads/main"]);
           if (current.mainCommit !== provenance.approvedLocalMainCommit
               || remote.split(/\s/u)[0] !== provenance.approvedOriginMainCommit) {
@@ -1632,7 +1660,11 @@ export class ReleaseGitWorkspaceService {
           throw new Error("Publication authority changed during native release preparation");
         }
         await validateLocalSource();
-        await assertNativeTaskHistories({ git, baseCommit, tasks });
+        historyAuthority = await this.#nativeHistoryAuthority(historyRequest);
+        await assertNativeTaskHistories({ git, baseCommit, tasks, historyAuthority });
+        if (historyAuthority?.adoptions.length) await assertNativeUpstreamOrigin({
+          git: (args, options = {}) => runGit(args, { ...options, cwd: initial.root }),
+          adoptions: historyAuthority.adoptions, originCommit: localSource.approvedOriginMainCommit });
         if (nativeAwaitRecovery) {
           const remote = await git(["ls-remote", "origin", "refs/heads/main"]);
           if (remote.split(/\s/u)[0] !== nativeAwaitRecovery.originMainCommit) {
@@ -2716,11 +2748,12 @@ export class ReleaseGitWorkspaceService {
       gitMaybe(["symbolic-ref", "--short", "HEAD"], { cwd: marker.releaseRoot }),
       runGit(["rev-parse", "HEAD^{commit}"], { cwd: marker.releaseRoot }),
       runGit(["rev-parse", "HEAD^{tree}"], { cwd: marker.releaseRoot }),
-      runGit(["status", "--porcelain=v1", "--untracked-files=all"], { cwd: marker.releaseRoot }),
+      runGit(["status", "--porcelain=v1", "-z", "--untracked-files=all"], { cwd: marker.releaseRoot, rawOutput: true })
+        .then(bytes => Buffer.from(bytes).toString("utf8")),
     ]);
     let authorizedNotes = false;
     if (checkpointPhase === "prepared" && releaseDirty && changelogContent != null
-        && releaseDirty.split(/\r?\n/u).filter(Boolean).every(line => line.slice(3) === "CHANGELOG.md")) {
+        && releaseDirty.split("\0").filter(Boolean).every(line => line.slice(3) === "CHANGELOG.md")) {
       const file = path.join(marker.releaseRoot, "CHANGELOG.md");
       const info = await lstat(file).catch(error => { if (error.code === "ENOENT") return null; throw error; });
       authorizedNotes = Boolean(info?.isFile() && !info.isSymbolicLink()

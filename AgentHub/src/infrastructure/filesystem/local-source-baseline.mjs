@@ -5,6 +5,7 @@ import { LOCAL_SOURCE_BASELINE_PROVENANCE, localSourceSelectionHash,
   normalizedReleaseBaseProvenance } from "../../domain/release-base-provenance.mjs";
 import { runtimeHostSourceHash } from "../process/runtime-host-builder.mjs";
 import { ReleasePreparationRejectedError } from "../../domain/release-preparation.mjs";
+import { readNativeUpstreamAdoptions, assertNativeUpstreamOrigin } from "./native-upstream-adoption.mjs";
 
 const sha = bytes => createHash("sha256").update(bytes).digest("hex");
 const reject = message => { throw new ReleasePreparationRejectedError(`Installed local source baseline: ${message}`); };
@@ -38,12 +39,23 @@ function sourceMatches(source, physical, relative) {
 // overlay, adoption, receipt or additional recovery registry is written here.
 export async function assertInstalledLocalSourceBaseline({
   provenance, git, primaryMainCommit, publishedRevision, planRevision, tasks, runtimeRoot,
+  adoptionGit = git, repositoryRoot = null,
 }) {
   const p = normalizedReleaseBaseProvenance(provenance);
   if (p?.kind !== LOCAL_SOURCE_BASELINE_PROVENANCE) reject("missing provenance");
   if (p.agreedMainCommit !== primaryMainCommit || p.publishedBaseCommit !== publishedRevision
       || p.planRevision !== planRevision || p.selectionHash !== localSourceSelectionHash(tasks)) reject("base, plan or selection changed");
-  if (String(await git(["ls-remote", "origin", "refs/heads/main"])).split(/\s/u)[0] !== publishedRevision) reject("origin differs from the pinned OWN publication");
+  let adoptions = [];
+  if (p.adoptions) {
+    if (!repositoryRoot) reject("adoption repository is absent");
+    adoptions = await readNativeUpstreamAdoptions({ git: adoptionGit, tasks, repositoryRoot,
+      localMainCommit: primaryMainCommit });
+    const pins = adoptions.map(({ taskId, resultCommit, recordRef, recordHash, adoptedCommit, acceptedLocalMainCommit }) =>
+      ({ taskId, resultCommit, recordRef, recordHash, adoptedCommit, acceptedLocalMainCommit }));
+    if (JSON.stringify(pins) !== JSON.stringify(p.adoptions)) reject("selected adoption receipts changed");
+    await assertNativeUpstreamOrigin({ git: adoptionGit, adoptions, originCommit: p.approvedOriginMainCommit });
+    await adoptionGit(["merge-base", "--is-ancestor", publishedRevision, p.approvedOriginMainCommit]);
+  } else if (String(await git(["ls-remote", "origin", "refs/heads/main"])).split(/\s/u)[0] !== publishedRevision) reject("origin differs from the pinned OWN publication");
   await git(["merge-base", "--is-ancestor", publishedRevision, p.sourceBaseCommit]);
   if (String(await git(["rev-parse", `${p.sourceBaseCommit}^{tree}`])) !== p.sourceBaseTree) reject("source tree changed");
   const patch = await git(["diff", "--binary", "--full-index", "--no-renames", publishedRevision, p.sourceBaseCommit], { rawOutput: true });
@@ -101,5 +113,36 @@ export async function assertInstalledLocalSourceBaseline({
       if (!sourceMatches(source, await regular(path.join(manifest.sourceRoot, relative)), relative)) reject("Host Git source differs from compiled inputs");
     }
   }
-  return { provenance: p, runtimeFiles, hostChanged };
+  if (p.adoptions) await assertNativeUpstreamOrigin({ git: adoptionGit, adoptions,
+    originCommit: p.approvedOriginMainCommit });
+  return { provenance: p, runtimeFiles, hostChanged, ...(p.adoptions ? { adoptions } : {}) };
+}
+
+// Test uses the same installed-byte proof as preparation. Only the manifest's
+// retained source checkout supplies a candidate commit; it is not trusted until
+// the complete ordinary baseline verifier above accepts it.
+export async function installedNativeHistoryBaseline({ git, sourceGit, repositoryRoot,
+  primaryMainCommit, publishedRevision, tasks, runtimeRoot, planRevision, adoptions = [] }) {
+  const currentFile = path.join(runtimeRoot, "current.json");
+  if (!await lstat(currentFile).catch(error => { if (error.code === "ENOENT") return null; throw error; })) return null;
+  const current = JSON.parse(await regular(currentFile));
+  if (!/^[A-Za-z0-9._-]{1,200}$/u.test(current.current) || current.current.includes("..")) reject("installed identity changed");
+  const bytes = await regular(path.join(runtimeRoot, "releases", current.current, "runtime-manifest.json"));
+  const manifest = JSON.parse(bytes);
+  if (typeof manifest.sourceRoot !== "string" || !path.isAbsolute(manifest.sourceRoot)) reject("retained source root is absent");
+  const sourceBaseCommit = await sourceGit(manifest.sourceRoot, ["rev-parse", "HEAD^{commit}"]);
+  const sourceBaseTree = await sourceGit(manifest.sourceRoot, ["rev-parse", "HEAD^{tree}"]);
+  if (await sourceGit(manifest.sourceRoot, ["status", "--porcelain=v1", "-z", "--untracked-files=all"])) reject("retained source checkout changed");
+  if (sourceBaseCommit === publishedRevision) return null;
+  const p = { schemaVersion: 1, kind: LOCAL_SOURCE_BASELINE_PROVENANCE, publishedBaseCommit: publishedRevision,
+    agreedMainCommit: primaryMainCommit, sourceBaseCommit, sourceBaseTree,
+    sourcePatchSha256: sha(await git(["diff", "--binary", "--full-index", "--no-renames", publishedRevision, sourceBaseCommit], { rawOutput: true })),
+    installedReleaseId: current.current, installedManifestSha256: sha(bytes), planRevision,
+    selectionHash: localSourceSelectionHash(tasks), ...(adoptions.length ? {
+      approvedOriginMainCommit: adoptions[0].adoptedCommit,
+      adoptions: adoptions.map(({ taskId, resultCommit, recordRef, recordHash, adoptedCommit, acceptedLocalMainCommit }) =>
+        ({ taskId, resultCommit, recordRef, recordHash, adoptedCommit, acceptedLocalMainCommit })),
+    } : {}) };
+  return (await assertInstalledLocalSourceBaseline({ provenance: p, git, repositoryRoot, primaryMainCommit,
+    publishedRevision, planRevision, tasks, runtimeRoot })).provenance;
 }

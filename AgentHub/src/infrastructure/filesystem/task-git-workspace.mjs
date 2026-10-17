@@ -19,6 +19,8 @@ import { canonicalPath } from "./config.mjs";
 import { taskWorkingTreeDiff } from "./task-git-diff.mjs";
 import * as legacySelectedV1 from "./legacy-selected-composition-materializer-v1.mjs";
 import { mergeSelectedResults, assertNativeTaskHistories } from "./native-release-merge.mjs";
+import { installedNativeHistoryBaseline, assertInstalledLocalSourceBaseline } from "./local-source-baseline.mjs";
+import { readNativeUpstreamAdoptions, assertNativeUpstreamOrigin } from "./native-upstream-adoption.mjs";
 import {
   applySelectedCompositionFiles, prepareSelectedCompositionFiles, readSelectedCompositionFiles,
   selectedCompositionFilePlan,
@@ -2189,39 +2191,16 @@ export class TaskGitWorkspaceService {
       taskId, taskNumber, repoRoot, branch, baseCommit, snapshotCommit,
       localMain, adoptedCommit, lease,
     });
-    const matchingRefs = [];
-    for (const candidateRef of taskUpstreamAdoptionIdentityRefs(
-      proof.taskId, proof.repositoryKey, proof.snapshotCommit, proof.adoptedCommit,
-    )) {
-      const candidateHash = await this.#runOwned(["rev-parse", "--verify", candidateRef], {
-        cwd: repoRoot, lease,
-      }).catch(() => null);
-      if (candidateHash) matchingRefs.push([candidateRef, candidateHash]);
-    }
-    if (!matchingRefs.length) {
-      throw new Error(`approved upstream ${proof.adoptedCommit} requires a durable explicit adoption receipt`);
-    }
-    if (new Set(matchingRefs.map(([, hash]) => hash)).size !== 1) {
-      throw new Error("explicit upstream adoption path aliases have conflicting receipts");
-    }
-    const [recordRef, recordHash] = matchingRefs[0];
-    const type = await this.#runOwned(["cat-file", "-t", recordHash], { cwd: repoRoot, lease });
-    if (type !== "blob") throw new Error("explicit upstream adoption receipt is not a Git blob");
-    const content = await this.#runOwned(["cat-file", "-p", recordHash], { cwd: repoRoot, lease });
-    let record;
-    try {
-      record = JSON.parse(content);
-    } catch {
-      throw new Error("explicit upstream adoption receipt is invalid JSON");
-    }
-    const expected = this.#upstreamAdoptionRecord(proof, record?.requestId);
-    if (JSON.stringify(record) !== JSON.stringify(expected)) {
+    const receipts = await readNativeUpstreamAdoptions({
+      git: (args, options = {}) => this.#runOwned(args, { ...options, cwd: repoRoot, lease }),
+      tasks: [{ taskId: proof.taskId, baseCommit: proof.taskBaseCommit, resultCommit: proof.snapshotCommit }],
+      repositoryRoot: repoRoot, localMainCommit: proof.acceptedLocalMainCommit,
+    });
+    if (receipts.length !== 1) throw new Error("approved upstream requires a durable explicit adoption receipt");
+    const { recordRef, recordHash, record } = receipts[0];
+    if (JSON.stringify(record) !== JSON.stringify(this.#upstreamAdoptionRecord(proof, record.requestId))) {
       throw new Error("explicit upstream adoption receipt identity changed");
     }
-    const verifiedHash = await this.#runOwned(["hash-object", "--stdin"], {
-      cwd: repoRoot, input: `${JSON.stringify(record)}\n`, lease,
-    });
-    if (verifiedHash !== recordHash) throw new Error("explicit upstream adoption receipt hash changed");
     return { recordRef, recordHash, record };
   }
 
@@ -3380,6 +3359,8 @@ export class TaskGitWorkspaceService {
         const record = await this.pendingNativeIntegrationOwned({ taskId, projectRoot, operationId, lease: ownedLease });
         if (JSON.stringify(record) !== JSON.stringify(original)) throw new Error("Native Test original intent changed");
         const s = record.snapshot;
+        if (record.nativeHistoryAuthority) await this.#nativeHistoryAuthority(s,
+          { mainCommit: record.mainCommit, headCommit: record.before }, ownedLease, record.nativeHistoryAuthority);
         const managedRoot = await this.managedRepositoryRoot(s.projectRoot, { taskId, taskNumber: s.branch });
         if (!managedRoot || !samePath(managedRoot, repoRoot)) {
           throw new Error("Native Test managed source binding changed");
@@ -3410,6 +3391,7 @@ export class TaskGitWorkspaceService {
             throw new Error("Applied native Test materialization changed");
           }
         }
+        await this.#nativeHistoryOrigin(s, record.nativeHistoryAuthority, ownedLease);
         await ownedLease.assertOwned();
       };
       await verify();
@@ -3438,6 +3420,8 @@ export class TaskGitWorkspaceService {
       await this.#nativeSelectedCompositionForResult(nativeAbsorptionHistory, lease);
     }
     if (record) {
+      if (record.nativeHistoryAuthority) await this.#nativeHistoryAuthority(snapshot,
+        { mainCommit: record.mainCommit, headCommit: record.before }, lease, record.nativeHistoryAuthority);
       if (JSON.stringify(record.nativeAbsorptionInput ?? null) !== JSON.stringify(nativeAbsorptionInput)
           || JSON.stringify(record.nativeAbsorptionHistory ?? null) !== JSON.stringify(nativeAbsorptionHistory)) {
         throw new Error("Native Test original absorption binding changed");
@@ -3470,6 +3454,7 @@ export class TaskGitWorkspaceService {
         throw Object.assign(new Error("Reused native Test lacks exact current dev readback"), { code: "TASK_NATIVE_INTEGRATION_UNKNOWN" });
       }
     }
+    await this.#nativeHistoryOrigin(snapshot, record?.nativeHistoryAuthority, lease);
     return record;
   }
 
@@ -3537,7 +3522,7 @@ export class TaskGitWorkspaceService {
     await this.#nativeIntegrationComposition(record, lease);
     if (descriptor.absorptionHistory) await this.#nativeSelectedCompositionForResult(descriptor.absorptionHistory, lease);
     await assertNativeTaskHistories({
-      git: args => this.#runOwned(args, { cwd: descriptor.repositoryRoot, lease }),
+      git: (args, options = {}) => this.#runOwned(args, { ...options, cwd: descriptor.repositoryRoot, lease }),
       baseCommit: descriptor.mainCommit,
       tasks: [{ taskId: descriptor.taskId, baseCommit: descriptor.taskBaseCommit,
         resultCommit: descriptor.taskCommit, selectedComposition: descriptor }],
@@ -3549,6 +3534,7 @@ export class TaskGitWorkspaceService {
     const snapshot = record.snapshot;
     const identity = { policy: "native-dev-merge-v1", taskId: snapshot.taskId,
       resultCommit: snapshot.headCommit, before: record.before, mainCommit: record.mainCommit,
+      ...(record.nativeHistoryAuthority ? { nativeHistoryAuthority: record.nativeHistoryAuthority } : {}),
       ...(record.nativeAbsorptionInput || record.nativeAbsorptionHistory ? {
         ...(record.nativeAbsorptionInput ? { nativeAbsorptionInput: record.nativeAbsorptionInput } : {}),
         ...(record.nativeAbsorptionHistory ? { nativeAbsorptionHistory: record.nativeAbsorptionHistory } : {}),
@@ -3589,6 +3575,40 @@ export class TaskGitWorkspaceService {
       throw new Error("Native Test completed merge binding changed");
     }
     return composition;
+  }
+
+  async #nativeHistoryOrigin(snapshot, binding, lease) {
+    if (binding?.adoptions?.length) await assertNativeUpstreamOrigin({
+      git: (args, options = {}) => this.#runOwned(args, { ...options, cwd: snapshot.repositoryRoot, lease }),
+      adoptions: binding.adoptions, originCommit: binding.adoptions[0].adoptedCommit });
+  }
+
+  async #nativeHistoryAuthority(snapshot, dev, lease, expected = undefined) {
+    const tasks = [{ taskId: snapshot.taskId, baseCommit: snapshot.baseCommit, resultCommit: snapshot.headCommit }];
+    const git = (args, options = {}) => this.#runOwned(args, { ...options, cwd: snapshot.repositoryRoot, lease });
+    const adoptions = await readNativeUpstreamAdoptions({ git, tasks, repositoryRoot: snapshot.repositoryRoot,
+      localMainCommit: dev.mainCommit });
+    if (adoptions.length) await assertNativeUpstreamOrigin({ git, adoptions, originCommit: adoptions[0].adoptedCommit });
+    const publication = await this.readPublication();
+    const published = publicationStateRepositories(publication ?? {})
+      .find(entry => samePath(entry.root, snapshot.repositoryRoot))?.revision;
+    const runtimeRoot = path.dirname(this.dataDir);
+    const planRevision = `native-test:${snapshot.taskId}:${snapshot.headCommit}`;
+    let baseline = expected?.baseline ?? null;
+    if (expected === undefined && publication?.generation && published) {
+      baseline = await installedNativeHistoryBaseline({ git, repositoryRoot: snapshot.repositoryRoot,
+        primaryMainCommit: dev.mainCommit, publishedRevision: published, tasks, runtimeRoot, planRevision, adoptions,
+        sourceGit: (cwd, args) => this.#runOwned(args, { cwd, lease, guardRepositoryRoot: snapshot.repositoryRoot }) });
+    } else if (baseline) {
+      await assertInstalledLocalSourceBaseline({ provenance: baseline, git, repositoryRoot: snapshot.repositoryRoot,
+        primaryMainCommit: dev.mainCommit, publishedRevision: published, planRevision, tasks, runtimeRoot });
+    }
+    const binding = { baseline, adoptions };
+    if (expected !== undefined && JSON.stringify(binding) !== JSON.stringify(expected)) {
+      throw new Error("Native Test installed source or adoption authority changed");
+    }
+    return { binding, bases: [dev.headCommit, ...(baseline ? [baseline.sourceBaseCommit] : [])],
+      metadataBases: baseline ? [baseline.sourceBaseCommit] : [], adoptions };
   }
 
   async #mergeIntoDevOwned(snapshot, { lease, operationId = null, nativeAbsorptionInput = null,
@@ -3634,15 +3654,18 @@ export class TaskGitWorkspaceService {
           validateAbsorption();
           await this.#assertSelectedAbsorptionGit(nativeAbsorptionInput, snapshot.repositoryRoot, ownedLease);
         }
+        const historyAuthority = await this.#nativeHistoryAuthority(snapshot, dev, ownedLease);
         await assertNativeTaskHistories({
-          git: args => this.#runOwned(args, { cwd: snapshot.repositoryRoot, lease: ownedLease }),
+          git: (args, options = {}) => this.#runOwned(args, { ...options, cwd: snapshot.repositoryRoot, lease: ownedLease }),
           baseCommit: dev.mainCommit,
+          historyAuthority,
           tasks: [{ taskId: snapshot.taskId, baseCommit: snapshot.baseCommit, resultCommit: snapshot.headCommit,
             ...(nativeAbsorptionInput || nativeAbsorptionHistory
               ? { nativeAbsorptionInput: nativeAbsorptionInput ?? nativeAbsorptionHistory.absorptionInput } : {}) }],
         });
         record = { version: 1, kind: "native-task-integration-v1", operationId, phase: "prepared",
           snapshot, devRoot: dev.projectRoot, before: dev.headCommit, mainCommit: dev.mainCommit,
+          nativeHistoryAuthority: historyAuthority.binding,
           ...(nativeResolutionReview ? { nativeResolutionReview } : {}),
           ...(initialNativeTest ? { initialNativeTest } : {}),
           ...(nativeAbsorptionInput || nativeAbsorptionHistory ? { expectedTaskRevision,
@@ -3655,6 +3678,14 @@ export class TaskGitWorkspaceService {
         guardRepositoryRoot: snapshot.repositoryRoot, timeoutMs: 300_000 });
       const sourceFence = async () => {
         await ownedLease.assertOwned();
+        if (record.nativeHistoryAuthority) {
+          const historyAuthority = await this.#nativeHistoryAuthority(snapshot, dev, ownedLease, record.nativeHistoryAuthority);
+          await assertNativeTaskHistories({ git: (args, options = {}) => git(args, snapshot.repositoryRoot, options),
+            baseCommit: record.mainCommit, tasks: [{ taskId: snapshot.taskId, baseCommit: snapshot.baseCommit,
+              resultCommit: snapshot.headCommit, ...(nativeAbsorptionInput || nativeAbsorptionHistory
+                ? { nativeAbsorptionInput: nativeAbsorptionInput ?? nativeAbsorptionHistory.absorptionInput } : {}) }],
+            historyAuthority });
+        }
         if (initialNativeTest) await validateInitialNativeTest({ record });
         if (nativeAbsorptionHistory) validateAbsorption();
         if (nativeAbsorptionInput) {
@@ -3669,6 +3700,7 @@ export class TaskGitWorkspaceService {
             || await git(["rev-parse", `${taskBaseRef(snapshot.taskId, taskRepositoryKey(snapshot.repositoryRoot))}^{commit}`], snapshot.repositoryRoot) !== snapshot.baseCommit) {
           throw Object.assign(new Error("Native Test source/main changed; original remains unresolved"), { code: "TASK_NATIVE_INTEGRATION_UNKNOWN" });
         }
+        await this.#nativeHistoryOrigin(snapshot, record.nativeHistoryAuthority, ownedLease);
       };
       await sourceFence();
       {

@@ -88,8 +88,10 @@ new external origin code. `installed-local-source-v1` retains agreed local main
 and the durable OWN publication as separate identities; it never moves primary.
 The exact source base/tree/binary patch, current installed release/manifest,
 plan revision and selected Task IDs/revisions/registered bases/results are pinned.
-Origin must still equal that OWN publication, which must be an ancestor of the
-source base. Missing, substituted or changed pins refuse before promotion.
+Origin must equal that OWN publication unless the exact selected Task has a
+current ordinary upstream-adoption receipt for the separately pinned approved
+origin (ADR-0117). OWN publication remains an ancestor of the local source base.
+Missing, substituted or changed pins refuse before promotion.
 
 The existing RM-only `hub_release_prepare` repository envelope may carry
 `localSourceBaseline` and `nativeResolutionReview`. Both participate in its
@@ -101,6 +103,31 @@ selectionHash. The latter has only requestId/text and uses the existing exact
 authenticated native merge review verifier; it supplies no caller approval flag.
 Ordinary Await still accepts the exact reviewed Task through its existing owner;
 this preparation replaces its candidate baseline before release admission.
+
+When approved incoming and installed local source coexist, the same envelope
+additionally binds both `approvedOriginMainCommit` and `adoptions`. Each adoption
+has the existing exact taskId/resultCommit/recordRef/recordHash/adoptedCommit/
+acceptedLocalMainCommit fields. All receipts name selected exact snapshots and
+the same approved origin. The normal adoption owner remains the only writer;
+read-side verification proves current main, Task base/branch, canonical blob,
+bounded first-parent merge proof and trees. Origin, receipt, source and installed
+pins are repeated after awaited caller validation, before promotion/Task CAS,
+prepared reuse and freeze. This does not adopt future origin or move primary.
+
+Native metadata validation distinguishes inherited metadata from Task edits.
+CHANGELOG entries must equal a complete Git mode/blob entry at the registered
+Task base, verified installed source or that Task's explicitly adopted commit.
+Metadata paths use raw NUL records and literal pathspecs; quoted presentation
+names, malformed or ambiguous tree lookups grant no inherited identity.
+Existing package versions must match one of those same sources. Arbitrary Task
+notes/version changes and unknown merge sides still refuse. Only exact verified
+installed/adopted ancestry is excluded from bounded Task history. Test may also
+recognize its already managed dev ancestry for preview integration; publication
+never consumes that dev context and independently checks the selected set.
+Test persists its proof in its existing native intent and repeats it through
+terminal/recovery checks; no new ledger, authority flag or recovery loop exists.
+
+Affected regression: `node --test tests/infrastructure/filesystem/native-installed-adoption.test.mjs`.
 
 The candidate owner verifies changed runtime paths against actual immutable
 installed bytes and Git source, allowing only built-in CRLF/LF text serialization
