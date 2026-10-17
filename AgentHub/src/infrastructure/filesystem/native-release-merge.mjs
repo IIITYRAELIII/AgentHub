@@ -17,6 +17,18 @@ function failure(message, code = "RELEASE_NATIVE_HISTORY_REQUIRED", details = {}
   return Object.assign(new Error(message), { code, ...details });
 }
 
+async function metadataEntry(git, commit, file) {
+  const output = String(await git(["--literal-pathspecs", "ls-tree", "--full-tree", "-z", commit, "--", file],
+    { rawOutput: true }));
+  if (!output) return null;
+  const records = output.split("\0");
+  const match = /^(\d{6}) blob ([a-f0-9]{40})\t([\s\S]*)$/u.exec(records[0]);
+  if (records.length !== 2 || records[1] !== "" || !match || match[3] !== file) {
+    throw failure("Native metadata lookup is malformed or ambiguous");
+  }
+  return `${match[1]} ${match[2]}`;
+}
+
 export async function assertNativeTaskHistories({ git, baseCommit, tasks, historyAuthority = null }) {
   // Internal context, verified by the owning caller at every effect boundary.
   // Only Test may include its already managed dev ancestry here.
@@ -40,18 +52,18 @@ export async function assertNativeTaskHistories({ git, baseCommit, tasks, histor
     const metadataBases = [...new Set([taskBase, ...(historyAuthority?.metadataBases ?? []),
       ...adopted.map(a => a.adoptedCommit)])];
     const metadata = String(await git([
-      "diff", "--name-only", "--no-renames", taskBase, task.resultCommit,
+      "diff", "--name-only", "--no-renames", "-z", taskBase, task.resultCommit,
       "--", "CHANGELOG.md", ":(glob)**/CHANGELOG.md",
-    ]));
-    for (const file of metadata.split(/\r?\n/u).filter(Boolean)) {
-      const entry = String(await git(["ls-tree", task.resultCommit, "--", file]));
+    ], { rawOutput: true }));
+    for (const file of metadata.split("\0").filter(Boolean)) {
+      const entry = await metadataEntry(git, task.resultCommit, file);
       const known = [];
-      for (const b of metadataBases) known.push(await git(["ls-tree", b, "--", file]));
-      if (!known.includes(entry)) throw failure(`Task ${task.taskId} changes release-owned CHANGELOG metadata`);
+      for (const b of metadataBases) known.push(await metadataEntry(git, b, file));
+      if (entry === null || !known.includes(entry)) throw failure(`Task ${task.taskId} changes release-owned CHANGELOG metadata`);
     }
-    const packages = String(await git(["diff", "--name-only", "--no-renames", taskBase, task.resultCommit,
+    const packages = String(await git(["diff", "--name-only", "--no-renames", "-z", taskBase, task.resultCommit,
       "--", "package.json", "package-lock.json", ":(glob)**/package.json", ":(glob)**/package-lock.json",
-    ])).split(/\r?\n/u).filter(Boolean);
+    ], { rawOutput: true })).split("\0").filter(Boolean);
     for (const file of packages) {
       const priors = [];
       for (const b of metadataBases) priors.push(await maybe(git, ["show", `${b}:${file}`]));

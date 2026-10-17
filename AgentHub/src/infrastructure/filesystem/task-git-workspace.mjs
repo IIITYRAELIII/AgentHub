@@ -3522,7 +3522,7 @@ export class TaskGitWorkspaceService {
     await this.#nativeIntegrationComposition(record, lease);
     if (descriptor.absorptionHistory) await this.#nativeSelectedCompositionForResult(descriptor.absorptionHistory, lease);
     await assertNativeTaskHistories({
-      git: args => this.#runOwned(args, { cwd: descriptor.repositoryRoot, lease }),
+      git: (args, options = {}) => this.#runOwned(args, { ...options, cwd: descriptor.repositoryRoot, lease }),
       baseCommit: descriptor.mainCommit,
       tasks: [{ taskId: descriptor.taskId, baseCommit: descriptor.taskBaseCommit,
         resultCommit: descriptor.taskCommit, selectedComposition: descriptor }],
@@ -3656,7 +3656,7 @@ export class TaskGitWorkspaceService {
         }
         const historyAuthority = await this.#nativeHistoryAuthority(snapshot, dev, ownedLease);
         await assertNativeTaskHistories({
-          git: args => this.#runOwned(args, { cwd: snapshot.repositoryRoot, lease: ownedLease }),
+          git: (args, options = {}) => this.#runOwned(args, { ...options, cwd: snapshot.repositoryRoot, lease: ownedLease }),
           baseCommit: dev.mainCommit,
           historyAuthority,
           tasks: [{ taskId: snapshot.taskId, baseCommit: snapshot.baseCommit, resultCommit: snapshot.headCommit,
@@ -3680,7 +3680,7 @@ export class TaskGitWorkspaceService {
         await ownedLease.assertOwned();
         if (record.nativeHistoryAuthority) {
           const historyAuthority = await this.#nativeHistoryAuthority(snapshot, dev, ownedLease, record.nativeHistoryAuthority);
-          await assertNativeTaskHistories({ git: args => git(args, snapshot.repositoryRoot),
+          await assertNativeTaskHistories({ git: (args, options = {}) => git(args, snapshot.repositoryRoot, options),
             baseCommit: record.mainCommit, tasks: [{ taskId: snapshot.taskId, baseCommit: snapshot.baseCommit,
               resultCommit: snapshot.headCommit, ...(nativeAbsorptionInput || nativeAbsorptionHistory
                 ? { nativeAbsorptionInput: nativeAbsorptionInput ?? nativeAbsorptionHistory.absorptionInput } : {}) }],

@@ -117,6 +117,8 @@ prepared reuse and freeze. This does not adopt future origin or move primary.
 Native metadata validation distinguishes inherited metadata from Task edits.
 CHANGELOG entries must equal a complete Git mode/blob entry at the registered
 Task base, verified installed source or that Task's explicitly adopted commit.
+Metadata paths use raw NUL records and literal pathspecs; quoted presentation
+names, malformed or ambiguous tree lookups grant no inherited identity.
 Existing package versions must match one of those same sources. Arbitrary Task
 notes/version changes and unknown merge sides still refuse. Only exact verified
 installed/adopted ancestry is excluded from bounded Task history. Test may also
