@@ -1,5 +1,12 @@
 # MCP-001 — Bounded Agent Hub tool bridge
 
+`hub_release_run` optionally accepts `release_metadata` with the existing
+`sourcePath`, `byteLength`, `rawSha256` and `canonicalSha256` artifact identity.
+It forwards this unchanged as authorization `releaseMetadata` to the same durable
+release owner. The existing domain bound and composition byte/digest checks apply;
+omitting the field preserves the existing authorization. It grants no additional
+publication authority and does not introduce another operation or publisher.
+
 ## Current corrected candidates and historical release facts (2026-10-14)
 
 A new candidate is admitted from the exact CURRENT normally accepted results.
