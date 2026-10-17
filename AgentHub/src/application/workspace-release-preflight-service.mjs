@@ -399,9 +399,20 @@ export class WorkspaceReleasePreflightService {
     return { planRevision: plan.revision, task: evidence.tasks[0] };
   }
 
+  async pendingNativeAwaitRecovery({ workspaceId, acceptingTask, projectRoot, lease, original }) {
+    const prospective = await this.validateAwaitAcceptance({ workspaceId, acceptingTask, projectRoot, lease });
+    if (prospective.task.resultCommit !== original.resultCommit) throw new Error("Original Await source changed");
+    return this.releaseGitWorkspaces.inspectNativeAwaitRecovery({ projectRoot, original,
+      frozenTasks: [prospective.task] });
+  }
+
+  async archivedNativeAwaitOriginal({ projectRoot, operationId }) {
+    return this.releaseGitWorkspaces.archivedNativeAwaitOriginal?.({ projectRoot, operationId }) ?? null;
+  }
+
   async prepareAwaitAcceptance({
     workspaceId, acceptingTask, projectRoot, lease = null, operationId, commitPrepared,
-    nativeResolutionReview = null,
+    nativeResolutionReview = null, nativeAwaitRecovery = null,
   } = {}) {
     if (typeof commitPrepared !== "function") throw new TypeError("commitPrepared is required");
     const root = path.resolve(String(projectRoot ?? "").trim());
@@ -410,7 +421,7 @@ export class WorkspaceReleasePreflightService {
     // Lifecycle holds Workspace Await -> Task -> repository locks, including
     // recovery and cross-Task cutover. Retain candidate rollback through Task CAS.
     return this.#prepareAwaitSet({
-      workspaceId, acceptingTask, lease, nativeResolutionReview,
+      workspaceId, acceptingTask, lease, nativeResolutionReview, nativeAwaitRecovery,
       commitPrepared: async (prepared) => {
         const matches = prepared.releaseCandidates.flatMap((candidate) => (
           canonicalRoot(candidate.repositoryRoot) === canonicalRoot(root)
@@ -418,7 +429,13 @@ export class WorkspaceReleasePreflightService {
             : []
         ));
         if (matches.length !== 1) throw new Error("Task has no unique prepared Await result to accept");
-        return commitPrepared({ ...prepared, task: matches[0] });
+        const recoveredCandidate = nativeAwaitRecovery ? prepared.releaseCandidates.find(candidate =>
+          canonicalRoot(candidate.repositoryRoot) === canonicalRoot(root)) : null;
+        if (nativeAwaitRecovery && typeof recoveredCandidate?.verifyNativeAwaitAuthority !== "function") {
+          throw new Error("Original Await candidate authority recheck is unavailable");
+        }
+        return commitPrepared({ ...prepared, task: matches[0],
+          ...(nativeAwaitRecovery ? { verifyNativeAwaitAuthority: recoveredCandidate.verifyNativeAwaitAuthority } : {}) });
       },
     });
   }
@@ -546,7 +563,7 @@ export class WorkspaceReleasePreflightService {
     acceptingTask = null, commitPrepared = null, lease = null, validateOnly = false,
     reviewedMainApprovals = null, selectedTaskIds = null, generationIdentity = null, changelogContent = undefined,
     prospectiveOnly = false, freezeGeneration = true, ephemeralGeneration = false,
-    previousSelectedResults = [], preparation = null,
+    previousSelectedResults = [], preparation = null, nativeAwaitRecovery = null,
     nativeResolutionReview = null,
   } = {}) {
     if (validateOnly && commitPrepared) throw new Error("Composition validation cannot commit Task acceptance");
@@ -751,6 +768,7 @@ export class WorkspaceReleasePreflightService {
         approvedBaseCommit,
         ...(baseProvenance ? { baseProvenance } : {}),
         preserveFrozen,
+        ...(nativeAwaitRecovery ? { nativeAwaitRecovery } : {}),
         nativeResolutionReview: preparationRepository?.nativeResolutionReview ?? nativeResolutionReview,
         ...(preparation ? { preflightRequestId: preparation.requestId, preparationGuard: {
           ...preparationRepository, argumentsHash: preparation.argumentsHash,

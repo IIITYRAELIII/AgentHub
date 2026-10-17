@@ -349,7 +349,8 @@ export class TaskOperationReconciliationService {
     });
     const metadataRecovery = !squash && !selected && !initial && !cutover && !workflowCas
       && options.nativeResolutionReview == null && !exactGuardId && nativeTestMetadataDrift(task, transition);
-    const receiptSettled = !transition && outcome?.result?.evidence?.nativeTerminalRecovery
+    const receiptSettled = !transition && (outcome?.result?.evidence?.nativeTerminalRecovery
+      || outcome?.result?.evidence?.nativeAwaitRecovery)
       && receipt?.operationStatus === "succeeded" && receipt?.receiptState === "succeeded";
     const receiptMatches = receipt
       && receipt.workspaceId === workspace.id

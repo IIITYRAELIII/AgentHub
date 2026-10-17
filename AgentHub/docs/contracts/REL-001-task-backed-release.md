@@ -2416,3 +2416,33 @@ blob-to-serialization relations. Historical projection does not authorize
 movement or use later rolling-dev bytes/configuration. Live recovery requires
 version 2 and fresh physical/configuration checks; legacy pending recovery
 refuses while preserving its original and data.
+
+## Original native Await with already published notes
+
+An UNKNOWN ordinary Await may resume without a fabricated process guard only
+through the existing reconciliation, lifecycle, preflight and release Git owners
+(ADR-0116). Its complete original receipt/CAS, current Task workflow/executor/
+references, clean Test source and absence of a process guard remain mandatory.
+The sole prospective result must be the original result. This exception admits
+only a completed native prior candidate whose source equals durable OWN
+publication, allowing only package version fields and
+root CHANGELOG to differ. Its only dirty path must be regular staged CHANGELOG,
+exactly the published blob with supported LF/CRLF physical text. Current
+origin/main is independently pinned and rechecked; its later commits are fetched
+as objects by ordinary clone creation but never become a composition base or
+selected source through this recovery. Approval of external incoming remains a
+separate publication boundary.
+
+The release Git owner journals the original-bound move before archiving its
+entire standalone clone and checkpoint inside its own root. Ref/index/worktree,
+private bytes, original journal and manifest remain evidence; no cleanup, ref
+repair, reset or serialization of old bytes is permitted. Authority and physical
+pins are rechecked before movement. The same journal resumes interrupted moves;
+changed originals, selections, publication, refs, index or bytes refuse. The
+ordinary owner then creates its usual standalone checkout, composes the exact
+prospective selection and performs the existing Task CAS/receipt settlement.
+Only the preserved already-published prior checkout is retired; candidate
+promotion/CAS retain ordinary rollback. Terminal repetition reads the same
+outcome without new Git effects. This migration is removable once the pending
+ordinary native Awaits lacking their own preparation intent are settled; it
+does not relax ordinary dirty-checkout rejection or authorize publication.
