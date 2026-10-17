@@ -280,8 +280,37 @@
     const name = String(stream?.name ?? "").trim();
     if (name) return name;
     return Number(streamCount) > 1
-      ? `Stream ${Math.max(1, Number(stream?.ordinal) || 1)}`
-      : "Stream";
+      ? `Диалог ${Math.max(1, Number(stream?.ordinal) || 1)}`
+      : "Диалог";
+  }
+
+  // Missing history/answer is not evidence of an empty, queued or failed dialog.
+  // This is display-only: the canonical run/history owners retain all authority.
+  function dialogListPresentation(task, { messages = [], live = null } = {}) {
+    const text = (value) => String(typeof value === "string" ? value : value?.text ?? "")
+      .replace(/\s+/gu, " ").trim();
+    const content = messages.filter((message) => ["user", "agent"].includes(message?.role)
+      && !["maintenance", "subagent"].includes(message?.kind));
+    const last = content.at(-1);
+    const currentLive = live?.projectionState === "active" && live?.operationKind === "user-turn"
+      && live?.threadId === task?.threadId && live?.provider === task?.provider && Boolean(live?.turnId);
+    const user = last?.role === "user" ? last : currentLive
+      ? [...content].reverse().find((message) => message.role === "user" && message.turnId === live.turnId)
+      : null;
+    const answer = text(task?.lastAnswer)
+      || (last?.role === "agent" ? text(last) : "");
+    if (task?.status === "unknown") return { preview: answer, status: "Статус неизвестен" };
+    if (task?.running) return {
+      preview: text(user) ? `Вы: ${text(user)}` : answer,
+      status: currentLive && (text(live.text) || text(live.reasoning)
+        || live.activities?.length || live.activityGroups?.length) ? "Отвечает" : "Готовит ответ",
+    };
+    const failed = task?.failed || task?.error || ["failed", "cancelled"].includes(task?.status);
+    if (failed) return { preview: answer || "Ответ не получен",
+      status: task?.status === "cancelled" ? "Отменено" : "Ошибка" };
+    if (answer) return { preview: answer, status: "" };
+    if (last?.role === "user" && text(last)) return { preview: `Вы: ${text(last)}`, status: "" };
+    return { preview: "", status: "" };
   }
 
   function streamTabsMutationAction(mutations) {
@@ -508,7 +537,7 @@
     const running = Boolean(task?.running);
     const answerReady = Boolean(task?.unread);
     const statusLabel = [
-      running ? "Ход выполняется" : "",
+      running ? "Готовит ответ" : "",
       answerReady ? "Ответ готов" : "",
     ].filter(Boolean).join(" · ") || String(task?.statusLabel ?? "");
     return { running, answerReady, statusLabel };
@@ -884,13 +913,13 @@
   }
 
   function pinnedStreamActionLabel(pinned) {
-    return pinned ? "Открепить Stream" : "Закрепить Stream";
+    return pinned ? "Открепить диалог" : "Закрепить диалог";
   }
 
   function pinnedStreamActionTitle(pinned) {
     return pinned
-      ? "Вернуть Stream в обычный порядок вкладок"
-      : "Показывать Stream первым во вкладках этого Workspace";
+      ? "Вернуть диалог в обычный порядок вкладок"
+      : "Показывать диалог первым во вкладках этого Workspace";
   }
 
   function reconcileOpenStreamIds(previousIds, availableIds, fallbackId, limit = 4) {
@@ -1164,15 +1193,15 @@
       wrapper.dataset.streamCardSettings = "true";
       wrapper.innerHTML = `
         <button type="button" class="stream-card-settings-toggle" data-stream-card-settings-toggle
-          aria-label="Настройки Streams" aria-expanded="false" title="Настройки Streams"></button>
+          aria-label="Настройки диалогов" aria-expanded="false" title="Настройки диалогов"></button>
         <div class="stream-card-settings-menu" data-stream-card-settings-menu role="dialog"
-          aria-label="Настройки Streams" hidden>
+          aria-label="Настройки диалогов" hidden>
           <section class="stream-card-settings-group" aria-labelledby="stream-settings-status-title">
-            <h3 class="stream-card-settings-group-title" id="stream-settings-status-title">Потоки</h3>
+            <h3 class="stream-card-settings-group-title" id="stream-settings-status-title">Диалоги</h3>
             <div class="stream-card-settings-section stream-card-settings-inline-section">
               <span class="stream-card-settings-kicker">Эффект</span>
               <select data-stream-status-effect-select
-                aria-label="Эффект активности и готового ответа Stream">
+                aria-label="Эффект активности и готового ответа диалога">
                 <option value="calm">Спокойный</option>
                 <option value="impulse">Импульс</option>
                 <option value="scanner">Сканер</option>
@@ -1188,7 +1217,7 @@
               title="Использовать всю поверхность панели вместо одной границы.">
               <span class="stream-card-settings-kicker">Подсвечивать целиком</span>
               <button type="button" class="stream-card-gap-toggle stream-card-settings-switch"
-                role="switch" aria-checked="false" aria-label="Подсвечивать панели Stream целиком"
+                role="switch" aria-checked="false" aria-label="Подсвечивать панели диалогов целиком"
                 data-stream-status-fill-toggle>
                 <span class="switch-track" aria-hidden="true"></span>
               </button>
@@ -1198,21 +1227,21 @@
             <h3 class="stream-card-settings-group-title" id="stream-settings-top-title">Верхняя панель</h3>
             <div class="stream-card-settings-section stream-card-settings-inline-section">
               <span class="stream-card-settings-kicker">Порядок</span>
-              <span class="stream-card-settings-segmented" role="group" aria-label="Порядок потоков">
+              <span class="stream-card-settings-segmented" role="group" aria-label="Порядок диалогов">
                 <button type="button" data-stream-order-mode="activity" title="По последней активности">Авто</button>
                 <button type="button" data-stream-order-mode="manual">Фикс</button>
               </span>
             </div>
             <div class="stream-card-settings-section stream-card-settings-inline-section">
               <span class="stream-card-settings-kicker">Ширина</span>
-              <span class="stream-card-settings-segmented" role="group" aria-label="Режим ширины карточек потоков">
+              <span class="stream-card-settings-segmented" role="group" aria-label="Режим ширины карточек диалогов">
                 <button type="button" data-stream-width-mode="auto" aria-pressed="true">Авто</button>
                 <button type="button" data-stream-width-mode="fixed" aria-pressed="false">Фикс</button>
               </span>
               <label class="stream-card-settings-range" data-stream-card-range hidden>
                 <span><span data-stream-card-width-value>${this.fixedWidth}</span> px</span>
                 <input type="range" min="${STREAM_CARD_MIN_WIDTH}" max="${STREAM_CARD_MAX_WIDTH}" step="1"
-                  value="${this.fixedWidth}" data-stream-card-width aria-label="Ширина карточек потоков">
+                  value="${this.fixedWidth}" data-stream-card-width aria-label="Ширина карточек диалогов">
                 <small>${STREAM_CARD_MIN_WIDTH} — ${STREAM_CARD_MAX_WIDTH} px</small>
               </label>
             </div>
@@ -1239,7 +1268,7 @@
               <span class="stream-card-settings-duration">
                 <label>
                   <input type="number" min="0" max="720" step="0.5" inputmode="decimal"
-                    data-stream-recent-hours aria-label="Часы для недавних Streams">
+                    data-stream-recent-hours aria-label="Часы для недавних диалогов">
                   <span>ч</span>
                 </label>
               </span>
@@ -1248,13 +1277,13 @@
               title="Показывать агента, модель и среду в правой панели.">
               <span class="stream-card-settings-kicker">Подробные карточки</span>
               <button type="button" class="stream-card-gap-toggle stream-card-settings-switch"
-                role="switch" aria-checked="false" aria-label="Подробные карточки Streams"
+                role="switch" aria-checked="false" aria-label="Подробные карточки диалогов"
                 data-stream-detailed-toggle>
                 <span class="switch-track" aria-hidden="true"></span>
               </button>
             </div>
             <div class="stream-card-settings-section stream-card-settings-gap-section"
-              title="Когда в одну колонку не помещаются и потоки и задачи">
+              title="Когда в одну колонку не помещаются и диалоги и задачи">
               <span class="stream-card-settings-kicker">Переносить задачи в отдельную колонку</span>
               <button type="button" class="stream-card-gap-toggle stream-card-settings-switch"
                 role="switch" aria-checked="true" aria-label="Переносить задачи в отдельную колонку"
@@ -1263,7 +1292,7 @@
               </button>
             </div>
             <div class="stream-card-settings-section stream-card-settings-gap-section"
-              title="Всегда показывать задачи и потоки в двух колонках"
+              title="Всегда показывать задачи и диалоги в двух колонках"
               data-activity-task-always-separate-setting hidden>
               <span class="stream-card-settings-kicker">Задачи всегда в отдельной колонке</span>
               <button type="button" class="stream-card-gap-toggle stream-card-settings-switch"
@@ -1636,6 +1665,7 @@
   }
 
   window.AgentHubStreamTabs = Object.freeze({
+    dialogListPresentation,
     answerArrivalTaskIds,
     archiveStreamIntent,
     activityStreamSections,

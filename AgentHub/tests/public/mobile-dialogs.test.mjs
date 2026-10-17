@@ -335,7 +335,7 @@ test("user corrections keep themed drawers, low FAB, direct Stream creation and 
       await page.locator('[data-mobile-stream-list] [data-mobile-stream-id="s1"]').first().click();
       const create = page.locator("[data-mobile-chat-stream-create]");
       assert.equal(await create.isVisible(), true);
-      assert.equal(await create.getAttribute("aria-label"), "Новый Stream");
+      assert.equal(await create.getAttribute("aria-label"), "Новый диалог");
       assert.equal(await create.evaluate((n) => {
         const r = n.getBoundingClientRect(), switcher = document.querySelector("[data-mobile-stream-switch]").getBoundingClientRect();
         const actions = document.querySelector(".chat-overlay-actions").getBoundingClientRect();
@@ -381,7 +381,7 @@ test("Mobile dialogs scope, modal navigation, Back, drafts and responsive parity
       const page = await context.newPage();
       const errors = await open(page);
       assert.equal(await page.locator("html").getAttribute("data-mobile-dialogs-enabled"), "");
-      assert.deepEqual(await page.locator('[data-mobile-stream-list] h2').allTextContents(), ["Все потоки"]);
+      assert.deepEqual(await page.locator('[data-mobile-stream-list] h2').allTextContents(), ["Все диалоги"]);
       assert.equal(await page.locator('[data-mobile-stream-list] [data-mobile-stream-id="s3"]').count(), 0);
       await page.screenshot({ path: path.join(captures.pathname.replace(/^\/(?:([A-Z]:))/u, "$1"), `list-${width}.png`) });
       await page.locator("[data-mobile-workspaces-open]").click();
@@ -770,7 +770,7 @@ test("real hub-client previews, creates in the chosen Workspace and restores an 
     await page.locator("[data-mobile-workspaces-open]").click();
     await page.locator('[data-workspace-select="empty"] .task-workspace-name').click();
     await page.reload();
-    await page.waitForFunction(() => document.querySelector("[data-mobile-workspace-label]")?.textContent === "Пустой Workspace");
+    await page.waitForFunction(() => document.querySelector("[data-mobile-workspace-name]")?.textContent === "Пустой Workspace");
     assert.equal(await page.locator('[data-mobile-stream-list] [data-mobile-stream-id]').count(), 0);
     assert.deepEqual(errors, []);
   } finally { await context.close(); await browser.close(); }
@@ -831,7 +831,7 @@ test("Mobile empty scope, long names, offline retry, focus containment and viewp
     await page.keyboard.press("Tab");
     assert.equal(await page.evaluate(() => document.activeElement.closest("[data-mobile-workspace-drawer]") !== null), true);
     await page.locator('[data-workspace-select="empty"] .task-workspace-name').click();
-    assert.match(await page.locator("[data-mobile-stream-list]").innerText(), /пока нет Stream/u);
+    assert.match(await page.locator("[data-mobile-stream-list]").innerText(), /пока нет диалогов/u);
     await page.locator("[data-mobile-stream-create]").click();
     assert.equal(await page.evaluate(() => window.testIntents.at(-1).workspaceId), "empty");
     await page.evaluate(() => AgentHub.setConnection("offline"));

@@ -1349,11 +1349,40 @@ test("task list keeps unassigned Tasks beside Workspace groups", async () => {
   assert.deepEqual(Array.from(sections.unassignedTasks, (task) => task.id), ["legacy-task", "missing-workspace"]);
 });
 
+test("dialog list previews use canonical content and never infer lifecycle from missing answers", async () => {
+  const { dialogListPresentation: present } = await streamTabsApi();
+  const value = (task, evidence) => JSON.parse(JSON.stringify(present(task, evidence)));
+  const empty = { preview: "", status: "" };
+  assert.deepEqual(value({}), empty);
+  assert.deepEqual(value({ draftStream: true }), empty);
+  assert.deepEqual(value({}, { messages: [] }), empty);
+  assert.deepEqual(value({}, { messages: [{ role: "system", text: "maintenance" }] }), empty);
+  assert.deepEqual(value({}, { messages: [{ role: "user", text: "Первый\nвопрос" }] }),
+    { preview: "Вы: Первый вопрос", status: "" });
+  assert.deepEqual(value({ lastAnswer: { text: "Последний ответ" }, unread: true }),
+    { preview: "Последний ответ", status: "" });
+  assert.deepEqual(value({ lastAnswer: "Snapshot final" }, { messages: [{ role: "user", text: "Old user" }] }),
+    { preview: "Snapshot final", status: "" });
+  assert.deepEqual(value({ running: true }), { preview: "", status: "Готовит ответ" });
+  const task = { provider: "codex", threadId: "thread-1", running: true, lastAnswer: "Previous answer" };
+  const live = { provider: "codex", threadId: "thread-1", turnId: "turn-2",
+    operationKind: "user-turn", projectionState: "active", text: "New content" };
+  const messages = [{ role: "user", turnId: "turn-2", text: "Current prompt" }];
+  assert.deepEqual(value(task, { live, messages }), { preview: "Вы: Current prompt", status: "Отвечает" });
+  assert.deepEqual(value(task, { live: { ...live, threadId: "old-thread" } }),
+    { preview: "Previous answer", status: "Готовит ответ" });
+  assert.deepEqual(value(task, { messages: [{ role: "user", text: "Old prompt" }, { role: "agent", text: "Old final" }] }),
+    { preview: "Previous answer", status: "Готовит ответ" });
+  assert.deepEqual(value({ status: "unknown" }), { preview: "", status: "Статус неизвестен" });
+  assert.deepEqual(value({ status: "failed" }), { preview: "Ответ не получен", status: "Ошибка" });
+  assert.deepEqual(value({ status: "cancelled" }), { preview: "Ответ не получен", status: "Отменено" });
+});
+
 test("an active Stream preserves its answer-ready state", async () => {
   const { streamStatusPresentation } = await streamTabsApi();
   assert.deepEqual(
     JSON.parse(JSON.stringify(streamStatusPresentation({ running: true, unread: true }))),
-    { running: true, answerReady: true, statusLabel: "Ход выполняется · Ответ готов" },
+    { running: true, answerReady: true, statusLabel: "Готовит ответ · Ответ готов" },
   );
 });
 
@@ -1383,8 +1412,8 @@ test("right panel visibility defaults on and its header switch preserves hidden 
       const group = page.getByRole("region", { name: "Правая панель", exact: true });
       const toggle = group.getByRole("switch", { name: "Отображать правую панель", exact: true });
       const options = group.locator("[data-activity-rail-settings]");
-      const recent = group.getByRole("spinbutton", { name: "Часы для недавних Streams" });
-      const detailed = group.getByRole("switch", { name: "Подробные карточки Streams" });
+      const recent = group.getByRole("spinbutton", { name: "Часы для недавних диалогов" });
+      const detailed = group.getByRole("switch", { name: "Подробные карточки диалогов" });
       assert.equal(await toggle.getAttribute("aria-checked"), "true");
       assert.equal(await page.locator("[data-activity-rail]").isVisible(), true);
       assert.equal(await options.isVisible(), true);
@@ -1779,8 +1808,8 @@ test("Workspace and Stream cards expose behavioral editing and quick reply contr
     await codexTab.focus();
     await codexTab.dblclick();
     assert.equal(await page.locator("[data-dialog-settings]").evaluate((node) => node.open), true);
-    assert.equal(await page.locator("[data-dialog-settings]").getAttribute("aria-label"), "Карточка Stream");
-    assert.equal(await page.getByText("Карточка Stream", { exact: true }).count(), 0);
+    assert.equal(await page.locator("[data-dialog-settings]").getAttribute("aria-label"), "Карточка диалога");
+    assert.equal(await page.getByText("Карточка диалога", { exact: true }).count(), 0);
     assert.equal(await page.locator("[data-dialog-settings] input").first().getAttribute("data-dialog-stream-name"), "");
     assert.equal(await page.locator("[data-dialog-stream-name]").inputValue(), "Codex Stream");
     await page.locator("[data-dialog-stream-name]").fill("Renamed Stream");
@@ -2139,7 +2168,7 @@ test("composer quick replies render above attached Task references", async () =>
 
     const stream = page.locator('.stream-tabs-track [data-stream-tab-id="stream-1"]');
     await stream.dblclick();
-    assert.equal(await page.getByText("Prompt-шаблоны потока", { exact: true }).isVisible(), true);
+    assert.equal(await page.getByText("Prompt-шаблоны диалога", { exact: true }).isVisible(), true);
     assert.equal(await page.locator("[data-dialog-stream-quick-messages-count]").textContent(), "1 шаблон");
     const streamEditor = await openPromptTemplatesForm(page, "stream");
     assert.equal(await streamEditor.locator("[data-quick-message-add]").textContent(), "Добавить шаблон");
@@ -3847,8 +3876,8 @@ test("Workspace and Stream cards survive logical-identity rerenders while stale 
 test("Stream display identity never exposes a blank name", async () => {
   const { streamDisplayName } = await streamTabsApi();
   assert.equal(streamDisplayName({ name: " Release Manager ", ordinal: 2 }, 3), "Release Manager");
-  assert.equal(streamDisplayName({ name: "", ordinal: 2 }, 3), "Stream 2");
-  assert.equal(streamDisplayName({ name: "", ordinal: 7 }, 1), "Stream");
+  assert.equal(streamDisplayName({ name: "", ordinal: 2 }, 3), "Диалог 2");
+  assert.equal(streamDisplayName({ name: "", ordinal: 7 }, 1), "Диалог");
 });
 
 test("overflow visibility mutations do not rebuild Stream settings", async () => {
