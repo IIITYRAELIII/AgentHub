@@ -107,6 +107,12 @@ the existing Task owner returns their exact historical pins and the candidate
 owner derives the same full installed-source proof before composition. Await
 passes that sealed provenance through its existing base and terminal CAS checks;
 it does not depend on a later preparation that requires Tasks already in Await.
+The candidate's internal authority closure reaches the lifecycle's final
+persistence callback and runs immediately before the owning Task commit, after
+awaited persistence admission. That closure rechecks source/adoption/origin,
+followed by the existing process guard and lease assertions. Ordinary derived
+proof receives this boundary as well as original Await recovery; it is not a
+public caller flag. Failure preserves the original rollback/unknown semantics.
 Historical pins do not authorize promotion after origin drift. Explicit
 preparation and generation reuse retain their existing bound-envelope rules.
 

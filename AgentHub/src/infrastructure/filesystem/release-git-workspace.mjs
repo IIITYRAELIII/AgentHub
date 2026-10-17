@@ -1786,7 +1786,7 @@ export class ReleaseGitWorkspaceService {
         independentGitCommonDir: !samePath(clone.releaseGitCommonDir, initial.commonDir),
         releaseGitCommonDir: clone.releaseGitCommonDir, primaryGitCommonDir: initial.commonDir,
         primaryPreserved: true, legacyLinkedHolders: initial.legacyLinkedHolders,
-        ...(nativeAwaitRecovery ? { verifyNativeAwaitAuthority: validate } : {}),
+        ...((nativeAwaitRecovery || localSource) ? { verifyNativeAwaitAuthority: validate } : {}),
       };
       try {
         await validate();

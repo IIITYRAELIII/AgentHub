@@ -429,13 +429,16 @@ export class WorkspaceReleasePreflightService {
             : []
         ));
         if (matches.length !== 1) throw new Error("Task has no unique prepared Await result to accept");
-        const recoveredCandidate = nativeAwaitRecovery ? prepared.releaseCandidates.find(candidate =>
-          canonicalRoot(candidate.repositoryRoot) === canonicalRoot(root)) : null;
-        if (nativeAwaitRecovery && typeof recoveredCandidate?.verifyNativeAwaitAuthority !== "function") {
-          throw new Error("Original Await candidate authority recheck is unavailable");
+        const acceptedCandidate = prepared.releaseCandidates.find(candidate =>
+          canonicalRoot(candidate.repositoryRoot) === canonicalRoot(root));
+        const needsAuthority = nativeAwaitRecovery
+          || acceptedCandidate?.manifest?.baseProvenance?.kind === LOCAL_SOURCE_BASELINE_PROVENANCE;
+        if (needsAuthority && typeof acceptedCandidate?.verifyNativeAwaitAuthority !== "function") {
+          throw new Error("Native Await candidate authority recheck is unavailable");
         }
         return commitPrepared({ ...prepared, task: matches[0],
-          ...(nativeAwaitRecovery ? { verifyNativeAwaitAuthority: recoveredCandidate.verifyNativeAwaitAuthority } : {}) });
+          ...(typeof acceptedCandidate?.verifyNativeAwaitAuthority === "function"
+            ? { verifyNativeAwaitAuthority: acceptedCandidate.verifyNativeAwaitAuthority } : {}) });
       },
     });
   }
@@ -792,6 +795,9 @@ export class WorkspaceReleasePreflightService {
           if (preparation) await this.measureOperation("preparation:precommit-pins", preparation.validate);
         },
         ...((acceptingTask && !prospectiveOnly) || preparation ? { commitPrepared: async (prepared) => {
+          if (acceptingTask && localSource && typeof prepared.verifyNativeAwaitAuthority !== "function") {
+            throw new Error("Native Await candidate authority recheck is unavailable");
+          }
           releaseCandidates.push(prepared);
           await prepare(index + 1);
         } } : {}),
