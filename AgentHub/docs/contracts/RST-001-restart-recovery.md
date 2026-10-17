@@ -37,6 +37,18 @@ provider/process completion owner may commit the exact terminal outcome.
 
 ## Invariants
 
+- File transfer shutdown fences new preparation/GC admission and drains the
+  admitted intake, background copy and complete GC filesystem/SQLite settlement
+  before closing its store. A completed close cannot reopen SQLite through a
+  delayed collection. Explicit GC failures retain their own outcome.
+- A preserved direct gateway with changed generated configuration is handed off
+  by its existing controller only after the former parent process is absent.
+  Exact executable, command line, PID/creation identity and unchanged regular
+  executable/config bytes are required before terminating that managed gateway;
+  the same open process handle fences PID reuse. A live or unknown parent and
+  any identity/file drift refuse the effect. No competing listener is launched.
+  Gateway shutdown also drains a pending observation/handoff before returning.
+
 - Timeout is ambiguous until reconciliation; it does not authorize duplicate
   non-idempotent starts.
 - Publication readiness binds the expected current release to both the ready

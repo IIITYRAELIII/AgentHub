@@ -116,6 +116,10 @@ export class FileTransferService {
   #preparations = new Map();
   #initializing;
   #gcTimer = null;
+  #collections = new Set();
+  #intakes = new Set();
+  #closing = false;
+  #closePromise;
 
   constructor({ dataDir, roots, store, policy, keyring }) {
     this.#artifactsDirectory = path.join(path.resolve(dataDir), "file-transfers", "artifacts");
@@ -141,6 +145,7 @@ export class FileTransferService {
   }
 
   async initialize() {
+    if (this.#closing) throw transferError("transfer-service-closed", 503);
     this.#initializing ??= (async () => {
       await mkdir(this.#artifactsDirectory, { recursive: true, mode: 0o700 });
       await this.#store.initialize();
@@ -213,7 +218,14 @@ export class FileTransferService {
     }
   }
 
-  async prepare({ owner, sourcePath, requestId }) {
+  prepare(input) {
+    if (this.#closing) return Promise.reject(transferError("transfer-service-closed", 503));
+    const intake = this.#prepare(input).finally(() => this.#intakes.delete(intake));
+    this.#intakes.add(intake);
+    return intake;
+  }
+
+  async #prepare({ owner, sourcePath, requestId }) {
     await this.initialize();
     const { candidate, configuredRoot, target } = await this.#resolveSourcePath(sourcePath);
     const source = await open(target, constants.O_RDONLY);
@@ -599,7 +611,14 @@ export class FileTransferService {
   revoke(owner, shareId) { return this.#store.revoke(String(owner), String(shareId)); }
   audit(owner, shareId) { return this.#store.audit(String(owner), String(shareId)); }
 
-  async gc() {
+  gc() {
+    if (this.#closing) return Promise.reject(transferError("transfer-service-closed", 503));
+    const collection = this.#collect().finally(() => this.#collections.delete(collection));
+    this.#collections.add(collection);
+    return collection;
+  }
+
+  async #collect() {
     await this.initialize();
     const removed = [];
     for (const artifactId of await this.#store.gcCandidates()) {
@@ -612,17 +631,25 @@ export class FileTransferService {
   }
 
   startOperationalGc(intervalMs = 15 * 60_000) {
-    if (this.#gcTimer) return;
+    if (this.#closing || this.#gcTimer) return;
     const collect = () => { void this.gc().catch(() => {}); };
     collect();
     this.#gcTimer = setInterval(collect, Math.max(60_000, Number(intervalMs) || 0));
     this.#gcTimer.unref?.();
   }
 
-  async close() {
+  close() {
+    if (this.#closePromise) return this.#closePromise;
+    this.#closing = true;
     if (this.#gcTimer) clearInterval(this.#gcTimer);
     this.#gcTimer = null;
-    await Promise.allSettled(this.#preparations.values());
-    await this.#store.close();
+    this.#closePromise = (async () => {
+      // Intakes can still register their admitted background copy. Collections
+      // own both filesystem deletion and the final durable deletion receipt.
+      await Promise.allSettled([...this.#intakes, ...this.#collections, this.#initializing]);
+      await Promise.allSettled(this.#preparations.values());
+      await this.#store.close();
+    })();
+    return this.#closePromise;
   }
 }
