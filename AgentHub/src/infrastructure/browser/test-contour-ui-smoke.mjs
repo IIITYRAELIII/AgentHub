@@ -6,6 +6,13 @@ import path from "node:path";
 export const TEST_CONTOUR_PROBE = "Ответь строго: AGENT_HUB_TEST_CONTOUR_SPARK_OK_V1";
 export const TEST_CONTOUR_PROBE_RESPONSE = "AGENT_HUB_TEST_CONTOUR_SPARK_OK_V1";
 
+export function assertTestContourShellContent(bodyText) {
+  const content = bodyText.trim();
+  if (content.length < 100 || !content.includes("Потоки")) {
+    throw new Error("Agent Hub shell did not render meaningful content");
+  }
+}
+
 const SMOKE_CONVERSATION_STATE_VERSION = 2;
 const SMOKE_CONVERSATION_STATE_FILE = "ui-smoke-conversation.json";
 const SMOKE_WORKSPACE_NAME = "Agent Hub Test Contour Smoke";
@@ -867,10 +874,7 @@ export async function runTestContourUiSmoke({
     await page.locator("[data-workspace]").waitFor({ state: "visible", timeout: timeoutMs });
     const title = await page.title();
     if (title !== "Agent Hub") throw new Error(`Unexpected Test Contour title: ${title}`);
-    const bodyText = (await page.locator("body").innerText()).trim();
-    if (bodyText.length < 100 || !bodyText.includes("Диалоги")) {
-      throw new Error("Agent Hub shell did not render meaningful content");
-    }
+    assertTestContourShellContent(await page.locator("body").innerText());
 
     await page.locator('[data-view-button="dashboard"]').click();
     await page.locator('html[data-view="dashboard"]').waitFor({ state: "attached", timeout: 10_000 });

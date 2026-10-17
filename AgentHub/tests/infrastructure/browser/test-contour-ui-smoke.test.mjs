@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 
 import {
+  assertTestContourShellContent,
   exactTestContourResponsePattern,
   isTestContourModelSettingResponse,
   locateTestContourResponse,
@@ -18,6 +19,32 @@ import {
   selectTestContourModel,
   TEST_CONTOUR_PROBE,
 } from "../../../src/infrastructure/browser/test-contour-ui-smoke.mjs";
+
+test("Test Contour shell requires the current Потоки label and meaningful body content", () => {
+  const currentShell = `Agent Hub Workspace Потоки ${"Содержимое ".repeat(10)}`;
+  assert.doesNotThrow(() => assertTestContourShellContent(currentShell));
+  assert.throws(
+    () => assertTestContourShellContent(currentShell.replace("Потоки", "Диалоги")),
+    /Agent Hub shell did not render meaningful content/u,
+  );
+  assert.throws(
+    () => assertTestContourShellContent("Agent Hub Workspace ".repeat(10)),
+    /Agent Hub shell did not render meaningful content/u,
+  );
+  assert.throws(
+    () => assertTestContourShellContent("Потоки"),
+    /Agent Hub shell did not render meaningful content/u,
+  );
+});
+
+test("Test Contour shell retains the trimmed 100-character minimum", () => {
+  const minimumShell = `Потоки${"x".repeat(94)}`;
+  assert.doesNotThrow(() => assertTestContourShellContent(`  ${minimumShell}\n`));
+  assert.throws(
+    () => assertTestContourShellContent(`  ${minimumShell.slice(0, -1)}\n`),
+    /Agent Hub shell did not render meaningful content/u,
+  );
+});
 
 function smokePage({ availableModels = ["gpt-5.3-codex-spark"], selectedModel = "" } = {}) {
   const events = [];
