@@ -999,7 +999,7 @@ export class WorkspaceReleasePreflightService {
       const explicitApprovalSupplied = Boolean(
         approval.approvedLocalMainCommit && approval.approvedOriginMainCommit,
       );
-      if (native && actualProvenance?.approvedOriginMainCommit
+      if (native && actualProvenance?.kind === NATIVE_MAIN_PROVENANCE && actualProvenance.approvedOriginMainCommit
           && (actualProvenance.agreedMainCommit !== audit.localMain
             || actualProvenance.approvedLocalMainCommit !== audit.localMain
             || actualProvenance.approvedOriginMainCommit !== audit.originMain)) {

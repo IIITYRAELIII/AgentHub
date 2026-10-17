@@ -57,10 +57,14 @@ export function normalizedReleaseBaseProvenance(value, expectedBaseCommit = null
   if (kind === LOCAL_SOURCE_BASELINE_PROVENANCE) {
     const fields = ["schemaVersion", "kind", "publishedBaseCommit", "agreedMainCommit", "sourceBaseCommit",
       "sourceBaseTree", "sourcePatchSha256", "installedReleaseId", "installedManifestSha256", "planRevision", "selectionHash"];
+    const adopted = value.approvedOriginMainCommit != null || value.adoptions != null;
+    if (adopted) fields.push("approvedOriginMainCommit", "adoptions");
     if (Object.keys(value).some(key => !fields.includes(key)) || fields.some(key => !Object.hasOwn(value, key))) {
       throw new Error("Invalid exact installed local source provenance");
     }
-    const normalized = Object.fromEntries(fields.map(key => [key, key === "schemaVersion" ? value[key] : text(value[key])]));
+    const normalized = Object.fromEntries(fields.map(key => [key, key === "schemaVersion" ? value[key]
+      : key === "adoptions" ? (Array.isArray(value[key]) ? value[key].map(normalizedAdoption)
+        .sort((a, b) => a.taskId.localeCompare(b.taskId)) : []) : text(value[key])]));
     if (normalized.schemaVersion !== 1
         || !["publishedBaseCommit", "agreedMainCommit", "sourceBaseCommit", "sourceBaseTree"].every(key => COMMIT.test(normalized[key]))
         || !["sourcePatchSha256", "installedManifestSha256", "selectionHash"].every(key => /^[a-f0-9]{64}$/u.test(normalized[key]))
@@ -69,6 +73,12 @@ export function normalizedReleaseBaseProvenance(value, expectedBaseCommit = null
         || normalized.sourceBaseCommit === normalized.publishedBaseCommit
         || expectedBaseCommit && normalized.sourceBaseCommit !== expectedBaseCommit) {
       throw new Error("Invalid installed local source provenance pins");
+    }
+    if (adopted && (!COMMIT.test(normalized.approvedOriginMainCommit) || !normalized.adoptions.length
+        || new Set(normalized.adoptions.map(a => a.taskId)).size !== normalized.adoptions.length
+        || normalized.adoptions.some(a => a.acceptedLocalMainCommit !== normalized.agreedMainCommit
+          || a.adoptedCommit !== normalized.approvedOriginMainCommit))) {
+      throw new Error("Invalid installed source selected adoption pins");
     }
     return normalized;
   }

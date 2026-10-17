@@ -64,7 +64,8 @@ export function validatePreparationEnvelope(value) {
       try { p = normalizedReleaseBaseProvenance(repository.localSourceBaseline, repository.approvedBaseCommit); }
       catch { throw new ReleasePreparationRejectedError("Invalid local source baseline envelope"); }
       if (p.kind !== LOCAL_SOURCE_BASELINE_PROVENANCE || p.agreedMainCommit !== repository.primaryMainCommit
-          || p.publishedBaseCommit !== repository.publishedRevision || repository.originMainCommit !== p.publishedBaseCommit
+          || p.publishedBaseCommit !== repository.publishedRevision
+          || repository.originMainCommit !== (p.approvedOriginMainCommit ?? p.publishedBaseCommit)
           || p.planRevision !== value.planRevision) throw new ReleasePreparationRejectedError("Local source baseline pins disagree");
     }
     if (repository.nativeResolutionReview != null) {
