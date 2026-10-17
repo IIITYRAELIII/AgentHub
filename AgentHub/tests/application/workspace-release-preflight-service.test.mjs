@@ -59,7 +59,7 @@ function localSourceFixture() {
 }
 
 test("ordinary Await derives adopted installed source before candidate and rechecks before Task CAS", async () => {
-  for (const drift of [false, true]) {
+  for (const drift of [false, true, "missing-authority"]) {
     const f = localSourceFixture();
     const adoptions = [{ taskId: "task-current", recordHash: "receipt" }];
     f.service.taskGitWorkspaces.releaseBaseEvidence = async () => ({
@@ -84,12 +84,16 @@ test("ordinary Await derives adopted installed source before candidate and reche
       assert.equal(request.approvedBaseCommit, f.p.sourceBaseCommit);
       await request.validateBeforeCommit();
       changed = drift;
-      await request.commitPrepared({ ...f.candidate, frozenTasks: f.plan.ready });
+      const candidate = { ...f.candidate, frozenTasks: f.plan.ready };
+      if (drift === "missing-authority") delete candidate.manifest;
+      else candidate.verifyNativeAwaitAuthority = request.validateBeforeCommit;
+      await request.commitPrepared(candidate);
     };
     const operation = f.service.prepareAwaitAcceptance({ workspaceId: "workspace-1",
       acceptingTask: { id: "task-current" }, projectRoot: f.projectRoot, operationId: "ordinary-await",
       commitPrepared: async () => { committed++; return "accepted"; } });
-    if (drift) await assert.rejects(operation, /authority changed/);
+    if (drift) await assert.rejects(operation,
+      drift === "missing-authority" ? /authority recheck is unavailable/ : /authority changed/);
     else assert.equal(await operation, "accepted");
     assert.equal(derived, 1);
     assert.equal(committed, drift ? 0 : 1);

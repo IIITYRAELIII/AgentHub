@@ -1016,10 +1016,10 @@ export class TaskLifecycleService {
                     let current;
                     try {
                       current = await this.#mutation(async () => {
-                        if (nativeAwaitRecovery) {
-                          if (typeof prepared.verifyNativeAwaitAuthority !== "function") throw new Error("Original Await terminal authority recheck is unavailable");
+                        if (nativeAwaitRecovery || prepared.verifyNativeAwaitAuthority) {
+                          if (typeof prepared.verifyNativeAwaitAuthority !== "function") throw new Error("Native Await terminal authority recheck is unavailable");
                           await prepared.verifyNativeAwaitAuthority();
-                          if (nativeAwaitRecovery.predecessor) this.#assertFailedAwaitPredecessor(task, nativeAwaitRecovery.predecessor, selectedProjectRoot);
+                          if (nativeAwaitRecovery?.predecessor) this.#assertFailedAwaitPredecessor(task, nativeAwaitRecovery.predecessor, selectedProjectRoot);
                           await this.taskGitWorkspaces.assertNoProcessTreeGuardOwned(task.id, { lease: repositoryLease });
                           await this.#assertOwned(repositoryLease);
                         }
