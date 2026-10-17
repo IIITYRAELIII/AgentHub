@@ -58,6 +58,44 @@ function localSourceFixture() {
   return { ...f, envelope, candidate, p, verified: () => verified };
 }
 
+test("ordinary Await derives adopted installed source before candidate and rechecks before Task CAS", async () => {
+  for (const drift of [false, true]) {
+    const f = localSourceFixture();
+    const adoptions = [{ taskId: "task-current", recordHash: "receipt" }];
+    f.service.taskGitWorkspaces.releaseBaseEvidence = async () => ({
+      baseCommit: f.p.agreedMainCommit, publishedBaseCommit: f.p.publishedBaseCommit, adoptions,
+    });
+    let derived = 0;
+    f.service.releaseGitWorkspaces.deriveInstalledLocalSourceBaselineForSelection = async request => {
+      assert.equal(request.planRevision, f.plan.revision);
+      assert.deepEqual(request.tasks, f.plan.ready);
+      assert.deepEqual(request.adoptions, adoptions);
+      derived++;
+      return f.p;
+    };
+    let changed = false, committed = 0;
+    const verify = f.service.releaseGitWorkspaces.validateLocalSourceBaseline;
+    f.service.releaseGitWorkspaces.validateLocalSourceBaseline = async request => {
+      if (changed) throw new Error("installed source authority changed");
+      return verify(request);
+    };
+    f.service.releaseGitWorkspaces.prepareCandidate = async request => {
+      assert.deepEqual(request.baseProvenance, f.p);
+      assert.equal(request.approvedBaseCommit, f.p.sourceBaseCommit);
+      await request.validateBeforeCommit();
+      changed = drift;
+      await request.commitPrepared({ ...f.candidate, frozenTasks: f.plan.ready });
+    };
+    const operation = f.service.prepareAwaitAcceptance({ workspaceId: "workspace-1",
+      acceptingTask: { id: "task-current" }, projectRoot: f.projectRoot, operationId: "ordinary-await",
+      commitPrepared: async () => { committed++; return "accepted"; } });
+    if (drift) await assert.rejects(operation, /authority changed/);
+    else assert.equal(await operation, "accepted");
+    assert.equal(derived, 1);
+    assert.equal(committed, drift ? 0 : 1);
+  }
+});
+
 test("installed local source preparation forwards exact baseline/review and rechecks before terminal", async () => {
   const f = localSourceFixture();
   const review = { requestId: "review-original", text: "Exact independent ACCEPT" };

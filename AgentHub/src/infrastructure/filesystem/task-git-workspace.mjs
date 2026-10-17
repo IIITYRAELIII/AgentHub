@@ -4205,9 +4205,21 @@ export class TaskGitWorkspaceService {
       const localMain = await localMainCommit(repoRoot);
       // local main is the agreed branch baseline. Publication and observation
       // remain separate authorities and do not silently choose another base.
-      void tasks;
+      const adoptions = [];
+      for (const task of [...tasks].sort((a, b) => String(a.taskId).localeCompare(String(b.taskId)))) {
+        const verified = await this.#recordedUpstreamAdoptionForSnapshot({ taskId: task.taskId,
+          repoRoot, snapshotCommit: task.resultCommit, localMain, lease: ownedLease,
+          publishedBaseCommit: published });
+        if (!verified) continue;
+        if (task.baseCommit != null && task.baseCommit !== verified.record.taskBaseCommit) {
+          throw new Error("Selected Task adoption registered base changed");
+        }
+        adoptions.push({ taskId: task.taskId, resultCommit: task.resultCommit,
+          recordRef: verified.recordRef, recordHash: verified.recordHash,
+          adoptedCommit: verified.record.adoptedCommit, acceptedLocalMainCommit: localMain });
+      }
       return { publishedBaseCommit: published, baseCommit: localMain,
-        compositionPolicy: "main-selected-git-merge-v1", adoptions: [] };
+        compositionPolicy: "main-selected-git-merge-v1", adoptions };
     });
   }
 

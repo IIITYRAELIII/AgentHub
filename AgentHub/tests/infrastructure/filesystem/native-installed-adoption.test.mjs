@@ -93,6 +93,27 @@ async function fixture(t) {
     task, tasks, result, receipt, service, candidate, port, adoptions, p, request, release };
 }
 
+test("ordinary Await derives exact selected adoption and installed source through existing owners", { timeout: 120000 }, async t => {
+  const f = await fixture(t);
+  const base = await f.service.releaseBaseEvidence({ projectRoot: f.primary,
+    publishedBaseCommit: f.published, tasks: f.tasks });
+  assert.deepEqual(base.adoptions, f.p.adoptions);
+  const request = { projectRoot: f.primary, planRevision: "exact", tasks: f.tasks,
+    publishedRevision: base.publishedBaseCommit, adoptions: base.adoptions };
+  assert.deepEqual(await f.candidate.deriveInstalledLocalSourceBaselineForSelection(request), f.p);
+  await assert.rejects(f.candidate.deriveInstalledLocalSourceBaselineForSelection({ ...request,
+    adoptions: [{ ...base.adoptions[0], recordHash: "0".repeat(40) }] }), /evidence changed/);
+  await assert.rejects(f.service.releaseBaseEvidence({ projectRoot: f.primary, publishedBaseCommit: f.published,
+    tasks: [{ ...f.tasks[0], baseCommit: "0".repeat(40) }] }), /base changed/);
+  await save(f.external, "AgentHub/later.mjs", "unapproved\n");
+  await commit(f.external, "origin drift before ordinary Await");
+  await git(f.external, ["push", "origin", "HEAD:main"]);
+  // Historical evidence is still readable, but never grants current promotion.
+  assert.deepEqual(await f.service.releaseBaseEvidence({ projectRoot: f.primary,
+    publishedBaseCommit: f.published, tasks: f.tasks }), base);
+  await assert.rejects(f.candidate.deriveInstalledLocalSourceBaselineForSelection(request), /identity changed/);
+});
+
 test("native installed source and exact ordinary adoption survive Test, candidate reuse and generation", { timeout: 240000 }, async t => {
   const f = await fixture(t);
   await assert.rejects(assertNativeTaskHistories({ git: f.port, baseCommit: f.main, tasks: f.tasks }), /release-owned/);

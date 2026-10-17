@@ -34,3 +34,11 @@ deliver this mechanism before ordinary Task adoption/Test/Await and canonical
 publication. That bootstrap is not the product release. After supported main
 synchronization contains the installed repairs, the one-time local migration
 envelope is unnecessary; ordinary adoption authority remains explicit.
+
+Ordinary prospective Await derives this same envelope read-only when its exact
+selected adoption receipts coexist with installed source. The Task owner returns
+the existing receipts as historical base evidence; the candidate owner verifies
+the current installed manifest/source and approved origin. The application passes
+that proof through its existing promotion and Task CAS rechecks. This avoids
+depending on preparation-only admission, which requires already accepted Tasks.
+No new caller flag or receipt writer is introduced; origin drift still refuses.
