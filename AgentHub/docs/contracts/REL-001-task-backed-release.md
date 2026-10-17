@@ -82,6 +82,15 @@ or original operation; subsequent validation still runs every required suite.
 
 ## Installed local source baseline (ADR-0115)
 
+Publication keeps the composition source base separate from the remote CAS base.
+The existing sealed manifest/checkpoint provenance supplies the exact approved
+origin (or the retained published baseline when no incoming was adopted).
+Readback and the frozen Git publisher use that same remote pin. Before push,
+both the source base and remote pin must be ancestors of the candidate; the
+exact remote lease still fences fetch/push drift. Provenance mismatch refuses.
+Publication validation children do not inherit a parent's replacement-startup
+operation or launcher identity; startup guards remain unchanged.
+
 The user's authorization of a local repair and its release includes a one-time
 transparent migration of already installed local source. It does not authorize
 new external origin code. `installed-local-source-v1` retains agreed local main

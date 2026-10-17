@@ -6,6 +6,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { callDesktopControl } from "./desktop-control.mjs";
 import { assertReleaseCloneForPublication } from "../filesystem/release-git-workspace.mjs";
+import { normalizedReleaseBaseProvenance, releasePublicationBaseCommit } from "../../domain/release-base-provenance.mjs";
 
 const execute = promisify(execFile);
 const sha = /^[a-f0-9]{40,64}$/u;
@@ -54,6 +55,10 @@ export function createFrozenReleasePublication({
     const bytes = await read(manifestFile);
     if (createHash("sha256").update(bytes).digest("hex") !== checkpoint.manifestHash) throw new Error("frozen release manifest digest changed");
     const manifest = JSON.parse(bytes.toString());
+    const provenance = normalizedReleaseBaseProvenance(manifest.baseProvenance, manifest.baseCommit);
+    if (JSON.stringify(provenance) !== JSON.stringify(
+      normalizedReleaseBaseProvenance(checkpoint.baseProvenance, checkpoint.baseCommit),
+    )) throw new Error("frozen release provenance changed");
     if (!samePath(manifest.primaryRoot, marker.primaryRoot)
       || !samePath(manifest.releaseRoot, marker.releaseRoot)
       || manifest.planRevision !== checkpoint.planRevision
@@ -80,6 +85,8 @@ export function createFrozenReleasePublication({
     return {
       workspaceId: selectedWorkspace, planRevision: checkpoint.planRevision,
       manifestHash: checkpoint.manifestHash, baseCommit: checkpoint.baseCommit,
+      publicationBaseCommit: releasePublicationBaseCommit(manifest),
+      ...(provenance ? { baseProvenance: provenance } : {}),
       preReleaseHead: checkpoint.preReleaseHead, primaryRoot: marker.primaryRoot,
     };
   }
@@ -90,11 +97,12 @@ export function createFrozenReleasePublication({
       await invoke(["fetch", "--no-tags", "--no-recurse-submodules", "origin", "+refs/heads/main:refs/remotes/origin/main"]);
       const remote = await invoke(["rev-parse", "refs/remotes/origin/main^{commit}"]);
       if (remote === identity.revision) return { status: "already_published", revision: remote };
-      if (remote !== release.baseCommit) throw new Error(`origin/main changed: approved ${release.baseCommit}, observed ${remote}`);
+      if (remote !== release.publicationBaseCommit) throw new Error(`origin/main changed: approved ${release.publicationBaseCommit}, observed ${remote}`);
       await invoke(["merge-base", "--is-ancestor", release.baseCommit, identity.revision]);
+      await invoke(["merge-base", "--is-ancestor", release.publicationBaseCommit, identity.revision]);
       // Exact lease also protects the fetch/push race. The ancestry check forbids
       // using that lease to replace unrelated remote history.
-      await invoke(["push", `--force-with-lease=refs/heads/main:${release.baseCommit}`, "origin", `${identity.revision}:refs/heads/main`]);
+      await invoke(["push", `--force-with-lease=refs/heads/main:${release.publicationBaseCommit}`, "origin", `${identity.revision}:refs/heads/main`]);
       const observed = await invoke(["ls-remote", "--exit-code", "origin", "refs/heads/main"]);
       if (observed.split(/\s/u)[0] !== identity.revision) throw new Error("Git publication outcome requires reconciliation");
       return { status: "published", revision: identity.revision };

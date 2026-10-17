@@ -150,6 +150,17 @@ export function releaseBaseProvenanceApprovedBase(provenance) {
     : provenance.approvedOriginMainCommit;
 }
 
+// Composition may start from installed local source while publication still
+// compares and advances the independently approved remote history. Both pins
+// already belong to the sealed candidate provenance; callers supply no override.
+export function releasePublicationBaseCommit({ baseCommit, baseProvenance = null }) {
+  const provenance = normalizedReleaseBaseProvenance(baseProvenance, baseCommit);
+  if (!provenance) return baseCommit;
+  return provenance.approvedOriginMainCommit
+    ?? provenance.adoptedBaseCommit
+    ?? provenance.publishedBaseCommit;
+}
+
 // Recurrence guard shared by preparation, freeze and preflight. A durable
 // published baseline is the authority: an advanced base without an envelope,
 // or an envelope for another baseline, is rejected before any effect. Without
