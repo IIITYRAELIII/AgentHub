@@ -170,7 +170,8 @@ test("ordinary Await checks native authority inside actual Task persistence and 
       const refs = await git(f.primary, ["for-each-ref", "--format=%(refname) %(objectname)"]);
       const prepared = await f.candidate.frozenCandidate(f.primary);
       const checkpoint = await readFile(prepared.checkpointFile);
-      const repeat = await lifecycle.updateWorkflowStatus(request);
+      await assert.rejects(lifecycle.updateWorkflowStatus(request), /revision changed/);
+      const repeat = board.lifecycleOutcome(request.operationId).result;
       assert.equal(repeat.task.revision, accepted.task.revision);
       assert.equal(prepares, 1);
       assert.equal(terminalCalls, 1);
