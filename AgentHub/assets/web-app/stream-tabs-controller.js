@@ -1248,7 +1248,7 @@
             <div class="stream-card-settings-section stream-card-settings-gap-section">
               <span class="stream-card-settings-kicker">Отступ</span>
               <button type="button" class="stream-card-gap-toggle" role="switch" aria-checked="false"
-                aria-label="Отступ между карточками потоков" data-stream-gap-toggle>
+                aria-label="Отступ между карточками диалогов" data-stream-gap-toggle>
                 <span class="switch-track" aria-hidden="true"></span>
               </button>
             </div>

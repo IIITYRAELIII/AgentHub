@@ -40,6 +40,21 @@ async function capture(page, name) {
   await page.screenshot({ path: path.join(captures, `${name}.png`) });
 }
 
+async function assertDialogAccessibleCopy(page) {
+  const attributes = await page.locator(
+    "[data-dialog-settings], [data-stream-card-settings-menu], .stream-context-menu:not(.workspace-context-menu), .chat-overlay-actions, [data-mobile-stream-switch]",
+  ).evaluateAll((roots) => roots.flatMap((root) => [root, ...root.querySelectorAll("[aria-label], [title], [placeholder]")])
+    .flatMap((node) => ["aria-label", "title", "placeholder"].filter((name) => node.hasAttribute(name))
+      .map((name) => ({ attribute: name, value: node.getAttribute(name) }))));
+  for (const { attribute, value } of attributes) {
+    const frameworkCopy = [workspaceName, longName, "Stream пользователя"]
+      .reduce((text, authoredName) => text.replaceAll(authoredName, ""), value);
+    assert.doesNotMatch(frameworkCopy, /Stream|Thread|[Пп]оток|Пока нет ответа|Ход выполняется/u,
+      `${attribute}: ${value}`);
+  }
+  return attributes;
+}
+
 async function geometry(page, mobile) {
   return page.evaluate((mobile) => {
     const visible = (node) => node.getClientRects().length && !node.closest("[hidden]");
@@ -175,6 +190,14 @@ for (const surface of surfaces) {
         "Новая директория начнёт использоваться после следующего запуска агента. Текущая работа продолжится в прежней директории.");
       assert.doesNotMatch(await settings.locator("[data-stream-card-rotate]").getAttribute("title"), /Thread/u);
       assert.equal(await settings.locator("[data-dialog-stream-rules]").getAttribute("placeholder"), "Дополнительные инструкции для этого диалога");
+      const attributes = await assertDialogAccessibleCopy(page);
+      const gapToggle = page.locator("[data-stream-gap-toggle]");
+      if (surface.width >= 860 && surface.surface === "web") {
+        assert.equal(await gapToggle.getAttribute("aria-label"), "Отступ между карточками диалогов");
+      } else {
+        assert.equal(await gapToggle.count(), 0);
+      }
+      await writeFile(path.join(captures, `${surface.name}-accessible-copy.json`), JSON.stringify(attributes, null, 2));
       await capture(page, `${surface.name}-settings`);
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
       assert.equal((await bridgeCalls(page, "send-message")).length, 0);
