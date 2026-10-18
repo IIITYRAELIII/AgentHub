@@ -164,6 +164,13 @@ for (const coversRemote of [false, true]) test(`published ancestry validates exa
   await commit(root, "adopted side");
   const adopted = await git(root, "rev-parse", "HEAD");
   await git(root, "checkout", "main");
+  // Current native admission verifies actual origin as well as retained
+  // tracking refs. Keep both independent observations real in this fixture.
+  const origin = path.join(root, "..", `${path.basename(root)}-approved-origin.git`);
+  context.after(() => rm(origin, { recursive: true, force: true }));
+  await git(root, "clone", "--bare", "--no-local", root, origin);
+  await git(origin, "update-ref", "refs/heads/main", adopted);
+  await git(root, "remote", "add", "origin", origin);
   await git(b.projectRoot, "merge", "--ff-only", remote);
   await writeFile(path.join(b.projectRoot, "b.txt"), "B\n");
   await commit(b.projectRoot, "B result");
@@ -179,7 +186,12 @@ for (const coversRemote of [false, true]) test(`published ancestry validates exa
   const dev = await service.prepareDev(root);
   if (coversRemote) {
     assert.equal((await service.recordExplicitUpstreamAdoption(input)).recordHash, receipt.recordHash);
-    await assert.rejects(service.mergeIntoDev(snapshot), { code: "RELEASE_NATIVE_HISTORY_REQUIRED" });
+    await service.mergeIntoDev(snapshot);
+    assert.notEqual(await git(root, "rev-parse", "dev"), dev.headCommit);
+    assert.equal(await git(root, "merge-base", "--is-ancestor", snapshot.headCommit, "dev"), "");
+    assert.equal(await readFile(path.join(dev.projectRoot, "remote-only.txt"), "utf8"), "remote\n");
+    assert.equal(await readFile(path.join(dev.projectRoot, "adopted.txt"), "utf8"), "approved side\n");
+    assert.equal(await readFile(path.join(dev.projectRoot, "b.txt"), "utf8"), "B\n");
   } else {
     await assert.rejects(service.recordExplicitUpstreamAdoption(input), /unpublished tracked remote history/u);
     await assert.rejects(service.mergeIntoDev(snapshot), { code: "RELEASE_NATIVE_HISTORY_REQUIRED" });
