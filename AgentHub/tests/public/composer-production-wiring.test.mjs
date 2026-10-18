@@ -205,9 +205,14 @@ test("late rejection cannot downgrade an exact canonical admission", { timeout: 
       accepted: true, conflictKind: "message-intake", clientProjectionIntent: "conversation",
       displayText: "accepted before transport failure",
     });
-    await page.waitForFunction(() => document.querySelector(".chat-log")?.textContent.includes("Принято"));
+    const admitted = page.locator(".msg").filter({ has: page.locator(".msg-body", {
+      hasText: "accepted before transport failure",
+    }) });
+    await admitted.getByText("Сохранено в Hub", { exact: true }).waitFor();
     await page.evaluate(() => window.__rejectHeldSend());
     await page.waitForFunction(() => window.__toastHistory.includes("Введите сообщение"));
+    assert.equal(await admitted.count(), 1);
+    assert.match(await admitted.textContent(), /Сохранено в Hub/u);
     assert.equal(await page.locator("[data-composer-input]").inputValue(), "");
     assert.equal(await page.locator("[data-message-retry-unconfirmed]").count(), 0);
     assert.equal((await bridgeCalls(page, "send-message")).length, attempts.length);

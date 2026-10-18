@@ -2147,7 +2147,7 @@ test("ordinary repeated preparation skips dependencies and sparse mutations whil
   assert.equal(await readFile(path.join(first.projectRoot, "app.txt"), "utf8"), "unfinished edit\n");
 });
 
-test("an unreviewed sibling Task merge is refused while unrelated dev work is preserved", { timeout: 90000 }, async (context) => {
+test("known dev sibling context is preview-only while unrelated dev work is preserved", { timeout: 90000 }, async (context) => {
   const root = await repository(context);
   const dataDir = path.join(root, "..", `${path.basename(root)}-conflict-data`);
   context.after(() => rm(dataDir, { recursive: true, force: true }));
@@ -2170,15 +2170,34 @@ test("an unreviewed sibling Task merge is refused while unrelated dev work is pr
   await writeFile(path.join(c.projectRoot, "c.txt"), "C\n");
   await service.snapshotAndMerge({ taskId: c.taskId, projectRoot: root });
   const before = await git(root, "rev-parse", "dev");
-  await assert.rejects(service.snapshotAndMerge({ taskId: b.taskId, projectRoot: root }), {
-    code: "RELEASE_NATIVE_HISTORY_REQUIRED",
-  });
-  assert.equal(await git(root, "rev-parse", "dev"), before);
+  const preview = await service.snapshotAndMerge({ taskId: b.taskId, projectRoot: root });
+  const after = await git(root, "rev-parse", "dev");
+  assert.notEqual(after, before);
+  assert.equal(preview.snapshot.headCommit, combined);
+  assert.deepEqual((await git(root, "show", "-s", "--format=%P", after)).split(" "), [before, combined]);
   const currentDev = await service.prepareDev(root);
-  assert.equal(await readFile(path.join(currentDev.projectRoot, "app.txt"), "utf8"), "A\n");
+  assert.equal(await readFile(path.join(currentDev.projectRoot, "app.txt"), "utf8"), "A and B\n");
   assert.equal(await readFile(path.join(currentDev.projectRoot, "c.txt"), "utf8"), "C\n");
   const parents = (await git(root, "show", "-s", "--format=%P", combined)).split(" ");
   assert.equal(parents[1], testedA.snapshot.headCommit);
+  // Test may use already managed dev ancestry. Publication still validates the
+  // selected source independently and cannot adopt this unselected sibling.
+  const origin = path.join(dataDir, "publication-origin.git");
+  await git(root, "clone", "--bare", "--no-local", root, origin);
+  await git(root, "remote", "add", "origin", origin);
+  const main = await git(root, "rev-parse", "main");
+  const { ReleaseGitWorkspaceService } = await import("../../../src/infrastructure/filesystem/release-git-workspace.mjs");
+  const release = new ReleaseGitWorkspaceService({ dataDir: path.join(dataDir, "publication") });
+  await assert.rejects(release.prepareCandidate({
+    projectRoot: root, workspaceId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    planRevision: "a".repeat(64), approvedBaseCommit: main,
+    frozenTasks: [{ taskId: b.taskId, taskRevision: 1, branch: b.branch,
+      baseCommit: b.baseCommit, resultCommit: combined }],
+  }), { code: "RELEASE_NATIVE_HISTORY_REQUIRED" });
+  assert.equal(await git(root, "rev-parse", "dev"), after);
+  assert.equal(await git(root, "rev-parse", "main"), main);
+  assert.equal(await git(b.projectRoot, "rev-parse", "HEAD"), combined);
+  assert.equal(await readFile(path.join(currentDev.projectRoot, "c.txt"), "utf8"), "C\n");
 });
 
 test("npm holds its Task while another Task can integrate into dev", { timeout: 30_000 }, async (context) => {

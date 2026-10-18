@@ -150,6 +150,8 @@ test("Task card opens exact journal links and fences on-demand Git previews", { 
       }
       await link.click();
       assert.match(page.url(), /#\/chat\/codex\/parent-thread\/turn\/old-thread\/exact-turn$/u);
+      await page.locator('[data-view-button="dashboard"]:visible, [data-mobile-dialogs-tab="dashboard"]:visible').first().click();
+      await page.waitForFunction(() => document.documentElement.dataset.view === "dashboard");
       await page.locator('[data-board-task-id="2"]').first().click();
       await page.evaluate((old) => window.AgentHubTaskBoard.showDiff({
         ...old, error: "wrong Task",
