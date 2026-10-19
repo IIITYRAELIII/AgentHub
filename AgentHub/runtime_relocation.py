@@ -7,6 +7,8 @@ Runtime stop/start and acceptance belong to the operator, not this module.
 from __future__ import annotations
 
 import argparse
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 import ctypes
 from ctypes import wintypes
 import hashlib
@@ -531,14 +533,214 @@ def relink_owned_file(canonical, target, operation, target_hash):
     os.replace(long_path(temporary), long_path(target))
 
 
-def copy_roots(plan, offline=False):
+def copy_regular_file(source, target, identity, old, linked, operation):
+    if os.path.exists(long_path(target)) and not old:
+        raise ValueError(f"Unowned file at destination: {target}")
+    source_hash = target_hash = None
+    if os.path.lexists(long_path(target)):
+        if reparse(target):
+            raise ValueError("Destination file became a reparse point")
+        source_hash, target_hash = content_digest(source), content_digest(target)
+        if target_hash not in (old["sha256"], source_hash):
+            raise ValueError("Owned destination contents changed")
+    key = (identity["dev"], identity["ino"])
+    added = 0
+    if key in linked:
+        canonical = linked[key]
+        source_hash = source_hash or content_digest(source)
+        if content_digest(canonical) != source_hash:
+            raise ValueError("Source hardlink contents changed")
+        if not os.path.exists(long_path(target)) or any(
+            info(target)[k] != info(canonical)[k] for k in ("dev", "ino")
+        ):
+            relink_owned_file(canonical, target, operation, target_hash)
+        sha = source_hash
+    elif source_hash and source_hash == target_hash:
+        sha = source_hash
+    else:
+        sha = copy_file(source, target, operation)
+        added = identity["size"]
+    observed = info(source)
+    if not same_identity(identity, observed) or identity["links"] != observed["links"]:
+        raise ValueError(f"Source changed during copy: {source}")
+    # Single-link files cannot have a later member of their group. Keeping only
+    # actual hardlink groups also bounds memory on million-file dependency trees.
+    if identity["links"] > 1:
+        linked[key] = target
+    return sha, added
+
+
+def quarantine_temporary(plan, index, rel, expected_identity, expected_sha):
+    """Preserve one explicitly inspected interrupted copy after its worker exits.
+
+    The installer must bind worker absence separately. This action neither stops
+    a process nor admits another writer; unknown temporaries are never inferred.
+    """
+    if (
+        not isinstance(index, int)
+        or not 0 <= index < len(plan["roots"])
+        or len(expected_sha) != 64
+        or any(c not in "0123456789abcdef" for c in expected_sha)
+    ):
+        raise ValueError("Exact temporary root and content digest required")
+    root = plan["roots"][index]
+    target = Path(root["target"]) / rel
+    if not inside(root["target"], target) or Path(rel).is_absolute():
+        raise ValueError("Temporary path escaped its selected root")
+    plain_directory(root["target"])
+    ensure_destination(plan, index)
+    plain_directory(target.parent)
+    temporary = target.with_name(
+        target.name + ".relocation-" + plan["operation"] + ".tmp"
+    )
     db = connect(plan["manifest"])
+    try:
+        if phase(db) not in ("planned", "staged"):
+            raise ValueError("Temporary recovery is only a paused preparation action")
+        row = db.execute(
+            "SELECT kind FROM files WHERE root=? AND rel=?", (index, rel)
+        ).fetchone()
+        if not row or row["kind"] != "file":
+            raise ValueError("Unknown copy intent; temporary preserved")
+        quarantine = (
+            Path(plan["manifest"]).parent
+            / ("incomplete-copy-" + plan["operation"])
+            / str(index)
+            / expected_sha
+            / rel
+        )
+        receipt_rel = "<incomplete-copy>/" + expected_sha + "/" + rel
+        previous = db.execute(
+            "SELECT * FROM departed WHERE root=? AND rel=?", (index, receipt_rel)
+        ).fetchone()
+        if previous:
+            if (
+                previous["kind"] != "incomplete-copy"
+                or previous["identity"] != json.dumps(expected_identity)
+                or previous["sha256"] != expected_sha
+                or previous["quarantine"] != str(quarantine)
+            ):
+                raise ValueError("Temporary recovery receipt changed")
+            if not os.path.lexists(long_path(temporary)):
+                if (
+                    not os.path.lexists(long_path(quarantine))
+                    or reparse(quarantine)
+                    or not same_identity(expected_identity, info(quarantine))
+                    or content_digest(quarantine) != expected_sha
+                ):
+                    raise ValueError("Interrupted-copy evidence changed")
+                return {"quarantine": str(quarantine), "resumed": True}
+        if (
+            reparse(temporary)
+            or not stat.S_ISREG(info(temporary)["mode"])
+            or info(temporary)["links"] != 1
+            or not same_identity(expected_identity, info(temporary))
+            or content_digest(temporary) != expected_sha
+        ):
+            raise ValueError("Explicit temporary identity/hash changed; preserved")
+        # An existing quarantine is never overwritten, even if its bytes match.
+        if os.path.lexists(long_path(quarantine)):
+            raise ValueError("Unaccounted interrupted-copy evidence exists")
+        if quarantine.drive.casefold() != target.drive.casefold():
+            raise ValueError("Temporary quarantine must stay on the destination volume")
+        ancestor = quarantine.parent
+        while not ancestor.exists():
+            ancestor = ancestor.parent
+        plain_directory(ancestor)
+        quarantine.parent.mkdir(parents=True, exist_ok=True)
+        plain_directory(quarantine.parent)
+        db.execute(
+            "INSERT OR IGNORE INTO departed VALUES(?,?,?,?,?,?)",
+            (
+                index,
+                receipt_rel,
+                "incomplete-copy",
+                json.dumps(expected_identity),
+                expected_sha,
+                str(quarantine),
+            ),
+        )
+        db.commit()  # Evidence custody precedes the same-volume rename.
+        if (
+            not same_identity(expected_identity, info(temporary))
+            or content_digest(temporary) != expected_sha
+        ):
+            raise ValueError("Temporary changed before quarantine")
+        os.rename(long_path(temporary), long_path(quarantine))
+        if (
+            not same_identity(expected_identity, info(quarantine))
+            or content_digest(quarantine) != expected_sha
+        ):
+            raise ValueError("Quarantined evidence differs")
+        return {"quarantine": str(quarantine), "resumed": False}
+    finally:
+        db.close()
+
+
+def validate_workers(workers):
+    if (
+        isinstance(workers, bool)
+        or not isinstance(workers, int)
+        or not 1 <= workers <= 8
+    ):
+        raise ValueError("Copy workers must be an integer from 1 to 8")
+    return workers
+
+
+def copy_roots(plan, offline=False, workers=1):
+    validate_workers(workers)
+    db = connect(plan["manifest"])
+    pool = ThreadPoolExecutor(max_workers=workers) if workers > 1 else None
+    pending = deque()
     try:
         if phase(db) not in ("planned", "staged", "copied_offline"):
             raise ValueError("Copy cannot run after verification/switch")
         generation = time.time_ns()
         count = copied_bytes = 0
         linked = {}
+
+        def record(entry, sha, copied, added=0):
+            nonlocal count, copied_bytes
+            i, rel, kind, identity, link_target = entry
+            db.execute(
+                "INSERT OR REPLACE INTO files(root,rel,kind,identity,link_target,sha256,copied,generation) VALUES(?,?,?,?,?,?,?,?)",
+                (
+                    i,
+                    rel,
+                    kind,
+                    json.dumps(identity),
+                    link_target,
+                    sha,
+                    copied,
+                    generation,
+                ),
+            )
+            count += 1
+            copied_bytes += added
+            if count % 1000 == 0:
+                db.commit()
+            if count % 10000 == 0:
+                print(
+                    json.dumps(
+                        {
+                            "phase": "offline-copy" if offline else "stage",
+                            "entries": count,
+                            "copied_bytes": copied_bytes,
+                            "workers": workers,
+                        }
+                    ),
+                    flush=True,
+                )
+
+        def drain_one():
+            future, entry = pending.popleft()
+            sha, added = future.result()
+            record(entry, sha, 1, added)
+
+        def drain_all():
+            while pending:
+                drain_one()
+
         for i, root in enumerate(plan["roots"]):
             if info(root["source"])["ino"] != root["identity"]["ino"]:
                 raise ValueError("Source root identity changed")
@@ -555,6 +757,7 @@ def copy_roots(plan, offline=False):
                 ).fetchone()
                 if old and old["kind"] != kind:
                     raise ValueError(f"Entry type changed: {source}")
+                entry = (i, rel, kind, identity, link_target)
                 if kind == "directory":
                     refuse_directory_streams(source)
                     os.makedirs(long_path(target), exist_ok=True)
@@ -589,68 +792,30 @@ def copy_roots(plan, offline=False):
                             (i, rel, kind, json.dumps(identity), -1, generation),
                         )
                         db.commit()
-                    if os.path.exists(long_path(target)) and not old:
-                        raise ValueError(f"Unowned file at destination: {target}")
-                    source_hash = target_hash = None
-                    if os.path.lexists(long_path(target)):
-                        if reparse(target):
-                            raise ValueError("Destination file became a reparse point")
-                        source_hash, target_hash = (
-                            content_digest(source),
-                            content_digest(target),
+                    if pool and identity["links"] == 1:
+                        future = pool.submit(
+                            copy_regular_file,
+                            source,
+                            target,
+                            identity,
+                            dict(old) if old else None,
+                            {},
+                            plan["operation"],
                         )
-                        if target_hash not in (old["sha256"], source_hash):
-                            raise ValueError("Owned destination contents changed")
-                    key = (identity["dev"], identity["ino"])
-                    if key in linked:
-                        canonical = linked[key]
-                        source_hash = source_hash or content_digest(source)
-                        if content_digest(canonical) != source_hash:
-                            raise ValueError("Source hardlink contents changed")
-                        if not os.path.exists(long_path(target)) or any(
-                            info(target)[k] != info(canonical)[k]
-                            for k in ("dev", "ino")
-                        ):
-                            relink_owned_file(
-                                canonical, target, plan["operation"], target_hash
-                            )
-                        sha = source_hash
-                    elif source_hash and source_hash == target_hash:
-                        sha = source_hash
-                    else:
-                        sha = copy_file(source, target, plan["operation"])
-                        copied_bytes += identity["size"]
-                    if not same_identity(identity, info(source)):
-                        raise ValueError(f"Source changed during copy: {source}")
-                    linked[(identity["dev"], identity["ino"])] = target
-                    copied = 1
-                db.execute(
-                    "INSERT OR REPLACE INTO files(root,rel,kind,identity,link_target,sha256,copied,generation) VALUES(?,?,?,?,?,?,?,?)",
-                    (
-                        i,
-                        rel,
-                        kind,
-                        json.dumps(identity),
-                        link_target,
-                        sha,
-                        copied,
-                        generation,
-                    ),
-                )
-                count += 1
-                if count % 1000 == 0:
-                    db.commit()
-                if count % 10000 == 0:
-                    print(
-                        json.dumps(
-                            {
-                                "phase": "offline-copy" if offline else "stage",
-                                "entries": count,
-                                "copied_bytes": copied_bytes,
-                            }
-                        ),
-                        flush=True,
+                        pending.append((future, entry))
+                        if len(pending) >= workers * 2:
+                            drain_one()
+                        continue
+                    # Hardlink groups retain their original serialized owner;
+                    # independent worker effects finish before sharing a group.
+                    drain_all()
+                    sha, added = copy_regular_file(
+                        source, target, identity, old, linked, plan["operation"]
                     )
+                    record(entry, sha, 1, added)
+                    continue
+                record(entry, sha, copied)
+        drain_all()
         # Staging is not a coherent snapshot. Preserve any copied file that later
         # disappears from the live source in the operation's D-side quarantine.
         # It must not reappear as a current receipt/config in the new runtime.
@@ -708,6 +873,10 @@ def copy_roots(plan, offline=False):
             verify_offline_copy(plan)
         return {"phase": phase(db), "entries": count, "copied_bytes": copied_bytes}
     finally:
+        if pool:
+            # Never report failure/return while a queued copy can still mutate
+            # the target. No worker writes the manifest or authoritative state.
+            pool.shutdown(wait=True, cancel_futures=True)
         db.close()
 
 
@@ -1224,6 +1393,7 @@ def main():
     parser.add_argument("--stopped-proof")
     parser.add_argument("--runtime-proof")
     parser.add_argument("--output")
+    parser.add_argument("--workers", type=int, default=1, choices=range(1, 9))
     args = parser.parse_args()
     if args.action == "plan":
         result = create_plan(args.plan, args.map)
@@ -1246,7 +1416,9 @@ def main():
         elif args.action == "refresh-stopped":
             result = refresh_stopped(plan, args.stopped_proof, args.output)
         else:
-            result = copy_roots(plan, offline=args.action == "final-copy")
+            result = copy_roots(
+                plan, offline=args.action == "final-copy", workers=args.workers
+            )
     print(json.dumps(result, ensure_ascii=False), flush=True)
 
 

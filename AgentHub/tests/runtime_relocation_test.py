@@ -2,6 +2,7 @@
 
 import importlib.util
 import base64
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -11,6 +12,7 @@ import tempfile
 import subprocess
 import sys
 import time
+import threading
 import unittest
 from unittest.mock import patch
 import runtime_relocation_process as process_custody
@@ -106,6 +108,320 @@ class RelocationTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "reparse"):
             relocation.copy_roots(plan, offline=True)
         self.assertEqual(list(foreign.iterdir()), [])
+
+    def test_parallel_copy_is_bounded_and_manifest_stays_on_coordinator(self):
+        for i in range(24):
+            (self.source / f"file-{i:02}").write_bytes(bytes([i]) * 8192)
+        plan = self.plan()
+        original = relocation.copy_regular_file
+        coordinator = threading.get_ident()
+        lock = threading.Lock()
+        active = maximum = 0
+        threads = set()
+        barrier = threading.Barrier(4, timeout=10)
+        executor_type = relocation.ThreadPoolExecutor
+        queued = maximum_queued = 0
+
+        class ObservedExecutor:
+            def __init__(self, **kwargs):
+                self.executor = executor_type(**kwargs)
+
+            def submit(self, *args):
+                nonlocal queued, maximum_queued
+                queued += 1
+                maximum_queued = max(maximum_queued, queued)
+                future = self.executor.submit(*args)
+
+                class ObservedFuture:
+                    def result(self):
+                        nonlocal queued
+                        try:
+                            return future.result()
+                        finally:
+                            queued -= 1
+
+                return ObservedFuture()
+
+            def shutdown(self, **kwargs):
+                return self.executor.shutdown(**kwargs)
+
+        def observed(*args):
+            nonlocal active, maximum
+            with lock:
+                threads.add(threading.get_ident())
+                active += 1
+                maximum = max(active, maximum)
+            try:
+                barrier.wait()
+                return original(*args)
+            finally:
+                with lock:
+                    active -= 1
+
+        original_connect = relocation.connect
+
+        def connection(*args):
+            self.assertEqual(threading.get_ident(), coordinator)
+            return original_connect(*args)
+
+        with (
+            patch.object(relocation, "copy_regular_file", side_effect=observed),
+            patch.object(relocation, "connect", side_effect=connection),
+            patch.object(relocation, "ThreadPoolExecutor", ObservedExecutor),
+        ):
+            relocation.copy_roots(plan, offline=True, workers=4)
+        self.assertEqual(maximum, 4)
+        self.assertEqual(len(threads), 4)
+        self.assertEqual(active, 0)
+        self.assertEqual(maximum_queued, 8)
+        self.assertEqual(queued, 0)
+        for file in self.source.iterdir():
+            self.assertEqual(file.read_bytes(), (self.target / file.name).read_bytes())
+        db = original_connect(plan["manifest"])
+        self.assertEqual(relocation.phase(db), "verified")
+        db.close()
+
+    def test_parallel_mixed_hardlinks_and_sqlite_cohort(self):
+        a = self.source / "a"
+        a.write_bytes(b"before")
+        os.link(a, self.source / "z")
+        for i in range(12):
+            (self.source / f"independent-{i}").write_bytes(bytes([i]) * 1024)
+        db = sqlite3.connect(self.source / "journal.sqlite")
+        db.execute("CREATE TABLE retained(v)")
+        db.execute("INSERT INTO retained VALUES('original')")
+        db.commit()
+        db.close()
+        plan = self.plan()
+        relocation.copy_roots(plan, workers=4)
+        self.assertFalse((self.target / "journal.sqlite").exists())
+        a.write_bytes(b"updated")
+        relocation.copy_roots(plan, offline=True, workers=4)
+        self.assertEqual(
+            relocation.info(self.target / "a")["ino"],
+            relocation.info(self.target / "z")["ino"],
+        )
+        (self.target / "a").write_bytes(b"target write through")
+        self.assertEqual((self.target / "z").read_bytes(), b"target write through")
+        self.assertEqual(a.read_bytes(), b"updated")
+        # Restore the verified bytes before exercising read-only DB validation.
+        (self.target / "a").write_bytes(b"updated")
+        self.assertEqual(relocation.validate_databases(plan)["databases_checked"], 1)
+
+    def test_parallel_failure_waits_for_workers_and_allows_exact_resume(self):
+        for i in range(20):
+            (self.source / f"file-{i:02}").write_bytes(bytes([i]) * 1024)
+        plan = self.plan()
+        original = relocation.copy_regular_file
+        completed = []
+        failed = threading.Event()
+
+        def interrupted(source, *args):
+            if source.name == "file-00":
+                failed.set()
+                raise OSError("injected concurrent copy failure")
+            self.assertTrue(failed.wait(10))
+            result = original(source, *args)
+            completed.append(source.name)
+            return result
+
+        with patch.object(relocation, "copy_regular_file", side_effect=interrupted):
+            with self.assertRaisesRegex(OSError, "concurrent copy failure"):
+                relocation.copy_roots(plan, offline=True, workers=4)
+            after_return = list(completed)
+            self.assertFalse(
+                any(
+                    t.name.startswith("ThreadPoolExecutor")
+                    for t in threading.enumerate()
+                )
+            )
+        self.assertEqual(completed, after_return)
+        db = relocation.connect(plan["manifest"])
+        self.assertEqual(relocation.phase(db), "planned")
+        db.close()
+        relocation.copy_roots(plan, offline=True, workers=4)
+        for file in self.source.iterdir():
+            self.assertEqual(file.read_bytes(), (self.target / file.name).read_bytes())
+
+    def test_parallel_worker_limits_refuse_before_destination_effect(self):
+        plan = self.plan()
+        for workers in (0, 9, True, 1.5):
+            with self.assertRaisesRegex(ValueError, "workers"):
+                relocation.copy_roots(plan, workers=workers)
+        self.assertFalse(self.target.exists())
+
+    def test_source_gaining_a_hardlink_during_copy_is_refused(self):
+        source = self.source / "file"
+        source.write_bytes(b"original")
+        plan = self.plan()
+        original = relocation.copy_file
+
+        def changed(*args):
+            result = original(*args)
+            os.link(source, self.source / "late-link")
+            return result
+
+        with patch.object(relocation, "copy_file", side_effect=changed):
+            with self.assertRaisesRegex(ValueError, "Source changed"):
+                relocation.copy_roots(plan, offline=True, workers=4)
+        self.assertEqual(source.read_bytes(), b"original")
+
+    def test_partial_temporary_is_preserved_by_explicit_custody_and_resume(self):
+        source = self.source / "file"
+        source.write_bytes(b"complete source")
+        plan = self.plan()
+        relocation.ensure_destination(plan, 0)
+        temporary = self.target / ("file.relocation-" + plan["operation"] + ".tmp")
+        temporary.write_bytes(b"interrupted body")
+        if os.name == "nt":
+            with open(str(temporary) + ":valuable", "wb") as stream:
+                stream.write(b"preserve stream too")
+        identity, sha = relocation.info(temporary), relocation.content_digest(temporary)
+        with self.assertRaisesRegex(ValueError, "Unresolved temporary"):
+            relocation.copy_roots(plan, workers=4)
+        with self.assertRaisesRegex(ValueError, "identity/hash"):
+            relocation.quarantine_temporary(plan, 0, "file", identity, "0" * 64)
+        self.assertTrue(temporary.exists())
+        result = relocation.quarantine_temporary(plan, 0, "file", identity, sha)
+        retained = Path(result["quarantine"])
+        self.assertEqual(relocation.content_digest(retained), sha)
+        self.assertFalse(temporary.exists())
+        self.assertTrue(
+            relocation.quarantine_temporary(plan, 0, "file", identity, sha)["resumed"]
+        )
+        relocation.copy_roots(plan, workers=4)
+        self.assertEqual((self.target / "file").read_bytes(), b"complete source")
+        self.assertEqual(retained.read_bytes(), b"interrupted body")
+
+    def test_unknown_temporary_and_foreign_quarantine_are_refused(self):
+        (self.source / "file").write_bytes(b"original")
+        plan = self.plan()
+        relocation.ensure_destination(plan, 0)
+        temporary = self.target / ("unknown.relocation-" + plan["operation"] + ".tmp")
+        temporary.write_bytes(b"unknown useful WIP")
+        identity, sha = relocation.info(temporary), relocation.content_digest(temporary)
+        with self.assertRaisesRegex(ValueError, "Unknown copy intent"):
+            relocation.quarantine_temporary(plan, 0, "unknown", identity, sha)
+        self.assertEqual(temporary.read_bytes(), b"unknown useful WIP")
+        temporary.rename(
+            self.target / ("file.relocation-" + plan["operation"] + ".tmp")
+        )
+        foreign = self.temp / "foreign"
+        foreign.mkdir()
+        quarantine_root = self.temp / ("incomplete-copy-" + plan["operation"])
+        relocation.make_link(str(foreign), quarantine_root, 0xA0000003, True)
+        with self.assertRaisesRegex(ValueError, "reparse"):
+            relocation.quarantine_temporary(plan, 0, "file", identity, sha)
+        self.assertEqual(list(foreign.iterdir()), [])
+        os.rmdir(quarantine_root)
+
+    def test_stage_pause_refuses_drift_and_never_claims_runtime_quiescence(self):
+        plan = self.plan()
+        helper = self.temp / "runtime_relocation.py"
+        helper.write_text("# isolated stage fixture")
+        command = subprocess.list2cmdline(
+            [
+                sys.executable,
+                str(helper),
+                "stage",
+                "--plan",
+                str(self.plan_file),
+                "--expected-plan-sha256",
+                relocation.digest(self.plan_file),
+            ]
+        )
+        row = {
+            "pid": 123456,
+            "parent": 321,
+            "name": "python.exe",
+            "executable": sys.executable,
+            "created": "134368685859403969",
+            "command": command,
+        }
+        expected = {k: v for k, v in row.items() if k != "command"}
+        expected.update(
+            operation=plan["operation"],
+            native_creation=True,
+            helper_sha256=relocation.digest(helper),
+            plan_sha256=relocation.digest(self.plan_file),
+            command_sha256=hashlib.sha256(command.encode()).hexdigest(),
+        )
+        binding, output = self.temp / "worker.json", self.temp / "paused.json"
+        relocation.write_json(binding, expected)
+        with (
+            patch.object(
+                process_custody,
+                "process_snapshot",
+                return_value=[{**row, "command": command + " changed"}],
+            ),
+            patch.object(process_custody, "HeldProcess") as held,
+        ):
+            with self.assertRaisesRegex(ValueError, "command/parent/children"):
+                process_custody.pause_stage(
+                    plan,
+                    binding,
+                    relocation.digest(binding),
+                    helper,
+                    self.plan_file,
+                    output,
+                )
+            held.assert_not_called()
+        with (
+            patch.object(
+                process_custody,
+                "process_snapshot",
+                return_value=[row, {**row, "pid": 999, "parent": row["pid"]}],
+            ),
+            patch.object(process_custody, "HeldProcess") as held,
+        ):
+            with self.assertRaisesRegex(ValueError, "children"):
+                process_custody.pause_stage(
+                    plan,
+                    binding,
+                    relocation.digest(binding),
+                    helper,
+                    self.plan_file,
+                    output,
+                )
+            held.assert_not_called()
+        with (
+            patch.object(
+                process_custody, "process_snapshot", side_effect=[[row], [row], []]
+            ),
+            patch.object(process_custody, "HeldProcess") as held,
+        ):
+            held.return_value.created = expected["created"]
+            held.return_value.stop.return_value = "stopped_held_identity"
+            held.return_value.exit_time.return_value = str(
+                int(expected["created"]) + 100
+            )
+            result = process_custody.pause_stage(
+                plan,
+                binding,
+                relocation.digest(binding),
+                helper,
+                self.plan_file,
+                output,
+            )
+            held.return_value.stop.assert_called_once()
+            held.return_value.close.assert_called_once()
+            self.assertTrue(result["stage_worker_absent"])
+            self.assertFalse(result["all_writers_stopped"])
+        with (
+            patch.object(process_custody, "process_snapshot", return_value=[]),
+            patch.object(process_custody, "HeldProcess") as held,
+        ):
+            result = process_custody.pause_stage(
+                plan,
+                binding,
+                relocation.digest(binding),
+                helper,
+                self.plan_file,
+                output,
+            )
+            held.assert_not_called()
+            self.assertIn("already_absent", result["outcome"])
+            self.assertFalse(result["all_writers_stopped"])
 
     def test_pre_start_switch_can_rollback_without_data_loss(self):
         (self.source / "file").write_text("original")

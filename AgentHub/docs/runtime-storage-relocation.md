@@ -51,6 +51,32 @@ protect copied configuration. Directory/MFT allocation is not a file-size sum.
    disappears is retained on the destination as departed evidence, not restored
    into the current runtime.
 
+Copy actions accept `--workers 1..8` (default one). Only independent files with
+one source hardlink are parallel; real hardlink groups retain serialized custody.
+At most twice the worker count is pending. The coordinator alone writes the
+manifest, and every worker is joined before success or failure returns. Final
+offline copy joins all workers before database-cohort and verification admission.
+The frozen cutover config may bind the same bound with `copy_workers`.
+
+To replace a slow live stage, the installer first freezes and reviews its exact
+worker/helper/plan hashes and native process identity. `pause-stage` in the existing
+process-custody helper takes that worker binding as `--process-plan`, its digest,
+and `--worker-helper`. It reopens a held handle, rechecks native creation/executable,
+command/parent and absence of children, then stops only that worker. This is not
+a main-runtime stop or an all-writers-stopped proof. Preserve its original exit,
+stdout and stderr as interrupted/failed unless its real exit proves otherwise.
+An already absent worker is never replaced with a new PID as a termination target.
+
+Resume only the same plan/manifest/target with the old worker authoritatively
+absent and no other copy writer. A complete exact-operation temporary is consumed
+by the original checksum guard. An incomplete one remains refused. After explicit
+inspection the installer may call `quarantine_temporary(plan, root, relative_path,
+identity, content_digest)` for that one known manifest intent. It preserves all
+streams through a same-volume rename into operation-side evidence, records custody
+before the move, and resumes an interrupted rename without overwriting evidence.
+Unknown temporary names, reparse entries, changed identities/hashes and foreign
+quarantine paths remain preserved and refused. This is not a general temp sweep.
+
 ## One controlled window
 
 The installer launches the frozen cutover helper independently from the destination

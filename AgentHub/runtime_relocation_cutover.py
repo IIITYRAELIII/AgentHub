@@ -70,6 +70,7 @@ def execute(config_file, expected_hash):
     if relocation.digest(config_file) != expected_hash:
         raise ValueError("Exact S2 cutover input changed")
     config = json.loads(Path(config_file).read_text(encoding="utf-8"))
+    relocation.validate_workers(config.get("copy_workers", 1))
     if os.name == "nt":
         kernel = ctypes.WinDLL("kernel32", use_last_error=True)
         kernel.GetCurrentProcess.restype = ctypes.c_void_p
@@ -162,7 +163,7 @@ def execute(config_file, expected_hash):
         output / "stopped.json",
     )
     relocation.require_stopped(output / "stopped.json", plan)
-    relocation.copy_roots(plan, offline=True)
+    relocation.copy_roots(plan, offline=True, workers=config.get("copy_workers", 1))
     relocation.validate_databases(plan)
     relocation.refresh_stopped(
         plan, output / "stopped.json", output / "pre-switch-stopped.json"

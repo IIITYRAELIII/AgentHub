@@ -224,6 +224,91 @@ def capture(plan, output):
     return {"process_count": len(result), "process_plan_sha256": digest(output)}
 
 
+def pause_stage(plan, worker_file, expected_hash, worker_helper, plan_file, output):
+    """Stop only the reviewed copy worker, without claiming Hub quiescence."""
+    if digest(worker_file) != expected_hash:
+        raise ValueError("Exact stage-worker binding changed")
+    expected = json.loads(Path(worker_file).read_text(encoding="utf-8"))
+    if (
+        expected.get("operation") != plan["operation"]
+        or digest(plan_file) != expected.get("plan_sha256")
+        or digest(worker_helper) != expected.get("helper_sha256")
+        or not expected.get("native_creation")
+        or Path(worker_helper).name != "runtime_relocation.py"
+    ):
+        raise ValueError("Reviewed stage helper/plan identity required")
+
+    def exact_row(rows):
+        row = next((r for r in rows if r["pid"] == expected["pid"]), None)
+        if row is None:
+            return None
+        command = str(row.get("command") or "")
+        # The exact argv is reviewed with the command hash. These additional
+        # guards prevent this narrow action being used for runtime/server stop.
+        normalized = command.replace("\\", "/").lower()
+        if (
+            row["parent"] != expected["parent"]
+            or hashlib.sha256(command.encode()).hexdigest()
+            != expected["command_sha256"]
+            or str(Path(worker_helper)).replace("\\", "/").lower() not in normalized
+            or str(Path(plan_file)).replace("\\", "/").lower() not in normalized
+            or " stage " not in normalized
+            or "--plan " not in normalized
+            or expected["plan_sha256"] not in normalized
+            or any(r["parent"] == row["pid"] for r in rows)
+        ):
+            raise ValueError("Stage worker command/parent/children changed")
+        return row
+
+    current = exact_row(process_snapshot())
+    if current is None:
+        result = {
+            "operation": plan["operation"],
+            "stage_worker_absent": True,
+            "outcome": "already_absent; inspect original exit and logs",
+            "all_writers_stopped": False,
+            "worker_binding_sha256": expected_hash,
+            "checked_at": time.time(),
+        }
+        write_json(output, result)
+        return result
+    handle = HeldProcess(expected)
+    try:
+        if exact_row(process_snapshot()) is None:
+            raise ValueError(
+                "Stage worker exited before final custody check; inspect its exit"
+            )
+        result = {
+            "operation": plan["operation"],
+            "worker_binding_sha256": expected_hash,
+            "pid": expected["pid"],
+            "created": handle.created,
+            "stage_worker_absent": False,
+            "all_writers_stopped": False,
+            "outcome": "stop intent; original stage is not successful",
+        }
+        write_json(output, result)
+        result["outcome"] = handle.stop()
+        result["exited"] = handle.exit_time()
+        remaining = process_snapshot()
+        if any(
+            r["pid"] == expected["pid"]
+            or (
+                r["parent"] == expected["pid"]
+                and int(expected["created"])
+                <= int(r["created"])
+                <= int(result["exited"])
+            )
+            for r in remaining
+        ):
+            raise ValueError("Stage worker identity/children remain; resume refused")
+        result.update(stage_worker_absent=True, checked_at=time.time())
+        write_json(output, result)
+        return result
+    finally:
+        handle.close()
+
+
 def stop(plan, process_file, expected_hash, saved_file, output):
     if digest(process_file) != expected_hash:
         raise ValueError("Exact process plan digest differs")
@@ -321,26 +406,35 @@ def stop(plan, process_file, expected_hash, saved_file, output):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=["capture", "stop"])
+    parser.add_argument("action", choices=["capture", "stop", "pause-stage"])
     parser.add_argument("--plan", required=True)
     parser.add_argument("--expected-plan-sha256", required=True)
     parser.add_argument("--process-plan")
     parser.add_argument("--expected-process-plan-sha256")
     parser.add_argument("--saved-proof")
+    parser.add_argument("--worker-helper")
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
     plan = load_plan(args.plan, args.expected_plan_sha256)
-    result = (
-        capture(plan, args.output)
-        if args.action == "capture"
-        else stop(
+    if args.action == "capture":
+        result = capture(plan, args.output)
+    elif args.action == "pause-stage":
+        result = pause_stage(
+            plan,
+            args.process_plan,
+            args.expected_process_plan_sha256,
+            args.worker_helper,
+            args.plan,
+            args.output,
+        )
+    else:
+        result = stop(
             plan,
             args.process_plan,
             args.expected_process_plan_sha256,
             args.saved_proof,
             args.output,
         )
-    )
     print(json.dumps(result), flush=True)
 
 
