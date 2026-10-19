@@ -67,6 +67,7 @@ export async function importLegacyReleaseOperations({
   statusFile = publicationRunPaths().statusFile,
   readStatus = readPublicationRunStatus,
   resolveTree = gitTree,
+  reportDiagnostic = () => {},
 } = {}) {
   if (!store || typeof store.importLegacy !== "function") throw new TypeError("release operation store is required");
   if (!String(dataDir ?? "").trim()) throw new TypeError("dataDir is required");
@@ -80,6 +81,7 @@ export async function importLegacyReleaseOperations({
   const skipped = [];
   for (const entry of entries.filter((item) => item.isDirectory()).sort((left, right) => left.name.localeCompare(right.name))) {
     const root = path.join(repositoriesRoot, entry.name);
+    try {
     const checkpoint = await json(path.join(root, "checkpoint.json"));
     if (!checkpoint || !SHA64.test(String(checkpoint.manifestHash ?? ""))
         || !SHA40.test(String(checkpoint.baseCommit ?? ""))
@@ -108,7 +110,12 @@ export async function importLegacyReleaseOperations({
     const evidence = status
       ? { checkpoint, manifest, publicationStatus: status, status: status.status }
       : { checkpoint, manifest, phase: checkpoint.phase };
-    const tree = await resolveTree(manifest.releaseRoot, checkpoint.preReleaseHead);
+    let tree;
+    try { tree = await resolveTree(manifest.releaseRoot, checkpoint.preReleaseHead); }
+    catch (cause) {
+      throw Object.assign(new Error(`Historical release Git evidence unavailable: ${cause.message}`, { cause }),
+        { code: "RELEASE_LEGACY_GIT_UNAVAILABLE" });
+    }
     const sourceIdentity = status?.runId
       ? `publication-run:${status.runId}`
       : `release-checkpoint:${checkpoint.manifestHash}`;
@@ -153,6 +160,14 @@ export async function importLegacyReleaseOperations({
       evidenceOnly,
       repositoryKey: entry.name,
     });
+    } catch (error) {
+      if (!(error instanceof SyntaxError) && !["ENOENT", "RELEASE_LEGACY_GIT_UNAVAILABLE",
+        "RELEASE_LEGACY_EVIDENCE_CHANGED"].includes(error.code)) throw error;
+      const diagnostic = { repositoryKey: entry.name, reason: "historical-evidence-unavailable",
+        code: error.code ?? "INVALID_JSON", message: error.message };
+      skipped.push(diagnostic);
+      reportDiagnostic(diagnostic);
+    }
   }
   return { imported, skipped };
 }

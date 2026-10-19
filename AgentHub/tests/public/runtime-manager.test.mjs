@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { createRequire } from "node:module";
 import test from "node:test";
+import { pathToFileURL } from "node:url";
 
 import {
   activateRuntime,
@@ -18,6 +19,43 @@ import {
 import { ReleaseOperationStore } from "../../src/infrastructure/persistence/release-operation-store.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "..", "..");
+
+test("prepared runtime retains the verified deletion helper and executes its exact identity guard", async (t) => {
+  if (process.platform !== "win32") return t.skip("Handle deletion is Windows-only");
+  const { sourceRoot, runtimeRoot } = await fixture();
+  t.after(() => rm(path.dirname(runtimeRoot), { recursive: true, force: true }));
+  const helper = "src/infrastructure/persistence/windows-delete-verified-entry";
+  await mkdir(path.join(sourceRoot, "src/infrastructure/persistence"), { recursive: true });
+  await mkdir(path.join(sourceRoot, "src/infrastructure/process"), { recursive: true });
+  for (const name of [`${helper}.mjs`, `${helper}.cs`, "src/infrastructure/process/system-boot-identity.mjs"]) {
+    await cp(path.join(ROOT, name), path.join(sourceRoot, name));
+  }
+  await writeFile(path.join(sourceRoot, "src/infrastructure/persistence/unrelated.cs"), "not a runtime asset");
+  const prepared = await prepareRuntime({ sourceRoot, runtimeRoot, releaseId: "verified-delete" });
+  const manifest = JSON.parse(await readFile(path.join(prepared.releaseRoot, "runtime-manifest.json"), "utf8"));
+  assert.ok(manifest.files.find((entry) => entry.path === `${helper}.cs`));
+  assert.deepEqual(await readFile(path.join(prepared.releaseRoot, `${helper}.cs`)), await readFile(path.join(sourceRoot, `${helper}.cs`)));
+  await assert.rejects(readFile(path.join(prepared.releaseRoot, "src/infrastructure/persistence/unrelated.cs")), /ENOENT/u);
+  await assert.rejects(readFile(path.join(runtimeRoot, "current.json")), /ENOENT/u);
+  const { deleteVerifiedWindowsEntry } = await import(pathToFileURL(path.join(prepared.releaseRoot, `${helper}.mjs`)));
+  const target = path.join(path.dirname(runtimeRoot), "disposable-backup.sqlite");
+  await writeFile(target, "disposable recovery bytes");
+  const identity = await stat(target, { bigint: true });
+  await assert.rejects(deleteVerifiedWindowsEntry(target, { ...identity, ino: identity.ino + 1n }), /./u);
+  assert.equal(await readFile(target, "utf8"), "disposable recovery bytes");
+  await deleteVerifiedWindowsEntry(target, identity);
+  await assert.rejects(readFile(target), /ENOENT/u);
+});
+
+test("runtime preparation refuses a missing verified deletion asset before publishing a pointer", async (t) => {
+  const { sourceRoot, runtimeRoot } = await fixture();
+  t.after(() => rm(path.dirname(runtimeRoot), { recursive: true, force: true }));
+  const relative = "src/infrastructure/persistence/windows-delete-verified-entry.mjs";
+  await mkdir(path.dirname(path.join(sourceRoot, relative)), { recursive: true });
+  await writeFile(path.join(sourceRoot, relative), "export const deletionOwner = true;\n");
+  await assert.rejects(prepareRuntime({ sourceRoot, runtimeRoot, releaseId: "missing-delete-source" }), /Runtime module asset is missing/u);
+  await assert.rejects(readFile(path.join(runtimeRoot, "current.json")), /ENOENT/u);
+});
 
 test("preparing a runtime leaves the current installation intact; applying consumes exact prepared bytes", async (t) => {
   const { sourceRoot, runtimeRoot } = await fixture();

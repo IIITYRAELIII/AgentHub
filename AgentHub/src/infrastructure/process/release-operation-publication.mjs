@@ -1,11 +1,12 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, open, readFile, writeFile } from "node:fs/promises";
+import { mkdir, open, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { processIsAlive } from "./process-liveness.mjs";
 import { readPublicationState } from "../persistence/publication-state.mjs";
 import { publicationRunStore } from "../persistence/publication-run-store.mjs";
+import { releasePublicationBaseCommit } from "../../domain/release-base-provenance.mjs";
 
 function identity(value) {
   return createHash("sha256").update(String(value)).digest("hex");
@@ -48,9 +49,13 @@ function publicationFailure(saved, exitCode, targetId) {
 }
 
 async function gitRemoteHead(candidate) {
+  const checkout = await stat(candidate.releaseRoot).then(() => candidate.releaseRoot, error => {
+    if (error.code !== "ENOENT") throw error;
+    return candidate.repositoryRoot;
+  });
   return new Promise((resolve) => {
     const child = spawn("git", ["ls-remote", "--exit-code", "origin", "refs/heads/main"], {
-      cwd: candidate.releaseRoot,
+      cwd: checkout,
       windowsHide: true,
       stdio: ["ignore", "pipe", "ignore"],
     });
@@ -137,13 +142,18 @@ export class ReleaseOperationPublication {
     await writeFile(layout.stateFile, `${JSON.stringify(runnerIdentity, null, 2)}\n`, "utf8");
     const stdout = await open(layout.stdoutFile, "a");
     const stderr = await open(layout.stderrFile, "a");
+    const environment = { ...this.environment };
+    // This worker is a publication, not a replacement startup. A completed
+    // parent restart intent must not authorize its validation child processes.
+    delete environment.AGENT_HUB_RESTART_OPERATION_ID;
+    delete environment.AGENT_HUB_RESTART_LAUNCHER_PID;
     const child = this.spawnImpl(process.execPath, [runner], {
       cwd: path.join(candidate.releaseRoot, "AgentHub"),
       windowsHide: true,
       detached: true,
       stdio: ["ignore", stdout.fd, stderr.fd],
       env: {
-        ...this.environment,
+        ...environment,
         AGENT_HUB_DATA_DIR: this.dataDir,
         AGENT_HUB_RUNTIME_ROOT: this.runtimeRoot,
         AGENT_HUB_RELEASE_OPERATION_ID: operation.operationId,
@@ -200,6 +210,13 @@ export class ReleaseOperationPublication {
   async readback({ operation, generation, target }) {
     const candidate = candidateFor(generation, target);
     const layout = this.#layout(operation, generation, target);
+    const runner = await readJson(layout.stateFile);
+    if (runner?.candidate === generation.identitySha256 && this.processAlive(runner.pid)) {
+      return { status: "unknown", cursor: { pid: runner.pid, stateFile: layout.stateFile } };
+    }
+    if (runner?.candidate === generation.identitySha256 && runner?.status === "launching") {
+      return { status: "unknown", cursor: { phase: "launching", stateFile: layout.stateFile } };
+    }
     const result = await readJson(layout.resultFile);
     if (result?.operationId === operation.operationId
         && result?.generation === generation.generation
@@ -217,13 +234,6 @@ export class ReleaseOperationPublication {
       revision: candidate.commit,
       source: "publication-state-readback",
     };
-    const runner = await readJson(layout.stateFile);
-    if (runner?.candidate === generation.identitySha256 && this.processAlive(runner.pid)) {
-      return { status: "unknown", cursor: { pid: runner.pid, stateFile: layout.stateFile } };
-    }
-    if (runner?.candidate === generation.identitySha256 && runner?.status === "launching") {
-      return { status: "unknown", cursor: { phase: "launching", stateFile: layout.stateFile } };
-    }
     const journal = this.publicationRunStore({ runtimeRoot: layout.root, environment: this.environment });
     const saved = await journal.read().catch(() => null);
     if (saved?.identity?.revision === candidate.commit && saved?.progress?.publicationState) {
@@ -231,7 +241,13 @@ export class ReleaseOperationPublication {
     }
     const remote = await this.gitRemoteHead(candidate);
     if (remote === candidate.commit) return { status: "partial", revision: remote, source: "origin-readback" };
-    if (remote === candidate.baseCommit) return { status: "not_applied", revision: remote };
+    if (candidate.manifest && candidate.manifest.baseCommit !== candidate.baseCommit) {
+      throw new Error("publication candidate source base changed");
+    }
+    const publicationBase = releasePublicationBaseCommit({
+      baseCommit: candidate.baseCommit, baseProvenance: candidate.manifest?.baseProvenance,
+    });
+    if (remote === publicationBase) return { status: "not_applied", revision: remote };
     return { status: "unknown", cursor: { remote, runner: runner?.pid ?? null, journalStatus: saved?.status ?? null } };
   }
 }

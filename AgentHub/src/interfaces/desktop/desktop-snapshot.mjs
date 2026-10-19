@@ -22,6 +22,11 @@ import { createSnapshotCollectionDelta } from "./snapshot-collection-delta.mjs";
 import { deferredInputAttachments } from "./deferred-input-presentation-service.mjs";
 
 const MAX_COMPACT_ACTIVITY_DETAIL_CHARS = 1_200;
+const TRACE_ID = /^[A-Za-z0-9][A-Za-z0-9:._-]{0,199}$/u;
+const traceId = (value) => {
+  const text = String(value ?? "").trim();
+  return TRACE_ID.test(text) ? text : "";
+};
 
 function deferredWaitProjection(item) {
   const waitReason = item.waitReason ?? deferredLaunchWaitReason(item.lastError);
@@ -211,6 +216,7 @@ export function createDesktopSnapshotFactory({
       threadId,
       status: "running",
       observer: true,
+      activityUnknown: entry.activityUnknown === true,
       executionOwner: entry.executionOwner ?? null,
       model: entry.model ?? null,
       progressStage: String(entry.stage ?? "").trim() || "Ход выполняется",
@@ -283,6 +289,12 @@ export function createDesktopSnapshotFactory({
           ? { clientProjectionIntent: String(result.clientProjectionIntent).trim() }
           : {}),
         createdAt: receipt.createdAt ?? null,
+        commandState: result.commandState ?? null,
+        submittedAt: result.submittedAt ?? receipt.createdAt ?? null,
+        startedAt: result.startedAt ?? result.deliveredAt ?? null,
+        completedAt: result.completedAt ?? null,
+        terminalRevision: result.terminalRevision ?? null,
+        providerAccepted: result.providerAccepted === true,
         accepted: result.accepted === true,
         deferred: result.deferred === true,
         queued: result.queued === true,
@@ -415,6 +427,7 @@ export function createDesktopSnapshotFactory({
       threadId: run.threadId,
       taskTitle: runs.titleFor(run),
       status: run.status,
+      ...(run.activityUnknown === true ? { activityUnknown: true } : {}),
       ...(operationKind ? { operationKind } : {}),
       observer: run.observer === true,
       executionOwner: run.executionOwner ?? null,
@@ -548,6 +561,7 @@ export function createDesktopSnapshotFactory({
       submittedAt: run.submittedAt ?? runUserMessages[0]?.submittedAt ?? runUserMessages[0]?.time ?? run.startedAt ?? null,
       responseItemId: run.responseItemId ?? null,
       startedAt: run.startedAt ?? null,
+      providerConnection: run.providerStart?.connection ?? null,
       lastActivityAt: run.lastMeaningfulProgressAt ?? run.progressHeartbeatAt ?? run.startedAt ?? null,
       activities,
       ...(activityGroups.length
@@ -584,7 +598,9 @@ export function createDesktopSnapshotFactory({
       || isClaudeCompactionRun(run);
   }
 
-  function desktopTaskSnapshot(entry, { accountId = "", compactSnapshot = false, computeUnread = true } = {}) {
+  function desktopTaskSnapshot(entry, {
+    accountId = "", compactSnapshot = false, computeUnread = true, onProjection = null,
+  } = {}) {
     const displayTitle = taskDisplayTitle(entry);
     const task = {
       streamId: entry.streamId ?? null,
@@ -618,6 +634,21 @@ export function createDesktopSnapshotFactory({
     const visibleRun = internalMaintenanceObserver || !runActive || savedCompletionMatchesRun
       ? null
       : run;
+    const selected = tasks.entryIsSelected(entry, selection.selectedTask());
+    if (selected && typeof onProjection === "function") {
+      onProjection({
+        source: boundRun ? "registry-bound" : run ? "catalog-fallback" : "none",
+        gate: internalMaintenanceObserver ? "maintenance"
+          : !runActive ? "inactive" : savedCompletionMatchesRun ? "saved-same-turn" : "visible",
+        provider: traceId(entry.provider),
+        threadId: traceId(entry.threadId),
+        streamId: traceId(entry.streamId),
+        turnId: traceId(runTurnId || entry.turnId),
+        clientUserMessageId: traceId(run?.clientUserMessageId),
+        entryRunning: entry.running === true,
+        providerStartPresent: Boolean(visibleRun?.providerStart),
+      });
+    }
     const unread = Boolean(
       computeUnread
       && accountId
@@ -648,9 +679,9 @@ export function createDesktopSnapshotFactory({
       displayTitle,
       threadTitle: entry.title,
       model: visibleRun?.model ?? entry.model ?? null,
-      selected: tasks.entryIsSelected(entry, selection.selectedTask()),
-      running: Boolean(visibleRun),
-      activityUnknown: entry.activityUnknown === true,
+      selected,
+      running: Boolean(visibleRun) && visibleRun.activityUnknown !== true,
+      activityUnknown: visibleRun ? visibleRun.activityUnknown === true : entry.activityUnknown === true,
       executionOwner: visibleRun?.executionOwner ?? entry.executionOwner ?? null,
       runtime: visibleRun?.appServer ?? (entry.executionOwner
         ? tasks.executionRuntimeLabel(entry.executionOwner)
@@ -756,7 +787,10 @@ export function createDesktopSnapshotFactory({
       }]);
     }
     const taskSnapshots = entries.map((entry) => {
-      const task = desktopTaskSnapshot(entry, { accountId, compactSnapshot, computeUnread: !projectTask });
+      const task = desktopTaskSnapshot(entry, {
+        accountId, compactSnapshot, computeUnread: !projectTask,
+        onProjection: (diagnostic) => { snapshotTiming.selectedProjection = diagnostic; },
+      });
       return projectTask ? projectTask(task) : task;
     });
     snapshotTiming.taskProjectionMs = Math.round((monotonicNow() - phaseStartedAt) * 10) / 10;

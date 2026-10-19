@@ -22,7 +22,7 @@ test("runtime restart follows the external launcher to the newest release", () =
     agentHubRoot: "C:\\Old",
   });
   assert.equal(result.command, path.resolve("C:\\Runtime\\AgentHub.RuntimeHost.exe"));
-  assert.deepEqual(result.args, ["--spawn-independent"]);
+  assert.deepEqual(result.args, []);
   assert.equal(result.options.cwd, path.resolve("C:\\Runtime"));
 });
 
@@ -80,9 +80,9 @@ test("replacement readiness ignores a lock owned by a dead process", async () =>
   assert.equal(lock?.pid, 85);
 });
 
-test("replacement retries WMI and then uses direct fallback until a bot owns the lock", async () => {
+test("ambiguous ownership timeout does not create a second launch or fallback", async () => {
   let launches = 0;
-  const result = await launchReplacementAndWait({
+  await assert.rejects(launchReplacementAndWait({
     invocation: { command: "wmi", args: [], options: {} },
     fallbackInvocation: { command: "direct", args: [], options: {} },
     lockFile: "bot.lock",
@@ -99,10 +99,8 @@ test("replacement retries WMI and then uses direct fallback until a bot owns the
       : "",
     delayImpl: async () => {},
     isAlive: (pid) => pid === 84,
-  });
-  assert.equal(launches, 3);
-  assert.equal(result.usedFallback, true);
-  assert.equal(result.lock.pid, 84);
+  }), /did not acquire/);
+  assert.equal(launches, 1);
 });
 
 test("replacement waits for the first owner to become ready without launching duplicates", async () => {

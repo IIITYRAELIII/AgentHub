@@ -58,7 +58,9 @@ test("Codex restart with unavailable transport retains the original run without 
     telegram: async () => {}, consumeTracker: () => null,
     finalizeDelivery: async () => calls.push("deliver"), turnTokenUsage: new Map(),
   });
-  await service.recover({ provider: "codex", threadId: "thread-1", turnId: "turn-1" });
+  const run = { provider: "codex", threadId: "thread-1", turnId: "turn-1" };
+  await service.recover(run);
+  assert.equal(run.activityUnknown, true);
   assert.deepEqual(calls, ["unknown", "observe", "save"]);
 });
 

@@ -9,6 +9,7 @@ import {
   sameProjectRoot,
   taskThreadId,
   WORK_LOG_ACCOUNT_USAGE_PROJECTION_VERSION,
+  workLogAccountUsageWindow,
 } from "../application/work-log-usage-projection.mjs";
 import { buildLazyJournalPayload } from "../application/journal-projection-data.mjs";
 import { incrementalJournalProjection, accountingRecord } from "../application/incremental-journal-projection.mjs";
@@ -24,6 +25,10 @@ const journal = new JournalDatabase(workerData.databaseFile);
 const journalOperations = new AsyncSqliteMutationQueue();
 const workspaceRequests = new Map();
 const mutationRequests = new Map();
+// One bounded receipt of a verified rendering in this worker lifetime. It
+// retains only hashes/scalars, not HTML/facts/records; SQLite remains authority.
+// Restart, a failed rendering or any changed dependency requires reconstruction.
+let journalReuse = null;
 
 async function synchronizeTaskTitles(payload) {
   const startedAt = performance.now();
@@ -94,9 +99,9 @@ async function projectJournal(payload, id) {
     sameProjectRoot(normalizeProjectRoot(record.projectRoot, payload.defaultProjectRoot), root));
   const accountingProjector = record => accountingRecord(record, payload.defaultProjectRoot);
   let input = await measure("ledgerReadMs", () => journalOperations.run(() => journal.projectionInput({ scope, selectRecord, accountingProjector })));
-  const accountingVersionCurrent = await journal.pricingProjectionVersion()
+  let accountingVersionCurrent = await journal.pricingProjectionVersion()
     === WORK_LOG_ACCOUNTING_PROJECTION_VERSION;
-  const imageVersionCurrent = payload.imageBackfillVersion == null
+  let imageVersionCurrent = payload.imageBackfillVersion == null
     || await journal.imageBackfillVersion() === payload.imageBackfillVersion;
   if (!input.full && (!accountingVersionCurrent || !imageVersionCurrent)) {
     input = await measure("ledgerReadMs", () => journalOperations.run(() => journal.projectionInput({
@@ -129,10 +134,71 @@ async function projectJournal(payload, id) {
     }
   }
   phases.workspaceResolveMs = performance.now() - workspaceStartedAt;
+  // Callbacks may let another SQLite owner change markers without changing the
+  // journal revision. Initial observations cannot authorize the consuming path.
+  accountingVersionCurrent = await journal.pricingProjectionVersion()
+    === WORK_LOG_ACCOUNTING_PROJECTION_VERSION;
+  imageVersionCurrent = payload.imageBackfillVersion == null
+    || await journal.imageBackfillVersion() === payload.imageBackfillVersion;
   // Rebinding existing Threads can affect historical days without a ledger edit.
   // New Threads only affect their dirty dates. Scope/version changes use one rebuild.
-  if (!full && (previousSource.bindings ?? []).some(([key, value]) => bindings.has(key)
-    && JSON.stringify(bindings.get(key)) !== JSON.stringify(value))) {
+  if (!full && (!accountingVersionCurrent || !imageVersionCurrent
+    || (previousSource.bindings ?? []).some(([key, value]) => bindings.has(key)
+      && JSON.stringify(bindings.get(key)) !== JSON.stringify(value)))) {
+    full = true;
+    input = await measure("ledgerReadMs", () => journal.projectionInput({ full: true, scope, selectRecord, accountingProjector }));
+  }
+  const rateLimits = String(current?.html ?? "").match(
+    /<div\b[^>]*data-work-log-rate-limits\b[^>]*>[\s\S]*?<\/div>/iu,
+  )?.[0] ?? "";
+  const factsIdentity = await measure("factsRevisionReadMs", () => store.projectionFactsIdentity());
+  const accountCatalog = await measure("accountCatalogReadMs", () => journal.accountCatalog());
+  const now = payload.now === undefined ? Date.now() : Number(payload.now);
+  const options = {
+    preferredOpenDate: input.openDate,
+    includeClaudeUsage: payload.includeClaudeUsage,
+    workspaceResolver: payload.resolveWorkspaces ? (reference) => bindings.get(bindingKey(reference)) : null,
+    accountCatalog,
+    localDeviceId: payload.localDeviceId,
+    localDeviceLabel: payload.localDeviceLabel,
+    now,
+  };
+  const reuseKey = version => {
+    const hash = crypto.createHash("sha256");
+    hash.update(JSON.stringify([scope, version, payload.imageBackfillVersion,
+      payload.localDeviceId, payload.localDeviceLabel, new Date().toLocaleDateString("ru-RU")]));
+    // Hash each existing scalar binding/catalog object; retain no second set.
+    for (const entry of bindings) hash.update(JSON.stringify(entry));
+    for (const account of accountCatalog) hash.update(JSON.stringify(account));
+    return hash.digest("hex");
+  };
+  phases.reuseCheckMs = 0;
+  const reuseCandidate = journalReuse;
+  const reuseEligible = !full && input.dirtyDates.length === 0 && accountingVersionCurrent && imageVersionCurrent
+    && expectedRevision === input.revision && expectedRevision === reuseCandidate?.revision
+    && reuseCandidate.key === reuseKey(current?.version)
+    && factsIdentity.revision === reuseCandidate.factsRevision
+    && factsIdentity.generation === reuseCandidate.factsGeneration
+    && Number.isSafeInteger(now) && now >= reuseCandidate.window.from && now < reuseCandidate.window.until;
+  if (reuseEligible && await measure("reuseCheckMs", () => journal.projectionReuseFence({
+      revision: expectedRevision, factsRevision: factsIdentity.revision, factsGeneration: factsIdentity.generation,
+      pricingProjectionVersion: WORK_LOG_ACCOUNTING_PROJECTION_VERSION,
+      imageBackfillVersion: payload.imageBackfillVersion,
+    }).catch(() => false))) {
+    return {
+      projected: false, reason: "unchanged", projectionReused: true,
+      version: current.version, revision: expectedRevision,
+      recordCount: 0, accountingRecordsRead: input.accountingRecordsRead,
+      projectionMode: "days", changedDayCount: 0, invalidRecordCount: 0, invalidRecordReasonCounts: {},
+      eventCount: reuseCandidate.eventCount, factsSourceRead: false,
+      factsCacheBytes: reuseCandidate.factsCacheBytes, factsCacheRetained: reuseCandidate.factsCacheRetained,
+      ...phases, factsReadMs: 0, renderMs: 0, durationMs: performance.now() - startedAt, workerThreadId: threadId,
+    };
+  }
+  journalReuse = null;
+  if (reuseEligible) {
+    // A failed final snapshot can include a marker change after the callback
+    // observation. Reconstruct fully, preserving the original revision CAS.
     full = true;
     input = await measure("ledgerReadMs", () => journal.projectionInput({ full: true, scope, selectRecord, accountingProjector }));
   }
@@ -150,22 +216,9 @@ async function projectJournal(payload, id) {
   const turns = Object.fromEntries(Object.entries(normalized.ledger.turns).filter(([, record]) => (
     !roots.some(Boolean) || roots.some((root) => sameProjectRoot(record.projectRoot, root))
   )));
-  const rateLimits = String(current?.html ?? "").match(
-    /<div\b[^>]*data-work-log-rate-limits\b[^>]*>[\s\S]*?<\/div>/iu,
-  )?.[0] ?? "";
   const factsSnapshot = await measure("factsReadMs", () => store.projectionFacts());
   const syncedUsageFacts = factsSnapshot.facts;
-  const accountCatalog = await measure("accountCatalogReadMs", () => journal.accountCatalog());
-  const options = {
-    preferredOpenDate: input.openDate,
-    includeClaudeUsage: payload.includeClaudeUsage,
-    workspaceResolver: payload.resolveWorkspaces ? (reference) => bindings.get(bindingKey(reference)) : null,
-    accountCatalog,
-    syncedUsageEvents: syncedUsageFacts,
-    localDeviceId: payload.localDeviceId,
-    localDeviceLabel: payload.localDeviceLabel,
-    now: payload.now,
-  };
+  options.syncedUsageEvents = syncedUsageFacts;
   const lazyPayload = await measure("renderMs", () => full
     ? buildLazyJournalPayload(projectWorkLogUsage(`# Глобальный журнал работ\n${rateLimits ? `${rateLimits}\n` : ""}`, turns, options))
     : incrementalJournalProjection(current?.html ?? '', turns, accounting, input.dirtyDates, options));
@@ -191,8 +244,29 @@ async function projectJournal(payload, id) {
       imageBackfillVersion: payload.imageBackfillVersion,
     })));
   }
+  try {
+    if (!result.conflict && factsSnapshot.revision && factsSnapshot.generation) {
+      const window = await measure("reuseWindowMs", () => workLogAccountUsageWindow(accounting, options));
+      if (window && await journal.projectionReuseFence({
+        revision: result.revision, factsRevision: factsSnapshot.revision, factsGeneration: factsSnapshot.generation,
+        pricingProjectionVersion: WORK_LOG_ACCOUNTING_PROJECTION_VERSION,
+        imageBackfillVersion: payload.imageBackfillVersion,
+      })) {
+        journalReuse = { key: reuseKey(result.version), revision: result.revision,
+          factsRevision: factsSnapshot.revision, factsGeneration: factsSnapshot.generation, window,
+          eventCount: syncedUsageFacts.length, factsCacheBytes: factsSnapshot.cacheBytes,
+          factsCacheRetained: factsSnapshot.cacheRetained };
+      }
+    }
+  } catch {
+    // An optional reuse receipt cannot turn a committed projection into a
+    // failure. No proof means no reuse; the next request reconstructs normally.
+    journalReuse = null;
+    phases.reuseReceiptFailed = 1;
+  }
   return {
     ...result,
+    projectionReused: false,
     ...(result.conflict ? { projectionDeferred: true, reason: "stale-journal-revision" } : {}),
     recordCount: Object.keys(turns).length,
     accountingRecordsRead: input.accountingRecordsRead,

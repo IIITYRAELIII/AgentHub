@@ -297,6 +297,9 @@ test("task title synchronization selects and writes in the worker without loadin
     const projectedSource = await journal.projectionSource();
     assert.equal(projectedSource.revision, revision - 1);
     assert.deepEqual(projectedSource.projectRoots, [root]);
+    assert.equal(projectedSource.incrementalVersion, 1);
+    assert.ok(projectedSource.bindings.some(([key, value]) => key === "codex\0task-root"
+      && value.streamId === "stream-title"));
     assert.deepEqual(await store.synchronizeTaskTitlesAndProject({ titles: [] }), {
       updated: 0, projected: false, reason: "unchanged",
     });

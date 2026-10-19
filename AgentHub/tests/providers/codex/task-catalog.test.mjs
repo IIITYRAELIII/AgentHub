@@ -866,6 +866,7 @@ test("Codex rollout activity keeps another concurrent turn active after one is a
     running: true,
     activeTurnIds: ["original"],
     activeVscodeTurnIds: [],
+    terminalStatusesByTurnId: { parallel: "aborted" },
     activityAtMsByTurnId: {},
     startedAtMsByTurnId: {},
     completedAtMsByTurnId: {},
@@ -911,6 +912,7 @@ test("Codex rollout activity ignores stale unmatched starts but keeps a fresh li
     running: true,
     activeTurnIds: ["live"],
     activeVscodeTurnIds: [],
+    terminalStatusesByTurnId: {},
     activityAtMsByTurnId: {
       live: Date.parse("2026-07-17T19:29:30Z"),
     },
@@ -988,6 +990,7 @@ test("an exact Codex observer completes its requested turn instead of following 
     completedAtMsByTurnId: {
       "old-turn": Date.parse("2026-07-17T18:30:00Z"),
     },
+    terminalStatusesByTurnId: { "old-turn": "completed" },
   };
   assert.deepEqual(codexRolloutTurnState(activity, "old-turn", {
     exact: true,
@@ -996,6 +999,7 @@ test("an exact Codex observer completes its requested turn instead of following 
     turnId: "old-turn",
     active: false,
     completed: true,
+    terminalStatus: "completed",
     userMessageSnapshotAuthority: "incremental",
     latestAnswer: "",
     finalAnswer: "old turn finished",
@@ -1003,6 +1007,9 @@ test("an exact Codex observer completes its requested turn instead of following 
     startedAt: "2026-07-17T18:00:00.000Z",
     completedAt: "2026-07-17T18:30:00.000Z",
   });
+  assert.equal(codexRolloutTurnState({ ...activity, terminalStatusesByTurnId: {} }, "old-turn", {
+    exact: true, threadActive: true,
+  }).completed, false, "a completion timestamp alone is not a provider terminal");
   assert.equal(codexRolloutTurnState(activity, "old-turn", {
     threadActive: true,
   }).turnId, "new-turn");

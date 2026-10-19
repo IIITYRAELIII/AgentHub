@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access, mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -9,12 +9,85 @@ import {
   testFingerprint,
   runWindowsTestFile,
   runTestSuite,
+  prepareTestDependencies,
 } from "../../test-suite.mjs";
 import {
   explainTestInputFingerprint,
   parallelTestExecution,
 } from "../../src/infrastructure/persistence/test-input-fingerprint.mjs";
 import { withPublicationLock } from "../../src/infrastructure/process/publication-lock.mjs";
+
+test("cold full-test checkout installs locked development dependencies once before every suite", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "ah-test-deps-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const packageJson = { name: "cold-generation", version: "1.0.0", devDependencies: { "browser-fixture": "1.0.0" } };
+  const entry = { version: "1.0.0", resolved: "https://registry.example.invalid/browser-fixture.tgz", integrity: "sha512-fixture", dev: true };
+  const lock = { name: packageJson.name, lockfileVersion: 3, packages: { "": packageJson, "node_modules/browser-fixture": entry } };
+  await writeFile(path.join(root, "package.json"), JSON.stringify(packageJson));
+  await writeFile(path.join(root, "package-lock.json"), JSON.stringify(lock));
+  const capabilityKeys = ["AGENT_HUB_PUBLICATION_SESSION", "AGENT_HUB_PUBLICATION_STAGE_DELEGATION"];
+  const precedingCapabilities = Object.fromEntries(capabilityKeys.map((key) => [key, process.env[key]]));
+  for (const key of capabilityKeys) process.env[key] = "fixture-publisher-capability";
+  t.after(() => {
+    for (const key of capabilityKeys) {
+      if (precedingCapabilities[key] === undefined) delete process.env[key];
+      else process.env[key] = precedingCapabilities[key];
+    }
+  });
+  const packageFile = path.join(root, "node_modules", "browser-fixture", "package.json");
+  await assert.rejects(readFile(packageFile), { code: "ENOENT" });
+  let installs = 0;
+  const prepare = () => prepareTestDependencies({ root, execute: async (args, options) => {
+    installs += 1;
+    assert.ok(args.includes("--include=dev"));
+    assert.ok(args.includes("--include=optional"));
+    assert.equal(options.cwd, root);
+    assert.equal(options.commandLabel, "npm");
+    assert.equal(options.env.AGENT_HUB_PUBLICATION_SESSION, undefined);
+    assert.equal(options.env.AGENT_HUB_PUBLICATION_STAGE_DELEGATION, undefined);
+    for (const key of capabilityKeys) assert.equal(Object.hasOwn(options.env, key), true);
+    assert.ok(options.signal instanceof AbortSignal);
+    await access(path.join(root, "WIP", "test-dependencies.lock"));
+    await mkdir(path.dirname(packageFile), { recursive: true });
+    await writeFile(packageFile, JSON.stringify({ name: "browser-fixture", version: entry.version }));
+    await writeFile(path.join(root, "node_modules", ".package-lock.json"), JSON.stringify({
+      lockfileVersion: 3, packages: { "node_modules/browser-fixture": entry },
+    }));
+  } });
+  let validationCalls = 0;
+  const validate = async () => {
+    assert.equal(JSON.parse(await readFile(packageFile, "utf8")).version, "1.0.0");
+    validationCalls += 1;
+  };
+  await runTestSuite("all", {
+    checkpointIdentity: "", checkpoint: null,
+    prepareDependencies: prepare,
+    discover: async () => ["tests/composition/example.test.mjs", "tests/domain/example.test.mjs"],
+    execute: validate,
+  });
+  assert.ok(validationCalls > 1);
+  assert.equal(installs, 1);
+  assert.equal((await prepare())[0].prepared, false);
+  assert.equal(installs, 1);
+  await assert.rejects(access(path.join(root, "WIP", "test-dependencies.lock")), { code: "ENOENT" });
+
+  // A changed lock cannot reuse the preceding successful dependency marker.
+  const marker = path.join(root, "node_modules", ".agent-hub-task-dependencies.json");
+  const priorMarker = await readFile(marker);
+  entry.version = "2.0.0";
+  packageJson.devDependencies["browser-fixture"] = "2.0.0";
+  await writeFile(path.join(root, "package.json"), JSON.stringify(packageJson));
+  await writeFile(path.join(root, "package-lock.json"), JSON.stringify(lock));
+  const failure = new Error("dependency process failed");
+  validationCalls = 0;
+  await assert.rejects(runTestSuite("all", {
+    prepareDependencies: () => prepareTestDependencies({ root, execute: async () => { throw failure; } }),
+    execute: validate,
+  }), (error) => error === failure);
+  assert.equal(validationCalls, 0);
+  assert.deepEqual(await readFile(marker), priorMarker);
+  await assert.rejects(access(path.join(root, "WIP", "test-dependencies.lock")), { code: "ENOENT" });
+});
 
 test("test checkpoint fingerprints only transitive module dependencies", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-test-fingerprint-"));
@@ -168,6 +241,7 @@ test("visual matrices run explicitly and exactly once in all, never in the unit 
     const files = [];
     await runTestSuite(mode, {
       checkpointIdentity: "", checkpoint: null,
+      prepareDependencies: async () => [],
       discover: async () => discovery,
       execute: async (_command, args) => { files.push(...args.filter((argument) => argument.endsWith(".test.mjs"))); },
     });

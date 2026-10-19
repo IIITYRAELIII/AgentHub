@@ -58,12 +58,12 @@ for (const advancedRemote of [false, true]) test(`combined Tasks accept publishe
     { generation: "g", repositories: [{ root: path.join(root, "foreign"), revision: published }] },
     { generation: "g", repositories: [{ root, revision: originalMain }] }]) {
     publication = invalid;
-    await assert.rejects(service.mergeIntoDev(snapshot), /upstream|adoption|unpublished tracked remote history/iu);
+    await assert.rejects(service.mergeIntoDev(snapshot), (error) => error.code === "RELEASE_NATIVE_HISTORY_REQUIRED");
     assert.equal(await git(root, "rev-parse", "dev"), devBefore);
   }
   publication = { generation: "published-generation", repositories: [{ root, revision: published }] };
   await git(root, "update-ref", "refs/remotes/origin/main", originalMain);
-  await assert.rejects(service.mergeIntoDev(snapshot), /upstream|adoption/iu);
+  await assert.rejects(service.mergeIntoDev(snapshot), (error) => error.code === "RELEASE_NATIVE_HISTORY_REQUIRED");
   assert.equal(await git(root, "rev-parse", "dev"), devBefore);
   await git(root, "update-ref", "refs/remotes/origin/main", published);
   if (advancedRemote) {
@@ -73,13 +73,10 @@ for (const advancedRemote of [false, true]) test(`combined Tasks accept publishe
     await git(root, "update-ref", "refs/remotes/origin/main", "HEAD");
     await git(root, "checkout", "main");
   }
-  const result = await service.mergeIntoDev(snapshot);
-  assert.equal(result.integrated, true);
+  await assert.rejects(service.mergeIntoDev(snapshot), { code: "RELEASE_NATIVE_HISTORY_REQUIRED" });
+  assert.equal(await git(root, "rev-parse", "dev"), devBefore);
   assert.equal(await git(root, "rev-parse", "main"), originalMain);
   assert.equal(await git(root, "status", "--porcelain"), "");
-  assert.equal(await readFile(path.join(result.dev.projectRoot, "a.txt"), "utf8"), "A\n");
-  assert.equal(await readFile(path.join(result.dev.projectRoot, "b.txt"), "utf8"), "B\n");
-  await assert.rejects(access(path.join(result.dev.projectRoot, "remote-only.txt")));
   const acceptedDev = await git(root, "rev-parse", "dev");
   await git(root, "checkout", "-b", "unpublished-foreign", published);
   await writeFile(path.join(root, "foreign.txt"), "not published\n");
@@ -89,7 +86,7 @@ for (const advancedRemote of [false, true]) test(`combined Tasks accept publishe
     "merge", "--no-ff", "unpublished-foreign", "-m", "unapproved adoption");
   await git(root, "update-ref", "refs/remotes/origin/main", "unpublished-foreign");
   const changed = await service.snapshot({ taskId: b.taskId, projectRoot: b.projectRoot });
-  await assert.rejects(service.mergeIntoDev(changed), /upstream|adoption|unpublished tracked remote history/iu);
+  await assert.rejects(service.mergeIntoDev(changed), (error) => error.code === "RELEASE_NATIVE_HISTORY_REQUIRED");
   assert.equal(await git(root, "rev-parse", "dev"), acceptedDev);
   assert.equal(await git(root, "rev-parse", "main"), originalMain);
 });
@@ -132,7 +129,7 @@ test("combined Task rejects unpublished remote fast-forward inside its first-par
   const snapshot = await service.snapshot({ taskId: b.taskId, projectRoot: b.projectRoot });
   publication = { generation: "published-generation", repositories: [{ root, revision: published }] };
   const devBefore = (await service.prepareDev(root)).headCommit;
-  await assert.rejects(service.mergeIntoDev(snapshot), /unpublished tracked remote history/u);
+  await assert.rejects(service.mergeIntoDev(snapshot), { code: "RELEASE_NATIVE_HISTORY_REQUIRED" });
   assert.equal(await git(root, "rev-parse", "dev"), devBefore);
   assert.equal(await git(root, "rev-parse", "main"), originalMain);
   await assert.rejects(access(path.join((await service.prepareDev(root)).projectRoot, "remote-only.txt")));
@@ -182,12 +179,10 @@ for (const coversRemote of [false, true]) test(`published ancestry validates exa
   const dev = await service.prepareDev(root);
   if (coversRemote) {
     assert.equal((await service.recordExplicitUpstreamAdoption(input)).recordHash, receipt.recordHash);
-    const result = await service.mergeIntoDev(snapshot);
-    assert.equal(result.integrated, true);
-    await access(path.join(result.dev.projectRoot, "remote-only.txt"));
+    await assert.rejects(service.mergeIntoDev(snapshot), { code: "RELEASE_NATIVE_HISTORY_REQUIRED" });
   } else {
     await assert.rejects(service.recordExplicitUpstreamAdoption(input), /unpublished tracked remote history/u);
-    await assert.rejects(service.mergeIntoDev(snapshot), /unpublished tracked remote history/u);
+    await assert.rejects(service.mergeIntoDev(snapshot), { code: "RELEASE_NATIVE_HISTORY_REQUIRED" });
     assert.equal(await git(root, "rev-parse", "dev"), dev.headCommit);
     await assert.rejects(access(path.join(dev.projectRoot, "remote-only.txt")));
   }
@@ -256,7 +251,7 @@ test("withdrawal proves rollback after a rejected lifecycle commit", { timeout: 
   }), /wait CAS rejected/u);
   await service.prepare({ taskId: b.taskId, taskNumber: "HUB-802", projectRoot: root });
   await withdraw(a);
-  const repeated = await service.snapshotAndMerge({ taskId: a.taskId, taskNumber: "HUB-801", projectRoot: a.projectRoot });
+  const repeated = await service.snapshotAndMerge({ taskId: a.taskId, taskNumber: "HUB-801", projectRoot: a.projectRoot, operationId: "test-after-acknowledged-withdrawal" });
   assert.equal(repeated.snapshot.headCommit, firstA.snapshot.headCommit);
   assert.equal(repeated.integration.integrated, true);
 });
@@ -319,7 +314,7 @@ test("withdrawing a Task based on another result preserves that ancestor Task", 
 });
 
 test("dependent Task withdraws first and waits for proven publication before claim or Test", { timeout: 90_000 }, async (context) => {
-  const { root, service, a, b, firstA, tasks, withdraw, publish } = await withdrawalFixture(context, { dependent: true });
+  const { root, service, a, b, firstA, tasks, withdraw, publish } = await withdrawalFixture(context, { dependent: "first-parent" });
   const before = await git(root, "rev-parse", "dev");
   await assert.rejects(withdraw(a), (error) => error.code === "TASK_WITHDRAWAL_DEPENDENCY" && error.blockedTaskIds[0] === b.taskId);
   assert.equal(await git(root, "rev-parse", "dev"), before);
@@ -1484,7 +1479,7 @@ test("Task result merge rejects a supplied snapshot that no longer matches its e
       ...workspace,
       headCommit: "1111111111111111111111111111111111111111",
     }),
-    /Task snapshot changed/u,
+    (error) => error.code === "RELEASE_NATIVE_HISTORY_REQUIRED",
   );
   assert.equal(await git(dev.projectRoot, "rev-parse", "HEAD^{commit}"), dev.headCommit);
   assert.equal(
@@ -1493,7 +1488,7 @@ test("Task result merge rejects a supplied snapshot that no longer matches its e
   );
 });
 
-test("Task result merge throws when abort leaves partial worktree state", async (context) => {
+test("isolated native merge does not inherit a primary custom merge driver", async (context) => {
   const root = await repository(context);
   const dataDir = path.join(root, "..", `${path.basename(root)}-data`);
   context.after(() => rm(dataDir, { recursive: true, force: true }));
@@ -1538,23 +1533,14 @@ test("Task result merge throws when abort leaves partial worktree state", async 
     projectRoot: second.projectRoot,
   });
 
-  await assert.rejects(
-    service.mergeIntoDev(secondSnapshot),
-    new RegExp(`could not restore managed dev ${firstResult.integration.dev.headCommit}`, "u"),
-  );
-  assert.equal(
-    await git(firstResult.integration.dev.projectRoot, "rev-parse", "HEAD^{commit}"),
-    firstResult.integration.dev.headCommit,
-  );
-  assert.match(
-    await git(
-      firstResult.integration.dev.projectRoot,
-      "status",
-      "--porcelain=v1",
-      "--untracked-files=all",
-    ),
-    /abort-survivor\.txt/u,
-  );
+  const conflict = await service.mergeIntoDev(secondSnapshot);
+  assert.equal(conflict.integrated, false);
+  assert.deepEqual(conflict.conflicts, ["app.txt"]);
+  assert.equal(conflict.devRestored, true);
+  assert.equal(await git(firstResult.integration.dev.projectRoot, "rev-parse", "HEAD"),
+    firstResult.integration.dev.headCommit);
+  assert.equal(await git(firstResult.integration.dev.projectRoot, "status", "--porcelain"), "");
+  await assert.rejects(access(path.join(conflict.nativeConflictRoot, "abort-survivor.txt")));
 });
 
 test("startup reconciles MERGE_HEAD, blocks index.lock and clears the block only after repair", async (context) => {
@@ -1705,7 +1691,10 @@ test("release adoption requires a selected Task result and stays pinned when ori
     }],
   }), /requires explicit adoption/u);
 
-  await assert.rejects(fixture.service.mergeIntoDev(fixture.snapshot), /durable explicit adoption receipt/u);
+  await assert.rejects(fixture.service.mergeIntoDev(fixture.snapshot), { code: "RELEASE_NATIVE_HISTORY_REQUIRED" });
+  // Materialize retained historical dev data for the adoption readback, not fresh native admission.
+  await git(fixture.devRoot, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+    "merge", "--no-ff", "--no-edit", fixture.snapshot.headCommit);
   const baseRequest = { projectRoot: fixture.root, publishedBaseCommit: localMain,
     tasks: [{ taskId: fixture.snapshot.taskId, resultCommit: fixture.snapshot.headCommit }] };
   assert.equal((await fixture.service.releaseBaseEvidence(baseRequest)).baseCommit, localMain);
@@ -1731,8 +1720,7 @@ test("release adoption requires a selected Task result and stays pinned when ori
     /already has different content/u,
   );
 
-  const integration = await fixture.service.mergeIntoDev(fixture.snapshot);
-  assert.equal(integration.integrated, true);
+  await assert.rejects(fixture.service.mergeIntoDev(fixture.snapshot), { code: "RELEASE_NATIVE_HISTORY_REQUIRED" });
   const adopted = await fixture.service.assertExplicitUpstreamAdoption({
     projectRoot: fixture.root,
     acceptedLocalMainCommit: localMain,
@@ -1746,10 +1734,12 @@ test("release adoption requires a selected Task result and stays pinned when ori
   assert.equal(adopted.approvedUpstream, fixture.mainCommit);
   assert.equal(adopted.adoptedByResultCommit, fixture.snapshot.headCommit);
   const acceptedBase = await fixture.service.releaseBaseEvidence(baseRequest);
-  assert.equal(acceptedBase.baseCommit, fixture.mainCommit);
-  assert.equal(acceptedBase.adoptions[0].recordHash, recorded.recordHash);
-  assert.equal(acceptedBase.adoptions[0].adoptedCommit, fixture.mainCommit);
-  assert.equal(acceptedBase.adoptions[0].acceptedLocalMainCommit, localMain);
+  assert.equal(acceptedBase.baseCommit, localMain);
+  assert.deepEqual(acceptedBase.adoptions, [{ taskId: fixture.snapshot.taskId,
+    resultCommit: fixture.snapshot.headCommit, recordRef: recorded.recordRef, recordHash: recorded.recordHash,
+    adoptedCommit: fixture.mainCommit, acceptedLocalMainCommit: localMain }]);
+  assert.equal(acceptedBase.compositionPolicy, "main-selected-git-merge-v1");
+  assert.equal(await git(fixture.root, "rev-parse", recorded.recordRef), recorded.recordHash);
   assert.equal((await fixture.service.releaseBaseEvidence({ ...baseRequest, tasks: [] })).baseCommit, localMain);
 
   const origin = await git(fixture.root, "remote", "get-url", "origin");
@@ -1789,7 +1779,8 @@ test("explicit upstream adoption fences Task snapshot and local-main drift befor
     await git(fixture.root, "update-ref", `refs/heads/${fixture.snapshot.branch}`, movedSnapshot,
       fixture.snapshot.headCommit);
 
-    await assert.rejects(fixture.service.mergeIntoDev(fixture.snapshot), /Task snapshot changed/u);
+    await assert.rejects(fixture.service.mergeIntoDev(fixture.snapshot),
+      /Native upstream adoption receipt or current Git identity changed/u);
     assert.equal(await git(fixture.root, "rev-parse", "refs/heads/dev^{commit}"), fixture.oldDev);
   });
 
@@ -1804,7 +1795,7 @@ test("explicit upstream adoption fences Task snapshot and local-main drift befor
     );
     await git(fixture.root, "update-ref", "refs/heads/main", movedMain, localMain);
 
-    await assert.rejects(fixture.service.mergeIntoDev(fixture.snapshot), /accepted local main changed/u);
+    await assert.rejects(fixture.service.mergeIntoDev(fixture.snapshot), /does not contain accepted local main/u);
     assert.equal(await git(fixture.root, "rev-parse", "refs/heads/dev^{commit}"), fixture.oldDev);
   });
 });
@@ -1822,7 +1813,7 @@ test("missing local main and zero-argument synchronization fail closed", async (
   }), /refs\/heads\/main/u);
 });
 
-test("a Task merge snapshot bootstraps divergent main and managed dev without mutating primary", async (context) => {
+test("a historical Task union cannot bootstrap divergent main and managed dev implicitly", async (context) => {
   const root = await repository(context);
   const dataDir = path.join(root, "..", `${path.basename(root)}-data`);
   context.after(() => rm(dataDir, { recursive: true, force: true }));
@@ -1888,35 +1879,9 @@ test("a Task merge snapshot bootstraps divergent main and managed dev without mu
   )).split(/\s+/u);
   assert.deepEqual(parents, [snapshot.headCommit, proofCommit, devHead]);
 
-  const integration = await service.mergeIntoDev(snapshot);
-  assert.equal(integration.integrated, true);
-  const integrationParents = (await git(
-    integration.dev.projectRoot,
-    "rev-list", "--parents", "-n", "1", integration.dev.headCommit,
-  )).split(/\s+/u);
-  assert.deepEqual(integrationParents, [
-    integration.dev.headCommit,
-    integration.bootstrapCommit,
-    snapshot.headCommit,
-  ]);
-  const bootstrapParents = (await git(
-    integration.dev.projectRoot,
-    "rev-list", "--parents", "-n", "1", integration.bootstrapCommit,
-  )).split(/\s+/u);
-  assert.deepEqual(bootstrapParents, [integration.bootstrapCommit, devHead, mainHead]);
-  assert.equal(
-    await git(integration.dev.projectRoot, "show", `${integration.bootstrapCommit}:task-only.txt`)
-      .then(() => "present", () => "absent"),
-    "absent",
-  );
-  assert.equal(await readFile(path.join(integration.dev.projectRoot, "task-only.txt"), "utf8"), "Task-only work\n");
-  await git(integration.dev.projectRoot, "merge-base", "--is-ancestor", mainHead, integration.dev.headCommit);
-  await git(integration.dev.projectRoot, "merge-base", "--is-ancestor", devHead, integration.dev.headCommit);
-  await git(
-    integration.dev.projectRoot,
-    "merge-base", "--is-ancestor", snapshot.headCommit, integration.dev.headCommit,
-  );
-  assert.equal(await git(root, "rev-parse", "HEAD^{commit}"), mainHead);
+  await assert.rejects(service.mergeIntoDev(snapshot), /does not contain accepted local main/u);
+  assert.equal(await git(root, "rev-parse", "dev"), devHead);
+  assert.equal(await git(root, "rev-parse", "HEAD"), mainHead);
   assert.equal(await git(root, "status", "--porcelain=v1", "--untracked-files=all"), primaryStatus);
 });
 
@@ -1952,7 +1917,7 @@ test("ordinary Task integration cannot bypass a divergent accepted local-main ba
 
   await assert.rejects(
     service.mergeIntoDev(snapshot),
-    /does not contain accepted local main.*does not prove the exact main\/dev bootstrap/u,
+    /does not contain accepted local main.*explicit adoption required/u,
   );
   assert.equal(await git(root, "rev-parse", "refs/heads/dev^{commit}"), devHeadBefore);
   await assert.rejects(git(root, "merge-base", "--is-ancestor", localMain, devHeadBefore));
@@ -1960,140 +1925,54 @@ test("ordinary Task integration cannot bypass a divergent accepted local-main ba
   assert.equal(await git(dev.projectRoot, "status", "--porcelain=v1", "--untracked-files=all"), "");
 });
 
-test("reviewed conflict bootstrap publishes B and C through one exact dev CAS", async (context) => {
-  const fixture = await reviewedDevBootstrapFixture(context);
-
-  const integration = await fixture.service.mergeIntoDev(fixture.snapshot);
-
-  assert.equal(integration.integrated, true);
-  assert.deepEqual((await git(
-    integration.dev.projectRoot, "rev-list", "--parents", "-n", "1", integration.bootstrapCommit,
-  )).split(/\s+/u), [integration.bootstrapCommit, fixture.oldDev, fixture.mainCommit]);
-  assert.deepEqual((await git(
-    integration.dev.projectRoot, "rev-list", "--parents", "-n", "1", integration.dev.headCommit,
-  )).split(/\s+/u), [integration.dev.headCommit, integration.bootstrapCommit, fixture.snapshot.headCommit]);
-  assert.equal(await git(integration.dev.projectRoot, "rev-parse", `${integration.bootstrapCommit}^{tree}`) === fixture.reviewedTree, false);
-  assert.equal(await git(integration.dev.projectRoot, "rev-parse", `${integration.dev.headCommit}^{tree}`), fixture.reviewedTree);
-  assert.equal(
-    await git(integration.dev.projectRoot, "show", `${integration.bootstrapCommit}:task-only.txt`)
-      .then(() => "present", () => "absent"),
-    "absent",
-  );
-  assert.equal(await readFile(path.join(integration.dev.projectRoot, "app.txt"), "utf8"), "reviewed union\n");
-  assert.equal(
-    await readFile(path.join(integration.dev.projectRoot, "CHANGELOG.md"), "utf8"),
-    "base entry\ndev entry\nmain entry\n",
-  );
-});
-
-test("reviewed conflict bootstrap rejects missing ambiguous and mode-mismatched proofs", async (context) => {
-  for (const variant of [
-    { missingProof: true, expected: /invalid explicit upstream adoption/u, throws: true },
-    { ambiguousProof: true, expected: /ambiguous explicit upstream adoption/u, throws: true },
-    { modeMismatch: true, expected: /found 0/u },
-  ]) {
+test("historical reviewed bootstrap does not authorize a fresh native result", async (context) => {
+  for (const variant of [{}, { missingProof: true }, { ambiguousProof: true }, { modeMismatch: true }]) {
     await context.test(JSON.stringify(variant), async (child) => {
       const fixture = await reviewedDevBootstrapFixture(child, variant);
-      if (variant.throws) {
-        await assert.rejects(fixture.service.mergeIntoDev(fixture.snapshot), variant.expected);
-        assert.equal(await git(fixture.root, "rev-parse", "refs/heads/dev^{commit}"), fixture.oldDev);
-        assert.equal(await git(fixture.devRoot, "status", "--porcelain=v1", "--untracked-files=all"), "");
-        return;
-      }
-      const integration = await fixture.service.mergeIntoDev(fixture.snapshot);
-      assert.equal(integration.integrated, false);
-      assert.match(integration.error, variant.expected);
-      assert.equal(await git(fixture.root, "rev-parse", "refs/heads/dev^{commit}"), fixture.oldDev);
-      assert.equal(await git(fixture.devRoot, "status", "--porcelain=v1", "--untracked-files=all"), "");
+      await assert.rejects(fixture.service.mergeIntoDev(fixture.snapshot), {
+        code: "RELEASE_NATIVE_HISTORY_REQUIRED",
+      });
+      assert.equal(await git(fixture.root, "rev-parse", "dev"), fixture.oldDev);
+      assert.equal(await git(fixture.devRoot, "status", "--porcelain"), "");
     });
   }
 });
 
-test("reviewed conflict bootstrap restores old dev before CAS and recovers an exact committed CAS", async (context) => {
-  await context.test("second merge failure", async (child) => {
-    const fixture = await reviewedDevBootstrapFixture(child);
-    const service = new TaskGitWorkspaceService({
-      dataDir: fixture.dataDir,
-      runCommand: async (args, options) => {
-        if (args[0] === "merge-tree") throw new Error("injected second merge failure");
-        return runTaskGitCommand(args, options);
-      },
-    });
-    const integration = await service.mergeIntoDev(fixture.snapshot);
-    assert.equal(integration.integrated, false);
-    assert.match(integration.error, /injected second merge failure/u);
-    assert.equal(await git(fixture.root, "rev-parse", "refs/heads/dev^{commit}"), fixture.oldDev);
-  });
-
-  await context.test("before CAS", async (child) => {
-    const fixture = await reviewedDevBootstrapFixture(child);
-    const service = new TaskGitWorkspaceService({
-      dataDir: fixture.dataDir,
-      runCommand: async (args, options) => {
-        if (args[0] === "update-ref" && args[1] === "refs/heads/dev") {
-          throw new Error("injected before dev CAS");
+test("native Test retains its original across interrupted dev CAS", { timeout: 120_000 }, async (context) => {
+  for (const interruption of ["before CAS", "after CAS", "merge"]) {
+    await context.test(interruption, async (child) => {
+      const root = await repository(child);
+      const dataDir = path.join(root, "..", `${path.basename(root)}-native-cas`);
+      child.after(() => rm(dataDir, { recursive: true, force: true }));
+      const setup = new TaskGitWorkspaceService({ dataDir });
+      const task = await setup.prepare({ taskId: "51515151-5151-4151-8151-515151515151", projectRoot: root });
+      await writeFile(path.join(task.projectRoot, "task-only.txt"), "exact Task\n");
+      const snapshot = await setup.snapshot({ taskId: task.taskId, projectRoot: task.projectRoot });
+      const before = (await setup.prepareDev(root)).headCommit;
+      let injected = false;
+      const service = new TaskGitWorkspaceService({ dataDir, runCommand: async (args, options) => {
+        if (!injected && ((interruption === "before CAS" && args[0] === "update-ref" && args[1] === "refs/heads/dev")
+            || (interruption === "after CAS" && args[0] === "symbolic-ref" && args[1] === "HEAD")
+            || (interruption === "merge" && args.includes("merge") && args.includes("--no-ff")))) {
+          injected = true;
+          throw new Error(`injected ${interruption}`);
         }
         return runTaskGitCommand(args, options);
-      },
+      } });
+      const params = { operationId: `native-interruption-${interruption}` };
+      const merge = owner => owner.withTaskLock(task.taskId,
+        lease => owner.mergeIntoDevOwned(snapshot, { ...params, lease }));
+      await assert.rejects(merge(service), /injected/u);
+      assert.equal(injected, true);
+      if (interruption !== "after CAS") assert.equal(await git(root, "rev-parse", "dev"), before);
+      const repeated = await merge(setup);
+      assert.equal(repeated.integrated, true);
+      assert.equal(await readFile(path.join(repeated.dev.projectRoot, "task-only.txt"), "utf8"), "exact Task\n");
+      const head = repeated.dev.headCommit;
+      assert.equal((await merge(setup)).dev.headCommit, head);
+      assert.equal(await git(repeated.dev.projectRoot, "status", "--porcelain"), "");
     });
-    const integration = await service.mergeIntoDev(fixture.snapshot);
-    assert.equal(integration.integrated, false);
-    assert.match(integration.error, /injected before dev CAS/u);
-    assert.equal(await git(fixture.root, "rev-parse", "refs/heads/dev^{commit}"), fixture.oldDev);
-  });
-
-  await context.test("remote tracking drift before CAS does not replace the pinned Task adoption", async (child) => {
-    const fixture = await reviewedDevBootstrapFixture(child);
-    const mainTree = await git(fixture.root, "rev-parse", `${fixture.mainCommit}^{tree}`);
-    const movedMain = await git(
-      fixture.root,
-      "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
-      "commit-tree", mainTree, "-p", fixture.mainCommit, "-m", "concurrent main movement",
-    );
-    let commitTreeCount = 0;
-    const service = new TaskGitWorkspaceService({
-      dataDir: fixture.dataDir,
-      runCommand: async (args, options) => {
-        const result = await runTaskGitCommand(args, options);
-        if (args.includes("commit-tree") && ++commitTreeCount === 2) {
-          await runTaskGitCommand([
-            "update-ref", "refs/remotes/origin/main", movedMain, fixture.mainCommit,
-          ], options);
-        }
-        return result;
-      },
-    });
-    const integration = await service.mergeIntoDev(fixture.snapshot);
-    assert.equal(integration.integrated, true);
-    assert.equal(integration.bootstrapCommit !== null, true);
-    assert.equal(await git(fixture.root, "rev-parse", "refs/heads/dev^{commit}"), integration.dev.headCommit);
-    await git(fixture.root, "merge-base", "--is-ancestor", fixture.mainCommit, integration.dev.headCommit);
-    await assert.rejects(git(fixture.root, "merge-base", "--is-ancestor", movedMain, integration.dev.headCommit));
-    assert.equal(await git(fixture.devRoot, "status", "--porcelain=v1", "--untracked-files=all"), "");
-  });
-
-  await context.test("after CAS", async (child) => {
-    const fixture = await reviewedDevBootstrapFixture(child);
-    let casCompleted = false;
-    let resetFailed = false;
-    const service = new TaskGitWorkspaceService({
-      dataDir: fixture.dataDir,
-      runCommand: async (args, options) => {
-        const result = await runTaskGitCommand(args, options);
-        if (args[0] === "update-ref" && args[1] === "refs/heads/dev") casCompleted = true;
-        if (casCompleted && !resetFailed && args[0] === "reset" && args[1] === "--hard") {
-          resetFailed = true;
-          throw new Error("injected after dev CAS");
-        }
-        return result;
-      },
-    });
-    const integration = await service.mergeIntoDev(fixture.snapshot);
-    assert.equal(integration.integrated, true);
-    assert.equal(integration.dev.recovered, true);
-    assert.equal(await git(fixture.root, "rev-parse", "refs/heads/dev^{commit}"), integration.dev.headCommit);
-    assert.equal(await git(integration.dev.projectRoot, "status", "--porcelain=v1", "--untracked-files=all"), "");
-  });
+  }
 });
 
 test("explicit published main to dev conflict aborts exactly while new Task creation stays independent", async (context) => {
@@ -2256,7 +2135,7 @@ test("ordinary repeated preparation skips dependencies and sparse mutations whil
   assert.equal(await readFile(path.join(first.projectRoot, "app.txt"), "utf8"), "unfinished edit\n");
 });
 
-test("agent resolves a conflict by merging the other Task branch while unrelated dev work advances", { timeout: 90000 }, async (context) => {
+test("an unreviewed sibling Task merge is refused while unrelated dev work is preserved", { timeout: 90000 }, async (context) => {
   const root = await repository(context);
   const dataDir = path.join(root, "..", `${path.basename(root)}-conflict-data`);
   context.after(() => rm(dataDir, { recursive: true, force: true }));
@@ -2278,10 +2157,14 @@ test("agent resolves a conflict by merging the other Task branch while unrelated
   const c = await service.prepare({ taskId: "33333333-3333-4333-8333-333333333333", projectRoot: root });
   await writeFile(path.join(c.projectRoot, "c.txt"), "C\n");
   await service.snapshotAndMerge({ taskId: c.taskId, projectRoot: root });
-  const finished = await service.snapshotAndMerge({ taskId: b.taskId, projectRoot: root });
-  assert.equal(finished.integration.integrated, true);
-  assert.equal(await readFile(path.join(finished.integration.dev.projectRoot, "app.txt"), "utf8"), "A and B\n");
-  assert.equal(await readFile(path.join(finished.integration.dev.projectRoot, "c.txt"), "utf8"), "C\n");
+  const before = await git(root, "rev-parse", "dev");
+  await assert.rejects(service.snapshotAndMerge({ taskId: b.taskId, projectRoot: root }), {
+    code: "RELEASE_NATIVE_HISTORY_REQUIRED",
+  });
+  assert.equal(await git(root, "rev-parse", "dev"), before);
+  const currentDev = await service.prepareDev(root);
+  assert.equal(await readFile(path.join(currentDev.projectRoot, "app.txt"), "utf8"), "A\n");
+  assert.equal(await readFile(path.join(currentDev.projectRoot, "c.txt"), "utf8"), "C\n");
   const parents = (await git(root, "show", "-s", "--format=%P", combined)).split(" ");
   assert.equal(parents[1], testedA.snapshot.headCommit);
 });

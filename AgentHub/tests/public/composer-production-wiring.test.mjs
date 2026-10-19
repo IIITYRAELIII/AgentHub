@@ -237,6 +237,7 @@ for (const { now, expectedTime } of [
     const initial = snapshot();
     initial.tasks[0] = { ...initial.tasks[0], running: true, run: {
       id: "run-live", turnId: "turn-live", operationKind: "user-turn",
+      projectionState: "active",
       providerStart: { state: "observed", turnId: "turn-live" },
       clientUserMessageId: "root", prompt: "Root question",
       startedAt: "2026-09-09T15:51:11.165Z", submittedAt: "2026-09-09T15:51:10.190Z",

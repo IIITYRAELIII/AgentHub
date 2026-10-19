@@ -13,7 +13,7 @@ import {
 test("single-instance guard rejects a concurrent owner and releases cleanly", async (context) => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "telegram-instance-lock-"));
   context.after(() => rm(dataDir, { recursive: true, force: true }));
-  const first = new SingleInstanceGuard({ dataDir, releaseId: "release-1" });
+  const first = new SingleInstanceGuard({ dataDir, releaseId: "release-1", restartOperationId: "original-restart" });
   const second = new SingleInstanceGuard({ dataDir });
   await first.acquire();
   await assert.rejects(() => second.acquire(), /already running/);
@@ -21,6 +21,7 @@ test("single-instance guard rejects a concurrent owner and releases cleanly", as
   assert.equal(lock.pid, process.pid);
   assert.ok(lock.instanceToken);
   assert.equal(lock.releaseId, "release-1");
+  assert.equal(lock.restartOperationId, "original-restart");
   assert.equal(lock.ready, false);
   assert.equal(await readInstanceLockOwner(dataDir), lock.instanceToken);
   await first.markReady();

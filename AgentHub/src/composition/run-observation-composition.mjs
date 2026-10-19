@@ -55,6 +55,7 @@ export function createRunObservationComposition({
   activeTaskTitle,
   rememberLastTaskMessage,
   logError,
+  ensureThreadNamed,
 }) {
   const claudeRunController = new ClaudeRunController({
     dataDir,
@@ -103,6 +104,7 @@ export function createRunObservationComposition({
   });
 
   const claudeTurnLauncher = new ClaudeTurnLauncher({
+    ensureThreadNamed,
     recordingContourRoot,
     taskRuns,
     turnTemporaryFiles,
