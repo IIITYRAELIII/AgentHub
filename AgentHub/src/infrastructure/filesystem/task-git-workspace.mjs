@@ -732,6 +732,20 @@ export class TaskGitWorkspaceService {
     }
   }
 
+  async #acceptedMainBootstrapPublishedAncestry(repoRoot, published, main, base, lease) {
+    const publishedBase = await this.#runOwned([
+      "merge-base", "--all", published, main,
+    ], { cwd: repoRoot, lease });
+    if (publishedBase === base) return true;
+    // Both branches may already contain accepted upstream newer than the last
+    // publication. Admit only an exact published ancestor of that shared base;
+    // an older divergent publication branch grants no additional ancestry.
+    if (publishedBase !== published) return false;
+    return await this.#runOwned([
+      "merge-base", "--all", published, base,
+    ], { cwd: repoRoot, lease }) === published;
+  }
+
   async #readAcceptedMainBootstrapReceipt(repoRoot, requestId) {
     const file = this.#acceptedMainBootstrapReceiptFile(repoRoot, requestId);
     return readFile(file, "utf8").then(JSON.parse, (error) => {
@@ -812,7 +826,9 @@ export class TaskGitWorkspaceService {
     const parents = await this.#runOwned(["rev-list", "--parents", "-n", "1", record.integrationCommit], { cwd: repoRoot, lease });
     const tree = await this.#runOwned(["rev-parse", `${record.integrationCommit}^{tree}`], { cwd: repoRoot, lease });
     const bases = await this.#runOwned(["merge-base", "--all", record.oldDevCommit, record.mainCommit], { cwd: repoRoot, lease });
-    const publishedBase = await this.#runOwned(["merge-base", "--all", record.publishedRevision, record.mainCommit], { cwd: repoRoot, lease });
+    const publishedAncestry = await this.#acceptedMainBootstrapPublishedAncestry(
+      repoRoot, record.publishedRevision, record.mainCommit, record.mergeBaseCommit, lease,
+    );
     const branch = await this.#runOwned(["symbolic-ref", "--quiet", "HEAD"], { cwd: devRoot, lease });
     const current = await this.#runOwned(["rev-parse", `refs/heads/${this.devBranch}^{commit}`], { cwd: repoRoot, lease });
     const indexTree = await this.#runOwned(["write-tree"], { cwd: devRoot, lease });
@@ -823,7 +839,7 @@ export class TaskGitWorkspaceService {
     const oldTree = await this.#runOwned(["rev-parse", `${record.oldDevCommit}^{tree}`], { cwd: repoRoot, lease });
     if (parents !== `${record.integrationCommit} ${record.oldDevCommit} ${record.mainCommit}`
       || tree !== record.resultTree || bases !== record.mergeBaseCommit
-      || publishedBase !== record.mergeBaseCommit
+      || !publishedAncestry
       || branch !== `refs/heads/${this.devBranch}` || worktreeDiff || otherFiles
       || ![oldTree, record.resultTree].includes(indexTree)) {
       throw new Error("Accepted-main bootstrap recovery proof changed");
@@ -2551,8 +2567,9 @@ export class TaskGitWorkspaceService {
       }
       if (status) throw new Error("Accepted-main bootstrap requires a clean managed dev worktree");
       if (bases !== base) throw new Error("Accepted-main bootstrap ancestry proof changed");
-      const publishedBase = await this.#runOwned(["merge-base", "--all", published, main], { cwd: repoRoot, lease });
-      if (publishedBase !== base) throw new Error("Accepted-main bootstrap published ancestry proof changed");
+      if (!await this.#acceptedMainBootstrapPublishedAncestry(repoRoot, published, main, base, lease)) {
+        throw new Error("Accepted-main bootstrap published ancestry proof changed");
+      }
       if (await gitMaybe(["merge-base", "--is-ancestor", main, oldDev], { cwd: repoRoot }) !== null) {
         return { status: "already_current", integrated: true, mainCommit: main, headCommit: oldDev };
       }
@@ -2622,8 +2639,9 @@ export class TaskGitWorkspaceService {
         await this.#acceptedMainBootstrapMain(repoRoot, main);
         const currentBase = await this.#runOwned(["merge-base", "--all", oldDev, main], { cwd: repoRoot, lease });
         if (currentBase !== base) throw new Error("Accepted-main bootstrap ancestry changed before CAS");
-        const currentPublishedBase = await this.#runOwned(["merge-base", "--all", published, main], { cwd: repoRoot, lease });
-        if (currentPublishedBase !== base) throw new Error("Accepted-main bootstrap published ancestry changed before CAS");
+        if (!await this.#acceptedMainBootstrapPublishedAncestry(repoRoot, published, main, base, lease)) {
+          throw new Error("Accepted-main bootstrap published ancestry changed before CAS");
+        }
         const record = {
           version: 2, kind: "accepted-local-main-bootstrap-v1", repositoryRoot: repoRoot,
           devRoot, devBranch: this.devBranch, requestId: id, oldDevCommit: oldDev,

@@ -1171,8 +1171,12 @@ When an explicitly accepted local `main` has advanced beyond the durable
 published revision while managed `dev` still contains separate Test results,
 the Task Git owner has a separate, operator-invoked bootstrap. It requires one
 stable request ID, the exact accepted main and dev commits, published revision
-and generation, and unique common merge base for both dev/main and
-published/main. Under the existing dev lease it verifies
+and generation, and a unique dev/main merge base. Published/main must have that
+same unique base, or the exact published revision must itself be an ancestor of
+the dev/main base when both branches already contain newer accepted upstream.
+An older divergent published branch does not satisfy this second case. The same
+proof is checked at admission, before CAS and during historical recovery
+(ADR-0119). Under the existing dev lease it verifies
 cleanliness, ancestry and the unchanged local main, constructs a merge with
 ordered parents `[oldDev, acceptedMain]`, and advances only `dev` by CAS. A
 durable pre-CAS record binds those proofs; recovery distinguishes no effect from

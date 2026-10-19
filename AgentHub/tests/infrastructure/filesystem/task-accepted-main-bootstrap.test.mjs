@@ -18,7 +18,7 @@ const commit = async (cwd, message) => {
   return git(cwd, "rev-parse", "HEAD");
 };
 
-async function fixture(context, { divergedPublication = false, withTrackedDirectory = false } = {}) {
+async function fixture(context, { divergedPublication = false, withTrackedDirectory = false, sharedAdvance = false } = {}) {
   const parent = await mkdtemp(path.join(os.tmpdir(), "hub-accepted-main-bootstrap-"));
   context.after(() => rm(parent, { recursive: true, force: true }));
   const root = path.join(parent, "repo");
@@ -31,13 +31,17 @@ async function fixture(context, { divergedPublication = false, withTrackedDirect
     await mkdir(path.join(root, "tracked-directory"));
     await writeFile(path.join(root, "tracked-directory", "child.txt"), "base child\n");
   }
-  const base = await commit(root, "shared base");
+  let base = await commit(root, "shared base");
   let published = base;
   if (divergedPublication) {
     await git(root, "checkout", "-b", "publication", base);
     await writeFile(path.join(root, "published.txt"), "published side\n");
     published = await commit(root, "published side");
     await git(root, "checkout", "main");
+  }
+  if (sharedAdvance) {
+    await writeFile(path.join(root, "app.txt"), "accepted shared upstream\n");
+    base = await commit(root, "shared upstream after publication");
   }
   let publication = { generation: "g1", repositories: [{ root, revision: published }] };
   const service = new TaskGitWorkspaceService({ dataDir: path.join(parent, "data"),
@@ -60,6 +64,68 @@ function input(f, requestId = "accepted-main-bootstrap-one") {
     expectedDevCommit: f.oldDev, publishedRevision: f.published,
     expectedPublicationGeneration: "g1", expectedMergeBaseCommit: f.base, requestId };
 }
+
+test("accepted main bootstrap supports a shared upstream newer than publication", { timeout: 90_000 }, async (context) => {
+  const f = await fixture(context, { sharedAdvance: true });
+  assert.notEqual(f.base, f.published);
+  assert.equal(await git(f.root, "merge-base", f.oldDev, f.main), f.base);
+  assert.equal(await git(f.root, "merge-base", f.published, f.base), f.published);
+  const result = await f.service.bootstrapAcceptedMainIntoDev(input(f, "shared-upstream"));
+  assert.equal(result.status, "merged");
+  assert.equal(await git(f.root, "show", "-s", "--format=%P", result.headCommit), `${f.oldDev} ${f.main}`);
+  assert.equal(await readFile(path.join(f.devRoot, "dev.txt"), "utf8"), "unrelated dev\n");
+  assert.equal(await readFile(path.join(f.devRoot, "app.txt"), "utf8"), "accepted local main\n");
+  assert.equal(await git(f.devRoot, "status", "--porcelain"), "");
+  assert.equal(await git(f.root, "rev-parse", "main"), f.main);
+  assert.equal(await git(f.taskRoot, "rev-parse", "HEAD"), f.taskResult);
+  const replay = await f.service.bootstrapAcceptedMainIntoDev(input(f, "shared-upstream"));
+  assert.equal(replay.status, "completed_replay");
+  assert.equal(replay.headCommit, result.headCommit);
+});
+
+test("older divergent publication cannot authorize a newer main-dev common base", { timeout: 90_000 }, async (context) => {
+  const f = await fixture(context, { sharedAdvance: true, divergedPublication: true });
+  await assert.rejects(f.service.bootstrapAcceptedMainIntoDev(input(f, "foreign-older-base")),
+    /published ancestry proof changed/u);
+  assert.equal(await git(f.root, "rev-parse", "dev"), f.oldDev);
+  assert.equal(await git(f.devRoot, "status", "--porcelain"), "");
+  assert.equal(await git(f.root, "rev-parse", "main"), f.main);
+  assert.equal(await git(f.taskRoot, "rev-parse", "HEAD"), f.taskResult);
+});
+
+test("shared-upstream bootstrap recovers its exact CAS after publication advances", { timeout: 90_000 }, async (context) => {
+  const f = await fixture(context, { sharedAdvance: true });
+  let casCount = 0;
+  let interrupted = false;
+  f.service.runCommand = async (args, options) => {
+    if (args[0] === "update-ref" && args[1] === "--stdin") {
+      casCount += 1;
+      f.setGeneration("g2");
+    }
+    if (!interrupted && args[0] === "read-tree" && args[1] === "-m" && args[2] === "-u") {
+      interrupted = true;
+      const error = new Error("shared-upstream materialization interrupted");
+      error.processTreeStopped = true;
+      throw error;
+    }
+    return runTaskGitCommand(args, options);
+  };
+  const request = input(f, "shared-upstream-interrupted");
+  await assert.rejects(f.service.bootstrapAcceptedMainIntoDev(request), /materialization interrupted/u);
+  assert.equal(interrupted, true);
+  const advanced = await git(f.root, "rev-parse", "dev");
+  assert.notEqual(advanced, f.oldDev);
+  const replay = await f.service.bootstrapAcceptedMainIntoDev(request);
+  assert.equal(replay.status, "completed_replay");
+  assert.equal(replay.headCommit, advanced);
+  assert.equal(casCount, 1);
+  assert.equal(await git(f.devRoot, "status", "--porcelain"), "");
+  assert.equal(await readFile(path.join(f.devRoot, "dev.txt"), "utf8"), "unrelated dev\n");
+  assert.equal(await readFile(path.join(f.devRoot, "app.txt"), "utf8"), "accepted local main\n");
+  assert.equal(await git(f.taskRoot, "rev-parse", "HEAD"), f.taskResult);
+  await assert.rejects(f.service.bootstrapAcceptedMainIntoDev(input(f, "new-generation-request")),
+    /publication provenance changed/u);
+});
 
 test("accepted main bootstraps managed dev without changing a separate Task result", { timeout: 90_000 }, async (context) => {
   const f = await fixture(context);
