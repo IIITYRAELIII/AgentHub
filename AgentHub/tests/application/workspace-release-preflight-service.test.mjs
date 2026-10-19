@@ -58,10 +58,11 @@ function localSourceFixture() {
   return { ...f, envelope, candidate, p, verified: () => verified };
 }
 
-test("ordinary Await derives adopted installed source before candidate and rechecks before Task CAS", async () => {
-  for (const drift of [false, true, "missing-authority"]) {
+test("ordinary Await derives installed source with incoming or agreed-main origin and rechecks before Task CAS", async () => {
+  for (const incoming of [true, false]) for (const drift of [false, true, "missing-authority"]) {
     const f = localSourceFixture();
-    const adoptions = [{ taskId: "task-current", recordHash: "receipt" }];
+    if (!incoming) f.p.agreedMainCommit = "a".repeat(40);
+    const adoptions = incoming ? [{ taskId: "task-current", recordHash: "receipt" }] : [];
     f.service.taskGitWorkspaces.releaseBaseEvidence = async () => ({
       baseCommit: f.p.agreedMainCommit, publishedBaseCommit: f.p.publishedBaseCommit, adoptions,
     });
@@ -256,6 +257,7 @@ function fixture({
       },
     },
     releaseGitWorkspaces: {
+      deriveInstalledLocalSourceBaselineForSelection: async () => null,
       withAwaitTransition: async (workspaceId, operation) => {
         locks.push(workspaceId);
         return operation();

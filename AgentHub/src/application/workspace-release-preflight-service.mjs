@@ -724,11 +724,12 @@ export class WorkspaceReleasePreflightService {
         canonicalRoot(item.projectRoot) === canonicalRoot(repository.projectRoot)
       ));
       let localSource = preparationRepository?.localSourceBaseline ?? null;
-      if (!preparation && !generationIdentity && base.adoptions?.length) {
+      if (!preparation && !generationIdentity && (base.adoptions?.length
+          || !reviewed && base.baseCommit !== base.publishedBaseCommit)) {
         requiredMethod(this.releaseGitWorkspaces, "deriveInstalledLocalSourceBaselineForSelection");
         localSource = await this.releaseGitWorkspaces.deriveInstalledLocalSourceBaselineForSelection({
           projectRoot: repository.projectRoot, planRevision: plan.revision, tasks: evidence.tasks,
-          publishedRevision: base.publishedBaseCommit, adoptions: base.adoptions,
+          publishedRevision: base.publishedBaseCommit, adoptions: base.adoptions ?? [],
         });
       }
       if (!preparation && generationIdentity) {

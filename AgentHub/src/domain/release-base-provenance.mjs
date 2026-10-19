@@ -74,7 +74,8 @@ export function normalizedReleaseBaseProvenance(value, expectedBaseCommit = null
         || expectedBaseCommit && normalized.sourceBaseCommit !== expectedBaseCommit) {
       throw new Error("Invalid installed local source provenance pins");
     }
-    if (adopted && (!COMMIT.test(normalized.approvedOriginMainCommit) || !normalized.adoptions.length
+    if (adopted && (!Array.isArray(value.adoptions) || !COMMIT.test(normalized.approvedOriginMainCommit)
+        || !normalized.adoptions.length && normalized.approvedOriginMainCommit !== normalized.agreedMainCommit
         || new Set(normalized.adoptions.map(a => a.taskId)).size !== normalized.adoptions.length
         || normalized.adoptions.some(a => a.acceptedLocalMainCommit !== normalized.agreedMainCommit
           || a.adoptedCommit !== normalized.approvedOriginMainCommit))) {

@@ -1433,7 +1433,7 @@ export class ReleaseGitWorkspaceService {
   }
 
   async deriveInstalledLocalSourceBaselineForSelection({ projectRoot, planRevision, tasks,
-    publishedRevision, adoptions }) {
+    publishedRevision, adoptions = [] }) {
     const initial = await primarySnapshot(projectRoot);
     await this.assertPrimaryInvariant(initial.root, { phase: "ordinary Await installed source binding" });
     if (publishedRevision !== await durablePublishedRevision(this.#environment, initial.root)) {
@@ -1444,14 +1444,14 @@ export class ReleaseGitWorkspaceService {
       localMainCommit: initial.mainCommit });
     const pins = actual.map(({ taskId, resultCommit, recordRef, recordHash, adoptedCommit, acceptedLocalMainCommit }) =>
       ({ taskId, resultCommit, recordRef, recordHash, adoptedCommit, acceptedLocalMainCommit }));
-    if (!pins.length || JSON.stringify(pins) !== JSON.stringify(adoptions)) {
+    if (JSON.stringify(pins) !== JSON.stringify(adoptions)) {
       throw new Error("Ordinary Await selected adoption evidence changed");
     }
     const provenance = await installedNativeHistoryBaseline({ git,
       sourceGit: (cwd, args) => runGit(args, { cwd, timeoutMs: 300_000 }),
       repositoryRoot: initial.root, primaryMainCommit: initial.mainCommit, publishedRevision,
       runtimeRoot: defaultRuntimeRoot({ environment: this.#environment }), planRevision, tasks, adoptions: actual });
-    if (!provenance) throw new Error("Ordinary adopted Await has no verified installed source baseline");
+    if (!provenance && pins.length) throw new Error("Ordinary adopted Await has no verified installed source baseline");
     return provenance;
   }
 

@@ -99,7 +99,14 @@ The exact source base/tree/binary patch, current installed release/manifest,
 plan revision and selected Task IDs/revisions/registered bases/results are pinned.
 Origin must equal that OWN publication unless the exact selected Task has a
 current ordinary upstream-adoption receipt for the separately pinned approved
-origin (ADR-0117). OWN publication remains an ancestor of the local source base.
+origin (ADR-0117), or the envelope binds origin to the exact already agreed main
+with an actual empty adoption array (ADR-0121). The latter requires current main
+and origin equal that pin, OWN publication ancestor of it, agreed main ancestor
+of retained installed source, and the same complete installed/source proof.
+No equal-main adoption receipt is created. Missing origin fields retain the
+original publication pin; foreign origin, non-array or substituted empty
+authority refuses. A sealed envelope never switches modes after drift.
+OWN publication remains an ancestor of the local source base.
 Missing, substituted or changed pins refuse before promotion.
 
 The existing RM-only `hub_release_prepare` repository envelope may carry
@@ -116,6 +123,10 @@ the existing Task owner returns their exact historical pins and the candidate
 owner derives the same full installed-source proof before composition. Await
 passes that sealed provenance through its existing base and terminal CAS checks;
 it does not depend on a later preparation that requires Tasks already in Await.
+The same ordinary derivation runs without new receipts when agreed main differs
+from publication, preserving the already-agreed-origin mode through Test and
+Await. Without an installed runtime the no-adoption route returns no migration
+envelope; selected incoming receipts still require their installed proof.
 The candidate's internal authority closure reaches the lifecycle's final
 persistence callback and runs immediately before the owning Task commit, after
 awaited persistence admission. That closure rechecks source/adoption/origin,
