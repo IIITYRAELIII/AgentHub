@@ -16,6 +16,7 @@ from pathlib import Path
 import shutil
 import sqlite3
 import stat
+import struct
 import subprocess
 import time
 import uuid
@@ -101,37 +102,64 @@ def named_streams(file):
     if os.name != "nt":
         return []
 
-    class StreamData(ctypes.Structure):
-        _fields_ = [("size", ctypes.c_longlong), ("name", wintypes.WCHAR * 296)]
-
     kernel = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel.FindFirstStreamW.argtypes = [
+    kernel.CreateFileW.argtypes = [
         wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    kernel.CreateFileW.restype = wintypes.HANDLE
+    kernel.GetFileInformationByHandleEx.argtypes = [
+        wintypes.HANDLE,
         ctypes.c_int,
-        ctypes.POINTER(StreamData),
+        ctypes.c_void_p,
         wintypes.DWORD,
     ]
-    kernel.FindFirstStreamW.restype = wintypes.HANDLE
-    kernel.FindNextStreamW.argtypes = [wintypes.HANDLE, ctypes.POINTER(StreamData)]
-    kernel.FindClose.argtypes = [wintypes.HANDLE]
-    data = StreamData()
-    handle = kernel.FindFirstStreamW(long_path(file), 0, ctypes.byref(data), 0)
+    kernel.GetFileInformationByHandleEx.restype = wintypes.BOOL
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    handle = kernel.CreateFileW(long_path(file), 0x80, 7, None, 3, 0x02200000, None)
     if handle == ctypes.c_void_p(-1).value:
-        if ctypes.get_last_error() == 38:
-            return []
         raise ctypes.WinError(ctypes.get_last_error())
-    streams = []
     try:
-        while True:
-            if data.name != "::$DATA":
-                streams.append((data.name, data.size))
-            if not kernel.FindNextStreamW(handle, ctypes.byref(data)):
-                if ctypes.get_last_error() != 38:
-                    raise ctypes.WinError(ctypes.get_last_error())
+        capacity = 4096
+        while capacity <= 1024 * 1024:
+            buffer = ctypes.create_string_buffer(capacity)
+            if kernel.GetFileInformationByHandleEx(handle, 7, buffer, capacity):
                 break
+            error = ctypes.get_last_error()
+            if error == 38:
+                return []
+            if error not in (122, 234):
+                raise ctypes.WinError(error)
+            capacity *= 2
+        else:
+            raise ValueError("File stream metadata exceeds the explicit bound")
+        streams = []
+        offset = 0
+        while True:
+            following, length, size, _allocated = struct.unpack_from(
+                "<IIqq", buffer.raw, offset
+            )
+            if length % 2 or offset + 24 + length > capacity:
+                raise ValueError("Malformed file stream metadata")
+            name = buffer.raw[offset + 24 : offset + 24 + length].decode("utf-16le")
+            if name.endswith(":$DATA") and name != "::$DATA":
+                streams.append((name, size))
+            if not following:
+                return sorted(streams)
+            if (
+                following < 24 + length
+                or following % 8
+                or offset + following >= capacity
+            ):
+                raise ValueError("Malformed next file stream metadata offset")
+            offset += following
     finally:
-        kernel.FindClose(handle)
-    return sorted(streams)
+        kernel.CloseHandle(handle)
 
 
 def content_digest(file, default_hash=None):
@@ -476,6 +504,33 @@ def make_link(source, target, tag, directory):
         os.symlink(source, long_path(target), target_is_directory=directory)
 
 
+def refuse_directory_streams(directory):
+    # Directory streams are user data too. Until their transfer has a supported
+    # atomic owner, mkdir/rmdir must never silently discard them.
+    if named_streams(directory):
+        raise ValueError(f"Unaccounted directory data streams: {directory}")
+
+
+def relink_owned_file(canonical, target, operation, target_hash):
+    temporary = target.with_name(
+        target.name + ".relocation-hardlink-" + operation + ".tmp"
+    )
+    canonical_identity = info(canonical)
+    if os.path.lexists(long_path(temporary)):
+        if reparse(temporary) or any(
+            info(temporary)[k] != canonical_identity[k] for k in ("dev", "ino")
+        ):
+            raise ValueError("Unresolved hardlink temporary identity")
+    else:
+        os.link(long_path(canonical), long_path(temporary))
+    if os.path.lexists(long_path(target)):
+        if reparse(target) or content_digest(target) != target_hash:
+            raise ValueError("Owned hardlink destination changed")
+        if info(target)["attributes"] & 1:
+            delete_verified_file(target, info(target), target_hash)
+    os.replace(long_path(temporary), long_path(target))
+
+
 def copy_roots(plan, offline=False):
     db = connect(plan["manifest"])
     try:
@@ -501,11 +556,14 @@ def copy_roots(plan, offline=False):
                 if old and old["kind"] != kind:
                     raise ValueError(f"Entry type changed: {source}")
                 if kind == "directory":
+                    refuse_directory_streams(source)
                     os.makedirs(long_path(target), exist_ok=True)
                     if reparse(target):
                         raise ValueError("Destination directory became reparse")
+                    refuse_directory_streams(target)
                     sha, copied = None, 1
                 elif kind == "link":
+                    refuse_directory_streams(source)
                     # Preserve the original target verbatim. Compatibility aliases
                     # retain absolute historical links; never follow their targets.
                     make_link(
@@ -533,43 +591,37 @@ def copy_roots(plan, offline=False):
                         db.commit()
                     if os.path.exists(long_path(target)) and not old:
                         raise ValueError(f"Unowned file at destination: {target}")
-                    if (
-                        os.path.exists(long_path(target))
-                        and old
-                        and not old["copied"]
-                        and (
-                            reparse(target)
-                            or content_digest(target) != content_digest(source)
-                        )
-                    ):
-                        raise ValueError(f"Pending destination differs: {target}")
-                    if (
-                        old
-                        and old["copied"]
-                        and same_identity(json.loads(old["identity"]), identity)
-                        and os.path.exists(long_path(target))
-                        and not reparse(target)
-                    ):
+                    source_hash = target_hash = None
+                    if os.path.lexists(long_path(target)):
+                        if reparse(target):
+                            raise ValueError("Destination file became a reparse point")
                         source_hash, target_hash = (
                             content_digest(source),
                             content_digest(target),
                         )
+                        if target_hash not in (old["sha256"], source_hash):
+                            raise ValueError("Owned destination contents changed")
+                    key = (identity["dev"], identity["ino"])
+                    if key in linked:
+                        canonical = linked[key]
+                        source_hash = source_hash or content_digest(source)
+                        if content_digest(canonical) != source_hash:
+                            raise ValueError("Source hardlink contents changed")
+                        if not os.path.exists(long_path(target)) or any(
+                            info(target)[k] != info(canonical)[k]
+                            for k in ("dev", "ino")
+                        ):
+                            relink_owned_file(
+                                canonical, target, plan["operation"], target_hash
+                            )
+                        sha = source_hash
+                    elif source_hash and source_hash == target_hash:
+                        sha = source_hash
                     else:
-                        source_hash, target_hash = None, None
-                    if source_hash and source_hash == target_hash:
-                        sha = target_hash
-                    else:
-                        key = (identity["dev"], identity["ino"])
-                        if key in linked and not os.path.exists(long_path(target)):
-                            os.link(long_path(linked[key]), long_path(target))
-                            sha = content_digest(target)
-                            if content_digest(source) != sha:
-                                raise ValueError("Source hardlink contents changed")
-                        else:
-                            sha = copy_file(source, target, plan["operation"])
-                        if not same_identity(identity, info(source)):
-                            raise ValueError(f"Source changed during copy: {source}")
+                        sha = copy_file(source, target, plan["operation"])
                         copied_bytes += identity["size"]
+                    if not same_identity(identity, info(source)):
+                        raise ValueError(f"Source changed during copy: {source}")
                     linked[(identity["dev"], identity["ino"])] = target
                     copied = 1
                 db.execute(
@@ -788,9 +840,32 @@ def verify_offline_copy(plan):
     try:
         if phase(db) != "copied_offline":
             raise ValueError("Complete offline copy required")
+        verify_directory_stream_absence(plan, db)
         set_phase(db, "verified")
     finally:
         db.close()
+
+
+def verify_directory_stream_absence(plan, db, switch_recovery=False):
+    for row in db.execute(
+        "SELECT root,rel,kind,link_target FROM files WHERE kind IN ('directory','link') ORDER BY root,length(rel),rel"
+    ):
+        root = plan["roots"][row["root"]]
+        source = Path(root["source"])
+        original = Path(root["original"])
+        if switch_recovery and original.exists():
+            if info(original)["ino"] != root["identity"]["ino"]:
+                raise ValueError("Original directory identity changed")
+            source = original
+        for directory in (source / row["rel"], Path(root["target"]) / row["rel"]):
+            if row["kind"] == "directory" and reparse(directory):
+                raise ValueError("Verified directory became a reparse point")
+            if row["kind"] == "link" and (
+                not reparse(directory)
+                or os.readlink(long_path(directory)) != row["link_target"]
+            ):
+                raise ValueError("Verified reparse target changed")
+            refuse_directory_streams(directory)
 
 
 def assert_no_source_processes(plan):
@@ -811,6 +886,7 @@ def switch_roots(plan):
     try:
         if phase(db) not in ("integrity_verified", "switching"):
             raise ValueError("Offline verified transfer required")
+        verify_directory_stream_absence(plan, db, switch_recovery=True)
         set_phase(db, "switching")
         for root in plan["roots"]:
             source, original, target = map(
@@ -926,7 +1002,9 @@ def accept_started(plan, proof_file):
         db.close()
 
 
-def delete_verified_file(file, expected, expected_hash):
+def delete_verified_file(
+    file, expected, expected_hash, directory=False, link_target=None
+):
     """Hash and delete the same exclusively opened Windows file handle."""
     if os.name != "nt":
         raise ValueError("Verified source pruning is Windows-only")
@@ -951,7 +1029,13 @@ def delete_verified_file(file, expected, expected_hash):
     kernel.CloseHandle.argtypes = [wintypes.HANDLE]
     # Deny concurrent writers/deletion; OPEN_REPARSE_POINT never follows a link.
     handle = kernel.CreateFileW(
-        long_path(file), 0x10000 | 0x80 | 1, 1, None, 3, 0x200000, None
+        long_path(file),
+        0x10000 | 0x80 | 1,
+        1,
+        None,
+        3,
+        0x02200000 if directory else 0x00200000,
+        None,
     )
     if handle == ctypes.c_void_p(-1).value:
         raise ctypes.WinError(ctypes.get_last_error())
@@ -963,17 +1047,23 @@ def delete_verified_file(file, expected, expected_hash):
         if (
             str(s.st_dev) != expected["dev"]
             or str(s.st_ino) != expected["ino"]
-            or s.st_size != expected["size"]
-            or getattr(s, "st_file_attributes", 0) & 0x400
+            or (not directory and link_target is None and s.st_size != expected["size"])
+            or bool(getattr(s, "st_file_attributes", 0) & 0x400)
+            != (link_target is not None)
         ):
             raise ValueError("Source deletion file identity changed")
-        h = hashlib.sha256()
-        while chunk := os.read(descriptor, 4 * 1024 * 1024):
-            h.update(chunk)
-        # Check named streams even when the original had none: a later added
-        # stream must also block deletion of the original.
-        if content_digest(file, h.hexdigest()) != expected_hash:
-            raise ValueError("Source deletion checksum changed")
+        if link_target is not None:
+            if os.readlink(long_path(file)) != link_target:
+                raise ValueError("Original reparse target changed")
+            refuse_directory_streams(file)
+        elif directory:
+            refuse_directory_streams(file)
+        else:
+            h = hashlib.sha256()
+            while chunk := os.read(descriptor, 4 * 1024 * 1024):
+                h.update(chunk)
+            if content_digest(file, h.hexdigest()) != expected_hash:
+                raise ValueError("Source deletion checksum changed")
         # DELETE | POSIX_SEMANTICS | IGNORE_READONLY_ATTRIBUTE. The latter permits
         # removal of copied Git object files without an unsafe pathname chmod.
         disposition = wintypes.DWORD(0x13)
@@ -1030,6 +1120,8 @@ def prune_originals(plan):
                     raise ValueError("Source file changed after offline transfer")
                 if kind == "link" and link_target != row["link_target"]:
                     raise ValueError("Original link changed")
+                if kind in ("directory", "link"):
+                    refuse_directory_streams(original / rel)
             rows = db.execute(
                 "SELECT * FROM files WHERE root=? AND deleted<>1 ORDER BY length(rel) DESC,rel DESC",
                 (i,),
@@ -1058,14 +1150,21 @@ def prune_originals(plan):
                         or os.readlink(long_path(file)) != row["link_target"]
                     ):
                         raise ValueError("Original reparse entry changed")
-                    if json.loads(row["identity"])["attributes"] & 0x10:
-                        os.rmdir(long_path(file))
-                    else:
-                        os.unlink(long_path(file))
+                    delete_verified_file(
+                        file,
+                        json.loads(row["identity"]),
+                        None,
+                        directory=bool(
+                            json.loads(row["identity"])["attributes"] & 0x10
+                        ),
+                        link_target=row["link_target"],
+                    )
                 else:
                     if reparse(file):
                         raise ValueError("Original directory became reparse")
-                    os.rmdir(long_path(file))  # Empty only; no recursive deletion.
+                    delete_verified_file(
+                        file, json.loads(row["identity"]), None, directory=True
+                    )
                 db.execute(
                     "UPDATE files SET deleted=1 WHERE root=? AND rel=?", (i, row["rel"])
                 )

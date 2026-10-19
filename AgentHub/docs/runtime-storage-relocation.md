@@ -21,8 +21,17 @@ destinations and an operation ID. Existing destinations are refused. Its local
 SQLite manifest describes only copied files and per-entry removal receipts; it
 does not replace a Hub ledger or add a permanent journal. No reparse point is
 traversed. Supported junction/symlink targets are preserved verbatim. CopyFile
-preserves NTFS streams and timestamps; hashes cover default and named data
-streams. Hardlinks are recreated within the transfer. Private destination ACLs
+preserves file NTFS streams and timestamps; hashes cover default and named file
+data streams. Directory data streams currently fail closed before verification
+or switching, including root-directory streams; they are never silently dropped.
+Pruning rechecks this boundary through a held directory delete handle that denies
+concurrent stream writers. Hardlinks are reconciled within the transfer even if
+a source group changes between stage and final-copy or a link rename is interrupted.
+Stream metadata is queried through an `OPEN_REPARSE_POINT` handle using
+[FILE_STREAM_INFO](https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-file_stream_info),
+including the reparse point itself. Foreign junction targets are not inspected
+or pruned; unaccounted streams attached to a link also fail closed.
+Private destination ACLs
 protect copied configuration. Directory/MFT allocation is not a file-size sum.
 
 ## Preparation

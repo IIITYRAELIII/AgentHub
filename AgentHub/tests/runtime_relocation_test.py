@@ -154,6 +154,134 @@ class RelocationTest(unittest.TestCase):
         with open(str(self.target / "file") + ":test-metadata", "rb") as f:
             self.assertEqual(f.read(), b"named stream")
 
+    @unittest.skipUnless(os.name == "nt", "Windows directory streams")
+    def test_directory_streams_fail_closed_before_verified_including_root(self):
+        for directory in (self.source, self.source / "nested"):
+            directory.mkdir(exist_ok=True)
+            with open(str(directory) + ":valuable", "wb") as stream:
+                stream.write(b"directory user data")
+        plan = self.plan()
+        with self.assertRaisesRegex(ValueError, "directory data streams"):
+            relocation.copy_roots(plan, offline=True)
+        with self.assertRaisesRegex(ValueError, "Offline verified"):
+            relocation.validate_databases(plan)
+        for directory in (self.source, self.source / "nested"):
+            with open(str(directory) + ":valuable", "rb") as stream:
+                self.assertEqual(stream.read(), b"directory user data")
+        with self.assertRaisesRegex(ValueError, "verified transfer"):
+            relocation.switch_roots(plan)
+
+    @unittest.skipUnless(os.name == "nt", "Windows directory handle")
+    def test_directory_delete_handle_denies_late_stream_write(self):
+        directory = self.source / "empty"
+        directory.mkdir()
+        original_streams = relocation.named_streams
+
+        def attempt_write(value):
+            with self.assertRaises(OSError):
+                with open(str(value) + ":late", "wb") as stream:
+                    stream.write(b"must not be lost")
+            return original_streams(value)
+
+        with patch.object(relocation, "named_streams", side_effect=attempt_write):
+            relocation.delete_verified_file(
+                directory, relocation.info(directory), None, directory=True
+            )
+        self.assertFalse(directory.exists())
+
+    @unittest.skipUnless(os.name == "nt", "Windows no-follow stream metadata")
+    def test_junction_stream_query_and_pruning_never_follow_foreign_target(self):
+        foreign = self.temp / "foreign"
+        foreign.mkdir()
+        (foreign / "valuable").write_bytes(b"keep foreign body")
+        with open(str(foreign) + ":valuable", "wb") as stream:
+            stream.write(b"keep foreign stream")
+        relocation.make_link(str(foreign), self.source / "link", 0xA0000003, True)
+        self.assertEqual(relocation.named_streams(self.source / "link"), [])
+        plan = self.plan()
+        relocation.copy_roots(plan, offline=True)
+        relocation.validate_databases(plan)
+        relocation.switch_roots(plan)
+        db = relocation.connect(plan["manifest"])
+        relocation.set_phase(db, "accepted")
+        db.close()
+        relocation.prune_originals(plan)
+        self.assertEqual((foreign / "valuable").read_bytes(), b"keep foreign body")
+        with open(str(foreign) + ":valuable", "rb") as stream:
+            self.assertEqual(stream.read(), b"keep foreign stream")
+
+    @unittest.skipUnless(os.name == "nt", "Windows directory stream late mutation")
+    def test_directory_stream_added_after_verification_blocks_switch(self):
+        (self.source / "file").write_bytes(b"keep")
+        plan = self.plan()
+        relocation.copy_roots(plan, offline=True)
+        relocation.validate_databases(plan)
+        with open(str(self.source) + ":late", "wb") as stream:
+            stream.write(b"valuable late stream")
+        with self.assertRaisesRegex(ValueError, "directory data streams"):
+            relocation.switch_roots(plan)
+        self.assertFalse(self.source.is_junction())
+        self.assertFalse(Path(plan["roots"][0]["original"]).exists())
+        with open(str(self.source) + ":late", "rb") as stream:
+            self.assertEqual(stream.read(), b"valuable late stream")
+
+    def test_final_copy_reconciles_updated_hardlinks_and_write_through(self):
+        a, b = self.source / "a", self.source / "b"
+        a.write_bytes(b"before")
+        os.link(a, b)
+        plan = self.plan()
+        relocation.copy_roots(plan)
+        a.write_bytes(b"updated after stage")
+        relocation.copy_roots(plan, offline=True)
+        self.assertEqual(
+            relocation.info(self.target / "a")["ino"],
+            relocation.info(self.target / "b")["ino"],
+        )
+        (self.target / "a").write_bytes(b"write through")
+        self.assertEqual((self.target / "b").read_bytes(), b"write through")
+        self.assertEqual(a.read_bytes(), b"updated after stage")
+
+    def test_foreign_modified_hardlink_destination_is_preserved_and_refused(self):
+        a, b = self.source / "a", self.source / "b"
+        a.write_bytes(b"before")
+        os.link(a, b)
+        plan = self.plan()
+        relocation.copy_roots(plan)
+        a.write_bytes(b"source update")
+        (self.target / "b").write_bytes(b"foreign useful WIP")
+        with self.assertRaisesRegex(ValueError, "destination contents changed"):
+            relocation.copy_roots(plan, offline=True)
+        self.assertEqual((self.target / "a").read_bytes(), b"foreign useful WIP")
+        self.assertEqual(a.read_bytes(), b"source update")
+
+    @unittest.skipUnless(os.name == "nt", "Windows read-only hardlink recovery")
+    def test_interrupted_readonly_hardlink_replacement_resumes_owned_temporary(self):
+        a, b = self.source / "a", self.source / "b"
+        a.write_bytes(b"before")
+        os.link(a, b)
+        plan = self.plan()
+        relocation.copy_roots(plan)
+        a.write_bytes(b"updated after stage")
+        os.chmod(self.target / "b", 0o444)
+        original_replace = os.replace
+
+        def interrupted(source, target):
+            if ".relocation-hardlink-" in str(source):
+                raise OSError("injected link-rename interruption")
+            return original_replace(source, target)
+
+        with patch.object(relocation.os, "replace", side_effect=interrupted):
+            with self.assertRaisesRegex(OSError, "link-rename"):
+                relocation.copy_roots(plan, offline=True)
+        self.assertEqual(a.read_bytes(), b"updated after stage")
+        relocation.copy_roots(plan, offline=True)
+        self.assertEqual(
+            relocation.info(self.target / "a")["ino"],
+            relocation.info(self.target / "b")["ino"],
+        )
+        self.assertEqual((self.target / "b").read_bytes(), b"updated after stage")
+        self.assertFalse(list(self.target.glob("*.relocation-hardlink-*")))
+
     def test_failure_does_not_claim_verified_or_delete_sources(self):
         file = self.source / "file"
         file.write_bytes(b"original")
@@ -207,6 +335,26 @@ class RelocationTest(unittest.TestCase):
         self.assertFalse(Path(plan["roots"][0]["original"]).exists())
         self.assertEqual((self.source / "nested/dirty").read_bytes(), b"dirty")
         self.assertEqual((self.source / "new-runtime-file").read_text(), "new")
+
+    @unittest.skipUnless(os.name == "nt", "Windows directory stream late mutation")
+    def test_late_original_directory_stream_blocks_prune_before_any_deletion(self):
+        (self.source / "valuable-file").write_bytes(b"keep")
+        plan = self.plan()
+        relocation.copy_roots(plan, offline=True)
+        relocation.validate_databases(plan)
+        relocation.switch_roots(plan)
+        # Fixture-only operator acceptance isolates the pruning boundary.
+        db = relocation.connect(plan["manifest"])
+        relocation.set_phase(db, "accepted")
+        db.close()
+        original = Path(plan["roots"][0]["original"])
+        with open(str(original) + ":late", "wb") as stream:
+            stream.write(b"late useful data")
+        with self.assertRaisesRegex(ValueError, "directory data streams"):
+            relocation.prune_originals(plan)
+        self.assertEqual((original / "valuable-file").read_bytes(), b"keep")
+        with open(str(original) + ":late", "rb") as stream:
+            self.assertEqual(stream.read(), b"late useful data")
 
     def test_switch_is_refused_before_database_validation(self):
         (self.source / "file").write_text("original")
@@ -361,7 +509,6 @@ class RelocationTest(unittest.TestCase):
             ],
             check=True,
             capture_output=True,
-            text=True,
             creationflags=subprocess.CREATE_NO_WINDOW,
         )
         created = json.loads(result.stdout)
