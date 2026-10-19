@@ -75,6 +75,69 @@ async function fixture(t, { conflict = false } = {}) {
   return { root, primary, carry, main, published, source, tasks, environment, runtimeRoot, release, physical, manifest, p, verify };
 }
 
+async function inheritedRepositoryFixture(t) {
+  const f = await fixture(t);
+  await save(f.primary, "TEAM_SKILLS/[Ж]/route.py", "accepted main routing\n");
+  await save(f.primary, "CHANGELOG.md", "accepted main history\n");
+  const main = await commit(f.primary, "accepted repository metadata after publication");
+  await git(f.carry, ["-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+    "merge", "--no-ff", "--no-edit", main]);
+  const source = await git(f.carry, ["rev-parse", "HEAD"]);
+  const provenance = async (commitId = source) => ({ ...f.p, agreedMainCommit: main,
+    sourceBaseCommit: commitId, sourceBaseTree: await git(f.primary, ["rev-parse", commitId + "^{tree}"]),
+    sourcePatchSha256: hash(await git(f.primary, ["diff", "--binary", "--full-index", "--no-renames",
+      f.published, commitId], { rawOutput: true })) });
+  return { ...f, main, source, provenance,
+    verifyInherited: async (extra = {}) => f.verify({ primaryMainCommit: main,
+      provenance: await provenance(), ...extra }) };
+}
+
+test("installed source preserves exact inherited repository files from agreed main", { timeout: 90000 }, async t => {
+  const f = await inheritedRepositoryFixture(t);
+  const result = await f.verifyInherited();
+  assert.equal(result.runtimeFiles, 1);
+  assert.equal(await git(f.primary, ["rev-parse", "main"]), f.main);
+  assert.equal(await git(f.primary, ["status", "--porcelain=v1"]), "");
+  assert.equal(await git(f.primary, ["show", f.source + ":TEAM_SKILLS/[Ж]/route.py"]), "accepted main routing");
+  await git(f.carry, ["push", "origin", "HEAD:main"]);
+  await assert.rejects(f.verifyInherited(), /origin differs from the pinned OWN publication/u);
+});
+
+test("installed source refuses changed, added, deleted or mode-shifted inherited repository files", { timeout: 90000 }, async t => {
+  const f = await inheritedRepositoryFixture(t);
+  for (const change of ["changed", "added", "deleted", "mode"]) {
+    await git(f.carry, ["checkout", "--detach", f.source]);
+    if (change === "changed") await save(f.carry, "TEAM_SKILLS/[Ж]/route.py", "unaccepted source override\n");
+    if (change === "added") await save(f.carry, "other-component/tool.mjs", "unaccepted extra component\n");
+    if (change === "deleted") await rm(path.join(f.carry, "CHANGELOG.md"));
+    let changed;
+    if (change === "mode") {
+      await git(f.carry, ["update-index", "--chmod=+x", "TEAM_SKILLS/[Ж]/route.py"]);
+      await git(f.carry, ["-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+        "commit", "-m", "unaccepted outside mode"]);
+      changed = await git(f.carry, ["rev-parse", "HEAD"]);
+    } else changed = await commit(f.carry, "unaccepted outside " + change);
+    await assert.rejects(f.verifyInherited({ provenance: await f.provenance(changed) }),
+      error => error instanceof ReleasePreparationRejectedError && /repository files differ from agreed main/u.test(error.message));
+    assert.equal(await git(f.primary, ["rev-parse", "main"]), f.main);
+    assert.equal(await git(f.primary, ["status", "--porcelain=v1"]), "");
+  }
+});
+
+test("inherited repository proof refuses malformed or oversized raw Git manifests", { timeout: 90000 }, async t => {
+  const f = await inheritedRepositoryFixture(t);
+  for (const defect of ["unterminated", "duplicate", "oversized"]) {
+    await assert.rejects(f.verifyInherited({ git: async (args, options) => {
+      const result = await git(f.primary, args, options);
+      if (args[0] !== "ls-tree" || !args.includes("--full-tree")) return result;
+      const raw = Buffer.from(result);
+      if (defect === "unterminated") return raw.subarray(0, raw.length - 1);
+      if (defect === "duplicate") return Buffer.concat([raw, raw.subarray(0, raw.indexOf(0) + 1)]);
+      return Buffer.alloc(4 * 1024 * 1024 + 1);
+    } }), /repository inventory/u);
+  }
+});
+
 // Deterministic Git port with real disposable inputs, manifest and artifact.
 // The existing tests below separately exercise the native Git candidate owner.
 async function hostFixture(t, { changed = "RuntimeHost/AgentHub.RuntimeHost.cs",

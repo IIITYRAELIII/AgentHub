@@ -35,6 +35,33 @@ function sourceMatches(source, physical, relative) {
   return normalized(source).equals(normalized(physical));
 }
 
+async function assertInheritedRepositoryFiles({ git, sourceCommit, agreedMainCommit }) {
+  const outside = async commit => {
+    const raw = Buffer.from(await git(["ls-tree", "-r", "-z", "--full-tree", commit], { rawOutput: true }));
+    if (raw.length > 4 * 1024 * 1024 || (raw.length && raw.at(-1) !== 0)) reject("repository inventory is malformed or exceeds bound");
+    const paths = new Set(), retained = [];
+    let offset = 0, count = 0;
+    while (offset < raw.length) {
+      const end = raw.indexOf(0, offset);
+      const record = raw.subarray(offset, end);
+      const tab = record.indexOf(9);
+      if (tab < 0 || !/^(?:100644 blob|100755 blob|120000 blob|160000 commit) [a-f0-9]{40,64}$/u
+        .test(record.subarray(0, tab).toString("utf8")) || tab + 1 === record.length
+        || ++count > 16_384) reject("repository inventory is malformed or exceeds bound");
+      const name = record.subarray(tab + 1);
+      const key = name.toString("hex");
+      if (paths.has(key)) reject("repository inventory has ambiguous paths");
+      paths.add(key);
+      if (!name.subarray(0, 9).equals(Buffer.from("AgentHub/"))) retained.push(record.toString("base64"));
+      offset = end + 1;
+    }
+    return retained.sort();
+  };
+  const source = await outside(sourceCommit);
+  const agreed = await outside(agreedMainCommit);
+  if (JSON.stringify(source) !== JSON.stringify(agreed)) reject("repository files differ from agreed main");
+}
+
 // Read-only verifier inside the existing candidate owner. No base/ref, runtime
 // overlay, adoption, receipt or additional recovery registry is written here.
 export async function assertInstalledLocalSourceBaseline({
@@ -83,8 +110,16 @@ export async function assertInstalledLocalSourceBaseline({
   }));
   let runtimeFiles = 0;
   let hostChanged = false;
+  let repositoryFilesVerified = false;
   for (const file of changed) {
-    if (!file.startsWith("AgentHub/")) reject("carry contains another component");
+    if (!file.startsWith("AgentHub/")) {
+      if (!repositoryFilesVerified) {
+        await assertInheritedRepositoryFiles({ git, sourceCommit: p.sourceBaseCommit,
+          agreedMainCommit: primaryMainCommit });
+        repositoryFilesVerified = true;
+      }
+      continue;
+    }
     const relative = file.slice("AgentHub/".length);
     if (relative.startsWith("RuntimeHost/") && !hostInputs.has(relative)) reject(`unsupported Host source: ${relative}`);
     if (metadata(relative)) continue;

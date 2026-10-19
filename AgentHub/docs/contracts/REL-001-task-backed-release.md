@@ -156,8 +156,16 @@ and exact Git LFS object identities. Documentation/tests are non-runtime source.
 Compiled Host provenance applies only to its four exact supported build inputs
 and verifies both retained originals and the physical bounded regular Host
 executable against its required manifest record. Other RuntimeHost paths refuse.
-Uninstalled executable changes, absent provenance or compiled artifact, foreign components,
+Uninstalled executable changes, absent provenance or compiled artifact, foreign component changes,
 unsupported deletions or missing retained Host inputs refuse this bounded route.
+If the retained source inherits repository files outside `AgentHub/` that differ
+from the older OWN publication, its COMPLETE outside path/mode/object set must
+equal the exact agreed local main. Bounded raw NUL Git inventories compare literal
+bytes, including non-ASCII names; missing, additional, substituted, duplicate or
+malformed entries refuse. Those unchanged repository files are not runtime carry
+and are never read or executed as installed source. This does not grant upstream
+adoption: the existing exact selected adoption/origin checks remain mandatory.
+See ADR-0120.
 The bound is 512 changed paths, a 4 MiB binary patch and bounded regular files.
 No installed-file overlay, selected Task expansion or rolling-dev import occurs.
 
