@@ -141,6 +141,25 @@ Native logical-root discovery, fresh-login TEMP and future extension installatio
 are explicit follow-up acceptance items in the same storage work, not reasons
 to retain hundreds of GiB on the old volume.
 
+The source installer stores new VS Code extension versions beneath the selected
+physical runtime root, at `external/vscode/extensions/<publisher.name-version>`.
+The shared VS Code extensions directory retains only a per-version junction
+(symlink on other platforms); unrelated extensions stay under VS Code ownership.
+Inventory accepts an old plain version or an alias to that exact Hub-owned
+payload location. A substituted payload ancestor or foreign alias is refused.
+Installed revision/provenance, descendant checks, rollback CAS and monotonic
+version ordering still belong to the existing extension installer. VS Code owns
+retirement of registered older Hub versions; this is not automatic version deletion.
+
+The installer commits a complete physical body before publishing its logical
+alias. An interrupted alias publication retains the physical body. An exact
+retry compares every staged file and directory, including package, profile and
+provenance, before reusing it. Changed bodies, unknown additional files and linked
+entries are preserved and refused. No separate extension journal is introduced.
+This source capability must be delivered by the runtime installer after physical
+relocation, before using an older installer's alias-incompatible extension plan.
+The relocation itself does not replace an installed binary or frozen source.
+
 ## Acceptance and rollback
 
 Before start admission, `rollback` removes only verified compatibility junctions
@@ -172,6 +191,8 @@ Choose a disposable destination-volume fixture directory and set
 ```text
 python -X utf8 -B -m unittest discover -s tests -p runtime_relocation_test.py -v
 python -X utf8 -B -m unittest install_test.RuntimeLocationTests -v
+python -X utf8 -B -m unittest install_test -v
+python -X utf8 -B -m unittest discover -s tests -p install_extension_storage_test.py -v
 node --test tests/infrastructure/filesystem/runtime-layout.test.mjs tests/providers/codex/codex-hook-launcher.test.mjs
 ```
 

@@ -299,6 +299,7 @@ class SecureInstallationTests(unittest.TestCase):
             with (
                 mock.patch.object(install, "ROOT", root),
                 mock.patch("AgentHub.install.Path.home", return_value=home),
+                mock.patch.object(install, "runtime_root", return_value=Path(temp) / "runtime"),
                 mock.patch.object(install, "extension_source_revision", return_value="a" * 40),
                 mock.patch.object(install.shutil, "copytree", side_effect=OSError("copy failed")),
             ):
@@ -327,6 +328,7 @@ class SecureInstallationTests(unittest.TestCase):
             with (
                 mock.patch.object(install, "ROOT", root),
                 mock.patch("AgentHub.install.Path.home", return_value=home),
+                mock.patch.object(install, "runtime_root", return_value=Path(temp) / "runtime"),
                 mock.patch.object(install, "extension_source_revision", return_value="a" * 40),
             ):
                 target = install.install_vscode_extension()
@@ -354,6 +356,7 @@ class SecureInstallationTests(unittest.TestCase):
             with (
                 mock.patch.object(install, "ROOT", root),
                 mock.patch("AgentHub.install.Path.home", return_value=home),
+                mock.patch.object(install, "runtime_root", return_value=Path(temp) / "runtime"),
                 mock.patch.object(install, "extension_source_revision", return_value="a" * 40),
             ):
                 target = install.install_vscode_extension()
@@ -381,6 +384,7 @@ class SecureInstallationTests(unittest.TestCase):
             with (
                 mock.patch.object(install, "ROOT", root),
                 mock.patch("AgentHub.install.Path.home", return_value=home),
+                mock.patch.object(install, "runtime_root", return_value=Path(temp) / "runtime"),
                 mock.patch.object(install, "extension_source_revision", return_value="a" * 40),
             ):
                 first = install.install_vscode_extension()
@@ -409,6 +413,7 @@ class SecureInstallationTests(unittest.TestCase):
             with (
                 mock.patch.object(install, "ROOT", root),
                 mock.patch("AgentHub.install.Path.home", return_value=home),
+                mock.patch.object(install, "runtime_root", return_value=Path(temp) / "runtime"),
                 mock.patch.object(
                     install,
                     "extension_revision_is_ancestor",
@@ -456,6 +461,7 @@ class SecureInstallationTests(unittest.TestCase):
             with (
                 mock.patch.object(install, "ROOT", root),
                 mock.patch("AgentHub.install.Path.home", return_value=home),
+                mock.patch.object(install, "runtime_root", return_value=Path(temp) / "runtime"),
                 mock.patch.object(install, "extension_revision_is_ancestor", return_value=True),
             ):
                 production_revision = "a" * 40
@@ -489,6 +495,7 @@ class SecureInstallationTests(unittest.TestCase):
             with (
                 mock.patch.object(install, "ROOT", root),
                 mock.patch("AgentHub.install.Path.home", return_value=home),
+                mock.patch.object(install, "runtime_root", return_value=Path(temp) / "runtime"),
                 mock.patch.object(install, "extension_revision_is_ancestor", return_value=True),
             ):
                 plan = install.vscode_extension_install_plan(
@@ -542,6 +549,7 @@ class SecureInstallationTests(unittest.TestCase):
             with (
                 mock.patch.object(install, "ROOT", root),
                 mock.patch("AgentHub.install.Path.home", return_value=home),
+                mock.patch.object(install, "runtime_root", return_value=Path(temp) / "runtime"),
                 mock.patch.object(install, "extension_source_revision", return_value="a" * 40),
             ):
                 target = install.install_vscode_extension("test-contour")
@@ -579,6 +587,7 @@ class SecureInstallationTests(unittest.TestCase):
             with (
                 mock.patch.object(install, "ROOT", root),
                 mock.patch("AgentHub.install.Path.home", return_value=home),
+                mock.patch.object(install, "runtime_root", return_value=Path(temp) / "runtime"),
                 mock.patch.object(install, "extension_source_revision", return_value="a" * 40),
                 mock.patch.object(install.shutil, "copytree", side_effect=OSError("copy failed")),
             ):
