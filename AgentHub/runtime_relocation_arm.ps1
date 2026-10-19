@@ -26,17 +26,12 @@ foreach ($argument in @($pythonw.FullName, $helper, $configFile.FullName)) {
     }
 }
 $command = '"{0}" -X utf8 -B "{1}" --config "{2}" --expected-config-sha256 {3}' -f $pythonw.FullName, $helper, $configFile.FullName, $ConfigSha256
-$startup = New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{
-    ShowWindow = [UInt16]0
-    CreateFlags = [UInt32]0x08000000
-}
 # WMI owns the independent process. A normal AppServer child can remain in its
 # job and disappear when the old runtime is stopped. The helper also verifies
 # IsProcessInJob before any stop and refuses an unproven independent launch.
 $created = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{
     CommandLine = $command
     CurrentDirectory = $PSScriptRoot
-    ProcessStartupInformation = $startup
 }
 if ($created.ReturnValue -ne 0) {
     throw "Independent helper creation failed: $($created.ReturnValue)"
