@@ -788,6 +788,7 @@ def copy_roots(plan, offline=False, workers=1):
                     sha, copied = None, 1
                 elif not offline and (
                     ".sqlite" in source.name.lower()
+                    or source.name.lower() == ".lock"
                     or source.suffix.lower()
                     in (".db", ".json", ".log", ".tmp", ".lock")
                     or source.name.lower().endswith(("-wal", "-shm"))

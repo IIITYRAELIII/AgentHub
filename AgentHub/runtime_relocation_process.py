@@ -105,7 +105,8 @@ def owned_processes(rows, roots, seeds=(), historical=None):
 
 
 class HeldProcess:
-    def __init__(self, expected):
+    def __init__(self, expected, *, terminate=True, duplicate=False):
+        self.may_terminate = terminate
         self.kernel = c.WinDLL("kernel32", use_last_error=True)
         k = self.kernel
         k.OpenProcess.argtypes = [w.DWORD, w.BOOL, w.DWORD]
@@ -130,7 +131,8 @@ class HeldProcess:
         k.TerminateProcess.argtypes = [w.HANDLE, w.UINT]
         k.TerminateProcess.restype = w.BOOL
         k.CloseHandle.argtypes = [w.HANDLE]
-        self.handle = k.OpenProcess(0x101001, False, int(expected["pid"]))
+        access = 0x101000 | (1 if terminate else 0) | (0x40 if duplicate else 0)
+        self.handle = k.OpenProcess(access, False, int(expected["pid"]))
         if not self.handle:
             raise c.WinError(c.get_last_error())
         try:
@@ -168,6 +170,8 @@ class HeldProcess:
             raise
 
     def stop(self):
+        if not self.may_terminate:
+            raise ValueError("Protected QUERY-only handle cannot stop a process")
         k = self.kernel
         if k.WaitForSingleObject(self.handle, 0) == 0:
             return "already_exited_held_identity"
@@ -190,6 +194,207 @@ class HeldProcess:
         if self.handle:
             self.kernel.CloseHandle(self.handle)
             self.handle = None
+
+
+def refuse_protected_ancestry(rows, selected, protected):
+    """Never subtract a foreign child from a rooted stop tree."""
+    by_id = {row["pid"]: row for row in rows}
+    for expected in protected:
+        row = by_id.get(expected["pid"])
+        if row is None or int(row["created"]) // 10 != int(expected["created"]) // 10:
+            raise ValueError("Protected process disappeared or changed identity")
+        seen = set()
+        while row and row["pid"] not in seen:
+            seen.add(row["pid"])
+            if row["pid"] in selected:
+                raise ValueError("Protected process has a selected live ancestor")
+            parent = by_id.get(row["parent"])
+            row = (
+                parent
+                if parent and int(parent["created"]) <= int(row["created"])
+                else None
+            )
+
+
+class _HandleEntry(c.Structure):
+    _fields_ = [
+        ("object", c.c_void_p),
+        ("pid", c.c_size_t),
+        ("handle", c.c_size_t),
+        ("access", w.ULONG),
+        ("trace", w.USHORT),
+        ("type", w.USHORT),
+        ("attributes", w.ULONG),
+        ("reserved", w.ULONG),
+    ]
+
+
+class _BasicLimits(c.Structure):
+    _fields_ = [
+        ("process_time", c.c_longlong),
+        ("job_time", c.c_longlong),
+        ("flags", w.DWORD),
+        ("minimum", c.c_size_t),
+        ("maximum", c.c_size_t),
+        ("active", w.DWORD),
+        ("affinity", c.c_size_t),
+        ("priority", w.DWORD),
+        ("scheduling", w.DWORD),
+    ]
+
+
+class _ExtendedLimits(c.Structure):
+    _fields_ = [
+        ("basic", _BasicLimits),
+        ("io", c.c_ulonglong * 6),
+        ("process_memory", c.c_size_t),
+        ("job_memory", c.c_size_t),
+        ("peak_process", c.c_size_t),
+        ("peak_job", c.c_size_t),
+    ]
+
+
+def _system_handles():
+    # This bounded native inventory is diagnostic only. Unsupported layouts,
+    # access failures and unstable inventories refuse before any termination.
+    native = c.WinDLL("ntdll")
+    native.NtQuerySystemInformation.argtypes = [
+        w.ULONG,
+        c.c_void_p,
+        w.ULONG,
+        c.POINTER(w.ULONG),
+    ]
+    native.NtQuerySystemInformation.restype = c.c_long
+    size = 1024 * 1024
+    for _ in range(8):
+        if size > 64 * 1024 * 1024:
+            break
+        buffer, needed = c.create_string_buffer(size), w.ULONG()
+        status = native.NtQuerySystemInformation(64, buffer, size, c.byref(needed))
+        if status == 0:
+            count = c.c_size_t.from_buffer(buffer).value
+            offset = 2 * c.sizeof(c.c_size_t)
+            if count > 1_000_000 or offset + count * c.sizeof(_HandleEntry) > size:
+                raise ValueError("Malformed native handle inventory")
+            return [
+                _HandleEntry.from_buffer_copy(
+                    buffer, offset + i * c.sizeof(_HandleEntry)
+                )
+                for i in range(count)
+            ]
+        if status not in (-1073741820, -1073741789):
+            raise OSError(f"Native handle query failed: {status}")
+        size = max(size * 2, needed.value + 65536)
+    raise ValueError("Native handle inventory exceeded its bound")
+
+
+def _inspect_job(kernel, job, protected):
+    limits, length = _ExtendedLimits(), w.DWORD()
+    if not kernel.QueryInformationJobObject(
+        job, 9, c.byref(limits), c.sizeof(limits), c.byref(length)
+    ):
+        raise c.WinError(c.get_last_error())
+    if length.value != c.sizeof(limits):
+        raise ValueError("Unknown native job limit layout")
+    members = {}
+    for pid, process in protected.items():
+        member = w.BOOL()
+        if not kernel.IsProcessInJob(process.handle, job, c.byref(member)):
+            raise c.WinError(c.get_last_error())
+        if kernel.WaitForSingleObject(process.handle, 0) != 258:
+            raise ValueError("Protected process exited during job query")
+        members[str(pid)] = bool(member.value)
+    flags = limits.basic.flags
+    if flags & 0x2000 and any(members.values()):
+        raise ValueError("Selected-owner kill-on-close job contains protected process")
+    return {"limit_flags": flags, "protected_membership": members}
+
+
+def inspect_protected_jobs(selected, protected, anchor):
+    """Query existing jobs; never create, assign, retain or change their limits."""
+    if not isinstance(anchor, dict) or not anchor.get("native_creation"):
+        raise ValueError("Exact existing Host job anchor required")
+    host = selected.get(anchor["pid"])
+    if (
+        host is None
+        or host.created != anchor["created"]
+        or os.path.normcase(host.executable) != os.path.normcase(anchor["executable"])
+        or Path(host.executable).name.lower() != "agenthub.runtimehost.exe"
+    ):
+        raise ValueError("Selected Host job anchor identity changed")
+    kernel = host.kernel
+    kernel.OpenJobObjectW.argtypes = [w.DWORD, w.BOOL, w.LPCWSTR]
+    kernel.OpenJobObjectW.restype = w.HANDLE
+    kernel.GetCurrentProcess.restype = w.HANDLE
+    kernel.DuplicateHandle.argtypes = [
+        w.HANDLE,
+        w.HANDLE,
+        w.HANDLE,
+        c.POINTER(w.HANDLE),
+        w.DWORD,
+        w.BOOL,
+        w.DWORD,
+    ]
+    kernel.QueryInformationJobObject.argtypes = [
+        w.HANDLE,
+        c.c_int,
+        c.c_void_p,
+        w.DWORD,
+        c.POINTER(w.DWORD),
+    ]
+    kernel.IsProcessInJob.argtypes = [w.HANDLE, w.HANDLE, c.POINTER(w.BOOL)]
+    job = kernel.OpenJobObjectW(
+        4, False, "Local\\IIITYRAELIII.AgentHub." + str(anchor["pid"])
+    )
+    if not job:
+        raise c.WinError(c.get_last_error())
+    try:
+        first = _system_handles()
+        hint = next(
+            (e for e in first if e.pid == os.getpid() and e.handle == job), None
+        )
+        if hint is None:
+            raise ValueError("Existing Host job type is unknown")
+
+        def inventory(entries):
+            return {
+                (e.pid, e.handle, e.object)
+                for e in entries
+                if e.type == hint.type and e.pid in selected
+            }
+
+        jobs = inventory(first)
+        if len(jobs) > 4096:
+            raise ValueError("Selected-owner job inventory exceeded its bound")
+        proof = {"named_host_job": _inspect_job(kernel, job, protected), "jobs": []}
+        for pid, original, identity in sorted(jobs):
+            duplicate = w.HANDLE()
+            if not kernel.DuplicateHandle(
+                selected[pid].handle,
+                original,
+                kernel.GetCurrentProcess(),
+                c.byref(duplicate),
+                4,
+                False,
+                0,
+            ):
+                raise c.WinError(c.get_last_error())
+            try:
+                record = _inspect_job(kernel, duplicate, protected)
+                record.update(
+                    owner_pid=pid,
+                    identity_sha256=hashlib.sha256(str(identity).encode()).hexdigest(),
+                )
+                proof["jobs"].append(record)
+            finally:
+                kernel.CloseHandle(duplicate)
+        if inventory(_system_handles()) != jobs:
+            raise ValueError("Selected-owner job handles changed during inspection")
+        return proof
+    finally:
+        # Closing all query duplicates before the first termination prevents
+        # this observer from masking last-handle job teardown behavior.
+        kernel.CloseHandle(job)
 
 
 def capture(plan, output):
@@ -330,13 +535,23 @@ def stop(plan, process_file, expected_hash, saved_file, output):
     ):
         raise ValueError("Fresh process and saved boundaries required")
     expected = {r["pid"]: r for r in selected["processes"]}
+    protected = saved.get("protected_processes")
+    if not isinstance(protected, list):
+        raise ValueError("Explicit protected-process boundary required")
     if not expected:
         raise ValueError("Empty live stop set")
-    handles = {}
+    handles, protected_handles = {}, {}
     try:
+        for row in protected:
+            if not row.get("native_creation") or row["pid"] in protected_handles:
+                raise ValueError("Exact unique protected native identity required")
+            if row["pid"] in expected:
+                raise ValueError("Protected process overlaps the stop set")
+            protected_handles[row["pid"]] = HeldProcess(row, terminate=False)
         for pid, row in expected.items():
-            handles[pid] = HeldProcess(row)
-        current = owned_processes(process_snapshot(), roots)
+            handles[pid] = HeldProcess(row, duplicate=bool(protected))
+        snapshot = process_snapshot()
+        current = owned_processes(snapshot, roots)
         if {r["pid"] for r in current} != set(expected):
             raise ValueError("Owned live process set changed")
         for row in current:
@@ -347,6 +562,12 @@ def stop(plan, process_file, expected_hash, saved_file, output):
                 != hashlib.sha256(str(row.get("command") or "").encode()).hexdigest()
             ):
                 raise ValueError("Owned live process command/parent changed")
+        refuse_protected_ancestry(snapshot, expected, protected)
+        job_proof = (
+            inspect_protected_jobs(handles, protected_handles, saved.get("job_anchor"))
+            if protected
+            else {"protected_processes": 0, "jobs": []}
+        )
         receipt = {
             "operation": plan["operation"],
             "process_plan_sha256": expected_hash,
@@ -354,6 +575,7 @@ def stop(plan, process_file, expected_hash, saved_file, output):
             "mode": "controlled process stop; SQLite crash recovery, not graceful shutdown",
             "results": [],
             "all_writers_stopped": False,
+            "protected_job_proof": job_proof,
         }
         write_json(output, receipt)
 
@@ -400,7 +622,7 @@ def stop(plan, process_file, expected_hash, saved_file, output):
             "proof": str(output),
         }
     finally:
-        for handle in handles.values():
+        for handle in [*handles.values(), *protected_handles.values()]:
             handle.close()
 
 

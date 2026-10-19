@@ -97,6 +97,26 @@ class RelocationTest(unittest.TestCase):
         )
         db.close()
 
+    @unittest.skipUnless(os.name == "nt", "Windows live dot-lock sharing")
+    def test_stage_defers_locked_dotfile_and_offline_copy_requires_release(self):
+        import msvcrt
+
+        lock = self.source / ".lock"
+        lock.write_bytes(b"retained lock bytes")
+        plan = self.plan()
+        with lock.open("r+b") as writer:
+            msvcrt.locking(writer.fileno(), msvcrt.LK_NBLCK, 1)
+            try:
+                relocation.copy_roots(plan, workers=2)
+                self.assertFalse((self.target / ".lock").exists())
+                with self.assertRaises(OSError):
+                    relocation.copy_roots(plan, offline=True, workers=2)
+            finally:
+                writer.seek(0)
+                msvcrt.locking(writer.fileno(), msvcrt.LK_UNLCK, 1)
+        relocation.copy_roots(plan, offline=True, workers=2)
+        self.assertEqual((self.target / ".lock").read_bytes(), lock.read_bytes())
+
     def test_wrong_destination_link_is_not_followed(self):
         (self.source / "directory").mkdir()
         (self.source / "directory/file").write_text("source")
@@ -913,6 +933,7 @@ class RelocationTest(unittest.TestCase):
                         "all_streams_saved_stopped": True,
                         "streams": ["fixture"],
                         "durable_readback_sha256": "0" * 64,
+                        "protected_processes": [],
                         "checked_at": time.time(),
                     }
                 )
@@ -932,6 +953,45 @@ class RelocationTest(unittest.TestCase):
         finally:
             cleanup_handle.stop()
             cleanup_handle.close()
+
+    def test_protected_overlap_refuses_before_opening_any_stop_handle(self):
+        plan = self.plan()
+        row = {"pid": 42, "created": "100", "native_creation": True}
+        process_file, saved_file = (
+            self.temp / "processes.json",
+            self.temp / "saved.json",
+        )
+        relocation.write_json(
+            process_file,
+            {
+                "operation": plan["operation"],
+                "captured_at": time.time(),
+                "roots": [r["source"] for r in plan["roots"]],
+                "processes": [row],
+            },
+        )
+        relocation.write_json(
+            saved_file,
+            {
+                "operation": plan["operation"],
+                "checked_at": time.time(),
+                "all_streams_saved_stopped": True,
+                "streams": ["fixture"],
+                "durable_readback_sha256": "0" * 64,
+                "protected_processes": [row],
+            },
+        )
+        with patch.object(process_custody, "HeldProcess") as held:
+            with self.assertRaisesRegex(ValueError, "overlaps the stop set"):
+                process_custody.stop(
+                    plan,
+                    process_file,
+                    relocation.digest(process_file),
+                    saved_file,
+                    self.temp / "stopped.json",
+                )
+            held.assert_not_called()
+        self.assertFalse((self.temp / "stopped.json").exists())
 
     def test_observer_subtree_is_never_part_of_the_stop_set(self):
         own = {

@@ -106,6 +106,18 @@ Include the actual Desktop and configured Hub Caddy, including adopted orphans.
 This is a controlled process stop followed by SQLite crash recovery; it is not
 claimed to be graceful JS shutdown.
 
+The frozen invocation supplies an explicit `protected_processes` list with exact
+native creation times and executable identities. The process owner opens these
+with QUERY/SYNCHRONIZE access only. Overlap with the selected stop set or a live
+selected ancestor refuses before the first termination. It also queries the
+existing named Host job and existing job handles held by selected processes,
+using QUERY-only non-inheritable duplicates without CLOSE_SOURCE. Unknown job
+limits, failed membership queries, changing handle inventories, or a protected
+member in a selected-owner kill-on-close job refuse the operation. All job query
+handles close before stopping; they are never kept to mask last-handle teardown.
+The existing Host identity is pinned separately as `job_anchor`. No job is
+created, reassigned or reconfigured by this diagnostic boundary.
+
 After all selected writers are absent, the helper copies and verifies the entire
 offline cohort, including every database and its WAL/SHM files, then performs
 read-only SQLite integrity checks. Direct `data/*.sqlite` and `data/*.db` files
@@ -162,6 +174,11 @@ The relocation itself does not replace an installed binary or frozen source.
 
 ## Acceptance and rollback
 
+Preparation defers the exact dotfile `.lock` as well as ordinary lock suffixes;
+it may be range-locked by a live provider. This is preparation only: offline
+copy must still read and verify every byte after writers release it. A failed
+preparation remains failed, with its exact operation temporary retained.
+
 Before start admission, `rollback` removes only verified compatibility junctions
 and restores original source names. Destination copies remain. After
 `admit-start`, automatic rollback is forbidden because the destination may contain
@@ -190,6 +207,7 @@ Choose a disposable destination-volume fixture directory and set
 
 ```text
 python -X utf8 -B -m unittest discover -s tests -p runtime_relocation_test.py -v
+python -X utf8 -B -m unittest discover -s tests -p runtime_relocation_protected_test.py -v
 python -X utf8 -B -m unittest install_test.RuntimeLocationTests -v
 python -X utf8 -B -m unittest install_test -v
 python -X utf8 -B -m unittest discover -s tests -p install_extension_storage_test.py -v

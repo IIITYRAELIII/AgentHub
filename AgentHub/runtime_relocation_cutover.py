@@ -70,6 +70,8 @@ def execute(config_file, expected_hash):
     if relocation.digest(config_file) != expected_hash:
         raise ValueError("Exact S2 cutover input changed")
     config = json.loads(Path(config_file).read_text(encoding="utf-8"))
+    if not isinstance(config.get("protected_processes"), list):
+        raise ValueError("Explicit frozen protected-process boundary required")
     relocation.validate_workers(config.get("copy_workers", 1))
     if os.name == "nt":
         kernel = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -153,6 +155,8 @@ def execute(config_file, expected_hash):
     saved.update(
         checked_at=time.time(),
         durable_readback_sha256=config["durable_readback_sha256"],
+        protected_processes=config["protected_processes"],
+        job_anchor=config.get("job_anchor"),
     )
     relocation.write_json(output / "saved-at-barrier.json", saved)
     custody.stop(
