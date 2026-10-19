@@ -64,6 +64,16 @@ async function assertInheritedRepositoryFiles({ git, sourceCommit, agreedMainCom
 
 // Read-only verifier inside the existing candidate owner. No base/ref, runtime
 // overlay, adoption, receipt or additional recovery registry is written here.
+export async function assertInstalledAgreedMainOrigin({ provenance, git }) {
+  const p = normalizedReleaseBaseProvenance(provenance);
+  if (p?.kind !== LOCAL_SOURCE_BASELINE_PROVENANCE || !Array.isArray(p.adoptions) || p.adoptions.length) {
+    reject("missing exact agreed main origin authority");
+  }
+  if (await git(["rev-parse", "refs/heads/main^{commit}"]) !== p.agreedMainCommit
+      || String(await git(["ls-remote", "origin", "refs/heads/main"])).split(/\s/u)[0]
+        !== p.approvedOriginMainCommit) reject("agreed main origin changed");
+}
+
 export async function assertInstalledLocalSourceBaseline({
   provenance, git, primaryMainCommit, publishedRevision, planRevision, tasks, runtimeRoot,
   adoptionGit = git, repositoryRoot = null,
@@ -83,17 +93,15 @@ export async function assertInstalledLocalSourceBaseline({
   } else if (String(await git(["ls-remote", "origin", "refs/heads/main"])).split(/\s/u)[0] !== publishedRevision) reject("origin differs from the pinned OWN publication");
   const validateOrigin = async () => {
     if (!p.adoptions) return;
+    await adoptionGit(["merge-base", "--is-ancestor", publishedRevision, p.approvedOriginMainCommit]);
     if (adoptions.length) {
       await assertNativeUpstreamOrigin({ git: adoptionGit, adoptions, originCommit: p.approvedOriginMainCommit });
     } else {
       // No new incoming is adopted when origin is the exact already agreed main.
       // Seal that identity; an existing envelope cannot switch back to published.
-      if (await adoptionGit(["rev-parse", "refs/heads/main^{commit}"]) !== p.agreedMainCommit
-          || String(await adoptionGit(["ls-remote", "origin", "refs/heads/main"])).split(/\s/u)[0]
-            !== p.approvedOriginMainCommit) reject("agreed main origin changed");
       await git(["merge-base", "--is-ancestor", p.agreedMainCommit, p.sourceBaseCommit]);
+      await assertInstalledAgreedMainOrigin({ provenance: p, git: adoptionGit });
     }
-    await adoptionGit(["merge-base", "--is-ancestor", publishedRevision, p.approvedOriginMainCommit]);
   };
   await validateOrigin();
   await git(["merge-base", "--is-ancestor", publishedRevision, p.sourceBaseCommit]);

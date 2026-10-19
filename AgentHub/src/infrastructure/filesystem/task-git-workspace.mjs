@@ -19,7 +19,8 @@ import { canonicalPath } from "./config.mjs";
 import { taskWorkingTreeDiff } from "./task-git-diff.mjs";
 import * as legacySelectedV1 from "./legacy-selected-composition-materializer-v1.mjs";
 import { mergeSelectedResults, assertNativeTaskHistories } from "./native-release-merge.mjs";
-import { installedNativeHistoryBaseline, assertInstalledLocalSourceBaseline } from "./local-source-baseline.mjs";
+import { installedNativeHistoryBaseline, assertInstalledLocalSourceBaseline,
+  assertInstalledAgreedMainOrigin } from "./local-source-baseline.mjs";
 import { readNativeUpstreamAdoptions, assertNativeUpstreamOrigin } from "./native-upstream-adoption.mjs";
 import {
   applySelectedCompositionFiles, prepareSelectedCompositionFiles, readSelectedCompositionFiles,
@@ -3599,6 +3600,8 @@ export class TaskGitWorkspaceService {
     if (binding?.adoptions?.length) await assertNativeUpstreamOrigin({
       git: (args, options = {}) => this.#runOwned(args, { ...options, cwd: snapshot.repositoryRoot, lease }),
       adoptions: binding.adoptions, originCommit: binding.adoptions[0].adoptedCommit });
+    else if (binding?.baseline?.adoptions) await assertInstalledAgreedMainOrigin({ provenance: binding.baseline,
+      git: (args, options = {}) => this.#runOwned(args, { ...options, cwd: snapshot.repositoryRoot, lease }) });
   }
 
   async #nativeHistoryAuthority(snapshot, dev, lease, expected = undefined) {

@@ -133,6 +133,10 @@ awaited persistence admission. That closure rechecks source/adoption/origin,
 followed by the existing process guard and lease assertions. Ordinary derived
 proof receives this boundary as well as original Await recovery; it is not a
 public caller flag. Failure preserves the original rollback/unknown semantics.
+For empty already-agreed-origin authority, the existing owner repeats the exact
+primary main/origin pin AFTER awaited native history/composition validation,
+including promotion, prepared reuse and Test/Task terminal fences. Earlier
+installed physical verification does not replace this final origin check.
 Historical pins do not authorize promotion after origin drift. Explicit
 preparation and generation reuse retain their existing bound-envelope rules.
 

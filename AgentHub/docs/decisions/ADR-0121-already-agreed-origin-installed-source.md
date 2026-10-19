@@ -27,6 +27,10 @@ candidate materialization uses a standalone clone. The origin is checked again
 after physical-source verification and by the existing candidate validation
 and lifecycle authority closure immediately before Task CAS. Test recovery,
 candidate reuse, promotion and final persistence retain their original owners.
+The same read-only exact main/origin check is the final origin fence after
+awaited native history/composition validation, including prepared generation
+reuse and the existing Test terminal fence. A physical-proof check before that
+await cannot substitute for this last check. No second physical scan is added.
 
 Ordinary Await derives installed proof when main differs from publication even
 without new adoption records. If no installed runtime exists, the ordinary

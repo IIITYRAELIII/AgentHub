@@ -146,10 +146,18 @@ async function terminalAuthority(t, agreedOrigin = false) {
     });
     f.service.measureOperation = async (stage, operation) => {
       if (stage === "persistence" && ready && drift && !injected) {
-        injected++;
-        await save(f.external, "AgentHub/late-origin.mjs", "unapproved before terminal CAS\n");
-        await commit(f.external, "origin drift inside actual persistence admission");
-        await git(f.external, ["push", "origin", "HEAD:main"]);
+        const changeOrigin = async () => {
+          if (injected) return;
+          injected++;
+          await save(f.external, "AgentHub/late-origin.mjs", "unapproved before terminal CAS\n");
+          await commit(f.external, "origin drift inside actual persistence admission");
+          await git(f.external, ["push", "origin", "HEAD:main"]);
+        };
+        if (process.env.HUB_TEST_LATE_NATIVE_HISTORY === "1") {
+          const key = Symbol.for("agent-hub.test.after-native-history");
+          globalThis[key] = changeOrigin;
+          child.after(() => { delete globalThis[key]; });
+        } else await changeOrigin();
       }
       return operation();
     };
@@ -192,6 +200,19 @@ test("ordinary Await checks native authority inside actual Task persistence and 
 
 test("already agreed main origin reaches actual Await terminal CAS without invented adoption receipts",
   { timeout: 300000 }, t => terminalAuthority(t, true));
+
+test("late native history completion keeps origin fencing before the actual Task CAS", { timeout: 240000 }, async () => {
+  const environment = { ...process.env, HUB_TEST_LATE_NATIVE_HISTORY: "1" };
+  delete environment.NODE_TEST_CONTEXT;
+  const result = await run(process.execPath, ["--import",
+    new URL("../../helpers/native-history-observer.mjs", import.meta.url).href,
+    "--test", "--test-name-pattern=^already agreed main origin reaches", import.meta.filename],
+  { env: environment, windowsHide: true, timeout: 180000, maxBuffer: 4 * 1024 * 1024 });
+  assert.equal(result.stderr, "");
+  assert.match(result.stdout, /tests 3/u);
+  assert.match(result.stdout, /pass 3/u);
+  assert.match(result.stdout, /fail 0/u);
+});
 
 test("already agreed main origin survives Test and candidate reuse but refuses drift and malformed authority", { timeout: 240000 }, async t => {
   const f = await fixture(t, undefined, undefined, true);

@@ -6,7 +6,8 @@ import path from "node:path";
 import { ReleaseCandidateFrozenError } from "../../domain/task-board-task.mjs";
 import { ReleasePreparationRejectedError } from "../../domain/release-preparation.mjs";
 import { assertPreparationCheckpoint } from "./release-preparation-guard.mjs";
-import { assertInstalledLocalSourceBaseline, installedNativeHistoryBaseline } from "./local-source-baseline.mjs";
+import { assertInstalledLocalSourceBaseline, installedNativeHistoryBaseline,
+  assertInstalledAgreedMainOrigin } from "./local-source-baseline.mjs";
 import { readNativeUpstreamAdoptions, assertNativeUpstreamOrigin } from "./native-upstream-adoption.mjs";
 import { inspectPublishedNotesArchive, archivePublishedNotesCheckout } from "./native-await-published-notes-recovery.mjs";
 import { defaultRuntimeRoot } from "./runtime-layout.mjs";
@@ -934,6 +935,9 @@ export class ReleaseGitWorkspaceService {
       if (historyAuthority?.adoptions.length) await assertNativeUpstreamOrigin({
         git: (args, options = {}) => runGit(args, { ...options, cwd: projectRoot }),
         adoptions: historyAuthority.adoptions, originCommit: manifest.baseProvenance.approvedOriginMainCommit });
+      else if (manifest.baseProvenance?.adoptions) await assertInstalledAgreedMainOrigin({
+        provenance: manifest.baseProvenance,
+        git: (args, options = {}) => runGit(args, { ...options, cwd: projectRoot }) });
       const binding = { kind: "native-prepared-release-v1", releaseRoot: source.releaseRoot,
         commit: source.preReleaseHead, tree: source.tree, manifestHash: source.manifestHash,
         checkpointSha256: sha256(await readFile(source.checkpointFile)),
@@ -1688,6 +1692,8 @@ export class ReleaseGitWorkspaceService {
         if (historyAuthority?.adoptions.length) await assertNativeUpstreamOrigin({
           git: (args, options = {}) => runGit(args, { ...options, cwd: initial.root }),
           adoptions: historyAuthority.adoptions, originCommit: localSource.approvedOriginMainCommit });
+        else if (localSource?.adoptions) await assertInstalledAgreedMainOrigin({ provenance: localSource,
+          git: (args, options = {}) => runGit(args, { ...options, cwd: initial.root }) });
         if (nativeAwaitRecovery) {
           const remote = await git(["ls-remote", "origin", "refs/heads/main"]);
           if (remote.split(/\s/u)[0] !== nativeAwaitRecovery.originMainCommit) {
