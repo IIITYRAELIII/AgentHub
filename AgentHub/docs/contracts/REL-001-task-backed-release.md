@@ -1362,8 +1362,10 @@ Successful test files are reused only with the same proven input fingerprint;
 opaque dynamic inputs without an explicit declaration are uncached. The v2 cache
 survives successful suites/publication, with 30-day and 2000-result bounds; legacy
 or proofless entries are not evidence. A failed file has no unconditional retry.
-The full-test stage has a two-hour wall-clock and ten-minute output-idle bound.
-These timeouts report failure, not an inferred external outcome. The two cosmetic
+The full-test stage has no aggregate execution deadline. Its ten-minute
+output-idle watchdog and local test, network, build and readiness bounds remain;
+those bounds report failure, not an inferred external outcome. Other publication
+steps keep their finite execution bounds. See ADR-0118. The two cosmetic
 browser matrices run in `test:visual`, affected focused UI validation and full
 validation exactly once, rather than every ordinary unit run. See ADR-0034.
 The process-per-file runner overlaps at most two files after CPU/memory admission
