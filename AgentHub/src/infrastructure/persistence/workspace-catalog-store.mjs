@@ -3,6 +3,7 @@ import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { AsyncSqliteMutationQueue } from "./async-sqlite-mutation-queue.mjs";
+import { claimAdmissionNoEffectEvidence } from "../../domain/task-board-task.mjs";
 
 import { normalizeInterstreamOrigin } from "../../domain/interstream-message.mjs";
 
@@ -916,6 +917,43 @@ export class WorkspaceCatalogStore {
     return mcpOperationFromRow(this.#database.prepare(
       "SELECT * FROM hub_mcp_operations WHERE request_id = ?",
     ).get(id));
+  }
+
+  recordClaimAdmissionRefusal({ receipt, task, claimArguments, busyReason } = {}) {
+    if (receipt?.replayed !== false || receipt.status !== "pending" || receipt.operationStatus !== "pending") {
+      throw new Error("Claim refusal requires a fresh MCP intake");
+    }
+    return this.#transaction(() => {
+      const current = this.mcpOperation(receipt.requestId);
+      const row = this.#database.prepare("SELECT * FROM hub_board_tasks WHERE id = ?").get(task.id);
+      if (!current || current.status !== "pending" || current.operationStatus !== "pending" || current.result !== null
+          || !row || row.status === "done" || Number(row.row_revision) !== task.revision
+          || row.workspace_id !== receipt.workspaceId || row.stream_id !== task.streamId
+          || row.status !== task.status || row.workflow_status !== task.workflowStatus
+          || this.#database.prepare("SELECT 1 FROM hub_task_turn_bindings WHERE operation_id = ?").get(receipt.requestId)
+          || this.#database.prepare("SELECT 1 FROM hub_task_lifecycle_transitions WHERE operation_id = ?").get(receipt.requestId)
+          || this.#database.prepare("SELECT 1 FROM hub_task_lifecycle_outcomes WHERE operation_id = ?").get(receipt.requestId)) {
+        throw new Error("Claim refusal cannot overwrite admitted, changed or foreign Task state");
+      }
+      const evidence = {
+        version: 1, kind: "task-claim-executor-busy-v1", code: "TASK_CLAIM_EXECUTOR_BUSY",
+        taskId: task.id, taskRevision: task.revision, ownerStreamId: task.streamId, busyReason, claimArguments,
+        ...Object.fromEntries(["requestId", "workspaceId", "streamId", "provider", "threadId", "toolName",
+          "argumentsHash", "createdAtMs"].map(key => [key, receipt[key]])),
+      };
+      const result = { outcome: "NO_EFFECT", evidence };
+      if (!claimAdmissionNoEffectEvidence({ ...current, result }, task.id)) {
+        throw new Error("Claim refusal does not match the original receipt identity");
+      }
+      // This proof in the existing receipt is an execution fence, not a Task
+      // assignment. A lost subsequent terminal write is recovered from it.
+      const changed = this.#database.prepare(`
+        UPDATE hub_mcp_operations SET result_json = ?
+        WHERE request_id = ? AND status = 'pending' AND receipt_state = 'pending' AND result_json IS NULL
+      `).run(JSON.stringify(result), receipt.requestId);
+      if (Number(changed.changes) !== 1) throw new Error("Claim refusal seal CAS failed");
+      return result;
+    });
   }
 
   failMcpOperation(requestId, error, evidence = null) {

@@ -2423,6 +2423,12 @@ export class TaskBoardStore {
       if (current.status === "starting" && String(current.start_request_id ?? "").trim()) {
         throw new Error("prepared Task launch must be cancelled before claim");
       }
+      const claimReceiptTable = database.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'hub_mcp_operations'").get();
+      if (claimReceiptTable && database.prepare(`
+        SELECT 1 FROM hub_mcp_operations WHERE request_id = ?
+          AND (json_extract(result_json, '$.evidence.kind') = 'task-claim-executor-busy-v1'
+            OR json_extract(result_json, '$.operatorReconciliation.evidence.kind') = 'task-claim-executor-busy-v1')
+      `).get(String(operationId))) throw new Error("Task claim was durably refused before admission");
       const bound = database.prepare(`
         SELECT * FROM hub_task_turn_bindings
         WHERE provider = ? AND provider_thread_id = ? AND turn_id = ? AND operation_id = ?

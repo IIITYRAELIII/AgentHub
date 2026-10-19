@@ -325,6 +325,24 @@ unsupported/unknown: absent transitions, error text, timings or current refs are
 not certificates. No operator proof register or new historical recovery API is
 introduced. See ADR-0085.
 
+A claim refused because its previous executor has active or queued work seals
+`task-claim-executor-busy-v1` in that original MCP receipt before Git preparation
+or Task assignment. The existing catalog SQLite transaction binds the fresh
+intake identity, full claim argument shape, observed Task revision/executor and
+the active/queued reason; it rejects prior assignment or lifecycle admission.
+The receipt then becomes terminal `failed` with structural `NO_EFFECT` and
+`TASK_CLAIM_EXECUTOR_BUSY`. Task claim writes are fenced by that same durable
+refusal. Queued input without a Stream ID uses its exact existing Thread binding.
+No context capability or message/file payload is retained in this evidence.
+
+Startup readback and exact same-ID retry recover a lost terminal receipt write
+from the sealed proof, without preparing Git or assigning the Task again. The
+same ID remains refused even after the former executor becomes idle. A typed
+error alone, legacy error text, current executor state, a prior assignment or a
+partial preparation cannot acquire this proof; ambiguous cases remain UNKNOWN.
+No new table, receipt owner, public reconciliation tool or legacy settlement
+permission is introduced. See ADR-0124.
+
 An ordinary original native Test whose merge is already exactly applied may
 finish after a metadata-only Task revision advance. Its original argument hash
 must contain no explicit CAS, cutover, absorption or review family. Recovery

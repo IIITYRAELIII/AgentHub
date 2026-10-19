@@ -29,7 +29,7 @@ import {
   TaskLifecycleBeginRejectedError,
   TaskLifecycleNoEffectError,
   TaskOperationReconciliationRefusedError,
-  workflowAdmissionNoEffectEvidence,
+  workflowAdmissionNoEffectEvidence, claimAdmissionNoEffectEvidence, TaskClaimExecutorBusyError,
   ReleaseCandidateFrozenError,
   TaskAbsorptionCompositionError,
 } from "../domain/task-board-task.mjs";
@@ -536,6 +536,14 @@ export class HubMcpService {
     let reconciled = 0;
     for (const receipt of this.workspaceCatalog.pendingMcpOperations()) {
       await this.workspaceCatalog.beginMcpOperationReconciliation?.(receipt.requestId);
+      const claimRefusal = receipt.toolName === "hub_task_claim" ? this.#claimAdmissionRefusal(receipt) : null;
+      if (claimRefusal) {
+        await this.workspaceCatalog.failMcpOperation(receipt.requestId, new TaskClaimExecutorBusyError(), {
+          outcome: "NO_EFFECT", evidence: claimRefusal,
+        });
+        reconciled += 1;
+        continue;
+      }
       const expectedKind = lifecycleKinds.get(receipt.toolName);
       const transition = expectedKind ? this.taskBoard.lifecycleTransition?.(receipt.requestId) : null;
       const outcome = expectedKind ? this.taskBoard.lifecycleOutcome?.(receipt.requestId) : null;
@@ -1498,18 +1506,22 @@ export class HubMcpService {
     }));
   }
 
-  async #claimTask(context, { task_id: taskId, request_id: operationId, dependency_mode: dependencyMode = "skip", dependency_override_reason: dependencyOverrideReason = null } = {}) {
+  async #claimTask(context, args = {}) {
+    const { task_id: taskId, request_id: operationId, dependency_mode: dependencyMode = "skip", dependency_override_reason: dependencyOverrideReason = null } = args;
     const task = this.#task(context, taskId);
     const active = this.#currentRun(context);
     if (task.status === "done") throw new Error("Closed Tasks are an archive; claim an open Task");
     if (task.streamId && task.streamId !== context.streamId) {
-      const threads = new Set((this.workspaceCatalog.stream(task.streamId)?.threads ?? []).map((thread) => (
-        `${thread.provider}\0${thread.threadId}`
-      )));
-      if (this.#activeRuns().some((run) => run.streamId === task.streamId)
-          || this.#deferredInputs().some((input) => input.streamId === task.streamId
-            || threads.has(`${input.provider}\0${input.threadId}`))) {
-        throw new Error("The other executor must finish its active and queued work before Task handoff");
+      const busyReason = this.#activeRuns().some(run => run.streamId === task.streamId) ? "active"
+        : this.#deferredInputs().some(input => input.streamId === task.streamId
+          || (input.provider && input.threadId && this.workspaceCatalog.resolveThread({
+            provider: input.provider, threadId: input.threadId,
+          })?.streamId === task.streamId)) ? "queued" : null;
+      if (busyReason) {
+        requiredMethod(this.workspaceCatalog, "recordClaimAdmissionRefusal");
+        await this.workspaceCatalog.recordClaimAdmissionRefusal({ receipt: context.admissionReceipt, task, busyReason,
+          claimArguments: Object.fromEntries(Object.entries(args).filter(([key]) => key !== "context_token")) });
+        throw new TaskClaimExecutorBusyError();
       }
     }
     const projectRoot = this.#taskProjectRoot(context);
@@ -2482,11 +2494,17 @@ export class HubMcpService {
       argumentsHash: argumentsHash(args),
     }));
     if (started.status === "succeeded") return started.result;
-    if (started.status === "failed") throw new Error(started.error || "previous MCP operation failed");
+    if (started.status === "failed") {
+      if (toolName === "hub_task_claim" && this.#claimAdmissionRefusal(started, args.task_id)) {
+        throw new TaskClaimExecutorBusyError();
+      }
+      throw new Error(started.error || "previous MCP operation failed");
+    }
     if (started.status === "unknown" && toolName === "hub_task_claim") {
       const reconciled = await this.#reconcileClaimAdmissionNoEffect(context, args, started).catch(() => null);
       if (reconciled) {
-        const terminal = new Error(reconciled.error);
+        const terminal = reconciled.evidence?.evidence?.kind === "task-claim-executor-busy-v1"
+          ? new TaskClaimExecutorBusyError() : new Error(reconciled.error);
         await this.workspaceCatalog.failUnknownMcpOperation(requestId, {
           workspaceId: context.workspaceId,
           toolName,
@@ -2558,6 +2576,18 @@ export class HubMcpService {
           )).catch(() => {});
           throw new Error(`MCP effect completed but receipt reconciliation is required for request_id ${requestId}`);
         }
+        const claimRefusal = toolName === "hub_task_claim"
+          ? this.#claimAdmissionRefusal(this.workspaceCatalog.mcpOperation(requestId), args.task_id) : null;
+        if (claimRefusal) {
+          const refusal = new TaskClaimExecutorBusyError();
+          try {
+            await this.workspaceCatalog.failMcpOperation(requestId, refusal, { outcome: "NO_EFFECT", evidence: claimRefusal });
+          } catch (settlementError) {
+            await Promise.resolve(this.workspaceCatalog.markMcpOperationUnknown?.(requestId, settlementError)).catch(() => {});
+            throw settlementError;
+          }
+          throw refusal;
+        }
         const workflowRefusal = toolName === "hub_task_status_update" ? this.#workflowAdmissionRefusal(started) : null;
         const reconciliationRefusal = toolName === "hub_task_operation_reconcile"
           && error instanceof TaskOperationReconciliationRefusedError;
@@ -2613,6 +2643,9 @@ export class HubMcpService {
   }
 
   async #reconcileClaimAdmissionNoEffect(context, args, receipt) {
+    const proof = this.#claimAdmissionRefusal(receipt, args.task_id);
+    if (proof) return { error: new TaskClaimExecutorBusyError().message,
+      evidence: { outcome: "NO_EFFECT", evidence: proof } };
     if (typeof this.taskBoard.claimBindingForOperation !== "function"
       || typeof this.taskGitWorkspaces?.claimAdmissionNoEffectEvidence !== "function"
       || typeof this.workspaceCatalog.failUnknownMcpOperation !== "function") return null;
@@ -2633,6 +2666,15 @@ export class HubMcpService {
         ...evidence,
       },
     };
+  }
+
+  #claimAdmissionRefusal(receipt, taskId = null) {
+    const proof = claimAdmissionNoEffectEvidence(receipt, taskId);
+    if (!proof || typeof this.taskBoard.claimBindingForOperation !== "function"
+        || this.taskBoard.claimBindingForOperation(receipt.requestId)
+        || this.taskBoard.lifecycleTransition?.(receipt.requestId)
+        || this.taskBoard.lifecycleOutcome?.(receipt.requestId)) return null;
+    return proof;
   }
 
   #hasPreparedTaskStart(context, args, requestId) {

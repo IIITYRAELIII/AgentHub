@@ -43,6 +43,39 @@ export class TaskOperationReconciliationRefusedError extends Error {
   }
 }
 
+export class TaskClaimExecutorBusyError extends Error {
+  constructor() {
+    super("The other executor must finish its active and queued work before Task handoff");
+    this.code = "TASK_CLAIM_EXECUTOR_BUSY";
+  }
+}
+
+// Issued by the live claim owner before prepare/claim. Historical error strings
+// and the current executor are never sufficient to construct this certificate.
+export function claimAdmissionNoEffectEvidence(receipt, taskId = null) {
+  const proof = receipt?.result?.evidence ?? receipt?.result?.operatorReconciliation?.evidence;
+  if (!proof || proof.version !== 1 || proof.kind !== "task-claim-executor-busy-v1"
+      || proof.code !== "TASK_CLAIM_EXECUTOR_BUSY" || receipt.toolName !== "hub_task_claim"
+      || !["active", "queued"].includes(proof.busyReason)
+      || !Number.isSafeInteger(proof.taskRevision) || proof.taskRevision < 1
+      || !Number.isSafeInteger(proof.createdAtMs)
+      || typeof proof.ownerStreamId !== "string" || !proof.ownerStreamId || proof.ownerStreamId.length > 200
+      || proof.ownerStreamId === proof.streamId
+      || typeof proof.taskId !== "string" || !proof.taskId || proof.taskId.length > 200
+      || (taskId !== null && proof.taskId !== taskId)) return null;
+  for (const key of ["requestId", "workspaceId", "streamId", "provider", "threadId", "toolName", "argumentsHash", "createdAtMs"]) {
+    if (proof[key] !== receipt[key]) return null;
+  }
+  const args = proof.claimArguments;
+  if (!args || args.task_id !== proof.taskId || args.request_id !== proof.requestId
+      || Object.keys(args).some(key => !["task_id", "request_id", "dependency_mode", "dependency_override_reason"].includes(key))
+      || (args.dependency_mode !== undefined && !["skip", "ensure", "verify"].includes(args.dependency_mode))
+      || (args.dependency_override_reason != null && (typeof args.dependency_override_reason !== "string"
+        || args.dependency_override_reason.length > 2000))
+      || proof.argumentsHash !== mcpArgumentsHash(args)) return null;
+  return proof;
+}
+
 // Only the existing lifecycle owner writes this outcome. Neither an error string
 // nor an absent transition is a certificate; the exact admitted MCP identity is
 // sealed with the observed CAS refusal before any workflow effects.
