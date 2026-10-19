@@ -464,8 +464,21 @@ def ensure_destination(plan, index):
     write_json(marker, expected)
 
 
+def copy_temporary(target, operation, hardlink=False):
+    prefix = ".relocation-hardlink-" if hardlink else ".relocation-"
+    name = target.name + prefix + operation + ".tmp"
+    # Extended paths bypass MAX_PATH, not NTFS's 255 UTF-16-unit leaf bound.
+    # Retain existing operation names where they fit so earlier copies resume.
+    if len(name.encode("utf-16le", errors="surrogatepass")) // 2 > 255:
+        leaf_hash = hashlib.sha256(
+            target.name.encode("utf-16le", errors="surrogatepass")
+        ).hexdigest()
+        name = prefix + operation + "-" + leaf_hash + ".tmp"
+    return target.with_name(name)
+
+
 def copy_file(source, target, operation):
-    temporary = target.with_name(target.name + ".relocation-" + operation + ".tmp")
+    temporary = copy_temporary(target, operation)
     existing_temporary = os.path.lexists(long_path(temporary))
     if existing_temporary and (
         reparse(temporary) or content_digest(temporary) != content_digest(source)
@@ -514,9 +527,7 @@ def refuse_directory_streams(directory):
 
 
 def relink_owned_file(canonical, target, operation, target_hash):
-    temporary = target.with_name(
-        target.name + ".relocation-hardlink-" + operation + ".tmp"
-    )
+    temporary = copy_temporary(target, operation, hardlink=True)
     canonical_identity = info(canonical)
     if os.path.lexists(long_path(temporary)):
         if reparse(temporary) or any(
@@ -590,9 +601,7 @@ def quarantine_temporary(plan, index, rel, expected_identity, expected_sha):
     plain_directory(root["target"])
     ensure_destination(plan, index)
     plain_directory(target.parent)
-    temporary = target.with_name(
-        target.name + ".relocation-" + plan["operation"] + ".tmp"
-    )
+    temporary = copy_temporary(target, plan["operation"])
     db = connect(plan["manifest"])
     try:
         if phase(db) not in ("planned", "staged"):
@@ -609,6 +618,11 @@ def quarantine_temporary(plan, index, rel, expected_identity, expected_sha):
             / expected_sha
             / rel
         )
+        # Custody retries reject substituted ancestors before accepting bytes.
+        ancestor = quarantine.parent
+        while not ancestor.exists():
+            ancestor = ancestor.parent
+        plain_directory(ancestor)
         receipt_rel = "<incomplete-copy>/" + expected_sha + "/" + rel
         previous = db.execute(
             "SELECT * FROM departed WHERE root=? AND rel=?", (index, receipt_rel)
@@ -643,10 +657,6 @@ def quarantine_temporary(plan, index, rel, expected_identity, expected_sha):
             raise ValueError("Unaccounted interrupted-copy evidence exists")
         if quarantine.drive.casefold() != target.drive.casefold():
             raise ValueError("Temporary quarantine must stay on the destination volume")
-        ancestor = quarantine.parent
-        while not ancestor.exists():
-            ancestor = ancestor.parent
-        plain_directory(ancestor)
         quarantine.parent.mkdir(parents=True, exist_ok=True)
         plain_directory(quarantine.parent)
         db.execute(

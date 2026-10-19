@@ -76,6 +76,11 @@ streams through a same-volume rename into operation-side evidence, records custo
 before the move, and resumes an interrupted rename without overwriting evidence.
 Unknown temporary names, reparse entries, changed identities/hashes and foreign
 quarantine paths remain preserved and refused. This is not a general temp sweep.
+Quarantine retries revalidate the entire existing ancestor chain before accepting
+retained evidence. Copy and hardlink temporaries use a deterministic short hash
+name when appending the operation suffix would exceed the NTFS filename-component
+limit; original payload filenames remain unchanged. Earlier temporary names that
+fit the limit retain their exact spelling for same-operation recovery.
 
 ## One controlled window
 

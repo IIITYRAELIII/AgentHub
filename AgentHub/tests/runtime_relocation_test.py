@@ -315,6 +315,65 @@ class RelocationTest(unittest.TestCase):
         self.assertEqual(list(foreign.iterdir()), [])
         os.rmdir(quarantine_root)
 
+    def test_quarantine_resume_refuses_substituted_parent_junction(self):
+        (self.source / "file").write_bytes(b"complete source")
+        plan = self.plan()
+        relocation.ensure_destination(plan, 0)
+        temporary = self.target / ("file.relocation-" + plan["operation"] + ".tmp")
+        temporary.write_bytes(b"retained partial")
+        identity, sha = relocation.info(temporary), relocation.content_digest(temporary)
+        result = relocation.quarantine_temporary(plan, 0, "file", identity, sha)
+        retained = Path(result["quarantine"])
+        parent = retained.parent
+        moved = self.temp / "moved-evidence"
+        parent.rename(moved)
+        relocation.make_link(str(moved), parent, 0xA0000003, True)
+        db = relocation.connect(plan["manifest"])
+        receipt_before = db.execute("SELECT * FROM departed").fetchall()
+        db.close()
+        try:
+            with self.assertRaisesRegex(ValueError, "reparse"):
+                relocation.quarantine_temporary(plan, 0, "file", identity, sha)
+            self.assertEqual(relocation.content_digest(moved / retained.name), sha)
+            db = relocation.connect(plan["manifest"])
+            self.assertEqual(
+                [tuple(r) for r in db.execute("SELECT * FROM departed")],
+                [tuple(r) for r in receipt_before],
+            )
+            db.close()
+        finally:
+            os.rmdir(parent)
+
+    def test_long_filename_copy_and_updated_hardlink_group_keep_original_names(self):
+        names = [letter * 246 + ".bin" for letter in ("a", "z")]
+        first, last = [self.source / name for name in names]
+        with open(relocation.long_path(first), "wb") as stream:
+            stream.write(b"before stage")
+        os.link(relocation.long_path(first), relocation.long_path(last))
+        independent = self.source / ("m" * 246 + ".bin")
+        with open(relocation.long_path(independent), "wb") as stream:
+            stream.write(b"independent attachment")
+        plan = self.plan()
+        relocation.copy_roots(plan, workers=4)
+        with open(relocation.long_path(first), "wb") as stream:
+            stream.write(b"updated source")
+        relocation.copy_roots(plan, offline=True, workers=4)
+        targets = [self.target / name for name in names]
+        self.assertEqual(
+            relocation.info(targets[0])["ino"], relocation.info(targets[1])["ino"]
+        )
+        for file in targets:
+            with open(relocation.long_path(file), "rb") as stream:
+                self.assertEqual(stream.read(), b"updated source")
+        with open(relocation.long_path(self.target / independent.name), "rb") as stream:
+            self.assertEqual(stream.read(), b"independent attachment")
+        with open(relocation.long_path(targets[0]), "wb") as stream:
+            stream.write(b"write through")
+        with open(relocation.long_path(targets[1]), "rb") as stream:
+            self.assertEqual(stream.read(), b"write through")
+        with open(relocation.long_path(first), "rb") as stream:
+            self.assertEqual(stream.read(), b"updated source")
+
     def test_stage_pause_refuses_drift_and_never_claims_runtime_quiescence(self):
         plan = self.plan()
         helper = self.temp / "runtime_relocation.py"
