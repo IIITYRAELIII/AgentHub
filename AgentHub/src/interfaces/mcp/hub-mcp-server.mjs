@@ -65,6 +65,7 @@ function writeJson(response, status, body) {
 export class HubMcpServer {
   #server = null;
   #url = null;
+  #boundPort = null;
 
   constructor({
     service,
@@ -147,10 +148,14 @@ export class HubMcpServer {
     });
     await new Promise((resolve, reject) => {
       this.#server.once("error", reject);
-      this.#server.listen(this.port, this.host, resolve);
+      this.#server.listen(this.#boundPort ?? this.port, this.host, resolve);
     });
     const address = this.#server.address();
     if (!address || typeof address === "string") throw new Error("Cannot resolve Agent Hub MCP address");
+    // A surviving App Server retains this URL in its launch configuration.
+    // Recovery of this same owner must restore it or fail, never advertise a
+    // different random port while that client still holds the old endpoint.
+    this.#boundPort = address.port;
     this.#url = `http://${this.host}:${address.port}${this.endpointPath}`;
     this.logger.log?.(`Agent Hub MCP listening on ${this.host}:${address.port}`);
     return this.#url;

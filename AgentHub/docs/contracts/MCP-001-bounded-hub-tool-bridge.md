@@ -253,6 +253,13 @@ HTTP admission still terminates in bounded time. The deadline applies only to
 
 ## Recovery and retry
 
+Closing and restarting the same MCP server owner preserves its first successfully
+advertised loopback port and capability URL. A surviving App Server can therefore
+reconnect using its existing launch configuration. If another listener occupies
+that port, recovery refuses instead of silently selecting a different endpoint;
+direct HTTP success on a new port is not proof that an agent's tool catalog has
+recovered. This retains the same context authorization and operation receipts.
+
 A failed dynamic `functions.exec` call that contains an `agent_hub` MCP call
 reloads the Codex MCP transport before a later attempt and wakes durable input
 lanes. Read-only calls are safe to retry after that rebind.
