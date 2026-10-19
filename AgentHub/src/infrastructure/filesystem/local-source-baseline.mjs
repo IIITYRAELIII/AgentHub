@@ -45,7 +45,7 @@ async function assertInheritedRepositoryFiles({ git, sourceCommit, agreedMainCom
       const end = raw.indexOf(0, offset);
       const record = raw.subarray(offset, end);
       const tab = record.indexOf(9);
-      if (tab < 0 || !/^(?:100644 blob|100755 blob|120000 blob|160000 commit) [a-f0-9]{40,64}$/u
+      if (tab < 0 || !/^(?:100644 blob|100755 blob|120000 blob|160000 commit) (?:[a-f0-9]{40}|[a-f0-9]{64})$/u
         .test(record.subarray(0, tab).toString("utf8")) || tab + 1 === record.length
         || ++count > 16_384) reject("repository inventory is malformed or exceeds bound");
       const name = record.subarray(tab + 1);

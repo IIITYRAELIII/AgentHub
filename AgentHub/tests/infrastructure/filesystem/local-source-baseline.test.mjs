@@ -126,13 +126,18 @@ test("installed source refuses changed, added, deleted or mode-shifted inherited
 
 test("inherited repository proof refuses malformed or oversized raw Git manifests", { timeout: 90000 }, async t => {
   const f = await inheritedRepositoryFixture(t);
-  for (const defect of ["unterminated", "duplicate", "oversized"]) {
+  for (const defect of ["unterminated", "duplicate", "oversized", 41, 63, 65]) {
     await assert.rejects(f.verifyInherited({ git: async (args, options) => {
       const result = await git(f.primary, args, options);
       if (args[0] !== "ls-tree" || !args.includes("--full-tree")) return result;
       const raw = Buffer.from(result);
       if (defect === "unterminated") return raw.subarray(0, raw.length - 1);
       if (defect === "duplicate") return Buffer.concat([raw, raw.subarray(0, raw.indexOf(0) + 1)]);
+      if (typeof defect === "number") {
+        const start = raw.indexOf(32, raw.indexOf(32) + 1) + 1;
+        const end = raw.indexOf(9);
+        return Buffer.concat([raw.subarray(0, start), Buffer.alloc(defect, 97), raw.subarray(end)]);
+      }
       return Buffer.alloc(4 * 1024 * 1024 + 1);
     } }), /repository inventory/u);
   }
