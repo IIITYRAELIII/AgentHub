@@ -87,7 +87,11 @@ def execute(config_file, expected_hash):
         ):
             raise ValueError("Offline helper is not proven independent of a parent job")
     plan = relocation.load_plan(config["plan"], config["plan_sha256"])
-    if Path(__file__).resolve().drive.casefold() != Path(plan["roots"][0]["target"]).drive.casefold() or any(relocation.inside(root["source"],__file__) for root in plan["roots"]):
+    if Path(__file__).resolve().drive.casefold() != Path(
+        plan["roots"][0]["target"]
+    ).drive.casefold() or any(
+        relocation.inside(root["source"], __file__) for root in plan["roots"]
+    ):
         raise ValueError("Offline helper must live on the destination volume")
     for name, expected in config["helper_sha256"].items():
         if (
