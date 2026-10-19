@@ -176,6 +176,11 @@ def require_embedded_sqlite() -> None:
 
 
 def runtime_root() -> Path:
+    configured = os.environ.get("AGENT_HUB_RUNTIME_ROOT", "").strip()
+    if configured:
+        if not Path(configured).is_absolute():
+            raise RuntimeError("AGENT_HUB_RUNTIME_ROOT must be absolute")
+        return Path(configured).resolve()
     if sys.platform == "win32":
         return Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")) / "AgentHub"
     return Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state")) / "agent-hub"

@@ -2,7 +2,18 @@ import assert from "node:assert/strict";
 import path from "node:path";
 import test from "node:test";
 
-import { defaultRuntimeRoot, runtimeLayout, runtimeReleaseDirectory } from "../../../src/infrastructure/filesystem/runtime-layout.mjs";
+import { defaultRuntimeRoot, defaultTestContourRoot, runtimeLayout, runtimeReleaseDirectory } from "../../../src/infrastructure/filesystem/runtime-layout.mjs";
+
+test("explicit machine roots override legacy locations without changing other homes", () => {
+  const root = path.resolve("relocated-runtime");
+  const contour = path.resolve("relocated-contour");
+  const environment = { AGENT_HUB_RUNTIME_ROOT: root, AGENT_HUB_TEST_CONTOUR_ROOT: contour, LOCALAPPDATA: "legacy" };
+  assert.equal(defaultRuntimeRoot({ environment }), root);
+  assert.equal(defaultTestContourRoot({ environment }), contour);
+  assert.equal(environment.LOCALAPPDATA, "legacy");
+  assert.throws(() => defaultRuntimeRoot({ environment: { AGENT_HUB_RUNTIME_ROOT: "relative" } }), /absolute/);
+  assert.throws(() => defaultTestContourRoot({ environment: { AGENT_HUB_TEST_CONTOUR_ROOT: "relative" } }), /absolute/);
+});
 
 test("defaultRuntimeRoot keeps Windows runtime outside the workspace", () => {
   assert.equal(

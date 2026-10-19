@@ -20,6 +20,15 @@ from AgentHub.install import (
 from AgentHub.whisper_runtime import nvidia_runtime_directories
 
 
+class RuntimeLocationTests(unittest.TestCase):
+    def test_explicit_runtime_root_is_shared_with_installer(self) -> None:
+        with mock.patch.dict(install.os.environ, {"AGENT_HUB_RUNTIME_ROOT": str(Path.cwd())}):
+            self.assertEqual(install.runtime_root(), Path.cwd().resolve())
+        with mock.patch.dict(install.os.environ, {"AGENT_HUB_RUNTIME_ROOT": "relative"}):
+            with self.assertRaisesRegex(RuntimeError, "absolute"):
+                install.runtime_root()
+
+
 class WhisperRuntimeTests(unittest.TestCase):
     def test_windows_runtime_discovers_installed_cublas_and_cudnn(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
