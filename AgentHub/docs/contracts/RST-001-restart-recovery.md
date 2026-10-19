@@ -1,5 +1,10 @@
 # RST-001 — Restart and maintenance recovery
 
+Catalog reads during startup must not indirectly launch optional historical
+pricing backfill. Its existing post-readiness coordinator remains the owner;
+mandatory terminal projection recovery and its durable ACK fences still finish
+before readiness, with the existing replacement deadline unchanged.
+
 ## Identity and owner
 
 Restart and compaction are persisted operations with `operationId`, kind, exact
