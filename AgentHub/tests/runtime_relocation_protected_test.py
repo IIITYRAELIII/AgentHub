@@ -3,8 +3,13 @@
 import ctypes as c
 from ctypes import wintypes as w
 import os
+from pathlib import Path
+import queue
+import shutil
 import subprocess
 import sys
+import tempfile
+import threading
 from types import SimpleNamespace
 import unittest
 from unittest.mock import MagicMock, patch
@@ -13,6 +18,138 @@ import runtime_relocation_process as custody
 
 
 class ProtectedProcessTest(unittest.TestCase):
+    def test_unavailable_same_object_api_refuses(self):
+        with patch.object(custody.c, "WinDLL", side_effect=OSError("unavailable")):
+            with self.assertRaisesRegex(ValueError, "witness is unavailable"):
+                custody._same_kernel_object(1, 1)
+
+    @unittest.skipUnless(os.name == "nt", "Windows actual job handle reuse")
+    def test_actual_recycled_job_handle_refuses_with_unknown_native_addresses(self):
+        parent = Path(
+            os.environ.get("AGENT_HUB_TEST_TMP", tempfile.gettempdir())
+        ).resolve()
+        fixture = Path(tempfile.mkdtemp(prefix="hub143-job-reuse-", dir=parent))
+        source = fixture / "Fixture.cs"
+        source.write_text(
+            r"""
+using System;
+using System.Runtime.InteropServices;
+class Fixture {
+ [DllImport("kernel32.dll",CharSet=CharSet.Unicode)] static extern IntPtr CreateJobObject(IntPtr sa,string name);
+ [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr h);
+ static int Main() {
+  IntPtr anchor=CreateJobObject(IntPtr.Zero,"Local\\IIITYRAELIII.AgentHub."+System.Diagnostics.Process.GetCurrentProcess().Id);
+  IntPtr extra=CreateJobObject(IntPtr.Zero,null);
+  try {
+   if(anchor==IntPtr.Zero || extra==IntPtr.Zero) return 1;
+   Console.WriteLine("ready"); string line;
+   while((line=Console.ReadLine())!=null) {
+    if(line=="swap") {
+     long old=extra.ToInt64(); if(!CloseHandle(extra)) return 2;
+     extra=CreateJobObject(IntPtr.Zero,null); if(extra==IntPtr.Zero) return 3;
+     Console.WriteLine(old+" "+extra.ToInt64());
+    } else if(line=="quit") return 0; else return 4;
+   }
+   return 0;
+  } finally { CloseHandle(extra); CloseHandle(anchor); }
+ }
+}
+""",
+            encoding="utf-8",
+        )
+        host = held_host = held_self = None
+        try:
+            exe = fixture / "AgentHub.RuntimeHost.exe"
+            compiler = (
+                Path(os.environ["SystemRoot"])
+                / "Microsoft.NET/Framework64/v4.0.30319/csc.exe"
+            )
+            built = subprocess.run(
+                [str(compiler), "/nologo", "/target:exe", f"/out:{exe}", str(source)],
+                capture_output=True,
+                timeout=30,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+            self.assertEqual(built.returncode, 0, built.stdout)
+            host = subprocess.Popen(
+                [str(exe)],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+            messages = queue.Queue()
+
+            def reader():
+                for line in host.stdout:
+                    messages.put(line.strip())
+
+            thread = threading.Thread(target=reader, daemon=True)
+            thread.start()
+            self.assertEqual(messages.get(timeout=10), "ready")
+            rows = custody.process_snapshot()
+            held_host = custody.HeldProcess(
+                next(r for r in rows if r["pid"] == host.pid),
+                terminate=False,
+                duplicate=True,
+            )
+            held_self = custody.HeldProcess(
+                next(r for r in rows if r["pid"] == os.getpid()), terminate=False
+            )
+            anchor = {
+                "pid": host.pid,
+                "created": held_host.created,
+                "executable": held_host.executable,
+                "native_creation": True,
+            }
+            native = custody._system_handles
+            observations = []
+
+            def enumerate_handles():
+                if observations:
+                    host.stdin.write("swap\n")
+                    host.stdin.flush()
+                    old, new = messages.get(timeout=10).split()
+                    self.assertEqual(
+                        old, new, "Fixture must reuse the actual source handle"
+                    )
+                result = native()
+                observations.append(result)
+                return result
+
+            with patch.object(
+                custody, "_system_handles", side_effect=enumerate_handles
+            ):
+                with self.assertRaisesRegex(
+                    ValueError, "job object changed or identity is unknown"
+                ):
+                    custody.inspect_protected_jobs(
+                        {host.pid: held_host}, {os.getpid(): held_self}, anchor
+                    )
+            self.assertEqual(len(observations), 2)
+            self.assertIsNone(host.poll(), "The observer must not stop the owner")
+        finally:
+            if held_host:
+                held_host.close()
+            if held_self:
+                held_self.close()
+            if host:
+                if host.poll() is None:
+                    host.stdin.write("quit\n")
+                    host.stdin.flush()
+                host.wait(timeout=10)
+                self.assertEqual(host.returncode, 0, host.stderr.read())
+                host.stdin.close()
+                host.stdout.close()
+                host.stderr.close()
+            if fixture.parent.resolve() != parent or not fixture.name.startswith(
+                "hub143-job-reuse-"
+            ):
+                raise ValueError("Fixture cleanup escaped its exact root")
+            shutil.rmtree(fixture)
+
     def test_overlap_and_selected_live_ancestor_refuse(self):
         parent = {"pid": 10, "parent": 0, "created": "100"}
         child = {"pid": 11, "parent": 10, "created": "200"}

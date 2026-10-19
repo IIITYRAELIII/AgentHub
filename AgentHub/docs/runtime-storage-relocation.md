@@ -118,6 +118,16 @@ handles close before stopping; they are never kept to mask last-handle teardown.
 The existing Host identity is pinned separately as `job_anchor`. No job is
 created, reassigned or reconfigured by this diagnostic boundary.
 
+Native handle enumeration may redact kernel object addresses. Those values and
+their hashes are never accepted as identity. The guard retains first QUERY-only
+duplicates during inspection, independently duplicates the current source handles,
+and requires the documented Windows `CompareObjectHandles` same-object witness.
+Unavailable comparison or a recycled handle referring to a different object refuses.
+Current limits and membership are reread on the matched object. All first/second
+duplicates close before stopping; none is retained as a runtime survival mechanism.
+The API contract is documented by Microsoft at
+https://learn.microsoft.com/en-us/windows/win32/api/handleapi/nf-handleapi-compareobjecthandles.
+
 After all selected writers are absent, the helper copies and verifies the entire
 offline cohort, including every database and its WAL/SHM files, then performs
 read-only SQLite integrity checks. Direct `data/*.sqlite` and `data/*.db` files

@@ -310,6 +310,18 @@ def _inspect_job(kernel, job, protected):
     return {"limit_flags": flags, "protected_membership": members}
 
 
+def _same_kernel_object(first, second):
+    # Documented Windows10 API; redacted kernel addresses are never identities.
+    try:
+        compare = c.WinDLL("kernelbase", use_last_error=True).CompareObjectHandles
+    except (AttributeError, OSError) as error:
+        raise ValueError("Supported same-object witness is unavailable") from error
+    compare.argtypes = [w.HANDLE, w.HANDLE]
+    compare.restype = w.BOOL
+    if not compare(first, second):
+        raise ValueError("Selected-owner job object changed or identity is unknown")
+
+
 def inspect_protected_jobs(selected, protected, anchor):
     """Query existing jobs; never create, assign, retain or change their limits."""
     if not isinstance(anchor, dict) or not anchor.get("native_creation"):
@@ -348,6 +360,7 @@ def inspect_protected_jobs(selected, protected, anchor):
     )
     if not job:
         raise c.WinError(c.get_last_error())
+    held_jobs = {}
     try:
         first = _system_handles()
         hint = next(
@@ -358,7 +371,7 @@ def inspect_protected_jobs(selected, protected, anchor):
 
         def inventory(entries):
             return {
-                (e.pid, e.handle, e.object)
+                (e.pid, e.handle)
                 for e in entries
                 if e.type == hint.type and e.pid in selected
             }
@@ -367,7 +380,8 @@ def inspect_protected_jobs(selected, protected, anchor):
         if len(jobs) > 4096:
             raise ValueError("Selected-owner job inventory exceeded its bound")
         proof = {"named_host_job": _inspect_job(kernel, job, protected), "jobs": []}
-        for pid, original, identity in sorted(jobs):
+
+        def duplicate_job(pid, original):
             duplicate = w.HANDLE()
             if not kernel.DuplicateHandle(
                 selected[pid].handle,
@@ -379,21 +393,32 @@ def inspect_protected_jobs(selected, protected, anchor):
                 0,
             ):
                 raise c.WinError(c.get_last_error())
+            return duplicate
+
+        for pid, original in sorted(jobs):
+            duplicate = duplicate_job(pid, original)
+            held_jobs[(pid, original)] = duplicate
+            _inspect_job(kernel, duplicate, protected)
+        if inventory(_system_handles()) != jobs:
+            raise ValueError("Selected-owner job handles changed during inspection")
+        for pid, original in sorted(jobs):
+            duplicate = duplicate_job(pid, original)
             try:
+                _same_kernel_object(held_jobs[(pid, original)], duplicate)
                 record = _inspect_job(kernel, duplicate, protected)
                 record.update(
                     owner_pid=pid,
-                    identity_sha256=hashlib.sha256(str(identity).encode()).hexdigest(),
+                    same_object_verified=True,
                 )
                 proof["jobs"].append(record)
             finally:
                 kernel.CloseHandle(duplicate)
-        if inventory(_system_handles()) != jobs:
-            raise ValueError("Selected-owner job handles changed during inspection")
         return proof
     finally:
         # Closing all query duplicates before the first termination prevents
         # this observer from masking last-handle job teardown behavior.
+        for duplicate in held_jobs.values():
+            kernel.CloseHandle(duplicate)
         kernel.CloseHandle(job)
 
 
