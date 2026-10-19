@@ -87,11 +87,23 @@ document.body.dataset.ready='1';});</script>`);
       await writeFile(path.join(directory, "profile", "Default", "Preferences"), JSON.stringify({
         download: { default_directory: directory, prompt_for_download: false, directory_upgrade: true },
       }));
-      context = await chromium.launchPersistentContext(path.join(directory, "profile"), {
-        channel, headless: true, downloadsPath: directory, acceptDownloads: true,
-        viewport: { width: 1280, height: 720 },
-        ignoreHTTPSErrors: true, args: [`--ignore-certificate-errors-spki-list=${spki}`],
-      });
+      try {
+        context = await chromium.launchPersistentContext(path.join(directory, "profile"), {
+          channel, headless: true, downloadsPath: directory, acceptDownloads: true,
+          viewport: { width: 1280, height: 720 },
+          ignoreHTTPSErrors: true, args: [`--ignore-certificate-errors-spki-list=${spki}`],
+        });
+      } catch (error) {
+        // Edge is the documented required Windows browser. Chrome is an
+        // additional feasibility matrix, not an installed Hub dependency.
+        // Only the explicit missing-distribution result is unavailable coverage;
+        // all other launch failures and all behavior assertions still fail.
+        if (channel === "chrome" && String(error?.message ?? "").includes("Chromium distribution 'chrome' is not found at")) {
+          t.skip("Optional Chrome channel is not installed/discoverable in this isolated run; no Chrome resume proof. Required Edge cases remain enabled.");
+          return;
+        }
+        throw error;
+      }
       const probe = await context.request.get(`https://127.0.0.1:${server.address().port}/transfer/file`, {
         headers: { Range: `bytes=${size - 1}-`, "X-Transfer-Spike": "signed", "X-Transfer-Spike-Probe": "1" },
       });

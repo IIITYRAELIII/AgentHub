@@ -1514,7 +1514,9 @@ test("Mini App serves the SQLite journal and announces revision changes", async 
     assert.match(hubClient, /pendingSelectionId/u);
     assert.match(hubClient, /history\.replaceState/u);
     assert.match(hubClient, /modelLabel: window\.AgentHubStreamTabs\.streamModelLabel\(task, catalogStream, snapshot\.settings\)/u);
-    assert.doesNotMatch(hubClient, /location\.hash\s*=/u);
+    // Route preservation is exercised by the production DOM case
+    // "explicit historical turn remains bound while the live head completes".
+    // A source regex also matches the equality guard location.hash === route.
     assert.match(script, /document\.documentElement\.dataset\.surface = surface/u);
     assert.match(script, /telegram\?\.expand\(\)/u);
     assert.match(page, /data-telegram-fullscreen hidden/u);
