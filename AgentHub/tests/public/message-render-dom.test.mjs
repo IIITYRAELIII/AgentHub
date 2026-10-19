@@ -745,7 +745,7 @@ test("triple-click quotes the last paragraph with exact source and rejects forei
       assert.equal(await page.locator("[data-annotations] .annotation-quote").count(), 2);
     }
     await page.locator("[data-composer-input]").fill("Проверь цитаты");
-    await page.locator("[data-composer-input]").press("Control+Enter");
+    await page.locator("[data-composer-input]").press("Enter");
     await page.waitForFunction(() => window.__quoteSends.length === 1);
     const verified = await page.evaluate(async (message) => {
       const api = window.AgentHubMessageDisclosure;

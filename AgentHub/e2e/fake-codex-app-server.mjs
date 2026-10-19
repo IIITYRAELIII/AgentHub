@@ -183,7 +183,25 @@ function appendManagedRollout(thread, entries) {
       type: "session_meta",
       payload: { id: `managed-session-${thread.id}`, originator: "codex_vscode" },
     })}\n`, "utf8");
+    // A newly exposed native journal includes the fixture's retained history;
+    // changing the read path must not erase seeded completed turns.
+    const history = thread.turns.filter(turn => turn.status !== "inProgress").flatMap(turn => [
+      { type: "event_msg", payload: { type: "task_started", turn_id: turn.id } },
+      ...turn.items.filter(item => item.type === "userMessage").map(item => ({
+        type: "event_msg", payload: {
+          type: "user_message", turn_id: turn.id, client_id: item.clientId ?? "",
+          message: promptText(item.content),
+        },
+      })),
+      { type: "event_msg", payload: {
+        type: turn.status === "interrupted" ? "turn_aborted" : "task_complete", turn_id: turn.id,
+        last_agent_message: turn.items.findLast(item => item.type === "agentMessage")?.text ?? "",
+        ...(turn.status === "failed" ? { error: { message: "Recorded fixture failure" } } : {}),
+      } },
+    ]);
+    entries = [...history, ...entries];
   }
+  thread.path = thread.managedRolloutPath;
   const lines = entries.map(({ type, payload }) => JSON.stringify({
     timestamp: new Date().toISOString(),
     ordinal: thread.managedRolloutOrdinal++,
@@ -256,6 +274,7 @@ function finishTurn(thread, turn, { status = "completed", answer = null } = {}) 
         type: status === "interrupted" ? "turn_aborted" : "task_complete",
         turn_id: turn.id,
         ...(status === "interrupted" ? {} : { last_agent_message: text }),
+        ...(status === "failed" ? { error: { message: text } } : {}),
       },
     }]);
   }
@@ -312,7 +331,9 @@ function startTurn(params) {
     }],
   };
   thread.turns.push(turn);
-  if (prompt.includes("[rollout-exact-pair]")) {
+  // Every managed turn needs literal restart evidence; RPC status alone is
+  // not an exact terminal event after reconnect.
+  {
     turn.managedRolloutPair = true;
     appendManagedRollout(thread, [{
       type: "event_msg",
@@ -552,6 +573,16 @@ function resumeInterruptedTurns() {
 function handleRequest(message) {
   const { id, method, params = {} } = message;
   state.requestCounts[method] = Number(state.requestCounts[method] ?? 0) + 1;
+  if (method === "model/list") {
+    reply(id, { data: params.cursor ? [] : [
+      { model: "gpt-6-astra", displayName: "GPT-6 Astra" },
+      { model: "gpt-5.6-sol", displayName: "GPT-5.6-Sol" },
+      { model: "gpt-5.6-terra", displayName: "GPT-5.6 Terra" },
+      { model: "gpt-e2e", displayName: "GPT-E2E" },
+      { model: "fake-codex", displayName: "FakeCodex" },
+    ], nextCursor: null });
+    return;
+  }
   if (method === "config/mcpServer/reload") {
     state.lastMcpReloadAt = Date.now();
     save();
@@ -737,7 +768,15 @@ function handleRequest(message) {
   }
   if (method === "thread/rollback") {
     const thread = threadById(params.threadId);
-    if (thread) thread.turns.splice(Math.max(0, thread.turns.length - Number(params.numTurns ?? 1)));
+    if (thread) {
+      const removed = thread.turns.slice(Math.max(0, thread.turns.length - Number(params.numTurns ?? 1)));
+      for (const turn of removed.filter(turn => turn.status === "inProgress" && turn.managedRolloutPair)) {
+        appendManagedRollout(thread, [{ type: "event_msg", payload: {
+          type: "turn_aborted", turn_id: turn.id,
+        } }]);
+      }
+      thread.turns.splice(Math.max(0, thread.turns.length - Number(params.numTurns ?? 1)));
+    }
     save();
     reply(id, { thread: publicThread(thread) });
     return;
@@ -750,6 +789,7 @@ function handleRequest(message) {
     reply(id, {});
     const turnId = thread?.turns?.at(-1)?.id ?? null;
     const item = { id: `${turnId ?? thread.id}:manual-context-compaction`, type: "contextCompaction" };
+    const completionDelayMs = Math.max(150, Number(state.manualCompactionDelayMs) || 150);
     schedule(() => notify("item/started", {
       threadId: thread.id,
       turnId,
@@ -764,8 +804,9 @@ function handleRequest(message) {
         last: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0, totalTokens: 92_592 },
         modelContextWindow: 200_000,
       },
-    }), 20);
-    const completionDelayMs = Math.max(150, Number(state.manualCompactionDelayMs) || 150);
+    // A post-compaction size estimate belongs after the completed boundary.
+    // An earlier token snapshot is deliberately not measurement authority.
+    }), completionDelayMs + 10);
     schedule(() => notify("item/completed", {
       threadId: thread.id,
       turnId,
@@ -820,9 +861,11 @@ function handleRequest(message) {
     return;
   }
   if (method === "turn/interrupt") {
+    state.lastInterrupt = structuredClone(params);
+    save();
     const thread = threadById(params.threadId);
     const turn = thread?.turns.find((item) => item.id === params.turnId);
-    if (turn?.prompt === "[external-hold] VSCode task") {
+    if (!turn || turn.status !== "inProgress" || turn.prompt === "[external-hold] VSCode task") {
       send({ id, error: { message: "no active turn to interrupt" } });
       return;
     }

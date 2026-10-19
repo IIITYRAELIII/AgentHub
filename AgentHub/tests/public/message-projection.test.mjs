@@ -467,3 +467,12 @@ test("internal and unknown operations never project as a user running turn", asy
     projectionState: "active",
   }), true);
 });
+
+test("unconfirmed recovery keeps Stop available without presenting execution as running", async () => {
+  const api = await projectionApi();
+  const run = { operationKind: "user-turn", status: "running", projectionState: "active", activityUnknown: true };
+  assert.deepEqual(plain(api.userRunActivity(run)), { running: false, canStop: true, unknown: true });
+  assert.deepEqual(plain(api.userRunActivity({ ...run, projectionState: "unknown" })), { running: false, canStop: true, unknown: true });
+  assert.deepEqual(plain(api.userRunActivity({ ...run, activityUnknown: false })), { running: true, canStop: true, unknown: false });
+  assert.deepEqual(plain(api.userRunActivity(null)), { running: false, canStop: false, unknown: false });
+});

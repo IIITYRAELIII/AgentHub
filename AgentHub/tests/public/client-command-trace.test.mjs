@@ -25,6 +25,26 @@ function fixture() {
     hide: () => { window.document.hidden = true; listeners.get("visibilitychange")?.(); } };
 }
 
+test("after-paint observer cancels an obsolete display and read metadata remains content-free", async () => {
+  const { trace, frames } = fixture();
+  const events = [];
+  trace.bindReporter(async (batch) => events.push(...batch.events));
+  trace.afterPaint("ui-render", "read-marker-clear", 10, "original-read", {
+    provider: "codex", threadId: "thread", turnId: "turn", terminalRevision: 2,
+    streamId: "stream", documentId: "document", codeMarker: "hub291.read-marker.1",
+    text: "PRIVATE", url: "PRIVATE", token: "PRIVATE",
+  }, () => ({ outcome: "cancelled", metadata: { render: "superseded", tabReady: true, cardReady: true } }));
+  frames.shift()(); frames.shift()();
+  await trace.flush();
+  const spans = clientPerformanceTraceSpans({ events });
+  assert.equal(spans.at(-1).outcome, "cancelled");
+  assert.equal(spans.at(-1).metadata.render, "superseded");
+  assert.equal(spans.at(-1).metadata.threadId, "thread");
+  assert.equal(spans.at(-1).metadata.terminalRevision, 2);
+  assert.equal(spans.at(-1).metadata.codeMarker, "hub291.read-marker.1");
+  assert.doesNotMatch(JSON.stringify(spans), /PRIVATE/u);
+});
+
 test("client trace batches are bounded and do not hold the measured result behind a stalled reporter", async () => {
   const { trace, advance } = fixture();
   let release;
@@ -53,13 +73,14 @@ test("one client trace owner retains command identity, ACK timings and errors wi
   const { trace, advance } = fixture();
   const batches = [];
   trace.bindReporter(async (batch) => { batches.push(batch); });
-  const secretResult = { snapshot: {}, text: "private-user-text", token: "secret" };
+  const secretResult = { snapshot: {}, history: { text: "private-history" }, text: "private-user-text", token: "secret" };
   const result = await trace.measure("ui-control", "send-message", async () => {
     advance(51);
     return trace.associate(secretResult, "original-command");
   }, "original-command");
   assert.equal(result, secretResult);
   assert.equal(trace.objectId(result.snapshot), "original-command");
+  assert.equal(trace.objectId(result.history), "original-command");
   const failure = new Error("private-error-content");
   await assert.rejects(trace.measure("ui-control", "snapshot", async () => { throw failure; }), (error) => error === failure);
   trace.ack("original-command", { submittedAtMs: Date.now(), submittedMonotonicMs: 10 }, "succeeded");
@@ -72,6 +93,27 @@ test("one client trace owner retains command identity, ACK timings and errors wi
   assert.equal(terminalEvents[2].stage, "client-ack");
   assert.equal(terminalEvents[2].timing.clientAckMonotonicMs, 61);
   assert.doesNotMatch(JSON.stringify(events), /private|secret/u);
+});
+
+test("document and selected-run observations retain only bounded content-free fields", () => {
+  const now = Date.now();
+  const [span] = clientPerformanceTraceSpans({ events: [{
+    stage: "ui-snapshot", outcome: "succeeded", commandId: "client-current",
+    observedAtMs: now, monotonicDurationMs: 0,
+    metadata: {
+      action: "selected-gate", decision: "applied", documentInstanceId: "document-1",
+      clientAssetRevision: "hub283.client.1", serverReleaseId: "release-1",
+      snapshotVersion: "snapshot-1", beforeRun: "active", afterRun: "missing",
+      beforeProviderStart: "present", afterProviderStart: "missing", providerLink: "unknown",
+      text: "Private message", invalidIdentifier: "Private id", url: "https://private.example",
+    },
+  }] }, { now });
+  assert.equal(span.metadata.documentInstanceId, "document-1");
+  assert.equal(span.metadata.clientAssetRevision, "hub283.client.1");
+  assert.equal(span.metadata.beforeRun, "active");
+  assert.equal(span.metadata.afterRun, "missing");
+  assert.equal(span.metadata.afterProviderStart, "missing");
+  assert.doesNotMatch(JSON.stringify(span), /Private|private\.example/u);
 });
 
 test("stalled client operations report started before completion and retain exact paired identity", async () => {

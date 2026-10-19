@@ -19,6 +19,8 @@ export class ClaudeTurnLauncher {
 
   async start(run, input, temporaryFiles, { forceSpeechButton = false } = {}) {
     const d = this.#d;
+    const namedTitle = await d.ensureThreadNamed?.({ provider: "claude", threadId: run.threadId });
+    if (namedTitle) run.taskTitle = namedTitle;
     const turnId = randomUUID();
     if (d.recordingContourRoot) {
       // The command and Stream/Thread remain canonical. Only execution paths

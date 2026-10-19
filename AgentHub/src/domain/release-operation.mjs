@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { selectedCompositionFields } from "./task-selected-composition.mjs";
 
 export const MAX_RELEASE_METADATA_BYTES = 8 * 1024 * 1024;
 
@@ -57,6 +58,10 @@ function stable(value) {
 
 export function releaseIdentitySha256(value) {
   return createHash("sha256").update(JSON.stringify(stable(value))).digest("hex");
+}
+
+export function releaseSelectionSha256(results) {
+  return releaseIdentitySha256(normalizedResults(results).map(({ tree, ...result }) => result));
 }
 
 function uniqueTextList(value, name) {
@@ -119,6 +124,7 @@ function normalizedResults(value) {
   return (Array.isArray(value) ? value : []).map((entry) => ({
     taskId: requiredText(entry?.taskId, "selected result taskId"),
     resultCommit: requiredText(entry?.resultCommit, "selected result commit"),
+    ...selectedCompositionFields(entry),
     ...(optionalText(entry?.tree) ? { tree: optionalText(entry.tree) } : {}),
     acceptanceRevision: Number.isSafeInteger(Number(entry?.acceptanceRevision))
       ? Number(entry.acceptanceRevision)

@@ -5,11 +5,11 @@ import {
   CodexCatalogProjectionService,
 } from "../../../src/providers/provider-catalog-services.mjs";
 
-test("Codex local catalog projection never writes titles through App Server", async () => {
+test("Codex local catalog projects titles without admitting optional pricing repair", async () => {
   const titleWrites = [];
   const catalogOptions = [];
   const service = new CodexCatalogProjectionService({
-    backfillPricing: async () => {},
+    backfillPricing: async () => { throw new Error('optional pricing backfill must remain owned by post-readiness startup'); },
     readTitleHistories: async () => new Map([["thread-1", {
       currentTitle: "Local title",
       recoverableTitle: "",

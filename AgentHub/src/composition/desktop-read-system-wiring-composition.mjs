@@ -75,6 +75,7 @@ export function createDesktopReadSystemWiring({
         recent: services.readProviderTurnTelemetry,
       },
       board: {
+        get snapshotRevision() { return services.taskBoardSnapshotRevision?.(); },
         snapshot: services.taskBoardSnapshot,
         workspaces: services.taskBoardWorkspaces,
         archivedWorkspaces: services.archivedWorkspaces,
@@ -163,6 +164,7 @@ export function createDesktopReadSystemWiring({
     },
     readModel: {
       readStateStore: services.readStateStore,
+      commandTrace: services.commandTrace,
       trustedDeviceUserId: system.trustedDeviceUserId,
       hasAllowedUsers: services.hasAllowedUsers,
       androidEnabled: services.androidEnabled,

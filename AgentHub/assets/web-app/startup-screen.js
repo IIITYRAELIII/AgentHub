@@ -2,6 +2,7 @@ import {
   createVisibilityBoundAnimation,
   createStartupDisconnectedModel,
   createStartupScreenModel,
+  restartWaitFailed,
   formatStartupElapsed,
   shouldShowStartupScreen,
 } from "./startup-screen-model.js";
@@ -66,6 +67,18 @@ screen.innerHTML = `
 `;
 
 document.body.append(screen);
+const diagnostics = document.createElement("details");
+diagnostics.className = "hub-startup-diagnostics";
+diagnostics.hidden = true;
+const diagnosticSummary = document.createElement("summary");
+const diagnosticErrors = document.createElement("div");
+const diagnosticRetry = document.createElement("button");
+diagnosticRetry.type = "button";
+diagnosticRetry.textContent = "Повторить упавшие этапы";
+const diagnosticStatus = document.createElement("p");
+diagnosticStatus.setAttribute("role", "status");
+diagnostics.append(diagnosticSummary, diagnosticErrors, diagnosticRetry, diagnosticStatus);
+document.body.append(diagnostics);
 
 const eyebrow = screen.querySelector(".hub-startup-eyebrow");
 const title = screen.querySelector(".hub-startup-title");
@@ -89,17 +102,22 @@ function requestRecovery(action) {
   recoveryPending = true;
   retryButton.disabled = true;
   restartButton.disabled = true;
+  diagnosticRetry.disabled = true;
   actionStatus.textContent = "Отправляю запрос…";
+  diagnosticStatus.textContent = actionStatus.textContent;
   document.dispatchEvent(new CustomEvent("agenthub:startup-recovery", {
     detail: { action, startedAtMs: currentModel?.startedAtMs },
   }));
 }
 
 retryButton.addEventListener("click", () => requestRecovery("retry-startup"));
+diagnosticRetry.addEventListener("click", () => requestRecovery("retry-startup"));
 restartButton.addEventListener("click", () => requestRecovery("restart-server"));
 document.addEventListener("agenthub:startup-recovery-result", (event) => {
   recoveryPending = false;
   actionStatus.textContent = String(event.detail?.message ?? "");
+  diagnosticStatus.textContent = actionStatus.textContent;
+  diagnosticRetry.disabled = false;
   scheduleRefresh(0);
 });
 const radius = 101;
@@ -117,6 +135,7 @@ let renderedCompleted = [];
 let renderedQueue = "";
 let currentModel = null;
 let currentOperationId = "";
+let modelGeneration = 0;
 let hadStartup = false;
 let hideTimer = 0;
 let pollTimer = 0;
@@ -269,11 +288,13 @@ function revealCurrentOperation() {
 }
 
 function showModel(model) {
+  const generation = ++modelGeneration;
   const nextOperationId = model.operations[model.currentIndex]?.id ?? "complete";
   const operationChanged = currentOperationId !== nextOperationId;
   if (currentOperationId && operationChanged) {
     screen.classList.add("is-transitioning");
     window.setTimeout(() => {
+      if (generation !== modelGeneration) return;
       applyModel(model);
       revealCurrentOperation();
       screen.classList.remove("is-transitioning");
@@ -281,6 +302,7 @@ function showModel(model) {
       window.setTimeout(() => screen.classList.remove("is-arrived"), 1_150);
     }, 270);
   } else {
+    screen.classList.remove("is-transitioning");
     applyModel(model);
     if (operationChanged) revealCurrentOperation();
   }
@@ -288,6 +310,8 @@ function showModel(model) {
 }
 
 function hideScreen() {
+  modelGeneration += 1;
+  screen.classList.remove("is-transitioning", "is-arrived");
   horizonAnimation.stop();
   screen.hidden = true;
   delete root.dataset.hubStartupScreen;
@@ -304,6 +328,9 @@ function clearConnectionTimer() {
 }
 
 function showDisconnectedState({ force = false, responding = false } = {}) {
+  // A delayed/failed health read does not revoke a previously proven ready
+  // runtime. The ordinary connection banner owns connection diagnostics.
+  if (currentModel?.ready && !restartExpected) return;
   waitingSinceMs ||= Date.now();
   const disconnectedModel = createStartupDisconnectedModel(currentModel, {
     restarting: restartExpected,
@@ -322,7 +349,24 @@ async function refresh() {
     const response = await fetch("/health", { cache: "no-store" });
     clearConnectionTimer();
     if (!response.ok) throw new Error(`health ${response.status}`);
-    const model = createStartupScreenModel(await response.json());
+    const health = await response.json();
+    if (restartExpected && restartWaitFailed(health, waitingSinceMs)) {
+      restartExpected = false;
+      waitingSinceMs = 0;
+      hideScreen();
+      hadStartup = false;
+    }
+    const model = createStartupScreenModel(health);
+    const failures = model.ready ? (model.operations ?? []).filter((operation) => operation.state === "failed") : [];
+    diagnostics.hidden = failures.length === 0;
+    diagnosticSummary.textContent = failures.length
+      ? `Недоступны интеграции: ${failures.map((operation) => operation.label).join(", ")}` : "";
+    diagnosticErrors.replaceChildren(...failures.map((operation) => {
+      const detail = document.createElement("p");
+      detail.textContent = `${operation.label}: ${operation.error || "Недоступно"}`;
+      return detail;
+    }));
+    diagnosticRetry.disabled = recoveryPending;
     const replacementStartup = restartExpected
       && !model.ready
       && lastStartupStartedAtMs > 0
@@ -331,6 +375,14 @@ async function refresh() {
     if (!restartExpected) waitingSinceMs = 0;
     if (restartExpected) {
       showDisconnectedState({ force: true, responding: true });
+    } else if (model.ready) {
+      currentModel = model;
+      lastStartupStartedAtMs = model.startedAtMs;
+      hadStartup = false;
+      window.clearTimeout(hideTimer);
+      hideTimer = 0;
+      hideScreen();
+      delay = READY_POLL_MS;
     } else if (!model.available) {
       hideScreen();
       hadStartup = false;
@@ -345,19 +397,8 @@ async function refresh() {
       hadStartup = true;
       lastStartupStartedAtMs = model.startedAtMs;
       showModel(model);
-      if (model.ready && !model.failed) {
-        if (!hideTimer) {
-          hideTimer = window.setTimeout(() => {
-            hideTimer = 0;
-            hideScreen();
-            hadStartup = false;
-          }, model.failed ? 2_000 : 1_100);
-        }
-        delay = READY_POLL_MS;
-      } else {
-        window.clearTimeout(hideTimer);
-        hideTimer = 0;
-      }
+      window.clearTimeout(hideTimer);
+      hideTimer = 0;
     }
   } catch {
     clearConnectionTimer();
@@ -390,7 +431,7 @@ function updateTimer() {
     if (currentModel.waitingSinceMs) timer.textContent = formatStartupElapsed(currentModel.waitingSinceMs);
     return;
   }
-  if (!currentModel.finished) timer.textContent = formatStartupElapsed(currentModel.startedAtMs);
+  if (!currentModel.finished && currentModel.startedAtMs > 0) timer.textContent = formatStartupElapsed(currentModel.startedAtMs);
 }
 
 function resizeCanvas() {

@@ -928,7 +928,8 @@ test("v15 EOF audit migrates once and repairs delivered current ImageGen output"
   await scheduler.auditNow();
   const migratedSnapshot = migratedAudit.snapshot();
 
-  assert.equal(migratedSnapshot.version, 19);
+  const currentAuditVersion = new CodexTerminalAudit({}).snapshot().version;
+  assert.equal(migratedSnapshot.version, currentAuditVersion);
   assert.equal(migratedSnapshot.historicalSubagentBackfill.pending, false);
   assert.equal(migratedSnapshot.historicalSubagentBackfill.completedFiles, 1);
   assert.equal(historicalScans, 1);
@@ -936,7 +937,7 @@ test("v15 EOF audit migrates once and repairs delivered current ImageGen output"
   assert.equal(imports, 1);
   assert.equal(historyProjections.length, 2);
   assert.equal(persistedAuditSnapshots.length, 1);
-  assert.equal(persistedAuditSnapshots[0].version, 19);
+  assert.equal(persistedAuditSnapshots[0].version, currentAuditVersion);
   assert.equal(persistedAuditSnapshots[0].historicalSubagentBackfill.pending, false);
   assert.deepEqual(historyProjections[1].responseAttachments.map((item) => item.id), [
     "codex-generated-v15-output.png",

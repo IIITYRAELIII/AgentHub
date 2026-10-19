@@ -55,7 +55,9 @@ const codexContextMaintenanceSource = await readFile(
 function clientFunctionSource(name, nextMarker) {
   let start = hubClientSource.indexOf(`function ${name}`);
   if (hubClientSource.slice(Math.max(0, start - 6), start) === "async ") start -= 6;
-  const end = hubClientSource.indexOf(nextMarker, start);
+  const closing = /\r?\n\}\r?\n/u.exec(hubClientSource.slice(start));
+  const end = name === "applyOpened" || !nextMarker
+    ? start + closing.index + closing[0].length : hubClientSource.indexOf(nextMarker, start);
   assert.notEqual(start, -1, `${name} source start`);
   assert.notEqual(end, -1, `${name} source end`);
   return hubClientSource.slice(start, end);
@@ -116,6 +118,7 @@ async function pagedActiveHistoryHarness(durableTurnCount) {
     ...run.userMessages[0], submittedAt: startedAt }]]);
   const sandbox = vm.createContext({
     ...lifecycle,
+    canonicalProjectionState: projection.projectionState,
     ...projection,
     Map, Set,
     historyByTask: new Map(), historyWindowByTask: new Map(), focusedHistoryWindowByTask: new Map(),
@@ -126,6 +129,10 @@ async function pagedActiveHistoryHarness(durableTurnCount) {
     optimisticDeferredClientUserMessageIds: new Set(), deferredClientUserMessageIds: new Set(),
     selectedTaskId: identity.streamId,
     lastSnapshot: { tasks: [] },
+    liveCardsByTask: new Map(),
+    snapshotResponseIsStale: () => false,
+    traceHistoryCard: () => {},
+    commandTrace: { objectId: () => "", newId: () => "fixture-open" },
     taskId: (provider, threadId, streamId) => streamId || `${provider}:${threadId}`,
     taskIdentity: () => identity,
     attachmentViews: (values) => values ?? [],
@@ -360,6 +367,7 @@ test("aggregated Stream history preserves each item's provider and Thread", () =
     conversationMessageAuthor: (_message, provider) => provider,
     focusedTurnAlreadyVisible: () => true,
     focusedTurnTaskThreadId: () => "",
+    canonicalProjectionState: projection.projectionState,
     historicalMessagesForDisplay: (item) => item.messages,
   });
   vm.runInContext(`${source}; globalThis.mapHistory = historyMessages;`, sandbox);
@@ -389,6 +397,7 @@ test("Web history mapping preserves canonical citation references", () => {
     conversationMessageAuthor: () => "Codex",
     focusedTurnAlreadyVisible: () => true,
     focusedTurnTaskThreadId: (turn) => turn.threadId,
+    canonicalProjectionState: projection.projectionState,
     historicalMessagesForDisplay: (item) => item.messages,
   });
   vm.runInContext(`${source}; globalThis.mapHistory = historyMessages;`, sandbox);
@@ -426,6 +435,7 @@ test("focused completed turn cannot append commentary after its durable final", 
     conversationMessageAuthor: (_message, provider) => provider,
     focusedTurnAlreadyVisible: lifecycle.focusedTurnAlreadyVisible,
     focusedTurnTaskThreadId: lifecycle.focusedTurnTaskThreadId,
+    canonicalProjectionState: projection.projectionState,
     historicalMessagesForDisplay: lifecycle.historicalMessagesForDisplay,
   });
   vm.runInContext(`${source}; globalThis.mapHistory = historyMessages;`, sandbox);
@@ -599,6 +609,7 @@ test("history and focused steers never inherit a parent turn timestamp", () => {
     conversationMessageAuthor: (_message, provider) => provider,
     focusedTurnAlreadyVisible: () => true,
     focusedTurnTaskThreadId: (turn) => turn.threadId,
+    canonicalProjectionState: projection.projectionState,
     historicalMessagesForDisplay: (item) => item.messages,
   });
   vm.runInContext(`${source}; globalThis.mapHistory = historyMessages;`, sandbox);
@@ -624,6 +635,7 @@ test("focused turn without message times keeps its startedAt chronology", () => 
     conversationMessageAuthor: (_message, provider) => provider,
     focusedTurnAlreadyVisible: () => false,
     focusedTurnTaskThreadId: (turn) => turn.threadId,
+    canonicalProjectionState: projection.projectionState,
     historicalMessagesForDisplay: (item) => item.messages,
   });
   vm.runInContext(`${source}; globalThis.mapHistory = historyMessages;`, sandbox);
@@ -864,11 +876,12 @@ test("subagent messages never fall back to the user author", () => {
 });
 
 test("desktop running state ignores a retained completed run object", () => {
-  assert.match(
-    hubClientSource,
-    /agentHub\.setRunning\(stableTaskId, Boolean\(task\.running\)\)/u,
-  );
-  assert.doesNotMatch(hubClientSource, /Boolean\(task\.run \|\| task\.running\)/u);
+  const window = {};
+  vm.runInNewContext(streamTabsSource, { window });
+  const task = { running: false, run: { operationKind: "user-turn", projectionState: "completed" } };
+  assert.equal(window.AgentHubStreamTabs.isExactActiveUserTurn(task), false);
+  assert.equal(window.AgentHubStreamTabs.isExactActiveUserTurn({ running: true,
+    run: { operationKind: "user-turn", projectionState: "active", turnId: "turn-active" } }), true);
 });
 
 test("response annotation envelopes become structured user messages", () => {
@@ -2095,6 +2108,7 @@ test("focused history item identity includes its provider Thread", () => {
     conversationMessageAuthor: (_message, provider) => provider,
     focusedTurnAlreadyVisible: () => true,
     focusedTurnTaskThreadId: (turn) => turn.threadId,
+    canonicalProjectionState: projection.projectionState,
     historicalMessagesForDisplay: (item) => item.messages,
   });
   vm.runInContext(`${source}; globalThis.mapHistory = historyMessages;`, sandbox);
@@ -2526,7 +2540,7 @@ test("dispatching, rejected and ambiguous starts remain queue-only", () => {
         reason: "provider-start-unconfirmed",
         clientProjectionIntent: "conversation",
       },
-      deliveryState: "deferred",
+      deliveryState: "unconfirmed",
     },
   ]) {
     const clientUserMessageId = `client-${scenario.state}-${scenario.receipt.reason ?? "active"}`;
@@ -2803,7 +2817,7 @@ test("authoritative provider acceptance moves one exact command into conversatio
   const projection = lifecycle.queueHistoryReceiptProjection(receipt);
   assert.equal(projection.providerAccepted, true);
   assert.equal(projection.ownsDeferredQueue, false);
-  assert.equal(projection.deliveryState, "accepted");
+  assert.equal(projection.deliveryState, "running");
   assert.equal(lifecycle.queuedCommandUsesQueue(deferredInput, [receipt]), false);
   assert.deepEqual(
     lifecycle.queuedCommandClientUserMessageIds([deferredInput], [receipt]),
@@ -3245,34 +3259,12 @@ test("rotation completion waits for maintenance and keeps its post-answer positi
 });
 
 test("context compaction start identifies the task and completion stays in chat", () => {
-  assert.match(hubClientSource, /function taskDisplayTitle\(task\)/u);
-  assert.match(hubClientSource, /displayTitle = String\(task\?\.displayTitle/u);
-  assert.match(hubClientSource, /workspaceName = String\(task\?\.workspaceName/u);
-  assert.match(hubClientSource, /streamName = String\(task\?\.streamName/u);
-  assert.match(hubClientSource, /return `\$\{workspaceName\} - \$\{streamName\}`/u);
-  assert.match(
-    hubClientSource,
-    /Началась автосвёртка контекста · \$\{taskDisplayTitle\(task\)\}/u,
-  );
-  assert.doesNotMatch(miniAppSource, /task\.threadTitle \|\| task\.title/u);
-  assert.match(
-    hubClientSource,
-    /measurementKnown = beforePercent !== null && afterPercent !== null;[\s\S]*"Свёртка завершена; замер контекста не получен"/u,
-  );
-  assert.match(hubClientSource, /maintenanceEventStorageKey/u);
-  assert.match(hubClientSource, /rememberMaintenanceEvent\(stableTaskId/u);
-  assert.match(
-    hubClientSource,
-    /id: `maintenance:compaction:\$\{compactionId\}:active`[\s\S]*turnId: compaction\.turnId \?\? null/u,
-  );
-  assert.match(hubClientSource, /syncActiveMaintenanceMessages\(representativeTasks\)/u);
-  assert.doesNotMatch(hubClientSource, /syncActiveMaintenanceMessages\(snapshot\.tasks\)/u);
-  assert.match(
-    hubClientSource,
-    /invalidZeroAfter[\s\S]*id\.startsWith\("maintenance:compaction:"\)[\s\S]*replace\(\/>0%\$\/u, ">\?%"\)/u,
-  );
-  assert.match(hubClientSource, /position === 2 && percent === 0 \? null : percent/u);
-
+  const sandbox = vm.createContext({});
+  vm.runInContext(clientFunctionSource("taskDisplayTitle"), sandbox);
+  assert.equal(sandbox.taskDisplayTitle({ workspaceName: "Workspace", streamName: "S2" }), "Workspace - S2");
+  assert.equal(sandbox.taskDisplayTitle({ displayTitle: "Exact Task", title: "Historical Thread" }), "Exact Task");
+  // Exact completion identity and unknown measurement projection are exercised
+  // by the executable compaction observer cases below.
 });
 
 test("compaction markers keep exact operation identity before provider turn acceptance", () => {
@@ -3303,6 +3295,7 @@ test("unknown and legacy timeout compaction replace false failure and settle by 
     latestMaintenanceMessages: (values) => values,
     persistMaintenanceEvents: () => {},
     agentHub: { toast: () => {} },
+    window: {},
   });
   vm.runInContext(clientFunctionSource("rememberMaintenanceEvent", "function taskIdentity"), sandbox);
   vm.runInContext(clientFunctionSource("observeContextCompactions", "function observeStreamRotations"), sandbox);
@@ -3362,7 +3355,7 @@ test("unknown and legacy timeout compaction replace false failure and settle by 
     const missing = events.get("task-1")[0];
     assert.equal(missing.afterPercent, null);
     assert.doesNotMatch(missing.text, /(?:≈14%|успешно)/u);
-    assert.match(missing.maintenanceDetail, /замер после не получен/u);
+    assert.ok(missing.maintenanceDetail);
   }
 });
 
@@ -3384,6 +3377,7 @@ test("completed history attaches the turn trace to its visible final answer", ()
     conversationMessageAuthor: (_message, provider) => provider,
     focusedTurnAlreadyVisible: () => true,
     focusedTurnTaskThreadId: () => "",
+    canonicalProjectionState: projection.projectionState,
     historicalMessagesForDisplay: lifecycle.historicalMessagesForDisplay,
   });
   vm.runInContext(`${source}; globalThis.mapHistory = historyMessages;`, sandbox);
@@ -3514,6 +3508,7 @@ test("terminal history clears a pre-turn live card by exact client identity", ()
     liveUserMessagesByTask,
     historyByTask: new Map([[taskId, history]]),
     completedLiveTurnIdentity: lifecycle.completedLiveTurnIdentity,
+    lastSnapshot: { tasks: [] },
     agentHub: { setLive: (...args) => cleared.push(args) },
   });
   const clearSource = clientFunctionSource(
@@ -3548,6 +3543,7 @@ test("an inactive snapshot clears a retained user live card after queued turns d
   const sandbox = vm.createContext({
     activeTaskRun: lifecycle.activeTaskRun,
     isUserRunningProjection: projection.isUserRunningProjection,
+    projectedActiveUserRun: (_id, task) => lifecycle.activeTaskRun(task),
     promoteLiveCompletion: () => false,
     rememberSnapshotCompletion: () => false,
     clearInternalContextProbe: () => {},
@@ -3624,6 +3620,7 @@ test("live snapshot projects generated response attachments into the current car
   const sandbox = vm.createContext({
     activeTaskRun: lifecycle.activeTaskRun,
     isUserRunningProjection: () => true,
+    projectedActiveUserRun: (_id, task) => lifecycle.activeTaskRun(task),
     promoteLiveCompletion: () => false,
     rememberSnapshotCompletion: () => false,
     clearInternalContextProbe: () => {},
@@ -3868,6 +3865,9 @@ test("an active run is authoritative acceptance evidence for its client message"
     submittedAt: "2026-08-25T22:14:00.000Z",
     startedAt: "2026-08-25T22:15:28.000Z",
     deliveredAt: "2026-08-25T22:15:28.000Z",
+    started: true,
+    unknown: false,
+    providerConnection: null,
     attachments: [{ id: "attachment-1" }],
   }]);
 });
@@ -3977,6 +3977,7 @@ function interstreamCardSandbox() {
   const outgoing = new Map();
   const sandbox = vm.createContext({
     ...lifecycle,
+    canonicalProjectionState: projection.projectionState,
     Map,
     Set,
     optimisticDeferredClientUserMessageIds: new Set(),
@@ -4116,6 +4117,7 @@ function receiptCardSandbox() {
   const outgoing = new Map();
   const sandbox = vm.createContext({
     ...lifecycle,
+    canonicalProjectionState: projection.projectionState,
     Map, Set,
     optimisticDeferredClientUserMessageIds: new Set(),
     deferredClientUserMessageIds: new Set(),

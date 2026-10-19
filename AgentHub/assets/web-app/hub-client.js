@@ -4,6 +4,29 @@
 
 const agentHub = window.AgentHub;
 const commandTrace = window.AgentHubCommandTrace;
+const traceIdentifierPattern = /^[A-Za-z0-9][A-Za-z0-9:._-]{0,199}$/u;
+// This marker identifies the executing client code path, not a file hash or
+// the release currently served by the Hub.
+const clientAssetRevision = "hub283.client.4";
+const documentInstanceId = commandTrace.newId();
+let previousDocumentInstanceId = "";
+try {
+  previousDocumentInstanceId = String(sessionStorage.getItem("agent-hub-client-document-id") ?? "");
+  sessionStorage.setItem("agent-hub-client-document-id", documentInstanceId);
+} catch {
+  // A blocked storage surface still emits this document's independent identity.
+}
+commandTrace.record("ui-snapshot", "client-document", 0, documentInstanceId, {
+  render: "created", documentInstanceId,
+  previousDocumentInstanceId: boundedTraceIdentifier(previousDocumentInstanceId),
+  clientAssetRevision,
+});
+window.addEventListener("pagehide", () => {
+  commandTrace.record("ui-snapshot", "client-document", 0, documentInstanceId, {
+    render: "closing", documentInstanceId, clientAssetRevision,
+  });
+  void commandTrace.flush();
+});
 const telegramInitData = String(window.Telegram?.WebApp?.initData ?? "");
 const localSessionReady = window.AgentHubLocalSessionReady ?? Promise.resolve();
 const vscode = window.__agentHubVscode ?? (typeof window.acquireVsCodeApi === "function"
@@ -170,7 +193,17 @@ const sendTaskGenerationById = new Map();
 let messageRenderBatchDepth = 0;
 const MAX_OUTGOING_MESSAGES_PER_TASK = 100;
 const acknowledgedFinalByTask = new Map();
-const { isUserRunningProjection, projectCanonicalMessages } = window.AgentHubMessageProjection;
+const confirmedReadCursorByThread = new Map();
+const readMarker = window.AgentHubReadMarker;
+const READ_MARKER_CODE = "hub291.read-marker.3";
+const readMarkerDocumentId = commandTrace.newId();
+function retainReadMarker(map, key, value) {
+  const replaced = map.get(key);
+  if (replaced !== value && replaced?.phase === "paint") cancelReadPaint(key, replaced, "superseded");
+  map.delete(key);
+  map.set(key, value);
+}
+const { isUserRunningProjection, projectCanonicalMessages, projectionState: canonicalProjectionState } = window.AgentHubMessageProjection;
 const {
   activeRunSubmissionTiming,
   activeRunMessageReceipts,
@@ -393,6 +426,10 @@ function observeServerIdentity(snapshot) {
   );
   let reloadStarted = false;
   if (transition.reloadRequired) {
+    commandTrace.record("ui-snapshot", "runtime-reload", 0, documentInstanceId, {
+      render: "requested", documentInstanceId, clientAssetRevision,
+      serverReleaseId: identity.releaseId,
+    });
     rememberServerIdentity(identity);
     if (transition.instanceChanged) notifyAndroidAboutRelease(identity);
     reloadStarted = reloadForPublishedRuntime();
@@ -596,12 +633,25 @@ function rememberOutgoing(taskIdValue, message) {
   );
 }
 
-function deliveryPatch(stateName) {
+function deliveryPatch(stateName, projection = null) {
+  if (projection?.delivery) return {
+    deliveryState: stateName,
+    delivery: projection.delivery,
+    failed: projection.failed === true,
+    terminalRevision: projection.terminalRevision ?? null,
+    completedAt: projection.completedAt ?? null,
+  };
   const states = {
     preparing: { deliveryState: "preparing", delivery: "Подготовка…", failed: false },
     sending: { deliveryState: "sending", delivery: "Отправляется…", failed: false },
     steering: { deliveryState: "steering", delivery: "В текущем ходе", failed: false },
-    accepted: { deliveryState: "accepted", delivery: "Принято", failed: false },
+    accepted: { deliveryState: "accepted", delivery: "Сохранено в Hub", failed: false },
+    running: { deliveryState: "running", delivery: "Ход выполняется", failed: false },
+    retrying: { deliveryState: "retrying", delivery: "Связь потеряна; повтор запроса Codex", failed: false },
+    "connection-lost": { deliveryState: "connection-lost", delivery: "Связь потеряна; исход уточняется", failed: false },
+    failed: { deliveryState: "failed", delivery: "Ход завершился ошибкой; проверь соединение и ответ", failed: true },
+    completed: { deliveryState: "completed", delivery: "Ход завершён", failed: false },
+    cancelled: { deliveryState: "cancelled", delivery: "Ход остановлен", failed: false },
     deferred: { deliveryState: "deferred", delivery: "Отложено", failed: false },
     queued: { deliveryState: "queued", delivery: "В очереди", failed: false },
     relaying: { deliveryState: "relaying", delivery: "Доставляется в Hub…", failed: false },
@@ -880,7 +930,7 @@ function restoreImmediateIntakeMessage(deferred, messageReceipts = []) {
       origin: deferredOrigin ?? null,
       kind: deferredOrigin ? "interstream" : null,
       author: (deferredOrigin && String(deferred.author ?? "").trim()) || "Вы",
-      ...deliveryPatch(projection.deliveryState),
+      ...deliveryPatch(projection.deliveryState, projection),
       ...(!existing.submittedAt && projection.submittedAt
         ? { submittedAt: projection.submittedAt }
         : {}),
@@ -910,7 +960,7 @@ function restoreImmediateIntakeMessage(deferred, messageReceipts = []) {
       submittedAt: projection.submittedAt,
       time: projection.submittedAt,
       attachments,
-      ...deliveryPatch(projection.deliveryState),
+      ...deliveryPatch(projection.deliveryState, projection),
     });
   }
   return true;
@@ -975,7 +1025,7 @@ function applyMessageReceipts(snapshot) {
       outgoingMessages(stableTaskId).delete(clientUserMessageId);
       continue;
     }
-    const patch = projection.deliveryState ? deliveryPatch(projection.deliveryState) : null;
+    const patch = projection.deliveryState ? deliveryPatch(projection.deliveryState, projection) : null;
     if (!patch) continue;
     const restoredText = String(receipt.displayText ?? "");
     // Same reason as the deferred card: the receipt owns the origin of its exact
@@ -1122,6 +1172,17 @@ function promoteLiveCompletion(taskIdValue, selected, incomingTurnId = "") {
   return true;
 }
 
+function projectedActiveUserRun(taskIdValue, task) {
+  const run = activeTaskRun(task);
+  if (!run || !isUserRunningProjection(run)
+    || !window.AgentHubStreamTabs.isExactActiveUserTurn(task)) return null;
+  // Canonical terminal history is absorbing for this exact provider/Thread/turn.
+  // Reuse the history owner; a later raw active snapshot cannot revive that turn.
+  return completedLiveTurnIdentity(historyByTask.get(taskIdValue) ?? [], {
+    provider: task.provider, threadId: task.threadId, turnId: run.turnId,
+  }) ? null : run;
+}
+
 function clearDurablyCompletedLiveCard(taskIdValue) {
   const liveCard = liveCardsByTask.get(taskIdValue);
   const liveUsers = liveUserMessagesByTask.get(taskIdValue) ?? {};
@@ -1144,6 +1205,15 @@ function clearDurablyCompletedLiveCard(taskIdValue) {
   liveProbeByTask.delete(taskIdValue);
   liveUserMessagesByTask.delete(taskIdValue);
   agentHub.setLive(taskIdValue, null);
+  const task = (lastSnapshot?.tasks ?? []).find((value) => taskId(
+    value.provider, value.threadId, value.streamId,
+  ) === taskIdValue);
+  if (task && !projectedActiveUserRun(taskIdValue, task)) {
+    const model = modelTask(task, lastSnapshot, selectedTaskId, selectedTaskId);
+    agentHub.patchTask(taskIdValue, {
+      running: model.running, status: model.status, statusLabel: model.statusLabel,
+    });
+  }
   return true;
 }
 
@@ -1186,6 +1256,7 @@ function renderTaskMessagesContent(taskIdValue, { preserveScroll, exactNavigatio
     agentHub.setMessagesForExactNavigation(taskIdValue, messages, exactNavigation);
   } else if (preserveScroll) agentHub.setMessagesPreservingScroll(taskIdValue, messages);
   else agentHub.setMessages(taskIdValue, messages);
+  considerDisplayedFinal(taskIdValue);
   return messages;
 }
 
@@ -1231,14 +1302,15 @@ function updateLiveMessage(taskIdValue, selected) {
   // Only an explicitly classified user turn may own the live card. Internal or
   // unknown projections must also clear a previously cached card so stale
   // maintenance cannot keep later user input queued behind false activity.
-  const run = activeTaskRun(selected);
-  if (run && !isUserRunningProjection({ ...run, projectionState: "active" })) {
-    const promoted = promoteLiveCompletion(taskIdValue, selected, run.turnId);
-    const snapshotCompletionRemembered = rememberSnapshotCompletion(taskIdValue, selected, run.turnId);
+  const rawRun = activeTaskRun(selected);
+  if (rawRun && !isUserRunningProjection({ ...rawRun, projectionState: "active" })) {
+    const promoted = promoteLiveCompletion(taskIdValue, selected, rawRun.turnId);
+    const snapshotCompletionRemembered = rememberSnapshotCompletion(taskIdValue, selected, rawRun.turnId);
     clearNonUserLiveProjection(taskIdValue);
     if (promoted || snapshotCompletionRemembered) renderTaskMessages(taskIdValue);
     return null;
   }
+  const run = projectedActiveUserRun(taskIdValue, selected);
   const promoted = promoteLiveCompletion(taskIdValue, selected, run?.turnId);
   const snapshotCompletionRemembered = rememberSnapshotCompletion(taskIdValue, selected, run?.turnId);
   if (!run) {
@@ -1384,7 +1456,10 @@ function bridgeCallOnce(action, params = {}) {
   return new Promise((resolve, reject) => {
     const timer = window.setTimeout(() => {
       pendingBridgeCalls.delete(id);
-      reject(markConnectionFailure(new Error("Agent Hub в VS Code не ответил вовремя")));
+      const error = new Error("Agent Hub в VS Code не ответил вовремя");
+      error.name = "TimeoutError";
+      error.code = "AGENT_HUB_CONTROL_TIMEOUT";
+      reject(markConnectionFailure(error));
     }, LONG_CONTROL_ACTIONS.has(action)
       ? LONG_CONTROL_TIMEOUT_MS
       : action === "send-message"
@@ -1557,7 +1632,7 @@ function observeQueuedRemoteMessage(commandId, params) {
           remoteQueued: false,
           remoteCommandId: commandId,
           providerAccepted: projection.providerAccepted,
-          ...deliveryPatch(projection.deliveryState ?? "rejected"),
+          ...deliveryPatch(projection.deliveryState ?? "rejected", projection),
         });
         if (resolvedTaskId) renderTaskMessages(resolvedTaskId);
       }
@@ -1768,9 +1843,12 @@ function modelTask(task, snapshot, effectiveSelectedId, serverSelectedId) {
   const streamId = String(task.streamId ?? "").trim()
     || `legacy:${String(task.provider ?? "").trim()}:${String(task.threadId ?? "").trim()}`;
   const answerAt = Date.parse(task.lastAnswerAt ?? "") || 0;
-  const running = window.AgentHubStreamTabs.isExactActiveUserTurn(task);
-  const unknown = task.activityUnknown === true;
-  const unread = task.unread === true;
+  const activity = window.AgentHubMessageProjection.userRunActivity(projectedActiveUserRun(id, task));
+  const running = activity.running;
+  const unknown = activity.unknown || task.activityUnknown === true;
+  const unread = task.unread === true && !readMarker.cursorCovers(
+    task.latestFinal, confirmedReadCursorByThread.get(readMarker.threadIdentity(task.latestFinal)),
+  );
   const serverSelected = id === serverSelectedId;
   const executionOwner = task.run?.executionOwner ?? task.executionOwner ?? "";
   const runtimeTitle = task.run?.runtime ?? task.runtime ?? "";
@@ -1803,8 +1881,10 @@ function modelTask(task, snapshot, effectiveSelectedId, serverSelectedId) {
     runtimeLabel: runtimeShortLabels[executionOwner] ?? (runtimeTitle ? "EXT" : ""),
     runtimeTitle,
     project: task.projectName || "",
+    canStop: activity.canStop,
+    activityUnknown: unknown,
     status: running ? "running" : unknown ? "unknown" : unread ? "ready" : "idle",
-    statusLabel: running ? "Выполняется" : unknown ? "Статус неизвестен" : unread ? "Ответ готов" : "",
+    statusLabel: running ? "Выполняется" : unknown ? "Состояние уточняется · поток занят" : unread ? "Ответ готов" : "",
     lastActivity: task.orderingActivityAtMs
       ? new Date(task.orderingActivityAtMs).toISOString()
       : task.lastAnswerAt,
@@ -2242,6 +2322,75 @@ function representativeSnapshotTasks(tasks) {
   return window.AgentHubStreamTabs.representativeSnapshotTasks(tasks);
 }
 
+function boundedTraceIdentifier(value) {
+  const text = String(value ?? "").trim();
+  return traceIdentifierPattern.test(text) ? text : "";
+}
+
+function selectedRunFacts(snapshot, id) {
+  const tasks = Array.isArray(snapshot?.tasks) ? snapshot.tasks : [];
+  const selected = tasks.find((task) => taskId(
+    task.provider, task.threadId, task.streamId,
+  ) === id) ?? (!id ? tasks.find((task) => task.selected === true) : null);
+  if (!selected) return { run: "unknown", providerStart: "missing", clientId: "", turnId: "",
+    provider: "", threadId: "", streamId: "", finalTurnId: "", finalRevision: "" };
+  const run = selected.run;
+  const active = selected.running === true && run?.operationKind === "user-turn"
+    && run?.projectionState === "active" && Boolean(String(run?.turnId ?? "").trim());
+  return {
+    run: selected.running !== true ? "idle" : !run ? "missing"
+      : active && window.AgentHubStreamTabs.isExactActiveUserTurn(selected) ? "active"
+        : active ? "absorbed" : "other",
+    providerStart: run?.providerStart || selected.providerStart ? "present" : "missing",
+    clientId: boundedTraceIdentifier(run?.clientUserMessageId),
+    turnId: boundedTraceIdentifier(run?.turnId),
+    provider: boundedTraceIdentifier(selected.provider),
+    threadId: boundedTraceIdentifier(selected.threadId),
+    streamId: boundedTraceIdentifier(selected.streamId),
+    finalTurnId: boundedTraceIdentifier(selected.latestFinal?.turnId),
+    finalRevision: boundedTraceIdentifier(selected.latestFinal?.revision),
+  };
+}
+
+let lastSnapshotGateTrace = { key: "", at: 0 };
+function traceSnapshotGate(snapshot, { decision, id = selectedTaskId, before = lastSnapshot } = {}) {
+  const previous = selectedRunFacts(before, id);
+  const next = selectedRunFacts(snapshot, id);
+  const releaseId = boundedTraceIdentifier(serverIdentity(snapshot)?.releaseId);
+  const key = [decision, id, previous.run, next.run, previous.providerStart,
+    next.providerStart, previous.turnId, next.turnId, previous.clientId, next.clientId,
+    previous.finalTurnId, next.finalTurnId, previous.finalRevision, next.finalRevision,
+    releaseId].join("\0");
+  const at = Date.now();
+  if (lastSnapshotGateTrace.key === key && at - lastSnapshotGateTrace.at < 30_000) return;
+  lastSnapshotGateTrace = { key, at };
+  const requestTraceId = boundedTraceIdentifier(commandTrace.objectId(snapshot));
+  const commandId = next.clientId || previous.clientId || requestTraceId || documentInstanceId;
+  const metadata = {
+    decision, documentInstanceId, clientAssetRevision, serverReleaseId: releaseId,
+    snapshotVersion: boundedTraceIdentifier(snapshot?.version),
+    requestTraceId, turnId: next.turnId || previous.turnId,
+    beforeTurnId: previous.turnId, afterTurnId: next.turnId,
+    finalTurnId: next.finalTurnId, finalRevision: next.finalRevision,
+    provider: next.provider || previous.provider,
+    threadId: next.threadId || previous.threadId,
+    streamId: next.streamId || previous.streamId,
+    beforeRun: previous.run, afterRun: next.run,
+    beforeProviderStart: previous.providerStart, afterProviderStart: next.providerStart,
+  };
+  commandTrace.record("ui-snapshot", "selected-gate", 0, commandId, metadata);
+  if (decision !== "applied" || document.hidden) return;
+  window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
+    if (document.hidden || lastSnapshot !== snapshot || selectedTaskId !== id) return;
+    const link = document.querySelector("[data-provider-connection-quality]");
+    commandTrace.record("ui-render", "snapshot-live-dom", 0, commandId, {
+      ...metadata,
+      render: renderedActiveCardState(),
+      providerLink: String(link?.dataset.linkState ?? "unknown"),
+    });
+  }));
+}
+
 function applySnapshot(snapshot, { materialized = false } = {}) {
   if (snapshotResponseIsStale(snapshot)) {
     void refresh();
@@ -2254,8 +2403,11 @@ function applySnapshot(snapshot, { materialized = false } = {}) {
 
 function applySnapshotContent(snapshot, { materialized = false } = {}) {
   if (!snapshot) return;
+  const requestTraceId = commandTrace.objectId(snapshot);
   if (!materialized) snapshot = window.AgentHubSnapshotTransport.materialize(lastSnapshot, snapshot);
+  if (requestTraceId) commandTrace.associate(snapshot, requestTraceId);
   if (observeServerIdentity(snapshot)) return;
+  const priorSnapshotForTrace = lastSnapshot;
   let effectiveSelectedId = "";
   let tasks = [];
   runBatchedMessageRenders(() => {
@@ -2269,6 +2421,34 @@ function applySnapshotContent(snapshot, { materialized = false } = {}) {
       appliedSnapshotGeneration += 1;
     }
     lastSnapshot = snapshot;
+    const representativeTasks = representativeSnapshotTasks(snapshot.tasks);
+    // Pending/retry identities belong to the current canonical final. Capacity
+    // pressure must never create a second operation for that same read.
+    const currentReadTasks = new Map(representativeTasks.map((task) => [
+      taskId(task.provider, task.threadId, task.streamId), task,
+    ]));
+    for (const [id, entry] of acknowledgedFinalByTask) {
+      const current = currentReadTasks.get(id);
+      const currentFinal = readMarker.finalIdentity(current?.latestFinal);
+      if (current && String(current.provider ?? "").trim().toLowerCase() === String(entry.final.provider).trim().toLowerCase()
+        && String(current.threadId ?? "").trim() === String(entry.final.threadId).trim()
+        && (!currentFinal || currentFinal === entry.identity)) continue;
+      if (entry.phase === "paint") cancelReadPaint(id, entry, "superseded");
+      acknowledgedFinalByTask.delete(id);
+    }
+    // Receipt mirrors are bounded by the canonical conversation collection,
+    // not an arbitrary LRU that could revive one of its acknowledged answers.
+    const readThreads = new Set((snapshot.tasks ?? []).map((task) => (
+      [String(task.provider ?? "").trim().toLowerCase(), String(task.threadId ?? "").trim()].join("\0")
+    )));
+    for (const key of confirmedReadCursorByThread.keys()) if (!readThreads.has(key)) confirmedReadCursorByThread.delete(key);
+    for (const task of snapshot.tasks ?? []) {
+      const receipt = { final: task.latestFinal, cursor: task.readCursor };
+      if (!readMarker.cursorCovers(task.latestFinal, receipt)) continue;
+      const key = readMarker.threadIdentity(task.latestFinal);
+      retainReadMarker(confirmedReadCursorByThread, key,
+        readMarker.newerReceipt(confirmedReadCursorByThread.get(key), receipt));
+    }
     for (const session of attachmentSendSessions.values()) {
       try { assertCurrentSendTaskOperation(session.operation); }
       catch (error) {
@@ -2277,7 +2457,6 @@ function applySnapshotContent(snapshot, { materialized = false } = {}) {
         session.resume?.();
       }
     }
-    const representativeTasks = representativeSnapshotTasks(snapshot.tasks);
     agentHub.setExchangeRates(snapshot.exchangeRates ?? null);
     agentHub.setServerStatus(snapshot.server ?? null);
     agentHub.setWorkspaces(snapshot.workspaces ?? [], snapshot.boardLayout?.columnOrder ?? []);
@@ -2410,7 +2589,8 @@ function applySnapshotContent(snapshot, { materialized = false } = {}) {
     for (const task of representativeTasks) {
       const stableTaskId = taskId(task.provider, task.threadId, task.streamId);
       agentHub.setLive(stableTaskId, updateLiveMessage(stableTaskId, task));
-      agentHub.setRunning(stableTaskId, Boolean(task.running));
+      agentHub.setRunning(stableTaskId, window.AgentHubMessageProjection.userRunActivity(
+        projectedActiveUserRun(stableTaskId, task)).running);
     }
     for (const task of representativeTasks) {
       renderTaskQueue(taskId(task.provider, task.threadId, task.streamId), snapshot);
@@ -2422,6 +2602,9 @@ function applySnapshotContent(snapshot, { materialized = false } = {}) {
         snapshot.pendingApprovals, task, { serverSelected: stableTaskId === serverSelectedId },
       ));
     }
+  });
+  traceSnapshotGate(snapshot, {
+    decision: "applied", id: effectiveSelectedId, before: priorSnapshotForTrace,
   });
   const settings = snapshot.settings ?? {};
   agentHub.setOptions({
@@ -2438,6 +2621,7 @@ function applySnapshotContent(snapshot, { materialized = false } = {}) {
     selectedDraft?.streamSettings,
   ));
   applySnapshotConnection(snapshot);
+  considerDisplayedFinal(selectedTaskId);
 }
 
 function applySnapshotConnection(snapshot, idleStatus = "online") {
@@ -2544,11 +2728,12 @@ function historyMessages(history, focusedTurn = null) {
         ? { operationKindMigrationGuard: String(item.operationKindMigrationGuard) }
         : {}),
       projectionAuthority: "canonical",
-      projectionState: item.completed === true
-        ? (["failed", "cancelled"].includes(String(item.status ?? "").toLowerCase())
-          ? String(item.status).toLowerCase()
-          : "completed")
-        : item.active === true ? "active" : "unknown",
+      projectionState: canonicalProjectionState({
+        status: item.status,
+        terminalRevision: item.completed === true ? Number(item.terminalRevision) || 1 : 0,
+        running: item.active === true,
+        operationKind: "user-turn",
+      }),
       terminalRevision: item.completed === true ? Number(item.terminalRevision) || 1 : 0,
       ...(item.completed === true && !Number(item.terminalRevision)
         ? { terminalRevisionMigrationGuard: "legacy-terminal-revision" }
@@ -2778,6 +2963,60 @@ function reconcileFocusedHistoryWindows(pins) {
   return changed;
 }
 
+const historyCardTraces = new Map();
+
+function renderedActiveCardState() {
+  const card = document.querySelector("[data-chat-live]");
+  const scroll = document.querySelector("[data-chat-scroll]");
+  if (!card?.isConnected || card.hidden || !card.getClientRects().length) return "absent";
+  const cardRect = card.getBoundingClientRect();
+  const scrollRect = scroll?.getBoundingClientRect();
+  return scrollRect && cardRect.bottom > scrollRect.top && cardRect.top < scrollRect.bottom
+    ? "viewport" : "offscreen";
+}
+
+function traceHistoryCard(id, history, { liveBefore, cleared, commandId }) {
+  const snapshotTask = (lastSnapshot?.tasks ?? []).find((task) => taskId(
+    task.provider, task.threadId, task.streamId,
+  ) === id);
+  if (!liveBefore && snapshotTask?.running !== true) return;
+  const turnId = String(liveBefore?.turnId ?? snapshotTask?.run?.turnId ?? "");
+  const exactItem = (Array.isArray(history?.items) ? history.items : [])
+    .findLast((item) => String(item?.id ?? "") === turnId);
+  const historyState = exactItem?.completed === true ? "completed"
+    : exactItem?.active === true ? "active" : "missing";
+  const decision = cleared ? "cleared" : liveBefore ? "retained" : "no-cache";
+  const key = `${id}\0${turnId}\0${historyState}\0${decision}`;
+  const now = Date.now();
+  const previous = historyCardTraces.get(id);
+  if (previous?.key === key && now - previous.at < 5_000) return;
+  const trace = { key, at: now };
+  historyCardTraces.delete(id);
+  historyCardTraces.set(id, trace);
+  if (historyCardTraces.size > 64) historyCardTraces.delete(historyCardTraces.keys().next().value);
+  commandTrace.record("ui-render", "history-live-decision", 0, commandId, {
+    render: decision, trigger: historyState, documentInstanceId, clientAssetRevision,
+    turnId: boundedTraceIdentifier(turnId),
+  });
+  if (selectedTaskId !== id || document.hidden) return;
+  const snapshotAtDecision = lastSnapshot;
+  const liveAtDecision = liveCardsByTask.get(id) ?? null;
+  const cardAtDecision = document.querySelector("[data-chat-live]");
+  const cardKeyAtDecision = cardAtDecision?.dataset.messageKey ?? "";
+  window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
+    const card = document.querySelector("[data-chat-live]");
+    const superseded = document.hidden || selectedTaskId !== id
+      || historyCardTraces.get(id) !== trace || lastSnapshot !== snapshotAtDecision
+      || (liveCardsByTask.get(id) ?? null) !== liveAtDecision
+      || card !== cardAtDecision || (card?.dataset.messageKey ?? "") !== cardKeyAtDecision;
+    commandTrace.record("ui-render", "history-live-dom", 0, commandId, {
+      render: superseded ? "superseded" : renderedActiveCardState(), trigger: historyState,
+      documentInstanceId, clientAssetRevision,
+      turnId: boundedTraceIdentifier(turnId),
+    });
+  }));
+}
+
 function applyOpened(result, {
   preserveScroll = false,
   skipSnapshot = false,
@@ -2824,7 +3063,8 @@ function applyOpened(result, {
     : preserveOlder
       ? mergeNewestHistory(previousWindow ?? [], newest)
       : newest);
-  clearDurablyCompletedLiveCard(id);
+  const liveBefore = liveCardsByTask.get(id) ?? null;
+  const liveCleared = clearDurablyCompletedLiveCard(id);
   if (!retainsPinnedFocus || !previousPage) {
     historyPageByTask.set(id, {
       start: preserveOlder ? previousPage.start : history.start,
@@ -2849,21 +3089,12 @@ function applyOpened(result, {
   if (selectTask) agentHub.selectTask(id);
   syncHistoryPagination(id);
   const renderedMessages = renderTaskMessages(id, { preserveScroll, exactNavigation });
+  traceHistoryCard(id, history, {
+    liveBefore,
+    cleared: liveCleared,
+    commandId: commandTrace.objectId(result) || commandTrace.objectId(history) || commandTrace.newId(),
+  });
   renderTaskQueue(id, lastSnapshot);
-  const acknowledgementSnapshot = lastSnapshot;
-  const acknowledgementTask = (acknowledgementSnapshot?.tasks ?? []).find((item) => taskId(
-    item.provider,
-    item.threadId,
-    item.streamId,
-  ) === id);
-  if (displayedFinalAcknowledgement({
-    messages: renderedMessages,
-    final: acknowledgementTask?.latestFinal,
-    focusedTurn: result.focusedTurn,
-    selectTask,
-    selectedTaskId,
-    taskId: id,
-  })) acknowledgeDisplayedFinal(id, acknowledgementSnapshot);
   if (result.focusedMessage && !exactNavigation) {
     window.requestAnimationFrame(() => agentHub.focusMessage?.({
       turnId: result.focusedMessage.turnId,
@@ -2883,32 +3114,116 @@ function applyOpened(result, {
   updateHistoryCatchUp(id, history, task);
 }
 
-function acknowledgeDisplayedFinal(id, snapshot) {
-  if (document.visibilityState !== "visible") return;
-  const task = (snapshot?.tasks ?? []).find((item) => taskId(
-    item.provider,
-    item.threadId,
-    item.streamId,
-  ) === id);
+function readMarkerMetadata(id, final) {
+  return { streamId: id, provider: final.provider, threadId: final.threadId,
+    turnId: final.turnId, terminalRevision: Number(final.revision),
+    codeMarker: READ_MARKER_CODE, documentId: readMarkerDocumentId,
+    instanceId: lastSnapshot?.server?.process?.instanceId,
+    releaseId: lastSnapshot?.server?.process?.releaseId };
+}
+
+function displayedReadCard(id, final) {
+  if (document.visibilityState !== "visible" || document.documentElement.dataset.view !== "chat"
+    || selectedTaskId !== id || focusedHistoryWindowByTask.has(id)) return null;
+  const current = snapshotTask(lastSnapshot, id)?.latestFinal;
+  if (readMarker.finalIdentity(current) !== readMarker.finalIdentity(final)) return null;
+  // Only canonical opened history proves the exact final, never snapshot arrival.
+  if (!displayedFinalAcknowledgement({ messages: historyWindowByTask.get(id), final,
+    selectedTaskId, taskId: id })) return null;
+  const pane = document.querySelector("[data-chat-pane]");
+  if (pane?.dataset.streamChatTaskId !== id || !pane.getClientRects().length) return null;
+  return [...pane.querySelectorAll("[data-role='agent'][data-turn-id]")].find((node) => (
+    node.dataset.provider === final.provider && node.dataset.threadId === final.threadId
+    && node.dataset.turnId === final.turnId && Number(node.dataset.terminalRevision) === Number(final.revision)
+    && node.getClientRects().length
+  )) ?? null;
+}
+
+function projectReadReceipt(id, entry) {
+  const current = snapshotTask(lastSnapshot, id);
+  if (!current) return;
+  const model = modelTask(current, lastSnapshot, selectedTaskId, selectedTaskId);
+  agentHub.patchTask(id, { unread: model.unread, status: model.status, statusLabel: model.statusLabel });
+  commandTrace.afterPaint("ui-render", "read-marker-clear", entry.viewedAt, entry.commandId,
+    readMarkerMetadata(id, entry.final), () => {
+      if (readMarker.finalIdentity(snapshotTask(lastSnapshot, id)?.latestFinal) !== entry.identity) {
+        return { outcome: "cancelled", metadata: { render: "superseded" } };
+      }
+      const tabs = [...document.querySelectorAll("[data-stream-task-id]")].filter((node) => node.dataset.streamTaskId === id);
+      const cards = [...document.querySelectorAll("[data-activity-task-id]")].filter((node) => node.dataset.activityTaskId === id);
+      const tabReady = tabs.some((node) => node.hasAttribute("data-answer-ready"));
+      const cardReady = cards.some((node) => node.hasAttribute("data-answer-ready"));
+      return { outcome: !tabReady && !cardReady && tabs.length ? "succeeded" : "cancelled",
+        metadata: { render: !tabReady && !cardReady ? "cleared" : "pending",
+          tabReady, cardReady, tabPresent: tabs.length > 0, cardPresent: cards.length > 0 } };
+    });
+}
+
+function considerDisplayedFinal(id) {
+  const task = snapshotTask(lastSnapshot, id);
   const final = task?.latestFinal;
-  if (!final?.provider || !final?.threadId || !final?.turnId || !Number(final?.revision)) return;
-  const identity = [final.provider, final.threadId, final.turnId, final.revision].join("\0");
-  if (acknowledgedFinalByTask.get(id) === identity) return;
-  acknowledgedFinalByTask.set(id, identity);
-  const acknowledge = () => {
-    void control("mark-task-read", { final }).then((result) => {
-      if (result?.marked === true && acknowledgedFinalByTask.get(id) === identity) {
-        agentHub.patchTask(id, { unread: false, status: "idle", statusLabel: "" });
+  const identity = readMarker.finalIdentity(final);
+  if (!identity || task.unread !== true || !displayedReadCard(id, final)
+    || readMarker.cursorCovers(final, confirmedReadCursorByThread.get(readMarker.threadIdentity(final)))) return;
+  let entry = acknowledgedFinalByTask.get(id);
+  if (entry?.identity === identity && ["paint", "pending", "confirmed"].includes(entry.phase)) return;
+  if (entry?.identity !== identity) {
+    entry = { identity, final: { ...final }, commandId: commandTrace.newId(), phase: "retry" };
+    retainReadMarker(acknowledgedFinalByTask, id, entry);
+  }
+  entry.phase = "paint";
+  entry.paintStarted = commandTrace.now();
+  commandTrace.record("ui-render", "read-marker-view", 0, entry.commandId,
+    readMarkerMetadata(id, final), Date.now(), "started");
+  // Read admission is independent of the diagnostic queue/paint cap.
+  entry.paintFrame = window.requestAnimationFrame(() => {
+    entry.paintFrame = window.requestAnimationFrame(() => {
+      entry.paintFrame = null;
+      const card = displayedReadCard(id, final);
+      if (!card || acknowledgedFinalByTask.get(id) !== entry || entry.phase !== "paint") {
+        cancelReadPaint(id, entry, "superseded");
         return;
       }
-      if (acknowledgedFinalByTask.get(id) === identity) acknowledgedFinalByTask.delete(id);
-      if (result?.reason === "stale-final") void refresh();
-    }).catch(() => {
-      if (acknowledgedFinalByTask.get(id) === identity) acknowledgedFinalByTask.delete(id);
+      entry.phase = "pending";
+      entry.viewedAt = commandTrace.now();
+      const rect = card.getBoundingClientRect();
+      void control("mark-task-read", { final: entry.final, streamId: id, clientTraceId: entry.commandId }).then((result) => {
+        const confirmed = result?.marked === true
+          && readMarker.finalIdentity(result.final) === entry.identity
+          && readMarker.cursorCovers(entry.final, result);
+        commandTrace.record("ui-render", "read-marker-receipt", commandTrace.now() - entry.viewedAt,
+          entry.commandId, { ...readMarkerMetadata(id, final), render: confirmed ? "confirmed" : "unconfirmed" });
+        entry.phase = confirmed ? "confirmed" : "retry";
+        if (confirmed) {
+          const key = readMarker.threadIdentity(final);
+          if ((lastSnapshot?.tasks ?? []).some((task) => task.provider === final.provider && task.threadId === final.threadId)) {
+            retainReadMarker(confirmedReadCursorByThread, key,
+              readMarker.newerReceipt(confirmedReadCursorByThread.get(key), { final: result.final, cursor: result.cursor }));
+          }
+          projectReadReceipt(id, entry);
+        } else if (result?.reason === "stale-final") void refresh();
+      }).catch(() => { entry.phase = "retry"; });
+      commandTrace.record("ui-render", "read-marker-view", commandTrace.now() - entry.paintStarted,
+        entry.commandId, { ...readMarkerMetadata(id, final), render: "viewed",
+          viewport: rect.bottom > 0 && rect.top < innerHeight && rect.right > 0 && rect.left < innerWidth });
     });
-  };
-  window.requestAnimationFrame(() => window.requestAnimationFrame(acknowledge));
+  });
 }
+
+function cancelReadPaint(id, entry, render) {
+  if (entry.paintFrame != null) window.cancelAnimationFrame(entry.paintFrame);
+  entry.paintFrame = null;
+  entry.phase = "retry";
+  commandTrace.record("ui-render", "read-marker-view", commandTrace.now() - entry.paintStarted,
+    entry.commandId, { ...readMarkerMetadata(id, entry.final), render }, Date.now(), "cancelled");
+}
+
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState !== "visible") {
+    for (const [id, entry] of acknowledgedFinalByTask) if (entry.phase === "paint") cancelReadPaint(id, entry, "hidden");
+  }
+  if (document.visibilityState === "visible") considerDisplayedFinal(selectedTaskId);
+});
 
 function annotatedText(text, annotations) {
   return responseAnnotationPrompt(text, annotations);
@@ -3431,7 +3746,7 @@ function sendUserMessage(request, frozenParams = null) {
         ...(result?.accepted && !result?.steered ? { turnUserSlot: "root" } : {}),
         ...(result?.remoteQueued
           ? deliveryPatch("relaying")
-          : deliveryPatch(projection.deliveryState ?? "rejected")),
+          : deliveryPatch(projection.deliveryState ?? "rejected", projection)),
       });
       renderOutgoingWithoutBlockingSend(request.taskId, { queue: true });
       commandTrace.afterPaint("ui-render", "message-ack-projection", projectionStarted, request.requestId);
@@ -3889,13 +4204,17 @@ agentHub.on("stream:settings-save", ({ streamId, settings }) => runAction(async 
 let modelCatalogRefresh = null;
 agentHub.on("model-catalog:refresh", ({ manual = false } = {}) => {
   if (modelCatalogRefresh) return;
+  agentHub.setModelCatalogRefreshing(true);
   modelCatalogRefresh = runAction(async () => {
     const result = await control("refresh-model-catalog");
     if (result?.snapshot) applySnapshot(result.snapshot);
     if (manual) agentHub.toast(result?.refreshed
       ? "Список доступных моделей обновлён"
       : "Каталог пока недоступен; прежний список сохранён");
-  }).finally(() => { modelCatalogRefresh = null; });
+  }).finally(() => {
+    modelCatalogRefresh = null;
+    agentHub.setModelCatalogRefreshing(false);
+  });
 });
 agentHub.on("stream:rules-save", ({ streamId, rules }) => runAction(async () => {
   applySnapshot(await control("update-stream-rules", { streamId, content: String(rules ?? "") }));
@@ -5170,6 +5489,7 @@ async function refresh({ reportError = false } = {}) {
     if (snapshotResult?.notModified === true) {
       resetConnectionFailures();
       applySnapshotConnection(snapshot);
+      considerDisplayedFinal(selectedTaskId);
     } else {
       applySnapshot(snapshot, { materialized: true });
     }
@@ -5188,7 +5508,7 @@ async function refresh({ reportError = false } = {}) {
       return;
     }
     const active = Boolean(lastSnapshot?.tasks?.some(
-      (task) => task.running || task.context?.compacting || task.maintenance,
+      (task) => task.running || task.activityUnknown || task.context?.compacting || task.maintenance,
     )) || [...visibleStreamTaskIds].some(historyNeedsCatchUp) || historyNeedsCatchUp(selectedTaskId);
     refreshTimer = window.setTimeout(refresh, active ? 1_200 : 5_000);
   }

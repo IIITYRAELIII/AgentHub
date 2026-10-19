@@ -40,6 +40,13 @@ function requiredSelectedProjectionError(taskId, reason, cause = null) {
   return error;
 }
 
+function requiredOwnedProjectionError(taskId, reason, cause = null) {
+  const error = new Error(`PreRelease requires the full registered-base projection for Task ${taskId}: ${reason}`);
+  error.code = "TASK_RELEASE_OWN_PROJECTION_REQUIRED";
+  if (cause) error.cause = cause;
+  return error;
+}
+
 // Ordinary net projection is an optimization: failure to prove exclusive ownership
 // retains effective dev replay. A selected squash transfer is different because its
 // effective dev delta can omit absorbed source bytes; its exact projection is mandatory.
@@ -113,6 +120,7 @@ export async function releaseTaskNetProjections({ tasks, baseCommit, git }) {
       }
       continue;
     }
+    let mandatoryOwnedProjection = false;
     try {
       if (task.selectedComposition) {
         const selected = task.selectedComposition;
@@ -137,9 +145,16 @@ export async function releaseTaskNetProjections({ tasks, baseCommit, git }) {
         if (task.integrations.length !== 1) {
           throw new Error("selected composition has unreviewed additional Task integrations");
         }
+        // Retained own-conflict evidence must use its reviewed published tree;
+        // the preview Task tip is not that historical release resolution.
+        if (verified.proofRoute && verified.releaseConflictPaths?.length && !verified.publishedResolution) {
+          throw new Error("retained own conflict lacks its exact published resolution");
+        }
         proofs.set(task.taskId, {
-          parent: verified.releaseParent, commit: task.resultCommit,
-          paths: await changedPaths(verified.releaseParent, task.resultCommit),
+          parent: verified.publishedResolution ? verified.publishedCommit : verified.releaseParent,
+          commit: verified.publishedResolution?.resolutionCommit ?? task.resultCommit,
+          paths: verified.publishedResolution ? verified.ownPlan.map(file => file.path)
+            : await changedPaths(verified.releaseParent, task.resultCommit),
           orderPreserving: true, selectedCompositionHash: selected.previewHash,
         });
         continue;
@@ -251,6 +266,59 @@ export async function releaseTaskNetProjections({ tasks, baseCommit, git }) {
       const taskBaseCommit = String(task.baseCommit ?? "").trim();
       if (!/^[0-9a-f]{40}$/u.test(taskBaseCommit)
           || await git(["rev-parse", "--verify", `${taskBaseCommit}^{commit}`]) !== taskBaseCommit) continue;
+      if (!await isApproved(taskBaseCommit)) {
+        // A migrated Task can start after the published base. Its dev delta may
+        // be empty because a different integration already carried its bytes.
+        // Prove its registered-base OWN instead; neither inherited base context
+        // nor an unproved effective-dev replay is release authority.
+        await git(["merge-base", "--is-ancestor", baseCommit, taskBaseCommit]);
+        mandatoryOwnedProjection = true;
+        await git(["merge-base", "--is-ancestor", taskBaseCommit, task.resultCommit]);
+        const lineage = (await git([
+          "rev-list", `--max-count=${MAX_ANCESTRY + 1}`, "--first-parent",
+          task.resultCommit, `^${taskBaseCommit}`,
+        ])).split(/\r?\n/u).filter(Boolean);
+        if (!lineage.length || lineage.length > MAX_ANCESTRY) {
+          throw new Error("registered-base result exceeds the linear ownership bound");
+        }
+        for (const commit of lineage) {
+          if ((await getParents(commit)).length !== 1) {
+            throw new Error("registered-base result contains an unproved merge owner");
+          }
+        }
+        if ((await getParents(lineage.at(-1)))[0] !== taskBaseCommit) {
+          throw new Error("result does not reach its exact registered base");
+        }
+        const ordered = [...task.integrations].sort(compareIntegrations);
+        if (new Set(ordered.map((item) => item.commit)).size !== ordered.length
+            || new Set(ordered.map((item) => item.order)).size !== ordered.length) {
+          throw new Error("registered-base integrations have ambiguous identity or order");
+        }
+        const own = new Set(lineage);
+        for (const integration of ordered) {
+          const values = await getParents(integration.commit);
+          if (values.length !== 2 || !own.has(values[1])
+              || integrationOwners.get(integration.commit)?.size !== 1
+              || !await isAutomatic(integration.commit)) {
+            throw new Error("registered-base result lacks an automatic uniquely owned integration");
+          }
+        }
+        if ((await getParents(ordered.at(-1).commit))[1] !== task.resultCommit) {
+          throw new Error("latest registered-base result is not covered by its owned integration");
+        }
+        const paths = await changedPaths(taskBaseCommit, task.resultCommit);
+        const ownPaths = new Set(paths);
+        if (ordered.length > 1 && tasks.some((other) => other.taskId !== task.taskId
+            && other.integrations.some((integration) => compareIntegrations(ordered[0], integration) < 0
+              && compareIntegrations(integration, ordered.at(-1)) < 0
+              && intersects(ownPaths, integrationPaths.get(integration))))) {
+          throw new Error("registered-base net would reorder an overlapping selected integration");
+        }
+        proofs.set(task.taskId, {
+          parent: taskBaseCommit, commit: task.resultCommit, paths, orderPreserving: true,
+        });
+        continue;
+      }
       await git(["merge-base", "--is-ancestor", taskBaseCommit, baseCommit]);
       const taskBaseBoundaries = (await git([
         "merge-base", "--all", taskBaseCommit, task.resultCommit,
@@ -308,6 +376,9 @@ export async function releaseTaskNetProjections({ tasks, baseCommit, git }) {
         parent: bases[0], commit: task.resultCommit, paths, orderPreserving,
       });
     } catch (error) {
+      if (mandatoryOwnedProjection) {
+        throw requiredOwnedProjectionError(task.taskId, error?.message ?? "Git proof is unavailable", error);
+      }
       if (task.selectedComposition) {
         if (error?.code === "TASK_SELECTED_PROJECTION_REQUIRED") throw error;
         throw requiredSelectedProjectionError(task.taskId,

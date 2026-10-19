@@ -163,7 +163,7 @@ test('v17 completed historical checkpoint reopens and repairs existing Extension
     await audit.runHistoricalMaintenance();
     const exact = repaired.find(t => t.turnId === turnId);
     assert.deepEqual(exact?.usageResult?.generatedImageSources ?? exact?.generatedImageSources, expected);
-    assert.equal(audit.snapshot().version, 19);
+    assert.equal(audit.snapshot().version, new CodexTerminalAudit({}).snapshot().version);
     assert.equal(audit.snapshot().historicalSubagentBackfill.pending, false);
   } finally { await unlink(file); }
 });

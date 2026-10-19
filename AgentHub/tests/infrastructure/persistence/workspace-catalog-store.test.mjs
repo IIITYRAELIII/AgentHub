@@ -38,6 +38,113 @@ async function fixture(t) {
   return store;
 }
 
+test('exact Thread resolution retains current binding and bounded display semantics', async (t) => {
+  const store = await fixture(t);
+  const first = store.createWorkspaceWithStream({ name: 'First' });
+  const second = store.createWorkspaceWithStream({ name: 'Second' });
+  const reference = { provider: 'codex', threadId: 'same-thread' };
+  store.bindThread({ ...reference, streamId: first.stream.id, projectRoot: 'D:/Synthetic', source: 'created' });
+  const expected = () => {
+    const thread = store.thread(reference);
+    const stream = store.stream(thread.streamId);
+    const workspace = store.workspace(stream.workspaceId);
+    return { workspaceId: workspace.id, workspaceName: workspace.name, workspaceKind: workspace.kind,
+      streamId: stream.id, streamOrdinal: stream.ordinal, streamName: stream.name,
+      streamDisplayName: stream.displayName, threadPosition: thread.position, thread };
+  };
+  assert.deepEqual(store.resolveThread(reference), expected());
+  assert.equal(store.resolveThread(reference).streamDisplayName, '');
+  const sibling = store.createStream({ workspaceId: first.workspace.id });
+  assert.deepEqual(store.resolveThread(reference), expected());
+  assert.equal(store.resolveThread(reference).streamDisplayName, `Stream ${first.stream.ordinal}`);
+  store.archiveStream(sibling.id);
+  assert.deepEqual(store.resolveThread(reference), expected());
+  assert.equal(store.resolveThread(reference).streamDisplayName, '');
+  store.renameStream(first.stream.id, 'Explicit');
+  store.renameWorkspace(first.workspace.id, 'Renamed');
+  assert.deepEqual(store.resolveThread(reference), expected());
+  assert.equal(store.resolveThread(reference).streamDisplayName, 'Explicit');
+  store.rebindThread(reference, { streamId: second.stream.id, source: 'migration' });
+  assert.deepEqual(store.resolveThread(reference), expected());
+  assert.equal(store.resolveThread(reference).workspaceId, second.workspace.id);
+  assert.equal(store.resolveThread({ provider: 'claude', threadId: reference.threadId }), null);
+  assert.equal(store.resolveThread({ provider: 'codex', threadId: 'absent' }), null);
+  assert.throws(() => store.resolveThread({ provider: 'foreign', threadId: reference.threadId }), /invalid provider/);
+});
+
+test('Thread point resolution observes another SQLite owner without a binding cache', async (t) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'agent-hub-thread-point-'));
+  const databaseFile = path.join(directory, 'journal.sqlite');
+  const owner = new WorkspaceCatalogStore({ databaseFile });
+  const peer = new WorkspaceCatalogStore({ databaseFile });
+  t.after(async () => { owner.close(); peer.close(); await rm(directory, { recursive: true, force: true }); });
+  await owner.load(); await peer.load();
+  const initial = owner.createWorkspaceWithStream({ name: 'Initial' });
+  const target = owner.createWorkspaceWithStream({ name: 'Target' });
+  const identity = { provider: 'codex', threadId: 'shared-identity' };
+  owner.bindThread({ ...identity, streamId: initial.stream.id, source: 'created' });
+  assert.equal(owner.resolveThread(identity).workspaceName, 'Initial');
+  peer.renameWorkspace(initial.workspace.id, 'Renamed externally');
+  assert.equal(owner.resolveThread(identity).workspaceName, 'Renamed externally');
+  peer.rebindThread(identity, { streamId: target.stream.id, source: 'migration' });
+  const resolved = owner.resolveThread(identity);
+  assert.equal(resolved.workspaceId, target.workspace.id);
+  assert.equal(resolved.streamId, target.stream.id);
+  assert.deepEqual(resolved.thread, owner.thread(identity));
+  assert.equal(owner.resolveThread({ provider: 'claude', threadId: identity.threadId }), null);
+});
+
+test("nested catalog rollback preserves outer writes and the outer transaction remains usable", async (t) => {
+  const store = await fixture(t);
+  const failure = new Error("inner operation failed");
+  await store.runMutation(() => store.transaction(() => {
+    const kept = store.createWorkspaceWithStream({ name: "Kept" });
+    assert.throws(() => store.transaction(() => {
+      store.createWorkspaceWithStream({ name: "Discarded" });
+      throw failure;
+    }), (error) => error === failure);
+    store.createStream({ workspaceId: kept.workspace.id, name: "After inner refusal" });
+  }));
+  assert.equal(store.hierarchy().some((workspace) => workspace.name === "Discarded"), false);
+  const kept = store.hierarchy().find((workspace) => workspace.name === "Kept");
+  assert.equal(kept.streams.length, 2);
+  // Depth and SQLite ownership are released after the outer commit.
+  store.createWorkspaceWithStream({ name: "Next transaction" });
+  assert.equal(store.hierarchy().some((workspace) => workspace.name === "Next transaction"), true);
+});
+
+test("outer catalog refusal rolls back completed nested mutations together", async (t) => {
+  const store = await fixture(t);
+  const before = store.hierarchy();
+  await assert.rejects(store.runMutation(() => store.transaction(() => {
+    store.createWorkspaceWithStream({ name: "Must roll back" });
+    throw new Error("outer operation failed");
+  })), /outer operation failed/u);
+  assert.deepEqual(store.hierarchy(), before);
+  store.createWorkspaceWithStream({ name: "Recovered" });
+  assert.equal(store.hierarchy().some((workspace) => workspace.name === "Recovered"), true);
+});
+
+test("preparation-only terminal receipt validator runs atomically and refusal retains original pending", async (t) => {
+  const store = await fixture(t);
+  const workspace = store.createWorkspace({ name: "Preparation" });
+  const stream = store.createStream({ workspaceId: workspace.id, displayName: "RM" });
+  store.beginMcpOperation({ requestId: "preparation", workspaceId: workspace.id, streamId: stream.id,
+    provider: "codex", threadId: "thread-1", toolName: "hub_release_prepare", argumentsHash: "a".repeat(64) });
+  assert.throws(() => store.completeMcpOperation("preparation", { tree: "b".repeat(40) },
+    { validate: () => { throw new Error("stale selected CAS"); } }), /stale selected/);
+  assert.equal(store.mcpOperation("preparation").status, "pending");
+  assert.throws(() => store.completeMcpOperation("preparation", {}, { validate: async () => {} }), /synchronous/);
+  let checks = 0;
+  const receipt = store.completeMcpOperation("preparation", { tree: "b".repeat(40) }, { validate: () => {
+    checks += 1;
+    assert.equal(store.mcpOperation("preparation").status, "pending");
+  } });
+  assert.equal(checks, 1);
+  assert.equal(receipt.status, "succeeded");
+  assert.equal(receipt.result.tree, "b".repeat(40));
+});
+
 test("Workspace mutation queue retries real SQLite contention and keeps timers responsive", async (t) => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-workspace-contention-"));
   const databaseFile = path.join(directory, "journal.sqlite");

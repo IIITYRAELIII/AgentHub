@@ -95,7 +95,6 @@ export function createProviderCatalogComposition({
   claudeTaskSnapshots,
   claudeRuntimeOwner,
   claudeRunAdmission,
-  backfillWorkLogPricingMetadata,
   readCodexThreadTitleHistories,
   rememberCodexRolloutPath,
   capturedCodexExecutionOwner,
@@ -123,7 +122,6 @@ export function createProviderCatalogComposition({
   clock = () => Date.now(),
 }) {
   const codexCatalogProjection = new CodexCatalogProjectionService({
-    backfillPricing: backfillWorkLogPricingMetadata,
     readTitleHistories: readCodexThreadTitleHistories,
     findProject,
     rememberRolloutPath: rememberCodexRolloutPath,

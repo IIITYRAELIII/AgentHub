@@ -16,7 +16,7 @@ test("restart banner describes generic blocking work rather than active Tasks", 
     restartWaitingMessage(2),
     "Agent Hub ожидает завершения блокирующей работы: 2.",
   );
-  assert.equal(restartWaitingMessage(0), "Agent Hub ожидает завершения блокирующей работы.");
+  assert.equal(restartWaitingMessage(0), "Перезапуск Agent Hub запрошен; ожидается начало.");
 });
 
 test("restart connection state trusts current blockers over a stale request flag", async () => {
@@ -34,7 +34,7 @@ test("restart connection state trusts current blockers over a stale request flag
     restartWaiting: false,
     restartBlockingCount: 0,
   }) }, {
-    status: "restarting",
+    status: "restart-waiting",
     blockingCount: 0,
   });
 });

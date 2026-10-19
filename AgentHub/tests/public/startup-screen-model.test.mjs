@@ -80,8 +80,8 @@ test("startup screen renders each completed startup once", () => {
     },
   }, 12_000);
 
-  assert.equal(shouldShowStartupScreen(model), true);
-  assert.equal(shouldShowStartupScreen(model, { visible: true, lastStartedAtMs: 10_000 }), true);
+  assert.equal(shouldShowStartupScreen(model), false);
+  assert.equal(shouldShowStartupScreen(model, { visible: true, lastStartedAtMs: 10_000 }), false);
   assert.equal(shouldShowStartupScreen(model, { visible: false, lastStartedAtMs: 10_000 }), false);
   assert.equal(shouldShowStartupScreen({ available: false, ready: false }), false);
 });
@@ -221,13 +221,11 @@ test("background work never blocks a ready interface and keeps its error visible
   ]), 10_000);
   assert.equal(failedBackground.failed, false, "фоновый отказ выдан за общий отказ запуска");
   assert.equal(failedBackground.finished, true);
-  // The first visitor of this startup still sees the screen once and the
-  // controller hides it on its own schedule; the fix only stops a background
-  // state from keeping it open afterwards.
-  assert.equal(shouldShowStartupScreen(failedBackground, { visible: false, lastStartedAtMs: 0 }), true,
-    "первый показ этого запуска не должен пропадать");
-  assert.equal(shouldShowStartupScreen(failedBackground, { visible: true, lastStartedAtMs: 0 }), true,
-    "уже показанный экран обязан дождаться собственного правила скрытия");
+  // Authoritative readiness closes the overlay for first and returning visitors.
+  assert.equal(shouldShowStartupScreen(failedBackground, { visible: false, lastStartedAtMs: 0 }), false,
+    "готовность немедленно открывает интерфейс");
+  assert.equal(shouldShowStartupScreen(failedBackground, { visible: true, lastStartedAtMs: 0 }), false,
+    "готовность закрывает уже показанный экран");
   assert.equal(shouldShowStartupScreen(failedBackground, { visible: false, lastStartedAtMs: 1_000 }), false,
     "уже виденный запуск снова закрыл готовый интерфейс");
 
@@ -261,7 +259,7 @@ test("a mandatory failure still blocks even next to background work", () => {
   assert.deepEqual(model.failedOperations.map((item) => item.id), ["provider"]);
   assert.deepEqual(model.backgroundFailedOperations.map((item) => item.id), ["provider-metadata"]);
   assert.equal(shouldShowStartupScreen(model, { visible: false, lastStartedAtMs: 1_000 }), false);
-  assert.equal(shouldShowStartupScreen(model, { visible: true, lastStartedAtMs: 1_000 }), true);
+  assert.equal(shouldShowStartupScreen(model, { visible: true, lastStartedAtMs: 1_000 }), false);
 
   // An unfinished mandatory stage keeps the screen active as before.
   const starting = createStartupScreenModel({

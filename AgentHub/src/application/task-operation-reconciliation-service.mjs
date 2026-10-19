@@ -2,12 +2,16 @@ import { createHash } from "node:crypto";
 import { realpathSync } from "node:fs";
 import path from "node:path";
 
-import { normalizedTaskGitReferences } from "../domain/task-git-reference.mjs";
+import { normalizedTaskGitReferences, normalizedInitialNativeTest } from "../domain/task-git-reference.mjs";
 import { taskProjectRoot } from "../domain/task-project-root.mjs";
 import { normalizedTaskSquashTransfer } from "../domain/task-squash-transfer.mjs";
 import { normalizedTaskSquashCutover } from "../domain/task-squash-cutover.mjs";
 import { TaskLifecycleNoEffectError, TaskOperationReconciliationRefusedError,
   workflowAdmissionNoEffectEvidence } from "../domain/task-board-task.mjs";
+
+import { normalizePublishedResolution } from "../domain/published-resolution.mjs";
+import { selectedAbsorptionHandoff } from "../domain/task-selected-composition.mjs";
+import { sameTaskWorkflowState as sameTaskState, nativeTestMetadataDrift } from "../domain/native-test-terminal-recovery.mjs";
 
 function requiredMethod(value, name) {
   if (typeof value?.[name] !== "function") throw new TypeError(`${name} is required`);
@@ -98,10 +102,17 @@ function workflowCasArguments({ expectedTaskRevision, expectedWorkflowStatus } =
 }
 
 function selectedCompositionArguments(options = {}) {
+  if (supplied(options.selectedAbsorptionHandoff)) selectedAbsorptionHandoff(options.selectedAbsorptionHandoff);
   const values = [options.selectedBundlePath, options.selectedBundleSha256,
     options.selectedProofCommit, options.selectedPreviewRequestId,
-    options.expectedSelectedPreviewHash];
+    options.expectedSelectedPreviewHash, options.selectedPublishedResolution, options.selectedAbsorptionHandoff];
   if (values.every((value) => !supplied(value))) return null;
+  if (values.slice(0, -1).every(value => !supplied(value))) {
+    if (!Number.isSafeInteger(Number(options.expectedTaskRevision)) || Number(options.expectedTaskRevision) < 1
+        || options.expectedWorkflowStatus !== "in_progress") throw new Error("Invalid native absorption original CAS");
+    return { expected_task_revision: Number(options.expectedTaskRevision), expected_workflow_status: "in_progress",
+      selected_absorption_handoff: options.selectedAbsorptionHandoff };
+  }
   const revision = Number(options.expectedTaskRevision);
   const bundlePath = String(options.selectedBundlePath ?? "").trim();
   const bundleSha256 = String(options.selectedBundleSha256 ?? "").trim().toLowerCase();
@@ -123,6 +134,10 @@ function selectedCompositionArguments(options = {}) {
     selected_proof_commit: proofCommit,
     selected_preview_request_id: previewRequestId,
     expected_selected_preview_hash: previewHash,
+    ...(supplied(options.selectedPublishedResolution)
+      ? { selected_published_resolution: options.selectedPublishedResolution } : {}),
+    ...(supplied(options.selectedAbsorptionHandoff)
+      ? { selected_absorption_handoff: options.selectedAbsorptionHandoff } : {}),
   };
 }
 
@@ -253,23 +268,6 @@ function exactWorkflowCasEvidence({ workflowCas, task, transition, outcome }) {
     || priorTask.workflowStatus === workflowCas.expected_workflow_status;
 }
 
-function sameTaskState(current, expected, { allowMetadataRevision = false } = {}) {
-  const state = (task) => task ? {
-    id: task.id,
-    workspaceId: task.workspaceId ?? null,
-    streamId: task.streamId ?? null,
-    status: task.status ?? null,
-    workflowStatus: task.workflowStatus,
-    ...(allowMetadataRevision ? {} : { revision: Number(task.revision) }),
-    gitReferences: normalizedTaskGitReferences(task.gitReferences).map((reference) => ({
-      projectRoot: path.resolve(reference.projectRoot),
-      branch: reference.branch,
-      resultCommit: reference.resultCommit,
-    })),
-  } : null;
-  return JSON.stringify(state(current)) === JSON.stringify(state(expected));
-}
-
 function exactCommittedEvidence(committed, evidence, projectRoot, targetWorkflowStatus, priorTask = null) {
   if (!committed || committed.workflowStatus !== targetWorkflowStatus) return false;
   const resultCommit = String(evidence?.resultCommit ?? "").trim().toLowerCase();
@@ -339,8 +337,15 @@ export class TaskOperationReconciliationService {
       ?? null;
     const squash = squashArguments(options);
     const selected = squash ? null : selectedCompositionArguments(options);
-    const cutover = squash || selected ? null : cutoverArguments(options);
-    const workflowCas = squash || selected || cutover ? null : workflowCasArguments(options);
+    const initial = options.initialNativeTest == null ? null : {
+      ...workflowCasArguments(options), initial_native_test: normalizedInitialNativeTest(options.initialNativeTest),
+    };
+    if (initial && (squash || selected || cutoverArguments(options)
+        || initial.expected_workflow_status !== "in_progress" || !initial.expected_task_revision)) {
+      throw new Error("Initial native Test reconciliation requires its complete original family");
+    }
+    const cutover = squash || selected || initial ? null : cutoverArguments(options);
+    const workflowCas = squash || selected || cutover || initial ? null : workflowCasArguments(options);
     const validTarget = WORKFLOW_STATUSES.has(targetWorkflowStatus);
     const taskRoot = taskProjectRoot({
       workspace,
@@ -360,16 +365,22 @@ export class TaskOperationReconciliationService {
         guardId: exactGuardId, state: "no_effect", noEffect: proof };
     }
     if (!root) throw new Error("Unknown workflow operation identity requires a project root");
+
+    const metadataRecovery = !squash && !selected && !initial && !cutover && !workflowCas
+      && options.nativeResolutionReview == null && !exactGuardId && nativeTestMetadataDrift(task, transition);
+    const receiptSettled = !transition && (outcome?.result?.evidence?.nativeTerminalRecovery
+      || outcome?.result?.evidence?.nativeAwaitRecovery)
+      && receipt?.operationStatus === "succeeded" && receipt?.receiptState === "succeeded";
     const receiptMatches = receipt
       && receipt.workspaceId === workspace.id
       && receipt.toolName === "hub_task_status_update"
       && validTarget
       && receipt.argumentsHash === workflowArgumentsHash({
         operationId, taskId: task.id, status: targetWorkflowStatus,
-        identityArguments: squash ?? selected ?? cutover ?? workflowCas,
+        identityArguments: { ...(initial ?? squash ?? selected ?? cutover ?? workflowCas),
+          ...(options.nativeResolutionReview != null ? { native_resolution_review: options.nativeResolutionReview } : {}) },
       })
-      && receipt.operationStatus === "pending"
-      && receipt.receiptState === "unknown";
+      && ((receipt.operationStatus === "pending" && receipt.receiptState === "unknown") || receiptSettled);
     const transitionMatches = !transition || (
       transition.operationId === operationId
       && transition.taskId === task.id
@@ -385,9 +396,38 @@ export class TaskOperationReconciliationService {
       cutover, task, transition, outcome, projectRoot: root, targetWorkflowStatus,
     });
     const workflowCasMatches = exactWorkflowCasEvidence({ workflowCas, task, transition, outcome });
+    const initialEvidence = transition?.evidence?.initialNativeTest ?? outcome?.result?.evidence?.initialNativeTest;
+    const initialPrior = transition?.priorTask ?? outcome?.result?.priorTask;
+    const returnedCommit = initial?.initial_native_test.returnedResultCommit;
+    const initialReferencesMatch = returnedCommit
+      ? initialPrior?.gitReferences?.length === 1
+        && initialPrior.gitReferences[0].resultCommit === returnedCommit
+        && samePath(initialPrior.gitReferences[0].projectRoot, root)
+        && initialEvidence?.priorResult?.taskId === task.id
+        && initialEvidence.priorResult.resultCommit === returnedCommit
+        && samePath(initialEvidence.priorResult.projectRoot, root)
+      : !initialPrior?.gitReferences?.length && !initialEvidence?.priorResult;
+    const initialMatches = !initial || (targetWorkflowStatus === "testing"
+      && initialPrior?.workflowStatus === "in_progress" && initialReferencesMatch
+      && initialPrior.revision === initial.expected_task_revision
+      && initialEvidence?.taskId === task.id && initialEvidence.taskRevision === initial.expected_task_revision
+      && initialEvidence.authority.workspaceId === receipt.workspaceId
+      && initialEvidence.authority.streamId === receipt.streamId
+      && initialEvidence.authority.provider === receipt.provider && initialEvidence.authority.threadId === receipt.threadId
+      && samePath(initialEvidence.projectRoot, root)
+      && JSON.stringify(initialEvidence.identity) === JSON.stringify(initial.initial_native_test)
+      && (!outcome || outcome.result.evidence.resultCommit === initial.initial_native_test.sourceCommit));
     let squashMatches = true;
     let selectedMatches = true;
     if (selected) {
+      if (!selected.selected_proof_commit) {
+        const evidence = transition?.evidence ?? outcome?.result?.evidence;
+        const input = evidence?.nativeAbsorptionInput;
+        selectedMatches = targetWorkflowStatus === "testing"
+          && (transition?.expectedRevision ?? outcome?.result?.priorTask?.revision) === selected.expected_task_revision
+          && JSON.stringify(input ? { requestId: input.requestId, text: input.text } : null)
+            === JSON.stringify(selected.selected_absorption_handoff);
+      } else {
       const selectedProof = transition?.evidence?.selectedComposition
         ?? outcome?.result?.evidence?.selectedComposition;
       selectedMatches = targetWorkflowStatus === "testing"
@@ -398,7 +438,13 @@ export class TaskOperationReconciliationService {
         && selectedProof?.proofCommit === selected.selected_proof_commit
         && selectedProof?.bundleSha256 === selected.selected_proof_bundle_sha256
         && selectedProof?.bundlePath === path.resolve(selected.selected_proof_bundle_path)
+        && JSON.stringify(normalizePublishedResolution(selectedProof?.publishedResolutionInput))
+          === JSON.stringify(normalizePublishedResolution(selected.selected_published_resolution))
+        && JSON.stringify(selectedProof?.absorptionInput
+          ? { requestId: selectedProof.absorptionInput.requestId, text: selectedProof.absorptionInput.text } : null)
+          === JSON.stringify(selected.selected_absorption_handoff ?? null)
         && samePath(selectedProof?.repositoryRoot, root);
+      }
     }
     let squashSourceTask = null;
     if (squash) {
@@ -440,7 +486,7 @@ export class TaskOperationReconciliationService {
       } catch { squashMatches = false; }
     }
     if (!receiptMatches || !transitionMatches || !outcomeMatches || !cutoverMatches || !workflowCasMatches
-        || !squashMatches || !selectedMatches
+        || !squashMatches || !selectedMatches || !initialMatches
         || !taskRoot || !samePath(taskRoot, root)) {
       throw new Error("Unknown workflow operation identity, lifecycle state, project root or Task CAS does not match");
     }
@@ -461,7 +507,7 @@ export class TaskOperationReconciliationService {
       } else {
         const committed = outcome.result?.task;
         if (
-          sameTaskState(task, committed)
+          sameTaskState(task, committed, { allowMetadataRevision: Boolean(outcome.result?.evidence?.nativeTerminalRecovery) })
           && exactCommittedEvidence(
             committed, outcome.result?.evidence, root, targetWorkflowStatus, outcome.result?.priorTask,
           )
@@ -473,11 +519,11 @@ export class TaskOperationReconciliationService {
         ? revisionUnchanged && sameTaskState(task, transition.priorTask)
           && sameTaskState(squashSourceTask, transition.priorSourceTask)
         : revisionUnchanged && task.workflowStatus !== targetWorkflowStatus;
-      const failedUnchanged = (revisionUnchanged || (!squash && !cutover
+      const failedUnchanged = (revisionUnchanged || (!squash && !cutover && !initial
           && Number(task.revision) > Number(transition.expectedRevision)))
-        && sameTaskState(task, transition.priorTask, { allowMetadataRevision: !squash && !cutover })
+        && sameTaskState(task, transition.priorTask, { allowMetadataRevision: !squash && !cutover && !initial })
         && (!squash || sameTaskState(squashSourceTask, transition.priorSourceTask));
-      if (transition.phase === "pending_git" && pendingUnchanged) state = "pending";
+      if (transition.phase === "pending_git" && (pendingUnchanged || metadataRecovery)) state = "pending";
       if (transition.phase === "failed" && failedUnchanged) state = "failed";
     }
     if (!state) {
@@ -494,9 +540,12 @@ export class TaskOperationReconciliationService {
       operationId,
       projectRoot: root,
       guardId: exactGuardId,
+      metadataRecovery,
+      receiptSettled,
       squash,
       selected,
-      sourceTaskId: squash?.squash_source_task_id ?? null,
+      sourceTaskId: squash?.squash_source_task_id
+        ?? selectedAbsorptionHandoff(selected?.selected_absorption_handoff)?.declaration.sourceTaskId ?? null,
       withdrawal: state === "succeeded" && outcome?.result?.evidence?.outcome === "withdrawn_result"
         || state === "pending" && ["new", "in_progress", "blocked"].includes(targetWorkflowStatus)
           && ["testing", "awaiting_implementation"].includes(task.workflowStatus)
@@ -537,7 +586,7 @@ export class TaskOperationReconciliationService {
         resultCommit: identity.outcome.result.evidence.resultCommit,
         taskRevision: identity.task.revision,
       };
-      const receipt = await this.workspaceCatalog.completeUnknownMcpOperation(identity.operationId, {
+      const receipt = identity.receiptSettled ? identity.receipt : await this.workspaceCatalog.completeUnknownMcpOperation(identity.operationId, {
         workspaceId: identity.workspace.id,
         toolName: "hub_task_status_update",
         result: originalResult,
@@ -584,7 +633,8 @@ export class TaskOperationReconciliationService {
       taskId: requiredText(options.taskId, "task id", 200),
       sourceTaskId: options.squashSourceTaskId
         ? requiredText(options.squashSourceTaskId, "squash source task id", 200)
-        : null,
+        : selectedAbsorptionHandoff(options.selectedAbsorptionHandoff)?.declaration.sourceTaskId ?? null,
+      operationId: requiredText(options.operationRequestId, "operation request id", 300),
       projectRoot: path.resolve(requiredText(options.projectRoot, "project root")),
     }, async (lease) => {
       let effectsStarted = false;
@@ -593,7 +643,11 @@ export class TaskOperationReconciliationService {
       const needsRecovery = identity.state === "pending" || identity.withdrawal;
       if (identity.state === "pending" && !identity.guardId && !identity.withdrawal
           && !identity.squash && !identity.selected) {
-        throw new Error("Pending workflow reconciliation requires the exact process-tree guard id");
+        const native = typeof this.taskLifecycle.pendingNativeWorkflowOwned === "function"
+          && await this.taskLifecycle.pendingNativeWorkflowOwned({ taskId: identity.task.id,
+            operationId: identity.operationId, projectRoot: identity.projectRoot, lease,
+            allowMetadataRecovery: identity.metadataRecovery });
+        if (!native) throw new Error("Pending workflow reconciliation requires the exact process-tree guard id or original native Git intent");
       }
       const proof = needsRecovery && identity.guardId ? {
         kind: requiredText(options.proofKind, "proof kind", 100),
@@ -631,6 +685,8 @@ export class TaskOperationReconciliationService {
           guardId: identity.guardId,
           proof,
           lease,
+          verifyInitialNativeTest: options.verifyInitialNativeTest,
+          allowMetadataRecovery: identity.metadataRecovery,
         });
       } catch (error) {
         try {

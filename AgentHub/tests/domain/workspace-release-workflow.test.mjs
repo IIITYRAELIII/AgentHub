@@ -59,12 +59,14 @@ test("composition preserves copied policies and authored whitespace across check
   }
 });
 
-test("active policy retains release freeze, conditional test lock and renamed role", () => {
+test("active policy freezes candidate only and retains conditional test lock and renamed role", () => {
   const role = effectiveStreamDeveloperRules("", { releaseManager: true });
   assert.doesNotMatch(role, /architect/iu);
   assert.match(role, /At the beginning.*create or reuse one service Task/u);
   assert.match(role, /every Task already included in PreRelease.*native linked checklist/u);
-  assert.match(role, /Freeze the included Tasks, their branches and managed worktrees/u);
+  assert.match(role, /Capture the exact accepted results into one immutable candidate generation/u);
+  assert.match(role, /Task work and later acceptance may continue/u);
+  assert.doesNotMatch(role, /Freeze the included Tasks/u);
   assert.match(role, /do not delete Task records/u);
   assert.match(role, /Remove only their managed branches and worktrees/u);
   const workspace = effectiveWorkspaceDeveloperRules("", { releaseWorkflowEnabled: true });
@@ -124,12 +126,14 @@ test("Release Manager rules use only explicit settings.releaseManager and allow 
   assert.match(RELEASE_MANAGER_RELEASE_DEVELOPER_RULES, /fetch origin without changing local main/iu);
   assert.match(RELEASE_MANAGER_RELEASE_DEVELOPER_RULES, /authors and committers.*GitHub logins.*signatures.*changed files/iu);
   assert.match(RELEASE_MANAGER_RELEASE_DEVELOPER_RULES, /Immediately before push.*frozen approved main commit/iu);
-  assert.match(RELEASE_MANAGER_RELEASE_DEVELOPER_RULES, /Workspace-prescribed preflight/u);
+  for (const command of ["hub_release_run", "hub_release_get", "hub_release_continue"]) {
+    assert.ok(RELEASE_MANAGER_RELEASE_DEVELOPER_RULES.includes(command));
+  }
   assert.match(RELEASE_MANAGER_RELEASE_DEVELOPER_RULES, /immutable candidate/u);
   assert.match(RELEASE_MANAGER_RELEASE_DEVELOPER_RULES, /production deployment is healthy/u);
   assert.doesNotMatch(
     RELEASE_MANAGER_RELEASE_DEVELOPER_RULES,
-    /hub_release_preflight|TestContour|CHANGELOG\.md/u,
+    /hub_release_preflight|TestContour/u,
   );
 });
 

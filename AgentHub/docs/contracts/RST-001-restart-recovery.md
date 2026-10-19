@@ -1,5 +1,10 @@
 # RST-001 — Restart and maintenance recovery
 
+Catalog reads during startup must not indirectly launch optional historical
+pricing backfill. Its existing post-readiness coordinator remains the owner;
+mandatory terminal projection recovery and its durable ACK fences still finish
+before readiness, with the existing replacement deadline unchanged.
+
 ## Identity and owner
 
 Restart and compaction are persisted operations with `operationId`, kind, exact
@@ -65,7 +70,18 @@ provider/process completion owner may commit the exact terminal outcome.
 - A restart requested with no selected Stream and Thread is persisted under the
   explicit runtime scope; a target naming only one of them is rejected.
 - Restart is a barrier over durable finals, command receipts, delivery outbox and
-  maintenance reconciliation.
+  maintenance reconciliation. The real input factory must pass that reservation
+  to ordinary and deferred admission, not only define an unused coordinator hook.
+- One durable restart launches one owned RuntimeHost tree. Windows restart never
+  submits an escaping WMI start, retries an ownership timeout or adds a fallback
+  launch. The controlled path uses a direct detached host and retains exact
+  cleanup ownership until lock/ready proof. Cold `--spawn-independent` uses
+  synchronous native process creation with explicit job breakaway; denied
+  breakaway fails visibly, with no WMI fallback or delayed launch. Cold start
+  cannot carry a managed restart operation identity.
+  The expected release is persisted before launch; exact operation/release/PID/
+  instance evidence fences readiness. The old owner recovers only after confirmed
+  cleanup of its owned replacement. See ADR-0114.
 - Once a restart operation is persisted, new durable commands remain queued in
   their exact lanes. The old runtime cannot admit them after the run that the
   restart is draining reaches terminal state.
@@ -98,6 +114,9 @@ provider/process completion owner may commit the exact terminal outcome.
   Concurrent Thread checks share one bounded process snapshot per runtime
   cadence. Queue retries use capped exponential backoff with jitter; an exact
   completion or wake cancels that delay and rechecks the lane head immediately.
+- Retained uncertain run ownership is projected as unknown while preserving the
+  exact Stop target and replay fence. Only an exact fresh active snapshot clears
+  that uncertainty; no terminal is manufactured from reconnect failure.
 - Process death does not preserve local `running` as fact. Recovery reconciles
   provider state or records an honest terminal timeout/unknown result.
 - An exact Codex turn whose rollout has only `task_started` remains unknown
@@ -130,9 +149,9 @@ provider/process completion owner may commit the exact terminal outcome.
   measured time since the wait began and says the previous process still
   answers only after a successful health response. A snapshot served after a
   failed restart carries its recent persisted reason, shown once per operation,
-  until a later restart settles successfully; that reason is part of the
-  snapshot source revision, so neither a failure, a later success nor the end
-  of its notice window can be hidden by a cached unchanged snapshot. Known failed
+  until a later restart settles successfully; elapsed time is not delivery and
+  cannot expire this terminal reason. It is part of the snapshot source revision,
+  so neither a failure nor a later success can be hidden by an unchanged cache. Known failed
   startup details remain available during ordinary connection loss. Fresh
   health and the canonical connection state remain the reconnect authority.
 - The startup screen retains failed-stage details and exposes authenticated
@@ -163,6 +182,13 @@ external processes, rollout files, Git repositories and media jobs are not
 execution authority. Excluded operations retain their evidence and explicitly
 report exclusion; they must not report successful remote work. Recording
 delivery receipts retain their original idempotency identity across restart.
+
+The literal Codex recording adapter recovers a turn from its own isolated
+SQLite command and turn rows. A read-only projection checks the seeded Thread,
+exact command fingerprint and mapped execution identity before supplying that
+turn to the ordinary snapshot and terminal owner. This profile never consumes
+captured production rollout status. Outside the explicit recording profile,
+Codex recovery still requires the exact native rollout terminal event.
 
 Recovery checks must separately report queue/terminal/delivery behavior, source
 immutability, exact replacement identity and excluded effects. Synthetic shell
@@ -232,3 +258,16 @@ hash remains unknown without cleanup. The final SQLite commit still waits for
 the ordinary squash Git proof and records both hashes in the existing lifecycle
 outcome. No bootstrap-specific registry or direct database/ref recovery path is
 introduced.
+
+The frontend startup overlay follows authoritative health readiness. A ready
+runtime with a failed optional capability remains usable and exposes that
+failure separately with the existing targeted retry. Failed or delayed health
+reads do not turn an already-ready runtime into an asserted startup/restart;
+connection diagnostics remain owned by the ordinary banner. A fresh unready
+health response still blocks, including before startup stages are available.
+Queued restart intent is waiting, not evidence that replacement started.
+Telegram transport failures retain bounded allowlisted cause codes in their
+existing error/health diagnostic; messages, credential-bearing URLs, tokens and
+request bodies never contribute to that summary. An old generic fetch failure
+without retained cause codes cannot be retrospectively diagnosed by a later
+successful request.

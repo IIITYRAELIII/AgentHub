@@ -1,4 +1,5 @@
 import { assertContourExternalEffects } from "../ports/contour-external-effects.mjs";
+import { randomUUID } from "node:crypto";
 
 const TIMER_NAME = "work-log-usage-sync";
 const USG001_HISTORY_RESEND_VERSION = 1;
@@ -84,7 +85,7 @@ export class UsageSyncAutoService {
     initialDelayMs = 30_000,
     intervalMs = 5 * 60_000,
     antiEntropyIntervalMs = DEFAULT_ANTI_ENTROPY_INTERVAL_MS,
-    accountBackfill = null,
+    trace = null,
     suggestedDeviceLabel = null,
     externalEffects = null,
     isStopping = () => false,
@@ -117,7 +118,7 @@ export class UsageSyncAutoService {
     this.initialDelayMs = initialDelayMs;
     this.intervalMs = intervalMs;
     this.antiEntropyIntervalMs = antiEntropyIntervalMs;
-    this.accountBackfill = typeof accountBackfill === "function" ? accountBackfill : null;
+    this.trace = trace;
     this.suggestedDeviceLabel = typeof suggestedDeviceLabel === "function" ? suggestedDeviceLabel : null;
     this.isStopping = isStopping;
     this.now = typeof now === "function" ? now : () => new Date();
@@ -147,7 +148,8 @@ export class UsageSyncAutoService {
   sync() {
     if (this.externalEffects) return Promise.resolve(this.externalEffects.exclude("usage-sync", "sync"));
     if (this.syncInFlight) return this.syncInFlight;
-    this.syncInFlight = this.#syncOnce().finally(() => {
+    const operationId = `usage-sync:${randomUUID()}`;
+    this.syncInFlight = this.#measure(operationId, "total", () => this.#syncOnce(operationId)).finally(() => {
       this.syncInFlight = null;
       this.schedule();
     });
@@ -218,14 +220,15 @@ export class UsageSyncAutoService {
     };
   }
 
-  async #syncOnce() {
-    const remoteConfig = await this.remoteConfigStore.load();
+  async #syncOnce(operationId) {
+    const measure = (stage, action) => this.#measure(operationId, stage, action);
+    const remoteConfig = await measure("config", () => this.remoteConfigStore.load());
     const serverUrl = String(remoteConfig?.serverUrl ?? "").trim();
     if (!serverUrl) return { skipped: true, reason: "not-configured" };
     if (!remoteConfig?.enrolledAt) return { skipped: true, reason: "not-enrolled", serverUrl };
     const client = this.clientFactory({ serverUrl, identityStore: this.identityStore });
     const localStateBefore = typeof this.workLogUsageStore.usageSyncState === "function"
-      ? await this.workLogUsageStore.usageSyncState()
+      ? await measure("state-before", () => this.workLogUsageStore.usageSyncState())
       : { localStoreGeneration: "", factSummary: null };
     const cursorServerGeneration = text(remoteConfig.lastUsagePullServerGeneration);
     const cursorLocalGeneration = text(remoteConfig.lastUsagePullLocalGeneration);
@@ -235,20 +238,19 @@ export class UsageSyncAutoService {
       && currentLocalGeneration
       && cursorLocalGeneration !== currentLocalGeneration
     );
-    const accountBackfill = await this.#backfillAccounts();
     const historyResendDoneVersion = Math.max(
       0,
       Math.trunc(Number(remoteConfig.lastUsageHistoryResendVersion) || 0),
     );
     const forceHistoryResend = historyResendDoneVersion < USG001_HISTORY_RESEND_VERSION;
-    const snapshot = await this.workLogUsageStore.usageSyncSnapshot({
+    const snapshot = await measure("snapshot", () => this.workLogUsageStore.usageSyncSnapshot({
       deviceId: this.identityStore.deviceId,
       deviceLabel: this.identityStore.label,
       afterObservedAt: forceHistoryResend ? "" : remoteConfig.lastUsagePushWatermark,
       afterJournalRevision: forceHistoryResend ? 0 : remoteConfig.lastUsagePushJournalRevision,
       ownFactsOnly: true,
-    });
-    const push = await client.push(snapshot);
+    }));
+    const push = await measure("push", () => client.push(snapshot));
     const pushAccepted = push?.ok !== false && !numberField(push.rejected);
     const serverAcceptsUsageFacts = usageFactSchemaVersion(push) >= USAGE_FACT_SCHEMA_VERSION;
     const canAdvanceUsageCursor = pushAccepted && (!forceHistoryResend || serverAcceptsUsageFacts);
@@ -266,7 +268,7 @@ export class UsageSyncAutoService {
     if (usageHistoryResendVersion != null) {
       rememberPushOptions.usageHistoryResendVersion = usageHistoryResendVersion;
     }
-    await this.remoteConfigStore.rememberPush(push, rememberPushOptions);
+    await measure("push-cursor", () => this.remoteConfigStore.rememberPush(push, rememberPushOptions));
     const serverGenerationAfterPush = text(push.datasetGeneration);
     const serverRevisionAfterPush = Number(push.serverRevision ?? 0) || 0;
     const cursorRevision = Math.max(0, Math.trunc(Number(remoteConfig.lastUsagePullRevision) || 0));
@@ -294,17 +296,17 @@ export class UsageSyncAutoService {
     let antiEntropyMismatch = false;
 
     const runFullReconcile = async (reasons) => {
-      const fullSnapshot = await client.pull();
+      const fullSnapshot = await measure("full-pull", () => client.pull());
       const fullRemoteEvents = Array.isArray(fullSnapshot.events) ? fullSnapshot.events.length : 0;
-      const reconcile = await this.workLogUsageStore.importUsageSyncSnapshotAndProject({
+      const reconcile = await measure("reconcile", () => this.workLogUsageStore.importUsageSyncSnapshotAndProject({
         snapshot: fullSnapshot,
         projectRoot: this.projectRoot,
         projectionProjectRoots: this.projectionProjectRoots,
         workLogFile: this.workLogFile,
         reconcile: true,
-      });
+      }));
       localStateAfterPull = typeof this.workLogUsageStore.usageSyncState === "function"
-        ? await this.workLogUsageStore.usageSyncState()
+        ? await measure("state-reconcile", () => this.workLogUsageStore.usageSyncState())
         : localStateAfterPull;
       const fullSummary = fullSnapshot.factSummary || null;
       const summaryRequired = Boolean(digest(fullSummary) || text(fullSnapshot.datasetGeneration));
@@ -322,7 +324,7 @@ export class UsageSyncAutoService {
         repair.failed = true;
         repair.reason = "fact-summary-mismatch-after-reconcile";
       } else {
-        repair.projection = await this.#ensureRepairProjection();
+        repair.projection = await measure("repair-projection", () => this.#ensureRepairProjection());
       }
       remoteSnapshot = fullSnapshot;
       remoteEvents = fullRemoteEvents;
@@ -332,21 +334,21 @@ export class UsageSyncAutoService {
     if (cursorInvalidReasons.length) {
       await runFullReconcile([...new Set(cursorInvalidReasons)]);
     } else {
-      remoteSnapshot = await client.pull({ sinceRevision: cursorRevision });
+      remoteSnapshot = await measure("pull", () => client.pull({ sinceRevision: cursorRevision }));
       remoteEvents = Array.isArray(remoteSnapshot.events) ? remoteSnapshot.events.length : 0;
       pull = remoteEvents
-        ? await this.workLogUsageStore.importUsageSyncSnapshotAndProject({
+        ? await measure("import", () => this.workLogUsageStore.importUsageSyncSnapshotAndProject({
           snapshot: remoteSnapshot,
           projectRoot: this.projectRoot,
           projectionProjectRoots: this.projectionProjectRoots,
           workLogFile: this.workLogFile,
-        })
+        }))
         : { imported: true, before: null, after: null, added: 0, updated: 0, projected: false };
       localStateAfterPull = typeof this.workLogUsageStore.usageSyncState === "function"
-        ? await this.workLogUsageStore.usageSyncState()
+        ? await measure("state-after", () => this.workLogUsageStore.usageSyncState())
         : { localStoreGeneration: "", factSummary: null };
       const antiEntropySnapshot = runAntiEntropy
-        ? await this.#usageSummary(client)
+        ? await measure("summary", () => this.#usageSummary(client))
         : null;
       const postPullInvalidReasons = [];
       const remoteGeneration = text(
@@ -389,7 +391,7 @@ export class UsageSyncAutoService {
     }
     if (antiEntropyAt) rememberPullOptions.antiEntropyAt = antiEntropyAt;
     if (repair?.converged) rememberPullOptions.replaceCursor = true;
-    await this.remoteConfigStore.rememberPull(pull, rememberPullOptions);
+    await measure("pull-cursor", () => this.remoteConfigStore.rememberPull(pull, rememberPullOptions));
     const result = {
       synced: true,
       exportedEvents: Array.isArray(snapshot.events) ? snapshot.events.length : 0,
@@ -403,7 +405,6 @@ export class UsageSyncAutoService {
       usageJournalRevision,
       usageHistoryResendVersion,
       usageHistoryResendPending: forceHistoryResend && !usageHistoryResendVersion,
-      accountBackfill,
       push,
       pull,
       serverUrl,
@@ -418,19 +419,31 @@ export class UsageSyncAutoService {
     return result;
   }
 
-  async #backfillAccounts() {
-    if (!this.accountBackfill) return { applied: false, reason: "not-configured" };
+  async #measure(operationId, stage, action) {
+    let span;
     try {
-      const result = await this.accountBackfill();
-      if (result?.applied) {
-        this.logger.info?.(
-          `Usage sync account backfill updated ${numberField(result.updated)} local journal record(s).`,
-        );
+      span = this.trace?.startBestEffortSpan?.({
+        commandId: operationId, stage: `usage-sync-${stage}`, transport: "local", recordStarted: true,
+      });
+    } catch { /* Instrumentation never admits or rejects a sync. */ }
+    let outcome = "failed";
+    let result;
+    try {
+      result = await action();
+      outcome = "succeeded";
+      return result;
+    } finally {
+      // Timing observes the existing operation. It cannot own its outcome,
+      // serialize another sync, or expose account/record/network payloads.
+      const metadata = {};
+      for (const key of ["added", "updated", "rejected", "pruned", "exportedEvents", "remoteEvents"]) {
+        if (Number.isSafeInteger(result?.[key]) && result[key] >= 0) metadata[key] = result[key];
       }
-      return result ?? { applied: false, reason: "empty-result" };
-    } catch (error) {
-      this.logger.warn?.(`Usage sync account backfill failed: ${error.message}`);
-      return { applied: false, failed: true, reason: error.message };
+      if (Array.isArray(result?.events)) metadata.events = result.events.length;
+      try {
+        const recorded = span?.finish?.({ outcome, metadata });
+        Promise.resolve(recorded).catch(() => {});
+      } catch { /* Telemetry failure does not change sync or cursor ownership. */ }
     }
   }
 
