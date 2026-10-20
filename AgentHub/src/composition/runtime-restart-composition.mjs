@@ -31,6 +31,7 @@ export function createRuntimeRestartComposition({
   botMenu,
   journalStartupReady,
   runtimeStateCoordinator,
+  storageRetention = null,
   telegramDeliveryService,
   mediaController,
   taskSyncStore,
@@ -84,6 +85,7 @@ export function createRuntimeRestartComposition({
   const runtimeResources = new RuntimeResourceRegistry({
     captureException: (error, context) => sentryDiagnostics.captureException(error, context),
     drain: [
+      { name: "storage retention", run: () => storageRetention?.close?.() },
       { name: "journal startup", run: () => journalStartupReady },
       { name: "state writes", run: () => runtimeStateCoordinator.flush() },
       { name: "message binding writes", run: () => telegramDeliveryService.waitForBindingWrites() },

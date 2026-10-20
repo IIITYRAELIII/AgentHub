@@ -1005,6 +1005,29 @@ test("a non-ancestral add-and-revert Task is rejected before dev integration", a
   assert.equal(devAfter, devBefore);
 });
 
+test("cleanup preserves ignored WIP despite clean status and explicit dirty permission", async (context) => {
+  const root = await repository(context);
+  await writeFile(path.join(root, ".gitignore"), "WIP/\n");
+  await git(root, "add", ".gitignore");
+  await git(root, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "ignore WIP");
+  const dataDir = path.join(root, "..", `${path.basename(root)}-ignored-data`);
+  context.after(() => rm(dataDir, { recursive: true, force: true }));
+  const service = new TaskGitWorkspaceService({ dataDir });
+  const workspace = await service.prepare({ taskId: "30303030-3030-4030-8030-303030303030", projectRoot: root });
+  await mkdir(path.join(workspace.projectRoot, "WIP"));
+  const useful = path.join(workspace.projectRoot, "WIP", "evidence.txt");
+  await writeFile(useful, "unpublished useful evidence");
+  assert.equal(await git(workspace.projectRoot, "status", "--porcelain"), "");
+  const preview = await service.cleanupPreview(workspace.taskId);
+  assert.equal(preview.dirty, false);
+  assert.deepEqual(preview.retainedIgnored[0].paths, ["WIP/"]);
+  for (const allowDirty of [false, true]) {
+    await assert.rejects(service.cleanup(workspace.taskId, { allowDirty, expectedPreview: preview }), /ignored local data/u);
+    assert.equal(await readFile(useful, "utf8"), "unpublished useful evidence");
+    assert.equal(await git(root, "rev-parse", workspace.branch), workspace.headCommit);
+  }
+});
+
 test("cleanup publication authority requires durable evidence matching origin main", async (context) => {
   const root = await repository(context);
   const revision = await git(root, "rev-parse", "HEAD");

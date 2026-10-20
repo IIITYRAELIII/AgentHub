@@ -1,5 +1,29 @@
 # REL-001 — Task-backed Workspace release
 
+## Native transport retirement (ADR-0126)
+
+New native merge transport contains exact selected base/result ancestry through
+private staging refs, including dangling accepted inputs, without copying all
+unrelated source refs or mutating source configuration/refs. The consuming clone
+has no alternates and remains independent.
+
+After an update's normal runtime start, policy v1 may retire only the redundant
+task-native-merge transport from a completed, durably published Task. The existing
+Task Git lease/process guard and fresh cleanup preview remain authoritative. The
+full clean independent capture must contain connected advertised object roots;
+advertised names/OIDs remain in the existing durable cleanup intent. Its refs,
+repository, merge journal, resolution evidence and Task results are preserved.
+Unknown, incomplete, dirty, unpublished or changed artifacts remain pinned. File
+retirement is handle-bound, exact-identity/hash checked and refuses extra streams,
+hardlinks and substituted physical ancestors; no recursive deletion is implied.
+
+Task worktree cleanup separately refuses ignored local files/directories even
+when Git status is clean or dirty removal was requested. Their artifact owner
+must prove retirement first. This includes useful WIP and dependencies without
+an accepted retirement proof. Current/running/rollback/prepared runtime/source
+roots, release generations, legacy archives and persistent evidence receive no
+new deletion authority from the storage scheduler.
+
 ## Current corrected candidates and historical release facts (2026-10-14)
 
 A new candidate is admitted from the exact CURRENT normally accepted results.

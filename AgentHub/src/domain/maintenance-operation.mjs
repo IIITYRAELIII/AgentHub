@@ -1,6 +1,7 @@
 export const MAINTENANCE_OPERATION_KINDS = Object.freeze({
   RESTART: "restart",
   CONTEXT_COMPACTION: "context-compaction",
+  STORAGE_RETENTION: "storage-retention",
 });
 
 export const MAINTENANCE_OPERATION_STATUSES = Object.freeze({

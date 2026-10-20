@@ -65,6 +65,7 @@ export function createRuntimeOrchestrationComposition({
     rateLimitTelemetry,
     providerLogin,
     usageSyncAuto,
+    storageRetention,
     taskSyncStore,
     messagePins,
     workspaceCatalogStore,
@@ -275,6 +276,7 @@ export function createRuntimeOrchestrationComposition({
     scheduleBugReportScan,
     rateLimitTelemetry,
     usageSyncAuto,
+    storageRetention,
     testContourJournalSync,
     providerLogin,
   });
@@ -369,6 +371,7 @@ export function createRuntimeOrchestrationComposition({
       botMenu,
       journalStartupReady,
       runtimeStateCoordinator,
+      storageRetention,
       telegramDeliveryService,
       mediaController,
       taskSyncStore,

@@ -1,5 +1,16 @@
 # PERF-001 — Local command latency
 
+## Bounded background storage work
+
+Policy v1 admits at most three artifact units per pass and checks a cooperative
+20-second budget between units, with bounded metadata/head lists/file size and
+persisted discovery progress. It does not abandon an in-flight destructive child
+or claim that hashing a large admitted transport has a hard 20-second deadline.
+Owner discovery reads a flat artifact directory; no per-turn recursive scan of
+archives, history or user work is introduced. Runtime health exposes cached
+status only. Filesystem free-space observations remain distinct from logical
+byte counts and can include concurrent allocations. See ADR-0126.
+
 Repeated journal projection may reuse a verified rendering only within the
 existing usage worker lifetime. Its bounded scalar receipt is not source
 authority: the current SQLite journal revision/index, clean dirty set, exact

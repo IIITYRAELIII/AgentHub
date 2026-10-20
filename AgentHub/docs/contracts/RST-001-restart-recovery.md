@@ -1,5 +1,23 @@
 # RST-001 — Restart and maintenance recovery
 
+## Background storage policy (ADR-0126)
+
+Normal installed startup schedules versioned storage maintenance after actual
+ready, then periodically; update installation itself does not launch the runtime.
+Test/recording/acceptance isolation and development do not construct production
+cleanup owners. Active user work defers admission. Storage maintenance reuses the
+existing maintenance-operation store in its own runtime scope; it is neither a
+user turn, a dispatch reservation nor a restart UI marker.
+
+Bounded owner discovery and previews precede durable artifact admission. A lost
+reply remains with the SAME original child and is reconciled, never replayed as a
+new delete. Unknown resources do not starve every other owner. Shutdown stops new
+admission and drains the actual effect before closing stores or releasing the
+instance lock; a timeout does not prove the child stopped. Policy v1 only owns
+redundant completed/published native merge transports. Other persistent artifacts
+remain under their existing cleanup contracts and are preserved until those
+owners supply their own verified eligibility/effect adapters.
+
 Catalog reads during startup must not indirectly launch optional historical
 pricing backfill. Its existing post-readiness coordinator remains the owner;
 mandatory terminal projection recovery and its durable ACK fences still finish

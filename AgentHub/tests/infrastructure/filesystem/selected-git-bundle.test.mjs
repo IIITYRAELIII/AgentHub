@@ -1,0 +1,44 @@
+import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
+import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import test from "node:test";
+import { promisify } from "node:util";
+import { createSelectedGitBundle } from "../../../src/infrastructure/filesystem/selected-git-bundle.mjs";
+const exec = promisify(execFile);
+const gitAt = async (cwd, args) => (await exec("git", args, { cwd, windowsHide: true })).stdout.trim();
+
+test("selected transport includes dangling result ancestry and excludes unrelated refs/objects", async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "hub-selected-bundle-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const source = path.join(root, "source"); await mkdir(source);
+  await gitAt(source, ["init", "-b", "main"]);
+  const commit = async name => {
+    await gitAt(source, ["add", "."]);
+    await gitAt(source, ["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", name]);
+    return gitAt(source, ["rev-parse", "HEAD"]);
+  };
+  await writeFile(path.join(source, "base"), "base data"); const base = await commit("base");
+  await gitAt(source, ["checkout", "--detach"]);
+  await writeFile(path.join(source, "accepted"), "accepted result"); const selected = await commit("selected");
+  await gitAt(source, ["checkout", "main"]);
+  await gitAt(source, ["checkout", "-b", "unrelated"]);
+  await writeFile(path.join(source, "large"), Buffer.alloc(250_000, "unrelated")); const unrelated = await commit("unrelated");
+  await gitAt(source, ["checkout", "main"]);
+  const refs = await gitAt(source, ["show-ref"]);
+  const bundle = path.join(root, "source.bundle");
+  await createSelectedGitBundle({ root, sourceRoot: source, bundle, inputs: [base, selected], gitAt });
+  assert.equal(await gitAt(source, ["show-ref"]), refs);
+  assert.equal(await gitAt(source, ["status", "--porcelain"]), "");
+  assert.equal((await readdir(root)).some(n => n.startsWith(".bundle-source-")), false);
+  const clone = path.join(root, "independent");
+  await gitAt(root, ["clone", "--no-local", "--no-hardlinks", "--no-checkout", bundle, clone]);
+  await gitAt(clone, ["cat-file", "-e", `${base}^{commit}`]);
+  await gitAt(clone, ["cat-file", "-e", `${selected}^{commit}`]);
+  await assert.rejects(gitAt(clone, ["cat-file", "-e", `${unrelated}^{commit}`]));
+  await assert.rejects(readFile(path.join(clone, ".git", "objects", "info", "alternates")), { code: "ENOENT" });
+  await assert.rejects(createSelectedGitBundle({ root, sourceRoot: source, bundle, inputs: [base], gitAt }), /original owner's recovery/u);
+  await gitAt(clone, ["checkout", "--detach", selected]);
+  assert.equal(await readFile(path.join(clone, "accepted"), "utf8"), "accepted result");
+});

@@ -1,5 +1,11 @@
 # UI-001 — Canonical message projection
 
+Task cleanup confirmation projects ignored local paths directly from the owning
+server preview, separately from Git clean/dirty state. The existing scrollable
+preview exposes those preserved paths without deriving deletion authority in
+the browser; cancellation sends no mutation and confirmation retains the exact
+server cleanup token (ADR-0126).
+
 Durable command state and terminal revision override the original intake receipt
 on live refresh, SSE reconnect and reload. Historical provider acceptance does
 not imply current execution. Known saved/queued/starting/running, structured

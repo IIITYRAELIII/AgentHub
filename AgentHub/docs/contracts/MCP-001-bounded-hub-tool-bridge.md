@@ -1,5 +1,12 @@
 # MCP-001 — Bounded Agent Hub tool bridge
 
+Task cleanup previews include ignored local data separately from ordinary Git
+dirty state. Confirmed Complete/Delete cannot discard those paths merely because
+Git status is clean or a dirty-worktree option is set; the owning artifact must
+first prove retirement (ADR-0126). Background storage policy adds no public MCP
+mutation or fresh receipt replay route and cannot close Tasks, publish results,
+or reinterpret UNKNOWN operations as no effect.
+
 `hub_release_run` optionally accepts `release_metadata` with the existing
 `sourcePath`, `byteLength`, `rawSha256` and `canonicalSha256` artifact identity.
 It forwards this unchanged as authorization `releaseMetadata` to the same durable

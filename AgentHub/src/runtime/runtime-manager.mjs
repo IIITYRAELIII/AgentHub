@@ -45,6 +45,8 @@ const TOP_LEVEL_FILES = new Set([
 ]);
 
 const RUNTIME_MODULE_ASSETS = [
+  ["src/infrastructure/filesystem/sealed-transport-delete.mjs",
+    "src/infrastructure/filesystem/sealed-transport-delete.cs"],
   ["src/infrastructure/persistence/windows-delete-verified-entry.mjs",
     "src/infrastructure/persistence/windows-delete-verified-entry.cs"],
 ];
