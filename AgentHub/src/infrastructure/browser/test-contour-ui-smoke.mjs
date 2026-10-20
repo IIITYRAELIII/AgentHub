@@ -8,7 +8,7 @@ export const TEST_CONTOUR_PROBE_RESPONSE = "AGENT_HUB_TEST_CONTOUR_SPARK_OK_V1";
 
 export function assertTestContourShellContent(bodyText) {
   const content = bodyText.trim();
-  if (content.length < 100 || !content.includes("Потоки")) {
+  if (content.length < 100 || !content.includes("Диалоги")) {
     throw new Error("Agent Hub shell did not render meaningful content");
   }
 }

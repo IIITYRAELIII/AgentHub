@@ -20,11 +20,11 @@ import {
   TEST_CONTOUR_PROBE,
 } from "../../../src/infrastructure/browser/test-contour-ui-smoke.mjs";
 
-test("Test Contour shell requires the current Потоки label and meaningful body content", () => {
-  const currentShell = `Agent Hub Workspace Потоки ${"Содержимое ".repeat(10)}`;
+test("Test Contour shell requires the desktop Диалоги label and meaningful body content", () => {
+  const currentShell = `Agent Hub Workspace Диалоги ${"Содержимое ".repeat(10)}`;
   assert.doesNotThrow(() => assertTestContourShellContent(currentShell));
   assert.throws(
-    () => assertTestContourShellContent(currentShell.replace("Потоки", "Диалоги")),
+    () => assertTestContourShellContent(currentShell.replace("Диалоги", "Потоки")),
     /Agent Hub shell did not render meaningful content/u,
   );
   assert.throws(
@@ -32,13 +32,13 @@ test("Test Contour shell requires the current Потоки label and meaningful 
     /Agent Hub shell did not render meaningful content/u,
   );
   assert.throws(
-    () => assertTestContourShellContent("Потоки"),
+    () => assertTestContourShellContent("Диалоги"),
     /Agent Hub shell did not render meaningful content/u,
   );
 });
 
 test("Test Contour shell retains the trimmed 100-character minimum", () => {
-  const minimumShell = `Потоки${"x".repeat(94)}`;
+  const minimumShell = "Диалоги".padEnd(100, "x");
   assert.doesNotThrow(() => assertTestContourShellContent(`  ${minimumShell}\n`));
   assert.throws(
     () => assertTestContourShellContent(`  ${minimumShell.slice(0, -1)}\n`),
