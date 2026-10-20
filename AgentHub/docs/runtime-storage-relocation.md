@@ -8,6 +8,70 @@ operation receipts remain outside tracked source.
 
 ## Authority and preservation
 
+### Private destination initialization and legacy unowned remnants
+
+Windows destination initialization publishes a marked, private directory rather
+than creating an unmarked final destination before an ACL subprocess. The current
+process token supplies the user SID; no `whoami` or `icacls` child is needed.
+Create-only [NtCreateFile](https://learn.microsoft.com/en-us/windows/win32/api/winternl/nf-winternl-ntcreatefile)
+applies a protected DACL (current user, SYSTEM, Administrators only) and returns
+the exact new staging directory handle. Its native file ID is persisted in the
+operation-local root-init receipt before marker/publication effects. The marker
+is written and checked inside that directory. The same retained handle is then
+renamed relative to the held destination parent with FALSE replace through
+[NtSetInformationFile](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/nf-ntifs-ntsetinformationfile).
+Unknown children, streams, changed IDs/parents/ACLs/markers and final-name
+collisions refuse without overwriting foreign data. Source-root identity and
+plain ancestry are checked. Existing marked legacy roots keep their ownership
+format and must still have the exact private ACL grants; canonical ACE ordering
+and auto-inheritance bookkeeping do not change the grant policy.
+
+A failed initializer retains its native error/NTSTATUS, subprocess return code
+and raw stdout/stderr bytes when available; it does not translate a loader
+status into access denied. A known created stage can resume only with its exact
+durable ID, parent, private ACL and contents. A crash before the ID receipt leaves
+an explicitly unproven stage and refuses automatic adoption. Original failure
+logs remain evidence; a controlled injected process exit code does not prove
+the historical DLL initialization cause.
+
+An older unmarked final directory is always refused by `ensure_destination`,
+including an empty directory. For a separately authorized exact legacy remnant,
+the explicit preservation-custody commands are:
+
+```text
+python -X utf8 -B runtime_relocation.py preview-unowned-root --plan <plan> --expected-plan-sha256 <hash> --root-index <index> --quarantine <new-path-outside-transfer-roots> --output <new-preview>
+python -X utf8 -B runtime_relocation.py custody-unowned-root --plan <same-plan> --expected-plan-sha256 <same-hash> --preview <exact-preview> --expected-preview-sha256 <preview-hash>
+```
+
+Custody is NOT ownership/adoption, copied/departed source or garbage deletion.
+The preview binds source/target/native ID, both plain parent chains, same volume,
+empty/no-ADS boundary and unoccupied quarantine. Confirm repeats all boundaries,
+checks current copy-worker absence using the existing process inventory owner,
+persists an intent, then renames the SAME held directory without replacement.
+The completed receipt retains `ownership: UNPROVEN`. No manifest phase/SQL is
+changed. Interrupted confirmation needs the exact object at quarantine AND the
+old path absent; changed/nonempty/ADS/reparse/colliding positions refuse and are
+preserved. A newly substituted old path is never removed to make retry pass.
+
+Unavailable Python command lines are UNKNOWN, not absent copy workers. If needed,
+confirm accepts `--copy-worker-proof <file>` and
+`--expected-copy-worker-proof-sha256 <hash>`. The independently reviewed proof
+must bind the operation, `checked_at` (at most60s old), and
+`foreign_unknown_python` entries containing exact PID/parent/native creation/exe
+plus `foreign_evidence: {path, sha256}`. Fresh native QUERY-only custody rechecks
+these identities; missing, changed or duplicate classifications refuse. An
+observed relocation stage/final-copy/cutover worker always refuses. This is a
+bounded operator input, never permission to classify arbitrary writers as foreign.
+
+Before the next offline window, the installer invokes the accepted
+`ensure_destination(plan, index)` for every explicit destination, with fresh
+no-copy-worker boundaries. This prepares/checks only private roots and markers,
+not source payloads; no new stage/full copy or manifest phase change is involved.
+Failing preparation remains failed and source runtime availability is preserved.
+Only after exact preparation and fresh caller/GLOBAL/source/stop binding does
+ordinary same-operation copying resume. Equal-hash cached files are reused;
+mandatory hashing, whole-copy verification and SQLite integrity are unchanged.
+
 The runtime installer owns stop/start. Before a transfer, save all source writers
 and obtain independent review of the exact scripts, plan, rollback and process
 ownership rules. Preserve current/rollback/prepared releases, immutable manifests,
@@ -254,6 +318,7 @@ Choose a disposable destination-volume fixture directory and set
 python -X utf8 -B -m unittest discover -s tests -p runtime_relocation_test.py -v
 python -X utf8 -B -m unittest discover -s tests -p runtime_relocation_protected_test.py -v
 python -X utf8 -B -m unittest discover -s tests -p runtime_relocation_stop_test.py -v
+python -X utf8 -B -m unittest discover -s tests -p runtime_relocation_destination_test.py -v
 python -X utf8 -B -m unittest install_test.RuntimeLocationTests -v
 python -X utf8 -B -m unittest install_test -v
 python -X utf8 -B -m unittest discover -s tests -p install_extension_storage_test.py -v

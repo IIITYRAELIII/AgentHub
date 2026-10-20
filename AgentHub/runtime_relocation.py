@@ -9,12 +9,14 @@ from __future__ import annotations
 import argparse
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 import ctypes
 from ctypes import wintypes
 import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import sqlite3
 import stat
@@ -423,6 +425,308 @@ def set_phase(db, value):
     db.commit()
 
 
+def private_root_sddl():
+    """Read our token SID without launching whoami or changing privileges."""
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    advapi = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel.GetCurrentProcess.restype = wintypes.HANDLE
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel.LocalFree.argtypes = [ctypes.c_void_p]
+    advapi.OpenProcessToken.argtypes = [
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+    ]
+    advapi.GetTokenInformation.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_int,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+    ]
+    advapi.ConvertSidToStringSidW.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    token, text, size = wintypes.HANDLE(), wintypes.LPWSTR(), wintypes.DWORD()
+    if not advapi.OpenProcessToken(kernel.GetCurrentProcess(), 8, ctypes.byref(token)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        advapi.GetTokenInformation(token, 1, None, 0, ctypes.byref(size))
+        if ctypes.get_last_error() != 122 or not size.value:
+            raise ctypes.WinError(ctypes.get_last_error())
+        buffer = ctypes.create_string_buffer(size.value)
+        if not advapi.GetTokenInformation(token, 1, buffer, size, ctypes.byref(size)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        sid = ctypes.cast(buffer, ctypes.POINTER(ctypes.c_void_p))[0]
+        if not advapi.ConvertSidToStringSidW(sid, ctypes.byref(text)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        return f"D:P(A;OICI;FA;;;{text.value})(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"
+    finally:
+        if text:
+            kernel.LocalFree(text)
+        kernel.CloseHandle(token)
+
+
+def root_directory_acl(descriptor):
+    import msvcrt
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    advapi = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel.LocalFree.argtypes = [ctypes.c_void_p]
+    advapi.GetSecurityInfo.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_int,
+        wintypes.DWORD,
+        *([ctypes.c_void_p] * 5),
+    ]
+    advapi.GetSecurityInfo.restype = wintypes.DWORD
+    advapi.ConvertSecurityDescriptorToStringSecurityDescriptorW.argtypes = [
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+    ]
+    sd, text = ctypes.c_void_p(), wintypes.LPWSTR()
+    error = advapi.GetSecurityInfo(
+        msvcrt.get_osfhandle(descriptor), 1, 4, None, None, None, None, ctypes.byref(sd)
+    )
+    if error:
+        raise ctypes.WinError(error)
+    try:
+        if not advapi.ConvertSecurityDescriptorToStringSecurityDescriptorW(
+            sd, 1, 4, ctypes.byref(text), None
+        ):
+            raise ctypes.WinError(ctypes.get_last_error())
+        return text.value
+    finally:
+        if text:
+            kernel.LocalFree(text)
+        kernel.LocalFree(sd)
+
+
+def private_root_acl_matches(value):
+    expected = private_root_sddl()
+    prefix, _, aces = value.partition("(")
+    # Canonical ACE ordering and the auto-inheritance bookkeeping bits may
+    # differ from older icacls output. Protection and the exact three grants may not.
+    if not prefix.startswith("D:") or "P" not in prefix[2:]:
+        return False
+    actual_aces = [x for x in ("(" + aces).split(")") if x]
+    expected_aces = [x for x in expected[expected.index("(") :].split(")") if x]
+    return len(actual_aces) == len(expected_aces) and set(actual_aces) == set(
+        expected_aces
+    )
+
+
+@contextmanager
+def held_root_directory(
+    path, expected=None, create=False, parent_descriptor=None, delete=True
+):
+    """FILE_CREATE returns the exact new private directory handle atomically."""
+    import msvcrt
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    handle = None
+    if create:
+        advapi = ctypes.WinDLL("advapi32", use_last_error=True)
+        advapi.ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = [
+            wintypes.LPCWSTR,
+            wintypes.DWORD,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+        ]
+        kernel.LocalFree.argtypes = [ctypes.c_void_p]
+        sd = ctypes.c_void_p()
+        if not advapi.ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            private_root_sddl(), 1, ctypes.byref(sd), None
+        ):
+            raise ctypes.WinError(ctypes.get_last_error())
+
+        class UnicodeString(ctypes.Structure):
+            _fields_ = [
+                ("length", wintypes.USHORT),
+                ("maximum", wintypes.USHORT),
+                ("buffer", wintypes.LPWSTR),
+            ]
+
+        class ObjectAttributes(ctypes.Structure):
+            _fields_ = [
+                ("length", wintypes.ULONG),
+                ("root", wintypes.HANDLE),
+                ("name", ctypes.c_void_p),
+                ("flags", wintypes.ULONG),
+                ("security", ctypes.c_void_p),
+                ("quality", ctypes.c_void_p),
+            ]
+
+        class IoStatus(ctypes.Structure):
+            _fields_ = [("status", ctypes.c_void_p), ("information", ctypes.c_size_t)]
+
+        native = ctypes.WinDLL("ntdll")
+        native.NtCreateFile.argtypes = [
+            ctypes.c_void_p,
+            wintypes.DWORD,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            wintypes.ULONG,
+            wintypes.ULONG,
+            wintypes.ULONG,
+            wintypes.ULONG,
+            ctypes.c_void_p,
+            wintypes.ULONG,
+        ]
+        native.NtCreateFile.restype = wintypes.LONG
+        native.RtlNtStatusToDosError.argtypes = [wintypes.LONG]
+        native.RtlNtStatusToDosError.restype = wintypes.ULONG
+        name = ctypes.create_unicode_buffer(
+            Path(path).name
+            if parent_descriptor is not None
+            else "\\??\\" + os.path.abspath(path)
+        )
+        length = len(name.value.encode("utf-16le"))
+        string = UnicodeString(length, length + 2, ctypes.cast(name, wintypes.LPWSTR))
+        attributes = ObjectAttributes(
+            ctypes.sizeof(ObjectAttributes),
+            msvcrt.get_osfhandle(parent_descriptor)
+            if parent_descriptor is not None
+            else None,
+            ctypes.addressof(string),
+            0x40,
+            sd,
+            None,
+        )
+        result, status = wintypes.HANDLE(), IoStatus()
+        try:
+            # DELETE|READ_CONTROL|SYNCHRONIZE|READ_ATTRIBUTES|LIST_DIRECTORY;
+            # share child writes but deny directory deletion; create-only, synchronous,
+            # OPEN_REPARSE_POINT. No existing directory can be adopted here.
+            code = native.NtCreateFile(
+                ctypes.byref(result),
+                0x130081,
+                ctypes.byref(attributes),
+                ctypes.byref(status),
+                None,
+                0x10,
+                3,
+                2,
+                0x200021,
+                None,
+                0,
+            )
+            if code < 0:
+                error = ctypes.WinError(native.RtlNtStatusToDosError(code))
+                error.ntstatus = code & 0xFFFFFFFF
+                raise error
+            handle = result.value
+        finally:
+            kernel.LocalFree(sd)
+    else:
+        kernel.CreateFileW.argtypes = [
+            wintypes.LPCWSTR,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            ctypes.c_void_p,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.HANDLE,
+        ]
+        kernel.CreateFileW.restype = wintypes.HANDLE
+        handle = kernel.CreateFileW(
+            long_path(path),
+            0x120081 | (0x10000 if delete else 0),
+            3,
+            None,
+            3,
+            0x02200000,
+            None,
+        )
+        if handle == ctypes.c_void_p(-1).value:
+            raise ctypes.WinError(ctypes.get_last_error())
+    descriptor = None
+    try:
+        descriptor = msvcrt.open_osfhandle(handle, os.O_RDONLY | os.O_BINARY)
+        handle = None
+        observed = os.fstat(descriptor)
+        if not stat.S_ISDIR(observed.st_mode) or observed.st_file_attributes & 0x400:
+            raise ValueError(
+                "Root initialization directory is reparse or not a directory"
+            )
+        if expected and (str(observed.st_dev), str(observed.st_ino)) != (
+            expected["dev"],
+            expected["ino"],
+        ):
+            raise ValueError("Root initialization native directory identity changed")
+        yield descriptor
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        elif handle is not None:
+            kernel.CloseHandle(handle)
+
+
+def publish_root_directory(descriptor, target, parent_descriptor):
+    """Rename the retained exact directory; FALSE replace preserves foreign targets."""
+    import msvcrt
+
+    class RenameInfo(ctypes.Structure):
+        _fields_ = [
+            ("replace", wintypes.DWORD),
+            ("root", wintypes.HANDLE),
+            ("length", wintypes.DWORD),
+            ("name", wintypes.WCHAR * 1),
+        ]
+
+    encoded = Path(target).name.encode("utf-16le")
+    buffer = ctypes.create_string_buffer(RenameInfo.name.offset + len(encoded))
+    value = RenameInfo.from_buffer(buffer)
+    value.replace, value.root, value.length = (
+        0,
+        msvcrt.get_osfhandle(parent_descriptor),
+        len(encoded),
+    )
+    ctypes.memmove(
+        ctypes.addressof(buffer) + RenameInfo.name.offset, encoded, len(encoded)
+    )
+
+    class IoStatus(ctypes.Structure):
+        _fields_ = [("status", ctypes.c_void_p), ("information", ctypes.c_size_t)]
+
+    native = ctypes.WinDLL("ntdll")
+    native.NtSetInformationFile.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        wintypes.ULONG,
+        ctypes.c_int,
+    ]
+    native.NtSetInformationFile.restype = wintypes.LONG
+    native.RtlNtStatusToDosError.argtypes = [wintypes.LONG]
+    native.RtlNtStatusToDosError.restype = wintypes.ULONG
+    status = IoStatus()
+    code = native.NtSetInformationFile(
+        msvcrt.get_osfhandle(descriptor), ctypes.byref(status), buffer, len(buffer), 10
+    )
+    if code < 0:
+        error = ctypes.WinError(native.RtlNtStatusToDosError(code))
+        error.ntstatus = code & 0xFFFFFFFF
+        raise error
+
+
+def ensure_plain_parents(directory):
+    missing = []
+    ancestor = Path(directory)
+    while not os.path.lexists(long_path(ancestor)):
+        missing.append(ancestor)
+        ancestor = ancestor.parent
+    plain_directory(ancestor)
+    for value in reversed(missing):
+        plain_directory(value.parent)
+        value.mkdir()
+        plain_directory(value)
+    return plain_directory(directory)
+
+
 def ensure_destination(plan, index):
     root = plan["roots"][index]
     target = Path(root["target"])
@@ -432,36 +736,419 @@ def ensure_destination(plan, index):
         "source": root["source"],
         "target": root["target"],
     }
-    if marker.exists():
-        if json.loads(marker.read_text()) != expected:
-            raise ValueError("Destination owner changed")
+    receipt_file = (
+        Path(plan["manifest"]).parent / f"root-init-{plan['operation']}-{index}.json"
+    )
+    plain_directory(receipt_file.parent)
+    receipt = None
+    if os.path.lexists(long_path(receipt_file)):
+        if reparse(receipt_file) or named_streams(receipt_file):
+            raise ValueError("Root initialization receipt changed")
+        receipt = json.loads(receipt_file.read_text(encoding="utf-8"))
+        if receipt.get("owner") != expected or receipt.get("index") != index:
+            raise ValueError("Root initialization receipt owner changed")
+    if os.path.lexists(long_path(marker)):
         plain_directory(target)
+        refuse_directory_streams(target)
+        if (
+            reparse(marker)
+            or named_streams(marker)
+            or json.loads(marker.read_text(encoding="utf-8")) != expected
+        ):
+            raise ValueError("Destination owner changed")
+        if receipt and (
+            not receipt.get("identity")
+            or any(
+                info(target)[key] != receipt["identity"][key] for key in ("dev", "ino")
+            )
+        ):
+            raise ValueError("Published root initialization identity changed")
+        if os.name == "nt":
+            with held_root_directory(target, info(target), delete=False) as descriptor:
+                if not private_root_acl_matches(root_directory_acl(descriptor)):
+                    raise ValueError("Owned destination private ACL changed")
         return
-    if target.exists():
+    if os.path.lexists(long_path(target)):
         raise ValueError("Unowned destination appeared")
-    target.mkdir(parents=True)
-    # Copying configuration/secrets must not make them readable by other users.
-    if os.name == "nt":
-        sid = (
-            subprocess.check_output(["whoami", "/user", "/fo", "csv", "/nh"], text=True)
-            .strip()
-            .split(",")[-1]
-            .strip('"')
+    if os.name != "nt":
+        target.mkdir(parents=True, mode=0o700)
+        write_json(marker, expected)
+        return
+    plain_directory(root["source"])
+    refuse_directory_streams(root["source"])
+    if any(
+        info(root["source"])[key] != root["identity"][key] for key in ("dev", "ino")
+    ):
+        raise ValueError("Root initialization source identity changed")
+    ensure_plain_parents(target.parent)
+    stage = target.parent / f".relocation-root-{plan['operation']}-{index}"
+    parent_identity = info(target.parent)
+    if receipt:
+        if receipt.get("stage") != str(stage) or any(
+            receipt.get("parent", {}).get(key) != parent_identity[key]
+            for key in ("dev", "ino")
+        ):
+            raise ValueError("Root initialization parent/stage changed")
+        if not receipt.get("identity"):
+            raise ValueError(
+                "Root initialization has no durable created identity; preserve"
+            )
+    else:
+        if os.path.lexists(long_path(stage)):
+            raise ValueError("Unowned root initialization stage appeared")
+        receipt = {
+            "owner": expected,
+            "index": index,
+            "stage": str(stage),
+            "parent": parent_identity,
+            "phase": "intent",
+        }
+        write_json(receipt_file, receipt)
+    try:
+        with (
+            held_root_directory(
+                target.parent, parent_identity, delete=False
+            ) as parent_descriptor,
+            held_root_directory(
+                stage,
+                receipt.get("identity"),
+                create=not receipt.get("identity"),
+                parent_descriptor=parent_descriptor,
+            ) as descriptor,
+        ):
+            observed = os.fstat(descriptor)
+            receipt.update(
+                identity={"dev": str(observed.st_dev), "ino": str(observed.st_ino)},
+                phase="created",
+            )
+            write_json(
+                receipt_file, receipt
+            )  # Created native identity precedes marker/publication.
+            if not private_root_acl_matches(root_directory_acl(descriptor)):
+                raise ValueError("Root initialization private ACL changed")
+            refuse_directory_streams(stage)
+            stage_marker = stage / marker.name
+            children = {p.name for p in stage.iterdir()}
+            if children - {marker.name}:
+                raise ValueError("Unknown root initialization child; preserve")
+            if marker.name in children:
+                if (
+                    reparse(stage_marker)
+                    or named_streams(stage_marker)
+                    or json.loads(stage_marker.read_text(encoding="utf-8")) != expected
+                ):
+                    raise ValueError("Root initialization marker changed")
+            else:
+                write_json(stage_marker, expected)
+            receipt["phase"] = "marker_ready"
+            write_json(receipt_file, receipt)
+            plain_directory(target.parent)
+            if any(
+                info(target.parent)[key] != receipt["parent"][key]
+                for key in ("dev", "ino")
+            ):
+                raise ValueError(
+                    "Root initialization parent changed before publication"
+                )
+            refuse_directory_streams(stage)
+            if (
+                {p.name for p in stage.iterdir()} != {marker.name}
+                or reparse(stage_marker)
+                or named_streams(stage_marker)
+                or json.loads(stage_marker.read_text(encoding="utf-8")) != expected
+            ):
+                raise ValueError(
+                    "Root initialization marker/children changed before publication"
+                )
+            publish_root_directory(descriptor, target, parent_descriptor)
+            receipt["phase"] = "published"
+            write_json(receipt_file, receipt)
+    except BaseException as error:
+        receipt.update(
+            phase="failed",
+            error={
+                "type": type(error).__name__,
+                "message": str(error),
+                "winerror": getattr(error, "winerror", None),
+                "errno": getattr(error, "errno", None),
+                "ntstatus": getattr(error, "ntstatus", None),
+                "returncode": getattr(error, "returncode", None),
+                "stdout_hex": (getattr(error, "stdout", None) or b"").hex()
+                if isinstance(getattr(error, "stdout", None), bytes)
+                else getattr(error, "stdout", None),
+                "stderr_hex": (getattr(error, "stderr", None) or b"").hex()
+                if isinstance(getattr(error, "stderr", None), bytes)
+                else getattr(error, "stderr", None),
+            },
         )
-        subprocess.run(
-            [
-                "icacls",
-                str(target),
-                "/inheritance:r",
-                "/grant:r",
-                f"*{sid}:(OI)(CI)F",
-                "*S-1-5-18:(OI)(CI)F",
-                "*S-1-5-32-544:(OI)(CI)F",
-            ],
-            check=True,
-            capture_output=True,
+        write_json(receipt_file, receipt)
+        raise
+
+
+def directory_chain(directory):
+    value = plain_directory(directory)
+    return [
+        {"path": str(p), "dev": info(p)["dev"], "ino": info(p)["ino"]}
+        for p in [value, *value.parents]
+    ]
+
+
+def unowned_root_source_boundary(plan, index):
+    if index < 0 or index >= len(plan["roots"]):
+        raise ValueError("Invalid explicit root index")
+    root = plan["roots"][index]
+    source = plain_directory(root["source"])
+    if any(info(source)[k] != root["identity"][k] for k in ("dev", "ino")):
+        raise ValueError("Unowned-root custody source identity changed")
+    db = sqlite3.connect(Path(plan["manifest"]).as_uri() + "?mode=ro", uri=True)
+    try:
+        if phase(db) not in ("planned", "staged"):
+            raise ValueError("Unowned-root custody is limited to pre-copy recovery")
+    finally:
+        db.close()
+    return source
+
+
+def unowned_root_snapshot(plan, index, quarantine):
+    """Explicit operator custody only; never grants ownership to an unmarked root."""
+    source = unowned_root_source_boundary(plan, index)
+    root = plan["roots"][index]
+    target = plain_directory(root["target"])
+    quarantine = Path(os.path.abspath(quarantine))
+    target_chain = directory_chain(target.parent)
+    quarantine_chain = directory_chain(quarantine.parent)
+    if info(target)["dev"] != info(quarantine.parent)["dev"]:
+        raise ValueError("Unowned-root custody must stay on the same volume")
+    if any(
+        quarantine == Path(r[k]) or inside(r[k], quarantine)
+        for r in plan["roots"]
+        for k in ("source", "target", "original")
+    ):
+        raise ValueError("Unowned-root evidence must stay outside all transfer roots")
+    if list(target.iterdir()):
+        raise ValueError(
+            "Unowned-root custody requires exact empty directory; preserve"
         )
-    write_json(marker, expected)
+    refuse_directory_streams(target)
+    if os.path.lexists(long_path(quarantine)):
+        raise ValueError("Unowned-root quarantine already exists; preserve")
+    return {
+        "operation": plan["operation"],
+        "index": index,
+        "source": str(source),
+        "target": str(target),
+        "quarantine": str(quarantine),
+        "identity": {k: info(target)[k] for k in ("dev", "ino")},
+        "target_parent_chain": target_chain,
+        "quarantine_parent_chain": quarantine_chain,
+        "ownership": "UNPROVEN; preservation custody, not copied/adopted source",
+        "empty": True,
+        "named_streams": [],
+    }
+
+
+def preview_unowned_root(plan_file, plan_sha256, index, quarantine, output):
+    plan = load_plan(plan_file, plan_sha256)
+    value = unowned_root_snapshot(plan, index, quarantine)
+    value.update(plan_sha256=plan_sha256, plan=str(Path(plan_file).absolute()))
+    if os.path.lexists(long_path(output)):
+        raise ValueError("Unowned-root preview already exists")
+    write_json(output, value)
+    return value
+
+
+def require_no_copy_workers(operation, proof_file=None, proof_sha256=None):
+    # Reuse the existing process inventory/custody owner. Missing Python argv
+    # needs an independently reviewed, fresh exact foreign identity classification.
+    import runtime_relocation_process as custody
+
+    classified = {}
+    if proof_file:
+        if digest(proof_file) != proof_sha256:
+            raise ValueError("Exact copy-worker boundary digest changed")
+        proof = json.loads(Path(proof_file).read_text(encoding="utf-8"))
+        if (
+            proof.get("operation") != operation
+            or not 0 <= time.time() - proof.get("checked_at", 0) <= 60
+        ):
+            raise ValueError(
+                "Fresh operation-bound copy-worker classification required"
+            )
+        entries = proof.get("foreign_unknown_python", [])
+        classified = {r["pid"]: r for r in entries}
+        if len(classified) != len(entries):
+            raise ValueError("Duplicate foreign Python classification")
+    for row in custody.process_snapshot():
+        if row["pid"] == os.getpid() or row["name"].lower() not in (
+            "python.exe",
+            "pythonw.exe",
+        ):
+            continue
+        command = str(row.get("command") or "").lower()
+        if not command:
+            allowed = classified.get(row["pid"])
+            if (
+                not allowed
+                or not allowed.get("native_creation")
+                or row["parent"] != allowed.get("parent")
+                or int(row["created"]) // 10 != int(allowed["created"]) // 10
+            ):
+                raise ValueError(
+                    "Unknown Python identity prevents copy-worker absence proof"
+                )
+            evidence = allowed.get("foreign_evidence", {})
+            if not evidence.get("path") or digest(evidence["path"]) != evidence.get(
+                "sha256"
+            ):
+                raise ValueError(
+                    "Exact foreign Python classification evidence required"
+                )
+            held = custody.HeldProcess(allowed, terminate=False)
+            held.close()
+        elif "runtime_relocation_cutover.py" in command or (
+            "runtime_relocation.py" in command
+            and re.search(r'(?:^|\s|")(?:stage|final-copy)(?:\s|$|")', command)
+        ):
+            raise ValueError("Relocation copy worker still exists; custody refused")
+    return {
+        "checked_at": time.time(),
+        "copy_workers": 0,
+        "classification_sha256": proof_sha256 if proof_file else None,
+    }
+
+
+def custody_unowned_root(
+    plan_file,
+    plan_sha256,
+    preview_file,
+    preview_sha256,
+    copy_proof=None,
+    copy_proof_sha256=None,
+):
+    plan = load_plan(plan_file, plan_sha256)
+    if digest(preview_file) != preview_sha256:
+        raise ValueError("Exact unowned-root preview digest changed")
+    preview = json.loads(Path(preview_file).read_text(encoding="utf-8"))
+    if (
+        preview.get("plan_sha256") != plan_sha256
+        or preview.get("operation") != plan["operation"]
+    ):
+        raise ValueError("Unowned-root custody plan changed")
+    index = preview["index"]
+    if index < 0 or index >= len(plan["roots"]):
+        raise ValueError("Invalid explicit root custody index")
+    root = plan["roots"][index]
+    if (
+        preview.get("target") != root["target"]
+        or preview.get("source") != root["source"]
+    ):
+        raise ValueError("Unowned-root custody mapping changed")
+    unowned_root_source_boundary(plan, index)
+    target, quarantine = Path(root["target"]), Path(preview["quarantine"])
+    receipt_file = (
+        Path(plan["manifest"]).parent
+        / f"unowned-root-custody-{plan['operation']}-{index}.json"
+    )
+    plain_directory(receipt_file.parent)
+    receipt = None
+    if os.path.lexists(long_path(receipt_file)):
+        if reparse(receipt_file) or named_streams(receipt_file):
+            raise ValueError("Unowned-root custody receipt changed")
+        receipt = json.loads(receipt_file.read_text(encoding="utf-8"))
+        if (
+            receipt.get("preview_sha256") != preview_sha256
+            or receipt.get("operation") != plan["operation"]
+            or receipt.get("identity") != preview["identity"]
+            or not receipt.get("attempts")
+        ):
+            raise ValueError("Unowned-root custody original preview changed")
+    if (
+        directory_chain(target.parent) != preview["target_parent_chain"]
+        or directory_chain(quarantine.parent) != preview["quarantine_parent_chain"]
+    ):
+        raise ValueError("Unowned-root custody parent ancestry changed")
+    boundary = require_no_copy_workers(plan["operation"], copy_proof, copy_proof_sha256)
+    if receipt and not os.path.lexists(long_path(target)):
+        with held_root_directory(quarantine, preview["identity"]) as held:
+            if list(quarantine.iterdir()):
+                raise ValueError("Retained unowned-root quarantine is no longer empty")
+            refuse_directory_streams(quarantine)
+            receipt["attempts"][-1].update(phase="completed", recovered_readback=True)
+            receipt.update(phase="completed", resumed=True, copy_boundary=boundary)
+            write_json(receipt_file, receipt)
+            return receipt
+    current = unowned_root_snapshot(plan, index, quarantine)
+    expected = {k: v for k, v in preview.items() if k not in ("plan", "plan_sha256")}
+    if current != expected:
+        raise ValueError("Unowned-root exact preview changed; preserve")
+    with (
+        held_root_directory(
+            target.parent, preview["target_parent_chain"][0], delete=False
+        ),
+        held_root_directory(
+            quarantine.parent, preview["quarantine_parent_chain"][0], delete=False
+        ) as destination_parent,
+        held_root_directory(target, preview["identity"]) as held,
+    ):
+        if list(target.iterdir()):
+            raise ValueError("Unowned root changed before custody intent")
+        refuse_directory_streams(target)
+        if receipt is None:
+            receipt = {
+                "operation": plan["operation"],
+                "preview_sha256": preview_sha256,
+                "ownership": "UNPROVEN",
+                "identity": preview["identity"],
+                "target": str(target),
+                "quarantine": str(quarantine),
+                "attempts": [],
+            }
+        attempt = {
+            "phase": "intent",
+            "started_at": time.time(),
+            "copy_boundary": boundary,
+        }
+        receipt["attempts"].append(attempt)
+        receipt["phase"] = "intent"
+        write_json(receipt_file, receipt)
+        try:
+            if (
+                time.time() - boundary["checked_at"] > 60
+                or directory_chain(target.parent) != preview["target_parent_chain"]
+                or directory_chain(quarantine.parent)
+                != preview["quarantine_parent_chain"]
+                or list(target.iterdir())
+            ):
+                raise ValueError("Unowned-root custody boundary changed after intent")
+            refuse_directory_streams(target)
+            # Same retained object, same volume, exact held destination parent,
+            # native FALSE replace. It never becomes an owned transfer entry.
+            publish_root_directory(held, quarantine, destination_parent)
+            if (
+                os.path.lexists(long_path(target))
+                or list(quarantine.iterdir())
+                or any(
+                    info(quarantine)[k] != preview["identity"][k]
+                    for k in ("dev", "ino")
+                )
+            ):
+                raise ValueError("Unowned-root custody readback differs; preserve both")
+            refuse_directory_streams(quarantine)
+            attempt.update(phase="completed", completed_at=time.time())
+            receipt.update(phase="completed", resumed=False)
+            write_json(receipt_file, receipt)
+            return receipt
+        except BaseException as error:
+            attempt.update(
+                phase="failed",
+                error_type=type(error).__name__,
+                error=str(error),
+                winerror=getattr(error, "winerror", None),
+                ntstatus=getattr(error, "ntstatus", None),
+            )
+            receipt["phase"] = "failed"
+            write_json(receipt_file, receipt)
+            raise
 
 
 def copy_temporary(target, operation, hardlink=False):
@@ -1394,6 +2081,8 @@ def main():
             "accept-started",
             "prune-originals",
             "refresh-stopped",
+            "preview-unowned-root",
+            "custody-unowned-root",
         ],
     )
     parser.add_argument("--plan", required=True)
@@ -1404,6 +2093,12 @@ def main():
     parser.add_argument("--stopped-proof")
     parser.add_argument("--runtime-proof")
     parser.add_argument("--output")
+    parser.add_argument("--root-index", type=int)
+    parser.add_argument("--quarantine")
+    parser.add_argument("--preview")
+    parser.add_argument("--expected-preview-sha256")
+    parser.add_argument("--copy-worker-proof")
+    parser.add_argument("--expected-copy-worker-proof-sha256")
     parser.add_argument("--workers", type=int, default=1, choices=range(1, 9))
     args = parser.parse_args()
     if args.action == "plan":
@@ -1412,7 +2107,24 @@ def main():
         plan = load_plan(args.plan, args.expected_plan_sha256)
         if args.action in ("final-copy", "switch", "rollback"):
             require_stopped(args.stopped_proof, plan)
-        if args.action == "switch":
+        if args.action == "preview-unowned-root":
+            result = preview_unowned_root(
+                args.plan,
+                args.expected_plan_sha256,
+                args.root_index,
+                args.quarantine,
+                args.output,
+            )
+        elif args.action == "custody-unowned-root":
+            result = custody_unowned_root(
+                args.plan,
+                args.expected_plan_sha256,
+                args.preview,
+                args.expected_preview_sha256,
+                args.copy_worker_proof,
+                args.expected_copy_worker_proof_sha256,
+            )
+        elif args.action == "switch":
             result = switch_roots(plan)
         elif args.action == "rollback":
             result = rollback_roots(plan)
