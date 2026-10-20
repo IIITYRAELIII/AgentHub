@@ -9,7 +9,7 @@ from __future__ import annotations
 import argparse
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager
+from contextlib import contextmanager, ExitStack
 import ctypes
 from ctypes import wintypes
 import hashlib
@@ -1871,8 +1871,27 @@ def accept_started(plan, proof_file):
         db.close()
 
 
+def held_creation_ns(kernel, handle):
+    # Windows Python fstat().st_ctime can expose ChangeTime while path stat()
+    # exposes CreationTime. Bind creation directly on the SAME native handle.
+    class BasicInfo(ctypes.Structure):
+        _fields_ = [(name, ctypes.c_longlong) for name in (
+            "created", "accessed", "written", "changed",
+        )] + [("attributes", wintypes.DWORD)]
+
+    kernel.GetFileInformationByHandleEx.argtypes = [
+        wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD,
+    ]
+    kernel.GetFileInformationByHandleEx.restype = wintypes.BOOL
+    value = BasicInfo()
+    if not kernel.GetFileInformationByHandleEx(handle, 0, ctypes.byref(value), ctypes.sizeof(value)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    return (value.created - 116444736000000000) * 100
+
+
 def delete_verified_file(
-    file, expected, expected_hash, directory=False, link_target=None
+    file, expected, expected_hash, directory=False, link_target=None,
+    strict_identity=False,
 ):
     """Hash and delete the same exclusively opened Windows file handle."""
     if os.name != "nt":
@@ -1919,6 +1938,12 @@ def delete_verified_file(
             or (not directory and link_target is None and s.st_size != expected["size"])
             or bool(getattr(s, "st_file_attributes", 0) & 0x400)
             != (link_target is not None)
+            or (strict_identity and (
+                s.st_mtime_ns != expected["mtime"]
+                or held_creation_ns(kernel, handle) != expected["ctime"]
+                or s.st_file_attributes != expected["attributes"]
+                or s.st_reparse_tag != expected["tag"]
+            ))
         ):
             raise ValueError("Source deletion file identity changed")
         if link_target is not None:
@@ -1944,7 +1969,163 @@ def delete_verified_file(
         os.close(descriptor)
 
 
-def prune_originals(plan):
+@contextmanager
+def held_verified_read(file, expected, expected_hash):
+    """Raw same-object read; deny new writers and deletion, never open SQLite."""
+    plain_directory(Path(file).parent)
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.CreateFileW.argtypes = [
+        wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p,
+        wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE,
+    ]
+    kernel.CreateFileW.restype = wintypes.HANDLE
+    handle = kernel.CreateFileW(long_path(file), 0x81, 1, None, 3, 0x200000, None)
+    if handle == ctypes.c_void_p(-1).value:
+        raise ctypes.WinError(ctypes.get_last_error())
+    import msvcrt
+
+    descriptor = msvcrt.open_osfhandle(handle, os.O_RDONLY | os.O_BINARY)
+    try:
+        s = os.fstat(descriptor)
+        if (not stat.S_ISREG(s.st_mode) or s.st_file_attributes & 0x400
+                or any(a != expected[k] for k, a in (
+                    ("dev", str(s.st_dev)), ("ino", str(s.st_ino)),
+                    ("size", s.st_size), ("mtime", s.st_mtime_ns),
+                    ("ctime", held_creation_ns(kernel, handle)), ("attributes", s.st_file_attributes),
+                    ("tag", s.st_reparse_tag),
+                ))):
+            raise ValueError("Held cohort/evidence identity changed")
+        # A typed WAL-index exception does not classify user named-stream data.
+        if named_streams(file):
+            raise ValueError("Cohort/evidence has unclassified data streams")
+        h = hashlib.sha256()
+        while chunk := os.read(descriptor, 4 * 1024 * 1024):
+            h.update(chunk)
+        if h.hexdigest() != expected_hash:
+            raise ValueError("Held cohort/evidence checksum changed")
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        yield descriptor
+    finally:
+        os.close(descriptor)
+
+
+def derived_shm_rows(plan, db):
+    """Only the configured runtime store in root0, not a suffix-based sweep."""
+    relative = str(Path("data") / "runtime.sqlite-shm")
+    rows = {}
+    for name, rel in (("database", relative[:-4]), ("wal", relative[:-4] + "-wal"),
+                      ("shm", relative)):
+        row = db.execute("SELECT * FROM files WHERE root=0 AND rel=?", (rel,)).fetchone()
+        if not row or row["kind"] != "file" or not row["sha256"] or row["copied"] != 1:
+            raise ValueError("Recorded runtime SQLite cohort is missing or unverified")
+        rows[name] = row
+    return rows
+
+
+def require_original_cohort_idle(plan):
+    from runtime_relocation_process import process_snapshot, owned_processes
+
+    # Logical source aliases now address the live D runtime. They are NOT stop
+    # selectors here: only exact original holding paths may identify old users.
+    originals = [r["original"] for r in plan["roots"]]
+    if owned_processes(process_snapshot(), originals):
+        raise ValueError("Original holding-path process is active; preserve cohort")
+
+
+def derived_shm_binding(plan, row):
+    return {
+        "version": 1, "kind": "runtime-sqlite-derived-wal-index",
+        "operation": plan["operation"], "root": 0, "relative": row["rel"],
+        "original": plan["roots"][0]["original"],
+        "plan_identity_sha256": hashlib.sha256(
+            json.dumps(plan, sort_keys=True, ensure_ascii=False).encode("utf-8")
+        ).hexdigest(),
+        "offline_shm": {"identity": json.loads(row["identity"]), "sha256": row["sha256"]},
+    }
+
+
+def validate_derived_shm_proof(plan, db, proof):
+    rows = derived_shm_rows(plan, db)
+    binding = derived_shm_binding(plan, rows["shm"])
+    if ({k: v for k, v in proof.items() if k not in ("current_shm", "preserved_shm")}
+            != binding):
+        raise ValueError("Typed derived-index proof binding changed")
+    old = binding["offline_shm"]["identity"]
+    current = proof["current_shm"]["identity"]
+    if (any(current[k] != old[k] for k in ("dev", "ino", "ctime", "attributes", "tag"))
+            or current["links"] != old["links"] or current["links"] != 1
+            or current["size"] <= 0 or current["size"] % 32768):
+        raise ValueError("Derived-index native object/type changed")
+    preserved = Path(proof["preserved_shm"]["path"])
+    if (not preserved.is_absolute()
+            or any(preserved == Path(r["original"]) or inside(r["original"], preserved)
+                   for r in plan["roots"])
+            or preserved.resolve().drive != Path(plan["roots"][0]["target"]).resolve().drive
+            or proof["preserved_shm"]["sha256"] != proof["current_shm"]["sha256"]
+            or proof["preserved_shm"]["identity"]["size"] != current["size"]
+            or (proof["preserved_shm"]["identity"]["dev"], proof["preserved_shm"]["identity"]["ino"])
+            == (current["dev"], current["ino"])):
+        raise ValueError("Independent destination-side index preservation required")
+    return rows
+
+
+@contextmanager
+def held_derived_shm_cohort(plan, db, proof):
+    rows = validate_derived_shm_proof(plan, db, proof)
+    original = plain_directory(plan["roots"][0]["original"])
+    if any(info(original)[k] != plan["roots"][0]["identity"][k] for k in ("dev", "ino")):
+        raise ValueError("Original runtime root identity changed")
+    require_original_cohort_idle(plan)
+    with ExitStack() as stack:
+        for name in ("database", "wal"):
+            row = rows[name]
+            fd = stack.enter_context(held_verified_read(
+                original / row["rel"], json.loads(row["identity"]), row["sha256"],
+            ))
+            header = os.read(fd, 16)
+            if ((name == "database" and header != b"SQLite format 3\x00")
+                    or (name == "wal" and header[:4] not in (b"\x37\x7f\x06\x82", b"\x37\x7f\x06\x83"))):
+                raise ValueError("Recorded cohort is not a SQLite WAL database")
+        kept = proof["preserved_shm"]
+        stack.enter_context(held_verified_read(kept["path"], kept["identity"], kept["sha256"]))
+        require_original_cohort_idle(plan)
+        yield rows["shm"]
+
+
+def preview_derived_shm(plan, preservation, output):
+    """Explicit operator preview, after runtime acceptance; no source SQLite open."""
+    db = sqlite3.connect(Path(plan["manifest"]).as_uri() + "?mode=ro", uri=True)
+    db.row_factory = sqlite3.Row
+    try:
+        if phase(db) not in ("accepted", "pruning"):
+            raise ValueError("Runtime acceptance required before derived-index preview")
+        rows = derived_shm_rows(plan, db)
+        if any(row["deleted"] for row in rows.values()):
+            raise ValueError("Preview requires an intact original cohort")
+        original = Path(plan["roots"][0]["original"])
+        file = original / rows["shm"]["rel"]
+        proof = {**derived_shm_binding(plan, rows["shm"]),
+                 "current_shm": {"identity": info(file), "sha256": content_digest(file)},
+                 "preserved_shm": {"path": os.path.abspath(preservation),
+                                   "identity": info(preservation), "sha256": content_digest(preservation)}}
+        with held_derived_shm_cohort(plan, db, proof):
+            with held_verified_read(file, proof["current_shm"]["identity"], proof["current_shm"]["sha256"]):
+                target = Path(output)
+                plain_directory(target.parent)
+                if (os.path.lexists(long_path(target))
+                        or any(target == Path(r["original"]) or inside(r["original"], target)
+                               for r in plan["roots"])):
+                    raise ValueError("Preview output must be a new destination-side file")
+                with open(long_path(target), "x", encoding="utf-8") as stream:
+                    json.dump(proof, stream, ensure_ascii=False, indent=2)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+        return {"preview": str(target), "sha256": digest(target), "source_changed": False}
+    finally:
+        db.close()
+
+
+def prune_originals(plan, derived_shm_proof=None, expected_derived_shm_proof_sha256=None):
     db = connect(plan["manifest"])
     before = {
         str(Path(r["source"]).anchor): shutil.disk_usage(Path(r["source"]).anchor).free
@@ -1954,6 +2135,29 @@ def prune_originals(plan):
     try:
         if phase(db) not in ("accepted", "pruning"):
             raise ValueError("Verified target runtime acceptance required")
+        bound = db.execute("SELECT value FROM state WHERE key='derived_shm_proof_sha256'").fetchone()
+        proof = None
+        if derived_shm_proof or expected_derived_shm_proof_sha256 or bound:
+            if (not derived_shm_proof or not expected_derived_shm_proof_sha256
+                    or reparse(derived_shm_proof) or named_streams(derived_shm_proof)
+                    or digest(derived_shm_proof) != expected_derived_shm_proof_sha256
+                    or (bound and bound[0] != expected_derived_shm_proof_sha256)):
+                raise ValueError("Exact original derived-index proof is required on every retry")
+            plain_directory(Path(derived_shm_proof).parent)
+            proof = json.loads(Path(derived_shm_proof).read_text(encoding="utf-8"))
+            validate_derived_shm_proof(plan, db, proof)
+            kept = proof["preserved_shm"]
+            with held_verified_read(kept["path"], kept["identity"], kept["sha256"]):
+                pass
+            if not bound:
+                row = derived_shm_rows(plan, db)["shm"]
+                if row["deleted"] != 0 or not os.path.lexists(long_path(
+                    Path(plan["roots"][0]["original"]) / row["rel"]
+                )):
+                    raise ValueError("New typed authority requires an intact original index")
+                db.execute("INSERT INTO state VALUES('derived_shm_proof_sha256',?)",
+                           (expected_derived_shm_proof_sha256,))
+                db.commit()
         set_phase(db, "pruning")
         for i, root in enumerate(plan["roots"]):
             original = Path(root["original"])
@@ -1985,12 +2189,37 @@ def prune_originals(plan):
                 if not row or row["kind"] != kind or row["deleted"] == 1:
                     raise ValueError("Unknown source entry; preserve it")
                 identity = json.loads(row["identity"])
-                if kind == "file" and not same_identity(observed, identity):
+                derived = proof if proof and i == 0 and rel == proof["relative"] else None
+                if kind == "file" and not same_identity(observed, identity) and not (
+                    derived and same_identity(observed, derived["current_shm"]["identity"])
+                ):
                     raise ValueError("Source file changed after offline transfer")
                 if kind == "link" and link_target != row["link_target"]:
                     raise ValueError("Original link changed")
                 if kind in ("directory", "link"):
                     refuse_directory_streams(original / rel)
+            # Validate the whole root first, then remove this ONE index while
+            # unchanged DB/WAL and its preserved destination copy remain held.
+            if i == 0 and proof:
+                row = derived_shm_rows(plan, db)["shm"]
+                file = original / row["rel"]
+                if row["deleted"] == 2 and not os.path.lexists(long_path(file)):
+                    if not bound:
+                        raise ValueError("Missing index has no prior typed deletion authority")
+                    with held_derived_shm_cohort(plan, db, proof):
+                        pass
+                    db.execute("UPDATE files SET deleted=1 WHERE root=0 AND rel=?", (row["rel"],))
+                    db.commit()
+                elif row["deleted"] != 1:
+                    with held_derived_shm_cohort(plan, db, proof):
+                        db.execute("UPDATE files SET deleted=2 WHERE root=0 AND rel=?", (row["rel"],))
+                        db.commit()
+                        delete_verified_file(file, proof["current_shm"]["identity"],
+                                             proof["current_shm"]["sha256"], strict_identity=True)
+                        db.execute("UPDATE files SET deleted=1 WHERE root=0 AND rel=?", (row["rel"],))
+                        db.commit()
+                        deleted += proof["current_shm"]["identity"]["size"]
+                        count += 1
             rows = db.execute(
                 "SELECT * FROM files WHERE root=? AND deleted<>1 ORDER BY length(rel) DESC,rel DESC",
                 (i,),
@@ -2085,6 +2314,7 @@ def main():
             "refresh-stopped",
             "preview-unowned-root",
             "custody-unowned-root",
+            "preview-derived-shm",
         ],
     )
     parser.add_argument("--plan", required=True)
@@ -2101,6 +2331,9 @@ def main():
     parser.add_argument("--expected-preview-sha256")
     parser.add_argument("--copy-worker-proof")
     parser.add_argument("--expected-copy-worker-proof-sha256")
+    parser.add_argument("--preserved-shm")
+    parser.add_argument("--derived-shm-proof")
+    parser.add_argument("--expected-derived-shm-proof-sha256")
     parser.add_argument("--workers", type=int, default=1, choices=range(1, 9))
     args = parser.parse_args()
     if args.action == "plan":
@@ -2137,7 +2370,9 @@ def main():
         elif args.action == "accept-started":
             result = accept_started(plan, args.runtime_proof)
         elif args.action == "prune-originals":
-            result = prune_originals(plan)
+            result = prune_originals(plan, args.derived_shm_proof, args.expected_derived_shm_proof_sha256)
+        elif args.action == "preview-derived-shm":
+            result = preview_derived_shm(plan, args.preserved_shm, args.output)
         elif args.action == "refresh-stopped":
             result = refresh_stopped(plan, args.stopped_proof, args.output)
         else:

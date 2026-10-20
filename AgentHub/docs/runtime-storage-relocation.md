@@ -309,6 +309,55 @@ The helper never closes the Task or claims retention is implemented. Automatic
 retention must use existing artifact owners, protect active/dirty/unpublished
 work and required rollback/evidence, and test crash leftovers and repeated cleanup.
 
+### Explicit original-runtime WAL-index drift after verification reads
+
+A read-only SQLite connection can rebuild or alter its shared WAL index. SQLite
+documents that the `-shm` wal-index is transient and reconstructible:
+https://www.sqlite.org/wal.html#implementation_of_shared_memory_for_the_wal_index.
+That fact alone never authorizes deleting a changed source file. The normal
+original-prune path continues to refuse every changed or unknown entry.
+
+For this migration owner only, an operator may separately admit the ONE
+`data/runtime.sqlite-shm` file in original root0 after destination-runtime
+acceptance. First preserve its current bytes on the destination volume through
+the existing verified copy owner. Then generate and independently review the
+typed preview using the immutable plan:
+
+```text
+python -X utf8 -B runtime_relocation.py preview-derived-shm --plan <same-plan> --expected-plan-sha256 <same-sha> --preserved-shm <destination-current-index-copy> --output <new-preview>
+python -X utf8 -B runtime_relocation.py prune-originals --plan <same-plan> --expected-plan-sha256 <same-sha> --derived-shm-proof <exact-preview> --expected-derived-shm-proof-sha256 <preview-sha>
+```
+
+The preview binds the operation/whole-plan identity, original root/relative file,
+unchanged offline manifest row, the SAME native index ID and creation time,
+current bytes/size/metadata, and an independent destination-side preservation
+file. It refuses reparse ancestors, named streams, replaced files, missing
+preservation and arbitrary filename-based exceptions. Source DB/WAL are opened
+only as raw files, never as SQLite connections. Their exact original identities
+and hashes must match the offline manifest while retained read handles deny
+writers/deletion. SQLite and WAL headers identify the configured cohort. Creation
+time is read from `FILE_BASIC_INFO` on the same native handle, since Windows
+Python path-stat and descriptor-stat can expose different `ctime` semantics.
+
+Pruning still validates the entire original root before its first deletion.
+This index is processed FIRST while DB, WAL and preserved copy stay held. The
+existing same-handle delete owner verifies the current proof and strict native
+metadata. Original manifest identity/hash columns remain unchanged. Only the
+existing `deleted=2` intent → effect → `deleted=1` progress is used, with the proof
+digest bound in the same operation-local manifest state. A failure before/after
+effect retains partial state; every retry requires that SAME proof. Missing
+untyped old intents cannot acquire authority merely by being retried. Interrupted
+post-effect recovery rechecks the held DB/WAL before completing its index receipt.
+
+Old-writer detection uses original holding paths, NOT the logical C aliases now
+addressing the running destination. The live destination may keep working and
+writing throughout original pruning. Changed DB/WAL, a held writer, foreign or
+changed preservation, a different current index, unknown streams or an invalid
+proof fail closed. No checkpoint, expected-hash rewrite, source-SQL mutation,
+main-runtime stop or additional business-state owner is introduced. This explicit
+exception expires with completion of original-source pruning; it is not automatic
+product retention or permission to remove any other SQLite sidecar.
+
 ## Focused verification
 
 Choose a disposable destination-volume fixture directory and set
@@ -319,6 +368,7 @@ python -X utf8 -B -m unittest discover -s tests -p runtime_relocation_test.py -v
 python -X utf8 -B -m unittest discover -s tests -p runtime_relocation_protected_test.py -v
 python -X utf8 -B -m unittest discover -s tests -p runtime_relocation_stop_test.py -v
 python -X utf8 -B -m unittest discover -s tests -p runtime_relocation_destination_test.py -v
+python -X utf8 -B -m unittest discover -s tests -p runtime_relocation_prune_test.py -v
 python -X utf8 -B -m unittest install_test.RuntimeLocationTests -v
 python -X utf8 -B -m unittest install_test -v
 python -X utf8 -B -m unittest discover -s tests -p install_extension_storage_test.py -v
