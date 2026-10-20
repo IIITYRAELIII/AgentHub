@@ -31,6 +31,11 @@ keeps its original ID and is dispatched by its existing owner. The old prompt
 is never relaunched. External observers, missing exact identities, promptless
 unconfirmed starts and active/unknown providers remain unchanged. A read or
 terminal persistence failure cannot release admission, including ordinary Stop.
+The cancellation owner has no direct admission-release capability: only the
+canonical completion/finalizer removes the registered run after durable terminal
+settlement. `finishing`/`completed` memory state and a fulfilled completion no-op
+are not proof of that settlement. A concurrent Stop or recovery therefore reports
+pending while the completion owner still retains the original run.
 
 ## Evidence and limits
 

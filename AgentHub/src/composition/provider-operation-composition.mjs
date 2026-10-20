@@ -245,7 +245,6 @@ export function createProviderOperationComposition({
   const providerCancellationService = new ProviderCancellationService({
     interruptCodex: (run) => codexTurnService.interrupt(run),
     runForTask: (run) => taskRuns.forTask(run),
-    completeRun: (run) => managedRunLifecycle.complete(run),
     readCodexSnapshot: readCodexTaskSnapshot,
     finishObserved: (...args) => taskObserver().finish(...args),
     completeManaged: (run, options) => runCoordinator().completeManaged(run, options),

@@ -420,7 +420,7 @@ export class ProviderCancellationService {
 
   constructor(dependencies = {}) {
     for (const name of [
-      "interruptCodex", "runForTask", "completeRun", "readCodexSnapshot",
+      "interruptCodex", "runForTask", "readCodexSnapshot",
       "finishObserved", "completeManaged", "taskExternalActivity", "stopClaudeRun",
       "processIsAlive", "claudeCancellationKey", "saveState",
     ]) requiredFunction(dependencies[name], name);
@@ -514,9 +514,9 @@ export class ProviderCancellationService {
     if (identity && !current()) return false;
     if (d.runForTask(run) !== run) return true;
     if (["finishing", "completed"].includes(run.status)) {
-      if (identity) return false;
-      await d.completeRun(run);
-      return true;
+      // Only the canonical completion owner can release its registered run.
+      // A pending/failed write can leave either in-memory status behind.
+      return false;
     }
     try {
       const snapshot = await d.readCodexSnapshot(run, { fresh: true });
@@ -535,8 +535,8 @@ export class ProviderCancellationService {
         };
         if (run.observer) await d.finishObserved(run, terminal);
         else await d.completeManaged(run, { snapshot: terminal });
-        // Only successful canonical terminal persistence permits release.
-        if (current()) await d.completeRun(run);
+        // The consumer can no-op when a competing completion is finishing.
+        // Its fulfilled return is not terminal evidence or release authority.
       }
     } catch (error) {
       d.logError?.(`Cannot reconcile inactive Codex task ${run.threadId}:`, error.message);
