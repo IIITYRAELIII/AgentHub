@@ -48,6 +48,55 @@ test("after-ready work is bounded, durable before effect, and has no restart pro
   assert.equal(f.store.activeFor({ kind: "restart", streamId: "agent-hub-runtime", threadId: "agent-hub-runtime" }), null);
 });
 
+test("known partial batches continue SAME admitted child and keep observations distinct from completion", async t => {
+  const f = await setup(t, { maxUnits: 1 });
+  let original, effects = 0;
+  f.owner.prune = async input => { original = input.operationId; effects++; return { status: "partial", files: 64, logicalBytes: 100 }; };
+  f.owner.reconcile = async input => {
+    assert.equal(input.operationId, original);
+    return { status: "removed", logicalBytes: 3 };
+  };
+  const service = f.make();
+  const partial = await service.runOnce();
+  assert.equal(partial.partialBatches, 1);
+  assert.equal(partial.removed, 0);
+  assert.equal(partial.pending, 1);
+  assert.equal(f.store.get(original).phase, "partial");
+  assert.equal(f.store.get(original).metadata.lastObservation.files, 64);
+  const complete = await service.runOnce();
+  assert.equal(complete.removed, 1);
+  assert.equal(complete.logicalBytes, 103);
+  assert.equal(effects, 1);
+  assert.equal(f.store.get(original).status, "succeeded");
+});
+
+test("only the explicit v1 native-transport to v2 runtime-owner append preserves pending original intents", async t => {
+  const f = await setup(t);
+  f.owner.id = "native-merge-transport";
+  f.owner.list = async () => ({ items: [{ id: "a", cursor: "a" }], done: true });
+  f.owner.prune = async () => ({ status: "unknown", reason: "pending-original" });
+  f.owner.reconcile = async () => ({ status: "unknown", reason: "pending-original" });
+  await f.make().runOnce();
+  const before = f.store.get("storage-retention:v1");
+  const original = before.metadata.pending[0].operationId;
+  f.owner.list = async () => ({ items: [], done: true });
+  const other = { ...f.owner, id: "runtime-release",
+    list: async () => ({ items: [{ id: "runtime", cursor: "runtime" }], done: true }),
+    prune: async () => ({ status: "removed" }) };
+  const upgraded = f.make({ owners: [f.owner, other] });
+  assert.equal((await upgraded.runOnce()).removed, 1);
+  const after = f.store.get("storage-retention:v1");
+  assert.deepEqual(after.metadata.ownerIds, ["native-merge-transport", "runtime-release"]);
+  assert.equal(after.metadata.policyVersion, 2);
+  assert.equal(after.metadata.pending[0].operationId, original);
+  assert.equal(f.store.get(original).status, "reconciling");
+  const rollback = await f.make().runOnce();
+  assert.equal(rollback.reason, "retention-policy-incompatible");
+  assert.equal(f.store.get("storage-retention:v1").revision, after.revision);
+  f.store.transition(after.operationId, { metadata: { policyVersion: 99 } }, { expectedRevision: after.revision });
+  assert.equal((await upgraded.runOnce()).reason, "retention-policy-incompatible");
+});
+
 test("unready, isolated and stopping contexts never initialize retention state", async t => {
   const f = await setup(t);
   for (const context of [{ ready: false }, { isolated: true }, { releaseId: null }]) {

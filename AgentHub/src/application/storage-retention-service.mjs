@@ -2,12 +2,13 @@ import { createHash } from "node:crypto";
 import { MAINTENANCE_OPERATION_KINDS } from "../domain/maintenance-operation.mjs";
 
 export const STORAGE_RETENTION_VERSION = 1;
+export const STORAGE_RETENTION_POLICY_VERSION = 2;
 const KIND = MAINTENANCE_OPERATION_KINDS.STORAGE_RETENTION;
 const ROOT_ID = `storage-retention:v${STORAGE_RETENTION_VERSION}`;
 const SCOPE = Object.freeze({ streamId: "agent-hub-runtime", threadId: "storage-retention" });
 const TIMER = "storage-retention";
 const TERMINAL = new Set(["succeeded", "failed"]);
-const OUTCOMES = new Set(["removed", "already-removed", "retained", "unknown"]);
+const OUTCOMES = new Set(["removed", "already-removed", "retained", "unknown", "partial"]);
 
 function bounded(value, bytes = 64 * 1024) {
   const encoded = JSON.stringify(value);
@@ -127,11 +128,18 @@ export class StorageRetentionService {
     await lease.assertOwned();
     let parent = this.store.get(ROOT_ID) ?? this.store.create({ operationId: ROOT_ID, kind: KIND, ...SCOPE,
       metadata: { version: STORAGE_RETENTION_VERSION, ownerIds: this.owners.map(o => o.id), pending: [], summary: summary() } });
+    const ownerIds = this.owners.map(o => o.id);
+    const ownerListChanged = JSON.stringify(parent.metadata.ownerIds) !== JSON.stringify(ownerIds);
+    const knownUpgrade = JSON.stringify(parent.metadata.ownerIds) === '["native-merge-transport"]'
+      && JSON.stringify(ownerIds) === '["native-merge-transport","runtime-release"]';
     if (TERMINAL.has(parent.status) || parent.metadata.version !== STORAGE_RETENTION_VERSION
-        || JSON.stringify(parent.metadata.ownerIds) !== JSON.stringify(this.owners.map(o => o.id))) {
+        || ![undefined, 1, STORAGE_RETENTION_POLICY_VERSION].includes(parent.metadata.policyVersion)
+        || (ownerListChanged && !knownUpgrade)) {
       return this.#last = { state: "deferred", reason: "retention-policy-incompatible" };
     }
     let state = bounded(parent.metadata);
+    if (knownUpgrade) Object.assign(state, { ownerIds, ownerIndex: 0, cursor: null });
+    state.policyVersion = STORAGE_RETENTION_POLICY_VERSION;
     const cycle = `${context.releaseId}:${Math.floor(this.now().getTime() / this.intervalMs)}`;
     if (state.cycle !== cycle) Object.assign(state, { cycle, ownerIndex: 0, cursor: null, summary: summary() });
     const save = async () => {
@@ -141,6 +149,9 @@ export class StorageRetentionService {
     const account = result => {
       if (result.status === "removed") {
         state.summary.removed += 1;
+        state.summary.logicalBytes += Math.max(0, Number(result.logicalBytes) || 0);
+      } else if (result.status === "partial") {
+        state.summary.partialBatches = (state.summary.partialBatches ?? 0) + 1;
         state.summary.logicalBytes += Math.max(0, Number(result.logicalBytes) || 0);
       } else if (result.status === "already-removed") {
         state.summary.alreadyRemoved += 1;
@@ -182,8 +193,9 @@ export class StorageRetentionService {
       const result = OUTCOMES.has(step.result?.status) ? step.result : { status: "unknown", reason: "owner-outcome-unknown" };
       if (step.child) {
         await lease.assertOwned();
-        if (result.status === "unknown") {
-          if (!TERMINAL.has(step.child.status)) this.#update(step.child, { status: "reconciling", phase: "reconciling", outcome: "unknown" });
+        if (result.status === "unknown" || result.status === "partial") {
+          if (!TERMINAL.has(step.child.status)) this.#update(step.child, { status: "reconciling",
+            phase: result.status === "partial" ? "partial" : "reconciling", outcome: "unknown", metadata: { lastObservation: bounded(result) } });
         } else {
           this.store.settle(step.child.operationId, { succeeded: true, phase: result.status, metadata: { result } });
           state.pending = state.pending.filter(p => p.operationId !== step.child.operationId);
@@ -221,7 +233,7 @@ export class StorageRetentionService {
         state.ownerIndex += 1; state.cursor = null; await save();
       } else if ((this.#closed || this.isStopping()) || deferred) break;
     }
-    this.#last = { state: "idle", policyVersion: STORAGE_RETENTION_VERSION, cycle,
+    this.#last = { state: "idle", policyVersion: STORAGE_RETENTION_POLICY_VERSION, cycle,
       more: state.ownerIndex < this.owners.length, pending: state.pending.length, ...state.summary };
     return this.status();
   }

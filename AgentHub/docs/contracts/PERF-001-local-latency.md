@@ -11,6 +11,14 @@ archives, history or user work is introduced. Runtime health exposes cached
 status only. Filesystem free-space observations remain distinct from logical
 byte counts and can include concurrent allocations. See ADR-0126.
 
+Policy v2 runtime-body batches remove at most 64 files/256 MiB and check a
+cooperative ten-second deletion budget after bounded metadata preflight. Asset
+bytes are hashed only for the admitted batch, through retained deletion handles;
+there is no repeated whole-body hash before every batch. The original partial
+operation remains pending between batches, and shutdown drains its actual child.
+The shared installation lease is scoped to the physical runtime root, outside
+ordinary provider/message admission. Install no longer sweeps prepared bodies.
+
 Repeated journal projection may reuse a verified rendering only within the
 existing usage worker lifetime. Its bounded scalar receipt is not source
 authority: the current SQLite journal revision/index, clean dirty set, exact

@@ -13,8 +13,14 @@ Bounded owner discovery and previews precede durable artifact admission. A lost
 reply remains with the SAME original child and is reconciled, never replayed as a
 new delete. Unknown resources do not starve every other owner. Shutdown stops new
 admission and drains the actual effect before closing stores or releasing the
-instance lock; a timeout does not prove the child stopped. Policy v1 only owns
-redundant completed/published native merge transports. Other persistent artifacts
+instance lock; a timeout does not prove the child stopped. Policy v1 owns
+redundant completed/published native merge transports. Policy v2 adds only
+explicitly retired runtime bodies with exact current-pointer custody, fresh
+current/rollback/running/prepared/source pins and original child identity. The
+reviewed owner-list append preserves v1 pending intents. Partial batches remain
+attached to the same admitted child; unknown outcomes are not replayed as new
+deletion. An older or unknown registry/version defers without clearing state.
+Other persistent artifacts
 remain under their existing cleanup contracts and are preserved until those
 owners supply their own verified eligibility/effect adapters.
 

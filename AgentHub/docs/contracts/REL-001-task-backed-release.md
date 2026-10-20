@@ -27,6 +27,17 @@ an accepted retirement proof. Current/running/rollback/prepared runtime/source
 roots, release generations, legacy archives and persistent evidence receive no
 new deletion authority from the storage scheduler.
 
+The runtime installation owner separately supplies policy v2 exact retirement
+custody in its existing current.json pointer. Installation preserves unrelated
+prepared bodies and defers deletion. Only known selected custody that leaves
+current/rollback may retire; legacy versions are not adopted by name or age.
+The same physical-root installation lease covers prepare/install/rollback and
+retirement. Current, rollback, running and prepared-source dependencies remain
+pinned before each native batch. The existing maintenance child is recorded in
+that retired binding before effects, and known partial work resumes only that
+original operation/root/manifest. Unknown data or custody stays retained; no
+recursive directory-removal fallback or Task-publication effect is granted.
+
 ## Current corrected candidates and historical release facts (2026-10-14)
 
 A new candidate is admitted from the exact CURRENT normally accepted results.

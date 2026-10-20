@@ -52,6 +52,39 @@ exists: a plain directory substitution cannot acquire deletion authority. A
 failed/partial output is preserved. The resulting bundle and consuming clone are
 full and independent; source refs/configuration are not copied or modified.
 
+## Policy v2: explicitly retired runtime bodies
+
+The previous eager install cleanup deleted every body except current/previous;
+an actual isolated install/prepare/install sequence demonstrated loss of an
+unrelated prepared version. Installation now records exact verified runtime
+custody in the existing current.json pointer and never performs that sweep.
+Known previous custody becomes retired only when it leaves current/rollback.
+Legacy/unfamiliar IDs are not adopted by age or absence from two pointer fields.
+Current, rollback, running, unselected prepared bodies and their referenced
+source roots stay pinned. Same-current repair preserves rollback; rollback swaps
+known bindings. Unknown metadata and a full bounded retirement queue preserve
+payload and explicitly defer reclamation. An admitted partially retired ID
+cannot be prepared or selected again.
+
+Prepare, installation, rollback and retirement share a physical-root scoped
+installation lease, including compatibility aliases. The existing pointer owns
+retirement identity; the existing maintenance child owns the original operation.
+Before native work the pointer binds that same child and pruning phase. Native
+custody holds the exact root/creation, physical ancestors and manifest; complete
+membership preflight refuses unknown names, streams, links and reparse entries.
+Each removed asset is size/hash/link checked through its own retained deletion
+handle. At most 64 files/256 MiB are removed per cooperative ten-second batch
+after bounded metadata preflight; there is no abandoned destructive timeout or
+recursive fallback. Changed later assets remain with the original partial
+operation even if earlier exact reproducible assets were already removed.
+The manifest is last, and directories/root must be empty with no named data.
+
+Known partial progress is not completion or a new operation. Subsequent batches
+reconcile the SAME admitted child/root/manifest under fresh pins; unknown results
+stay pending. The scheduler appends this one reviewed owner to its known v1
+registry while retaining all original pending children, bindings and observations.
+An older policy or an unknown registry/version defers without clearing custody.
+
 ## Boundaries and remaining work
 
 Each pass admits at most three units and checks a 20-second cooperative budget
@@ -61,7 +94,7 @@ size have separate bounds. Logical bytes are separate from observed filesystem
 free-space deltas; concurrent writers make the latter observations, not exact
 per-operation allocation attribution.
 
-This first policy does not automatically delete legacy migration archives,
+These policies do not automatically delete legacy migration archives,
 unpublished/unknown integration captures, release repositories/generations,
 current/running/rollback/prepared runtime versions, attachments, receipts, audit
 evidence or dependency/WIP directories. They retain their existing owners and

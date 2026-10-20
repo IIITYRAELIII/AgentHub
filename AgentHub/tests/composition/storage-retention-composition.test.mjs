@@ -28,7 +28,8 @@ test("every installed user's startup schedules deferred ready work and periodic 
       reconcile: async () => { throw new Error("no intent"); } }) },
     timers: { schedule: (name, run, delay) => schedules.push({ name, run, delay }), clear: name => sources.set("cleared", name) },
     readReady: () => ready, readBusy: () => busy, isStopping: () => false,
-    health: { setDiagnosticSource: (name, read) => sources.set(name, read) }, environment: { AGENT_HUB_RELEASE_ID: "updated-runtime" },
+    health: { setDiagnosticSource: (name, read) => sources.set(name, read) }, environment: {
+      AGENT_HUB_RELEASE_ID: "updated-runtime", AGENT_HUB_RUNTIME_ROOT: path.join(dataDir, "runtime") },
   });
   assert.equal(listed, 0, "constructing the installed runtime does no discovery");
   service.scheduleInitial();

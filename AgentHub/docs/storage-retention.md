@@ -1,6 +1,6 @@
 # Native storage retention
 
-Normal installed Hub startup schedules policy v1 after readiness and periodically
+Normal installed Hub startup schedules policy v2 after readiness and periodically
 every six hours. The installer does not start the application to run cleanup.
 No per-user external scheduled task or Codex automation is required. Test Contour,
 recording, release acceptance and development runtimes do not run production
@@ -8,7 +8,7 @@ cleanup. Active user turns defer admission.
 
 The health diagnostic `storageRetention` reads cached bounded status only. It
 reports policy version, discovery completion, pending original intents, removed
-transport count, observed prior removals and retention reasons. Status/Task/board
+artifact count, known partial batches, observed prior removals and retention reasons. Status/Task/board
 reads do not open the cleanup store or enumerate files. Durable child outcomes
 retain the preview, original identity, logical bytes and free-before/free-after
 observations. A free-space delta can include concurrent allocations and is not
@@ -40,10 +40,29 @@ are not newly authorized by policy v1. The implementation must add their existin
 owners' previews and retirement proofs before expanding automatic deletion.
 See [ADR-0126](decisions/ADR-0126-owned-background-storage-retention.md).
 
+Policy v2 also retires runtime bodies explicitly recorded by the installation
+owner after they leave current/rollback. Installation preserves unrelated prepared
+versions and does no eager directory sweep. Legacy versions are not adopted by
+age. Current/rollback/running bodies and prepared manifests' source dependencies
+remain pinned. Prepare/install/rollback/retirement share the same physical-root
+lease, including a logical compatibility alias. Unknown custody is preserved.
+
+Retirement is recorded against the SAME maintenance child before native work.
+Each batch removes at most 64 known files/256 MiB, with a cooperative ten-second
+budget after bounded metadata preflight. Each asset is hashed through its held
+deletion handle; unknown names/streams/links/reparse entries refuse. A partial
+batch keeps its root identity and immutable manifest for original-operation
+continuation. A lost reply does not launch another deletion identity. Changed
+later bytes stay preserved even if earlier exact assets were already removed.
+The manifest and empty directories/root are last; no recursive fallback exists.
+Policy migration preserves all v1 pending transports, and older code defers upon
+the unfamiliar owner registry rather than clearing those operations.
+
 Focused validation from AgentHub:
 
 ```text
 node --no-warnings --test tests/application/storage-retention-service.test.mjs tests/composition/storage-retention-composition.test.mjs tests/infrastructure/filesystem/native-merge-transport-retention.test.mjs tests/infrastructure/filesystem/sealed-transport-delete.test.mjs tests/infrastructure/filesystem/selected-git-bundle.test.mjs
+node --no-warnings --test tests/infrastructure/filesystem/runtime-release-retention-policy.test.mjs tests/infrastructure/filesystem/runtime-release-retention.test.mjs tests/infrastructure/filesystem/sealed-runtime-release.test.mjs
 node --no-warnings --test --test-name-pattern="cleanup preserves ignored WIP|published cleanup|isolated native merge|native Test retains" tests/infrastructure/filesystem/task-git-workspace.test.mjs
 ```
 
