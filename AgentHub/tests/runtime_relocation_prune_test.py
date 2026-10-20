@@ -33,6 +33,10 @@ class DerivedShmPruneTests(unittest.TestCase):
             raw = {p.name: p.read_bytes() for p in data.iterdir()}
         for name, payload in raw.items():
             (data / name).write_bytes(payload)
+        # Reproduce the observed two-region offline index -> one-region rebuild.
+        index = data / "runtime.sqlite-shm"
+        self.assertEqual(index.stat().st_size, 32768)
+        index.write_bytes(index.read_bytes() + bytes(32768))
         (self.source / "untracked-WIP.txt").write_bytes(b"retain useful work")
         self.plan_file = self.temp / "plan.json"
         relocation.create_plan(self.plan_file, [(self.source, self.target)])
@@ -71,8 +75,8 @@ class DerivedShmPruneTests(unittest.TestCase):
     def change_and_preview(self):
         payload = bytearray(self.shm.read_bytes())
         payload[128] ^= 0x5A
-        # Same native file, changed derived bytes, optionally a different region count.
-        self.shm.write_bytes(bytes(payload) + bytes(32768))
+        # Same native file and creation time: old64KiB -> current32KiB.
+        self.shm.write_bytes(bytes(payload[:32768]))
         relocation.copy_file(self.shm, self.kept, self.plan["operation"])
         relocation.preview_derived_shm(self.plan, self.kept, self.preview)
         return relocation.digest(self.preview)
@@ -90,6 +94,8 @@ class DerivedShmPruneTests(unittest.TestCase):
         sha = self.change_and_preview()
         current = self.shm.read_bytes()
         old = self.original_row
+        self.assertEqual(json.loads(old["identity"])["size"], 65536)
+        self.assertEqual(len(current), 32768)
         with self.assertRaisesRegex(ValueError, "Source file changed"):
             relocation.prune_originals(self.plan)
         self.assert_no_source_deleted()
