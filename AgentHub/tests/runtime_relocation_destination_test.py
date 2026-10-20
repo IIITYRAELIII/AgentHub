@@ -509,6 +509,113 @@ class DestinationTest(unittest.TestCase):
         self.assertFalse(self.target.exists())
         relocation.ensure_destination(self.value, 0)
 
+    def test_short_utf16_destination_leaves_publish_exact_native_object(self):
+        for index, leaf in enumerate(("a", "ab", "я", "😀")):
+            with self.subTest(leaf=leaf):
+                case = self.temp / f"final-{index}"
+                case.mkdir()
+                source, target = case / "source", case / leaf
+                source.mkdir()
+                body = source / "dirty.txt"
+                body.write_bytes(b"source bytes\r\n")
+                plan_file = case / "plan.json"
+                relocation.create_plan(plan_file, [(source, target)])
+                plan = relocation.load_plan(plan_file, relocation.digest(plan_file))
+                try:
+                    relocation.ensure_destination(plan, 0)
+                    marker = json.loads(
+                        (target / ".agent-hub-relocation-owner.json").read_text(
+                            encoding="utf-8"
+                        )
+                    )
+                    self.assertEqual(
+                        marker,
+                        {
+                            "operation": plan["operation"],
+                            "source": str(source),
+                            "target": str(target),
+                        },
+                    )
+                    record = json.loads(
+                        (case / f"root-init-{plan['operation']}-0.json").read_text()
+                    )
+                    self.assertEqual(record["phase"], "published")
+                    identity = relocation.info(target)["ino"]
+                    self.assertEqual(identity, record["identity"]["ino"])
+                    relocation.ensure_destination(plan, 0)
+                    self.assertEqual(relocation.info(target)["ino"], identity)
+                finally:
+                    self.assertEqual(body.read_bytes(), b"source bytes\r\n")
+
+    def test_short_custody_leaf_retains_unproven_identity_and_preserves_collision(self):
+        for index, leaf in enumerate(("a", "ab", "я", "😀")):
+            with self.subTest(leaf=leaf):
+                case = self.temp / f"custody-{index}"
+                case.mkdir()
+                source, target, quarantine = (
+                    case / "source",
+                    case / "target",
+                    case / leaf,
+                )
+                source.mkdir()
+                body = source / "dirty.txt"
+                body.write_bytes(b"retained source")
+                plan_file, preview_file = case / "plan.json", case / "preview.json"
+                relocation.create_plan(plan_file, [(source, target)])
+                plan_sha = relocation.digest(plan_file)
+                target.mkdir()
+                original_id = relocation.info(target)["ino"]
+                relocation.preview_unowned_root(
+                    plan_file, plan_sha, 0, quarantine, preview_file
+                )
+                preview_sha = relocation.digest(preview_file)
+                quarantine.mkdir()
+                foreign_id = relocation.info(quarantine)["ino"]
+                try:
+                    with patch.object(processes, "process_snapshot", return_value=[]):
+                        with self.assertRaisesRegex(ValueError, "already exists"):
+                            relocation.custody_unowned_root(
+                                plan_file, plan_sha, preview_file, preview_sha
+                            )
+                        self.assertEqual(relocation.info(quarantine)["ino"], foreign_id)
+                        self.assertEqual(relocation.info(target)["ino"], original_id)
+                        foreign = case / "retained-foreign"
+                        quarantine.rename(foreign)  # This test's own collision fixture.
+                        result = relocation.custody_unowned_root(
+                            plan_file, plan_sha, preview_file, preview_sha
+                        )
+                    self.assertEqual(result["ownership"], "UNPROVEN")
+                    self.assertEqual(result["phase"], "completed")
+                    self.assertEqual(relocation.info(quarantine)["ino"], original_id)
+                    self.assertFalse(target.exists())
+                    self.assertEqual(list(quarantine.iterdir()), [])
+                    self.assertEqual(relocation.info(foreign)["ino"], foreign_id)
+                finally:
+                    self.assertEqual(body.read_bytes(), b"retained source")
+
+    def test_one_unit_native_publication_never_overwrites_foreign_directory(self):
+        self.target = self.temp / "a"
+        self.plan()
+        body = self.source / "retained.txt"
+        body.write_bytes(b"unchanged")
+        real_publish = relocation.publish_root_directory
+        foreign = []
+
+        def collision(descriptor, target, parent):
+            Path(target).mkdir()
+            foreign.append(relocation.info(target)["ino"])
+            return real_publish(descriptor, target, parent)
+
+        try:
+            with patch.object(relocation, "publish_root_directory", collision):
+                with self.assertRaises(OSError):
+                    relocation.ensure_destination(self.value, 0)
+            self.assertEqual(relocation.info(self.target)["ino"], foreign[0])
+            self.assertEqual(list(self.target.iterdir()), [])
+            self.assertEqual(json.loads(self.receipt().read_text())["phase"], "failed")
+        finally:
+            self.assertEqual(body.read_bytes(), b"unchanged")
+
 
 if __name__ == "__main__":
     unittest.main()

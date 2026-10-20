@@ -678,7 +678,9 @@ def publish_root_directory(descriptor, target, parent_descriptor):
         ]
 
     encoded = Path(target).name.encode("utf-16le")
-    buffer = ctypes.create_string_buffer(RenameInfo.name.offset + len(encoded))
+    buffer = ctypes.create_string_buffer(
+        max(ctypes.sizeof(RenameInfo), RenameInfo.name.offset + len(encoded))
+    )
     value = RenameInfo.from_buffer(buffer)
     value.replace, value.root, value.length = (
         0,
