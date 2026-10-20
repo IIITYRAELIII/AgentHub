@@ -17,6 +17,8 @@ import time
 
 from runtime_relocation import digest, inside, load_plan, write_json
 
+PROCESS_STOP_SETTLE_MS = 10_000
+
 
 def process_snapshot():
     script = r"""[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)
@@ -173,13 +175,50 @@ class HeldProcess:
         if not self.may_terminate:
             raise ValueError("Protected QUERY-only handle cannot stop a process")
         k = self.kernel
-        if k.WaitForSingleObject(self.handle, 0) == 0:
+        self.stop_details = {"stage": "precheck", "terminate_winerror": None}
+        initial = k.WaitForSingleObject(self.handle, 0)
+        self.stop_details["initial_wait"] = initial
+        if initial == 0:
+            self.stop_details["stage"] = "already_exited"
             return "already_exited_held_identity"
-        if not k.TerminateProcess(self.handle, 0xC000013A):
-            if k.WaitForSingleObject(self.handle, 0) != 0:
-                raise c.WinError(c.get_last_error())
-        if k.WaitForSingleObject(self.handle, 10000) != 0:
-            raise RuntimeError("Exact retained process handle did not terminate")
+        if initial != 258:
+            error = c.get_last_error() if initial == 0xFFFFFFFF else None
+            self.stop_details.update(stage="precheck_failed", wait_winerror=error)
+            if error is not None:
+                raise c.WinError(error)
+            raise RuntimeError("Unknown retained process wait state")
+        self.stop_details["stage"] = "terminate"
+        terminated = bool(k.TerminateProcess(self.handle, 0xC000013A))
+        # Capture before any other native call can overwrite the error.
+        error = None if terminated else c.get_last_error()
+        self.stop_details.update(terminate_return=terminated, terminate_winerror=error)
+        if not terminated and error != 5:
+            raise c.WinError(error)
+        self.stop_details.update(
+            stage="settlement", wait_bound_ms=PROCESS_STOP_SETTLE_MS
+        )
+        started = time.monotonic()
+        settled = k.WaitForSingleObject(self.handle, PROCESS_STOP_SETTLE_MS)
+        wait_error = c.get_last_error() if settled == 0xFFFFFFFF else None
+        self.stop_details.update(
+            settlement_wait=settled,
+            wait_winerror=wait_error,
+            settlement_ms=(time.monotonic() - started) * 1000,
+        )
+        if settled != 0:
+            self.stop_details["stage"] = (
+                "settlement_timeout" if settled == 258 else "settlement_failed"
+            )
+            if wait_error is not None:
+                raise c.WinError(wait_error)
+            if error is not None:
+                raise c.WinError(error)
+            raise TimeoutError(
+                "Exact retained process handle did not terminate within bound"
+            )
+        self.stop_details["stage"] = "exited"
+        if error is not None:
+            return "exited_held_identity_after_termination_error"
         return "stopped_held_identity"
 
     def exit_time(self):
@@ -599,6 +638,7 @@ def stop(plan, process_file, expected_hash, saved_file, output):
             "saved_boundary_sha256": digest(saved_file),
             "mode": "controlled process stop; SQLite crash recovery, not graceful shutdown",
             "results": [],
+            "attempts": [],
             "all_writers_stopped": False,
             "protected_job_proof": job_proof,
         }
@@ -614,14 +654,55 @@ def stop(plan, process_file, expected_hash, saved_file, output):
             return len(seen)
 
         for pid in sorted(expected, key=depth, reverse=True):
-            outcome = handles[pid].stop()
-            expected[pid]["exited"] = handles[pid].exit_time()
+            attempt = {
+                "pid": pid,
+                "created": handles[pid].created,
+                "executable": handles[pid].executable,
+                "stage": "stop_intent",
+                "status": "intent",
+                "started_at": time.time(),
+            }
+            receipt["attempts"].append(attempt)
+            write_json(output, receipt)  # Exact identity intent precedes each effect.
+            try:
+                outcome = handles[pid].stop()
+                attempt["stage"] = "exit_time"
+                expected[pid]["exited"] = handles[pid].exit_time()
+            except BaseException as error:
+                details = getattr(handles[pid], "stop_details", {})
+                details = details if isinstance(details, dict) else {}
+                attempt.update(
+                    status="failed",
+                    finished_at=time.time(),
+                    stop_details=details,
+                    stage=attempt["stage"]
+                    if attempt["stage"] == "exit_time"
+                    else details.get("stage", "stop"),
+                    error={
+                        "type": type(error).__name__,
+                        "message": str(error),
+                        "winerror": getattr(error, "winerror", None),
+                        "errno": getattr(error, "errno", None),
+                    },
+                )
+                receipt["failure"] = dict(attempt)
+                write_json(output, receipt)
+                raise
+            attempt.update(
+                status="completed",
+                stage="exited",
+                outcome=outcome,
+                exited=expected[pid]["exited"],
+                finished_at=time.time(),
+                stop_details=getattr(handles[pid], "stop_details", {}),
+            )
             receipt["results"].append(
                 {
                     "pid": pid,
                     "created": handles[pid].created,
                     "outcome": outcome,
                     "exited": expected[pid]["exited"],
+                    "stop_details": attempt["stop_details"],
                 }
             )
             write_json(output, receipt)
@@ -629,6 +710,13 @@ def stop(plan, process_file, expected_hash, saved_file, output):
             process_snapshot(), roots, seeds=expected, historical=expected
         )
         if remaining:
+            receipt["failure"] = {
+                "stage": "verify_absence",
+                "remaining": [
+                    {"pid": row["pid"], "created": row["created"]} for row in remaining
+                ],
+            }
+            write_json(output, receipt)
             raise RuntimeError(
                 "Owned processes remain after stop; no offline copy admission"
             )

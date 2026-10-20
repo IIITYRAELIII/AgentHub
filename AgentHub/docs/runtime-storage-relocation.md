@@ -184,6 +184,41 @@ The relocation itself does not replace an installed binary or frozen source.
 
 ## Acceptance and rollback
 
+### Recovery after a partial controlled stop
+
+`TerminateProcess` is asynchronous. Error5 can mean that termination is already
+in progress; it is never accepted on its own. The owner captures the native error
+immediately and waits at most10 seconds on the SAME retained process handle. Only
+a signalled handle confirms exit. A still-live error5, wait failure or timeout
+stops the operation with `all_writers_stopped:false`. No PID lookup, privilege
+change, process-tree fallback or job-limit adjustment is used.
+
+The existing stop receipt records each exact PID/native creation/executable intent
+before its attempt, then the observed outcome or failed native stage/error/wait.
+Successfully stopped entries remain recorded if a later attempt fails. Pending
+intent after a crash is unknown, never implicit success. Only fresh final absence
+of the whole owned set can admit offline copying.
+
+For a failed attempt before offline copy/switch, retain its original invocation,
+output directory, partial stop receipt, log and hashes unchanged. First establish
+that the original helper identity is terminal/absent, all source roots remain
+plain with their original identities, the same manifest is still planned/staged,
+and no pre-switch/start admission exists. Preserve the owned destination cache,
+quarantine, dirty/untracked work, refs, original UNKNOWN outcomes and receipts.
+Recheck current runtime/source/foreign identities and stop all source work again.
+The sole installer then prepares a NEW output/config with fresh actual caller,
+saved boundary and original failure evidence, SAME operation/plan/manifest/targets,
+for the same reviewer's narrow binding check. Use the ordinary accepted execution
+owner: fresh capture and held custody of the CURRENT complete owned set, all
+terminal/GLOBAL/protected/ancestry/job guards, whole offline copy and integrity.
+Do not replay the old PID order, edit a failed receipt to green, reuse its output
+log, skip missing children by raw PID, or infer all-writers absence from partial
+results. If copy/switch/start has already been admitted, this procedure does not
+apply; preserve both sides for the appropriate explicit recovery.
+
+Microsoft documents asynchronous termination and error5 after exit:
+https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-terminateprocess.
+
 Preparation defers the exact dotfile `.lock` as well as ordinary lock suffixes;
 it may be range-locked by a live provider. This is preparation only: offline
 copy must still read and verify every byte after writers release it. A failed
@@ -218,6 +253,7 @@ Choose a disposable destination-volume fixture directory and set
 ```text
 python -X utf8 -B -m unittest discover -s tests -p runtime_relocation_test.py -v
 python -X utf8 -B -m unittest discover -s tests -p runtime_relocation_protected_test.py -v
+python -X utf8 -B -m unittest discover -s tests -p runtime_relocation_stop_test.py -v
 python -X utf8 -B -m unittest install_test.RuntimeLocationTests -v
 python -X utf8 -B -m unittest install_test -v
 python -X utf8 -B -m unittest discover -s tests -p install_extension_storage_test.py -v
