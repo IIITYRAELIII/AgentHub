@@ -5908,6 +5908,7 @@ function renderStreamChatHeader(task, now = Date.now()) {
   const branch = String(task.branch ?? task.gitBranch ?? task.repositoryBranch ?? "").trim();
   if (streamHeaderBranch) {
     streamHeaderBranch.textContent = branch;
+    streamHeaderBranch.title = branch;
     streamHeaderBranch.hidden = !branch;
   }
   if (streamHeaderBranchSeparator) streamHeaderBranchSeparator.hidden = !branch;
@@ -6004,6 +6005,7 @@ function renderContextUsage(task) {
     ? "свёртка…"
     : context.usagePending ? "обновление…" : known
       ? `${context.estimated ? "≈" : ""}${Math.round(percent)}% контекста` : "нет оценки";
+  contextUsageButton.setAttribute("aria-label", `Использование контекста: ${contextLabel.textContent.replace(" контекста", "")}`);
   contextRing.style.setProperty("--context-percent", `${percent}%`);
   contextUsageButton.title = preparing ? "Подготовка обслуживания контекста. Проверяется завершение предыдущего хода…"
     : starting ? "Запуск обслуживания контекста…" : context.compacting

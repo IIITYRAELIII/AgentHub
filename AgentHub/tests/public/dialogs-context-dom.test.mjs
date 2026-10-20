@@ -114,9 +114,9 @@ for (const surface of surfaces) {
       if (compact) {
         assert.equal(await page.locator('[data-composer-input]').isVisible(), true);
         assert.equal(await page.locator('[data-mobile-dialogs], [data-mobile-conversation-back]').count(), 0);
-        assert.equal(await context.locator('[data-mobile-workspace-name]').innerText(), workspaceName);
+        assert.equal(await page.locator('.stream-chat-meta [data-mobile-workspace-name]').innerText(), workspaceName);
         assert.equal(await context.locator('[data-mobile-stream-name]').innerText(), 'Поток 1');
-        assert.equal(await context.getAttribute('aria-label'), `Workspace ${workspaceName} / Поток 1`);
+        assert.equal(await context.getAttribute('aria-label'), `Переключить поток: Поток 1. Workspace ${workspaceName}`);
         assert.equal(await page.locator('[data-mobile-dialogs-tab="chat"]').getAttribute('aria-label'), 'Чат');
         assert.deepEqual(await page.locator('[data-mobile-dialogs-tab] span').allTextContents(), ['Чат', 'Задачи', 'Журнал', 'Статистика', 'Ещё']);
         await context.click();
@@ -206,7 +206,7 @@ for (const surface of surfaces) {
           assert.equal(await page.locator('[data-mobile-conversation-empty] h2').evaluate((n) => document.activeElement === n), true);
           assert.equal((await metrics(page)).emptyComposerCount, 0);
           assert.equal(await context.locator('[data-mobile-stream-name]').innerText(), 'Нет потоков');
-          assert.equal(await context.getAttribute('aria-label'), 'Workspace Пустой Workspace 🛰 / Нет потоков');
+          assert.equal(await context.getAttribute('aria-label'), 'Переключить поток: Нет потоков. Workspace Пустой Workspace 🛰');
           await writeFile(path.join(captures, `${surface.name}-${theme}-empty-accessible.json`), JSON.stringify({ ariaLabel: await context.getAttribute('aria-label'), title: await context.getAttribute('title') }, null, 2));
           await capture(page, `${surface.name}-${theme}-empty`);
           await context.click();

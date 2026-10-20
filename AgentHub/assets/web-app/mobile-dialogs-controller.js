@@ -70,7 +70,7 @@
       { "data-mobile-workspaces-open": "", "aria-haspopup": "dialog", "aria-expanded": "false" });
     const workspaceName = node("strong", { "data-mobile-workspace-name": "" });
     const workspaceLabel = node("span", { class: "mobile-context-workspace", "data-mobile-workspace-label": "" }, [
-      node("span", { text: "Workspace" }), workspaceName,
+      node("span", { text: "Workspace " }), workspaceName,
     ]);
     const chatHeader = doc.querySelector("[data-stream-chat-header]");
     const headerHome = chatHeader.parentNode;
@@ -85,8 +85,17 @@
       { class: "mobile-dialog-button mobile-conversation-create", "data-mobile-chat-stream-create": "" });
     const streamName = node("strong", { "data-mobile-stream-name": "" });
     const streamLine = node("span", { class: "mobile-context-stream" }, [streamName, switchButton.querySelector("svg")]);
-    switchButton.append(node("span", { class: "mobile-context-lines" }, [workspaceLabel, streamLine]));
-    chatHeader.prepend(drawerButton, switchButton, chatCreate);
+    switchButton.append(streamLine);
+    const headerActions = chatHeader.querySelector(".chat-overlay-actions");
+    const primaryActions = node("div", { class: "mobile-conversation-actions" }, [chatCreate]);
+    chatHeader.prepend(drawerButton, switchButton, primaryActions);
+    const meta = chatHeader.querySelector(".stream-chat-meta");
+    meta.prepend(workspaceLabel);
+    // Move the existing controls, retaining their identities, listeners and form.
+    // Restore their original parents when leaving the compact surface.
+    const composerMain = doc.querySelector(".composer-main");
+    const composerActions = node("div", { class: "composer-primary-actions" });
+    const composerButtons = [...composerMain.querySelectorAll(".context-usage, .chat-stop-bottom, .composer-send")];
     const emptyText = node("h2", { tabindex: "-1" });
     const emptyHelper = node("p", { text: "Создайте поток, чтобы начать работу." });
     const emptyCreate = textButton("Новый поток", "plus", () => createStream(workspaceId),
@@ -99,7 +108,7 @@
     let lastContext = "";
     const currentStatus = node("span", { class: "mobile-current-status", "data-mobile-current-status": "" });
     const currentRuntime = node("span", { class: "mobile-current-runtime", "data-mobile-current-runtime": "" });
-    chatHeader.querySelector(".stream-chat-meta").append(currentRuntime, currentStatus);
+    meta.append(currentRuntime, currentStatus);
     const drawer = dialog("Workspace", "mobile-workspace-drawer", "data-mobile-workspace-drawer");
     const drawerBody = node("div", { class: "mobile-workspace-drawer-body" });
     drawer.append(drawerBody);
@@ -511,10 +520,16 @@
         if (active !== enabled) {
           active = enabled;
           root.toggleAttribute("data-mobile-dialogs-enabled", enabled);
-          if (enabled) { drawerBody.append(rail); chat.prepend(chatHeader); }
+          if (enabled) {
+            drawerBody.append(rail); chat.prepend(chatHeader);
+            primaryActions.append(headerActions);
+            composerActions.append(...composerButtons); composerMain.append(composerActions);
+          }
           else {
             ownDialogs.forEach(close); railHome.insertBefore(rail, railNext);
             headerHome.insertBefore(chatHeader, headerNext);
+            chatHeader.append(headerActions);
+            composerMain.append(...composerButtons); composerActions.remove();
             for (const item of rail.querySelectorAll("[data-workspace-select]")) {
               const primary = item.querySelector("[data-mobile-workspace-select]");
               if (primary) { item.prepend(...primary.childNodes); primary.remove(); }
@@ -556,13 +571,14 @@
         const switchLabel = `Переключить поток: ${streamName.textContent}`;
         switchButton.title = switchLabel;
         const contextLabel = `Workspace ${workspaceName.textContent} / ${streamName.textContent}`;
-        switchButton.setAttribute("aria-label", contextLabel);
+        switchButton.setAttribute("aria-label", `${switchLabel}. Workspace ${workspaceName.textContent}`);
         if (contextLabel !== lastContext) { contextStatus.textContent = contextLabel; lastContext = contextLabel; }
         currentRuntime.textContent = selected?.runtimeLabel || "";
-        currentRuntime.title = selected?.runtimeTitle || "";
+        currentRuntime.title = selected?.runtimeTitle || currentRuntime.textContent;
         currentRuntime.hidden = !currentRuntime.textContent;
         currentStatus.textContent = state.connection === "offline" ? "Нет связи" : state.connection !== "online"
           ? "Подключение…" : listPresentation(selected).status;
+        currentStatus.title = currentStatus.textContent;
         currentStatus.hidden = !currentStatus.textContent;
         chatCreate.disabled = !workspaceId;
         renderEmpty(selected);

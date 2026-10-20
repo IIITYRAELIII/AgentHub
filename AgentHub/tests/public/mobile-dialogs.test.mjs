@@ -266,7 +266,7 @@ test("user corrections keep themed drawers, direct Stream creation and five mobi
       assert.equal(await create.evaluate((n) => {
         const r = n.getBoundingClientRect(), switcher = document.querySelector("[data-mobile-stream-switch]").getBoundingClientRect();
         const actions = document.querySelector(".chat-overlay-actions").getBoundingClientRect();
-        return r.width >= 44 && r.height >= 44 && r.right <= innerWidth && switcher.right <= r.left && r.bottom <= actions.top;
+        return r.width >= 44 && r.height >= 44 && r.right <= innerWidth && switcher.right <= r.left && Math.abs(r.top - actions.top) <= 1 && r.right <= actions.left;
       }), true);
       await page.locator("[data-composer-input]").fill("Сохранённый черновик");
       const before = await page.evaluate(() => window.testIntents.filter((i) => i.type === "stream:new").length);
@@ -434,7 +434,7 @@ test("mobile parity paths expose Workspace/archive, Stream actions and readable 
     assert.equal(await page.locator('[data-message-repeat]').isVisible(), true);
     await save("message-actions-390.png");
     const metrics = await page.evaluate(() => {
-      const selected = ["[data-composer-send]", "[data-chat-stop]", "[data-context-usage]",
+      const selected = ["[data-chat-stop]", "[data-context-usage]",
         "[data-mobile-workspaces-open]", "[data-mobile-stream-switch]", ".composer-slash", ".composer-attach"];
       return selected.map((selector) => {
         const node = document.querySelector(selector);
@@ -448,7 +448,7 @@ test("mobile parity paths expose Workspace/archive, Stream actions and readable 
     for (const metric of metrics) {
       assert.ok(metric.width >= 44 && metric.height >= 44, JSON.stringify(metric));
     }
-    assert.ok(metrics.find((m) => m.selector === "[data-composer-send]").glyphWidth >= 22);
+    assert.equal(await page.locator("[data-composer-send]").isVisible(), false);
     assert.ok(metrics.find((m) => m.selector === "[data-chat-stop]").glyphWidth >= 22);
     const contrast = await page.evaluate(() => {
       const rgb = (value) => value.match(/[\d.]+/gu).map(Number);
@@ -465,6 +465,9 @@ test("mobile parity paths expose Workspace/archive, Stream actions and readable 
         });
     });
     for (const result of contrast) assert.ok(result.ratio >= 4.5, JSON.stringify(result));
+    await page.evaluate(() => AgentHub.patchTask("a1", { running: false }));
+    assert.equal(await page.locator("[data-composer-send]").isVisible(), true);
+    assert.equal(await page.locator(".composer-primary-actions [data-chat-stop]").isVisible(), false);
     await page.locator("[data-composer-input]").fill("Готовый prompt");
     await save("composer-enabled-390.png");
     await page.locator("[data-composer-input]").fill("");
@@ -778,7 +781,8 @@ test("Mobile empty scope, long names, offline retry, focus containment and viewp
     await page.evaluate(() => { AgentHub.selectTask("a1"); AgentHub.showSelectedTask(); });
     await page.setViewportSize({ width: 320, height: 450 });
     assert.equal(await page.locator("[data-composer-input]").isVisible(), true);
-    assert.equal(await page.locator("[data-composer-send]").isVisible(), true);
+    assert.equal(await page.locator("[data-composer-send]").isVisible(), false);
+    assert.equal(await page.locator(".composer-primary-actions [data-chat-stop]").isVisible(), true);
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
     assert.deepEqual(errors, []);
   } finally { await context.close(); await browser.close(); }
