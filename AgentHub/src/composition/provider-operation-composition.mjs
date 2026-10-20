@@ -193,6 +193,7 @@ export function createProviderOperationComposition({
   const codexRecoveryService = new CodexRecoveryService({
     transportRunning: codexTransportRunning,
     readTaskSnapshot: readCodexTaskSnapshot,
+    recoverInactiveRun: (run) => providerCancellationService.recoverCodex(run),
     startTransport: startCodexTransport,
     initialize: initializeCodex,
     isCodex,

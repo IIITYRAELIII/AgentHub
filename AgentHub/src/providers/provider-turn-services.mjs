@@ -416,6 +416,7 @@ export class CodexTurnService {
 
 export class ProviderCancellationService {
   #d;
+  #recoveryAttempts = new WeakMap();
 
   constructor(dependencies = {}) {
     for (const name of [
@@ -438,6 +439,33 @@ export class ProviderCancellationService {
         stopRequested: false,
       };
     }
+  }
+
+  recoverCodex(run) {
+    if (this.#recoveryAttempts.has(run)) return this.#recoveryAttempts.get(run);
+    const identity = { threadId: run.threadId, turnId: run.turnId };
+    const current = () => this.#d.runForTask(run) === run
+      && run.threadId === identity.threadId && run.turnId === identity.turnId;
+    const pending = (async () => {
+      if (run.observer || !identity.turnId || !current()) return false;
+      try {
+        const activity = await this.#d.taskExternalActivity(run, { forceFresh: true });
+        if (activity.state !== "inactive" || !current()) return false;
+        try {
+          await this.#d.interruptCodex(run);
+          // An accepted interrupt still needs its exact terminal event.
+          return false;
+        } catch (error) {
+          if (!activeTurnMissing(error) || !current()) return false;
+        }
+        return await this.#reconcileInactiveCodexRun(run, { identity });
+      } catch (error) {
+        this.#d.logError?.(`Cannot recover inactive Codex task ${identity.threadId}:`, error.message);
+        return false;
+      }
+    })();
+    this.#recoveryAttempts.set(run, pending);
+    return pending;
   }
 
   async cancelClaude(run) {
@@ -479,17 +507,25 @@ export class ProviderCancellationService {
     return { accepted: false, message: "Codex не подтвердил остановку. Наблюдение и блокировка потока сохранены" };
   }
 
-  async #reconcileInactiveCodexRun(run) {
+  async #reconcileInactiveCodexRun(run, { identity = null } = {}) {
     const d = this.#d;
+    const current = () => d.runForTask(run) === run && (!identity
+      || (run.threadId === identity.threadId && run.turnId === identity.turnId));
+    if (identity && !current()) return false;
     if (d.runForTask(run) !== run) return true;
     if (["finishing", "completed"].includes(run.status)) {
+      if (identity) return false;
       await d.completeRun(run);
       return true;
     }
     try {
       const snapshot = await d.readCodexSnapshot(run, { fresh: true });
-      if (d.runForTask(run) !== run) return true;
-      if (snapshot) {
+      if (!current()) return !identity;
+      if (snapshot && snapshot.turnId === run.turnId) {
+        if (identity) {
+          const activity = await d.taskExternalActivity(run, { forceFresh: true });
+          if (activity.state !== "inactive" || !current()) return false;
+        }
         const terminal = {
           ...snapshot,
           active: false,
@@ -499,11 +535,11 @@ export class ProviderCancellationService {
         };
         if (run.observer) await d.finishObserved(run, terminal);
         else await d.completeManaged(run, { snapshot: terminal });
+        // Only successful canonical terminal persistence permits release.
+        if (current()) await d.completeRun(run);
       }
     } catch (error) {
       d.logError?.(`Cannot reconcile inactive Codex task ${run.threadId}:`, error.message);
-    } finally {
-      if (d.runForTask(run) === run) await d.completeRun(run);
     }
     return d.runForTask(run) !== run;
   }

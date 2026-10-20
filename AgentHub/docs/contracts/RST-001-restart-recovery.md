@@ -39,6 +39,9 @@ Provider recovery read, reconnect or reattach failure is likewise unknown: a
 generic recovery exception and a local `interrupted` bookkeeping decision do
 not create provider terminal evidence or release the manual session. Only the
 provider/process completion owner may commit the exact terminal outcome.
+The narrowly scoped ADR-0125 recovery interruption uses that same cancellation
+and terminal owner after fresh provider/native inactivity and exact interrupt
+rejection; a startup/read exception or idle status alone still cannot release.
 
 ## Invariants
 
