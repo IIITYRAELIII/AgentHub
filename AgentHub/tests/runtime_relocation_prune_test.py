@@ -140,6 +140,27 @@ class DerivedShmPruneTests(unittest.TestCase):
         self.assertEqual(self.kept.read_bytes(), preserved)
         self.assertNotEqual(self.row()["deleted"], 1)
 
+    def test_hardlink_added_during_held_hash_is_refused_before_disposition(self):
+        sha = self.change_and_preview()
+        foreign = self.temp / "during-hash-index-link"
+        preserved = self.shm.read_bytes()
+        digest = relocation.content_digest
+
+        def add_link_during_hash(file, default_hash=None):
+            if Path(file) == self.shm and default_hash is not None:
+                os.link(self.shm, foreign)  # Real native operation while delete handle is held.
+                self.assertEqual(relocation.info(foreign)["links"], 2)
+            return digest(file, default_hash)
+
+        with patch.object(relocation, "content_digest", side_effect=add_link_during_hash):
+            with self.assertRaisesRegex(ValueError, "link count changed"):
+                self.prune(sha)
+        self.assert_no_source_deleted()
+        self.assertEqual(self.shm.read_bytes(), preserved)
+        self.assertEqual(foreign.read_bytes(), preserved)
+        self.assertEqual(self.kept.read_bytes(), preserved)
+        self.assertNotEqual(self.row()["deleted"], 1)
+
     def test_current_index_drift_or_missing_preservation_refuses(self):
         self.change_and_preview()
         self.shm.write_bytes(self.shm.read_bytes() + bytes(32768))

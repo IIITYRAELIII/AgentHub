@@ -343,7 +343,10 @@ Pruning still validates the entire original root before its first deletion.
 This index is processed FIRST while DB, WAL and preserved copy stay held. The
 existing same-handle delete owner verifies the current proof and strict native
 metadata, including the actual retained descriptor's single-link count immediately
-before disposition. A hardlink added after preview refuses deletion. Ordinary
+before disposition, rechecking after hashing because the held file's sharing
+mode does not prevent another hardlink name. A link added before that final
+observation refuses deletion. This is a same-handle admission check, not an atomic
+Windows link-count compare-and-delete primitive. Ordinary
 hardlink-group pruning keeps its existing semantics because link counts decrease
 as sibling links are removed. Original manifest identity/hash columns remain unchanged. Only the
 existing `deleted=2` intent → effect → `deleted=1` progress is used, with the proof

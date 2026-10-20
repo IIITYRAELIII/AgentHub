@@ -1959,6 +1959,10 @@ def delete_verified_file(
                 h.update(chunk)
             if content_digest(file, h.hexdigest()) != expected_hash:
                 raise ValueError("Source deletion checksum changed")
+        # Hardlink creation can succeed while this handle is held. Recheck the
+        # typed index's count after hashing at the final disposition admission.
+        if strict_identity and os.fstat(descriptor).st_nlink != expected["links"]:
+            raise ValueError("Source deletion link count changed")
         # DELETE | POSIX_SEMANTICS | IGNORE_READONLY_ATTRIBUTE. The latter permits
         # removal of copied Git object files without an unsafe pathname chmod.
         disposition = wintypes.DWORD(0x13)
