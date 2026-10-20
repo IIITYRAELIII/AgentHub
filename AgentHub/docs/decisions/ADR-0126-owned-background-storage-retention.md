@@ -44,10 +44,13 @@ aliases before that boundary. Unsupported platforms defer; there is no pathname
 unlink fallback. Recheck link count after hashing; this remains last-observed
 admission, not an atomic link-count/delete CAS.
 
-New native merges pack only selected base/result ancestry through private refs
-in a fresh bare pool. They no longer include all unrelated source refs. The pool
-temporarily borrows objects; the resulting bundle and consuming clone are full
-and independent. Source refs/configuration are not copied or modified.
+New native merges stream only selected base/result ancestry from Git into an
+already-owned output descriptor, with private advertised bundle tips. The
+documented bundle header supports SHA-1/v2 and SHA-256/v3. They no longer include
+all unrelated source refs. No bare pool, alternates or recursive scratch cleanup
+exists: a plain directory substitution cannot acquire deletion authority. A
+failed/partial output is preserved. The resulting bundle and consuming clone are
+full and independent; source refs/configuration are not copied or modified.
 
 ## Boundaries and remaining work
 

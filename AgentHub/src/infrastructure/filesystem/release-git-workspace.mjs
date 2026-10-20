@@ -48,16 +48,17 @@ const AWAIT_UNKNOWN_OUTCOME_CODES = new Set([
   "AWAIT_ACCEPTANCE_UNKNOWN",
 ]);
 
-function runGit(args, { cwd, timeoutMs = 120_000, rawOutput = false, acceptableExitCodes = [], input = null } = {}) {
+function runGit(args, { cwd, timeoutMs = 120_000, rawOutput = false, acceptableExitCodes = [], input = null, stdoutFd = null } = {}) {
+  if (stdoutFd !== null && (!Number.isSafeInteger(stdoutFd) || stdoutFd < 3)) throw new TypeError("Invalid owned Git output descriptor");
   return new Promise((resolve, reject) => {
-    const child = spawn("git", args, { cwd, windowsHide: true, stdio: [input == null ? "ignore" : "pipe", "pipe", "pipe"] });
+    const child = spawn("git", args, { cwd, windowsHide: true, stdio: [input == null ? "ignore" : "pipe", stdoutFd ?? "pipe", "pipe"] });
     const stdout = [];
     const stderr = [];
     const timer = setTimeout(() => {
       child.kill();
       reject(new Error(`git ${args[0]} timed out after ${timeoutMs} ms`));
     }, timeoutMs);
-    child.stdout.on("data", (chunk) => stdout.push(chunk));
+    child.stdout?.on("data", (chunk) => stdout.push(chunk));
     child.stderr.on("data", (chunk) => stderr.push(chunk));
     child.on("error", (error) => {
       clearTimeout(timer);

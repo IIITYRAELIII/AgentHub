@@ -31,6 +31,10 @@ there is no retry that invents a fresh deletion identity.
 
 New native merge transport excludes unrelated source refs. Existing large broad
 transports become eligible only under the same completed/published owner checks.
+Git's complete pack is streamed into an already-owned bundle descriptor; no
+temporary bare pool is recursively deleted. The supported [bundle format](https://git-scm.com/docs/gitformat-bundle)
+uses private advertised tips, including dangling results. Failed/partial output
+and substituted directories are preserved instead of being recursively removed.
 Other legacy archives, fixture directories, runtime versions and dependency trees
 are not newly authorized by policy v1. The implementation must add their existing
 owners' previews and retirement proofs before expanding automatic deletion.

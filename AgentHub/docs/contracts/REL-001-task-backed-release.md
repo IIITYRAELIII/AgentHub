@@ -3,9 +3,12 @@
 ## Native transport retirement (ADR-0126)
 
 New native merge transport contains exact selected base/result ancestry through
-private staging refs, including dangling accepted inputs, without copying all
-unrelated source refs or mutating source configuration/refs. The consuming clone
-has no alternates and remains independent.
+private advertised bundle tips, including dangling accepted inputs, without
+copying all unrelated source refs or mutating source configuration/refs. Git
+streams its complete pack into an already-owned output descriptor; no bare pool
+or recursive temporary-directory deletion is used. A failed/partial output and
+any plain/reparse replacement are preserved. The consuming clone has no
+alternates and remains independent.
 
 After an update's normal runtime start, policy v1 may retire only the redundant
 task-native-merge transport from a completed, durably published Task. The existing

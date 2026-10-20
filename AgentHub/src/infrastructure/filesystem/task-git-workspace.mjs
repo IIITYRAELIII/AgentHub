@@ -212,7 +212,9 @@ export function runTaskGitCommand(args, options = {}) {
 function runTaskGitCommandUntraced(args, {
   cwd, timeoutMs = 60_000, executable = "git", spawnProcess = spawn, signal = null, input = null,
   commandLabel = "git", env = null, rawOutput = false, acceptableExitCodes = [],
+  stdoutFd = null,
 } = {}) {
+  if (stdoutFd !== null && (!Number.isSafeInteger(stdoutFd) || stdoutFd < 3)) throw new TypeError("Invalid owned Git output descriptor");
   return new Promise((resolve, reject) => {
     if (signal?.aborted) {
       reject(signal.reason instanceof Error ? signal.reason : new Error("Task Git lease ownership was lost"));
@@ -221,7 +223,7 @@ function runTaskGitCommandUntraced(args, {
     const child = spawnProcess(executable, args, {
       cwd,
       windowsHide: true,
-      stdio: [input == null ? "ignore" : "pipe", "pipe", "pipe"],
+      stdio: [input == null ? "ignore" : "pipe", stdoutFd ?? "pipe", "pipe"],
       ...(env ? { env: { ...process.env, ...env } } : {}),
     });
     const stdout = [];
@@ -260,7 +262,7 @@ function runTaskGitCommandUntraced(args, {
     const abort = () => terminate("was fenced");
     signal?.addEventListener?.("abort", abort, { once: true });
     const timer = setTimeout(() => terminate("timed out"), timeoutMs);
-    child.stdout.on("data", (chunk) => stdout.push(chunk));
+    child.stdout?.on("data", (chunk) => stdout.push(chunk));
     child.stderr.on("data", (chunk) => stderr.push(chunk));
     child.on("error", (error) => {
       clearTimeout(timer);
