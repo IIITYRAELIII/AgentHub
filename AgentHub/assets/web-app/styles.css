@@ -10869,6 +10869,17 @@ html[data-surface="mobile"] .chat-stop-bottom > span {
   opacity: 0.42;
 }
 
+.themed-select-action {
+  background: transparent;
+  border-top: 1px solid var(--line-strong);
+  border-radius: 0;
+  display: block;
+  margin-top: 0.3rem;
+  text-align: left;
+  white-space: normal;
+  width: 100%;
+}
+
 .setting-field .themed-select {
   width: 100%;
 }

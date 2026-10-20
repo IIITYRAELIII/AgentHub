@@ -4,7 +4,7 @@ function requiredMethod(value, name) {
 export class ReleaseOperationFinalization {
   constructor({ taskBoard, releaseGitWorkspaces, taskGitWorkspaces } = {}) {
     requiredMethod(taskBoard, "completeReleaseOperation");
-    requiredMethod(releaseGitWorkspaces, "synchronizePublishedPrimary");
+    requiredMethod(releaseGitWorkspaces, "verifyPublishedPrimary");
     requiredMethod(taskGitWorkspaces, "synchronizeMainIntoDev");
     this.taskBoard = taskBoard;
     this.releaseGitWorkspaces = releaseGitWorkspaces;
@@ -19,33 +19,41 @@ export class ReleaseOperationFinalization {
     if (missing.length) throw new Error(`release finalization is missing target effects: ${missing.join(", ")}`);
     const repositories = [];
     for (const candidate of generation.candidates) {
-      const primary = await this.releaseGitWorkspaces.synchronizePublishedPrimary({
+      const primary = await this.releaseGitWorkspaces.verifyPublishedPrimary({
         projectRoot: candidate.repositoryRoot,
         publishedRevision: candidate.commit,
         planRevision: candidate.planRevision,
       });
-      if (!["already_current", "fast_forwarded"].includes(primary?.status)) {
-        const error = new Error(primary?.reason || `primary synchronization failed for ${candidate.repositoryRoot}`);
+      if (primary?.status !== "preserved") {
+        const error = new Error(primary?.reason || `published primary verification failed for ${candidate.repositoryRoot}`);
         error.code = "RELEASE_EXTERNAL_CONDITION";
         throw error;
       }
-      const dev = await this.taskGitWorkspaces.synchronizeMainIntoDev({
-        projectRoot: candidate.repositoryRoot,
-        publishedRevision: candidate.commit,
-      });
-      if (dev?.integrated !== true) {
-        const error = new Error(dev?.reason || `dev synchronization failed for ${candidate.repositoryRoot}`);
-        error.code = "RELEASE_EXTERNAL_CONDITION";
-        throw error;
-      }
-      repositories.push({ projectRoot: candidate.repositoryRoot, revision: candidate.commit, primary, dev });
+      repositories.push({ projectRoot: candidate.repositoryRoot, revision: candidate.commit, primary });
     }
-    const tasks = this.taskBoard.completeReleaseOperation(operation.workspaceId, {
+    const tasks = await this.taskBoard.completeReleaseOperation(operation.workspaceId, {
       operationId: operation.operationId,
       generation: generation.generation,
       selectedResults: generation.selectedResults,
       publicationEffects: operation.publicationEffects,
     });
+    for (const repository of repositories) {
+      try {
+        repository.dev = await this.taskGitWorkspaces.synchronizeMainIntoDev({
+          projectRoot: repository.projectRoot, publishedRevision: repository.revision,
+        });
+      } catch (error) {
+        repository.dev = { integrated: false, reason: error.message, code: error.code ?? null };
+      }
+    }
+    const pending = repositories.filter(repository => repository.dev?.integrated !== true);
+    if (pending.length) {
+      const error = new Error(pending.map(repository => repository.dev?.reason
+        || `dev synchronization pending for ${repository.projectRoot}`).join("; "));
+      error.code = "RELEASE_EXTERNAL_CONDITION";
+      error.finalization = { status: "awaiting_dev_sync", repositories, tasks };
+      throw error;
+    }
     return { status: "completed", repositories, tasks };
   }
 }

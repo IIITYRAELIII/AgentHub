@@ -1,5 +1,28 @@
 # PERF-001 — Local command latency
 
+Repeated journal projection may reuse a verified rendering only within the
+existing usage worker lifetime. Its bounded scalar receipt is not source
+authority: the current SQLite journal revision/index, clean dirty set, exact
+scope/version/device settings, freshly resolved Workspace bindings, freshly read
+account catalog and generation-fenced facts revision must still match. Workspace
+resolution and unknown-Thread assignment are never skipped. A single SQLite
+read snapshot rechecks journal/facts/dirty and pricing/image markers after
+asynchronous callbacks, both when consuming and establishing a reuse receipt.
+Marker drift requires a canonical full rebuild with the original revision CAS;
+pre-callback version observations never authorize reuse.
+Rolling-window future-record/24h boundaries and local midnight expire reuse;
+backward or invalid clocks fail closed. Restart, a failed/stale render and changed
+inputs reconstruct through the canonical renderer and existing revision CAS.
+The receipt retains hashes/scalars only, not another HTML or facts cache.
+Matching facts are checked through their indexed revision/generation metadata;
+no facts are hydrated on this path, including when the existing facts payload
+cache declined retention at its byte limit. A miss still uses that bounded cache
+and the canonical renderer. Content-free retained byte/count scalars are not
+payloads and do not widen its retention limit.
+Content-free reuse-check/window and render measurements distinguish eliminated
+render work from preserved ledger reads, callbacks and queue waits. A no-dirty
+result alone never establishes unchanged projection inputs.
+
 ## Bounded Codex trace and fact projections
 
 Codex rollout preview retains at most 256 groups, 128 activities per group,
@@ -82,6 +105,17 @@ bounded Journal Durable Object trace owner. A 24-hour browser cache retries
 those spans after endpoint loss without changing upload or command outcomes.
 The Worker trace is queried by exact upload ID and is not merged into local
 runtime health statistics. See MSG-002 and ADR-0083.
+
+Selected-Stream visibility diagnostics retain the original snapshot request
+identity across the server's bounded run-source/gate observation, the client's
+accepted or rejected snapshot decision, and its later rendered viewport state.
+The client records only document identity and predecessor, selected provider,
+Thread, Stream, turn and command IDs, run/provider-start presence, exact final
+revision, model-link state, and whether the live card is in view, offscreen or
+absent. A code marker identifies a loaded client path only when release evidence
+maps it to one reviewed immutable asset digest; a server release ID alone is
+not evidence of client bytes. A missing trace can mean a page close, failed
+transport or diagnostic backpressure, not an idle provider.
 
 A blocking operation records a started marker before awaiting and a terminal
 measurement with the same `operationSpanId`. Missing terminal measurements are

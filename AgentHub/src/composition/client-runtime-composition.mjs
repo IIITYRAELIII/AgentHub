@@ -406,6 +406,7 @@ export async function createClientRuntimeComposition({
   ports.codexLifecycle.bind(codexLifecycle);
   const { runtime: codexRuntime, transport: codexTransport, controller: codexLifecycleController } = codexLifecycle;
   ports.codexTaskSettings.bind(createCodexTaskSettingsComposition({
+    recoverThreadNaming: provider.hubThreadNaming.recoverThreadNaming,
     pinnedTaskTitle,
     readCodexThreadTitleHistory,
     sendRpc: api.sendRpc,

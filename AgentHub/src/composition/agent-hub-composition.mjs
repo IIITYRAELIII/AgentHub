@@ -448,6 +448,7 @@ const clientRuntime = await createClientRuntimeComposition({
   },
   provider: {
     runtimeTimers,
+    hubThreadNaming: providerApplication.hubThreadNaming,
     resolveClaudeInvocation,
     spawnCapture,
     taskRuns,

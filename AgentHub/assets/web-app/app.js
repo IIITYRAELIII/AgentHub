@@ -1020,15 +1020,25 @@ for (const button of journalGroupingButtons) {
    источник значения и событий, но показывает единый доступный listbox. */
 let themedSelectSequence = 0;
 let openThemedSelect = null;
+let modelCatalogRefreshing = false;
 
 function themedSelectOptions(select) {
-  return [...select.options].map((option, index) => ({
-    disabled: option.disabled,
+  const items = [...select.options].map((option, index) => ({
+    disabled: select.disabled || option.disabled,
     index,
     label: option.label || option.textContent || option.value,
     selected: option.selected,
     value: option.value,
   }));
+  if (select.dataset.modelCatalogRefresh === "true") {
+    items.push({
+      action: "model-catalog-refresh",
+      index: items.length,
+      label: modelCatalogRefreshing ? "Обновление моделей…" : "Обновить доступные модели",
+      disabled: modelCatalogRefreshing,
+    });
+  }
+  return items;
 }
 
 function enhanceThemedSelect(select) {
@@ -1085,7 +1095,7 @@ function enhanceThemedSelect(select) {
     const option = menu.querySelector(`[data-option-index="${index}"]`);
     option?.focus({ preventScroll: true });
     if (!option) return;
-    menu.setAttribute("aria-activedescendant", option.id);
+    if (menu.getAttribute("role") === "listbox") menu.setAttribute("aria-activedescendant", option.id);
     const optionTop = option.offsetTop;
     const optionBottom = optionTop + option.offsetHeight;
     if (optionTop < menu.scrollTop) menu.scrollTop = optionTop;
@@ -1118,33 +1128,68 @@ function enhanceThemedSelect(select) {
     if (restoreFocus) button.focus();
   };
   const choose = (index) => {
+    const item = options()[index];
+    if (item?.action) {
+      if (item.disabled) return;
+      close({ restoreFocus: true });
+      emit("model-catalog:refresh", { manual: true });
+      return;
+    }
     const option = select.options[index];
-    if (!option || option.disabled) return;
+    if (!option || select.disabled || option.disabled) return;
     select.selectedIndex = index;
     select.dispatchEvent(new Event("input", { bubbles: true }));
     select.dispatchEvent(new Event("change", { bubbles: true }));
     close({ restoreFocus: true });
   };
   const render = () => {
+    const focused = menu.contains(document.activeElement) ? document.activeElement : null;
+    const focusedAction = focused?.dataset.selectAction;
+    const focusedValue = focused?.dataset.value;
     const items = options();
-    menu.replaceChildren(...items.map((option) => {
-      const item = document.createElement("div");
-      item.className = "themed-select-option";
+    const hasActions = items.some((item) => item.action);
+    if (hasActions) menu.removeAttribute("aria-activedescendant");
+    menu.setAttribute("role", hasActions ? "dialog" : "listbox");
+    button.setAttribute("aria-haspopup", hasActions ? "dialog" : "listbox");
+    const list = hasActions ? document.createElement("div") : menu;
+    if (hasActions) {
+      list.setAttribute("role", "listbox");
+      list.setAttribute("aria-label", button.getAttribute("aria-label"));
+    }
+    menu.replaceChildren();
+    if (hasActions) menu.append(list);
+    for (const option of items) {
+      const item = document.createElement(option.action ? "button" : "div");
+      item.className = option.action ? "themed-select-option themed-select-action" : "themed-select-option";
       item.dataset.optionIndex = String(option.index);
-      item.dataset.value = option.value;
       item.id = `${menu.id}-option-${option.index}`;
       item.tabIndex = -1;
       item.textContent = option.label;
-      item.setAttribute("role", "option");
-      item.setAttribute("aria-selected", String(option.selected));
+      if (option.action) {
+        item.type = "button";
+        item.dataset.selectAction = option.action;
+        item.disabled = option.disabled;
+        item.setAttribute("aria-busy", String(option.disabled));
+      } else {
+        item.dataset.value = option.value;
+        item.setAttribute("role", "option");
+        item.setAttribute("aria-selected", String(option.selected));
+      }
       item.setAttribute("aria-disabled", String(option.disabled));
       if (option.disabled) item.dataset.disabled = "true";
-      return item;
-    }));
-    const selected = items.find((option) => option.selected) ?? items[0];
+      (option.action ? menu : list).append(item);
+    }
+    const selected = items.find((option) => option.selected) ?? items.find((option) => !option.action);
     value.textContent = selected?.label ?? "";
-    button.disabled = select.disabled;
-    if (!menu.hidden) positionMenu();
+    button.disabled = select.disabled && !hasActions;
+    if (!menu.hidden) {
+      positionMenu();
+      if (focused) {
+        const retained = items.find((item) => !item.disabled && (focusedAction
+          ? item.action === focusedAction : !item.action && item.value === focusedValue));
+        focusOption(retained?.index ?? enabledFrom(items.length - 1, 1));
+      }
+    }
   };
   const open = () => {
     if (button.disabled) return;
@@ -1158,16 +1203,24 @@ function enhanceThemedSelect(select) {
     button.setAttribute("aria-expanded", "true");
     openThemedSelect = state;
     positionMenu();
-    requestAnimationFrame(() => focusOption(Math.max(0, select.selectedIndex)));
+    const selected = options().find((item) => item.selected && !item.disabled);
+    requestAnimationFrame(() => focusOption(selected?.index ?? enabledFrom(options().length - 1, 1)));
   };
 
   button.addEventListener("click", () => (menu.hidden ? open() : close()));
   button.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !menu.hidden) {
+      event.preventDefault();
+      event.stopPropagation();
+      close({ restoreFocus: true });
+      return;
+    }
     if (!["ArrowDown", "ArrowUp", "Home", "End", "Enter", " "].includes(event.key)) return;
     event.preventDefault();
     open();
-    const last = Math.max(0, select.options.length - 1);
-    const target = ["Enter", " "].includes(event.key) ? select.selectedIndex
+    const last = Math.max(0, options().length - 1);
+    const target = ["Enter", " "].includes(event.key)
+      ? (options().find((item) => item.selected && !item.disabled)?.index ?? enabledFrom(last, 1))
       : event.key === "Home" ? enabledFrom(last, 1)
       : event.key === "End" ? enabledFrom(0, -1)
         : enabledFrom(select.selectedIndex, event.key === "ArrowUp" ? -1 : 1);
@@ -1196,7 +1249,7 @@ function enhanceThemedSelect(select) {
     }
     if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
     event.preventDefault();
-    const last = Math.max(0, select.options.length - 1);
+    const last = Math.max(0, options().length - 1);
     const target = event.key === "Home" ? enabledFrom(last, 1)
       : event.key === "End" ? enabledFrom(0, -1)
         : enabledFrom(current, event.key === "ArrowUp" ? -1 : 1);
@@ -4004,7 +4057,7 @@ function representativeStreamTask(stream) {
   // Порядок обязан совпадать с attentionRank рельса: там готовый ответ идёт
   // впереди идущего хода. Обратный порядок давал разные ветки одного потока
   // в полосе и в панели, и они показывали разные состояния одновременно.
-  const attention = (task) => (task?.unread && !task?.running ? 0 : task?.running ? 1 : 2);
+  const attention = (task) => (task?.unread && !task?.running ? 0 : task?.running || task?.activityUnknown ? 1 : 2);
   return stream.tasks.find((task) => task.id === state.selectedId)
     ?? [...stream.tasks].sort((left, right) => (
       attention(left) - attention(right)
@@ -4018,6 +4071,7 @@ function streamActivityTime(task) {
 }
 
 function streamAttentionKind(task, now = Date.now()) {
+  if (task?.activityUnknown) return "unknown";
   if (task?.unread && !task?.running) return "completed";
   if (task?.running) return "running";
   const activityTime = streamActivityTime(task);
@@ -4038,7 +4092,7 @@ function activityStreamEntries(tasks) {
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(task);
   }
-  const attentionRank = (task) => ({ completed: 0, running: 1, recent: 2 }[
+  const attentionRank = (task) => ({ completed: 0, running: 1, unknown: 1, recent: 2 }[
     streamAttentionKind(task, now)
   ] ?? 3);
   return [...groups.values()]
@@ -4082,6 +4136,8 @@ function renderStreamStatusCard(task, title, presentation) {
         }),
       ]),
       el("span", { class: "stream-tab-meta" }, [
+        task?.activityUnknown
+          ? el("span", { class: "task-runtime", text: presentation.statusLabel }) : null,
         el("span", { class: "task-agent", text: presentation.agentLabel }),
         task?.modelLabel
           ? el("span", {
@@ -5872,7 +5928,7 @@ function renderChatContent({ preserveStreamTabs = false } = {}) {
   renderMessagePinShelf();
   for (const stop of chatStops) {
     const preparing = contextMaintenancePreparing(task);
-    stop.hidden = !task.running && !preparing;
+    stop.hidden = !task.running && !task.canStop && !preparing;
     stop.title = preparing ? "Отменить подготовку обслуживания контекста" : "Остановить ход";
     stop.setAttribute("aria-label", stop.title);
   }
@@ -6603,12 +6659,16 @@ function patchRenderedMessage(node, message) {
   if (!article) return;
   article.dataset.messageId = message.id ?? "";
   article.dataset.turnId = message.turnId ?? "";
+  article.dataset.provider = message.provider ?? article.dataset.provider ?? "";
+  article.dataset.threadId = message.threadId ?? "";
+  article.dataset.terminalRevision = String(Number(message.terminalRevision) || 0);
   article.dataset.itemId = message.itemId ?? "";
   article.dataset.deliveryState = message.deliveryState ?? "";
   const role = message.role === "user" ? "user" : message.role === "system" ? "system" : "agent";
   const author = renderedMessageAuthor(message, role);
   const head = article.querySelector(".msg-head");
   syncMessageUploadActions(head, message);
+  MessageView.syncTurnStatus(head, message);
   const authorNode = head?.querySelector(".msg-author");
   if (authorNode) authorNode.textContent = author;
   let time = head?.querySelector(".msg-time");
@@ -7613,6 +7673,8 @@ function renderMessage(message, { readOnly = false, task = currentTask() } = {})
     "data-role": role,
     "data-message-id": message.id ?? "",
     "data-turn-id": message.turnId ?? "",
+    "data-thread-id": message.threadId ?? "",
+    "data-terminal-revision": String(Number(message.terminalRevision) || 0),
     "data-item-id": message.itemId ?? "",
     "data-message-key": message.messageKey ?? "",
     "data-delivery-state": message.deliveryState ?? "",
@@ -7659,6 +7721,8 @@ function renderMessage(message, { readOnly = false, task = currentTask() } = {})
         })
       : null,
   ]);
+
+  MessageView.syncTurnStatus(head, message);
 
   const body = el("div", {
     class: "msg-body",
@@ -8392,6 +8456,8 @@ function renderQueueForTask(taskId, container) {
     const content = el("div", { class: "queue-content" }, [
       entry.author ? el("strong", { class: "queue-author", text: entry.author }) : null,
       visibleText ? el("div", { class: "queue-text", text: visibleText }) : null,
+      task?.activityUnknown && [entry.waitReason, entry.conflictKind].includes("task-running")
+        ? el("div", { class: "queue-status", text: "Поток занят исходным ходом: состояние уточняется после потери связи. Доступен Stop; сообщение повторно не отправляется." }) : null,
       entry.waitReason === "provider-thread-active"
         ? el("div", { class: "queue-status", text: "Thread удерживается другим Codex. Автоповторы остановлены; проверьте снова после закрытия задачи или отправьте сообщение в новую." })
         : entry.waitReason === "provider-temporarily-unavailable"
@@ -8533,6 +8599,12 @@ composerQuickMessages?.addEventListener("click", (event) => {
 });
 
 composerInput.addEventListener("keydown", (event) => {
+  if (event.isComposing) return;
+  if (event.key === "Enter" && event.ctrlKey && !event.metaKey) {
+    event.preventDefault();
+    if (!event.repeat) insertTextAtCaret(composerInput, "\n");
+    return;
+  }
   if (!slashMenu.hidden) {
     const commands = visibleSlashCommands();
     if (event.key === "ArrowDown" || event.key === "ArrowUp") {
@@ -8552,9 +8624,9 @@ composerInput.addEventListener("keydown", (event) => {
       return;
     }
   }
-  if (event.key !== "Enter" || event.shiftKey || event.isComposing || phoneComposerMode()) return;
+  if (event.key !== "Enter" || event.shiftKey || phoneComposerMode()) return;
   event.preventDefault();
-  submitComposer({ steerWhileRunning: event.ctrlKey || event.metaKey });
+  submitComposer({ steerWhileRunning: event.metaKey });
 });
 
 slashMenu.addEventListener("click", (event) => {
@@ -8682,7 +8754,8 @@ function submitQuickMessage(entry) {
 function insertTextAtCaret(input, text) {
   if (!input || !text) return false;
   const start = Number.isSafeInteger(input.selectionStart) ? input.selectionStart : input.value.length;
-  input.setRangeText(text, start, start, "end");
+  const end = Number.isSafeInteger(input.selectionEnd) ? input.selectionEnd : start;
+  input.setRangeText(text, start, end, "end");
   input.dispatchEvent(new Event("input", { bubbles: true }));
   input.focus({ preventScroll: true });
   return true;
@@ -10294,11 +10367,10 @@ function renderDialogSettings() {
       ?? state.options.reasoning,
     mode: state.options.mode,
   };
-  const refreshModels = dialogSettings.querySelector("[data-dialog-model-refresh]");
-  if (refreshModels) refreshModels.hidden = effectiveProvider !== "codex";
   for (const [group, values] of Object.entries(optionGroups)) {
     const container = dialogSettings.querySelector(`[data-dialog-options='${group}']`);
     if (!container) continue;
+    if (group === "model") container.dataset.modelCatalogRefresh = String(effectiveProvider === "codex");
     container.replaceChildren();
     const saved = String(selection?.[group] ?? "").trim();
     if (!Array.isArray(values) || values.length === 0) {
@@ -10521,10 +10593,6 @@ dialogSettings.addEventListener("click", (event) => {
     if (!streamId || streamCardArchive?.disabled) return;
     emit("stream:archive", { streamId });
     setDialogSettingsOpen(false);
-    return;
-  }
-  if (event.target.closest("[data-dialog-model-refresh]")) {
-    emit("model-catalog:refresh", { manual: true });
     return;
   }
   const chip = event.target.closest("[data-select-group]");
@@ -11744,6 +11812,10 @@ const AgentHub = {
     if (sameData(state.options, next)) return;
     state.options = next;
     renderOptions();
+  },
+  setModelCatalogRefreshing(refreshing) {
+    modelCatalogRefreshing = Boolean(refreshing);
+    dialogSettings.querySelector('select[data-dialog-options="model"]')?.__themedSelect?.render();
   },
   /** Текущий выбор: { model, reasoning, mode, project, autoApprove,
    *  includeClaudeUsage, activityRecentMinutes, streamOrderMode,
@@ -13368,7 +13440,7 @@ function refreshUsageUnits(scope = document) {
       const quota = Number(node.dataset.usageQu);
       const incomplete = node.dataset.usageQuIncomplete === "1";
       node.textContent = node.dataset.usageQu !== undefined
-        ? `${incomplete && quota <= 0 ? "— QU" : formatUsageValue(quota, "qu")}${incomplete ? " · неполно" : ""}`
+        ? incomplete && quota <= 0 ? "— QU" : formatUsageValue(quota, "qu")
         : "— QU";
     } else if (Number.isFinite(credits)) node.textContent = formatUsageValue(credits);
   }
@@ -15477,7 +15549,7 @@ function usageBadge(text, credits = Number.NaN, quotaUnits = Number.NaN, incompl
   }
   badge.textContent = usageUnit === "qu"
     ? quotaUnits === null || !Number.isFinite(Number(quotaUnits)) ? "— QU"
-      : `${incomplete && Number(quotaUnits) <= 0 ? "— QU" : formatUsageValue(quotaUnits, "qu")}${incomplete ? " · неполно" : ""}`
+      : incomplete && Number(quotaUnits) <= 0 ? "— QU" : formatUsageValue(quotaUnits, "qu")
     : text;
   return badge;
 }

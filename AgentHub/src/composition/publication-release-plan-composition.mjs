@@ -18,12 +18,23 @@ export async function readCandidatePublicationReleasePlan(workspaceId, {
     readOnly: true,
   });
   let tasks;
+  const selectedProofs = new Map();
   try {
     tasks = store.releaseTasksSnapshot(selectedWorkspace);
+    for (const task of tasks.filter((item) => item.status !== "done"
+      && item.workflowStatus === "awaiting_implementation")) {
+      for (const reference of task.gitReferences ?? []) {
+        selectedProofs.set(`${task.id}\0${reference.projectRoot}\0${reference.resultCommit}`,
+          store.selectedCompositionForRelease({ taskId: task.id, ...reference }));
+      }
+    }
   } finally {
     store.close();
   }
   const taskBoard = {
+    selectedCompositionForRelease({ taskId, projectRoot, resultCommit }) {
+      return selectedProofs.get(`${taskId}\0${projectRoot}\0${resultCommit}`) ?? null;
+    },
     releaseTasks(requestedWorkspace) {
       if (String(requestedWorkspace) !== selectedWorkspace) {
         throw new Error("Publication release plan Workspace changed");

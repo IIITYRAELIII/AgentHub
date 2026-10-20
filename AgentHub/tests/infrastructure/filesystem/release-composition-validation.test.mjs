@@ -88,7 +88,7 @@ test("composition conflict leaves last good candidate and primary untouched", as
   await assert.rejects(f.service.validateCandidate({
     ...f.request, planRevision: "conflicting-plan",
     frozenTasks: [...f.request.frozenTasks, { taskId: "right", taskRevision: 1, baseCommit: f.request.approvedBaseCommit, resultCommit: right }],
-  }), /PreRelease delta/u);
+  }), { code: "RELEASE_NATIVE_MERGE_CONFLICT" });
   assert.deepEqual(await snapshot(f.dataDir), before);
   assert.equal(await git(f.primary, "status", "--porcelain"), "");
 });

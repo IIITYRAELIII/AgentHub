@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
+import { modelCallbackAction } from "../../src/interfaces/telegram/callback-context.mjs";
 import { JournalDatabase } from "../../src/infrastructure/persistence/journal-database.mjs";
 import {
   readRuntimeState,
@@ -257,7 +258,7 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   const secondThreadId = secondThreadState.threadIds.codex;
   assert.notEqual(secondThreadId, firstThreadId);
   assert.equal((await readJson(codexStatePath)).threads
-    .find((thread) => thread.id === secondThreadId)?.name, "New Workspace — Поток 1");
+    .find((thread) => thread.id === secondThreadId)?.name, "New Workspace - Поток 1 1");
 
   mark = telegram.calls.length;
   telegram.pushMessage("/streams");
@@ -314,7 +315,7 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   telegram.pushMessage("/model");
   const modelPicker = await telegram.waitForText("Current Codex model", { after: mark });
   mark = telegram.calls.length;
-  telegram.pushCallback(callbackButton(modelPicker, "codex-model:gpt-e2e").callback_data, modelPicker.result);
+  telegram.pushCallback(callbackButton(modelPicker, modelCallbackAction("codex", "gpt-e2e")).callback_data, modelPicker.result);
   await telegram.waitForText("Codex model: GPT-E2E", { after: mark });
   await waitFor(async () => (await readJson(statePath)).codexModel === "gpt-e2e", "model switch");
 
@@ -344,7 +345,7 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   const renamedProviderThreads = (await readJson(codexStatePath)).threads;
   assert.equal(renamedProviderThreads.find((thread) => thread.id === firstThreadId)?.name, "E2E основная");
   assert.equal(renamedProviderThreads.find((thread) => thread.id === secondThreadId)?.name,
-    "New Workspace — Поток 1", "renaming another Thread must preserve the canonical Workspace/Stream name");
+    "New Workspace - Поток 1 1", "renaming another Thread must preserve the canonical Workspace/Stream name");
   assert.equal(
     renamedState.clientTaskSelections.find(([clientId]) => clientId === `telegram:${CHAT_ID}`)?.[1]?.taskTitle,
     "E2E основная",

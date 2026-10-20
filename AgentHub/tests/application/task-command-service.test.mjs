@@ -186,7 +186,7 @@ test("task command service creates a Workspace and binds the provider Thread to 
   assert.equal(binding.threadId, "thread-new");
   assert.deepEqual(events.find(([name]) => name === "set-thread").slice(1), [
     "thread-new",
-    { provider: "codex", streamId: "stream-new", title: "Architecture" },
+    { provider: "codex", streamId: "stream-new", title: "New" },
   ]);
   assert.equal(result.createdTask.threadId, "thread-new");
   assert.equal(result.createdTask.streamId, "stream-new");
@@ -228,12 +228,12 @@ test("task command service creates a sibling Stream in the source Workspace", as
 
 test("new default Workspace keeps its name instead of adopting the generated provider title", async () => {
   const { service, events } = fixture({
-    createTask: async () => ({ provider: "codex", threadId: "thread-new", title: "New Workspace — Поток 1" }),
+    createTask: async () => ({ provider: "codex", threadId: "thread-new", title: "New Workspace - Поток 1 1" }),
   });
   service.workspaceCatalog.renameWorkspace = () => { throw new Error("Thread title must not rename its Workspace"); };
   const result = await service.create({ provider: "codex" });
-  assert.equal(result.createdTask.taskTitle, "New Workspace — Поток 1");
-  assert.equal(events.find(([name]) => name === "set-thread")[2].title, "New Workspace");
+  assert.equal(result.createdTask.taskTitle, "New Workspace - Поток 1 1");
+  assert.equal(events.find(([name]) => name === "set-thread")[2].title, "New Workspace - Поток 1 1");
 });
 
 test("task command service rejects a source Stream without its Workspace", async () => {
@@ -273,7 +273,7 @@ test("task command service binds a reserved Claude Thread before its first trans
   assert.equal(result.createdTask.threadId, "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee");
 });
 
-test("task command service recovers a persisted provider Thread after post-create failure", async () => {
+test("task command service preserves the exact created Thread but does not mask post-create failure", async () => {
   const { service, events } = fixture({
     createTask: async (selected) => {
       selected.threadId = "thread-recovered";
@@ -281,9 +281,10 @@ test("task command service recovers a persisted provider Thread after post-creat
       throw new Error("naming failed");
     },
   });
-  const result = await service.create({ provider: "codex", workspaceName: "Architecture" });
-  assert.equal(result.createdTask.threadId, "thread-recovered");
-  assert.equal(events.find(([name]) => name === "bind")[1].threadId, "thread-recovered");
+  await assert.rejects(service.create({ provider: "codex", workspaceName: "Architecture" }), /naming failed/);
+  assert.equal(service.selectionStore.threadId, "thread-recovered");
+  assert.equal(events.some(([name]) => name === "bind"), false);
+  assert.equal(events.some(([name]) => name === "set-thread"), false);
 });
 
 test("task command service continues an existing Stream in a new Codex Thread", async () => {
@@ -303,7 +304,7 @@ test("task command service continues an existing Stream in a new Codex Thread", 
   });
   assert.deepEqual(events.find(([name]) => name === "set-thread").slice(1), [
     "thread-new",
-    { provider: "codex", streamId: "stream-1", title: "Existing" },
+    { provider: "codex", streamId: "stream-1", title: "New" },
   ]);
   assert.deepEqual(events.find(([name]) => name === "prepare")[1], {
     provider: "codex",

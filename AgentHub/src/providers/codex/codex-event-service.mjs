@@ -123,6 +123,27 @@ export class CodexEventService {
       provider: "codex",
       allowThreadFallback: method === "turn/started",
     });
+    if (run && eventTurnId && eventTurnId === run.turnId && run.status === "running") {
+      if (method === "error") {
+        // Structured provider retry evidence, never inferred from error text or age.
+        run.providerStart ??= { turnId: eventTurnId };
+        run.providerStart.connection = {
+          state: params.willRetry === true ? "retrying" : "lost",
+          sinceAt: new Date(receivedAt).toISOString(),
+        };
+        d.setStage(run, params.willRetry === true
+          ? "Связь с Codex потеряна; провайдер повторяет запрос."
+          : "Связь с Codex потеряна; исход уточняется.");
+        d.reindexRun(run, { turnId: run.turnId });
+        saveStateBestEffort(d);
+      } else if (method === "turn/completed" || startsProviderResponse(method)) {
+        if (run.providerStart?.connection) {
+          run.providerStart.connection = null;
+          d.reindexRun(run, { turnId: run.turnId });
+          saveStateBestEffort(d);
+        }
+      }
+    }
     if (run) {
       // A terminal snapshot can recover an item whose individual notification
       // was lost. Both observations share the durable question identity.

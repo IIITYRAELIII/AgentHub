@@ -131,9 +131,9 @@
     schedule();
   }
 
-  function record(stage, action, durationMs, commandId = activeId || newId(), metadata = {}, observedAtMs = Date.now()) {
+  function record(stage, action, durationMs, commandId = activeId || newId(), metadata = {}, observedAtMs = Date.now(), outcome = "succeeded") {
     enqueue({
-      commandId, stage, outcome: "succeeded", observedAtMs,
+      commandId, stage, outcome, observedAtMs,
       monotonicDurationMs: Math.max(0, Number(durationMs) || 0),
       metadata: { action, surface: surface(), view: view(), ...metadata,
         droppedCount, queueDepth: pending.length },
@@ -227,21 +227,27 @@
     } catch (error) { return failed(error); }
   }
 
-  function afterPaint(stage, action, started, commandId, metadata = {}) {
+  function afterPaint(stage, action, started, commandId, metadata = {}, observe = null) {
     // A hidden WebView cannot paint. Never leave per-event frame callbacks
     // accumulating while it is suspended; the immediate stage remains recorded.
-    if (pendingPaints.size >= BATCH_SIZE) { droppedCount += 1; return; }
+    if (pendingPaints.size >= BATCH_SIZE) { droppedCount += 1; return false; }
     const finish = begin(stage, action, commandId, started, metadata);
-    if (global.document?.hidden) { finish("cancelled", { failureKind: "hidden" }); return; }
+    if (global.document?.hidden) { finish("cancelled", { failureKind: "hidden" }); return false; }
     const entry = { frame: null, finish };
     pendingPaints.add(entry);
     entry.frame = global.requestAnimationFrame(() => {
       if (!pendingPaints.has(entry)) return;
       entry.frame = global.requestAnimationFrame(() => {
         if (!pendingPaints.delete(entry)) return;
-        finish("succeeded");
+        try {
+          const observation = observe?.();
+          finish(observation?.outcome ?? "succeeded", observation?.metadata);
+        } catch {
+          finish("failed", { failureKind: "error" });
+        }
       });
     });
+    return true;
   }
 
   function interaction(event) {
@@ -306,6 +312,7 @@
     associate(object, commandId) {
       if (object && typeof object === "object") objectIds.set(object, commandId);
       if (object?.snapshot && typeof object.snapshot === "object") objectIds.set(object.snapshot, commandId);
+      if (object?.history && typeof object.history === "object") objectIds.set(object.history, commandId);
       return object;
     },
     ack(commandId, timing, outcome) {

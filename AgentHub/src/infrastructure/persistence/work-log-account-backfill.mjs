@@ -1,12 +1,19 @@
-import { mkdir, stat } from "node:fs/promises";
+import { lstat } from "node:fs/promises";
+import { lstatSync, mkdirSync, realpathSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
+import { performance } from "node:perf_hooks";
 import { DatabaseSync } from "node:sqlite";
+import { withInterprocessLocks } from "../process/interprocess-lock.mjs";
+import {
+  commitWorkLogAccountBackup,
+  ensureWorkLogAccountBackupReceipts,
+  failWorkLogAccountBackup,
+  pruneWorkLogAccountBackups,
+  startWorkLogAccountBackup,
+} from "./work-log-account-backup-retention.mjs";
 
 const LEDGER_VERSION = 9;
-
-function migrationTimestamp(now) {
-  return now.toISOString().replace(/[:.]/gu, "-");
-}
 
 function tableExists(database, name) {
   return Boolean(database.prepare(`
@@ -171,20 +178,46 @@ export async function applyWorkLogAccountBackfill({
   backupRoot = null,
   providerAccounts = [],
   now = new Date(),
+  trace = null,
+  traceCommandId = null,
+  retentionDeleteEntry,
+  retentionBeforeDelete,
+  retentionHandleTestBarrier,
+  retentionPruneClock,
 } = {}) {
   if (!databaseFile) throw new Error("Work-log account backfill requires a SQLite database");
   const resolvedDatabase = path.resolve(String(databaseFile));
   try {
-    const info = await stat(resolvedDatabase);
+    const info = await lstat(resolvedDatabase);
     if (!info.isFile()) return { applied: false, reason: "no-database" };
   } catch (error) {
     if (error?.code === "ENOENT") return { applied: false, reason: "no-database" };
     throw error;
   }
 
+  const operationId = traceCommandId || `work-log-account-backfill:${randomUUID()}`;
+  let lockWaitMs = 0;
+  let lockAcquired = false;
+  const lockStarted = performance.now();
+  return withInterprocessLocks([resolvedDatabase], async (lease) => {
   const database = new DatabaseSync(resolvedDatabase);
   database.exec("PRAGMA busy_timeout = 10000");
   const observedAt = now.toISOString();
+  const resolvedBackupRoot = path.resolve(
+    backupRoot || path.join(path.dirname(resolvedDatabase), "migrations"),
+  );
+  const timing = { lockWaitMs, backupMs: 0, pruneMs: 0, prunedBytes: 0, prunedCount: 0, pruneErrors: 0 };
+  const report = (stage, started, outcome, metadata = {}) => {
+    try {
+      trace?.recordBestEffort?.({
+        commandId: operationId, stage, transport: "local", outcome, lockWaitMs,
+        monotonicDurationMs: Math.max(0, performance.now() - started),
+        metadata,
+      });
+    } catch {
+      // Telemetry is not an account-update authority.
+    }
+  };
   try {
     if (!tableExists(database, "journal_records")) {
       return { applied: false, reason: "no-journal-records" };
@@ -230,11 +263,43 @@ export async function applyWorkLogAccountBackfill({
           provider: row.provider,
           threadId: row.thread_id,
           turnId: row.turn_id,
+          originalJson: row.record_json,
           json: JSON.stringify(next),
         });
       }
     }
+    ensureWorkLogAccountBackupReceipts(database);
+    const prune = async () => {
+      const started = performance.now();
+      try {
+        await lease.assertOwned();
+        const result = await pruneWorkLogAccountBackups(database, {
+          root: resolvedBackupRoot,
+          databaseName: path.basename(resolvedDatabase),
+          deleteEntry: retentionDeleteEntry,
+          beforeDelete: retentionBeforeDelete,
+          handleTestBarrier: retentionHandleTestBarrier,
+          clock: retentionPruneClock,
+        });
+        timing.pruneMs = performance.now() - started;
+        timing.prunedBytes = result.bytes;
+        timing.prunedCount = result.deleted;
+        timing.pruneErrors = result.errors;
+        report("work-log-account-backup-prune", started,
+          result.errors ? "failed" : "succeeded",
+          { deleted: result.deleted, skipped: result.skipped, errors: result.errors,
+            bytes: result.bytes, attempted: result.attempted, remaining: result.remaining,
+            budgetExhausted: result.budgetExhausted, failureKinds: result.failureKinds });
+        return result;
+      } catch {
+        timing.pruneMs = performance.now() - started;
+        timing.pruneErrors += 1;
+        report("work-log-account-backup-prune", started, "failed");
+        return { deleted: 0, bytes: 0, errors: 1, skipped: 0 };
+      }
+    };
     if (!updates.length) {
+      const retention = await prune();
       return {
         applied: false,
         reason: "unchanged",
@@ -245,35 +310,86 @@ export async function applyWorkLogAccountBackfill({
         withoutAccount,
         invalid,
         timelineEvents: timeline.length,
+        retention,
+        timing,
       };
     }
 
-    const resolvedBackupRoot = path.resolve(
-      backupRoot || path.join(path.dirname(resolvedDatabase), "migrations"),
-    );
-    const backupDirectory = path.join(
-      resolvedBackupRoot,
-      `work-log-account-${migrationTimestamp(now)}`,
-    );
-    await mkdir(backupDirectory, { recursive: true });
-    database.prepare("VACUUM INTO ?").run(path.join(backupDirectory, path.basename(resolvedDatabase)));
+    const backup = startWorkLogAccountBackup(database, {
+      now, fileName: path.basename(resolvedDatabase),
+    });
+    const backupDirectory = path.join(resolvedBackupRoot, backup.directoryName);
+    const backupStarted = performance.now();
+    let backupInfo;
+    let backupDirectoryInfo;
+    try {
+      await lease.assertOwned();
+      // Keep the final containment check, private-directory creation and
+      // VACUUM launch in one synchronous boundary. An async lease check between
+      // validation and the path-consuming SQLite call allowed a swap.
+      mkdirSync(resolvedBackupRoot, { recursive: true });
+      const rootInfo = lstatSync(resolvedBackupRoot);
+      if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink()) {
+        throw new Error("Account backup root is not a regular directory");
+      }
+      mkdirSync(backupDirectory, { recursive: false, mode: 0o700 });
+      const privateInfo = lstatSync(backupDirectory);
+      const canonicalRoot = realpathSync(resolvedBackupRoot);
+      const canonicalDirectory = realpathSync(backupDirectory);
+      if (!privateInfo.isDirectory() || privateInfo.isSymbolicLink()
+          || path.dirname(canonicalDirectory).toLowerCase() !== canonicalRoot.toLowerCase()) {
+        throw new Error("Account backup directory escaped its root");
+      }
+      const backupFile = path.join(canonicalDirectory, backup.fileName);
+      database.prepare("VACUUM INTO ?").run(backupFile);
+      backupInfo = lstatSync(backupFile, { bigint: true });
+      backupDirectoryInfo = lstatSync(backupDirectory, { bigint: true });
+      if (!backupInfo.isFile() || backupInfo.isSymbolicLink() || backupInfo.nlink !== 1n
+          || backupInfo.size === 0n || backupInfo.size > BigInt(Number.MAX_SAFE_INTEGER)) {
+        throw new Error("Account backup did not produce a regular non-empty file");
+      }
+      if (!backupDirectoryInfo.isDirectory() || backupDirectoryInfo.isSymbolicLink()) {
+        throw new Error("Account backup directory changed before receipt");
+      }
+      timing.backupMs = performance.now() - backupStarted;
+      report("work-log-account-backup", backupStarted, "succeeded",
+        { bytes: Number(backupInfo.size) });
+    } catch (error) {
+      timing.backupMs = performance.now() - backupStarted;
+      report("work-log-account-backup", backupStarted, "failed");
+      try { failWorkLogAccountBackup(database, backup, "backup"); } catch {}
+      // A failed receipt and any partial file are held for inspection. A crash
+      // before this update leaves the original pending receipt.
+      throw error;
+    }
 
+    await lease.assertOwned();
+    const transactionStarted = performance.now();
     database.exec("BEGIN IMMEDIATE");
     let revision = null;
     try {
       const update = database.prepare(`
         UPDATE journal_records SET record_json = ?
-        WHERE provider = ? AND thread_id = ? AND turn_id = ?
+        WHERE provider = ? AND thread_id = ? AND turn_id = ? AND record_json = ?
       `);
-      for (const item of updates) update.run(item.json, item.provider, item.threadId, item.turnId);
+      for (const item of updates) {
+        const changed = update.run(item.json, item.provider, item.threadId, item.turnId, item.originalJson);
+        if (changed.changes !== 1) throw new Error("Account backfill source changed during backup");
+      }
       ensureJournalMeta(database);
       revision = advanceRevision(database);
+      commitWorkLogAccountBackup(database, backup, backupInfo, backupDirectoryInfo, now);
       database.exec("COMMIT");
+      report("work-log-account-backfill-commit", transactionStarted, "succeeded",
+        { updated: updates.length });
     } catch (error) {
       database.exec("ROLLBACK");
+      try { failWorkLogAccountBackup(database, backup, "transaction"); } catch {}
+      report("work-log-account-backfill-commit", transactionStarted, "failed");
       throw error;
     }
 
+    const retention = await prune();
     return {
       applied: true,
       backupDirectory,
@@ -286,8 +402,30 @@ export async function applyWorkLogAccountBackfill({
       invalid,
       timelineEvents: timeline.length,
       revision,
+      retention,
+      timing,
     };
   } finally {
     database.close();
   }
+  }, {
+    timeoutMs: 600_000,
+    onAcquired: (details) => {
+      lockAcquired = true;
+      lockWaitMs = details.waitMs;
+    },
+  }).catch((error) => {
+    if (!lockAcquired) {
+      try {
+        trace?.recordBestEffort?.({
+          commandId: operationId, stage: "work-log-account-backup-lock",
+          transport: "local", outcome: "failed",
+          monotonicDurationMs: Math.max(0, performance.now() - lockStarted),
+        });
+      } catch {
+        // Trace failure must not replace the original lock refusal.
+      }
+    }
+    throw error;
+  });
 }

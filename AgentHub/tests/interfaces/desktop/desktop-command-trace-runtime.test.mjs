@@ -51,3 +51,29 @@ test("generic UI trace identity correlates handlers without changing durable ret
   assert.ok(spans.some((span) => span.commandId === "ui-1" && span.stage === "hub-receive"));
   assert.ok(spans.some((span) => span.commandId === "ui-2" && span.stage === "hub-receive"));
 });
+
+test("snapshot run-source trace shares the original client request identity", async () => {
+  const spans = [];
+  const projection = {
+    source: "none", gate: "inactive", provider: "codex", threadId: "thread-current",
+    streamId: "stream-current", turnId: "turn-current", clientUserMessageId: "client-current",
+    entryRunning: false, providerStartPresent: false,
+  };
+  const snapshot = {
+    version: "snapshot-current", server: { process: { releaseId: "release-current" } },
+    snapshotTiming: { selectedProjection: projection },
+  };
+  const router = createDesktopControlRouter({
+    handlers: { snapshot: async () => snapshot },
+    commandTrace: { recordBestEffort: (span) => { spans.push(span); return true; } },
+  });
+  assert.equal(await router.handleDesktopControl({ action: "snapshot",
+    params: { clientTraceId: "request-original" }, context: { source: "desktop-control" } }), snapshot);
+  const evidence = spans.find((span) => span.stage === "snapshot-selected-projection");
+  assert.equal(evidence?.commandId, "request-original");
+  assert.equal(evidence?.metadata.source, "none");
+  assert.equal(evidence?.metadata.gate, "inactive");
+  assert.equal(evidence?.metadata.turnId, "turn-current");
+  assert.equal(evidence?.metadata.serverReleaseId, "release-current");
+  assert.doesNotMatch(JSON.stringify(evidence), /Private|prompt|answer/u);
+});

@@ -72,7 +72,7 @@ test("the desktop snapshot revision follows the recent restart failure owner", a
   const expiring = await revision();
   assert.notEqual(expiring, idle);
   clock += RESTART_FAILURE_NOTICE_WINDOW_MS + 1_000;
-  assert.equal(await revision(), idle, "the end of the notice window changes the revision back");
+  assert.equal(await revision(), expiring, "elapsed time cannot erase an undelivered failure");
 });
 
 test("transient work still disables the desktop snapshot revision", async () => {

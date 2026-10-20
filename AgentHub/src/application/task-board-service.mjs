@@ -367,6 +367,11 @@ export class TaskBoardService {
     return this.store.lifecycleOutcome(operationId);
   }
 
+  returnedNativeTestPriorResult(taskId) {
+    requiredMethod(this.store, "returnedNativeTestPriorResult");
+    return this.store.returnedNativeTestPriorResult(taskId);
+  }
+
   failLifecycleTransition(operationId, error) {
     requiredMethod(this.store, "failLifecycleTransition");
     return this.store.failLifecycleTransition(operationId, error);
@@ -436,6 +441,16 @@ export class TaskBoardService {
 
   releaseTasks(workspaceId) {
     return this.store.releaseTasks(workspaceId);
+  }
+
+  selectedCompositionForRelease(payload) {
+    requiredMethod(this.store, "selectedCompositionForRelease");
+    return this.store.selectedCompositionForRelease(payload);
+  }
+
+  assertSelectedAbsorptionState(payload) {
+    requiredMethod(this.store, "assertSelectedAbsorptionState");
+    return this.store.assertSelectedAbsorptionState(payload);
   }
 
   completeRelease(workspaceId, payload = {}) {

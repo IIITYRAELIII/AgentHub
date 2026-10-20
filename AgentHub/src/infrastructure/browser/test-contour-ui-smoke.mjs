@@ -435,6 +435,11 @@ export async function selectTestContourConversation(page, identity, timeoutMs) {
       + `[data-workspace-id="${selectorValue(exact.workspaceId)}"]`
       + '[data-stream-provider="codex"]:visible',
   );
+  if (!(await stream.isVisible())) {
+    const overflow = page.locator("[data-stream-overflow-toggle]:visible");
+    await overflow.waitFor({ state: "visible", timeout: timeoutMs });
+    await overflow.click();
+  }
   await stream.waitFor({ state: "visible", timeout: timeoutMs });
   if (String(await stream.getAttribute("data-stream-task-id") ?? "") !== exact.streamId) {
     throw new Error(`Test Contour did not project the exact smoke Stream ${exact.streamId}`);

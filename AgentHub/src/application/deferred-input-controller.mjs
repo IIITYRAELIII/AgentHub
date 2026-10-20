@@ -57,9 +57,19 @@ function steerTargetsOccupancy(item, occupancy) {
 }
 
 function intentionallyPaused(item) {
-  return item?.paused === true && ![
+  return item?.manualPaused === true || (item?.paused === true && ![
     "provider-thread-active", "provider-temporarily-unavailable",
-  ].includes(String(item?.waitReason ?? ""));
+  ].includes(String(item?.waitReason ?? "")));
+}
+
+function restoreWaitState(item, previous) {
+  const manualPaused = item.manualPaused === true;
+  for (const key of Reflect.ownKeys(item)) delete item[key];
+  Object.defineProperties(item, previous);
+  if (manualPaused) {
+    item.manualPaused = true;
+    item.paused = true;
+  }
 }
 
 const AUTO_RELEASABLE_PENDING_CONFLICTS = new Set([
@@ -164,6 +174,7 @@ export class DeferredInputController {
 
   schedule(item, delayMs = this.retryDelayMs) {
     if (!item) return;
+    if (intentionallyPaused(item) && !item.dispatchingAt) return;
     const normalizedDelayMs = Math.max(0, Number(delayMs) || 0);
     if (this.timers.has(item.id)) {
       if (normalizedDelayMs > 0) return;
@@ -241,16 +252,16 @@ export class DeferredInputController {
         }
         return;
       }
-      if (item.paused === true && ![
-        "provider-thread-active", "provider-temporarily-unavailable",
-      ].includes(item.waitReason)) return;
-      if (item.paused === true || item.waitReason === "provider-thread-active") {
+      if (intentionallyPaused(item) && !item.dispatchingAt) return;
+      if (!intentionallyPaused(item)
+        && (item.paused === true || item.waitReason === "provider-thread-active")) {
         const occupied = await this.refreshActiveWriterWait(item);
         if (occupied) return;
       }
       let activeSteer = item.conflictKind === "message-steer" && Boolean(item.dispatchingAt);
       if (item.conflictKind === "message-steer" && !item.dispatchingAt) {
         const occupancy = await this.occupancy(item);
+        if (intentionallyPaused(item)) return;
         activeSteer = steerTargetsOccupancy(item, occupancy);
         if (!activeSteer) {
           await this.requireSteerDecision(item);
@@ -335,7 +346,9 @@ export class DeferredInputController {
         this.onStateChange(item, "queued");
         await this.persist();
       }
-      if (await this.isBlocked(item)) {
+      const blocked = await this.isBlocked(item);
+      if (intentionallyPaused(item)) return;
+      if (blocked) {
         if (item.waitReason === "provider-thread-active") {
           await this.pauseForActiveWriter(item);
           return;
@@ -351,6 +364,13 @@ export class DeferredInputController {
       item.dispatchingAt = new Date(this.now()).toISOString();
       this.onStateChange(item, "dispatching");
       await this.persist();
+      // A manual pause may arrive while eligibility or its durable save waits.
+      // No provider call has happened yet, so leave the same item cancellable.
+      if (intentionallyPaused(item)) {
+        delete item.dispatchingAt;
+        await this.persist();
+        return;
+      }
       let started;
       const dispatchSpan = this.commandTrace?.startBestEffortSpan?.({
         commandId: String(item.clientUserMessageId ?? ""),
@@ -489,7 +509,9 @@ export class DeferredInputController {
       return;
     }
 
-    if (await this.isSteerDispatchBlocked(item)) {
+    const blocked = await this.isSteerDispatchBlocked(item);
+    if (intentionallyPaused(item)) return;
+    if (blocked) {
       item.blockedChecks = Number(item.blockedChecks ?? 0) + 1;
       this.schedule(item, this.retryDelay(item.blockedChecks));
       return;
@@ -498,6 +520,11 @@ export class DeferredInputController {
     item.dispatchingAt = new Date(this.now()).toISOString();
     this.onStateChange(item, "dispatching");
     await this.persist();
+    if (intentionallyPaused(item)) {
+      delete item.dispatchingAt;
+      await this.persist();
+      return;
+    }
     const dispatchSpan = this.commandTrace?.startBestEffortSpan?.({
       commandId: String(item.clientUserMessageId ?? ""),
       stage: "dispatch",
@@ -640,8 +667,7 @@ export class DeferredInputController {
     try {
       await this.persist();
     } catch (error) {
-      for (const key of Reflect.ownKeys(item)) delete item[key];
-      Object.defineProperties(item, previous);
+      restoreWaitState(item, previous);
       this.schedule(item, this.retryDelay(Number(item.blockedChecks ?? 0) + 1));
       throw error;
     }
@@ -652,6 +678,7 @@ export class DeferredInputController {
 
   async refreshActiveWriterWait(item) {
     const current = await this.occupancy(item);
+    if (intentionallyPaused(item)) return true;
     if (current?.occupied) {
       await this.pauseForActiveWriter(item, {
         waitReason: current.waitReason ?? "provider-thread-active",
@@ -666,8 +693,7 @@ export class DeferredInputController {
     try {
       await this.persist();
     } catch (error) {
-      for (const key of Reflect.ownKeys(item)) delete item[key];
-      Object.defineProperties(item, previous);
+      restoreWaitState(item, previous);
       this.schedule(item, this.retryDelay(Number(item.blockedChecks ?? 0) + 1));
       throw error;
     }
@@ -689,7 +715,8 @@ export class DeferredInputController {
     for (const candidate of candidates) {
       if (this.pendingInputs.has(candidate.id) && candidate.laneReleased === true) continue;
       if (this.taskKey(candidate) !== key) continue;
-      if (runnableOnly && this.queuedInputs.has(candidate.id) && intentionallyPaused(candidate)) continue;
+      if (runnableOnly && this.queuedInputs.has(candidate.id)
+        && intentionallyPaused(candidate) && !candidate.dispatchingAt) continue;
       const order = Number(candidate.queueOrder);
       const parsed = Date.parse(String(candidate.createdAt ?? ""));
       const candidateAt = Number.isFinite(order)
