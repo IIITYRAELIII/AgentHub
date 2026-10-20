@@ -3729,7 +3729,7 @@ function setViewContent(view, { persist = true, activate = true } = {}) {
           ? "Null"
           : next === "server"
             ? "Server"
-            : "Потоки";
+            : "Диалоги";
   }
   syncMobileNav();
   if (activate) activateView(next);
@@ -3865,7 +3865,7 @@ function renderTasksContent() {
   let visibleCount = visible.length;
   const { workspaceTasks, unassignedTasks } = window.AgentHubStreamTabs.taskListSections(visible);
   const hasWorkspace = workspaceTasks.length > 0
-    || (surface === "mobile" && !vscodeMode && state.workspaces.length > 0);
+    || (surface === "mobile" && state.workspaces.length > 0);
   if (hasWorkspace) {
     const groups = new Map();
     for (const task of workspaceTasks) {
@@ -3879,7 +3879,7 @@ function renderTasksContent() {
       });
       groups.get(key).tasks.push(task);
     }
-    if (surface === "mobile" && !vscodeMode) {
+    if (surface === "mobile") {
       for (const workspace of state.workspaces) {
         if (!groups.has(workspace.id) && (!filter || workspace.name.toLowerCase().includes(filter))) {
           groups.set(workspace.id, { id: workspace.id, name: workspace.name,
@@ -5848,7 +5848,7 @@ function providerConnectionTitle(providerLabel, presentation, measurement) {
 function renderStreamChatHeader(task, now = Date.now()) {
   mobileDialogs?.sync();
   if (!streamChatHeader) return;
-  streamChatHeader.hidden = !task;
+  streamChatHeader.hidden = !task && !root.hasAttribute("data-mobile-dialogs-enabled");
   const workspaceName = task ? String(task.workspaceName || task.title || "Workspace").trim() : "";
   const streamName = task ? taskDialogName(task) : "";
   if (streamHeaderWorkspace) {
@@ -6384,6 +6384,7 @@ function navigateBack() {
     return true;
   }
   if (root.dataset.view === "chat" && root.dataset.pane === "chat") {
+    if (root.hasAttribute("data-mobile-dialogs-enabled")) return false;
     setPane("tasks");
     return true;
   }
@@ -18149,11 +18150,12 @@ AgentHub.setConnection(telegramMode ? "online" : "connecting");
 mobileDialogs = window.AgentHubMobileDialogs.create({
   root, state, currentTask, workspaceKey,
   workspaceStreams: (tasks) => orderedWorkspaceStreams(workspaceStreams(tasks), tasks[0] ? workspaceKey(tasks[0]) : ""),
-  representativeStreamTask,
+  representativeStreamTask, restoreSelection: restoreOpenStreams,
   selectTask: (id) => selectTaskFromUi(id), setView, setPane,
-  isMobile: () => surface === "mobile" && !vscodeMode,
-  formatTime: (value) => formatRelativeTime(activityTimestamp(value)), shortModel: shortModelLabel,
-  openSearch: openWorkspaceMessageSearch, openSettings: openPanel,
+  isMobile: () => surface === "mobile",
+  openSettings: openPanel,
+  transientLayers: [streamContextMenu, workspaceContextMenu, workspaceFolderContextMenu,
+    annotationContextMenu, resourceContextMenu, dialog, settingsPanel, workspaceMessageSearch],
   openWorkspaceCard, workspaceDialog: workspaceCardModal, renameWorkspaceFolder,
   textDialog: dialog, cancelTextDialog: () => closeDialog(null),
   createStream: (workspaceId) => emit("stream:new", { workspaceId }),

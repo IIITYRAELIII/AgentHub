@@ -2510,6 +2510,16 @@ test("prompt template drafts stay isolated by owner across rejected and pending 
         const editor = page.locator(editorSelector);
         const title = () => editor.locator("[data-quick-message-title]");
         const openWorkspace = async (workspaceId) => {
+          if (viewport.width < 860) {
+            if (await page.locator("[data-workspace-card-modal]").evaluate((n) => n.open)) {
+              await page.locator("[data-workspace-card-close]").click();
+            }
+            if (!await page.locator("[data-mobile-workspace-drawer]").evaluate((n) => n.open)) {
+              await page.locator("[data-mobile-workspaces-open]").click();
+            }
+            await page.locator(`[data-workspace-select="${workspaceId}"] [data-mobile-workspace-edit]`).click();
+            return;
+          }
           await page.locator(`[data-workspace-select="${workspaceId}"]`).evaluate((node) => {
             node.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 1 }));
             node.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, detail: 2 }));
@@ -2666,8 +2676,10 @@ test("prompt template action setting stays compact on Web, narrow WebView and Mo
           streams: {},
         },
       }));
-      await page.locator(surface === "mobile-web"
-        ? '.mobile-dialogs-top [aria-label="Настройки AgentHub"]' : '[data-panel-open="settings"]').click();
+      if (viewport.width < 860) {
+        await page.locator('[data-mobile-dialogs-tab="more"]').click();
+        await page.locator('[data-mobile-more-sheet]').getByRole("button", { name: "Настройки AgentHub", exact: true }).click();
+      } else await page.locator('[data-panel-open="settings"]').click();
       await openPromptTemplatesForm(page, "global");
       const layout = await page.locator(".prompt-template-action-row").evaluate((row) => {
         const panel = row.closest("[data-prompt-templates-modal]");
@@ -2798,13 +2810,15 @@ test("shared prompt template editor stays responsive across every scope and surf
         }
       };
 
-      await page.locator(surface === "mobile-web"
-        ? '.mobile-dialogs-top [aria-label="Настройки AgentHub"]' : '[data-panel-open="settings"]').click();
+      if (viewport.width < 860) {
+        await page.locator('[data-mobile-dialogs-tab="more"]').click();
+        await page.locator('[data-mobile-more-sheet]').getByRole("button", { name: "Настройки AgentHub", exact: true }).click();
+      } else await page.locator('[data-panel-open="settings"]').click();
       await verifyEditor("global", await openPromptTemplatesForm(page, "global"));
       await closePromptTemplatesForm(page);
       await page.locator("[data-panel-close]").click();
 
-      if (surface === "mobile-web") {
+      if (viewport.width < 860) {
         await page.locator("[data-mobile-workspaces-open]").click();
         await page.getByRole("button", { name: "Настройки Workspace", exact: true }).click();
       } else {
@@ -2817,8 +2831,7 @@ test("shared prompt template editor stays responsive across every scope and surf
       await page.locator("[data-workspace-card-close]").click();
 
       const streamTab = page.locator('.stream-tabs-track [data-stream-tab-id="stream-1"]');
-      if (surface === "mobile-web") {
-        await page.locator('[data-mobile-stream-list] [data-mobile-stream-id="stream-1"]').first().click();
+      if (viewport.width < 860) {
         await page.locator("[data-dialog-settings-toggle]").click();
       } else {
         await streamTab.dispatchEvent("click", { detail: 1 });
@@ -3046,7 +3059,7 @@ test("mobile drawer selection and explicit Workspace settings preserve identity 
       cardOpen: document.querySelector("[data-workspace-card-modal]")?.open,
     })), {
       surface: "mobile",
-      pane: "tasks",
+      pane: "chat",
       selected: "true",
       cardOpen: false,
     });
@@ -3084,7 +3097,7 @@ test("mobile drawer selection and explicit Workspace settings preserve identity 
   }
 });
 
-test("desktop and narrow WebView Workspace or Stream native dblclicks survive exact-identity rerenders in Edge", async () => {
+test("desktop and wide WebView Workspace or Stream native dblclicks survive exact-identity rerenders in Edge", async () => {
   const { chromium } = await import("playwright");
   const browser = await launchDomBrowser(chromium);
   const screenshotDirectory = String(process.env.HUB157_QA_SCREENSHOT_DIR ?? "").trim();
@@ -3141,7 +3154,7 @@ test("desktop and narrow WebView Workspace or Stream native dblclicks survive ex
   try {
     for (const [surface, viewport] of [
       ["desktop", { width: 1440, height: 1000 }],
-      ["webview", { width: 480, height: 844 }],
+      ["webview", { width: 1000, height: 844 }],
     ]) {
       const problems = [];
       const page = await browser.newPage({ viewport });
@@ -3253,9 +3266,6 @@ test("desktop and narrow WebView Workspace or Stream native dblclicks survive ex
       });
 
       for (const scenario of scenarios) {
-        if (surface === "webview") {
-          await page.locator(`[data-mobile-button="${scenario.kind === "workspace" ? "tasks" : "chat"}"]`).click();
-        }
         await page.evaluate(() => window.AgentHub.selectTask("task-one"));
         const singleTarget = targetFor(page, scenario, "text");
         const beforeSingle = await page.evaluate((kind) => window.__hub157DialogOpenCounts[kind], scenario.kind);

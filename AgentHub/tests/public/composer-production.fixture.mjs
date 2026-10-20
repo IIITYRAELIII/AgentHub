@@ -1,6 +1,9 @@
 import { readFile } from "node:fs/promises";
 import { after } from "node:test";
 import vm from "node:vm";
+import { createRequire } from "node:module";
+
+const { renderThemeHtml } = createRequire(import.meta.url)("../../theme-registry.cjs");
 
 const WEB_APP_ROOT = new URL("../../assets/web-app/", import.meta.url);
 const composerDraftSource = await readFile(
@@ -200,6 +203,8 @@ async function openFixture(page, {
   attachmentStorageOpenFailure = false,
   surface = "vscode",
   directTransport = false,
+  themeRegistry = null,
+  followSelection = false,
 } = {}) {
   const diagnostics = [];
   page.on("pageerror", (error) => diagnostics.push(error.message));
@@ -208,7 +213,7 @@ async function openFixture(page, {
   });
   await page.addInitScript(({
     initialSnapshot, initialHistory, initialDrafts, authorityAvailable, holdAuthority, attachmentOpenFailure,
-    transportSurface, direct,
+    transportSurface, direct, followSelection,
   }) => {
     // Opening the attachment database fails. This covers only the open step:
     // the product treats that rejection as "not durable". The error code is set
@@ -356,6 +361,11 @@ async function openFixture(page, {
             || fixture.snapshot.tasks.find((entry) => entry.provider === message.params.provider
               && entry.threadId === message.params.threadId)?.streamId
             || null;
+          if (followSelection && message.action === "open-task") {
+            for (const task of fixture.snapshot.tasks) task.selected = task.streamId === streamId;
+            fixture.snapshot.selected = { ...fixture.snapshot.selected, streamId,
+              provider: message.params.provider, threadId: message.params.threadId };
+          }
           const fixtureHistoryMatches = fixture.history?.provider === message.params.provider
             && fixture.history?.threadId === message.params.threadId
             && fixture.history?.streamId === streamId;
@@ -415,7 +425,7 @@ async function openFixture(page, {
     authorityAvailable: recoveryAuthorityAvailable,
     holdAuthority: holdRecoveryAuthority,
     attachmentOpenFailure: attachmentStorageOpenFailure,
-    transportSurface: surface, direct: directTransport,
+    transportSurface: surface, direct: directTransport, followSelection,
   });
   const uploads = new Map();
   await page.route("**/*", async (route) => {
@@ -512,7 +522,8 @@ async function openFixture(page, {
     }
     if (requestUrl.pathname === "/") {
       const source = await readFile(new URL("index.html", WEB_APP_ROOT), "utf8");
-      const body = source
+      const themedSource = themeRegistry ? renderThemeHtml(source, themeRegistry) : source;
+      const body = themedSource
         .replace(/\s*<script src="https:\/\/telegram\.org\/[^>]+><\/script>/u, "")
         .replace(/\s*<script src="\/browser-device-auth\.js" defer><\/script>/u, "")
         .replace("<!-- agent-hub-theme-catalog -->", `<script type="application/json" data-theme-catalog>${TEST_THEME_CATALOG}</script>`);
