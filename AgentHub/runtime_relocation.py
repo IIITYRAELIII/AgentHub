@@ -1891,7 +1891,7 @@ def held_creation_ns(kernel, handle):
 
 def delete_verified_file(
     file, expected, expected_hash, directory=False, link_target=None,
-    strict_identity=False,
+    strict_identity=False, single_link=False,
 ):
     """Hash and delete the same exclusively opened Windows file handle."""
     if os.name != "nt":
@@ -1938,6 +1938,7 @@ def delete_verified_file(
             or (not directory and link_target is None and s.st_size != expected["size"])
             or bool(getattr(s, "st_file_attributes", 0) & 0x400)
             != (link_target is not None)
+            or (single_link and (not stat.S_ISREG(s.st_mode) or s.st_nlink != 1))
             or (strict_identity and (
                 s.st_nlink != expected["links"]
                 or s.st_mtime_ns != expected["mtime"]
@@ -1963,6 +1964,8 @@ def delete_verified_file(
         # typed index's count after hashing at the final disposition admission.
         if strict_identity and os.fstat(descriptor).st_nlink != expected["links"]:
             raise ValueError("Source deletion link count changed")
+        if single_link and os.fstat(descriptor).st_nlink != 1:
+            raise ValueError("Parallel source deletion link count changed")
         # DELETE | POSIX_SEMANTICS | IGNORE_READONLY_ATTRIBUTE. The latter permits
         # removal of copied Git object files without an unsafe pathname chmod.
         disposition = wintypes.DWORD(0x13)
@@ -2130,13 +2133,82 @@ def preview_derived_shm(plan, preservation, output):
         db.close()
 
 
-def prune_originals(plan, derived_shm_proof=None, expected_derived_shm_proof_sha256=None):
+PRUNE_PROGRESS_INTERVAL = 10000
+
+
+class PruneFileBatch:
+    """Bounded native work; its caller alone persists intents and outcomes."""
+
+    def __init__(self, workers, completed):
+        self.pool = ThreadPoolExecutor(max_workers=workers)
+        self.limit, self.completed = workers, completed
+        self.pending = []
+        self.identities = set()
+
+    def submit(self, row, file, identity):
+        key = (identity["dev"], identity["ino"])
+        if len(self.pending) >= self.limit or key in self.identities:
+            raise ValueError("Parallel prune admission is not independent or bounded")
+        future = self.pool.submit(
+            delete_verified_file, file, identity, row["sha256"], single_link=True,
+        )
+        self.pending.append((future, row))
+        self.identities.add(key)
+
+    def drain(self):
+        # Observe EVERY submitted result even if an earlier worker or receipt
+        # fails. A missing/failed receipt retains deleted=2, never success.
+        first_error = None
+        for future, row in self.pending:
+            try:
+                future.result()
+                self.completed(row)
+            except BaseException as error:
+                if first_error is None:
+                    first_error = error
+        self.pending.clear()
+        self.identities.clear()
+        if first_error is not None:
+            raise first_error
+
+    def close(self):
+        try:
+            self.drain()
+        finally:
+            self.pool.shutdown(wait=True)
+
+
+def prune_originals(
+    plan, derived_shm_proof=None, expected_derived_shm_proof_sha256=None,
+    prune_workers=1,
+):
+    if (isinstance(prune_workers, bool) or not isinstance(prune_workers, int)
+            or prune_workers not in (1, 8)):
+        raise ValueError("Prune workers must be 1 or the explicit bounded mode 8")
     db = connect(plan["manifest"])
     before = {
         str(Path(r["source"]).anchor): shutil.disk_usage(Path(r["source"]).anchor).free
         for r in plan["roots"]
     }
     deleted = count = 0
+    batch = None
+
+    def report_progress():
+        if count % PRUNE_PROGRESS_INTERVAL == 0:
+            print(json.dumps({
+                "phase": "pruning", "entries": count,
+                "logical_deleted_bytes": deleted,
+            }), flush=True)
+
+    def completed_file(row):
+        nonlocal deleted, count
+        db.execute("UPDATE files SET deleted=1 WHERE root=? AND rel=?",
+                   (row["root"], row["rel"]))
+        db.commit()
+        deleted += json.loads(row["identity"])["size"]
+        count += 1
+        report_progress()
+
     try:
         if phase(db) not in ("accepted", "pruning"):
             raise ValueError("Verified target runtime acceptance required")
@@ -2164,6 +2236,8 @@ def prune_originals(plan, derived_shm_proof=None, expected_derived_shm_proof_sha
                            (expected_derived_shm_proof_sha256,))
                 db.commit()
         set_phase(db, "pruning")
+        if prune_workers > 1:
+            batch = PruneFileBatch(prune_workers, completed_file)
         for i, root in enumerate(plan["roots"]):
             original = Path(root["original"])
             if not original.exists():
@@ -2231,6 +2305,28 @@ def prune_originals(plan, derived_shm_proof=None, expected_derived_shm_proof_sha
             )
             for row in rows:
                 file = original / row["rel"]
+                if batch:
+                    identity = json.loads(row["identity"])
+                    current = info(file) if os.path.lexists(long_path(file)) else None
+                    independent = (
+                        row["kind"] == "file" and identity["links"] == 1
+                        and current is not None and current["links"] == 1
+                        and stat.S_ISREG(current["mode"])
+                        and not current["attributes"] & 0x400
+                        and same_identity(current, identity)
+                        and (identity["dev"], identity["ino"]) not in batch.identities
+                    )
+                    if independent:
+                        db.execute("UPDATE files SET deleted=2 WHERE root=? AND rel=?",
+                                   (i, row["rel"]))
+                        db.commit()  # Same durable intent BEFORE native submission.
+                        batch.submit(row, file, identity)
+                        if len(batch.pending) == batch.limit:
+                            batch.drain()
+                        continue
+                    # Hardlink groups, reparse entries, missing-intent recovery,
+                    # directories and unknown/currently linked files serialize.
+                    batch.drain()
                 if row["deleted"] == 2 and not os.path.lexists(long_path(file)):
                     db.execute(
                         "UPDATE files SET deleted=1 WHERE root=? AND rel=?",
@@ -2273,17 +2369,9 @@ def prune_originals(plan, derived_shm_proof=None, expected_derived_shm_proof_sha
                 )
                 db.commit()  # Exact partial progress survives interruption.
                 count += 1
-                if count % 10000 == 0:
-                    print(
-                        json.dumps(
-                            {
-                                "phase": "pruning",
-                                "entries": count,
-                                "logical_deleted_bytes": deleted,
-                            }
-                        ),
-                        flush=True,
-                    )
+                report_progress()
+            if batch:
+                batch.drain()  # Root completion never overtakes pending effects.
         set_phase(db, "completed")
         after = {drive: shutil.disk_usage(drive).free for drive in before}
         result = {
@@ -2299,7 +2387,11 @@ def prune_originals(plan, derived_shm_proof=None, expected_derived_shm_proof_sha
         write_json(Path(plan["manifest"]).with_suffix(".result.json"), result)
         return result
     finally:
-        db.close()
+        try:
+            if batch:
+                batch.close()  # Join and persist known successes on failure too.
+        finally:
+            db.close()
 
 
 def main():
@@ -2340,6 +2432,7 @@ def main():
     parser.add_argument("--derived-shm-proof")
     parser.add_argument("--expected-derived-shm-proof-sha256")
     parser.add_argument("--workers", type=int, default=1, choices=range(1, 9))
+    parser.add_argument("--prune-workers", type=int, default=1, choices=(1, 8))
     args = parser.parse_args()
     if args.action == "plan":
         result = create_plan(args.plan, args.map)
@@ -2375,7 +2468,10 @@ def main():
         elif args.action == "accept-started":
             result = accept_started(plan, args.runtime_proof)
         elif args.action == "prune-originals":
-            result = prune_originals(plan, args.derived_shm_proof, args.expected_derived_shm_proof_sha256)
+            result = prune_originals(
+                plan, args.derived_shm_proof, args.expected_derived_shm_proof_sha256,
+                prune_workers=args.prune_workers,
+            )
         elif args.action == "preview-derived-shm":
             result = preview_derived_shm(plan, args.preserved_shm, args.output)
         elif args.action == "refresh-stopped":

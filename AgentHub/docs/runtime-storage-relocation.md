@@ -364,6 +364,28 @@ main-runtime stop or additional business-state owner is introduced. This explici
 exception expires with completion of original-source pruning; it is not automatic
 product retention or permission to remove any other SQLite sidecar.
 
+### Optional bounded original-file pruning
+
+`prune-originals` remains serial by default. An independently reviewed NEW
+invocation may explicitly select `--prune-workers 8`; changing a running worker,
+its pinned helper or its invocation is not supported. A prior worker must be
+authoritatively absent before resuming the SAME operation/manifest and proof.
+Completion of the original worker needs no replacement invocation.
+
+Only ordinary files whose original and fresh identities both have one link are
+submitted, at most eight at a time. The coordinator alone commits each existing
+`deleted=2` intent before submission and `deleted=1` after observed native success.
+The same held delete handle rechecks the single-link condition after hashing.
+Hardlink groups, directories, reparse entries and missing-intent recovery drain
+all pending work and retain their serial owner. The typed WAL-index remains the
+first serial effect with its unchanged proof. Root completion cannot overtake
+pending work; failure or cancellation joins every submitted effect and records
+known successes before closing the manifest. Unknown results keep their intents
+and resume through the same original owner, without altering stored identities.
+
+Small destination-volume timings are component evidence, not source-volume
+throughput, physical reclaimed bytes or a production completion estimate.
+
 ## Focused verification
 
 Choose a disposable destination-volume fixture directory and set
@@ -375,6 +397,7 @@ python -X utf8 -B -m unittest discover -s tests -p runtime_relocation_protected_
 python -X utf8 -B -m unittest discover -s tests -p runtime_relocation_stop_test.py -v
 python -X utf8 -B -m unittest discover -s tests -p runtime_relocation_destination_test.py -v
 python -X utf8 -B -m unittest discover -s tests -p runtime_relocation_prune_test.py -v
+python -X utf8 -B -m unittest discover -s tests -p runtime_relocation_parallel_prune_test.py -v
 python -X utf8 -B -m unittest install_test.RuntimeLocationTests -v
 python -X utf8 -B -m unittest install_test -v
 python -X utf8 -B -m unittest discover -s tests -p install_extension_storage_test.py -v
