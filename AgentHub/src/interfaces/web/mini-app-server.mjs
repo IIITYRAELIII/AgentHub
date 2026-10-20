@@ -2,6 +2,7 @@ import { createReadStream, readFileSync, statSync } from "node:fs";
 import { mkdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
 import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
+import { observeAuthorizedUpload, UPLOAD_TRACE_HEADERS } from "./upload-transport-trace.mjs";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { pipeline } from "node:stream/promises";
@@ -973,6 +974,7 @@ export class MiniAppServer {
           "X-Agent-Hub-Attachment-Name",
           "X-Agent-Hub-File-Name",
           "X-Agent-Hub-Chunk-Sha256",
+          ...UPLOAD_TRACE_HEADERS,
         ].join(", "),
         "Access-Control-Allow-Methods": "GET, HEAD, POST, PUT, DELETE, OPTIONS",
         "Access-Control-Max-Age": "600",
@@ -1433,6 +1435,7 @@ export class MiniAppServer {
       const authorization = await this.#authorize(request, response);
       if (!authorization) return;
       const timings = { auth: performance.now() - authStarted, body: 0, owner: 0 };
+      observeAuthorizedUpload({ request, response, record: this.#recordCommandTrace, timings, receivedAtMs: transportReceivedAtMs });
       const timedJson = (status, value) => json(response, status, value, method, { headers: {
         "Server-Timing": Object.entries(timings).map(([name, duration]) => `${name};dur=${duration.toFixed(2)}`).join(", "),
       } });
@@ -2035,7 +2038,7 @@ function applyVscodeWebviewCors(request, response, enabled) {
   const origin = vscodeWebviewCorsOrigin(request, enabled);
   if (!origin) return false;
   response.setHeader("Access-Control-Allow-Origin", origin);
-  response.setHeader("Access-Control-Expose-Headers", "Content-Type, ETag");
+  response.setHeader("Access-Control-Expose-Headers", "Content-Type, ETag, Server-Timing, X-Agent-Hub-Upload-Request-Id");
   response.setHeader("Vary", "Origin");
   return true;
 }

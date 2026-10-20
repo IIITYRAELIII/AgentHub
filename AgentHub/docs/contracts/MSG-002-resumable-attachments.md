@@ -1,5 +1,17 @@
 # MSG-002 — Resumable attachment upload
 
+The owned local HTTP gateway keeps its primary upstream idle pool below the
+Node owner's five-second timeout (currently two seconds). It does not enable
+mutating-request retries or change operator-defined additional upstreams.
+Transient proxy failures expose their bounded upload stage and HTTP status while
+retaining the original draft. Explicit resume reconciles the same upload receipt;
+known committed chunks/ready files are not retransmitted. A diagnostic HTTP UUID
+joins browser, authenticated origin and sanitized gateway-error spans without
+replacing any logical/attempt/message identity. No raw request content enters
+those spans (ADR-0083). Deployment still belongs to the existing gateway/runtime
+owner; these settings cannot be applied by starting a competing listener.
+
+
 ## Authority and transitions
 
 An upload is preparation, not message admission. Its client-created UUID and

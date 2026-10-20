@@ -1420,6 +1420,7 @@ async function hubFetchResponse(input, init, retrySession = true, traceId) {
     const measured = (action, operation) => traceId?.traceUploadId
       ? commandTrace.upload(action, operation, { uploadId: traceId.traceUploadId,
         uploadAttemptId: traceId.traceAttemptId,
+        httpRequestId: traceId.traceHttpRequestId,
         messageRequestId: traceId.traceRequestId, chunkIndex: traceId.traceChunkIndex }) : operation();
     // Refreshing the session re-issues the HttpOnly cookie that the request below
     // carries automatically as a same-origin request.
@@ -2930,16 +2931,17 @@ function dataUrlBody(dataUrl) {
 
 const attachmentUploader = window.AgentHubAttachmentUpload.create({
   request: async (path, init) => {
-    const { traceUploadId, traceAttemptId, traceRequestId, traceChunkIndex, ...wireInit } = init ?? {};
-    const identity = { traceUploadId, traceAttemptId, traceRequestId, traceChunkIndex };
+    const { traceUploadId, traceAttemptId, traceRequestId, traceHttpRequestId, traceChunkIndex, ...wireInit } = init ?? {};
+    const identity = { traceUploadId, traceAttemptId, traceRequestId, traceHttpRequestId, traceChunkIndex };
     await commandTrace.upload("local-session", () => localSessionReady,
-      { uploadId: traceUploadId, uploadAttemptId: traceAttemptId, messageRequestId: traceRequestId, chunkIndex: traceChunkIndex });
+      { uploadId: traceUploadId, uploadAttemptId: traceAttemptId, messageRequestId: traceRequestId,
+        httpRequestId: traceHttpRequestId, chunkIndex: traceChunkIndex });
     const signal = AbortSignal.any([...(wireInit.signal ? [wireInit.signal] : []), AbortSignal.timeout(30_000)]);
     return hubFetch(path, { ...wireInit, signal, headers: { ...authorizationHeaders(), ...wireInit.headers } }, true, identity);
   },
-  trace: (action, operation, { traceUploadId, traceAttemptId, traceRequestId, traceChunkIndex } = {}) =>
+  trace: (action, operation, { traceUploadId, traceAttemptId, traceRequestId, traceHttpRequestId, traceChunkIndex } = {}) =>
     commandTrace.upload(action, operation, { uploadId: traceUploadId, uploadAttemptId: traceAttemptId,
-      messageRequestId: traceRequestId, chunkIndex: traceChunkIndex }),
+      messageRequestId: traceRequestId, httpRequestId: traceHttpRequestId, chunkIndex: traceChunkIndex }),
 });
 window.AgentHubAttachmentCapabilities = () => attachmentUploader.capabilities();
 

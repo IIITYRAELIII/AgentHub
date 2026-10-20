@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { chmod, mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -10,6 +13,34 @@ import {
   directGatewayCaddyfile,
   loadDirectGatewaySettings,
 } from "../../../src/interfaces/web/direct-gateway.mjs";
+
+test("actual pinned Caddy bounds only the Hub upstream pool below Node's five second keepalive", {
+  skip: !process.env.AGENT_HUB_TEST_CADDY ? "Set AGENT_HUB_TEST_CADDY and its verified SHA256 for optional gateway QA" : false,
+}, async t => {
+  const executable = process.env.AGENT_HUB_TEST_CADDY, expected = process.env.AGENT_HUB_TEST_CADDY_SHA256;
+  assert.ok(path.isAbsolute(executable) && /^[a-f0-9]{64}$/u.test(expected ?? ""));
+  assert.equal(createHash("sha256").update(await readFile(executable)).digest("hex"), expected);
+  const root = await mkdtemp(path.join(os.tmpdir(), "hub-caddy-adapt-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const file = path.join(root, "Caddyfile");
+  await writeFile(file, directGatewayCaddyfile({ domain: "hub.example.invalid", localUrl: "http://127.0.0.1:8787",
+    routes: [{ domain: "other.example.invalid", upstreamUrl: "http://127.0.0.2:9999" }] }));
+  const environment = Object.fromEntries(["SystemRoot", "WINDIR", "PATH", "PATHEXT"].filter(k => process.env[k]).map(k => [k, process.env[k]]));
+  Object.assign(environment, { TEMP: root, TMP: root, XDG_DATA_HOME: root, XDG_CONFIG_HOME: root });
+  const { stdout } = await promisify(execFile)(executable, ["adapt", "--config", file, "--adapter", "caddyfile"],
+    { windowsHide: true, cwd: root, env: environment, timeout: 10_000, maxBuffer: 1024 * 1024 });
+  const handlers = [];
+  function walk(value) {
+    if (!value || typeof value !== "object") return;
+    if (value.handler === "reverse_proxy") handlers.push(value);
+    for (const child of Object.values(value)) walk(child);
+  }
+  walk(JSON.parse(stdout));
+  const hub = handlers.find(h => h.upstreams.some(u => u.dial === "127.0.0.1:8787"));
+  const other = handlers.find(h => h.upstreams.some(u => u.dial === "127.0.0.2:9999"));
+  assert.equal(hub.transport.keep_alive.idle_timeout, 2_000_000_000);
+  assert.equal(other.transport?.keep_alive?.idle_timeout, undefined);
+});
 
 test("direct gateway settings keep the Hub backend on loopback", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-gateway-"));
@@ -117,6 +148,27 @@ test("replacement runtime adopts an unchanged live direct gateway", async () => 
 
   assert.equal(await controller.start(), settings.publicUrl);
   assert.equal(probes, 1);
+});
+
+test("changed pre-existing gateway config refuses before write or a competing listener", async t => {
+  const workingDirectory = await mkdtemp(path.join(os.tmpdir(), "hub-gateway-config-handoff-"));
+  t.after(() => rm(workingDirectory, { recursive: true, force: true }));
+  const settings = { domain: "hub.example.invalid", publicUrl: "https://hub.example.invalid", localUrl: "http://127.0.0.1:8787",
+    workingDirectory, executable: path.join(workingDirectory, "not-executed.exe") };
+  const file = path.join(workingDirectory, "Caddyfile"), previous = "retained old gateway configuration\n";
+  await writeFile(file, previous);
+  let spawns = 0;
+  const controller = new DirectGatewayController(settings, { spawnImpl: () => { spawns++; assert.fail("no competing gateway"); },
+    probeImpl: async () => true, scheduleHealthCheckImpl: () => ({ unref() {} }), cancelHealthCheckImpl: () => {} });
+  await assert.rejects(controller.start(), error => error.code === "DIRECT_GATEWAY_CONFIG_HANDOFF_REQUIRED");
+  assert.equal(await readFile(file, "utf8"), previous);
+  assert.equal(spawns, 0);
+  await controller.close();
+  // Only a completed owning config handoff permits normal unchanged adoption.
+  await writeFile(file, directGatewayCaddyfile(settings));
+  assert.equal(await controller.start(), settings.publicUrl);
+  assert.equal(spawns, 0);
+  await controller.close();
 });
 
 test("adopted direct gateway is relaunched after its health check fails", async () => {

@@ -70,6 +70,22 @@ test("upload receipt traces retain logical and transport identities and only exp
   assert.doesNotMatch(JSON.stringify(spans), /PRIVATE/u);
 });
 
+test("upload HTTP correlation and failed receipt status survive the existing bounded trace ingest", async () => {
+  const { trace } = fixture(), events = [];
+  trace.bindReporter(async batch => events.push(...batch.events));
+  const error = Object.assign(new Error("private upstream content"), { attachmentUploadStatus: 502 });
+  await assert.rejects(trace.upload("chunk", async () => { throw error; }, {
+    uploadId: "logical-upload", httpRequestId: "http-request", messageRequestId: "original-message",
+  }), value => value === error);
+  await trace.flush();
+  const spans = clientPerformanceTraceSpans({ events });
+  assert.equal(spans.length, 2);
+  assert.ok(spans.every(span => span.metadata.httpRequestId === "http-request"));
+  assert.equal(spans[1].metadata.statusCode, 502);
+  assert.equal(spans[1].outcome, "failed");
+  assert.equal(JSON.stringify(spans).includes("private upstream"), false);
+});
+
 test("expired upload traces cannot poison fresh traces after a same-page outage", async () => {
   const { trace, storage, advanceWall, wallNow } = fixture();
   const staleId = "123e4567-e89b-12d3-a456-426614174010";

@@ -5,7 +5,7 @@ import { MiniAppLifecycleService } from "../../../src/interfaces/web/mini-app-li
 function fixture({ gateway = false, worker = false, tunnel = false, sharedBot = false } = {}) {
   const events = [];
   class Controller {
-    constructor(options) { this.options = options; }
+    constructor(options, diagnostics = {}) { this.options = options; this.diagnostics = diagnostics; }
     async start() { events.push("controller:start"); return "https://public.example/"; }
     async close() { events.push("controller:close"); }
   }
@@ -73,6 +73,15 @@ test("Mini App lifecycle starts the local surface without optional transports", 
   const { service, events } = fixture();
   assert.deepEqual(await service.start(), { url: "http://127.0.0.1:1/" });
   assert.deepEqual(events, ["local:start"]);
+});
+
+test("gateway diagnostics use the existing trace port without a second runtime owner", async () => {
+  const { service } = fixture({ gateway: true }), spans = [];
+  service.recordCommandTrace = span => spans.push(span);
+  await service.start();
+  service.directGateway.diagnostics.recordCommandTrace({ commandId: "synthetic-upload", outcome: "failed" });
+  assert.deepEqual(spans, [{ commandId: "synthetic-upload", outcome: "failed" }]);
+  await service.closeDirectGateway();
 });
 
 test("Mini App lifecycle exposes the local startup screen before the shared bot", async () => {

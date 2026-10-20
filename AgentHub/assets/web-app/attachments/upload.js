@@ -3,20 +3,46 @@
   const PROTOCOL = "agent-hub-attachment-upload-v1";
   const LEGACY_BYTES = 20 * 1024 * 1024;
   const CHUNK_BYTES = 1024 * 1024;
+  const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 
   function create({ request, trace = (_action, operation) => operation() }) {
     let limits;
+    function httpError(status, value, action) {
+      const error = new Error(value?.error ?? `Загрузка: HTTP ${status}`);
+      error.attachmentUploadTerminal = [400, 404, 409, 410, 413, 422].includes(status);
+      error.attachmentUploadStatus = status;
+      error.attachmentUploadState = value?.state;
+      error.attachmentUploadAction = action;
+      if ([502, 503, 504].includes(status)) {
+        const stage = { capabilities: "согласование загрузки", status: "проверка состояния", begin: "начало",
+          "begin-recovery": "восстановление начала", chunk: "передача части", complete: "подтверждение", cancel: "отмена" }[action] ?? "запрос";
+        const recovery = ["capabilities", "cancel"].includes(action) ? "Результат запроса не подтверждён."
+          : "Файл сохранён в черновике; продолжите загрузку.";
+        error.message = `Загрузка: ${stage}, HTTP ${status}. ${recovery}`;
+      }
+      return error;
+    }
+    async function exchange(path, init, action, identity) {
+      const traceHttpRequestId = crypto.randomUUID();
+      const correlation = { ...identity, traceHttpRequestId };
+      const headers = { ...init.headers, "X-Agent-Hub-Upload-Request-Id": traceHttpRequestId };
+      for (const [key, header] of [["traceUploadId", "X-Agent-Hub-Upload-Id"],
+        ["traceAttemptId", "X-Agent-Hub-Upload-Attempt-Id"], ["traceRequestId", "X-Agent-Hub-Message-Request-Id"]]) {
+        if (UUID.test(correlation[key] ?? "")) headers[header] = correlation[key];
+      }
+      return trace(action, () => request(path, { ...init, ...correlation, headers }), correlation);
+    }
     async function capabilities({ signal, ...identity } = {}) {
       signal?.throwIfAborted();
       if (limits) return limits;
-      const response = await trace("capabilities", () => request("/api/attachment-upload",
-        { method: "GET", signal, ...identity }), identity);
+      const response = await exchange("/api/attachment-upload", { method: "GET", signal }, "capabilities", identity);
       signal?.throwIfAborted();
       if ([404, 405, 501].includes(response.status)) {
         return (limits = { protocol: "legacy", maxBytes: LEGACY_BYTES, maxTotalBytes: LEGACY_BYTES });
       }
-      const value = await response.json();
+      const value = await response.json().catch(() => ({}));
       signal?.throwIfAborted();
+      if (!response.ok) throw httpError(response.status, value, "capabilities");
       if (!response.ok || value.protocol !== PROTOCOL || value.chunkBytes !== CHUNK_BYTES
         || !Number.isSafeInteger(value.maxBytes) || value.maxBytes < 1
         || !Number.isSafeInteger(value.maxTotalBytes) || value.maxTotalBytes < 1) {
@@ -27,16 +53,11 @@
     }
 
     async function json(path, init, action = "request", identity = {}) {
-      const response = await trace(action, () => request(path, { ...init, ...identity }), identity);
+      const response = await exchange(path, init, action, identity);
       const value = await trace("response-json", () => response.json().catch(() => ({})), identity);
       return trace("receipt", () => {
         if (!response.ok) {
-          const message = value.error ?? `Загрузка: HTTP ${response.status}`;
-          const error = new Error(message);
-          error.attachmentUploadTerminal = [400, 404, 409, 410, 413, 422].includes(response.status);
-          error.attachmentUploadStatus = response.status;
-          error.attachmentUploadState = value.state;
-          throw error;
+          throw httpError(response.status, value, action);
         }
         return value;
       }, identity);

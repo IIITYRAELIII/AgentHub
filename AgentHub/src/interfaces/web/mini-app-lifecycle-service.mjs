@@ -21,6 +21,7 @@ export class MiniAppLifecycleService {
     trustedDeviceStore = null,
     sharedDashboardBotClient = null,
     logger = console,
+    recordCommandTrace = null,
   } = {}) {
     if (!config) throw new TypeError("config is required");
     Object.assign(this, {
@@ -41,6 +42,7 @@ export class MiniAppLifecycleService {
       trustedDeviceStore,
       sharedDashboardBotClient,
       logger,
+      recordCommandTrace,
     });
     this.publisher = null;
     this.directGateway = null;
@@ -99,7 +101,7 @@ export class MiniAppLifecycleService {
     if (!this.#transportActive(generation)) return address;
     let preferredMenuUrl = "";
     if (gatewaySettings.enabled) {
-      this.directGateway ??= new this.DirectGatewayControllerClass(gatewaySettings);
+      this.directGateway ??= new this.DirectGatewayControllerClass(gatewaySettings, { recordCommandTrace: this.recordCommandTrace });
       const publicUrl = await this.directGateway.start();
       if (!this.#transportActive(generation)) return address;
       preferredMenuUrl = publicUrl;
