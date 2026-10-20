@@ -1,0 +1,21 @@
+{
+  "components": {
+    "telegram": false,
+    "miniApp": false,
+    "androidApp": false,
+    "sharedDashboardBot": false,
+    "codexContextCleanup": false,
+    "testContour": false
+  },
+  "provider": "codex",
+  "projectRoot": ".",
+  "projects": [],
+  "dataDir": "data",
+  "autoApproveOnStart": false,
+  "codexSandboxMode": "workspace-write",
+  "voiceEnabled": false,
+  "ttsEnabled": false,
+  "diagnostics": {
+    "sentry": { "enabled": false, "dsn": "" }
+  }
+}

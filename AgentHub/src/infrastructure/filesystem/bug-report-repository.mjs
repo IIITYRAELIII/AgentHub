@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { copyFile, mkdir, mkdtemp, readFile, rm, stat, unlink, writeFile } from "node:fs/promises";
+import { copyFile, lstat, mkdir, mkdtemp, readFile, rm, stat, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -103,6 +103,21 @@ function ancestors(value) {
   }
 }
 
+async function requireUtilitiesReportDestination(repository) {
+  // Source extraction retains AgentHub/package.json in the public repository.
+  // That file is no longer evidence of the legacy Utilities report destination.
+  // Thin Utilities keeps these stable markers after removing the source tree.
+  for (const marker of ["UTILITY_INVENTORY.md", "AI_INFRA_SETUP/team_profile.py"]) {
+    const info = await lstat(path.join(repository, marker)).catch(error => {
+      if (error.code === "ENOENT") return null;
+      throw error;
+    });
+    if (!info?.isFile() || info.isSymbolicLink()) {
+      throw new Error("Automatic bug reports require Utilities repository markers; source repositories are not report destinations");
+    }
+  }
+}
+
 export async function findUtilitiesRepository({
   agentHubRoot,
   projectRoots = [],
@@ -121,8 +136,8 @@ export async function findUtilitiesRepository({
     try {
       const { stdout } = await runGit(candidate, ["rev-parse", "--show-toplevel"]);
       if (path.resolve(stdout.trim()) !== candidate) continue;
-      const info = await stat(path.join(candidate, "AgentHub", "package.json"));
-      if (info.isFile()) return candidate;
+      await requireUtilitiesReportDestination(candidate);
+      return candidate;
     } catch {
       // A configured project may live outside the shared workspace. Try the next ancestor.
     }
@@ -173,6 +188,7 @@ export class BugReportRepository {
   }
 
   async #publicationTarget() {
+    await requireUtilitiesReportDestination(await this.#resolveRepository());
     const branch = (await this.#git("branch", "--show-current")).stdout.trim();
     if (branch !== "main") throw new Error("Отчёты о багах публикуются только из ветки main");
     const upstream = (await this.#git("rev-parse", "--abbrev-ref", "@{upstream}")).stdout.trim();

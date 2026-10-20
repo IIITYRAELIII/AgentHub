@@ -7,7 +7,7 @@ import test from "node:test";
 import { promisify } from "node:util";
 
 import { AGENT_HUB_VERSION } from "../../../src/infrastructure/filesystem/agent-hub-package.mjs";
-import { BugReportRepository } from "../../../src/infrastructure/filesystem/bug-report-repository.mjs";
+import { BugReportRepository, findUtilitiesRepository } from "../../../src/infrastructure/filesystem/bug-report-repository.mjs";
 
 const execFileAsync = promisify(execFile);
 const PNG = Buffer.from(
@@ -19,6 +19,50 @@ async function git(cwd, ...args) {
   const result = await execFileAsync("git", args, { cwd, encoding: "utf8", windowsHide: true });
   return result.stdout;
 }
+
+async function utilitiesMarkers(repository) {
+  await mkdir(path.join(repository, "AI_INFRA_SETUP"), { recursive: true });
+  await writeFile(path.join(repository, "UTILITY_INVENTORY.md"), "Synthetic Utilities inventory\n");
+  await writeFile(path.join(repository, "AI_INFRA_SETUP", "team_profile.py"), "# Synthetic Utilities marker; never execute\n");
+}
+
+test("standalone source is never discovered as the private Utilities report destination", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-source-report-boundary-"));
+  const repository = path.join(root, "standalone-source");
+  try {
+    await git(root, "init", "--initial-branch=main", repository);
+    await mkdir(path.join(repository, "AgentHub"), { recursive: true });
+    await writeFile(path.join(repository, "AgentHub", "package.json"), "{}\n");
+    await assert.rejects(findUtilitiesRepository({ agentHubRoot: path.join(repository, "AgentHub") }), /Utilities/u);
+    // Explicit constructor injection cannot bypass the publication boundary.
+    const effects = [];
+    const reports = new BugReportRepository({ repository, runGit: async (cwd, args) => {
+      effects.push(args[0]);
+      return execFileAsync("git", args, { cwd, encoding: "utf8", windowsHide: true });
+    } });
+    await assert.rejects(reports.submit({ text: "Synthetic private report" }), /Utilities repository markers/u);
+    assert.equal(effects.some(command => ["fetch", "commit", "push", "worktree", "add"].includes(command)), false);
+    await assert.rejects(readFile(path.join(repository, "AgentHub", "Bugs")), /ENOENT/u);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("thin Utilities report destination remains discoverable without the source package", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-thin-report-boundary-"));
+  const repository = path.join(root, "Utilities");
+  try {
+    await git(root, "init", "--initial-branch=main", repository);
+    await utilitiesMarkers(repository);
+    await mkdir(path.join(repository, "AgentHub"), { recursive: true });
+    await writeFile(path.join(repository, "AgentHub", "README.md"), "Thin distribution entry\n");
+    assert.equal(await findUtilitiesRepository({ agentHubRoot: path.join(root, "runtime", "releases", "exact"),
+      projectRoots: [path.join(root, "Project")] }), repository);
+    await assert.rejects(readFile(path.join(repository, "AgentHub", "package.json")), /ENOENT/u);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test("initial bug report scan returns every report already present at HEAD", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-existing-bug-report-"));
@@ -72,6 +116,7 @@ test("bug report commit and push contain only one generated report folder", asyn
     await git(repository, "config", "user.email", "agent-hub@example.test");
     await mkdir(path.join(repository, "AgentHub"), { recursive: true });
     await writeFile(path.join(repository, "AgentHub", "package.json"), "{}\n", "utf8");
+    await utilitiesMarkers(repository);
     await writeFile(path.join(repository, "notes.txt"), "initial\n", "utf8");
     await git(repository, "add", "AgentHub/package.json", "notes.txt");
     await git(repository, "commit", "-m", "Initial");
@@ -145,6 +190,7 @@ test("bug report publishes without pushing existing local commits", async () => 
     await git(repository, "config", "user.email", "agent-hub@example.test");
     await mkdir(path.join(repository, "AgentHub"), { recursive: true });
     await writeFile(path.join(repository, "AgentHub", "package.json"), "{}\n", "utf8");
+    await utilitiesMarkers(repository);
     await git(repository, "add", "AgentHub/package.json");
     await git(repository, "commit", "-m", "Initial");
     await git(repository, "remote", "add", "origin", origin);
@@ -187,6 +233,7 @@ test("bug report publishes when local main is behind upstream", async () => {
     await git(repository, "config", "user.email", "agent-hub@example.test");
     await mkdir(path.join(repository, "AgentHub"), { recursive: true });
     await writeFile(path.join(repository, "AgentHub", "package.json"), "{}\n", "utf8");
+    await utilitiesMarkers(repository);
     await git(repository, "add", "AgentHub/package.json");
     await git(repository, "commit", "-m", "Initial");
     await git(repository, "remote", "add", "origin", origin);
