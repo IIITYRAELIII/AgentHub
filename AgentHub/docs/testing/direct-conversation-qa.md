@@ -7,10 +7,11 @@ deleted or archived IDs cannot create a Stream or adopt another Stream's draft.
 An empty Workspace shows a compact empty state inside the conversation shell;
 the previous Workspace's conversation, approvals and composer are not exposed.
 
-The compact header has two intrinsic normal-flow rows. The first contains the
-Workspace drawer button, a single-line Stream opener, then the existing create,
-search, diff and settings controls. The second contains Workspace first, then
-provider, model, optional branch, message count, connection and runtime/status.
+The compact header retains its action row: Workspace drawer button, single-line
+Stream opener, then existing create/search/diff/settings controls. Below it, two
+separate normal-flow rows show the Workspace name / Stream display name breadcrumb
+(without a literal Workspace prefix, Stream name stronger), then provider, model,
+optional branch, message count, connection and runtime/status with separators.
 The opener retains the full Stream and Workspace in its accessible name and
 opens the searchable Stream picker. Search is local and never loads history for previews. The picker shows
 names and authoritative state, without duplicating last-answer cards. Keyboard
@@ -62,8 +63,10 @@ not claim a manual screen-reader pass or full accessibility certification.
 The header cannot flex-shrink over the transcript. Header and metadata use an
 opaque semantic theme canvas; the transcript owns its separate clipped scroll
 viewport below them. No overlay or elevated z-index is used to hide overlap.
-Empty Workspace keeps only the Workspace metadata token. Long names have full
-titles and ellipsis; tokens wrap between items into at most two lines.
+Empty Workspace keeps its Workspace name / Нет потоков breadcrumb and hides
+stream-dependent metadata. Long names have full
+titles and ellipsis; breadcrumb and technical metadata each stay on one line; flexible technical
+text shrinks with ellipsis while count and connection bars retain their space.
 
 On compact surfaces the existing context, Stop and Send elements move into one
 transparent right action cluster, retaining their listeners and form owner.
@@ -73,13 +76,23 @@ composer handler. Switching back to desktop restores the original DOM parents
 and geometry. Context and primary targets are 44px, with a 3px gap.
 
 The compact regression emits actual Nebula/Orange captures and computed metrics
-to ignored `WIP/compact-header-captures/`: Mobile320×568/390/430, narrow
+to ignored `WIP/breadcrumb-header-captures/`: Mobile320×568/390/430, narrow
 WebView390/520, long transcript top/mid/running, long names, empty Workspace,
 disabled/enabled/running actions and hidden context. It checks header/scroller
 bounds, painted ownership, opaque background, metadata line limits, target and
 cluster geometry, Tab order, Stop transport, and desktop round-trip restoration.
 A desktop1280 capture and geometry record verify the unaffected surface.
 
-Design direction: `design-hub114-compact-header-composer-spec-20261020-v1`.
+Design direction: `design-hub114-breadcrumb-spec-dialogs-20261020-v1`, with
+`design-hub114-padding-addendum-dialogs-20261020-v1` and metric clarification.
 Final Design acceptance binds the completed captures and final source hashes;
 DOM evidence does not substitute for a manual assistive-technology audit.
+
+The compact action/breadcrumb/metadata grid has 44/20/28px intrinsic minimum
+tracks, 1px row gaps, outer padding 4px 8px 0 and a 1px bottom border. At the
+default font scale its active height is 99px. Breadcrumb and metadata share
+raw row edges at 8px and padded visible content edges at 12px. Empty hides the
+technical track and retains 72px header height, including 2px bottom air.
+No maximum header height prevents growth at text zoom. The geometry matrix
+checks row ownership, raw/content rects, single baselines and full accessible
+breadcrumb names; desktop receives no compact breadcrumb node.

@@ -70,7 +70,11 @@
       { "data-mobile-workspaces-open": "", "aria-haspopup": "dialog", "aria-expanded": "false" });
     const workspaceName = node("strong", { "data-mobile-workspace-name": "" });
     const workspaceLabel = node("span", { class: "mobile-context-workspace", "data-mobile-workspace-label": "" }, [
-      node("span", { text: "Workspace " }), workspaceName,
+      workspaceName,
+    ]);
+    const breadcrumbStream = node("strong", { "data-mobile-breadcrumb-stream": "" });
+    const breadcrumb = node("div", { class: "mobile-conversation-breadcrumb", "data-mobile-breadcrumb": "", role: "group" }, [
+      workspaceLabel, node("span", { text: "/", "aria-hidden": "true" }), breadcrumbStream,
     ]);
     const chatHeader = doc.querySelector("[data-stream-chat-header]");
     const headerHome = chatHeader.parentNode;
@@ -90,7 +94,6 @@
     const primaryActions = node("div", { class: "mobile-conversation-actions" }, [chatCreate]);
     chatHeader.prepend(drawerButton, switchButton, primaryActions);
     const meta = chatHeader.querySelector(".stream-chat-meta");
-    meta.prepend(workspaceLabel);
     // Move the existing controls, retaining their identities, listeners and form.
     // Restore their original parents when leaving the compact surface.
     const composerMain = doc.querySelector(".composer-main");
@@ -522,12 +525,14 @@
           root.toggleAttribute("data-mobile-dialogs-enabled", enabled);
           if (enabled) {
             drawerBody.append(rail); chat.prepend(chatHeader);
+            chatHeader.insertBefore(breadcrumb, meta);
             primaryActions.append(headerActions);
             composerActions.append(...composerButtons); composerMain.append(composerActions);
           }
           else {
             ownDialogs.forEach(close); railHome.insertBefore(rail, railNext);
             headerHome.insertBefore(chatHeader, headerNext);
+            breadcrumb.remove();
             chatHeader.append(headerActions);
             composerMain.append(...composerButtons); composerActions.remove();
             for (const item of rail.querySelectorAll("[data-workspace-select]")) {
@@ -563,11 +568,16 @@
         if (view === "chat" && root.dataset.pane !== "chat") setPane("chat");
         workspaceName.textContent = state.workspaces?.find((w) => w.id === workspaceId)?.name
           || selected?.workspaceName || "Выбрать Workspace";
-        workspaceLabel.title = `Workspace ${workspaceName.textContent}`;
+        workspaceName.title = workspaceName.textContent;
         streamName.textContent = selected ? window.AgentHubStreamTabs.streamDisplayName({
           name: selected?.streamName || selected?.streamDisplayName, ordinal: selected?.streamOrdinal,
         }, streams().length) : "Нет потоков";
         streamName.title = streamName.textContent;
+        breadcrumbStream.textContent = streamName.textContent;
+        breadcrumbStream.title = streamName.textContent;
+        breadcrumb.setAttribute("aria-label", selected
+          ? `Workspace ${workspaceName.textContent}, поток ${streamName.textContent}`
+          : `Workspace ${workspaceName.textContent}, потоков нет`);
         const switchLabel = `Переключить поток: ${streamName.textContent}`;
         switchButton.title = switchLabel;
         const contextLabel = `Workspace ${workspaceName.textContent} / ${streamName.textContent}`;

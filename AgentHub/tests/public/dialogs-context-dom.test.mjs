@@ -114,7 +114,7 @@ for (const surface of surfaces) {
       if (compact) {
         assert.equal(await page.locator('[data-composer-input]').isVisible(), true);
         assert.equal(await page.locator('[data-mobile-dialogs], [data-mobile-conversation-back]').count(), 0);
-        assert.equal(await page.locator('.stream-chat-meta [data-mobile-workspace-name]').innerText(), workspaceName);
+        assert.equal(await page.locator('.mobile-conversation-breadcrumb [data-mobile-workspace-name]').innerText(), workspaceName);
         assert.equal(await context.locator('[data-mobile-stream-name]').innerText(), 'Поток 1');
         assert.equal(await context.getAttribute('aria-label'), `Переключить поток: Поток 1. Workspace ${workspaceName}`);
         assert.equal(await page.locator('[data-mobile-dialogs-tab="chat"]').getAttribute('aria-label'), 'Чат');

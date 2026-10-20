@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import { launchBrowser, openFixture, snapshot, bridgeCalls } from "./composer-production.fixture.mjs";
 
-const output = fileURLToPath(new URL("../../WIP/compact-header-captures/", import.meta.url));
+const output = fileURLToPath(new URL("../../WIP/breadcrumb-header-captures/", import.meta.url));
 const { loadThemeRegistry } = createRequire(import.meta.url)("../../theme-registry.cjs");
 const themeRegistry = loadThemeRegistry(fileURLToPath(new URL("../../assets/web-app/", import.meta.url)));
 const surfaces = [
@@ -18,6 +18,7 @@ async function measure(page) {
   return page.evaluate(() => {
     const $ = (s) => document.querySelector(s);
     const rect = (n) => { const r = n.getBoundingClientRect(); return { x: r.x, y: r.y, right: r.right, bottom: r.bottom, width: r.width, height: r.height }; };
+    const contentRect = (n) => { const r = rect(n), s = getComputedStyle(n); return { x: r.x + parseFloat(s.paddingLeft), right: r.right - parseFloat(s.paddingRight), paddingLeft: parseFloat(s.paddingLeft), paddingRight: parseFloat(s.paddingRight) }; };
     const visible = (n) => n.checkVisibility() && !n.closest("[hidden]");
     const header = $("[data-stream-chat-header]"), meta = $(".stream-chat-meta"), scroller = $("[data-chat-scroll]");
     const opener = $("[data-mobile-stream-switch]"), name = $("[data-mobile-stream-name]"), caret = opener.querySelector("svg");
@@ -30,6 +31,7 @@ async function measure(page) {
     const intersections = [...scroller.querySelectorAll(".msg")].map(rect).filter((r) =>
       Math.min(r.bottom, scrollerRect.bottom, headerRect.bottom) > Math.max(r.y, scrollerRect.y, headerRect.y));
     const tokens = [...meta.children].filter(visible);
+    const breadcrumb = $("[data-mobile-breadcrumb]"), workspace = $("[data-mobile-workspace-name]"), breadcrumbStream = $("[data-mobile-breadcrumb-stream]");
     const canvas = document.createElement("canvas"), ctx = canvas.getContext("2d");
     const rgba = (color) => { ctx.clearRect(0, 0, 1, 1); ctx.fillStyle = color; ctx.fillRect(0, 0, 1, 1); return [...ctx.getImageData(0, 0, 1, 1).data].slice(0, 3); };
     const luminance = (rgb) => rgb.map((v) => v / 255).map((v) => v <= .04045 ? v / 12.92 : ((v + .055) / 1.055) ** 2.4).reduce((s, v, i) => s + v * [.2126, .7152, .0722][i], 0);
@@ -37,20 +39,27 @@ async function measure(page) {
     const ratio = (color) => { const foreground = luminance(rgba(color)); return (Math.max(foreground, background) + .05) / (Math.min(foreground, background) + .05); };
     const probe = document.createElement("span"); probe.style.color = "var(--accent)"; header.append(probe);
     const focusContrast = ratio(getComputedStyle(probe).color); probe.remove();
-    const textContrast = [name, ...meta.querySelectorAll("[data-mobile-workspace-name], [data-stream-header-provider], [data-stream-header-model], [data-stream-header-branch], [data-stream-header-message-count], [data-provider-connection-label], [data-mobile-current-runtime], [data-mobile-current-status]")].filter(visible).map((n) => ({ text: n.textContent, ratio: ratio(getComputedStyle(n).color) }));
+    const textContrast = [name, workspace, breadcrumbStream, ...meta.querySelectorAll("[data-mobile-workspace-name], [data-stream-header-provider], [data-stream-header-model], [data-stream-header-branch], [data-stream-header-message-count], [data-provider-connection-label], [data-mobile-current-runtime], [data-mobile-current-status]")].filter(visible).map((n) => ({ text: n.textContent, ratio: ratio(getComputedStyle(n).color) }));
     const iconContrast = [...header.querySelectorAll("button svg")].filter((n) => visible(n) && !n.closest("button").disabled).map((n) => ({ label: n.closest("button").title, color: getComputedStyle(n).color, ratio: ratio(getComputedStyle(n).color) }));
     return {
+      slash: rect(breadcrumb.querySelector("[aria-hidden]")), breadcrumb: rect(breadcrumb), breadcrumbContent: contentRect(breadcrumb), metaContent: contentRect(meta), workspace: rect(workspace), breadcrumbStream: rect(breadcrumbStream),
+      breadcrumbText: breadcrumb.textContent, workspaceText: workspace.textContent, streamText: breadcrumbStream.textContent,
+      breadcrumbAria: breadcrumb.getAttribute("aria-label"), breadcrumbTitles: [workspace.title, breadcrumbStream.title],
+      connection: rect($("[data-provider-connection-quality]")),
+      orphanSeparators: [...meta.querySelectorAll(".stream-chat-meta-separator")].filter(visible).some((n) => !n.previousElementSibling || !n.nextElementSibling || !visible(n.nextElementSibling)),
+      breadcrumbWeights: [getComputedStyle(workspace).fontWeight, getComputedStyle(breadcrumbStream).fontWeight],
       focusContrast, textContrast, iconContrast, header: headerRect, meta: rect(meta), scroller: scrollerRect, scrollTop: scroller.scrollTop, scrollHeight: scroller.scrollHeight, scrollClientHeight: scroller.clientHeight,
-      metaPaintOwned: [...meta.querySelectorAll("[data-mobile-workspace-name], [data-stream-header-provider]")].filter(visible).every((n) => { const r = n.getBoundingClientRect(); const hit = document.elementFromPoint(r.x + Math.min(2, r.width / 2), r.y + r.height / 2); return header.contains(hit); }),
+      metaPaintOwned: [workspace, breadcrumbStream, ...tokens].filter(visible).every((n) => { const r = n.getBoundingClientRect(); const hit = document.elementFromPoint(r.x + Math.min(2, r.width / 2), r.y + r.height / 2); return header.contains(hit); }),
       headerStyle: { background: getComputedStyle(header).backgroundColor, isolation: getComputedStyle(header).isolation,
-        flexShrink: getComputedStyle(header).flexShrink, position: getComputedStyle(header).position,
+        rowGap: getComputedStyle(header).rowGap, padding: getComputedStyle(header).padding, flexShrink: getComputedStyle(header).flexShrink, position: getComputedStyle(header).position,
         themeCanvas: getComputedStyle(document.documentElement).getPropertyValue("--mobile-navigation-bg").trim() },
-      metaStyle: { background: getComputedStyle(meta).backgroundColor, isolation: getComputedStyle(meta).isolation },
+      metaStyle: { display: getComputedStyle(meta).display, background: getComputedStyle(meta).backgroundColor, isolation: getComputedStyle(meta).isolation },
       intersections: intersections.length, overflow: Math.max(0, document.documentElement.scrollWidth - innerWidth),
       metaLines: new Set(tokens.map((n) => Math.round(n.getBoundingClientRect().y + n.getBoundingClientRect().height / 2))).size,
       tokens: tokens.map((n) => ({ text: n.textContent.trim(), title: n.title, ...rect(n) })),
       name: rect(name), nameLineHeight: parseFloat(getComputedStyle(name).lineHeight), caret: rect(caret), opener: rect(opener),
       controls: [...header.querySelectorAll("button")].filter(visible).map((n) => ({ label: n.title, ...rect(n) })),
+      tokensWithinMeta: tokens.every((n) => rect(n).x >= contentRect(meta).x && rect(n).right <= contentRect(meta).right + 1),
       workspaceInOpener: Boolean(opener.querySelector("[data-mobile-workspace-label]")),
       aria: opener.getAttribute("aria-label"),
       cluster: rect(cluster), composer: rect($(".composer-main")), primary: primary && rect(primary),
@@ -69,6 +78,7 @@ function assertLayout(m, { empty = false, running = false, enabled = false } = {
   assert.ok(m.header.bottom <= m.scroller.y + 1 || empty, JSON.stringify(m));
   assert.equal(m.intersections, 0);
   assert.equal(m.metaPaintOwned, true);
+  assert.equal(m.tokensWithinMeta, true, JSON.stringify(m.tokens));
   assert.equal(m.headerStyle.flexShrink, "0");
   assert.equal(m.headerStyle.isolation, "isolate");
   assert.equal(m.metaStyle.isolation, "isolate");
@@ -78,12 +88,36 @@ function assertLayout(m, { empty = false, running = false, enabled = false } = {
   assert.equal(m.workspaceInOpener, false);
   assert.ok(m.name.height <= m.nameLineHeight + 1);
   assert.ok(m.caret.width > 0 && m.caret.right <= m.opener.right + 1);
-  assert.ok(m.metaLines <= 2, JSON.stringify(m.tokens));
-  assert.ok(m.meta.height >= 28);
+  assert.equal(m.metaLines, empty ? 0 : 1, JSON.stringify(m.tokens));
+  assert.equal(m.breadcrumbText, m.workspaceText + "/" + m.streamText);
+  assert.ok(m.breadcrumb.y >= m.controls[0].bottom);
+  assert.ok(Number(m.breadcrumbWeights[1]) > Number(m.breadcrumbWeights[0]));
+  assert.equal(m.workspace.height, 16); assert.equal(m.breadcrumbStream.height, 16);
+  assert.ok(Math.abs(m.slash.x - m.workspace.right - 6) <= 1);
+  assert.ok(Math.abs(m.breadcrumbStream.x - m.slash.right - 6) <= 1);
+  assert.ok(m.workspace.width <= .42 * (m.breadcrumbContent.right - m.breadcrumbContent.x) + 1);
+  assert.deepEqual(m.breadcrumbTitles, [m.workspaceText, m.streamText]);
+  assert.equal(m.breadcrumbAria, empty ? `Workspace ${m.workspaceText}, потоков нет` : `Workspace ${m.workspaceText}, поток ${m.streamText}`);
+  if (!empty) { assert.ok(m.breadcrumb.bottom <= m.meta.y); assert.equal(m.meta.height, 28); assert.ok(m.connection.height >= 24 && m.connection.width >= 24); }
+  assert.equal(m.orphanSeparators, false);
+  assert.equal(m.header.height, empty ? 72 : 99);
+  assert.equal(m.headerStyle.rowGap, "1px");
+  assert.equal(m.headerStyle.padding, "4px 8px 0px");
+  assert.equal(m.controls[0].y - m.header.y, 4);
+  assert.equal(m.breadcrumb.y - m.header.y, 49); assert.equal(m.breadcrumb.height, 20);
+  assert.equal(m.breadcrumbContent.x - m.header.x, 12);
+  assert.equal(m.header.right - m.breadcrumbContent.right, 12);
+  assert.equal(m.breadcrumb.x - m.header.x, 8); assert.equal(m.header.right - m.breadcrumb.right, 8);
+  assert.equal(m.breadcrumbContent.paddingLeft, 4); assert.equal(m.breadcrumbContent.paddingRight, 4);
+  if (!empty) {
+    assert.equal(m.meta.y - m.header.y, 70); assert.equal(m.metaContent.paddingLeft, 4); assert.equal(m.metaContent.paddingRight, 4);
+    assert.equal(m.metaContent.x, m.breadcrumbContent.x); assert.equal(m.metaContent.right, m.breadcrumbContent.right);
+  }
   for (const r of m.controls) assert.ok(r.width >= 44 && r.height >= 44, JSON.stringify(r));
   for (let i = 1; i < m.controls.length; i++) assert.ok(m.controls[i - 1].right <= m.controls[i].x + 1, JSON.stringify(m.controls));
-  assert.ok(m.tokens[0].text.startsWith("Workspace "));
-  if (empty) { assert.equal(m.tokens.length, 1); return; }
+  assert.equal(m.tokens.some((t) => t.text.includes(m.workspaceText)), false);
+  if (empty) { assert.equal(m.tokens.length, 0); assert.equal(m.metaStyle.display, "none"); assert.equal(m.meta.width, 0); assert.equal(m.meta.height, 0); assert.ok(m.breadcrumb.bottom <= m.header.bottom - 2); return; }
+  assert.equal(m.tokens.find((t) => t.text)?.text, "Codex");
   assert.equal(m.primaryCount, 1);
   assert.equal(m.sendVisible, !running); assert.equal(m.stopVisible, running);
   assert.equal(m.primaryFocusable, running || enabled);
@@ -162,7 +196,11 @@ for (const surface of surfaces) test(`compact header, transcript and primary act
       });
       assert.equal(await page.locator("[data-stream-header-branch]").isVisible(), true);
       assert.equal(await page.locator("[data-stream-header-branch]").innerText(), "long-branch-with-unicode-🛰");
-      await record(`${theme}-long`, { enabled: true });
+      const longMetrics = await record(`${theme}-long`, { enabled: true });
+      assert.ok(longMetrics.workspace.width > 0 && longMetrics.breadcrumbStream.width > longMetrics.workspace.width);
+      assert.ok(longMetrics.tokens.find((n) => n.text === "long-branch-with-unicode-🛰").width > 0);
+      await page.evaluate(() => AgentHub.patchTask("stream-a", { running: true, run: { turnId: "compact-turn", operationKind: "user-turn", projectionState: "active" } }));
+      await record(`${theme}-long-running`, { running: true });
       await page.locator("[data-mobile-workspaces-open]").click();
       await page.locator('[data-workspace-select="empty"] [data-mobile-workspace-select]').click();
       await page.waitForFunction(() => document.documentElement.hasAttribute("data-mobile-empty"));
@@ -201,11 +239,13 @@ test("desktop header/composer geometry and control ownership survive compact rou
         const r = document.querySelector(s).getBoundingClientRect(); return [s, { x: r.x, y: r.y, width: r.width, height: r.height }];
       })));
     const before = await geometry();
+    assert.equal(await page.locator("[data-mobile-breadcrumb]").count(), 0);
     await page.setViewportSize({ width: 390, height: 900 });
     await page.waitForFunction(() => document.documentElement.hasAttribute("data-mobile-dialogs-enabled"));
     await page.setViewportSize({ width: 1280, height: 900 });
     await page.waitForFunction(() => !document.documentElement.hasAttribute("data-mobile-dialogs-enabled"));
     assert.deepEqual(await geometry(), before);
+    assert.equal(await page.locator("[data-mobile-breadcrumb]").count(), 0);
     assert.equal(await page.locator(".composer-primary-actions").count(), 0);
     assert.equal(await page.locator(".stream-chat-header > .chat-overlay-actions").count(), 1);
     await mkdir(output, { recursive: true });
