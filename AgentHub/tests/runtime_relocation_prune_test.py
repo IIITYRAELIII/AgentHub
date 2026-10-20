@@ -124,6 +124,22 @@ class DerivedShmPruneTests(unittest.TestCase):
             file.write_bytes(before)
             os.utime(file, ns=(file.stat().st_atime_ns, native["mtime"]))
 
+    def test_after_preview_hardlink_drift_is_refused_before_index_delete(self):
+        sha = self.change_and_preview()
+        foreign = self.temp / "foreign-index-link"
+        preserved = self.shm.read_bytes()
+        os.link(self.shm, foreign)
+        admitted = json.loads(self.preview.read_text(encoding="utf-8"))
+        self.assertEqual(admitted["current_shm"]["identity"]["links"], 1)
+        self.assertEqual(relocation.info(self.shm)["links"], 2)
+        with self.assertRaisesRegex(ValueError, "identity changed"):
+            self.prune(sha)
+        self.assert_no_source_deleted()
+        self.assertEqual(self.shm.read_bytes(), preserved)
+        self.assertEqual(foreign.read_bytes(), preserved)
+        self.assertEqual(self.kept.read_bytes(), preserved)
+        self.assertNotEqual(self.row()["deleted"], 1)
+
     def test_current_index_drift_or_missing_preservation_refuses(self):
         self.change_and_preview()
         self.shm.write_bytes(self.shm.read_bytes() + bytes(32768))

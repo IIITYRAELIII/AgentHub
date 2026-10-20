@@ -342,7 +342,10 @@ Python path-stat and descriptor-stat can expose different `ctime` semantics.
 Pruning still validates the entire original root before its first deletion.
 This index is processed FIRST while DB, WAL and preserved copy stay held. The
 existing same-handle delete owner verifies the current proof and strict native
-metadata. Original manifest identity/hash columns remain unchanged. Only the
+metadata, including the actual retained descriptor's single-link count immediately
+before disposition. A hardlink added after preview refuses deletion. Ordinary
+hardlink-group pruning keeps its existing semantics because link counts decrease
+as sibling links are removed. Original manifest identity/hash columns remain unchanged. Only the
 existing `deleted=2` intent → effect → `deleted=1` progress is used, with the proof
 digest bound in the same operation-local manifest state. A failure before/after
 effect retains partial state; every retry requires that SAME proof. Missing

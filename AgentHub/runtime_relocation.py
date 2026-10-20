@@ -1939,7 +1939,8 @@ def delete_verified_file(
             or bool(getattr(s, "st_file_attributes", 0) & 0x400)
             != (link_target is not None)
             or (strict_identity and (
-                s.st_mtime_ns != expected["mtime"]
+                s.st_nlink != expected["links"]
+                or s.st_mtime_ns != expected["mtime"]
                 or held_creation_ns(kernel, handle) != expected["ctime"]
                 or s.st_file_attributes != expected["attributes"]
                 or s.st_reparse_tag != expected["tag"]
