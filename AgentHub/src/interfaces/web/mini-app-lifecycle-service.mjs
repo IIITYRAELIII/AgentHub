@@ -100,14 +100,25 @@ export class MiniAppLifecycleService {
     );
     if (!this.#transportActive(generation)) return address;
     let preferredMenuUrl = "";
+    let deferredGatewayError = null;
     if (gatewaySettings.enabled) {
       this.directGateway ??= new this.DirectGatewayControllerClass(gatewaySettings, { recordCommandTrace: this.recordCommandTrace });
-      const publicUrl = await this.directGateway.start();
+      let publicUrl;
+      try {
+        publicUrl = await this.directGateway.start();
+      } catch (error) {
+        if (error?.code !== "DIRECT_GATEWAY_CONFIG_HANDOFF_REQUIRED") throw error;
+        // A preserved gateway awaiting its owner does not own independent
+        // Worker startup. Keep its exact failure for the startup promise below.
+        deferredGatewayError = error;
+      }
       if (!this.#transportActive(generation)) return address;
-      preferredMenuUrl = publicUrl;
-      await this.configureMenu(publicUrl, this.config.miniApp.worker.menuText);
-      if (!this.#transportActive(generation)) return address;
-      this.logger.log(`Direct Agent Hub gateway ready at ${publicUrl}`);
+      if (!deferredGatewayError) {
+        preferredMenuUrl = publicUrl;
+        await this.configureMenu(publicUrl, this.config.miniApp.worker.menuText);
+        if (!this.#transportActive(generation)) return address;
+        this.logger.log(`Direct Agent Hub gateway ready at ${publicUrl}`);
+      }
     }
     if (this.config.miniApp.worker.enabled) {
       this.publisher ??= new this.MiniAppPublisherClass({
@@ -120,7 +131,9 @@ export class MiniAppLifecycleService {
         onControlResultDelivered: async ({ id }) => this.forgetControl(id),
         attachmentDirectory: path.join(this.runtimeCommandRoot, "attachments"),
         onPublished: async (url) => {
+          if (!this.#transportActive(generation)) return;
           if (!preferredMenuUrl) await this.configureMenu(url, this.config.miniApp.worker.menuText);
+          if (!this.#transportActive(generation)) return;
           this.logger.log(`Agent Hub Worker ready at ${url}`);
         },
       });
@@ -143,6 +156,7 @@ export class MiniAppLifecycleService {
       if (!this.#transportActive(generation)) return address;
     }
     if (!this.config.miniApp.quickTunnel.enabled) {
+      if (deferredGatewayError) throw deferredGatewayError;
       return gatewaySettings.enabled
         ? { ...address, publicUrl: gatewaySettings.publicUrl }
         : address;
@@ -159,12 +173,14 @@ export class MiniAppLifecycleService {
       controlPort: this.config.miniApp.quickTunnel.controlPort,
       localUrl: publicAddress.url,
       onUrl: async (url) => {
+        if (!this.#transportActive(generation)) return;
         if (!preferredMenuUrl) await this.configureMenu(url, this.config.miniApp.quickTunnel.menuText);
       },
     });
     const publicUrl = await this.quickTunnel.start();
     if (!this.#transportActive(generation)) return address;
     this.logger.log(`Public Agent Hub Web App ready at ${publicUrl}`);
+    if (deferredGatewayError) throw deferredGatewayError;
     return { ...address, publicUrl };
   }
 
@@ -195,7 +211,9 @@ export class MiniAppLifecycleService {
 
   async closePublisher() {
     this.#beginClose();
-    return this.publisher?.close();
+    const publisher = this.publisher;
+    await publisher?.close();
+    if (this.publisher === publisher) this.publisher = null;
   }
 
   async closeSharedDashboardBot() {
@@ -210,7 +228,9 @@ export class MiniAppLifecycleService {
 
   async closeQuickTunnel() {
     this.#beginClose();
-    return this.quickTunnel?.close();
+    const tunnel = this.quickTunnel;
+    await tunnel?.close();
+    if (this.quickTunnel === tunnel) this.quickTunnel = null;
   }
 
   async closePublicServer() {

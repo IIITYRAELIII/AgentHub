@@ -70,3 +70,22 @@ Installed .20 lacks these source changes. Its persistent gateway must receive
 the desired config through the existing release owner's verified handoff; merely
 overwriting a live Caddyfile or launching another port443 listener is not delivery.
 Source validation is not a live configuration/restart or release authorization.
+
+## Configured Worker during gateway handoff
+
+The one-restart delivery sequence exposed a composition boundary: the gateway's
+typed handoff refusal rejected the shared transport-startup promise before the
+already configured Worker could start. Gateway-only health recovery cannot
+resume that cached promise or its skipped services. Actual installation flags
+have Worker enabled; absence of a Worker deployment is not a disabled setting.
+
+The existing Mini App lifecycle now defers only that exact gateway refusal while
+starting independent configured transports in their original generation. The
+Worker's real publication callback chooses its fallback menu when no gateway URL
+has been confirmed. Other gateway failures are not swallowed. After independent
+startup the exact original handoff error still rejects the shared promise;
+neither local readiness, Worker publication nor eventual Caddy health is called
+complete transport startup. Repeated same-generation starts do not replay those
+services. Closing the lifecycle fences delayed Worker/tunnel menu callbacks.
+The gateway configuration refusal, owner process guards and health timer remain
+unchanged. This introduces no reset API, retry loop, new writer or second restart.
