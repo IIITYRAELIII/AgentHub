@@ -3,11 +3,11 @@
 Do not include secrets, private conversations, databases, customer files or
 unredacted screenshots in a public issue.
 
-Before this repository's first public publication, its owner must enable and
-verify GitHub private vulnerability reporting. Once enabled, use **Security →
-Report a vulnerability** in this repository. This draft does not assert that
-the channel already exists; no repository or private reporting channel has yet
-been created by the extraction preparation. No private email address is offered.
+Use [GitHub private vulnerability reporting](https://github.com/IIITYRAELIII/AgentHub/security/advisories/new)
+in the AgentHub repository (**Security → Report a vulnerability**). This channel
+is enabled; reports are shared privately with repository maintainers. If the
+form is unavailable, do not post sensitive details in a public issue. No private
+email address is offered.
 
 Describe the affected version/commit, prerequisites, trust boundary, expected and
 actual behavior, and a minimal synthetic reproduction. Redact credentials and
