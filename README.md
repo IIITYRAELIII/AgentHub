@@ -29,8 +29,11 @@ published as part of the repository extraction preparation.
 You need Windows, a Node.js runtime with `node:sqlite` (22.5 or later; 24 or later
 recommended), and an installed/authenticated Codex CLI or Claude Code CLI.
 Provider accounts and their usage costs are separate from Hub. Python and model
-downloads are required only for optional local voice processing; the Utilities
-bootstrap itself uses Python 3.10 or later. Android builds need their own JDK/SDK.
+downloads are required only for optional local voice processing; the standalone
+package installer itself uses Python 3.10 or later. Utilities retains only a link
+to this project and is not an installation or update dependency. See the
+[ready-package guide](AgentHub/distribution/INSTALL.md). Android builds need their
+own JDK/SDK.
 
 For a development checkout, run from `AgentHub/`:
 

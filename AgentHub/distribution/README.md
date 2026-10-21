@@ -126,19 +126,35 @@ is required to run Hub; npm, Git, a compiler and a source checkout are not requi
 on the recipient machine. Voice/Android/Cloudflare build dependencies are optional
 and are not silently bundled.
 
-The future Utilities tree retains only a thin download/install/update/rollback
-entry under its existing `AgentHub` component and this installation guide. It
-must refer to versioned public AgentHub release assets and SHA-256, not private
-Utilities assets. No source directory is removed until fresh install, update,
-rollback and the exact public download have passed and S2 owns the cutover.
-`utilities-entry.json` is the concrete two-file replacement proposal: the reviewed
-stdlib bootstrap becomes the existing `AgentHub/install.py` entry and
-`utilities-README.md` becomes its installation guide. It applies no deletion or
-Git effect. The native installation test materializes exactly those two files in
-a source-free recipient directory and invokes that copied CLI for fresh install,
-repeat, update, live-runtime refusal and rollback. The old source-build CLI flags
-are explicitly retired only at the later managed cutover; no updater component
-identifier or participant acceptance is invented here.
+The future Utilities tree retains only a brief public AgentHub link in its
+existing inventory/documentation. It contains no Hub source directory, installer
+copy or release assets. The reviewed `install_release.py`, ready packages and
+[installation guide](INSTALL.md) live in standalone AgentHub. This supersedes
+the earlier two-file Utilities bootstrap proposal.
+
+`utilities-entry.json` records that future link-only metadata handoff, with an
+empty Utilities file-copy list. `utilities-README.md` is the short link text for
+the existing inventory, not another retained AgentHub folder. Neither file
+applies Git, updater, uninstall or deletion effects. No source directory is
+removed until the exact public download, fresh install, existing-user update,
+rollback and managed source/origin migration have passed and S2 owns the cutover.
+Original Tasks/WIP/receipts/history and private consent evidence stay preserved.
+
+The current `UPDATER/imports.json` has no AgentHub import registration. Existing
+`agent-hub`, `tool:agent-hub`, `app:agent-hub`, `runtime:agent-hub` decisions and
+optional component choices remain historical participant consent, not uninstall
+instructions. Do not delete them or manufacture another acceptance/update owner.
+At cutover retire source-build guidance from the current inventory; standalone
+versioned AgentHub assets remain the update origin. Removing Utilities sources
+must not delete/stop the installed runtime, config, data, sync URL/auth/cursors
+or disable standalone updates. Old CHANGELOG entries remain historical records.
+
+The native installation test invokes a copy of the standalone installer from a
+source-free recipient directory. It checks fresh install/repeat, then removes an
+owned synthetic legacy Utilities source folder and checks update/live refusal/
+rollback with the same runtime and unchanged participant choices/config/data.
+Only transport is synthetic; no actual Utilities source removal or public
+download acceptance follows from this fixture. No graphical Setup.exe is added.
 
 ## Existing identities and cutover
 
@@ -157,7 +173,7 @@ identifier or participant acceptance is invented here.
 - Automatic report discovery/publication requires the existing Utilities
   inventory/team-setup markers, not `AgentHub/package.json`. Standalone source
   and an explicit source-repository argument refuse before Git publication.
-  Thin Utilities remains eligible after source removal. The operator must retain
+  Link-only Utilities remains eligible after source removal. The operator must retain
   its private destination: markers identify layout, not remote visibility.
 
 ## Current preparation limits
