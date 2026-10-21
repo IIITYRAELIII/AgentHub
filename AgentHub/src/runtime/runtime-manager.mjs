@@ -44,6 +44,11 @@ const TOP_LEVEL_FILES = new Set([
   "work-log.css",
 ]);
 
+const RUNTIME_MODULE_ASSETS = [
+  ["src/infrastructure/persistence/windows-delete-verified-entry.mjs",
+    "src/infrastructure/persistence/windows-delete-verified-entry.cs"],
+];
+
 async function exists(target) {
   return access(target).then(() => true, () => false);
 }
@@ -93,6 +98,15 @@ async function releaseFileNames(sourceRoot) {
   }
   if (entries.some((entry) => entry.isDirectory() && entry.name === "src")) {
     await visitInternal("src");
+  }
+  for (const [module, asset] of RUNTIME_MODULE_ASSETS) {
+    if (!internal.includes(path.normalize(module))) continue;
+    const info = await stat(path.join(sourceRoot, asset)).catch((error) => {
+      if (error?.code === "ENOENT") return null;
+      throw error;
+    });
+    if (!info?.isFile()) throw new Error(`Runtime module asset is missing: ${asset}`);
+    internal.push(path.normalize(asset));
   }
   return [...topLevel, ...internal].sort();
 }

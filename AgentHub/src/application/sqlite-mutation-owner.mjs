@@ -12,7 +12,7 @@ const WORKSPACE_MUTATIONS = new Set([
   "archiveStream", "updateStreamSettings", "updateStreamDeveloperRules", "moveStream",
   "moveStreamToStart", "reorderStream", "moveStreamOrdered", "bindThread", "rebindThread",
   "assignUnknownThread", "assignCatalogEntries", "moveThreadToNewStream", "setMeta",
-  "deleteMeta",
+  "deleteMeta", "completeThreadNaming",
 ]);
 
 const WORKSPACE_READS = new Set([
@@ -20,7 +20,7 @@ const WORKSPACE_READS = new Set([
   "mcpOperation", "pendingMcpOperations", "mcpOperations", "interstreamOriginForClientMessage",
   "workspace", "workspaceBySystemKey", "stream", "streamDeveloperRules", "developerRulesForThread",
   "developerRulesForStream", "thread", "activeThread", "threadsForStream", "resolveThread", "hierarchy",
-  "meta", "mutationDiagnostics", "close",
+  "meta", "threadNaming", "mutationDiagnostics", "close",
 ]);
 
 const TASK_MUTATIONS = new Set([
@@ -44,6 +44,9 @@ const TASK_READS = new Set([
   "task", "list", "pendingTriage", "orderedColumnIds", "notesComment", "claimedTaskForTurn",
   "claimBindingForOperation",
   "lifecycleTransition", "lifecycleOutcome", "releaseTasks", "captureEnabled", "mutationDiagnostics", "close",
+  "selectedCompositionForRelease",
+  "returnedNativeTestPriorResult",
+  "assertSelectedAbsorptionState",
   "checklistRequestResult", "awaitRebuildPending", "releaseFinalizationOutcome",
 ]);
 

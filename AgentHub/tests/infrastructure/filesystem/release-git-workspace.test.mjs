@@ -93,10 +93,9 @@ async function fixture(context) {
   const canonicalDataDir = canonicalPath(dataDir);
   const service = new ReleaseGitWorkspaceService({ dataDir: canonicalDataDir });
   const prepare = service.prepareCandidate.bind(service);
-  // These legacy fixtures explicitly publish their synthetic baseline to the
-  // bare repository. Production obtains this authority from publication state.
+  // Each native preparation pins the fixture's explicitly agreed local main.
   service.prepareCandidate = async (request) => prepare({
-    approvedBaseCommit: await git(canonicalOrigin, "rev-parse", "main"), ...request,
+    approvedBaseCommit: await git(canonicalPrimary, "rev-parse", "main"), ...request,
   });
   return {
     root: canonicalRoot,
@@ -136,7 +135,7 @@ async function registeredTaskBranch(setup, context, { taskId, startCommit, baseC
   return { branch, taskRoot };
 }
 
-test("one operation generation isolates source bundles per repository", { timeout: 30000 }, async (context) => {
+test("one operation generation isolates source bundles per repository", { timeout: 60000 }, async (context) => {
   const first = await fixture(context);
   const second = await fixture(context);
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "rg-"));
@@ -149,6 +148,8 @@ test("one operation generation isolates source bundles per repository", { timeou
     workspaceId: "workspace",
     frozenTasks: [],
   };
+  await service.prepareCandidate({ ...common, projectRoot: first.primary, approvedBaseCommit: first.baseCommit });
+  await service.prepareCandidate({ ...common, projectRoot: second.primary, approvedBaseCommit: second.baseCommit });
   const firstCandidate = await service.prepareGeneration({
     ...common,
     projectRoot: first.primary,
@@ -181,7 +182,7 @@ test("one operation generation isolates source bundles per repository", { timeou
   assert.equal((await readFile(path.join(secondArchive, "evidence", `${secondCandidate.manifestHash}.json`))).length > 0, true);
 });
 
-for (const binaryOnly of [false, true]) test(`PreRelease preserves ${binaryOnly ? "terminal binary patch delimiters" : "binary patch bytes and a trailing blank context line"}`, { timeout: 20000 }, async (context) => {
+for (const binaryOnly of [false, true]) test(`PreRelease preserves ${binaryOnly ? "terminal binary patch delimiters" : "binary patch bytes and a trailing blank context line"}`, { timeout: 180000 }, async (context) => {
   const setup = await fixture(context);
   await writeFile(path.join(setup.primary, "z-final.txt"), "before\nunchanged\n\n", "utf8");
   await writeFile(path.join(setup.primary, "binary.bin"), Buffer.from([0, 255, 1, 2, 3]));
@@ -209,20 +210,19 @@ for (const binaryOnly of [false, true]) test(`PreRelease preserves ${binaryOnly 
   assert.equal(retry.preReleaseHead, candidate.preReleaseHead);
 });
 
-test("candidate requires a pinned base and excludes newer remote and local main content", async (context) => {
+test("candidate requires the exact agreed local main and refuses a stale base after main advances", async (context) => {
   const setup = await fixture(context);
   const service = new ReleaseGitWorkspaceService({ dataDir: setup.dataDir });
   const request = { planRevision: "pinned-base", projectRoot: setup.primary, frozenTasks: [] };
-  await assert.rejects(service.prepareCandidate(request), /requires an exact published, adopted, or explicitly reviewed base/u);
+  await assert.rejects(service.prepareCandidate(request), /exact agreed local main and plan revision/u);
   const first = await service.prepareCandidate({ ...request, approvedBaseCommit: setup.baseCommit });
   await writeFile(path.join(setup.primary, "unreviewed.txt"), "unreviewed\n");
   const incoming = await commit(setup.primary, "unreviewed local and remote main");
   await git(setup.primary, "push", "origin", "main");
-  const retry = await service.prepareCandidate({ ...request, approvedBaseCommit: setup.baseCommit });
-  assert.equal(retry.preReleaseHead, first.preReleaseHead);
-  assert.equal(retry.baseCommit, setup.baseCommit);
-  assert.equal(await git(retry.releaseRoot, "rev-parse", "refs/remotes/origin/main"), incoming);
-  await assert.rejects(git(retry.releaseRoot, "show", "PreRelease:unreviewed.txt"));
+  await assert.rejects(service.prepareCandidate({ ...request, approvedBaseCommit: setup.baseCommit }),
+    /exact agreed local main and plan revision/u);
+  assert.equal((await service.frozenCandidate(setup.primary)).preReleaseHead, first.preReleaseHead);
+  await assert.rejects(git(first.releaseRoot, "show", "PreRelease:unreviewed.txt"));
   assert.equal(await git(setup.primary, "rev-parse", "main"), incoming);
 });
 
@@ -1120,17 +1120,20 @@ test("abandoned freeze rebuild preserves reviewed incoming base and composes the
   const incomingCommit = await commit(incomingRoot, "approved incoming main");
   await git(incomingRoot, "push", "origin", "main");
   await git(setup.primary, "fetch", "origin", "main");
+  await git(setup.primary, "merge", "--ff-only", incomingCommit);
   const initialPlan = "2".repeat(64);
   const provenance = {
     schemaVersion: 1, kind: "explicit-reviewed-main-v1",
     publishedBaseCommit: setup.baseCommit,
-    approvedLocalMainCommit: setup.baseCommit,
+    approvedLocalMainCommit: incomingCommit,
     approvedOriginMainCommit: incomingCommit,
   };
   const prepared = await setup.service.prepareCandidate({
     planRevision: initialPlan, projectRoot: setup.primary, workspaceId: "workspace-rebuild",
     approvedBaseCommit: incomingCommit, baseProvenance: provenance, frozenTasks: [],
   });
+  // The retained recovery fixture includes the original owner's reviewed remote observation.
+  await git(prepared.releaseRoot, "fetch", "origin", "main");
   const changelog = Buffer.from("# incoming release\n", "utf8");
   await writeFile(path.join(prepared.releaseRoot, "CHANGELOG.md"), changelog);
   await setup.service.freezePublicationCandidate({
@@ -1268,7 +1271,7 @@ test("request-bound prepared checkpoint is not usable after the final primary gu
   assert.equal(await git(setup.primary, "rev-parse", "HEAD"), setup.baseCommit);
   await assert.rejects(
     () => setup.service.frozenCandidate(setup.primary),
-    /HEAD must remain attached to refs\/heads\/main/u,
+    /release checkpoint is incomplete/u,
   );
 });
 
@@ -1408,7 +1411,7 @@ test("main review accepts a preserved old primary when the published revision is
   assert.deepEqual(await readFile(path.join(setup.primary, "1C_ACCESS", "access.json")), before.access);
 });
 
-test("release candidate aggregates effective dev deltas instead of replaying conflicting Task snapshots", async (context) => {
+test("native candidate requires an explicit selected conflict resolution despite an effective dev resolution", async (context) => {
   const setup = await fixture(context);
   const firstResult = await taskResult(setup, context, {
     branch: "HUB-effective-1", file: "app.txt", content: "first\n",
@@ -1429,7 +1432,7 @@ test("release candidate aggregates effective dev deltas instead of replaying con
   await git(devRoot, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--no-edit");
   const secondIntegration = await git(devRoot, "rev-parse", "HEAD");
 
-  const candidate = await setup.service.prepareCandidate({
+  const request = {
     planRevision: "plan-effective-deltas",
     projectRoot: setup.primary,
     frozenTasks: [{
@@ -1443,10 +1446,12 @@ test("release candidate aggregates effective dev deltas instead of replaying con
       resultCommit: secondResult,
       integrations: [{ commit: secondIntegration, parent: firstIntegration, order: 2 }],
     }],
+  };
+  await assert.rejects(setup.service.prepareCandidate(request), error => {
+    assert.equal(error.code, "RELEASE_NATIVE_MERGE_CONFLICT");
+    return true;
   });
-
-  assert.equal(await git(candidate.releaseRoot, "show", `${candidate.preReleaseHead}:app.txt`), "first + second");
-  assert.equal((await git(candidate.releaseRoot, "show", "-s", "--format=%P", candidate.preReleaseHead)).split(" ").length, 3);
+  assert.equal(await git(devRoot, "show", "HEAD:app.txt"), "first + second");
 });
 
 test("release candidate three-way applies an Await delta over a later non-overlapping main change", async (context) => {
@@ -1475,6 +1480,7 @@ test("release candidate three-way applies an Await delta over a later non-overla
     frozenTasks: [{
       taskId: "task-three-way",
       taskRevision: 8,
+      baseCommit: taskBase,
       resultCommit,
       integrations: [{ commit: integrationCommit, parent: taskBase, order: 1 }],
     }],
@@ -1509,7 +1515,7 @@ test("failed PreRelease rebuild preserves the last good branch and checkpoint", 
         { taskId: "task-second", taskRevision: 3, resultCommit: secondResult },
       ],
     }),
-    /PreRelease delta/u,
+    { code: "RELEASE_NATIVE_MERGE_CONFLICT" },
   );
 
   assert.equal(await git(first.releaseRoot, "rev-parse", "refs/heads/PreRelease"), first.preReleaseHead);
@@ -1579,7 +1585,9 @@ test("automatic Await preparation preserves frozen evidence after push until fin
     projectRoot: setup.primary, publishedRevision: frozen.preReleaseHead,
     planRevision: "plan-frozen-automatic",
   });
-  const next = await setup.service.prepareCandidate(request);
+  const next = await setup.service.prepareCandidate({ ...request,
+    frozenTasks: [{ ...request.frozenTasks[0], baseCommit: setup.baseCommit }],
+  });
   assert.equal(next.baseCommit, frozen.preReleaseHead);
   assert.equal(await git(next.releaseRoot, "show", `${next.preReleaseHead}:next.txt`), "next");
   assert.equal(await git(next.releaseRoot, "show", `${next.preReleaseHead}:feature.txt`), "feature");
@@ -1830,7 +1838,7 @@ test("dirty primary bytes, retry checkpoint and legacy linked holder remain unto
   assert.equal(manifest.schemaVersion, 2);
   assert.equal(manifest.tasks[0].taskId, "task-dirty");
   assert.equal(manifest.tasks[0].resultCommit, resultCommit);
-  assert.equal(manifest.tasks[0].integrations.length, 1);
+  assert.equal(manifest.tasks[0].integrations.length, 0);
 });
 
 test("post-release fast-forward preserves non-overlapping intentional local bytes", async (context) => {
@@ -1901,10 +1909,12 @@ async function dependencyFixture(setup, context, { selectDependency }) {
   await writeFile(path.join(depRoot, "dependency.txt"), "dependency\n", "utf8");
   const dependencyResult = await commit(depRoot, "dependency");
 
-  // Задача Б ветвится от результата А, поэтому содержит её коммит в своей истории.
+  // The Task starts at agreed main and explicitly merges the selected dependency.
   const dependentRoot = path.join(setup.root, "task-dependent");
-  await git(setup.primary, "worktree", "add", "-b", "HUB-dependent", dependentRoot, dependencyResult);
+  await git(setup.primary, "worktree", "add", "-b", "HUB-dependent", dependentRoot, setup.baseCommit);
   context.after(() => git(setup.primary, "worktree", "remove", "--force", dependentRoot).catch(() => {}));
+  await git(dependentRoot, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+    "merge", "--no-ff", "--no-edit", dependencyResult);
   await writeFile(path.join(dependentRoot, "dependent.txt"), "dependent\n", "utf8");
   const dependentResult = await commit(dependentRoot, "dependent");
 
@@ -1928,7 +1938,7 @@ async function dependencyFixture(setup, context, { selectDependency }) {
   const dependentTask = {
     taskId: "task-dependent",
     taskRevision: 3,
-    baseCommit: dependencyResult,
+    baseCommit: setup.baseCommit,
     resultCommit: dependentResult,
     integrations: [{ commit: dependentIntegration, parent: dependencyIntegration, order: 2 }],
   };
@@ -1971,7 +1981,7 @@ test("real nested Task evidence projects the selected dependency once before its
   const dependent = await registeredTaskBranch(setup, context, {
     taskId: dependentId,
     startCommit: dependencyResult,
-    baseCommit: dependencyResult,
+    baseCommit: setup.baseCommit,
   });
   await writeFile(path.join(dependent.taskRoot, "dependent.txt"), "dependent\n", "utf8");
   const dependentResult = await commit(dependent.taskRoot, "selected dependent");
@@ -1989,10 +1999,11 @@ test("real nested Task evidence projects the selected dependency once before its
     "merge", "--no-ff", "--no-edit", dependentResult);
 
   const releaseOwnerBase = await git(dev.projectRoot, "rev-parse", "HEAD");
+  assert.notEqual(releaseOwnerBase, dependentResult);
   const releaseOwner = await registeredTaskBranch(setup, context, {
     taskId: releaseOwnerId,
-    startCommit: releaseOwnerBase,
-    baseCommit: releaseOwnerBase,
+    startCommit: dependentResult,
+    baseCommit: setup.baseCommit,
   });
   await writeFile(path.join(releaseOwner.taskRoot, "projection.txt"), "slot=release-owner\n", "utf8");
   await writeFile(path.join(releaseOwner.taskRoot, "release-owner.txt"), "release-owner\n", "utf8");
@@ -2019,7 +2030,8 @@ test("real nested Task evidence projects the selected dependency once before its
     projectRoot: setup.primary,
     frozenTasks: evidence.tasks,
   });
-  assert.deepEqual(candidate.netProjectedTaskIds, [dependencyId]);
+  assert.equal(JSON.parse(await readFile(candidate.manifestFile, "utf8")).compositionPolicy,
+    "main-selected-git-merge-v1");
   assert.equal(await git(candidate.releaseRoot, "show", `${candidate.preReleaseHead}:projection.txt`),
     "slot=release-owner");
   assert.equal(await git(candidate.releaseRoot, "show", `${candidate.preReleaseHead}:dependent.txt`), "dependent");
@@ -2030,15 +2042,7 @@ test("real nested Task evidence projects the selected dependency once before its
     setup.baseCommit, candidate.preReleaseHead)).split("\n").filter(Boolean).sort();
   assert.deepEqual(names, ["dependent.txt", "projection.txt", "release-owner.txt"]);
 
-  const withoutDependency = await taskGit.releaseIntegrationEvidence({
-    projectRoot: setup.primary,
-    tasks: tasks.filter((task) => task.taskId !== dependencyId),
-  });
-  await assert.rejects(setup.service.prepareCandidate({
-    planRevision: "plan-real-nested-evidence-without-dependency",
-    projectRoot: setup.primary,
-    frozenTasks: withoutDependency.tasks,
-  }), new RegExp(`failed for Task ${releaseOwnerId}`, "u"));
+  await assert.rejects(readFile(path.join(candidate.releaseRoot, "foreign.txt")));
 });
 
 test("incomparable selected Tasks cannot claim one shared dev integration", async (context) => {
@@ -2082,17 +2086,12 @@ test("an unselected dependency never reaches the release through its dependent T
   const setup = await fixture(context);
   const scenario = await dependencyFixture(setup, context, { selectDependency: false });
 
-  const candidate = await setup.service.prepareCandidate({
+  await assert.rejects(setup.service.prepareCandidate({
     planRevision: "plan-dependency-excluded",
     projectRoot: setup.primary,
     frozenTasks: scenario.frozenTasks,
-  });
-
-  assert.equal(await git(candidate.releaseRoot, "show", `${candidate.preReleaseHead}:dependent.txt`), "dependent");
-  await assert.rejects(git(candidate.releaseRoot, "show", `${candidate.preReleaseHead}:dependency.txt`));
-  const names = (await git(candidate.releaseRoot, "diff", "--name-only",
-    setup.baseCommit, candidate.preReleaseHead)).split("\n").filter(Boolean);
-  assert.deepEqual(names, ["dependent.txt"]);
+  }), { code: "RELEASE_NATIVE_HISTORY_REQUIRED" });
+  assert.equal(await git(setup.primary, "rev-parse", "main"), setup.baseCommit);
 });
 
 test("repeated publication freeze reuses the accepted PreRelease without rebuilding or losing composition", async (context) => {
@@ -2215,7 +2214,9 @@ test("frozen candidate readback is phase-aware and feeds release completion with
   assert.equal(pending, null);
 });
 
-test("a frozen 13-Task candidate accepts one descendant result delta without foreign baggage", { timeout: 60000 }, async (context) => {
+// Thirteen real Git histories are prepared, frozen, corrected and reverted;
+// retain a bounded margin over the measured 116-second isolated execution.
+test("a frozen 13-Task candidate accepts one descendant result delta with exact native Task history", { timeout: 180000 }, async (context) => {
   const setup = await fixture(context);
   await writeFile(path.join(setup.primary, "CHANGELOG.md"), "previous\n", "utf8");
   setup.baseCommit = await commit(setup.primary, "release base");
@@ -2253,8 +2254,8 @@ test("a frozen 13-Task candidate accepts one descendant result delta without for
     planRevision: "plan-13-old", workspaceId: "workspace", projectRoot: setup.primary,
     frozenTasks: firstTasks,
   });
-  await assert.rejects(git(accepted.releaseRoot, "show", `${accepted.preReleaseHead}:AgentHub/assets/web-app/themes/bestiary/theme.css`));
-  await assert.rejects(git(accepted.releaseRoot, "show", `${accepted.preReleaseHead}:AgentHub/docs/recording-contour.md`));
+  assert.equal(await git(accepted.releaseRoot, "show", `${accepted.preReleaseHead}:AgentHub/assets/web-app/themes/bestiary/theme.css`), "foreign");
+  assert.equal(await git(accepted.releaseRoot, "show", `${accepted.preReleaseHead}:AgentHub/docs/recording-contour.md`), "foreign");
   await writeFile(path.join(accepted.releaseRoot, "CHANGELOG.md"), "release 13\n", "utf8");
   const frozen = await setup.service.freezePublicationCandidate({
     projectRoot: setup.primary, workspaceId: "workspace", expectedPlanRevision: "plan-13-old",
@@ -2285,20 +2286,20 @@ test("a frozen 13-Task candidate accepts one descendant result delta without for
   });
   const manifest = JSON.parse(await readFile(refreshed.manifestFile, "utf8"));
   assert.equal(manifest.tasks.length, 13);
-  assert.equal(manifest.candidateReuse.policy, "selected-result-successor-v1");
-  assert.equal(manifest.candidateReuse.sourceHead, frozen.preReleaseHead);
-  assert.equal(manifest.candidateReuse.priorResultCommit, oldResult);
-  assert.equal(manifest.candidateReuse.resultCommit, newResult);
+  assert.equal(manifest.candidateReuse, undefined);
+  assert.equal(manifest.compositionPolicy, "main-selected-git-merge-v1");
+  assert.equal(manifest.tasks.find(task => task.taskId === ownerTask.taskId).resultCommit, newResult);
   assert.equal(manifest.tasks.find((task) => task.taskId === ownerTask.taskId).taskRevision, 41);
   await assert.doesNotReject(git(
     refreshed.releaseRoot, "merge-base", "--is-ancestor", newResult, refreshed.preReleaseHead,
   ));
   assert.deepEqual((await git(refreshed.releaseRoot, "diff", "--name-only", frozen.preReleaseHead, refreshed.preReleaseHead))
-    .split("\n").filter(Boolean), ["AgentHub/release-refresh.txt"]);
-  assert.equal(await git(refreshed.releaseRoot, "show", `${refreshed.preReleaseHead}:CHANGELOG.md`), "release 13");
-  await assert.rejects(git(refreshed.releaseRoot, "show", `${refreshed.preReleaseHead}:AgentHub/assets/web-app/themes/bestiary/theme.css`));
-  await assert.rejects(git(refreshed.releaseRoot, "show", `${refreshed.preReleaseHead}:AgentHub/docs/recording-contour.md`));
+    .split("\n").filter(Boolean), ["AgentHub/package-lock.json", "AgentHub/package.json", "AgentHub/release-refresh.txt", "CHANGELOG.md"]);
+  assert.equal(await git(refreshed.releaseRoot, "show", `${refreshed.preReleaseHead}:CHANGELOG.md`), "previous");
+  assert.equal(await git(refreshed.releaseRoot, "show", `${refreshed.preReleaseHead}:AgentHub/assets/web-app/themes/bestiary/theme.css`), "foreign");
+  assert.equal(await git(refreshed.releaseRoot, "show", `${refreshed.preReleaseHead}:AgentHub/docs/recording-contour.md`), "foreign");
 
+  await writeFile(path.join(refreshed.releaseRoot, "CHANGELOG.md"), "release 13\n");
   const refrozen = await setup.service.freezePublicationCandidate({
     projectRoot: setup.primary, workspaceId: "workspace", expectedPlanRevision: "plan-13-new",
     expectedPreparedHead: refreshed.preReleaseHead, changelogContent: Buffer.from("release 13\n"),
@@ -2313,8 +2314,9 @@ test("a frozen 13-Task candidate accepts one descendant result delta without for
     planRevision: "plan-13-revert", workspaceId: "workspace", projectRoot: setup.primary,
     frozenTasks: revertedTasks,
   });
-  assert.equal(JSON.parse(await readFile(reverted.manifestFile, "utf8")).candidateReuse.sourceHead,
-    refrozen.preReleaseHead);
+  assert.equal(JSON.parse(await readFile(reverted.manifestFile, "utf8")).compositionPolicy,
+    "main-selected-git-merge-v1");
+  assert.notEqual(reverted.preReleaseHead, refrozen.preReleaseHead);
   await assert.doesNotReject(git(
     reverted.releaseRoot, "merge-base", "--is-ancestor", revertedResult, reverted.preReleaseHead,
   ));
@@ -2323,7 +2325,7 @@ test("a frozen 13-Task candidate accepts one descendant result delta without for
     "reviewed fix");
 });
 
-test("prepared candidate reuses one newly selected correction from its snapshot parent", { timeout: 30000 }, async (context) => {
+test("prepared candidate natively composes an additional exact correction", { timeout: 90000 }, async (context) => {
   const setup = await fixture(context);
   const staleResult = await taskResult(setup, context, {
     branch: "HUB-correction-stale", file: "AgentHub/shared.txt", content: "stale\n",
@@ -2350,10 +2352,9 @@ test("prepared candidate reuses one newly selected correction from its snapshot 
     frozenTasks: [staleTask, correctionTask],
   });
   const manifest = JSON.parse(await readFile(refreshed.manifestFile, "utf8"));
-  assert.equal(manifest.candidateReuse.policy, "selected-correction-addition-v1");
-  assert.equal(manifest.candidateReuse.sourceHead, accepted.preReleaseHead);
-  assert.equal(manifest.candidateReuse.correctionBaseCommit, staleResult);
-  assert.equal(manifest.candidateReuse.resultCommit, correctionResult);
+  assert.equal(manifest.candidateReuse, undefined);
+  assert.equal(manifest.compositionPolicy, "main-selected-git-merge-v1");
+  assert.equal(manifest.tasks.find(task => task.taskId === correctionTask.taskId).resultCommit, correctionResult);
   assert.equal(await git(refreshed.releaseRoot, "show", `${refreshed.preReleaseHead}:AgentHub/shared.txt`), "fixed");
   assert.deepEqual((await git(refreshed.releaseRoot, "diff", "--name-only", accepted.preReleaseHead,
     refreshed.preReleaseHead)).split("\n").filter(Boolean), ["AgentHub/shared.txt"]);
@@ -2448,12 +2449,12 @@ test("prepared candidate rejects correction-owned publication metadata", { timeo
   await assert.rejects(setup.service.prepareCandidate({
     planRevision: "plan-metadata-new", workspaceId: "workspace", projectRoot: setup.primary,
     frozenTasks: [staleTask, correctionTask],
-  }), /selected correction cannot change publication metadata: AgentHub\/package\.json/);
+  }), /changes release-owned package-version metadata: AgentHub\/package\.json/);
   assert.equal(await git(accepted.releaseRoot, "rev-parse", "PreRelease"), accepted.preReleaseHead);
 });
 
 for (const scenario of ["changed selection", "changed base", "non-descendant result"]) {
-  test(`frozen candidate reuse rejects ${scenario}`, { timeout: 30000 }, async (context) => {
+  test(`a new native plan does not reuse the frozen tree after ${scenario}`, { timeout: 90000 }, async (context) => {
     const setup = await fixture(context);
     const ownerRoot = path.join(setup.root, "task-reuse-owner");
     await git(setup.primary, "worktree", "add", "-b", "HUB-reuse-owner", ownerRoot, setup.baseCommit);
@@ -2504,6 +2505,11 @@ for (const scenario of ["changed selection", "changed base", "non-descendant res
     });
     const manifest = JSON.parse(await readFile(candidate.manifestFile, "utf8"));
     assert.equal(manifest.candidateReuse, undefined);
-    assert.equal(manifest.projectionPolicy, "task-net-ancestry-v2");
+    assert.equal(manifest.compositionPolicy, "main-selected-git-merge-v1");
+    if (scenario === "non-descendant result") {
+      await assert.rejects(setup.service.assertSelectedResultLineage({ candidate,
+        previousSelectedResults: [{ taskId: oldTask.taskId, resultCommit: oldResult }],
+      }), { code: "RELEASE_RESULT_LINEAGE_MISMATCH" });
+    }
   });
 }

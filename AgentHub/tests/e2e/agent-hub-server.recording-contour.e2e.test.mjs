@@ -297,7 +297,14 @@ test("recording queued command survives Hub replacement and commits the same pro
     await waitFor(async () => {
       const state = await readRuntimeState(path.join(runtimeRoot, "data"));
       return !state.activeRuns?.some((run) => run.turnId === command.turn_id);
-    }, "terminal active run removal");
+    }, "terminal active run removal").catch(async error => {
+      const state = await readRuntimeState(path.join(runtimeRoot, "data"));
+      throw new Error(`${error.message}; authoritative readback=${JSON.stringify({
+        runs: state.activeRuns?.map(run => ({ provider: run.provider, threadId: run.threadId,
+          turnId: run.turnId, status: run.status, stage: run.stage, providerStart: run.providerStart })),
+        command: { state: readCommand().state, turnId: readCommand().turn_id },
+      })}`, { cause: error });
+    });
     assert.equal(readCommand().turn_id, command.turn_id);
     assert.equal(commandReader.prepare("SELECT count(*) AS count FROM commands").get().count, 1);
     await stop();

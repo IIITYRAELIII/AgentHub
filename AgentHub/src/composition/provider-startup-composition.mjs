@@ -1,6 +1,7 @@
 import { pathInsideOrSame } from "../infrastructure/filesystem/config.mjs";
 import { codexThreadSandboxSettings } from "../providers/codex/codex-sandbox.mjs";
 import { reconcileCodexThreadSubscriptions } from "../providers/codex/codex-thread-subscriptions.mjs";
+import { needsThreadResume } from "../providers/codex/codex-recovery.mjs";
 
 export function createProviderStartupComposition({
   config,
@@ -71,14 +72,18 @@ export function createProviderStartupComposition({
   async function attachCodexThread() {
     const threadId = getThreadId();
     if (threadId) {
+      let resumed = false;
       try {
         const result = await sendRpc("thread/resume", {
           threadId,
           ...codexThreadSandboxSettings(config.codexSandboxMode),
         });
         if (!isWorkspaceThread(result.thread ?? {})) {
-          throw new Error("saved thread belongs to another project");
+          const error = new Error("saved thread belongs to another project");
+          error.code = "HUB_THREAD_WRONG_PROJECT";
+          throw error;
         }
+        resumed = true;
         selectionStore.setTitle(await resolveResumedCodexThreadTitle(threadId, result.thread));
         applyCodexThreadSettings(threadId, result);
         await saveState();
@@ -90,6 +95,11 @@ export function createProviderStartupComposition({
         return true;
       } catch (error) {
         logger.error("Cannot resume saved thread:", error.message);
+        if (resumed || (!needsThreadResume(error) && error.code !== "HUB_THREAD_WRONG_PROJECT")) {
+          // Successful resume followed by naming failure is not missing-Thread
+          // evidence and cannot authorize a replacement Thread.
+          return false;
+        }
         const savedActiveRun = taskRuns.forTask({
           provider: "codex",
           projectRoot: getProjectRoot(),

@@ -154,6 +154,14 @@ terminal.
   history and journal data are persisted and the shared projection succeeds.
   Projection failure preserves retryability; a superseding revision retains its
   own delivery identity. Ordinary live completion does not wait for a batch.
+  Independent revisions within the existing at-most-16 batch prepare concurrently;
+  each retains its own claim, history, terminal-revision and readback fences.
+  Shared journal input keeps the original page order. After the flush, individual
+  persistence fences are admitted together through the existing state owner so
+  it can coalesce snapshots; each ACK still waits for its covered durable save.
+  The next batch starts only after every admitted delivery has settled. Startup
+  awaits that same recovery drain before readiness; it neither skips pending
+  projections nor increases the replacement readiness deadline.
 - The durable terminal outbox is the sole retry owner for terminal projection.
   A projection revision is acknowledged only after canonical readback confirms
   its exact journal record, matching immutable accounting fields in the

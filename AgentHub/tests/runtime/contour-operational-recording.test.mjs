@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { createContourOperationalPaths } from "../../src/domain/test-contour-operational-paths.mjs";
-import { RecordingContourProvider } from "../../src/providers/recording-contour-provider.mjs";
+import { RecordingContourProvider, readRecordingContourCodexTurn } from "../../src/providers/recording-contour-provider.mjs";
 
 const sources = [{ source: "C:\\production\\repo", kind: "project" }, { source: "C:\\production\\attachments", kind: "attachment" }];
 async function fixture(t) {
@@ -61,4 +61,28 @@ test("recording receipts survive reopen, preserve original IDs and never interpr
     assert.throws(() => provider.finish({ threadId: "original-thread", turnId: "original-turn", status: "failed", answer: "late" }), /absorbing/);
   } finally { provider.close(); }
   assert.deepEqual((await readdir(root)).sort(), ["recording-provider.json", "recording-provider.sqlite"]);
+});
+
+test("recording recovery reads the exact canonical turn without writes and rejects substituted receipts", async t => {
+  const root = await fixture(t);
+  const provider = new RecordingContourProvider({ root, provider: "codex" });
+  try {
+    for (const status of ["completed", "failed", "interrupted"]) {
+      const run = { threadId: "original-thread", turnId: `turn-${status}` };
+      provider.start({ threadId: run.threadId, turnId: run.turnId, clientUserMessageId: `command-${status}`, input });
+      assert.equal(readRecordingContourCodexTurn(root, run).status, "inProgress");
+      provider.finish({ ...run, status, answer: `literal ${status}` });
+      const rows = () => ["threads", "turns", "commands"].map(table => provider.db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all());
+      const before = rows();
+      assert.equal(readRecordingContourCodexTurn(root, run).items.at(-1).text, `literal ${status}`);
+      assert.deepEqual(rows(), before);
+    }
+    assert.equal(readRecordingContourCodexTurn(root, { threadId: "original-thread", turnId: "missing" }), null);
+    assert.throws(() => readRecordingContourCodexTurn(root, { threadId: "foreign", turnId: "turn-completed" }), /Unseeded/);
+    provider.db.prepare("UPDATE commands SET fingerprint=? WHERE client_id=?").run("tampered", "command-completed");
+    assert.throws(() => readRecordingContourCodexTurn(root, { threadId: "original-thread", turnId: "turn-completed" }), /identity changed/);
+    const reader = new RecordingContourProvider({ root, provider: "codex", readOnly: true });
+    try { assert.throws(() => reader.db.exec("DELETE FROM turns"), /readonly|read-only/i); }
+    finally { reader.close(); }
+  } finally { provider.close(); }
 });

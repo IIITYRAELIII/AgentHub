@@ -112,8 +112,7 @@ test("a separate Task Test history refusal is durably failed before dev mutation
     "commit", "-m", "reviewed main advance");
   await writeFile(path.join(task.root, "task.txt"), "separate result\n");
   await assert.rejects(f.status(task.task.id, "testing", "separate-task-history-refusal"),
-    (error) => error instanceof TaskIntegrationRejectedError
-      && /does not prove the exact main\/dev bootstrap/u.test(error.message));
+    (error) => /does not contain accepted local main.*explicit adoption required/u.test(error.message));
   assert.equal(f.taskBoard.lifecycleTransition("separate-task-history-refusal").phase, "failed");
   assert.equal(f.taskBoard.task(task.task.id).workflowStatus, "new");
   assert.equal(await git(f.primary, "rev-parse", "dev"), devBefore);
@@ -125,18 +124,22 @@ test("real conflict saves a terminal failed lifecycle with file and revision evi
   const a = await f.create("A"), b = await f.create("B");
   await writeFile(path.join(a.root, "app.txt"), "A\n");
   await f.status(a.task.id, "testing", "test-a");
+  const devBefore = await git(f.primary, "rev-parse", "dev");
+  let conflictRoot;
   await writeFile(path.join(b.root, "app.txt"), "B\n");
   await assert.rejects(f.status(b.task.id, "testing", "test-b"), (error) => {
     assert.ok(error instanceof TaskIntegrationConflictError);
     assert.deepEqual(error.details.conflicts, ["app.txt"]);
     assert.equal(error.details.devRestored, true);
     assert.equal(error.details.taskId, b.task.id);
+    conflictRoot = error.details.nativeConflictRoot;
     return true;
   });
   assert.equal(f.taskBoard.lifecycleTransition("test-b").phase, "failed");
   assert.equal(f.taskBoard.task(b.task.id).workflowStatus, "new");
   assert.equal(await git(f.primary, "status", "--porcelain"), "");
-  assert.ok(f.timings.some(event => event.operationId === "test-b" && event.stage === "git-child" && event.command === "merge-abort" && event.phase === "end"));
+  assert.equal(await git(f.primary, "rev-parse", "dev"), devBefore);
+  assert.equal(await git(conflictRoot, "rev-parse", "MERGE_HEAD"), await git(b.root, "rev-parse", "HEAD"));
   assert.equal(f.timings.find(event => event.operationId === "test-b" && event.stage === "workflow" && event.phase === "end").outcome, "error");
 });
 
@@ -171,7 +174,7 @@ test("correction preserves its accepted result without touching another pending 
   }), true);
 });
 
-test("agent consolidation preserves source archive and releases all combined code", { timeout: 120000 }, async (t) => {
+test("native consolidation without an authenticated handoff refuses Test and preserves source archive", { timeout: 120000 }, async (t) => {
   const f = await fixture(t);
   const origin = path.join(f.root, "origin.git");
   await git(f.root, "init", "--bare", "--initial-branch=main", origin);
@@ -187,48 +190,18 @@ test("agent consolidation preserves source archive and releases all combined cod
   await git(b.root, "add", "b.txt");
   await git(b.root, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "Save survivor");
   await git(b.root, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "merge", "--no-ff", "--no-edit", sourceHead);
-  await f.status(b.task.id, "testing", "combined-test");
-  f.lifecycle.releasePreflight = new WorkspaceReleasePreflightService({
-    releasePlanner: new TaskReleasePlanService({ taskBoard: f.taskBoard, taskGitWorkspaces: f.taskGitWorkspaces }),
-    taskGitWorkspaces: f.taskGitWorkspaces,
-    releaseGitWorkspaces: new ReleaseGitWorkspaceService({ dataDir: path.join(f.root, "data") }),
-    resolveReleaseValidationSource: () => assert.fail("Consolidation must not access Test Contour"),
-    readPublicationState: async () => ({ repositories: [{ root: f.primary,
-      revision: await git(f.primary, "rev-parse", "main") }] }),
-    validateProductionCandidate: () => assert.fail("Consolidation must not run release validation"),
+  const devBefore = (await f.taskGitWorkspaces.prepareDev(f.primary)).headCommit;
+  await assert.rejects(f.status(b.task.id, "testing", "combined-test"), {
+    code: "RELEASE_NATIVE_HISTORY_REQUIRED",
   });
-  const prepare = f.lifecycle.releasePreflight.prepareAwaitSet.bind(f.lifecycle.releasePreflight);
-  f.lifecycle.releasePreflight.prepareAwaitSet = async () => { throw new Error("selected composition rejected"); };
+  assert.equal(f.taskBoard.lifecycleTransition("combined-test").phase, "failed");
+  assert.equal(await git(f.primary, "rev-parse", "dev"), devBefore);
   await assert.rejects(f.lifecycle.complete({ taskId: a.task.id, absorbedIntoTaskId: b.task.id,
-    operationId: "failed-composition" }), /selected composition rejected/);
+    operationId: "unreviewed-combined-close" }), /Surviving Task must be open and tested/u);
   assert.notEqual(f.taskBoard.task(a.task.id).status, "done");
-  assert.equal(f.taskBoard.lifecycleTransition("failed-composition"), null);
-  f.lifecycle.releasePreflight.prepareAwaitSet = prepare;
-  const preview = await f.lifecycle.complete({ taskId: a.task.id, absorbedIntoTaskId: b.task.id, operationId: "preview" });
-  assert.equal(f.taskBoard.task(b.task.id).workflowStatus, "testing");
-  assert.deepEqual(preview.preview.absorbedInto.composition.taskIds, [b.task.id]);
-  assert.equal(preview.preview.absorbedInto.composition.releaseCandidates[0].status, "validated");
-  await assert.rejects(f.lifecycle.complete({ taskId: a.task.id, absorbedIntoTaskId: b.task.id,
-    operationId: "stale-close", confirmCleanup: true, expectedCleanupToken: "stale" }), /stale/);
-  const closed = await f.lifecycle.complete({ taskId: a.task.id, absorbedIntoTaskId: b.task.id,
-    operationId: "close-combined", confirmCleanup: true, expectedCleanupToken: preview.cleanupToken });
-  assert.equal(closed.status, "done");
-  assert.notEqual(closed.workflowStatus, "done");
   assert.equal(await git(f.primary, "rev-parse", sourceBranch), sourceHead);
   assert.equal(await git(a.root, "rev-parse", "HEAD"), sourceHead);
-  assert.equal(f.taskBoard.lifecycleOutcome("close-combined").result.evidence.absorbedInto.taskId, b.task.id);
-  assert.throws(() => f.store.claim(a.task.id, { workspaceId: f.workspace.id, streamId: "s", provider: "codex",
-    threadId: "thread", turnId: "turn", operationId: "reopen" }), /archive/);
-  const accepted = await f.status(b.task.id, "awaiting_implementation", "accept-combined");
-  // Acceptance composes the combined result itself.
-  assert.equal(accepted.releaseCandidate.status, "prepared", accepted.releaseCandidate.reason);
-  const prepared = await f.lifecycle.releasePreflight.prepareAwaitSet({ workspaceId: f.workspace.id });
-  assert.deepEqual(prepared.taskIds, [b.task.id]);
-  const candidate = prepared.releaseCandidates[0];
-  assert.equal(await git(candidate.releaseRoot, "show", "PreRelease:a.txt"), "source work");
-  assert.equal(await git(candidate.releaseRoot, "show", "PreRelease:b.txt"), "surviving work");
-  const plan = await new TaskReleasePlanService({ taskBoard: f.taskBoard, taskGitWorkspaces: f.taskGitWorkspaces }).plan(f.workspace.id);
-  assert.ok(!plan.candidates.some((task) => task.id === a.task.id));
+  assert.equal(await readFile(path.join(a.root, "a.txt"), "utf8"), "source work\n");
 });
 
 test("combined closure rejects missing source commits, dirty work and a separate source integration", { timeout: 90000 }, async (t) => {
@@ -246,72 +219,48 @@ test("combined closure rejects missing source commits, dirty work and a separate
   f.taskBoard.commitWorkflowTransition({ operationId: "legacy-claim", replaceGitReferences: false });
   await assert.rejects(f.lifecycle.complete(options), /does not contain all source/);
   await git(b.root, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "merge", "--no-ff", "--no-edit", await git(a.root, "rev-parse", "HEAD"));
-  await f.status(b.task.id, "testing", "test-combined");
-  await assert.rejects(f.lifecycle.complete(options), /separate dev integration/);
+  await assert.rejects(f.status(b.task.id, "testing", "test-combined"), { code: "RELEASE_NATIVE_HISTORY_REQUIRED" });
+  await assert.rejects(f.lifecycle.complete(options), /Surviving Task changed after Test/u);
   await writeFile(path.join(a.root, "unfinished.txt"), "unsaved\n");
   await assert.rejects(f.lifecycle.complete(options), /Save the source/);
   assert.notEqual(f.taskBoard.task(a.task.id).status, "done");
 });
 
-for (const [owner, change, confirm] of [
-  ["source", "dirty", false], ["source", "commit", true],
-  ["survivor", "dirty", true], ["survivor", "commit", false],
-]) test(`absorption rejects late ${owner} ${change} during ${confirm ? "confirmation" : "preview"} validation`, { timeout: 120000 }, async (t) => {
-  const f = await fixture(t);
-  const origin = path.join(f.root, "origin.git");
-  await git(f.root, "init", "--bare", "--initial-branch=main", origin);
-  await git(f.primary, "remote", "add", "origin", origin);
-  await git(f.primary, "push", "-u", "origin", "main");
-  const source = await f.create("Source"), survivor = await f.create("Survivor");
-  for (const [task, file] of [[source, "source.txt"], [survivor, "survivor.txt"]]) {
-    await writeFile(path.join(task.root, file), "saved work\n");
-    await git(task.root, "add", file);
-    await git(task.root, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "Saved work");
-  }
-  await git(survivor.root, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "merge", "--no-ff", "--no-edit",
-    await git(source.root, "rev-parse", "HEAD"));
-  await f.status(survivor.task.id, "testing", "test-survivor");
-  const releasePreflight = new WorkspaceReleasePreflightService({
-    releasePlanner: new TaskReleasePlanService({ taskBoard: f.taskBoard, taskGitWorkspaces: f.taskGitWorkspaces }),
-    taskGitWorkspaces: f.taskGitWorkspaces,
-    releaseGitWorkspaces: new ReleaseGitWorkspaceService({ dataDir: path.join(f.root, "data") }),
-    resolveReleaseValidationSource: () => assert.fail("No live contour"),
-    readPublicationState: async () => ({ repositories: [{ root: f.primary, revision: await git(f.primary, "rev-parse", "main") }] }),
-  });
-  f.lifecycle.releasePreflight = releasePreflight;
-  const options = { taskId: source.task.id, absorbedIntoTaskId: survivor.task.id, operationId: "late-work" };
-  const preview = confirm ? await f.lifecycle.complete({ ...options, operationId: "before-late-work" }) : null;
-  const taskBefore = f.taskBoard.task(source.task.id);
-  const survivorBefore = f.taskBoard.task(survivor.task.id);
-  const devBefore = await git(f.primary, "rev-parse", "dev");
-  const changed = owner === "source" ? source : survivor;
-  const changedFile = path.join(changed.root, "late.txt");
-  const branch = await git(changed.root, "branch", "--show-current");
-  let expectedHead = await git(changed.root, "rev-parse", "HEAD");
-  const prepare = releasePreflight.prepareAwaitSet.bind(releasePreflight);
-  releasePreflight.prepareAwaitSet = async (request) => {
-    const composition = await prepare(request);
-    // External editor/Git does not acquire Hub's leases or change Task rows.
-    await writeFile(changedFile, "late external work\n");
+for (const [owner, change] of [["source", "dirty"], ["source", "commit"],
+  ["survivor", "dirty"], ["survivor", "commit"]]) {
+  test(`unreviewed absorption preserves ${owner} ${change} work`, { timeout: 90000 }, async t => {
+    const f = await fixture(t), source = await f.create("Source"), survivor = await f.create("Survivor");
+    for (const [task, file] of [[source, "source.txt"], [survivor, "survivor.txt"]]) {
+      await writeFile(path.join(task.root, file), "saved work\n");
+      await git(task.root, "add", file);
+      await git(task.root, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "Save work");
+    }
+    await git(survivor.root, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "merge", "--no-ff", "--no-edit",
+      await git(source.root, "rev-parse", "HEAD"));
+    const changed = owner === "source" ? source : survivor;
+    await writeFile(path.join(changed.root, "late.txt"), "late work\n");
     if (change === "commit") {
       await git(changed.root, "add", "late.txt");
-      await git(changed.root, "-c", "user.name=External", "-c", "user.email=external@example.invalid", "commit", "-m", "Late external work");
-      expectedHead = await git(changed.root, "rev-parse", "HEAD");
+      await git(changed.root, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "Late work");
     }
-    return composition;
-  };
-  await assert.rejects(f.lifecycle.complete({ ...options, confirmCleanup: confirm,
-    expectedCleanupToken: preview?.cleanupToken ?? null }), { code: "TASK_ABSORPTION_COMPOSITION_FAILED" });
-  assert.deepEqual(f.taskBoard.task(source.task.id), taskBefore);
-  assert.deepEqual(f.taskBoard.task(survivor.task.id), survivorBefore);
-  assert.equal(f.taskBoard.lifecycleTransition(options.operationId), null);
-  assert.equal(f.taskBoard.lifecycleOutcome(options.operationId), null);
-  assert.equal(await git(f.primary, "rev-parse", "dev"), devBefore);
-  assert.equal(await git(changed.root, "rev-parse", "HEAD"), expectedHead);
-  assert.equal(await git(f.primary, "rev-parse", branch), expectedHead);
-  assert.equal(await readFile(changedFile, "utf8"), "late external work\n");
-  assert.equal(Boolean(await git(changed.root, "status", "--porcelain")), change === "dirty");
-});
+    const sourceBefore = f.taskBoard.task(source.task.id);
+    const head = await git(changed.root, "rev-parse", "HEAD");
+    const dev = await f.taskGitWorkspaces.prepareDev(f.primary);
+    await assert.rejects(f.status(survivor.task.id, "testing", "unreviewed-survivor"), { code: "RELEASE_NATIVE_HISTORY_REQUIRED" });
+    await assert.rejects(f.lifecycle.complete({ taskId: source.task.id, absorbedIntoTaskId: survivor.task.id,
+      operationId: "unreviewed-close" }), /Surviving Task must be open and tested/u);
+    assert.deepEqual(f.taskBoard.task(source.task.id), sourceBefore);
+    assert.equal(f.taskBoard.lifecycleTransition("unreviewed-survivor").phase, "failed");
+    assert.equal(f.taskBoard.lifecycleOutcome("unreviewed-close"), null);
+    assert.equal(await git(f.primary, "rev-parse", "dev"), dev.headCommit);
+    const currentHead = await git(changed.root, "rev-parse", "HEAD");
+    if (owner === "survivor" && change === "dirty") {
+      // Ordinary Test saves the owned Task snapshot before refusing its foreign merge history.
+      await git(changed.root, "merge-base", "--is-ancestor", head, currentHead);
+    } else assert.equal(currentHead, head);
+    assert.equal(await readFile(path.join(changed.root, "late.txt"), "utf8"), "late work\n");
+  });
+}
 
 test("a sibling branch cannot hide an unapproved upstream merge", { timeout: 90000 }, async (t) => {
   const f = await fixture(t);
@@ -328,7 +277,7 @@ test("a sibling branch cannot hide an unapproved upstream merge", { timeout: 900
   await git(b.root, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "merge", "--no-ff", "--no-edit", await git(a.root, "rev-parse", "HEAD"));
   await f.taskGitWorkspaces.prepareDev(f.primary);
   const before = await git(f.primary, "rev-parse", "dev");
-  await assert.rejects(f.status(b.task.id, "testing", "unapproved-combined"), /unapproved upstream/);
+  await assert.rejects(f.status(b.task.id, "testing", "unapproved-combined"), { code: "RELEASE_NATIVE_HISTORY_REQUIRED" });
   assert.equal(await git(f.primary, "rev-parse", "dev"), before);
 });
 
@@ -433,8 +382,8 @@ for (const committed of [false, true]) test(`old conflict keeps immutable accept
   }
   await f.status(a.task.id, "in_progress", "return-a");
   const before = await git(f.primary, "rev-parse", "dev");
-  await f.status(b.task.id, "testing", "finish-b");
-  assert.notEqual(await git(f.primary, "rev-parse", "dev"), before);
+  await assert.rejects(f.status(b.task.id, "testing", "finish-b"), { code: "RELEASE_NATIVE_HISTORY_REQUIRED" });
+  assert.equal(await git(f.primary, "rev-parse", "dev"), before);
   await git(f.primary, "merge-base", "--is-ancestor", testedA.task.gitReferences[0].resultCommit, "dev");
 });
 

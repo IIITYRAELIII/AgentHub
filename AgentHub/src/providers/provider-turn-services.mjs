@@ -166,6 +166,8 @@ export class CodexTurnService {
     run.mcpCalls = [];
     run.toolMetricsKnown = true;
     try {
+      const namedTitle = await d.ensureThreadNamed?.({ provider: "codex", threadId: run.threadId });
+      if (namedTitle) run.taskTitle = namedTitle;
       const developerInstructions = await d.developerInstructions({
         provider: "codex",
         threadId: run.threadId,

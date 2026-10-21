@@ -301,40 +301,17 @@ test("exact squash transfer adds the selected delta once and preserves foreign d
   damaged.sourceWitnesses[0].source.object = "9".repeat(40);
   damaged.sourceWitnesses[0].survivor.object = "9".repeat(40);
   damaged.transferHash = undefined;
-  await assert.rejects(new ReleaseGitWorkspaceService({
-    dataDir: invalidWitnessReleaseDataDir,
-  }).prepareCandidate({
-    planRevision: "squash-invalid-witness",
-    workspaceId: "workspace",
-    projectRoot: root,
-    approvedBaseCommit: await git(root, "rev-parse", "main"),
-    frozenTasks: [{ ...releaseTask, squashTransfer: damaged, taskRevision: applied.survivor.releaseRevision + 1 }],
-  }), /requires the exact squash projection/u);
-  await assertNoAcceptedCheckpoint(invalidWitnessReleaseDataDir);
-
-  await assert.rejects(new ReleaseGitWorkspaceService({
-    dataDir: missingIntegrationReleaseDataDir,
-  }).prepareCandidate({
-    planRevision: "squash-missing-integration",
-    workspaceId: "workspace",
-    projectRoot: root,
-    approvedBaseCommit: await git(root, "rev-parse", "main"),
-    frozenTasks: [{ ...releaseTask, integrations: [], taskRevision: applied.survivor.releaseRevision + 1 }],
-  }), /requires the exact squash projection/u);
-  await assertNoAcceptedCheckpoint(missingIntegrationReleaseDataDir);
-
+  const project = tasks => releaseTaskNetProjections({ tasks,
+    baseCommit: gitBase, git: projectorGit });
+  const gitBase = await git(root, "rev-parse", "main");
+  await assert.rejects(project([{ ...releaseTask, squashTransfer: damaged }]), /requires the exact squash projection/u);
+  await assert.rejects(project([{ ...releaseTask, integrations: [] }]), /requires the exact squash projection/u);
   const unavailable = structuredClone(applied);
   unavailable.source.baseCommit = "8".repeat(40);
   unavailable.transferHash = undefined;
-  await assert.rejects(new ReleaseGitWorkspaceService({
-    dataDir: unavailableProofReleaseDataDir,
-  }).prepareCandidate({
-    planRevision: "squash-unavailable-proof",
-    workspaceId: "workspace",
-    projectRoot: root,
-    approvedBaseCommit: await git(root, "rev-parse", "main"),
-    frozenTasks: [{ ...releaseTask, squashTransfer: unavailable, taskRevision: applied.survivor.releaseRevision + 1 }],
-  }));
+  await assert.rejects(project([{ ...releaseTask, squashTransfer: unavailable }]));
+  await assertNoAcceptedCheckpoint(invalidWitnessReleaseDataDir);
+  await assertNoAcceptedCheckpoint(missingIntegrationReleaseDataDir);
   await assertNoAcceptedCheckpoint(unavailableProofReleaseDataDir);
 
   const release = new ReleaseGitWorkspaceService({ dataDir: releaseDataDir });
@@ -345,7 +322,8 @@ test("exact squash transfer adds the selected delta once and preserves foreign d
     approvedBaseCommit: await git(root, "rev-parse", "main"),
     frozenTasks: [{ ...releaseTask, taskRevision: applied.survivor.releaseRevision + 1 }],
   });
-  assert.deepEqual(prepared.netProjectedTaskIds, [SURVIVOR_ID]);
+  assert.deepEqual(prepared.manifest.tasks.map(task => task.taskId), [SURVIVOR_ID]);
+  assert.equal(prepared.manifest.compositionPolicy, "main-selected-git-merge-v1");
   assert.equal(
     await git(prepared.releaseRoot, "rev-parse", `${prepared.preReleaseHead}^{tree}`),
     await git(root, "rev-parse", `${newResult}^{tree}`),
@@ -355,18 +333,13 @@ test("exact squash transfer adds the selected delta once and preserves foreign d
     .map((name) => path.join(releaseDataDir, name))
     .find((name) => path.basename(name) === "checkpoint.json");
   assert.ok(checkpointFile);
-  const incompleteCheckpoint = JSON.parse(await readFile(checkpointFile, "utf8"));
-  incompleteCheckpoint.netProjectedTaskIds = [];
+  const checkpointBytes = await readFile(checkpointFile);
+  const incompleteCheckpoint = JSON.parse(checkpointBytes);
+  incompleteCheckpoint.manifestHash = "0".repeat(64);
   await writeFile(checkpointFile, `${JSON.stringify(incompleteCheckpoint, null, 2)}\n`);
-  const rebuilt = await release.prepareCandidate({
-    planRevision: "squash-direct-result",
-    workspaceId: "workspace",
-    projectRoot: root,
-    approvedBaseCommit: await git(root, "rev-parse", "main"),
-    frozenTasks: [{ ...releaseTask, taskRevision: applied.survivor.releaseRevision + 1 }],
-  });
-  assert.equal(rebuilt.reused, false);
-  assert.deepEqual(rebuilt.netProjectedTaskIds, [SURVIVOR_ID]);
+  await assert.rejects(release.frozenCandidate(root));
+  await writeFile(checkpointFile, checkpointBytes);
+  assert.equal((await release.frozenCandidate(root)).preReleaseHead, prepared.preReleaseHead);
   const laterRoot = `${root}-later`;
   context.after(() => rm(laterRoot, { recursive: true, force: true }));
   await git(root, "worktree", "add", "-b", "later-selected", laterRoot, newResult);
@@ -417,17 +390,16 @@ test("exact squash transfer adds the selected delta once and preserves foreign d
   })).get(SURVIVOR_ID);
   assert.equal(descendantProjection.commit, newResult);
   assert.deepEqual(descendantProjection.subsequentIntegrations.map((entry) => entry.commit), [firstDescendantIntegration, descendantIntegration]);
-  const descendantPrepared = await release.prepareCandidate({
+  // The archived projector can read this old lineage. Its dev merge cannot
+  // become a fresh native Task result without the authenticated absorption owner.
+  await assert.rejects(release.prepareCandidate({
     planRevision: "squash-descendant", workspaceId: "workspace", projectRoot: root,
     approvedBaseCommit: await git(root, "rev-parse", "main"), frozenTasks: [descendantTask],
-  });
-  assert.equal(await git(descendantPrepared.releaseRoot, "show", `${descendantPrepared.preReleaseHead}:source.txt`), "source-result");
-  assert.equal(await git(descendantPrepared.releaseRoot, "show", `${descendantPrepared.preReleaseHead}:followup.txt`), "SQL fix");
-  assert.equal(await git(descendantPrepared.releaseRoot, "show", `${descendantPrepared.preReleaseHead}:first-followup.txt`), "first owned fix");
-  assert.equal(await git(descendantPrepared.releaseRoot, "show", `${descendantPrepared.preReleaseHead}:unique.txt`), "new-survivor-effect");
+  }), { code: "RELEASE_NATIVE_HISTORY_REQUIRED" });
+  assert.equal((await release.frozenCandidate(root)).preReleaseHead, prepared.preReleaseHead);
   for (const name of ["foreign.txt", "excluded.txt"]) {
-    await assert.rejects(git(descendantPrepared.releaseRoot, "show", `${descendantPrepared.preReleaseHead}:${name}`));
     assert.ok(await readFile(path.join(survivorWorkspace.projectRoot, name), "utf8"));
+    await assert.rejects(git(prepared.releaseRoot, "show", `${prepared.preReleaseHead}:${name}`));
   }
   const latestDelta = descendantTask.integrations.find((entry) => entry.commit === descendantIntegration);
   await assert.rejects(releaseTaskNetProjections({
@@ -452,7 +424,7 @@ test("exact squash transfer adds the selected delta once and preserves foreign d
 
   // Selected overlapping work remains at its original integration position;
   // the descendant must neither import nor swallow the other Task's update.
-  const orderedPrepared = await release.prepareCandidate({
+  await assert.rejects(release.prepareCandidate({
     planRevision: "squash-descendant-selected-overlap", workspaceId: "workspace", projectRoot: root,
     approvedBaseCommit: await git(root, "rev-parse", "main"),
     frozenTasks: [descendantTask, {
@@ -460,19 +432,15 @@ test("exact squash transfer adds the selected delta once and preserves foreign d
       baseCommit: newResult, resultCommit: laterResult,
       integrations: [{ commit: laterIntegration, parent: beforeLaterIntegration, order: latestDelta.order - 2 }],
     }],
-  });
-  assert.equal(await git(orderedPrepared.releaseRoot, "show", `${orderedPrepared.preReleaseHead}:unique.txt`), "later-selected-edit");
-  assert.equal(await git(orderedPrepared.releaseRoot, "show", `${orderedPrepared.preReleaseHead}:followup.txt`), "SQL fix");
+  }), { code: "RELEASE_NATIVE_HISTORY_REQUIRED" });
   const partialBaseProjection = (await releaseTaskNetProjections({
     tasks: [descendantTask], baseCommit: firstDescendant, git: projectorGit,
   })).get(SURVIVOR_ID);
   assert.deepEqual(partialBaseProjection.subsequentIntegrations.map((entry) => entry.commit), [descendantIntegration]);
-  const partialBasePrepared = await release.prepareCandidate({
+  await assert.rejects(release.prepareCandidate({
     planRevision: "squash-partially-published-descendant", workspaceId: "workspace", projectRoot: root,
     approvedBaseCommit: firstDescendant, frozenTasks: [descendantTask],
-  });
-  assert.equal(await git(partialBasePrepared.releaseRoot, "show", `${partialBasePrepared.preReleaseHead}:first-followup.txt`), "first owned fix");
-  assert.equal(await git(partialBasePrepared.releaseRoot, "show", `${partialBasePrepared.preReleaseHead}:followup.txt`), "SQL fix");
+  }), /exact agreed local main/u);
   await git(root, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
     "merge", "--no-ff", newResult, "-m", "publish clean survivor");
   await git(root, "push", "origin", "main");
@@ -490,7 +458,7 @@ test("exact squash transfer adds the selected delta once and preserves foreign d
     approvedBaseCommit: published,
     frozenTasks: [{ ...releaseTask, squashTransfer: damaged, taskRevision: applied.survivor.releaseRevision + 1 }],
   });
-  assert.deepEqual(alreadyPublished.netProjectedTaskIds, []);
+  assert.equal(alreadyPublished.manifest.compositionPolicy, "main-selected-git-merge-v1");
   assert.equal(alreadyPublished.preReleaseHead, published);
   assert.equal(await git(alreadyPublished.releaseRoot, "show", `${published}:source.txt`), "source-result");
   await service.withTaskLock(SOURCE_ID, async (lease) => {
