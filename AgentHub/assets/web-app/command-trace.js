@@ -227,7 +227,7 @@
     } catch (error) { return failed(error); }
   }
 
-  function afterPaint(stage, action, started, commandId, metadata = {}, observe = null) {
+  function afterPaint(stage, action, started, commandId, metadata = {}, observe = null, isCurrent = null) {
     // A hidden WebView cannot paint. Never leave per-event frame callbacks
     // accumulating while it is suspended; the immediate stage remains recorded.
     if (pendingPaints.size >= BATCH_SIZE) { droppedCount += 1; return false; }
@@ -239,6 +239,12 @@
       if (!pendingPaints.has(entry)) return;
       entry.frame = global.requestAnimationFrame(() => {
         if (!pendingPaints.delete(entry)) return;
+        if (global.document?.hidden) { finish("cancelled", { failureKind: "hidden" }); return; }
+        // Scheduling is not completion: diagnostic owners may be superseded
+        // during either frame. A faulty diagnostic guard must also fail closed.
+        let current = true;
+        try { if (isCurrent) current = isCurrent() === true; } catch { current = false; }
+        if (!current) { finish("cancelled", { failureKind: "superseded", view: view() }); return; }
         try {
           const observation = observe?.();
           finish(observation?.outcome ?? "succeeded", observation?.metadata);

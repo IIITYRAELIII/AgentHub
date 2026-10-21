@@ -131,6 +131,28 @@ test("after-paint observer cancels an obsolete display and read metadata remains
   assert.doesNotMatch(JSON.stringify(spans), /PRIVATE/u);
 });
 
+test("paint ownership precedes rich observation and preserves its measured result", async () => {
+  for (const current of [true, false]) {
+    const { trace, frames } = fixture();
+    const events = [];
+    let observations = 0;
+    trace.bindReporter(async (batch) => events.push(...batch.events));
+    trace.afterPaint("ui-render", "read-marker-clear", 10, "read-owner", {}, () => {
+      observations += 1;
+      return { outcome: "cancelled", metadata: { render: "pending", cardReady: true } };
+    }, () => current);
+    frames.shift()(); frames.shift()();
+    await trace.flush();
+    const spans = clientPerformanceTraceSpans({ events });
+    assert.equal(observations, current ? 1 : 0);
+    assert.equal(spans.at(-1).outcome, "cancelled");
+    if (current) {
+      assert.equal(spans.at(-1).metadata.render, "pending");
+      assert.equal(spans.at(-1).metadata.cardReady, true);
+    } else assert.equal(spans.at(-1).metadata.failureKind, "superseded");
+  }
+});
+
 test("client trace batches are bounded and do not hold the measured result behind a stalled reporter", async () => {
   const { trace, advance } = fixture();
   let release;
@@ -262,6 +284,66 @@ test("a hidden surface cancels pending paint measurements and late frames cannot
   assert.equal(events[1].metadata.failureKind, "hidden");
   assert.equal(events[1].monotonicDurationMs, 19);
   assert.equal(events[0].metadata.operationSpanId, events[1].metadata.operationSpanId);
+});
+
+test("paint completion rechecks its owner and a throwing diagnostic guard fails closed", async () => {
+  for (const mode of ["current", "superseded", "throws"]) {
+    const { trace, frames } = fixture();
+    const events = [];
+    trace.bindReporter(async (batch) => events.push(...batch.events));
+    let current = true;
+    trace.afterPaint("ui-render", "history-terminal-paint", 10, "root-command", {}, null, () => {
+      if (mode === "throws") throw new Error("private diagnostic error");
+      return current;
+    });
+    frames.shift()();
+    current = mode === "current";
+    frames.shift()();
+    await trace.flush();
+    const converted = clientPerformanceTraceSpans({ events });
+    assert.deepEqual(converted.map((event) => event.outcome), ["started", mode === "current" ? "succeeded" : "cancelled"]);
+    assert.equal(converted[0].metadata.operationSpanId, converted[1].metadata.operationSpanId);
+    assert.equal(converted[1].commandId, "root-command");
+    if (mode !== "current") assert.equal(converted[1].metadata.failureKind, "superseded");
+    assert.equal(trace.diagnostics().paintPending, 0);
+    assert.equal(JSON.stringify(converted).includes("private diagnostic error"), false);
+  }
+});
+
+test("completed shipped keepalive reports release capacity for later diagnostic batches", { timeout: 30_000 }, async () => {
+  const browser = await launchBrowser();
+  const page = await browser.newPage();
+  try {
+    const diagnostics = await openFixture(page);
+    const received = [];
+    await page.route("**/api/command-trace/client-events", async (route) => {
+      received.push(...clientPerformanceTraceSpans(route.request().postDataJSON()));
+      await route.fulfill({ status: 200, contentType: "application/json", body: "{}" });
+    });
+    await page.waitForFunction(() => {
+      const trace = window.AgentHubCommandTrace;
+      const state = trace.diagnostics();
+      if (state.pending && !state.flushing) void trace.flush();
+      return !state.pending && !state.flushing;
+    });
+    const result = await page.evaluate(async () => {
+      const trace = window.AgentHubCommandTrace;
+      const before = trace.diagnostics();
+      for (let batch = 0; batch < 12; batch += 1) {
+        for (let index = 0; index < 32; index += 1) {
+          trace.record("ui-render", "keepalive-capacity", 0, "capacity-command", {
+            streamId: "s".repeat(190), threadId: "t".repeat(190), turnId: "u".repeat(190),
+          });
+        }
+        await trace.flush();
+      }
+      return { before, after: trace.diagnostics() };
+    });
+    assert.equal(result.after.failedBatches, result.before.failedBatches);
+    assert.equal(result.after.droppedCount, result.before.droppedCount);
+    assert.equal(received.filter((event) => event.metadata.action === "keepalive-capacity").length, 384);
+    assert.deepEqual(diagnostics, []);
+  } finally { await page.close(); await browser.close(); }
 });
 
 test("shipped UI measures navigation, message ACK, rendering and long main-thread work through one batch endpoint", { timeout: 30_000 }, async () => {
