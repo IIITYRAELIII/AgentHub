@@ -6,11 +6,6 @@ export function defaultRuntimeRoot({
   platform = process.platform,
   home = homedir(),
 } = {}) {
-  const configured = String(environment.AGENT_HUB_RUNTIME_ROOT ?? "").trim();
-  if (configured) {
-    if (!path.isAbsolute(configured)) throw new Error("AGENT_HUB_RUNTIME_ROOT must be absolute");
-    return path.resolve(configured);
-  }
   if (platform === "win32") {
     return path.resolve(
       environment.LOCALAPPDATA ?? path.join(home, "AppData", "Local"),
@@ -28,11 +23,6 @@ export function defaultTestContourRoot({
   platform = process.platform,
   home = homedir(),
 } = {}) {
-  const configured = String(environment.AGENT_HUB_TEST_CONTOUR_ROOT ?? "").trim();
-  if (configured) {
-    if (!path.isAbsolute(configured)) throw new Error("AGENT_HUB_TEST_CONTOUR_ROOT must be absolute");
-    return path.resolve(configured);
-  }
   if (platform === "win32") {
     return path.resolve(
       environment.LOCALAPPDATA ?? path.join(home, "AppData", "Local"),

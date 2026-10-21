@@ -41,6 +41,17 @@ navigation. Legacy citations already bound to shortened content are not rewritte
 
 ## Invariants
 
+- Local sending is visible before a transport response. The exact durable Hub
+  ACK updates that same command immediately, before snapshot/history refresh;
+  its final selected state and displayed delivery label must agree. Explicit
+  queue intent remains queue-owned. An ACK does not imply provider execution.
+- Explicit provider-start preparation is shown as preparation while preserving
+  occupied admission and cancellation/queue intent. An exact accepted/observed
+  provider turn is shown running even with no answer text. Legacy exact-bound
+  accepted responses keep their existing authority; a missing optional marker
+  alone is not evidence of rejection. Terminal state remains absorbing after
+  reordered snapshots or reconnect. See ADR-0123.
+
 - The Codex picker contains every selectable ID from the last complete successful
   provider catalog, excluding provider-hidden entries. A failed or incomplete
   refresh cannot remove an option. Manual priority controls order, not
@@ -321,6 +332,15 @@ same classifier. Receipt snapshots are bounded. A durable waiting command with
 an explicit non-`message-intake` conflict restores the queue after its receipt
 leaves the window, ahead of its original client projection intent. Otherwise
 the durable explicit projection intent restores the chosen surface.
+An explicit queued/deferred receipt with a non-`message-intake` conflict also
+overrides conversation intent when Hub has accepted durable storage
+(`accepted=true`) but the provider has not accepted the input. In particular,
+`runtime-restart` remains queue-owned and visibly says it awaits Hub restart,
+both on the direct ACK and after snapshot/reload or receipt eviction. This is
+not provider preparation or running, and does not relax the restart barrier.
+A scheduled restart alone emits no such admission barrier: ordinary input keeps
+its normal intake/steer/queue semantics. The restart explanation applies to the
+actual stopping/cutover fence (ADR-0127), never to the pending request alone.
 Legacy rows without that field use exact `conflictKind=message-intake` only as a
 temporary compatibility boundary; remove it after every retained active command
 has an explicit projection intent. Text, time and display order cannot choose
@@ -397,6 +417,16 @@ pending. These previews are labelled as preparation, are cancellable, and are
 excluded from serialized/sendable attachments. Send waits for that draft's
 pending preparation or explicit cancellation; another Stream's preparation
 cannot block it. Settling or invalidating the operation releases its preview URL.
+Preparation failure retains the original selected files and their previews in
+the live draft with an explicit retry action. Retry repeats only failed work,
+keeps its upload identity and does not admit a message. Successful siblings are
+not discarded because another file failed. Unresolved preparation still blocks
+send and managed reload until successful preparation or explicit removal.
+If retained bytes outlive a transport receipt, explicit send/resume may recover
+under MSG-002 with one saved fresh transport attempt, preserving the logical
+attachment and request identities, text and sibling files. Recovery is visible;
+an expired session is never extended. A preview without original bytes cannot
+claim recovery after reload. Receipt uncertainty cannot admit another message.
 An explicit retry of the unchanged restored payload reuses the original request
 identity and uploads recovered attachments again. If browser privacy or quota
 policy, serialization normalization or a configured bound prevents exact atomic

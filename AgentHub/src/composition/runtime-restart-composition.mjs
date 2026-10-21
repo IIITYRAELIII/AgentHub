@@ -35,6 +35,7 @@ export function createRuntimeRestartComposition({
   telegramDeliveryService,
   mediaController,
   taskSyncStore,
+  taskDiffs,
   messagePins,
   workspaceCatalogStore,
   deliveryOutbox,
@@ -91,6 +92,7 @@ export function createRuntimeRestartComposition({
       { name: "message binding writes", run: () => telegramDeliveryService.waitForBindingWrites() },
       { name: "media writes", run: () => mediaController.waitForWrites() },
       { name: "task sync", run: () => taskSyncStore.save() },
+      ...(taskDiffs ? [{ name: "task diffs", run: () => taskDiffs.flush() }] : []),
       { name: "delivery outbox", run: () => deliveryOutbox.waitForIdle({ flush: true }) },
       { name: "background jobs", run: () => backgroundJobStore.waitForWrites() },
       { name: "failed updates", run: () => failedUpdateStore.waitForWrites() },
@@ -131,7 +133,7 @@ export function createRuntimeRestartComposition({
   const runtimeRestart = new RuntimeRestartController({
     captureException: (error, context) => sentryDiagnostics.captureException(error, context),
     measure: (id, stage, action) => commandTrace?.measureBestEffort
-      ? commandTrace.measureBestEffort({ commandId: id, stage: `restart:${stage}`, transport: "runtime" }, action)
+      ? commandTrace.measureBestEffort({ commandId: id, stage: `restart-${stage}`, transport: "runtime" }, action)
       : action(),
     getRequest: getRestartRequest,
     updateOffset,
@@ -159,7 +161,7 @@ export function createRuntimeRestartComposition({
       return launchReplacementAndWait({ invocation, lockFile: instanceLockFile,
         expectedReleaseId, expectedOperationId: operationId ?? "",
         measure: (stage, action) => commandTrace?.measureBestEffort
-          ? commandTrace.measureBestEffort({ commandId: operationId, stage: `restart:${stage}`,
+          ? commandTrace.measureBestEffort({ commandId: operationId, stage: `restart-${stage}`,
             transport: "runtime", metadata: { expectedReleaseId, oldPid: process.pid } }, action)
           : action(),
       });

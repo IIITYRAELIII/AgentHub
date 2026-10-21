@@ -116,10 +116,9 @@ test("RunCoordinator preserves exact durable steer during provider-internal comp
   assert.equal(deferred.steerTargetTurnId, "turn-active");
 });
 
-test("RunCoordinator preserves exact steer behind managed maintenance and restart barriers", async () => {
+test("RunCoordinator preserves exact steer behind managed maintenance", async () => {
   for (const [label, overrides] of [
     ["maintenance", { isMaintenanceActive: () => true, isManagedMaintenanceActive: () => true }],
-    ["restart", { isRestartPending: () => true }],
   ]) {
     const active = {
       id: `run-${label}`, provider: "codex", threadId: "thread-1", turnId: `turn-${label}`,
@@ -168,9 +167,9 @@ test("RunCoordinator keeps ordinary input behind provider-internal compaction", 
   assert.equal(f.calls.find(([name]) => name === "defer")[3].conflictKind, "context-maintenance");
 });
 
-test("RunCoordinator holds durable intake until a pending runtime restart clears", async () => {
+test("RunCoordinator holds durable intake only during actual runtime stopping", async () => {
   let restartPending = true;
-  const f = fixture({ isRestartPending: () => restartPending });
+  const f = fixture({ isRuntimeStopping: () => restartPending });
   const target = { ...f.target, streamId: "stream-1" };
   const result = await f.coordinator.acceptClientInput({
     input: "continue after cutover",

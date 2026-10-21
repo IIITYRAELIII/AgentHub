@@ -361,15 +361,7 @@ namespace AgentHub.RuntimeHost
         private static void ApplyReleaseAcceptanceEnvironment(string runtimeRoot, ProcessStartInfo start)
         {
             Dictionary<string, object> acceptance = ReadAcceptanceMarker(runtimeRoot);
-            if (acceptance == null)
-            {
-                string runtimeTemporary = Path.Combine(runtimeRoot, "temp");
-                Directory.CreateDirectory(runtimeTemporary);
-                EnsureDirectoryWithoutReparsePoint(runtimeTemporary, "Agent Hub temporary directory is missing or a reparse point");
-                start.EnvironmentVariables["TEMP"] = runtimeTemporary;
-                start.EnvironmentVariables["TMP"] = runtimeTemporary;
-                return;
-            }
+            if (acceptance == null) return;
             if (File.Exists(Path.Combine(runtimeRoot, ".agent-hub-release-acceptance.closed")))
                 throw new InvalidOperationException("Release acceptance is closed; no later runtime may start");
             bool recording = Convert.ToInt32(acceptance["schemaVersion"]) == 2;

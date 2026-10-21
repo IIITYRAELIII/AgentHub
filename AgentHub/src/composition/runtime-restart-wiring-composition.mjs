@@ -4,6 +4,7 @@ import { createRuntimeRestartComposition } from "./runtime-restart-composition.m
 
 export function createRuntimeRestartWiring({
   taskRuns,
+  runCoordinator,
   agentProviders,
   backgroundJobs,
   streamMaintenance,
@@ -12,8 +13,12 @@ export function createRuntimeRestartWiring({
   restartRequestService,
   runtimeRestart,
 }) {
+  if (typeof runCoordinator?.hasPendingAdmission !== "function") {
+    throw new TypeError("restart wiring requires the pending-admission owner");
+  }
   let runtimeRestartController;
   let restartScheduled = false;
+  let lastReadinessTrace = "";
 
   function restartBlockingRuns() {
     return taskRuns.values().filter((run) => (
@@ -26,9 +31,28 @@ export function createRuntimeRestartWiring({
   }
 
   function restartBlockingWorkCount() {
-    return restartBlockingRuns().length
-      + (backgroundJobs.activeSize ?? backgroundJobs.size)
-      + streamMaintenance.activeCount();
+    const runs = restartBlockingRuns();
+    const backgroundCount = backgroundJobs.activeSize ?? backgroundJobs.size;
+    const maintenanceCount = streamMaintenance.activeCount();
+    const admissionPending = runCoordinator.hasPendingAdmission(() => true) === true;
+    const count = runs.length + backgroundCount + maintenanceCount + Number(admissionPending);
+    const request = getRestartRequest();
+    const blockingRunIds = runs.slice(0, 20).map((run) => String(run.id ?? "").slice(0, 200));
+    const key = JSON.stringify([request?.operationId, blockingRunIds, count,
+      backgroundCount, maintenanceCount, admissionPending, isStopping()]);
+    if (request?.operationId && key !== lastReadinessTrace) {
+      try {
+        const recorded = runtimeRestart.commandTrace?.recordBestEffort?.({
+          commandId: request.operationId, stage: "restart-readiness", transport: "runtime",
+          outcome: count ? "waiting" : isStopping() ? "stopping" : "ready",
+          metadata: { blockingRunIds, blockersTruncated: runs.length > 20,
+            blockingRunCount: runs.length, backgroundCount, maintenanceCount, admissionPending,
+            requestedAt: request.requestedAt ?? null },
+        });
+        if (recorded !== false) lastReadinessTrace = key;
+      } catch { /* Diagnostics cannot alter the synchronous admission/cutover decision. */ }
+    }
+    return count;
   }
 
   async function performRestart() {

@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { normalizeProviderRunTerminalStatus } from "../domain/provider-run-terminal.mjs";
+import { providerTurnAcceptance } from "../domain/task-runs.mjs";
 
 import {
   consistentInterstreamRecordIdentity,
@@ -167,6 +168,13 @@ export class TerminalTurnCommitService {
     }
     const finalAnswer = String(completion.finalAnswer ?? "").trim();
     const durableCompletion = structuredClone(completion);
+    if (run?.providerStart) {
+      // Accounting retains its original admission timestamp. Command delivery
+      // keeps the separately observed provider acceptance, including unknown time.
+      const exactRun = run.provider === completion.provider && run.threadId === completion.threadId
+        && run.turnId === completion.turnId;
+      durableCompletion.providerAcceptedAt = exactRun ? providerTurnAcceptance(run).acceptedAt : null;
+    }
     durableCompletion.status = normalizeProviderRunTerminalStatus(completion.status) ?? completion.status;
     const completionRootMessage = (Array.isArray(durableCompletion.userMessages)
       ? durableCompletion.userMessages
@@ -476,7 +484,13 @@ export class TerminalTurnCommitService {
           terminalRevision: terminal.terminalRevision,
           status: terminal.status,
           runId: history.id ?? null,
-          startedAt: completion.startedAt ?? history.startedAt ?? null,
+          ...(Object.hasOwn(completion, "providerAcceptedAt") ? {
+            providerAcceptedAt: completion.providerAcceptedAt,
+            deliveredAt: completion.providerAcceptedAt,
+            admittedAt: completion.startedAt ?? history.startedAt ?? null,
+          } : {}),
+          startedAt: Object.hasOwn(completion, "providerAcceptedAt")
+            ? completion.providerAcceptedAt : completion.startedAt ?? history.startedAt ?? null,
           completedAt: completion.completedAt ?? null,
         },
       });

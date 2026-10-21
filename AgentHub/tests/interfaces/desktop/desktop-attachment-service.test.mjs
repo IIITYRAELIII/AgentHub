@@ -43,7 +43,11 @@ test("desktop-only authenticated IPC uploads full parts and shares HTTP upload r
     assert.equal(complete.status, "ready");
     assert.deepEqual(await readFile(complete.path), Buffer.concat([bytes, tail]));
     assert.equal((await request({ method: "POST", path: `${route}?id=${metadata.uploadId}&complete=1` })).path, complete.path);
-    assert.equal((await request({ path: `${route}?id=${randomUUID()}` })).httpStatus, 404);
+    const absent = await request({ path: `${route}?id=${randomUUID()}` });
+    assert.equal(absent.httpStatus, 404); assert.equal(absent.state, "absent");
+    const expired = await request({ method: "POST", path: route, body: JSON.stringify({ ...metadata,
+      uploadId: randomUUID(), attemptedAtMs: Date.now() - caps.ttlMs - 1 }) });
+    assert.equal(expired.httpStatus, 410); assert.equal(expired.state, "expired");
     const cancelled = { ...metadata, uploadId: randomUUID() };
     await request({ method: "POST", path: route, body: JSON.stringify(cancelled) });
     assert.equal((await request({ method: "DELETE", path: `${route}?id=${cancelled.uploadId}` })).ok, true);

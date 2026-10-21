@@ -29,10 +29,10 @@ export class ProviderTaskActivityService {
     this.resolveActivity = resolveActivity;
   }
 
-  async readCodex(target) {
+  async readCodex(target, { forceFresh = false } = {}) {
     let rolloutPath = await this.knownCodexRolloutPath(target.threadId);
     let threadStatus = null;
-    if (!rolloutPath) {
+    if (!rolloutPath || forceFresh) {
       if (!this.codexRunning()) await this.ensureCodex();
       const result = await this.readCodexThread(target.threadId, {
         fresh: true,
@@ -48,6 +48,7 @@ export class ProviderTaskActivityService {
       rolloutPath,
       agentHubPid: this.codexPid(),
       capturedOwner: this.capturedCodexExecutionOwner(target.threadId, activeTurnId),
+      forceFresh,
     });
   }
 

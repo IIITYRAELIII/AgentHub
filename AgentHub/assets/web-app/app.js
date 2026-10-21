@@ -8464,7 +8464,10 @@ function renderQueueForTask(taskId, container) {
           ? el("div", { class: "queue-status", text: "Связь с Codex временно недоступна; сообщение сохранено и будет отправлено автоматически." })
           : entry.waitReason === "context-maintenance" || entry.conflictKind === "context-maintenance"
             ? el("div", { class: "queue-status", text: "Ожидает завершения свёртки или ротации контекста; сообщение сохранено в очереди." })
-          : null,
+            : ["queued", "pending", "paused"].includes(entry.state)
+              && (entry.waitReason || entry.conflictKind) === "runtime-restart"
+              ? el("div", { class: "queue-status", text: "Ожидает перезапуска Hub; сообщение сохранено в очереди." })
+              : null,
       entry.lastError ? el("div", { class: "queue-error", text: entry.lastError }) : null,
       entryAnnotations.length
         ? el("div", { class: "queue-annotation-list" }, entryAnnotations.map((annotation, index) => {
@@ -8717,7 +8720,7 @@ function sendComposerRequest({
     messageOrigin: requestMessageOrigin,
     composerTransfer: requestComposerTransfer,
     followUpMode: MessageView.composerFollowUpMode(task, { steerWhileRunning }),
-    deferWhileRunning: task?.running === true && !steerWhileRunning,
+    deferWhileRunning: (task?.running === true || task?.canStop === true) && !steerWhileRunning,
     draftStream: task?.draftStream === true,
     streamId: task?.streamId ?? null,
     settings: task?.draftStream ? { ...task.streamSettings } : null,
@@ -8811,6 +8814,7 @@ function currentAttachmentPreviews(taskId = state.selectedId) {
 function disposeAttachmentPreview(entry) {
   if (!attachmentPreparationPreviews.delete(entry)) return;
   for (const item of entry.items) if (item.url) URL.revokeObjectURL(item.url);
+  window.AgentHubComposerFiles.settle(entry.items.flatMap((item) => item.result ? [item.result] : []));
 }
 
 function discardAttachmentPreviews(taskId) {
@@ -8861,14 +8865,19 @@ function renderAttachments() {
     for (const item of previews) {
       strip.append(el("div", {
         class: `attachment attachment-preparing${item.url ? " attachment-image" : " attachment-file"}`,
-        "data-attachment-preparing": "", "aria-busy": "true", title: item.name,
+        "data-attachment-preparing": "", "data-attachment-preparation-id": item.uploadId,
+        "aria-busy": String(item.preparing), title: item.name,
       }, [
         item.url ? el("img", { src: item.url, alt: item.name })
           : el("span", { class: "attachment-file-card", text: item.name }),
-        el("span", { class: "attachment-preparing-label", role: "status", text: "Подготовка…" }),
+        !item.preparing && item.failed ? el("button", {
+          type: "button", class: "attachment-preparing-label", "data-attachment-preparation-retry": item.uploadId,
+          text: "Сбой · Повторить", "aria-label": `Повторить подготовку ${item.name}`,
+        }) : el("span", { class: "attachment-preparing-label", role: "status",
+          text: item.preparing ? "Подготовка…" : "Файл подготовлен" }),
         el("button", {
-          type: "button", class: "attachment-remove", "data-attachment-preparation-remove": "",
-          title: "Отменить подготовку вложений", "aria-label": "Отменить подготовку вложений", text: "×",
+          type: "button", class: "attachment-remove", "data-attachment-preparation-remove": item.uploadId,
+          title: "Удалить вложение", "aria-label": `Удалить ${item.name}`, text: "×",
         }),
       ]));
     }
@@ -9033,8 +9042,28 @@ function formatAttachmentSize(value) {
 }
 
 attachmentsBox.addEventListener("click", (event) => {
-  if (event.target.closest("[data-attachment-preparation-remove]")) {
-    advanceComposerAsyncOperationFence(state.selectedId);
+  const retry = event.target.closest("[data-attachment-preparation-retry]");
+  if (retry) {
+    const entry = [...attachmentPreparationPreviews].find((candidate) => candidate.operation.taskId === state.selectedId
+      && candidate.items.some((item) => item.uploadId === retry.dataset.attachmentPreparationRetry));
+    if (entry) void entry.retry();
+    return;
+  }
+  const preparationRemove = event.target.closest("[data-attachment-preparation-remove]");
+  if (preparationRemove) {
+    const entry = [...attachmentPreparationPreviews].find((candidate) => candidate.operation.taskId === state.selectedId
+      && candidate.items.some((item) => item.uploadId === preparationRemove.dataset.attachmentPreparationRemove));
+    if (!entry) return;
+    const index = entry.items.findIndex((item) => item.uploadId === preparationRemove.dataset.attachmentPreparationRemove);
+    const [item] = entry.items.splice(index, 1);
+    item.removed = true;
+    if (item.url) URL.revokeObjectURL(item.url);
+    if (item.result) window.AgentHubComposerFiles.settle([item.result]);
+    if (!entry.items.length) disposeAttachmentPreview(entry);
+    else if (!entry.busy && entry.items.every((candidate) => candidate.result)) void entry.retry();
+    pruneComposerFiles();
+    renderAttachments();
+    updateSendState();
     return;
   }
   const taskReferenceRemove = event.target.closest("[data-task-reference-index]");
@@ -9047,9 +9076,10 @@ attachmentsBox.addEventListener("click", (event) => {
   const remove = event.target.closest("[data-attachment-index]");
   if (!remove) return;
   const index = Number(remove.dataset.attachmentIndex);
-  advanceComposerAsyncOperationFence(state.selectedId);
   setAttachments(attachments.filter((_, i) => i !== index));
-  saveDraft({ userEdited: true });
+  // Removing one ready file is not a cancellation of other selected Files.
+  // The edit revision still invalidates recovery of the old complete draft.
+  saveDraft({ userEdited: true, preserveAttachmentPreviews: true });
 });
 
 async function readAttachmentFiles(files) {
@@ -9095,76 +9125,98 @@ async function readAttachmentFiles(files) {
     else if (oversized) showToast(`Общий лимит вложений: ${Math.floor(policy.maxTotalBytes / 1024 / 1024)} МБ.`);
     return;
   }
-  pendingAttachmentPreparations += 1;
   const preview = { operation, items: accepted.map((file) => {
     let url = "";
     if (file.type.startsWith("image/")) {
       try { url = URL.createObjectURL(file); } catch { /* Preparation still owns file validation. */ }
     }
-    return { name: file.name, size: file.size, url };
+    return { file, name: file.name, size: file.size, url, uploadId: crypto.randomUUID(), preparing: true };
   }) };
   attachmentPreparationPreviews.add(preview);
-  renderAttachments();
-  updateSendState();
-  let settled;
-  try {
-    settled = await Promise.allSettled(accepted.map((file) => window.AgentHubComposerFiles.prepare(file, {
-      name: file.name,
-      type: file.type || "application/octet-stream",
-      size: file.size,
-    })));
-  } finally {
-    pendingAttachmentPreparations -= 1;
-    disposeAttachmentPreview(preview);
+  preview.retry = async () => {
+    if (preview.busy || !attachmentPreparationPreviews.has(preview)) return;
+    preview.busy = true;
+    pendingAttachmentPreparations += 1;
+    for (const item of preview.items) item.preparing = !item.result;
     renderAttachments();
     updateSendState();
-  }
-  const failed = settled.find((result) => result.status === "rejected");
-  if (failed) {
-    window.AgentHubComposerFiles.settle(settled.filter((result) => result.status === "fulfilled").map((result) => result.value));
-    pruneComposerFiles();
-    showToast(failed.reason?.message ?? "Не удалось прочитать вложение");
-    return;
-  }
-  const loaded = settled.map((result) => result.value);
-  const canonical = window.AgentHubComposerDraftReconciliation.recoveryAttachments(loaded, {
-    maxCount: limit,
-    maxBytes: DRAFT_ATTACHMENT_MAX_BYTES,
-    maxTotalBytes: policy.maxTotalBytes - existingBytes,
-  });
-  if (!canonical) {
-    window.AgentHubComposerFiles.settle(loaded);
-    pruneComposerFiles();
-    showToast("Вложение не прошло проверку целостности.");
-    return;
-  }
-  if ((attachmentOperationSequences.get(operation.taskId) ?? 0) === operationSequence
-    && composerTaskOperationCurrent(operation, { allowDraftEdits: true })) {
-    // Independent pastes append to the current composition. Never replay the
-    // pre-read text/attachments over edits or another completed paste.
-    const current = composerDraftSnapshot(operation.taskId);
-    let bytes = current.attachments.reduce((sum, item) => sum + (Number(item?.size) || 0), 0);
-    const additions = [];
-    for (const item of canonical) {
-      if (current.attachments.length + additions.length >= limit) break;
-      if (bytes + item.size > policy.maxTotalBytes) { oversized += 1; continue; }
-      additions.push(item);
-      bytes += item.size;
+    try {
+      await Promise.all(preview.items.map(async (item) => {
+        if (item.result) return;
+        try {
+          item.result = await window.AgentHubComposerFiles.prepare(item.file, {
+            name: item.file.name, type: item.file.type || "application/octet-stream", size: item.file.size,
+          }, { uploadId: item.uploadId });
+          item.failed = null;
+        } catch (error) { item.failed = error; }
+        finally {
+          item.preparing = false;
+          if ((item.removed || !attachmentPreparationPreviews.has(preview)) && item.result) {
+            window.AgentHubComposerFiles.settle([item.result]);
+            pruneComposerFiles();
+          }
+        }
+      }));
+      if (!attachmentPreparationPreviews.has(preview)
+        || (attachmentOperationSequences.get(operation.taskId) ?? 0) !== operationSequence
+        || !composerTaskOperationCurrent(operation, { allowDraftEdits: true })) {
+        disposeAttachmentPreview(preview);
+        window.AgentHubComposerFiles.settle(preview.items.flatMap((item) => item.result ? [item.result] : []));
+        pruneComposerFiles();
+        return;
+      }
+      const failed = preview.items.find((item) => item.failed);
+      if (failed) {
+        // Keep the original File, preview and successful siblings in this live draft.
+        // Explicit retry performs only the failed work; no message exists yet.
+        showToast(failed.failed?.message ?? "Не удалось прочитать вложение");
+        return;
+      }
+      const loaded = preview.items.map((item) => item.result);
+      const canonical = window.AgentHubComposerDraftReconciliation.recoveryAttachments(loaded, {
+        maxCount: limit,
+        maxBytes: DRAFT_ATTACHMENT_MAX_BYTES,
+        maxTotalBytes: policy.maxTotalBytes - existingBytes,
+      });
+      if (!canonical) {
+        window.AgentHubComposerFiles.settle(loaded);
+        for (const item of preview.items) { item.result = null; item.failed = new Error("Вложение не прошло проверку целостности."); }
+        showToast("Вложение не прошло проверку целостности.");
+        return;
+      }
+      // Independent pastes append to the current composition. Never replay the
+      // pre-read text/attachments over edits or another completed paste.
+      const current = composerDraftSnapshot(operation.taskId);
+      let bytes = current.attachments.reduce((sum, item) => sum + (Number(item?.size) || 0), 0);
+      const additions = [];
+      for (const item of canonical) {
+        if (current.attachments.length + additions.length >= limit) break;
+        if (bytes + item.size > policy.maxTotalBytes) { oversized += 1; continue; }
+        additions.push(item);
+        bytes += item.size;
+      }
+      if (additions.length > 0) {
+        composerDraftReconciliation.save(operation.taskId, {
+          ...current,
+          attachments: [...current.attachments, ...additions],
+        }, { userEdited: true });
+        if (state.selectedId === operation.taskId) restoreDraft();
+      }
+      if (additions.length < canonical.length && !oversized) showToast(`Можно приложить не больше ${limit} файлов.`);
+      window.AgentHubComposerFiles.settle(loaded);
+      disposeAttachmentPreview(preview);
+      pruneComposerFiles();
+      if (selected.length > room) showToast(`Можно приложить не больше ${limit} файлов.`);
+      else if (unsafe) showToast("Часть файлов отклонена: небезопасное имя или тип.");
+      else if (oversized) showToast(`Общий лимит вложений: ${Math.floor(policy.maxTotalBytes / 1024 / 1024)} МБ.`);
+    } finally {
+      preview.busy = false;
+      pendingAttachmentPreparations -= 1;
+      renderAttachments();
+      updateSendState();
     }
-    if (additions.length > 0) {
-      composerDraftReconciliation.save(operation.taskId, {
-        ...current,
-        attachments: [...current.attachments, ...additions],
-      }, { userEdited: true });
-      if (state.selectedId === operation.taskId) restoreDraft();
-    }
-    if (additions.length < canonical.length && !oversized) showToast(`Можно приложить не больше ${limit} файлов.`);
-  }
-  window.AgentHubComposerFiles.settle(loaded);
-  pruneComposerFiles();
-  if (selected.length > room) showToast(`Можно приложить не больше ${limit} файлов.`);
-  else if (unsafe) showToast("Часть файлов отклонена: небезопасное имя или тип.");
-  else if (oversized) showToast(`Общий лимит вложений: ${Math.floor(policy.maxTotalBytes / 1024 / 1024)} МБ.`);
+  };
+  await preview.retry();
 }
 
 document.querySelector("[data-action='attach']").addEventListener("click", () => fileInput.click());
@@ -9681,10 +9733,10 @@ function composerDraftSnapshot(taskId) {
   );
 }
 
-function saveDraft({ userEdited = false } = {}) {
+function saveDraft({ userEdited = false, preserveAttachmentPreviews = false } = {}) {
   if (!state.selectedId) return;
   const draft = composerDraftSnapshot(state.selectedId);
-  if (userEdited && !window.AgentHubComposerDraftReconciliation.hasDraftContent(draft)
+  if (userEdited && !preserveAttachmentPreviews && !window.AgentHubComposerDraftReconciliation.hasDraftContent(draft)
     && window.AgentHubComposerDraftReconciliation.hasDraftContent(drafts.get(state.selectedId))) {
     advanceComposerAsyncOperationFence(state.selectedId);
   }
@@ -9721,7 +9773,7 @@ function prepareForRuntimeReload() {
     draftsPersisted,
     drafts: drafts.values(),
     modalOpen,
-    requestPending: Boolean(pendingComposerRequest) || pendingAttachmentPreparations > 0,
+    requestPending: Boolean(pendingComposerRequest) || pendingAttachmentPreparations > 0 || attachmentPreparationPreviews.size > 0,
     bugReportAttachments,
     bugReportSending,
   })) return false;

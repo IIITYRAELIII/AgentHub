@@ -6,7 +6,6 @@ import json
 import os
 import re
 import secrets
-import stat
 import subprocess
 import sys
 import tempfile
@@ -177,11 +176,6 @@ def require_embedded_sqlite() -> None:
 
 
 def runtime_root() -> Path:
-    configured = os.environ.get("AGENT_HUB_RUNTIME_ROOT", "").strip()
-    if configured:
-        if not Path(configured).is_absolute():
-            raise RuntimeError("AGENT_HUB_RUNTIME_ROOT must be absolute")
-        return Path(configured).resolve()
     if sys.platform == "win32":
         return Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")) / "AgentHub"
     return Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state")) / "agent-hub"
@@ -502,76 +496,17 @@ def extension_install_version(requested: str, installed: list[str]) -> str:
     return f"{major}.{minor}.{patch + 1}"
 
 
-def _extension_payload_root(*, create: bool = False) -> Path:
-    # Resolving the selected runtime root permits its explicit migration alias.
-    # Its descendants must remain ordinary owned directories, not new aliases.
-    root = runtime_root().resolve()
-    nodes = [root, root / "external", root / "external/vscode", root / "external/vscode/extensions"]
-    for node in nodes:
-        if os.path.lexists(node):
-            mode = node.lstat()
-            if not stat.S_ISDIR(mode.st_mode) or getattr(mode, "st_file_attributes", 0) & 0x400:
-                raise RuntimeError(f"Refusing unsafe extension payload directory: {node}")
-        elif create:
-            node.mkdir(parents=node == root)
-    return nodes[-1]
-
-
-def _extension_location(candidate: Path, extensions_root: Path) -> Path:
-    mode = candidate.lstat()
-    linked = stat.S_ISLNK(mode.st_mode) or bool(getattr(mode, "st_file_attributes", 0) & 0x400)
-    if linked:
-        expected = _extension_payload_root() / candidate.name
-        if candidate.resolve() != expected or not expected.is_dir():
-            raise RuntimeError(f"Refusing unsafe installed extension payload: {candidate}")
-        actual = expected.lstat()
-        if not stat.S_ISDIR(actual.st_mode) or getattr(actual, "st_file_attributes", 0) & 0x400:
-            raise RuntimeError(f"Refusing unsafe installed extension payload: {candidate}")
-        return expected
-    if not stat.S_ISDIR(mode.st_mode) or candidate.resolve().parent != extensions_root:
-        raise RuntimeError(f"Refusing unsafe installed extension path: {candidate}")
-    return candidate.resolve()
-
-
-def _extension_payload_manifest(root: Path) -> dict:
-    """Compare an interrupted unpublished payload with the exact staged body."""
-    entries = {}
-    pending = [root]
-    while pending:
-        item = pending.pop()
-        mode = item.lstat()
-        if stat.S_ISLNK(mode.st_mode) or getattr(mode, "st_file_attributes", 0) & 0x400:
-            raise RuntimeError(f"Refusing linked extension payload entry: {item}")
-        relative = item.relative_to(root).as_posix()
-        if stat.S_ISDIR(mode.st_mode):
-            entries[relative] = ("directory",)
-            pending.extend(item.iterdir())
-        elif stat.S_ISREG(mode.st_mode):
-            entries[relative] = ("file", hashlib.sha256(item.read_bytes()).hexdigest())
-        else:
-            raise RuntimeError(f"Refusing special extension payload entry: {item}")
-    return entries
-
-
-def _create_extension_alias(payload: Path, logical: Path) -> None:
-    # Both APIs refuse an existing destination. Do not replace a concurrent
-    # registration or manufacture a second physical copy in the VS Code root.
-    if os.name == "nt":
-        import _winapi
-        _winapi.CreateJunction(str(payload), str(logical))
-    else:
-        logical.symlink_to(payload, target_is_directory=True)
-
-
 def _installed_vscode_extensions(package: dict, extensions_root: Path) -> list[dict]:
     prefix = f"{package['publisher']}.{package['name']}-"
     installed = []
     if not extensions_root.is_dir():
         return installed
     for candidate in extensions_root.iterdir():
-        if not candidate.name.startswith(prefix):
+        if not candidate.is_dir() or not candidate.name.startswith(prefix):
             continue
-        resolved = _extension_location(candidate, extensions_root)
+        resolved = candidate.resolve()
+        if candidate.is_symlink() or resolved.parent != extensions_root:
+            raise RuntimeError(f"Refusing unsafe installed extension path: {candidate}")
         try:
             installed_package = json.loads((candidate / "package.json").read_text(encoding="utf-8"))
             installed_version = str(installed_package["version"])
@@ -714,31 +649,28 @@ def install_vscode_extension(
     )
     if prepared_plan is not None and plan != prepared_plan:
         if _prepared_extension_plan_is_applied(plan, prepared_plan):
-            target = _extension_location(extensions_root / plan["targetName"], extensions_root)
+            target = (extensions_root / plan["targetName"]).resolve()
             print(f"VS Code extension is current: {target}")
             return target
         raise RuntimeError("Prepared VS Code extension install plan changed")
     package = plan["package"]
     source_package = json.loads((source / "package.json").read_text(encoding="utf-8"))
     requested_id = f"{package['publisher']}.{package['name']}-{package['version']}"
-    requested_target = extensions_root / requested_id
-    logical_target = extensions_root / plan["targetName"]
+    requested_target = (extensions_root / requested_id).resolve()
+    target = (extensions_root / plan["targetName"]).resolve()
     if plan["action"] == "current":
-        target = _extension_location(logical_target, extensions_root)
         print(f"VS Code extension is current: {target}")
         return target
     fingerprint = plan["sourceFingerprint"]
     provenance = plan["provenance"]
-    if logical_target.parent != extensions_root or not logical_target.name.startswith(f"{package['publisher']}.{package['name']}-"):
-        raise RuntimeError(f"Refusing unexpected extension path: {logical_target}")
-    payload_root = _extension_payload_root()
-    target = payload_root / logical_target.name
+    if target.parent != extensions_root or not target.name.startswith(f"{package['publisher']}.{package['name']}-"):
+        raise RuntimeError(f"Refusing to replace unexpected extension path: {target}")
     extensions_root.mkdir(parents=True, exist_ok=True)
     recover_interrupted_extension_swap(requested_target, vscode_extension_package(source_package, profile))
-    if logical_target != requested_target:
-        recover_interrupted_extension_swap(logical_target, package)
-    _extension_payload_root(create=True)
-    staging = payload_root / f".{target.name}.staging-{uuid4().hex}"
+    if target != requested_target:
+        recover_interrupted_extension_swap(target, package)
+    staging = extensions_root / f".{target.name}.staging-{uuid4().hex}"
+    rollback = extensions_root / f".{target.name}.rollback-{uuid4().hex}"
     # VS Code owns retirement of its previous Agent Hub versions.  A publisher
     # running from a stale checkout must never delete a newer version that VS
     # Code has already registered or loaded; doing so leaves extensions.json
@@ -770,22 +702,15 @@ def install_vscode_extension(
         staged_package = json.loads((staging / "package.json").read_text(encoding="utf-8"))
         if staged_package != package:
             raise RuntimeError("Staged VS Code extension package does not match source package.")
-        expected_body = _extension_payload_manifest(staging)
-        if os.path.lexists(logical_target):
-            raise RuntimeError(f"Refusing occupied extension registration: {logical_target}")
-        _extension_payload_root()
-        if os.path.lexists(target):
-            if _extension_payload_manifest(target) != expected_body:
-                raise RuntimeError(f"Refusing changed unpublished extension payload: {target}")
-        else:
-            # A monotonic new version has no installed target to replace.
-            # Retain this body if alias publication fails; an exact retry can
-            # prove it against a newly staged body without deleting unknown WIP.
-            os.rename(staging, target)
-        _extension_payload_root()
-        _create_extension_alias(target, logical_target)
-        if _extension_location(logical_target, extensions_root) != target:
-            raise RuntimeError("Published extension alias does not match its payload")
+        if target.exists():
+            os.replace(target, rollback)
+        try:
+            os.replace(staging, target)
+        except Exception:
+            if rollback.exists():
+                os.replace(rollback, target)
+            raise
+        shutil.rmtree(rollback, ignore_errors=True)
     finally:
         if staging.exists():
             shutil.rmtree(staging, ignore_errors=True)
@@ -816,7 +741,9 @@ def uninstall_vscode_extension(profile: str) -> list[Path]:
     for candidate in extensions_root.iterdir():
         if not candidate.name.startswith(prefix):
             continue
-        resolved = _extension_location(candidate, extensions_root)
+        resolved = candidate.resolve()
+        if candidate.is_symlink() or not candidate.is_dir() or resolved.parent != extensions_root:
+            raise RuntimeError(f"Refusing to remove unsafe extension path: {candidate}")
         try:
             installed = json.loads((candidate / "package.json").read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as error:
@@ -824,11 +751,6 @@ def uninstall_vscode_extension(profile: str) -> list[Path]:
         if installed.get("publisher") != package["publisher"] or installed.get("name") != package["name"]:
             raise RuntimeError(f"Refusing to remove foreign extension: {candidate}")
         shutil.rmtree(resolved)
-        if candidate != resolved:
-            if os.name == "nt":
-                candidate.rmdir()
-            else:
-                candidate.unlink()
         removed.append(resolved)
     return removed
 

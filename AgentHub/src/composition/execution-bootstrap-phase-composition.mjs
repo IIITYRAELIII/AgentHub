@@ -76,6 +76,7 @@ export function createExecutionBootstrapPhase({
       providerLogin: clients.providerLogin,
       usageSyncAuto: provider.usageSyncAuto,
       taskSyncStore: provider.taskSyncStore,
+      taskDiffs: provider.taskDiffs,
       messagePins: provider.messagePins,
       workspaceCatalogStore: provider.workspaceCatalogStore,
       dismissedExternalTasks: provider.dismissedExternalTasks,

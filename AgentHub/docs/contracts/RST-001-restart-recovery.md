@@ -71,6 +71,9 @@ Provider recovery read, reconnect or reattach failure is likewise unknown: a
 generic recovery exception and a local `interrupted` bookkeeping decision do
 not create provider terminal evidence or release the manual session. Only the
 provider/process completion owner may commit the exact terminal outcome.
+The narrowly scoped ADR-0125 recovery interruption uses that same cancellation
+and terminal owner after fresh provider/native inactivity and exact interrupt
+rejection; a startup/read exception or idle status alone still cannot release.
 
 ## Invariants
 
@@ -94,16 +97,17 @@ provider/process completion owner may commit the exact terminal outcome.
   Terminal reconciliation accounts their usage without emitting a user response
   or changing the last message. Inline compaction inside an ordinary turn and
   legacy operations lacking that marker do not authorize suppressing its final.
-- Ordinary and new-turn admission is blocked by an exact active maintenance
+- Ordinary and new-turn admission is blocked by an exact active Stream context-maintenance
   operation. An explicit steer targeting an exact active managed turn may be
   admitted during provider-internal compaction, but its provider dispatch waits
   durably for that compaction to settle. Hub-owned compaction and rotation
   reservations remain admission barriers.
 - A restart requested with no selected Stream and Thread is persisted under the
   explicit runtime scope; a target naming only one of them is rejected.
-- Restart is a barrier over durable finals, command receipts, delivery outbox and
-  maintenance reconciliation. The real input factory must pass that reservation
-  to ordinary and deferred admission, not only define an unused coordinator hook.
+- Restart waits for durable finals, command receipts, delivery outbox and
+  maintenance reconciliation. A pending/scheduled request does not block intake,
+  ordinary starts, steering or queued dispatch, and never causes automatic Stop
+  or pause. User Stop/pause retains its authority (ADR-0127).
 - One durable restart launches one owned RuntimeHost tree. Windows restart never
   submits an escaping WMI start, retries an ownership timeout or adds a fallback
   launch. The controlled path uses a direct detached host and retains exact
@@ -114,9 +118,14 @@ provider/process completion owner may commit the exact terminal outcome.
   The expected release is persisted before launch; exact operation/release/PID/
   instance evidence fences readiness. The old owner recovers only after confirmed
   cleanup of its owned replacement. See ADR-0114.
-- Once a restart operation is persisted, new durable commands remain queued in
-  their exact lanes. The old runtime cannot admit them after the run that the
-  restart is draining reaches terminal state.
+- Only the synchronous transition into actual stopping closes provider admission.
+  Its readiness check includes existing pending admission/steer ownership, active
+  blocking runs, background jobs and maintenance, with no asynchronous gap before
+  the stopping fence. An admission already underway protects its run through
+  registration/launch; a later input remains durable in its exact lane and original
+  identity without a provider-start claim. Every real input/queued dispatch factory
+  receives that stopping fence. Ordinary terminal completion still wakes the queue
+  while a restart is pending; the restart rechecks safety rather than starving it.
 - A replacement runtime finalizes the persisted restart and marks its instance
   ready before it starts deferred-input timers. Queued commands are then
   admitted once under their original `clientUserMessageId`.
@@ -303,3 +312,15 @@ existing error/health diagnostic; messages, credential-bearing URLs, tokens and
 request bodies never contribute to that summary. An old generic fetch failure
 without retained cause codes cannot be retrospectively diagnosed by a later
 successful request.
+
+A preserved direct gateway awaiting the existing owner's verified configuration
+handoff may report `DIRECT_GATEWAY_CONFIG_HANDOFF_REQUIRED`. This exact refusal
+does not prevent independently configured Worker or quick-tunnel startup. The
+existing Mini App lifecycle starts those services once in the same generation;
+only their actual publication callbacks may select a fallback menu URL. Other
+gateway failures keep their existing failure behavior. The original handoff
+error still rejects the cached transport-startup promise after independent work,
+so main readiness or Worker availability never becomes full gateway readiness.
+Gateway health recovery does not replay Worker startup or settle that promise.
+Shutdown/generation changes fence late publication and menu callbacks. No new
+retry loop, gateway writer, process authority or restart is introduced.

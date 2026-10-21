@@ -224,7 +224,17 @@
     const owned = Boolean(run) && operationKind(run) === "user-turn" && !isTerminal(run)
       && (isUserRunningProjection(run) || run.activityUnknown === true);
     const unknown = owned && run.activityUnknown === true;
-    return { running: owned && !unknown, canStop: owned, unknown };
+    // Occupancy begins before turn/start returns. Only an explicit exact-turn
+    // provider marker can end preparation for a run carrying that marker.
+    // Retained runs without providerStart keep their existing legacy authority.
+    const turnId = text(run?.turnId);
+    const providerStart = run?.providerStart;
+    const preparing = owned && !unknown && (!turnId || (providerStart && !(
+      text(providerStart.turnId) === turnId
+      && ["accepted-awaiting-first-event", "observed"].includes(text(providerStart.state))
+    )));
+    return { running: owned && !unknown && !preparing, canStop: owned, unknown,
+      ...(preparing ? { preparing: true } : {}) };
   }
 
   global.AgentHubMessageProjection = Object.freeze({

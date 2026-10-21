@@ -7,11 +7,6 @@ import { pathToFileURL } from "node:url";
 const FORWARDED_ENVIRONMENT = ["CODEX_HOME"];
 
 function defaultRuntimeRoot(environment = process.env) {
-  const configured = String(environment.AGENT_HUB_RUNTIME_ROOT ?? "").trim();
-  if (configured) {
-    if (!path.isAbsolute(configured)) throw new Error("AGENT_HUB_RUNTIME_ROOT must be absolute");
-    return path.resolve(configured);
-  }
   if (process.platform === "win32") {
     return path.resolve(environment.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local"), "AgentHub");
   }

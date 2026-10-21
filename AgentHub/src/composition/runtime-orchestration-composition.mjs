@@ -67,6 +67,7 @@ export function createRuntimeOrchestrationComposition({
     usageSyncAuto,
     storageRetention,
     taskSyncStore,
+    taskDiffs,
     messagePins,
     workspaceCatalogStore,
     preTurnInstructions,
@@ -334,6 +335,7 @@ export function createRuntimeOrchestrationComposition({
 
   const restartWiring = ports.runtimeRestart.bind(createRuntimeRestartWiring({
     taskRuns,
+    runCoordinator,
     agentProviders,
     backgroundJobs,
     streamMaintenance,
@@ -375,6 +377,7 @@ export function createRuntimeOrchestrationComposition({
       telegramDeliveryService,
       mediaController,
       taskSyncStore,
+      taskDiffs,
       workspaceCatalogStore,
       deliveryOutbox,
       backgroundJobStore,
