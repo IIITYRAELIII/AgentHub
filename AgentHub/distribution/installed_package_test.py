@@ -32,18 +32,25 @@ class InstalledPackageTests(unittest.TestCase):
             notices = root/"NOTICES"
             license_file.write_text("Synthetic fixture license, not a public distribution grant")
             notices.write_text("Synthetic fixture; actual runtime owner and native host copied for isolated testing")
-            # Materialize the exact future two-file Utilities entry in a fresh
-            # recipient directory with no source checkout or .git metadata.
-            recipient = root/"recipient-utilities"
+            # The standalone installer runs without a Utilities source checkout.
+            # Link-only Utilities carries no executable or copied release assets.
+            recipient = root/"recipient-standalone"
+            recipient.mkdir()
             entry = json.loads((ROOT/"utilities-entry.json").read_text(encoding="utf-8"))
-            for record in entry["files"]:
-                source = ROOT.parents[1]/record["source"]
-                target = recipient/record["target"]
-                target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(source, target)
+            self.assertEqual(entry["files"], [])
+            bootstrap = recipient/"install_release.py"
+            shutil.copy2(ROOT/"install_release.py", bootstrap)
             self.assertEqual(sorted(p.relative_to(recipient).as_posix() for p in recipient.rglob("*") if p.is_file()),
-                             ["AgentHub/README.md", "AgentHub/install.py"])
-            bootstrap = recipient/"AgentHub/install.py"
+                             ["install_release.py"])
+            legacy_utilities = root/"legacy-utilities"
+            legacy_source = legacy_utilities/"AgentHub"
+            legacy_source.mkdir(parents=True)
+            (legacy_source/"install.py").write_text("raise RuntimeError('legacy source installer must not execute')\n", encoding="utf-8")
+            profile = legacy_utilities/".team/fixture.json"
+            profile.parent.mkdir()
+            profile.write_text(json.dumps({"decisions": {"app:agent-hub": {"status": "accepted"},
+                                                         "android-app:agent-hub": {"status": "declined"}}}), encoding="utf-8")
+            prior_profile = profile.read_bytes()
 
             def run(args, *, success=True):
                 result = subprocess.run(args, env=env, capture_output=True, encoding="utf-8", errors="replace", timeout=90)
@@ -70,7 +77,7 @@ class InstalledPackageTests(unittest.TestCase):
                 checksum = checksum_override or checksum
                 command = [str(bootstrap), "--archive", str(archive), "--sha256", checksum]
                 if release:
-                    # Only HTTPS transport is synthetic. The copied two-file CLI,
+                    # Only HTTPS transport is synthetic. The standalone CLI,
                     # ZIP verification, Node entry and native installation owner
                     # run unchanged in a source-free recipient directory.
                     harness = root/"release-transport.py"
@@ -99,6 +106,12 @@ class InstalledPackageTests(unittest.TestCase):
             self.assertEqual((runtime/"current.json").read_bytes(), pointer_before)
             install(0)
             self.assertEqual((runtime/"current.json").read_bytes(), pointer_before)
+            # Delete only this fixture's synthetic source folder. Neither the
+            # installed runtime nor participant choices belong to that folder.
+            shutil.rmtree(legacy_source)
+            self.assertFalse(legacy_source.exists())
+            self.assertEqual((runtime/"current.json").read_bytes(), pointer_before)
+            self.assertEqual(profile.read_bytes(), prior_profile)
             config = runtime/"config.json"
             config.write_text(json.dumps({"provider": "codex", "privateMarker": "synthetic-user-configuration",
                                          "usageSyncServerUrl": "https://sync.example.invalid",
@@ -138,6 +151,8 @@ class InstalledPackageTests(unittest.TestCase):
             self.assertEqual((data/"user-state.keep").read_bytes(), before_data)
             self.assertEqual((data/"sync-cursors.keep").read_bytes(), b"synthetic existing sync cursors")
             self.assertEqual((data/"usage-sync-remote.json").read_bytes(), sync_remote)
+            self.assertEqual(profile.read_bytes(), prior_profile)
+            self.assertFalse(legacy_source.exists())
             install(1)
             run([str(runtime/"AgentHub.RuntimeHost.exe"), "--check"])
             pointer = json.loads((runtime/"current.json").read_text())
@@ -152,6 +167,9 @@ class InstalledPackageTests(unittest.TestCase):
             self.assertEqual((runtime/"releases/synthetic-2/agent-hub-main.mjs").read_text(), 'console.log("synthetic app 2");\n')
             self.assertEqual((data/"sync-cursors.keep").read_bytes(), b"synthetic existing sync cursors")
             self.assertEqual((data/"usage-sync-remote.json").read_bytes(), sync_remote)
+
+            self.assertEqual(profile.read_bytes(), prior_profile)
+            self.assertFalse(legacy_source.exists())
 
 
 if __name__ == "__main__":
