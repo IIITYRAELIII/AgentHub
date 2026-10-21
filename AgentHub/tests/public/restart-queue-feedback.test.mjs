@@ -14,7 +14,7 @@ async function restartReceipt(clientUserMessageId = "restart-original") {
   let launches = 0;
   const coordinator = new RunCoordinator({
     taskRuns: { forTask: () => null }, providers: { call: () => { throw new Error("Unexpected provider call"); } },
-    isRestartPending: () => true, externalActivity: async () => ({ state: "inactive" }),
+    isRuntimeStopping: () => true, externalActivity: async () => ({ state: "inactive" }),
     repositoryConflict: async () => null,
     deferInput: async (_input, _files, options) => ({ id: "restart-deferred", item: { ...options }, duplicate: false }),
     beginRun: async () => { throw new Error("Unexpected run"); }, rollbackAdmission: async () => {},

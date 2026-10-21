@@ -131,7 +131,7 @@ export function createRuntimeRestartComposition({
   const runtimeRestart = new RuntimeRestartController({
     captureException: (error, context) => sentryDiagnostics.captureException(error, context),
     measure: (id, stage, action) => commandTrace?.measureBestEffort
-      ? commandTrace.measureBestEffort({ commandId: id, stage: `restart:${stage}`, transport: "runtime" }, action)
+      ? commandTrace.measureBestEffort({ commandId: id, stage: `restart-${stage}`, transport: "runtime" }, action)
       : action(),
     getRequest: getRestartRequest,
     updateOffset,
@@ -159,7 +159,7 @@ export function createRuntimeRestartComposition({
       return launchReplacementAndWait({ invocation, lockFile: instanceLockFile,
         expectedReleaseId, expectedOperationId: operationId ?? "",
         measure: (stage, action) => commandTrace?.measureBestEffort
-          ? commandTrace.measureBestEffort({ commandId: operationId, stage: `restart:${stage}`,
+          ? commandTrace.measureBestEffort({ commandId: operationId, stage: `restart-${stage}`,
             transport: "runtime", metadata: { expectedReleaseId, oldPid: process.pid } }, action)
           : action(),
       });

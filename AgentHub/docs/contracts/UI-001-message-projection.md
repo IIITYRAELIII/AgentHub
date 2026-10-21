@@ -332,6 +332,9 @@ overrides conversation intent when Hub has accepted durable storage
 `runtime-restart` remains queue-owned and visibly says it awaits Hub restart,
 both on the direct ACK and after snapshot/reload or receipt eviction. This is
 not provider preparation or running, and does not relax the restart barrier.
+A scheduled restart alone emits no such admission barrier: ordinary input keeps
+its normal intake/steer/queue semantics. The restart explanation applies to the
+actual stopping/cutover fence (ADR-0127), never to the pending request alone.
 Legacy rows without that field use exact `conflictKind=message-intake` only as a
 temporary compatibility boundary; remove it after every retained active command
 has an explicit projection intent. Text, time and display order cannot choose

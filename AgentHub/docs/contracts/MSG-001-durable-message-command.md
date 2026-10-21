@@ -75,6 +75,12 @@ remain distinct, and stale read-model aliases are replaced rather than guessed.
 The durable command ledger owns acceptance and dispatch state. UI cards,
 in-memory receipts and runtime snapshots are projections.
 
+A scheduled restart does not reserve admission or pause queued/steer delivery.
+Only the runtime's actual stopping fence retains new commands for the replacement,
+durably and under their original IDs; storage acceptance is not provider start.
+The restart owner checks in-flight admission and active work synchronously before
+closing that fence, so it cannot shut down a newly admitted run (ADR-0127).
+
 Snapshot writes project only the command IDs referenced by that snapshot; they
 do not enumerate unrelated active lanes or hot terminal history. Compaction
 point-reads those exact IDs, including terminal tombstones, and leaves unowned

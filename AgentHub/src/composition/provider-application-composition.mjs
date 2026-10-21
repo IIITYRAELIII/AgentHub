@@ -33,11 +33,10 @@ export function resumePostTurnWork({
   wakeDeferredInputs,
   scheduleDeferredRestartIfReady,
 }) {
+  wakeDeferredInputs();
   if (restartPending) {
     void Promise.resolve(maintenance).finally(scheduleDeferredRestartIfReady);
-    return "restart";
   }
-  wakeDeferredInputs();
   return "deferred-inputs";
 }
 import { createRunAccountingComposition } from "./run-accounting-composition.mjs";

@@ -333,6 +333,7 @@ export function createRuntimeOrchestrationComposition({
 
   const restartWiring = ports.runtimeRestart.bind(createRuntimeRestartWiring({
     taskRuns,
+    runCoordinator,
     agentProviders,
     backgroundJobs,
     streamMaintenance,

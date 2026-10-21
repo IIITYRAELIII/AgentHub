@@ -102,6 +102,14 @@ These elapsed spans do not classify filesystem or callback wait as CPU work.
 
 ## Unified performance evidence
 
+Restart readiness checkpoints use the original restart operation ID and bounded
+content-free blocker run IDs/counts, pending-admission state and request time.
+Changed observations distinguish waiting from ready/cutover; unchanged repeated
+checks do not flood traces. Existing command IDs retain durable intake, dispatch
+and provider-acceptance timings. These observations neither close admission nor
+attribute inclusive waiting time to CPU/network work. Sink failure cannot change
+restart or message delivery, and source/fixture timings are not live latency proof.
+
 Runtime snapshot projection and compaction resolve only their referenced command
 IDs through the existing ledger. They do not hydrate unrelated active or hot
 terminal records before filtering. Full startup/reconnect overlay remains a
