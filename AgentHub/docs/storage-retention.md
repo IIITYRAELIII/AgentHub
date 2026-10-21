@@ -6,6 +6,16 @@ No per-user external scheduled task or Codex automation is required. Test Contou
 recording, release acceptance and development runtimes do not run production
 cleanup. Active user turns defer admission.
 
+The production composition passes the existing Task board, Task/Release Git
+services and release-operation proof owner into the provider application, then
+passes the SAME retention service into execution bootstrap. That instance owns
+the deferred timer, cached health and shutdown drain. Startup coverage runs the
+actual installed-mode factories with private data and a fake provider; it does
+not replace the Git services with test-only retention adapters.
+
+Focused startup/lifecycle regression:
+`node --no-warnings --test tests/composition/storage-retention-startup.test.mjs`.
+
 The health diagnostic `storageRetention` reads cached bounded status only. It
 reports policy version, discovery completion, pending original intents, removed
 artifact count, known partial batches, observed prior removals and retention reasons. Status/Task/board
