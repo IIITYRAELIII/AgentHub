@@ -8,18 +8,24 @@ import {
   bridgeCalls,
 } from "./composer-production.fixture.mjs";
 
-async function openKeyboardPage(browser, { running = false, mobile = false } = {}) {
+async function openMobileConversation(page) {
+  await page.locator('[data-mobile-dialogs-tab="chat"]').click();
+  await page.locator('[data-mobile-stream-list] [data-mobile-stream-id="stream-a"]').first().click();
+}
+
+async function openKeyboardPage(browser, { running = false, mobile = false, mapping = null } = {}) {
   const page = await browser.newPage(mobile
     ? { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true }
     : { viewport: { width: 1280, height: 800 } });
   const fixtureSnapshot = snapshot();
+  if (mapping) await page.addInitScript((mapping) => localStorage.setItem("agent-hub:composer-shortcuts:v1", JSON.stringify(mapping)), mapping);
   fixtureSnapshot.version = `keyboard-${running ? "running" : "idle"}-${mobile ? "mobile" : "desktop"}`;
   fixtureSnapshot.tasks[0].running = running;
   fixtureSnapshot.tasks[0].run = running ? {
     turnId: "keyboard-active-turn", operationKind: "user-turn", projectionState: "active", model: "gpt-test",
   } : null;
-  const diagnostics = await openFixture(page, { fixtureSnapshot });
-  if (mobile) await page.locator('[data-mobile-button="chat"]').click();
+  const diagnostics = await openFixture(page, { fixtureSnapshot, surface: mobile ? "web" : "vscode" });
+  if (mobile) await openMobileConversation(page);
   assert.equal(new URL(page.url()).host, "agent-hub.test");
   assert.equal(await page.title(), "Agent Hub");
   assert.equal(await page.locator("[data-composer-input]").isVisible(), true);
@@ -33,6 +39,167 @@ async function openKeyboardPage(browser, { running = false, mobile = false } = {
   });
   return page;
 }
+
+test("production left-edge Back saves composer and shortcut dirty-close owns only the top settings layer", async () => {
+  const browser = await launchBrowser();
+  try {
+    for (const surface of [
+      { name: "Web", width: 1280, surface: "web" },
+      { name: "WebView", width: 520, surface: "vscode" },
+      { name: "Mobile", width: 390, surface: "web", mobile: true },
+    ]) {
+      const page = await browser.newPage({ viewport: { width: surface.width, height: 844 },
+        ...(surface.mobile ? { isMobile: true, hasTouch: true } : {}) });
+      await openFixture(page, { surface: surface.surface });
+      if (surface.mobile) await openMobileConversation(page);
+      else await page.evaluate(() => window.AgentHub.showSelectedTask());
+      const input = page.locator("[data-composer-input]");
+      await input.fill("Draft retained by left-edge Back");
+      const url = page.url();
+      const moveConsumed = await page.evaluate(() => {
+        const target = document.querySelector("[data-chat-pane]");
+        const dispatch = (type, x) => {
+          const touch = new Touch({ identifier: 1, target, clientX: x, clientY: 300 });
+          const event = new TouchEvent(type, { bubbles: true, cancelable: true,
+            touches: type === "touchend" ? [] : [touch], changedTouches: [touch] });
+          target.dispatchEvent(event); return event.defaultPrevented;
+        };
+        dispatch("touchstart", 8); const consumed = dispatch("touchmove", 82); dispatch("touchend", 96); return consumed;
+      });
+      assert.equal(moveConsumed, true, surface.name);
+      assert.equal(page.url(), url);
+      assert.equal(await page.evaluate(() => document.documentElement.dataset.pane), "tasks");
+      const stored = await page.evaluate((key) => JSON.parse(localStorage.getItem(key)), `agent-hub:composer-drafts:v1:${surface.surface}`);
+      assert.equal(stored.find((draft) => draft.taskId === "stream-a").text, "Draft retained by left-edge Back");
+      assert.equal(await input.inputValue(), "Draft retained by left-edge Back");
+      if (surface.mobile) {
+        await page.locator('[data-mobile-dialogs-tab="more"]').click();
+        await page.locator("[data-mobile-more-sheet]").getByRole("button", { name: "Настройки AgentHub", exact: true }).click();
+      } else await page.locator('[data-panel-open="settings"]').click();
+      await page.locator("[data-composer-shortcuts-open]").click();
+      await page.getByLabel("Действие для Control + Enter", { exact: true }).selectOption("steer");
+      const pane = await page.evaluate(() => document.documentElement.dataset.pane);
+      assert.equal(await page.evaluate(() => window.AgentHub.navigateBack()), true);
+      assert.equal(await page.locator("[data-composer-shortcuts-discard]").evaluate((dialog) => dialog.open), true);
+      assert.equal(await page.locator("[data-composer-shortcuts-dialog]").evaluate((dialog) => dialog.open), true);
+      assert.equal(await page.evaluate(() => window.AgentHub.navigateBack()), true);
+      assert.equal(await page.locator("[data-composer-shortcuts-discard]").evaluate((dialog) => dialog.open), false);
+      assert.equal(await page.locator("[data-composer-shortcuts-dialog]").evaluate((dialog) => dialog.open), true);
+      assert.equal(await page.evaluate(() => document.documentElement.dataset.pane), pane);
+      assert.equal(await input.inputValue(), "Draft retained by left-edge Back");
+      assert.equal((await bridgeCalls(page, "send-message")).length, 0);
+      await page.close();
+    }
+  } finally { await browser.close(); }
+});
+
+test("opt-in queue/newline mappings preserve slash precedence, repeat and IME ownership", async () => {
+  const browser = await launchBrowser();
+  try {
+    for (const chord of ["Control+Enter", "Shift+Enter"]) {
+      const page = await openKeyboardPage(browser, { mapping: { enter: "newline", ctrlEnter: "queue", shiftEnter: "queue" } });
+      const input = page.locator("[data-composer-input]");
+      await input.fill("/status");
+      await input.dispatchEvent("keydown", { key: "Enter", ctrlKey: chord === "Control+Enter", shiftKey: chord === "Shift+Enter", repeat: true });
+      assert.equal((await sends(page)).length, 0);
+      for (const guard of [{ isComposing: true }, { keyCode: 229 }]) {
+        const untouched = await input.evaluate((node, guard) => {
+          const event = new KeyboardEvent("keydown", { key: "Enter", ctrlKey: true, bubbles: true, cancelable: true, ...guard });
+          node.dispatchEvent(event); return !event.defaultPrevented;
+        }, guard);
+        assert.equal(untouched, true); assert.equal((await sends(page)).length, 0);
+      }
+      await input.press(chord);
+      assert.equal((await sends(page)).length, 1);
+      assert.equal((await sends(page))[0].followUpMode, "queue");
+      assert.equal(await page.evaluate(() => window.__keyboardIntents.filter((i) => i.type === "status:open").length), 0);
+      await page.close();
+    }
+    const page = await openKeyboardPage(browser, { mapping: { enter: "newline", ctrlEnter: "newline", shiftEnter: "newline" } });
+    const input = page.locator("[data-composer-input]");
+    await input.fill("AB"); await input.press("Enter");
+    assert.equal(await input.inputValue(), "AB\n"); assert.deepEqual(await sends(page), []);
+    await input.fill("/status"); await input.press("Enter");
+    assert.equal(await page.evaluate(() => window.__keyboardIntents.filter((i) => i.type === "status:open").length), 1);
+  } finally { await browser.close(); }
+});
+
+test("mobile bare Enter stays native newline even with a saved queue action and physical-looking code", async () => {
+  const browser = await launchBrowser();
+  try {
+    const page = await openKeyboardPage(browser, { mobile: true, mapping: { enter: "queue", ctrlEnter: "queue", shiftEnter: "queue" } });
+    const input = page.locator("[data-composer-input]");
+    await input.fill("Mobile");
+    for (const code of ["", "Enter"]) {
+      assert.equal(await input.evaluate((node, code) => {
+        const event = new KeyboardEvent("keydown", { key: "Enter", code, bubbles: true, cancelable: true });
+        node.dispatchEvent(event); return !event.defaultPrevented;
+      }, code), true);
+    }
+    await input.press("Enter"); assert.equal(await input.inputValue(), "Mobile\n");
+    assert.deepEqual(await sends(page), []);
+    await input.press("Control+Enter"); assert.equal((await sends(page)).length, 1);
+    assert.equal((await sends(page))[0].followUpMode, "queue");
+  } finally { await browser.close(); }
+});
+
+test("shortcut queue/steer reuse ordinary send-message for both providers on Web, WebView IPC/direct and mobile", async () => {
+  const browser = await launchBrowser();
+  try {
+    for (const surface of [
+      { name: "Web", surface: "web", width: 1280 },
+      { name: "WebView IPC", surface: "vscode", width: 520 },
+      { name: "WebView direct", surface: "vscode", width: 520, directTransport: true },
+      { name: "Mobile", surface: "web", width: 390, mobile: true },
+    ]) for (const provider of ["codex", "claude"]) {
+      const page = await browser.newPage({ viewport: { width: surface.width, height: 844 },
+        ...(surface.mobile ? { isMobile: true, hasTouch: true } : {}) });
+      page.setDefaultTimeout(5_000);
+      await page.addInitScript(() => {
+        localStorage.setItem("agent-hub:composer-shortcuts:v1", JSON.stringify({ enter: "steer", ctrlEnter: "queue", shiftEnter: "steer" }));
+        localStorage.setItem("fixture:send-mode", "accept");
+      });
+      const initial = snapshot();
+      initial.tasks[0].provider = provider; initial.selected.provider = provider; initial.settings.provider = provider;
+      // An idle source still sends the existing steer intent; server fallback owns its outcome.
+      initial.tasks[0].running = false;
+      const diagnostics = await openFixture(page, { fixtureSnapshot: initial,
+        surface: surface.surface, directTransport: Boolean(surface.directTransport) });
+      if (surface.mobile) await openMobileConversation(page);
+      else await page.evaluate(() => window.AgentHub.showSelectedTask());
+      const input = page.locator("[data-composer-input]");
+      let count = 0;
+      for (const [chord, mode] of [["Enter", surface.mobile ? null : "steer"], ["Control+Enter", "queue"], ["Shift+Enter", "steer"]]) {
+        const text = `${surface.name} ${provider} ${chord}`;
+        await input.fill(text);
+        await page.locator("[data-composer-send]").waitFor({ state: "visible" });
+        await page.waitForFunction(() => !document.querySelector("[data-composer-send]").disabled, null, { timeout: 5_000 })
+          .catch(async (error) => { throw new Error(`${surface.name} ${provider} ${chord}: send disabled; ${JSON.stringify(await bridgeCalls(page, "send-message"))}; ${error.message}`); });
+        await input.press(chord);
+        if (!mode) {
+          assert.equal(await input.inputValue(), text + "\n");
+          assert.equal((await bridgeCalls(page, "send-message")).length, count);
+          continue;
+        }
+        count++;
+        await page.waitForFunction((count) => JSON.parse(localStorage.getItem("fixture:bridge-log") ?? "[]")
+          .filter((entry) => entry.action === "send-message").length === count, count, { timeout: 5_000 });
+        const request = (await bridgeCalls(page, "send-message")).at(-1);
+        assert.equal(request.params.followUpMode, mode, `${surface.name} ${provider} ${chord}`);
+        assert.equal(request.params.provider, provider);
+        assert.equal(request.params.text, text);
+        assert.equal(request.transport ?? "ipc", surface.surface === "web" || surface.directTransport ? "http" : "ipc");
+        assert.equal(Object.hasOwn(request.params, "exactSteer"), false);
+        assert.equal(Object.hasOwn(request.params, "exactTarget"), false);
+        assert.equal(await input.inputValue(), "");
+      }
+      assert.equal((await bridgeCalls(page, "send-message")).length, count);
+      assert.deepEqual(diagnostics, []);
+      await page.unrouteAll({ behavior: "ignoreErrors" });
+      await page.close();
+    }
+  } finally { await browser.close(); }
+});
 
 async function sends(page) {
   return page.evaluate(() => window.__keyboardIntents.filter((intent) => intent.type === "message:send"));

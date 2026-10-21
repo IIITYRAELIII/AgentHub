@@ -157,12 +157,15 @@ test("changed pre-existing gateway config refuses before write or a competing li
     workingDirectory, executable: path.join(workingDirectory, "not-executed.exe") };
   const file = path.join(workingDirectory, "Caddyfile"), previous = "retained old gateway configuration\n";
   await writeFile(file, previous);
-  let spawns = 0;
+  let spawns = 0, handoffs = 0;
   const controller = new DirectGatewayController(settings, { spawnImpl: () => { spawns++; assert.fail("no competing gateway"); },
+    handoffImpl: async () => { handoffs++; throw Object.assign(new Error("existing owner is not ready"),
+      { code: "DIRECT_GATEWAY_CONFIG_HANDOFF_REQUIRED" }); },
     probeImpl: async () => true, scheduleHealthCheckImpl: () => ({ unref() {} }), cancelHealthCheckImpl: () => {} });
   await assert.rejects(controller.start(), error => error.code === "DIRECT_GATEWAY_CONFIG_HANDOFF_REQUIRED");
   assert.equal(await readFile(file, "utf8"), previous);
   assert.equal(spawns, 0);
+  assert.equal(handoffs, 1);
   await controller.close();
   // Only a completed owning config handoff permits normal unchanged adoption.
   await writeFile(file, directGatewayCaddyfile(settings));

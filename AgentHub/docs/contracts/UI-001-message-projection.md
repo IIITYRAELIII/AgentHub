@@ -6,6 +6,14 @@ query or fragment are admitted. A pending edit does not change the effective
 running endpoint; ordinary restart applies the saved value. Private historical
 account policy is never part of the client configuration projection (ADR-0329).
 
+An external-file owner dialog projects only its exact current opening, including
+when the same file is reopened. It captures the path, API and operation revision
+before awaiting status/preparation/create/poll/revoke. A late response cannot
+change another opening's file/link, issue a follow-up creation, close a new
+confirmation or overwrite its clipboard feedback. The original admitted server
+effect remains intact; projection invalidation neither cancels nor replays it.
+An ambiguous creation retains its original artifact/request/TTL envelope.
+
 Task cleanup confirmation projects ignored local paths directly from the owning
 server preview, separately from Git clean/dirty state. The existing scrollable
 preview exposes those preserved paths without deriving deletion authority in
@@ -550,6 +558,14 @@ placed after the source answer and restored on first snapshot and reload without
 creating a user turn. The bound target Thread and completion time are recorded
 after successful catalog binding. Readiness is the fresh `idle` readback of the
 exact target after creation and item injection, with no generated model turn.
+A live Stream representative follows its highest durable Thread position before
+historical selection or retained running state. Stream-only Desktop navigation
+uses the catalog owner's current binding, independently of catalog ordering;
+an explicit retained provider/Thread reference selects that exact catalog entry.
+A historical turn route retains its exact history page while the head evolves.
+Selecting the Stream explicitly resumes head-history navigation. Retained links
+whose Thread no longer has a catalog entry still resolve through their owning
+Stream lineage; the exact historical turn body remains provider/Thread scoped.
 A rotation that stopped before switching produces no completed rotation marker.
 Percentages name their historical stage. The post-compaction estimate is shown
 with an explicit estimated label only when bound to that exact compaction and

@@ -13,6 +13,7 @@ import {
   CODEX_REASONING_EFFORTS,
   normalizeCodexSandboxMode,
 } from "../../domain/agent-runtime-settings.mjs";
+import { fileTransferPolicy } from "../../domain/file-transfer.mjs";
 import { defaultRuntimeRoot, runtimeLayout } from "./runtime-layout.mjs";
 
 export const AGENT_HUB_ROOT = path.resolve(import.meta.dirname, "../../..");
@@ -406,6 +407,7 @@ export function miniAppSettings(value, { configDirectory = process.cwd() } = {})
       publicUrl,
       tokenFile,
     },
+    fileTransfer: fileTransferPolicy(raw.fileTransfer ?? {}),
     worker: {
       enabled: workerEnabled,
       publicUrl: workerPublicUrl,

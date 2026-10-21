@@ -196,6 +196,8 @@
 
   const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
   const PHOSPHOR_ICON_PATHS = Object.freeze({
+    list: "M224,128a8,8,0,0,1-8,8H40a8,8,0,0,1,0-16H216A8,8,0,0,1,224,128ZM40,72H216a8,8,0,0,0,0-16H40a8,8,0,0,0,0,16ZM216,184H40a8,8,0,0,0,0,16H216a8,8,0,0,0,0-16Z",
+    "dots-three": "M140,128a12,12,0,1,1-12-12A12,12,0,0,1,140,128ZM60,116a12,12,0,1,0,12,12A12,12,0,0,0,60,116Zm136,0a12,12,0,1,0,12,12A12,12,0,0,0,196,116Z",
     "arrow-down": "M213.66,162.34a8,8,0,0,0-11.32,0L136,228.69V16a8,8,0,0,0-16,0V228.69L53.66,162.34a8,8,0,0,0-11.32,11.32l80,80a8,8,0,0,0,11.32,0l80-80A8,8,0,0,0,213.66,162.34Z",
     "arrow-up": "M213.66,82.34l-80-80a8,8,0,0,0-11.32,0l-80,80A8,8,0,0,0,53.66,93.66L120,27.31V240a8,8,0,0,0,16,0V27.31l66.34,66.35a8,8,0,0,0,11.32-11.32Z",
     "caret-down": "M213.66,101.66l-80,80a8,8,0,0,1-11.32,0l-80-80A8,8,0,0,1,53.66,90.34L128,164.69l74.34-74.35a8,8,0,0,1,11.32,11.32Z",
@@ -321,6 +323,11 @@
   }
 
   function snapshotTaskPreferred(candidate, current) {
+    // Thread position is assigned by the durable Stream lineage owner.
+    // Historical selection (or a retained old run) must not hide the new head.
+    const candidatePosition = Number(candidate?.threadPosition) || 0;
+    const currentPosition = Number(current?.threadPosition) || 0;
+    if (candidatePosition !== currentPosition) return candidatePosition > currentPosition;
     const rank = (task) => task?.selected
       ? 3
       : task?.running && String(task?.run?.turnId ?? "").trim()
@@ -336,9 +343,6 @@
       const currentStartedAt = Date.parse(current?.run?.startedAt ?? current?.startedAt ?? "") || 0;
       if (candidateStartedAt !== currentStartedAt) return candidateStartedAt > currentStartedAt;
     }
-    const candidatePosition = Number(candidate?.threadPosition) || 0;
-    const currentPosition = Number(current?.threadPosition) || 0;
-    if (candidatePosition !== currentPosition) return candidatePosition > currentPosition;
     return snapshotTaskActivityAtMs(candidate) > snapshotTaskActivityAtMs(current);
   }
 
