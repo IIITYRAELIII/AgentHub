@@ -42,3 +42,14 @@ with package names/versions/license declarations and hashes of shipped adjacent
 notice files. It does not relabel `SEE LICENSE` or undeclared licenses as MIT.
 The complete ready archive and its dependencies still require review before
 public publication. Runtime state and build-machine paths are never notices.
+
+## Public status header artwork boundary
+
+The public status-header family uses byte-exact copies of the existing unbranded
+`assets/notification-cards/background-hex.png`. Provider/group file names are
+stable selection keys; the images contain no provider name or logo. All variants
+currently share the same artwork. Exact original overlaid vendor-mark blobs are
+excluded across both historical source prefixes and retained only in private
+Utilities provenance. Contributor permission for Hub code/backgrounds does not
+assert permission to redistribute a vendor mark. No runtime provider selection,
+status command, receipt identity or model invocation changes in this replacement.
