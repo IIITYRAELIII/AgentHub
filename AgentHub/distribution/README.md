@@ -8,15 +8,16 @@ restart, push Git, change Task results or publish a second release.
 
 The standalone repository keeps `AgentHub/` as its source directory. This retains
 the accepted `AgentHub/package.json` release metadata paths. Its root contains
-the public README, license, contribution/security guidance, CI and Hub-only
+the public README, license, contribution/security guidance and Hub-only
 release notes. Historical `TelegramIntegration/` paths remain only where they
 actually existed in the extracted development history.
 
 Files under `opensource/` are reviewed draft root overlays, not an automatic
 publish operation. `release-notes.example.md` becomes root `CHANGELOG.md` only in
 the independent export. Its template name deliberately respects the managed Task
-rule excluding files named CHANGELOG.md. MIT and SECURITY drafts retain their
-explicit pending boundaries until rights and the real private channel are proven.
+rule excluding files named CHANGELOG.md. MIT scope and the real private reporting
+channel are documented in the reviewed public root overlays. Those source
+approvals do not accept a runtime package.
 
 ## Offline history extraction
 
@@ -69,7 +70,30 @@ reviewed source cutover, the existing release owner must prepare the runtime fro
 the accepted standalone source. Repository/selection authority remains with that
 owner; the packager does not manufacture a new adoption or receipt.
 
-The recipient runs the thin bootstrap against that exact version/checksum:
+For discovery, publish the owner-accepted ready ZIP under the fixed asset name
+`AgentHub-win32-x64.zip`, plus its adjacent `AgentHub-win32-x64.zip.json`, in the
+same stable GitHub release. The builder emits the descriptor with exact package,
+source, manifest and outer checksum identities. Its `publicApproval: false` is
+preparation metadata, not an approval flag to flip: only the existing release
+owner's reviewed publication admits assets. This tool does not upload a release.
+
+The recipient can select an exact stable tag (or explicitly `latest`):
+
+```powershell
+python install_release.py --release <exact-stable-tag> --runtime-root <private-runtime-directory> --scratch-root <separate-private-temporary-directory>
+```
+
+The fixed anonymous API origin is `IIITYRAELIII/AgentHub`; Utilities is never an
+update origin. No token or GitHub CLI is read. One bounded release response pins
+both versioned asset URLs, GitHub SHA-256 digests and sizes. Missing digests,
+duplicate assets, unpublished/prerelease metadata, cross-repository URLs and
+descriptor/ZIP/inner-manifest disagreement refuse before Node execution. The
+descriptor and ZIP are independently hashed against that response; this is not
+an author signature or immutable-release guarantee. Additional `--sha256` pins
+the chosen ZIP even when using discovery. API redirects are refused; asset
+redirects retain the existing canonical HTTPS host restrictions.
+
+Alternatively the recipient supplies an exact version/checksum:
 
 ```powershell
 python install_release.py --url https://github.com/IIITYRAELIII/AgentHub/releases/download/<version>/<package>.zip --sha256 <published-sha256> --runtime-root <private-runtime-directory> --scratch-root <separate-private-temporary-directory>
@@ -86,6 +110,7 @@ Focused preparation checks, with `AGENT_HUB_TEST_TEMP` on the intended volume:
 
 ```powershell
 python -m unittest discover -s AgentHub/distribution -p package_test.py -v
+python -m unittest discover -s AgentHub/distribution -p release_source_test.py -v
 python -m unittest discover -s AgentHub/distribution -p installed_package_test.py -v
 ```
 
@@ -137,7 +162,9 @@ identifier or participant acceptance is invented here.
 
 ## Current preparation limits
 
-No new public repository, assets, release publisher cutover or source-tree removal
-is established by this document. Contributor rights/MIT scope, the final accepted
-product pin, complete export audit, public private-vulnerability reporting and
-ready-package acceptance must be evidenced before they are described as done.
+The audited source history and preserved WIP branch are published in the public
+AgentHub repository, with confirmed scoped grants and an enabled private
+vulnerability channel. The ready Windows product release, exact final selected
+composition/prepared standalone runtime, actual public download acceptance and
+managed Utilities source-tree replacement remain separate delivery stages.
+No source audit, repair runtime or synthetic installer test substitutes for them.

@@ -87,7 +87,8 @@ def build_package(prepared: Path, license_file: Path, notices_file: Path, source
             entry.external_attr = (stat.S_IFREG | 0o644) << 16
             entry.compress_type = zipfile.ZIP_DEFLATED
             archive.writestr(entry, data)
-    result = {"schema": 1, "asset": output.name, "bytes": output.stat().st_size,
+    result = {"schema": 1, "repository": REPOSITORY, "platform": "win32-x64",
+              "version": descriptor["version"], "asset": output.name, "bytes": output.stat().st_size,
               "sha256": file_hash(output), "releaseId": release_id, "sourceCommit": source_commit,
               "packageManifestSha256": hashlib.sha256(payload["package-manifest.json"]).hexdigest(),
               "publicApproval": False}
