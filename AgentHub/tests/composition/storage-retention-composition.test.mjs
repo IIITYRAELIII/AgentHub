@@ -26,6 +26,10 @@ test("every installed user's startup schedules deferred ready work and periodic 
       list: async () => { listed++; return { items: [], done: true }; },
       preview: async () => { throw new Error("no candidate"); }, prune: async () => { throw new Error("no candidate"); },
       reconcile: async () => { throw new Error("no intent"); } }) },
+    releaseGitWorkspaces: { storageRetentionOwner: () => ({ id: "release-generation-transport",
+      list: async () => ({ items: [], done: true }), preview: async () => { throw new Error("no candidate"); },
+      prune: async () => { throw new Error("no candidate"); }, reconcile: async () => { throw new Error("no intent"); } }) },
+    releaseOperations: {},
     timers: { schedule: (name, run, delay) => schedules.push({ name, run, delay }), clear: name => sources.set("cleared", name) },
     readReady: () => ready, readBusy: () => busy, isStopping: () => false,
     health: { setDiagnosticSource: (name, read) => sources.set(name, read) }, environment: {

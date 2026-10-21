@@ -85,6 +85,30 @@ stay pending. The scheduler appends this one reviewed owner to its known v1
 registry while retaining all original pending children, bindings and observations.
 An older policy or an unknown registry/version defers without clearing custody.
 
+## Policy v3: completed release-generation transports
+
+The release operation owner exposes read-only eligibility only for its exact
+completed current generation. The immutable generation identity, applied
+validation/finalization inputs and every approved target's published outcome
+must agree. A failed, waiting, superseded or unknown generation is not retired
+by age. The release filesystem owner holds the existing per-generation lease,
+also shared by preparation and canonical discard. It verifies the generation's
+identity and marked independent clone against that proof and the frozen
+checkpoint/manifest. Its full local object graph must contain all advertised
+bundle roots, and those commit-ish roots must remain anchored in retained Git
+refs/HEAD. Unanchored objects are not sufficient because later Git GC may prune
+them; no new keeper refs or automatic Git mutations are created. Alternates, shallow/partial clones, changed work or mismatched
+capture metadata refuse.
+
+This policy removes only the exact redundant source.bundle through the existing
+native single-file transport custodian. The generation root, repository, refs,
+checkpoints, manifests, receipts, dependency trees and ignored/untracked useful
+work are never swept. A missing bundle under the same original binding is
+reconciled as already removed; an unknown present bundle remains with its
+original maintenance child. No new release/publication operation is created.
+Known v1/v2 registries may append this owner while preserving pending identities;
+unknown registries/versions and rollback to an older registry defer unchanged.
+
 ## Boundaries and remaining work
 
 Each pass admits at most three units and checks a 20-second cooperative budget
@@ -95,11 +119,11 @@ free-space deltas; concurrent writers make the latter observations, not exact
 per-operation allocation attribution.
 
 These policies do not automatically delete legacy migration archives,
-unpublished/unknown integration captures, release repositories/generations,
+unpublished/unknown integration captures, release repository/generation bodies,
 current/running/rollback/prepared runtime versions, attachments, receipts, audit
 evidence or dependency/WIP directories. They retain their existing owners and
 must receive separate eligibility/effect adapters before the policy expands.
-Task cleanup now explicitly refuses ignored local data, including reproducible
+The v3 transport exception does not retire those bodies. Task cleanup explicitly refuses ignored local data, including reproducible
 dependencies until their own owner proves retirement; --force is not that proof.
 
 Unknown admitted transports that remain present are retained for authoritative

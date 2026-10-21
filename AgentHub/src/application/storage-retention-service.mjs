@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { MAINTENANCE_OPERATION_KINDS } from "../domain/maintenance-operation.mjs";
 
 export const STORAGE_RETENTION_VERSION = 1;
-export const STORAGE_RETENTION_POLICY_VERSION = 2;
+export const STORAGE_RETENTION_POLICY_VERSION = 3;
 const KIND = MAINTENANCE_OPERATION_KINDS.STORAGE_RETENTION;
 const ROOT_ID = `storage-retention:v${STORAGE_RETENTION_VERSION}`;
 const SCOPE = Object.freeze({ streamId: "agent-hub-runtime", threadId: "storage-retention" });
@@ -130,10 +130,10 @@ export class StorageRetentionService {
       metadata: { version: STORAGE_RETENTION_VERSION, ownerIds: this.owners.map(o => o.id), pending: [], summary: summary() } });
     const ownerIds = this.owners.map(o => o.id);
     const ownerListChanged = JSON.stringify(parent.metadata.ownerIds) !== JSON.stringify(ownerIds);
-    const knownUpgrade = JSON.stringify(parent.metadata.ownerIds) === '["native-merge-transport"]'
-      && JSON.stringify(ownerIds) === '["native-merge-transport","runtime-release"]';
+    const knownUpgrade = ['["native-merge-transport"]', '["native-merge-transport","runtime-release"]'].includes(JSON.stringify(parent.metadata.ownerIds))
+      && JSON.stringify(ownerIds) === '["native-merge-transport","runtime-release","release-generation-transport"]';
     if (TERMINAL.has(parent.status) || parent.metadata.version !== STORAGE_RETENTION_VERSION
-        || ![undefined, 1, STORAGE_RETENTION_POLICY_VERSION].includes(parent.metadata.policyVersion)
+        || ![undefined, 1, 2, STORAGE_RETENTION_POLICY_VERSION].includes(parent.metadata.policyVersion)
         || (ownerListChanged && !knownUpgrade)) {
       return this.#last = { state: "deferred", reason: "retention-policy-incompatible" };
     }

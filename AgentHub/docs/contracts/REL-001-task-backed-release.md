@@ -38,6 +38,17 @@ that retired binding before effects, and known partial work resumes only that
 original operation/root/manifest. Unknown data or custody stays retained; no
 recursive directory-removal fallback or Task-publication effect is granted.
 
+Policy v3 may retire only a redundant generation source.bundle after the original
+ReleaseOperation proves its exact current generation done, applied validate/finalize
+inputs and published outcomes for every approved target. The marked full independent
+clone, frozen checkpoint/manifest and advertised locally connected object roots,
+anchored in retained refs/HEAD against later ordinary GC, must
+match that generation. Shallow/partial/alternate-backed, dirty, incomplete, failed,
+waiting, superseded or UNKNOWN captures remain pinned. Prepare, discard and bundle
+retirement share the existing generation lease. The same native exact-file transport
+custody applies; the repository, refs, generation body, evidence and all ignored WIP
+remain. This is not a new release, Task cleanup, recursive deletion or age policy.
+
 ## Current corrected candidates and historical release facts (2026-10-14)
 
 A new candidate is admitted from the exact CURRENT normally accepted results.

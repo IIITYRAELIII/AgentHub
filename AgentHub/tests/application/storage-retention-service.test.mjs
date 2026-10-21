@@ -70,7 +70,7 @@ test("known partial batches continue SAME admitted child and keep observations d
   assert.equal(f.store.get(original).status, "succeeded");
 });
 
-test("only the explicit v1 native-transport to v2 runtime-owner append preserves pending original intents", async t => {
+test("only explicit v1/v2 registry upgrades to v3 preserve pending original intents", async t => {
   const f = await setup(t);
   f.owner.id = "native-merge-transport";
   f.owner.list = async () => ({ items: [{ id: "a", cursor: "a" }], done: true });
@@ -83,11 +83,12 @@ test("only the explicit v1 native-transport to v2 runtime-owner append preserves
   const other = { ...f.owner, id: "runtime-release",
     list: async () => ({ items: [{ id: "runtime", cursor: "runtime" }], done: true }),
     prune: async () => ({ status: "removed" }) };
-  const upgraded = f.make({ owners: [f.owner, other] });
+  const release = { ...other, id: "release-generation-transport", list: async () => ({ items: [], done: true }) };
+  const upgraded = f.make({ owners: [f.owner, other, release] });
   assert.equal((await upgraded.runOnce()).removed, 1);
   const after = f.store.get("storage-retention:v1");
-  assert.deepEqual(after.metadata.ownerIds, ["native-merge-transport", "runtime-release"]);
-  assert.equal(after.metadata.policyVersion, 2);
+  assert.deepEqual(after.metadata.ownerIds, ["native-merge-transport", "runtime-release", "release-generation-transport"]);
+  assert.equal(after.metadata.policyVersion, 3);
   assert.equal(after.metadata.pending[0].operationId, original);
   assert.equal(f.store.get(original).status, "reconciling");
   const rollback = await f.make().runOnce();
@@ -95,6 +96,23 @@ test("only the explicit v1 native-transport to v2 runtime-owner append preserves
   assert.equal(f.store.get("storage-retention:v1").revision, after.revision);
   f.store.transition(after.operationId, { metadata: { policyVersion: 99 } }, { expectedRevision: after.revision });
   assert.equal((await upgraded.runOnce()).reason, "retention-policy-incompatible");
+});
+
+test("a v2 runtime retirement in flight keeps its exact original child after the v3 append", async t => {
+  const f = await setup(t);
+  f.owner.id = "runtime-release";
+  f.owner.prune = async () => ({ status: "unknown", reason: "still-original" });
+  f.owner.reconcile = async () => ({ status: "unknown", reason: "still-original" });
+  const native = { ...f.owner, id: "native-merge-transport", list: async () => ({ items: [], done: true }) };
+  await f.make({ owners: [native, f.owner] }).runOnce();
+  const parent = f.store.get("storage-retention:v1");
+  f.store.transition(parent.operationId, { metadata: { policyVersion: 2 } }, { expectedRevision: parent.revision });
+  const original = parent.metadata.pending[0].operationId;
+  const release = { ...native, id: "release-generation-transport" };
+  await f.make({ owners: [native, f.owner, release] }).runOnce();
+  assert.equal(f.store.get("storage-retention:v1").metadata.policyVersion, 3);
+  assert.ok(f.store.get("storage-retention:v1").metadata.pending.some(item => item.operationId === original));
+  assert.equal(f.store.get(original).status, "reconciling");
 });
 
 test("unready, isolated and stopping contexts never initialize retention state", async t => {

@@ -20,6 +20,14 @@ current/rollback/running/prepared/source pins and original child identity. The
 reviewed owner-list append preserves v1 pending intents. Partial batches remain
 attached to the same admitted child; unknown outcomes are not replayed as new
 deletion. An older or unknown registry/version defers without clearing state.
+Policy v3 appends only redundant release-generation bundle transports after the
+original release owner proves its exact current generation completed, all approved
+publication targets applied and hash-bound validation/finalization receipts applied.
+The release filesystem owner rechecks original capture/clone/object connectivity
+under its existing per-generation lease and native single-file deletion custody.
+Known v1/v2 registries preserve pending children when appending this owner; unknown
+registries and rollback remain fail-closed. No replay/publication/Task transition,
+recursive generation deletion or age-based legacy adoption follows from this policy.
 Other persistent artifacts
 remain under their existing cleanup contracts and are preserved until those
 owners supply their own verified eligibility/effect adapters.

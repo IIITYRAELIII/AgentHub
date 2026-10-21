@@ -6,6 +6,7 @@ import path from "node:path";
 import { ReleaseCandidateFrozenError } from "../../domain/task-board-task.mjs";
 import { ReleasePreparationRejectedError } from "../../domain/release-preparation.mjs";
 import { assertPreparationCheckpoint } from "./release-preparation-guard.mjs";
+import { ReleaseGenerationTransportRetention } from "./release-generation-transport-retention.mjs";
 import { assertInstalledLocalSourceBaseline, installedNativeHistoryBaseline,
   assertInstalledAgreedMainOrigin } from "./local-source-baseline.mjs";
 import { readNativeUpstreamAdoptions, assertNativeUpstreamOrigin } from "./native-upstream-adoption.mjs";
@@ -674,6 +675,21 @@ export class ReleaseGitWorkspaceService {
     assertContourGitAvailable(this.#contourExternalEffects, "release-git", operation);
   }
 
+  storageRetentionOwner({ readGeneration, isStopping } = {}) {
+    this.#assertAvailable("storageRetentionOwner");
+    return new ReleaseGenerationTransportRetention({ dataDir: this.dataDir, readGeneration, isStopping,
+      withGenerationLease: (key, action) => withInterprocessLocks([
+        path.join(this.dataDir, "locks", `release-generation-${key}`),
+      ], action, { timeoutMs: 250 }),
+      gitAt: async (root, args, { lease, ...options } = {}) => {
+        await lease.assertOwned();
+        const result = await runGit(["--no-lazy-fetch", "--no-replace-objects", "--no-optional-locks",
+          "-c", "core.fsmonitor=false", ...args], { ...options, cwd: root });
+        await lease.assertOwned();
+        return result;
+      } });
+  }
+
   async assertPrimaryInvariant(projectRoot, { phase = "release" } = {}) {
     this.#assertAvailable("assertPrimaryInvariant");
     const snapshot = await primarySnapshot(projectRoot);
@@ -1122,6 +1138,15 @@ export class ReleaseGitWorkspaceService {
 
   async discardGenerationCandidate(candidate) {
     this.#assertAvailable("discardGenerationCandidate");
+    const key = path.basename(String(candidate?.generationRoot ?? ""));
+    if (!/^[a-f0-9]{24}$/u.test(key)) throw new Error("release generation cleanup identity required");
+    return withInterprocessLocks([path.join(this.dataDir, "locks", `release-generation-${key}`)],
+      lease => this.#discardGenerationCandidate(candidate, lease));
+  }
+
+  async #discardGenerationCandidate(candidate, lease) {
+    this.#assertAvailable("discardGenerationCandidate");
+    await lease.assertOwned();
     const releaseGenerationsRoot = path.join(this.dataDir, "release-gens");
     const generationRoot = canonicalPath(String(candidate?.generationRoot ?? ""));
     if (!generationRoot || samePath(generationRoot, releaseGenerationsRoot)
@@ -1181,6 +1206,7 @@ export class ReleaseGitWorkspaceService {
         }
       }
     }
+    await lease.assertOwned();
     await rm(generationRoot, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
   }
 

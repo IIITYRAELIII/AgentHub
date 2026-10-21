@@ -1,6 +1,6 @@
 # Native storage retention
 
-Normal installed Hub startup schedules policy v2 after readiness and periodically
+Normal installed Hub startup schedules policy v3 after readiness and periodically
 every six hours. The installer does not start the application to run cleanup.
 No per-user external scheduled task or Codex automation is required. Test Contour,
 recording, release acceptance and development runtimes do not run production
@@ -58,11 +58,33 @@ The manifest and empty directories/root are last; no recursive fallback exists.
 Policy migration preserves all v1 pending transports, and older code defers upon
 the unfamiliar owner registry rather than clearing those operations.
 
+Policy v3 appends release-generation transport retirement. The original release
+owner must report its exact current generation done, every approved publication
+target applied/already-applied and hash-bound validate/finalize receipts applied.
+Waiting, failed, superseded and UNKNOWN generations remain retained. Only the
+redundant `release-gens/*/source.bundle` is eligible: its original identity,
+frozen checkpoint/manifest and marked independent clone must match the published
+candidate. All advertised objects must be locally connected and commit-ish roots
+anchored in retained refs/HEAD, so ordinary Git GC cannot discard them; shallow, partial,
+alternate-backed or dirty clones refuse. Ignored WIP is preserved because no
+repository or directory body is removed. The native single-file custody owner
+performs the same exact-identity/hash/streams/link checks as other transports.
+Git inspection disables lazy fetch, replacement objects and optional locks; no
+missing object is fetched to manufacture local availability. An unsupported Git
+option defers this owner safely. See [Git's global options](https://git-scm.com/docs/git).
+Generation creation, discard and this retirement share the original per-generation
+lease. A lost reply reconciles that SAME child; a still-present bundle is unknown
+and is never submitted as another delete. Registry migration from known v1/v2
+preserves every pending child. Legacy root trees, dependency caches, migration
+archives and failed-generation bodies receive no deletion authority from v3.
+
 Focused validation from AgentHub:
 
 ```text
 node --no-warnings --test tests/application/storage-retention-service.test.mjs tests/composition/storage-retention-composition.test.mjs tests/infrastructure/filesystem/native-merge-transport-retention.test.mjs tests/infrastructure/filesystem/sealed-transport-delete.test.mjs tests/infrastructure/filesystem/selected-git-bundle.test.mjs
 node --no-warnings --test tests/infrastructure/filesystem/runtime-release-retention-policy.test.mjs tests/infrastructure/filesystem/runtime-release-retention.test.mjs tests/infrastructure/filesystem/sealed-runtime-release.test.mjs
+node --no-warnings --test tests/infrastructure/filesystem/release-generation-transport-retention.test.mjs tests/application/storage-retention-service.test.mjs tests/composition/storage-retention-composition.test.mjs
+node --no-warnings --test --test-name-pattern="retention proof|release operation acknowledges" tests/application/release-operation-service.test.mjs
 node --no-warnings --test --test-name-pattern="cleanup preserves ignored WIP|published cleanup|isolated native merge|native Test retains" tests/infrastructure/filesystem/task-git-workspace.test.mjs
 ```
 

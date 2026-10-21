@@ -178,6 +178,7 @@ export async function createProviderApplicationComposition({
   const maintenanceOperations = new MaintenanceOperationStore({ dataDir: config.dataDir });
   const storageRetention = createStorageRetentionComposition({ config, store: maintenanceOperations,
     taskBoard: infrastructure.taskBoard, taskGitWorkspaces: infrastructure.taskGitWorkspaces,
+    releaseGitWorkspaces: infrastructure.releaseGitWorkspaces, releaseOperations: infrastructure.releaseOperations,
     timers: runtimeTimers, readReady: () => agentHubRuntimeHealth.snapshot().ready,
     readBusy: () => runtimeData.taskRuns.size > 0, isStopping: () => hostState.stopping,
     health: agentHubRuntimeHealth });
