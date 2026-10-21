@@ -21,11 +21,10 @@ def regular(path: Path) -> bytes:
     return path.read_bytes()
 
 
-def build_package(prepared: Path, license_file: Path, notices_file: Path, source_commit: str, output: Path) -> dict:
+def verified_runtime_payload(prepared: Path, source_commit: str) -> tuple[bytes, dict, dict]:
+    """Read the immutable manifest and verify its declared runtime file bytes."""
     if not re.fullmatch(r"[0-9a-f]{40}", source_commit):
         raise ValueError("The reviewed exported source commit must be exact")
-    if output.exists() or output.with_suffix(output.suffix+".json").exists():
-        raise ValueError("Package output already exists")
     original = regular(prepared/"runtime-manifest.json")
     manifest = json.loads(original.decode("utf-8"))
     if manifest.get("publicationRevision") != source_commit:
@@ -51,6 +50,14 @@ def build_package(prepared: Path, license_file: Path, notices_file: Path, source
         payload["runtime/"+name] = data
     if "runtime/AgentHub.RuntimeHost.exe" not in payload or "runtime/agent-hub-main.mjs" not in payload:
         raise ValueError("Prepared Windows RuntimeHost/entry point missing")
+    return original, manifest, payload
+
+
+def build_package(prepared: Path, license_file: Path, notices_file: Path, source_commit: str, output: Path) -> dict:
+    if output.exists() or output.with_suffix(output.suffix+".json").exists():
+        raise ValueError("Package output already exists")
+    original, manifest, payload = verified_runtime_payload(prepared, source_commit)
+    release_id = manifest["releaseId"]
     # Public distribution is a NEW immutable artifact. Do not mutate/relabel the
     # original prepared manifest or its release-operation receipt. Its private
     # machine sourceRoot is omitted only in this copied public artifact.

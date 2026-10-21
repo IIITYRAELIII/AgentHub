@@ -53,6 +53,51 @@ repository. A source audit pin is not a release acceptance.
 
 ## Ready packages
 
+The tracked offline packaging checkpoint is the normal interface for the release
+owner after canonical preparation:
+
+```powershell
+python AgentHub/distribution/build_release.py --prepared-receipt <owner-prepared.json> --receipt-sha256 <receipt-sha256> --source-commit <exact-reviewed-export-OID> --version <frozen-artifact-version> --license <confirmed-LICENSE> --notices <actual-shipped-notices> --output-root <private-build-root>
+```
+
+The existing release/build owner supplies those arguments from its saved exact
+release input, not by editing a per-version script. It creates the hash-pinned
+receipt with exactly these fields: `schema: 1`, `phase: "PREPARED"`, original
+`operationId`, positive integer `generation`, `sourceCommit`, `releaseId`,
+`version`, absolute `releaseRoot` and original `manifestSha256`. `version` must
+equal the manifest's `releaseVersion` (or its legacy `version` if absent); the
+stage neither allocates a suffix nor patches a manifest. A receipt is an input
+identity, not new acceptance or authority to publish its source.
+
+`build_release.py` uses the existing packager and recipient archive verifier. It
+verifies the manifest's complete declared runtime payload on every invocation,
+binds license/notices and packaging-tool hashes, and writes an exclusive
+`<output-root>/<version>/intent.json` before artifacts. Its only public asset
+directory is `assets/`, containing exactly `AgentHub-win32-x64.zip`, its `.json`,
+the versioned `install_release.py` and `SHA256SUMS`. The checksums list the first
+three files. Private original receipt, intent, failure and result metadata stay
+outside `assets/`; never upload the whole checkpoint directory.
+
+A successful checkpoint persists `result.json` with `phase: "PACKAGED"`, original
+operation/generation/source/version/manifest identity under `inputs`, an
+`inputIdentity` SHA-256 and the four exact asset names/sizes/hashes. Calling the
+same command revalidates the prepared input and saved package/inner inventory,
+then returns that exact saved result without another pack, version allocation or
+publication. A different input/tool/license/notice, changed artifact, foreign
+file, missing result or partial pair refuses and preserves the original files.
+Even a complete ZIP without the committed result is not completion; inspect the
+original failed/unknown checkpoint through its owning release operation. This
+tool does not delete or silently rebuild it. Its file writes are exclusive and
+flushed; this is not a notarization, filesystem snapshot or independent signature.
+
+Runtime preparation and publication remain existing release-owner stages. The
+minimal bridge that freezes the preparation version, reuses its original
+PREPARED result before any reallocation, and publishes the accepted allowlist
+through the original release checkpoint is being completed by that owner. Until
+that exact bridge and final product input are reviewed, this offline checkpoint
+alone is not the complete build-to-public-release command. No second publisher,
+manual asset upload or source-only artifact substitutes for it.
+
 The publisher's prepared runtime is an input, not a trigger for another build:
 
 ```powershell
@@ -110,6 +155,7 @@ Focused preparation checks, with `AGENT_HUB_TEST_TEMP` on the intended volume:
 
 ```powershell
 python -m unittest discover -s AgentHub/distribution -p package_test.py -v
+python -m unittest discover -s AgentHub/distribution -p build_release_test.py -v
 python -m unittest discover -s AgentHub/distribution -p release_source_test.py -v
 python -m unittest discover -s AgentHub/distribution -p installed_package_test.py -v
 ```
@@ -117,6 +163,12 @@ python -m unittest discover -s AgentHub/distribution -p installed_package_test.p
 The latter uses the real native host builder, manifest verification and runtime
 installation owner with synthetic application/state bytes. It is not product,
 provider, production data migration or public download acceptance.
+It invokes the same packaging CLI twice for each actual native prepared fixture,
+proves saved result and all artifact bytes/mtimes stay unchanged, then uses the
+resulting package for install/update/rollback. The dedicated checkpoint suite
+also exercises real package integrity, cutpoints and reparse refusal. These
+tests do not promise bitwise reproducibility of independent full product builds
+or replace the required real public download and installer acceptance.
 
 The package must contain a verified prepared runtime, its production dependencies
 and native RuntimeHost, plus license/notices and safe first-run configuration.

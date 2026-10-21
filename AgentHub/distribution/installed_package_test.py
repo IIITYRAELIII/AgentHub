@@ -9,8 +9,7 @@ import sys
 import tempfile
 import unittest
 
-from build_package import build_package
-from install_release import extract_verified
+from install_release import extract_verified, file_hash
 
 ROOT = Path(__file__).resolve().parent
 
@@ -65,8 +64,27 @@ class InstalledPackageTests(unittest.TestCase):
                 area = root/f"prepare-{i}"
                 output = run(["node", str(ROOT/"prepare-fixture.mjs"), str(area), f"synthetic-{i}", f"synthetic app {i}", str(i)*40])
                 prepared = Path(json.loads(output.stdout.splitlines()[-1])["releaseRoot"])
-                archive = root/f"synthetic-{i}.zip"
-                manifest = build_package(prepared, license_file, notices, str(i)*40, archive)
+                native_manifest = json.loads((prepared/"runtime-manifest.json").read_text(encoding="utf-8"))
+                receipt = root/f"owner-prepared-{i}.json"
+                receipt.write_text(json.dumps({"schema": 1, "phase": "PREPARED", "operationId": f"fixture-{i}",
+                    "generation": i, "sourceCommit": str(i)*40, "releaseId": f"synthetic-{i}",
+                    "version": native_manifest["releaseVersion"], "releaseRoot": str(prepared),
+                    "manifestSha256": file_hash(prepared/"runtime-manifest.json")}), encoding="utf-8")
+                checkpoint = root/f"package-checkpoint-{i}"
+                build = [sys.executable, "-X", "utf8", "-B", str(ROOT/"build_release.py"),
+                         "--prepared-receipt", str(receipt), "--receipt-sha256", file_hash(receipt),
+                         "--source-commit", str(i)*40, "--version", native_manifest["releaseVersion"],
+                         "--license", str(license_file), "--notices", str(notices), "--output-root", str(checkpoint)]
+                first = json.loads(run(build).stdout)
+                namespace = checkpoint/native_manifest["releaseVersion"]
+                before = {str(p.relative_to(namespace)): (p.read_bytes(), p.stat().st_mtime_ns)
+                          for p in namespace.rglob("*") if p.is_file()}
+                self.assertEqual(json.loads(run(build).stdout), first)
+                self.assertEqual({str(p.relative_to(namespace)): (p.read_bytes(), p.stat().st_mtime_ns)
+                                  for p in namespace.rglob("*") if p.is_file()}, before)
+                self.assertEqual((namespace/"assets/install_release.py").read_bytes(), bootstrap.read_bytes())
+                archive = namespace/"assets/AgentHub-win32-x64.zip"
+                manifest = json.loads(archive.with_suffix(".zip.json").read_text(encoding="utf-8"))
                 package = root/f"package-{i}"
                 extract_verified(archive, manifest["sha256"], package)
                 packages.append(package)
