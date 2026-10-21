@@ -72,6 +72,8 @@ performs the same exact-identity/hash/streams/link checks as other transports.
 Git inspection disables lazy fetch, replacement objects and optional locks; no
 missing object is fetched to manufacture local availability. An unsupported Git
 option defers this owner safely. See [Git's global options](https://git-scm.com/docs/git).
+Legacy grafts and ambient object/index/repository overrides also defer; proof
+must describe this independent repository's ordinary local object graph.
 Generation creation, discard and this retirement share the original per-generation
 lease. A lost reply reconciles that SAME child; a still-present bundle is unknown
 and is never submitted as another delete. Registry migration from known v1/v2

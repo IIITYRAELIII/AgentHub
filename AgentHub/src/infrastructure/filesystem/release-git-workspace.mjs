@@ -683,6 +683,10 @@ export class ReleaseGitWorkspaceService {
       ], action, { timeoutMs: 250 }),
       gitAt: async (root, args, { lease, ...options } = {}) => {
         await lease.assertOwned();
+        if (["GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_SHALLOW_FILE",
+          "GIT_DIR", "GIT_COMMON_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"].some(name => process.env[name])) {
+          throw new Error("Release retention requires its ordinary local Git object/index context");
+        }
         const result = await runGit(["--no-lazy-fetch", "--no-replace-objects", "--no-optional-locks",
           "-c", "core.fsmonitor=false", ...args], { ...options, cwd: root });
         await lease.assertOwned();

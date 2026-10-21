@@ -7,7 +7,8 @@ import { deleteSealedTransport } from "./sealed-transport-delete.mjs";
 const hash = value => createHash("sha256").update(value).digest("hex");
 const retained = reason => ({ status: "retained", reason });
 const absent = error => { if (error.code === "ENOENT") return null; throw error; };
-const same = (a, b) => path.resolve(a).toLowerCase() === path.resolve(b).toLowerCase();
+const same = (a, b) => process.platform === "win32"
+  ? path.resolve(a).toLowerCase() === path.resolve(b).toLowerCase() : path.resolve(a) === path.resolve(b);
 const keys = ["dev", "ino", "size", "mtimeNs", "ctimeNs", "nlink"];
 
 async function plain(file, directory = true) {
@@ -21,7 +22,15 @@ async function metadata(file) {
   if (first.nlink !== 1n || first.size > 1024n * 1024n) throw new Error("release-transport-metadata-budget");
   const held = await open(file, "r");
   try {
-    const bytes = await held.readFile();
+    const buffer = Buffer.alloc(1024 * 1024 + 1);
+    let length = 0;
+    for (;;) {
+      const next = await held.read(buffer, length, buffer.length - length, length);
+      length += next.bytesRead;
+      if (length === buffer.length) throw new Error("release-transport-metadata-budget");
+      if (!next.bytesRead) break;
+    }
+    const bytes = buffer.subarray(0, length);
     const last = await held.stat({ bigint: true });
     if (BigInt(bytes.length) !== first.size || keys.some(key => first[key] !== last[key])) throw new Error("release-transport-metadata-changed");
     return { value: JSON.parse(bytes), hash: hash(bytes) };
@@ -35,7 +44,12 @@ async function transport(file) {
   const held = await open(file, "r");
   try {
     const digest = createHash("sha256");
-    for await (const chunk of held.createReadStream({ autoClose: false })) digest.update(chunk);
+    let length = 0n;
+    for await (const chunk of held.createReadStream({ autoClose: false })) {
+      length += BigInt(chunk.length);
+      if (length > first.size) throw new Error("release-transport-file-changed");
+      digest.update(chunk);
+    }
     const last = await held.stat({ bigint: true });
     if (keys.some(key => first[key] !== last[key])) throw new Error("release-transport-file-changed");
     return { dev: String(first.dev), ino: String(first.ino), size: String(first.size), sha256: digest.digest("hex") };
@@ -108,6 +122,8 @@ export class ReleaseGenerationTransportRetention {
       await plain(repository); await plain(path.join(repository, ".git"));
       await plain(path.join(repository, ".git", "objects")); await plain(path.join(repository, ".git", "objects", "info"));
       if (await lstat(path.join(repository, ".git", "objects", "info", "alternates")).catch(absent)) return retained("release-borrowed-objects");
+      await plain(path.join(repository, ".git", "info"));
+      if (await lstat(path.join(repository, ".git", "info", "grafts")).catch(absent)) return retained("release-rewritten-object-history");
       const marker = await metadata(path.join(repository, ".git", "agent-hub-release-clone.json"));
       if (marker.value.kind !== "agent-hub-owned-release-clone"
           || !same(marker.value.primaryRoot, value.repositoryRoot)
@@ -136,6 +152,7 @@ export class ReleaseGenerationTransportRetention {
             || (await metadata(path.join(repository, ".git", "agent-hub-release-clone.json"))).hash !== marker.hash
             || (await metadata(path.join(owner, "evidence", `${published.manifestHash}.json`))).hash !== manifest.hash
             || await lstat(path.join(repository, ".git", "objects", "info", "alternates")).catch(absent)
+            || await lstat(path.join(repository, ".git", "info", "grafts")).catch(absent)
             || /^(extensions\.partialclone|remote\..*\.promisor)=/imu.test(await git(["config", "--local", "--list"]))
             || await git(["rev-parse", "--is-shallow-repository"]) !== "false"
             || !same(await realpath(await git(["rev-parse", "--path-format=absolute", "--git-common-dir"])), await realpath(path.join(repository, ".git")))

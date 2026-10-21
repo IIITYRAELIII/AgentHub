@@ -13,6 +13,7 @@ import { withInterprocessLocks } from "../../../src/infrastructure/process/inter
 const exec = promisify(execFile);
 const sha = value => createHash("sha256").update(value).digest("hex");
 async function git(cwd, args, { input } = {}) {
+  args = ["-c", "core.longpaths=true", ...args];
   if (input == null) return String((await exec("git", args, { cwd, windowsHide: true })).stdout).trim();
   return new Promise((resolve, reject) => {
     const child = spawn("git", args, { cwd, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
@@ -51,6 +52,7 @@ async function fixture(t) {
   await mkdir(path.join(ownerRoot, "evidence"), { recursive: true });
   await git(root, ["clone", "--no-local", "--no-hardlinks", source, repository]);
   await git(repository, ["config", "core.autocrlf", "false"]);
+  await git(repository, ["config", "core.longpaths", "true"]);
   await mkdir(path.join(repository, ".git", "objects", "info"), { recursive: true });
   await writeFile(path.join(generationRoot, "identity.json"), JSON.stringify(identity));
   await writeFile(path.join(repository, ".git", "agent-hub-release-clone.json"), JSON.stringify({
@@ -122,6 +124,22 @@ test("a changed advertised root missing from the independent clone is retained",
   const preview = await f.retention.preview({ candidate: f.candidate });
   assert.equal(preview.reason, "release-bundle-objects-unavailable", JSON.stringify(preview));
   assert.ok((await lstat(f.bundle)).isFile());
+});
+
+test("rewritten history or an ambient borrowed object store never supplies local retirement proof", async t => {
+  const f = await fixture(t), before = sha(await readFile(f.bundle));
+  const grafts = path.join(f.repository, ".git", "info", "grafts");
+  await writeFile(grafts, f.commit + "\n");
+  assert.equal((await f.retention.preview({ candidate: f.candidate })).reason, "release-rewritten-object-history");
+  await rm(grafts);
+  const prior = process.env.GIT_ALTERNATE_OBJECT_DIRECTORIES;
+  process.env.GIT_ALTERNATE_OBJECT_DIRECTORIES = path.join(f.source, ".git", "objects");
+  try { assert.equal((await f.retention.preview({ candidate: f.candidate })).status, "retained"); }
+  finally {
+    if (prior === undefined) delete process.env.GIT_ALTERNATE_OBJECT_DIRECTORIES;
+    else process.env.GIT_ALTERNATE_OBJECT_DIRECTORIES = prior;
+  }
+  assert.equal(sha(await readFile(f.bundle)), before);
 });
 
 test("locally present but unanchored advertised history is retained across future Git GC", async t => {
