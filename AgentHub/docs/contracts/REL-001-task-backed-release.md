@@ -18,7 +18,9 @@ selected base/result commits still use the existing exact-object fetch path.
 Existing generation transports are reused unchanged, including older broad packs;
 partial/unknown outputs require original-owner recovery, not replacement. This
 does not change composition selection, provenance, candidate fetch/freeze or
-publication guards. Disposable validation's older all-ref capture is separate.
+publication guards. Disposable composition validation uses the same selected
+main/base/result transport and still returns only a read-only composition proof;
+its existing invocation-local temporary cleanup and acceptance refusal remain.
 
 After an update's normal runtime start, policy v1 may retire only the redundant
 task-native-merge transport from a completed, durably published Task. The existing

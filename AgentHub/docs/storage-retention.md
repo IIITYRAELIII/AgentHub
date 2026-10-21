@@ -36,9 +36,10 @@ selected result ancestry, and ordinary release clones/refresh fetch main only.
 The existing exact-object fetch supplies missing selected results. An advertised
 main alias preserves the normal clone entry point without mutating source refs.
 Existing generation bundles are reused byte-for-byte, never rebuilt to shrink
-them. Disposable composition validation still has its older all-ref capture;
-this change does not authorize deleting its unknown failed leftovers or any
-legacy clone's refs/objects. No new periodic Git GC is introduced.
+them. Disposable composition validation uses the same selected main/base/result
+capture while retaining its existing invocation-local temporary cleanup. This
+does not authorize deleting unknown historical failed leftovers or any legacy
+clone's refs/objects. No new periodic Git GC is introduced.
 Git's complete pack is streamed into an already-owned bundle descriptor; no
 temporary bare pool is recursively deleted. The supported [bundle format](https://git-scm.com/docs/gitformat-bundle)
 uses private advertised tips, including dangling results. Failed/partial output

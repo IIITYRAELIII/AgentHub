@@ -905,9 +905,12 @@ export class ReleaseGitWorkspaceService {
       // hooks. Git's clone protection remains enabled for the bundle transport.
       // The live primary still supplies identity and invariant checks.
       const bundle = path.join(temporaryRoot, "source.bundle");
-      await runGit(["bundle", "create", bundle, "--all"], {
-        cwd: await repositoryRoot(projectRoot), timeoutMs: 300_000,
-      });
+      const sourceRoot = await repositoryRoot(projectRoot);
+      const mainCommit = await runGit(["rev-parse", "refs/heads/main"], { cwd: sourceRoot });
+      await createSelectedGitBundle({ root: temporaryRoot, sourceRoot, bundle, mainCommit,
+        inputs: [mainCommit, String(approvedBaseCommit ?? "").trim(),
+          ...normalizedFrozenTasks(frozenTasks).map(task => task.resultCommit)],
+        gitAt: (cwd, args, options) => runGit(args, { ...options, cwd, timeoutMs: 300_000 }) });
       isolated.#validationBundle = bundle;
       const candidate = await isolated.prepareCandidate({
         planRevision, projectRoot, workspaceId, frozenTasks, approvedBaseCommit, baseProvenance,

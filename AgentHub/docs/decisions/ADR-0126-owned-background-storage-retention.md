@@ -60,8 +60,10 @@ fetch for missing selected results. Prepared candidate promotion/freeze, source
 provenance and composition guards remain authoritative. Existing bundles are
 reused unchanged; an interrupted or unknown body is not overwritten on retry.
 This prevents new permanent copies of unrelated branch payloads without adopting
-or pruning old clone refs. Disposable composition validation's all-ref capture
-and its historical cleanup boundary remain outside this change.
+or pruning old clone refs. Disposable composition validation uses the same
+selected main/base/result capture and existing invocation-local cleanup; it
+cannot accept a Task or replace a prepared/frozen holder. Historical leftover
+adoption and changes to that cleanup boundary remain outside this decision.
 
 ## Policy v2: explicitly retired runtime bodies
 
