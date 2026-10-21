@@ -65,23 +65,51 @@ class InstalledPackageTests(unittest.TestCase):
                 packages.append(package)
                 archives.append((archive, manifest["sha256"]))
 
-            def install(index, *, rollback=False, success=True):
+            def install(index, *, rollback=False, success=True, release=False, checksum_override=None):
                 archive, checksum = archives[index]
-                return run([sys.executable, "-X", "utf8", "-B", str(bootstrap), "--archive", str(archive),
-                            "--sha256", checksum, "--runtime-root", str(runtime), "--scratch-root", str(root/"package-scratch"),
+                checksum = checksum_override or checksum
+                command = [str(bootstrap), "--archive", str(archive), "--sha256", checksum]
+                if release:
+                    # Only HTTPS transport is synthetic. The copied two-file CLI,
+                    # ZIP verification, Node entry and native installation owner
+                    # run unchanged in a source-free recipient directory.
+                    harness = root/"release-transport.py"
+                    harness.write_text(
+                        "import hashlib, io, json, pathlib, runpy, sys, urllib.request\n"
+                        "archive=pathlib.Path("+repr(str(archive))+"); data=archive.read_bytes()\n"
+                        "descriptor=json.loads(archive.with_suffix('.zip.json').read_text()); descriptor['asset']='AgentHub-win32-x64.zip'\n"
+                        "raw=json.dumps(descriptor).encode(); base='https://github.com/IIITYRAELIII/AgentHub/releases/download/v1/'\n"
+                        "def asset(name, body): return dict(name=name, browser_download_url=base+name, size=len(body), state='uploaded', digest='sha256:'+hashlib.sha256(body).hexdigest())\n"
+                        "metadata=dict(tag_name='v1',draft=False,prerelease=False,published_at='2026-01-01T00:00:00Z',assets=[asset('AgentHub-win32-x64.zip',data),asset('AgentHub-win32-x64.zip.json',raw)])\n"
+                        "responses={'https://api.github.com/repos/IIITYRAELIII/AgentHub/releases/latest':json.dumps(metadata).encode(),base+'AgentHub-win32-x64.zip.json':raw,base+'AgentHub-win32-x64.zip':data}\n"
+                        "def open_response(self, request, timeout): return io.BytesIO(responses[request.full_url])\n"
+                        "urllib.request.OpenerDirector.open=open_response\n"
+                        "target=sys.argv.pop(1); sys.argv[0]=target; runpy.run_path(target,run_name='__main__')\n", encoding="utf-8")
+                    command = [str(harness), str(bootstrap), "--release", "latest", "--sha256", checksum]
+                return run([sys.executable, "-X", "utf8", "-B", *command,
+                            "--runtime-root", str(runtime), "--scratch-root", str(root/"package-scratch"),
                             *(["--rollback"] if rollback else [])], success=success)
 
-            install(0)
+            install(0, release=True)
+            self.assertEqual(json.loads((runtime/"config.json").read_text())["usageSyncServerUrl"], "")
             run([str(runtime/"AgentHub.RuntimeHost.exe"), "--check"])
             pointer_before = (runtime/"current.json").read_bytes()
+            wrong_pin = install(0, release=True, success=False, checksum_override="0"*64)
+            self.assertIn("additional SHA-256 pin", wrong_pin.stderr)
+            self.assertEqual((runtime/"current.json").read_bytes(), pointer_before)
             install(0)
             self.assertEqual((runtime/"current.json").read_bytes(), pointer_before)
             config = runtime/"config.json"
-            config.write_text('{"provider":"codex","privateMarker":"synthetic-user-configuration"}', encoding="utf-8")
+            config.write_text(json.dumps({"provider": "codex", "privateMarker": "synthetic-user-configuration",
+                                         "usageSyncServerUrl": "https://sync.example.invalid",
+                                         "components": {"sharedDashboardBot": True}}), encoding="utf-8")
             before_config = config.read_bytes()
             data = runtime/"data"
             data.mkdir(exist_ok=True)
             (data/"user-state.keep").write_bytes(b"synthetic unfinished work and receipts")
+            (data/"sync-cursors.keep").write_bytes(b"synthetic existing sync cursors")
+            sync_remote = b'{"serverUrl":"https://sync.example.invalid","deviceId":"synthetic-device","token":"synthetic-token"}'
+            (data/"usage-sync-remote.json").write_bytes(sync_remote)
             before_data = (data/"user-state.keep").read_bytes()
             # Exact live process evidence must refuse before pointer/launcher changes.
             (data/"bot.lock").write_text(json.dumps({"pid": os.getpid(), "ready": True, "releaseId": "synthetic-1"}))
@@ -108,6 +136,8 @@ class InstalledPackageTests(unittest.TestCase):
             self.assertEqual((runtime/"AgentHub.RuntimeHost.exe").read_bytes(), before_launcher)
             self.assertEqual(config.read_bytes(), before_config)
             self.assertEqual((data/"user-state.keep").read_bytes(), before_data)
+            self.assertEqual((data/"sync-cursors.keep").read_bytes(), b"synthetic existing sync cursors")
+            self.assertEqual((data/"usage-sync-remote.json").read_bytes(), sync_remote)
             install(1)
             run([str(runtime/"AgentHub.RuntimeHost.exe"), "--check"])
             pointer = json.loads((runtime/"current.json").read_text())
@@ -120,6 +150,8 @@ class InstalledPackageTests(unittest.TestCase):
             self.assertEqual((data/"user-state.keep").read_bytes(), before_data)
             self.assertEqual((runtime/"releases/synthetic-1/agent-hub-main.mjs").read_text(), 'console.log("synthetic app 1");\n')
             self.assertEqual((runtime/"releases/synthetic-2/agent-hub-main.mjs").read_text(), 'console.log("synthetic app 2");\n')
+            self.assertEqual((data/"sync-cursors.keep").read_bytes(), b"synthetic existing sync cursors")
+            self.assertEqual((data/"usage-sync-remote.json").read_bytes(), sync_remote)
 
 
 if __name__ == "__main__":

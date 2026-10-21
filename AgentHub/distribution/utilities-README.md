@@ -6,29 +6,43 @@
 
 Поддерживается Windows x64. Установи Python 3.10+ и Node.js с модулем `node:sqlite`
 (проверяется установщиком; используй поддерживаемую проектом версию Node.js).
-Скачай выбранный versioned ZIP и его SHA-256 из публичного релиза AgentHub.
-Не используй исходный архив GitHub вместо готового пакета.
+Источник установки и обновлений — только публичные releases
+`IIITYRAELIII/AgentHub`. Выбери точный stable tag или явно `latest`.
+Не используй исходный архив GitHub вместо готового пакета. Пока ready release
+не опубликован, команда откажет; исходники вместо него не скачиваются.
 
 Запуск из корня Utilities, где пути задаются твоей локальной конфигурацией:
 
 ```powershell
-python AgentHub/install.py --url https://github.com/IIITYRAELIII/AgentHub/releases/download/<version>/<package>.zip --sha256 <published-sha256> --runtime-root <private-runtime-directory> --scratch-root <separate-private-temporary-directory>
+python AgentHub/install.py --release <exact-stable-tag> --runtime-root <private-runtime-directory> --scratch-root <separate-private-temporary-directory>
 ```
 
-Для offline-установки замени `--url` на `--archive <local-zip>`. Установщик проверяет
-внешний SHA-256, состав пакета и хэши всех файлов. Он не скачивает исходники и не
+`--release latest` выбирает опубликованный stable release один раз, затем
+скачивает только его versioned assets `AgentHub-win32-x64.zip` и `.zip.json`.
+Установщик сверяет SHA-256 и размеры обоих assets с анонимным GitHub API,
+согласованность descriptor/ZIP/source identity, состав и хэши всех файлов.
+Отсутствие digest, неоднозначный asset, draft/prerelease или ошибка сети дают
+отказ. Это проверка целостности через доверенный publisher/TLS, не отдельная
+криптографическая подпись автора. Дополнительный `--sha256` фиксирует точный ZIP.
+
+Для offline-установки используй `--archive <local-zip> --sha256 <published-sha256>`.
+Остаётся и явный `--url <versioned-public-asset> --sha256 <published-sha256>`.
+Установщик не скачивает исходники и не
 запускает сборку. Runtime и временная папка должны быть отдельными каталогами;
 выбирай диск с достаточным местом. Установка и обновление не удаляют твою конфигурацию
 или данные. Перед обновлением штатно останови всех writers; живой или неизвестный
 runtime заставит установщик отказать. Не обходи этот отказ повторной отправкой.
 
-Для обновления используй ту же команду с новой проверенной версией и checksum.
+Для обновления используй ту же команду с новым exact tag или `latest`.
 Для rollback добавь `--rollback` к команде с доступным проверенным пакетом:
 существующий runtime owner выберет сохранённую предыдущую версию. Данные и
-конфигурация не откатываются. Автоматического stop/start/restart нет.
+конфигурация не откатываются. Существующие sync URL, выбор синхронизации,
+auth и cursors сохраняются: bootstrap не редактирует config/data и не выбирает
+новый endpoint. Автоматического stop/start/restart нет.
 
-После первой установки открой `config.example.json` из пакета, создай приватную
-конфигурацию runtime и укажи свой project root/нужные компоненты. Настоящие ключи
+После первой установки отредактируй созданный приватный `config.json` runtime
+и укажи свой project root/нужные компоненты. Готовый пример не содержит частного
+sync endpoint; при необходимости укажи свой в настройках Hub. Настоящие ключи
 держи в приватной конфигурации, не в Utilities. Затем запусти установленный
 `AgentHub.RuntimeHost.exe`. Возможности, ограничения, провайдеры и данные:
 README самостоятельного репозитория.

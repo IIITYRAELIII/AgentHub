@@ -24,7 +24,9 @@ import zipfile
 MAX_ARCHIVE_BYTES = 2 * 1024**3
 MAX_EXPANDED_BYTES = 4 * 1024**3
 MAX_FILES = 100_000
+MAX_METADATA_BYTES = 1024 * 1024
 REPOSITORY = "IIITYRAELIII/AgentHub"
+PACKAGE_ASSET = "AgentHub-win32-x64.zip"
 ASSET_HOSTS = {"release-assets.githubusercontent.com", "objects.githubusercontent.com"}
 
 
@@ -66,7 +68,7 @@ class AssetRedirect(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
-def download(url: str, target: Path) -> None:
+def download(url: str, target: Path, *, max_bytes=MAX_ARCHIVE_BYTES) -> None:
     validate_source_url(url)
     opener = urllib.request.build_opener(AssetRedirect())
     request = urllib.request.Request(url, headers={"User-Agent": "AgentHub-ReadyPackage-Installer"})
@@ -75,11 +77,88 @@ def download(url: str, target: Path) -> None:
         deadline = time.monotonic()+10*60
         while chunk := response.read(1024 * 1024):
             size += len(chunk)
-            if size > MAX_ARCHIVE_BYTES or time.monotonic() > deadline:
+            if size > max_bytes or time.monotonic() > deadline:
                 raise ValueError("Ready package exceeds download budget")
             out.write(chunk)
         out.flush()
         os.fsync(out.fileno())
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise ValueError("Release API redirects refused")
+
+
+def release_metadata(release: str) -> dict:
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", release):
+        raise ValueError("Use latest or an exact simple release tag")
+    selector = "latest" if release == "latest" else "tags/"+release
+    url = f"https://api.github.com/repos/{REPOSITORY}/releases/{selector}"
+    request = urllib.request.Request(url, headers={
+        "User-Agent": "AgentHub-ReadyPackage-Installer", "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28"})
+    # Public anonymous endpoint only: no gh, environment token or credentials.
+    with urllib.request.build_opener(NoRedirect()).open(request, timeout=30) as response:
+        raw = response.read(MAX_METADATA_BYTES+1)
+    if len(raw) > MAX_METADATA_BYTES:
+        raise ValueError("Release metadata exceeds budget")
+    metadata = json.loads(raw.decode("utf-8"))
+    if not isinstance(metadata, dict):
+        raise ValueError("Invalid release metadata")
+    tag = metadata.get("tag_name", "")
+    if (not isinstance(tag, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", tag)
+            or (release != "latest" and tag != release)
+            or metadata.get("draft") is not False or metadata.get("prerelease") is not False
+            or not metadata.get("published_at")):
+        raise ValueError("Only a published stable release is supported")
+    return metadata
+
+
+def select_asset(metadata: dict, name: str, max_bytes: int) -> dict:
+    assets = metadata.get("assets")
+    if not isinstance(assets, list) or len(assets) > 100:
+        raise ValueError("Invalid release asset inventory")
+    matches = [x for x in assets if isinstance(x, dict) and x.get("name") == name]
+    if len(matches) != 1:
+        raise ValueError("Required ready package asset is missing or ambiguous")
+    asset = matches[0]
+    url = f"https://github.com/{REPOSITORY}/releases/download/{metadata['tag_name']}/{name}"
+    if (asset.get("browser_download_url") != url or asset.get("state") != "uploaded"
+            or type(asset.get("size")) is not int or not 0 < asset["size"] <= max_bytes
+            or not re.fullmatch(r"sha256:[0-9a-f]{64}", asset.get("digest") or "")):
+        raise ValueError("Release asset URL, digest, state or size is invalid")
+    return asset
+
+
+def fetch_release(release: str, scratch: Path) -> tuple[Path, str, dict]:
+    metadata = release_metadata(release)
+    asset = select_asset(metadata, PACKAGE_ASSET, MAX_ARCHIVE_BYTES)
+    checksum_asset = select_asset(metadata, PACKAGE_ASSET+".json", MAX_METADATA_BYTES)
+    checksum_file = scratch/"release.json"
+    download(checksum_asset["browser_download_url"], checksum_file, max_bytes=MAX_METADATA_BYTES)
+    if (checksum_file.stat().st_size != checksum_asset["size"]
+            or "sha256:"+file_hash(checksum_file) != checksum_asset["digest"]):
+        raise ValueError("Release descriptor SHA-256 or size mismatch")
+    descriptor = json.loads(checksum_file.read_text(encoding="utf-8"))
+    if (not isinstance(descriptor, dict) or descriptor.get("schema") != 1
+            or descriptor.get("repository") != REPOSITORY or descriptor.get("platform") != "win32-x64"
+            or descriptor.get("asset") != PACKAGE_ASSET or descriptor.get("bytes") != asset["size"]
+            or "sha256:"+str(descriptor.get("sha256")) != asset["digest"]
+            or not re.fullmatch(r"[0-9a-f]{40}", str(descriptor.get("sourceCommit")))
+            or not re.fullmatch(r"[0-9a-f]{64}", str(descriptor.get("packageManifestSha256")))
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", str(descriptor.get("releaseId")))):
+        raise ValueError("Release descriptor and published asset disagree")
+    archive = scratch/"release.zip"
+    download(asset["browser_download_url"], archive, max_bytes=asset["size"])
+    if archive.stat().st_size != asset["size"] or file_hash(archive) != descriptor["sha256"]:
+        raise ValueError("Release ZIP SHA-256 or size mismatch")
+    return archive, metadata["tag_name"], descriptor
+
+
+def verify_release_descriptor(package: dict, extracted: Path, release: dict) -> None:
+    if (any(package.get(key) != release.get(key) for key in ("releaseId", "sourceCommit", "version"))
+            or file_hash(extracted/"package-manifest.json") != release["packageManifestSha256"]):
+        raise ValueError("Extracted package differs from the selected release descriptor")
 
 
 def extract_verified(archive: Path, expected_sha256: str, destination: Path) -> dict:
@@ -160,11 +239,16 @@ def main():
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--url")
     source.add_argument("--archive", type=Path)
-    parser.add_argument("--sha256", required=True, help="Checksum of the exact reviewed release ZIP")
+    source.add_argument("--release", help="Exact stable tag, or latest, from the public AgentHub release origin")
+    parser.add_argument("--sha256", help="Required for --url/--archive; optional additional pin for --release")
     parser.add_argument("--runtime-root", type=Path, required=True)
     parser.add_argument("--scratch-root", type=Path, required=True, help="Private temporary area on the intended volume")
     parser.add_argument("--rollback", action="store_true")
     args = parser.parse_args()
+    if not args.release and not args.sha256:
+        parser.error("--sha256 is required with --url or --archive")
+    if args.sha256 and not re.fullmatch(r"[0-9a-f]{64}", args.sha256):
+        parser.error("--sha256 must be 64 lowercase hexadecimal characters")
     if os.name != "nt":
         raise RuntimeError("Ready packages currently support Windows x64 only")
     if args.runtime_root.resolve().is_relative_to(args.scratch_root.resolve()):
@@ -173,10 +257,20 @@ def main():
     with tempfile.TemporaryDirectory(prefix="agenthub-package-", dir=args.scratch_root) as temporary:
         scratch = Path(temporary)
         archive = args.archive
-        if args.url:
+        selected = None
+        checksum = args.sha256
+        if args.release:
+            archive, tag, selected = fetch_release(args.release, scratch)
+            if checksum and checksum != selected["sha256"]:
+                raise ValueError("Selected release differs from the additional SHA-256 pin")
+            checksum = selected["sha256"]
+            print(f"Selected {REPOSITORY} {tag}: {selected['releaseId']} SHA-256 {checksum}", flush=True)
+        elif args.url:
             archive = scratch/"release.zip"
             download(args.url, archive)
-        descriptor = extract_verified(archive, args.sha256, scratch/"verified")
+        descriptor = extract_verified(archive, checksum, scratch/"verified")
+        if selected:
+            verify_release_descriptor(descriptor, scratch/"verified", selected)
         node = shutil.which("node")
         if not node:
             raise RuntimeError("Node.js runtime with node:sqlite is required; no npm or compiler is needed")
