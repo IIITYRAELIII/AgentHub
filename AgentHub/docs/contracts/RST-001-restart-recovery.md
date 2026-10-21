@@ -39,6 +39,13 @@ before readiness, with the existing replacement deadline unchanged.
 
 ## Identity and owner
 
+At actual cutover the existing transfer service fences new background preparation
+and GC, stops its timer and drains already admitted filesystem work before the
+instance lock can be released. Its SQLite remains open until successful replacement
+finalization. Failed-cutover recovery resumes that same service and its original
+GC cadence; it does not recreate requests or close/reopen the store. A pending
+restart alone does not invoke this fence or block ordinary user communication.
+
 Restart and compaction are persisted operations with `operationId`, kind, exact
 Stream and Thread, optional provider turn identity, status and revision. They are
 not user turns.
@@ -76,6 +83,18 @@ and terminal owner after fresh provider/native inactivity and exact interrupt
 rejection; a startup/read exception or idle status alone still cannot release.
 
 ## Invariants
+
+- File transfer shutdown fences new preparation/GC admission and drains the
+  admitted intake, background copy and complete GC filesystem/SQLite settlement
+  before closing its store. A completed close cannot reopen SQLite through a
+  delayed collection. Explicit GC failures retain their own outcome.
+- A preserved direct gateway with changed generated configuration is handed off
+  by its existing controller only after the former parent process is absent.
+  Exact executable, command line, PID/creation identity and unchanged regular
+  executable/config bytes are required before terminating that managed gateway;
+  the same open process handle fences PID reuse. A live or unknown parent and
+  any identity/file drift refuse the effect. No competing listener is launched.
+  Gateway shutdown also drains a pending observation/handoff before returning.
 
 - Timeout is ambiguous until reconciliation; it does not authorize duplicate
   non-idempotent starts.

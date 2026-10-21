@@ -380,6 +380,7 @@ const localSessionReady = Promise.all([
 ]).then(() => undefined);
 window.AgentHubLocalSessionReady = localSessionReady;
 const vscodeMode = Boolean(window.__agentHubVscode);
+let mobileDialogs = null;
 const telegramPlatform = String(telegram?.platform ?? "").toLowerCase();
 const mobileTelegramPlatforms = new Set(["android", "ios"]);
 const compactSurfaceWidth = 860;
@@ -419,6 +420,7 @@ function phoneComposerMode() {
 }
 
 function syncComposerInputMode() {
+  root.toggleAttribute("data-phone-composer", phoneComposerMode());
   composerInput.placeholder = "Сообщение агенту…";
   composerInput.removeAttribute("title");
   composerSend.title = "Отправить";
@@ -972,6 +974,9 @@ applyBackgroundMotion(backgroundMotionPreference.stored(localStorage));
 applyTheme(savedTheme());
 applyChatSurface(chatSurfacePreference.stored(localStorage));
 applyActivityRailVisibility(activityRailPreference.stored(localStorage));
+const composerShortcuts = window.AgentHubComposerShortcuts.createSettings({
+  document, storage: () => globalThis.localStorage, overlays: modalOverlays,
+});
 applyStreamStatusStyle(savedStreamStatusStyle());
 applyStreamStatusEffect(savedStreamStatusEffect());
 applyActivityStreamDetailedCards(savedActivityStreamDetailedCards());
@@ -1042,6 +1047,7 @@ function themedSelectOptions(select) {
 }
 
 function enhanceThemedSelect(select) {
+  if (select?.matches?.("[data-composer-shortcut]")) return;
   if (!(select instanceof HTMLSelectElement) || select.multiple || select.dataset.themedSelectReady) return;
   select.dataset.themedSelectReady = "true";
   select.classList.add("themed-select-native");
@@ -3739,6 +3745,7 @@ function setPane(pane, { persist = true } = {}) {
 }
 
 function syncMobileNav() {
+  mobileDialogs?.sync();
   const active = navigationTabs.isStandaloneNavigationTab(root.dataset.view)
     ? root.dataset.view
     : (root.dataset.pane === "chat" ? "chat" : "tasks");
@@ -3857,7 +3864,8 @@ function renderTasksContent() {
   taskList.replaceChildren();
   let visibleCount = visible.length;
   const { workspaceTasks, unassignedTasks } = window.AgentHubStreamTabs.taskListSections(visible);
-  const hasWorkspace = workspaceTasks.length > 0;
+  const hasWorkspace = workspaceTasks.length > 0
+    || (surface === "mobile" && !vscodeMode && state.workspaces.length > 0);
   if (hasWorkspace) {
     const groups = new Map();
     for (const task of workspaceTasks) {
@@ -3870,6 +3878,14 @@ function renderTasksContent() {
         tasks: [],
       });
       groups.get(key).tasks.push(task);
+    }
+    if (surface === "mobile" && !vscodeMode) {
+      for (const workspace of state.workspaces) {
+        if (!groups.has(workspace.id) && (!filter || workspace.name.toLowerCase().includes(filter))) {
+          groups.set(workspace.id, { id: workspace.id, name: workspace.name,
+            kind: workspace.kind ?? "user", folderName: workspace.settings?.catalogFolder ?? "", tasks: [] });
+        }
+      }
     }
     visibleCount = groups.size + unassignedTasks.length;
     /* Поиск ищет по всему списку сразу, поэтому при фильтре деление на ленту
@@ -3910,6 +3926,7 @@ function renderTasksContent() {
   reusableWorkspaceCards = new Map();
   resumeAdoptedCardAnimations();
   renderActivityRail();
+  mobileDialogs?.sync();
 }
 
 function workspaceStreams(tasks) {
@@ -4761,6 +4778,7 @@ taskList.addEventListener("dblclick", (event) => {
 });
 taskList.addEventListener("keydown", (event) => {
   if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) {
+    if (surface === "mobile" && !vscodeMode) return;
     const workspace = event.target.closest("[data-workspace-select]");
     if (workspace) {
       event.preventDefault();
@@ -4908,14 +4926,16 @@ function renderWorkspaceMessageSearch() {
   workspaceMessageSearchMore.hidden = search.nextOffset == null || search.loading;
 }
 
-function openWorkspaceMessageSearch() {
+function openWorkspaceMessageSearch(requestedWorkspaceId = "") {
   const task = currentTask();
-  const workspaceId = String(task?.workspaceId ?? "").trim();
+  const workspaceId = String(typeof requestedWorkspaceId === "string" && requestedWorkspaceId
+    || task?.workspaceId || "").trim();
   if (!workspaceId) return showToast("Сначала выберите Workspace");
   const search = state.workspaceMessageSearch;
   search.open = true;
   search.workspaceId = workspaceId;
-  workspaceMessageSearchTitle.textContent = `Поиск в «${task.workspaceName || task.title || "Workspace"}»`;
+  const name = workspaceCatalogItem(workspaceId)?.name || task?.workspaceName || task?.title || "Workspace";
+  workspaceMessageSearchTitle.textContent = `Поиск в «${name}»`;
   renderWorkspaceMessageSearch();
   window.requestAnimationFrame(() => workspaceMessageSearchInput?.focus());
 }
@@ -5343,22 +5363,25 @@ function ensureWorkspaceFolderContextMenu() {
     const currentName = String(workspaceFolderContextMenu.dataset.folderName ?? "");
     closeWorkspaceFolderContextMenu();
     if (action.dataset.workspaceFolderMenuAction !== "rename") return;
-    const requestedName = await askText({ title: "Новое название папки", value: currentName });
-    if (requestedName == null) return;
-    const plan = window.AgentHubStreamTabs.workspaceFolderRenamePlan(
-      state.workspaces,
-      currentName,
-      requestedName,
-      workspaceFolderCatalogNames(),
-    );
-    if (!plan) return;
-    if (plan.duplicateFolderName) {
-      showToast(`Папка «${plan.duplicateFolderName}» уже существует`);
-      return;
-    }
-    emit("workspace:folder-rename", plan);
+    await renameWorkspaceFolder(currentName);
   });
   return workspaceFolderContextMenu;
+}
+
+async function renameWorkspaceFolder(folderName) {
+  const currentName = window.AgentHubStreamTabs.normalizeWorkspaceFolderName(folderName);
+  if (!currentName) return;
+  const requestedName = await askText({ title: "Новое название папки", value: currentName });
+  if (requestedName == null) return;
+  const plan = window.AgentHubStreamTabs.workspaceFolderRenamePlan(
+    state.workspaces, currentName, requestedName, workspaceFolderCatalogNames(),
+  );
+  if (!plan) return;
+  if (plan.duplicateFolderName) {
+    showToast(`Папка «${plan.duplicateFolderName}» уже существует`);
+    return;
+  }
+  emit("workspace:folder-rename", plan);
 }
 
 function openWorkspaceFolderContextMenu(event, folderName) {
@@ -5819,6 +5842,7 @@ function providerConnectionTitle(providerLabel, presentation, measurement) {
 }
 
 function renderStreamChatHeader(task, now = Date.now()) {
+  mobileDialogs?.sync();
   if (!streamChatHeader) return;
   streamChatHeader.hidden = !task;
   const workspaceName = task ? String(task.workspaceName || task.title || "Workspace").trim() : "";
@@ -6050,6 +6074,7 @@ function renderContextUsageDetails(task) {
   contextUsageCompact.textContent = context.compacting ? "Контекст сворачивается…" : "Свернуть контекст";
 }
 
+let contextMobileDismissCleanup = null;
 function openContextUsage() {
   const task = currentTask();
   if (!task?.context || (Number(task.context.modelContextWindow) <= 0 && task.context.percent == null)
@@ -6059,7 +6084,16 @@ function openContextUsage() {
     return;
   }
   renderContextUsageDetails(task);
-  contextUsageModal.show();
+  if (surface === "mobile" && !vscodeMode) {
+    contextMobileDismissCleanup ??= modalOverlays?.installDismissibleOverlay({
+      dialog: contextUsageModal, close: closeContextUsage, fallbackFocus: contextUsageButton,
+    });
+    contextUsageModal.showModal();
+  } else {
+    contextMobileDismissCleanup?.();
+    contextMobileDismissCleanup = null;
+    contextUsageModal.show();
+  }
   contextUsageButton.setAttribute("aria-expanded", "true");
   positionContextUsage();
 }
@@ -6332,7 +6366,9 @@ function closeAttachmentViewer() {
 }
 
 function navigateBack() {
+  if (composerShortcuts.handleBack()) return true;
   saveDraft();
+  if (mobileDialogs?.handleBack()) return true;
   if (closeAttachmentViewer()) return true;
   if (settingsPanel?.classList.contains("open")) {
     closePanel();
@@ -7005,14 +7041,29 @@ function currentFileLinkContext(task = currentTask()) {
 }
 
 function desktopFileLink(raw, fileContext = currentFileLinkContext()) {
-  if (!(vscodeMode || surface === "desktop")) return null;
   const resolved = resourceInteractions.resolveFileReference(raw, fileContext);
   if (!resolved?.localPath) return null;
   return {
     candidates: resolved.candidates,
-    href: vscodeMode ? "#" : `vscode://file/${encodeURI(resolved.localPath)}`,
+    href: vscodeMode || surface !== "desktop" ? "#" : `vscode://file/${encodeURI(resolved.localPath)}`,
     localPath: resolved.localPath,
   };
+}
+
+function appendLocalResourceOverflow(target, link, targetLink, name) {
+  if (!targetLink?.localPath) return;
+  const control = el("button", {
+    class: "local-resource-overflow",
+    type: "button",
+    title: "Действия с файлом",
+    "aria-label": `Действия с файлом ${name || ""}`.trim(),
+  });
+  control.dataset.agentHubResourceAction = "menu";
+  control.dataset.agentHubLocalLink = targetLink.localPath;
+  control.dataset.agentHubResourceHref = link.href;
+  control.dataset.agentHubResourceName = name || targetLink.localPath;
+  control.textContent = "⋯";
+  target.append(control);
 }
 
 function markdownLink(raw, fileContext = currentFileLinkContext()) {
@@ -7068,6 +7119,7 @@ function appendInlineMarkdown(target, source, fileContext = currentFileLinkConte
         });
         if (targetLink.localPath) link.dataset.agentHubLocalLink = targetLink.localPath;
         target.append(link);
+        appendLocalResourceOverflow(target, link, targetLink, citation?.label);
       } else {
         target.append(el("span", attributes));
       }
@@ -7085,6 +7137,7 @@ function appendInlineMarkdown(target, source, fileContext = currentFileLinkConte
         }, [code]);
         link.dataset.agentHubLocalLink = targetLink.localPath;
         target.append(link);
+        appendLocalResourceOverflow(target, link, targetLink, value);
       } else {
         target.append(code);
       }
@@ -7111,6 +7164,7 @@ function appendInlineMarkdown(target, source, fileContext = currentFileLinkConte
         if (targetLink.taskId) link.dataset.agentHubTaskReference = targetLink.taskId;
         if (targetLink.localPath) link.dataset.agentHubLocalLink = targetLink.localPath;
         target.append(link);
+        appendLocalResourceOverflow(target, link, targetLink, parts[1]);
       } else {
         target.append(document.createTextNode(token));
       }
@@ -7809,6 +7863,15 @@ document.addEventListener("click", (event) => {
   if (resourceActionButton) {
     event.preventDefault();
     event.stopPropagation();
+    if (resourceActionButton.dataset.agentHubResourceAction === "menu") {
+      const rect = resourceActionButton.getBoundingClientRect();
+      openResourceContextMenu({ clientX: rect.right, clientY: rect.bottom, target: resourceActionButton }, resourceInteractions.linkResource({
+        href: resourceActionButton.dataset.agentHubResourceHref,
+        localPath: resourceActionButton.dataset.agentHubLocalLink,
+        name: resourceActionButton.dataset.agentHubResourceName,
+      }));
+      return;
+    }
     emit(`resource:${resourceActionButton.dataset.agentHubResourceAction}`, {
       resource: resourceInteractions.linkResource({
         href: resourceActionButton.dataset.agentHubResourceHref,
@@ -8601,8 +8664,28 @@ composerQuickMessages?.addEventListener("click", (event) => {
   else insertQuickMessage(entry);
 });
 
+let composerCompositionActive = false;
+let composerIMEConfirmation = false;
+composerInput.addEventListener("compositionstart", () => { composerCompositionActive = true; });
+composerInput.addEventListener("compositionend", () => { composerCompositionActive = false; composerIMEConfirmation = true; });
+composerInput.addEventListener("keyup", () => { composerIMEConfirmation = false; });
 composerInput.addEventListener("keydown", (event) => {
-  if (event.isComposing) return;
+  if (event.isComposing || composerCompositionActive || event.keyCode === 229
+    || (event.key === "Enter" && composerIMEConfirmation)) return;
+  if (event.key !== "Enter") composerIMEConfirmation = false;
+  const chord = window.AgentHubComposerShortcuts.chord(event);
+  const applyShortcut = () => {
+    const action = composerShortcuts.preference().mapping[chord];
+    event.preventDefault();
+    if (action === "newline") {
+      if (!event.repeat || chord !== "ctrlEnter") insertTextAtCaret(composerInput, "\n");
+    } else if (!event.repeat) {
+      if (action === "queue") submitComposer();
+      else submitComposer({ steerWhileRunning: true });
+    }
+  };
+  if (chord === "ctrlEnter" || chord === "shiftEnter") { applyShortcut(); return; }
+  if (chord === "enter" && phoneComposerMode()) return;
   if (event.key === "Enter" && event.ctrlKey && !event.metaKey) {
     event.preventDefault();
     if (!event.repeat) insertTextAtCaret(composerInput, "\n");
@@ -8623,13 +8706,14 @@ composerInput.addEventListener("keydown", (event) => {
     }
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
-      runSlashCommand(commands[slashSelection]?.command);
+      if (!event.repeat) runSlashCommand(commands[slashSelection]?.command);
       return;
     }
   }
+  if (chord === "enter" && !phoneComposerMode()) { applyShortcut(); return; }
   if (event.key !== "Enter" || event.shiftKey || phoneComposerMode()) return;
   event.preventDefault();
-  submitComposer({ steerWhileRunning: event.metaKey });
+  if (!event.repeat) submitComposer({ steerWhileRunning: event.metaKey });
 });
 
 slashMenu.addEventListener("click", (event) => {
@@ -9658,20 +9742,35 @@ document.addEventListener("keydown", (event) => {
 window.addEventListener("scroll", closeAnnotationContextMenu, true);
 
 let pendingResource = null;
+let pendingResourceOpener = null;
 
 function closeResourceContextMenu() {
   pendingResource = null;
+  pendingResourceOpener = null;
   resourceContextMenu.hidden = true;
 }
 
 function openResourceContextMenu(event, resource) {
   pendingResource = resource;
+  pendingResourceOpener = event?.target?.closest?.("button, a") ?? document.activeElement;
   const actions = new Set(resourceInteractions.resourceActions(resource, {
     localWorkspaceFilesAvailable: directoryBrowseAvailable,
     vscode: vscodeMode,
   }));
   for (const button of resourceContextMenu.querySelectorAll("[data-resource-action]")) {
     button.hidden = !actions.has(button.dataset.resourceAction);
+  }
+  for (const divider of resourceContextMenu.querySelectorAll("[data-resource-action-divider]")) {
+    divider.hidden = !actions.has(divider.dataset.resourceActionDivider);
+  }
+  const shareAction = resourceContextMenu.querySelector('[data-resource-action="external-share"]');
+  if (shareAction && actions.has("external-share")) {
+    const sharePath = resourceInteractions.workspaceFilePath(resource.localPath);
+    shareAction.textContent = window.AgentHubFileTransferOwner?.actionLabel(sharePath)
+      ?? "Создать внешнюю ссылку…";
+    void window.AgentHubFileTransferOwner?.probe(sharePath).then((label) => {
+      if (pendingResource?.localPath === resource.localPath) shareAction.textContent = label;
+    });
   }
   resourceContextMenu.hidden = false;
   const rect = resourceContextMenu.getBoundingClientRect();
@@ -9702,9 +9801,10 @@ resourceContextMenu.addEventListener("click", (event) => {
   const button = event.target.closest("[data-resource-action]");
   if (!button || !pendingResource) return;
   const resource = pendingResource;
+  const trigger = pendingResourceOpener;
   const action = button.dataset.resourceAction;
   closeResourceContextMenu();
-  emit(`resource:${action}`, { resource });
+  emit(`resource:${action}`, { resource, trigger });
 });
 
 document.addEventListener("pointerdown", (event) => {
@@ -9944,6 +10044,7 @@ bugReportToggle?.addEventListener("click", () => {
 });
 document.addEventListener("contextmenu", (event) => {
   if (event.defaultPrevented) return;
+  if (surface === "mobile" && !vscodeMode && event.target.closest("[data-mobile-workspace-drawer]")) return;
   const workspace = event.target.closest("[data-workspace-heading], [data-board-workspace-id]");
   if (workspace) {
     event.preventDefault();
@@ -11358,6 +11459,7 @@ async function handleAction(action, trigger) {
 
 document.addEventListener("pointerdown", (event) => {
   if (!contextUsageModal?.open) return;
+  if (surface === "mobile" && !vscodeMode) return;
   if (contextUsageModal.contains(event.target) || contextUsageButton?.contains(event.target)) return;
   closeContextUsage();
 });
@@ -11509,6 +11611,7 @@ const AgentHub = {
       && sameData(state.workspaceColumnOrder, nextColumnOrder)) return;
     state.workspaces = nextWorkspaces;
     state.workspaceColumnOrder = nextColumnOrder;
+    mobileDialogs?.sync();
     if (journalRendered) updateJournalStreamCount();
   },
   setArchivedWorkspaces(workspaces) {
@@ -11516,6 +11619,7 @@ const AgentHub = {
     if (sameData(state.archivedWorkspaces, next)) return;
     state.archivedWorkspaces = next;
     renderWorkspaceArchive();
+    mobileDialogs?.sync();
   },
   renameWorkspaceFolderCatalog,
   openDialogSettings,
@@ -11958,6 +12062,7 @@ const AgentHub = {
   showSelectedTask() {
     setView("chat");
     setPane("chat");
+    mobileDialogs?.showSelected();
   },
   addSelectedAnnotation() {
     return addAnnotation(selectedQuotableSelection() || lastAnnotationSelection);
@@ -18085,6 +18190,41 @@ if (vscodeMode) {
 /* ------------------------------------------------------------- инициализация */
 
 AgentHub.setConnection(telegramMode ? "online" : "connecting");
+
+mobileDialogs = window.AgentHubMobileDialogs.create({
+  root, state, currentTask, workspaceKey,
+  workspaceStreams: (tasks) => orderedWorkspaceStreams(workspaceStreams(tasks), tasks[0] ? workspaceKey(tasks[0]) : ""),
+  representativeStreamTask,
+  selectTask: (id) => selectTaskFromUi(id), setView, setPane,
+  isMobile: () => surface === "mobile" && !vscodeMode,
+  formatTime: (value) => formatRelativeTime(activityTimestamp(value)), shortModel: shortModelLabel,
+  openSearch: openWorkspaceMessageSearch, openSettings: openPanel,
+  openWorkspaceCard, workspaceDialog: workspaceCardModal, renameWorkspaceFolder,
+  textDialog: dialog, cancelTextDialog: () => closeDialog(null),
+  createStream: (workspaceId) => emit("stream:new", { workspaceId }),
+  retryConnection: () => emit("connection:retry", { taskId: state.selectedId }),
+  closeNative: (opened) => {
+    if (opened === attachmentViewer || opened === attachmentViewerStage) { closeAttachmentViewer(); return true; }
+    if (opened === contextUsageModal) { closeContextUsage(); return true; }
+    return false;
+  },
+  closeTransient: () => {
+    const menus = [streamContextMenu, workspaceContextMenu, workspaceFolderContextMenu,
+      annotationContextMenu, resourceContextMenu];
+    const shown = menus.find((menu) => menu && !menu.hidden);
+    if (shown) {
+      closeStreamContextMenu(); closeWorkspaceContextMenu(); closeWorkspaceFolderContextMenu();
+      closeAnnotationContextMenu(); closeResourceContextMenu(); return true;
+    }
+    if (!document.querySelector("dialog[open]")) {
+      if (!dialog.hidden) { closeDialog(null); return true; }
+      if (state.workspaceMessageSearch.open) { closeWorkspaceMessageSearch(); return true; }
+      if (!settingsPanel.hidden) { closePanel(); return true; }
+    }
+    return false;
+  },
+});
+mobileDialogs.sync();
 const taskDurationTimer = window.setInterval(refreshTaskDurations, 1_000);
 void ensureComposerDraftsRestored();
 window.addEventListener("pagehide", () => {

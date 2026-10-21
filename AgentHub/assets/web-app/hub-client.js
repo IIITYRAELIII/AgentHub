@@ -1922,6 +1922,7 @@ function modelTask(task, snapshot, effectiveSelectedId, serverSelectedId) {
     lastActivity: task.orderingActivityAtMs
       ? new Date(task.orderingActivityAtMs).toISOString()
       : task.lastAnswerAt,
+    lastAnswer: task.lastAnswer ?? null,
     startedAt: running ? activeRunSubmissionTiming(task.run).startedAt : null,
     unread: !running && unread,
     running,
@@ -5114,6 +5115,35 @@ agentHub.on("resource:copy-object", ({ resource }) => runAction(async () => {
   }
   if (!remoteWorkspaceFileBridgeAvailable()) agentHub.toast("Файл скопирован в буфер обмена");
 }));
+
+window.AgentHubFileTransferOwner?.configure(async (action, body) => {
+  await localSessionReady;
+  const response = await hubFetch(`/api/file-transfer/owner/${action}`, {
+    method: "POST",
+    cache: "no-store",
+    headers: {
+      ...authorizationHeaders(),
+      "Content-Type": "application/json",
+      "X-Agent-Hub-Transfer-CSRF": "1",
+    },
+    body: JSON.stringify(body),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || payload.ok === false) {
+    throw Object.assign(new Error(String(payload.error ?? "Не удалось получить статус")), {
+      code: String(payload.code ?? ""), status: response.status,
+    });
+  }
+  return payload;
+});
+
+agentHub.on("resource:external-share", ({ resource, trigger }) => {
+  const target = window.AgentHubResourceInteractions.workspaceFilePath(resource?.localPath);
+  void window.AgentHubFileTransferOwner?.open({
+    path: target,
+    trigger,
+  });
+});
 
 agentHub.on("resource:save", ({ resource }) => runAction(async () => {
   if (resource?.kind === "attachment") {

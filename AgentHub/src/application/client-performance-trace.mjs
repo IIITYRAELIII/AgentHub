@@ -10,7 +10,7 @@ const IDENTIFIERS = new Set(["documentInstanceId", "previousDocumentInstanceId",
   "requestTraceId", "turnId", "beforeTurnId", "afterTurnId", "threadId", "streamId",
   "finalTurnId", "finalRevision"]);
 const NUMBERS = new Set(["count", "longTaskCount", "maxLongTaskMs", "totalLongTaskMs", "droppedEvents", "droppedCount", "queueDepth",
-  "chunkIndex", "serverAuthMs", "serverBodyMs", "serverStorageMs", "serverOwnerMs", "terminalRevision"]);
+  "chunkIndex", "serverAuthMs", "serverBodyMs", "serverStorageMs", "serverOwnerMs"]);
 const FAILURE_KINDS = new Set(["aborted", "timeout", "error", "hidden", "superseded"]);
 const READ_IDS = new Set(["streamId", "threadId", "turnId", "instanceId", "releaseId", "documentId"]);
 const READ_FLAGS = new Set(["viewport", "tabReady", "cardReady", "tabPresent", "cardPresent"]);
@@ -43,6 +43,7 @@ export function clientPerformanceTraceSpans(body, { now = Date.now() } = {}) {
       if (key === "operationSpanId" && typeof value === "string" && ID.test(value)) metadata[key] = value;
       if (["uploadId", "uploadAttemptId", "messageRequestId", "httpRequestId"].includes(key) && typeof value === "string" && ID.test(value)) metadata[key] = value;
       if (key === "uploadState" && ["absent", "expired", "cancelled"].includes(value)) metadata[key] = value;
+      if (key === "terminalRevision" && Number.isSafeInteger(value) && value > 0) metadata[key] = value;
       if (key === "startedAtMs" && Number.isSafeInteger(value)
         && value >= now - 86_400_000 && value <= at) metadata[key] = value;
       if (key === "statusCode" && Number.isInteger(value) && value >= 0 && value <= 599) metadata[key] = value;

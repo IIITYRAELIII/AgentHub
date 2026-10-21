@@ -183,9 +183,22 @@ for (const oldFirst of [true, false]) test(`production Desktop → representativ
     state.turns.set("thread-new", [turn("thread-new", "new-turn", "Fresh rotated answer")]);
     const done = { ...head, running: false, run: null, unread: true, lastAnswerTurnId: "new-turn",
       lastAnswerAt: "2026-10-09T22:01:00.000Z", lastAnswerRevision: 1,
-      latestFinal: { provider: "codex", threadId: "thread-new", turnId: "new-turn", revision: 1 } };
+      latestFinal: { provider: "codex", threadId: "thread-new", turnId: "new-turn", revision: 1,
+        completedAt: "2026-10-09T22:01:00.000Z" } };
+    // A retained snapshot final can render before background canonical history.
+    // Observe that read and its paint separately instead of assuming two frames
+    // also settle an asynchronous history request.
+    const terminalTrace = Promise.all(["history-retrieved", "history-terminal-paint"].map((action) => (
+      page.waitForResponse((response) => response.url().endsWith("/api/command-trace/client-events")
+        && response.request().postDataJSON()?.events?.some((event) => (
+          event.commandId === "new-turn-client" && event.metadata?.action === action
+            && (action === "history-retrieved" || event.outcome === "succeeded")
+        )))
+    )));
+    terminalTrace.catch(() => {});
     await advance({ ...active, version: "rotated-completed", tasks: active.tasks.map((item) => item.threadId === "thread-new" ? done : item) });
     await page.getByText("Fresh rotated answer", { exact: true }).waitFor();
+    await terminalTrace;
     await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     await page.evaluate(async () => {
       while (window.AgentHubCommandTrace.diagnostics().pending) await window.AgentHubCommandTrace.flush();

@@ -1,5 +1,13 @@
 # UI-001 — Canonical message projection
 
+An external-file owner dialog projects only its exact current opening, including
+when the same file is reopened. It captures the path, API and operation revision
+before awaiting status/preparation/create/poll/revoke. A late response cannot
+change another opening's file/link, issue a follow-up creation, close a new
+confirmation or overwrite its clipboard feedback. The original admitted server
+effect remains intact; projection invalidation neither cancels nor replays it.
+An ambiguous creation retains its original artifact/request/TTL envelope.
+
 Task cleanup confirmation projects ignored local paths directly from the owning
 server preview, separately from Git clean/dirty state. The existing scrollable
 preview exposes those preserved paths without deriving deletion authority in

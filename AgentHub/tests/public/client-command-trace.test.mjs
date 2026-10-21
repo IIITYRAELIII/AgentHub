@@ -131,25 +131,28 @@ test("after-paint observer cancels an obsolete display and read metadata remains
   assert.doesNotMatch(JSON.stringify(spans), /PRIVATE/u);
 });
 
-test("paint ownership precedes rich observation and preserves its measured result", async () => {
-  for (const current of [true, false]) {
+test("paint ownership guard preserves the existing observer protocol and error outcome", async () => {
+  for (const mode of ["current", "superseded", "observer-error"]) {
     const { trace, frames } = fixture();
     const events = [];
     let observations = 0;
     trace.bindReporter(async (batch) => events.push(...batch.events));
-    trace.afterPaint("ui-render", "read-marker-clear", 10, "read-owner", {}, () => {
+    trace.afterPaint("ui-render", "read-marker-clear", 10, "original-read", {}, () => {
       observations += 1;
+      if (mode === "observer-error") throw new Error("PRIVATE");
       return { outcome: "cancelled", metadata: { render: "pending", cardReady: true } };
-    }, () => current);
+    }, () => mode !== "superseded");
     frames.shift()(); frames.shift()();
     await trace.flush();
     const spans = clientPerformanceTraceSpans({ events });
-    assert.equal(observations, current ? 1 : 0);
-    assert.equal(spans.at(-1).outcome, "cancelled");
-    if (current) {
+    assert.equal(spans.at(-1).outcome, mode === "observer-error" ? "failed" : "cancelled");
+    assert.equal(observations, mode === "superseded" ? 0 : 1);
+    if (mode === "current") {
       assert.equal(spans.at(-1).metadata.render, "pending");
       assert.equal(spans.at(-1).metadata.cardReady, true);
-    } else assert.equal(spans.at(-1).metadata.failureKind, "superseded");
+    }
+    if (mode === "observer-error") assert.equal(spans.at(-1).metadata.failureKind, "error");
+    assert.doesNotMatch(JSON.stringify(spans), /PRIVATE/u);
   }
 });
 

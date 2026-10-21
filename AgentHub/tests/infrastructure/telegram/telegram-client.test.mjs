@@ -95,12 +95,18 @@ test("TelegramClient answers callbacks in the background and reports transport e
 
   const returned = result.answerCallback(
     { callback_query_id: "callback-1" },
-    { onError: (error) => errors.push(error.message) },
+    { onError: (error) => errors.push(error) },
   );
   assert.equal(returned, undefined);
-  rejectRequest(new Error("callback transport failed"));
+  const cause = new Error("callback transport failed");
+  rejectRequest(cause);
   await new Promise((resolve) => setImmediate(resolve));
-  assert.deepEqual(errors, ["Telegram answerCallbackQuery: callback transport failed"]);
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0].name, "TelegramRequestError");
+  assert.equal(errors[0].message, "Telegram answerCallbackQuery: transport failed");
+  assert.equal(errors[0].cause, cause);
+  assert.equal(errors[0].retryable, true);
+  assert.equal(errors[0].uncertain, true);
 });
 
 test("TelegramClient splits long output and puts speech action on the last part", async () => {

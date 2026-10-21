@@ -240,8 +240,6 @@
       entry.frame = global.requestAnimationFrame(() => {
         if (!pendingPaints.delete(entry)) return;
         if (global.document?.hidden) { finish("cancelled", { failureKind: "hidden" }); return; }
-        // Scheduling is not completion: diagnostic owners may be superseded
-        // during either frame. A faulty diagnostic guard must also fail closed.
         let current = true;
         try { if (isCurrent) current = isCurrent() === true; } catch { current = false; }
         if (!current) { finish("cancelled", { failureKind: "superseded", view: view() }); return; }
