@@ -182,14 +182,26 @@ export class ReleaseGenerationTransportRetention {
 
   async #anchored(owned, heads) {
     // Present dangling objects can be discarded by a later ordinary Git GC.
-    // Require retained refs/HEAD instead of inventing new keeper refs.
-    const peeled = String(await owned.git(["cat-file", "--batch-check=%(objectname) %(objecttype)"], {
-      input: heads.map(item => item.split(" ")[0] + "^{commit}").join("\n") + "\n",
+    // Check ORIGINAL objects: peeling a tag proves nothing about its metadata.
+    const objects = String(await owned.git(["cat-file", "--batch-check=%(objectname) %(objecttype)"], {
+      input: heads.map(item => item.split(" ")[0]).join("\n") + "\n",
     })).split(/\r?\n/u);
-    if (peeled.length !== heads.length || peeled.some(item => !/^[a-f0-9]{40,64} commit$/u.test(item))
-        || await owned.git(["rev-list", "--max-count=1", "--stdin", "--not", "--all"], {
-          input: peeled.map(item => item.split(" ")[0]).join("\n") + "\n",
-        })) return false;
+    if (objects.length !== heads.length || objects.some((item, i) => !new RegExp(`^${heads[i].split(" ")[0]} (commit|tag)$`, "u").test(item))) return false;
+    const commits = objects.filter(item => item.endsWith(" commit")).map(item => item.split(" ")[0]);
+    if (commits.length && await owned.git(["rev-list", "--max-count=1", "--stdin", "--not", "--all"], {
+      input: commits.join("\n") + "\n",
+    })) return false;
+    const tags = heads.filter((item, i) => objects[i].endsWith(" tag"));
+    if (tags.length) {
+      // Conservatively require each advertised tag's exact retained ref and OID.
+      // --verify accepts exact ref paths, not revision expressions; no peeling,
+      // keeper refs or unbounded inventory of every reachable object is needed.
+      if (tags.some(item => !item.split(" ")[1].startsWith("refs/"))) return false;
+      let refs;
+      try { refs = String(await owned.git(["show-ref", "--verify", "--", ...tags.map(item => item.split(" ")[1])])).split(/\r?\n/u); }
+      catch { return false; }
+      if (refs.length !== tags.length || refs.some((item, i) => item !== tags[i])) return false;
+    }
     return true;
   }
 

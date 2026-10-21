@@ -64,8 +64,13 @@ target applied/already-applied and hash-bound validate/finalize receipts applied
 Waiting, failed, superseded and UNKNOWN generations remain retained. Only the
 redundant `release-gens/*/source.bundle` is eligible: its original identity,
 frozen checkpoint/manifest and marked independent clone must match the published
-candidate. All advertised objects must be locally connected and commit-ish roots
-anchored in retained refs/HEAD, so ordinary Git GC cannot discard them; shallow, partial,
+candidate. All advertised objects must be locally connected. Original commit roots
+must be reachable from retained refs/HEAD; original annotated tag OIDs require
+their exact advertised ref to remain bound to that same tag object, including
+tag chains. A published peeled commit alone does not preserve tag metadata.
+Renamed/missing tag refs and unsupported tree/blob roots are conservatively
+retained; no keeper refs are created. These checks run again before deletion,
+so ordinary Git GC cannot discard the admitted roots; shallow, partial,
 alternate-backed or dirty clones refuse. Ignored WIP is preserved because no
 repository or directory body is removed. The native single-file custody owner
 performs the same exact-identity/hash/streams/link checks as other transports.

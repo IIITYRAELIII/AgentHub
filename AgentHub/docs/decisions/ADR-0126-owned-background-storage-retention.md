@@ -95,9 +95,14 @@ by age. The release filesystem owner holds the existing per-generation lease,
 also shared by preparation and canonical discard. It verifies the generation's
 identity and marked independent clone against that proof and the frozen
 checkpoint/manifest. Its full local object graph must contain all advertised
-bundle roots, and those commit-ish roots must remain anchored in retained Git
-refs/HEAD. Unanchored objects are not sufficient because later Git GC may prune
-them; no new keeper refs or automatic Git mutations are created. Alternates, shallow/partial clones, changed work or mismatched
+bundle roots. Original commit objects must remain reachable from retained Git
+refs/HEAD. Original annotated tag objects (including tags pointing to tags)
+require the exact advertised retained ref to resolve to the same unpeeled OID;
+reachability of the peeled commit does not preserve a tag's metadata. Missing or
+renamed tag refs and unsupported tree/blob roots conservatively retain the bundle.
+The same original-root check runs before the effect. Unanchored objects are not
+sufficient because later Git GC may prune them; no new keeper refs or automatic
+Git mutations are created. Alternates, shallow/partial clones, changed work or mismatched
 capture metadata refuse.
 
 This policy removes only the exact redundant source.bundle through the existing

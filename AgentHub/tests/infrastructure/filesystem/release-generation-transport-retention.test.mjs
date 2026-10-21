@@ -156,6 +156,70 @@ test("locally present but unanchored advertised history is retained across futur
   assert.ok((await lstat(f.bundle)).isFile());
 });
 
+test("an unanchored annotated tag is retained even when its peeled commit is published", async t => {
+  const f = await fixture(t);
+  await git(f.source, ["tag", "-a", "capture-tag", "-m", "unique tag metadata", f.commit]);
+  const tag = await git(f.source, ["rev-parse", "refs/tags/capture-tag"]);
+  await git(f.repository, ["fetch", "--no-tags", "--no-write-fetch-head", f.source, tag]);
+  const metadata = await git(f.repository, ["cat-file", "tag", tag]);
+  await rm(f.bundle); await git(f.source, ["bundle", "create", f.bundle, "--all"]);
+  const before = sha(await readFile(f.bundle)), refs = await git(f.repository, ["show-ref"]);
+  assert.equal(await git(f.repository, ["rev-parse", tag + "^{commit}"]), f.commit);
+  assert.equal((await f.retention.preview({ candidate: f.candidate })).reason, "release-bundle-roots-unanchored");
+  assert.equal(sha(await readFile(f.bundle)), before);
+  assert.equal(await git(f.repository, ["cat-file", "tag", tag]), metadata);
+  assert.equal(await git(f.repository, ["show-ref"]), refs);
+  // A same-name lightweight tag still anchors only the commit, not the tag object.
+  await git(f.repository, ["update-ref", "refs/tags/capture-tag", f.commit]);
+  assert.equal((await f.retention.preview({ candidate: f.candidate })).reason, "release-bundle-roots-unanchored");
+  assert.equal(sha(await readFile(f.bundle)), before);
+});
+
+test("retained annotated tags and a tag chain survive native bundle retirement and Git GC", { skip: process.platform !== "win32" }, async t => {
+  const f = await fixture(t);
+  await git(f.source, ["tag", "-a", "inner", "-m", "inner metadata", f.commit]);
+  await git(f.source, ["tag", "-a", "outer", "-m", "outer metadata", "refs/tags/inner"]);
+  await git(f.repository, ["fetch", "--no-write-fetch-head", f.source, "refs/tags/inner:refs/tags/inner", "refs/tags/outer:refs/tags/outer"]);
+  const inner = await git(f.repository, ["rev-parse", "refs/tags/inner"]), outer = await git(f.repository, ["rev-parse", "refs/tags/outer"]);
+  const tags = await Promise.all([inner, outer].map(oid => git(f.repository, ["cat-file", "tag", oid])));
+  const refs = await git(f.repository, ["show-ref"]);
+  await rm(f.bundle); await git(f.source, ["bundle", "create", f.bundle, "--all"]);
+  const preview = await f.retention.preview({ candidate: f.candidate });
+  assert.equal(preview.status, "eligible", JSON.stringify(preview));
+  assert.equal((await f.retention.prune({ candidate: f.candidate, binding: preview.binding })).status, "removed");
+  await assert.rejects(lstat(f.bundle), { code: "ENOENT" });
+  await git(f.repository, ["gc", "--prune=now"]);
+  assert.deepEqual(await Promise.all([inner, outer].map(oid => git(f.repository, ["cat-file", "tag", oid]))), tags);
+  assert.equal(await git(f.repository, ["show-ref"]), refs);
+  assert.equal(await git(f.repository, ["rev-parse", "HEAD"]), f.commit);
+});
+
+test("tag ref loss after the fresh preview refuses the before-effect original-root check", async t => {
+  const f = await fixture(t);
+  await git(f.source, ["tag", "-a", "capture-tag", "-m", "preserve tag metadata", f.commit]);
+  await git(f.repository, ["fetch", "--no-write-fetch-head", f.source, "refs/tags/capture-tag:refs/tags/capture-tag"]);
+  await rm(f.bundle); await git(f.source, ["bundle", "create", f.bundle, "--all"]);
+  const before = sha(await readFile(f.bundle));
+  const preview = await f.retention.preview({ candidate: f.candidate });
+  assert.equal(preview.status, "eligible", JSON.stringify(preview));
+  const gitAt = f.retention.gitAt;
+  let removedRef = false, effects = 0;
+  f.retention.gitAt = async (root, args, options) => {
+    const result = await gitAt(root, args, options);
+    if (!removedRef && args[0] === "show-ref") {
+      removedRef = true;
+      await git(f.repository, ["update-ref", "-d", "refs/tags/capture-tag"]);
+    }
+    return result;
+  };
+  f.retention.deleteTransport = async () => { effects++; throw new Error("unexpected delete"); };
+  const result = await f.retention.prune({ candidate: f.candidate, binding: preview.binding });
+  assert.equal(removedRef, true);
+  assert.equal(result.reason, "release-bundle-roots-unanchored");
+  assert.equal(effects, 0);
+  assert.equal(sha(await readFile(f.bundle)), before);
+});
+
 test("generation lease serializes transport retirement with the existing generation owner", { timeout: 15_000 }, async t => {
   const f = await fixture(t);
   let enter, release;
