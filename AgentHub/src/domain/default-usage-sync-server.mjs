@@ -12,7 +12,9 @@ export function normalizeUsageSyncServerUrl(value) {
   if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) {
     throw new Error("Usage sync server must use HTTP(S) without credentials, query or fragment");
   }
-  return url.toString().replace(/\/$/u, "");
+  const normalized = url.toString().replace(/\/$/u, "");
+  if (normalized.length > 2048) throw new Error("Invalid usage sync server URL");
+  return normalized;
 }
 
 export function defaultUsageSyncServerUrl(environment = process.env) {

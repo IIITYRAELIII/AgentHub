@@ -6,6 +6,31 @@ import test from "node:test";
 import { serverConfigurationEntries, updateServerConfiguration } from "../../../src/interfaces/web/server-configuration.mjs";
 import { UsageSyncRemoteConfigStore } from "../../../src/infrastructure/persistence/usage-sync-remote-config-store.mjs";
 
+test("sync endpoint admission is idempotent across Unicode URL encoding", async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "hub-sync-unicode-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const configPath = path.join(root, "config.json");
+  await writeFile(configPath, JSON.stringify({ unrelated: "preserved", usageSyncServerUrl: "https://old.example.invalid" }));
+  const prefix = "https://sync.example.invalid/", suffix = "/endpoint";
+  const before = await readFile(configPath);
+  await assert.rejects(updateServerConfiguration({ configPath,
+    changes: { usageSyncServerUrl: prefix + "я".repeat(350) + suffix },
+    environment: {}, protectConfig: async () => {} }), /Invalid usage sync server URL/u);
+  assert.deepEqual(await readFile(configPath), before);
+  const accepted = prefix + "я".repeat(335) + suffix;
+  const encoded = prefix + "%D1%8F".repeat(335) + suffix;
+  assert.equal(encoded.length, 2048);
+  await updateServerConfiguration({ configPath, changes: { usageSyncServerUrl: accepted },
+    environment: {}, protectConfig: async () => {} });
+  const saved = JSON.parse(await readFile(configPath, "utf8"));
+  assert.equal(saved.usageSyncServerUrl, encoded);
+  const store = new UsageSyncRemoteConfigStore({ file: path.join(root, "remote.json"), configuredServerUrl: saved.usageSyncServerUrl });
+  assert.equal((await store.load()).serverUrl, encoded);
+  await updateServerConfiguration({ configPath, changes: { usageSyncServerUrl: saved.usageSyncServerUrl },
+    environment: {}, protectConfig: async () => {} });
+  assert.equal(JSON.parse(await readFile(configPath, "utf8")).usageSyncServerUrl, encoded);
+});
+
 test("admitted sync endpoint survives settings and effective-store roundtrip without truncation", async t => {
   const root = await mkdtemp(path.join(os.tmpdir(), "hub-sync-url-roundtrip-"));
   t.after(() => rm(root, { recursive: true, force: true }));
