@@ -1,11 +1,20 @@
 # Status headers
 
-`/status` выбирает готовую локальную шапку без обращения к модели:
+`/status` выбирает готовую локальную PNG-шапку без обращения к модели:
 
-- `codex-header-01.png` … `codex-header-07.png` — синие технологические варианты Codex;
-- `claude-header-01.png` … `claude-header-07.png` — терракотовые редакционные варианты Claude;
-- `both-header-01.png` … `both-header-03.png` — совместные варианты для одновременно активных задач обоих агентов.
+- `codex-header-01.png` … `codex-header-07.png` — ключи выбора для Codex;
+- `claude-header-01.png` … `claude-header-07.png` — ключи выбора для Claude;
+- `both-header-01.png` … `both-header-03.png` — ключи выбора при активных задачах обоих провайдеров;
+- `codex-header.png` и `claude-header.png` — сохранённые базовые имена файлов.
 
-Фоны созданы встроенной генерацией изображений как панорамы 3:1 без текста и водяных знаков. Основные направления промптов: neural constellation, data aurora, circuit cathedral, quantum grid, dark glass waves, space network и code rain для Codex; paper waves, geometric folds, copper aurora, topographic clay, linen texture, abstract sunrise и particle field для Claude; convergence, split-field fusion и dual-agent orbit для совместных вариантов.
+Все эти PNG побайтно повторяют существующий нейтральный фон
+`../notification-cards/background-hex.png`. Он не содержит названий или логотипов
+провайдеров. Варианты сейчас визуально одинаковы; число файлов, provider/group
+selection и контракт `status-header.mjs` сохранены. Название выбранного провайдера
+остаётся обычным текстом в статусе, а не графическим знаком на изображении.
 
-Логотипы наложены локально из исходных `codex-header.png` и `claude-header.png`. Выбор файлов реализован в `status-header.mjs`; повторная генерация и расход токенов при показе статуса не происходят.
+Прежние шапки с намеренно наложенными vendor marks сохраняются только в
+приватной Utilities-истории. При public source extraction исключаются все их
+точные исторические blobs, включая старый префикс `TelegramIntegration/`, затем
+добавляются эти нейтральные PNG. Изначальные OID/receipts не переименовываются.
+Наложение vendor logos и повторная генерация при показе статуса не выполняются.
