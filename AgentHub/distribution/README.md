@@ -100,6 +100,17 @@ or locked dependency installation. A mismatch refuses; it never changes a manife
 or allocates an arbitrary version. Publication version and artifact version are
 distinct inputs and must not be silently relabeled.
 
+For newly frozen generations, the existing release freeze records the calendar
+publication version and the canonical next `runtimeReleaseVersion` separately in
+the same immutable manifest and freeze intent. It reads the configured runtime's
+existing release metadata; it does not reserve a suffix or prepare a runtime.
+The canonical publication runner passes that exact version, original operation,
+generation and frozen commit to the artifact owner. A later competing allocation
+therefore causes an explicit mismatch under the installation lease. Repeating a
+freeze or resuming its prepared artifact retains the original version. Historical
+generations without this field keep their original artifact identity and do not
+acquire a newly invented PREPARED receipt.
+
 After normal preparation, `artifacts.preparedRuntimeReceipt(identity)` verifies
 the original artifact, full runtime and frozen source/version, then returns
 `{ receipt, receiptFile, receiptSha256 }`. The exact nine-field JSON is retained in
@@ -109,8 +120,9 @@ lost, is reused before another preparation/allocation. Partial bodies without a
 manifest and changed original inputs refuse and remain available for inspection.
 This is an existing-checkpoint adapter, not another preparation or approval ledger.
 
-The canonical runner's final standalone input and publication of the accepted
-asset allowlist through its original release checkpoint remain separate wiring.
+The final standalone export input, invocation of the packaging stage and
+publication of its accepted asset allowlist through the original release
+checkpoint remain separate wiring.
 Until that wiring and final product input are reviewed, this offline checkpoint
 and callable adapter alone are not the complete build-to-public-release command.
 No second publisher, manual asset upload or source-only artifact substitutes for it.

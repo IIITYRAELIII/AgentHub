@@ -1,5 +1,15 @@
 # REL-001 — Task-backed Workspace release
 
+New publication freezes persist both the calendar publication version and the
+canonical next runtime artifact version in their existing immutable manifest and
+freeze intent. This observation reserves nothing. The original generation runner
+passes the exact operation/generation/commit/artifact version to the existing
+artifact owner, whose installation lease compares that expectation before any
+preparation or allocation. A competing allocation refuses rather than retargeting
+the frozen input. Freeze retry and lost-reply artifact reuse retain the original
+version. Historical generations lacking this field keep their original executor
+identity; they are not rewritten or granted a new packaging receipt.
+
 ## Frozen standalone artifact preparation
 
 The existing publication artifact checkpoint may bind an explicit original

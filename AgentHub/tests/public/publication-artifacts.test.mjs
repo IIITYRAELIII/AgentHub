@@ -7,6 +7,7 @@ import test from "node:test";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { publishChanged } from "../../publish-changed.mjs";
+import { releaseOperationRuntimePublicationInput } from "../../release-operation-publication-runner.mjs";
 import { createPublicationArtifactSteps, artifactFiles, buildArtifact, readArtifact } from "../../src/infrastructure/process/publication-artifacts.mjs";
 import { publicationCheckpointStore, runPublicationSteps } from "../../src/infrastructure/persistence/publication-checkpoint.mjs";
 import { publicationRunStore } from "../../src/infrastructure/persistence/publication-run-store.mjs";
@@ -139,7 +140,14 @@ test("frozen publication string fields reject coerced arrays and boxed strings b
 });
 
 test("original artifact checkpoint yields the exact packager receipt and reuses before allocation", async t => {
-  const f = await fixture(t, { runtimePublication: frozenRuntime });
+  const runtimePublication = releaseOperationRuntimePublicationInput({
+    operation: { operationId: frozenRuntime.operationId },
+    generation: { operationId: frozenRuntime.operationId, generation: frozenRuntime.generation },
+    candidate: { commit: frozenRuntime.sourceCommit, manifest: { publication: {
+      head: frozenRuntime.sourceCommit, releaseVersion: "2026.9.16", runtimeReleaseVersion: frozenRuntime.version,
+    } } },
+  });
+  const f = await fixture(t, { runtimePublication });
   await publishChanged(["--full-tests"], f.create());
   const owner = f.create();
   const identity = (await owner.journal.read()).identity;

@@ -1882,7 +1882,9 @@ export class ReleaseGitWorkspaceService {
         if (baseBinding.provenance?.kind === LOCAL_SOURCE_BASELINE_PROVENANCE) {
           await this.validateLocalSourceBaseline({ projectRoot: marker.primaryRoot, ...baseBinding });
         }
-        const result = await freezePreparedPublicationCandidate({ ...options, layout, marker, workspaceId,
+        const result = await freezePreparedPublicationCandidate({
+          runtimeRoot: defaultRuntimeRoot({ environment: this.#environment }),
+          ...options, layout, marker, workspaceId,
           validateBeforeCommit: async () => {
             await options.validateBeforeCommit?.();
             if (baseBinding.provenance?.kind === LOCAL_SOURCE_BASELINE_PROVENANCE) {
