@@ -75,6 +75,25 @@ remain distinct, and stale read-model aliases are replaced rather than guessed.
 The durable command ledger owns acceptance and dispatch state. UI cards,
 in-memory receipts and runtime snapshots are projections.
 
+Snapshot writes project only the command IDs referenced by that snapshot; they
+do not enumerate unrelated active lanes or hot terminal history. Compaction
+point-reads those exact IDs, including terminal tombstones, and leaves unowned
+legacy payloads intact. Recovery reads still enumerate the canonical ledger so
+an intake committed after an older snapshot is not lost. Existing state/revision
+CAS, exact occupancy binding and terminal absorption remain unchanged.
+
+A run's admission timestamp is not its provider delivery time. When an exact
+provider-start observation exists, command `startedAt`/`deliveredAt` use its
+captured `acceptedAt`, or remain unknown if that time is unavailable. The earlier
+timestamp is retained as `admittedAt`. Terminal persistence and reopen retain
+that distinction without rewriting the original accounting interval. Legacy
+terminal payloads lacking the captured field keep their previous interpretation;
+they are not retrospectively assigned a provider-acceptance time (ADR-0123).
+The existing compact terminal retry tombstone retains the bounded captured
+provider/admission timestamps, including explicit unknown versus absent legacy
+fields. Archival and exact-ID retry cannot change that distinction or restore
+message/attachment payloads to the hot row.
+
 A new response annotation may carry one bounded source locator owned by the
 original client capture from a canonical user, final agent or active non-final
 agent item: exact `provider + threadId + turnId + itemId + role`,

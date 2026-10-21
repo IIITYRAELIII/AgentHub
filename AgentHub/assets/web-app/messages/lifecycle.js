@@ -196,7 +196,9 @@ function activeRunSubmissionTiming(run) {
   return {
     rootMessage,
     submittedAt: run?.submittedAt ?? rootMessage?.submittedAt ?? rootMessage?.time ?? run?.startedAt ?? null,
-    startedAt: run?.startedAt ?? rootMessage?.startedAt ?? null,
+    startedAt: run?.providerStart
+      ? runHasAuthoritativeProviderAcceptance(run) ? run.providerStart.acceptedAt ?? null : null
+      : run?.startedAt ?? rootMessage?.startedAt ?? null,
   };
 }
 
@@ -1107,14 +1109,14 @@ function receiptDeliveryState(receipt) {
   if (receipt?.providerConnection?.state === "lost") return "connection-lost";
   if (receipt?.dispatching === true) return "sending";
   if (receipt?.deferred === true && receipt?.queued === true) return "queued";
-  if (receipt?.started === true || receiptHasAuthoritativeProviderAcceptance(receipt)) return "running";
+  if ((receipt?.started === true && receipt?.providerAccepted !== false)
+    || receiptHasAuthoritativeProviderAcceptance(receipt)) return "running";
   if (receipt?.accepted === true || receipt?.steered === true) return "accepted";
   if (receipt?.deferred === true) return "deferred";
   return null;
 }
 
-function messageReceiptProjection(receipt) {
-  const deliveryState = receiptDeliveryState(receipt);
+function messageReceiptProjection(receipt, { deliveryState = receiptDeliveryState(receipt) } = {}) {
   const submittedAt = receipt?.submittedAt ?? receipt?.createdAt ?? null;
   const startedAt = receipt?.startedAt ?? receipt?.deliveredAt ?? null;
   const completedAt = receipt?.completedAt ?? null;
@@ -1151,6 +1153,7 @@ function messageReceiptProjection(receipt) {
 function receiptHasAuthoritativeProviderAcceptance(receipt) {
   const turnId = String(receipt?.turnId ?? "").trim();
   if (!turnId) return false;
+  if (receipt?.providerAccepted === false) return false;
   if (receipt?.providerAccepted === true || receipt?.steered === true) return true;
   return Boolean(
     receipt?.accepted === true
@@ -1215,7 +1218,7 @@ function queueHistoryReceiptProjection(receipt) {
             : receipt?.queued === true ? "queued" : "deferred"
         : base.deliveryState;
   return {
-    ...base,
+    ...messageReceiptProjection(receipt, { deliveryState }),
     clientProjectionIntent: projectionIntent || null,
     providerAccepted,
     ownsDeferredQueue: ownsQueue,

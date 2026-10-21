@@ -8717,7 +8717,7 @@ function sendComposerRequest({
     messageOrigin: requestMessageOrigin,
     composerTransfer: requestComposerTransfer,
     followUpMode: MessageView.composerFollowUpMode(task, { steerWhileRunning }),
-    deferWhileRunning: task?.running === true && !steerWhileRunning,
+    deferWhileRunning: (task?.running === true || task?.canStop === true) && !steerWhileRunning,
     draftStream: task?.draftStream === true,
     streamId: task?.streamId ?? null,
     settings: task?.draftStream ? { ...task.streamSettings } : null,

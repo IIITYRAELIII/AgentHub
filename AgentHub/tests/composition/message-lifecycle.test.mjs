@@ -3618,6 +3618,7 @@ test("live snapshot projects generated response attachments into the current car
   const taskId = "stream:imagegen-live";
   const liveCardsByTask = new Map();
   const sandbox = vm.createContext({
+    window: { AgentHubMessageProjection: projection },
     activeTaskRun: lifecycle.activeTaskRun,
     isUserRunningProjection: () => true,
     projectedActiveUserRun: (_id, task) => lifecycle.activeTaskRun(task),

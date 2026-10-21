@@ -102,6 +102,20 @@ These elapsed spans do not classify filesystem or callback wait as CPU work.
 
 ## Unified performance evidence
 
+Runtime snapshot projection and compaction resolve only their referenced command
+IDs through the existing ledger. They do not hydrate unrelated active or hot
+terminal records before filtering. Full startup/reconnect overlay remains a
+canonical recovery read. This eliminates unnecessary enumeration, not mandatory
+run persistence or its error/recovery fence. Original-command measurements must
+still distinguish snapshot encoding, worker/queue waits and durable writes; a
+file size or inclusive wall duration alone does not identify CPU or fsync cost.
+
+Local submission, durable Hub acceptance, preparation/queueing and exact provider
+acceptance are distinct visible boundaries. Rendering a durable ACK does not
+wait for full snapshot/history synchronization. A preparing run may own admission
+and cancellation without being labelled a running provider. First text and usage
+enrichment are not prerequisites for displaying an accepted provider turn.
+
 Client interactions, navigation, control ACKs, request and rendering durations,
 long main-thread tasks, startup, terminal-outbox phases and existing runtime
 health/SQLite counters use the same `command-traces.sqlite` worker owner.

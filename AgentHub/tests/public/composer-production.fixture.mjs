@@ -1,8 +1,11 @@
 import { readFile } from "node:fs/promises";
 import { after } from "node:test";
 import vm from "node:vm";
+import { pathToFileURL } from "node:url";
 
-const WEB_APP_ROOT = new URL("../../assets/web-app/", import.meta.url);
+const WEB_APP_ROOT = process.env.AGENT_HUB_TEST_WEB_APP_ROOT
+  ? pathToFileURL(`${process.env.AGENT_HUB_TEST_WEB_APP_ROOT.replace(/[\\/]+$/u, "")}/`)
+  : new URL("../../assets/web-app/", import.meta.url);
 const composerDraftSource = await readFile(
   new URL("messages/composer-draft-reconciliation.js", WEB_APP_ROOT),
   "utf8",
@@ -126,7 +129,8 @@ let sharedBrowserPromise = null;
 function sharedBrowser() {
   if (!sharedBrowserPromise) {
     const pending = (async () => {
-      const { chromium } = await import("playwright-core");
+      const { chromium } = await import(process.env.AGENT_HUB_TEST_PLAYWRIGHT_MODULE
+        ? pathToFileURL(process.env.AGENT_HUB_TEST_PLAYWRIGHT_MODULE).href : "playwright-core");
       return process.platform === "win32"
         ? chromium.launch({ channel: "msedge", headless: true })
         : chromium.launch({ headless: true });

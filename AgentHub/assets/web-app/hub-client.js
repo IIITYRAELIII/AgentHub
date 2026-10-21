@@ -733,7 +733,11 @@ function updateOutgoing(taskIdValue, clientUserMessageId, patch) {
   if (!resolvedTaskId) return "";
   const message = outgoingMessages(resolvedTaskId).get(clientUserMessageId);
   if (!message) return "";
-  Object.assign(message, patch);
+  const absorbingProjection = message.providerAccepted === true
+    || ["completed", "failed", "cancelled"].includes(message.projectionState);
+  Object.assign(message, patch.projectionState && absorbingProjection
+    ? window.AgentHubMessageProjection.reduceProjectionEntity(message, { ...message, ...patch })
+    : patch);
   if (patch.projectionAuthority === "canonical" || ["accepted", "rejected"].includes(patch.deliveryState)) {
     queueMicrotask(() => window.AgentHubPruneComposerFiles?.());
   }
@@ -1174,12 +1178,23 @@ function promoteLiveCompletion(taskIdValue, selected, incomingTurnId = "") {
 
 function projectedActiveUserRun(taskIdValue, task) {
   const run = activeTaskRun(task);
+  const preparingRun = run && !String(run.turnId ?? "").trim()
+    && String(run.id ?? "").trim() && String(run.clientUserMessageId ?? "").trim();
   if (!run || !isUserRunningProjection(run)
-    || !window.AgentHubStreamTabs.isExactActiveUserTurn(task)) return null;
+    || (!preparingRun && !window.AgentHubStreamTabs.isExactActiveUserTurn(task))) return null;
+  // Before turn binding, the durable original command can already be terminal.
+  // Consume only its exact lane/client/run receipt, never another preparation.
+  if (preparingRun && (lastSnapshot?.messageReceipts ?? []).some((receipt) => (
+    exactSnapshotTaskId(receipt, lastSnapshot?.tasks) === taskIdValue
+    && String(receipt?.clientUserMessageId ?? "").trim() === String(run.clientUserMessageId).trim()
+    && String(receipt?.runId ?? "").trim() === String(run.id).trim()
+    && ["completed", "failed", "cancelled"].includes(queueHistoryReceiptProjection(receipt).projectionState)
+  ))) return null;
   // Canonical terminal history is absorbing for this exact provider/Thread/turn.
   // Reuse the history owner; a later raw active snapshot cannot revive that turn.
   return completedLiveTurnIdentity(historyByTask.get(taskIdValue) ?? [], {
     provider: task.provider, threadId: task.threadId, turnId: run.turnId,
+    clientUserMessageIds: [run.clientUserMessageId],
   }) ? null : run;
 }
 
@@ -1365,7 +1380,8 @@ function updateLiveMessage(taskIdValue, selected) {
   }
   const liveCard = mergeLiveMaintenance({
     author: selected.provider === "claude" ? "Claude" : "Codex",
-    stage: activeStageLabel(run.stage),
+    stage: window.AgentHubMessageProjection.userRunActivity(run).preparing
+      ? "Подготовка хода…" : activeStageLabel(run.stage),
     reasoning: run.progress || "",
     text: response,
     attachments: attachmentViews(run.responseAttachments),
@@ -1386,7 +1402,7 @@ function updateLiveMessage(taskIdValue, selected) {
     projectionAuthority: "live",
     projectionState: "active",
     time: run.lastActivityAt ?? run.startedAt ?? null,
-    turnStartedAt: run.startedAt ?? null,
+    turnStartedAt: runTiming.startedAt,
     snapshotLastAnswerAt: selected.lastAnswerAt ?? null,
   }, maintenanceEventsByTask.get(taskIdValue) ?? []);
   liveCardsByTask.set(taskIdValue, liveCard);
@@ -1882,13 +1898,15 @@ function modelTask(task, snapshot, effectiveSelectedId, serverSelectedId) {
     runtimeTitle,
     project: task.projectName || "",
     canStop: activity.canStop,
+    preparing: activity.preparing === true,
     activityUnknown: unknown,
     status: running ? "running" : unknown ? "unknown" : unread ? "ready" : "idle",
-    statusLabel: running ? "Выполняется" : unknown ? "Состояние уточняется · поток занят" : unread ? "Ответ готов" : "",
+    statusLabel: running ? "Выполняется" : unknown ? "Состояние уточняется · поток занят"
+      : activity.preparing ? "Подготовка хода" : unread ? "Ответ готов" : "",
     lastActivity: task.orderingActivityAtMs
       ? new Date(task.orderingActivityAtMs).toISOString()
       : task.lastAnswerAt,
-    startedAt: running ? task.run?.startedAt ?? task.startedAt ?? null : null,
+    startedAt: running ? activeRunSubmissionTiming(task.run).startedAt : null,
     unread: !running && unread,
     running,
     selected: id === effectiveSelectedId,
@@ -2571,7 +2589,7 @@ function applySnapshotContent(snapshot, { materialized = false } = {}) {
         provider: task.provider,
         threadId: task.threadId,
         turnId: String(task.run?.turnId ?? ""),
-        time: task.run?.startedAt ?? null,
+        startedAt: activeRunSubmissionTiming(task.run).startedAt,
         ...nonEmptyAttachmentPatch(task.run?.attachments),
         // The run-level receipt is assigned only when Agent Hub starts a new
         // turn. It identifies the first user item even while Codex history has
@@ -2579,7 +2597,7 @@ function applySnapshotContent(snapshot, { materialized = false } = {}) {
         turnUserSlot: "root",
         projectionState: "active",
         providerAccepted: true,
-        ...deliveryPatch("accepted"),
+        ...deliveryPatch("running"),
       });
     }
     const selected = representativeTasks.find(

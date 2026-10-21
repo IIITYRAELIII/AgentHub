@@ -22,6 +22,12 @@ terminal.
 
 ## Invariants
 
+- New terminal payloads with a captured provider-start observation retain its
+  exact acceptance timestamp separately from the original accounting/admission
+  start. Command reconciliation after restart uses that captured value, including
+  explicit unknown, rather than backdating provider acceptance to run creation.
+  Existing legacy terminals keep their recorded interpretation (ADR-0123).
+
 - Terminal status, final content, usage identity and last-message identity are
   committed before admission or queue ownership is released.
 - Ordinary Claude turns remain background work on Windows: starting a turn or

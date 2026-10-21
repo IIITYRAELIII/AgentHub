@@ -35,6 +35,17 @@ navigation. Legacy citations already bound to shortened content are not rewritte
 
 ## Invariants
 
+- Local sending is visible before a transport response. The exact durable Hub
+  ACK updates that same command immediately, before snapshot/history refresh;
+  its final selected state and displayed delivery label must agree. Explicit
+  queue intent remains queue-owned. An ACK does not imply provider execution.
+- Explicit provider-start preparation is shown as preparation while preserving
+  occupied admission and cancellation/queue intent. An exact accepted/observed
+  provider turn is shown running even with no answer text. Legacy exact-bound
+  accepted responses keep their existing authority; a missing optional marker
+  alone is not evidence of rejection. Terminal state remains absorbing after
+  reordered snapshots or reconnect. See ADR-0123.
+
 - The Codex picker contains every selectable ID from the last complete successful
   provider catalog, excluding provider-hidden entries. A failed or incomplete
   refresh cannot remove an option. Manual priority controls order, not
