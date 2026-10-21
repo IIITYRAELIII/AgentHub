@@ -90,3 +90,14 @@ synthetic fixtures are restored as a declared new source delta over the accepted
 audit baseline. Original private Git history/config custody and frozen release
 provenance remain separate and unchanged. A passing HEAD test does not approve
 the public history or a runtime package.
+
+## Public status header artwork boundary
+
+The public status-header family uses byte-exact copies of the existing unbranded
+`assets/notification-cards/background-hex.png`. Provider/group file names are
+stable selection keys; the images contain no provider name or logo. All variants
+currently share the same artwork. Exact original overlaid vendor-mark blobs are
+excluded across both historical source prefixes and retained only in private
+Utilities provenance. Contributor permission for Hub code/backgrounds does not
+assert permission to redistribute a vendor mark. No runtime provider selection,
+status command, receipt identity or model invocation changes in this replacement.
