@@ -128,6 +128,8 @@ test("frozen publication string fields reject coerced arrays and boxed strings b
   for (const field of ["operationId", "sourceCommit", "version"]) {
     for (const value of [[frozenRuntime[field]], Object(frozenRuntime[field])]) {
       assert.throws(() => createPublicationArtifactSteps({
+        sourceRoot: path.join(os.tmpdir(), "hub-frozen-type-source"),
+        runtimeRoot: path.join(os.tmpdir(), "hub-frozen-type-runtime"),
         runtimePublication: { ...frozenRuntime, [field]: value },
         prepareRuntimeImpl: async () => { preparations++; },
       }), /Invalid frozen runtime publication input/u);
