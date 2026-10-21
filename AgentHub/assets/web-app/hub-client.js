@@ -1502,20 +1502,26 @@ async function hubFetch(input, init, retrySession = true, traceId) {
   if (pathname.startsWith("/api/command-trace/")) return hubFetchResponse(input, init, retrySession);
   const route = ["journal", "attachment", "control", "snapshot", "startup", "workspace", "usage", "rate-limit"]
     .find((name) => pathname.startsWith(`/api/${name}`)) || "other";
-  return commandTrace.http(`http-${route}`, () => hubFetchResponse(input, init, retrySession), traceId);
+  return commandTrace.http(`http-${route}`, () => hubFetchResponse(input, init, retrySession, traceId),
+    typeof traceId === "object" ? traceId.traceRequestId || traceId.traceUploadId : traceId);
 }
 
-async function hubFetchResponse(input, init, retrySession = true) {
+async function hubFetchResponse(input, init, retrySession = true, traceId) {
   try {
+    const measured = (action, operation) => traceId?.traceUploadId
+      ? commandTrace.upload(action, operation, { uploadId: traceId.traceUploadId,
+        uploadAttemptId: traceId.traceAttemptId,
+        httpRequestId: traceId.traceHttpRequestId,
+        messageRequestId: traceId.traceRequestId, chunkIndex: traceId.traceChunkIndex }) : operation();
     // Refreshing the session re-issues the HttpOnly cookie that the request below
     // carries automatically as a same-origin request.
-    await window.AgentHubBrowserDevice?.ensureSession?.();
-    const response = await fetch(input, init);
+    await measured("session", () => window.AgentHubBrowserDevice?.ensureSession?.());
+    const response = await measured("transport", () => fetch(input, init));
     if (response.status !== 401 || !retrySession || !window.AgentHubBrowserDevice?.ensureSession) {
       return response;
     }
-    await window.AgentHubBrowserDevice.ensureSession(true);
-    return hubFetchResponse(input, init, false);
+    await measured("session-refresh", () => window.AgentHubBrowserDevice.ensureSession(true));
+    return hubFetchResponse(input, init, false, traceId);
   } catch (error) {
     throw markConnectionFailure(error);
   }
@@ -3258,10 +3264,17 @@ function dataUrlBody(dataUrl) {
 
 const attachmentUploader = window.AgentHubAttachmentUpload.create({
   request: async (path, init) => {
-    await localSessionReady;
-    const signal = AbortSignal.any([...(init?.signal ? [init.signal] : []), AbortSignal.timeout(30_000)]);
-    return hubFetch(path, { ...init, signal, headers: { ...authorizationHeaders(), ...init?.headers } });
+    const { traceUploadId, traceAttemptId, traceRequestId, traceHttpRequestId, traceChunkIndex, ...wireInit } = init ?? {};
+    const identity = { traceUploadId, traceAttemptId, traceRequestId, traceHttpRequestId, traceChunkIndex };
+    await commandTrace.upload("local-session", () => localSessionReady,
+      { uploadId: traceUploadId, uploadAttemptId: traceAttemptId, messageRequestId: traceRequestId,
+        httpRequestId: traceHttpRequestId, chunkIndex: traceChunkIndex });
+    const signal = AbortSignal.any([...(wireInit.signal ? [wireInit.signal] : []), AbortSignal.timeout(30_000)]);
+    return hubFetch(path, { ...wireInit, signal, headers: { ...authorizationHeaders(), ...wireInit.headers } }, true, identity);
   },
+  trace: (action, operation, { traceUploadId, traceAttemptId, traceRequestId, traceHttpRequestId, traceChunkIndex } = {}) =>
+    commandTrace.upload(action, operation, { uploadId: traceUploadId, uploadAttemptId: traceAttemptId,
+      messageRequestId: traceRequestId, httpRequestId: traceHttpRequestId, chunkIndex: traceChunkIndex }),
 });
 window.AgentHubAttachmentCapabilities = () => attachmentUploader.capabilities();
 
@@ -3650,7 +3663,9 @@ function sendUserMessage(request, frozenParams = null) {
           // Draft preparation is local; negotiate server limits once here,
           // before the first upload or provider command can have an effect.
           if (requestAttachments.length) project("uploading", "Проверка лимитов вложений…");
-          await attachmentUploader.validateBatch(requestAttachments, { signal: session.controller.signal });
+          await attachmentUploader.validateBatch(requestAttachments, {
+            signal: session.controller.signal, traceRequestId: request.requestId,
+          });
           session.controller.signal.throwIfAborted();
           assertCurrentSendTaskOperation(sendTaskOperation);
           for (const attachment of requestAttachments) {
@@ -3662,16 +3677,21 @@ function sendUserMessage(request, frozenParams = null) {
                 project("uploading", `Загрузка ${attachment.name}…`);
                 path = await uploadAttachment(attachment, {
                   signal: session.controller.signal,
-                  progress: (bytes) => project("uploading", `Загрузка файлов: ${Math.floor((uploaded + bytes) / Math.max(1, total) * 100)}%`),
+                  traceRequestId: request.requestId,
+                  progress: (bytes, _total, recovery) => project("uploading", recovery?.restarted
+                    ? recovery.reason === "expired" ? "Срок прежней загрузки истёк. Загружаю сохранённый файл заново…"
+                      : "Восстанавливаю загрузку сохранённого файла…"
+                    : `Загрузка файлов: ${Math.floor((uploaded + bytes) / Math.max(1, total) * 100)}%`),
                 });
                 session.controller.signal.throwIfAborted();
               } catch (error) {
                 if (session.controller.signal.aborted || error?.attachmentUploadTerminal
                   || error?.agentHubMessagePreparationCancelled || !attachment.blobId) throw error;
-                await new Promise((resolve) => {
-                  session.resume = resolve;
+                await commandTrace.upload("pause-wait", () => new Promise((resolve, reject) => {
+                  session.resume = () => session.controller.signal.aborted
+                    ? reject(new DOMException("Upload cancelled", "AbortError")) : resolve();
                   project("paused", `Загрузка приостановлена: ${hubErrorMessage(error)}`);
-                });
+                }), { uploadId: attachment.uploadId, messageRequestId: request.requestId });
                 session.resume = null;
               }
             }

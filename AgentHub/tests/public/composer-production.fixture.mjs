@@ -423,18 +423,25 @@ async function openFixture(page, {
     if (requestUrl.pathname === "/api/attachment-upload") {
       if (!chunkedUpload) { await route.fulfill({ status: 404, body: "{}" }); return; }
       const protocol = "agent-hub-attachment-upload-v1";
-      const policy = { protocol, chunkBytes: 1024 * 1024, maxBytes: 128 * 1024 * 1024, maxTotalBytes: 256 * 1024 * 1024 };
+      const policy = { protocol, chunkBytes: 1024 * 1024, maxBytes: 128 * 1024 * 1024,
+        maxTotalBytes: 256 * 1024 * 1024, expiresInMs: 30 * 60_000, supportsBeginRecovery: true };
       const method = route.request().method();
       const id = requestUrl.searchParams.get("id");
       let value = policy;
       let status = 200;
       if (method === "POST" && !id) {
+        const mode = await page.evaluate(() => localStorage.getItem("fixture:upload-mode"));
+        if (mode === "drop-begin-once") {
+          await page.evaluate(() => localStorage.removeItem("fixture:upload-mode"));
+          await route.abort("failed");
+          return;
+        }
         const metadata = route.request().postDataJSON();
         if (!uploads.has(metadata.uploadId)) uploads.set(metadata.uploadId, { ...metadata, protocol, status: "uploading", received: [] });
         value = uploads.get(metadata.uploadId);
       } else if (id) {
         value = uploads.get(id);
-        if (!value) { status = 404; value = { error: "Upload missing" }; }
+        if (!value) { status = 404; value = { error: "Upload missing", state: "absent" }; }
         else if (method === "PUT") {
           const mode = await page.evaluate(() => localStorage.getItem("fixture:upload-mode"));
           if (mode === "fail-once") {
@@ -455,7 +462,8 @@ async function openFixture(page, {
         log.push(entry); localStorage.setItem("fixture:upload-log", JSON.stringify(log));
       }, { method, id, index: requestUrl.searchParams.get("index"), value,
         size: method === "PUT" ? route.request().postDataBuffer().length : 0 });
-      await route.fulfill({ status, contentType: "application/json", body: JSON.stringify(value) });
+      await route.fulfill({ status, contentType: "application/json", body: JSON.stringify(value),
+        headers: { "Server-Timing": "auth;dur=2.5, body;dur=3.5, owner;dur=4.5" } });
       return;
     }
     if (requestUrl.pathname === "/api/attachment") {

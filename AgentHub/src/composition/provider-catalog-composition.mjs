@@ -196,7 +196,7 @@ export function createProviderCatalogComposition({
       steerCodexTurn: (...args) => codexTurnService.steer(...args),
       findCodexTurnByClientMessage: (...args) => codexTurnService.findByClientMessage(...args),
       cancelCodexProviderRun: (...args) => providerCancellationService.cancelCodex(...args),
-      readCodexTaskActivity: (target) => providerTaskActivity.readCodex(target),
+      readCodexTaskActivity: (...args) => providerTaskActivity.readCodex(...args),
       readCodexTaskSnapshot,
       completeObservedCodexRun: (...args) => codexCompletionService.completeObserved(...args),
       completeManagedCodexRun: (...args) => codexCompletionService.completeManaged(...args),

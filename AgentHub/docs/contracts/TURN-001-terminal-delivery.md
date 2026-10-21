@@ -54,10 +54,19 @@ terminal.
   same outcome. A promptless `task_started`, a missing active-turn projection,
   an App Server `interrupted` status, a lost connection and rollout age are not
   terminal evidence. Observer and restart recovery keep the exact run and its
-  admission lane until an exact terminal event is committed; a late terminal
+  admission lane until an exact terminal event or the narrowly proven current
+  recovery interruption below is committed; a late terminal
   releases that lane once. Current context maintenance does not generate a user
   turn. The retired probe is a bounded historical exception identified only by
   its generated reserved `client_id`, never by prompt or response text (ADR-0073).
+- Restart recovery may establish a new interrupted outcome for an exact managed
+  accepted run through the existing cancellation owner (ADR-0125). A fresh idle
+  provider Thread with that exact interrupted turn is only eligibility: fresh
+  provider/native inactivity, definite rejection of the original exact interrupt,
+  a second fresh inactivity check and unchanged ownership are required. Missing
+  or failed snapshot/terminal persistence keeps admission. This does not infer a
+  historical success, rewrite the rollout, replay the old prompt or authorize a
+  different run. Terminal persistence still precedes admission release.
 - If a previously committed Codex completion is contradicted by a later exact
   rollout terminal for the same provider/thread/turn, the terminal owner uses
   expected-revision CAS to commit a higher revision and its existing projection

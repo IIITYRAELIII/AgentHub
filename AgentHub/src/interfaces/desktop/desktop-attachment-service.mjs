@@ -87,7 +87,8 @@ export class DesktopAttachmentService {
       else return response(405, { error: "Unsupported upload operation" });
       return response(200, { ok: true, ...result });
     } catch (error) {
-      return response(error.statusCode ?? 400, { ok: false, error: String(error.message ?? error) });
+      return response(error.statusCode ?? 400, { ok: false, error: String(error.message ?? error),
+        ...(error.state ? { state: error.state } : error.statusCode === 404 ? { state: "absent" } : {}) });
     }
   }
 

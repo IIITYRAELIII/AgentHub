@@ -39,6 +39,9 @@ Provider recovery read, reconnect or reattach failure is likewise unknown: a
 generic recovery exception and a local `interrupted` bookkeeping decision do
 not create provider terminal evidence or release the manual session. Only the
 provider/process completion owner may commit the exact terminal outcome.
+The narrowly scoped ADR-0125 recovery interruption uses that same cancellation
+and terminal owner after fresh provider/native inactivity and exact interrupt
+rejection; a startup/read exception or idle status alone still cannot release.
 
 ## Invariants
 
@@ -271,3 +274,15 @@ existing error/health diagnostic; messages, credential-bearing URLs, tokens and
 request bodies never contribute to that summary. An old generic fetch failure
 without retained cause codes cannot be retrospectively diagnosed by a later
 successful request.
+
+A preserved direct gateway awaiting the existing owner's verified configuration
+handoff may report `DIRECT_GATEWAY_CONFIG_HANDOFF_REQUIRED`. This exact refusal
+does not prevent independently configured Worker or quick-tunnel startup. The
+existing Mini App lifecycle starts those services once in the same generation;
+only their actual publication callbacks may select a fallback menu URL. Other
+gateway failures keep their existing failure behavior. The original handoff
+error still rejects the cached transport-startup promise after independent work,
+so main readiness or Worker availability never becomes full gateway readiness.
+Gateway health recovery does not replay Worker startup or settle that promise.
+Shutdown/generation changes fence late publication and menu callbacks. No new
+retry loop, gateway writer, process authority or restart is introduced.

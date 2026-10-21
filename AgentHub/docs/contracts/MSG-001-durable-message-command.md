@@ -193,7 +193,9 @@ effect.
 An exact Codex `task_started` without a terminal remains uncertain too, even
 when an idle/interrupt projection or elapsed grace hides it from the active
 display. The original managed run continues to own admission until exact
-terminal evidence. A separate maintenance barrier is shown in the queue as
+terminal evidence or the current recovery interruption proven by TURN-001 and
+ADR-0125. That canonical terminal wakes the same queued command, with no resend
+or identity replacement. A separate maintenance barrier is shown in the queue as
 the concrete `context-maintenance` wait reason. When a deferred command starts,
 its receipt clears the stale wait
 reason. `providerAccepted` becomes true only for a matching accepted provider
