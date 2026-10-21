@@ -10,9 +10,14 @@ Third-party components, brands and marks retain their own terms. The traced Goth
 emblem and its earlier related geometry are excluded from this public history;
 the replacement Hub connections SVG is original geometric artwork.
 
-This is a private candidate under independent review, not an available public
-release. Actual shipped dependencies and package notices require separate
-verification against the eventual prepared release artifact.
+The scoped personal permissions and exact contribution lists are preserved in a
+private archive. They cover the declared existing contributions, without an
+automatic grant over future contributions. SHA-256 manifests verify saved bytes;
+they are not independent author signatures or trusted timestamps.
+
+The initial public source import is a development snapshot. Actual shipped
+dependencies and package notices require separate verification against the
+eventual prepared release artifact. No ready package is published by this import.
 
 ## Third-party inventory
 
@@ -33,7 +38,7 @@ verification against the eventual prepared release artifact.
 - Node.js, Codex/Claude installations, browser QA binaries, Cloudflare/Caddy,
   optional Python voice packages/models and Android SDK/JDK each have separate
   licenses. Do not claim they are shipped merely because code can invoke them.
-- Images, themes, logo/provider marks and historical design references require
+- New images, themes, logo/provider marks and design references require
   provenance review. Existing generation notes are evidence for the specific
   assets they name, not a blanket license for every binary in the history.
 

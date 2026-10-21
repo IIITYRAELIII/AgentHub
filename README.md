@@ -12,6 +12,12 @@ have explicit limits; a passing unit test does not prove production latency,
 provider parity or physical-device behavior. Read the
 [accepted contracts](AgentHub/docs/contracts/README.md) before changing behavior.
 
+The initial source-history import is an audited development snapshot. Ready
+Windows packages and the installed-runtime cutover are still being prepared.
+The preserved `wip/sidoruksv-2026-10-20` branch contains unfinished work and is
+outside the selected release. Existing installations keep their current source
+and release identities until the release owner's managed cutover.
+
 ## Installation and quick start
 
 Use a versioned ready Windows package from this repository's GitHub Releases
@@ -120,10 +126,12 @@ was used to draw it. Game and provider marks remain their owners' property.
 
 ## Licensing and security
 
-MIT is selected for code whose ownership/permission is confirmed. Existing
-third-party notices and component licenses remain applicable; dependencies,
+MIT applies to the exported Hub contributions covered by confirmed permissions.
+The scoped contributor permissions are preserved in a private evidence archive.
+Existing third-party notices and component licenses remain applicable; dependencies,
 provider tools and branding are not relicensed by a top-level license. The
-license/provenance review must complete before the first public push.
+exported history, privacy exclusions and source license boundary have undergone
+independent review; ready packages require their own artifact checks.
 
 For a suspected vulnerability, follow [SECURITY.md](SECURITY.md); do not post
 tokens, private conversations, runtime databases or unredacted screenshots in
