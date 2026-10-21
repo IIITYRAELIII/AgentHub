@@ -71,7 +71,10 @@ try {
   assert.equal(service.store.get("storage-retention:v1"), null,
     "construction/readiness must not scan storage before the deferred timer");
   const deadline = Date.now() + 15_000;
-  while (service.status().state !== "idle" && Date.now() < deadline) await delay(25);
+  // Idle is published before lease cleanup and the timer callback's finally.
+  // Await the observable installed timer too, not merely the cached run status.
+  while ((service.status().state !== "idle" || schedules.length < 2
+      || !service.timers.has("storage-retention")) && Date.now() < deadline) await delay(25);
   assert.equal(service.status().state, "idle");
   assert.equal(service.status().more, false);
   assert.equal(service.status().pending, 0);
