@@ -17,6 +17,7 @@ import {
   interstreamDisplayText,
 } from "../domain/interstream-message.mjs";
 import { canonicalMcpValue, mcpArgumentsHash } from "../domain/mcp-arguments-hash.mjs";
+import { MAX_RELEASE_METADATA_BYTES } from "../domain/release-operation.mjs";
 import { taskProjectRoot } from "../domain/task-project-root.mjs";
 import { normalizedInitialNativeTest } from "../domain/task-git-reference.mjs";
 import {
@@ -338,8 +339,10 @@ function boundedActiveTurn(run, { includeBody, maximumActivities }) {
     })), 2_000),
     startedAt: run?.startedAt ?? null,
     completedAt: null,
-    status: "active",
-    active: true,
+    status: run?.activityUnknown === true ? "unknown" : "active",
+    active: run?.activityUnknown !== true,
+    activityUnknown: run?.activityUnknown === true,
+    canStop: true,
     stage: compactText(run?.progressStage ?? "Выполняется…", 500),
     ...(includeBody ? {
       body: compactText(run?.responseText ?? "", 6_000),
@@ -833,6 +836,18 @@ export class HubMcpService {
         workspace_id: { type: "string", description: "Defaults to the caller Workspace." },
         task_ids: { type: "array", minItems: 1, items: { type: "string" } },
         validation_mode: { type: "string", enum: ["focused", "full"] },
+        release_metadata: {
+          type: "object",
+          description: "Exact prepared CHANGELOG artifact identity; the existing release owner verifies its bytes before composition.",
+          additionalProperties: false,
+          properties: {
+            sourcePath: { type: "string", minLength: 1 },
+            byteLength: { type: "integer", minimum: 1, maximum: MAX_RELEASE_METADATA_BYTES },
+            rawSha256: { type: "string", pattern: "^[a-f0-9]{64}$" },
+            canonicalSha256: { type: "string", pattern: "^[a-f0-9]{64}$" },
+          },
+          required: ["sourcePath", "byteLength", "rawSha256", "canonicalSha256"],
+        },
         approved_targets: {
           type: "array",
           minItems: 1,
@@ -1947,6 +1962,7 @@ export class HubMcpService {
         taskIds: Array.isArray(args.task_ids) ? args.task_ids : [],
         validationMode: requiredText(args.validation_mode, "validation mode", 32),
         approvedTargets: Array.isArray(args.approved_targets) ? args.approved_targets : [],
+        ...(args.release_metadata !== undefined ? { releaseMetadata: args.release_metadata } : {}),
       },
     });
   }
@@ -2220,7 +2236,8 @@ export class HubMcpService {
         turnId: run.turnId ?? null,
         streamId: resolved.streamId,
         streamName: resolved.streamDisplayName,
-        status: run.status,
+        status: run.activityUnknown === true ? "unknown" : run.status,
+        ...(run.activityUnknown === true ? { activityUnknown: true } : {}),
         stage: compactText(run.progressStage, 500),
         startedAt: run.startedAt,
         lastMeaningfulProgressAt: run.lastMeaningfulProgressAt,
@@ -2338,7 +2355,8 @@ export class HubMcpService {
       : null;
     const selectedRun = cursorRun ?? activeRuns[0] ?? null;
     let state = "idle";
-    if (selectedRun) state = !parsedCursor || cursorRun ? "active" : "replaced";
+    if (selectedRun) state = !parsedCursor || cursorRun
+      ? selectedRun.activityUnknown === true ? "unknown" : "active" : "replaced";
     else if (parsedCursor) {
       const cursorIdentities = turnIdentityAliases(parsedCursor);
       state = completedTurns.some((turn) => (

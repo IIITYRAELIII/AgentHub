@@ -26,7 +26,6 @@ import { WorkspaceReleaseOperationAdapter } from "../application/workspace-relea
 import { StreamHandoffService } from "../application/stream-handoff-service.mjs";
 import { AGENT_HUB_VERSION } from "../infrastructure/filesystem/agent-hub-package.mjs";
 import { samePath } from "../infrastructure/filesystem/config.mjs";
-import { FileTransferService } from "../infrastructure/filesystem/file-transfer-service.mjs";
 import { TaskGitWorkspaceService } from "../infrastructure/filesystem/task-git-workspace.mjs";
 import { ReleaseGitWorkspaceService } from "../infrastructure/filesystem/release-git-workspace.mjs";
 import { AttachmentThumbnailService } from "../infrastructure/media/attachment-thumbnail-service.mjs";
@@ -35,7 +34,6 @@ import { UsdRubRateStore } from "../infrastructure/network/exchange-rate.mjs";
 import { migrateMessageBindings } from "../infrastructure/persistence/message-bindings.mjs";
 import { RateLimitHistoryStore } from "../infrastructure/persistence/rate-limit-history.mjs";
 import { ProviderTurnTelemetryStore } from "../infrastructure/persistence/provider-turn-telemetry-store.mjs";
-import { FileTransferStore } from "../infrastructure/persistence/file-transfer-store.mjs";
 import { ReleaseOperationStore } from "../infrastructure/persistence/release-operation-store.mjs";
 import { PreTurnInstructionStore } from "../infrastructure/persistence/pre-turn-instruction-store.mjs";
 import { installRotatingConsole } from "../infrastructure/persistence/rotating-log.mjs";
@@ -428,23 +426,6 @@ export async function createHubInfrastructure({
     pythonExe: config.pythonExe,
   });
   const hubMcpSecret = await ensureLocalWebSecret(path.join(runtimeCommandRoot, "hub-mcp.secret"));
-  const fileTransferPolicy = config.miniApp.fileTransfer;
-  const fileTransferStore = fileTransferPolicy.enabled
-    ? new FileTransferStore({ dataDir: config.dataDir, policy: fileTransferPolicy, instanceId: serverInstanceId })
-    : null;
-  const fileTransferService = fileTransferStore
-    ? new FileTransferService({
-      dataDir: config.dataDir,
-      roots: [config.projectRoot, ...config.projects.map((project) => project.path)],
-      store: fileTransferStore,
-      policy: fileTransferPolicy,
-      keyring: { currentKid: "transfer-v1", keys: { "transfer-v1": Buffer.from(hubMcpSecret) } },
-    })
-    : null;
-  if (fileTransferService) {
-    await startupStep("file-transfer-initialize", () => fileTransferService.initialize());
-    fileTransferService.startOperationalGc();
-  }
   const contourExternalEffects = config.testContourRecording
     ? createContourExternalEffects({ root: config.testContourRecording.root })
     : null;
@@ -593,8 +574,6 @@ export async function createHubInfrastructure({
     },
     usageSyncRemoteConfigStore: workLogUsageRemoteConfigStore,
     workspaceFileRoots: [config.projectRoot, ...config.projects.map((project) => project.path)],
-    fileTransferPolicy,
-    fileTransferService,
     recordCommandTrace: (span) => commandTrace?.service?.recordBestEffort?.(span) ?? false,
     reportUnexpectedError: (error, context) => sentryDiagnostics.captureUnexpectedException(error, context),
   };
@@ -727,7 +706,6 @@ export async function createHubInfrastructure({
     runtimeCommandServer,
     rateLimitHistoryStore,
     providerTurnTelemetryStore,
-    fileTransferService,
     commandTrace,
     commandTraceService: commandTrace.service,
     sqliteRecovery,

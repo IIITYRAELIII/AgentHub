@@ -248,3 +248,13 @@ test("a desktop restart without any selected Stream and Thread uses the runtime 
   halfSelected.service.desktopTarget = () => ({ streamId: "stream-only", threadId: null });
   await assert.rejects(halfSelected.service.fromDesktop(), /exact Stream and Thread/);
 });
+
+test("restart settlement binds the persisted intended release and keeps terminal replay read-only", async () => {
+  const setup = fixture();
+  const admitted = await setup.service.fromDesktop();
+  await setup.service.checkpoint(admitted.operationId, "launching", { expectedReleaseId: "required-fixture-release" });
+  await assert.rejects(setup.service.complete(admitted.operationId), /does not match/);
+  await setup.service.fail(admitted.operationId, new Error("owned launch failed"));
+  const terminal = await setup.service.complete(admitted.operationId);
+  assert.equal(terminal.status, "failed");
+});

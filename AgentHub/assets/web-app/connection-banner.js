@@ -5,7 +5,7 @@
     const count = Math.max(0, Number(blockingCount) || 0);
     return count
       ? `Agent Hub ожидает завершения блокирующей работы: ${count}.`
-      : "Agent Hub ожидает завершения блокирующей работы.";
+      : "Перезапуск Agent Hub запрошен; ожидается начало.";
   }
 
   function transientFailureDecision({
@@ -31,7 +31,9 @@
       snapshot?.restartWaiting === true || blockingCount > 0
     );
     return {
-      status: waiting ? "restart-waiting" : snapshot?.restartPending ? "restarting" : idleStatus,
+      // A queued restart request (even with zero current blockers) is not
+      // evidence that process replacement has started.
+      status: waiting || snapshot?.restartPending ? "restart-waiting" : idleStatus,
       blockingCount,
     };
   }

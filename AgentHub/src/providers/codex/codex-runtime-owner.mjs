@@ -206,6 +206,7 @@ export async function detectCodexHookExecutionOwner({
 }
 
 async function observedRuntimeProbe({
+  forceFresh = false,
   turnId = null,
   rolloutPath,
   agentHubPid = null,
@@ -214,8 +215,8 @@ async function observedRuntimeProbe({
 } = {}) {
   const cacheKey = `${path.resolve(rolloutPath)}\0${String(turnId ?? "")}\0${Number(agentHubPid) || 0}`;
   const cached = ownerProbeCache.get(cacheKey);
-  if (cached && nowMs - cached.checkedAtMs < OWNER_PROBE_CACHE_MS) return cached;
-  if (ownerProbeInFlight.has(cacheKey)) return ownerProbeInFlight.get(cacheKey);
+  if (!forceFresh && cached && nowMs - cached.checkedAtMs < OWNER_PROBE_CACHE_MS) return cached;
+  if (!forceFresh && ownerProbeInFlight.has(cacheKey)) return ownerProbeInFlight.get(cacheKey);
 
   const pending = (async () => {
     let result;
@@ -232,19 +233,21 @@ async function observedRuntimeProbe({
       };
     }
     const cachedResult = { ...result, checkedAtMs: nowMs };
-    ownerProbeCache.set(cacheKey, cachedResult);
+    if (!ownerProbeCache.has(cacheKey)
+      || ownerProbeCache.get(cacheKey).checkedAtMs <= nowMs) ownerProbeCache.set(cacheKey, cachedResult);
     if (ownerProbeCache.size > 100) ownerProbeCache.delete(ownerProbeCache.keys().next().value);
     return cachedResult;
   })();
-  ownerProbeInFlight.set(cacheKey, pending);
+  if (!forceFresh) ownerProbeInFlight.set(cacheKey, pending);
   try {
     return await pending;
   } finally {
-    ownerProbeInFlight.delete(cacheKey);
+    if (ownerProbeInFlight.get(cacheKey) === pending) ownerProbeInFlight.delete(cacheKey);
   }
 }
 
 export async function codexObservedRuntimeActive(activity = {}, {
+  forceFresh = false,
   turnId = null,
   rolloutPath = null,
   capturedOwner = null,
@@ -262,6 +265,7 @@ export async function codexObservedRuntimeActive(activity = {}, {
     && Number.isFinite(lastActivityAtMs)
     && nowMs - lastActivityAtMs <= UNOWNED_ACTIVITY_GRACE_MS) return true;
   const runtime = await observedRuntimeProbe({
+    forceFresh,
     turnId,
     rolloutPath,
     agentHubPid,
@@ -276,6 +280,18 @@ export async function resolveCodexTaskActivity({
   activity = {},
 } = {}, options = {}) {
   const threadActive = threadStatus?.type === "active";
+  if (options.forceFresh) {
+    if ((options.platform ?? process.platform) !== "win32" || !options.rolloutPath) {
+      return { state: "unknown", executionOwner: TASK_EXECUTION_OWNERS.EXTERNAL };
+    }
+    const runtime = await observedRuntimeProbe({ ...options, forceFresh: true });
+    if (!runtime.known || !["idle", "active"].includes(threadStatus?.type)) {
+      return { state: "unknown", executionOwner: TASK_EXECUTION_OWNERS.EXTERNAL };
+    }
+    return threadActive || runtime.hasLiveProcess
+      ? { state: "active", executionOwner: runtime.owner }
+      : { state: "inactive", executionOwner: null };
+  }
   const rolloutActive = activity.running
     ? await codexObservedRuntimeActive(activity, options)
     : false;

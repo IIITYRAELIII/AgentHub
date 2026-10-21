@@ -839,6 +839,49 @@ test("completed turn duration is formatted in hours and minutes", async () => {
   assert.equal(api.turnDurationLabel("", "2026-08-22T11:08:00.000Z"), "");
 });
 
+test("cancelled agent card shows stopped on creation, update and reload", async () => {
+  const api = await messageViewApi();
+  const children = [];
+  const head = {
+    ownerDocument: { createElement: () => ({
+      setAttribute(name, value) { this[name] = value; },
+      remove() { children.splice(children.indexOf(this), 1); },
+    }) },
+    querySelector: () => children.find((child) => child["data-turn-status"]) ?? null,
+    append: (child) => children.push(child),
+  };
+  const message = { role: "agent", projectionState: "active", text: "HUB_UI_STOP_READY" };
+  api.syncTurnStatus(head, message);
+  assert.equal(children.length, 0);
+  const projectionContext = vm.createContext({});
+  projectionContext.window = projectionContext;
+  vm.runInContext(await readFile(
+    new URL("../../assets/web-app/messages/projection.js", import.meta.url), "utf8",
+  ), projectionContext);
+  const stopped = { ...message, projectionState: projectionContext.AgentHubMessageProjection
+    .projectionState({ status: "aborted", terminalRevision: 1 }), terminalRevision: 1 };
+  assert.equal(projectionContext.AgentHubMessageProjection
+    .projectionState({ status: "interrupted", terminalRevision: 1 }), "cancelled");
+  api.syncTurnStatus(head, stopped);
+  assert.equal(children.length, 1);
+  assert.equal(children[0].textContent, "Остановлен");
+  assert.equal(children[0]["data-turn-status"], "cancelled");
+  api.syncTurnStatus(head, JSON.parse(JSON.stringify(stopped)));
+  assert.equal(children.length, 1);
+  assert.equal(children[0].textContent, "Остановлен");
+  assert.equal(api.prependedMessageCount([message], [{ id: "older" }, stopped]), 0);
+  for (const next of [
+    { ...stopped, role: "user" },
+    { ...stopped, kind: "subagent" },
+    { ...stopped, projectionState: "completed" },
+    { ...stopped, projectionState: "unknown" },
+  ]) {
+    api.syncTurnStatus(head, next);
+    assert.equal(children.length, 0);
+    api.syncTurnStatus(head, stopped);
+  }
+});
+
 test("running turn duration accepts the live clock timestamp", async () => {
   const api = await messageViewApi();
 

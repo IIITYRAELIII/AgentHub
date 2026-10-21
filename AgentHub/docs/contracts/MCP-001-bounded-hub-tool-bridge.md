@@ -1,5 +1,19 @@
 # MCP-001 — Bounded Agent Hub tool bridge
 
+Task cleanup previews include ignored local data separately from ordinary Git
+dirty state. Confirmed Complete/Delete cannot discard those paths merely because
+Git status is clean or a dirty-worktree option is set; the owning artifact must
+first prove retirement (ADR-0126). Background storage policy adds no public MCP
+mutation or fresh receipt replay route and cannot close Tasks, publish results,
+or reinterpret UNKNOWN operations as no effect.
+
+`hub_release_run` optionally accepts `release_metadata` with the existing
+`sourcePath`, `byteLength`, `rawSha256` and `canonicalSha256` artifact identity.
+It forwards this unchanged as authorization `releaseMetadata` to the same durable
+release owner. The existing domain bound and composition byte/digest checks apply;
+omitting the field preserves the existing authorization. It grants no additional
+publication authority and does not introduce another operation or publisher.
+
 ## Current corrected candidates and historical release facts (2026-10-14)
 
 A new candidate is admitted from the exact CURRENT normally accepted results.
@@ -42,6 +56,13 @@ it does not falsify old receipts or claim the main logical release complete.
 
 
 ## Preparation-only release admission
+
+The repository envelope also admits the bounded optional localSourceBaseline
+and nativeResolutionReview fields specified by REL-001/ADR-0115. They remain
+inside the same genuine RM authority, exact original argument hash, complete
+selected-row CAS, source closure, existing candidate rollback and terminal
+receipt. No new public command, approval flag, status writer or retry route is
+created. Other unknown fields still reject; old receipts retain their old hashes.
 
 The explicit exception `hub_release_prepare` and original-addressed
 `hub_release_prepare_get` follow REL-001 and ADR-0104. Both require genuine RM
@@ -239,6 +260,13 @@ HTTP admission still terminates in bounded time. The deadline applies only to
 
 ## Recovery and retry
 
+Closing and restarting the same MCP server owner preserves its first successfully
+advertised loopback port and capability URL. A surviving App Server can therefore
+reconnect using its existing launch configuration. If another listener occupies
+that port, recovery refuses instead of silently selecting a different endpoint;
+direct HTTP success on a new port is not proof that an agent's tool catalog has
+recovered. This retains the same context authorization and operation receipts.
+
 A failed dynamic `functions.exec` call that contains an `agent_hub` MCP call
 reloads the Codex MCP transport before a later attempt and wakes durable input
 lanes. Read-only calls are safe to retry after that rebind.
@@ -275,6 +303,19 @@ not treated as cutover evidence. Missing, added or changed CAS fields therefore
 change the arguments hash and fail closed. An already failed transition or
 authoritative outcome settles only the original receipt without Git replay;
 pending Git work still requires its existing process-tree guard and owner.
+
+An ordinary original native Test whose merge is already exactly applied may
+finish after a metadata-only Task revision advance. Its original argument hash
+must contain no explicit CAS, cutover, absorption or review family. Recovery
+compares the unchanged Task/Workspace/executor/status/workflow/result state,
+the original native intent, ordered merge parents, source and dev trees and
+clean indexes under their existing leases. A retained process guard refuses.
+Immediately before the owning terminal transaction it repeats that readback
+and CASes the current row revision, preserving current metadata. It commits the
+original outcome/references/status and settles the same receipt; it never
+prepares, snapshots or merges again. Concurrent metadata edits fail the CAS;
+other state or Git drift remains unknown. An already settled matching original
+is a read-only result. See [ADR-0113](../decisions/ADR-0113-native-test-metadata-terminal.md).
 
 The local Await cutover uses the same canonical `hub_task_status_update` receipt.
 When its projector source is a separate Task, the receipt includes that source
@@ -598,3 +639,11 @@ includes exact Stream/provider/Thread and command identity, queue state, wait
 reason, state age and a stalled marker after sixty seconds in `dispatching` or
 `reconciling`. A deferred command never
 becomes a synthetic live run merely to make blocked admission observable.
+
+Original native Await recovery (ADR-0116) uses the existing RM reconciliation
+operation/CLI and the exact original arguments hash and workflow CAS. It adds no
+public approval flag, second receipt or replay identity. An owning proof of the
+bounded already-published-notes archive can substitute for a nonexistent process
+guard; every real guard still refuses. Drift remains UNKNOWN. The same durable
+workflow outcome settles the same receipt; repeated terminal reconciliation
+performs a read without re-composing or re-archiving.

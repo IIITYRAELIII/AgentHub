@@ -131,6 +131,7 @@ export async function createClientRuntimeComposition({
 
   const clients = await createClientInterfaceComposition({
     config,
+    recordCommandTrace: span => infrastructure.commandTraceService?.recordBestEffort?.(span) ?? false,
     token,
     botMenu,
     statusHeaderDirectory,

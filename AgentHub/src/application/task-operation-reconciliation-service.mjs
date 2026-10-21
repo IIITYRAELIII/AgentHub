@@ -8,6 +8,7 @@ import { normalizedTaskSquashTransfer } from "../domain/task-squash-transfer.mjs
 import { normalizedTaskSquashCutover } from "../domain/task-squash-cutover.mjs";
 import { normalizePublishedResolution } from "../domain/published-resolution.mjs";
 import { selectedAbsorptionHandoff } from "../domain/task-selected-composition.mjs";
+import { sameTaskWorkflowState as sameTaskState, nativeTestMetadataDrift } from "../domain/native-test-terminal-recovery.mjs";
 
 function requiredMethod(value, name) {
   if (typeof value?.[name] !== "function") throw new TypeError(`${name} is required`);
@@ -264,23 +265,6 @@ function exactWorkflowCasEvidence({ workflowCas, task, transition, outcome }) {
     || priorTask.workflowStatus === workflowCas.expected_workflow_status;
 }
 
-function sameTaskState(current, expected, { allowMetadataRevision = false } = {}) {
-  const state = (task) => task ? {
-    id: task.id,
-    workspaceId: task.workspaceId ?? null,
-    streamId: task.streamId ?? null,
-    status: task.status ?? null,
-    workflowStatus: task.workflowStatus,
-    ...(allowMetadataRevision ? {} : { revision: Number(task.revision) }),
-    gitReferences: normalizedTaskGitReferences(task.gitReferences).map((reference) => ({
-      projectRoot: path.resolve(reference.projectRoot),
-      branch: reference.branch,
-      resultCommit: reference.resultCommit,
-    })),
-  } : null;
-  return JSON.stringify(state(current)) === JSON.stringify(state(expected));
-}
-
 function exactCommittedEvidence(committed, evidence, projectRoot, targetWorkflowStatus, priorTask = null) {
   if (!committed || committed.workflowStatus !== targetWorkflowStatus) return false;
   const resultCommit = String(evidence?.resultCommit ?? "").trim().toLowerCase();
@@ -363,6 +347,11 @@ export class TaskOperationReconciliationService {
       workspace,
       stream: task.streamId ? this.workspaceCatalog.stream(task.streamId) : null,
     });
+    const metadataRecovery = !squash && !selected && !initial && !cutover && !workflowCas
+      && options.nativeResolutionReview == null && !exactGuardId && nativeTestMetadataDrift(task, transition);
+    const receiptSettled = !transition && (outcome?.result?.evidence?.nativeTerminalRecovery
+      || outcome?.result?.evidence?.nativeAwaitRecovery)
+      && receipt?.operationStatus === "succeeded" && receipt?.receiptState === "succeeded";
     const receiptMatches = receipt
       && receipt.workspaceId === workspace.id
       && receipt.toolName === "hub_task_status_update"
@@ -372,8 +361,7 @@ export class TaskOperationReconciliationService {
         identityArguments: { ...(initial ?? squash ?? selected ?? cutover ?? workflowCas),
           ...(options.nativeResolutionReview != null ? { native_resolution_review: options.nativeResolutionReview } : {}) },
       })
-      && receipt.operationStatus === "pending"
-      && receipt.receiptState === "unknown";
+      && ((receipt.operationStatus === "pending" && receipt.receiptState === "unknown") || receiptSettled);
     const transitionMatches = !transition || (
       transition.operationId === operationId
       && transition.taskId === task.id
@@ -500,7 +488,7 @@ export class TaskOperationReconciliationService {
       } else {
         const committed = outcome.result?.task;
         if (
-          sameTaskState(task, committed)
+          sameTaskState(task, committed, { allowMetadataRevision: Boolean(outcome.result?.evidence?.nativeTerminalRecovery) })
           && exactCommittedEvidence(
             committed, outcome.result?.evidence, root, targetWorkflowStatus, outcome.result?.priorTask,
           )
@@ -516,7 +504,7 @@ export class TaskOperationReconciliationService {
           && Number(task.revision) > Number(transition.expectedRevision)))
         && sameTaskState(task, transition.priorTask, { allowMetadataRevision: !squash && !cutover && !initial })
         && (!squash || sameTaskState(squashSourceTask, transition.priorSourceTask));
-      if (transition.phase === "pending_git" && pendingUnchanged) state = "pending";
+      if (transition.phase === "pending_git" && (pendingUnchanged || metadataRecovery)) state = "pending";
       if (transition.phase === "failed" && failedUnchanged) state = "failed";
     }
     if (!state) {
@@ -533,6 +521,8 @@ export class TaskOperationReconciliationService {
       operationId,
       projectRoot: root,
       guardId: exactGuardId,
+      metadataRecovery,
+      receiptSettled,
       squash,
       selected,
       sourceTaskId: squash?.squash_source_task_id
@@ -569,7 +559,7 @@ export class TaskOperationReconciliationService {
         resultCommit: identity.outcome.result.evidence.resultCommit,
         taskRevision: identity.task.revision,
       };
-      const receipt = await this.workspaceCatalog.completeUnknownMcpOperation(identity.operationId, {
+      const receipt = identity.receiptSettled ? identity.receipt : await this.workspaceCatalog.completeUnknownMcpOperation(identity.operationId, {
         workspaceId: identity.workspace.id,
         toolName: "hub_task_status_update",
         result: originalResult,
@@ -612,7 +602,8 @@ export class TaskOperationReconciliationService {
           && !identity.squash && !identity.selected) {
         const native = typeof this.taskLifecycle.pendingNativeWorkflowOwned === "function"
           && await this.taskLifecycle.pendingNativeWorkflowOwned({ taskId: identity.task.id,
-            operationId: identity.operationId, projectRoot: identity.projectRoot, lease });
+            operationId: identity.operationId, projectRoot: identity.projectRoot, lease,
+            allowMetadataRecovery: identity.metadataRecovery });
         if (!native) throw new Error("Pending workflow reconciliation requires the exact process-tree guard id or original native Git intent");
       }
       const proof = needsRecovery && identity.guardId ? {
@@ -650,6 +641,7 @@ export class TaskOperationReconciliationService {
           proof,
           lease,
           verifyInitialNativeTest: options.verifyInitialNativeTest,
+          allowMetadataRecovery: identity.metadataRecovery,
         });
       } catch (error) {
         try {

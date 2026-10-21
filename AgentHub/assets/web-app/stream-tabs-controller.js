@@ -196,8 +196,6 @@
 
   const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
   const PHOSPHOR_ICON_PATHS = Object.freeze({
-    list: "M224,128a8,8,0,0,1-8,8H40a8,8,0,0,1,0-16H216A8,8,0,0,1,224,128ZM40,72H216a8,8,0,0,0,0-16H40a8,8,0,0,0,0,16ZM216,184H40a8,8,0,0,0,0,16H216a8,8,0,0,0,0-16Z",
-    "dots-three": "M140,128a12,12,0,1,1-12-12A12,12,0,0,1,140,128ZM60,116a12,12,0,1,0,12,12A12,12,0,0,0,60,116Zm136,0a12,12,0,1,0,12,12A12,12,0,0,0,196,116Z",
     "arrow-down": "M213.66,162.34a8,8,0,0,0-11.32,0L136,228.69V16a8,8,0,0,0-16,0V228.69L53.66,162.34a8,8,0,0,0-11.32,11.32l80,80a8,8,0,0,0,11.32,0l80-80A8,8,0,0,0,213.66,162.34Z",
     "arrow-up": "M213.66,82.34l-80-80a8,8,0,0,0-11.32,0l-80,80A8,8,0,0,0,53.66,93.66L120,27.31V240a8,8,0,0,0,16,0V27.31l66.34,66.35a8,8,0,0,0,11.32-11.32Z",
     "caret-down": "M213.66,101.66l-80,80a8,8,0,0,1-11.32,0l-80-80A8,8,0,0,1,53.66,90.34L128,164.69l74.34-74.35a8,8,0,0,1,11.32,11.32Z",
@@ -302,7 +300,7 @@
 
   function attentionStreamCount(tasks) {
     return (tasks ?? []).reduce((count, task) => (
-      count + (task?.running || task?.unread ? 1 : 0)
+      count + (task?.running || task?.preparing || task?.activityUnknown || task?.unread ? 1 : 0)
     ), 0);
   }
 
@@ -310,7 +308,7 @@
     const active = [];
     const recent = [];
     for (const task of tasks ?? []) {
-      if (task?.running || task?.unread) active.push(task);
+      if (task?.running || task?.preparing || task?.activityUnknown || task?.unread) active.push(task);
       else recent.push(task);
     }
     return { active, recent };
@@ -505,9 +503,11 @@
   }
 
   function streamStatusPresentation(task) {
-    const running = Boolean(task?.running);
+    const running = Boolean(task?.running) && task?.activityUnknown !== true;
     const answerReady = Boolean(task?.unread);
     const statusLabel = [
+      task?.activityUnknown ? "Состояние уточняется · поток занят" : "",
+      task?.preparing ? "Подготовка хода" : "",
       running ? "Ход выполняется" : "",
       answerReady ? "Ответ готов" : "",
     ].filter(Boolean).join(" · ") || String(task?.statusLabel ?? "");
@@ -605,7 +605,7 @@
 
   function includeTaskInActivityRail(task, kind) {
     const workspaceName = String(task?.workspaceName ?? "").trim();
-    return workspaceName !== "Other" || kind === "running" || kind === "completed";
+    return workspaceName !== "Other" || kind === "running" || kind === "unknown" || kind === "completed";
   }
 
   function resolveTaskHierarchy(task, workspaces) {

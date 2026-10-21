@@ -196,7 +196,9 @@ function activeRunSubmissionTiming(run) {
   return {
     rootMessage,
     submittedAt: run?.submittedAt ?? rootMessage?.submittedAt ?? rootMessage?.time ?? run?.startedAt ?? null,
-    startedAt: run?.startedAt ?? rootMessage?.startedAt ?? null,
+    startedAt: run?.providerStart
+      ? runHasAuthoritativeProviderAcceptance(run) ? run.providerStart.acceptedAt ?? null : null
+      : run?.startedAt ?? rootMessage?.startedAt ?? null,
   };
 }
 
@@ -220,6 +222,9 @@ function activeRunMessageReceipts(tasks) {
       submittedAt,
       startedAt,
       deliveredAt: startedAt,
+      started: true,
+      unknown: run.activityUnknown === true,
+      providerConnection: run.providerConnection ?? null,
       attachments: Array.isArray(rootMessage?.attachments) ? rootMessage.attachments : [],
     });
   }
@@ -1096,24 +1101,54 @@ function receiptUsesDeferredQueue(receipt) {
 }
 
 function receiptDeliveryState(receipt) {
+  if (receipt?.failed === true || receipt?.rejected === true || receipt?.commandState === "failed") return "failed";
+  if (receipt?.cancelled === true || receipt?.commandState === "cancelled") return "cancelled";
+  if (receipt?.completed === true || receipt?.commandState === "completed") return "completed";
+  if (receipt?.unknown === true || receipt?.commandState === "unknown") return "unconfirmed";
+  if (receipt?.providerConnection?.state === "retrying") return "retrying";
+  if (receipt?.providerConnection?.state === "lost") return "connection-lost";
   if (receipt?.dispatching === true) return "sending";
   if (receipt?.deferred === true && receipt?.queued === true) return "queued";
+  if ((receipt?.started === true && receipt?.providerAccepted !== false)
+    || receiptHasAuthoritativeProviderAcceptance(receipt)) return "running";
   if (receipt?.accepted === true || receipt?.steered === true) return "accepted";
   if (receipt?.deferred === true) return "deferred";
   return null;
 }
 
-function messageReceiptProjection(receipt) {
-  const deliveryState = receiptDeliveryState(receipt);
+function messageReceiptProjection(receipt, { deliveryState = receiptDeliveryState(receipt) } = {}) {
   const submittedAt = receipt?.submittedAt ?? receipt?.createdAt ?? null;
   const startedAt = receipt?.startedAt ?? receipt?.deliveredAt ?? null;
+  const completedAt = receipt?.completedAt ?? null;
+  const projectionState = ["failed", "completed", "cancelled"].includes(deliveryState)
+    ? deliveryState : deliveryState === "unconfirmed" ? "unknown"
+      : ["queued", "deferred"].includes(deliveryState) ? "queued"
+        : ["running", "retrying", "connection-lost"].includes(deliveryState) ? "active" : "optimistic";
+  const labels = {
+    accepted: "Сохранено в Hub", sending: "Запускается", queued: "В очереди", deferred: "Ожидает решения",
+    running: "Ход выполняется", retrying: "Связь с провайдером потеряна; провайдер повторяет запрос",
+    "connection-lost": "Связь с провайдером потеряна; исход уточняется",
+    failed: `Ошибка ${receipt?.provider === "codex" ? "Codex" : receipt?.provider === "claude" ? "Claude" : "провайдера"}. Проверь соединение и подробности ответа; повторная отправка — через поле ввода`,
+    completed: "Ход завершён", cancelled: "Ход остановлен", unconfirmed: "Исход неизвестен",
+  };
+  if (["queued", "deferred"].includes(deliveryState)
+    && String(receipt?.reason ?? receipt?.conflictKind ?? "").trim() === "runtime-restart") {
+    labels[deliveryState] = "В очереди · Ожидает перезапуска Hub";
+  }
+  const phaseStart = ["retrying", "connection-lost"].includes(deliveryState)
+    ? receipt?.providerConnection?.sinceAt : startedAt ?? submittedAt;
+  const from = Date.parse(phaseStart ?? "");
+  const to = Date.parse(completedAt ?? "") || Date.now();
+  const duration = Number.isFinite(from) && to >= from ? ` · ${Math.floor((to - from) / 1000)} с` : "";
   return {
     accepted: Boolean(receipt?.accepted || receipt?.deferred),
     deliveryState,
     ownsDeferredQueue: receiptUsesDeferredQueue(receipt),
-    projectionState: deliveryState === "queued" || deliveryState === "deferred"
-      ? "queued"
-      : deliveryState ? "active" : "unknown",
+    projectionState,
+    delivery: (labels[deliveryState] ?? "Исход неизвестен") + duration,
+    failed: deliveryState === "failed",
+    terminalRevision: receipt?.terminalRevision ?? null,
+    completedAt,
     ...(submittedAt ? { submittedAt } : {}),
     ...(startedAt ? { startedAt } : {}),
   };
@@ -1122,6 +1157,7 @@ function messageReceiptProjection(receipt) {
 function receiptHasAuthoritativeProviderAcceptance(receipt) {
   const turnId = String(receipt?.turnId ?? "").trim();
   if (!turnId) return false;
+  if (receipt?.providerAccepted === false) return false;
   if (receipt?.providerAccepted === true || receipt?.steered === true) return true;
   return Boolean(
     receipt?.accepted === true
@@ -1146,7 +1182,10 @@ function queueHistoryReceiptProjection(receipt) {
     || receipt?.rejected === true
     || receipt?.failed === true
     || receipt?.completed === true;
-  const requiresQueue = receipt?.unknown === true
+  const conflictKind = String(receipt?.reason ?? receipt?.conflictKind ?? "").trim();
+  const waitingConflict = Boolean(conflictKind && conflictKind !== "message-intake"
+    && (receipt?.queued === true || receipt?.deferred === true));
+  const requiresQueue = waitingConflict || receipt?.unknown === true
     || receipt?.attentionRequired === true
     || receipt?.paused === true;
   const immediateIntake = !providerAccepted
@@ -1174,8 +1213,10 @@ function queueHistoryReceiptProjection(receipt) {
       || receipt?.steerPending === true
       || receipt?.unknown === true
     );
-  const deliveryState = providerAccepted
-    ? "accepted"
+  const deliveryState = terminal || receipt?.unknown === true || receipt?.providerConnection
+    ? base.deliveryState
+    : providerAccepted
+    ? "running"
     : immediateIntake
       ? "accepted"
       : ownsQueue
@@ -1184,13 +1225,13 @@ function queueHistoryReceiptProjection(receipt) {
             : receipt?.queued === true ? "queued" : "deferred"
         : base.deliveryState;
   return {
-    ...base,
+    ...messageReceiptProjection(receipt, { deliveryState }),
     clientProjectionIntent: projectionIntent || null,
     providerAccepted,
     ownsDeferredQueue: ownsQueue,
     ownsOptimisticConversation: immediateIntake,
     deliveryState,
-    projectionState: ownsQueue
+    projectionState: terminal || receipt?.unknown === true ? base.projectionState : ownsQueue
       ? "queued"
       : providerAccepted ? "active" : immediateIntake ? "optimistic" : "unknown",
   };

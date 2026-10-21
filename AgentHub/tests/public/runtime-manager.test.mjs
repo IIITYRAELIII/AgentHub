@@ -17,6 +17,7 @@ import {
   runtimeStatus,
 } from "../../runtime-manager.mjs";
 import { ReleaseOperationStore } from "../../src/infrastructure/persistence/release-operation-store.mjs";
+import { captureRuntimeReleaseBinding } from "../../src/infrastructure/filesystem/runtime-installation-custody.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "..", "..");
 
@@ -84,6 +85,25 @@ test("actual fresh install has no private sync default; changed old source refus
   const clean = await prepareRuntime({ sourceRoot, runtimeRoot: fresh, releaseId: "sync-clean" });
   await installPreparedRuntime({ runtimeRoot: fresh, ...clean });
   assert.equal(JSON.parse(await readFile(path.join(fresh, "config.json"))).usageSyncServerUrl, "");
+});
+
+test("prepared runtime carries its retirement owner and refuses wrong native custody", async (t) => {
+  if (process.platform !== "win32") return t.skip("Native Windows custody");
+  const { sourceRoot, runtimeRoot } = await fixture();
+  t.after(() => rm(path.dirname(runtimeRoot), { recursive: true, force: true }));
+  const owner = "src/infrastructure/filesystem/sealed-runtime-release";
+  for (const name of [`${owner}.mjs`, `${owner}.cs`, "src/infrastructure/process/system-boot-identity.mjs"]) {
+    await mkdir(path.dirname(path.join(sourceRoot, name)), { recursive: true });
+    await cp(path.join(ROOT, name), path.join(sourceRoot, name));
+  }
+  const prepared = await prepareRuntime({ sourceRoot, runtimeRoot, releaseId: "retirement-owner" });
+  const binding = await captureRuntimeReleaseBinding(prepared.releaseRoot, prepared.releaseId);
+  const bytes = await readFile(path.join(prepared.releaseRoot, "runtime-manifest.json"));
+  const { retireSealedRuntimeRelease } = await import(pathToFileURL(path.join(prepared.releaseRoot, `${owner}.mjs`)));
+  await assert.rejects(retireSealedRuntimeRelease(prepared.releaseRoot,
+    { ...binding, root: { ...binding.root, ino: String(BigInt(binding.root.ino) + 1n) } }), /runtime-root-changed/u);
+  assert.deepEqual(await readFile(path.join(prepared.releaseRoot, "runtime-manifest.json")), bytes);
+  await assert.rejects(readFile(path.join(runtimeRoot, "current.json")), /ENOENT/u);
 });
 
 test("prepared runtime retains the verified deletion helper and executes its exact identity guard", async (t) => {
@@ -300,8 +320,9 @@ async function fixture() {
   return { sourceRoot, runtimeRoot };
 }
 
-test("deployRuntime publishes an atomic release without tests or local config", async () => {
+test("deployRuntime publishes an atomic release without tests or local config", async (t) => {
   const { sourceRoot, runtimeRoot } = await fixture();
+  t.after(() => rm(path.dirname(runtimeRoot), { recursive: true, force: true }));
   const first = await deployRuntime({ sourceRoot, runtimeRoot, releaseId: "release-1" });
   assert.equal(JSON.parse(await readFile(path.join(runtimeRoot, "current.json"), "utf8")).current, "release-1");
   const firstManifest = JSON.parse(await readFile(path.join(first.releaseRoot, "runtime-manifest.json"), "utf8"));
@@ -355,7 +376,10 @@ test("deployRuntime publishes an atomic release without tests or local config", 
     JSON.parse(await readFile(path.join(third.releaseRoot, "runtime-manifest.json"), "utf8")).releaseVersion,
     "2026.8.23.3",
   );
-  await assert.rejects(readFile(path.join(runtimeRoot, "releases", "release-1", "agent-hub-server.mjs"), "utf8"), /ENOENT/);
+  assert.match(await readFile(path.join(first.releaseRoot, "agent-hub-server.mjs"), "utf8"), /ready/u);
+  const retired = JSON.parse(await readFile(path.join(runtimeRoot, "current.json"), "utf8")).runtimeRetention.retired;
+  assert.deepEqual(retired.map(entry => entry.releaseId), ["release-1"]);
+  assert.equal(third.pruningDeferred, true);
 });
 
 test("deployRuntime treats a legacy same-day release as sequence one", async () => {
@@ -388,27 +412,41 @@ test("deployRuntime rejects a release with a missing relative import before cuto
   await assert.rejects(readFile(path.join(runtimeRoot, "current.json"), "utf8"), /ENOENT/u);
 });
 
-test("deployRuntime keeps a locked old release without failing the published pointer", async () => {
+test("deployRuntime defers old-body deletion to the exact after-ready owner", async (t) => {
   const { sourceRoot, runtimeRoot } = await fixture();
+  t.after(() => rm(path.dirname(runtimeRoot), { recursive: true, force: true }));
   await deployRuntime({ sourceRoot, runtimeRoot, releaseId: "release-1" });
   await deployRuntime({ sourceRoot, runtimeRoot, releaseId: "release-2" });
-  const warnings = [];
-  await deployRuntime({
+  const result = await deployRuntime({
     sourceRoot,
     runtimeRoot,
     releaseId: "release-3",
-    removeRelease: async (target) => {
-      const error = new Error("locked by running bot");
-      error.code = "EBUSY";
-      throw error;
-    },
-    onPruneWarning: (error, target) => warnings.push({ error, target }),
+    removeRelease: async () => assert.fail("installation cannot adopt old releases for deletion"),
   });
   const pointer = JSON.parse(await readFile(path.join(runtimeRoot, "current.json"), "utf8"));
   assert.equal(pointer.current, "release-3");
   assert.equal(pointer.previous, "release-2");
-  assert.equal(warnings.length, 1);
+  assert.equal(result.pruningDeferred, true);
+  assert.deepEqual(pointer.runtimeRetention.retired.map(entry => entry.releaseId), ["release-1"]);
   assert.match(await readFile(path.join(runtimeRoot, "releases", "release-1", "agent-hub-server.mjs"), "utf8"), /ready/);
+});
+
+test("installing another runtime preserves an unrelated prepared body and rollback custody", async (t) => {
+  const { sourceRoot, runtimeRoot } = await fixture();
+  t.after(() => rm(path.dirname(runtimeRoot), { recursive: true, force: true }));
+  await deployRuntime({ sourceRoot, runtimeRoot, releaseId: "first" });
+  const pending = await prepareRuntime({ sourceRoot, runtimeRoot, releaseId: "not-yet-selected" });
+  const original = await readFile(path.join(pending.releaseRoot, "runtime-manifest.json"));
+  await deployRuntime({ sourceRoot, runtimeRoot, releaseId: "second" });
+  assert.deepEqual(await readFile(path.join(pending.releaseRoot, "runtime-manifest.json")), original);
+  const before = JSON.parse(await readFile(path.join(runtimeRoot, "current.json"), "utf8"));
+  assert.equal(before.previous, "first");
+  assert.deepEqual(before.runtimeRetention.retired, []);
+  await rollbackRuntime({ runtimeRoot });
+  const after = JSON.parse(await readFile(path.join(runtimeRoot, "current.json"), "utf8"));
+  assert.deepEqual(after.runtimeRetention.current, before.runtimeRetention.previous);
+  assert.deepEqual(after.runtimeRetention.previous, before.runtimeRetention.current);
+  assert.deepEqual(await readFile(path.join(pending.releaseRoot, "runtime-manifest.json")), original);
 });
 
 test("deployRuntime recompiles a tampered cached RuntimeHost", async (t) => {
@@ -431,7 +469,7 @@ test("deployRuntime restores a missing RuntimeHost without changing user data", 
   const configFile = path.join(runtimeRoot, "config.json");
   const journalFile = path.join(runtimeRoot, "data", "journal.sqlite");
   await mkdir(path.dirname(journalFile), { recursive: true });
-  await writeFile(configFile, '{"provider":"codex","customSetting":true}\n');
+  await writeFile(configFile, '{"provider":"codex","customSetting":true,"usageSyncServerUrl":""}\n');
   await writeFile(journalFile, "retained journal bytes");
   const configBefore = await readFile(configFile);
   const journalBefore = await readFile(journalFile);

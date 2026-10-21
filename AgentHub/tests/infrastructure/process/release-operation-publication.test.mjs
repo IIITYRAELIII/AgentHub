@@ -191,6 +191,8 @@ test("publication launches the stable owner runner and reads its exact generatio
     dataDir: path.join(root, "data"),
     runtimeRoot: path.join(root, "runtime"),
     runnerFile,
+    environment: { AGENT_HUB_RESTART_OPERATION_ID: "completed-parent-restart",
+      AGENT_HUB_RESTART_LAUNCHER_PID: "123", SYNTHETIC_KEEP: "retained" },
     readPublicationStateImpl: async () => null,
     gitRemoteHeadImpl: async () => "base-commit",
     processAliveImpl: () => false,
@@ -223,6 +225,9 @@ test("publication launches the stable owner runner and reads its exact generatio
   assert.equal(spawnCalls[0].options.cwd, path.join(candidateRoot, "AgentHub"));
   assert.equal(spawnCalls[0].options.detached, true);
   assert.equal(spawnCalls[0].options.windowsHide, true);
+  assert.equal(spawnCalls[0].options.env.AGENT_HUB_RESTART_OPERATION_ID, undefined);
+  assert.equal(spawnCalls[0].options.env.AGENT_HUB_RESTART_LAUNCHER_PID, undefined);
+  assert.equal(spawnCalls[0].options.env.SYNTHETIC_KEEP, "retained");
 });
 
 test("publication readback stays unknown while the exact runner is alive", async (t) => {

@@ -180,7 +180,9 @@ export class ManagedRunLifecycleService {
       admissionOperation = "persist-task-diff";
       await tracedAdmissionStep(d.commandTrace, {
         commandId, transport, stage: "admission-task-diff",
-      }, () => d.persistTaskDiff(taskRunKey(run), ""));
+      }, () => d.persistTaskDiff(taskRunKey(run), "", {
+        admission: true, commandId, transport, commandTrace: d.commandTrace,
+      }));
       admissionOperation = "sync-run";
       d.clearSelectedDiff(run);
       run.gitBaseline = null;

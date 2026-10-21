@@ -44,7 +44,8 @@ test("started deferred input becomes one accepted receipt with preserved attachm
   assert.equal(setup.updates[0].result.dispatching, false);
   assert.equal(setup.updates[0].result.steered, false);
   assert.equal(setup.updates[0].result.runId, "run-1");
-  assert.equal(setup.updates[0].result.deliveredAt, "2026-08-13T01:31:00.000Z");
+  assert.equal(setup.updates[0].result.deliveredAt, null);
+  assert.equal(setup.updates[0].result.admittedAt, "2026-08-13T01:31:00.000Z");
   assert.deepEqual(setup.updates[0].result.attachments, [{ path: "shot.png" }]);
   assert.equal(setup.updates[0].result.providerAccepted, false);
   assert.equal(setup.updates[0].result.reason, null);

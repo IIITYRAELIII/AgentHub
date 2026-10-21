@@ -1005,6 +1005,29 @@ test("a non-ancestral add-and-revert Task is rejected before dev integration", a
   assert.equal(devAfter, devBefore);
 });
 
+test("cleanup preserves ignored WIP despite clean status and explicit dirty permission", async (context) => {
+  const root = await repository(context);
+  await writeFile(path.join(root, ".gitignore"), "WIP/\n");
+  await git(root, "add", ".gitignore");
+  await git(root, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "ignore WIP");
+  const dataDir = path.join(root, "..", `${path.basename(root)}-ignored-data`);
+  context.after(() => rm(dataDir, { recursive: true, force: true }));
+  const service = new TaskGitWorkspaceService({ dataDir });
+  const workspace = await service.prepare({ taskId: "30303030-3030-4030-8030-303030303030", projectRoot: root });
+  await mkdir(path.join(workspace.projectRoot, "WIP"));
+  const useful = path.join(workspace.projectRoot, "WIP", "evidence.txt");
+  await writeFile(useful, "unpublished useful evidence");
+  assert.equal(await git(workspace.projectRoot, "status", "--porcelain"), "");
+  const preview = await service.cleanupPreview(workspace.taskId);
+  assert.equal(preview.dirty, false);
+  assert.deepEqual(preview.retainedIgnored[0].paths, ["WIP/"]);
+  for (const allowDirty of [false, true]) {
+    await assert.rejects(service.cleanup(workspace.taskId, { allowDirty, expectedPreview: preview }), /ignored local data/u);
+    assert.equal(await readFile(useful, "utf8"), "unpublished useful evidence");
+    assert.equal(await git(root, "rev-parse", workspace.branch), workspace.headCommit);
+  }
+});
+
 test("cleanup publication authority requires durable evidence matching origin main", async (context) => {
   const root = await repository(context);
   const revision = await git(root, "rev-parse", "HEAD");
@@ -1735,7 +1758,9 @@ test("release adoption requires a selected Task result and stays pinned when ori
   assert.equal(adopted.adoptedByResultCommit, fixture.snapshot.headCommit);
   const acceptedBase = await fixture.service.releaseBaseEvidence(baseRequest);
   assert.equal(acceptedBase.baseCommit, localMain);
-  assert.deepEqual(acceptedBase.adoptions, []);
+  assert.deepEqual(acceptedBase.adoptions, [{ taskId: fixture.snapshot.taskId,
+    resultCommit: fixture.snapshot.headCommit, recordRef: recorded.recordRef, recordHash: recorded.recordHash,
+    adoptedCommit: fixture.mainCommit, acceptedLocalMainCommit: localMain }]);
   assert.equal(acceptedBase.compositionPolicy, "main-selected-git-merge-v1");
   assert.equal(await git(fixture.root, "rev-parse", recorded.recordRef), recorded.recordHash);
   assert.equal((await fixture.service.releaseBaseEvidence({ ...baseRequest, tasks: [] })).baseCommit, localMain);
@@ -1777,7 +1802,8 @@ test("explicit upstream adoption fences Task snapshot and local-main drift befor
     await git(fixture.root, "update-ref", `refs/heads/${fixture.snapshot.branch}`, movedSnapshot,
       fixture.snapshot.headCommit);
 
-    await assert.rejects(fixture.service.mergeIntoDev(fixture.snapshot), { code: "RELEASE_NATIVE_HISTORY_REQUIRED" });
+    await assert.rejects(fixture.service.mergeIntoDev(fixture.snapshot),
+      /Native upstream adoption receipt or current Git identity changed/u);
     assert.equal(await git(fixture.root, "rev-parse", "refs/heads/dev^{commit}"), fixture.oldDev);
   });
 

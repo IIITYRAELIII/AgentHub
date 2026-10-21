@@ -19,7 +19,10 @@ class DigestStream extends WritableStream {
   }
 }
 const crypto = { subtle: globalThis.crypto.subtle, randomUUID: globalThis.crypto.randomUUID.bind(globalThis.crypto), DigestStream };`;
-const worker = await import(`data:text/javascript;base64,${Buffer.from(source.replace('import { DurableObject } from "cloudflare:workers";', shim)).toString("base64")}`);
+const worker = await import(`data:text/javascript;base64,${Buffer.from(source
+  .replace('import { DurableObject } from "cloudflare:workers";', shim)
+  .replace('from "../../src/application/client-performance-trace.mjs";',
+    `from "${new URL("../../../../src/application/client-performance-trace.mjs", import.meta.url).href}";`)).toString("base64")}`);
 const MiB = 1024 * 1024;
 const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
 
@@ -87,12 +90,43 @@ function fixture(limits = {}) {
   };
 }
 
+test("authenticated Worker upload traces persist content-free failure spans across owner recreation", async () => {
+  const f = fixture();
+  const uploadId = randomUUID();
+  const requestId = randomUUID();
+  const event = { commandId: uploadId, stage: "attachment-upload", outcome: "failed",
+    observedAtMs: Date.now(), monotonicDurationMs: 1200,
+    metadata: { action: "begin", uploadId, messageRequestId: requestId, operationSpanId: randomUUID(),
+      failureKind: "timeout", secret: "private payload text" } };
+  const report = () => worker.default.fetch(new Request("https://hub.test/api/command-trace/client-events", {
+    method: "POST", headers: { Authorization: f.authorization(), "Content-Type": "application/json" },
+    body: JSON.stringify({ events: [event] }),
+  }), f.env);
+  assert.equal((await report()).status, 200);
+  const traceKey = `control:attachment-trace:42:${uploadId}`;
+  const firstExpiry = (await f.storage.get(traceKey)).expiresAt;
+  f.recreate();
+  assert.equal((await report()).status, 200, "lost trace ACK cannot duplicate a span");
+  assert.equal((await f.storage.get(traceKey)).expiresAt, firstExpiry, "duplicate ACK cannot extend trace retention");
+  const read = await worker.default.fetch(new Request(`https://hub.test/api/attachment-upload-trace?id=${uploadId}`, {
+    headers: { Authorization: f.authorization() },
+  }), f.env);
+  assert.equal(read.status, 200);
+  const body = await read.json();
+  assert.equal(body.events.length, 1);
+  assert.equal(body.events[0].metadata.messageRequestId, requestId);
+  assert.doesNotMatch(JSON.stringify(body), /private payload text/u);
+  assert.equal((await worker.default.fetch(new Request(`https://hub.test/api/attachment-upload-trace?id=${uploadId}`), f.env)).status, 401);
+});
+
 test("resumable Worker upload persists immutable parts across recreation and publishes only complete bytes", { timeout: 20_000 }, async () => {
   const f = fixture();
   const id = randomUUID();
   const a = Buffer.alloc(MiB, 71);
   const b = Buffer.from("last-part");
-  assert.equal((await f.begin(id, a.length + b.length)).status, 200);
+  const begun = await f.begin(id, a.length + b.length);
+  assert.equal(begun.status, 200);
+  assert.match(begun.headers.get("server-timing"), /auth;dur=[0-9.]+, body;dur=[0-9.]+, owner;dur=[0-9.]+/u);
   assert.equal((await f.part(id, 1, b)).status, 200);
   assert.equal((await f.enqueue(id)).status, 404, "partial storage must not be a command attachment");
   assert.equal((await f.complete(id)).status, 409);
@@ -160,7 +194,27 @@ test("Worker upload authentication, cancellation, expiry and reservations share 
   await f.alarm();
   assert.equal(await f.storage.get(recordKey), undefined);
   assert.equal(await f.storage.get(`control:attachment-chunk:${expiredId}:0`), undefined);
+  assert.equal((await f.begin(expiredId, 2 * MiB)).status, 410, "expired identity cannot re-begin");
+  assert.equal((await f.request("GET", `?id=${expiredId}`)).status, 410);
+  const absent = await (await f.request("GET", `?id=${randomUUID()}`)).json();
+  assert.equal(absent.state, "absent");
   assert.equal((await f.begin(randomUUID(), 2 * MiB)).status, 200);
+});
+
+test("Worker delayed begin retains the original attempt deadline and metadata", async () => {
+  const f = fixture();
+  const id = randomUUID();
+  const attemptedAtMs = Date.now() - 5 * 60_000;
+  const first = await f.begin(id, 8, { attemptedAtMs });
+  assert.equal(first.status, 200);
+  const originalExpiry = (await first.json()).expiresAt;
+  assert.ok(originalExpiry <= attemptedAtMs + 30 * 60_000);
+  assert.equal((await (await f.begin(id, 8, { attemptedAtMs })).json()).expiresAt, originalExpiry);
+  assert.equal((await f.begin(id, 8, { attemptedAtMs: attemptedAtMs + 1 })).status, 409);
+  assert.equal((await f.begin(id, 8, { attemptedAtMs, name: "different.bin" })).status, 409);
+  assert.equal((await f.begin(randomUUID(), 8, { attemptedAtMs: Date.now() - 31 * 60_000 })).status, 410);
+  assert.equal((await f.request("DELETE", `?id=${id}`)).status, 200);
+  assert.equal((await f.begin(id, 8, { attemptedAtMs })).status, 410);
 });
 
 test("large ready uploads use bounded download transport and cannot resurrect after command cleanup", { timeout: 20_000 }, async () => {
