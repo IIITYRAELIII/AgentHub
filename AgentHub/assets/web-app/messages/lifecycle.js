@@ -1131,6 +1131,10 @@ function messageReceiptProjection(receipt, { deliveryState = receiptDeliveryStat
     failed: `Ошибка ${receipt?.provider === "codex" ? "Codex" : receipt?.provider === "claude" ? "Claude" : "провайдера"}. Проверь соединение и подробности ответа; повторная отправка — через поле ввода`,
     completed: "Ход завершён", cancelled: "Ход остановлен", unconfirmed: "Исход неизвестен",
   };
+  if (["queued", "deferred"].includes(deliveryState)
+    && String(receipt?.reason ?? receipt?.conflictKind ?? "").trim() === "runtime-restart") {
+    labels[deliveryState] = "В очереди · Ожидает перезапуска Hub";
+  }
   const phaseStart = ["retrying", "connection-lost"].includes(deliveryState)
     ? receipt?.providerConnection?.sinceAt : startedAt ?? submittedAt;
   const from = Date.parse(phaseStart ?? "");
@@ -1178,7 +1182,10 @@ function queueHistoryReceiptProjection(receipt) {
     || receipt?.rejected === true
     || receipt?.failed === true
     || receipt?.completed === true;
-  const requiresQueue = receipt?.unknown === true
+  const conflictKind = String(receipt?.reason ?? receipt?.conflictKind ?? "").trim();
+  const waitingConflict = Boolean(conflictKind && conflictKind !== "message-intake"
+    && (receipt?.queued === true || receipt?.deferred === true));
+  const requiresQueue = waitingConflict || receipt?.unknown === true
     || receipt?.attentionRequired === true
     || receipt?.paused === true;
   const immediateIntake = !providerAccepted

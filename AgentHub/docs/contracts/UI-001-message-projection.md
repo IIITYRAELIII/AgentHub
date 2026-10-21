@@ -326,6 +326,12 @@ same classifier. Receipt snapshots are bounded. A durable waiting command with
 an explicit non-`message-intake` conflict restores the queue after its receipt
 leaves the window, ahead of its original client projection intent. Otherwise
 the durable explicit projection intent restores the chosen surface.
+An explicit queued/deferred receipt with a non-`message-intake` conflict also
+overrides conversation intent when Hub has accepted durable storage
+(`accepted=true`) but the provider has not accepted the input. In particular,
+`runtime-restart` remains queue-owned and visibly says it awaits Hub restart,
+both on the direct ACK and after snapshot/reload or receipt eviction. This is
+not provider preparation or running, and does not relax the restart barrier.
 Legacy rows without that field use exact `conflictKind=message-intake` only as a
 temporary compatibility boundary; remove it after every retained active command
 has an explicit projection intent. Text, time and display order cannot choose
