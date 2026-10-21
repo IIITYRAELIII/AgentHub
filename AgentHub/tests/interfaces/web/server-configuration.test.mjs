@@ -4,6 +4,40 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { serverConfigurationEntries, updateServerConfiguration } from "../../../src/interfaces/web/server-configuration.mjs";
+import { UsageSyncRemoteConfigStore } from "../../../src/infrastructure/persistence/usage-sync-remote-config-store.mjs";
+
+test("admitted sync endpoint survives settings and effective-store roundtrip without truncation", async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "hub-sync-url-roundtrip-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const configPath = path.join(root, "config.json");
+  await writeFile(configPath, JSON.stringify({ unrelated: "preserved" }));
+  const prefix = "https://sync.example.invalid/", suffix = "/endpoint";
+  for (const length of [1023, 1024, 1025, 2048]) {
+    const endpoint = prefix + "a".repeat(length - prefix.length - suffix.length) + suffix;
+    assert.equal(endpoint.length, length);
+    await updateServerConfiguration({ configPath, changes: { usageSyncServerUrl: endpoint },
+      environment: {}, protectConfig: async () => {} });
+    const saved = JSON.parse(await readFile(configPath, "utf8"));
+    assert.equal(saved.usageSyncServerUrl, endpoint);
+    assert.equal(saved.unrelated, "preserved");
+    const file = path.join(root, `remote-${length}.json`);
+    const store = new UsageSyncRemoteConfigStore({ file, configuredServerUrl: saved.usageSyncServerUrl });
+    assert.equal((await store.load()).serverUrl, endpoint);
+    await store.rememberEnrollment({ serverUrl: endpoint, deviceId: "synthetic-device" });
+    await store.rememberPull({ ok: true }, { serverRevision: 17, serverGeneration: "synthetic-generation" });
+    const reloaded = await new UsageSyncRemoteConfigStore({ file, configuredServerUrl: saved.usageSyncServerUrl }).load();
+    assert.equal(reloaded.serverUrl, endpoint);
+    assert.equal(reloaded.deviceId, "synthetic-device");
+    assert.equal(reloaded.lastUsagePullRevision, 17);
+    assert.equal(reloaded.lastUsagePullServerGeneration, "synthetic-generation");
+    assert.equal(JSON.parse(await readFile(file, "utf8")).serverUrl, endpoint);
+  }
+  const before = await readFile(configPath);
+  await assert.rejects(updateServerConfiguration({ configPath,
+    changes: { usageSyncServerUrl: prefix + "a".repeat(2049 - prefix.length) },
+    environment: {}, protectConfig: async () => {} }), /Invalid usage sync server URL/u);
+  assert.deepEqual(await readFile(configPath), before);
+});
 
 test("sync endpoint uses the ordinary private writer and preserves unrelated settings", async t => {
   const root = await mkdtemp(path.join(os.tmpdir(), "hub-sync-setting-"));

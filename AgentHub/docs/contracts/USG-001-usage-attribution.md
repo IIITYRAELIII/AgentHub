@@ -16,6 +16,9 @@ pointer cutover, preserving enrollment/credentials/cursors/data. It never
 executes the old module or replaces an existing explicit setting. A clean public
 installation has no project-specific server. An enrolled client with an
 unverifiable previous address refuses cutover; no replacement endpoint is guessed.
+Every admitted normalized endpoint reaches the effective sync store and its
+persisted reload intact. The shared setting validator owns URL admission;
+storage never silently truncates an accepted URL to a different endpoint.
 
 
 Model and rationale: [USAGE_CORRELATION_MODEL.md](../architecture/USAGE_CORRELATION_MODEL.md).

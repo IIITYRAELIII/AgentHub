@@ -1,6 +1,7 @@
 import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 
+import { normalizeUsageSyncServerUrl } from "../../domain/default-usage-sync-server.mjs";
 import { writeTextAtomic } from "./state-store.mjs";
 
 function text(value, limit = 1024) {
@@ -12,7 +13,7 @@ function positiveInteger(value) {
 }
 
 function normalizeUrl(value) {
-  const candidate = text(value);
+  const candidate = String(value ?? "").trim();
   if (!candidate) return "";
   const url = new URL(candidate);
   if (!["http:", "https:"].includes(url.protocol)) {
@@ -70,7 +71,7 @@ export class UsageSyncRemoteConfigStore {
     if (!file) throw new TypeError("UsageSyncRemoteConfigStore requires a file");
     this.#file = path.resolve(file);
     this.#defaultServerUrl = defaultServerUrl ? normalizeUrl(defaultServerUrl) : "";
-    this.#configuredServerUrl = configuredServerUrl === undefined ? undefined : normalizeUrl(configuredServerUrl);
+    this.#configuredServerUrl = configuredServerUrl === undefined ? undefined : normalizeUsageSyncServerUrl(configuredServerUrl);
     this.#now = now;
   }
 
