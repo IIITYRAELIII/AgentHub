@@ -15,7 +15,9 @@ from pathlib import Path, PurePosixPath
 
 
 PREFIXES = ("AgentHub/", "TelegramIntegration/")
-EXCLUDED_PARTS = {"Bugs", "WIP", "data", "node_modules", "releases", "runtime", "models", "__pycache__"}
+EXCLUDED_PARTS = {"Bugs", "WIP", "node_modules", "__pycache__"}
+EXCLUDED_ROOT_PARTS = {"data", "releases", "runtime", "models"}
+SOURCE_CONFIG_SUFFIXES = {".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx"}
 EXCLUDED_PREFIXES = ("AgentHub/docs/design/", "AgentHub/DesktopApp/attachments/")
 PATTERNS = {
     "private-key": rb"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----",
@@ -66,10 +68,12 @@ def projected_path(raw: bytes) -> bytes | None:
     if any(part in {".", ".."} for part in parts) or "\\" in value:
         raise ValueError("Unsafe exported path")
     canonical = "AgentHub/"+"/".join(parts[1:])
-    if any(part in EXCLUDED_PARTS for part in parts[1:]) or canonical.startswith(EXCLUDED_PREFIXES):
+    if (any(part in EXCLUDED_PARTS for part in parts[1:])
+            or parts[1] in EXCLUDED_ROOT_PARTS or canonical.startswith(EXCLUDED_PREFIXES)):
         return None
     name = parts[-1].lower()
-    if ((name.startswith("config.") and name != "config.example.json")
+    if ((name.startswith("config.") and name != "config.example.json"
+         and PurePosixPath(name).suffix not in SOURCE_CONFIG_SUFFIXES)
             or (name.startswith(".env") and name != ".env.example")
             or name in {"config.json", "tgbottoken.txt"}):
         return None

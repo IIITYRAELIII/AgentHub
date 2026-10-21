@@ -4,16 +4,11 @@ import { DatabaseSync } from "node:sqlite";
 
 import { RateLimitHistoryStore } from "./rate-limit-history.mjs";
 import {
-  DARK_ACCOUNT,
-  FIRST_ACCOUNT_BOUNDARY,
-  SECOND_ACCOUNT_BOUNDARY,
-  SIDER_ACCOUNT,
+  createLegacyTeamUsageAccountPolicy,
   teamUsageAccountAt,
 } from "../../domain/team-usage-accounts.mjs";
 
 const MIGRATION_KEY = "team_rate_limit_account_backfill:2026-08-31-v5";
-
-export { FIRST_ACCOUNT_BOUNDARY, SECOND_ACCOUNT_BOUNDARY };
 
 function participantLogin(value) {
   const login = String(value ?? "").trim();
@@ -23,8 +18,8 @@ function participantLogin(value) {
   return login;
 }
 
-export function teamRateLimitAccountAt(value, observedMs) {
-  return teamUsageAccountAt(participantLogin(value), observedMs);
+export function teamRateLimitAccountAt(value, observedMs, policy) {
+  return teamUsageAccountAt(participantLogin(value), observedMs, policy);
 }
 
 function migrationTimestamp(now) {
@@ -76,8 +71,11 @@ export async function applyTeamRateLimitAccountBackfill({
   participant,
   backupRoot = null,
   now = new Date(),
+  policy: configuredPolicy = null,
 } = {}) {
   const login = participantLogin(participant);
+  const policy = createLegacyTeamUsageAccountPolicy(configuredPolicy);
+  if (!policy) return { applied: false, reason: "not-configured", participant: login };
   if (!databaseFile) throw new Error("Team account backfill requires a SQLite database");
   const resolvedDatabase = path.resolve(String(databaseFile));
   try {
@@ -160,7 +158,7 @@ export async function applyTeamRateLimitAccountBackfill({
     `);
     const counts = new Map();
     for (const snapshot of snapshots) {
-      const account = teamRateLimitAccountAt(login, snapshot.observed_ms);
+      const account = teamRateLimitAccountAt(login, snapshot.observed_ms, policy);
       update.run(
         account.key,
         account.label,
@@ -197,14 +195,11 @@ export async function applyTeamRateLimitAccountBackfill({
         source = excluded.source
     `);
     if (Number.isFinite(firstObservedMs)) {
-      upsertAccountEvent(upsertEvent, firstObservedMs, SIDER_ACCOUNT);
+      upsertAccountEvent(upsertEvent, firstObservedMs, policy.initialAccount);
     }
-    upsertAccountEvent(upsertEvent, Date.parse(FIRST_ACCOUNT_BOUNDARY), DARK_ACCOUNT);
-    upsertAccountEvent(
-      upsertEvent,
-      Date.parse(SECOND_ACCOUNT_BOUNDARY),
-      teamRateLimitAccountAt(login, Date.parse(SECOND_ACCOUNT_BOUNDARY)),
-    );
+    for (const boundary of policy.boundaries) {
+      upsertAccountEvent(upsertEvent, Date.parse(boundary), teamRateLimitAccountAt(login, Date.parse(boundary), policy));
+    }
     database.prepare(`
       INSERT INTO rate_limit_store_meta (key, value) VALUES (?, ?)
       ON CONFLICT(key) DO UPDATE SET value = excluded.value
@@ -216,7 +211,7 @@ export async function applyTeamRateLimitAccountBackfill({
       backupDirectory,
       snapshots: snapshots.length,
       counts: Object.fromEntries(counts),
-      boundaries: [FIRST_ACCOUNT_BOUNDARY, SECOND_ACCOUNT_BOUNDARY],
+      boundaries: [...policy.boundaries],
     };
   } catch (error) {
     database.exec("ROLLBACK");

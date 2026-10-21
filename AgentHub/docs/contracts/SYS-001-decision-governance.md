@@ -27,6 +27,12 @@ UNKNOWN outcomes. A source audit, rewritten OID or packaged runtime alone is not
 release acceptance. The existing release/runtime owners retain composition,
 publication and stopped-writer cutover authority. See ADR-0329.
 
+The projection preserves executable runtime/configuration source and its tests;
+installed-state name filters cannot silently discard those files. Its excluded
+local-state blobs remain absent from the exported object store. A filter change
+requires a fresh projected-history audit rather than reuse of an incomplete
+previous plan as public readiness evidence.
+
 ## Readiness evidence
 
 The change names affected contract IDs, identifies the authoritative owner,

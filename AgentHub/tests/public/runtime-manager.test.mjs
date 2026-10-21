@@ -20,6 +20,72 @@ import { ReleaseOperationStore } from "../../src/infrastructure/persistence/rele
 
 const ROOT = path.resolve(import.meta.dirname, "..", "..");
 
+test("actual prepared update preserves old sync address, explicit settings and retry identity", async t => {
+  const previousEnv = process.env.AGENT_HUB_USAGE_SYNC_SERVER_URL;
+  delete process.env.AGENT_HUB_USAGE_SYNC_SERVER_URL;
+  t.after(() => {
+    if (previousEnv === undefined) delete process.env.AGENT_HUB_USAGE_SYNC_SERVER_URL;
+    else process.env.AGENT_HUB_USAGE_SYNC_SERVER_URL = previousEnv;
+  });
+  for (const source of ["legacy-default", "enrolled", "explicit", "environment"]) await t.test(source, async t => {
+    const { sourceRoot, runtimeRoot } = await fixture();
+    t.after(() => rm(path.dirname(runtimeRoot), { recursive: true, force: true }));
+    const module = path.join(sourceRoot, "src/domain/default-usage-sync-server.mjs");
+    await mkdir(path.dirname(module), { recursive: true });
+    await writeFile(module, 'export const DEFAULT_USAGE_SYNC_SERVER_URL = "https://legacy.example.invalid/sync";\n');
+    await deployRuntime({ sourceRoot, runtimeRoot, releaseId: "sync-old" });
+    const config = { dataDir: "custom-data", token: "synthetic-token", unrelated: { retained: true } };
+    if (source === "explicit") config.usageSyncServerUrl = "https://chosen.example.invalid";
+    await writeFile(path.join(runtimeRoot, "config.json"), JSON.stringify(config));
+    const data = path.join(runtimeRoot, "custom-data"); await mkdir(data);
+    const remote = { deviceId: "original-device", lastUsagePushJournalRevision: 19, lastUsagePullRevision: 27 };
+    if (source === "enrolled") remote.serverUrl = "https://enrolled.example.invalid";
+    const remoteBytes = JSON.stringify(remote), identityBytes = JSON.stringify({ deviceId: "original-device", privateKey: "synthetic-key" });
+    await writeFile(path.join(data, "usage-sync-remote.json"), remoteBytes);
+    await writeFile(path.join(data, "usage-sync-identity.json"), identityBytes);
+    if (source === "environment") process.env.AGENT_HUB_USAGE_SYNC_SERVER_URL = "https://environment.example.invalid";
+    await writeFile(module, 'export const DEFAULT_USAGE_SYNC_SERVER_URL = "";\n');
+    const prepared = await prepareRuntime({ sourceRoot, runtimeRoot, releaseId: "sync-new" });
+    const oldPointer = await readFile(path.join(runtimeRoot, "current.json"));
+    await assert.rejects(installPreparedRuntime({ runtimeRoot, ...prepared,
+      beforePointerCommit: () => { throw new Error("synthetic cutpoint"); } }), /synthetic cutpoint/u);
+    assert.deepEqual(await readFile(path.join(runtimeRoot, "current.json")), oldPointer);
+    const expected = ({ "legacy-default": "https://legacy.example.invalid/sync", enrolled: "https://enrolled.example.invalid",
+      explicit: "https://chosen.example.invalid", environment: "https://environment.example.invalid" })[source];
+    assert.deepEqual(JSON.parse(await readFile(path.join(runtimeRoot, "config.json"))), { ...config, usageSyncServerUrl: expected });
+    await installPreparedRuntime({ runtimeRoot, ...prepared });
+    const saved = await readFile(path.join(runtimeRoot, "config.json"));
+    await installPreparedRuntime({ runtimeRoot, ...prepared });
+    assert.deepEqual(await readFile(path.join(runtimeRoot, "config.json")), saved);
+    assert.equal(await readFile(path.join(data, "usage-sync-remote.json"), "utf8"), remoteBytes);
+    assert.equal(await readFile(path.join(data, "usage-sync-identity.json"), "utf8"), identityBytes);
+    assert.equal(JSON.parse(await readFile(path.join(runtimeRoot, "current.json"))).current, "sync-new");
+    delete process.env.AGENT_HUB_USAGE_SYNC_SERVER_URL;
+  });
+});
+
+test("actual fresh install has no private sync default; changed old source refuses cutover", async t => {
+  const { sourceRoot, runtimeRoot } = await fixture();
+  t.after(() => rm(path.dirname(runtimeRoot), { recursive: true, force: true }));
+  const module = path.join(sourceRoot, "src/domain/default-usage-sync-server.mjs");
+  await mkdir(path.dirname(module), { recursive: true });
+  await writeFile(module, 'export const DEFAULT_USAGE_SYNC_SERVER_URL = "https://legacy.example.invalid";\n');
+  await deployRuntime({ sourceRoot, runtimeRoot, releaseId: "sync-initial" });
+  await writeFile(path.join(runtimeRoot, "config.json"), JSON.stringify({ dataDir: "data" }));
+  await writeFile(module, 'export const DEFAULT_USAGE_SYNC_SERVER_URL = "";\n');
+  const prepared = await prepareRuntime({ sourceRoot, runtimeRoot, releaseId: "sync-update" });
+  const pointer = await readFile(path.join(runtimeRoot, "current.json"));
+  await writeFile(path.join(runtimeRoot, "releases/sync-initial/src/domain/default-usage-sync-server.mjs"), "changed source");
+  await assert.rejects(installPreparedRuntime({ runtimeRoot, ...prepared }), /Previous usage sync source changed/u);
+  assert.deepEqual(await readFile(path.join(runtimeRoot, "current.json")), pointer);
+  assert.equal(Object.hasOwn(JSON.parse(await readFile(path.join(runtimeRoot, "config.json"))), "usageSyncServerUrl"), false);
+  const fresh = path.join(path.dirname(runtimeRoot), "fresh"); await mkdir(fresh);
+  await writeFile(path.join(fresh, "config.json"), "{}");
+  const clean = await prepareRuntime({ sourceRoot, runtimeRoot: fresh, releaseId: "sync-clean" });
+  await installPreparedRuntime({ runtimeRoot: fresh, ...clean });
+  assert.equal(JSON.parse(await readFile(path.join(fresh, "config.json"))).usageSyncServerUrl, "");
+});
+
 test("prepared runtime retains the verified deletion helper and executes its exact identity guard", async (t) => {
   if (process.platform !== "win32") return t.skip("Handle deletion is Windows-only");
   const { sourceRoot, runtimeRoot } = await fixture();

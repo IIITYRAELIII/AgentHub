@@ -1,5 +1,12 @@
 # UI-001 — Canonical message projection
 
+The Server page exposes the private sync endpoint through its existing
+configuration save/cancel flow. Only HTTP(S) URLs without embedded credentials,
+query or fragment are admitted. A pending edit does not change the effective
+running endpoint; ordinary restart applies the saved value. Private historical
+account policy is never part of the client configuration projection (ADR-0329).
+
+
 ## Explicit Codex trace details
 
 A shortened rollout preview exposes “All stages” only on explicit expansion.

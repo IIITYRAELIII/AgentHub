@@ -1,4 +1,5 @@
 {
+  "usageSyncServerUrl": "",
   "components": {
     "telegram": false,
     "miniApp": false,

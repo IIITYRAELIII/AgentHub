@@ -125,6 +125,50 @@ class SourceExportTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             EXPORT.projected_path(b"Other/private.txt")
 
+    def test_runtime_and_configuration_source_survive_state_exclusions(self):
+        retained = {
+            "AgentHub/src/runtime/runtime-manager.mjs": b"export const manager = true;\n",
+            "AgentHub/src/infrastructure/filesystem/config.mjs": b"export const defaults = {};\n",
+            "AgentHub/tests/runtime/runtime-manager.test.mjs": b"export const test = true;\n",
+            "AgentHub/tests/infrastructure/filesystem/config.test.mjs": b"export const configTest = true;\n",
+            "AgentHub/src/data/codec.mjs": b"export const codec = true;\n",
+            "TelegramIntegration/src/runtime/controller.mjs": b"export const legacy = true;\n",
+            "AgentHub/config.example.json": b'{"token":""}\n',
+        }
+        private = {
+            "AgentHub/runtime/private.txt": b"synthetic runtime state\n",
+            "AgentHub/data/private.txt": b"synthetic persisted state\n",
+            "AgentHub/releases/private.txt": b"synthetic installed release\n",
+            "AgentHub/models/private.txt": b"synthetic downloaded model\n",
+            "AgentHub/config.local.json": b"synthetic operator setting\n",
+            "AgentHub/config.secret": b"synthetic operator secret\n",
+            "AgentHub/.env": b"synthetic environment\n",
+            "AgentHub/src/node_modules/private.txt": b"synthetic dependency\n",
+            "AgentHub/src/__pycache__/private.pyc": b"synthetic bytecode\n",
+            "TelegramIntegration/runtime/private.txt": b"synthetic legacy runtime\n",
+        }
+        for name, body in {**retained, **private}.items():
+            self.write(name, body)
+        self.pin = self.commit("source and synthetic local state coexist")
+        self.audit = self.root/"runtime-source-audit"
+        source_refs = self.git("show-ref")
+        source_index = EXPORT.digest((self.source/".git/index").read_bytes())
+        destination = self.root/"runtime-source.git"
+        with contextlib.redirect_stdout(io.StringIO()):
+            EXPORT.plan(self.source, self.pin, self.audit)
+            EXPORT.extract(self.source, self.audit/"plan.private.json", self.decisions(), destination)
+        files = set(EXPORT.git(destination, "ls-tree", "-r", "--name-only", "main").decode().splitlines())
+        for name, body in retained.items():
+            self.assertIn(name, files)
+            self.assertEqual(EXPORT.git(destination, "show", "main:"+name), body)
+        objects = EXPORT.git(destination, "rev-list", "--objects", "--all")
+        for name in private:
+            self.assertNotIn(name, files)
+            original_blob = self.git("rev-parse", self.pin+":"+name).strip()
+            self.assertNotIn(original_blob, objects)
+        self.assertEqual(self.git("show-ref"), source_refs)
+        self.assertEqual(EXPORT.digest((self.source/".git/index").read_bytes()), source_index)
+
     def test_private_only_root_middle_and_tip_have_explicit_alias_mapping(self):
         self.source = self.root/"private-first-source"
         self.source.mkdir()

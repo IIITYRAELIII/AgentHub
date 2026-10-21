@@ -1,3 +1,5 @@
+import { normalizeUsageSyncServerUrl } from "../../domain/default-usage-sync-server.mjs";
+import { createLegacyTeamUsageAccountPolicy } from "../../domain/team-usage-accounts.mjs";
 import { assertRecordingContourConfiguration } from "./test-contour-recording-environment.mjs";
 import { recordingContourProfile } from "./test-contour-recording-profile.mjs";
 import { access, readFile } from "node:fs/promises";
@@ -650,18 +652,30 @@ function loadCodexModels(raw) {
   return models;
 }
 
-export async function loadConfig() {
-  const configPath = await resolveConfigPath();
-  const configDirectory = path.dirname(configPath);
-  let raw;
+async function readPrivateConfig(configPath) {
   try {
-    raw = JSON.parse(await readFile(configPath, "utf8"));
+    const raw = JSON.parse(await readFile(configPath, "utf8"));
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error();
+    return raw;
   } catch (error) {
     if (error?.code === "ENOENT") {
       throw new Error(`Configuration not found: ${configPath}. Copy config.example.json to config.json.`);
     }
-    throw new Error(`Cannot read ${configPath}: ${error.message}`);
+    throw new Error(`Cannot read configuration: ${configPath}`);
   }
+}
+
+// Private migration policy is read only by the explicit legacy CLI. It is not
+// returned by loadConfig, projected to clients, or scheduled by usage sync.
+export async function loadLegacyTeamUsageAccountPolicy({ configPath, environment = process.env } = {}) {
+  const file = configPath || await resolveConfigPath({ environment });
+  return createLegacyTeamUsageAccountPolicy((await readPrivateConfig(file)).legacyTeamUsageAccountPolicy);
+}
+
+export async function loadConfig() {
+  const configPath = await resolveConfigPath();
+  const configDirectory = path.dirname(configPath);
+  const raw = await readPrivateConfig(configPath);
 
   const legacyProfile = String(process.env.AGENT_HUB_PROFILE ?? raw.profile ?? "")
     .trim()
@@ -780,6 +794,8 @@ export async function loadConfig() {
 
   return {
     configPath,
+    usageSyncServerUrl: Object.hasOwn(raw, "usageSyncServerUrl")
+      ? normalizeUsageSyncServerUrl(raw.usageSyncServerUrl) : undefined,
     testContourRecording,
     components,
     telegramEnabled,

@@ -11084,7 +11084,7 @@ function renderServerConfigLayout(autostart, entries) {
   advanced.addEventListener("toggle", () => {
     serverAdvancedOpen = advanced.open;
   });
-  return [primary, advanced];
+  return [primary, renderKey("usageSyncServerUrl"), advanced].filter(Boolean);
 }
 
 function renderServerConfigCopy(entry, { showHint = true } = {}) {
@@ -11127,6 +11127,12 @@ function renderServerConfigEntry(entry = {}, { inlineEntry = null } = {}) {
     text: "Применится после перезапуска",
   }) : null;
   const hint = entry.hint ? el("small", { class: "server-config-hint", text: entry.hint }) : null;
+  if (entry.type === "url") {
+    const input = el("input", { type: "url", value: entry.value ?? "", maxlength: 2048,
+      "aria-label": entry.name, autocomplete: "off", spellcheck: "false" });
+    input.addEventListener("input", () => noteServerConfigDraft(entry.key, input.value));
+    return el("label", { class: "server-config-row server-config-url" }, [renderServerConfigCopy(entry), input, pendingNote].filter(Boolean));
+  }
   const accessModeToggle = entry.type === "choice" && entry.presentation === "access-toggle";
   if (entry.type === "boolean" || accessModeToggle) {
     const input = el("input", {

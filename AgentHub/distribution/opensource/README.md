@@ -51,6 +51,23 @@ retain the prior package for rollback. A rollback changes executable release
 selection; it does not undo database migrations or restore user data. Keep a
 verified offline backup when a release's migration contract requires it.
 
+The journal sync endpoint is a private `usageSyncServerUrl` setting, editable on
+the Server page. Save it and use the ordinary restart flow to apply it. A blank
+value disables the connection; a clean public installation has no built-in
+server. Use HTTP(S) without embedded credentials, query or fragment. An explicit
+value wins over the environment and enrollment metadata.
+`AGENT_HUB_USAGE_SYNC_SERVER_URL` is an initial fallback only while that setting
+is absent.
+
+Before switching an installed release, the ordinary installer fills a missing
+setting from the previous effective address: saved enrollment, then environment,
+then the verified previous release's literal default. It never downloads or
+executes that old source. Existing settings, enrollment keys, journal data and
+sync cursors are preserved; retry does not reset the value. An enrolled client
+whose old address cannot be established refuses cutover until explicitly
+configured. This is an installed-runtime update path, not a claim that replacing
+an uninstalled source checkout preserves an erased hardcode.
+
 The running installation and any original frozen release operation are not
 silently redirected by extracting this repository. Development source builds
 and public ready packages are different artifacts, with different checksums.
@@ -64,6 +81,13 @@ account and policies. Enabling Telegram, Cloudflare/public HTTPS, a team bot or
 remote diagnostics adds those services as data recipients. Review each component
 before enabling it. Hub's public Git history and release packages must contain
 none of your runtime state, credentials or conversations.
+
+Personal historical account rosters, billing mailboxes, device-label overrides
+and switch dates are not shipped. The explicit legacy account-backfill CLI may
+read an operator-supplied `legacyTeamUsageAccountPolicy` from private config;
+without it, that tool makes no database changes. Normal startup/sync does not
+load or apply that policy. Recorded account facts and generic projection from
+exact observations on the same device retain their existing owners.
 
 Local storage is not end-to-end encryption. Keep the machine and backups private.
 Do not expose the local server directly to an untrusted network. Public access

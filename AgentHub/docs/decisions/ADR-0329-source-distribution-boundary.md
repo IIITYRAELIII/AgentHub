@@ -16,6 +16,15 @@ alternate or mirror, rewrite Utilities history, or retarget existing operation
 receipts. Public approval requires the entire export and ready assets to be
 checked, contributor rights confirmed and independent review completed.
 
+State-directory exclusions apply at the project root. They must not remove
+`src/runtime`, executable configuration modules or their tests merely because
+a directory or basename resembles installed state. Dependency/cache and private
+report exclusions remain recursive. An executable Git projection test retains
+those source bytes while proving excluded synthetic state blobs are absent from
+all exported objects. Correcting the filter invalidates previous projected
+history plans: newly retained versions require the same complete privacy and
+ownership audit before export approval.
+
 MIT is the selected license for code covered by confirmed ownership/permission;
 it does not relicense third-party code, binaries or trademarks. Draft license and
 security documents must not claim that these prerequisites are complete.
@@ -53,3 +62,31 @@ The runtime disk relocation takes priority over source extraction. Source remova
 and publisher origin cutover happen only after working replacement and the
 release owner's exact mapping/accepted-composition checks. The preparation has no
 authority to reinterpret or replay an original frozen generation or UNKNOWN.
+
+## Private configuration continuity
+
+The public source has no personal account roster or built-in sync endpoint.
+Personal legacy account epochs/participant/device-label mappings move to the
+existing private configuration owner, read only by the explicit legacy backfill
+CLI. Missing policy is a no-effect outcome before opening SQLite. Generic exact
+device/timeline inference remains projection-only and unchanged; no new scheduled
+account migration or replacement receipt is introduced. Existing migration keys
+and applied markers retain their original meaning.
+
+The existing Server configuration writer owns `usageSyncServerUrl`; explicit
+empty means disabled. Installed updates seed a missing setting before publishing
+the new runtime pointer, preserving the old effective enrollment/environment/
+verified-release default precedence. Extraction of a literal never executes old
+code. Failure preserves old pointer authority; an added setting remains backward
+compatible with the old release and makes retry idempotent. Credentials, sync
+cursors and journal files are not rewritten. Clean installs have no private
+fallback. A missing/unverifiable enrolled endpoint fails closed. This is not a
+second installer, daemon, runtime-data ledger or permission to update the live
+installation outside its existing owner.
+
+All historical versions of personalized modules, fixtures and private endpoint
+defaults must be excluded from the public object store. Generalized code and
+synthetic fixtures are restored as a declared new source delta over the accepted
+audit baseline. Original private Git history/config custody and frozen release
+provenance remain separate and unchanged. A passing HEAD test does not approve
+the public history or a runtime package.
