@@ -21,6 +21,25 @@ import { captureRuntimeReleaseBinding } from "../../src/infrastructure/filesyste
 
 const ROOT = path.resolve(import.meta.dirname, "..", "..");
 
+test("frozen runtime version refuses before build and uses the canonical next suffix", async t => {
+  const { sourceRoot, runtimeRoot } = await fixture();
+  t.after(() => rm(path.dirname(runtimeRoot), { recursive: true, force: true }));
+  let dependencyCalls = 0, customizationCalls = 0;
+  const options = { sourceRoot, runtimeRoot, releaseId: "frozen-first",
+    installProductionDependencies: async () => { dependencyCalls += 1; },
+    beforeManifest: async () => { customizationCalls += 1; } };
+  await assert.rejects(prepareRuntime({ ...options, expectedReleaseVersion: "2026.8.23.2" }), /Frozen runtime version/u);
+  assert.equal(dependencyCalls, 0);
+  assert.equal(customizationCalls, 0);
+  await assert.rejects(stat(path.join(runtimeRoot, "releases", "frozen-first")), /ENOENT/u);
+  const prepared = await prepareRuntime({ ...options, expectedReleaseVersion: "2026.8.23.1" });
+  const bytes = await readFile(path.join(prepared.releaseRoot, "runtime-manifest.json"));
+  assert.equal(JSON.parse(bytes).releaseVersion, "2026.8.23.1");
+  await assert.rejects(prepareRuntime({ ...options, releaseId: "frozen-second", expectedReleaseVersion: "2026.8.23.1" }), /Frozen runtime version/u);
+  assert.deepEqual(await readFile(path.join(prepared.releaseRoot, "runtime-manifest.json")), bytes);
+  assert.equal(customizationCalls, 1);
+});
+
 test("actual prepared update preserves old sync address, explicit settings and retry identity", async t => {
   const previousEnv = process.env.AGENT_HUB_USAGE_SYNC_SERVER_URL;
   delete process.env.AGENT_HUB_USAGE_SYNC_SERVER_URL;

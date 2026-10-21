@@ -1,5 +1,21 @@
 # REL-001 — Task-backed Workspace release
 
+## Frozen standalone artifact preparation
+
+The existing publication artifact checkpoint may bind an explicit original
+operation/generation/source and runtime artifact version. Canonical preparation
+checks that version against its next suffix under the same installation lease
+before copying, compiling Host or installing locked dependencies. A different
+result refuses instead of changing the frozen version or manifest. Publication
+version remains distinct from the runtime artifact version.
+
+The packager's PREPARED receipt is derived from that same hash-pinned artifact
+and verified runtime, not from a second allocation or acceptance owner. Reuse
+validates the original source/version/manifest and complete payload before any
+new preparation. A lost preparation reply may reuse its verified completed body;
+a partial body without a manifest or changed inputs remains preserved/refused.
+This receipt grants no Git, installation, restart or remote publication authority.
+
 ## Native transport retirement (ADR-0126)
 
 New native merge transport contains exact selected base/result ancestry through

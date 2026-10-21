@@ -91,12 +91,29 @@ tool does not delete or silently rebuild it. Its file writes are exclusive and
 flushed; this is not a notarization, filesystem snapshot or independent signature.
 
 Runtime preparation and publication remain existing release-owner stages. The
-minimal bridge that freezes the preparation version, reuses its original
-PREPARED result before any reallocation, and publishes the accepted allowlist
-through the original release checkpoint is being completed by that owner. Until
-that exact bridge and final product input are reviewed, this offline checkpoint
-alone is not the complete build-to-public-release command. No second publisher,
-manual asset upload or source-only artifact substitutes for it.
+existing `createPublicationArtifactSteps` owner accepts an optional
+`runtimePublication: { operationId, generation, sourceCommit, version }` copied
+from the exact frozen release input. Its runtime artifact identity includes all
+four fields. `prepareRuntime` checks `expectedReleaseVersion` against the canonical
+next suffix under the existing installation lease before copying, Host compilation
+or locked dependency installation. A mismatch refuses; it never changes a manifest
+or allocates an arbitrary version. Publication version and artifact version are
+distinct inputs and must not be silently relabeled.
+
+After normal preparation, `artifacts.preparedRuntimeReceipt(identity)` verifies
+the original artifact, full runtime and frozen source/version, then returns
+`{ receipt, receiptFile, receiptSha256 }`. The exact nine-field JSON is retained in
+that artifact's immutable payload. Pass its file and hash to `build_release.py`
+above. A completed artifact, or a verified prepared body whose build reply was
+lost, is reused before another preparation/allocation. Partial bodies without a
+manifest and changed original inputs refuse and remain available for inspection.
+This is an existing-checkpoint adapter, not another preparation or approval ledger.
+
+The canonical runner's final standalone input and publication of the accepted
+asset allowlist through its original release checkpoint remain separate wiring.
+Until that wiring and final product input are reviewed, this offline checkpoint
+and callable adapter alone are not the complete build-to-public-release command.
+No second publisher, manual asset upload or source-only artifact substitutes for it.
 
 The publisher's prepared runtime is an input, not a trigger for another build:
 
