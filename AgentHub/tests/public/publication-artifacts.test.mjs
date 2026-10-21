@@ -123,6 +123,19 @@ async function fixture(t, { runtimePublication = null } = {}) {
 const frozenRuntime = { operationId: "fefefefe-fefe-4efe-8efe-fefefefefefe", generation: 2,
   sourceCommit: "a".repeat(40), version: "2026.9.16.7" };
 
+test("frozen publication string fields reject coerced arrays and boxed strings before preparation", () => {
+  let preparations = 0;
+  for (const field of ["operationId", "sourceCommit", "version"]) {
+    for (const value of [[frozenRuntime[field]], Object(frozenRuntime[field])]) {
+      assert.throws(() => createPublicationArtifactSteps({
+        runtimePublication: { ...frozenRuntime, [field]: value },
+        prepareRuntimeImpl: async () => { preparations++; },
+      }), /Invalid frozen runtime publication input/u);
+    }
+  }
+  assert.equal(preparations, 0);
+});
+
 test("original artifact checkpoint yields the exact packager receipt and reuses before allocation", async t => {
   const f = await fixture(t, { runtimePublication: frozenRuntime });
   await publishChanged(["--full-tests"], f.create());

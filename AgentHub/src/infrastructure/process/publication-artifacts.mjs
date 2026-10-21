@@ -76,9 +76,12 @@ export function createPublicationArtifactSteps({
   const preparedInput = runtimePublication === null ? null : structuredClone(runtimePublication);
   if (preparedInput !== null && (typeof preparedInput !== "object" || Array.isArray(preparedInput)
     || Object.keys(preparedInput).sort().join(",") !== "generation,operationId,sourceCommit,version"
+    || typeof preparedInput.operationId !== "string"
     || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/u.test(preparedInput.operationId)
     || !Number.isSafeInteger(preparedInput.generation) || preparedInput.generation < 1
+    || typeof preparedInput.sourceCommit !== "string"
     || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u.test(preparedInput.sourceCommit)
+    || typeof preparedInput.version !== "string"
     || !/^\d+(?:\.\d+){3}$/u.test(preparedInput.version))) {
     throw new Error("Invalid frozen runtime publication input");
   }
