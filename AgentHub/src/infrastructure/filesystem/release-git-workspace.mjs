@@ -7,6 +7,7 @@ import { ReleaseCandidateFrozenError } from "../../domain/task-board-task.mjs";
 import { ReleasePreparationRejectedError } from "../../domain/release-preparation.mjs";
 import { assertPreparationCheckpoint } from "./release-preparation-guard.mjs";
 import { ReleaseGenerationTransportRetention } from "./release-generation-transport-retention.mjs";
+import { createSelectedGitBundle } from "./selected-git-bundle.mjs";
 import { assertInstalledLocalSourceBaseline, installedNativeHistoryBaseline,
   assertInstalledAgreedMainOrigin } from "./local-source-baseline.mjs";
 import { readNativeUpstreamAdoptions, assertNativeUpstreamOrigin } from "./native-upstream-adoption.mjs";
@@ -823,7 +824,7 @@ export class ReleaseGitWorkspaceService {
         : await mkdtemp(path.join(layout.root, "clone-source-"));
       const bundle = this.#validationBundle ?? path.join(transportRoot, "source.bundle");
       try {
-        if (transportRoot) await runGit(["bundle", "create", bundle, "--all"], {
+        if (transportRoot) await runGit(["bundle", "create", bundle, "refs/heads/main"], {
           cwd: sourceRoot, timeoutMs: 300_000,
         });
         await runGit([
@@ -1032,15 +1033,14 @@ export class ReleaseGitWorkspaceService {
         }
         const bundle = path.join(generationDataDir, "source.bundle");
         if (!ephemeral && !await fileExists(bundle)) {
-          const temporaryBundle = `${bundle}.${process.pid}.${randomUUID()}.tmp`;
-          try {
-            await runGit(["bundle", "create", temporaryBundle, "--all"], {
-              cwd: sourceRoot, timeoutMs: 300_000,
-            });
-            await rename(temporaryBundle, bundle);
-          } finally {
-            await rm(temporaryBundle, { force: true });
-          }
+          const mainCommit = await runGit(["rev-parse", "refs/heads/main"], { cwd: sourceRoot });
+          const inputs = [mainCommit, String(approvedBaseCommit ?? "").trim(),
+            ...normalizedFrozenTasks(frozenTasks).map(task => task.resultCommit)];
+          // The prepared candidate is fetched by exact identity below. Capture
+          // only main/base/selected result ancestry, never unrelated source refs.
+          // Preserve partial output for this original generation's recovery.
+          await createSelectedGitBundle({ root: generationDataDir, sourceRoot, bundle, inputs, mainCommit,
+            gitAt: (cwd, args, options) => runGit(args, { ...options, cwd, timeoutMs: 300_000 }) });
         }
         const isolated = new ReleaseGitWorkspaceService({
           dataDir: generationDataDir,
@@ -1625,7 +1625,7 @@ export class ReleaseGitWorkspaceService {
       };
       await validatePreparationMain();
       await assertPreparationCheckpoint({ guard: preparationGuard, clone, initial, checkpoint, git });
-      await git(["fetch", "--prune", "workspace", "+refs/heads/*:refs/remotes/workspace/*"]);
+      await git(["fetch", "--prune", "workspace", "+refs/heads/main:refs/remotes/workspace/main"]);
       for (const commit of [baseCommit, ...tasks.map((task) => task.resultCommit)]) {
         if (await gitMaybe(["cat-file", "-e", `${commit}^{commit}`], { cwd: clone.releaseRoot }) === null) {
           await git(["fetch", "workspace", commit]);

@@ -10,6 +10,16 @@ or recursive temporary-directory deletion is used. A failed/partial output and
 any plain/reparse replacement are preserved. The consuming clone has no
 alternates and remains independent.
 
+New permanent release-generation transport likewise streams only exact local
+main, approved base and selected result ancestry. Its advertised main alias is
+bound to an included exact input so the existing main clone contract survives.
+Ordinary initial release clones and workspace refresh fetch main only; missing
+selected base/result commits still use the existing exact-object fetch path.
+Existing generation transports are reused unchanged, including older broad packs;
+partial/unknown outputs require original-owner recovery, not replacement. This
+does not change composition selection, provenance, candidate fetch/freeze or
+publication guards. Disposable validation's older all-ref capture is separate.
+
 After an update's normal runtime start, policy v1 may retire only the redundant
 task-native-merge transport from a completed, durably published Task. The existing
 Task Git lease/process guard and fresh cleanup preview remain authoritative. The

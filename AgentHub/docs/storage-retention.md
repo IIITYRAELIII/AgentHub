@@ -31,6 +31,14 @@ there is no retry that invents a fresh deletion identity.
 
 New native merge transport excludes unrelated source refs. Existing large broad
 transports become eligible only under the same completed/published owner checks.
+New permanent release-generation transports also capture only exact main/base/
+selected result ancestry, and ordinary release clones/refresh fetch main only.
+The existing exact-object fetch supplies missing selected results. An advertised
+main alias preserves the normal clone entry point without mutating source refs.
+Existing generation bundles are reused byte-for-byte, never rebuilt to shrink
+them. Disposable composition validation still has its older all-ref capture;
+this change does not authorize deleting its unknown failed leftovers or any
+legacy clone's refs/objects. No new periodic Git GC is introduced.
 Git's complete pack is streamed into an already-owned bundle descriptor; no
 temporary bare pool is recursively deleted. The supported [bundle format](https://git-scm.com/docs/gitformat-bundle)
 uses private advertised tips, including dangling results. Failed/partial output

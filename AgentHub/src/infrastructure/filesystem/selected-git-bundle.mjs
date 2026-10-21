@@ -4,11 +4,12 @@ import path from "node:path";
 // Documented gitformat-bundle header + Git's complete pack stream. The caller
 // owns the output descriptor before Git starts; no temporary bare repository,
 // source ref mutation, pack buffering or recursive scratch deletion is needed.
-export async function createSelectedGitBundle({ root, sourceRoot, bundle, inputs, gitAt }) {
+export async function createSelectedGitBundle({ root, sourceRoot, bundle, inputs, gitAt, mainCommit = null }) {
   const commits = [...new Set(inputs)];
   if (!commits.length || commits.length > 1024 || commits.some(c => !/^[a-f0-9]{40,64}$/u.test(c))) {
     throw new TypeError("Selected Git transport requires bounded exact commit identities");
   }
+  if (mainCommit !== null && !commits.includes(mainCommit)) throw new TypeError("Transport main must be an exact selected input");
   if (path.dirname(path.resolve(bundle)) !== path.resolve(root)) throw new Error("Native transport escaped its owner root");
   const parent = await lstat(root, { bigint: true });
   if (!parent.isDirectory() || parent.isSymbolicLink()) throw new Error("Native transport root is not plain");
@@ -17,6 +18,7 @@ export async function createSelectedGitBundle({ root, sourceRoot, bundle, inputs
     throw new Error("Native transport object format changed");
   }
   const header = Buffer.from([...(format === "sha1" ? ["# v2 git bundle"] : ["# v3 git bundle", "@object-format=sha256"]),
+    ...(mainCommit === null ? [] : [`${mainCommit} refs/heads/main`]),
     ...commits.map((commit, i) => `${commit} refs/heads/selected-${i}`), "", ""].join("\n"));
   const handle = await open(bundle, "wx+").catch(error => {
     if (error.code === "EEXIST") throw new Error("Existing uninitialized native transport requires its original owner's recovery");

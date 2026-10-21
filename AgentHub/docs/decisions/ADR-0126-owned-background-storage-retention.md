@@ -52,6 +52,17 @@ exists: a plain directory substitution cannot acquire deletion authority. A
 failed/partial output is preserved. The resulting bundle and consuming clone are
 full and independent; source refs/configuration are not copied or modified.
 
+New permanent release generations use the same descriptor-owned pack stream for
+exact main/base/selected-result ancestry. An optional main alias must name an
+included exact input; default native-merge headers remain unchanged. Ordinary
+release clones and refresh fetch main only and retain the original exact-object
+fetch for missing selected results. Prepared candidate promotion/freeze, source
+provenance and composition guards remain authoritative. Existing bundles are
+reused unchanged; an interrupted or unknown body is not overwritten on retry.
+This prevents new permanent copies of unrelated branch payloads without adopting
+or pruning old clone refs. Disposable composition validation's all-ref capture
+and its historical cleanup boundary remain outside this change.
+
 ## Policy v2: explicitly retired runtime bodies
 
 The previous eager install cleanup deleted every body except current/previous;

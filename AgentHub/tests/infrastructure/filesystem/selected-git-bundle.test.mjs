@@ -44,6 +44,16 @@ for (const format of ["sha1", "sha256"]) test(`selected ${format} transport incl
   await assert.rejects(createSelectedGitBundle({ root, sourceRoot: source, bundle, inputs: [base], gitAt }), /original owner's recovery/u);
   await gitAt(clone, ["checkout", "--detach", selected]);
   assert.equal(await readFile(path.join(clone, "accepted"), "utf8"), "accepted result");
+  const releaseBundle = path.join(root, "release.bundle"), releaseClone = path.join(root, "release");
+  await assert.rejects(createSelectedGitBundle({ root, sourceRoot: source, bundle: releaseBundle,
+    inputs: [selected], mainCommit: base, gitAt }), /main must be an exact selected input/u);
+  await createSelectedGitBundle({ root, sourceRoot: source, bundle: releaseBundle,
+    inputs: [base, selected], mainCommit: base, gitAt });
+  await gitAt(root, ["clone", "--single-branch", "--branch", "main", "--no-local", "--no-hardlinks", releaseBundle, releaseClone]);
+  assert.equal(await gitAt(releaseClone, ["rev-parse", "HEAD"]), base);
+  await gitAt(releaseClone, ["cat-file", "-e", `${selected}^{commit}`]);
+  await assert.rejects(gitAt(releaseClone, ["cat-file", "-e", unrelatedBlob]));
+  assert.equal(await gitAt(source, ["show-ref"]), refs);
 });
 
 test("plain directory ABA preserves original and foreign replacement at actual Git completion", async t => {
