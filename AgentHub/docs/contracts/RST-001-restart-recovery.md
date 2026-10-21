@@ -1,5 +1,13 @@
 # RST-001 — Restart and maintenance recovery
 
+Installed sync-endpoint migration (ADR-0329) belongs to the existing runtime
+installation owner before stable-file/pointer publication. It does not launch
+or restart Hub, enroll a device or write journal/credential/cursor files. A
+retained new config key is backward-compatible with the old runtime after a
+failed cutover; retry must preserve it. Original release identities and unknown
+effects remain under their original owners.
+
+
 Catalog reads during startup must not indirectly launch optional historical
 pricing backfill. Its existing post-readiness coordinator remains the owner;
 mandatory terminal projection recovery and its durable ACK fences still finish

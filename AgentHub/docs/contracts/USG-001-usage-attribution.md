@@ -1,5 +1,23 @@
 # USG-001 — Usage fact transport and account attribution
 
+## Private legacy operator policy and sync configuration (ADR-0329)
+
+No personal billing roster, device-label overrides or account switch dates are
+shipped as product defaults. Only the explicit legacy CLI may read the private
+`legacyTeamUsageAccountPolicy`; absent policy performs no database mutation.
+Existing migration keys/markers, recorded facts and generic exact-device/timeline
+projection keep their owners. Normal startup and scheduled sync never apply the
+private team policy.
+
+`usageSyncServerUrl` is an ordinary private editable server setting. Explicit
+empty disables the endpoint. An installed update seeds a missing value from the
+old effective enrollment, environment or verified local release default before
+pointer cutover, preserving enrollment/credentials/cursors/data. It never
+executes the old module or replaces an existing explicit setting. A clean public
+installation has no project-specific server. An enrolled client with an
+unverifiable previous address refuses cutover; no replacement endpoint is guessed.
+
+
 Model and rationale: [USAGE_CORRELATION_MODEL.md](../architecture/USAGE_CORRELATION_MODEL.md).
 Decision: [ADR-0013](../decisions/ADR-0013-interval-account-attribution.md).
 Limit sample conflict semantics: [ADR-0014](../decisions/ADR-0014-lossless-limit-sample-merge.md).

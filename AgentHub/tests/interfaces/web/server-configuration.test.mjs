@@ -5,6 +5,27 @@ import path from "node:path";
 import test from "node:test";
 import { serverConfigurationEntries, updateServerConfiguration } from "../../../src/interfaces/web/server-configuration.mjs";
 
+test("sync endpoint uses the ordinary private writer and preserves unrelated settings", async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "hub-sync-setting-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const configPath = path.join(root, "config.json");
+  const original = { telegramBotToken: "synthetic-secret", dataDir: "own-data", privatePolicy: { version: 1 } };
+  await writeFile(configPath, JSON.stringify(original));
+  await updateServerConfiguration({ configPath, changes: { usageSyncServerUrl: " https://sync.example.invalid/ " },
+    environment: {}, protectConfig: async () => {} });
+  assert.deepEqual(JSON.parse(await readFile(configPath)), { ...original, usageSyncServerUrl: "https://sync.example.invalid" });
+  const entry = serverConfigurationEntries({ usageSyncServerUrl: "https://sync.example.invalid" })
+    .find(value => value.key === "usageSyncServerUrl");
+  assert.equal(entry.type, "url");
+  assert.equal(entry.value, "https://sync.example.invalid");
+  const before = await readFile(configPath);
+  await assert.rejects(updateServerConfiguration({ configPath, changes: { usageSyncServerUrl: "https://user:secret@example.invalid" },
+    environment: {}, protectConfig: async () => {} }), /without credentials/u);
+  assert.deepEqual(await readFile(configPath), before);
+  await updateServerConfiguration({ configPath, changes: { usageSyncServerUrl: "" }, environment: {}, protectConfig: async () => {} });
+  assert.equal(JSON.parse(await readFile(configPath)).usageSyncServerUrl, "");
+});
+
 test("server configuration exposes only its editable non-secret fields", () => {
   const entries = serverConfigurationEntries({
     autoApproveOnStart: true,
@@ -26,7 +47,7 @@ test("server configuration exposes only its editable non-secret fields", () => {
     logMaxFiles: 5,
     token: "secret",
   }, { logMaxFiles: 7 });
-  assert.equal(entries.length, 15);
+  assert.equal(entries.length, 16);
   assert.equal(JSON.stringify(entries).includes("secret"), false);
   assert.deepEqual(entries.find((entry) => entry.key === "codexExecutableAutoUpdate"), {
     key: "codexExecutableAutoUpdate",

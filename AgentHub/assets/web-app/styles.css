@@ -14881,6 +14881,22 @@ html[data-view="server"] .server-view {
   min-width: 0;
 }
 
+.server-config-url {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.server-config-url input {
+  background: color-mix(in srgb, var(--surface-3) 82%, transparent);
+  border: 1px solid var(--line);
+  border-radius: 0.5rem;
+  box-sizing: border-box;
+  color: var(--text);
+  font: inherit;
+  min-width: 0;
+  padding: 0.45rem;
+  width: 100%;
+}
+
 /* Меню всплывает поверх выделенного текста, поэтому подложка должна быть
    плотной: `--surface-2` сама полупрозрачна, и надпись сливалась с выделением. */
 .annotation-context-menu {

@@ -174,5 +174,6 @@
   "deliveryRetryIntervalSeconds": 15,
   "deferredInputTtlHours": 168,
   "progressStartDelayMs": 500,
-  "dataDir": "data"
+  "dataDir": "data",
+  "usageSyncServerUrl": ""
 }

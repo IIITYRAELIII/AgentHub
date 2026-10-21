@@ -23,6 +23,7 @@ import { protectRuntimeConfig, protectRuntimeDirectory } from "../infrastructure
 import { buildWindowsRuntimeHost, runtimeHostSourceHash } from "../infrastructure/process/runtime-host-builder.mjs";
 import { processIsAlive } from "../infrastructure/process/process-liveness.mjs";
 import { writeTextAtomic } from "../infrastructure/persistence/state-store.mjs";
+import { migrateUsageSyncServerSetting } from "../infrastructure/filesystem/usage-sync-settings-migration.mjs";
 
 const SOURCE_ROOT = path.resolve(import.meta.dirname, "..", "..");
 const TOP_LEVEL_FILES = new Set([
@@ -450,6 +451,7 @@ export async function installPreparedRuntime({
       throw error;
     });
     const previousPointer = JSON.parse(priorPointerText ?? "{}");
+    await migrateUsageSyncServerSetting({ layout, previousReleaseId: previousPointer.current });
     const stableFiles = await installStableRuntimeFiles(layout, releaseRoot, {
       beforeCommit: beforeStableLauncherCommit,
       commitFile: commitStableFile,

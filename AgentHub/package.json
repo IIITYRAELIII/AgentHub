@@ -69,7 +69,8 @@
     "contour:lock-status": "node test-contour.mjs lock-status",
     "contour:unlock": "node test-contour.mjs unlock",
     "contour:stop": "node test-contour.mjs stop",
-    "contour:verify": "node test-contour.mjs verify"
+    "contour:verify": "node test-contour.mjs verify",
+    "test:distribution": "python -m unittest discover -s distribution -p \"*_test.py\" -v && python -m unittest discover -s tools -p source_export_test.py -v"
   },
   "devDependencies": {
     "playwright": "1.62.1",
@@ -77,5 +78,10 @@
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.3.286"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/IIITYRAELIII/AgentHub.git"
   }
 }

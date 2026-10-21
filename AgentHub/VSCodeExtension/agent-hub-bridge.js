@@ -531,7 +531,8 @@ class AgentHubBridge {
   async storedUsageSyncStatus() {
     try {
       const { publicUsageSyncStatus } = await this.journalData();
-      const dataDirectory = path.join(this.runtimeRoot, "data");
+      const config = await readJsonFile(path.join(this.runtimeRoot, "config.json"));
+      const dataDirectory = path.resolve(this.runtimeRoot, config?.dataDir ?? "data");
       const [remote, identity] = await Promise.all([
         readJsonFile(path.join(dataDirectory, "usage-sync-remote.json")),
         readJsonFile(path.join(dataDirectory, "usage-sync-identity.json")),
@@ -541,7 +542,9 @@ class AgentHubBridge {
       const labelConfirmedAt = String(identity?.labelConfirmedAt ?? "").trim();
       return publicUsageSyncStatus({
         ...remote,
-        serverUrl: String(remote?.serverUrl ?? "").trim() || defaultServerUrl,
+        serverUrl: Object.hasOwn(config ?? {}, "usageSyncServerUrl")
+          ? String(config.usageSyncServerUrl ?? "").trim()
+          : String(remote?.serverUrl ?? "").trim() || defaultServerUrl,
         deviceId: String(remote?.deviceId ?? "").trim() || String(identity?.deviceId ?? "").trim(),
         deviceLabel,
         suggestedDeviceLabel: deviceLabel,

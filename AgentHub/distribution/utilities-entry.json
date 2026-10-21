@@ -1,0 +1,24 @@
+{
+  "schema": 1,
+  "componentDirectory": "AgentHub",
+  "mode": "reviewed-future-tree-replacement-only",
+  "files": [
+    {
+      "source": "AgentHub/distribution/install_release.py",
+      "target": "AgentHub/install.py"
+    },
+    {
+      "source": "AgentHub/distribution/utilities-README.md",
+      "target": "AgentHub/README.md"
+    }
+  ],
+  "requiredBeforeReplacement": [
+    "exact standalone source history and mapping accepted",
+    "versioned public package and checksum accessible and validated",
+    "fresh install, update and rollback verified from the two-file entry",
+    "existing release owner owns current source/origin cutover",
+    "original Utilities operations, active Task refs and frozen provenance preserved"
+  ],
+  "appliesChanges": false,
+  "removesCurrentSource": false
+}

@@ -385,6 +385,7 @@ export async function createHubInfrastructure({
   const workLogUsageRemoteConfigStore = new UsageSyncRemoteConfigStore({
     file: path.join(config.dataDir, "usage-sync-remote.json"),
     defaultServerUrl: defaultUsageSyncServerUrl(),
+    configuredServerUrl: config.usageSyncServerUrl,
   });
   const workLogUsageSyncDeviceId = workLogUsageIdentityStore.deviceId;
   const workLogUsageRuntimeHomeIds = usageSyncRuntimeHomeIds(workLogUsageIdentityStore);

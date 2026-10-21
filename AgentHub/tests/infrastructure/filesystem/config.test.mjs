@@ -10,12 +10,34 @@ import {
   findContainingProject,
   httpBaseUrl,
   loadConfig,
+  loadLegacyTeamUsageAccountPolicy,
   miniAppSettings,
   pathInsideOrSame,
   repositoryWriteGuardEnabled,
   resolveConfigPath,
   samePath,
 } from "../../../src/infrastructure/filesystem/config.mjs";
+import { rawPolicy } from "../../helpers/legacy-account-policy.mjs";
+
+test("private legacy policy is explicit-CLI only; normal configuration projects only the sync URL", async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "hub-private-policy-config-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const configPath = path.join(root, "config.json"), previous = process.env.AGENT_HUB_CONFIG;
+  t.after(() => { if (previous === undefined) delete process.env.AGENT_HUB_CONFIG; else process.env.AGENT_HUB_CONFIG = previous; });
+  process.env.AGENT_HUB_CONFIG = configPath;
+  const base = { projectRoot: root, components: { telegram: false, miniApp: false, androidApp: false },
+    usageSyncServerUrl: "https://sync.example.invalid/", legacyTeamUsageAccountPolicy: rawPolicy };
+  await writeFile(configPath, JSON.stringify(base));
+  const config = await loadConfig();
+  assert.equal(config.usageSyncServerUrl, "https://sync.example.invalid");
+  assert.equal(Object.hasOwn(config, "legacyTeamUsageAccountPolicy"), false);
+  assert.equal(JSON.stringify(config).includes("one@example.invalid"), false);
+  assert.equal((await loadLegacyTeamUsageAccountPolicy({ configPath })).initialAccount.label, "one@example.invalid");
+  await writeFile(configPath, JSON.stringify({ ...base, legacyTeamUsageAccountPolicy: null }));
+  assert.equal(await loadLegacyTeamUsageAccountPolicy({ configPath }), null);
+  await writeFile(configPath, '{"private-secret":');
+  await assert.rejects(loadLegacyTeamUsageAccountPolicy({ configPath }), error => !error.message.includes("private-secret"));
+});
 
 test("Agent Hub root remains independent from the config module location", () => {
   assert.equal(AGENT_HUB_ROOT, path.resolve(import.meta.dirname, "..", "..", ".."));
