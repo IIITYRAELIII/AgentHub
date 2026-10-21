@@ -116,6 +116,14 @@ for (const viewport of [{ width: 1366, height: 900 }, { width: 390, height: 844 
       await canonicalRow.waitFor({ state: "visible" });
       assert.match(await canonicalRow.locator(".queue-status").innerText(), /Ожидает перезапуска Hub/u);
       assert.equal(await rows.count(), 1);
+      for (const update of [{ waitReason: "task-running" }, { state: "dispatching" }]) {
+        const progressed = structuredClone(queued);
+        progressed.version = `restart-progress-${JSON.stringify(update)}`;
+        Object.assign(progressed.deferredInputs[0], update);
+        await applyFixtureSnapshot(page, progressed);
+        assert.doesNotMatch(await canonicalRow.innerText(), /Ожидает перезапуска Hub/u);
+        assert.equal(await rows.count(), 1);
+      }
       const evicted = { ...queued, version: "restart-receipt-evicted", messageReceipts: [] };
       await applyFixtureSnapshot(page, evicted);
       await page.locator("[data-composer-input]").fill("unrelated saved draft");

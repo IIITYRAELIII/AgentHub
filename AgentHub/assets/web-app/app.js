@@ -8464,7 +8464,8 @@ function renderQueueForTask(taskId, container) {
           ? el("div", { class: "queue-status", text: "Связь с Codex временно недоступна; сообщение сохранено и будет отправлено автоматически." })
           : entry.waitReason === "context-maintenance" || entry.conflictKind === "context-maintenance"
             ? el("div", { class: "queue-status", text: "Ожидает завершения свёртки или ротации контекста; сообщение сохранено в очереди." })
-            : entry.waitReason === "runtime-restart" || entry.conflictKind === "runtime-restart"
+            : ["queued", "pending", "paused"].includes(entry.state)
+              && (entry.waitReason || entry.conflictKind) === "runtime-restart"
               ? el("div", { class: "queue-status", text: "Ожидает перезапуска Hub; сообщение сохранено в очереди." })
               : null,
       entry.lastError ? el("div", { class: "queue-error", text: entry.lastError }) : null,
