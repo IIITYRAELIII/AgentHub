@@ -1,15 +1,23 @@
-# License preparation boundary
+# Source license scope
 
-`LICENSE.MIT.template` is a draft for the confirmed owner's own code, not an
-automatic grant over other contributors or third-party components. The name is
-present in the owner's Git author metadata; the source history begins in 2026.
-Do not rename this template to `LICENSE`, set package metadata to MIT or publish
-until contributor rights and the export's exact license scope are confirmed.
+The top-level MIT license applies to Hub code and original contributions covered
+by the contributors' confirmed permission. Their copyrights remain theirs; no
+copyright assignment is requested. Public attribution uses the contributors'
+confirmed GitHub accounts; original emails, private bodies and audit mapping are
+not exported. The original Utilities history and receipts retain their identities.
 
-The existing Utilities repository had no detected general license. Direct
-contributions from other named participants must be covered by actual permission
-or rights ownership. Acceptance for internal use does not establish a relicensing
-grant. Original contributor attribution and applicable notices must survive.
+Third-party components, brands and marks retain their own terms. The traced Gothic
+emblem and its earlier related geometry are excluded from this public history;
+the replacement Hub connections SVG is original geometric artwork.
+
+The scoped personal permissions and exact contribution lists are preserved in a
+private archive. They cover the declared existing contributions, without an
+automatic grant over future contributions. SHA-256 manifests verify saved bytes;
+they are not independent author signatures or trusted timestamps.
+
+The initial public source import is a development snapshot. Actual shipped
+dependencies and package notices require separate verification against the
+eventual prepared release artifact. No ready package is published by this import.
 
 ## Third-party inventory
 
@@ -30,7 +38,7 @@ grant. Original contributor attribution and applicable notices must survive.
 - Node.js, Codex/Claude installations, browser QA binaries, Cloudflare/Caddy,
   optional Python voice packages/models and Android SDK/JDK each have separate
   licenses. Do not claim they are shipped merely because code can invoke them.
-- Images, themes, logo/provider marks and historical design references require
+- New images, themes, logo/provider marks and design references require
   provenance review. Existing generation notes are evidence for the specific
   assets they name, not a blanket license for every binary in the history.
 
