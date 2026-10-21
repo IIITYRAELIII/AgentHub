@@ -1,5 +1,4 @@
 import { DurableObject } from "cloudflare:workers";
-import { clientPerformanceTraceSpans } from "../../src/application/client-performance-trace.mjs";
 
 const encoder = new TextEncoder();
 const MAX_SYNC_AGE_SECONDS = 300;
@@ -62,9 +61,6 @@ const ATTACHMENT_MANIFEST_PREFIX = "control:attachment-manifest:";
 const LEGACY_ATTACHMENT_MANIFEST_PREFIX = "control:attachment:";
 const ATTACHMENT_CHUNK_PREFIX = "control:attachment-chunk:";
 const ATTACHMENT_UPLOAD_PREFIX = "control:attachment-upload:";
-const ATTACHMENT_UPLOAD_TOMBSTONE_PREFIX = "control:attachment-upload-tombstone:";
-const ATTACHMENT_TRACE_PREFIX = "control:attachment-trace:";
-const ATTACHMENT_TRACE_TTL_MS = DAY_MS;
 export const ATTACHMENT_UPLOAD_PROTOCOL = "agent-hub-attachment-upload-v1";
 const ATTACHMENT_UPLOAD_HARD_MAX_BYTES = 256 * 1024 * 1024;
 const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
@@ -88,7 +84,6 @@ function attachmentUploadLimits(env) {
     maxTotalBytes: bounded(env?.AGENT_HUB_ATTACHMENT_USER_MAX_BYTES, 256 * 1024 * 1024, 512 * 1024 * 1024),
     maxUploads: MAX_ATTACHMENTS_PER_USER,
     expiresInMs: ATTACHMENT_EXPIRY_MS,
-    supportsBeginRecovery: true,
   };
 }
 
@@ -2986,10 +2981,6 @@ export class JournalStore extends DurableObject {
 
   async #cleanupAttachmentUploads(now, storage) {
     let nextExpiry = Infinity;
-    for (const [key, tombstone] of await storage.list({ prefix: ATTACHMENT_UPLOAD_TOMBSTONE_PREFIX })) {
-      if (tombstone.purgeAt <= now) await storage.delete(key);
-      else nextExpiry = Math.min(nextExpiry, tombstone.purgeAt);
-    }
     for (const [key, record] of await storage.list({ prefix: ATTACHMENT_UPLOAD_PREFIX })) {
       if (record.expiresAt > now) {
         nextExpiry = Math.min(nextExpiry, record.expiresAt);
@@ -3000,10 +2991,6 @@ export class JournalStore extends DurableObject {
       if (record.state === "uploading") {
         await deleteStorageKeys(storage, record.received.map(({ index }) => `${ATTACHMENT_CHUNK_PREFIX}${record.id}:${index}`));
       }
-      const purgeAt = now + 7 * DAY_MS;
-      await storage.put(`${ATTACHMENT_UPLOAD_TOMBSTONE_PREFIX}${record.id}`,
-        { userId: record.userId, expiresAt: record.expiresAt, purgeAt });
-      nextExpiry = Math.min(nextExpiry, purgeAt);
       await storage.delete(key);
     }
     return nextExpiry;
@@ -3011,66 +2998,13 @@ export class JournalStore extends DurableObject {
 
   async #attachmentUploadQuota(userId, manifests, storage) {
     const records = [...(await storage.list({ prefix: ATTACHMENT_UPLOAD_PREFIX })).values()]
-      .filter((record) => record.userId === userId && record.state !== "cancelled");
+      .filter((record) => record.userId === userId);
     const pending = records.filter((record) => record.state === "uploading");
     const ready = manifests.filter((manifest) => manifest.userId === userId);
     return {
       count: new Set([...records, ...ready].map((record) => record.id)).size,
       bytes: [...pending, ...ready].reduce((total, record) => total + Number(record.size), 0),
     };
-  }
-
-  async #attachmentTrace(request) {
-    const userId = String(request.headers.get("X-Agent-Hub-User-Id") ?? "");
-    if (!userId) return json({ error: "attachment trace owner required" }, 401);
-    const prefix = `${ATTACHMENT_TRACE_PREFIX}${userId}:`;
-    if (request.method === "GET") {
-      const id = String(new URL(request.url).searchParams.get("id") ?? "").toLowerCase();
-      if (!CONTROL_ID_PATTERN.test(id)) return json({ error: "invalid attachment trace id" }, 400);
-      const record = await this.ctx.storage.get(`${prefix}${id}`);
-      return record?.expiresAt > Date.now() ? json({ uploadId: id,
-        events: record.events.filter((event) => event.observedAtMs > Date.now() - ATTACHMENT_TRACE_TTL_MS),
-        expiresAt: record.expiresAt })
-        : json({ error: "attachment trace not found" }, 404);
-    }
-    if (request.method !== "POST") return json({ error: "Method Not Allowed" }, 405);
-    const spans = clientPerformanceTraceSpans(await request.json()).filter((span) => span.stage === "attachment-upload");
-    const groups = new Map();
-    for (const span of spans) {
-      const id = String(span.metadata.uploadId ?? "").toLowerCase();
-      if (!CONTROL_ID_PATTERN.test(id) || span.commandId !== id || !span.metadata.operationSpanId) {
-        return json({ error: "invalid attachment trace identity" }, 400);
-      }
-      if (!groups.has(id)) groups.set(id, []);
-      groups.get(id).push(span);
-    }
-    await this.ctx.storage.transaction(async (storage) => {
-      const now = Date.now();
-      let nextExpiry = Infinity;
-      const existing = await storage.list({ prefix });
-      for (const [key, record] of existing) if (record.expiresAt <= now) {
-        await storage.delete(key);
-        existing.delete(key);
-      }
-      for (const [id, events] of groups) {
-        const key = `${prefix}${id}`;
-        const prior = existing.get(key);
-        if (!prior && existing.size >= 64) throw new Error("attachment trace capacity exceeded");
-        const retained = (prior?.events ?? []).filter((event) => event.observedAtMs > now - ATTACHMENT_TRACE_TTL_MS);
-        const seen = new Set(retained.map((event) => `${event.metadata.operationSpanId}:${event.outcome}`));
-        for (const event of events) {
-          const identity = `${event.metadata.operationSpanId}:${event.outcome}`;
-          if (!seen.has(identity)) { retained.push(event); seen.add(identity); }
-        }
-        const bounded = retained.slice(-256);
-        const expiresAt = Math.max(...bounded.map((event) => event.observedAtMs)) + ATTACHMENT_TRACE_TTL_MS;
-        await storage.put(key, { events: bounded, expiresAt });
-        nextExpiry = Math.min(nextExpiry, expiresAt);
-        existing.set(key, true);
-      }
-      if (groups.size) await this.#scheduleCleanupAlarm(nextExpiry, storage);
-    });
-    return json({ ok: true, accepted: spans.length });
   }
 
   async #attachmentUpload(request) {
@@ -3090,8 +3024,7 @@ export class JournalStore extends DurableObject {
       if (!Number.isSafeInteger(metadata?.size) || metadata.size < 1 || metadata.size > limits.maxBytes) {
         return json({ error: "attachment size exceeds upload limit" }, 413);
       }
-      metadata = { size: metadata.size, name: attachmentFileName(metadata.name), contentType: attachmentContentType(metadata.type),
-        viewOnly, attemptedAtMs: metadata.attemptedAtMs };
+      metadata = { size: metadata.size, name: attachmentFileName(metadata.name), contentType: attachmentContentType(metadata.type), viewOnly };
     }
     if (!CONTROL_ID_PATTERN.test(id)) return json({ error: "invalid attachment upload id" }, 400);
     const index = Number(url.searchParams.get("index"));
@@ -3109,9 +3042,6 @@ export class JournalStore extends DurableObject {
       const manifests = await this.#cleanupAttachments(now, storage);
       const key = `${ATTACHMENT_UPLOAD_PREFIX}${id}`;
       let record = await storage.get(key);
-      const tombstone = await storage.get(`${ATTACHMENT_UPLOAD_TOMBSTONE_PREFIX}${id}`);
-      if (tombstone) return json({ error: tombstone.userId === userId ? "attachment upload expired" : "attachment upload not found",
-        ...(tombstone.userId === userId ? { state: "expired" } : {}) }, tombstone.userId === userId ? 410 : 404);
       const existing = await this.#attachmentManifestRecord(id, storage);
       if (existing.state === "conflict") return json({ error: "attachment identity conflict" }, 409);
       if (record && record.userId !== userId || existing.manifest && existing.manifest.userId !== userId) {
@@ -3120,35 +3050,21 @@ export class JournalStore extends DurableObject {
       if (record && Boolean(record.viewOnly) !== viewOnly) return json({ error: "attachment upload not found" }, 404);
       if (record?.state === "uploading" && existing.state === "active") return json({ error: "attachment identity conflict" }, 409);
       if (metadata) {
-        if (metadata.attemptedAtMs !== undefined && (!Number.isSafeInteger(metadata.attemptedAtMs)
-          || metadata.attemptedAtMs < 1 || metadata.attemptedAtMs > now + 5 * 60_000)) {
-          return json({ error: "invalid upload attempt time" }, 400);
-        }
         if (record && (record.size !== metadata.size || record.name !== metadata.name || record.contentType !== metadata.contentType)) {
           return json({ error: "attachment upload metadata conflict" }, 409);
         }
-        if (record && record.attemptedAtMs !== metadata.attemptedAtMs) {
-          return json({ error: "attachment upload attempt conflict" }, 409);
-        }
         if (!record) {
-          if (metadata.attemptedAtMs !== undefined && now >= metadata.attemptedAtMs + ATTACHMENT_EXPIRY_MS) {
-            return json({ error: "attachment upload attempt expired", state: "expired" }, 410);
-          }
           if (existing.state === "active") return json({ error: "attachment identity already exists" }, 409);
           const quota = await this.#attachmentUploadQuota(userId, manifests, storage);
           if (quota.count >= limits.maxUploads || quota.bytes + metadata.size > limits.maxTotalBytes) {
             return json({ error: "attachment upload quota exceeded" }, 429);
           }
-          record = { ...metadata, id, userId, state: "uploading", received: [], createdAt: now,
-            expiresAt: Math.min(now + ATTACHMENT_EXPIRY_MS,
-              metadata.attemptedAtMs === undefined ? Infinity : metadata.attemptedAtMs + ATTACHMENT_EXPIRY_MS) };
+          record = { ...metadata, id, userId, state: "uploading", received: [], createdAt: now, expiresAt: now + ATTACHMENT_EXPIRY_MS };
           await storage.put(key, record);
           await this.#scheduleCleanupAlarm(record.expiresAt, storage);
         }
       }
-      if (!record) return existing.state === "active"
-        ? json({ error: "attachment upload already consumed", state: "consumed" }, 410)
-        : json({ error: "attachment upload not found", state: "absent" }, 404);
+      if (!record) return json({ error: "attachment upload not found or expired" }, 404);
       if (record.state === "cancelled" || record.state === "ready" && existing.state !== "active") {
         return json({ error: "attachment upload no longer available", state: record.state === "cancelled" ? "cancelled" : "consumed" }, 410);
       }
@@ -3520,14 +3436,9 @@ export class JournalStore extends DurableObject {
     await this.ctx.storage.transaction(async (storage) => {
       const nextSyncExpiry = await this.#cleanupSyncStaging(Date.now(), storage);
       const nextUploadExpiry = await this.#cleanupAttachmentUploads(Date.now(), storage);
-      let nextTraceExpiry = Infinity;
-      for (const [key, record] of await storage.list({ prefix: ATTACHMENT_TRACE_PREFIX })) {
-        if (record.expiresAt <= Date.now()) await storage.delete(key);
-        else nextTraceExpiry = Math.min(nextTraceExpiry, record.expiresAt);
-      }
       await this.#cleanupAttachments(Date.now(), storage);
       await this.#cleanupExpiredControlCommands(Date.now(), storage);
-      const nextExpiry = Math.min(nextSyncExpiry, nextUploadExpiry, nextTraceExpiry, await this.#nextControlExpiry(storage),
+      const nextExpiry = Math.min(nextSyncExpiry, nextUploadExpiry, await this.#nextControlExpiry(storage),
         await this.#nextDashboardBotReceipt(storage));
       if (Number.isFinite(nextExpiry)) await storage.setAlarm(nextExpiry);
       else await storage.deleteAlarm();
@@ -3976,10 +3887,6 @@ export class JournalStore extends DurableObject {
       } catch (error) {
         return json({ error: error.message }, 400);
       }
-    }
-    if (url.pathname === "/attachment-trace") {
-      try { return await this.#attachmentTrace(request); }
-      catch { return json({ error: "attachment trace unavailable" }, 503); }
     }
     if (url.pathname === "/attachment-upload") {
       try { return await this.#attachmentUpload(request); }
@@ -5429,42 +5336,16 @@ export default {
         ? new Response(null, { status: response.status, headers: response.headers })
         : response;
     }
-    if (["/api/command-trace/client-events", "/api/attachment-upload-trace"].includes(url.pathname)) {
-      if (url.pathname.endsWith("client-events") && request.method !== "POST"
-        || url.pathname.endsWith("upload-trace") && request.method !== "GET") return json({ error: "Method Not Allowed" }, 405);
-      let user;
-      try { user = await clientUser(request, env, store); }
-      catch { return json({ error: "attachment trace authentication required" }, 401); }
-      try {
-        const body = request.method === "POST" ? await readBoundedBinary(request, 32 * 1024, "client trace batch") : undefined;
-        return store.fetch(new Request(`https://journal.internal/attachment-trace${url.pathname.endsWith("upload-trace") ? url.search : ""}`, {
-          method: request.method, headers: { "Content-Type": "application/json", "X-Agent-Hub-User-Id": String(user.id) }, body,
-        }));
-      } catch { return json({ error: "attachment trace unavailable" }, 503); }
-    }
     if (url.pathname === "/api/attachment-upload") {
       if (!["GET", "POST", "PUT", "DELETE"].includes(request.method)) return json({ error: "Method Not Allowed" }, 405);
-      const durations = { auth: 0, body: 0, owner: 0 };
-      const measured = async (key, operation) => {
-        const started = performance.now();
-        try { return await operation(); }
-        finally { durations[key] += performance.now() - started; }
-      };
-      const timed = (response) => {
-        const headers = new Headers(response.headers);
-        headers.set("Server-Timing", Object.entries(durations)
-          .map(([name, duration]) => `${name};dur=${duration.toFixed(2)}`).join(", "));
-        return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
-      };
       let user;
-      try { user = await measured("auth", () => clientUser(request, env, store)); }
-      catch { return timed(json({ error: "attachment upload authentication required" }, 401)); }
+      try { user = await clientUser(request, env, store); }
+      catch (error) { return json({ error: error.message }, 401); }
       try {
         const body = ["POST", "PUT"].includes(request.method)
-          ? await measured("body", () => readBoundedBinary(request,
-            request.method === "PUT" ? ATTACHMENT_STORAGE_CHUNK_BYTES : 4096, "attachment upload request"))
+          ? await readBoundedBinary(request, request.method === "PUT" ? ATTACHMENT_STORAGE_CHUNK_BYTES : 4096, "attachment upload request")
           : undefined;
-        const result = await measured("owner", () => store.fetch(new Request(`https://journal.internal/attachment-upload${url.search}`, {
+        return store.fetch(new Request(`https://journal.internal/attachment-upload${url.search}`, {
           method: request.method,
           headers: {
             "Content-Type": request.headers.get("Content-Type") ?? "application/octet-stream",
@@ -5472,10 +5353,8 @@ export default {
             "X-Agent-Hub-Chunk-Sha256": request.headers.get("X-Agent-Hub-Chunk-Sha256") ?? "",
           },
           body,
-        })));
-        return timed(result);
-      } catch (error) { return timed(json({ error: /too large/iu.test(error.message) ? error.message
-        : "attachment upload unavailable" }, /too large/iu.test(error.message) ? 413 : 503)); }
+        }));
+      } catch (error) { return json({ error: error.message }, /too large/iu.test(error.message) ? 413 : 400); }
     }
     if (url.pathname === "/api/attachment") {
       if (request.method !== "POST") return json({ error: "Method Not Allowed" }, 405);
