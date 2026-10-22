@@ -622,3 +622,19 @@ html[data-hub-startup-screen] body::-webkit-scrollbar,
 .hub-startup-action-status {
   color: #a9c4d8;
 }
+.hub-startup-diagnostics {
+  position: fixed;
+  top: 8px;
+  right: 72px;
+  z-index: 120;
+  max-width: min(32rem, calc(100vw - 88px));
+  padding: 8px 12px;
+  border: 1px solid #97763b;
+  border-radius: 8px;
+  background: #151a24;
+  color: #f2d9aa;
+  font: 12px/1.4 system-ui, sans-serif;
+}
+.hub-startup-diagnostics[hidden] { display: none; }
+.hub-startup-diagnostics summary { cursor: pointer; }
+.hub-startup-diagnostics button { cursor: pointer; }

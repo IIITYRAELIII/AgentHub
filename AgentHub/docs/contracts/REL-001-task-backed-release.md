@@ -1,5 +1,77 @@
 # REL-001 — Task-backed Workspace release
 
+## Original stale-main recovery
+
+ADR-0128 defines one narrow exception to generic terminal refusal. Existing RM
+continuation may bind separately verified current main pins to the original
+failed compose operation, after exact revision CAS, current selected/prepared
+source verification and original publication not-applied proof. Original
+authorization, terminal attempt, immutable generations and all receipts remain
+history; `reviewedMain` and the recovery event are appended by the same store.
+UNKNOWN/partial/applied/live/source-owned effects refuse. No work executes inside
+rebinding; ordinary composition and publication guards still own the next attempt.
+
+## Native transport retirement (ADR-0126)
+
+New native merge transport contains exact selected base/result ancestry through
+private advertised bundle tips, including dangling accepted inputs, without
+copying all unrelated source refs or mutating source configuration/refs. Git
+streams its complete pack into an already-owned output descriptor; no bare pool
+or recursive temporary-directory deletion is used. A failed/partial output and
+any plain/reparse replacement are preserved. The consuming clone has no
+alternates and remains independent.
+
+New permanent release-generation transport likewise streams only exact local
+main, approved base and selected result ancestry. Its advertised main alias is
+bound to an included exact input so the existing main clone contract survives.
+Ordinary initial release clones and workspace refresh fetch main only; missing
+selected base/result commits still use the existing exact-object fetch path.
+Existing generation transports are reused unchanged, including older broad packs;
+partial/unknown outputs require original-owner recovery, not replacement. This
+does not change composition selection, provenance, candidate fetch/freeze or
+publication guards. Disposable composition validation uses the same selected
+main/base/result transport and still returns only a read-only composition proof;
+its existing invocation-local temporary cleanup and acceptance refusal remain.
+
+After an update's normal runtime start, policy v1 may retire only the redundant
+task-native-merge transport from a completed, durably published Task. The existing
+Task Git lease/process guard and fresh cleanup preview remain authoritative. The
+full clean independent capture must contain connected advertised object roots;
+advertised names/OIDs remain in the existing durable cleanup intent. Its refs,
+repository, merge journal, resolution evidence and Task results are preserved.
+Unknown, incomplete, dirty, unpublished or changed artifacts remain pinned. File
+retirement is handle-bound, exact-identity/hash checked and refuses extra streams,
+hardlinks and substituted physical ancestors; no recursive deletion is implied.
+
+Task worktree cleanup separately refuses ignored local files/directories even
+when Git status is clean or dirty removal was requested. Their artifact owner
+must prove retirement first. This includes useful WIP and dependencies without
+an accepted retirement proof. Current/running/rollback/prepared runtime/source
+roots, release generations, legacy archives and persistent evidence receive no
+new deletion authority from the storage scheduler.
+
+The runtime installation owner separately supplies policy v2 exact retirement
+custody in its existing current.json pointer. Installation preserves unrelated
+prepared bodies and defers deletion. Only known selected custody that leaves
+current/rollback may retire; legacy versions are not adopted by name or age.
+The same physical-root installation lease covers prepare/install/rollback and
+retirement. Current, rollback, running and prepared-source dependencies remain
+pinned before each native batch. The existing maintenance child is recorded in
+that retired binding before effects, and known partial work resumes only that
+original operation/root/manifest. Unknown data or custody stays retained; no
+recursive directory-removal fallback or Task-publication effect is granted.
+
+Policy v3 may retire only a redundant generation source.bundle after the original
+ReleaseOperation proves its exact current generation done, applied validate/finalize
+inputs and published outcomes for every approved target. The marked full independent
+clone, frozen checkpoint/manifest and advertised locally connected object roots,
+anchored in retained refs/HEAD against later ordinary GC, must
+match that generation. Shallow/partial/alternate-backed, dirty, incomplete, failed,
+waiting, superseded or UNKNOWN captures remain pinned. Prepare, discard and bundle
+retirement share the existing generation lease. The same native exact-file transport
+custody applies; the repository, refs, generation body, evidence and all ignored WIP
+remain. This is not a new release, Task cleanup, recursive deletion or age policy.
+
 ## Current corrected candidates and historical release facts (2026-10-14)
 
 A new candidate is admitted from the exact CURRENT normally accepted results.
@@ -79,6 +151,125 @@ dependency lease with publication capabilities removed. A preparation failure
 fails the full-test stage before artifact or publication effects. This does not
 change the prescribed pipeline, stage contract, frozen tracked content, version
 or original operation; subsequent validation still runs every required suite.
+
+## Installed local source baseline (ADR-0115)
+
+Publication keeps the composition source base separate from the remote CAS base.
+The existing sealed manifest/checkpoint provenance supplies the exact approved
+origin (or the retained published baseline when no incoming was adopted).
+Readback and the frozen Git publisher use that same remote pin. Before push,
+both the source base and remote pin must be ancestors of the candidate; the
+exact remote lease still fences fetch/push drift. Provenance mismatch refuses.
+Publication validation children do not inherit a parent's replacement-startup
+operation or launcher identity; startup guards remain unchanged.
+
+The user's authorization of a local repair and its release includes a one-time
+transparent migration of already installed local source. It does not authorize
+new external origin code. `installed-local-source-v1` retains agreed local main
+and the durable OWN publication as separate identities; it never moves primary.
+The exact source base/tree/binary patch, current installed release/manifest,
+plan revision and selected Task IDs/revisions/registered bases/results are pinned.
+Origin must equal that OWN publication unless the exact selected Task has a
+current ordinary upstream-adoption receipt for the separately pinned approved
+origin (ADR-0117), or the envelope binds origin to the exact already agreed main
+with an actual empty adoption array (ADR-0121). The latter requires current main
+and origin equal that pin, OWN publication ancestor of it, agreed main ancestor
+of retained installed source, and the same complete installed/source proof.
+No equal-main adoption receipt is created. Missing origin fields retain the
+original publication pin; foreign origin, non-array or substituted empty
+authority refuses. A sealed envelope never switches modes after drift.
+OWN publication remains an ancestor of the local source base.
+Missing, substituted or changed pins refuse before promotion.
+
+The existing RM-only `hub_release_prepare` repository envelope may carry
+`localSourceBaseline` and `nativeResolutionReview`. Both participate in its
+original argument hash, source closure and existing terminal receipt. The
+former has exactly schemaVersion=1, kind=installed-local-source-v1,
+publishedBaseCommit, agreedMainCommit, sourceBaseCommit, sourceBaseTree,
+sourcePatchSha256, installedReleaseId, installedManifestSha256, planRevision,
+selectionHash. The latter has only requestId/text and uses the existing exact
+authenticated native merge review verifier; it supplies no caller approval flag.
+Ordinary Await still accepts the exact reviewed Task through its existing owner.
+When selected ordinary adoption receipts coexist with installed local source,
+the existing Task owner returns their exact historical pins and the candidate
+owner derives the same full installed-source proof before composition. Await
+passes that sealed provenance through its existing base and terminal CAS checks;
+it does not depend on a later preparation that requires Tasks already in Await.
+The same ordinary derivation runs without new receipts when agreed main differs
+from publication, preserving the already-agreed-origin mode through Test and
+Await. Without an installed runtime the no-adoption route returns no migration
+envelope; selected incoming receipts still require their installed proof.
+The candidate's internal authority closure reaches the lifecycle's final
+persistence callback and runs immediately before the owning Task commit, after
+awaited persistence admission. That closure rechecks source/adoption/origin,
+followed by the existing process guard and lease assertions. Ordinary derived
+proof receives this boundary as well as original Await recovery; it is not a
+public caller flag. Failure preserves the original rollback/unknown semantics.
+For empty already-agreed-origin authority, the existing owner repeats the exact
+primary main/origin pin AFTER awaited native history/composition validation,
+including promotion, prepared reuse and Test/Task terminal fences. Earlier
+installed physical verification does not replace this final origin check.
+Historical pins do not authorize promotion after origin drift. Explicit
+preparation and generation reuse retain their existing bound-envelope rules.
+
+When approved incoming and installed local source coexist, the same envelope
+additionally binds both `approvedOriginMainCommit` and `adoptions`. Each adoption
+has the existing exact taskId/resultCommit/recordRef/recordHash/adoptedCommit/
+acceptedLocalMainCommit fields. All receipts name selected exact snapshots and
+the same approved origin. The normal adoption owner remains the only writer;
+read-side verification proves current main, Task base/branch, canonical blob,
+bounded first-parent merge proof and trees. Origin, receipt, source and installed
+pins are repeated after awaited caller validation, before promotion/Task CAS,
+prepared reuse and freeze. This does not adopt future origin or move primary.
+
+Native metadata validation distinguishes inherited metadata from Task edits.
+CHANGELOG entries must equal a complete Git mode/blob entry at the registered
+Task base, verified installed source or that Task's explicitly adopted commit.
+Metadata paths use raw NUL records and literal pathspecs; quoted presentation
+names, malformed or ambiguous tree lookups grant no inherited identity.
+Existing package versions must match one of those same sources. Arbitrary Task
+notes/version changes and unknown merge sides still refuse. Only exact verified
+installed/adopted ancestry is excluded from bounded Task history. Test may also
+recognize its already managed dev ancestry for preview integration; publication
+never consumes that dev context and independently checks the selected set.
+Test persists its proof in its existing native intent and repeats it through
+terminal/recovery checks; no new ledger, authority flag or recovery loop exists.
+
+Affected regression: `node --test tests/infrastructure/filesystem/native-installed-adoption.test.mjs`.
+
+The candidate owner verifies changed runtime paths against actual immutable
+installed bytes and Git source, allowing only built-in CRLF/LF text serialization
+and exact Git LFS object identities. Documentation/tests are non-runtime source.
+Compiled Host provenance applies only to its four exact supported build inputs
+and verifies both retained originals and the physical bounded regular Host
+executable against its required manifest record. Other RuntimeHost paths refuse.
+Uninstalled executable changes, absent provenance or compiled artifact, foreign component changes,
+unsupported deletions or missing retained Host inputs refuse this bounded route.
+If the retained source inherits repository files outside `AgentHub/` that differ
+from the older OWN publication, its COMPLETE outside path/mode/object set must
+equal the exact agreed local main. Bounded raw NUL Git inventories compare literal
+bytes, including non-ASCII names; missing, additional, substituted, duplicate or
+malformed entries refuse. Those unchanged repository files are not runtime carry
+and are never read or executed as installed source. This does not grant upstream
+adoption: the existing exact selected adoption/origin checks remain mandatory.
+See ADR-0120.
+The bound is 512 changed paths, a 4 MiB binary patch and bounded regular files.
+No installed-file overlay, selected Task expansion or rolling-dev import occurs.
+
+Native selected merges, complete tree checks, existing locks/CAS and rollback
+remain authoritative. An unresolved native conflict in the preparation owner's
+private checkout is a
+definite pre-promotion refusal, retaining its issued root and paths for exact
+reviewed resolution. It does not change the prior candidate/checkpoint or turn
+an uncertain post-effect failure into rejection. The baseline is rechecked at
+preparation precommit and
+inside freeze before ref CAS. Generation capture retains the complete provenance
+without replacing it; changed plan/selection rejects reuse. Preflight verifies
+the sealed native manifest, whose registered Task bases are not present in the
+plan's display projection. Unknown outcomes remain on their original receipts.
+No extra writer, recovery registry, Task transition or publication is introduced.
+The migration is unnecessary after verified publication/main synchronization
+contains that source; it grants no authority to future selections or origin code.
 
 ## Explicit preparation-only recovery (ADR-0104)
 
@@ -1075,8 +1266,12 @@ When an explicitly accepted local `main` has advanced beyond the durable
 published revision while managed `dev` still contains separate Test results,
 the Task Git owner has a separate, operator-invoked bootstrap. It requires one
 stable request ID, the exact accepted main and dev commits, published revision
-and generation, and unique common merge base for both dev/main and
-published/main. Under the existing dev lease it verifies
+and generation, and a unique dev/main merge base. Published/main must have that
+same unique base, or the exact published revision must itself be an ancestor of
+the dev/main base when both branches already contain newer accepted upstream.
+An older divergent published branch does not satisfy this second case. The same
+proof is checked at admission, before CAS and during historical recovery
+(ADR-0119). Under the existing dev lease it verifies
 cleanliness, ancestry and the unchanged local main, constructs a merge with
 ordered parents `[oldDev, acceptedMain]`, and advances only `dev` by CAS. A
 durable pre-CAS record binds those proofs; recovery distinguishes no effect from
@@ -1680,8 +1875,10 @@ Successful test files are reused only with the same proven input fingerprint;
 opaque dynamic inputs without an explicit declaration are uncached. The v2 cache
 survives successful suites/publication, with 30-day and 2000-result bounds; legacy
 or proofless entries are not evidence. A failed file has no unconditional retry.
-The full-test stage has a two-hour wall-clock and ten-minute output-idle bound.
-These timeouts report failure, not an inferred external outcome. The two cosmetic
+The full-test stage has no aggregate execution deadline. Its ten-minute
+output-idle watchdog and local test, network, build and readiness bounds remain;
+those bounds report failure, not an inferred external outcome. Other publication
+steps keep their finite execution bounds. See ADR-0118. The two cosmetic
 browser matrices run in `test:visual`, affected focused UI validation and full
 validation exactly once, rather than every ordinary unit run. See ADR-0034.
 The process-per-file runner overlaps at most two files after CPU/memory admission
@@ -2368,3 +2565,33 @@ blob-to-serialization relations. Historical projection does not authorize
 movement or use later rolling-dev bytes/configuration. Live recovery requires
 version 2 and fresh physical/configuration checks; legacy pending recovery
 refuses while preserving its original and data.
+
+## Original native Await with already published notes
+
+An UNKNOWN ordinary Await may resume without a fabricated process guard only
+through the existing reconciliation, lifecycle, preflight and release Git owners
+(ADR-0116). Its complete original receipt/CAS, current Task workflow/executor/
+references, clean Test source and absence of a process guard remain mandatory.
+The sole prospective result must be the original result. This exception admits
+only a completed native prior candidate whose source equals durable OWN
+publication, allowing only package version fields and
+root CHANGELOG to differ. Its only dirty path must be regular staged CHANGELOG,
+exactly the published blob with supported LF/CRLF physical text. Current
+origin/main is independently pinned and rechecked; its later commits are fetched
+as objects by ordinary clone creation but never become a composition base or
+selected source through this recovery. Approval of external incoming remains a
+separate publication boundary.
+
+The release Git owner journals the original-bound move before archiving its
+entire standalone clone and checkpoint inside its own root. Ref/index/worktree,
+private bytes, original journal and manifest remain evidence; no cleanup, ref
+repair, reset or serialization of old bytes is permitted. Authority and physical
+pins are rechecked before movement. The same journal resumes interrupted moves;
+changed originals, selections, publication, refs, index or bytes refuse. The
+ordinary owner then creates its usual standalone checkout, composes the exact
+prospective selection and performs the existing Task CAS/receipt settlement.
+Only the preserved already-published prior checkout is retired; candidate
+promotion/CAS retain ordinary rollback. Terminal repetition reads the same
+outcome without new Git effects. This migration is removable once the pending
+ordinary native Awaits lacking their own preparation intent are settled; it
+does not relax ordinary dirty-checkout rejection or authorize publication.

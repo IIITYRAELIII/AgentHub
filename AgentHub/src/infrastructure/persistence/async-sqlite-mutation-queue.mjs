@@ -18,7 +18,7 @@ export class AsyncSqliteMutationQueue {
     lastQueueWaitMs: 0, maxQueueWaitMs: 0, lastExecutionMs: 0, lastTotalMs: 0,
   };
 
-  async run(operation, { timeoutMs = 2_000, requestId = null, retryContention = true } = {}) {
+  async run(operation, { timeoutMs = 2_000, requestId = null } = {}) {
     if (typeof operation !== "function") throw new TypeError("SQLite mutation operation is required");
     const entry = { enqueuedAt: performance.now() };
     this.#pending.add(entry);
@@ -37,7 +37,7 @@ export class AsyncSqliteMutationQueue {
           try {
             return await operation();
           } catch (error) {
-            if (!retryContention || !sqliteContention(error)) throw error;
+            if (!sqliteContention(error)) throw error;
             if (performance.now() >= deadline) {
               this.#diagnostics.exhausted += 1;
               this.#diagnostics.lastWaitMs = performance.now() - startedAt;

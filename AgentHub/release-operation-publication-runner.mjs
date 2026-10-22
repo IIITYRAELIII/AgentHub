@@ -30,6 +30,26 @@ export function releaseOperationPublicationArguments({ operation, candidate, sav
   ];
 }
 
+export function releaseOperationRuntimePublicationInput({ operation, generation, candidate } = {}) {
+  const publication = candidate?.manifest?.publication;
+  // Original generations without this field keep their original executor
+  // identity; introducing a receipt must never retarget an admitted effect.
+  if (publication?.runtimeReleaseVersion === undefined) return null;
+  if (generation?.operationId !== operation?.operationId
+    || publication.head !== candidate.commit
+    || typeof publication.releaseVersion !== "string"
+    || typeof publication.runtimeReleaseVersion !== "string"
+    || !/^\d+(?:\.\d+){2}$/u.test(publication.releaseVersion)
+    || !publication.runtimeReleaseVersion.startsWith(`${publication.releaseVersion}.`)
+    || !/^[1-9]\d*$/u.test(publication.runtimeReleaseVersion.slice(publication.releaseVersion.length + 1))) {
+    throw new Error("Frozen runtime publication binding differs from the candidate generation");
+  }
+  return {
+    operationId: operation.operationId, generation: generation.generation,
+    sourceCommit: candidate.commit, version: publication.runtimeReleaseVersion,
+  };
+}
+
 async function run() {
   const dataDir = requiredEnvironment("AGENT_HUB_DATA_DIR");
   const operationId = requiredEnvironment("AGENT_HUB_RELEASE_OPERATION_ID");
@@ -77,6 +97,7 @@ async function run() {
     prepareRuntimeImpl: prepareRuntime,
     installRuntimeImpl: installPreparedRuntime,
     verifyRuntimeImpl: verifyInstalledRuntime,
+    runtimePublication: releaseOperationRuntimePublicationInput({ operation, generation, candidate }),
   });
   const saved = await journal.read();
   const args = releaseOperationPublicationArguments({ operation, candidate, saved });

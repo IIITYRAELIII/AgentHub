@@ -8,6 +8,8 @@ import { taskProjectRoot } from "../domain/task-project-root.mjs";
 import { TaskAbsorptionCompositionError } from "../domain/task-board-task.mjs";
 import { normalizedTaskSquashCutover } from "../domain/task-squash-cutover.mjs";
 import { TaskGitHistoryRejectedError, normalizedInitialNativeTest } from "../domain/task-git-reference.mjs";
+import { nativeTestMetadataDrift, sameTaskWorkflowState } from "../domain/native-test-terminal-recovery.mjs";
+import { mcpArgumentsHash } from "../domain/mcp-arguments-hash.mjs";
 
 export class TaskIntegrationRejectedError extends Error {
   constructor(cause) {
@@ -85,6 +87,7 @@ function confirmation(task, action, preview) {
       dirty: item.dirty,
       changedPaths: item.changedPaths,
       untrackedPaths: item.untrackedPaths,
+      ignoredPaths: item.ignoredPaths,
     })),
     gitReferences: preview.gitReferences ?? [],
     absorbedInto: preview.absorbedInto ?? null,
@@ -851,7 +854,7 @@ export class TaskLifecycleService {
   async #updateWorkflowStatusWithLease({
     taskId, status, operationId, binding = {}, projectRoot = null,
     expectedRevision = null, expectedWorkflowStatus = null, operationEvidence = null,
-    initialNativeTestSource = null, initialNativeTestRecovery = false,
+    initialNativeTestSource = null, initialNativeTestRecovery = false, nativeAwaitRecovery = null,
   } = {}, { releaseWorkflow = false, lease = {} } = {}) {
       const task = this.#task(taskId);
       const workflowStatus = String(status ?? "").trim();
@@ -996,12 +999,15 @@ export class TaskLifecycleService {
               selectedProjectRoot,
               lease,
               async (repositoryLease) => {
+                nativeAwaitRecovery ??= await this.#failedArchivedAwaitSuccessor({ task, operationId,
+                  projectRoot: selectedProjectRoot, lease: repositoryLease });
                 return this.releasePreflight.prepareAwaitAcceptance({
                   workspaceId: task.workspaceId,
                   acceptingTask: { id: task.id, revision: task.revision },
                   projectRoot: selectedProjectRoot,
                   lease: repositoryLease,
                   operationId,
+                  nativeAwaitRecovery,
                   nativeResolutionReview: operationEvidence?.nativeResolutionReview ?? null,
                   commitPrepared: async (prepared) => {
                     if (prepared.task.resultCommit !== acceptedReference.resultCommit) {
@@ -1010,10 +1016,19 @@ export class TaskLifecycleService {
                     await this.#assertOwned(repositoryLease);
                     let current;
                     try {
-                      current = await this.#mutation(() => this.taskBoard.commitWorkflowTransition({
+                      current = await this.#mutation(async () => {
+                        if (nativeAwaitRecovery || prepared.verifyNativeAwaitAuthority) {
+                          if (typeof prepared.verifyNativeAwaitAuthority !== "function") throw new Error("Native Await terminal authority recheck is unavailable");
+                          await prepared.verifyNativeAwaitAuthority();
+                          if (nativeAwaitRecovery?.predecessor) this.#assertFailedAwaitPredecessor(task, nativeAwaitRecovery.predecessor, selectedProjectRoot);
+                          await this.taskGitWorkspaces.assertNoProcessTreeGuardOwned(task.id, { lease: repositoryLease });
+                          await this.#assertOwned(repositoryLease);
+                        }
+                        return this.taskBoard.commitWorkflowTransition({
                         operationId, gitReferences: [], replaceGitReferences: false, ...binding,
                         evidence: {
                           ...(operationEvidence ?? {}), outcome: "accepted_existing_result",
+                          ...(nativeAwaitRecovery ? { nativeAwaitRecovery } : {}),
                           resultCommit: acceptedReference.resultCommit,
                           releaseIntegration: prepared.task,
                           response: { releaseCandidate: {
@@ -1021,7 +1036,8 @@ export class TaskLifecycleService {
                             planRevision: prepared.planRevision,
                           } },
                         },
-                      }), operationId);
+                        });
+                      }, operationId);
                     } catch (error) {
                       try {
                         const outcome = this.taskBoard.lifecycleOutcome(operationId);
@@ -1210,14 +1226,77 @@ export class TaskLifecycleService {
       }
   }
 
-  async pendingNativeWorkflowOwned({ taskId, operationId, projectRoot, lease } = {}) {
+  async pendingNativeWorkflowOwned({ taskId, operationId, projectRoot, lease, allowMetadataRecovery = false } = {}) {
     const transition = this.taskBoard.lifecycleTransition(operationId);
     const task = this.#task(taskId);
+    if (transition?.targetWorkflowStatus === "awaiting_implementation"
+        && typeof this.releasePreflight?.pendingNativeAwaitRecovery === "function") {
+      return Boolean(await this.#pendingNativeAwaitRecovery({ taskId, operationId, projectRoot, lease }));
+    }
     if (transition?.taskId !== task.id || transition.operationId !== operationId
         || transition.kind !== "workflow" || transition.phase !== "pending_git"
-        || transition.targetWorkflowStatus !== "testing" || transition.expectedRevision !== task.revision
+        || transition.targetWorkflowStatus !== "testing"
+        || (transition.expectedRevision !== task.revision
+          && !(allowMetadataRecovery && nativeTestMetadataDrift(task, transition)))
         || !this.taskGitWorkspaces?.pendingNativeIntegrationOwned) return false;
     return Boolean(await this.taskGitWorkspaces.pendingNativeIntegrationOwned({ taskId, operationId, projectRoot, lease }));
+  }
+
+  async #pendingNativeAwaitRecovery({ taskId, operationId, projectRoot, lease }) {
+    await this.#assertOwned(lease);
+    const task = this.#task(taskId), transition = this.taskBoard.lifecycleTransition(operationId);
+    const receipt = this.workspaceCatalog.mcpOperation(operationId);
+    if (transition?.taskId !== task.id || transition.operationId !== operationId
+        || transition.kind !== "workflow" || transition.phase !== "pending_git"
+        || transition.targetWorkflowStatus !== "awaiting_implementation"
+        || task.workflowStatus !== "testing" || task.revision !== transition.expectedRevision
+        || !sameTaskWorkflowState(task, transition.priorTask)
+        || receipt?.operationStatus !== "pending" || receipt.receiptState !== "unknown"
+        || receipt.toolName !== "hub_task_status_update" || receipt.workspaceId !== task.workspaceId) {
+      throw new Error("Original native Await identity or Task state changed");
+    }
+    await this.taskGitWorkspaces.assertNoProcessTreeGuardOwned(task.id, { lease });
+    const references = task.gitReferences.filter(reference => samePath(reference.projectRoot, projectRoot));
+    if (references.length !== 1) throw new Error("Original native Await requires its unique result");
+    const original = await this.#failedArchivedAwaitSuccessor({ task, operationId, projectRoot, lease }) ?? { operationId, taskId: task.id, workspaceId: task.workspaceId,
+      argumentsHash: receipt.argumentsHash, taskRevision: task.revision, resultCommit: references[0].resultCommit };
+    const proof = await this.releasePreflight.pendingNativeAwaitRecovery({ workspaceId: task.workspaceId,
+      acceptingTask: { id: task.id, revision: task.revision }, projectRoot, lease, original });
+    return { ...original, originMainCommit: proof.original.originMainCommit };
+  }
+
+  #assertFailedAwaitPredecessor(task, original, projectRoot) {
+    const receipt = this.workspaceCatalog.mcpOperation(original.operationId);
+    const failed = this.taskBoard.lifecycleTransition(original.operationId);
+    const references = (task.gitReferences ?? []).filter(ref => samePath(ref.projectRoot, projectRoot));
+    const hash = mcpArgumentsHash({ request_id: original.operationId, task_id: task.id,
+      status: "awaiting_implementation", expected_task_revision: original.taskRevision,
+      expected_workflow_status: "testing" });
+    if (original.taskId !== task.id || original.workspaceId !== task.workspaceId || original.taskRevision !== task.revision
+        || references.length !== 1 || references[0].resultCommit !== original.resultCommit
+        || receipt?.operationStatus !== "failed" || receipt.receiptState !== "failed"
+        || receipt.workspaceId !== task.workspaceId || receipt.toolName !== "hub_task_status_update"
+        || receipt.argumentsHash !== original.argumentsHash || hash !== original.argumentsHash
+        || failed?.phase !== "failed" || failed.kind !== "workflow" || failed.taskId !== task.id
+        || failed.targetWorkflowStatus !== "awaiting_implementation" || failed.expectedRevision !== task.revision
+        || !sameTaskWorkflowState(this.#task(task.id), failed.priorTask)
+        || this.taskBoard.lifecycleOutcome(original.operationId)) {
+      throw new Error("Archived Await predecessor is not an exact terminal failed ordinary operation");
+    }
+  }
+
+  async #failedArchivedAwaitSuccessor({ task, operationId, projectRoot, lease }) {
+    const original = await this.releasePreflight.archivedNativeAwaitOriginal?.({ projectRoot, operationId });
+    if (!original || original.operationId === operationId) return null;
+    await this.#assertOwned(lease);
+    await this.taskGitWorkspaces.assertNoProcessTreeGuardOwned(task.id, { lease });
+    this.#assertFailedAwaitPredecessor(task, original, projectRoot);
+    const receipt = this.workspaceCatalog.mcpOperation(operationId);
+    if (receipt?.operationStatus !== "pending" || receipt.workspaceId !== task.workspaceId
+        || receipt.toolName !== "hub_task_status_update") throw new Error("New ordinary Await receipt is unavailable");
+    return { operationId, taskId: task.id, workspaceId: task.workspaceId, taskRevision: task.revision,
+      resultCommit: original.resultCommit, argumentsHash: receipt.argumentsHash,
+      originMainCommit: original.originMainCommit, predecessor: original };
   }
 
   withUnknownWorkflowReconciliationLock({ taskId, sourceTaskId = null, projectRoot, operationId } = {}, operation) {
@@ -1254,10 +1333,38 @@ export class TaskLifecycleService {
   async reconcileUnknownWorkflowStatusOwned({
     taskId, operationId, projectRoot, guardId, proof, lease, finalizeCommittedWithdrawal = false,
     verifyInitialNativeTest = null,
+    allowMetadataRecovery = false,
   } = {}) {
     await this.#assertOwned(lease);
     const current = this.#task(taskId);
     const transition = this.taskBoard.lifecycleTransition?.(operationId);
+    if (allowMetadataRecovery) {
+      if (guardId || !nativeTestMetadataDrift(current, transition)) throw new Error("Native Test metadata recovery state changed");
+      return this.taskGitWorkspaces.withAppliedNativeTerminalOwned({ taskId, operationId, projectRoot, lease },
+        async (native, verify) => {
+          const fresh = this.#task(taskId);
+          if (!nativeTestMetadataDrift(fresh, this.taskBoard.lifecycleTransition(operationId))) {
+            throw new Error("Native Test metadata recovery state changed");
+          }
+          const nativeTerminalRecovery = { kind: "native-test-metadata-terminal-v1",
+            expectedCurrentRevision: fresh.revision, sourceCommit: native.snapshot.headCommit,
+            devCommit: native.target, originalExpectedRevision: transition.expectedRevision };
+          const result = await this.#mutation(async () => {
+            await verify();
+            return this.taskBoard.commitWorkflowTransition({ operationId, metadataRecovery: nativeTerminalRecovery,
+              gitReferences: [{ projectRoot: native.snapshot.repositoryRoot, branch: native.snapshot.branch,
+                resultCommit: native.snapshot.headCommit }],
+              evidence: { outcome: "integrated", resultCommit: native.snapshot.headCommit,
+                devHeadCommit: native.target, nativeTerminalRecovery,
+                response: { gitWorkspace: { branch: native.snapshot.branch, projectRoot: native.snapshot.projectRoot,
+                  baseCommit: native.snapshot.baseCommit, headCommit: native.snapshot.headCommit },
+                gitIntegration: { outcome: "integrated", integrated: true, alreadyIntegrated: true,
+                  devBranch: "dev", devHeadCommit: native.target, conflicts: [], error: null } } },
+            });
+          }, operationId);
+          return { result: { task: result }, recovery: null };
+        });
+    }
     const selectedComposition = transition?.evidence?.selectedComposition ?? null;
     if (transition?.evidence?.selectedCompositionRequired || selectedComposition) {
       selectedCompositionFields({ taskId, resultCommit: selectedComposition?.taskCommit,
@@ -1426,7 +1533,10 @@ export class TaskLifecycleService {
     ) {
       throw new Error("Unknown workflow reconciliation identity or Task CAS does not match");
     }
-    if (!pendingWithdrawal && !guardId) throw new Error("Pending Await recovery requires its process-tree guard");
+    const nativeAwaitRecovery = !pendingWithdrawal && !guardId
+      && typeof this.releasePreflight?.pendingNativeAwaitRecovery === "function"
+      ? await this.#pendingNativeAwaitRecovery({ taskId, operationId, projectRoot, lease }) : null;
+    if (!pendingWithdrawal && !guardId && !nativeAwaitRecovery) throw new Error("Pending Await recovery requires its process-tree guard");
     const recovery = guardId ? await this.taskGitWorkspaces.recoverProcessTreeGuard(current.id, {
       repositoryRoot: projectRoot,
       guardId,
@@ -1439,6 +1549,7 @@ export class TaskLifecycleService {
       operationId,
       projectRoot,
       operationEvidence: transition.evidence,
+      nativeAwaitRecovery,
     }, { releaseWorkflow: true, lease });
     return {
       result: result?.releaseCandidate?.status === "invalidated"

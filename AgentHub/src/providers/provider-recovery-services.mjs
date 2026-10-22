@@ -9,6 +9,8 @@ import { resolveTaskRecoveryAction, TASK_RECOVERY_ACTIONS } from "../domain/task
 import { emptyTokenUsage } from "../domain/token-usage.mjs";
 import { hydrateCodexAgentMessages } from "./codex/codex-agent-message-reducer.mjs";
 
+const INACTIVE_RECOVERY = Symbol("inactive Codex recovery");
+
 function requiredFunction(value, name) {
   if (typeof value !== "function") throw new TypeError(`${name} is required`);
   return value;
@@ -63,6 +65,7 @@ export class CodexRecoveryService {
 
   async recover(run, { observerSnapshot = null } = {}) {
     const d = this.#d;
+    run.activityUnknown = true;
     const initialAction = resolveTaskRecoveryAction({
       run,
       observerSnapshot,
@@ -83,6 +86,15 @@ export class CodexRecoveryService {
         recoveryResult = await this.#recoverFromThread(run, snapshot);
       },
     });
+    if (recoveryResult === INACTIVE_RECOVERY) {
+      // readThread applies its snapshot under the Thread lane. Cancellation's
+      // fresh provider read must run only after that lane has been released.
+      if (await d.recoverInactiveRun(run)) return;
+      d.setProgressStage(run, "Исходный ход сохранён; подтверждение остановки пока не получено.");
+      d.scheduleObservedRun(run);
+      await d.saveState();
+      return;
+    }
     return recoveryResult;
   }
 
@@ -115,6 +127,14 @@ export class CodexRecoveryService {
     const exactTerminal = terminalSnapshot?.completed === true
       && String(terminalSnapshot.turnId ?? "").trim() === exactTurnId
       ? terminalSnapshot : null;
+    // An idle projection alone is not terminal authority. Ask the existing
+    // cancellation owner to establish a new recovery interruption instead.
+    if (!exactTerminal && run.observer !== true && exactTurnId
+      && String(run.clientUserMessageId ?? "").trim()
+      && run.providerStart?.state !== "unconfirmed"
+      && result.thread?.status?.type === "idle"
+      && ["interrupted", "aborted"].includes(turn?.status)
+      && typeof d.recoverInactiveRun === "function") return INACTIVE_RECOVERY;
     if (!exactTerminal && recoveryAction === TASK_RECOVERY_ACTIONS.MISSING_CODEX_TURN) {
       d.setProgressStage(run, "Ожидаю подтверждения исходного хода Codex…");
       d.scheduleObservedRun(run);
@@ -136,13 +156,17 @@ export class CodexRecoveryService {
       return;
     }
     if (!exactTerminal && recoveryAction === TASK_RECOVERY_ACTIONS.ATTACH_CODEX) {
+      run.activityUnknown = !(terminalSnapshot?.running === true
+        && String(terminalSnapshot.turnId ?? "").trim() === exactTurnId);
       const previousTurnId = run.turnId;
       run.turnId = turn.id;
       d.reindexRun(run, { turnId: previousTurnId });
       if (!d.turnTokenUsage.has(run.turnId)) {
         rememberBounded(d.turnTokenUsage, run.turnId, { usage: emptyTokenUsage(), reported: false }, 200);
       }
-      d.setProgressStage(run, "Подключено к продолжающемуся потоку.");
+      d.setProgressStage(run, run.activityUnknown
+        ? "Исходный ход сохранён; выполнение Codex пока не подтверждено."
+        : "Подключено к продолжающемуся потоку.");
       d.scheduleObservedRun(run);
       if (run.displayRequested) d.startTyping();
       await d.saveState();

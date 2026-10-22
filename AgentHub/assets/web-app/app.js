@@ -380,7 +380,6 @@ const localSessionReady = Promise.all([
 ]).then(() => undefined);
 window.AgentHubLocalSessionReady = localSessionReady;
 const vscodeMode = Boolean(window.__agentHubVscode);
-let mobileDialogs = null;
 const telegramPlatform = String(telegram?.platform ?? "").toLowerCase();
 const mobileTelegramPlatforms = new Set(["android", "ios"]);
 const compactSurfaceWidth = 860;
@@ -420,7 +419,6 @@ function phoneComposerMode() {
 }
 
 function syncComposerInputMode() {
-  root.toggleAttribute("data-phone-composer", phoneComposerMode());
   composerInput.placeholder = "Сообщение агенту…";
   composerInput.removeAttribute("title");
   composerSend.title = "Отправить";
@@ -974,9 +972,6 @@ applyBackgroundMotion(backgroundMotionPreference.stored(localStorage));
 applyTheme(savedTheme());
 applyChatSurface(chatSurfacePreference.stored(localStorage));
 applyActivityRailVisibility(activityRailPreference.stored(localStorage));
-const composerShortcuts = window.AgentHubComposerShortcuts.createSettings({
-  document, storage: () => globalThis.localStorage, overlays: modalOverlays,
-});
 applyStreamStatusStyle(savedStreamStatusStyle());
 applyStreamStatusEffect(savedStreamStatusEffect());
 applyActivityStreamDetailedCards(savedActivityStreamDetailedCards());
@@ -1047,7 +1042,6 @@ function themedSelectOptions(select) {
 }
 
 function enhanceThemedSelect(select) {
-  if (select?.matches?.("[data-composer-shortcut]")) return;
   if (!(select instanceof HTMLSelectElement) || select.multiple || select.dataset.themedSelectReady) return;
   select.dataset.themedSelectReady = "true";
   select.classList.add("themed-select-native");
@@ -1347,39 +1341,68 @@ function el(tag, props = {}, children = []) {
    полоса активности не успевает пройти свой цикл. Узел с тем же ключом
    переиспользуется, а его анимации продолжаются с накопленного времени. */
 const STREAM_STATUS_LAYER_SELECTOR = ".stream-tab-status-layer";
-const STREAM_STATUS_ANIMATION_PREFIX = "stream-";
+const STREAM_STATUS_ANIMATION_NAME = /(?:^|-)stream-/u;
 let reusableWorkspaceCards = new Map();
 let reusableStreamTabs = new Map();
 let adoptedCardAnimations = [];
+const renderedCardAnswerIdentities = new WeakMap();
 
 function statusAnimationKey(animation) {
   return `${animation.animationName} ${animation.effect?.pseudoElement ?? ""}`;
 }
 
-function statusAnimationTimes(node) {
+function statusAnimationSnapshot(node) {
   const times = new Map();
+  const answerKeys = new Set();
+  let answerAnimating = false;
   for (const animation of node.getAnimations?.({ subtree: true }) ?? []) {
-    if (!String(animation.animationName ?? "").startsWith(STREAM_STATUS_ANIMATION_PREFIX)) continue;
+    if (!STREAM_STATUS_ANIMATION_NAME.test(String(animation.animationName ?? ""))) continue;
     const time = Number(animation.currentTime);
     if (Number.isFinite(time)) times.set(statusAnimationKey(animation), time);
+    if (Number.isFinite(animation.effect?.getTiming().iterations)) {
+      answerKeys.add(statusAnimationKey(animation));
+      if (node.hasAttribute("data-answer-arrived")
+        && ["running", "paused"].includes(animation.playState)) answerAnimating = true;
+    }
   }
-  return times;
+  return { times, answerKeys, answerAnimating };
+}
+
+function cardAnswerIdentity(tasks) {
+  const unread = tasks.filter((task) => task?.unread);
+  if (!unread.length) return "";
+  const identities = unread.map((task) => [task.id, observedAnswerFinalIdentityByTaskId.get(task.id)]);
+  if (identities.some(([, identity]) => !identity)) return "";
+  return JSON.stringify(identities.sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0));
 }
 
 function indexRenderedCards(container, selector, attribute) {
   const index = new Map();
   for (const node of container?.querySelectorAll(selector) ?? []) {
     const key = node.getAttribute(attribute);
-    if (key && !index.has(key)) index.set(key, { node, times: statusAnimationTimes(node) });
+    if (key && !index.has(key)) index.set(key, {
+      node,
+      ...statusAnimationSnapshot(node),
+      answerIdentity: renderedCardAnswerIdentities.get(node) ?? "",
+    });
   }
   return index;
 }
 
-function adoptRenderedCard(index, key, next) {
+function adoptRenderedCard(index, key, next, answerIdentity = "") {
   const previous = index.get(key);
+  renderedCardAnswerIdentities.set(next, answerIdentity);
   if (!previous || previous.node.tagName !== next.tagName) return next;
   index.delete(key);
   const node = previous.node;
+  const sameAnswer = Boolean(answerIdentity) && previous.answerIdentity === answerIdentity;
+  // Обновление той же непрочитанной ревизии не обрывает конечную вспышку.
+  // После её завершения, чтения или смены final прежний эффект не переносится.
+  if (sameAnswer && previous.answerAnimating && !next.hasAttribute("data-running")
+    && (next.hasAttribute("data-unread") || next.hasAttribute("data-answer-ready"))) {
+    next.setAttribute("data-answer-arrived", "");
+  }
+  renderedCardAnswerIdentities.set(node, answerIdentity);
   /* Наблюдатель видимости помечает карточку своим атрибутом, и рендер им не
      владеет: при обновлении он сохраняется. */
   for (const attribute of [...node.attributes]) {
@@ -1397,7 +1420,10 @@ function adoptRenderedCard(index, key, next) {
   const nextLayer = next.querySelector(STREAM_STATUS_LAYER_SELECTOR);
   if (keptLayer && nextLayer) nextLayer.replaceWith(keptLayer);
   node.replaceChildren(...next.childNodes);
-  if (previous.times.size) adoptedCardAnimations.push(previous);
+  const times = next.hasAttribute("data-answer-arrived") && !sameAnswer
+    ? new Map([...previous.times].filter(([key]) => !previous.answerKeys.has(key)))
+    : previous.times;
+  if (times.size) adoptedCardAnimations.push({ node, times });
   return node;
 }
 
@@ -3745,7 +3771,6 @@ function setPane(pane, { persist = true } = {}) {
 }
 
 function syncMobileNav() {
-  mobileDialogs?.sync();
   const active = navigationTabs.isStandaloneNavigationTab(root.dataset.view)
     ? root.dataset.view
     : (root.dataset.pane === "chat" ? "chat" : "tasks");
@@ -3864,8 +3889,7 @@ function renderTasksContent() {
   taskList.replaceChildren();
   let visibleCount = visible.length;
   const { workspaceTasks, unassignedTasks } = window.AgentHubStreamTabs.taskListSections(visible);
-  const hasWorkspace = workspaceTasks.length > 0
-    || (surface === "mobile" && !vscodeMode && state.workspaces.length > 0);
+  const hasWorkspace = workspaceTasks.length > 0;
   if (hasWorkspace) {
     const groups = new Map();
     for (const task of workspaceTasks) {
@@ -3878,14 +3902,6 @@ function renderTasksContent() {
         tasks: [],
       });
       groups.get(key).tasks.push(task);
-    }
-    if (surface === "mobile" && !vscodeMode) {
-      for (const workspace of state.workspaces) {
-        if (!groups.has(workspace.id) && (!filter || workspace.name.toLowerCase().includes(filter))) {
-          groups.set(workspace.id, { id: workspace.id, name: workspace.name,
-            kind: workspace.kind ?? "user", folderName: workspace.settings?.catalogFolder ?? "", tasks: [] });
-        }
-      }
     }
     visibleCount = groups.size + unassignedTasks.length;
     /* Поиск ищет по всему списку сразу, поэтому при фильтре деление на ленту
@@ -3926,7 +3942,6 @@ function renderTasksContent() {
   reusableWorkspaceCards = new Map();
   resumeAdoptedCardAnimations();
   renderActivityRail();
-  mobileDialogs?.sync();
 }
 
 function workspaceStreams(tasks) {
@@ -4060,7 +4075,7 @@ function renderTaskWorkspaceItem({ id, name, kind, tasks }, { folderMember = fal
       text: formatRelativeTime(lastActivity),
       title: lastActivity ? new Date(lastActivity).toLocaleString("ru-RU") : "",
     }),
-  ]));
+  ]), cardAnswerIdentity(tasks));
 }
 
 function representativeStreamTask(stream) {
@@ -4074,7 +4089,7 @@ function representativeStreamTask(stream) {
   // Порядок обязан совпадать с attentionRank рельса: там готовый ответ идёт
   // впереди идущего хода. Обратный порядок давал разные ветки одного потока
   // в полосе и в панели, и они показывали разные состояния одновременно.
-  const attention = (task) => (task?.unread && !task?.running ? 0 : task?.running ? 1 : 2);
+  const attention = (task) => (task?.unread && !task?.running ? 0 : task?.running || task?.activityUnknown ? 1 : 2);
   return stream.tasks.find((task) => task.id === state.selectedId)
     ?? [...stream.tasks].sort((left, right) => (
       attention(left) - attention(right)
@@ -4088,6 +4103,7 @@ function streamActivityTime(task) {
 }
 
 function streamAttentionKind(task, now = Date.now()) {
+  if (task?.activityUnknown) return "unknown";
   if (task?.unread && !task?.running) return "completed";
   if (task?.running) return "running";
   const activityTime = streamActivityTime(task);
@@ -4108,7 +4124,7 @@ function activityStreamEntries(tasks) {
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(task);
   }
-  const attentionRank = (task) => ({ completed: 0, running: 1, recent: 2 }[
+  const attentionRank = (task) => ({ completed: 0, running: 1, unknown: 1, recent: 2 }[
     streamAttentionKind(task, now)
   ] ?? 3);
   return [...groups.values()]
@@ -4152,6 +4168,8 @@ function renderStreamStatusCard(task, title, presentation) {
         }),
       ]),
       el("span", { class: "stream-tab-meta" }, [
+        task?.activityUnknown
+          ? el("span", { class: "task-runtime", text: presentation.statusLabel }) : null,
         el("span", { class: "task-agent", text: presentation.agentLabel }),
         task?.modelLabel
           ? el("span", {
@@ -4213,6 +4231,7 @@ function renderActivityRail() {
     streamId: String(selectedTask?.streamId ?? "").trim() || null,
   });
   const entries = activityStreamEntries(state.tasks);
+  const reusableActivityCards = indexRenderedCards(activityRail, ".activity-stream-item", "data-activity-task-id");
   const sections = window.AgentHubStreamTabs.activityStreamSections(entries);
   activityRailCount.textContent = "Активно";
   if (activityStreamHeading) {
@@ -4236,7 +4255,7 @@ function renderActivityRail() {
       modelLabel: task?.modelLabel,
     });
     const title = `${presentation.statusLabel ? `${presentation.statusLabel}. ` : ""}${activityTitle}. ${providerModelTitle}`;
-    return el("button", {
+    return adoptRenderedCard(reusableActivityCards, task.id, el("button", {
       type: "button",
       class: "stream-tab activity-stream-item",
       "data-activity-task-id": task.id,
@@ -4257,10 +4276,11 @@ function renderActivityRail() {
     }, [
       el("span", { class: "stream-tab-status-layer", "aria-hidden": "true" }),
       renderStreamStatusCard(task, activityTitle, presentation),
-    ]);
+    ]), cardAnswerIdentity([task]));
   };
   activityStreamList.replaceChildren(...sections.active.map(renderEntry));
   activityRecentList.replaceChildren(...sections.recent.map(renderEntry));
+  resumeAdoptedCardAnimations();
   applyActivityRailState();
 }
 
@@ -4432,7 +4452,7 @@ function renderStreamTabs() {
     }, [
       el("span", { class: "stream-tab-status-layer", "aria-hidden": "true" }),
       el("span", { class: "stream-tab-card" }, content()),
-    ]));
+    ]), cardAnswerIdentity(task ? [task] : []));
     overflowItems.push(el("button", {
       ...attributes,
       class: "stream-overflow-item",
@@ -4775,7 +4795,6 @@ taskList.addEventListener("dblclick", (event) => {
 });
 taskList.addEventListener("keydown", (event) => {
   if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) {
-    if (surface === "mobile" && !vscodeMode) return;
     const workspace = event.target.closest("[data-workspace-select]");
     if (workspace) {
       event.preventDefault();
@@ -4923,16 +4942,14 @@ function renderWorkspaceMessageSearch() {
   workspaceMessageSearchMore.hidden = search.nextOffset == null || search.loading;
 }
 
-function openWorkspaceMessageSearch(requestedWorkspaceId = "") {
+function openWorkspaceMessageSearch() {
   const task = currentTask();
-  const workspaceId = String(typeof requestedWorkspaceId === "string" && requestedWorkspaceId
-    || task?.workspaceId || "").trim();
+  const workspaceId = String(task?.workspaceId ?? "").trim();
   if (!workspaceId) return showToast("Сначала выберите Workspace");
   const search = state.workspaceMessageSearch;
   search.open = true;
   search.workspaceId = workspaceId;
-  const name = workspaceCatalogItem(workspaceId)?.name || task?.workspaceName || task?.title || "Workspace";
-  workspaceMessageSearchTitle.textContent = `Поиск в «${name}»`;
+  workspaceMessageSearchTitle.textContent = `Поиск в «${task.workspaceName || task.title || "Workspace"}»`;
   renderWorkspaceMessageSearch();
   window.requestAnimationFrame(() => workspaceMessageSearchInput?.focus());
 }
@@ -5360,25 +5377,22 @@ function ensureWorkspaceFolderContextMenu() {
     const currentName = String(workspaceFolderContextMenu.dataset.folderName ?? "");
     closeWorkspaceFolderContextMenu();
     if (action.dataset.workspaceFolderMenuAction !== "rename") return;
-    await renameWorkspaceFolder(currentName);
+    const requestedName = await askText({ title: "Новое название папки", value: currentName });
+    if (requestedName == null) return;
+    const plan = window.AgentHubStreamTabs.workspaceFolderRenamePlan(
+      state.workspaces,
+      currentName,
+      requestedName,
+      workspaceFolderCatalogNames(),
+    );
+    if (!plan) return;
+    if (plan.duplicateFolderName) {
+      showToast(`Папка «${plan.duplicateFolderName}» уже существует`);
+      return;
+    }
+    emit("workspace:folder-rename", plan);
   });
   return workspaceFolderContextMenu;
-}
-
-async function renameWorkspaceFolder(folderName) {
-  const currentName = window.AgentHubStreamTabs.normalizeWorkspaceFolderName(folderName);
-  if (!currentName) return;
-  const requestedName = await askText({ title: "Новое название папки", value: currentName });
-  if (requestedName == null) return;
-  const plan = window.AgentHubStreamTabs.workspaceFolderRenamePlan(
-    state.workspaces, currentName, requestedName, workspaceFolderCatalogNames(),
-  );
-  if (!plan) return;
-  if (plan.duplicateFolderName) {
-    showToast(`Папка «${plan.duplicateFolderName}» уже существует`);
-    return;
-  }
-  emit("workspace:folder-rename", plan);
 }
 
 function openWorkspaceFolderContextMenu(event, folderName) {
@@ -5839,7 +5853,6 @@ function providerConnectionTitle(providerLabel, presentation, measurement) {
 }
 
 function renderStreamChatHeader(task, now = Date.now()) {
-  mobileDialogs?.sync();
   if (!streamChatHeader) return;
   streamChatHeader.hidden = !task;
   const workspaceName = task ? String(task.workspaceName || task.title || "Workspace").trim() : "";
@@ -5949,7 +5962,7 @@ function renderChatContent({ preserveStreamTabs = false } = {}) {
   renderMessagePinShelf();
   for (const stop of chatStops) {
     const preparing = contextMaintenancePreparing(task);
-    stop.hidden = !task.running && !preparing;
+    stop.hidden = !task.running && !task.canStop && !preparing;
     stop.title = preparing ? "Отменить подготовку обслуживания контекста" : "Остановить ход";
     stop.setAttribute("aria-label", stop.title);
   }
@@ -6071,7 +6084,6 @@ function renderContextUsageDetails(task) {
   contextUsageCompact.textContent = context.compacting ? "Контекст сворачивается…" : "Свернуть контекст";
 }
 
-let contextMobileDismissCleanup = null;
 function openContextUsage() {
   const task = currentTask();
   if (!task?.context || (Number(task.context.modelContextWindow) <= 0 && task.context.percent == null)
@@ -6081,16 +6093,7 @@ function openContextUsage() {
     return;
   }
   renderContextUsageDetails(task);
-  if (surface === "mobile" && !vscodeMode) {
-    contextMobileDismissCleanup ??= modalOverlays?.installDismissibleOverlay({
-      dialog: contextUsageModal, close: closeContextUsage, fallbackFocus: contextUsageButton,
-    });
-    contextUsageModal.showModal();
-  } else {
-    contextMobileDismissCleanup?.();
-    contextMobileDismissCleanup = null;
-    contextUsageModal.show();
-  }
+  contextUsageModal.show();
   contextUsageButton.setAttribute("aria-expanded", "true");
   positionContextUsage();
 }
@@ -6363,9 +6366,7 @@ function closeAttachmentViewer() {
 }
 
 function navigateBack() {
-  if (composerShortcuts.handleBack()) return true;
   saveDraft();
-  if (mobileDialogs?.handleBack()) return true;
   if (closeAttachmentViewer()) return true;
   if (settingsPanel?.classList.contains("open")) {
     closePanel();
@@ -6701,6 +6702,7 @@ function patchRenderedMessage(node, message) {
   const author = renderedMessageAuthor(message, role);
   const head = article.querySelector(".msg-head");
   syncMessageUploadActions(head, message);
+  MessageView.syncTurnStatus(head, message);
   const authorNode = head?.querySelector(".msg-author");
   if (authorNode) authorNode.textContent = author;
   let time = head?.querySelector(".msg-time");
@@ -7037,29 +7039,14 @@ function currentFileLinkContext(task = currentTask()) {
 }
 
 function desktopFileLink(raw, fileContext = currentFileLinkContext()) {
+  if (!(vscodeMode || surface === "desktop")) return null;
   const resolved = resourceInteractions.resolveFileReference(raw, fileContext);
   if (!resolved?.localPath) return null;
   return {
     candidates: resolved.candidates,
-    href: vscodeMode || surface !== "desktop" ? "#" : `vscode://file/${encodeURI(resolved.localPath)}`,
+    href: vscodeMode ? "#" : `vscode://file/${encodeURI(resolved.localPath)}`,
     localPath: resolved.localPath,
   };
-}
-
-function appendLocalResourceOverflow(target, link, targetLink, name) {
-  if (!targetLink?.localPath) return;
-  const control = el("button", {
-    class: "local-resource-overflow",
-    type: "button",
-    title: "Действия с файлом",
-    "aria-label": `Действия с файлом ${name || ""}`.trim(),
-  });
-  control.dataset.agentHubResourceAction = "menu";
-  control.dataset.agentHubLocalLink = targetLink.localPath;
-  control.dataset.agentHubResourceHref = link.href;
-  control.dataset.agentHubResourceName = name || targetLink.localPath;
-  control.textContent = "⋯";
-  target.append(control);
 }
 
 function markdownLink(raw, fileContext = currentFileLinkContext()) {
@@ -7115,7 +7102,6 @@ function appendInlineMarkdown(target, source, fileContext = currentFileLinkConte
         });
         if (targetLink.localPath) link.dataset.agentHubLocalLink = targetLink.localPath;
         target.append(link);
-        appendLocalResourceOverflow(target, link, targetLink, citation?.label);
       } else {
         target.append(el("span", attributes));
       }
@@ -7133,7 +7119,6 @@ function appendInlineMarkdown(target, source, fileContext = currentFileLinkConte
         }, [code]);
         link.dataset.agentHubLocalLink = targetLink.localPath;
         target.append(link);
-        appendLocalResourceOverflow(target, link, targetLink, value);
       } else {
         target.append(code);
       }
@@ -7160,7 +7145,6 @@ function appendInlineMarkdown(target, source, fileContext = currentFileLinkConte
         if (targetLink.taskId) link.dataset.agentHubTaskReference = targetLink.taskId;
         if (targetLink.localPath) link.dataset.agentHubLocalLink = targetLink.localPath;
         target.append(link);
-        appendLocalResourceOverflow(target, link, targetLink, parts[1]);
       } else {
         target.append(document.createTextNode(token));
       }
@@ -7772,6 +7756,8 @@ function renderMessage(message, { readOnly = false, task = currentTask() } = {})
       : null,
   ]);
 
+  MessageView.syncTurnStatus(head, message);
+
   const body = el("div", {
     class: "msg-body",
     ...(role === "user" ? { "data-user-message-disclosure": "" } : {}),
@@ -7857,15 +7843,6 @@ document.addEventListener("click", (event) => {
   if (resourceActionButton) {
     event.preventDefault();
     event.stopPropagation();
-    if (resourceActionButton.dataset.agentHubResourceAction === "menu") {
-      const rect = resourceActionButton.getBoundingClientRect();
-      openResourceContextMenu({ clientX: rect.right, clientY: rect.bottom, target: resourceActionButton }, resourceInteractions.linkResource({
-        href: resourceActionButton.dataset.agentHubResourceHref,
-        localPath: resourceActionButton.dataset.agentHubLocalLink,
-        name: resourceActionButton.dataset.agentHubResourceName,
-      }));
-      return;
-    }
     emit(`resource:${resourceActionButton.dataset.agentHubResourceAction}`, {
       resource: resourceInteractions.linkResource({
         href: resourceActionButton.dataset.agentHubResourceHref,
@@ -8513,13 +8490,18 @@ function renderQueueForTask(taskId, container) {
     const content = el("div", { class: "queue-content" }, [
       entry.author ? el("strong", { class: "queue-author", text: entry.author }) : null,
       visibleText ? el("div", { class: "queue-text", text: visibleText }) : null,
+      task?.activityUnknown && [entry.waitReason, entry.conflictKind].includes("task-running")
+        ? el("div", { class: "queue-status", text: "Поток занят исходным ходом: состояние уточняется после потери связи. Доступен Stop; сообщение повторно не отправляется." }) : null,
       entry.waitReason === "provider-thread-active"
         ? el("div", { class: "queue-status", text: "Thread удерживается другим Codex. Автоповторы остановлены; проверьте снова после закрытия задачи или отправьте сообщение в новую." })
         : entry.waitReason === "provider-temporarily-unavailable"
           ? el("div", { class: "queue-status", text: "Связь с Codex временно недоступна; сообщение сохранено и будет отправлено автоматически." })
           : entry.waitReason === "context-maintenance" || entry.conflictKind === "context-maintenance"
             ? el("div", { class: "queue-status", text: "Ожидает завершения свёртки или ротации контекста; сообщение сохранено в очереди." })
-          : null,
+            : ["queued", "pending", "paused"].includes(entry.state)
+              && (entry.waitReason || entry.conflictKind) === "runtime-restart"
+              ? el("div", { class: "queue-status", text: "Ожидает перезапуска Hub; сообщение сохранено в очереди." })
+              : null,
       entry.lastError ? el("div", { class: "queue-error", text: entry.lastError }) : null,
       entryAnnotations.length
         ? el("div", { class: "queue-annotation-list" }, entryAnnotations.map((annotation, index) => {
@@ -8653,28 +8635,8 @@ composerQuickMessages?.addEventListener("click", (event) => {
   else insertQuickMessage(entry);
 });
 
-let composerCompositionActive = false;
-let composerIMEConfirmation = false;
-composerInput.addEventListener("compositionstart", () => { composerCompositionActive = true; });
-composerInput.addEventListener("compositionend", () => { composerCompositionActive = false; composerIMEConfirmation = true; });
-composerInput.addEventListener("keyup", () => { composerIMEConfirmation = false; });
 composerInput.addEventListener("keydown", (event) => {
-  if (event.isComposing || composerCompositionActive || event.keyCode === 229
-    || (event.key === "Enter" && composerIMEConfirmation)) return;
-  if (event.key !== "Enter") composerIMEConfirmation = false;
-  const chord = window.AgentHubComposerShortcuts.chord(event);
-  const applyShortcut = () => {
-    const action = composerShortcuts.preference().mapping[chord];
-    event.preventDefault();
-    if (action === "newline") {
-      if (!event.repeat || chord !== "ctrlEnter") insertTextAtCaret(composerInput, "\n");
-    } else if (!event.repeat) {
-      if (action === "queue") submitComposer();
-      else submitComposer({ steerWhileRunning: true });
-    }
-  };
-  if (chord === "ctrlEnter" || chord === "shiftEnter") { applyShortcut(); return; }
-  if (chord === "enter" && phoneComposerMode()) return;
+  if (event.isComposing) return;
   if (event.key === "Enter" && event.ctrlKey && !event.metaKey) {
     event.preventDefault();
     if (!event.repeat) insertTextAtCaret(composerInput, "\n");
@@ -8695,14 +8657,13 @@ composerInput.addEventListener("keydown", (event) => {
     }
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
-      if (!event.repeat) runSlashCommand(commands[slashSelection]?.command);
+      runSlashCommand(commands[slashSelection]?.command);
       return;
     }
   }
-  if (chord === "enter" && !phoneComposerMode()) { applyShortcut(); return; }
   if (event.key !== "Enter" || event.shiftKey || phoneComposerMode()) return;
   event.preventDefault();
-  if (!event.repeat) submitComposer({ steerWhileRunning: event.metaKey });
+  submitComposer({ steerWhileRunning: event.metaKey });
 });
 
 slashMenu.addEventListener("click", (event) => {
@@ -8793,7 +8754,7 @@ function sendComposerRequest({
     messageOrigin: requestMessageOrigin,
     composerTransfer: requestComposerTransfer,
     followUpMode: MessageView.composerFollowUpMode(task, { steerWhileRunning }),
-    deferWhileRunning: task?.running === true && !steerWhileRunning,
+    deferWhileRunning: (task?.running === true || task?.canStop === true) && !steerWhileRunning,
     draftStream: task?.draftStream === true,
     streamId: task?.streamId ?? null,
     settings: task?.draftStream ? { ...task.streamSettings } : null,
@@ -8887,6 +8848,7 @@ function currentAttachmentPreviews(taskId = state.selectedId) {
 function disposeAttachmentPreview(entry) {
   if (!attachmentPreparationPreviews.delete(entry)) return;
   for (const item of entry.items) if (item.url) URL.revokeObjectURL(item.url);
+  window.AgentHubComposerFiles.settle(entry.items.flatMap((item) => item.result ? [item.result] : []));
 }
 
 function discardAttachmentPreviews(taskId) {
@@ -8937,14 +8899,19 @@ function renderAttachments() {
     for (const item of previews) {
       strip.append(el("div", {
         class: `attachment attachment-preparing${item.url ? " attachment-image" : " attachment-file"}`,
-        "data-attachment-preparing": "", "aria-busy": "true", title: item.name,
+        "data-attachment-preparing": "", "data-attachment-preparation-id": item.uploadId,
+        "aria-busy": String(item.preparing), title: item.name,
       }, [
         item.url ? el("img", { src: item.url, alt: item.name })
           : el("span", { class: "attachment-file-card", text: item.name }),
-        el("span", { class: "attachment-preparing-label", role: "status", text: "Подготовка…" }),
+        !item.preparing && item.failed ? el("button", {
+          type: "button", class: "attachment-preparing-label", "data-attachment-preparation-retry": item.uploadId,
+          text: "Сбой · Повторить", "aria-label": `Повторить подготовку ${item.name}`,
+        }) : el("span", { class: "attachment-preparing-label", role: "status",
+          text: item.preparing ? "Подготовка…" : "Файл подготовлен" }),
         el("button", {
-          type: "button", class: "attachment-remove", "data-attachment-preparation-remove": "",
-          title: "Отменить подготовку вложений", "aria-label": "Отменить подготовку вложений", text: "×",
+          type: "button", class: "attachment-remove", "data-attachment-preparation-remove": item.uploadId,
+          title: "Удалить вложение", "aria-label": `Удалить ${item.name}`, text: "×",
         }),
       ]));
     }
@@ -9109,8 +9076,28 @@ function formatAttachmentSize(value) {
 }
 
 attachmentsBox.addEventListener("click", (event) => {
-  if (event.target.closest("[data-attachment-preparation-remove]")) {
-    advanceComposerAsyncOperationFence(state.selectedId);
+  const retry = event.target.closest("[data-attachment-preparation-retry]");
+  if (retry) {
+    const entry = [...attachmentPreparationPreviews].find((candidate) => candidate.operation.taskId === state.selectedId
+      && candidate.items.some((item) => item.uploadId === retry.dataset.attachmentPreparationRetry));
+    if (entry) void entry.retry();
+    return;
+  }
+  const preparationRemove = event.target.closest("[data-attachment-preparation-remove]");
+  if (preparationRemove) {
+    const entry = [...attachmentPreparationPreviews].find((candidate) => candidate.operation.taskId === state.selectedId
+      && candidate.items.some((item) => item.uploadId === preparationRemove.dataset.attachmentPreparationRemove));
+    if (!entry) return;
+    const index = entry.items.findIndex((item) => item.uploadId === preparationRemove.dataset.attachmentPreparationRemove);
+    const [item] = entry.items.splice(index, 1);
+    item.removed = true;
+    if (item.url) URL.revokeObjectURL(item.url);
+    if (item.result) window.AgentHubComposerFiles.settle([item.result]);
+    if (!entry.items.length) disposeAttachmentPreview(entry);
+    else if (!entry.busy && entry.items.every((candidate) => candidate.result)) void entry.retry();
+    pruneComposerFiles();
+    renderAttachments();
+    updateSendState();
     return;
   }
   const taskReferenceRemove = event.target.closest("[data-task-reference-index]");
@@ -9123,9 +9110,10 @@ attachmentsBox.addEventListener("click", (event) => {
   const remove = event.target.closest("[data-attachment-index]");
   if (!remove) return;
   const index = Number(remove.dataset.attachmentIndex);
-  advanceComposerAsyncOperationFence(state.selectedId);
   setAttachments(attachments.filter((_, i) => i !== index));
-  saveDraft({ userEdited: true });
+  // Removing one ready file is not a cancellation of other selected Files.
+  // The edit revision still invalidates recovery of the old complete draft.
+  saveDraft({ userEdited: true, preserveAttachmentPreviews: true });
 });
 
 async function readAttachmentFiles(files) {
@@ -9171,76 +9159,98 @@ async function readAttachmentFiles(files) {
     else if (oversized) showToast(`Общий лимит вложений: ${Math.floor(policy.maxTotalBytes / 1024 / 1024)} МБ.`);
     return;
   }
-  pendingAttachmentPreparations += 1;
   const preview = { operation, items: accepted.map((file) => {
     let url = "";
     if (file.type.startsWith("image/")) {
       try { url = URL.createObjectURL(file); } catch { /* Preparation still owns file validation. */ }
     }
-    return { name: file.name, size: file.size, url };
+    return { file, name: file.name, size: file.size, url, uploadId: crypto.randomUUID(), preparing: true };
   }) };
   attachmentPreparationPreviews.add(preview);
-  renderAttachments();
-  updateSendState();
-  let settled;
-  try {
-    settled = await Promise.allSettled(accepted.map((file) => window.AgentHubComposerFiles.prepare(file, {
-      name: file.name,
-      type: file.type || "application/octet-stream",
-      size: file.size,
-    })));
-  } finally {
-    pendingAttachmentPreparations -= 1;
-    disposeAttachmentPreview(preview);
+  preview.retry = async () => {
+    if (preview.busy || !attachmentPreparationPreviews.has(preview)) return;
+    preview.busy = true;
+    pendingAttachmentPreparations += 1;
+    for (const item of preview.items) item.preparing = !item.result;
     renderAttachments();
     updateSendState();
-  }
-  const failed = settled.find((result) => result.status === "rejected");
-  if (failed) {
-    window.AgentHubComposerFiles.settle(settled.filter((result) => result.status === "fulfilled").map((result) => result.value));
-    pruneComposerFiles();
-    showToast(failed.reason?.message ?? "Не удалось прочитать вложение");
-    return;
-  }
-  const loaded = settled.map((result) => result.value);
-  const canonical = window.AgentHubComposerDraftReconciliation.recoveryAttachments(loaded, {
-    maxCount: limit,
-    maxBytes: DRAFT_ATTACHMENT_MAX_BYTES,
-    maxTotalBytes: policy.maxTotalBytes - existingBytes,
-  });
-  if (!canonical) {
-    window.AgentHubComposerFiles.settle(loaded);
-    pruneComposerFiles();
-    showToast("Вложение не прошло проверку целостности.");
-    return;
-  }
-  if ((attachmentOperationSequences.get(operation.taskId) ?? 0) === operationSequence
-    && composerTaskOperationCurrent(operation, { allowDraftEdits: true })) {
-    // Independent pastes append to the current composition. Never replay the
-    // pre-read text/attachments over edits or another completed paste.
-    const current = composerDraftSnapshot(operation.taskId);
-    let bytes = current.attachments.reduce((sum, item) => sum + (Number(item?.size) || 0), 0);
-    const additions = [];
-    for (const item of canonical) {
-      if (current.attachments.length + additions.length >= limit) break;
-      if (bytes + item.size > policy.maxTotalBytes) { oversized += 1; continue; }
-      additions.push(item);
-      bytes += item.size;
+    try {
+      await Promise.all(preview.items.map(async (item) => {
+        if (item.result) return;
+        try {
+          item.result = await window.AgentHubComposerFiles.prepare(item.file, {
+            name: item.file.name, type: item.file.type || "application/octet-stream", size: item.file.size,
+          }, { uploadId: item.uploadId });
+          item.failed = null;
+        } catch (error) { item.failed = error; }
+        finally {
+          item.preparing = false;
+          if ((item.removed || !attachmentPreparationPreviews.has(preview)) && item.result) {
+            window.AgentHubComposerFiles.settle([item.result]);
+            pruneComposerFiles();
+          }
+        }
+      }));
+      if (!attachmentPreparationPreviews.has(preview)
+        || (attachmentOperationSequences.get(operation.taskId) ?? 0) !== operationSequence
+        || !composerTaskOperationCurrent(operation, { allowDraftEdits: true })) {
+        disposeAttachmentPreview(preview);
+        window.AgentHubComposerFiles.settle(preview.items.flatMap((item) => item.result ? [item.result] : []));
+        pruneComposerFiles();
+        return;
+      }
+      const failed = preview.items.find((item) => item.failed);
+      if (failed) {
+        // Keep the original File, preview and successful siblings in this live draft.
+        // Explicit retry performs only the failed work; no message exists yet.
+        showToast(failed.failed?.message ?? "Не удалось прочитать вложение");
+        return;
+      }
+      const loaded = preview.items.map((item) => item.result);
+      const canonical = window.AgentHubComposerDraftReconciliation.recoveryAttachments(loaded, {
+        maxCount: limit,
+        maxBytes: DRAFT_ATTACHMENT_MAX_BYTES,
+        maxTotalBytes: policy.maxTotalBytes - existingBytes,
+      });
+      if (!canonical) {
+        window.AgentHubComposerFiles.settle(loaded);
+        for (const item of preview.items) { item.result = null; item.failed = new Error("Вложение не прошло проверку целостности."); }
+        showToast("Вложение не прошло проверку целостности.");
+        return;
+      }
+      // Independent pastes append to the current composition. Never replay the
+      // pre-read text/attachments over edits or another completed paste.
+      const current = composerDraftSnapshot(operation.taskId);
+      let bytes = current.attachments.reduce((sum, item) => sum + (Number(item?.size) || 0), 0);
+      const additions = [];
+      for (const item of canonical) {
+        if (current.attachments.length + additions.length >= limit) break;
+        if (bytes + item.size > policy.maxTotalBytes) { oversized += 1; continue; }
+        additions.push(item);
+        bytes += item.size;
+      }
+      if (additions.length > 0) {
+        composerDraftReconciliation.save(operation.taskId, {
+          ...current,
+          attachments: [...current.attachments, ...additions],
+        }, { userEdited: true });
+        if (state.selectedId === operation.taskId) restoreDraft();
+      }
+      if (additions.length < canonical.length && !oversized) showToast(`Можно приложить не больше ${limit} файлов.`);
+      window.AgentHubComposerFiles.settle(loaded);
+      disposeAttachmentPreview(preview);
+      pruneComposerFiles();
+      if (selected.length > room) showToast(`Можно приложить не больше ${limit} файлов.`);
+      else if (unsafe) showToast("Часть файлов отклонена: небезопасное имя или тип.");
+      else if (oversized) showToast(`Общий лимит вложений: ${Math.floor(policy.maxTotalBytes / 1024 / 1024)} МБ.`);
+    } finally {
+      preview.busy = false;
+      pendingAttachmentPreparations -= 1;
+      renderAttachments();
+      updateSendState();
     }
-    if (additions.length > 0) {
-      composerDraftReconciliation.save(operation.taskId, {
-        ...current,
-        attachments: [...current.attachments, ...additions],
-      }, { userEdited: true });
-      if (state.selectedId === operation.taskId) restoreDraft();
-    }
-    if (additions.length < canonical.length && !oversized) showToast(`Можно приложить не больше ${limit} файлов.`);
-  }
-  window.AgentHubComposerFiles.settle(loaded);
-  pruneComposerFiles();
-  if (selected.length > room) showToast(`Можно приложить не больше ${limit} файлов.`);
-  else if (unsafe) showToast("Часть файлов отклонена: небезопасное имя или тип.");
-  else if (oversized) showToast(`Общий лимит вложений: ${Math.floor(policy.maxTotalBytes / 1024 / 1024)} МБ.`);
+  };
+  await preview.retry();
 }
 
 document.querySelector("[data-action='attach']").addEventListener("click", () => fileInput.click());
@@ -9682,35 +9692,20 @@ document.addEventListener("keydown", (event) => {
 window.addEventListener("scroll", closeAnnotationContextMenu, true);
 
 let pendingResource = null;
-let pendingResourceOpener = null;
 
 function closeResourceContextMenu() {
   pendingResource = null;
-  pendingResourceOpener = null;
   resourceContextMenu.hidden = true;
 }
 
 function openResourceContextMenu(event, resource) {
   pendingResource = resource;
-  pendingResourceOpener = event?.target?.closest?.("button, a") ?? document.activeElement;
   const actions = new Set(resourceInteractions.resourceActions(resource, {
     localWorkspaceFilesAvailable: directoryBrowseAvailable,
     vscode: vscodeMode,
   }));
   for (const button of resourceContextMenu.querySelectorAll("[data-resource-action]")) {
     button.hidden = !actions.has(button.dataset.resourceAction);
-  }
-  for (const divider of resourceContextMenu.querySelectorAll("[data-resource-action-divider]")) {
-    divider.hidden = !actions.has(divider.dataset.resourceActionDivider);
-  }
-  const shareAction = resourceContextMenu.querySelector('[data-resource-action="external-share"]');
-  if (shareAction && actions.has("external-share")) {
-    const sharePath = resourceInteractions.workspaceFilePath(resource.localPath);
-    shareAction.textContent = window.AgentHubFileTransferOwner?.actionLabel(sharePath)
-      ?? "Создать внешнюю ссылку…";
-    void window.AgentHubFileTransferOwner?.probe(sharePath).then((label) => {
-      if (pendingResource?.localPath === resource.localPath) shareAction.textContent = label;
-    });
   }
   resourceContextMenu.hidden = false;
   const rect = resourceContextMenu.getBoundingClientRect();
@@ -9741,10 +9736,9 @@ resourceContextMenu.addEventListener("click", (event) => {
   const button = event.target.closest("[data-resource-action]");
   if (!button || !pendingResource) return;
   const resource = pendingResource;
-  const trigger = pendingResourceOpener;
   const action = button.dataset.resourceAction;
   closeResourceContextMenu();
-  emit(`resource:${action}`, { resource, trigger });
+  emit(`resource:${action}`, { resource });
 });
 
 document.addEventListener("pointerdown", (event) => {
@@ -9773,10 +9767,10 @@ function composerDraftSnapshot(taskId) {
   );
 }
 
-function saveDraft({ userEdited = false } = {}) {
+function saveDraft({ userEdited = false, preserveAttachmentPreviews = false } = {}) {
   if (!state.selectedId) return;
   const draft = composerDraftSnapshot(state.selectedId);
-  if (userEdited && !window.AgentHubComposerDraftReconciliation.hasDraftContent(draft)
+  if (userEdited && !preserveAttachmentPreviews && !window.AgentHubComposerDraftReconciliation.hasDraftContent(draft)
     && window.AgentHubComposerDraftReconciliation.hasDraftContent(drafts.get(state.selectedId))) {
     advanceComposerAsyncOperationFence(state.selectedId);
   }
@@ -9813,7 +9807,7 @@ function prepareForRuntimeReload() {
     draftsPersisted,
     drafts: drafts.values(),
     modalOpen,
-    requestPending: Boolean(pendingComposerRequest) || pendingAttachmentPreparations > 0,
+    requestPending: Boolean(pendingComposerRequest) || pendingAttachmentPreparations > 0 || attachmentPreparationPreviews.size > 0,
     bugReportAttachments,
     bugReportSending,
   })) return false;
@@ -9984,7 +9978,6 @@ bugReportToggle?.addEventListener("click", () => {
 });
 document.addEventListener("contextmenu", (event) => {
   if (event.defaultPrevented) return;
-  if (surface === "mobile" && !vscodeMode && event.target.closest("[data-mobile-workspace-drawer]")) return;
   const workspace = event.target.closest("[data-workspace-heading], [data-board-workspace-id]");
   if (workspace) {
     event.preventDefault();
@@ -11399,7 +11392,6 @@ async function handleAction(action, trigger) {
 
 document.addEventListener("pointerdown", (event) => {
   if (!contextUsageModal?.open) return;
-  if (surface === "mobile" && !vscodeMode) return;
   if (contextUsageModal.contains(event.target) || contextUsageButton?.contains(event.target)) return;
   closeContextUsage();
 });
@@ -11551,7 +11543,6 @@ const AgentHub = {
       && sameData(state.workspaceColumnOrder, nextColumnOrder)) return;
     state.workspaces = nextWorkspaces;
     state.workspaceColumnOrder = nextColumnOrder;
-    mobileDialogs?.sync();
     if (journalRendered) updateJournalStreamCount();
   },
   setArchivedWorkspaces(workspaces) {
@@ -11559,7 +11550,6 @@ const AgentHub = {
     if (sameData(state.archivedWorkspaces, next)) return;
     state.archivedWorkspaces = next;
     renderWorkspaceArchive();
-    mobileDialogs?.sync();
   },
   renameWorkspaceFolderCatalog,
   openDialogSettings,
@@ -12002,7 +11992,6 @@ const AgentHub = {
   showSelectedTask() {
     setView("chat");
     setPane("chat");
-    mobileDialogs?.showSelected();
   },
   addSelectedAnnotation() {
     return addAnnotation(selectedQuotableSelection() || lastAnnotationSelection);
@@ -18130,41 +18119,6 @@ if (vscodeMode) {
 /* ------------------------------------------------------------- инициализация */
 
 AgentHub.setConnection(telegramMode ? "online" : "connecting");
-
-mobileDialogs = window.AgentHubMobileDialogs.create({
-  root, state, currentTask, workspaceKey,
-  workspaceStreams: (tasks) => orderedWorkspaceStreams(workspaceStreams(tasks), tasks[0] ? workspaceKey(tasks[0]) : ""),
-  representativeStreamTask,
-  selectTask: (id) => selectTaskFromUi(id), setView, setPane,
-  isMobile: () => surface === "mobile" && !vscodeMode,
-  formatTime: (value) => formatRelativeTime(activityTimestamp(value)), shortModel: shortModelLabel,
-  openSearch: openWorkspaceMessageSearch, openSettings: openPanel,
-  openWorkspaceCard, workspaceDialog: workspaceCardModal, renameWorkspaceFolder,
-  textDialog: dialog, cancelTextDialog: () => closeDialog(null),
-  createStream: (workspaceId) => emit("stream:new", { workspaceId }),
-  retryConnection: () => emit("connection:retry", { taskId: state.selectedId }),
-  closeNative: (opened) => {
-    if (opened === attachmentViewer || opened === attachmentViewerStage) { closeAttachmentViewer(); return true; }
-    if (opened === contextUsageModal) { closeContextUsage(); return true; }
-    return false;
-  },
-  closeTransient: () => {
-    const menus = [streamContextMenu, workspaceContextMenu, workspaceFolderContextMenu,
-      annotationContextMenu, resourceContextMenu];
-    const shown = menus.find((menu) => menu && !menu.hidden);
-    if (shown) {
-      closeStreamContextMenu(); closeWorkspaceContextMenu(); closeWorkspaceFolderContextMenu();
-      closeAnnotationContextMenu(); closeResourceContextMenu(); return true;
-    }
-    if (!document.querySelector("dialog[open]")) {
-      if (!dialog.hidden) { closeDialog(null); return true; }
-      if (state.workspaceMessageSearch.open) { closeWorkspaceMessageSearch(); return true; }
-      if (!settingsPanel.hidden) { closePanel(); return true; }
-    }
-    return false;
-  },
-});
-mobileDialogs.sync();
 const taskDurationTimer = window.setInterval(refreshTaskDurations, 1_000);
 void ensureComposerDraftsRestored();
 window.addEventListener("pagehide", () => {

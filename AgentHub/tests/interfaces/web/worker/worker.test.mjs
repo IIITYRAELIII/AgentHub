@@ -16,7 +16,8 @@ async function loadWorker() {
     .replace(
       'import { DurableObject } from "cloudflare:workers";',
       "class DurableObject { constructor(ctx, env) { this.ctx = ctx; this.env = env; } }",
-    );
+    ).replace('from "../../src/application/client-performance-trace.mjs";',
+      `from "${new URL("../../../../src/application/client-performance-trace.mjs", import.meta.url).href}";`);
   return import(`data:text/javascript;base64,${Buffer.from(source).toString("base64")}#${Date.now()}-${Math.random()}`);
 }
 

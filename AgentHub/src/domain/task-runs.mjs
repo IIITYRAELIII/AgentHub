@@ -380,6 +380,16 @@ export function markProviderTurnRequested(run, {
   return run.providerStart;
 }
 
+export function providerTurnAcceptance(run) {
+  const start = run?.providerStart;
+  const turnId = String(run?.turnId ?? "").trim();
+  const accepted = Boolean(turnId) && turnId === String(start?.turnId ?? "").trim()
+    && ["accepted-awaiting-first-event", "observed"].includes(start?.state);
+  const acceptedAt = accepted && Number.isFinite(Date.parse(start?.acceptedAt ?? ""))
+    ? String(start.acceptedAt) : null;
+  return { accepted, acceptedAt };
+}
+
 export function markProviderTurnAccepted(run, {
   turnId,
   acceptedAt = Date.now(),

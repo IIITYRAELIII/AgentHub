@@ -5,19 +5,20 @@ import { RuntimeResourceRegistry } from "../runtime/runtime-resource-registry.mj
 import { RuntimeRestartController } from "../runtime/runtime-restart-controller.mjs";
 import {
   botReplacementInvocation,
-  directWindowsLauncherInvocation,
   launchReplacementAndWait,
 } from "../runtime/runtime-restart.mjs";
 import {
   finalizeSuccessfulReplacement,
   restorePreviousBotAfterFailedReplacement,
 } from "../runtime/restart-recovery.mjs";
+import { readFile } from "node:fs/promises";
 import { sentryDiagnostics } from "../infrastructure/diagnostics/sentry-diagnostics.mjs";
 
 export function createRuntimeRestartComposition({
   getRestartRequest,
   setRestartRequest,
   completeRestartOperation = () => {},
+  checkpointRestartOperation = async () => {},
   failRestartOperation = () => {},
   isStopping,
   setStopping,
@@ -30,9 +31,11 @@ export function createRuntimeRestartComposition({
   botMenu,
   journalStartupReady,
   runtimeStateCoordinator,
+  storageRetention = null,
   telegramDeliveryService,
   mediaController,
   taskSyncStore,
+  taskDiffs,
   messagePins,
   workspaceCatalogStore,
   deliveryOutbox,
@@ -48,7 +51,6 @@ export function createRuntimeRestartComposition({
   workLogUsageStore,
   rateLimitHistoryStore,
   providerTurnTelemetryStore,
-  fileTransferService,
   taskReadStateStore,
   runtimeStateStore,
   commandTrace,
@@ -84,11 +86,13 @@ export function createRuntimeRestartComposition({
   const runtimeResources = new RuntimeResourceRegistry({
     captureException: (error, context) => sentryDiagnostics.captureException(error, context),
     drain: [
+      { name: "storage retention", run: () => storageRetention?.close?.() },
       { name: "journal startup", run: () => journalStartupReady },
       { name: "state writes", run: () => runtimeStateCoordinator.flush() },
       { name: "message binding writes", run: () => telegramDeliveryService.waitForBindingWrites() },
       { name: "media writes", run: () => mediaController.waitForWrites() },
       { name: "task sync", run: () => taskSyncStore.save() },
+      ...(taskDiffs ? [{ name: "task diffs", run: () => taskDiffs.flush() }] : []),
       { name: "delivery outbox", run: () => deliveryOutbox.waitForIdle({ flush: true }) },
       { name: "background jobs", run: () => backgroundJobStore.waitForWrites() },
       { name: "failed updates", run: () => failedUpdateStore.waitForWrites() },
@@ -117,7 +121,6 @@ export function createRuntimeRestartComposition({
       { name: "work log usage", run: () => workLogUsageStore.close() },
       { name: "rate limit history", run: () => rateLimitHistoryStore.close() },
       { name: "provider turn telemetry", run: () => providerTurnTelemetryStore?.close?.() },
-      { name: "file transfer", run: () => fileTransferService?.close?.() },
       { name: "task sync store", run: () => taskSyncStore.close() },
       { name: "message pin store", run: () => messagePins?.close?.() },
       { name: "workspace catalog store", run: () => workspaceCatalogStore.close() },
@@ -129,6 +132,9 @@ export function createRuntimeRestartComposition({
 
   const runtimeRestart = new RuntimeRestartController({
     captureException: (error, context) => sentryDiagnostics.captureException(error, context),
+    measure: (id, stage, action) => commandTrace?.measureBestEffort
+      ? commandTrace.measureBestEffort({ commandId: id, stage: `restart-${stage}`, transport: "runtime" }, action)
+      : action(),
     getRequest: getRestartRequest,
     updateOffset,
     hasBlockingWork,
@@ -142,15 +148,23 @@ export function createRuntimeRestartComposition({
     stopMedia: () => mediaController.stop(),
     resumeAfterAbort: () => startRuntimeTimers(),
     launchReplacement: async () => {
+      const operationId = getRestartRequest()?.operationId;
+      const pointer = JSON.parse(await readFile(path.join(agentHubRoot, "..", "..", "current.json"), "utf8").catch(() => "{}"));
+      const expectedReleaseId = pointer.current ?? process.env.AGENT_HUB_RELEASE_ID ?? "";
+      if (process.env.AGENT_HUB_LAUNCHER && !pointer.current) throw new Error("Restart has no exact current release");
+      await checkpointRestartOperation(operationId, "launching", { expectedReleaseId, oldPid: process.pid });
       const invocation = botReplacementInvocation({
         botFile: path.join(agentHubRoot, "agent-hub-main.mjs"),
         agentHubRoot,
+        environment: { ...process.env, AGENT_HUB_RESTART_OPERATION_ID: operationId ?? "" },
       });
-      const launcher = String(process.env.AGENT_HUB_LAUNCHER ?? "").trim();
-      const fallbackInvocation = process.platform === "win32" && launcher
-        ? directWindowsLauncherInvocation({ launcher })
-        : null;
-      return launchReplacementAndWait({ invocation, fallbackInvocation, lockFile: instanceLockFile });
+      return launchReplacementAndWait({ invocation, lockFile: instanceLockFile,
+        expectedReleaseId, expectedOperationId: operationId ?? "",
+        measure: (stage, action) => commandTrace?.measureBestEffort
+          ? commandTrace.measureBestEffort({ commandId: operationId, stage: `restart-${stage}`,
+            transport: "runtime", metadata: { expectedReleaseId, oldPid: process.pid } }, action)
+          : action(),
+      });
     },
     recoverPrevious: (error, { lockReleased }) => restorePreviousBotAfterFailedReplacement({
       replacementError: error,

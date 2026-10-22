@@ -188,11 +188,27 @@ export class RestartRequestService {
     return true;
   }
 
+  async checkpoint(operationId, phase, metadata) {
+    const operation = await this.#transition(operationId, {
+      status: MAINTENANCE_OPERATION_STATUSES.RUNNING, phase, metadata, blockers: [],
+    });
+    if (!operation) throw new Error("Restart launch intent is no longer active");
+    this.#project(operation);
+    await this.saveState();
+    return operation;
+  }
+
   complete(operationId = this.getRequest()?.operationId) {
     if (!operationId) return null;
-    return mutateRestartOperation(this.operationStore, () => this.operationStore.settle(
-      operationId, { succeeded: true, phase: "completed" },
-    ), operationId);
+    return mutateRestartOperation(this.operationStore, () => {
+      const current = this.operationStore.get(operationId);
+      if (maintenanceOperationIsTerminal(current)) return current;
+      const expected = current?.metadata?.expectedReleaseId;
+      if (expected && expected !== process.env.AGENT_HUB_RELEASE_ID) {
+        throw new Error("Replacement release does not match the persisted restart intent");
+      }
+      return this.operationStore.settle(operationId, { succeeded: true, phase: "completed" });
+    }, operationId);
   }
 
   async fail(operationId = this.getRequest()?.operationId, error = null) {

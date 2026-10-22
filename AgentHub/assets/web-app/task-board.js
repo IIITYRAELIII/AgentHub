@@ -54,6 +54,7 @@
         `    Состояние: ${workspace.dirty === true ? "dirty" : "clean"}`,
         ...cleanupPaths("    Изменённые пути", workspace.changedPaths),
         ...cleanupPaths("    Untracked пути", workspace.untrackedPaths),
+        ...cleanupPaths("    Игнорируемые данные (сохранить)", workspace.ignoredPaths),
       );
     }
     lines.push("", `Общее dirty-состояние: ${preview.dirty === true ? "dirty" : "clean"}`, "", "Результат и публикация:");

@@ -1,5 +1,6 @@
 import path from "node:path";
 import { mkdir, lstat, readFile, writeFile } from "node:fs/promises";
+import { createSelectedGitBundle } from "./selected-git-bundle.mjs";
 import { createHash } from "node:crypto";
 import { taskGitIdentityHash } from "../../domain/task-git-reference.mjs";
 import { selectedCompositionFields, normalizedSelectedAbsorption, selectedAbsorptionHandoff }
@@ -17,7 +18,22 @@ function failure(message, code = "RELEASE_NATIVE_HISTORY_REQUIRED", details = {}
   return Object.assign(new Error(message), { code, ...details });
 }
 
-export async function assertNativeTaskHistories({ git, baseCommit, tasks }) {
+async function metadataEntry(git, commit, file) {
+  const output = String(await git(["--literal-pathspecs", "ls-tree", "--full-tree", "-z", commit, "--", file],
+    { rawOutput: true }));
+  if (!output) return null;
+  const records = output.split("\0");
+  const match = /^(\d{6}) blob ([a-f0-9]{40})\t([\s\S]*)$/u.exec(records[0]);
+  if (records.length !== 2 || records[1] !== "" || !match || match[3] !== file) {
+    throw failure("Native metadata lookup is malformed or ambiguous");
+  }
+  return `${match[1]} ${match[2]}`;
+}
+
+export async function assertNativeTaskHistories({ git, baseCommit, tasks, historyAuthority = null }) {
+  // Internal context, verified by the owning caller at every effect boundary.
+  // Only Test may include its already managed dev ancestry here.
+  const bases = [...new Set([baseCommit, ...(historyAuthority?.bases ?? [])])];
   const owned = new Set();
   const histories = [];
   for (const task of tasks) {
@@ -27,28 +43,38 @@ export async function assertNativeTaskHistories({ git, baseCommit, tasks }) {
       throw failure(`Task ${task.taskId} requires a main-based result or explicit historical migration`);
     }
     const rows = String(await git([
-      "rev-list", "--first-parent", "--parents", "--max-count=513", task.resultCommit, `^${baseCommit}`,
+      "rev-list", "--first-parent", "--parents", "--max-count=513", task.resultCommit, ...bases.map(b => `^${b}`),
     ])).split(/\r?\n/u).filter(Boolean).map((row) => row.split(" "));
     if (rows.length > 512) throw failure(`Task ${task.taskId} history exceeds the native merge bound`);
     for (const [commit] of rows) owned.add(commit);
     histories.push({ task, rows });
+    const adopted = (historyAuthority?.adoptions ?? []).filter(a => a.taskId === task.taskId
+      && a.resultCommit === task.resultCommit);
+    const metadataBases = [...new Set([taskBase, ...(historyAuthority?.metadataBases ?? []),
+      ...adopted.map(a => a.adoptedCommit)])];
     const metadata = String(await git([
-      "diff", "--name-only", "--no-renames", taskBase, task.resultCommit,
+      "diff", "--name-only", "--no-renames", "-z", taskBase, task.resultCommit,
       "--", "CHANGELOG.md", ":(glob)**/CHANGELOG.md",
-    ]));
-    if (metadata) throw failure(`Task ${task.taskId} changes release-owned CHANGELOG metadata`);
-    const packages = String(await git(["diff", "--name-only", "--no-renames", taskBase, task.resultCommit,
+    ], { rawOutput: true }));
+    for (const file of metadata.split("\0").filter(Boolean)) {
+      const entry = await metadataEntry(git, task.resultCommit, file);
+      const known = [];
+      for (const b of metadataBases) known.push(await metadataEntry(git, b, file));
+      if (entry === null || !known.includes(entry)) throw failure(`Task ${task.taskId} changes release-owned CHANGELOG metadata`);
+    }
+    const packages = String(await git(["diff", "--name-only", "--no-renames", "-z", taskBase, task.resultCommit,
       "--", "package.json", "package-lock.json", ":(glob)**/package.json", ":(glob)**/package-lock.json",
-    ])).split(/\r?\n/u).filter(Boolean);
+    ], { rawOutput: true })).split("\0").filter(Boolean);
     for (const file of packages) {
-      const priorBytes = await maybe(git, ["show", `${taskBase}:${file}`]);
-      if (priorBytes === null) continue; // New packages are Task content, not an existing frozen version.
+      const priors = [];
+      for (const b of metadataBases) priors.push(await maybe(git, ["show", `${b}:${file}`]));
+      if (priors.every(bytes => bytes === null)) continue; // New packages are Task content.
       const nextBytes = await maybe(git, ["show", `${task.resultCommit}:${file}`]);
-      const prior = JSON.parse(priorBytes);
       const next = nextBytes === null ? null : JSON.parse(nextBytes);
-      if ((prior.version !== undefined && prior.version !== next?.version)
-          || (prior.packages?.[""]?.version !== undefined
-            && prior.packages[""].version !== next?.packages?.[""]?.version)) {
+      if (!priors.filter(bytes => bytes !== null).map(bytes => JSON.parse(bytes)).some(prior =>
+        (prior.version === undefined || prior.version === next?.version)
+          && (prior.packages?.[""]?.version === undefined
+            || prior.packages[""].version === next?.packages?.[""]?.version))) {
         throw failure(`Task ${task.taskId} changes release-owned package-version metadata: ${file}`);
       }
     }
@@ -88,8 +114,14 @@ export async function assertNativeTaskHistories({ git, baseCommit, tasks }) {
     for (const [commit, ...parents] of rows) {
       if (parents.length > 2 || !parents.length) throw failure(`Task ${task.taskId} has unsupported result history`);
       for (const side of parents.slice(1)) {
+        const trustedBases = [...bases, ...(historyAuthority?.adoptions ?? [])
+          .filter(a => a.taskId === task.taskId && a.resultCommit === task.resultCommit).map(a => a.adoptedCommit)];
+        let contained = false;
+        for (const b of trustedBases) {
+          if (await maybe(git, ["merge-base", "--is-ancestor", side, b]) !== null) { contained = true; break; }
+        }
         if (!owned.has(side) && !(authorizedSide?.commit === commit && authorizedSide.source === side)
-            && await maybe(git, ["merge-base", "--is-ancestor", side, baseCommit]) === null) {
+            && !contained) {
           throw failure(`Task ${task.taskId} contains an unselected merge side; migrate it explicitly`,
             "RELEASE_NATIVE_HISTORY_REQUIRED", { taskId: task.taskId, sideCommit: side });
         }
@@ -173,8 +205,8 @@ async function verifyMergeStep(git, before, result, target, { identity, review =
 
 // Verify an already accepted native candidate without composing another one.
 export async function assertNativePreparedComposition({ git, baseCommit, tasks, merges, head, tree,
-  identity = { policy: NATIVE_RELEASE_POLICY, baseCommit, tasks }, verifyReview = null }) {
-  await assertNativeTaskHistories({ git, baseCommit, tasks });
+  identity = { policy: NATIVE_RELEASE_POLICY, baseCommit, tasks }, verifyReview = null, historyAuthority = null }) {
+  await assertNativeTaskHistories({ git, baseCommit, tasks, historyAuthority });
   if (!Array.isArray(merges) || merges.length !== tasks.length) throw failure("Prepared native selection changed");
   let prefix = baseCommit;
   for (const [index, step] of merges.entries()) {
@@ -215,10 +247,8 @@ export async function mergeSelectedResults({
     const bundle = path.join(root, "source.bundle");
     const inputs = [...new Set([baseCommit, ...tasks.map(task => task.resultCommit)])];
     // The existing owner may have fetched an exact result with no local ref.
-    // Include its ancestry explicitly; stdin avoids a platform argv-size limit.
-    await gitAt(sourceRoot, ["bundle", "create", bundle, "--all", "--stdin"], {
-      input: `${inputs.join("\n")}\n`,
-    });
+    // Private exact refs include that ancestry without a growing revision argv.
+    await createSelectedGitBundle({ root, sourceRoot, bundle, inputs, gitAt });
     await gitAt(root, ["clone", "--no-local", "--no-hardlinks", "--no-checkout", bundle, repository]);
     const git = (args) => gitAt(repository, args);
     for (const commit of inputs) {

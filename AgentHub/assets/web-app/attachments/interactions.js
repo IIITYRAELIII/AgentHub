@@ -225,18 +225,14 @@
     };
   }
 
-  function workspaceFilePath(value) {
-    return fileReferenceParts(String(value ?? ""))?.file ?? String(value ?? "").trim();
-  }
-
   function resourceActions(resource, {
     localWorkspaceFilesAvailable: localFilesAvailable = true,
     vscode = false,
   } = {}) {
     if (resource?.kind !== "link") return ["copy", "save"];
     if (String(resource?.localPath ?? "").trim()) {
-      if (!vscode && !localFilesAvailable) return ["save", "copy-path", "external-share"];
-      return ["open-editor", "reveal", "copy-path", "copy-object", "save", "external-share"];
+      if (!vscode && !localFilesAvailable) return ["save", "copy-path"];
+      return ["open-editor", "reveal", "copy-path", "copy-object", "save"];
     }
     return ["open", "copy", "save"];
   }
@@ -303,7 +299,6 @@
     normalizeWindowsPath,
     revealWorkspaceFileResource,
     workspaceFileRevealBridgeFallbackAllowed,
-    workspaceFilePath,
     resourceActions,
     resolveFileReference,
     shouldDismissViewer,

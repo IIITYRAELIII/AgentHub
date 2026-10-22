@@ -75,6 +75,7 @@ export function createDesktopReadSystemWiring({
         recent: services.readProviderTurnTelemetry,
       },
       board: {
+        get snapshotRevision() { return services.taskBoardSnapshotRevision?.(); },
         snapshot: services.taskBoardSnapshot,
         workspaces: services.taskBoardWorkspaces,
         archivedWorkspaces: services.archivedWorkspaces,

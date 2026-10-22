@@ -8,6 +8,35 @@ import { RestartRequestService } from "../../src/application/restart-request-ser
 import { createRuntimeRestartComposition } from "../../src/composition/runtime-restart-composition.mjs";
 import { restartRequestProjection, restartUiProjection } from "../../src/domain/maintenance-operation.mjs";
 import { MaintenanceOperationStore } from "../../src/infrastructure/persistence/maintenance-operation-store.mjs";
+import { TaskDiffStore } from "../../src/infrastructure/persistence/task-diff-store.mjs";
+
+test("the existing restart drain persists the latest remembered diff before replacement", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(),"hub315-drain-"));
+  const filePath = path.join(root,"diffs.json");
+  const noop = async()=>{};
+  const taskDiffs = new TaskDiffStore({filePath});
+  try {
+    await taskDiffs.set("one","old");
+    taskDiffs.remember("one","last");
+    taskDiffs.remember("two","independent");
+    const {runtimeResources} = createRuntimeRestartComposition({
+      taskDiffs,journalStartupReady:Promise.resolve(),
+      stopCodexAppServerTree:noop,
+      getRestartRequest:()=>null,updateOffset:()=>0,hasBlockingWork:()=>false,
+      setWaiting:noop,updateRestartMessage:noop,saveState:noop,
+      beginStopping:()=>true,stopRuntimeTimers:noop,
+      runtimeStateCoordinator:{flush:noop},
+      telegramDeliveryService:{waitForBindingWrites:noop},
+      mediaController:{waitForWrites:noop}, taskSyncStore:{save:noop},
+      deliveryOutbox:{waitForIdle:noop}, backgroundJobStore:{waitForWrites:noop},
+      failedUpdateStore:{waitForWrites:noop},
+    });
+    await runtimeResources.drain();
+    const reopened = new TaskDiffStore({filePath}); await reopened.load();
+    assert.equal(reopened.get("one"),"last");
+    assert.equal(reopened.get("two"),"independent");
+  } finally { await rm(root,{recursive:true,force:true}); }
+});
 
 test("deferred restart recovery settles durable cutover before readiness and permits a new request", async (t) => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-restart-recovery-"));

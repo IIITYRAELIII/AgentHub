@@ -3,7 +3,10 @@
 
   const MAX_PENDING = 256;
   const BATCH_SIZE = 32;
+  const UPLOAD_TRACE_KEY = "agent-hub-upload-trace-v1";
+  const UPLOAD_TRACE_TTL_MS = 24 * 60 * 60 * 1_000;
   const pending = [];
+  const retainedUploadEvents = new Map();
   const objectIds = new WeakMap();
   const recentInteractions = [];
   const views = new Set(["chat", "dashboard", "journal", "statistics", "background", "server", "tasks"]);
@@ -24,6 +27,7 @@
   let reportedCount = 0;
   let failedBatches = 0;
   let activeId = "";
+  let retryDelayMs = 1_000;
   const pendingPaints = new Set();
   const now = () => global.performance.now();
   const newId = () => typeof global.crypto.randomUUID === "function" ? global.crypto.randomUUID()
@@ -34,22 +38,95 @@
   const view = () => views.has(global.document?.documentElement?.dataset?.view)
     ? global.document.documentElement.dataset.view : "chat";
 
+  function persistUploadEvents() {
+    try {
+      const current = Date.now();
+      const cutoff = current - UPLOAD_TRACE_TTL_MS;
+      for (const [id, event] of retainedUploadEvents) {
+        if (!Number.isSafeInteger(event.observedAtMs) || event.observedAtMs < cutoff
+          || event.observedAtMs > current + 60_000) retainedUploadEvents.delete(id);
+      }
+      global.localStorage?.setItem(UPLOAD_TRACE_KEY, JSON.stringify([...retainedUploadEvents.values()]));
+    } catch { /* Diagnostics must never change the upload outcome. */ }
+  }
+
+  function pruneExpiredPending() {
+    const current = Date.now();
+    const cutoff = current - UPLOAD_TRACE_TTL_MS;
+    let cacheChanged = false;
+    for (let index = pending.length - 1; index >= 0; index -= 1) {
+      const event = pending[index];
+      if (event.stage === "client-ack") continue;
+      if (Number.isSafeInteger(event.observedAtMs) && event.observedAtMs >= cutoff
+        && event.observedAtMs <= current + 60_000) continue;
+      pending.splice(index, 1);
+      if (retainedUploadEvents.delete(event.traceEventId)) cacheChanged = true;
+      droppedCount += 1;
+    }
+    if (cacheChanged) persistUploadEvents();
+  }
+
+  try {
+    const cutoff = Date.now() - UPLOAD_TRACE_TTL_MS;
+    const saved = JSON.parse(global.localStorage?.getItem(UPLOAD_TRACE_KEY) || "[]");
+    if (Array.isArray(saved)) for (const event of saved.slice(-MAX_PENDING)) {
+      if (event?.stage === "attachment-upload" && typeof event.traceEventId === "string"
+        && Number.isSafeInteger(event.observedAtMs) && event.observedAtMs >= cutoff
+        && event.observedAtMs <= Date.now() + 60_000) {
+        retainedUploadEvents.set(event.traceEventId, event);
+        pending.push(event);
+      }
+    }
+  } catch { /* An unavailable or damaged diagnostic cache cannot block the app. */ }
+  persistUploadEvents();
+
   function schedule() {
     if (timer !== null || !reporter || !pending.length) return;
-    timer = global.setTimeout(() => { timer = null; void flush(); }, 1_000);
+    timer = global.setTimeout(() => { timer = null; void flush(); }, retryDelayMs);
   }
 
   async function flush() {
+    pruneExpiredPending();
     if (flushing || !reporter || !pending.length) return;
     flushing = true;
     const events = pending.splice(0, BATCH_SIZE);
-    try { await reporter({ events }); reportedCount += events.length; }
-    catch { failedBatches += 1; droppedCount += events.length; }
+    try {
+      await reporter({ events });
+      reportedCount += events.length;
+      retryDelayMs = 1_000;
+      for (const event of events) retainedUploadEvents.delete(event.traceEventId);
+      persistUploadEvents();
+    } catch {
+      failedBatches += 1;
+      retryDelayMs = Math.min(60_000, retryDelayMs * 2);
+      const uploadEvents = events.filter((event) => event.stage === "attachment-upload");
+      droppedCount += events.length - uploadEvents.length;
+      pending.unshift(...uploadEvents);
+      pruneExpiredPending();
+      if (pending.length > MAX_PENDING) {
+        const evicted = pending.splice(MAX_PENDING);
+        for (const event of evicted) retainedUploadEvents.delete(event.traceEventId);
+        droppedCount += evicted.length;
+        persistUploadEvents();
+      }
+    }
     finally { flushing = false; schedule(); }
   }
 
   function enqueue(event) {
-    if (pending.length >= MAX_PENDING) { droppedCount += 1; return; }
+    pruneExpiredPending();
+    if (pending.length >= MAX_PENDING) {
+      if (event.stage !== "attachment-upload") { droppedCount += 1; return; }
+      const evicted = pending.shift();
+      retainedUploadEvents.delete(evicted.traceEventId);
+      droppedCount += 1;
+    }
+    if (event.stage === "attachment-upload") {
+      event.traceEventId = newId();
+      retainedUploadEvents.set(event.traceEventId, event);
+      if (retainedUploadEvents.size > MAX_PENDING) retainedUploadEvents.delete(retainedUploadEvents.keys().next().value);
+      persistUploadEvents();
+    }
     pending.push(event);
     schedule();
   }
@@ -107,6 +184,47 @@
       return succeeded(result);
     } catch (error) { return failed(error); }
     finally { activeId = previous; }
+  }
+
+  function upload(action, operation, { uploadId, uploadAttemptId, messageRequestId, httpRequestId, chunkIndex } = {}) {
+    if (typeof uploadId !== "string" || !uploadId) return operation();
+    const identity = { uploadId, ...(typeof uploadAttemptId === "string" ? { uploadAttemptId } : {}),
+      ...(typeof httpRequestId === "string" ? { httpRequestId } : {}),
+      ...(typeof messageRequestId === "string" ? { messageRequestId } : {}),
+      ...(Number.isSafeInteger(chunkIndex) && chunkIndex >= 0 ? { chunkIndex } : {}) };
+    let finish;
+    try { finish = begin("attachment-upload", action, uploadId, now(), identity); }
+    catch { return operation(); }
+    const safeFinish = (outcome, details) => {
+      try { finish(outcome, details); } catch { /* Diagnostics cannot change the upload result. */ }
+    };
+    const succeeded = (value) => {
+      const details = {};
+      if (Number.isInteger(value?.status)) details.statusCode = value.status;
+      try {
+        const timing = value?.headers?.get?.("Server-Timing") ?? "";
+        for (const part of timing.split(",")) {
+          const match = part.trim().match(/^(auth|body|storage|owner);dur=([0-9]+(?:\.[0-9]+)?)$/u);
+          if (match) details[`server${match[1][0].toUpperCase()}${match[1].slice(1)}Ms`] = Number(match[2]);
+        }
+      } catch { /* Optional server timing must not change the response. */ }
+      safeFinish(value?.status >= 400 ? "failed" : "succeeded", details);
+      return value;
+    };
+    const failed = (error) => {
+      safeFinish(error?.name === "AbortError" ? "cancelled" : "failed", {
+        ...(Number.isInteger(error?.attachmentUploadStatus) ? { statusCode: error.attachmentUploadStatus } : {}),
+        ...(["absent", "expired", "cancelled"].includes(error?.attachmentUploadState)
+          ? { uploadState: error.attachmentUploadState } : {}),
+        failureKind: error?.name === "AbortError" ? "aborted"
+          : error?.name === "TimeoutError" ? "timeout" : "error",
+      });
+      throw error;
+    };
+    try {
+      const result = operation();
+      return result && typeof result.then === "function" ? result.then(succeeded, failed) : succeeded(result);
+    } catch (error) { return failed(error); }
   }
 
   function afterPaint(stage, action, started, commandId, metadata = {}, observe = null) {
@@ -177,7 +295,7 @@
   global.addEventListener?.("pagehide", () => { void flush(); });
 
   global.AgentHubCommandTrace = Object.freeze({
-    record, measure, afterPaint, now, newId, surface,
+    record, measure, upload, afterPaint, now, newId, surface,
     http(action, operation, commandId) {
       return measure("ui-control", action, operation, commandId, (response) => ({
         outcome: response.status >= 400 ? "failed" : "succeeded",
@@ -204,7 +322,8 @@
     },
     bindReporter(value) { reporter = value; schedule(); },
     flush,
-    diagnostics: () => ({ pending: pending.length, paintPending: pendingPaints.size,
+    diagnostics: () => ({ pending: pending.length, retainedUpload: retainedUploadEvents.size,
+      paintPending: pendingPaints.size,
       flushing, droppedCount, reportedCount, failedBatches }),
   });
 })(window);

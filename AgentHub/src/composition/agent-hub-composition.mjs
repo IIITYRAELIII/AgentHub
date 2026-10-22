@@ -79,7 +79,7 @@ const localWebSecret = config.miniApp.enabled
   ? await ensureLocalWebSecret(path.join(runtimeCommandRoot, "local-web.secret"))
   : "";
 const { value: {
-  trustedDeviceStore, taskLifecycle,
+  trustedDeviceStore, taskLifecycle, taskGitWorkspaces, releaseGitWorkspaces, releaseOperations,
   contourExternalEffects,
   codexRolloutContextSanitizer,
   workLogUsageStore, workLogUsageIdentityStore, workLogUsageRemoteConfigStore, workspaceCatalogStore, taskReleasePlanner, workspaceReleaseService, preTurnInstructions, taskBoard, taskVoiceTranscriber, hubMcpService, hubMcpServer, mcpAdmissionCoordinator,
@@ -93,7 +93,7 @@ const { value: {
   turnEndNotifications,
   runtimeNotificationController, runJournal,
   runtimeCommandServer,
-  rateLimitHistoryStore, providerTurnTelemetryStore, fileTransferService, commandTrace, commandTraceService,
+  rateLimitHistoryStore, providerTurnTelemetryStore, commandTrace, commandTraceService,
   sqliteRecovery, acknowledgeSqliteRecovery,
 }, record: recordInfrastructure } = await measureStartupBeforeTrace("infrastructure", () => createHubInfrastructure({
   config,
@@ -270,6 +270,7 @@ const providerApplication = await createProviderApplicationComposition({
   },
   infrastructure: {
     runJournal,
+    taskBoard, taskGitWorkspaces, releaseGitWorkspaces, releaseOperations,
     contourExternalEffects,
     turnEndNotifications,
     workLogUsageStore, workLogUsageIdentityStore, workLogUsageRemoteConfigStore, workspaceCatalogStore, preTurnInstructions, hubMcpService,
@@ -633,7 +634,7 @@ const executionBootstrap = createExecutionBootstrapPhase({
     providerTitle,
   },
   infrastructure: {
-    instanceGuard, runtimeCommandServer, fileTransferService,
+    instanceGuard, runtimeCommandServer,
     runtimeStateStore, taskReadStateStore,
     workLogUsageStore, rateLimitHistoryStore, providerTurnTelemetryStore, taskBoard, hubMcpServer, hubMcpService, sqliteRecovery, acknowledgeSqliteRecovery,
     preTurnInstructions, commandTrace, commandTraceService,

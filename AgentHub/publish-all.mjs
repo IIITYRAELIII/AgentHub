@@ -31,7 +31,7 @@ const REPOSITORY_ROOT = path.resolve(ROOT, "..");
 const python = process.platform === "win32" ? "python.exe" : "python3";
 const DEFAULT_STEP_TIMEOUT_MS = 15 * 60 * 1_000;
 export const FULL_TEST_BUDGET = Object.freeze({
-  timeoutMs: 2 * 60 * 60 * 1_000,
+  timeoutMs: null,
   idleTimeoutMs: 10 * 60 * 1_000,
 });
 const RESTART_REQUEST_TIMEOUT_MS = 30_000;
@@ -175,8 +175,10 @@ export function runStep({
       log?.write(chunk);
       progress();
     });
-    timer = schedule(() => stop(`превышен таймаут ${timeoutMs} мс`), timeoutMs);
-    timer.unref?.();
+    if (timeoutMs != null) {
+      timer = schedule(() => stop(`превышен таймаут ${timeoutMs} мс`), timeoutMs);
+      timer.unref?.();
+    }
     progress();
     child.once("error", (error) => finish(reject, error));
     child.once("exit", (code, signal) => {

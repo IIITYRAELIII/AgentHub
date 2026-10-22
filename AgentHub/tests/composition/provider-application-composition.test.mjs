@@ -32,7 +32,7 @@ test("provider application phase owns provider, accounting and catalog assembly"
   assert.equal(owner.includes("providerStartup.bind("), true);
 });
 
-test("pending runtime restart keeps deferred inputs asleep until restart scheduling", async () => {
+test("pending runtime restart wakes deferred inputs before considering safe restart", async () => {
   const events = [];
   let finishMaintenance;
   const maintenance = new Promise((resolve) => { finishMaintenance = resolve; });
@@ -42,13 +42,13 @@ test("pending runtime restart keeps deferred inputs asleep until restart schedul
     restartPending: true,
     wakeDeferredInputs: () => events.push("wake"),
     scheduleDeferredRestartIfReady: () => events.push("restart"),
-  }), "restart");
-  assert.deepEqual(events, []);
+  }), "deferred-inputs");
+  assert.deepEqual(events, ["wake"]);
 
   finishMaintenance();
   await maintenance;
   await Promise.resolve();
-  assert.deepEqual(events, ["restart"]);
+  assert.deepEqual(events, ["wake", "restart"]);
 });
 
 test("completed turn wakes deferred inputs when restart is not pending", () => {

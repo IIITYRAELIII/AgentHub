@@ -83,6 +83,7 @@
 
   function projectionState(value) {
     const explicit = text(value?.projectionState ?? value?.status).toLowerCase();
+    if (["aborted", "interrupted", "canceled", "stopped"].includes(explicit)) return "cancelled";
     if (STATE_RANK.has(explicit)) return explicit;
     if (Number(value?.terminalRevision) > 0) return "completed";
     if (["final", "final_answer", "finalanswer"].includes(text(value?.phase ?? value?.responsePhase).toLowerCase())) {
@@ -219,7 +220,25 @@
     return operationKind(value) === "user-turn" && projectionState(value) === "active" && !isTerminal(value);
   }
 
+  function userRunActivity(run) {
+    const owned = Boolean(run) && operationKind(run) === "user-turn" && !isTerminal(run)
+      && (isUserRunningProjection(run) || run.activityUnknown === true);
+    const unknown = owned && run.activityUnknown === true;
+    // Occupancy begins before turn/start returns. Only an explicit exact-turn
+    // provider marker can end preparation for a run carrying that marker.
+    // Retained runs without providerStart keep their existing legacy authority.
+    const turnId = text(run?.turnId);
+    const providerStart = run?.providerStart;
+    const preparing = owned && !unknown && (!turnId || (providerStart && !(
+      text(providerStart.turnId) === turnId
+      && ["accepted-awaiting-first-event", "observed"].includes(text(providerStart.state))
+    )));
+    return { running: owned && !unknown && !preparing, canStop: owned, unknown,
+      ...(preparing ? { preparing: true } : {}) };
+  }
+
   global.AgentHubMessageProjection = Object.freeze({
+    userRunActivity,
     canonicalEntityIdentity,
     isUserRunningProjection,
     legacyOperationKindMigrationGuard,

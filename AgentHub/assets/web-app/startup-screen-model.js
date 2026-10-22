@@ -27,7 +27,18 @@ export function createStartupScreenModel(snapshot, nowMs = Date.now()) {
   const operations = Array.isArray(snapshot?.startup?.operations)
     ? snapshot.startup.operations.map(normalizedOperation)
     : [];
-  if (!operations.length) return { available: false, ready: Boolean(snapshot?.ready) };
+  if (!operations.length) {
+    if (snapshot?.ready !== false) return { available: false, ready: Boolean(snapshot?.ready) };
+    return {
+      ...createStartupDisconnectedModel(null),
+      connectionLost: false,
+      startedAtMs: Number(snapshot?.startup?.startedAtMs) || 0,
+      status: "starting",
+      eyebrow: "Agent Hub запускается",
+      title: "Ожидание этапов запуска",
+      stageLabel: "Готовность ещё не подтверждена",
+    };
+  }
 
   // Optional background work never returns an already usable interface to the
   // blocking startup screen: it gates neither progress nor failure. Its own
@@ -116,9 +127,7 @@ export function shouldShowStartupScreen(model, {
   visible = false,
   lastStartedAtMs = 0,
 } = {}) {
-  if (!model?.available) return false;
-  if (!model.ready || visible) return true;
-  return Number(model.startedAtMs) !== Number(lastStartedAtMs);
+  return Boolean(model?.available && !model.ready);
 }
 
 export function createVisibilityBoundAnimation({
@@ -154,4 +163,11 @@ export function createVisibilityBoundAnimation({
   };
 
   return Object.freeze({ start: schedule, stop, destroy });
+}
+
+// A responding restored process can terminate the wait without claiming cutover.
+export function restartWaitFailed(snapshot, waitingSinceMs) {
+  const operation = snapshot?.diagnostics?.restart;
+  return operation?.status === "failed"
+    && Date.parse(operation.completedAt ?? "") >= Number(waitingSinceMs);
 }

@@ -4,14 +4,15 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { canonicalMcpValue } from "../domain/mcp-arguments-hash.mjs";
 import { ReleasePreparationRejectedError } from "../domain/release-preparation.mjs";
+import { LOCAL_SOURCE_BASELINE_PROVENANCE, normalizedReleaseBaseProvenance } from "../domain/release-base-provenance.mjs";
 export { ReleasePreparationRejectedError } from "../domain/release-preparation.mjs";
 
 export const preparationHash = (value) => createHash("sha256")
   .update(JSON.stringify(canonicalMcpValue(value))).digest("hex");
 
-function object(value, fields, label) {
+function object(value, fields, label, optional = []) {
   if (!value || typeof value !== "object" || Array.isArray(value)
-      || Object.keys(value).some((key) => !fields.includes(key))
+      || Object.keys(value).some((key) => !fields.includes(key) && !optional.includes(key))
       || fields.some((key) => !Object.hasOwn(value, key))) {
     throw new ReleasePreparationRejectedError(`Invalid exact ${label} envelope`);
   }
@@ -57,7 +58,21 @@ export function validatePreparationEnvelope(value) {
   if (value.repositories.length > 8) throw new ReleasePreparationRejectedError("Too many repositories");
   for (const repository of value.repositories) {
     object(repository, ["projectRoot", "approvedBaseCommit", "publishedRevision", "primaryMainCommit", "originMainCommit",
-      "checkpointHash", "manifestHash", "preReleaseHead", "tree", "approvedTree"], "repository");
+      "checkpointHash", "manifestHash", "preReleaseHead", "tree", "approvedTree"], "repository", ["localSourceBaseline", "nativeResolutionReview"]);
+    if (repository.localSourceBaseline != null) {
+      let p;
+      try { p = normalizedReleaseBaseProvenance(repository.localSourceBaseline, repository.approvedBaseCommit); }
+      catch { throw new ReleasePreparationRejectedError("Invalid local source baseline envelope"); }
+      if (p.kind !== LOCAL_SOURCE_BASELINE_PROVENANCE || p.agreedMainCommit !== repository.primaryMainCommit
+          || p.publishedBaseCommit !== repository.publishedRevision
+          || repository.originMainCommit !== (p.approvedOriginMainCommit ?? p.publishedBaseCommit)
+          || p.planRevision !== value.planRevision) throw new ReleasePreparationRejectedError("Local source baseline pins disagree");
+    }
+    if (repository.nativeResolutionReview != null) {
+      object(repository.nativeResolutionReview, ["requestId", "text"], "native review");
+      text(repository.nativeResolutionReview.requestId, "native review id", 200);
+      text(repository.nativeResolutionReview.text, "native review text", 32 * 1024);
+    }
     text(repository.projectRoot, "repository root", 2048);
     for (const key of ["checkpointHash", "manifestHash"]) digest(repository[key], 64, key);
     for (const key of ["approvedBaseCommit", "publishedRevision", "primaryMainCommit", "originMainCommit",
