@@ -169,8 +169,22 @@ export async function assertInstalledLocalSourceBaseline({
       if (!sourceMatches(source, await regular(path.join(manifest.sourceRoot, relative)), relative)) reject("Host Git source differs from compiled inputs");
     }
   }
+  const metadataBases = [p.sourceBaseCommit];
+  // Keep the exact installed source's inherited metadata when an explicitly
+  // verified source base has incorporated a later agreed main. This identity
+  // comes from the hash-pinned installed manifest, never from Task arguments.
+  if (typeof manifest.publicationRevision === "string" && /^[a-f0-9]{40}$/u.test(manifest.publicationRevision)
+      && typeof manifest.sourceRoot === "string" && path.isAbsolute(manifest.sourceRoot)) {
+    const installedSource = manifest.publicationRevision;
+    if (await git(["-C", manifest.sourceRoot, "rev-parse", "HEAD^{commit}"]) !== installedSource
+        || await git(["-C", manifest.sourceRoot, "status", "--porcelain=v1", "-z", "--untracked-files=all"])) {
+      reject("retained installed source identity changed");
+    }
+    await git(["merge-base", "--is-ancestor", installedSource, p.sourceBaseCommit]);
+    if (installedSource !== p.sourceBaseCommit) metadataBases.push(installedSource);
+  }
   await validateOrigin();
-  return { provenance: p, runtimeFiles, hostChanged, ...(p.adoptions ? { adoptions } : {}) };
+  return { provenance: p, runtimeFiles, hostChanged, metadataBases, ...(p.adoptions ? { adoptions } : {}) };
 }
 
 // Test uses the same installed-byte proof as preparation. Only the manifest's

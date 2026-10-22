@@ -300,6 +300,13 @@ prepared reuse and freeze. This does not adopt future origin or move primary.
 Native metadata validation distinguishes inherited metadata from Task edits.
 CHANGELOG entries must equal a complete Git mode/blob entry at the registered
 Task base, verified installed source or that Task's explicitly adopted commit.
+An explicitly verified installed-source base may incorporate later agreed main
+metadata. Its existing owner also retains the installed manifest's exact source
+revision as a metadata base: the hash-pinned manifest, unchanged clean source
+HEAD and ancestry into the verified new base must all agree. This grants no
+arbitrary historical revision or caller-supplied authority. Ordinary exact
+path/mode/blob and package-version rules still apply; merge-side authority,
+selection and Task acceptance remain unchanged (ADR-HUB-321).
 Metadata paths use raw NUL records and literal pathspecs; quoted presentation
 names, malformed or ambiguous tree lookups grant no inherited identity.
 Existing package versions must match one of those same sources. Arbitrary Task

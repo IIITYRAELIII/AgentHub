@@ -1508,7 +1508,7 @@ export class ReleaseGitWorkspaceService {
   async #nativeHistoryAuthority({ projectRoot, provenance, planRevision, tasks }) {
     if (provenance?.kind === LOCAL_SOURCE_BASELINE_PROVENANCE) {
       const verified = await this.validateLocalSourceBaseline({ projectRoot, provenance, planRevision, tasks });
-      return { bases: [verified.provenance.sourceBaseCommit], metadataBases: [verified.provenance.sourceBaseCommit],
+      return { bases: [verified.provenance.sourceBaseCommit], metadataBases: verified.metadataBases,
         adoptions: verified.adoptions ?? [] };
     }
     const initial = await primarySnapshot(projectRoot);
