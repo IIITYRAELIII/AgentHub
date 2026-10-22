@@ -1,4 +1,4 @@
-import { createHash, createHmac, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, timingSafeEqual, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { lstat, mkdir, open, readFile, realpath, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -38,7 +38,7 @@ import { TaskIntegrationRejectedError } from "./task-lifecycle-service.mjs";
 import { createWorkspaceCatalogMutationOwner } from "./sqlite-mutation-owner.mjs";
 
 import { assertPreparationRows, readPreparationSourceClosure, ReleasePreparationRejectedError,
-  validatePreparationEnvelope } from "./release-preparation-admission.mjs";
+  validatePreparationEnvelope, preparationSourceRoot } from "./release-preparation-admission.mjs";
 
 const CONTEXT_TOKEN_VERSION = 1;
 const MAX_REGISTERED_CONTEXT_CAPABILITIES = 1_000;
@@ -50,7 +50,7 @@ const MUTATING_TOOLS = new Set([
   "hub_task_attachment_add", "hub_workspace_rules_update", "hub_stream_rules_update",
   "hub_stream_message_send",
   "hub_task_operation_reconcile",
-  "hub_release_run", "hub_release_continue", "hub_release_prepare",
+  "hub_release_run", "hub_release_continue", "hub_release_prepare", "hub_release_prepare_resume",
 ]);
 
 // Only the synchronous input boundary below can produce this proof of no effects.
@@ -832,6 +832,10 @@ export class HubMcpService {
         preparation_request_id: { type: "string" },
         expected_arguments_hash: { type: "string", pattern: "^[a-f0-9]{64}$" },
       }, ["preparation_request_id", "expected_arguments_hash"]),
+      tool("hub_release_prepare_resume", "Resume the SAME original preparation only from its durable before-compose owner stage under existing Await/Task/repository leases. request_id is the original ID, never a new intake. Legacy or ambiguous compose effects remain UNKNOWN.", {
+        expected_arguments_hash: { type: "string", pattern: "^[a-f0-9]{64}$" },
+        expected_preparation_revision: { type: "integer", minimum: 0 },
+      }, ["expected_arguments_hash", "expected_preparation_revision"]),
       tool("hub_release_run", "Persist one authorized release operation and return its operation id immediately. The durable owner continues compose, validation, publication and finalization without holding this MCP request open.", {
         workspace_id: { type: "string", description: "Defaults to the caller Workspace." },
         task_ids: { type: "array", minItems: 1, items: { type: "string" } },
@@ -928,7 +932,7 @@ export class HubMcpService {
     await this.#startupReconciliation;
     const context = this.#authorize(args.context_token);
     const toolName = String(name ?? "");
-    if (["hub_release_prepare", "hub_release_prepare_get"].includes(toolName)
+    if (["hub_release_prepare", "hub_release_prepare_get", "hub_release_prepare_resume"].includes(toolName)
         && !this.#isReleaseManager(context)) {
       throw new ReleasePreparationRejectedError("Candidate preparation requires a Release Manager Stream");
     }
@@ -947,6 +951,12 @@ export class HubMcpService {
         () => this.#preparationReadback(context, args));
       return this.taskGitWorkspaces?.withOperationTrace
         ? this.taskGitWorkspaces.withOperationTrace({ operationId: args.preparation_request_id }, operation)
+        : operation();
+    }
+    if (toolName === "hub_release_prepare_resume") {
+      const operation = () => this.#resumePreparation(context, args);
+      return this.taskGitWorkspaces?.withOperationTrace
+        ? this.taskGitWorkspaces.withOperationTrace({ operationId: args.request_id }, operation)
         : operation();
     }
     if (MUTATING_TOOLS.has(toolName)) {
@@ -1793,24 +1803,81 @@ export class HubMcpService {
         provider: operation.provider, threadId: operation.threadId },
       status: operation.status, receiptState: operation.receiptState,
       createdAtMs: operation.createdAtMs, completedAtMs: operation.completedAtMs,
-      result: operation.status === "succeeded" ? operation.result : null, error: operation.error };
+      result: operation.status === "succeeded" ? operation.result : null, error: operation.error,
+      recovery: operation.preparationState ? {
+        revision: operation.preparationState.revision, phase: operation.preparationState.phase,
+        originalError: operation.preparationState.originalError ?? null,
+        ...(["composing", "terminal-intent"].includes(operation.preparationState.phase)
+          ? { missingEvidence: "original committed candidate or rollback outcome is not proved by this stage" } : {}),
+      } : { revision: 0, phase: null, missingEvidence: "original owner stage checkpoint was not persisted" } };
   }
 
-  async #prepareRelease(context, args) {
+  async #resumePreparation(context, args) {
+    if (Object.keys(args).some(key => !["context_token", "request_id", "expected_arguments_hash",
+      "expected_preparation_revision"].includes(key))
+        || !Number.isSafeInteger(args.expected_preparation_revision) || args.expected_preparation_revision < 0) {
+      throw new ReleasePreparationRejectedError("Unexpected preparation recovery argument");
+    }
+    const original = this.#preparationReadback(context, { preparation_request_id: args.request_id,
+      expected_arguments_hash: args.expected_arguments_hash });
+    const record = this.workspaceCatalog.mcpOperation(original.requestId);
+    if (record.streamId !== context.streamId || record.provider !== context.provider
+        || record.threadId !== context.auditThreadId) {
+      throw new ReleasePreparationRejectedError("Preparation recovery original caller differs");
+    }
+    if (record.status === "succeeded") return record.result;
+    if (!["pending", "unknown"].includes(record.status) || !record.preparationState
+        || !Number.isSafeInteger(args.expected_preparation_revision)
+        || args.expected_preparation_revision !== record.preparationState.revision
+        || !["checking", "paused"].includes(record.preparationState.phase)) {
+      throw new ReleasePreparationRejectedError("Preparation recovery lacks original resumable owner stage evidence; UNKNOWN is preserved");
+    }
+    const recovered = { context_token: args.context_token, request_id: original.requestId,
+      preparation: record.preparationState.envelope };
+    if (argumentsHash(recovered) !== original.argumentsHash) {
+      throw new ReleasePreparationRejectedError("Preparation recovery original envelope differs");
+    }
+    try { return await this.#prepareRelease(context, recovered, { record }); }
+    catch (error) {
+      // A recovery failure is not a new intake or administrative terminal.
+      await this.workspaceCatalog.markMcpOperationUnknown(original.requestId, error);
+      throw error;
+    }
+  }
+
+  async #prepareRelease(context, args, recovery = null) {
     const envelope = validatePreparationEnvelope(args.preparation);
     const hash = argumentsHash(args);
+    const identity = { workspaceId: context.workspaceId, streamId: context.streamId, provider: context.provider,
+      threadId: context.auditThreadId, argumentsHash: hash };
+    const ownerId = randomUUID();
+    let state = recovery?.record.preparationState ?? null;
+    let owned = false;
+    const sourceRoot = state?.sourceRoot ?? preparationSourceRoot();
+    const checkpoint = async (phase, extra = {}, { resume = false } = {}) => {
+      requiredMethod(this.workspaceCatalog, "checkpointMcpPreparation");
+      const next = { ...state, schemaVersion: 1, revision: (state?.revision ?? 0) + 1,
+        envelope, sourceRoot, ownerId, phase, ...extra };
+      const written = await this.workspaceCatalog.checkpointMcpPreparation(args.request_id,
+        { identity, expectedRevision: state?.revision ?? 0, state: next, resume });
+      state = written.preparationState;
+    };
     const checkRows = () => {
       if (!this.#isReleaseManager(context)) throw new ReleasePreparationRejectedError("Release Manager authority changed");
       assertPreparationRows(envelope, this.taskBoard, context.workspaceId);
       const original = this.workspaceCatalog.mcpOperation(args.request_id);
       if (original?.argumentsHash !== hash || original?.toolName !== "hub_release_prepare"
-          || original?.workspaceId !== context.workspaceId || original?.status !== "pending") {
+          || original?.workspaceId !== context.workspaceId
+          || !(recovery ? ["unknown", "pending", "reconciling"] : ["pending"]).includes(original?.status)) {
         throw new ReleasePreparationRejectedError("Preparation intake identity changed");
       }
     };
     const validate = async () => {
       checkRows();
-      if ((await readPreparationSourceClosure()).hash !== envelope.sourceClosureHash) {
+      const root = await lstat(sourceRoot);
+      if (!root.isDirectory() || root.isSymbolicLink()
+          || state?.sourceRootIdentity && (state.sourceRootIdentity !== `${root.dev}:${root.ino}`)
+          || (await readPreparationSourceClosure(sourceRoot)).hash !== envelope.sourceClosureHash) {
         throw new ReleasePreparationRejectedError("Preparation source closure changed");
       }
     };
@@ -1818,9 +1885,19 @@ export class HubMcpService {
     if (typeof this.releasePreflight?.prepareCurrentAwaitSet !== "function") {
       throw new ReleasePreparationRejectedError("Preparation owner is unavailable");
     }
-    return this.releasePreflight.prepareCurrentAwaitSet({
+    try { return await this.releasePreflight.prepareCurrentAwaitSet({
       workspaceId: context.workspaceId, envelope, requestId: args.request_id, argumentsHash: hash, validate,
+      ownPreparation: async () => {
+        const root = await lstat(sourceRoot);
+        await checkpoint("checking", {
+          sourceRootIdentity: `${root.dev}:${root.ino}`,
+          originalError: state?.originalError ?? recovery?.record.error ?? null,
+        }, { resume: !!recovery });
+        owned = true;
+      },
+      beforeCompose: async () => { if (state.phase !== "composing") await checkpoint("composing"); },
       commitPrepared: async (prepared) => {
+        if (!owned || state.phase !== "composing") throw new Error("Preparation commit has no owned compose boundary");
         await validate();
         const result = { schemaVersion: 1, kind: "preparation-only", requestId: args.request_id,
           argumentsHash: hash, workspaceId: context.workspaceId, planRevision: prepared.planRevision,
@@ -1835,6 +1912,8 @@ export class HubMcpService {
           throw new ReleasePreparationRejectedError("Preparation terminal receipt exceeds its exact retention budget");
         }
         try {
+          // This is provisional while candidate rollback is still live, not terminal authority.
+          await checkpoint("terminal-intent", { result });
           await this.measureOperation("preparation:terminal-receipt", () => this.workspaceCatalog
             .completeMcpOperation(args.request_id, result, { validate: checkRows }));
         } catch (cause) {
@@ -1848,7 +1927,12 @@ export class HubMcpService {
         }
         return result;
       },
-    });
+    }); } catch (error) {
+      if (owned && state.phase === "checking") {
+        await checkpoint("paused", { originalError: state.originalError ?? String(error.message).slice(0, 2000) });
+      }
+      throw error;
+    }
   }
 
   async #adoptLegacyTaskGit(context, {

@@ -328,7 +328,8 @@ export class WorkspaceReleasePreflightService {
       candidateHash: taskGitIdentityHash(candidate) };
   }
 
-  async prepareCurrentAwaitSet({ workspaceId, envelope, requestId, argumentsHash, validate, commitPrepared }) {
+  async prepareCurrentAwaitSet({ workspaceId, envelope, requestId, argumentsHash, validate, commitPrepared,
+    ownPreparation = null, beforeCompose = null }) {
     requiredFunction(validate, "preparation validator");
     requiredFunction(commitPrepared, "preparation terminal receipt");
     requiredMethod(this.taskGitWorkspaces, "withTaskLocks");
@@ -363,9 +364,10 @@ export class WorkspaceReleasePreflightService {
               (repositoryLease) => ownRepository(index + 1, repositoryLease),
             );
             await verify();
+            await ownPreparation?.();
             return this.#prepareAwaitSet({ workspaceId, expectedPlanRevision: envelope.planRevision,
               preserveFrozen: true, lease: ownedLease,
-              preparation: { envelope, requestId, argumentsHash, validate: verify },
+              preparation: { envelope, requestId, argumentsHash, validate: verify, beforeCompose },
               commitPrepared: async (prepared) => {
                 await verify();
                 return commitPrepared(prepared);
@@ -843,6 +845,7 @@ export class WorkspaceReleasePreflightService {
       const prepareCandidate = generationIdentity
         ? this.releaseGitWorkspaces.prepareGeneration.bind(this.releaseGitWorkspaces)
         : this.releaseGitWorkspaces.prepareCandidate.bind(this.releaseGitWorkspaces);
+      await preparation?.beforeCompose?.();
       const candidate = await this.measureOperation(preparation ? "preparation:compose" : "release:compose", () => prepareCandidate({
         planRevision: plan.revision,
         workspaceId,

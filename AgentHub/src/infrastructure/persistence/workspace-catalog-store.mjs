@@ -118,6 +118,7 @@ function configure(database) {
       interstream_content_hash TEXT NOT NULL DEFAULT '',
       status TEXT NOT NULL CHECK (status IN ('pending', 'succeeded', 'failed')),
       receipt_state TEXT NOT NULL DEFAULT 'pending',
+      preparation_state_json TEXT,
       result_json TEXT,
       error_text TEXT NOT NULL DEFAULT '',
       created_at_ms INTEGER NOT NULL,
@@ -183,6 +184,9 @@ function configure(database) {
   `);
   const streamColumns = database.prepare("PRAGMA table_info(hub_streams)").all();
   const operationColumns = database.prepare("PRAGMA table_info(hub_mcp_operations)").all();
+  if (!operationColumns.some((column) => column.name === "preparation_state_json")) {
+    database.exec("ALTER TABLE hub_mcp_operations ADD COLUMN preparation_state_json TEXT");
+  }
   if (!operationColumns.some((column) => column.name === "interstream_content_hash")) {
     database.exec("ALTER TABLE hub_mcp_operations ADD COLUMN interstream_content_hash TEXT NOT NULL DEFAULT ''");
   }
@@ -331,6 +335,7 @@ function mcpOperationFromRow(row) {
     error: String(row.error_text ?? ""),
     createdAtMs: Number(row.created_at_ms) || 0,
     completedAtMs: row.completed_at_ms == null ? null : Number(row.completed_at_ms),
+    ...(row.preparation_state_json == null ? {} : { preparationState: JSON.parse(row.preparation_state_json) }),
   };
 }
 
@@ -1064,6 +1069,48 @@ export class WorkspaceCatalogStore {
       this.#database.exec("ROLLBACK");
       throw failure;
     }
+  }
+
+  checkpointMcpPreparation(requestId, { identity, expectedRevision, state, resume = false } = {}) {
+    const id = safeIdentifier(requestId, "MCP request id");
+    return this.#transaction(() => {
+      const row = this.#database.prepare("SELECT * FROM hub_mcp_operations WHERE request_id = ?").get(id);
+      const current = mcpOperationFromRow(row);
+      if (!current || current.toolName !== "hub_release_prepare" || current.operationStatus !== "pending"
+          || ["workspaceId", "streamId", "provider", "threadId", "argumentsHash"].some(key => (
+            current[key] !== identity?.[key]
+          )) || (current.preparationState?.revision ?? 0) !== expectedRevision) {
+        throw new Error("Original preparation identity/revision CAS changed");
+      }
+      if (resume ? !["pending", "unknown"].includes(current.receiptState)
+        : !["pending", "reconciling"].includes(current.receiptState)) {
+        throw new Error("Original preparation receipt cannot checkpoint");
+      }
+      if (resume && !["checking", "paused"].includes(current.preparationState?.phase)) {
+        throw new Error("Original preparation has no proven resumable owner stage");
+      }
+      if (state?.schemaVersion !== 1 || state.revision !== expectedRevision + 1
+          || !["checking", "paused", "composing", "terminal-intent"].includes(state.phase)
+          || typeof state.ownerId !== "string" || !state.ownerId
+          || Buffer.byteLength(JSON.stringify(state)) > 128 * 1024) {
+        throw new Error("Invalid bounded preparation owner checkpoint");
+      }
+      const prior = current.preparationState;
+      const allowed = resume ? ["checking"] : prior == null ? ["checking"]
+        : { checking: ["paused", "composing"], composing: ["terminal-intent"] }[prior.phase] ?? [];
+      if (!allowed.includes(state.phase) || prior && !resume && prior.ownerId !== state.ownerId
+          || prior && (JSON.stringify(prior.envelope) !== JSON.stringify(state.envelope)
+            || prior.sourceRoot !== state.sourceRoot || prior.sourceRootIdentity !== state.sourceRootIdentity)) {
+        throw new Error("Preparation checkpoint owner/transition changed");
+      }
+      const updated = this.#database.prepare(`UPDATE hub_mcp_operations
+        SET preparation_state_json = ?, receipt_state = ?
+        WHERE request_id = ? AND arguments_hash = ? AND receipt_state = ?
+          AND preparation_state_json IS ?`).run(JSON.stringify(state), resume ? "reconciling" : current.receiptState,
+        id, identity.argumentsHash, row.receipt_state, row.preparation_state_json);
+      if (Number(updated.changes) !== 1) throw new Error("Original preparation checkpoint CAS failed");
+      return this.mcpOperation(id);
+    });
   }
 
   mcpOperation(requestId) {

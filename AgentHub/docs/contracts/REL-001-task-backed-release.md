@@ -403,6 +403,31 @@ terminal persistence is recoverable by that readback. Missing terminal or
 ambiguous persistence remains UNKNOWN; no newer checkpoint, timeout or absent
 lock settles it or authorizes automatic Git replay.
 
+ADR-0130 adds explicit same-original `hub_release_prepare_resume` using the
+original `request_id`, `expected_arguments_hash` and exact
+`expected_preparation_revision`. It creates no second MCP intake or journal.
+The existing MCP row holds the original envelope, fixed source root/custody,
+revision and bounded owner stage. Only the existing Await -> Task -> repository
+lease boundary may checkpoint or resume it. The immutable original argument
+hash, caller and source closure remain binding; a newer approved mechanism may
+read that retained original closure without importing it or relabelling it.
+New attempts checkpoint `checking` before composition and `composing` before
+admitting any candidate effect. A caught pre-compose interruption records
+`paused`. A lost checkpoint reply can leave `checking`; reacquiring the same
+leases and exact revision CAS proves exclusive ownership before resumption.
+Current plan/rows/publication and candidate/main/source guards still apply.
+Main audit is not repeated or credited as no effect by resume. Bootstrap of
+accepted main into dev is a separate normal lease/CAS operation and never
+settles a preparation receipt.
+
+`composing` and provisional `terminal-intent` do not authorize replay. Candidate
+rollback remains live until the terminal transaction, so even a saved proposed
+result cannot turn an ambiguous terminal write into success. Only the existing
+successful original receipt supplies terminal readback. Legacy originals with
+no owner stage retain UNKNOWN and report the exact missing checkpoint; a later
+bootstrap, absent candidate, timeout or current refs cannot reconstruct it.
+No automatic startup recovery, original-ID replacement or SQL override is added.
+
 Affected commands:
 `node --test --test-name-pattern=preparation-only tests/application/hub-mcp-service.test.mjs tests/application/release-preparation-admission.test.mjs tests/infrastructure/persistence/workspace-catalog-store.test.mjs` and
 `node --test --test-name-pattern="restored preparation" tests/interfaces/cli/initial-native-test-cutover.test.mjs`.

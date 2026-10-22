@@ -543,14 +543,23 @@ async function fixture(context, {
 
 async function preparationFixture(t) {
   const setup = await fixture(t, { releaseWorkflowEnabled: true });
+  setup.workspaceCatalog.checkpointMcpPreparation = (requestId, { state, expectedRevision }) => {
+    const row = setup.operations.get(requestId);
+    assert.equal(row.preparationState?.revision ?? 0, expectedRevision);
+    row.preparationState = structuredClone(state);
+    return structuredClone(row);
+  };
   const envelope = preparationEnvelope(setup.projectRoot);
   envelope.sourceClosureHash = (await readPreparationSourceClosure()).hash;
   setup.tasks.get("task-current").workflowStatus = "awaiting_implementation";
   let calls = 0;
-  setup.service.releasePreflight.prepareCurrentAwaitSet = async ({ validate, commitPrepared, requestId }) => {
+  setup.service.releasePreflight.prepareCurrentAwaitSet = async ({ validate, commitPrepared, requestId,
+    ownPreparation, beforeCompose }) => {
     calls += 1;
     assert.equal(setup.operations.get(requestId).status, "pending", "intake precedes composer");
     await validate();
+    await ownPreparation();
+    await beforeCompose();
     return commitPrepared({ planRevision: envelope.planRevision, taskIds: ["task-current"],
       releaseCandidates: [{ repositoryRoot: setup.projectRoot, preReleaseHead: "8".repeat(40),
         tree: envelope.repositories[0].approvedTree, baseCommit: envelope.repositories[0].approvedBaseCommit,
