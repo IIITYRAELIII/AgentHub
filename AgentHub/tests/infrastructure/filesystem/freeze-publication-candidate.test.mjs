@@ -13,6 +13,7 @@ import { ReleaseGitWorkspaceService, assertReleaseCandidateContourSource } from 
 const execute = promisify(execFile);
 const git = async (cwd, ...args) => String((await execute("git", args, { cwd, windowsHide: true, encoding: "utf8" })).stdout).trimEnd();
 async function fixture(t, {
+  publicVersion = "2026.8.23",
   releaseAutoCrlf = "false",
   attributes = "* text eol=lf\n",
   changelogContent = Buffer.from("consolidated\n"),
@@ -26,10 +27,10 @@ async function fixture(t, {
   await mkdir(path.join(primary, "AgentHub"));
   if (attributes !== null) await writeFile(path.join(primary, ".gitattributes"), attributes);
   await writeFile(path.join(primary, "AgentHub", "package.json"), `${JSON.stringify({
-    name: "agent-hub", version: "2026.8.23",
+    name: "agent-hub", version: publicVersion,
   }, null, 2)}\n`);
   await writeFile(path.join(primary, "AgentHub", "package-lock.json"), `${JSON.stringify({
-    name: "agent-hub", version: "2026.8.23", packages: { "": { name: "agent-hub", version: "2026.8.23" } },
+    name: "agent-hub", version: publicVersion, packages: { "": { name: "agent-hub", version: publicVersion } },
   }, null, 2)}\n`);
   await writeFile(path.join(primary, "app.txt"), "source\n");
   await writeFile(path.join(primary, "CHANGELOG.md"), "previous\n");
@@ -43,7 +44,7 @@ async function fixture(t, {
   const checkpointFile = path.join(candidate.releaseRoot, "..", "checkpoint.json");
   const freeze = (options = {}) => service.freezePublicationCandidate({ projectRoot: primary, workspaceId: "workspace",
     expectedPlanRevision: "plan", expectedPreparedHead: candidate.preReleaseHead,
-    changelogContent, releaseDate: new Date(2026, 7, 24, 23, 59), ...options });
+    changelogContent, runtimeRoot: path.join(root, "runtime"), releaseDate: new Date(2026, 7, 24, 23, 59), ...options });
   return { primary, service, candidate, freeze, checkpointFile, changelogContent };
 }
 
@@ -64,26 +65,36 @@ test("freeze pins the artifact version separately and retry never reallocates it
     const root = path.join(releases, name);
     await mkdir(root, { recursive: true });
     await writeFile(path.join(root, "runtime-manifest.json"), JSON.stringify({
-      version: "2026.8.24", releaseVersion,
+      releaseId: name, version: "2026.8.24", releaseVersion, files: [],
     }));
   };
-  await add("prior", "2026.8.24.7");
+  await add("prior", "2026.8.24.100000000");
   await writeFile(path.join(f.candidate.releaseRoot, "CHANGELOG.md"), f.changelogContent);
   const frozen = await f.freeze({ runtimeRoot });
   const manifest = JSON.parse(await readFile(frozen.manifestFile, "utf8"));
-  assert.equal(manifest.publication.releaseVersion, "2026.8.24");
-  assert.equal(manifest.publication.runtimeReleaseVersion, "2026.8.24.8");
+  assert.equal(manifest.publication.releaseVersion, "2.0.0");
+  assert.equal(manifest.publication.runtimeReleaseVersion, "2.0.0+build.100000001");
   assert.deepEqual(releaseOperationRuntimePublicationInput({
     operation: { operationId: "fefefefe-fefe-4efe-8efe-fefefefefefe" },
     generation: { operationId: "fefefefe-fefe-4efe-8efe-fefefefefefe", generation: 2 },
     candidate: { commit: frozen.preReleaseHead, manifest },
   }), { operationId: "fefefefe-fefe-4efe-8efe-fefefefefefe", generation: 2,
-    sourceCommit: frozen.preReleaseHead, version: "2026.8.24.8" });
-  await add("later", "2026.8.24.9");
+    sourceCommit: frozen.preReleaseHead, version: "2.0.0+build.100000001" });
+  await add("later", "2026.8.24.100000002");
   const repeat = await f.freeze({ runtimeRoot });
   assert.equal(repeat.manifestHash, frozen.manifestHash);
   assert.equal(JSON.parse(await readFile(repeat.manifestFile, "utf8")).publication.runtimeReleaseVersion,
-    "2026.8.24.8");
+    "2.0.0+build.100000001");
+});
+
+test("new semantic freeze selects minor once and resume retains the original version", async t => {
+  const f = await fixture(t, { publicVersion: "2.0.9" });
+  await writeFile(path.join(f.candidate.releaseRoot, "CHANGELOG.md"), f.changelogContent);
+  const frozen = await f.freeze({ releaseType: "minor" });
+  const manifest = JSON.parse(await readFile(frozen.manifestFile, "utf8"));
+  assert.equal(manifest.publication.releaseVersion, "2.1.0");
+  const repeated = await f.freeze({ releaseType: "major" });
+  assert.equal(repeated.manifestHash, frozen.manifestHash);
 });
 
 function assertLineEndings(bytes, expected) {
@@ -109,7 +120,7 @@ test("freeze commits only supplied CHANGELOG, promotes clone main and preserves 
   assert.deepEqual((await git(f.candidate.releaseRoot, "diff", "--name-only", f.candidate.preReleaseHead, frozen.preReleaseHead))
     .split("\n").sort(), ["AgentHub/package-lock.json", "AgentHub/package.json", "CHANGELOG.md"]);
   assert.equal(JSON.parse(await readFile(path.join(f.candidate.releaseRoot, "AgentHub", "package.json"), "utf8")).version,
-    "2026.8.24");
+    "2.0.0");
   assert.equal(await git(f.candidate.releaseRoot, "rev-parse", "PreRelease"), frozen.preReleaseHead);
   const manifestBytes = await readFile(frozen.manifestFile);
   assert.equal(createHash("sha256").update(manifestBytes).digest("hex"), frozen.manifestHash);
@@ -120,17 +131,17 @@ test("freeze commits only supplied CHANGELOG, promotes clone main and preserves 
   assert.equal(repeat.reused, true);
   assert.equal(repeat.preReleaseHead, frozen.preReleaseHead);
   assert.equal(repeat.manifestHash, frozen.manifestHash);
-  assert.equal(JSON.parse(await readFile(repeat.manifestFile, "utf8")).publication.releaseVersion, "2026.8.24");
+  assert.equal(JSON.parse(await readFile(repeat.manifestFile, "utf8")).publication.releaseVersion, "2.0.0");
   const packageRoot = path.join(f.candidate.releaseRoot, "AgentHub");
-  assert.equal(JSON.parse(await readFile(path.join(packageRoot, "package.json"), "utf8")).version, "2026.8.24");
+  assert.equal(JSON.parse(await readFile(path.join(packageRoot, "package.json"), "utf8")).version, "2.0.0");
   const lock = JSON.parse(await readFile(path.join(packageRoot, "package-lock.json"), "utf8"));
-  assert.equal(lock.version, "2026.8.24");
-  assert.equal(lock.packages[""].version, "2026.8.24");
+  assert.equal(lock.version, "2.0.0");
+  assert.equal(lock.packages[""].version, "2.0.0");
   assert.equal(await readFile(path.join(f.candidate.releaseRoot, "CHANGELOG.md"), "utf8"), "consolidated\n");
   assert.deepEqual(await snapshot(), before);
 });
 
-test("freeze with unchanged CHANGELOG still commits the frozen CalVer", async (t) => {
+test("freeze with unchanged CHANGELOG still commits the first semantic version", async (t) => {
   const f = await fixture(t);
   const frozen = await f.freeze({ changelogContent: Buffer.from("previous\n") });
   assert.notEqual(frozen.preReleaseHead, f.candidate.preReleaseHead);
@@ -165,7 +176,7 @@ for (const phase of ["intent", "refs"]) test(`freeze resumes exact persisted com
   await assert.rejects(f.freeze({ changelogContent: Buffer.from("consolidated\r\n") }), /supplied publication CHANGELOG bytes changed/u);
   await writeFile(path.join(f.candidate.releaseRoot, "CHANGELOG.md"), "consolidated\n");
   const frozen = await f.freeze({ releaseDate: new Date(2026, 7, 25, 12) });
-  assert.equal(JSON.parse(await readFile(frozen.manifestFile, "utf8")).publication.releaseVersion, "2026.8.24");
+  assert.equal(JSON.parse(await readFile(frozen.manifestFile, "utf8")).publication.releaseVersion, "2.0.0");
   assert.equal(frozen.preReleaseHead, pending.preReleaseHead);
   assert.equal(frozen.manifestHash, pending.manifestHash);
   assert.equal(frozen.phase, "frozen");
@@ -217,7 +228,7 @@ for (const scenario of [
   for (const name of ["package.json", "package-lock.json"]) {
     const bytes = await readFile(path.join(f.candidate.releaseRoot, "AgentHub", name));
     assertLineEndings(bytes, scenario.checkoutEol);
-    assert.equal(JSON.parse(bytes).version, "2026.8.24");
+    assert.equal(JSON.parse(bytes).version, "2.0.0");
   }
 });
 

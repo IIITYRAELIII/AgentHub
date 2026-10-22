@@ -11,11 +11,13 @@ import { releaseOperationRuntimePublicationInput } from "../../release-operation
 import { createPublicationArtifactSteps, artifactFiles, buildArtifact, readArtifact } from "../../src/infrastructure/process/publication-artifacts.mjs";
 import { publicationCheckpointStore, runPublicationSteps } from "../../src/infrastructure/persistence/publication-checkpoint.mjs";
 import { publicationRunStore } from "../../src/infrastructure/persistence/publication-run-store.mjs";
+import { artifactVersionIdentity } from "../../src/domain/agent-hub-version.mjs";
 
 const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const save = async (file, value) => { await mkdir(path.dirname(file), { recursive: true }); await writeFile(file, value); };
 
 async function fixture(t, { runtimePublication = null } = {}) {
+  const semantic = runtimePublication?.version.includes("+build.") ? artifactVersionIdentity(runtimePublication.version) : null;
   const root = await mkdtemp(path.join(os.tmpdir(), "hub-artifacts-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const sourceRoot = path.join(root, "source");
@@ -35,7 +37,11 @@ async function fixture(t, { runtimePublication = null } = {}) {
     if (step.label === "Сборка Agent Hub Mobile") {
       const apk = Buffer.from("prepared APK");
       await save(path.join(sourceRoot, "assets", "mobile", "AgentHub-Mobile.apk"), apk);
-      await save(path.join(sourceRoot, "assets", "mobile", "update.json"), JSON.stringify({ sha256: hash(apk), bytes: apk.length }));
+      if (semantic) assert.deepEqual(step.args.slice(-2), ["-ArtifactVersion", runtimePublication.version]);
+      await save(path.join(sourceRoot, "assets", "mobile", "update.json"), JSON.stringify({
+        sha256: hash(apk), bytes: apk.length,
+        ...(semantic ? { versionCode: semantic.buildNumber, versionName: semantic.publicVersion } : {}),
+      }));
     }
     if (step.label === "Сборка Mini App Worker") {
       assert.ok(step.args.includes("--dry-run"));
@@ -90,9 +96,11 @@ async function fixture(t, { runtimePublication = null } = {}) {
         state.preparedVersion = expectedReleaseVersion;
         if (state.failBuild) throw new Error("runtime build failed");
         const releaseRoot = path.join(runtimeRoot, "releases", releaseId);
-        const bytes = JSON.stringify({ name: "agent-hub", version: "2026.9.16" });
+        const version = semantic?.publicVersion ?? "2026.9.16";
+        const bytes = JSON.stringify({ name: "agent-hub", version });
         await save(path.join(releaseRoot, "package.json"), bytes);
-        await save(path.join(releaseRoot, "runtime-manifest.json"), JSON.stringify({ releaseId, version: "2026.9.16",
+        await save(path.join(releaseRoot, "runtime-manifest.json"), JSON.stringify({ releaseId, version,
+          ...(semantic ? semantic : {}),
           ...(expectedReleaseVersion ? { releaseVersion: state.overrideRuntimeVersion ?? expectedReleaseVersion } : {}), publicationRevision, sourceRoot,
           files: [{ path: "package.json", bytes: Buffer.byteLength(bytes), sha256: hash(bytes) }] }));
         if (state.losePreparedReply) { state.losePreparedReply = false; throw new Error("lost prepared reply"); }
@@ -123,6 +131,25 @@ async function fixture(t, { runtimePublication = null } = {}) {
 
 const frozenRuntime = { operationId: "fefefefe-fefe-4efe-8efe-fefefefefefe", generation: 2,
   sourceCommit: "a".repeat(40), version: "2026.9.16.7" };
+
+test("semantic artifact freeze keeps original build and Android identity after lost prepare reply", async t => {
+  const runtimePublication = { ...frozenRuntime, version: "2.0.0+build.30000001" };
+  const f = await fixture(t, { runtimePublication });
+  f.state.losePreparedReply = true;
+  await assert.rejects(publishChanged(["--full-tests"], f.create()), /lost prepared reply/u);
+  assert.equal(f.events.includes("Git"), false);
+  await publishChanged(["--resume"], f.create());
+  const owner = f.create(), identity = (await owner.journal.read()).identity;
+  const first = await owner.artifacts.preparedRuntimeReceipt(identity);
+  assert.equal(first.receipt.version, runtimePublication.version);
+  assert.equal(Object.keys(first.receipt).length, 9);
+  const original = await readFile(first.receiptFile);
+  const repeated = await f.create().artifacts.preparedRuntimeReceipt(identity);
+  assert.deepEqual(repeated, first);
+  assert.deepEqual(await readFile(first.receiptFile), original);
+  assert.equal(f.events.filter(x => x === "runtime build").length, 1);
+  assert.equal(f.events.filter(x => x === "Сборка Agent Hub Mobile").length, 1);
+});
 
 test("frozen publication string fields reject coerced arrays and boxed strings before preparation", () => {
   let preparations = 0;

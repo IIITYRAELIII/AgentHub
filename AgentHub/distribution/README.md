@@ -51,6 +51,33 @@ There is no clone, alternate object store, network or push in the extractor.
 Only independently reviewed, sanitized history may later be pushed to the new
 repository. A source audit pin is not a release acceptance.
 
+## Version identity
+
+The first installer is public **2.0.0**. The immutable runtime/artifact version
+is `2.0.0+build.N`, with the real allocated N, not a display counter. Runtime
+manifest `version` and `publicVersion` are `2.0.0`; `releaseVersion` is the
+artifact identity, `buildNumber` is N and `versionScheme` is `semver-build-v1`.
+Inner package inventory, outer descriptor and saved PACKAGED inputs agree on
+all these fields. The original nine-field PREPARED receipt remains unchanged:
+its `version` and CLI `--version` are the artifact identity.
+
+Public GitHub tag/installer `--release` is `2.0.0`, **not** `2.0.0+build.N`.
+A published tag cannot be overwritten with another N. The release owner binds
+that public tag to frozen source/build/manifest and asset digests. Stable
+`latest` discovery still refuses beta/rc releases. Prerelease grammar and
+precedence are supported in isolated identity/update checks, not implicitly
+selected by the stable channel.
+
+The existing allocator reads retained runtime manifests and verified Android
+codes, with an epoch-minute floor, under its installation lease. A frozen N
+is reused on retries; a competing allocation refuses before preparation. There
+is no package-side allocation or new counter. Unknown/foreign/partial retained
+metadata refuses rather than being deleted. Legacy calendar receipts keep their
+original identity. Ordinary verified updates permit calendar → 2.0.0, then
+nondecreasing semantic precedence and increasing N. Exact reinstall is reusable;
+explicit rollback uses the verified previous pointer. Config, data and enrollment
+remain untouched by this version migration.
+
 ## Ready packages
 
 The tracked offline packaging checkpoint is the normal interface for the release
@@ -100,8 +127,8 @@ or locked dependency installation. A mismatch refuses; it never changes a manife
 or allocates an arbitrary version. Publication version and artifact version are
 distinct inputs and must not be silently relabeled.
 
-For newly frozen generations, the existing release freeze records the calendar
-publication version and the canonical next `runtimeReleaseVersion` separately in
+For newly frozen generations, the existing release freeze records the public
+semantic version and the canonical next `runtimeReleaseVersion` separately in
 the same immutable manifest and freeze intent. It reads the configured runtime's
 existing release metadata; it does not reserve a suffix or prepare a runtime.
 The canonical publication runner passes that exact version, original operation,
@@ -185,6 +212,7 @@ Focused preparation checks, with `AGENT_HUB_TEST_TEMP` on the intended volume:
 ```powershell
 python -m unittest discover -s AgentHub/distribution -p package_test.py -v
 python -m unittest discover -s AgentHub/distribution -p build_release_test.py -v
+python -m unittest discover -s AgentHub/distribution -p semantic_package_test.py -v
 python -m unittest discover -s AgentHub/distribution -p release_source_test.py -v
 python -m unittest discover -s AgentHub/distribution -p installed_package_test.py -v
 ```

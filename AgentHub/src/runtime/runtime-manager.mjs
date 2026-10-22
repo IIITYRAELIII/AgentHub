@@ -16,6 +16,7 @@ import process from "node:process";
 import { spawn } from "node:child_process";
 
 import { readAgentHubVersion } from "../infrastructure/filesystem/agent-hub-package.mjs";
+import { artifactVersionIdentity, SEMVER_BUILD_SCHEME } from "../domain/agent-hub-version.mjs";
 import { defaultRuntimeRoot, runtimeLayout, runtimeReleaseDirectory } from "../infrastructure/filesystem/runtime-layout.mjs";
 import { verifyRuntimeImportClosure, verifyRuntimeManifest } from "../infrastructure/filesystem/runtime-manifest-verifier.mjs";
 import { nextRuntimeReleaseVersion } from "../infrastructure/filesystem/runtime-release-version.mjs";
@@ -324,9 +325,14 @@ async function prepareRuntimeOwned({
   // under the existing installation lease, before copying, compiling or npm ci.
   // Reuse of an already prepared body belongs to the publication checkpoint.
   let frozenReleaseVersion = null;
+  const allocationPackageVersion = readAgentHubVersion({ packageFile: path.join(sourceRoot, "package.json") });
+  const expected = typeof expectedReleaseVersion === "string" && expectedReleaseVersion.includes("+build.")
+    ? artifactVersionIdentity(expectedReleaseVersion) : null;
+  frozenReleaseVersion = await nextRuntimeReleaseVersion({
+    releasesDir: layout.releasesDir, packageVersion: allocationPackageVersion,
+    ...(expected ? { allocationFloor: expected.buildNumber - 1 } : {}),
+  });
   if (expectedReleaseVersion !== null) {
-    const packageVersion = readAgentHubVersion({ packageFile: path.join(sourceRoot, "package.json") });
-    frozenReleaseVersion = await nextRuntimeReleaseVersion({ releasesDir: layout.releasesDir, packageVersion });
     if (typeof expectedReleaseVersion !== "string" || expectedReleaseVersion !== frozenReleaseVersion) {
       throw new Error(`Frozen runtime version differs from the next allocated version: ${frozenReleaseVersion}`);
     }
@@ -398,13 +404,16 @@ async function prepareRuntimeOwned({
       names.push("node_modules");
     }
     const packageVersion = readAgentHubVersion({ packageFile: path.join(sourceRoot, "package.json") });
+    const allocatedVersion = frozenReleaseVersion ?? await nextRuntimeReleaseVersion({
+      releasesDir: layout.releasesDir, packageVersion,
+    });
+    const semanticBuild = allocatedVersion.includes("+build.") ? artifactVersionIdentity(allocatedVersion) : null;
     const manifest = {
       releaseId,
       version: packageVersion,
-      releaseVersion: frozenReleaseVersion ?? await nextRuntimeReleaseVersion({
-        releasesDir: layout.releasesDir,
-        packageVersion,
-      }),
+      releaseVersion: allocatedVersion,
+      ...(semanticBuild ? { versionScheme: SEMVER_BUILD_SCHEME,
+        publicVersion: packageVersion, buildNumber: semanticBuild.buildNumber } : {}),
       createdAt: new Date().toISOString(),
       sourceRoot: path.resolve(sourceRoot),
       ...(publicationRevision ? { publicationRevision } : {}),

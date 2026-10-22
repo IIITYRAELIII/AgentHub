@@ -68,7 +68,7 @@ async function persistChangelogPayload(layout, content, expectedHash) {
 // Called only under the ReleaseGitWorkspaceService's release and repository locks.
 export async function freezePreparedPublicationCandidate({
   layout, marker, expectedPlanRevision, expectedPreparedHead, workspaceId,
-  changelogContent, reusePersistedChangelog = false, releaseDate = new Date(),
+  changelogContent, reusePersistedChangelog = false, releaseDate = new Date(), releaseType = "patch",
   runtimeRoot = defaultRuntimeRoot(),
   validateBeforeCommit = async () => {}, onPhase = async () => {},
 }) {
@@ -169,7 +169,7 @@ export async function freezePreparedPublicationCandidate({
     if (oldPreRelease !== preparedHead) throw new Error("prepared PreRelease branch changed");
     const changelogPayloadFile = await persistChangelogPayload(layout, suppliedChangelog, suppliedChangelogHash);
     const versionState = await inspectAgentHubReleaseVersion({
-      root: path.join(root, "AgentHub"), now: releaseDate,
+      root: path.join(root, "AgentHub"), now: releaseDate, releaseType,
     });
     // This is a frozen expectation, not a reservation or allocation. The
     // installation owner compares it again under its existing lease before

@@ -10,7 +10,7 @@ authorization, terminal attempt, immutable generations and all receipts remain
 history; `reviewedMain` and the recovery event are appended by the same store.
 UNKNOWN/partial/applied/live/source-owned effects refuse. No work executes inside
 rebinding; ordinary composition and publication guards still own the next attempt.
-New publication freezes persist both the calendar publication version and the
+New publication freezes persist both the public semantic version and the
 canonical next runtime artifact version in their existing immutable manifest and
 freeze intent. This observation reserves nothing. The original generation runner
 passes the exact operation/generation/commit/artifact version to the existing
@@ -19,6 +19,47 @@ preparation or allocation. A competing allocation refuses rather than retargetin
 the frozen input. Freeze retry and lost-reply artifact reuse retain the original
 version. Historical generations lacking this field keep their original executor
 identity; they are not rewritten or granted a new packaging receipt.
+
+## Semantic public version and original build (ADR-HUB-334)
+
+New installer publications migrate recognized calendar versions to public
+`2.0.0`. Later compatible corrections use patch, compatible features minor,
+and changes to supported interfaces/update compatibility major. The existing
+freeze accepts `releaseType` (`patch` by default, `minor` or `major`) only for
+new intent; an admitted freeze always reuses its saved version. A selected
+prerelease can stabilize without changing its core. Stable public discovery
+continues to refuse prereleases; this does not introduce a beta update channel.
+
+Public version, internal releaseId and artifact version are distinct. The new
+artifact is `<publicVersion>+build.N`; manifest and package descriptors also bind
+`versionScheme: semver-build-v1`, `publicVersion` and integer `buildNumber`.
+The UI displays `<publicVersion> · сборка N`. Public tags use the public version
+(first stable installer `2.0.0`), not the artifact identity containing `+`.
+The existing exact four-field runtimePublication and nine-field PREPARED receipt
+keep `version` as the complete artifact identity. No receipt is enriched or
+rewritten and no second allocation ledger is introduced.
+
+The existing retained-manifest allocator observes all recognized builds and
+verified retained Android codes, with the existing epoch-minute floor on a new
+freeze. Its next N is at most 2,100,000,000. Freeze is an observation, not a
+reservation. Under the same installation lease, preparation compares again
+against retained allocations using original N minus one as its frozen floor,
+so elapsed wall time cannot allocate a new build. A competing allocation,
+unknown/foreign manifest or partial retained allocation refuses and preserves
+evidence. Original artifact reuse happens before new preparation. Android takes
+versionName from the same public version and versionCode from the same frozen N;
+its builder does not allocate another semantic build.
+
+The recipient verifies current and candidate manifests before ordinary update:
+recognized calendar identity may migrate to semantic major 2 or later; semantic
+precedence may not decrease and build must increase. SemVer build metadata alone
+has no precedence. Exact byte-identical reinstall is idempotent; explicit
+verified previous-runtime rollback retains its separate existing owner. Unknown
+metadata does not authorize downgrade. Config/data/enrollment, signer/package
+identity and stopped-writer checks remain mandatory. Old calendar receipt
+read/retry remains supported at its original checkpoint; it is not authority
+for a new calendar downgrade after migration. The release publisher must refuse
+overwriting a previously published public tag with another build.
 
 ## Frozen standalone artifact preparation
 
@@ -1644,7 +1685,7 @@ record, including nested publisher and receipt fields; two records that differ
 below the first object level are conflicting rather than silently coalesced.
 
 The Release Manager uses the prepared PreRelease, supplies its consolidated
-`CHANGELOG.md`, and freezes the calendar version before validation. Freeze binds
+`CHANGELOG.md`, and freezes the public version before validation. Freeze binds
 the exact main base, release-plan revision, included Task IDs and acceptance
 revisions, Task results, owning dev integrations, aggregate `PreRelease` head,
 manifest hash, standalone candidate head and Agent Hub package version. Later

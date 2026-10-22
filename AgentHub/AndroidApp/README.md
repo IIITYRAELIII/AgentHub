@@ -49,7 +49,7 @@ python Utilities/AgentHub/install.py --enable-component android-app
 и Gradle закреплены в проекте, wrapper содержит SHA-256 официального дистрибутива.
 
 ```powershell
-pwsh -NoProfile -File AndroidApp/build.ps1 -HubUrl https://hub.example.com
+pwsh -NoProfile -File AndroidApp/build.ps1 -HubUrl https://hub.example.com -ArtifactVersion <frozen-public-version+build.N>
 ```
 
 Debug APK создаётся в `AndroidApp/app/build/outputs/apk/debug/app-debug.apk`, а
@@ -57,9 +57,16 @@ Debug APK создаётся в `AndroidApp/app/build/outputs/apk/debug/app-debu
 Та же сборка атомарно публикуется как `assets/mobile/AgentHub-Mobile.apk` вместе
 с `update.json` (versionCode, versionName, размер и SHA-256). Эти генерируемые
 файлы не хранятся в Git, но входят в следующий runtime-релиз Agent Hub. Если
-версия не передана явно, `build.ps1` использует UTC epoch minutes и при повторной
-сборке в ту же минуту увеличивает предыдущий код на единицу, сохраняя монотонный
-`versionCode`; UTC дата/время становится читаемым `versionName`.
+используется SemVer, `build.ps1` требует `-ArtifactVersion` из существующего
+release owner: `versionName` равен публичной версии (например, `2.0.0`), а
+`versionCode` — тому же frozen N. Explicit code/name и фактическая Gradle metadata
+должны точно совпасть. Повтор сборки не выделяет новый code. Историческая
+calendar-сборка сохраняет прежний UTC epoch-minute/date режим только для старых
+источников; новые semantic источники без frozen identity отказываются.
+Обновление требует увеличения code и неубывания SemVer, включая beta/rc→stable.
+Распознанная календарная версия может перейти на major 2 или выше; неизвестная
+версия либо downgrade не разрешают установку. Signer, package ID, Keystore,
+сессии и enrollment сохраняют существующие владельцы; uninstall/clear не нужны.
 Без `HubUrl` адрес можно ввести при первом запуске. Личные URL, ключи телефона и
 записи доверенных устройств не хранятся в Git.
 

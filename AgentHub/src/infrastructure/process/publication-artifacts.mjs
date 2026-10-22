@@ -8,6 +8,7 @@ import { pathToFileURL } from "node:url";
 
 import { runtimeLayout, runtimeReleaseDirectory } from "../filesystem/runtime-layout.mjs";
 import { verifyRuntimeManifest } from "../filesystem/runtime-manifest-verifier.mjs";
+import { artifactVersionIdentity } from "../../domain/agent-hub-version.mjs";
 
 export const PREPARE_PUBLICATION_ARTIFACTS = "Подготовка артефактов публикации";
 export const INSTALL_PREPARED_RUNTIME = "Установка runtime-релиза";
@@ -16,6 +17,12 @@ const json = async (file) => JSON.parse(await readFile(file, "utf8"));
 const absent = (error) => { if (error.code === "ENOENT") return null; throw error; };
 const python = process.platform === "win32" ? "python.exe" : "python3";
 const executeFile = promisify(execFile);
+function validArtifactVersion(value) {
+  try {
+    const identity = artifactVersionIdentity(value);
+    return identity.versionScheme === "semver-build-v1" || /^\d+\.\d+\.\d+\.[1-9]\d*$/u.test(value);
+  } catch { return false; }
+}
 
 // These manifests describe immutable build products. Publication progress and
 // effect admission remain in the existing publication journal, not here.
@@ -82,7 +89,7 @@ export function createPublicationArtifactSteps({
     || typeof preparedInput.sourceCommit !== "string"
     || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u.test(preparedInput.sourceCommit)
     || typeof preparedInput.version !== "string"
-    || !/^\d+(?:\.\d+){3}$/u.test(preparedInput.version))) {
+    || !validArtifactVersion(preparedInput.version))) {
     throw new Error("Invalid frozen runtime publication input");
   }
   const artifactIdentity = (identity) => {
@@ -193,11 +200,19 @@ export function createPublicationArtifactSteps({
     const has = (label) => steps.some((step) => step.label === label);
     if (has("Сборка Agent Hub Mobile")) {
       await ensure(identity, "android", async (output) => {
-        await execute(steps.find((step) => step.label === "Сборка Agent Hub Mobile"));
+        const step = steps.find((step) => step.label === "Сборка Agent Hub Mobile");
+        await execute(preparedInput?.version.includes("+build.")
+          ? { ...step, args: [...step.args, "--", "-ArtifactVersion", preparedInput.version] } : step);
         for (const file of ["AgentHub-Mobile.apk", "update.json"]) await cp(path.join(sourceRoot, "assets", "mobile", file), path.join(output, file));
         const manifest = await json(path.join(output, "update.json"));
         const apk = await readFile(path.join(output, "AgentHub-Mobile.apk"));
         if (manifest.sha256 !== sha(apk) || manifest.bytes !== apk.length) throw new Error("Prepared Android APK does not match its update manifest");
+        if (preparedInput?.version.includes("+build.")) {
+          const version = artifactVersionIdentity(preparedInput.version);
+          if (manifest.versionCode !== version.buildNumber || manifest.versionName !== version.publicVersion) {
+            throw new Error("Prepared Android version differs from the frozen artifact");
+          }
+        }
         return {};
       });
     }

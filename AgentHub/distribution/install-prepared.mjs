@@ -6,6 +6,7 @@ import { installPreparedRuntime, activateRuntime, runtimeStatus } from "./runtim
 import { verifyRuntimeManifest } from "./runtime/src/infrastructure/filesystem/runtime-manifest-verifier.mjs";
 import { protectRuntimeDirectory, protectRuntimeConfig } from "./runtime/src/infrastructure/filesystem/runtime-security.mjs";
 import { withPublicationLock } from "./runtime/src/infrastructure/process/publication-lock.mjs";
+import { assertAgentHubUpgrade } from "./runtime/src/domain/agent-hub-version.mjs";
 
 // Packaged entry: it delegates pointer/stable-launcher/rollback to the existing
 // runtime owner. It never builds, starts, stops or restarts a process.
@@ -54,9 +55,24 @@ await withPublicationLock(async () => {
   }
   const releaseRoot = path.join(releases, releaseId);
   await requireRegularAncestors(releaseRoot);
+  let requireUpgrade = async () => {};
   if (command === "install") {
     const source = path.join(packageRoot, "runtime");
     await verifyRuntimeManifest(source, releaseId);
+    const candidateBytes = await readFile(path.join(source, "runtime-manifest.json"));
+    const candidateManifest = JSON.parse(candidateBytes);
+    requireUpgrade = async () => {
+      const pointer = await readFile(path.join(runtimeRoot, "current.json"), "utf8")
+        .then(JSON.parse, error => { if (error.code === "ENOENT") return null; throw error; });
+      if (!pointer) return assertAgentHubUpgrade(null, candidateManifest);
+      if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(pointer.current ?? "")) throw new Error("Unknown current runtime identity");
+      const currentRoot = path.join(releases, pointer.current);
+      await requireRegularAncestors(currentRoot);
+      await verifyRuntimeManifest(currentRoot, pointer.current);
+      const currentBytes = await readFile(path.join(currentRoot, "runtime-manifest.json"));
+      assertAgentHubUpgrade(JSON.parse(currentBytes), candidateManifest, { sameArtifact: currentBytes.equals(candidateBytes) });
+    };
+    await requireUpgrade();
     const exists = await lstat(releaseRoot).catch(error => { if (error.code === "ENOENT") return null; throw error; });
     if (!exists) {
       const staging = path.join(releases, `.distribution-${randomUUID()}`);
@@ -85,7 +101,8 @@ await withPublicationLock(async () => {
     await protectRuntimeConfig(config);
   }
   const installed = await installPreparedRuntime({ runtimeRoot, releaseRoot, releaseId,
-    beforeStableLauncherCommit: requireStopped, beforePointerCommit: requireStopped });
+    beforeStableLauncherCommit: async () => { await requireStopped(); await requireUpgrade(); },
+    beforePointerCommit: async () => { await requireStopped(); await requireUpgrade(); } });
   await activateRuntime({ sourceRoot: releaseRoot, runtimeRoot, retireLegacyConfig: false, retireWorkspaceRuntime: false });
   console.log(JSON.stringify({ installed: installed.releaseId, restarted: false,
     next: "Configure your project/provider, then start the installed RuntimeHost explicitly." }));

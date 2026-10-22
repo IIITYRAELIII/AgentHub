@@ -62,7 +62,8 @@ class InstalledPackageTests(unittest.TestCase):
             packages, archives = [], []
             for i in (1, 2):
                 area = root/f"prepare-{i}"
-                output = run(["node", str(ROOT/"prepare-fixture.mjs"), str(area), f"synthetic-{i}", f"synthetic app {i}", str(i)*40])
+                output = run(["node", str(ROOT/"prepare-fixture.mjs"), str(area), f"synthetic-{i}", f"synthetic app {i}", str(i)*40,
+                              "2026.10.19" if i == 1 else "2.0.0"])
                 prepared = Path(json.loads(output.stdout.splitlines()[-1])["releaseRoot"])
                 native_manifest = json.loads((prepared/"runtime-manifest.json").read_text(encoding="utf-8"))
                 receipt = root/f"owner-prepared-{i}.json"
@@ -175,6 +176,10 @@ class InstalledPackageTests(unittest.TestCase):
             run([str(runtime/"AgentHub.RuntimeHost.exe"), "--check"])
             pointer = json.loads((runtime/"current.json").read_text())
             self.assertEqual((pointer["current"], pointer["previous"]), ("synthetic-2", "synthetic-1"))
+            semantic_pointer = (runtime/"current.json").read_bytes()
+            downgrade = install(0, success=False)
+            self.assertIn("downgrade", downgrade.stderr)
+            self.assertEqual((runtime/"current.json").read_bytes(), semantic_pointer)
             install(1, rollback=True)
             run([str(runtime/"AgentHub.RuntimeHost.exe"), "--check"])
             pointer = json.loads((runtime/"current.json").read_text())

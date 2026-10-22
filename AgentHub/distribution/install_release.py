@@ -28,6 +28,44 @@ MAX_METADATA_BYTES = 1024 * 1024
 REPOSITORY = "IIITYRAELIII/AgentHub"
 PACKAGE_ASSET = "AgentHub-win32-x64.zip"
 ASSET_HOSTS = {"release-assets.githubusercontent.com", "objects.githubusercontent.com"}
+VERSION_SCHEME = "semver-build-v1"
+_NUMBER = r"(?:0|[1-9]\d*)"
+_SEMVER = re.compile(rf"({_NUMBER})\.({_NUMBER})\.({_NUMBER})(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?")
+
+
+def semantic_fields(value: dict, *, descriptor=False) -> dict:
+    """Validate the new explicit identity; old receipts are read without enrichment."""
+    artifact = value.get("version") if descriptor else value.get("releaseVersion")
+    scheme = value.get("versionScheme")
+    if scheme is None and not (isinstance(artifact, str) and "+build." in artifact):
+        if any(key in value for key in ("publicVersion", "buildNumber")):
+            raise ValueError("Unrecognized version metadata")
+        return {}
+    public = value.get("publicVersion")
+    build = value.get("buildNumber")
+    match = _SEMVER.fullmatch(public) if isinstance(public, str) and len(public) <= 128 else None
+    if (scheme != VERSION_SCHEME or not match or any(int(x) > 9007199254740991 for x in match.group(1, 2, 3))
+            or type(build) is not int or not 1 <= build <= 2100000000
+            or any(x.isdigit() and len(x) > 1 and x[0] == "0" for x in (match[4] or "").split("."))
+            or artifact != f"{public}+build.{build}" or (not descriptor and value.get("version") != public)):
+        raise ValueError("Semantic public/build/artifact identity mismatch")
+    return {"versionScheme": VERSION_SCHEME, "publicVersion": public, "buildNumber": build}
+
+
+def valid_artifact_version(value: str) -> bool:
+    if not isinstance(value, str):
+        return False
+    if re.fullmatch(r"[0-9]+(?:\.[0-9]+){2,3}", value):
+        return True  # Historical immutable receipt grammar; not upgrade authority.
+    match = re.fullmatch(r"(.+)\+build\.([1-9]\d*)", value)
+    if not match:
+        return False
+    try:
+        semantic_fields({"versionScheme": VERSION_SCHEME, "publicVersion": match[1],
+                         "buildNumber": int(match[2]), "version": value}, descriptor=True)
+        return True
+    except ValueError:
+        return False
 
 
 def file_hash(path: Path) -> str:
@@ -148,6 +186,11 @@ def fetch_release(release: str, scratch: Path) -> tuple[Path, str, dict]:
             or not re.fullmatch(r"[0-9a-f]{64}", str(descriptor.get("packageManifestSha256")))
             or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", str(descriptor.get("releaseId")))):
         raise ValueError("Release descriptor and published asset disagree")
+    fields = semantic_fields(descriptor, descriptor=True)
+    if fields and "-" in fields["publicVersion"]:
+        raise ValueError("Prerelease is not eligible for stable discovery")
+    if fields and metadata["tag_name"] != fields["publicVersion"]:
+        raise ValueError("Published tag differs from public version")
     archive = scratch/"release.zip"
     download(asset["browser_download_url"], archive, max_bytes=asset["size"])
     if archive.stat().st_size != asset["size"] or file_hash(archive) != descriptor["sha256"]:
@@ -159,6 +202,8 @@ def verify_release_descriptor(package: dict, extracted: Path, release: dict) -> 
     if (any(package.get(key) != release.get(key) for key in ("releaseId", "sourceCommit", "version"))
             or file_hash(extracted/"package-manifest.json") != release["packageManifestSha256"]):
         raise ValueError("Extracted package differs from the selected release descriptor")
+    if semantic_fields(package, descriptor=True) != semantic_fields(release, descriptor=True):
+        raise ValueError("Extracted public version/build differs from release")
 
 
 def extract_verified(archive: Path, expected_sha256: str, destination: Path) -> dict:
@@ -189,6 +234,7 @@ def extract_verified(archive: Path, expected_sha256: str, destination: Path) -> 
         if not descriptor_entry or descriptor_entry.file_size > 8*1024**2:
             raise ValueError("Missing or oversized package descriptor")
         descriptor = json.loads(source.read(descriptor_entry).decode("utf-8"))
+        version_fields = semantic_fields(descriptor, descriptor=True)
         if (descriptor.get("schema") != 1 or descriptor.get("repository") != REPOSITORY
                 or descriptor.get("platform") != "win32-x64" or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", descriptor.get("releaseId", ""))):
             raise ValueError("Unsupported ready package identity")
@@ -224,6 +270,12 @@ def extract_verified(archive: Path, expected_sha256: str, destination: Path) -> 
                         outgoing.write(chunk)
                 if name in indexed and (size != indexed[name]["bytes"] or digest.hexdigest() != indexed[name]["sha256"]):
                     raise ValueError("Ready package file integrity mismatch")
+            if version_fields:
+                runtime = json.loads((destination/"runtime/runtime-manifest.json").read_text(encoding="utf-8"))
+                if (semantic_fields(runtime) != version_fields or runtime.get("releaseVersion") != descriptor["version"]
+                        or runtime.get("releaseId") != descriptor["releaseId"]
+                        or runtime.get("publicationRevision") != descriptor.get("sourceCommit")):
+                    raise ValueError("Package/runtime version identity mismatch")
         except BaseException:
             # Destination was exclusively created by this call and no child has
             # executed. Preserve the supplied archive; remove only our extraction.

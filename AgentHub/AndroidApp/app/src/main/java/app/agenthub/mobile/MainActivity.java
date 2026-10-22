@@ -500,6 +500,7 @@ public final class MainActivity extends Activity {
                 int versionCode = manifest.getInt("versionCode");
                 if (versionCode <= BuildConfig.VERSION_CODE) return;
                 String versionName = manifest.getString("versionName").trim();
+                if (!MobileVersion.allowsUpgrade(BuildConfig.VERSION_NAME, BuildConfig.VERSION_CODE, versionName, versionCode)) return;
                 String expectedHash = manifest.getString("sha256").trim().toLowerCase();
                 long expectedBytes = manifest.getLong("bytes");
                 String downloadPath = manifest.getString("downloadUrl").trim();

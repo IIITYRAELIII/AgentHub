@@ -40,6 +40,29 @@ test("frozen runtime version refuses before build and uses the canonical next su
   assert.equal(customizationCalls, 1);
 });
 
+test("semantic frozen build survives clock advance and competing allocation refuses before work", async t => {
+  const { sourceRoot, runtimeRoot } = await fixture();
+  t.after(() => rm(path.dirname(runtimeRoot), { recursive: true, force: true }));
+  const file = path.join(sourceRoot, "package.json");
+  const metadata = JSON.parse(await readFile(file, "utf8"));
+  await writeFile(file, JSON.stringify({ ...metadata, version: "2.0.0" }));
+  let calls = 0;
+  const options = { sourceRoot, runtimeRoot, expectedReleaseVersion: "2.0.0+build.42",
+    beforeManifest: async () => { calls++; } };
+  // Actual wall clock is far beyond build 42. Preparation uses the frozen floor.
+  const prepared = await prepareRuntime({ ...options, releaseId: "semantic-original" });
+  const raw = await readFile(path.join(prepared.releaseRoot, "runtime-manifest.json"));
+  const manifest = JSON.parse(raw);
+  assert.equal(manifest.publicVersion, "2.0.0");
+  assert.equal(manifest.buildNumber, 42);
+  assert.equal(manifest.releaseVersion, options.expectedReleaseVersion);
+  assert.equal(manifest.versionScheme, "semver-build-v1");
+  await assert.rejects(prepareRuntime({ ...options, releaseId: "competing" }), /Frozen runtime version/u);
+  assert.equal(calls, 1);
+  await assert.rejects(stat(path.join(runtimeRoot, "releases/competing")), /ENOENT/u);
+  assert.deepEqual(await readFile(path.join(prepared.releaseRoot, "runtime-manifest.json")), raw);
+});
+
 test("actual prepared update preserves old sync address, explicit settings and retry identity", async t => {
   const previousEnv = process.env.AGENT_HUB_USAGE_SYNC_SERVER_URL;
   delete process.env.AGENT_HUB_USAGE_SYNC_SERVER_URL;
