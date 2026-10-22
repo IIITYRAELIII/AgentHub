@@ -509,6 +509,15 @@ export class WorkspaceReleasePreflightService {
   async withReviewedMainRecovery({ workspaceId, taskIds, approvedRepositories, commit } = {}) {
     requiredFunction(commit, "reviewed-main recovery commit");
     return this.withAwaitTransition(workspaceId, async () => {
+      const verifyMain = async ({ repository, approval, publishedRevision }) => {
+        const audit = await this.releaseGitWorkspaces.inspectMainChanges({ projectRoot: repository.projectRoot, publishedRevision,
+          approvedLocalMainCommit: approval.approvedLocalMainCommit, approvedOriginMainCommit: approval.approvedOriginMainCommit });
+        if (!audit.approved || audit.approvalRequired || canonicalRoot(audit.projectRoot) !== canonicalRoot(repository.projectRoot)
+            || audit.publishedRevision !== publishedRevision || audit.localMain !== approval.approvedLocalMainCommit
+            || audit.originMain !== approval.approvedOriginMainCommit) {
+          throw new Error("Reviewed-main recovery approval is stale");
+        }
+      };
       const capture = async () => {
         const plan = await this.releasePlanner.plan(workspaceId, { selectedTaskIds: taskIds });
         if (plan.blocked?.length) throw new Error("Reviewed-main recovery selected plan is blocked");
@@ -518,7 +527,7 @@ export class WorkspaceReleasePreflightService {
         const approvals = approvedRepositoryEntries(approvedRepositories);
         if (approvals.size !== repositories.length) throw new Error("Reviewed-main recovery repository membership changed");
         const publication = await this.readPublicationState();
-        const preparedCandidates = [], selectedResults = [];
+        const preparedCandidates = [], selectedResults = [], mainChecks = [];
         for (const repository of repositories) {
           const approval = approvals.get(canonicalRoot(repository.projectRoot));
           if (!approval) throw new Error("Reviewed-main recovery repository approval is missing");
@@ -526,13 +535,12 @@ export class WorkspaceReleasePreflightService {
           const publishedRevision = publicationBaselineFor(repository, publication).publishedRevision;
           const evidence = await this.taskGitWorkspaces.releaseIntegrationEvidence({ projectRoot: repository.projectRoot, tasks: repository.frozenTasks });
           const base = await this.taskGitWorkspaces.releaseBaseEvidence({ projectRoot: repository.projectRoot, publishedBaseCommit: publishedRevision, tasks: repository.frozenTasks });
-          const audit = await this.releaseGitWorkspaces.inspectMainChanges({ projectRoot: repository.projectRoot, publishedRevision,
-            approvedLocalMainCommit: approval.approvedLocalMainCommit, approvedOriginMainCommit: approval.approvedOriginMainCommit });
-          if (!audit.approved || audit.approvalRequired || canonicalRoot(audit.projectRoot) !== canonicalRoot(repository.projectRoot)
-              || audit.publishedRevision !== publishedRevision || audit.localMain !== approval.approvedLocalMainCommit
-              || audit.originMain !== approval.approvedOriginMainCommit || base.baseCommit !== approval.approvedLocalMainCommit) {
+          const mainCheck = { repository, approval, publishedRevision };
+          await verifyMain(mainCheck);
+          if (base.baseCommit !== approval.approvedLocalMainCommit) {
             throw new Error("Reviewed-main recovery approval is stale");
           }
+          mainChecks.push(mainCheck);
           const prepared = await this.releaseGitWorkspaces.frozenCandidate(repository.projectRoot);
           if (!prepared.manifestHash || !prepared.preReleaseHead || prepared.planRevision !== plan.revision
               || !sameFrozenTasks(prepared.manifest?.tasks, evidence.tasks)) {
@@ -555,6 +563,9 @@ export class WorkspaceReleasePreflightService {
           preparedCandidates.push({ repositoryRoot: repository.projectRoot, commit: prepared.preReleaseHead,
             manifestHash: prepared.manifestHash, baseEvidenceHash: taskGitIdentityHash(base) });
         }
+        // Every awaited prepared/source check, including later repositories,
+        // precedes the final current-main/origin fence for ALL provenance kinds.
+        for (const check of mainChecks) await verifyMain(check);
         return { approvedRepositories, planRevision: plan.revision, publicationHash: taskGitIdentityHash(publication),
           selectedResults: selectedResults.sort((a, b) => a.taskId.localeCompare(b.taskId)), preparedCandidates };
       };

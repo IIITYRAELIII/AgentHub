@@ -92,6 +92,45 @@ for (const drift of ["main", "selection", "manifest"]) test(`reviewed-main recov
     } }), /stale|changed/u);
 });
 
+for (const localSource of [false, true]) for (const drift of [false, true]) {
+  test(`reviewed-main recovery fences earlier repository after final prepared await (local=${localSource}, drift=${drift})`, async () => {
+    const f = fixture({ publishedRevision: "f".repeat(40) });
+    const roots = [f.projectRoot, path.resolve("D:/second-reviewed-repository")];
+    const agreed = "a".repeat(40), changed = "b".repeat(40), published = "f".repeat(40);
+    const origins = new Map(roots.map(root => [root, agreed]));
+    f.plan.ready = roots.map((projectRoot, index) => ({ taskId: `selected-${index}`, taskRevision: 7,
+      projectRoot, resultCommit: "c".repeat(40) }));
+    f.service.readPublicationState = async () => ({ repositories: roots.map(root => ({ root, revision: published })) });
+    f.service.taskGitWorkspaces.releaseIntegrationEvidence = async ({ tasks }) => ({ tasks });
+    f.service.taskGitWorkspaces.releaseBaseEvidence = async () => ({ baseCommit: agreed, publishedBaseCommit: published });
+    f.service.releaseGitWorkspaces.assertPrimaryInvariant = async () => ({});
+    f.service.releaseGitWorkspaces.inspectMainChanges = async ({ projectRoot }) => ({ projectRoot,
+      publishedRevision: published, localMain: agreed, originMain: origins.get(projectRoot), approved: true, approvalRequired: false });
+    let checkpoints = 0, committed = 0;
+    f.service.releaseGitWorkspaces.validateLocalSourceBaseline = async request => ({ provenance: request.provenance });
+    f.service.releaseGitWorkspaces.frozenCandidate = async projectRoot => {
+      checkpoints++;
+      if (drift && checkpoints === 4) origins.set(roots[0], changed);
+      const tasks = f.plan.ready.filter(task => task.projectRoot === projectRoot);
+      const provenance = localSource ? { schemaVersion: 1, kind: "installed-local-source-v1",
+        publishedBaseCommit: published, agreedMainCommit: agreed, sourceBaseCommit: "d".repeat(40),
+        sourceBaseTree: "e".repeat(40), sourcePatchSha256: "e".repeat(64), installedReleaseId: "retained",
+        installedManifestSha256: "e".repeat(64), planRevision: f.plan.revision,
+        selectionHash: localSourceSelectionHash(tasks), approvedOriginMainCommit: agreed, adoptions: [] }
+        : { schemaVersion: 1, kind: "explicit-reviewed-main-v1", publishedBaseCommit: published,
+          approvedLocalMainCommit: agreed, approvedOriginMainCommit: agreed };
+      return { planRevision: f.plan.revision, manifestHash: "e".repeat(64), preReleaseHead: "c".repeat(40),
+        baseCommit: localSource ? provenance.sourceBaseCommit : agreed, manifest: { tasks, baseProvenance: provenance } };
+    };
+    const pending = f.service.withReviewedMainRecovery({ workspaceId: "workspace-1",
+      taskIds: f.plan.ready.map(task => task.taskId), approvedRepositories: roots.map(projectRoot => ({ projectRoot,
+        approvedLocalMainCommit: agreed, approvedOriginMainCommit: agreed })),
+      commit: async (_authority, validate) => { await validate(); committed++; } });
+    if (drift) { await assert.rejects(pending, /approval is stale/u); assert.equal(committed, 0); }
+    else { await pending; assert.equal(committed, 1); }
+  });
+}
+
 test("ordinary Await derives installed source with incoming or agreed-main origin and rechecks before Task CAS", async () => {
   for (const incoming of [true, false]) for (const drift of [false, true, "missing-authority"]) {
     const f = localSourceFixture();
