@@ -2,6 +2,8 @@ import { createReadStream } from "node:fs";
 import { mkdir, readFile, rename, rm, open, link, opendir, stat } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import path from "node:path";
+import { AsyncLocalStorage } from "node:async_hooks";
+import { monitorEventLoopDelay } from "node:perf_hooks";
 import { attachmentContentType, createAttachmentStorageName, imageMatchesContentType } from "../../domain/attachment-files.mjs";
 import { attachmentUploadLimits } from "../../domain/attachment-upload-policy.mjs";
 
@@ -13,6 +15,27 @@ function failure(message, statusCode = 400, state = null) {
 }
 const digest = (body) => createHash("sha256").update(body).digest("hex");
 const owners = new Map();
+const observations = new AsyncLocalStorage();
+function observe(key, duration) {
+  const timings = observations.getStore();
+  if (timings) timings[key] = (timings[key] ?? 0) + Math.max(0, duration);
+}
+async function measured(key, operation) {
+  if (!observations.getStore()) return operation();
+  const started = performance.now();
+  try { return await operation(); }
+  finally { observe(key, performance.now() - started); }
+}
+async function* measuredRead(stream) {
+  const iterator = stream[Symbol.asyncIterator]();
+  try {
+    while (true) {
+      const next = await measured("storageRead", () => iterator.next());
+      if (next.done) return;
+      yield next.value;
+    }
+  } finally { await iterator.return?.(); }
+}
 
 // Local and tunnel HTTP listeners share one owner and its per-user mutation queues.
 export async function acquireAttachmentUploadService(options) {
@@ -38,9 +61,11 @@ export async function acquireAttachmentUploadService(options) {
 }
 
 async function durableWrite(file, body) {
-  const handle = await open(file, "w", 0o600);
-  try { await handle.writeFile(body); await handle.sync(); }
-  finally { await handle.close(); }
+  const handle = await measured("storageOpen", () => open(file, "w", 0o600));
+  try {
+    await measured("storageWrite", () => handle.writeFile(body));
+    await measured("storageSync", () => handle.sync());
+  } finally { await measured("storageClose", () => handle.close()); }
 }
 
 /** Owns only upload receipts and staging parts; published files belong to commands/history. */
@@ -70,9 +95,17 @@ export class AttachmentUploadService {
   }
 
   capabilities() { return { ...this.#limits }; }
-  #run(user, action) {
+  #run(user, action, timings = null) {
     if (this.#closed) return Promise.reject(failure("Upload service closed", 503));
-    const result = (this.#queues.get(user) ?? Promise.resolve()).then(action);
+    const started = performance.now();
+    const loop = timings ? monitorEventLoopDelay({ resolution: 20 }) : null;
+    loop?.enable();
+    const result = (this.#queues.get(user) ?? Promise.resolve()).then(() => observations.run(timings, () => {
+      observe("ownerQueue", performance.now() - started);
+      return action();
+    })).finally(() => {
+      if (loop) { loop.disable(); timings.ownerLoopMax = loop.max / 1e6; }
+    });
     const tail = result.catch(() => {}).then(() => {
       if (this.#queues.get(user) === tail) this.#queues.delete(user);
     });
@@ -90,7 +123,7 @@ export class AttachmentUploadService {
   }
   #directory(user) { return path.join(this.#staging, user); }
   async #load(user) {
-    try { return JSON.parse(await readFile(path.join(this.#directory(user), "index.json"), "utf8")); }
+    try { return JSON.parse(await measured("storageRead", () => readFile(path.join(this.#directory(user), "index.json"), "utf8"))); }
     catch (error) { if (error.code === "ENOENT") return []; throw error; }
   }
   async #save(user, records) {
@@ -98,7 +131,7 @@ export class AttachmentUploadService {
     await mkdir(directory, { recursive: true });
     const temporary = path.join(directory, "index.tmp");
     await durableWrite(temporary, JSON.stringify(records));
-    await rename(temporary, path.join(directory, "index.json"));
+    await measured("storageRename", () => rename(temporary, path.join(directory, "index.json")));
   }
   async #expire(user, records) {
     const now = this.#now();
@@ -106,7 +139,7 @@ export class AttachmentUploadService {
     const purged = records.filter((record) => record.status === "expired" && record.tombstoneUntil <= now);
     if (!expired.length && !purged.length) return records;
     for (const record of expired) {
-      await rm(path.join(this.#directory(user), this.#id(record.uploadId)), { recursive: true, force: true });
+      await measured("storageCleanup", () => rm(path.join(this.#directory(user), this.#id(record.uploadId)), { recursive: true, force: true }));
     }
     const retained = records.filter((record) => record.expiresAt > now || record.status === "expired" && record.tombstoneUntil > now)
       .map((record) => record.expiresAt > now ? record : {
@@ -145,7 +178,7 @@ export class AttachmentUploadService {
       if (!info.isFile() || info.size !== record.size) throw new Error("Ready size changed");
       const hash = createHash("sha256");
       let size = 0;
-      for await (const buffer of this.#readStream(target, { start: 0, end: record.size, highWaterMark: 64 * 1024 })) {
+      for await (const buffer of measuredRead(this.#readStream(target, { start: 0, end: record.size, highWaterMark: this.#limits.chunkBytes }))) {
         size += buffer.length;
         if (size > record.size) throw new Error("Ready size changed");
         hash.update(buffer);
@@ -163,7 +196,7 @@ export class AttachmentUploadService {
     if (record.status === "expired") throw failure("Upload expired", 410, "expired");
     return { records, record };
   }
-  begin(userId, metadata) {
+  begin(userId, metadata, timings = null) {
     return this.#run(this.#user(userId), async () => {
       const user = this.#user(userId);
       const uploadId = this.#id(metadata?.uploadId);
@@ -195,13 +228,13 @@ export class AttachmentUploadService {
       records.push(record);
       await this.#save(user, records);
       return this.#view(record);
-    });
+    }, timings);
   }
-  status(userId, uploadId) {
+  status(userId, uploadId, timings = null) {
     const user = this.#user(userId);
-    return this.#run(user, async () => this.#verifiedView(user, (await this.#record(user, this.#id(uploadId))).record));
+    return this.#run(user, async () => this.#verifiedView(user, (await this.#record(user, this.#id(uploadId))).record), timings);
   }
-  putChunk(userId, uploadId, index, body, sha256) {
+  putChunk(userId, uploadId, index, body, sha256, timings = null) {
     return this.#run(this.#user(userId), async () => {
       const user = this.#user(userId), id = this.#id(uploadId);
       const { records, record } = await this.#record(user, id);
@@ -216,14 +249,14 @@ export class AttachmentUploadService {
       const directory = path.join(this.#directory(user), id);
       await mkdir(directory, { recursive: true });
       await durableWrite(path.join(directory, `${index}.tmp`), body);
-      await rename(path.join(directory, `${index}.tmp`), path.join(directory, `${index}.part`));
+      await measured("storageRename", () => rename(path.join(directory, `${index}.tmp`), path.join(directory, `${index}.part`)));
       record.received.push({ index, size: body.length, sha256 });
       record.received.sort((a, b) => a.index - b.index);
       await this.#save(user, records);
       return this.#view(record);
-    });
+    }, timings);
   }
-  complete(userId, uploadId) {
+  complete(userId, uploadId, timings = null) {
     return this.#run(this.#user(userId), async () => {
       const user = this.#user(userId), id = this.#id(uploadId);
       const { records, record } = await this.#record(user, id);
@@ -231,7 +264,7 @@ export class AttachmentUploadService {
       if (record.status !== "uploading" || record.received.length !== Math.ceil(record.size / this.#limits.chunkBytes)) throw failure("Upload is incomplete", 409);
       const directory = path.join(this.#directory(user), id);
       const temporary = path.join(directory, "assembled.tmp");
-      const output = await open(temporary, "w", 0o600);
+      const output = await measured("storageOpen", () => open(temporary, "w", 0o600));
       const hash = createHash("sha256");
       let size = 0;
       let prefix = Buffer.alloc(0);
@@ -239,12 +272,12 @@ export class AttachmentUploadService {
         for (const part of record.received) {
           const partHash = createHash("sha256");
           let partSize = 0;
-          for await (const buffer of this.#readStream(path.join(directory, `${part.index}.part`))) {
+          for await (const buffer of measuredRead(this.#readStream(path.join(directory, `${part.index}.part`), { highWaterMark: this.#limits.chunkBytes }))) {
             if (prefix.length < 12) prefix = Buffer.concat([prefix, buffer.subarray(0, 12 - prefix.length)]);
             partHash.update(buffer); hash.update(buffer); partSize += buffer.length; size += buffer.length;
             if (partSize > part.size || size > record.size) throw failure("Upload part is corrupt", 409);
             let offset = 0;
-            while (offset < buffer.length) offset += (await output.write(buffer, offset, buffer.length - offset)).bytesWritten;
+            while (offset < buffer.length) offset += (await measured("storageWrite", () => output.write(buffer, offset, buffer.length - offset))).bytesWritten;
           }
           if (partSize !== part.size || partHash.digest("hex") !== part.sha256) throw failure("Upload part is corrupt", 409);
         }
@@ -252,31 +285,31 @@ export class AttachmentUploadService {
         if (record.type.startsWith("image/") && !imageMatchesContentType(prefix, record.type)) {
           throw failure("Attachment content does not match its image type", 400);
         }
-        await output.sync();
-      } finally { await output.close(); }
+        await measured("storageSync", () => output.sync());
+      } finally { await measured("storageClose", () => output.close()); }
       const sha256 = hash.digest("hex");
       const target = this.#target(user, record);
-      try { await link(temporary, target); }
+      try { await measured("storagePublish", () => link(temporary, target)); }
       catch (error) {
         if (error.code !== "EEXIST") throw error;
         await this.#verifiedView(user, { ...record, status: "ready", path: target, sha256 });
       }
       record.status = "ready"; record.path = target; record.sha256 = sha256;
       await this.#save(user, records);
-      await rm(directory, { recursive: true, force: true });
+      await measured("storageCleanup", () => rm(directory, { recursive: true, force: true }));
       return this.#view(record);
-    });
+    }, timings);
   }
-  cancel(userId, uploadId) {
+  cancel(userId, uploadId, timings = null) {
     return this.#run(this.#user(userId), async () => {
       const user = this.#user(userId), id = this.#id(uploadId);
       const { records, record } = await this.#record(user, id);
       record.status = "cancelled";
       delete record.path; delete record.sha256;
       await this.#save(user, records);
-      await rm(path.join(this.#directory(user), id), { recursive: true, force: true });
+      await measured("storageCleanup", () => rm(path.join(this.#directory(user), id), { recursive: true, force: true }));
       return this.#view(record);
-    });
+    }, timings);
   }
   async close() {
     clearInterval(this.#timer);
