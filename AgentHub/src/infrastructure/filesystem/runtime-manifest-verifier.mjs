@@ -4,6 +4,7 @@ import path from "node:path";
 
 import { agentHubReleaseSequence, readAgentHubVersion } from "./agent-hub-package.mjs";
 import { relativeModuleSpecifiers } from "./module-import-specifiers.mjs";
+import { manifestVersionIdentity } from "../../domain/agent-hub-version.mjs";
 
 const MODULE_FILE_PATTERN = /\.(?:cjs|mjs)$/iu;
 
@@ -58,6 +59,7 @@ export async function verifyRuntimeManifest(releaseRoot, releaseId) {
   }
   if (manifest.releaseVersion != null) {
     agentHubReleaseSequence(packageVersion, manifest.releaseVersion);
+    if (manifest.releaseVersion.includes("+build.")) manifestVersionIdentity(manifest);
   }
   if (!Array.isArray(manifest.files)) throw new Error("Agent Hub runtime manifest has no file list");
   await verifyRuntimeImportClosure(releaseRoot, manifest.files);

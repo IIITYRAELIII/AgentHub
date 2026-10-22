@@ -182,6 +182,186 @@ test("restored preparation public owner preserves native content and same SQLite
   assert.equal(await git(f.primary, "rev-parse", "main"), f.main);
 });
 
+async function preparationRecoveryFixture(t, { checkingReplyLost = false } = {}) {
+  const f = await fixture(t, { releaseManager: true }), task = await f.create("dev-only-accepted");
+  await f.status(task, "testing", "recovery-task-test");
+  await f.status(task, "awaiting_implementation", "recovery-task-await");
+  const candidate = await f.releaseGit.initialNativeTestCandidate(f.primary), before = structuredClone(f.board.task(task.id));
+  const plan = await new TaskReleasePlanService({ taskBoard: f.board, taskGitWorkspaces: f.taskGit }).plan(f.workspaceId);
+  const entry = plan.ready[0], oldDev = await git(f.primary, "rev-parse", "dev");
+  await writeFile(path.join(f.primary, "base.txt"), "main\naccepted docs correction\n");
+  await commit(f.primary, "accepted local docs correction");
+  const acceptedMain = await git(f.primary, "rev-parse", "main");
+  await git(f.primary, "push", "origin", "main");
+  // Actual owner refresh before the public preparation, as in the reported refusal.
+  const audit = await f.releaseGit.inspectMainChanges({ projectRoot: f.primary, publishedRevision: f.main,
+    approvedLocalMainCommit: acceptedMain, approvedOriginMainCommit: acceptedMain });
+  assert.equal(audit.approved, true);
+  const expectedTree = (await git(f.primary, "merge-tree", "--write-tree", acceptedMain, entry.resultCommit)).split(/\r?\n/u)[0];
+  const envelope = { schemaVersion: 1, planRevision: plan.revision, publicationHash: preparationHash(f.publication),
+    sourceCommit: f.main, sourceTree: await git(f.primary, "rev-parse", `${f.main}^{tree}`),
+    sourceClosureHash: (await readPreparationSourceClosure()).hash,
+    tasks: [{ taskId: task.id, rowRevision: before.revision, taskRevision: entry.taskRevision,
+      baseCommit: f.main, resultCommit: entry.resultCommit, projectRoot: f.primary }],
+    repositories: [{ projectRoot: f.primary, approvedBaseCommit: acceptedMain, publishedRevision: f.main,
+      primaryMainCommit: acceptedMain, originMainCommit: acceptedMain, checkpointHash: candidate.checkpointSha256,
+      manifestHash: candidate.candidate.manifestHash, preReleaseHead: candidate.candidate.preReleaseHead,
+      tree: candidate.candidate.tree, approvedTree: expectedTree }] };
+  const originalId = "recovery-original";
+  const invoke = async (tool, body, customize = () => {}) => {
+    const runtime = await f.open();
+    try {
+      customize(runtime);
+      const token = runtime.service.contextToken({ provider: "codex", threadId: "fixture-thread", streamId: f.streamId });
+      return await runtime.service.call(tool, { context_token: token, ...body });
+    } finally { runtime.close(); }
+  };
+  const prepare = (customize = () => {}) => invoke("hub_release_prepare", { request_id: originalId, preparation: envelope }, customize);
+  await assert.rejects(prepare(runtime => {
+    if (!checkingReplyLost) return;
+    const checkpoint = runtime.fixtureCatalog.checkpointMcpPreparation.bind(runtime.fixtureCatalog);
+    runtime.fixtureCatalog.checkpointMcpPreparation = (...args) => {
+      const result = checkpoint(...args);
+      if (args[1].state.phase === "checking" && !args[1].resume) throw new Error("lost owned checking reply");
+      return result;
+    };
+  }), checkingReplyLost ? /lost owned checking reply/u : /does not contain accepted local main/u);
+  const original = f.catalog.mcpOperation(originalId);
+  assert.equal(original.status, "unknown");
+  assert.equal(original.preparationState.phase, checkingReplyLost ? "checking" : "paused");
+  assert.deepEqual(await f.releaseGit.initialNativeTestCandidate(f.primary), candidate);
+  const resumeArgs = { request_id: originalId, expected_arguments_hash: original.argumentsHash,
+    expected_preparation_revision: original.preparationState.revision };
+  const bootstrap = () => f.taskGit.bootstrapAcceptedMainIntoDev({ projectRoot: f.primary, acceptedMainCommit: acceptedMain,
+    expectedDevCommit: oldDev, publishedRevision: f.main, expectedPublicationGeneration: f.publication.generation,
+    expectedMergeBaseCommit: f.main, requestId: "normal-accepted-main-bootstrap" });
+  return { ...f, task, before, candidate, oldDev, acceptedMain, originalId, original, envelope, invoke,
+    prepare, resumeArgs, bootstrap };
+}
+
+test("preparation recovery actual ancestry refusal after main audit resumes same SQLite original after guarded bootstrap", { timeout: 240_000 }, async t => {
+  const f = await preparationRecoveryFixture(t);
+  const read = await f.invoke("hub_release_prepare_get", { preparation_request_id: f.originalId,
+    expected_arguments_hash: f.original.argumentsHash });
+  assert.equal(read.recovery.phase, "paused");
+  await assert.rejects(f.prepare(), /unknown/u);
+  await assert.rejects(f.invoke("hub_release_prepare_resume", { ...f.resumeArgs, expected_arguments_hash: "0".repeat(64) }), /identity/u);
+  await assert.rejects(f.invoke("hub_release_prepare_resume", { ...f.resumeArgs, expected_preparation_revision: 0 }), /stage evidence/u);
+  for (const value of [-1, 1.5, [f.resumeArgs.expected_preparation_revision]]) {
+    await assert.rejects(f.invoke("hub_release_prepare_resume", { ...f.resumeArgs, expected_preparation_revision: value }), /argument/u);
+  }
+  const boot = await f.bootstrap();
+  assert.equal(boot.integrated, true);
+  await git(f.primary, "merge-base", "--is-ancestor", f.oldDev, boot.headCommit);
+  await git(f.primary, "merge-base", "--is-ancestor", f.acceptedMain, boot.headCommit);
+  assert.equal(f.catalog.mcpOperation(f.originalId).status, "unknown", "bootstrap is not original settlement");
+  f.publication.generation = "drift";
+  await assert.rejects(f.invoke("hub_release_prepare_resume", f.resumeArgs), /changed/u);
+  assert.equal(f.catalog.mcpOperation(f.originalId).preparationState.revision, f.resumeArgs.expected_preparation_revision);
+  f.publication.generation = "fixture";
+  const replies = await Promise.allSettled([f.invoke("hub_release_prepare_resume", f.resumeArgs),
+    f.invoke("hub_release_prepare_resume", f.resumeArgs)]);
+  assert.equal(replies.filter(reply => reply.status === "fulfilled").length, 1);
+  const result = replies.find(reply => reply.status === "fulfilled").value;
+  assert.equal(result.requestId, f.originalId);
+  const finished = f.catalog.mcpOperation(f.originalId);
+  assert.equal(finished.status, "succeeded");
+  assert.equal(finished.argumentsHash, f.original.argumentsHash);
+  assert.match(finished.preparationState.originalError, /does not contain accepted local main/u);
+  assert.equal(await git(f.primary, "rev-parse", "dev"), boot.headCommit);
+  assert.deepEqual(f.board.task(f.task.id), f.before);
+  const current = await f.releaseGit.frozenCandidate(f.primary);
+  assert.equal(await git(current.releaseRoot, "rev-parse", `${current.preReleaseHead}:dev-only-accepted.txt`),
+    await git(f.primary, "rev-parse", `${f.oldDev}:dev-only-accepted.txt`));
+  assert.match(await readFile(path.join(current.releaseRoot, "base.txt"), "utf8"), /accepted docs correction/u);
+  assert.equal(await git(f.primary, "rev-parse", "main"), f.acceptedMain);
+  assert.deepEqual(await f.invoke("hub_release_prepare_resume", f.resumeArgs), result);
+});
+
+test("preparation recovery legacy UNKNOWN never gains authority from absent candidate or later bootstrap", { timeout: 240_000 }, async t => {
+  const f = await preparationRecoveryFixture(t);
+  // Model the old schema's exact missing checkpoint, only in this disposable SQLite fixture.
+  const db = new DatabaseSync(f.databaseFile);
+  try { db.prepare("UPDATE hub_mcp_operations SET preparation_state_json = NULL WHERE request_id = ?").run(f.originalId); }
+  finally { db.close(); }
+  const before = JSON.stringify(f.catalog.mcpOperation(f.originalId));
+  await f.bootstrap();
+  const read = await f.invoke("hub_release_prepare_get", { preparation_request_id: f.originalId,
+    expected_arguments_hash: f.original.argumentsHash });
+  assert.match(read.recovery.missingEvidence, /owner stage checkpoint/u);
+  await assert.rejects(f.invoke("hub_release_prepare_resume", { ...f.resumeArgs, expected_preparation_revision: 0 }), /stage evidence/u);
+  assert.equal(JSON.stringify(f.catalog.mcpOperation(f.originalId)), before);
+  assert.deepEqual(await f.releaseGit.initialNativeTestCandidate(f.primary), f.candidate);
+});
+
+test("preparation recovery lost checking checkpoint reply resumes only after reacquiring original owner leases", { timeout: 240_000 }, async t => {
+  const f = await preparationRecoveryFixture(t, { checkingReplyLost: true });
+  await f.bootstrap();
+  const result = await f.invoke("hub_release_prepare_resume", f.resumeArgs);
+  assert.equal(result.requestId, f.originalId);
+  const original = f.catalog.mcpOperation(f.originalId);
+  assert.equal(original.status, "succeeded");
+  assert.match(original.preparationState.originalError, /lost owned checking reply/u);
+  assert.deepEqual(f.board.task(f.task.id), f.before);
+});
+
+test("preparation recovery live origin drift refuses without repeating the successful main audit", { timeout: 240_000 }, async t => {
+  const f = await preparationRecoveryFixture(t);
+  await f.bootstrap();
+  const advanced = await git(f.primary, "-c", "user.name=Fixture", "-c", "user.email=fixture@local.invalid",
+    "commit-tree", await git(f.primary, "rev-parse", `${f.acceptedMain}^{tree}`), "-p", f.acceptedMain,
+    "-m", "new external origin commit");
+  await git(f.primary, "push", "origin", `${advanced}:refs/heads/main`);
+  f.releaseGit.inspectMainChanges = async () => assert.fail("resume repeated the successful original main audit");
+  await assert.rejects(f.invoke("hub_release_prepare_resume", f.resumeArgs), /current main or remote changed/u);
+  assert.equal(f.catalog.mcpOperation(f.originalId).status, "unknown");
+  assert.deepEqual(await f.releaseGit.initialNativeTestCandidate(f.primary), f.candidate);
+  assert.deepEqual(f.board.task(f.task.id), f.before);
+  assert.equal(await git(f.primary, "rev-parse", "main"), f.acceptedMain);
+});
+
+for (const boundary of ["compose-intent", "terminal-intent", "terminal-response"]) {
+  test(`preparation recovery ${boundary} does not replay possible effects`, { timeout: 240_000 }, async t => {
+    const f = await preparationRecoveryFixture(t);
+    await f.bootstrap();
+    let effects = 0;
+    const invocation = f.invoke("hub_release_prepare_resume", f.resumeArgs, runtime => {
+      if (boundary === "compose-intent") {
+        runtime.service.releasePreflight.releaseGitWorkspaces.prepareCandidate = async () => {
+          effects++; throw new Error("lost compose reply");
+        };
+      } else {
+        const originalComplete = runtime.fixtureCatalog.completeMcpOperation.bind(runtime.fixtureCatalog);
+        runtime.fixtureCatalog.completeMcpOperation = (...args) => {
+          if (args[2]?.validate) effects++;
+          if (boundary === "terminal-response") {
+            const result = originalComplete(...args);
+            if (args[2]?.validate) throw new Error("lost terminal reply");
+            return result;
+          }
+          throw new Error("terminal write unavailable");
+        };
+      }
+    });
+    if (boundary === "terminal-response") await invocation;
+    else await assert.rejects(invocation, /lost compose reply|unknown/u);
+    const after = f.catalog.mcpOperation(f.originalId);
+    if (boundary === "terminal-response") {
+      assert.equal(after.status, "succeeded");
+      assert.deepEqual(await f.invoke("hub_release_prepare_resume", f.resumeArgs), after.result);
+    } else {
+      assert.equal(after.status, "unknown");
+      assert.equal(after.preparationState.phase, boundary === "compose-intent" ? "composing" : "terminal-intent");
+      const readback = await f.invoke("hub_release_prepare_get", { preparation_request_id: f.originalId,
+        expected_arguments_hash: after.argumentsHash });
+      assert.match(readback.recovery.missingEvidence, /candidate or rollback outcome/u);
+      await assert.rejects(f.invoke("hub_release_prepare_resume", { ...f.resumeArgs,
+        expected_preparation_revision: after.preparationState.revision }), /stage evidence/u);
+    }
+    assert.equal(effects, 1);
+  });
+}
+
 test("initial native Test parser requires the full reviewed identity and keeps legacy families separate", () => {
   const args = ["--workspace", "workspace", "--stream", "stream", "--provider", "codex", "--thread", "thread",
     "--task", "task", "--request", "original", "--repository", ".", "--expected-task-revision", "1",
@@ -419,3 +599,39 @@ for (const failure of ["sql-terminal", "mcp-receipt"]) {
     assert.deepEqual((await f.run(task, input)).result, wire(result.result));
   });
 }
+
+
+test("reviewer concurrent lock refusal cannot poison current preparation owner", { timeout:240_000 }, async t => {
+  const f=await preparationRecoveryFixture(t); await f.bootstrap();
+  const staleEntered=Promise.withResolvers(), refuseStale=Promise.withResolvers();
+  const composeEntered=Promise.withResolvers(), finishCompose=Promise.withResolvers();
+  const awaitBoundary=f.preflight.withAwaitTransition.bind(f.preflight);
+  let first=true;
+  f.preflight.withAwaitTransition=async (...args)=>{
+    if(first){first=false;staleEntered.resolve();await refuseStale.promise;throw new Error("Workspace Await lock acquisition refused before owner transfer");}
+    return awaitBoundary(...args);
+  };
+  let effects=0;
+  const prepare=f.releaseGit.prepareCandidate.bind(f.releaseGit);
+  f.releaseGit.prepareCandidate=async (...args)=>{effects++;composeEntered.resolve();await finishCompose.promise;return prepare(...args);};
+  const stale=f.invoke("hub_release_prepare_resume",f.resumeArgs).then(value=>({value}),error=>({error:error.message}));
+  await staleEntered.promise;
+  const winner=f.invoke("hub_release_prepare_resume",f.resumeArgs).then(value=>({value}),error=>({error:error.message}));
+  await composeEntered.promise;
+  const owned=f.catalog.mcpOperation(f.originalId);
+  refuseStale.resolve();const refused=await stale;
+  const afterRefusal=f.catalog.mcpOperation(f.originalId);
+  finishCompose.resolve();const completed=await winner;
+  const final=f.catalog.mcpOperation(f.originalId);
+  console.log(JSON.stringify({reviewerRace:{owned:{status:owned.status,phase:owned.preparationState.phase,revision:owned.preparationState.revision,ownerId:owned.preparationState.ownerId},refused,
+    afterRefusal:{status:afterRefusal.status,error:afterRefusal.error,phase:afterRefusal.preparationState.phase,revision:afterRefusal.preparationState.revision,ownerId:afterRefusal.preparationState.ownerId},completed,
+    final:{status:final.status,phase:final.preparationState.phase,revision:final.preparationState.revision}}}));
+  assert.equal(afterRefusal.receiptState,owned.receiptState,"unowned lock refusal changed the live invocation's receipt");
+  assert.deepEqual(afterRefusal,owned);
+  assert.match(refused.error,/lock acquisition refused/u);
+  assert.equal(effects,1);
+  assert.deepEqual(await f.invoke("hub_release_prepare_resume",f.resumeArgs),completed.value);
+  assert.equal(effects,1);
+  assert.deepEqual(f.catalog.mcpOperation(f.originalId),final);
+  assert.ok(completed.value,"the actual owned winner must complete");
+});

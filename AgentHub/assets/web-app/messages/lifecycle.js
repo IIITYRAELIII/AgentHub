@@ -196,7 +196,9 @@ function activeRunSubmissionTiming(run) {
   return {
     rootMessage,
     submittedAt: run?.submittedAt ?? rootMessage?.submittedAt ?? rootMessage?.time ?? run?.startedAt ?? null,
-    startedAt: run?.startedAt ?? rootMessage?.startedAt ?? null,
+    startedAt: run?.providerStart
+      ? runHasAuthoritativeProviderAcceptance(run) ? run.providerStart.acceptedAt ?? null : null
+      : run?.startedAt ?? rootMessage?.startedAt ?? null,
   };
 }
 
@@ -1107,14 +1109,14 @@ function receiptDeliveryState(receipt) {
   if (receipt?.providerConnection?.state === "lost") return "connection-lost";
   if (receipt?.dispatching === true) return "sending";
   if (receipt?.deferred === true && receipt?.queued === true) return "queued";
-  if (receipt?.started === true || receiptHasAuthoritativeProviderAcceptance(receipt)) return "running";
+  if ((receipt?.started === true && receipt?.providerAccepted !== false)
+    || receiptHasAuthoritativeProviderAcceptance(receipt)) return "running";
   if (receipt?.accepted === true || receipt?.steered === true) return "accepted";
   if (receipt?.deferred === true) return "deferred";
   return null;
 }
 
-function messageReceiptProjection(receipt) {
-  const deliveryState = receiptDeliveryState(receipt);
+function messageReceiptProjection(receipt, { deliveryState = receiptDeliveryState(receipt) } = {}) {
   const submittedAt = receipt?.submittedAt ?? receipt?.createdAt ?? null;
   const startedAt = receipt?.startedAt ?? receipt?.deliveredAt ?? null;
   const completedAt = receipt?.completedAt ?? null;
@@ -1129,6 +1131,10 @@ function messageReceiptProjection(receipt) {
     failed: `Ошибка ${receipt?.provider === "codex" ? "Codex" : receipt?.provider === "claude" ? "Claude" : "провайдера"}. Проверь соединение и подробности ответа; повторная отправка — через поле ввода`,
     completed: "Ход завершён", cancelled: "Ход остановлен", unconfirmed: "Исход неизвестен",
   };
+  if (["queued", "deferred"].includes(deliveryState)
+    && String(receipt?.reason ?? receipt?.conflictKind ?? "").trim() === "runtime-restart") {
+    labels[deliveryState] = "В очереди · Ожидает перезапуска Hub";
+  }
   const phaseStart = ["retrying", "connection-lost"].includes(deliveryState)
     ? receipt?.providerConnection?.sinceAt : startedAt ?? submittedAt;
   const from = Date.parse(phaseStart ?? "");
@@ -1151,6 +1157,7 @@ function messageReceiptProjection(receipt) {
 function receiptHasAuthoritativeProviderAcceptance(receipt) {
   const turnId = String(receipt?.turnId ?? "").trim();
   if (!turnId) return false;
+  if (receipt?.providerAccepted === false) return false;
   if (receipt?.providerAccepted === true || receipt?.steered === true) return true;
   return Boolean(
     receipt?.accepted === true
@@ -1175,7 +1182,10 @@ function queueHistoryReceiptProjection(receipt) {
     || receipt?.rejected === true
     || receipt?.failed === true
     || receipt?.completed === true;
-  const requiresQueue = receipt?.unknown === true
+  const conflictKind = String(receipt?.reason ?? receipt?.conflictKind ?? "").trim();
+  const waitingConflict = Boolean(conflictKind && conflictKind !== "message-intake"
+    && (receipt?.queued === true || receipt?.deferred === true));
+  const requiresQueue = waitingConflict || receipt?.unknown === true
     || receipt?.attentionRequired === true
     || receipt?.paused === true;
   const immediateIntake = !providerAccepted
@@ -1215,7 +1225,7 @@ function queueHistoryReceiptProjection(receipt) {
             : receipt?.queued === true ? "queued" : "deferred"
         : base.deliveryState;
   return {
-    ...base,
+    ...messageReceiptProjection(receipt, { deliveryState }),
     clientProjectionIntent: projectionIntent || null,
     providerAccepted,
     ownsDeferredQueue: ownsQueue,

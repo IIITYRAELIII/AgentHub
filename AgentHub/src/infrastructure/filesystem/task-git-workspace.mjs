@@ -19,6 +19,7 @@ import { canonicalPath } from "./config.mjs";
 import { taskWorkingTreeDiff } from "./task-git-diff.mjs";
 import * as legacySelectedV1 from "./legacy-selected-composition-materializer-v1.mjs";
 import { mergeSelectedResults, assertNativeTaskHistories } from "./native-release-merge.mjs";
+import { NativeMergeTransportRetention } from "./native-merge-transport-retention.mjs";
 import { installedNativeHistoryBaseline, assertInstalledLocalSourceBaseline,
   assertInstalledAgreedMainOrigin } from "./local-source-baseline.mjs";
 import { readNativeUpstreamAdoptions, assertNativeUpstreamOrigin } from "./native-upstream-adoption.mjs";
@@ -211,7 +212,9 @@ export function runTaskGitCommand(args, options = {}) {
 function runTaskGitCommandUntraced(args, {
   cwd, timeoutMs = 60_000, executable = "git", spawnProcess = spawn, signal = null, input = null,
   commandLabel = "git", env = null, rawOutput = false, acceptableExitCodes = [],
+  stdoutFd = null,
 } = {}) {
+  if (stdoutFd !== null && (!Number.isSafeInteger(stdoutFd) || stdoutFd < 3)) throw new TypeError("Invalid owned Git output descriptor");
   return new Promise((resolve, reject) => {
     if (signal?.aborted) {
       reject(signal.reason instanceof Error ? signal.reason : new Error("Task Git lease ownership was lost"));
@@ -220,7 +223,7 @@ function runTaskGitCommandUntraced(args, {
     const child = spawnProcess(executable, args, {
       cwd,
       windowsHide: true,
-      stdio: [input == null ? "ignore" : "pipe", "pipe", "pipe"],
+      stdio: [input == null ? "ignore" : "pipe", stdoutFd ?? "pipe", "pipe"],
       ...(env ? { env: { ...process.env, ...env } } : {}),
     });
     const stdout = [];
@@ -259,7 +262,7 @@ function runTaskGitCommandUntraced(args, {
     const abort = () => terminate("was fenced");
     signal?.addEventListener?.("abort", abort, { once: true });
     const timer = setTimeout(() => terminate("timed out"), timeoutMs);
-    child.stdout.on("data", (chunk) => stdout.push(chunk));
+    child.stdout?.on("data", (chunk) => stdout.push(chunk));
     child.stderr.on("data", (chunk) => stderr.push(chunk));
     child.on("error", (error) => {
       clearTimeout(timer);
@@ -1325,6 +1328,13 @@ export class TaskGitWorkspaceService {
       await this.#assertNoProcessTreeGuard(taskId);
       return operation(this.#guardedLease(taskId, lease));
     }, options);
+  }
+
+  storageRetentionOwner({ taskBoard, isStopping } = {}) {
+    return new NativeMergeTransportRetention({ dataDir: this.dataDir, taskBoard, taskGitWorkspaces: this,
+      isStopping, gitAt: (cwd, args, options = {}) => this.#runOwned(args, {
+        ...options, cwd, guardRepositoryRoot: cwd, timeoutMs: 60_000,
+      }) });
   }
 
   async withTaskLocks(taskIds, operation, { guardTaskId = null, ...options } = {}) {
@@ -5585,6 +5595,13 @@ export class TaskGitWorkspaceService {
     this.#assertAvailable("cleanupPreview");
     const id = normalizedTaskId(taskId);
     const workspaces = await this.describe(id);
+    // A clean Git status excludes ignored data. Native worktree remove can
+    // discard that data even without --force, so it is a separate cleanup pin.
+    for (const workspace of workspaces) {
+      workspace.ignoredPaths = String(await runGit([
+        "ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "--no-empty-directory", "-z",
+      ], { cwd: workspace.projectRoot })).split("\0").filter(Boolean);
+    }
     const references = [];
     const publication = await this.readPublication();
     let squashTransfer = null;
@@ -5691,6 +5708,8 @@ export class TaskGitWorkspaceService {
       workspaces,
       gitReferences: references,
       dirty: workspaces.some((item) => item.dirty),
+      retainedIgnored: workspaces.filter(item => item.ignoredPaths.length)
+        .map(item => ({ projectRoot: item.projectRoot, paths: item.ignoredPaths })),
       unpublished: [...references.filter((item) => !item.published || !item.branchPublished), ...unpublishedWorktrees],
       deleting: uniqueDeleting,
       ...(squashTransfer ? { squashTransfer } : {}),
@@ -5731,6 +5750,7 @@ export class TaskGitWorkspaceService {
       }
     }
     const workspaces = preview.workspaces;
+    if (preview.retainedIgnored.length) throw new Error("Task cleanup blocked: ignored local data requires its artifact owner's verified retirement");
     if (!allowDirty && preview.dirty) throw new Error("Task cleanup blocked: managed worktree is dirty");
     if (requirePublished && preview.unpublished.length) {
       throw new Error("Task cleanup blocked: exact result or current branch/worktree head is not contained in published main");

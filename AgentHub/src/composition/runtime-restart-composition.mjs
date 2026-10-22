@@ -31,9 +31,11 @@ export function createRuntimeRestartComposition({
   botMenu,
   journalStartupReady,
   runtimeStateCoordinator,
+  storageRetention = null,
   telegramDeliveryService,
   mediaController,
   taskSyncStore,
+  taskDiffs,
   messagePins,
   workspaceCatalogStore,
   deliveryOutbox,
@@ -49,6 +51,7 @@ export function createRuntimeRestartComposition({
   workLogUsageStore,
   rateLimitHistoryStore,
   providerTurnTelemetryStore,
+  fileTransferService,
   taskReadStateStore,
   runtimeStateStore,
   commandTrace,
@@ -83,12 +86,17 @@ export function createRuntimeRestartComposition({
 
   const runtimeResources = new RuntimeResourceRegistry({
     captureException: (error, context) => sentryDiagnostics.captureException(error, context),
+    quiesce: [
+      { name: "file transfer", run: () => fileTransferService?.quiesce() },
+    ],
     drain: [
+      { name: "storage retention", run: () => storageRetention?.close?.() },
       { name: "journal startup", run: () => journalStartupReady },
       { name: "state writes", run: () => runtimeStateCoordinator.flush() },
       { name: "message binding writes", run: () => telegramDeliveryService.waitForBindingWrites() },
       { name: "media writes", run: () => mediaController.waitForWrites() },
       { name: "task sync", run: () => taskSyncStore.save() },
+      ...(taskDiffs ? [{ name: "task diffs", run: () => taskDiffs.flush() }] : []),
       { name: "delivery outbox", run: () => deliveryOutbox.waitForIdle({ flush: true }) },
       { name: "background jobs", run: () => backgroundJobStore.waitForWrites() },
       { name: "failed updates", run: () => failedUpdateStore.waitForWrites() },
@@ -113,10 +121,14 @@ export function createRuntimeRestartComposition({
     releaseLock: [
       { name: "instance lock", run: () => instanceGuard.release() },
     ],
+    recover: [
+      { name: "file transfer", run: () => fileTransferService?.resume() },
+    ],
     finalize: [
       { name: "work log usage", run: () => workLogUsageStore.close() },
       { name: "rate limit history", run: () => rateLimitHistoryStore.close() },
       { name: "provider turn telemetry", run: () => providerTurnTelemetryStore?.close?.() },
+      { name: "file transfer", run: () => fileTransferService?.close?.() },
       { name: "task sync store", run: () => taskSyncStore.close() },
       { name: "message pin store", run: () => messagePins?.close?.() },
       { name: "workspace catalog store", run: () => workspaceCatalogStore.close() },
@@ -129,7 +141,7 @@ export function createRuntimeRestartComposition({
   const runtimeRestart = new RuntimeRestartController({
     captureException: (error, context) => sentryDiagnostics.captureException(error, context),
     measure: (id, stage, action) => commandTrace?.measureBestEffort
-      ? commandTrace.measureBestEffort({ commandId: id, stage: `restart:${stage}`, transport: "runtime" }, action)
+      ? commandTrace.measureBestEffort({ commandId: id, stage: `restart-${stage}`, transport: "runtime" }, action)
       : action(),
     getRequest: getRestartRequest,
     updateOffset,
@@ -157,7 +169,7 @@ export function createRuntimeRestartComposition({
       return launchReplacementAndWait({ invocation, lockFile: instanceLockFile,
         expectedReleaseId, expectedOperationId: operationId ?? "",
         measure: (stage, action) => commandTrace?.measureBestEffort
-          ? commandTrace.measureBestEffort({ commandId: operationId, stage: `restart:${stage}`,
+          ? commandTrace.measureBestEffort({ commandId: operationId, stage: `restart-${stage}`,
             transport: "runtime", metadata: { expectedReleaseId, oldPid: process.pid } }, action)
           : action(),
       });

@@ -5,6 +5,7 @@ import path from "node:path";
 import process from "node:process";
 
 import { AGENT_HUB_VERSION } from "../../infrastructure/filesystem/agent-hub-package.mjs";
+import { displayArtifactVersion } from "../../domain/agent-hub-version.mjs";
 import { serverConfigurationEntries } from "./server-configuration.mjs";
 
 export const ROOT_AGENTS_MAX_BYTES = 128 * 1024;
@@ -155,6 +156,7 @@ export function serverPageSnapshot({
       instanceId: String(instanceId ?? "").trim() || null,
       releaseId: String(releaseId ?? "").trim() || null,
       version: String(version ?? "").trim() || null,
+      versionLabel: displayArtifactVersion(String(version ?? "").trim()) || null,
       activeCount: Math.max(0, Number(activeCount) || 0),
     },
     // Sign-in state and allowlisted account display. Sign-in links remain in

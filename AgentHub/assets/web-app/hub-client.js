@@ -89,6 +89,7 @@ function createLatestIntentController() {
   let generation = 0;
   return Object.freeze({
     begin: () => ++generation,
+    capture: () => generation,
     current: (candidate) => candidate === generation,
   });
 }
@@ -579,9 +580,15 @@ function beginHistoryRequest(id, identity) {
   return { id, identity: stableIdentity(identity), generation };
 }
 
+function historyRequestIdentity(id) {
+  return id === selectedTaskId && directChatRoute()
+    ? historyPageByTask.get(id)?.identity ?? taskIdentity(id)
+    : taskIdentity(id);
+}
+
 function currentHistoryRequest(request) {
   return historyRequestGenerationByTask.get(request.id) === request.generation
-    && sameIdentity(taskIdentity(request.id), request.identity);
+    && sameIdentity(historyRequestIdentity(request.id), request.identity);
 }
 
 function invalidateHistoryRequests(id) {
@@ -733,7 +740,11 @@ function updateOutgoing(taskIdValue, clientUserMessageId, patch) {
   if (!resolvedTaskId) return "";
   const message = outgoingMessages(resolvedTaskId).get(clientUserMessageId);
   if (!message) return "";
-  Object.assign(message, patch);
+  const absorbingProjection = message.providerAccepted === true
+    || ["completed", "failed", "cancelled"].includes(message.projectionState);
+  Object.assign(message, patch.projectionState && absorbingProjection
+    ? window.AgentHubMessageProjection.reduceProjectionEntity(message, { ...message, ...patch })
+    : patch);
   if (patch.projectionAuthority === "canonical" || ["accepted", "rejected"].includes(patch.deliveryState)) {
     queueMicrotask(() => window.AgentHubPruneComposerFiles?.());
   }
@@ -1174,12 +1185,23 @@ function promoteLiveCompletion(taskIdValue, selected, incomingTurnId = "") {
 
 function projectedActiveUserRun(taskIdValue, task) {
   const run = activeTaskRun(task);
+  const preparingRun = run && !String(run.turnId ?? "").trim()
+    && String(run.id ?? "").trim() && String(run.clientUserMessageId ?? "").trim();
   if (!run || !isUserRunningProjection(run)
-    || !window.AgentHubStreamTabs.isExactActiveUserTurn(task)) return null;
+    || (!preparingRun && !window.AgentHubStreamTabs.isExactActiveUserTurn(task))) return null;
+  // Before turn binding, the durable original command can already be terminal.
+  // Consume only its exact lane/client/run receipt, never another preparation.
+  if (preparingRun && (lastSnapshot?.messageReceipts ?? []).some((receipt) => (
+    exactSnapshotTaskId(receipt, lastSnapshot?.tasks) === taskIdValue
+    && String(receipt?.clientUserMessageId ?? "").trim() === String(run.clientUserMessageId).trim()
+    && String(receipt?.runId ?? "").trim() === String(run.id).trim()
+    && ["completed", "failed", "cancelled"].includes(queueHistoryReceiptProjection(receipt).projectionState)
+  ))) return null;
   // Canonical terminal history is absorbing for this exact provider/Thread/turn.
   // Reuse the history owner; a later raw active snapshot cannot revive that turn.
   return completedLiveTurnIdentity(historyByTask.get(taskIdValue) ?? [], {
     provider: task.provider, threadId: task.threadId, turnId: run.turnId,
+    clientUserMessageIds: [run.clientUserMessageId],
   }) ? null : run;
 }
 
@@ -1365,7 +1387,8 @@ function updateLiveMessage(taskIdValue, selected) {
   }
   const liveCard = mergeLiveMaintenance({
     author: selected.provider === "claude" ? "Claude" : "Codex",
-    stage: activeStageLabel(run.stage),
+    stage: window.AgentHubMessageProjection.userRunActivity(run).preparing
+      ? "Подготовка хода…" : activeStageLabel(run.stage),
     reasoning: run.progress || "",
     text: response,
     attachments: attachmentViews(run.responseAttachments),
@@ -1386,7 +1409,7 @@ function updateLiveMessage(taskIdValue, selected) {
     projectionAuthority: "live",
     projectionState: "active",
     time: run.lastActivityAt ?? run.startedAt ?? null,
-    turnStartedAt: run.startedAt ?? null,
+    turnStartedAt: runTiming.startedAt,
     snapshotLastAnswerAt: selected.lastAnswerAt ?? null,
   }, maintenanceEventsByTask.get(taskIdValue) ?? []);
   liveCardsByTask.set(taskIdValue, liveCard);
@@ -1486,20 +1509,26 @@ async function hubFetch(input, init, retrySession = true, traceId) {
   if (pathname.startsWith("/api/command-trace/")) return hubFetchResponse(input, init, retrySession);
   const route = ["journal", "attachment", "control", "snapshot", "startup", "workspace", "usage", "rate-limit"]
     .find((name) => pathname.startsWith(`/api/${name}`)) || "other";
-  return commandTrace.http(`http-${route}`, () => hubFetchResponse(input, init, retrySession), traceId);
+  return commandTrace.http(`http-${route}`, () => hubFetchResponse(input, init, retrySession, traceId),
+    typeof traceId === "object" ? traceId.traceRequestId || traceId.traceUploadId : traceId);
 }
 
-async function hubFetchResponse(input, init, retrySession = true) {
+async function hubFetchResponse(input, init, retrySession = true, traceId) {
   try {
+    const measured = (action, operation) => traceId?.traceUploadId
+      ? commandTrace.upload(action, operation, { uploadId: traceId.traceUploadId,
+        uploadAttemptId: traceId.traceAttemptId,
+        httpRequestId: traceId.traceHttpRequestId,
+        messageRequestId: traceId.traceRequestId, chunkIndex: traceId.traceChunkIndex }) : operation();
     // Refreshing the session re-issues the HttpOnly cookie that the request below
     // carries automatically as a same-origin request.
-    await window.AgentHubBrowserDevice?.ensureSession?.();
-    const response = await fetch(input, init);
+    await measured("session", () => window.AgentHubBrowserDevice?.ensureSession?.());
+    const response = await measured("transport", () => fetch(input, init));
     if (response.status !== 401 || !retrySession || !window.AgentHubBrowserDevice?.ensureSession) {
       return response;
     }
-    await window.AgentHubBrowserDevice.ensureSession(true);
-    return hubFetchResponse(input, init, false);
+    await measured("session-refresh", () => window.AgentHubBrowserDevice.ensureSession(true));
+    return hubFetchResponse(input, init, false, traceId);
   } catch (error) {
     throw markConnectionFailure(error);
   }
@@ -1789,6 +1818,9 @@ commandTrace.bindReporter(async (batch) => {
     body: JSON.stringify(batch),
     keepalive: true,
   }, 5_000);
+  // The status is sufficient; release the body so completed keepalive batches
+  // do not retain the document's in-flight request budget.
+  await response.body?.cancel();
   if (!response.ok) throw new Error("Client trace batch rejected");
 });
 
@@ -1882,13 +1914,16 @@ function modelTask(task, snapshot, effectiveSelectedId, serverSelectedId) {
     runtimeTitle,
     project: task.projectName || "",
     canStop: activity.canStop,
+    preparing: activity.preparing === true,
     activityUnknown: unknown,
     status: running ? "running" : unknown ? "unknown" : unread ? "ready" : "idle",
-    statusLabel: running ? "Выполняется" : unknown ? "Состояние уточняется · поток занят" : unread ? "Ответ готов" : "",
+    statusLabel: running ? "Выполняется" : unknown ? "Состояние уточняется · поток занят"
+      : activity.preparing ? "Подготовка хода" : unread ? "Ответ готов" : "",
     lastActivity: task.orderingActivityAtMs
       ? new Date(task.orderingActivityAtMs).toISOString()
       : task.lastAnswerAt,
-    startedAt: running ? task.run?.startedAt ?? task.startedAt ?? null : null,
+    lastAnswer: task.lastAnswer ?? null,
+    startedAt: running ? activeRunSubmissionTiming(task.run).startedAt : null,
     unread: !running && unread,
     running,
     selected: id === effectiveSelectedId,
@@ -2571,7 +2606,7 @@ function applySnapshotContent(snapshot, { materialized = false } = {}) {
         provider: task.provider,
         threadId: task.threadId,
         turnId: String(task.run?.turnId ?? ""),
-        time: task.run?.startedAt ?? null,
+        startedAt: activeRunSubmissionTiming(task.run).startedAt,
         ...nonEmptyAttachmentPatch(task.run?.attachments),
         // The run-level receipt is assigned only when Agent Hub starts a new
         // turn. It identifies the first user item even while Codex history has
@@ -2579,7 +2614,7 @@ function applySnapshotContent(snapshot, { materialized = false } = {}) {
         turnUserSlot: "root",
         projectionState: "active",
         providerAccepted: true,
-        ...deliveryPatch("accepted"),
+        ...deliveryPatch("running"),
       });
     }
     const selected = representativeTasks.find(
@@ -3023,6 +3058,8 @@ function applyOpened(result, {
   selectTask = true,
   exactNavigation = null,
 } = {}) {
+  const historyReceivedAtMs = Date.now();
+  const historyProjectionStarted = commandTrace.now();
   const history = result?.history;
   if (!history) {
     applySnapshot(result?.snapshot);
@@ -3067,6 +3104,7 @@ function applyOpened(result, {
   const liveCleared = clearDurablyCompletedLiveCard(id);
   if (!retainsPinnedFocus || !previousPage) {
     historyPageByTask.set(id, {
+      identity: stableIdentity(history),
       start: preserveOlder ? previousPage.start : history.start,
       end: history.end,
       total: history.total,
@@ -3094,6 +3132,38 @@ function applyOpened(result, {
     cleared: liveCleared,
     commandId: commandTrace.objectId(result) || commandTrace.objectId(history) || commandTrace.newId(),
   });
+  // Join the existing server terminal-history span using the original durable
+  // client identity, not this background read's unrelated control request ID.
+  // Retrieval and a visible paint opportunity are distinct diagnostic facts.
+  const finalMessage = newest.findLast((message) => message.role === "agent"
+    && ["completed", "failed", "cancelled"].includes(message.projectionState));
+  const rootUser = finalMessage && newest.find((message) => message.role === "user"
+    && message.turnUserSlot === "root" && message.provider === finalMessage.provider
+    && message.threadId === finalMessage.threadId && message.turnId === finalMessage.turnId);
+  if (rootUser?.clientUserMessageId) {
+    const metadata = { streamId: history.streamId, provider: finalMessage.provider,
+      threadId: finalMessage.threadId, turnId: finalMessage.turnId,
+      terminalRevision: finalMessage.terminalRevision };
+    commandTrace.record("ui-control", "history-retrieved", 0, rootUser.clientUserMessageId,
+      metadata, historyReceivedAtMs);
+    if (selectedTaskId === id && document.documentElement.dataset.view === "chat"
+      && renderedMessages?.some((message) => message.id === finalMessage.id)) {
+      const navigationGeneration = navigationIntents.capture();
+      const page = historyPageByTask.get(id);
+      const route = window.location.hash;
+      const terminalNode = Array.from(document.querySelectorAll("[data-chat-pane] [data-message-id]"))
+        .find((node) => node.dataset.messageId === finalMessage.id);
+      commandTrace.afterPaint("ui-render", "history-terminal-paint", historyProjectionStarted,
+        rootUser.clientUserMessageId, metadata, null, () => navigationIntents.current(navigationGeneration)
+          && selectedTaskId === id && document.documentElement.dataset.view === "chat"
+          && window.location.hash === route && historyPageByTask.get(id) === page
+          && terminalNode?.isConnected === true && terminalNode.getClientRects().length > 0
+          && historyWindowByTask.get(id)?.some((message) => message.id === finalMessage.id
+            && message.provider === finalMessage.provider && message.threadId === finalMessage.threadId
+            && message.turnId === finalMessage.turnId && message.terminalRevision === finalMessage.terminalRevision
+            && message.projectionState === finalMessage.projectionState));
+    }
+  }
   renderTaskQueue(id, lastSnapshot);
   if (result.focusedMessage && !exactNavigation) {
     window.requestAnimationFrame(() => agentHub.focusMessage?.({
@@ -3240,10 +3310,17 @@ function dataUrlBody(dataUrl) {
 
 const attachmentUploader = window.AgentHubAttachmentUpload.create({
   request: async (path, init) => {
-    await localSessionReady;
-    const signal = AbortSignal.any([...(init?.signal ? [init.signal] : []), AbortSignal.timeout(30_000)]);
-    return hubFetch(path, { ...init, signal, headers: { ...authorizationHeaders(), ...init?.headers } });
+    const { traceUploadId, traceAttemptId, traceRequestId, traceHttpRequestId, traceChunkIndex, ...wireInit } = init ?? {};
+    const identity = { traceUploadId, traceAttemptId, traceRequestId, traceHttpRequestId, traceChunkIndex };
+    await commandTrace.upload("local-session", () => localSessionReady,
+      { uploadId: traceUploadId, uploadAttemptId: traceAttemptId, messageRequestId: traceRequestId,
+        httpRequestId: traceHttpRequestId, chunkIndex: traceChunkIndex });
+    const signal = AbortSignal.any([...(wireInit.signal ? [wireInit.signal] : []), AbortSignal.timeout(30_000)]);
+    return hubFetch(path, { ...wireInit, signal, headers: { ...authorizationHeaders(), ...wireInit.headers } }, true, identity);
   },
+  trace: (action, operation, { traceUploadId, traceAttemptId, traceRequestId, traceHttpRequestId, traceChunkIndex } = {}) =>
+    commandTrace.upload(action, operation, { uploadId: traceUploadId, uploadAttemptId: traceAttemptId,
+      messageRequestId: traceRequestId, httpRequestId: traceHttpRequestId, chunkIndex: traceChunkIndex }),
 });
 window.AgentHubAttachmentCapabilities = () => attachmentUploader.capabilities();
 
@@ -3376,6 +3453,7 @@ function enqueueTaskHistoryLoad(id, identity, {
             knownVersion: historyPageByTask.get(id)?.version ?? "",
           }),
         ));
+        if (id === selectedTaskId && directChatRoute()) continue;
         if (settled.status === "rejected" || !currentHistoryRequest(pending.request)) continue;
         const history = verifiedTaskHistory(settled.value, pending.identity);
         if (!sameIdentity(taskIdentity(id), history)) continue;
@@ -3458,7 +3536,7 @@ agentHub.on("history:trace-page", ({ identity, tracePage, resolve, reject }) => 
 });
 
 agentHub.on("history:load-older", ({ taskId: id }) => runAction(async () => {
-  const identity = taskIdentity(id);
+  const identity = historyRequestIdentity(id);
   const page = historyPageByTask.get(id);
   if (!identity || !page || page.nextBefore == null || page.loading) return;
   const requestedBefore = Number(page.nextBefore);
@@ -3472,7 +3550,7 @@ agentHub.on("history:load-older", ({ taskId: id }) => runAction(async () => {
       before: requestedBefore,
       limit: 20,
     }), identity);
-    if (!currentHistoryRequest(request) || !sameIdentity(taskIdentity(id), history)) {
+    if (!currentHistoryRequest(request) || !sameIdentity(historyRequestIdentity(id), history)) {
       page.loading = false;
       syncHistoryPagination(id);
       return;
@@ -3632,7 +3710,9 @@ function sendUserMessage(request, frozenParams = null) {
           // Draft preparation is local; negotiate server limits once here,
           // before the first upload or provider command can have an effect.
           if (requestAttachments.length) project("uploading", "Проверка лимитов вложений…");
-          await attachmentUploader.validateBatch(requestAttachments, { signal: session.controller.signal });
+          await attachmentUploader.validateBatch(requestAttachments, {
+            signal: session.controller.signal, traceRequestId: request.requestId,
+          });
           session.controller.signal.throwIfAborted();
           assertCurrentSendTaskOperation(sendTaskOperation);
           for (const attachment of requestAttachments) {
@@ -3644,16 +3724,21 @@ function sendUserMessage(request, frozenParams = null) {
                 project("uploading", `Загрузка ${attachment.name}…`);
                 path = await uploadAttachment(attachment, {
                   signal: session.controller.signal,
-                  progress: (bytes) => project("uploading", `Загрузка файлов: ${Math.floor((uploaded + bytes) / Math.max(1, total) * 100)}%`),
+                  traceRequestId: request.requestId,
+                  progress: (bytes, _total, recovery) => project("uploading", recovery?.restarted
+                    ? recovery.reason === "expired" ? "Срок прежней загрузки истёк. Загружаю сохранённый файл заново…"
+                      : "Восстанавливаю загрузку сохранённого файла…"
+                    : `Загрузка файлов: ${Math.floor((uploaded + bytes) / Math.max(1, total) * 100)}%`),
                 });
                 session.controller.signal.throwIfAborted();
               } catch (error) {
                 if (session.controller.signal.aborted || error?.attachmentUploadTerminal
                   || error?.agentHubMessagePreparationCancelled || !attachment.blobId) throw error;
-                await new Promise((resolve) => {
-                  session.resume = resolve;
+                await commandTrace.upload("pause-wait", () => new Promise((resolve, reject) => {
+                  session.resume = () => session.controller.signal.aborted
+                    ? reject(new DOMException("Upload cancelled", "AbortError")) : resolve();
                   project("paused", `Загрузка приостановлена: ${hubErrorMessage(error)}`);
-                });
+                }), { uploadId: attachment.uploadId, messageRequestId: request.requestId });
                 session.resume = null;
               }
             }
@@ -5031,6 +5116,35 @@ agentHub.on("resource:copy-object", ({ resource }) => runAction(async () => {
   if (!remoteWorkspaceFileBridgeAvailable()) agentHub.toast("Файл скопирован в буфер обмена");
 }));
 
+window.AgentHubFileTransferOwner?.configure(async (action, body) => {
+  await localSessionReady;
+  const response = await hubFetch(`/api/file-transfer/owner/${action}`, {
+    method: "POST",
+    cache: "no-store",
+    headers: {
+      ...authorizationHeaders(),
+      "Content-Type": "application/json",
+      "X-Agent-Hub-Transfer-CSRF": "1",
+    },
+    body: JSON.stringify(body),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || payload.ok === false) {
+    throw Object.assign(new Error(String(payload.error ?? "Не удалось получить статус")), {
+      code: String(payload.code ?? ""), status: response.status,
+    });
+  }
+  return payload;
+});
+
+agentHub.on("resource:external-share", ({ resource, trigger }) => {
+  const target = window.AgentHubResourceInteractions.workspaceFilePath(resource?.localPath);
+  void window.AgentHubFileTransferOwner?.open({
+    path: target,
+    trigger,
+  });
+});
+
 agentHub.on("resource:save", ({ resource }) => runAction(async () => {
   if (resource?.kind === "attachment") {
     if (vscode && resource.attachment?.id) {
@@ -5391,6 +5505,10 @@ async function refreshVisibleTaskHistories(previousSnapshot, snapshot) {
   if (selectedTaskId) visibleIds.add(selectedTaskId);
   const chatVisible = document.documentElement.dataset.view === "chat";
   await Promise.all([...visibleIds].map(async (id) => {
+    // An exact turn route is intentional historical navigation, not a live
+    // Stream route. Keep its page while the head evolves; clicking the Stream
+    // again explicitly returns to the existing head-history path.
+    if (id === selectedTaskId && directChatRoute()) return;
     const previousTask = snapshotTask(previousSnapshot, id);
     const currentTask = snapshotTask(snapshot, id);
     if (!currentTask) return;

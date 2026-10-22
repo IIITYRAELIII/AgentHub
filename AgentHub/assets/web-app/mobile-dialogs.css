@@ -1,0 +1,284 @@
+.mobile-dialogs, .mobile-dialogs-nav, .mobile-conversation-back,
+.mobile-conversation-switch, .mobile-conversation-create, [data-mobile-workspace-edit], [data-mobile-folder-rename] { display: none; }
+.mobile-current-status, .mobile-current-runtime { display: none; }
+html[data-mobile-dialogs-enabled] .mobile-current-status:not([hidden]),
+html[data-mobile-dialogs-enabled] .mobile-current-runtime:not([hidden]) { display: inline; }
+.mobile-navigation-dialog:not([open]) { display: none; }
+html[data-mobile-dialogs-enabled] { --mobile-nav-h: 3.8rem; }
+html[data-mobile-dialogs-enabled][data-view="chat"] .app-header,
+html[data-mobile-dialogs-enabled] .stream-tabs,
+html[data-mobile-dialogs-enabled] .mobile-nav > .mobile-tab { display: none !important; }
+html[data-mobile-dialogs-enabled] .mobile-dialogs-nav {
+  display: flex; width: 100%; min-width: 0; background: var(--bg);
+}
+html[data-mobile-dialogs-enabled] .mobile-dialogs-nav .mobile-tab {
+  color: var(--text-muted); min-width: 44px; min-height: 44px;
+  padding: 0.3rem 0.1rem; font-size: 0.64rem;
+}
+html[data-mobile-dialogs-enabled] .mobile-dialogs-nav .mobile-tab span { white-space: nowrap; }
+html[data-mobile-dialogs-enabled] .mobile-dialogs-nav .mobile-tab[aria-pressed="true"] { color: var(--accent); }
+html[data-mobile-dialogs-enabled] .workspace { height: auto; flex: 1; min-height: 0; }
+html[data-mobile-dialogs-enabled][data-view="chat"] body {
+  height: var(--mobile-viewport-height, 100dvh); min-height: 0;
+  box-sizing: border-box; overflow: hidden;
+}
+html[data-mobile-dialogs-enabled] .mobile-dialogs:not([hidden]) {
+  display: flex; flex-direction: column; min-height: 0; min-width: 0;
+  width: 100%; height: 100%; box-sizing: border-box; background: var(--bg);
+  padding: 0.65rem 1rem;
+}
+html[data-mobile-dialogs-enabled][data-view="chat"]:not([data-mobile-conversation]) .chat { display: none; }
+html[data-mobile-dialogs-enabled][data-mobile-conversation] .chat { display: flex; }
+.mobile-dialogs-top { display: flex; gap: 0.4rem; align-items: center; }
+.mobile-dialogs-top > strong { margin-right: auto; font-size: 1.1rem; }
+.mobile-dialog-button {
+  display: inline-flex; justify-content: center; align-items: center; flex: 0 0 auto;
+  min-width: 44px; min-height: 44px; padding: 0.45rem; gap: 0.5rem;
+  border: 0; border-radius: var(--radius-sm, 0.5rem); background: transparent;
+  color: var(--text); cursor: pointer;
+}
+.mobile-dialog-button svg, .mobile-more-entry svg, .mobile-dialogs-fab svg { width: 1.35rem; height: 1.35rem; flex: 0 0 auto; }
+.mobile-dialog-button.mobile-conversation-back, .mobile-dialog-button.mobile-conversation-switch,
+.mobile-dialog-button.mobile-conversation-create { display: none; }
+.mobile-dialog-button:focus-visible, .mobile-stream-row:focus-visible,
+.mobile-dialogs-workspace:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+html[data-mobile-dialogs-enabled] .mobile-dialogs h1 { font-size: 1.65rem; margin: 0.75rem 0 0.25rem; }
+.mobile-dialogs-workspace { background: none; border: 0; color: var(--accent); padding: 0.5rem 0;
+  text-align: left; min-height: 44px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mobile-dialogs input { box-sizing: border-box; min-height: 44px; width: 100%; padding: 0.6rem;
+  background: var(--surface, var(--bg)); color: var(--text); border: 1px solid var(--line); border-radius: 0.5rem; }
+.mobile-dialogs-list { flex: 1; min-height: 0; overflow-y: auto; padding-bottom: 4rem; }
+.mobile-dialogs-list h2, .mobile-attention summary { font-size: 0.8rem; font-weight: 500;
+  text-transform: uppercase; color: var(--accent); padding: 1rem 0 0.65rem; border-bottom: 1px solid var(--line); }
+.mobile-attention summary { min-height: 44px; box-sizing: border-box; cursor: pointer; }
+.mobile-stream-row { display: flex; align-items: start; gap: 0.6rem; width: 100%; min-width: 0;
+  min-height: 84px; padding: 0.8rem 0; text-align: left; border: 0; border-bottom: 1px solid var(--line);
+  background: transparent; color: var(--text); cursor: pointer; font: inherit; }
+.mobile-stream-row .provider-dot { flex: 0 0 auto; margin-top: 0.35rem; }
+.mobile-stream-body { flex: 1 1 auto; min-width: 0; display: grid; gap: 0.35rem; }
+.mobile-stream-line { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: baseline; min-width: 0; }
+.mobile-stream-line strong { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mobile-stream-line > span { color: var(--text-muted); font-size: 0.72rem; }
+.mobile-stream-preview { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden; overflow-wrap: anywhere; color: var(--text-muted); font-size: 0.82rem; line-height: 1.35; }
+.mobile-stream-tail { display: grid; justify-items: end; gap: 0.6rem; flex: 0 0 auto; max-width: 6.5rem; font-size: 0.7rem; }
+.mobile-stream-tail time { color: var(--text-muted); }
+.mobile-stream-running { color: var(--accent); }
+.mobile-current-status { color: var(--pending, var(--accent)); }
+.mobile-stream-row[data-state="running"] .provider-dot { background: var(--pending, var(--accent)); }
+.mobile-stream-row[data-state="answer-ready"] .provider-dot { background: var(--accent); }
+.mobile-stream-new { background: var(--accent); color: var(--bg); border-radius: 1rem; padding: 0.2rem 0.5rem; }
+.mobile-dialogs-fab { position: fixed; bottom: calc(var(--mobile-nav-h) + env(safe-area-inset-bottom) + 8px);
+  right: max(1rem, env(safe-area-inset-right)); display: flex; align-items: center; gap: 0.5rem; min-height: 48px; border: 0;
+  border-radius: 1.5rem; padding: 0.7rem 1rem; background: var(--accent); color: var(--bg); cursor: pointer; }
+.mobile-dialogs-status { color: var(--text-muted); font-size: 0.85rem; }
+.mobile-navigation-dialog { box-sizing: border-box; padding: 1rem; border: 1px solid var(--line-strong);
+  color: var(--text); background: var(--bg); max-height: calc(100dvh - env(safe-area-inset-top)); overflow-y: auto; }
+.mobile-navigation-dialog::backdrop { background: rgb(0 0 0 / 65%); }
+/* Capture semantic pairs at the shell boundary. Desktop rail themes may own a
+   different local palette; moving that rail must not mix its text with this canvas. */
+html[data-mobile-dialogs-enabled] {
+  --mobile-navigation-bg: var(--bg);
+  --mobile-navigation-surface-1: var(--surface-1);
+  --mobile-navigation-surface-2: var(--surface-2);
+  --mobile-navigation-surface-3: var(--surface-3);
+  --mobile-navigation-text: var(--text);
+  --mobile-navigation-soft: var(--text-soft);
+  --mobile-navigation-muted: var(--text-soft);
+  --mobile-navigation-line: var(--line);
+  --mobile-navigation-line-strong: var(--line-strong);
+  --mobile-navigation-accent: var(--text);
+  --mobile-navigation-hover: var(--surface-1);
+  --mobile-navigation-selected: var(--surface-2);
+}
+html[data-view][data-surface][data-theme][data-mobile-dialogs-enabled] .mobile-workspace-drawer,
+html[data-view][data-surface][data-theme][data-mobile-dialogs-enabled] .mobile-drawer-rename-layer {
+  background: var(--mobile-navigation-bg); color: var(--mobile-navigation-text);
+  border-color: var(--mobile-navigation-line);
+}
+html[data-view][data-surface][data-theme][data-mobile-dialogs-enabled] .mobile-workspace-drawer .task-rail {
+  --text: var(--mobile-navigation-text); --text-soft: var(--mobile-navigation-soft);
+  --text-muted: var(--mobile-navigation-muted); --text-faint: var(--mobile-navigation-soft);
+  --surface-1: var(--mobile-navigation-surface-1); --surface-2: var(--mobile-navigation-surface-2);
+  --surface-3: var(--mobile-navigation-surface-3);
+  background: var(--mobile-navigation-bg) !important;
+  color: var(--mobile-navigation-text); box-shadow: none;
+}
+html[data-view][data-surface][data-theme][data-mobile-dialogs-enabled] .mobile-workspace-drawer :is(
+  .task-rail-title, .task-workspace-name, .task-workspace-folder-summary, .task-workspace-folder-count,
+  .task-count, .mobile-dialog-button, .task-workspace-folder-icon, .task-workspace-folder-glyph) {
+  color: var(--mobile-navigation-text); opacity: 1;
+}
+html[data-view][data-surface][data-theme][data-mobile-dialogs-enabled] .mobile-workspace-drawer :is(
+  .task-workspace-item, .task-workspace-folder-details, .task-workspace-folder-summary, .task-workspace-folder-list) {
+  background: var(--mobile-navigation-bg); box-shadow: none;
+}
+html[data-view][data-surface][data-theme][data-mobile-dialogs-enabled] .mobile-workspace-drawer .task-workspace-item {
+  display: flex; align-items: center; gap: 0.4rem; min-height: 48px; height: 48px; box-sizing: border-box;
+  padding: 0 0.5rem; margin: 0; border-radius: 0 !important;
+  /* These compact navigation rows are not legacy important themed card frames. */
+  background: var(--mobile-navigation-bg) !important; box-shadow: none !important;
+  border: 0 !important; border-left: 3px solid transparent !important; border-image: none !important;
+}
+html[data-view][data-surface][data-theme][data-mobile-dialogs-enabled] .mobile-workspace-drawer .task-workspace-folder-details {
+  border: 0; border-radius: 0; background-image: none;
+}
+html[data-view][data-surface][data-theme][data-mobile-dialogs-enabled] .mobile-workspace-drawer :is(.task-workspace-item, .task-workspace-folder-details)::before,
+html[data-view][data-surface][data-theme][data-mobile-dialogs-enabled] .mobile-workspace-drawer :is(.task-workspace-item, .task-workspace-folder-details)::after { content: none; }
+html[data-view][data-surface][data-theme][data-mobile-dialogs-enabled] .mobile-workspace-drawer .task-workspace-folder-summary {
+  min-height: 44px; height: 44px; box-sizing: border-box; padding: 0 0.5rem;
+}
+html[data-view][data-surface][data-theme][data-mobile-dialogs-enabled] .mobile-workspace-drawer .task-workspace-folder-list {
+  gap: 2px; padding: 2px 0 2px 0.5rem;
+}
+html[data-view][data-surface][data-theme][data-mobile-dialogs-enabled] .mobile-workspace-drawer :is(.task-workspace-folder-count, .task-count) {
+  background: var(--mobile-navigation-surface-2);
+}
+html[data-view][data-surface][data-theme][data-mobile-dialogs-enabled] .mobile-workspace-drawer .task-workspace-item[data-selected] {
+  background: var(--mobile-navigation-selected) !important;
+  /* Legacy desktop frames declare important border colours. This component
+     boundary owns its compact selection marker on every theme, not that frame. */
+  border-left-color: var(--mobile-navigation-accent) !important;
+}
+html[data-view][data-surface][data-theme][data-mobile-dialogs-enabled] .mobile-workspace-drawer :is(.task-workspace-item, .task-workspace-folder-summary, .mobile-dialog-button):hover {
+  background: var(--mobile-navigation-hover) !important;
+}
+html[data-view][data-surface][data-theme][data-mobile-dialogs-enabled] .mobile-workspace-drawer .task-workspace-item:hover { box-shadow: inset 0 -1px var(--mobile-navigation-line) !important; }
+html[data-view][data-surface][data-theme][data-mobile-dialogs-enabled] .mobile-workspace-drawer svg { color: inherit; opacity: 1; }
+html[data-view][data-surface][data-theme][data-mobile-dialogs-enabled] .mobile-workspace-drawer :is([data-mobile-workspace-edit], [data-mobile-folder-rename]) svg {
+  width: 22px; height: 22px; min-width: 22px; min-height: 22px; flex: none;
+}
+html[data-mobile-dialogs-enabled] .mobile-folder-row { position: relative; }
+html[data-mobile-dialogs-enabled] .mobile-folder-row > [data-mobile-folder-rename] { position: absolute; top: 0; right: 0.5rem; }
+html[data-view][data-surface][data-theme][data-mobile-dialogs-enabled] .mobile-workspace-drawer .mobile-folder-row > details > summary {
+  padding-right: 3.5rem; grid-template-columns: 0.65rem 1rem minmax(0, 1fr) auto;
+}
+html[data-mobile-dialogs-enabled] .mobile-workspace-select {
+  display: flex; align-items: center; flex: 1; min-width: 0; min-height: 44px; height: 44px;
+  gap: 0.4rem; padding: 0; border: 0; background: transparent; color: inherit; text-align: left; cursor: pointer;
+}
+html[data-view][data-surface][data-theme][data-mobile-dialogs-enabled] .mobile-workspace-drawer :is(button, input, [tabindex], summary):focus-visible {
+  outline: 2px solid var(--mobile-navigation-accent); outline-offset: -2px;
+}
+html[data-view][data-surface][data-theme][data-mobile-dialogs-enabled] .mobile-workspace-drawer [data-task-filter] {
+  background: var(--mobile-navigation-hover); color: var(--mobile-navigation-text); border-color: color-mix(in srgb, var(--mobile-navigation-line-strong) 25%, var(--mobile-navigation-muted)); min-height: 44px;
+}
+html[data-view][data-surface][data-theme][data-mobile-dialogs-enabled] .mobile-workspace-drawer [data-task-filter]::placeholder {
+  color: var(--mobile-navigation-muted); opacity: 1;
+}
+html[data-view][data-surface][data-theme][data-mobile-dialogs-enabled] .mobile-drawer-rename-layer {
+  width: min(356px, calc(100vw - 32px)); padding: 1rem;
+  border: 1px solid var(--mobile-navigation-line); border-radius: 12px; box-shadow: var(--card-shadow);
+}
+.mobile-drawer-rename-layer::backdrop { background: rgb(0 0 0 / 20%); }
+html[data-view][data-surface][data-theme][data-mobile-dialogs-enabled] .mobile-drawer-rename-layer .text-dialog {
+  position: static; width: 100%; max-width: 100%; transform: none; margin: 0;
+  background: transparent; border: 0; border-radius: 0; box-shadow: none; padding: 0;
+}
+html[data-view][data-surface][data-theme][data-mobile-dialogs-enabled] .mobile-drawer-rename-layer :is(input, button) {
+  min-height: 44px;
+}
+.mobile-navigation-head { display: flex; align-items: center; justify-content: space-between; gap: 1rem; min-height: 48px; }
+.mobile-navigation-head strong { font-size: 1.2rem; }
+.mobile-workspace-drawer { margin: 0; height: 100dvh; max-height: 100dvh; width: min(90vw, 24rem);
+  max-width: 100%; padding: 0.7rem; border-radius: 0; }
+html[data-mobile-dialogs-enabled] .mobile-workspace-drawer .task-rail { display: flex !important; height: 100%;
+  padding: 0; border: 0; background: var(--bg); overflow: hidden; }
+html[data-mobile-dialogs-enabled] .mobile-workspace-drawer .task-rail-title > span:first-child {
+  clip-path: none; height: auto; width: auto; position: static; }
+html[data-mobile-dialogs-enabled] [data-mobile-workspace-edit],
+html[data-mobile-dialogs-enabled] [data-mobile-folder-rename] { display: inline-flex; }
+html[data-mobile-dialogs-enabled] .task-workspace-item { min-height: 48px; padding-inline: 0.6rem; }
+html[data-mobile-dialogs-enabled] .task-workspace-item[data-selected] { border-left: 3px solid var(--accent); background: var(--surface); }
+.mobile-workspace-drawer .task-workspace-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.mobile-workspace-drawer .task-workspace-time { display: none; }
+html[data-mobile-dialogs-enabled] .mobile-workspace-drawer .task-workspace-folder-summary {
+  grid-template-columns: 0.65rem 1rem minmax(0, 1fr) auto auto; min-height: 44px;
+}
+html[data-mobile-dialogs-enabled] .mobile-workspace-drawer .task-rail-actions { display: none; }
+.mobile-workspace-footer { display: grid; gap: 0.2rem; border-top: 1px solid var(--line); padding-top: 0.5rem; }
+.mobile-workspace-footer button { justify-content: start; min-height: 44px; }
+.mobile-workspace-drawer-body { height: auto; flex: 1; min-height: 0; }
+.mobile-workspace-drawer[open] { display: flex; flex-direction: column; }
+.mobile-more-sheet, .mobile-stream-switcher { margin: auto 0 0; width: 100%; max-width: 100%;
+  border-radius: 1.2rem 1.2rem 0 0; padding-bottom: calc(1rem + env(safe-area-inset-bottom)); }
+.mobile-more-entry { display: flex; align-items: center; text-align: left; gap: 1rem; width: 100%;
+  min-height: 64px; padding: 0.8rem; background: var(--bg); color: var(--text); border: 0;
+  border-bottom: 1px solid var(--line); cursor: pointer; font: inherit; }
+html[data-view][data-surface][data-theme][data-mobile-dialogs-enabled] .stream-chat-header { position: relative;
+  display: flex; flex-wrap: wrap; justify-content: start; gap: 0.2rem; padding: 0.25rem 0.4rem; }
+html[data-mobile-dialogs-enabled] .mobile-conversation-back,
+html[data-mobile-dialogs-enabled] .mobile-conversation-switch,
+html[data-mobile-dialogs-enabled] .mobile-conversation-create { display: flex; }
+html[data-mobile-dialogs-enabled] .mobile-conversation-switch { min-width: 0; flex: 1; justify-content: start;
+  font-weight: 600; font-size: 1rem; }
+.mobile-conversation-switch span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+html[data-view][data-surface][data-theme][data-mobile-dialogs-enabled] .stream-chat-identity { display: none; }
+html[data-view][data-surface][data-theme][data-mobile-dialogs-enabled] .stream-chat-meta { width: 100%; min-width: 0; flex-wrap: wrap; font-size: 0.72rem; order: 3; }
+html[data-view][data-surface][data-theme][data-mobile-dialogs-enabled] .chat-overlay-actions { position: static; margin-left: auto; order: 2; }
+html[data-mobile-dialogs-enabled] .chat-overlay-actions button { min-width: 44px; min-height: 44px; }
+html[data-mobile-dialogs-enabled] .composer .chat-back { display: none; }
+html[data-mobile-dialogs-enabled] .composer-slash, html[data-mobile-dialogs-enabled] .composer-attach,
+html[data-mobile-dialogs-enabled] .composer-send, html[data-mobile-dialogs-enabled] .context-usage,
+html[data-mobile-dialogs-enabled] .chat-stop-bottom { min-width: 44px; min-height: 44px; }
+html[data-view][data-surface][data-theme][data-mobile-dialogs-enabled] .composer-send {
+  color: var(--bg); opacity: 1;
+}
+html[data-view][data-surface][data-theme][data-mobile-dialogs-enabled] .composer-send:disabled {
+  color: var(--text-muted); opacity: 1; background: color-mix(in srgb, var(--accent) 25%, var(--bg));
+}
+html[data-view][data-surface][data-theme][data-mobile-dialogs-enabled] .composer-send svg,
+html[data-view][data-surface][data-theme][data-mobile-dialogs-enabled] .chat-stop-bottom svg {
+  width: 22px; height: 22px;
+}
+html[data-view][data-surface][data-theme][data-mobile-dialogs-enabled] .chat-stop-bottom {
+  color: var(--warning, var(--text)); background: var(--surface-1);
+  border: 1px solid var(--warning, var(--line-strong));
+}
+html[data-view][data-surface][data-theme][data-mobile-dialogs-enabled] .composer-main {
+  grid-template-columns: 44px 44px 24px 44px minmax(0, 1fr) 44px 44px;
+  column-gap: 3px;
+}
+html[data-view][data-surface][data-theme][data-mobile-dialogs-enabled] .composer-slash,
+html[data-view][data-surface][data-theme][data-mobile-dialogs-enabled] .composer-attach,
+html[data-view][data-surface][data-theme][data-mobile-dialogs-enabled] .context-usage,
+html[data-view][data-surface][data-theme][data-mobile-dialogs-enabled] .chat-stop-bottom,
+html[data-view][data-surface][data-theme][data-mobile-dialogs-enabled] .composer-send {
+  width: 44px; min-width: 44px; height: 44px; min-height: 44px;
+}
+html[data-mobile-dialogs-enabled][data-mobile-keyboard] .mobile-nav { display: none; }
+html[data-mobile-dialogs-enabled][data-mobile-keyboard][data-view="chat"] body { padding-bottom: env(safe-area-inset-bottom); }
+
+html[data-view][data-surface][data-theme][data-mobile-dialogs-enabled] .context-usage-modal[open] {
+  position: fixed; inset: auto 0 0; margin: auto 0 0; width: 100%; max-width: 100%;
+  max-height: calc(var(--mobile-viewport-height, 100dvh) - env(safe-area-inset-top));
+  box-sizing: border-box; display: flex; flex-direction: column; gap: 1rem;
+  overflow-y: auto; padding: 1rem 1rem calc(1rem + env(safe-area-inset-bottom));
+  background: var(--bg); color: var(--text); border-radius: 1rem 1rem 0 0;
+  z-index: 100;
+}
+html[data-view][data-surface][data-theme][data-mobile-dialogs-enabled] .context-usage-modal::backdrop { background: rgb(0 0 0 / 65%); }
+html[data-view][data-surface][data-theme][data-mobile-dialogs-enabled] .context-usage-modal > header {
+  display: flex; align-items: start; justify-content: space-between; gap: 0.5rem; position: static;
+}
+html[data-view][data-surface][data-theme][data-mobile-dialogs-enabled] .context-usage-modal h2 { font-size: 1.2rem; margin: 0.3rem 0; }
+html[data-view][data-surface][data-theme][data-mobile-dialogs-enabled] .context-usage-modal > section { display: grid; gap: 0.8rem; }
+html[data-view][data-surface][data-theme][data-mobile-dialogs-enabled] .context-usage-modal > footer { display: flex; gap: 0.6rem; flex-wrap: wrap; }
+html[data-view][data-surface][data-theme][data-mobile-dialogs-enabled] .context-usage-modal button { min-height: 44px; color: var(--text); }
+html[data-view][data-surface][data-theme][data-mobile-dialogs-enabled] .context-usage-modal .primary { background: var(--accent); color: var(--bg); }
+html[data-view][data-surface][data-theme][data-mobile-dialogs-enabled] .context-usage-modal .primary:disabled { background: var(--surface-1); color: var(--text-muted); opacity: 1; }
+
+html[data-mobile-dialogs-enabled] .mobile-workspace-drawer::backdrop {
+  background: color-mix(in srgb, var(--bg) 65%, transparent);
+}
+html[data-mobile-dialogs-enabled] .mobile-drawer-rename-layer::backdrop {
+  background: color-mix(in srgb, var(--bg) 20%, transparent);
+}
+html[data-view][data-surface][data-theme][data-mobile-dialogs-enabled] .mobile-workspace-drawer :is(.task-count, .task-workspace-folder-count, .task-workspace-folder-glyph) {
+  color: var(--mobile-navigation-soft);
+}
+html[data-mobile-dialogs-enabled] .mobile-workspace-footer { border-color: var(--mobile-navigation-line); }
+html[data-mobile-dialogs-enabled] .mobile-workspace-drawer :is(.mobile-navigation-head, .mobile-workspace-footer) {
+  background: var(--mobile-navigation-surface-1);
+}
+html[data-mobile-dialogs-enabled] .mobile-workspace-drawer .mobile-workspace-footer button { color: var(--mobile-navigation-soft); }

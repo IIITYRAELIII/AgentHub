@@ -87,7 +87,8 @@ export function validatePreparationEnvelope(value) {
 // Fixed runtime root, complete src inventory and executable/package entrypoints.
 // No caller-supplied inventory can silently omit an imported module. Frozen
 // loading additionally verifies these bytes before importing the factory.
-export async function readPreparationSourceClosure(root = fileURLToPath(new URL("../../", import.meta.url))) {
+export const preparationSourceRoot = () => fileURLToPath(new URL("../../", import.meta.url));
+export async function readPreparationSourceClosure(root = preparationSourceRoot()) {
   const inventory = [];
   let total = 0;
   const visit = async (relative) => {

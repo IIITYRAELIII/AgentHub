@@ -1,11 +1,14 @@
-import { spawn } from "node:child_process";
+import { spawn, execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { createHash } from "node:crypto";
-import { mkdir, open, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, open, readFile, stat, lstat, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { processIsAlive } from "./process-liveness.mjs";
 import { readPublicationState } from "../persistence/publication-state.mjs";
-import { publicationRunStore } from "../persistence/publication-run-store.mjs";
+import { publicationRunStore, failedFrozenPublicationEvidence } from "../persistence/publication-run-store.mjs";
+import { readPublicationCheckpoint } from "../persistence/publication-checkpoint.mjs";
+import { releaseIdentitySha256 } from "../../domain/release-operation.mjs";
 import { releasePublicationBaseCommit } from "../../domain/release-base-provenance.mjs";
 
 function identity(value) {
@@ -67,6 +70,31 @@ async function gitRemoteHead(candidate) {
   });
 }
 
+// A retired candidate checkout need not exist. Prove absence from the COMPLETE
+// current origin ancestry, without fetching or depending on the old object.
+async function candidateAbsentFromRemote(candidate, remote) {
+  const git = promisify(execFile);
+  const options = { encoding: "utf8", windowsHide: true, maxBuffer: 16 * 1024 * 1024 };
+  const args = ["--no-replace-objects", "--no-optional-locks", "-C", candidate.repositoryRoot];
+  const run = async tail => (await git("git", [...args, ...tail], options)).stdout.trim();
+  try {
+    if (process.env.GIT_SHALLOW_FILE || process.env.GIT_GRAFT_FILE
+        || await run(["rev-parse", "--is-shallow-repository"]) !== "false") return false;
+    const common = await run(["rev-parse", "--path-format=absolute", "--git-common-dir"]);
+    const grafts = await lstat(path.join(common, "info", "grafts")).catch(error => {
+      if (error.code === "ENOENT") return null; throw error;
+    });
+    if (grafts) return false;
+    const rows = (await run(["rev-list", "--parents", "--max-count=100001", remote, "--"]))
+      .split("\n").map(row => row.trim().split(/\s+/u));
+    if (!rows.length || rows.length > 100000 || rows[0][0] !== remote
+        || rows.some(row => row.some(oid => !/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/u.test(oid)))) return false;
+    const commits = new Set(rows.map(row => row[0]));
+    if (commits.size !== rows.length || rows.some(row => row.slice(1).some(parent => !commits.has(parent)))) return false;
+    return !commits.has(candidate.commit);
+  } catch { return false; }
+}
+
 export class ReleaseOperationPublication {
   constructor({
     dataDir,
@@ -77,6 +105,8 @@ export class ReleaseOperationPublication {
     publicationRunStoreFactory = publicationRunStore,
     processAliveImpl = processIsAlive,
     gitRemoteHeadImpl = gitRemoteHead,
+    candidateAbsentFromRemoteImpl = candidateAbsentFromRemote,
+    readPublicationCheckpointImpl = readPublicationCheckpoint,
     runnerFile = path.join(import.meta.dirname, "../../../release-operation-publication-runner.mjs"),
     now = () => new Date().toISOString(),
     launchGraceMs = 30_000,
@@ -91,6 +121,8 @@ export class ReleaseOperationPublication {
     this.publicationRunStore = publicationRunStoreFactory;
     this.processAlive = processAliveImpl;
     this.gitRemoteHead = gitRemoteHeadImpl;
+    this.candidateAbsentFromRemote = candidateAbsentFromRemoteImpl;
+    this.readPublicationCheckpoint = readPublicationCheckpointImpl;
     this.runnerFile = path.resolve(runnerFile);
     this.now = now;
     this.launchGraceMs = Math.max(1_000, Number(launchGraceMs) || 30_000);
@@ -207,7 +239,7 @@ export class ReleaseOperationPublication {
     }
   }
 
-  async readback({ operation, generation, target }) {
+  async readback({ operation, generation, target, reviewedMain = null }) {
     const candidate = candidateFor(generation, target);
     const layout = this.#layout(operation, generation, target);
     const runner = await readJson(layout.stateFile);
@@ -248,6 +280,25 @@ export class ReleaseOperationPublication {
       baseCommit: candidate.baseCommit, baseProvenance: candidate.manifest?.baseProvenance,
     });
     if (remote === publicationBase) return { status: "not_applied", revision: remote };
+    const approval = reviewedMain?.approvedRepositories?.find(entry =>
+      path.resolve(entry.projectRoot) === path.resolve(candidate.repositoryRoot));
+    if (approval && remote === approval.approvedOriginMainCommit
+        && runner?.operationId === operation.operationId && runner.generation === generation.generation
+        && runner.targetId === target.targetId && runner.candidate === generation.identitySha256
+        && runner.status === "exited" && Number.isInteger(runner.exitCode) && runner.exitCode !== 0
+        && runner.completedAt && saved?.identity?.revision === candidate.commit) {
+      try {
+        const checkpoint = await this.readPublicationCheckpoint(path.join(layout.root, "publication-checkpoint.json"));
+        const preEffect = failedFrozenPublicationEvidence(saved, checkpoint, { expectedRunId: saved.runId });
+        if (await this.candidateAbsentFromRemote(candidate, remote)) return {
+          status: "not_applied", revision: remote, source: "original-pre-effect-failure-current-reviewed-origin",
+          evidence: { ...preEffect, runnerHash: releaseIdentitySha256(runner), journalHash: releaseIdentitySha256(saved),
+            checkpointHash: releaseIdentitySha256(checkpoint), candidateAbsentFromRemote: true },
+        };
+      } catch {
+        // Missing, foreign or contradictory original evidence is UNKNOWN.
+      }
+    }
     return { status: "unknown", cursor: { remote, runner: runner?.pid ?? null, journalStatus: saved?.status ?? null } };
   }
 }

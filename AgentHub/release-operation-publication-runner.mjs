@@ -11,6 +11,7 @@ import { createPublicationArtifactSteps } from "./src/infrastructure/process/pub
 import { publicationCheckpointStore } from "./src/infrastructure/persistence/publication-checkpoint.mjs";
 import { publicationRunStore } from "./src/infrastructure/persistence/publication-run-store.mjs";
 import { ReleaseOperationStore } from "./src/infrastructure/persistence/release-operation-store.mjs";
+import { artifactVersionIdentity } from "./src/domain/agent-hub-version.mjs";
 
 function requiredEnvironment(name) {
   const value = String(process.env[name] ?? "").trim();
@@ -28,6 +29,24 @@ export function releaseOperationPublicationArguments({ operation, candidate, sav
     operation.authorization.validationMode === "full" ? "--full-tests"
       : operation.authorization.validationMode === "quick" ? "--quick" : "--validation=focused",
   ];
+}
+
+export function releaseOperationRuntimePublicationInput({ operation, generation, candidate } = {}) {
+  const publication = candidate?.manifest?.publication;
+  // Original generations without this field keep their original executor
+  // identity; introducing a receipt must never retarget an admitted effect.
+  if (publication?.runtimeReleaseVersion === undefined) return null;
+  if (generation?.operationId !== operation?.operationId
+    || publication.head !== candidate.commit
+    || typeof publication.releaseVersion !== "string"
+    || typeof publication.runtimeReleaseVersion !== "string"
+    || artifactVersionIdentity(publication.runtimeReleaseVersion).publicVersion !== publication.releaseVersion) {
+    throw new Error("Frozen runtime publication binding differs from the candidate generation");
+  }
+  return {
+    operationId: operation.operationId, generation: generation.generation,
+    sourceCommit: candidate.commit, version: publication.runtimeReleaseVersion,
+  };
 }
 
 async function run() {
@@ -77,6 +96,7 @@ async function run() {
     prepareRuntimeImpl: prepareRuntime,
     installRuntimeImpl: installPreparedRuntime,
     verifyRuntimeImpl: verifyInstalledRuntime,
+    runtimePublication: releaseOperationRuntimePublicationInput({ operation, generation, candidate }),
   });
   const saved = await journal.read();
   const args = releaseOperationPublicationArguments({ operation, candidate, saved });

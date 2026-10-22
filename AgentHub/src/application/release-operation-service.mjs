@@ -5,6 +5,9 @@ import {
   RELEASE_OPERATION_STATES,
   releaseIdentitySha256,
   releaseOperationIsTerminal,
+  reviewedMainBinding,
+  staleReviewedMainFailure,
+  releaseApprovedTargets,
 } from "../domain/release-operation.mjs";
 
 const DEFAULT_LEASE_MS = 30_000;
@@ -142,6 +145,7 @@ export class ReleaseOperationService {
     deliveryRetryMs = 1_000,
     requestCorrection = null,
     cleanupGeneration = null,
+    withReviewedMainRecovery = null,
   } = {}) {
     for (const name of [
       "create", "get", "snapshot", "transition", "acquire", "heartbeat", "release",
@@ -183,6 +187,7 @@ export class ReleaseOperationService {
     this.deliveryRetryMs = Math.max(100, Number(deliveryRetryMs) || 1_000);
     this.requestCorrection = requestCorrection;
     this.cleanupGeneration = cleanupGeneration;
+    this.withReviewedMainRecovery = withReviewedMainRecovery;
   }
 
   start({ requestId, workspaceId, streamId, threadId, authorization } = {}) {
@@ -212,7 +217,34 @@ export class ReleaseOperationService {
     return snapshot;
   }
 
-  continue(operationId) {
+  // Read-only eligibility from this original release owner. Directory age or a
+  // local Git head is never evidence that a release finished publication.
+  retentionGeneration(operationId, number) {
+    const operation = this.store.get(operationId);
+    if (operation?.state !== "done" || !operation.completedAt || operation.currentGeneration !== number) return null;
+    const generation = this.store.generation(operationId, number);
+    if (!generation || generation.operationId !== operationId || generation.generation !== number
+        || generation.candidates?.length > 32) return null;
+    const { identitySha256, ...contents } = generation;
+    if (releaseIdentitySha256(contents) !== identitySha256) return null;
+    const effects = operation.publicationEffects;
+    if (effects?.generation !== number || effects.publishStarted?.candidate !== identitySha256
+        || !operation.authorization.approvedTargets.every(target => publishedTarget(effects.targets?.[target.targetId]))) return null;
+    const validation = this.store.latestStep(operationId, number, "validate");
+    const finalization = this.store.latestStep(operationId, number, "finalize");
+    for (const receipt of [validation, finalization]) {
+      if (receipt?.status !== "applied" || receipt.operationId !== operationId || receipt.generation !== number
+          || receipt.input?.candidate !== identitySha256 || releaseIdentitySha256(receipt.input) !== receipt.inputSha256) return null;
+    }
+    if (releaseIdentitySha256(finalization.input.effects) !== releaseIdentitySha256(effects)
+        || releaseIdentitySha256(finalization.input.selectedResults) !== releaseIdentitySha256(generation.selectedResults)) return null;
+    return { operationId, generation: number, operationRevision: operation.revision, completedAt: operation.completedAt,
+      identitySha256, candidates: generation.candidates.map(({ repositoryRoot, releaseRoot, generationRoot, commit, tree, manifestHash }) =>
+        ({ repositoryRoot, releaseRoot, generationRoot, commit, tree, manifestHash })) };
+  }
+
+  continue(operationId, options = {}) {
+    if (options.reviewedMain != null) return this.#recoverReviewedMain(operationId, options);
     const current = this.store.get(requiredText(operationId, "operationId"));
     if (!current) throw new Error("release operation was not found");
     if (releaseOperationIsTerminal(current)) return { accepted: false, operation: current, reason: "terminal" };
@@ -238,6 +270,45 @@ export class ReleaseOperationService {
     }
     this.#schedule(operation.operationId);
     return { accepted: true, operationId: operation.operationId, state: operation.state, revision: operation.revision };
+  }
+
+  async #recoverReviewedMain(operationId, { requestId, reviewedMain }) {
+    const current = this.store.get(requiredText(operationId, "operationId"));
+    if (!current) throw new Error("release operation was not found");
+    const binding = reviewedMainBinding(current, reviewedMain);
+    if (binding.expectedRevision !== current.revision) return { accepted: false, reason: "stale-revision", operation: current };
+    if (!staleReviewedMainFailure(current)) return { accepted: false, reason: "ineligible", operation: current };
+    if (typeof requestId !== "string" || !requestId.trim()) throw new TypeError("Recovery requestId must be a primitive string");
+    if (typeof this.withReviewedMainRecovery !== "function") throw new Error("Reviewed-main recovery verification is unavailable");
+    return this.withReviewedMainRecovery({ workspaceId: current.workspaceId,
+      taskIds: current.authorization.taskIds, approvedRepositories: binding.approvedRepositories,
+      commit: async (authority, validateBeforeCommit) => {
+        if (releaseIdentitySha256(authority.approvedRepositories) !== releaseIdentitySha256(binding.approvedRepositories)) {
+          throw new Error("Reviewed-main verified repository binding changed");
+        }
+        const generation = this.store.generation(current.operationId, current.currentGeneration);
+        if (!generation) throw new Error("Original publication generation is missing");
+        const readbacks = [];
+        for (const target of current.authorization.approvedTargets) {
+          const readback = normalizeReadback(await this.readTarget({ operation: current, generation, target, reviewedMain: authority }));
+          if (readback.status !== "not_applied") throw new Error(`Original publication effect readback is ${readback.status}`);
+          readbacks.push({ targetId: target.targetId, generation: generation.generation, evidence: readback });
+        }
+        await validateBeforeCommit();
+        const contents = { ...authority, requestId, priorRevision: current.revision, priorGeneration: current.currentGeneration,
+          previousBinding: current.reviewedMain?.identitySha256 ?? null,
+          priorFailure: { completedAt: current.completedAt, error: current.lastError },
+          authorizationFingerprint: current.authorization.fingerprint, readbacks };
+        const recovery = { ...contents, identitySha256: releaseIdentitySha256(contents) };
+        const result = this.store.transition(current.operationId, { state: "compose", currentStep: "compose",
+          lastError: null, nextAction: "compose current reviewed main with the original selected set" }, {
+          expectedRevision: binding.expectedRevision, reviewedMainRecovery: recovery, eventKind: "operation.reviewed-main-rebound",
+          event: { operationId: current.operationId, state: "compose", reviewedMain: recovery },
+        });
+        if (result.applied) this.#schedule(current.operationId);
+        return { accepted: result.applied, reason: result.reason, operationId: current.operationId,
+          state: result.operation.state, revision: result.operation.revision };
+      } });
   }
 
   wakeForTask(taskId) {
@@ -502,6 +573,7 @@ export class ReleaseOperationService {
     const input = {
       authorization: operation.authorization,
       priorGeneration: operation.currentGeneration,
+      ...(operation.reviewedMain ? { reviewedMain: operation.reviewedMain.identitySha256 } : {}),
     };
     const started = this.store.beginStep({
       operationId: operation.operationId,
@@ -648,7 +720,7 @@ export class ReleaseOperationService {
       if (latest.state === "compose") return latest;
     }
     let effects = targetEffects(latest);
-    for (const target of latest.authorization.approvedTargets) {
+    for (const target of releaseApprovedTargets(latest)) {
       if (publishedTarget(effects[target.targetId])) continue;
       const stepId = `publish:${target.targetId}`;
       const input = { candidate: generation.identitySha256, target };

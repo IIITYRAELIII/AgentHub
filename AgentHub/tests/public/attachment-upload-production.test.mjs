@@ -51,6 +51,89 @@ test("production Blob draft reload resumes explicit upload and retains the exact
   } finally { await browser.close(); }
 });
 
+test("browser resumes an unreceived begin under one upload and message identity with visible stage evidence", { timeout: 25_000 }, async () => {
+  const browser = await launchBrowser();
+  const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+  page.setDefaultTimeout(6000);
+  const batches = [];
+  const firstTraceFailure = Promise.withResolvers();
+  let failedTrace = false;
+  try {
+    await openFixture(page, { chunkedUpload: true });
+    await page.route("**/api/command-trace/client-events", async (route) => {
+      const events = route.request().postDataJSON().events;
+      if (!failedTrace && events.some((event) => event.stage === "attachment-upload")) {
+        failedTrace = true;
+        await route.abort("failed");
+        firstTraceFailure.resolve();
+        return;
+      }
+      batches.push(...events);
+      await route.fulfill({ status: 200, contentType: "application/json", body: '{"ok":true}' });
+    });
+    await attach(page, 3);
+    const original = (await persisted(page))[0].attachments[0].uploadId;
+    await page.evaluate(() => localStorage.setItem("fixture:upload-mode", "drop-begin-once"));
+    await page.locator("[data-composer]").evaluate((form) => form.requestSubmit());
+    await page.locator("[data-upload-resume]").waitFor({ state: "visible" });
+    await firstTraceFailure.promise;
+    assert.ok((await page.evaluate(() => JSON.parse(localStorage.getItem("agent-hub-upload-trace-v1") ?? "[]"))).length > 0,
+      "failed telemetry remains in bounded browser storage");
+    assert.equal((await bridgeCalls(page, "send-message")).length, 0);
+    await page.locator("[data-upload-resume]").click();
+    await page.waitForFunction(() => JSON.parse(localStorage.getItem("fixture:bridge-log") ?? "[]")
+      .some((entry) => entry.action === "send-message"));
+    const sends = await bridgeCalls(page, "send-message");
+    assert.equal(sends.length, 1);
+    const uploads = await page.evaluate(() => JSON.parse(localStorage.getItem("fixture:upload-log") ?? "[]"));
+    assert.equal(uploads.filter((entry) => entry.method === "POST" && !entry.id).length, 1);
+    assert.ok(uploads.every((entry) => !entry.id || entry.id === original));
+    await page.waitForFunction(() => JSON.parse(localStorage.getItem("agent-hub-upload-trace-v1") ?? "[]").length === 0);
+    const spans = batches.filter((event) => event.stage === "attachment-upload");
+    assert.ok(spans.some((event) => event.metadata.action === "pause-wait"));
+    assert.ok(spans.some((event) => event.metadata.action === "begin-recovery"));
+    assert.ok(spans.every((event) => event.metadata.uploadId === original));
+    assert.ok(spans.some((event) => event.metadata.messageRequestId === sends[0].params.clientUserMessageId));
+    assert.ok(spans.some((event) => event.metadata.serverOwnerMs === 4.5));
+  } finally { await browser.close(); }
+});
+
+test("browser reload retains the first begin deadline before a manual same-ID retry", { timeout: 25_000 }, async () => {
+  const browser = await launchBrowser();
+  const page = await browser.newPage();
+  page.setDefaultTimeout(6000);
+  try {
+    await openFixture(page, { chunkedUpload: true });
+    await attach(page, 3);
+    const original = (await persisted(page))[0].attachments[0].uploadId;
+    await page.evaluate(() => localStorage.setItem("fixture:upload-mode", "drop-begin-once"));
+    await page.locator("[data-composer]").evaluate((form) => form.requestSubmit());
+    await page.locator("[data-upload-resume]").waitFor({ state: "visible" });
+    const attemptedAtMs = await page.evaluate(async (id) => new Promise((resolve, reject) => {
+      const open = indexedDB.open("agent-hub-composer-files-v1", 1);
+      open.onsuccess = () => {
+        const read = open.result.transaction("files", "readonly").objectStore("files").get(id);
+        read.onsuccess = () => resolve(read.result?.uploadAttemptedAt);
+        read.onerror = () => reject(read.error);
+      };
+      open.onerror = () => reject(open.error);
+    }), original);
+    assert.ok(Number.isSafeInteger(attemptedAtMs));
+    await page.locator("[data-upload-cancel]").click();
+    await page.waitForFunction(() => document.querySelector("[data-composer-input]")?.value === "Resume exact attachment");
+    await page.reload({ waitUntil: "load" });
+    await page.waitForFunction(() => document.querySelectorAll("[data-attachments] [data-attachment-index]").length === 1);
+    assert.equal((await persisted(page))[0].attachments[0].uploadId, original);
+    await page.locator("[data-composer]").evaluate((form) => form.requestSubmit());
+    await page.waitForFunction(() => JSON.parse(localStorage.getItem("fixture:bridge-log") ?? "[]")
+      .some((entry) => entry.action === "send-message"));
+    const uploads = await page.evaluate(() => JSON.parse(localStorage.getItem("fixture:upload-log") ?? "[]"));
+    assert.equal(uploads.filter((entry) => entry.method === "POST" && !entry.id).length, 1);
+    assert.equal(uploads.find((entry) => entry.method === "POST" && !entry.id).value.attemptedAtMs, attemptedAtMs);
+    assert.ok(uploads.every((entry) => !entry.id || entry.id === original));
+  } finally { await browser.close(); }
+});
+
 test("production cancel stops preparation and restores original durable Blob draft without message admission", { timeout: 25_000 }, async () => {
   const browser = await launchBrowser();
   const page = await browser.newPage({ viewport: { width: 390, height: 844 } });

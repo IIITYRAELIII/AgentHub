@@ -26,6 +26,7 @@ import { createHubThreadNamingService } from "../application/hub-thread-naming-s
 import { createProviderProcessComposition } from "./provider-process-composition.mjs";
 import { createProviderSnapshotComposition } from "./provider-snapshot-composition.mjs";
 import { createProviderStartupComposition } from "./provider-startup-composition.mjs";
+import { createStorageRetentionComposition } from "./storage-retention-composition.mjs";
 
 export function resumePostTurnWork({
   maintenance,
@@ -33,11 +34,10 @@ export function resumePostTurnWork({
   wakeDeferredInputs,
   scheduleDeferredRestartIfReady,
 }) {
+  wakeDeferredInputs();
   if (restartPending) {
     void Promise.resolve(maintenance).finally(scheduleDeferredRestartIfReady);
-    return "restart";
   }
-  wakeDeferredInputs();
   return "deferred-inputs";
 }
 import { createRunAccountingComposition } from "./run-accounting-composition.mjs";
@@ -175,6 +175,12 @@ export async function createProviderApplicationComposition({
     canonicalizeProjectRoots,
   });
   const maintenanceOperations = new MaintenanceOperationStore({ dataDir: config.dataDir });
+  const storageRetention = createStorageRetentionComposition({ config, store: maintenanceOperations,
+    taskBoard: infrastructure.taskBoard, taskGitWorkspaces: infrastructure.taskGitWorkspaces,
+    releaseGitWorkspaces: infrastructure.releaseGitWorkspaces, releaseOperations: infrastructure.releaseOperations,
+    timers: runtimeTimers, readReady: () => agentHubRuntimeHealth.snapshot().ready,
+    readBusy: () => runtimeData.taskRuns.size > 0, isStopping: () => hostState.stopping,
+    health: agentHubRuntimeHealth });
   agentHubRuntimeHealth.setDiagnosticSource("restart", () => {
     const settled = maintenanceOperations.latestSettledRestart();
     return settled ? { operationId: settled.operationId, status: settled.status,
@@ -585,6 +591,7 @@ export async function createProviderApplicationComposition({
     runtimeTimers,
     commandTraceService,
     usageSyncAuto,
+    storageRetention,
     defaultNotificationChatId,
     ...providerProcess,
     ...accounting,

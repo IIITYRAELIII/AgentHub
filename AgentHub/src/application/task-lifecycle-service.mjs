@@ -88,6 +88,7 @@ function confirmation(task, action, preview) {
       dirty: item.dirty,
       changedPaths: item.changedPaths,
       untrackedPaths: item.untrackedPaths,
+      ignoredPaths: item.ignoredPaths,
     })),
     gitReferences: preview.gitReferences ?? [],
     absorbedInto: preview.absorbedInto ?? null,

@@ -94,6 +94,37 @@ test("release operation acknowledges before work and finishes one exact generati
   assert.deepEqual(cleaned, [["done", 1, snapshot.generations[0].identitySha256]]);
 });
 
+test("retention proof reads only the exact completed, validated and published generation", async t => {
+  const scheduled = [];
+  const f = await fixture(t, { schedule: callback => scheduled.push(callback) });
+  const ack = start(f.service);
+  assert.equal(f.service.retentionGeneration(ack.operationId, 1), null);
+  scheduled.shift()();
+  await f.service.drain(ack.operationId);
+  const before = f.store.snapshot(ack.operationId);
+  const proof = f.service.retentionGeneration(ack.operationId, 1);
+  assert.equal(proof.identitySha256, before.generations[0].identitySha256);
+  assert.equal(proof.candidates[0].commit, "candidate");
+  assert.equal(f.service.retentionGeneration(ack.operationId, 2), null);
+  assert.deepEqual(f.store.snapshot(ack.operationId), before, "retention does not transition or replay publication");
+  const get = f.store.get.bind(f.store);
+  for (const state of ["waiting", "failed", "publish"]) {
+    f.store.get = id => ({ ...get(id), state });
+    assert.equal(f.service.retentionGeneration(ack.operationId, 1), null);
+  }
+  f.store.get = get;
+  const latest = f.store.latestStep.bind(f.store);
+  for (const step of ["validate", "finalize"]) {
+    f.store.latestStep = (id, number, name) => name === step ? { ...latest(id, number, name), status: "unknown" } : latest(id, number, name);
+    assert.equal(f.service.retentionGeneration(ack.operationId, 1), null);
+  }
+  f.store.latestStep = latest;
+  f.store.get = id => ({ ...get(id), publicationEffects: { ...get(id).publicationEffects, targets: {} } });
+  assert.equal(f.service.retentionGeneration(ack.operationId, 1), null);
+  f.store.get = get;
+  assert.deepEqual(f.service.retentionGeneration(ack.operationId, 1), proof);
+});
+
 test("startup recovery leaves a reviewed external native owner and its receipts untouched", async t => {
   const scheduled = [];
   const f = await fixture(t, { schedule: callback => scheduled.push(callback) });

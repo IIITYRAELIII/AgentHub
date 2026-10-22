@@ -2,13 +2,15 @@ import { randomUUID } from "node:crypto";
 import { open, readFile, rename, unlink } from "node:fs/promises";
 import path from "node:path";
 
-async function writeAndSync(filePath, content) {
-  const handle = await open(filePath, "w", 0o600);
+const unmeasured = (_phase, operation) => operation();
+
+async function writeAndSync(filePath, content, measure = unmeasured) {
+  const handle = await measure("open", () => open(filePath, "w", 0o600));
   try {
-    await handle.writeFile(String(content), "utf8");
-    await handle.sync();
+    await measure("write", () => handle.writeFile(String(content), "utf8"));
+    await measure("fsync", () => handle.sync());
   } finally {
-    await handle.close();
+    await measure("close", () => handle.close());
   }
 }
 
@@ -48,25 +50,26 @@ export async function writeTextAtomic(filePath, content, {
   syncParentDirectoryImpl = syncParentDirectory,
   retryDelaysMs = [10, 25, 50, 100, 200, 400],
   exchangeBlockedTarget = false,
+  measure = unmeasured,
 } = {}) {
-  await writeAndSyncImpl(temporaryFile, String(content));
+  await writeAndSyncImpl(temporaryFile, String(content), measure);
   try {
     for (let attempt = 0; ; attempt += 1) {
       try {
-        await renameImpl(temporaryFile, filePath);
-        await syncParentDirectoryImpl(filePath);
+        await measure("rename", () => renameImpl(temporaryFile, filePath));
+        await measure("directory-sync", () => syncParentDirectoryImpl(filePath));
         break;
       } catch (error) {
         const retryable = ["EPERM", "EACCES", "EBUSY"].includes(error?.code);
         if (!retryable) throw error;
         if (attempt >= retryDelaysMs.length) {
           if (!exchangeBlockedTarget) throw error;
-          await renameImpl(filePath, replacementBackupFile);
+          await measure("backup-rename", () => renameImpl(filePath, replacementBackupFile));
           try {
-            await renameImpl(temporaryFile, filePath);
+            await measure("rename", () => renameImpl(temporaryFile, filePath));
           } catch (replacementError) {
             try {
-              await renameImpl(replacementBackupFile, filePath);
+              await measure("rollback-rename", () => renameImpl(replacementBackupFile, filePath));
             } catch (rollbackError) {
               throw new AggregateError(
                 [replacementError, rollbackError],
@@ -79,7 +82,7 @@ export async function writeTextAtomic(filePath, content, {
           await syncParentDirectoryImpl(filePath);
           break;
         }
-        await new Promise((resolve) => setTimeout(resolve, retryDelaysMs[attempt]));
+        await measure("retry-wait", () => new Promise((resolve) => setTimeout(resolve, retryDelaysMs[attempt])));
       }
     }
   } catch (error) {

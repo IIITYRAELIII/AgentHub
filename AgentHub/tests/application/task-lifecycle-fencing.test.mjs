@@ -64,6 +64,22 @@ function lifecycleFixture({ synchronousFence = false, stableFence = false } = {}
   return { service, calls, task };
 }
 
+test("cleanup confirmation binds newly appearing ignored WIP before lifecycle admission", async () => {
+  const { service, task, calls } = lifecycleFixture({ stableFence: true });
+  const ignoredPaths = [];
+  service.taskGitWorkspaces.cleanupPreview = async () => ({ workspaces: [{ projectRoot: "fixture/worktree",
+    branch: "HUB-159", headCommit: "a".repeat(40), dirty: false, changedPaths: [], untrackedPaths: [],
+    ignoredPaths: [...ignoredPaths] }], gitReferences: [], dirty: false, unpublished: [], deleting: [] });
+  const request = { taskId: task.id, operationId: "complete-with-wip-change" };
+  const initial = await service.complete(request);
+  ignoredPaths.push("WIP/evidence.txt");
+  const changed = await service.complete(request);
+  assert.notEqual(initial.cleanupToken, changed.cleanupToken);
+  await assert.rejects(service.complete({ ...request, confirmCleanup: true, expectedCleanupToken: initial.cleanupToken }), /confirmation is stale/u);
+  assert.equal(calls.begin, 0);
+  assert.equal(calls.cleanup, 0);
+});
+
 test("async lifecycle fencing blocks every workflow/cleanup commit without an unhandled rejection", async () => {
   const unhandled = [];
   const onUnhandled = (reason) => unhandled.push(reason);

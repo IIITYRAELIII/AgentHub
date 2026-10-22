@@ -1,5 +1,152 @@
 # REL-001 — Task-backed Workspace release
 
+## Original stale-main recovery
+
+ADR-0128 defines one narrow exception to generic terminal refusal. Existing RM
+continuation may bind separately verified current main pins to the original
+failed compose operation, after exact revision CAS, current selected/prepared
+source verification and original publication not-applied proof. Original
+authorization, terminal attempt, immutable generations and all receipts remain
+history; `reviewedMain` and the recovery event are appended by the same store.
+UNKNOWN/partial/applied/live/source-owned effects refuse. No work executes inside
+rebinding; ordinary composition and publication guards still own the next attempt.
+New publication freezes persist both the public semantic version and the
+canonical next runtime artifact version in their existing immutable manifest and
+freeze intent. This observation reserves nothing. The original generation runner
+passes the exact operation/generation/commit/artifact version to the existing
+artifact owner, whose installation lease compares that expectation before any
+preparation or allocation. A competing allocation refuses rather than retargeting
+the frozen input. Freeze retry and lost-reply artifact reuse retain the original
+version. Historical generations lacking this field keep their original executor
+identity; they are not rewritten or granted a new packaging receipt.
+
+## Semantic public version and original build (ADR-HUB-334)
+
+New installer publications migrate recognized calendar versions to public
+`2.0.0`. Later compatible corrections use patch, compatible features minor,
+and changes to supported interfaces/update compatibility major. The existing
+freeze accepts `releaseType` (`patch` by default, `minor` or `major`) only for
+new intent; an admitted freeze always reuses its saved version. A selected
+prerelease can stabilize without changing its core. Stable public discovery
+continues to refuse prereleases; this does not introduce a beta update channel.
+
+Full publication uses that same freeze owner and passes its original expected
+version into committed-metadata validation. Validation/retry never selects a
+next patch; absent original expectation refuses without writing metadata. Core
+and build numbers use the same ASCII-only grammar in producer and recipient.
+Full publication also binds the same immutable artifact version and source head
+before stages. Android consumes that artifact as its code/name input; runtime
+deploy passes its original expected version and source to the existing lease
+owner. Neither stage allocates an independent semantic build.
+
+Public version, internal releaseId and artifact version are distinct. The new
+artifact is `<publicVersion>+build.N`; manifest and package descriptors also bind
+`versionScheme: semver-build-v1`, `publicVersion` and integer `buildNumber`.
+The UI displays `<publicVersion> · сборка N`. Public tags use the public version
+(first stable installer `2.0.0`), not the artifact identity containing `+`.
+The existing exact four-field runtimePublication and nine-field PREPARED receipt
+keep `version` as the complete artifact identity. No receipt is enriched or
+rewritten and no second allocation ledger is introduced.
+
+The existing retained-manifest allocator observes all recognized builds and
+verified retained Android codes, with the existing epoch-minute floor on a new
+freeze. Its next N is at most 2,100,000,000. Freeze is an observation, not a
+reservation. Under the same installation lease, preparation compares again
+against retained allocations using original N minus one as its frozen floor,
+so elapsed wall time cannot allocate a new build. A competing allocation,
+unknown/foreign manifest or partial retained allocation refuses and preserves
+evidence. Original artifact reuse happens before new preparation. Android takes
+versionName from the same public version and versionCode from the same frozen N;
+its builder does not allocate another semantic build.
+
+The recipient verifies current and candidate manifests before ordinary update:
+recognized calendar identity may migrate to semantic major 2 or later; semantic
+precedence may not decrease and build must increase. SemVer build metadata alone
+has no precedence. Exact byte-identical reinstall is idempotent; explicit
+verified previous-runtime rollback retains its separate existing owner. Unknown
+metadata does not authorize downgrade. Config/data/enrollment, signer/package
+identity and stopped-writer checks remain mandatory. Old calendar receipt
+read/retry remains supported at its original checkpoint; it is not authority
+for a new calendar downgrade after migration. The release publisher must refuse
+overwriting a previously published public tag with another build.
+
+## Frozen standalone artifact preparation
+
+The existing publication artifact checkpoint may bind an explicit original
+operation/generation/source and runtime artifact version. Canonical preparation
+checks that version against its next suffix under the same installation lease
+before copying, compiling Host or installing locked dependencies. A different
+result refuses instead of changing the frozen version or manifest. Publication
+version remains distinct from the runtime artifact version.
+
+The packager's PREPARED receipt is derived from that same hash-pinned artifact
+and verified runtime, not from a second allocation or acceptance owner. Reuse
+validates the original source/version/manifest and complete payload before any
+new preparation. A lost preparation reply may reuse its verified completed body;
+a partial body without a manifest or changed inputs remains preserved/refused.
+This receipt grants no Git, installation, restart or remote publication authority.
+
+## Native transport retirement (ADR-0126)
+
+New native merge transport contains exact selected base/result ancestry through
+private advertised bundle tips, including dangling accepted inputs, without
+copying all unrelated source refs or mutating source configuration/refs. Git
+streams its complete pack into an already-owned output descriptor; no bare pool
+or recursive temporary-directory deletion is used. A failed/partial output and
+any plain/reparse replacement are preserved. The consuming clone has no
+alternates and remains independent.
+
+New permanent release-generation transport likewise streams only exact local
+main, approved base and selected result ancestry. Its advertised main alias is
+bound to an included exact input so the existing main clone contract survives.
+Ordinary initial release clones and workspace refresh fetch main only; missing
+selected base/result commits still use the existing exact-object fetch path.
+Existing generation transports are reused unchanged, including older broad packs;
+partial/unknown outputs require original-owner recovery, not replacement. This
+does not change composition selection, provenance, candidate fetch/freeze or
+publication guards. Disposable composition validation uses the same selected
+main/base/result transport and still returns only a read-only composition proof;
+its existing invocation-local temporary cleanup and acceptance refusal remain.
+
+After an update's normal runtime start, policy v1 may retire only the redundant
+task-native-merge transport from a completed, durably published Task. The existing
+Task Git lease/process guard and fresh cleanup preview remain authoritative. The
+full clean independent capture must contain connected advertised object roots;
+advertised names/OIDs remain in the existing durable cleanup intent. Its refs,
+repository, merge journal, resolution evidence and Task results are preserved.
+Unknown, incomplete, dirty, unpublished or changed artifacts remain pinned. File
+retirement is handle-bound, exact-identity/hash checked and refuses extra streams,
+hardlinks and substituted physical ancestors; no recursive deletion is implied.
+
+Task worktree cleanup separately refuses ignored local files/directories even
+when Git status is clean or dirty removal was requested. Their artifact owner
+must prove retirement first. This includes useful WIP and dependencies without
+an accepted retirement proof. Current/running/rollback/prepared runtime/source
+roots, release generations, legacy archives and persistent evidence receive no
+new deletion authority from the storage scheduler.
+
+The runtime installation owner separately supplies policy v2 exact retirement
+custody in its existing current.json pointer. Installation preserves unrelated
+prepared bodies and defers deletion. Only known selected custody that leaves
+current/rollback may retire; legacy versions are not adopted by name or age.
+The same physical-root installation lease covers prepare/install/rollback and
+retirement. Current, rollback, running and prepared-source dependencies remain
+pinned before each native batch. The existing maintenance child is recorded in
+that retired binding before effects, and known partial work resumes only that
+original operation/root/manifest. Unknown data or custody stays retained; no
+recursive directory-removal fallback or Task-publication effect is granted.
+
+Policy v3 may retire only a redundant generation source.bundle after the original
+ReleaseOperation proves its exact current generation done, applied validate/finalize
+inputs and published outcomes for every approved target. The marked full independent
+clone, frozen checkpoint/manifest and advertised locally connected object roots,
+anchored in retained refs/HEAD against later ordinary GC, must
+match that generation. Shallow/partial/alternate-backed, dirty, incomplete, failed,
+waiting, superseded or UNKNOWN captures remain pinned. Prepare, discard and bundle
+retirement share the existing generation lease. The same native exact-file transport
+custody applies; the repository, refs, generation body, evidence and all ignored WIP
+remain. This is not a new release, Task cleanup, recursive deletion or age policy.
+
 ## Current corrected candidates and historical release facts (2026-10-14)
 
 A new candidate is admitted from the exact CURRENT normally accepted results.
@@ -153,6 +300,13 @@ prepared reuse and freeze. This does not adopt future origin or move primary.
 Native metadata validation distinguishes inherited metadata from Task edits.
 CHANGELOG entries must equal a complete Git mode/blob entry at the registered
 Task base, verified installed source or that Task's explicitly adopted commit.
+An explicitly verified installed-source base may incorporate later agreed main
+metadata. Its existing owner also retains the installed manifest's exact source
+revision as a metadata base: the hash-pinned manifest, unchanged clean source
+HEAD and ancestry into the verified new base must all agree. This grants no
+arbitrary historical revision or caller-supplied authority. Ordinary exact
+path/mode/blob and package-version rules still apply; merge-side authority,
+selection and Task acceptance remain unchanged (ADR-HUB-321).
 Metadata paths use raw NUL records and literal pathspecs; quoted presentation
 names, malformed or ambiguous tree lookups grant no inherited identity.
 Existing package versions must match one of those same sources. Arbitrary Task
@@ -248,6 +402,31 @@ success returns the same receipt without composition. Response loss after
 terminal persistence is recoverable by that readback. Missing terminal or
 ambiguous persistence remains UNKNOWN; no newer checkpoint, timeout or absent
 lock settles it or authorizes automatic Git replay.
+
+ADR-0130 adds explicit same-original `hub_release_prepare_resume` using the
+original `request_id`, `expected_arguments_hash` and exact
+`expected_preparation_revision`. It creates no second MCP intake or journal.
+The existing MCP row holds the original envelope, fixed source root/custody,
+revision and bounded owner stage. Only the existing Await -> Task -> repository
+lease boundary may checkpoint or resume it. The immutable original argument
+hash, caller and source closure remain binding; a newer approved mechanism may
+read that retained original closure without importing it or relabelling it.
+New attempts checkpoint `checking` before composition and `composing` before
+admitting any candidate effect. A caught pre-compose interruption records
+`paused`. A lost checkpoint reply can leave `checking`; reacquiring the same
+leases and exact revision CAS proves exclusive ownership before resumption.
+Current plan/rows/publication and candidate/main/source guards still apply.
+Main audit is not repeated or credited as no effect by resume. Bootstrap of
+accepted main into dev is a separate normal lease/CAS operation and never
+settles a preparation receipt.
+
+`composing` and provisional `terminal-intent` do not authorize replay. Candidate
+rollback remains live until the terminal transaction, so even a saved proposed
+result cannot turn an ambiguous terminal write into success. Only the existing
+successful original receipt supplies terminal readback. Legacy originals with
+no owner stage retain UNKNOWN and report the exact missing checkpoint; a later
+bootstrap, absent candidate, timeout or current refs cannot reconstruct it.
+No automatic startup recovery, original-ID replacement or SQL override is added.
 
 Affected commands:
 `node --test --test-name-pattern=preparation-only tests/application/hub-mcp-service.test.mjs tests/application/release-preparation-admission.test.mjs tests/infrastructure/persistence/workspace-catalog-store.test.mjs` and
@@ -1563,7 +1742,7 @@ record, including nested publisher and receipt fields; two records that differ
 below the first object level are conflicting rather than silently coalesced.
 
 The Release Manager uses the prepared PreRelease, supplies its consolidated
-`CHANGELOG.md`, and freezes the calendar version before validation. Freeze binds
+`CHANGELOG.md`, and freezes the public version before validation. Freeze binds
 the exact main base, release-plan revision, included Task IDs and acceptance
 revisions, Task results, owning dev integrations, aggregate `PreRelease` head,
 manifest hash, standalone candidate head and Agent Hub package version. Later

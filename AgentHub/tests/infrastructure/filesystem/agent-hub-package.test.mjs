@@ -59,7 +59,7 @@ test("Agent Hub package metadata rejects missing and invalid versions", async ()
   }
 });
 
-test("release version preparation updates package metadata to the local calendar date", async () => {
+test("release version preparation migrates calendar metadata to first installer 2.0.0", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-release-version-"));
   const packageFile = path.join(root, "package.json");
   const lockFile = path.join(root, "package-lock.json");
@@ -75,13 +75,13 @@ test("release version preparation updates package metadata to the local calendar
     const first = await prepareAgentHubReleaseVersion({ root, now: new Date(2026, 7, 24, 12) });
     assert.deepEqual(
       { changed: first.changed, previousVersion: first.previousVersion, version: first.version },
-      { changed: true, previousVersion: "2026.8.23", version: "2026.8.24" },
+      { changed: true, previousVersion: "2026.8.23", version: "2.0.0" },
     );
-    assert.equal(JSON.parse(await readFile(packageFile, "utf8")).version, "2026.8.24");
+    assert.equal(JSON.parse(await readFile(packageFile, "utf8")).version, "2.0.0");
     const lock = JSON.parse(await readFile(lockFile, "utf8"));
-    assert.equal(lock.version, "2026.8.24");
-    assert.equal(lock.packages[""].version, "2026.8.24");
-    assert.equal((await prepareAgentHubReleaseVersion({ root, now: new Date(2026, 7, 24, 23) })).changed, false);
+    assert.equal(lock.version, "2.0.0");
+    assert.equal(lock.packages[""].version, "2.0.0");
+    assert.equal((await prepareAgentHubReleaseVersion({ root, expectedVersion: "2.0.0" })).changed, false);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -100,8 +100,8 @@ test("publication preflight stops after preparing an uncommitted calendar versio
       packages: { "": { name: "agent-hub", version: "2026.8.23" } },
     }), "utf8");
     await assert.rejects(
-      prepareCommittedAgentHubReleaseVersion({ root, now: new Date(2026, 7, 24, 12) }),
-      /автоматически повышена до v2026\.8\.24/u,
+      prepareCommittedAgentHubReleaseVersion({ root, expectedVersion: "2.0.0", now: new Date(2026, 7, 24, 12) }),
+      /автоматически повышена до v2\.0\.0/u,
     );
   } finally {
     await rm(root, { recursive: true, force: true });

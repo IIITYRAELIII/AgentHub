@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
+import { artifactVersionIdentity, manifestVersionIdentity, semanticVersion } from "../../domain/agent-hub-version.mjs";
 
 export const AGENT_HUB_PACKAGE_FILE = path.resolve(
   import.meta.dirname,
@@ -23,6 +24,7 @@ export function readAgentHubPackage({
   if (!VERSION_PATTERN.test(version)) {
     throw new Error(`Agent Hub package metadata has an invalid version: ${version || "missing"}`);
   }
+  semanticVersion(version);
   return { ...metadata, version };
 }
 
@@ -31,6 +33,11 @@ export function readAgentHubVersion(options = {}) {
 }
 
 export function agentHubReleaseSequence(packageVersion, releaseVersion) {
+  if (String(releaseVersion).includes("+build.")) {
+    const identity = artifactVersionIdentity(releaseVersion);
+    if (identity.publicVersion !== packageVersion) throw new Error("Agent Hub runtime manifest has an invalid release version");
+    return identity.buildNumber;
+  }
   const prefix = `${packageVersion}.`;
   const sequenceText = String(releaseVersion ?? "").trim().slice(prefix.length);
   if (!String(releaseVersion ?? "").startsWith(prefix)
@@ -56,6 +63,7 @@ export function readAgentHubReleaseVersion({
   }
   if (manifest?.releaseVersion == null) return packageVersion;
   agentHubReleaseSequence(packageVersion, manifest.releaseVersion);
+  if (manifest.releaseVersion.includes("+build.")) manifestVersionIdentity(manifest);
   return manifest.releaseVersion;
 }
 

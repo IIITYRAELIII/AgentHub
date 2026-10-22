@@ -568,7 +568,7 @@ export function createDesktopShellComposition({
       hasDeferredBacklog: (target) => deferredInputs.hasBacklog(target),
       isMaintenanceActive: (target) => streamContextMaintenance.isActive(target),
       isManagedMaintenanceActive: (target) => streamContextMaintenance.isManagedActive(target),
-      isRestartPending: () => Boolean(hostState.restartRequest),
+      isRuntimeStopping: () => hostState.stopping,
       scheduleDeferred: scheduleQueuedInput,
       setProgressStage: (...args) => taskProgress.setStage(...args),
       noteRunActivity: (...args) => taskProgress.noteActivity(...args),

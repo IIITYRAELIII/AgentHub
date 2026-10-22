@@ -1,5 +1,6 @@
 import path from "node:path";
 import { mkdir, lstat, readFile, writeFile } from "node:fs/promises";
+import { createSelectedGitBundle } from "./selected-git-bundle.mjs";
 import { createHash } from "node:crypto";
 import { taskGitIdentityHash } from "../../domain/task-git-reference.mjs";
 import { selectedCompositionFields, normalizedSelectedAbsorption, selectedAbsorptionHandoff }
@@ -246,10 +247,8 @@ export async function mergeSelectedResults({
     const bundle = path.join(root, "source.bundle");
     const inputs = [...new Set([baseCommit, ...tasks.map(task => task.resultCommit)])];
     // The existing owner may have fetched an exact result with no local ref.
-    // Include its ancestry explicitly; stdin avoids a platform argv-size limit.
-    await gitAt(sourceRoot, ["bundle", "create", bundle, "--all", "--stdin"], {
-      input: `${inputs.join("\n")}\n`,
-    });
+    // Private exact refs include that ancestry without a growing revision argv.
+    await createSelectedGitBundle({ root, sourceRoot, bundle, inputs, gitAt });
     await gitAt(root, ["clone", "--no-local", "--no-hardlinks", "--no-checkout", bundle, repository]);
     const git = (args) => gitAt(repository, args);
     for (const commit of inputs) {

@@ -22,6 +22,7 @@ export function createRuntimeTimersComposition({
   scheduleBugReportScan,
   rateLimitTelemetry,
   usageSyncAuto = null,
+  storageRetention = null,
   testContourJournalSync = null,
   providerLogin = null,
 }) {
@@ -30,6 +31,7 @@ export function createRuntimeTimersComposition({
     contextCompactions.dispose();
     providerLogin?.dispose?.();
     usageSyncAuto?.stop?.();
+    storageRetention?.stop?.();
     testContourJournalSync?.stop?.();
     turnEndDelivery?.stopProjectionRecovery?.();
     runtimeTimers.clearAll();
@@ -54,6 +56,7 @@ export function createRuntimeTimersComposition({
     scheduleBugReportScan(500);
     rateLimitTelemetry.schedule(1_000);
     usageSyncAuto?.scheduleInitial?.();
+    storageRetention?.scheduleInitial?.();
     testContourJournalSync?.scheduleInitial?.();
   }
 
