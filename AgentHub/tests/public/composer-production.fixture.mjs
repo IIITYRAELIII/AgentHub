@@ -199,6 +199,8 @@ async function openFixture(page, {
   holdRecoveryAuthority = false,
   chunkedUpload = false,
   attachmentStorageOpenFailure = false,
+  webAppRoot = WEB_APP_ROOT,
+  assetOverrides = {},
 } = {}) {
   const diagnostics = [];
   page.on("pageerror", (error) => diagnostics.push(error.message));
@@ -493,7 +495,7 @@ async function openFixture(page, {
       return;
     }
     if (requestUrl.pathname === "/") {
-      const source = await readFile(new URL("index.html", WEB_APP_ROOT), "utf8");
+      const source = await readFile(new URL("index.html", webAppRoot), "utf8");
       const body = source
         .replace(/\s*<script src="https:\/\/telegram\.org\/[^>]+><\/script>/u, "")
         .replace(/\s*<script src="\/browser-device-auth\.js" defer><\/script>/u, "")
@@ -514,7 +516,7 @@ async function openFixture(page, {
       await route.fulfill({
         status: 200,
         contentType: contentType(relative),
-        body: await readFile(new URL(relative, WEB_APP_ROOT)),
+        body: assetOverrides[relative] ?? await readFile(new URL(relative, webAppRoot)),
       });
     } catch {
       await route.fulfill({ status: 404, body: "Not found" });

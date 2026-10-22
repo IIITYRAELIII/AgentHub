@@ -266,6 +266,18 @@ reducer and live-card filtering, preserving one user entity without presenting
 an intermediate agent response as a final. Older loaded pages and request/Stream
 generation fences retain their existing ownership.
 
+Repeated snapshot notifications for the same provider/Thread/Stream coalesce a
+following history read without invalidating the page already in flight. Only
+dispatched reads advance its request generation; Thread rotation and explicit
+pagination still reject superseded responses. An earlier queued refresh cannot
+supersede a later navigation or older-page intent merely by dispatching later;
+background notifications leave an in-flight explicit older-page read owned by
+that request. An initial background read exposes
+the existing loading indicator until the canonical page arrives, while retaining
+visible receipt/user projections. A refresh never hides already loaded history.
+Content-free queue, response-decision and visible-paint measurements retain that
+history request's original trace identity through the existing trace owner.
+
 Opening history shares a bounded transport envelope with optional global
 snapshot data. If that snapshot leaves insufficient space, the server returns
 `snapshot: null` and `snapshotDeferred: true`, preserving the complete quote and
@@ -647,11 +659,16 @@ The original acknowledgement ID correlates render/paint, control transport,
 final resolution, cursor queue wait/write/contention, confirmed receipt and
 after-paint marker state on tabs/cards. These bounded content-free observations
 are diagnostic, not additional read authority.
-The persisted cursor is monotonic even when an older request finishes last:
-`answerAtMs` orders different completion times, a higher revision orders the same
-turn at an equal time, and the exact `turnId` is the deterministic tie-break for
-different turns completed at the same millisecond. A lower canonical tuple cannot
-replace the stored cursor.
+The persisted cursor is monotonic even when an older request finishes last.
+Within the exact provider/Thread/turn identity, revision orders reads before
+completion timestamps: enrichment of the timestamp cannot resurrect the same
+read revision or cover an unseen higher revision. A lower revision cannot replace
+a higher one even with a later timestamp; a higher revision may advance its own
+turn despite an earlier timestamp. Across different turns, `answerAtMs` retains
+the existing chronology and exact `turnId` breaks equal-millisecond ties.
+The browser mirrors that same ordering only for server-confirmed receipts.
+No new cursor table, timestamp rewrite or background reconciliation is introduced
+(ADR-0112). Existing legacy-revision migration guards remain narrowly scoped.
 Cached history may be returned with the open response, but provider/history
 hydration starts strictly as background work and is never awaited by mark-read.
 
