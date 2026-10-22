@@ -108,6 +108,8 @@ test('snapshot refreshes cannot starve a valid in-flight first history page', { 
       }
     }
     assert.notEqual(loading, null, 'an incomplete initial projection is visibly loading');
+    assert.equal(await page.locator('[data-history-loader]').getAttribute('data-loading'), null,
+      'the admitted canonical page clears initial loading while the follow-up is held');
     const ids = await page.locator('[data-chat-log] [data-message-id]').evaluateAll(nodes => nodes.map(n => n.dataset.messageId));
     assert.equal(new Set(ids).size, ids.length, 'same-page notifications do not duplicate canonical identities');
     const text = await page.locator('[data-chat-log]').innerText();
@@ -187,3 +189,60 @@ test('rotation still rejects an old Thread reply and admits the current Thread p
     assert.deepEqual(errors, []);
   } finally { await page.close(); await browser.close(); }
 });
+
+for (const notificationTiming of ['before', 'during']) {
+  test(`explicit older-page intent survives background notification queued ${notificationTiming} pagination`, { timeout: 30000 }, async () => {
+    const browser = await launchBrowser();
+    const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+    try {
+      await holdHistory(page);
+      const initial = snapshot();
+      const errors = await openFixture(page, await fixtureOptions(initial));
+      await page.waitForFunction(() => window.__heldHistory.some(x => x.message.action === 'open-task'));
+      const open = await page.evaluate(() => window.__heldHistory.findIndex(x => x.message.action === 'open-task'));
+      const historyPage = (start, end) => ({
+        ...fullHistory, start, end, total: 22, messageTotal: 44, nextBefore: start || null,
+        version: `page-${start}-${end}`,
+        items: Array.from({ length: end - start }, (_, index) => {
+          const n = start + index + 1;
+          return { ...fullHistory.items[0], id: `turn-${n}`, messages: [
+            { ...fullHistory.items[0].messages[0], itemId: `user-${n}`,
+              clientUserMessageId: `client-${n}`, text: `Question ${n}. ${'content '.repeat(80)}` },
+            { ...fullHistory.items[0].messages[1], itemId: `final-${n}`,
+              text: `Answer ${n}. ${'content '.repeat(80)}` },
+          ] };
+        }),
+      });
+      const latest = historyPage(20, 22);
+      await page.evaluate(({ index, history }) => window.__deliverHistory({ index, history }), { index: open, history: latest });
+      await page.waitForFunction(() => document.querySelector('[data-chat-log]')?.textContent.includes('Answer 22.'));
+      await page.waitForFunction(() => window.__heldHistory.some(x => x.message.action === 'task-history' && x.message.params.before == null));
+      const background = await page.evaluate(() => window.__heldHistory.findIndex(x => x.message.action === 'task-history' && x.message.params.before == null));
+      const notify = async () => {
+        const next = structuredClone(initial);
+        next.version = `pagination-${notificationTiming}`;
+        next.tasks[0].lastAnswerAt = '2026-10-02T10:00:00.000Z';
+        await applyFixtureSnapshot(page, next);
+        await frames(page);
+      };
+      if (notificationTiming === 'before') await notify();
+      await page.locator('[data-history-load]').click();
+      await page.waitForFunction(() => window.__heldHistory.some(x => x.message.params.before === 20));
+      const older = await page.evaluate(() => window.__heldHistory.findIndex(x => x.message.params.before === 20));
+      if (notificationTiming === 'during') await notify();
+      // Finish A so the single flight can process queued B. B may be dropped as
+      // obsolete; the newer explicit request must still admit its valid page.
+      await page.evaluate(({ index, history }) => window.__deliverHistory({ index, history }), { index: background, history: latest });
+      await frames(page);
+      await page.evaluate(({ index, history }) => window.__deliverHistory({ index, history }), { index: older, history: historyPage(0, 20) });
+      await page.waitForFunction(() => document.querySelector('[data-chat-log]')?.textContent.includes('Answer 1.'), null, { timeout: 1500 });
+      const messages = await page.locator('[data-chat-log] [data-role]').evaluateAll(nodes => nodes.map(n => n.dataset.messageId));
+      assert.equal(messages.length, 44);
+      assert.equal(new Set(messages).size, 44);
+      const text = await page.locator('[data-chat-log]').innerText();
+      assert.ok(text.indexOf('Answer 1.') < text.indexOf('Question 21.'));
+      assert.equal(await page.locator('[data-history-loader]').getAttribute('data-loading'), null);
+      assert.deepEqual(errors, []);
+    } finally { await page.close(); await browser.close(); }
+  });
+}

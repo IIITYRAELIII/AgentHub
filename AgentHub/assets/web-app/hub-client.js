@@ -3318,7 +3318,8 @@ async function settleOpenedTaskHistory(id, identity) {
 }
 
 function mergeHistoryLoadRequest(previous, next) {
-  if (!previous || !sameIdentity(previous.identity, next.identity)) return next;
+  if (!previous || !sameIdentity(previous.identity, next.identity)
+    || previous.generation !== next.generation) return next;
   return {
     ...next,
     traceId: previous.traceId,
@@ -3340,6 +3341,7 @@ function enqueueTaskHistoryLoad(id, identity, {
   }
   state.pending = mergeHistoryLoadRequest(state.pending, {
     identity: stableIdentity(identity),
+    generation: historyRequestGenerationByTask.get(id) ?? 0,
     traceId: commandTrace.newId(),
     queuedAt: performance.now(),
     refreshSource,
@@ -3354,6 +3356,12 @@ function enqueueTaskHistoryLoad(id, identity, {
       while (state.pending) {
         const pending = state.pending;
         state.pending = null;
+        // Dispatch order cannot override a later explicit navigation/page
+        // intent. Notifications during an older-page read also leave it owned
+        // by that user request rather than cancelling it with a latest read.
+        if ((historyRequestGenerationByTask.get(id) ?? 0) !== pending.generation
+          || !sameIdentity(taskIdentity(id), pending.identity)
+          || historyPageByTask.get(id)?.loading === true) continue;
         // Coalesced notifications for this identity request a later read, not
         // cancellation of the page already being read. Fence only dispatched
         // reads; explicit pagination and a changed Thread still supersede it.

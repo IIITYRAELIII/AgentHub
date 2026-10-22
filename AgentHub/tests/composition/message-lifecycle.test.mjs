@@ -309,6 +309,7 @@ test("an in-flight completion refresh follows a Stream rotation and discards the
     commandTrace: { newId: () => "fixture-history", record: () => {}, afterPaint: () => {} },
     syncHistoryPagination: () => {},
     historyLoadStates: new Map(),
+    historyRequestGenerationByTask: generations,
     visibleHistoryLoads: new Set(),
     historyPageByTask: new Map(),
     beginHistoryRequest: (id, identity) => {

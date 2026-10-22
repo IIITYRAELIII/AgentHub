@@ -241,7 +241,10 @@ generation fences retain their existing ownership.
 Repeated snapshot notifications for the same provider/Thread/Stream coalesce a
 following history read without invalidating the page already in flight. Only
 dispatched reads advance its request generation; Thread rotation and explicit
-pagination still reject superseded responses. An initial background read exposes
+pagination still reject superseded responses. An earlier queued refresh cannot
+supersede a later navigation or older-page intent merely by dispatching later;
+background notifications leave an in-flight explicit older-page read owned by
+that request. An initial background read exposes
 the existing loading indicator until the canonical page arrives, while retaining
 visible receipt/user projections. A refresh never hides already loaded history.
 Content-free queue, response-decision and visible-paint measurements retain that
