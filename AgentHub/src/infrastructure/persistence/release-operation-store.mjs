@@ -384,15 +384,17 @@ export class ReleaseOperationStore {
     eventKind = "operation.progress",
     event = null,
     emitEvent = true,
+    reviewedMainRecovery = null,
   } = {}) {
     const id = String(operationId ?? "").trim();
     if (!id) throw new TypeError("operationId is required");
     return this.#withDatabase((database) => {
       database.exec("BEGIN IMMEDIATE");
       try {
-        const current = operationFromRow(database.prepare(
+        const row = database.prepare(
           "SELECT operation_json FROM release_operations WHERE operation_id = ?",
-        ).get(id));
+        ).get(id);
+        const current = operationFromRow(row);
         if (!current) {
           database.exec("ROLLBACK");
           return { operation: null, applied: false, reason: "not-found" };
@@ -401,9 +403,29 @@ export class ReleaseOperationStore {
           database.exec("ROLLBACK");
           return { operation: current, applied: false, reason: "owner-fenced" };
         }
+        if (reviewedMainRecovery && expectedRevision === current.revision) {
+          const raw = JSON.parse(row.operation_json);
+          if (raw.authorization?.nativeOwnerCutover || raw.nativeOwnerRecovery) {
+            throw new Error("Reviewed-main recovery is source-owner-fenced");
+          }
+          const nextGeneration = current.currentGeneration + 1;
+          if (database.prepare("SELECT 1 FROM release_candidate_generations WHERE operation_id=? AND generation=?")
+            .get(id, nextGeneration)) throw new Error("Reviewed-main recovery cannot replace an immutable generation");
+          const compose = readJson(database.prepare("SELECT receipt_json FROM release_step_receipts WHERE operation_id=? AND generation=? AND step_id='compose' ORDER BY attempt DESC LIMIT 1")
+            .get(id, nextGeneration)?.receipt_json);
+          if (compose?.status !== "failed" || compose.error !== current.lastError?.message) {
+            throw new Error("Reviewed-main recovery requires the original terminal failed compose receipt");
+          }
+          const publications = database.prepare("SELECT receipt_json FROM release_step_receipts WHERE operation_id=? AND step_id LIKE 'publish:%'").all(id);
+          if (!publications.length || publications.some(row => {
+            const receipt = readJson(row.receipt_json);
+            return receipt?.status !== "failed" || receipt.effect?.status !== "not_applied";
+          })) throw new Error("Reviewed-main recovery requires terminal not-applied publication receipts");
+        }
         const result = transitionReleaseOperation(current, patch, {
           expectedRevision: expectedRevision ?? current.revision,
           updatedAt: this.now(),
+          reviewedMainRecovery,
         });
         if (!result.applied) {
           database.exec("ROLLBACK");

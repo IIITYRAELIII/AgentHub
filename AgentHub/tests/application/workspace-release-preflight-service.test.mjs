@@ -58,6 +58,40 @@ function localSourceFixture() {
   return { ...f, envelope, candidate, p, verified: () => verified };
 }
 
+test("reviewed-main recovery rechecks the sealed source and exact selection inside the existing Await boundary", async () => {
+  const f = localSourceFixture();
+  f.service.releaseGitWorkspaces.inspectMainChanges = async () => ({ projectRoot: f.projectRoot,
+    publishedRevision: f.p.publishedBaseCommit, localMain: f.p.agreedMainCommit, originMain: f.p.agreedMainCommit,
+    approvalRequired: false, approved: true });
+  const approvedRepositories = [{ projectRoot: f.projectRoot, approvedLocalMainCommit: f.p.agreedMainCommit,
+    approvedOriginMainCommit: f.p.agreedMainCommit }];
+  let commitCount = 0;
+  const result = await f.service.withReviewedMainRecovery({ workspaceId: "workspace-1", taskIds: f.plan.ready.map(t => t.taskId),
+    approvedRepositories, commit: async (authority, validate) => {
+      assert.equal(authority.preparedCandidates[0].commit, f.candidate.preReleaseHead);
+      assert.deepEqual(authority.approvedRepositories, approvedRepositories);
+      await validate(); commitCount++; return "committed";
+    } });
+  assert.equal(result, "committed"); assert.equal(commitCount, 1); assert.equal(f.verified(), 2);
+  assert.deepEqual(f.locks, ["workspace-1"]);
+  assert.equal(f.calls.some(([name]) => ["prepare-candidate", "prepare-dev"].includes(name)), false);
+});
+
+for (const drift of ["main", "selection", "manifest"]) test(`reviewed-main recovery refuses ${drift} drift after original readback`, async () => {
+  const f = localSourceFixture(); let origin = f.p.agreedMainCommit;
+  f.service.releaseGitWorkspaces.inspectMainChanges = async () => ({ projectRoot: f.projectRoot,
+    publishedRevision: f.p.publishedBaseCommit, localMain: f.p.agreedMainCommit, originMain: origin,
+    approvalRequired: false, approved: true });
+  await assert.rejects(f.service.withReviewedMainRecovery({ workspaceId: "workspace-1", taskIds: f.plan.ready.map(t => t.taskId),
+    approvedRepositories: [{ projectRoot: f.projectRoot, approvedLocalMainCommit: f.p.agreedMainCommit, approvedOriginMainCommit: origin }],
+    commit: async (_authority, validate) => {
+      if (drift === "main") origin = "a".repeat(40);
+      if (drift === "selection") f.plan.revision = "new-plan";
+      if (drift === "manifest") f.candidate.manifestHash = "a".repeat(64);
+      await validate(); assert.fail("changed authority may not commit");
+    } }), /stale|changed/u);
+});
+
 test("ordinary Await derives installed source with incoming or agreed-main origin and rechecks before Task CAS", async () => {
   for (const incoming of [true, false]) for (const drift of [false, true, "missing-authority"]) {
     const f = localSourceFixture();

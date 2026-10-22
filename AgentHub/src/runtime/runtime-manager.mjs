@@ -302,6 +302,7 @@ async function prepareRuntimeOwned({
   runtimeRoot = defaultRuntimeRoot(),
   releaseId = newReleaseId(),
   publicationRevision = null,
+  expectedReleaseVersion = null,
   mobileAssetsRoot = null,
   beforeManifest,
   installProductionDependencies = installLockedRuntimeDependencies,
@@ -317,6 +318,17 @@ async function prepareRuntimeOwned({
   const pointer = await readRuntimePointer(runtimeRoot);
   if (pointer.runtimeRetention?.retired?.some?.(entry => entry.releaseId === releaseId && entry.operationId)) {
     throw new Error("Partially retired runtime cannot be prepared again");
+  }
+  // A frozen publication may require one exact allocator result. Check it
+  // under the existing installation lease, before copying, compiling or npm ci.
+  // Reuse of an already prepared body belongs to the publication checkpoint.
+  let frozenReleaseVersion = null;
+  if (expectedReleaseVersion !== null) {
+    const packageVersion = readAgentHubVersion({ packageFile: path.join(sourceRoot, "package.json") });
+    frozenReleaseVersion = await nextRuntimeReleaseVersion({ releasesDir: layout.releasesDir, packageVersion });
+    if (typeof expectedReleaseVersion !== "string" || expectedReleaseVersion !== frozenReleaseVersion) {
+      throw new Error(`Frozen runtime version differs from the next allocated version: ${frozenReleaseVersion}`);
+    }
   }
   await mkdir(staging, { recursive: true });
   try {
@@ -388,7 +400,7 @@ async function prepareRuntimeOwned({
     const manifest = {
       releaseId,
       version: packageVersion,
-      releaseVersion: await nextRuntimeReleaseVersion({
+      releaseVersion: frozenReleaseVersion ?? await nextRuntimeReleaseVersion({
         releasesDir: layout.releasesDir,
         packageVersion,
       }),

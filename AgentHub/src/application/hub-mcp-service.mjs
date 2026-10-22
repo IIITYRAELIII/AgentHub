@@ -871,6 +871,13 @@ export class HubMcpService {
       }, ["operation_id"]),
       tool("hub_release_continue", "Wake an existing waiting release operation without changing its original authorization or creating a new operation.", {
         operation_id: { type: "string" },
+        reviewed_main: { type: "object", additionalProperties: false, required: ["expectedRevision", "approvedRepositories"], properties: {
+          expectedRevision: { type: "integer", minimum: 1 },
+          approvedRepositories: { type: "array", minItems: 1, maxItems: 32, items: { type: "object", additionalProperties: false,
+            required: ["projectRoot", "approvedLocalMainCommit", "approvedOriginMainCommit"], properties: {
+              projectRoot: { type: "string" }, approvedLocalMainCommit: { type: "string" }, approvedOriginMainCommit: { type: "string" },
+            } } },
+        } },
       }, ["operation_id"]),
       tool("hub_events_list", "Read bounded persistent Workspace events after a cursor; this never holds a long poll.", {
         workspace_id: { type: "string", description: "Defaults to the caller Workspace." },
@@ -1977,7 +1984,9 @@ export class HubMcpService {
     const operationId = requiredText(args.operation_id, "operation id", 200);
     const snapshot = this.#releaseOperation().get(operationId);
     this.#workspace(context, snapshot.operation.workspaceId);
-    return this.#releaseOperation().continue(operationId);
+    return this.#releaseOperation().continue(operationId, {
+      requestId: args.request_id, reviewedMain: args.reviewed_main,
+    });
   }
 
 

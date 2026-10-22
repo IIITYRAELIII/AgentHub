@@ -1,5 +1,13 @@
 # MCP-001 — Bounded Agent Hub tool bridge
 
+`hub_release_continue` optionally carries `reviewed_main` with exact positive
+integer `expectedRevision` and bounded original-repository primitive-string Git
+pins. Under the existing genuine RM authorization and original MCP request
+identity, the same release owner verifies and persists ADR-0128 recovery. This
+does not mutate original authorization or add a release/tool/status writer.
+Ordinary terminal continuation remains refused; ambiguous original effects
+cannot receive not-applied credit from the caller envelope.
+
 Task cleanup previews include ignored local data separately from ordinary Git
 dirty state. Confirmed Complete/Delete cannot discard those paths merely because
 Git status is clean or a dirty-worktree option is set; the owning artifact must

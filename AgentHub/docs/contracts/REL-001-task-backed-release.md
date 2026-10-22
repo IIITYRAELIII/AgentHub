@@ -1,5 +1,16 @@
 # REL-001 — Task-backed Workspace release
 
+## Original stale-main recovery
+
+ADR-0128 defines one narrow exception to generic terminal refusal. Existing RM
+continuation may bind separately verified current main pins to the original
+failed compose operation, after exact revision CAS, current selected/prepared
+source verification and original publication not-applied proof. Original
+authorization, terminal attempt, immutable generations and all receipts remain
+history; `reviewedMain` and the recovery event are appended by the same store.
+UNKNOWN/partial/applied/live/source-owned effects refuse. No work executes inside
+rebinding; ordinary composition and publication guards still own the next attempt.
+
 ## Native transport retirement (ADR-0126)
 
 New native merge transport contains exact selected base/result ancestry through
