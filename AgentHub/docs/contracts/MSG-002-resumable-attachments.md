@@ -52,6 +52,13 @@ the same final identity and hash.
 
 A successful begin response is that same authoritative upload receipt. A fresh
 upload uses it directly; only an existing or lost attempt needs a status request.
+HTTP success headers alone are not a received receipt. An aborted or malformed
+JSON body remains unconfirmed and preserves the saved attempt for explicit
+resume/status reconciliation. It is not an upload-ID, protocol or checksum
+conflict, and cannot authorize a new begin/attempt or accepted message. A decoded
+receipt with a different upload ID or protocol still fails the strict identity
+check. An unreadable error body retains its actual HTTP refusal without guessing
+an absent/expired state.
 Local preparation and the initial capabilities/auth request carry the original
 upload ID, joined to the message ID when sending starts. A failed local read keeps
 its original File and preview in the live draft, alongside successful files in
