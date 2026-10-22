@@ -4,7 +4,8 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { AsyncSqliteMutationQueue } from "./async-sqlite-mutation-queue.mjs";
 import { claimCustodyHash, claimCustodyState, assertClaimCustodyOriginal, TaskClaimCustodyRejectedError, TaskClaimContinuationWithdrawnError } from "../../domain/claim-forward-custody.mjs";
-import { readClaimCustodyFence, configureClaimCustodyBindingFences } from "./claim-custody-fence.mjs";
+import { readClaimCustodyFence, configureClaimCustodyBindingFences, configureClaimCustodyNamespaceFences,
+  claimCustodyNamespaces, claimCustodyTaskSnapshot, assertNoPendingClaimCustodyWriters } from "./claim-custody-fence.mjs";
 import { claimAdmissionNoEffectEvidence } from "../../domain/task-board-task.mjs";
 
 import { normalizeInterstreamOrigin } from "../../domain/interstream-message.mjs";
@@ -33,7 +34,7 @@ import {
   withReleasePrimaryWorkspaceRule,
 } from "../../domain/release-primary-workspace-policy.mjs";
 
-const SCHEMA_VERSION = 14;
+const SCHEMA_VERSION = 15;
 export const DEVELOPER_RULES_MAX_BYTES = 32 * 1024;
 const SOURCES = new Set(["created", "discovered", "migration", "rebirth"]);
 const DEVELOPER_RULE_SCOPES = new Set(["workspace", "stream"]);
@@ -191,6 +192,9 @@ function configure(database) {
   if (!operationColumns.some((column) => column.name === "claim_custody_json")) {
     database.exec("ALTER TABLE hub_mcp_operations ADD COLUMN claim_custody_json TEXT");
   }
+  if (!operationColumns.some((column) => column.name === "claim_custody_write_json")) {
+    database.exec("ALTER TABLE hub_mcp_operations ADD COLUMN claim_custody_write_json TEXT");
+  }
   database.exec(`
     CREATE TRIGGER IF NOT EXISTS hub_claim_withdrawn_receipt_update
     BEFORE UPDATE ON hub_mcp_operations
@@ -220,6 +224,7 @@ function configure(database) {
     database.exec("ALTER TABLE hub_mcp_operations ADD COLUMN interstream_content_hash TEXT NOT NULL DEFAULT ''");
   }
   configureClaimCustodyBindingFences(database);
+  configureClaimCustodyNamespaceFences(database);
   if (!streamColumns.some((column) => column.name === "settings_json")) {
     database.exec("ALTER TABLE hub_streams ADD COLUMN settings_json TEXT NOT NULL DEFAULT '{}'");
   }
@@ -964,6 +969,20 @@ export class WorkspaceCatalogStore {
     return readClaimCustodyFence(this.#database, "task", taskId);
   }
 
+  claimCustodyNamespaceForTask(taskId) {
+    return claimCustodyNamespaces(this.#database).find(state => state.taskId === taskId) ?? null;
+  }
+
+  claimCustodyTaskSnapshot(taskId) {
+    const nested = this.#database.isTransaction;
+    if (!nested) this.#database.exec("BEGIN");
+    try {
+      const result = claimCustodyTaskSnapshot(this.#database, taskId);
+      if (!nested) this.#database.exec("COMMIT");
+      return result;
+    } catch (error) { if (!nested) this.#database.exec("ROLLBACK"); throw error; }
+  }
+
   checkpointClaimCustody(state) {
     return this.#transaction(() => {
       const receipt = this.mcpOperation(state.requestId);
@@ -997,10 +1016,23 @@ export class WorkspaceCatalogStore {
             || plan.originalHash !== state.originalHash || claimCustodyHash(plan.envelope) !== claimCustodyHash(state.envelope)
             || claimCustodyHash(plan.source) !== claimCustodyHash(state.source)
             || claimCustodyHash(plan.cohort) !== claimCustodyHash(state.cohort)
-            || state.retirement?.retired !== true) throw new TaskClaimCustodyRejectedError("Fence differs from its durable plan");
+            || (state.envelope.admission !== "isolated-source-v1" && state.retirement?.retired !== true)) throw new TaskClaimCustodyRejectedError("Fence differs from its durable plan");
+        if (state.envelope.admission === "isolated-source-v1") {
+          if (state.namespace?.epoch !== plan.namespace?.epoch || state.namespace?.root !== plan.namespace?.root
+              || !state.namespace?.workspace || state.namespace.workspace.gitBaseline?.custodyEpoch !== plan.namespace.epoch
+              || plan.taskState?.hash !== claimCustodyTaskSnapshot(this.#database, state.taskId).hash) {
+            throw new TaskClaimCustodyRejectedError("Task state, independent namespace, or source custody changed before fence");
+          }
+        }
       } else {
         const { planHash, result, ...body } = state;
         if (planHash !== claimCustodyHash(body)) throw new TaskClaimCustodyRejectedError("Plan hash differs");
+      }
+      if (state.envelope.admission === "isolated-source-v1") {
+        assertNoPendingClaimCustodyWriters(this.#database, state.taskId);
+        if (state.taskState?.hash !== claimCustodyTaskSnapshot(this.#database, state.taskId).hash) {
+          throw new TaskClaimCustodyRejectedError("Task state changed before custody stage commit");
+        }
       }
       const changed = this.#database.prepare(`
         UPDATE hub_mcp_operations SET claim_custody_json = ?, result_json = ?, status = 'succeeded',

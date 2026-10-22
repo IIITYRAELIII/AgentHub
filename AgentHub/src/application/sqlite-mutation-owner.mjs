@@ -18,7 +18,7 @@ const WORKSPACE_MUTATIONS = new Set([
 
 const WORKSPACE_READS = new Set([
   "archivedWorkspaces", "releaseWorkflowEnabledForThread", "workspaceDeveloperRules", "workspaceEvents",
-  "claimCustodyForOriginal", "claimCustodyForTask", "mcpOperation", "pendingMcpOperations", "mcpOperations", "interstreamOriginForClientMessage",
+  "claimCustodyForOriginal", "claimCustodyForTask", "claimCustodyNamespaceForTask", "claimCustodyTaskSnapshot", "mcpOperation", "pendingMcpOperations", "mcpOperations", "interstreamOriginForClientMessage",
   "workspace", "workspaceBySystemKey", "stream", "streamDeveloperRules", "developerRulesForThread",
   "developerRulesForStream", "thread", "activeThread", "threadsForStream", "resolveThread", "hierarchy",
   "meta", "threadNaming", "mutationDiagnostics", "close",
@@ -80,7 +80,7 @@ function createMutationOwner(store, { scope, mutations, reads, managedEffects = 
         if (typeof value !== "function") return undefined;
         return (...args) => store.runMutation(
           () => value.apply(store, args),
-          { requestId: mutationIdentity(scope, property, args) },
+          { requestId: mutationIdentity(scope, property, args), method: property, args },
         );
       }
       if (typeof property === "string" && managedEffects.has(property)) {

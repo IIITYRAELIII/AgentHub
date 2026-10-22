@@ -2731,3 +2731,16 @@ A durable exact-cohort retirement certificate and existing claim writer authoriz
 only the predeclared successor binding. WIP/history and the legacy UNKNOWN remain
 preserved, and active/queued previous-executor work still blocks actual assignment.
 Publication/installed capability and the public release set are unaffected.
+
+The explicitly authorized `isolated-source-v1` forward-custody admission stages
+an independent full-object Git source and hash-verified retained WIP under an
+owner-bound epoch. Original/base history is pinned; no alternates, common mutable
+Git, linked checkout or old deterministic ref namespace grants authority. The old
+root remains preserved at capture but is not immutable. Persistent SQL fences
+isolate every supported old Task writer; an atomic full Task-state pin detects
+intervening effects. Ordinary Test imports private objects through the existing
+native owner and writes epoch result refs while preserving logical repository,
+base, publication lineage and normal lifecycle receipts. Old shared Task refs
+never become current successor authority. Generic cleanup cannot retire this
+retained custody snapshot/WIP; its owning retirement must be proved separately.
+The general busy guard and fresh operational authorization still apply.

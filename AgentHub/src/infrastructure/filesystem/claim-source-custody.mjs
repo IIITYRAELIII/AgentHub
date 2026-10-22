@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { lstat, readFile, readdir, readlink, realpath } from "node:fs/promises";
+import { lstat, readFile, readdir, readlink, realpath, mkdir, open, rename, unlink } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 
 // A bounded source inventory, never a copy, cleanup or dependency preparation.
@@ -55,4 +56,29 @@ export async function readClaimCustodyWip(root, paths) {
   }
   records.sort((a, b) => a.path.localeCompare(b.path, "en"));
   return { digest: createHash("sha256").update(JSON.stringify(records)).digest("hex"), records };
+}
+
+// Only the exact bounded WIP inventory is copied. Existing bytes are verified,
+// never overwritten; symlinks/junctions cannot retain a legacy mutable target.
+export async function copyClaimCustodyWip(sourceRoot, destination, inventory) {
+  for (const record of inventory.records) {
+    if (record.type === "link") throw new Error("Independent custody requires materialized WIP, not links into a legacy writer namespace");
+    const target = path.resolve(destination, record.path);
+    const relative = path.relative(destination, target);
+    if (!relative || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) throw new Error("WIP copy escaped its independent namespace");
+    await mkdir(record.type === "directory" ? target : path.dirname(target), { recursive: true });
+    if (record.type === "directory") continue;
+    const bytes = await readFile(path.resolve(sourceRoot, record.path));
+    const digest = createHash("sha256").update(bytes).digest("hex");
+    if (bytes.length !== record.bytes || digest !== record.sha256) throw new Error("Pinned WIP changed before copying");
+    const prior = await readFile(target).catch(error => { if (error.code === "ENOENT") return null; throw error; });
+    if (prior) {
+      if (prior.length !== record.bytes || createHash("sha256").update(prior).digest("hex") !== record.sha256) throw new Error("Independent WIP snapshot differs; refusing overwrite");
+      continue;
+    }
+    const temporary = `${target}.custody-${randomUUID()}.tmp`;
+    const handle = await open(temporary, "wx");
+    try { await handle.writeFile(bytes); await handle.sync(); } finally { await handle.close(); }
+    try { await rename(temporary, target); } finally { await unlink(temporary).catch(error => { if (error.code !== "ENOENT") throw error; }); }
+  }
 }

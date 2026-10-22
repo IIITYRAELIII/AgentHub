@@ -33,13 +33,15 @@ export function assertClaimCustodyOriginal(original, envelope, taskId, operation
       || original.completedAtMs < original.createdAtMs) reject("Original claim is not a completed ambiguous intake");
   if (original.result !== null || original.preparationState != null) reject("Original retains partial effect evidence requiring its own review");
   const allowed = new Set(["action", "authorization_id", "handoff_id", "expected_original", "original_arguments",
-    "expected_task_revision", "expected_owner_stream_id", "successor_claim_request_id", "source", "runtime_witness"]);
+    "expected_task_revision", "expected_owner_stream_id", "successor_claim_request_id", "source", "runtime_witness", "admission"]);
   if (!envelope || Object.keys(envelope).some(k => !allowed.has(k))) reject("Unexpected forward custody argument");
   const expected = envelope?.expected_original;
   for (const key of ["workspaceId", "streamId", "provider", "threadId", "argumentsHash", "createdAtMs"]) {
     if (!expected || expected[key] !== original[key]) reject(`Original claim ${key} differs`);
   }
   const args = envelope.original_arguments;
+  if (envelope.admission != null && envelope.admission !== "isolated-source-v1") reject("Unknown custody admission guarantee");
+  if (envelope.admission && envelope.runtime_witness != null) reject("Isolation cannot manufacture a retirement witness");
   if (!args || args.task_id !== taskId || args.request_id !== operationId
       || Object.keys(args).some(k => !["task_id", "request_id", "dependency_mode", "dependency_override_reason"].includes(k))
       || mcpArgumentsHash(args) !== original.argumentsHash) reject("Original claim argument identity differs");

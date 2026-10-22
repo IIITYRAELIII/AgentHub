@@ -2,7 +2,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { readClaimCustodyFence, configureClaimCustodyBindingFences } from "./claim-custody-fence.mjs";
+import { readClaimCustodyFence, configureClaimCustodyBindingFences, configureClaimCustodyNamespaceFences,
+  claimCustodySqlConnection, captureClaimCustodySqlAuthorities } from "./claim-custody-fence.mjs";
 import { claimCustodyState, TaskClaimCustodyRejectedError, TaskClaimContinuationWithdrawnError } from "../../domain/claim-forward-custody.mjs";
 import { nativeTestMetadataDrift } from "../../domain/native-test-terminal-recovery.mjs";
 import { AsyncSqliteMutationQueue } from "./async-sqlite-mutation-queue.mjs";
@@ -441,7 +442,7 @@ function configure(database) {
       WHEN status = 'started' AND start_destination_stream_id IS NOT stream_id THEN 'prepared'
       ELSE 'completed'
     END
-    WHERE start_effect_state IS NULL
+    WHERE start_effect_state IS NULL AND start_request_id IS NOT NULL
   `);
   if (!taskColumns.some((column) => column.name === "workflow_status")) {
     database.exec("ALTER TABLE hub_board_tasks ADD COLUMN workflow_status TEXT NOT NULL DEFAULT 'new'");
@@ -834,6 +835,7 @@ export class TaskBoardStore {
   #revision = 0;
   #checklistEventDrain = null;
   #mutations = new AsyncSqliteMutationQueue();
+  #custodyWriteAuthorities = [];
 
   constructor({ databaseFile, now = () => Date.now(), idFactory = randomUUID, readOnly = false } = {}) {
     if (!databaseFile) throw new TypeError("databaseFile is required");
@@ -850,6 +852,8 @@ export class TaskBoardStore {
         configure(this.#database);
         this.#migrateLegacyReleaseRegistry();
         this.#removeReleaseRegistry();
+        configureClaimCustodyNamespaceFences(this.#database);
+        this.#database = claimCustodySqlConnection(this.#database, () => this.#custodyWriteAuthorities);
       }
     } catch (error) {
       this.#database.close();
@@ -2244,7 +2248,15 @@ export class TaskBoardStore {
   }
 
   runMutation(operation, options = {}) {
-    return this.#mutations.run(operation, options);
+    const authorities = captureClaimCustodySqlAuthorities(this.#database, options.method, options.args ?? []);
+    return this.#mutations.run(() => {
+      this.#custodyWriteAuthorities = authorities;
+      try {
+        const result = operation();
+        if (result?.then) throw new TypeError("Task SQL mutation must remain synchronous");
+        return result;
+      } finally { this.#custodyWriteAuthorities = []; }
+    }, options);
   }
 
   mutationDiagnostics() {
@@ -2454,7 +2466,7 @@ export class TaskBoardStore {
         if (!intake || intake.tool_name !== "hub_task_claim" || intake.workspace_id !== workspaceId || intake.stream_id !== streamId
             || intake.provider !== provider || intake.provider_thread_id !== threadId || intake.arguments_hash !== fence.successorArgumentsHash
             || intake.status !== "pending" || !["pending", "unknown"].includes(intake.receipt_state)) throw new TaskClaimCustodyRejectedError("Custody successor intake differs");
-        if (baselineJson !== gitBaselineJson(fence.source.gitBaseline)) throw new TaskClaimCustodyRejectedError("Custody baseline differs");
+        if (baselineJson !== gitBaselineJson(fence.namespace?.workspace?.gitBaseline ?? fence.source.gitBaseline)) throw new TaskClaimCustodyRejectedError("Custody baseline differs");
       }
       const bound = database.prepare(`
         SELECT * FROM hub_task_turn_bindings

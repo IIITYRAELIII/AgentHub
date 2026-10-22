@@ -455,7 +455,8 @@ export async function createHubInfrastructure({
   });
   const verifyNativeResolutionReview = createNativeMergeReviewVerifier({ workspaceCatalog: workspaceCatalogStore, taskBoard });
   const taskGitWorkspaces = new TaskGitWorkspaceService({ dataDir: config.dataDir,
-    contourExternalEffects, recordTiming: recordTaskTiming, verifyNativeResolutionReview });
+    contourExternalEffects, recordTiming: recordTaskTiming, verifyNativeResolutionReview,
+    readClaimCustodyNamespace: taskId => workspaceCatalogStore.claimCustodyNamespaceForTask(taskId) });
   const releaseGitWorkspaces = new ReleaseGitWorkspaceService({ dataDir: config.dataDir, contourExternalEffects, verifyNativeResolutionReview });
   const registeredReleaseProjectRoots = workspaceCatalogStore.hierarchy()
     .filter((workspace) => workspace.settings?.releaseWorkflowEnabled === true)

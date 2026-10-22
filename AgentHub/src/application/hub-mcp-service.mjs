@@ -791,8 +791,9 @@ export class HubMcpService {
       tool("hub_task_operation_reconcile", "Release Manager-only reconciliation of one exact unknown Task workflow operation. A real unresolved process guard requires trusted proof; exact pending withdrawal or squash state can reconcile without inventing one. An already terminal lifecycle settles its original receipt without Git replay.", {
         task_id: { type: "string" },
         operation_request_id: { type: "string" },
-        claim_custody: { type: "object", description: "Explicit RM forward ownership recovery, not historical NO_EFFECT. Prepare binds original/caller/hash/Task/source/WIP/authorization and captures live primary runtime cohort; fence requires its complete positive retirement. Two distinct exact request IDs.",
+        claim_custody: { type: "object", description: "Explicit RM forward ownership recovery, not historical NO_EFFECT. The default requires exact positive legacy retirement. Separately authorized isolated-source-v1 instead stages an independent full-object source/ref authority and fences legacy SQL writers. Two distinct exact request IDs.",
           properties: { action: { type: "string", enum: ["prepare", "fence"] },
+            admission: { type: "string", enum: ["isolated-source-v1"] },
             authorization_id: { type: "string" }, handoff_id: { type: "string" },
             expected_original: { type: "object" }, original_arguments: { type: "object" },
             expected_task_revision: { type: "integer", minimum: 1 }, expected_owner_stream_id: { type: "string" },
@@ -1583,8 +1584,7 @@ export class HubMcpService {
     }
     const input = args.claim_custody;
     if (!input || !["prepare", "fence"].includes(input.action)) throw new TaskClaimCustodyRejectedError("Invalid custody action");
-    if (!this.taskGitWorkspaces?.reuseClaimWorkspaceOwned || !this.taskGitWorkspaces?.withTaskLock
-        || !this.claimCustodyRuntime?.capture || !this.claimCustodyRuntime?.assertRetired) {
+    if (!this.taskGitWorkspaces?.reuseClaimWorkspaceOwned || !this.taskGitWorkspaces?.withTaskLock) {
       throw new TaskClaimCustodyRejectedError("Canonical custody capabilities are unavailable");
     }
     if (this.#pendingMutations.has(args.operation_request_id)) throw new TaskClaimCustodyRejectedError("Original claim worker is still live");
@@ -1598,19 +1598,31 @@ export class HubMcpService {
           || plan.actorThreadId !== context.auditThreadId || plan.actorProvider !== context.provider) throw new TaskClaimCustodyRejectedError("Exact durable custody plan differs");
     }
     const envelope = plan?.envelope ?? input;
+    const isolated = envelope.admission === "isolated-source-v1";
+    if ((!isolated && (!this.claimCustodyRuntime?.capture || !this.claimCustodyRuntime?.assertRetired))
+        || (isolated && (!this.taskGitWorkspaces.planIndependentClaimNamespace || !this.taskGitWorkspaces.stageIndependentClaimNamespaceOwned))) {
+      throw new TaskClaimCustodyRejectedError("Canonical admission guarantee is unavailable");
+    }
     const original = this.workspaceCatalog.mcpOperation(args.operation_request_id);
     assertClaimCustodyOriginal(original, envelope, args.task_id, args.operation_request_id);
     if (original.workspaceId !== context.workspaceId) throw new TaskClaimCustodyRejectedError("Original belongs to another Workspace");
     return this.taskGitWorkspaces.withTaskLock(args.task_id, async lease => {
       const task = this.#custodyTask(context, args.task_id, envelope);
+      if (this.workspaceCatalog.claimCustodyForOriginal?.(original.requestId)
+          || this.workspaceCatalog.claimCustodyNamespaceForTask?.(task.id)) throw new TaskClaimCustodyRejectedError("Another custody disposition already owns this Task");
       if (this.#pendingMutations.has(original.requestId)) throw new TaskClaimCustodyRejectedError("Original claim is still live");
       const workspace = await this.taskGitWorkspaces.reuseClaimWorkspaceOwned({ taskId: task.id, taskNumber: task.taskNumber, source: plan?.source ?? envelope.source, lease });
       const source = { ...envelope.source, ...workspace };
       if (plan && (claimCustodyHash(source) !== claimCustodyHash(plan.source)
           || claimCustodyHash(original) !== plan.originalHash)) throw new TaskClaimCustodyRejectedError("Pinned custody source or original changed");
-      const cohort = plan?.cohort ?? await this.claimCustodyRuntime.capture({ original, witness: envelope.runtime_witness ?? null });
-      const retirement = plan ? await this.claimCustodyRuntime.assertRetired(cohort) : null;
-      if (plan && retirement?.retired !== true) throw new TaskClaimCustodyRejectedError("Legacy cohort retirement is not proved");
+      const cohort = isolated ? null : plan?.cohort ?? await this.claimCustodyRuntime.capture({ original, witness: envelope.runtime_witness ?? null });
+      const retirement = !isolated && plan ? await this.claimCustodyRuntime.assertRetired(cohort) : null;
+      if (!isolated && plan && retirement?.retired !== true) throw new TaskClaimCustodyRejectedError("Legacy cohort retirement is not proved");
+      const namespace = isolated ? plan
+        ? await this.taskGitWorkspaces.stageIndependentClaimNamespaceOwned({ state: plan, lease })
+        : this.taskGitWorkspaces.planIndependentClaimNamespace({ taskId: task.id, source,
+          requestId: args.request_id, originalHash: claimCustodyHash(original) }) : null;
+      if (isolated && plan) await this.taskGitWorkspaces.reuseClaimWorkspaceOwned({ taskId: task.id, taskNumber: task.taskNumber, source, lease });
       await lease.assertOwned();
       // Re-read after the native/runtime wait, without refreshing expected pins.
       this.#custodyTask(context, task.id, envelope);
@@ -1619,6 +1631,7 @@ export class HubMcpService {
         workspaceId: context.workspaceId, actorStreamId: context.streamId, actorThreadId: context.auditThreadId, actorProvider: context.provider,
         taskId: task.id, taskRevision: task.revision, original, originalHash: claimCustodyHash(original),
         envelope, source, cohort, successorClaimRequestId: envelope.successor_claim_request_id,
+        ...(isolated ? { namespace, taskState: plan?.taskState ?? this.workspaceCatalog.claimCustodyTaskSnapshot(task.id) } : {}),
         ...(plan ? { planRequestId: plan.requestId, planHash: plan.planHash, retirement } : {}) };
       if (plan) state.successorArgumentsHash = mcpArgumentsHash({ request_id: state.successorClaimRequestId,
         task_id: state.taskId, forward_custody_request_id: state.requestId,
@@ -1648,10 +1661,13 @@ export class HubMcpService {
       // Whole-cohort retirement was positively proved by the native port and
       // committed with this immutable fence. It is monotonic: closing the own
       // read-only collector after commit cannot revive the retired invocation.
-      if (fence.retirement?.retired !== true) throw new TaskClaimCustodyRejectedError("Durable retirement certificate differs");
+      const isolated = fence.envelope.admission === "isolated-source-v1";
+      if (!isolated && fence.retirement?.retired !== true) throw new TaskClaimCustodyRejectedError("Durable retirement certificate differs");
       const task = this.#task(context, args.task_id);
-      const workspace = await this.taskGitWorkspaces.reuseClaimWorkspaceOwned({ taskId: task.id, taskNumber: task.taskNumber, source: fence.source, lease: guarded });
-      if (claimCustodyHash({ ...fence.source, ...workspace }) !== claimCustodyHash(fence.source)) throw new TaskClaimCustodyRejectedError("Custody source or registered baseline differs");
+      const workspace = isolated
+        ? await this.taskGitWorkspaces.readIndependentClaimNamespaceOwned({ state: fence, lease: guarded, exactInitial: true })
+        : await this.taskGitWorkspaces.reuseClaimWorkspaceOwned({ taskId: task.id, taskNumber: task.taskNumber, source: fence.source, lease: guarded });
+      if (!isolated && claimCustodyHash({ ...fence.source, ...workspace }) !== claimCustodyHash(fence.source)) throw new TaskClaimCustodyRejectedError("Custody source or registered baseline differs");
       const bound = this.taskBoard.claimBindingForOperation(args.request_id);
       if (bound) {
         if (bound.taskId !== task.id || bound.workspaceId !== context.workspaceId || bound.provider !== context.provider
@@ -1672,6 +1688,10 @@ export class HubMcpService {
   async #claimTask(context, args = {}) {
     const { task_id: taskId, request_id: operationId, dependency_mode: dependencyMode = "skip", dependency_override_reason: dependencyOverrideReason = null } = args;
     const task = this.#task(context, taskId);
+    const namespace = this.workspaceCatalog.claimCustodyNamespaceForTask?.(taskId);
+    if (namespace && context.streamId !== namespace.original.streamId) {
+      throw new TaskClaimCustodyRejectedError("Foreign claim cannot prepare the successor source namespace");
+    }
     const active = this.#currentRun(context);
     if (task.status === "done") throw new Error("Closed Tasks are an archive; claim an open Task");
     if (args.forward_custody_request_id) return this.#consumeClaimCustody(context, args);

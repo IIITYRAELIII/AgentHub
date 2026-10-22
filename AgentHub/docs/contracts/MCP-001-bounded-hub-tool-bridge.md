@@ -721,6 +721,19 @@ nonce-bound pipe, not caller-supplied retirement flags. A lost witness before th
 fence commit refuses; the committed positive certificate survives later collector
 exit. There is no forced stop or automatic independent launch mechanism.
 
+An explicitly scoped RM authorization may instead select
+`claim_custody.admission=isolated-source-v1` in the prepare envelope. The existing
+Task Git owner stages full independent Git objects and hash-verified WIP under a
+new custody epoch outside legacy source/ref/cleanup paths. The existing catalog
+atomically checks the complete Task-keyed SQL inventory and commits the fence;
+persistent data triggers protect current Task/binding/lifecycle/result/receipt
+writers, including old open connections, cached statements and replace/delete
+paths. Only the new canonical store can use a synchronous transaction-scoped
+epoch permit, cleared before commit. Effects before the fence cause refusal;
+late supported legacy writes are rejected or confined to the old checkout.
+The historical UNKNOWN is unchanged. This is the exact authorized historical
+claim scope in ADR-0131, not a default substitute for missing retirement proof.
+
 Only ordinary successor `hub_task_claim` with the declared ID and
 `forward_custody_request_id` assigns the Task. It retains the current executor's
 active/queued-work guard through the SQL commit and uses the existing managed

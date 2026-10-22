@@ -30,9 +30,10 @@ result was compacted. Competing fenced intents for an original or Task revision
 have one winner. The original row is never settled, rewritten or replayed.
 
 Prepare does not transfer the Task or reserve the Workspace. The RM's independent
-turn may run then. Fence requires positive retirement of the complete legacy
-runtime cohort, the real Task lease/process guards, and unchanged source/WIP/
-original/Task pins. Only the successor claim assigns the Task. It retains the
+turn may run then. The default fence requires positive retirement of the complete legacy runtime
+cohort. The explicitly authorized `isolated-source-v1` alternative below instead
+requires independent successor authority. Both retain real Task lease/process
+guards and unchanged source/WIP/original/Task pins. Only the successor claim assigns the Task. It retains the
 general previous-executor active/queued-work guard, freshly repeated inside the
 canonical SQLite claim transaction. No global busy-guard exemption is added.
 
@@ -48,8 +49,9 @@ Changed Task/source/caller/hash pins refuse rather than refresh expected values.
 
 MCP intake/startup, owned prepare-to-claim lease assertions, the SQL claim writer
 BEFORE same-binding baseline backfill, receipt settlement and binding SQL triggers
-all honor the forward fence. A worker from a binary lacking these fences must
-have positively retired before the fence is committed. A dedicated SQL trigger
+all honor the forward fence. A worker from a binary lacking JavaScript fences must either have positively
+retired or be technically unable to write isolated successor authority through
+its supported legacy SQL/Git paths, as specified below. A dedicated SQL trigger
 also preserves the withdrawn original row against late receipt writes.
 
 ## Native retirement boundary
@@ -77,10 +79,72 @@ job name. Before commit, losing the collector gives UNKNOWN/no certificate;
 there is no fabricated fallback. The operator must be independently launched
 outside the old cohort and keep its handle until the fence commit. Ordinary
 agent tool children and a tested COM launch remained in the old job in the actual
-runtime; neither produced an eligible live witness. Production takeover remains
-blocked until a real outside-cohort witness is acquired and separately reviewed
-code is delivered through the existing S2 owner. The native disposable positive
+runtime; neither produced an eligible live witness. This default retirement admission remains blocked for the captured historical
+original: no eligible pre-exit witness was retained. Missing historical proof is
+not repaired by a replacement runtime or a newly created same-name job. The
+explicitly authorized isolation alternative does not manufacture that proof. The native disposable positive
 case is evidence of capability, not that operational admission.
+
+## Explicit independent-source admission
+
+The RM decision of 2026-10-23 authorizes `admission=isolated-source-v1` only for
+the captured S10 claim of the S2-owned direct-delivery Task at revision 24 and
+its exact saved source/authorization. It changes the forward guarantee, not the
+original UNKNOWN. It excludes the historical S8 claim and the separate release
+preparation original. The operation still requires explicit RM authorization,
+exact original caller/tool/hash, expected Task CAS/owner, source and handoff pins;
+it is not automatic recovery of other legacy NULL/unknown receipts.
+
+The same Task Git owner stages a full-object standalone repository under its
+data-owned custody epoch, outside legacy task-worktree write/cleanup paths.
+It fetches immutable source/base object closures without alternates, shared Git,
+linked worktrees, shallow history or hardlink cloning. A retained source ref and
+base ref preserve the complete original history. Bounded declared WIP is copied
+and hash-checked both in the new checkout and a retained snapshot. The old root
+is neither changed nor described as immutable. A late old prepare/checkout or
+cleanup may still affect that old root; it cannot reach the new root/epoch refs.
+No original dependency ensure is repeated. Existing immutable staging intent and
+snapshot records allow exact retry after init/fetch/snapshot interruption;
+foreign/nonempty/aliased roots and changed snapshots refuse.
+
+Before the fence, the existing catalog takes a bounded Task-row inventory across
+actual Task-keyed tables, including secondary checklist/absorption identities.
+The fence transaction rechecks that full hash and Task revision/executor plus
+original effects. A committed intervening effect refuses. Admitted lifecycle or
+linked-action writers must finish/reconcile first. SQLite serializes a concurrent
+writer; a legacy read transaction cannot upgrade a pre-fence stale snapshot.
+The namespace and withdrawal disposition commit together in the existing MCP
+ledger. No assignment occurs until ordinary successor claim under its Task lease.
+
+Persistent SQLite BEFORE triggers fence assignment, binding/baseline, lifecycle,
+result refs, Task metadata/history/checklists and secondary linked identities.
+They cover INSERT/UPDATE/DELETE/UPSERT/REPLACE and preserve the withdrawn original
+and custody row against late receipt writes, deletion and rekeying. These are
+schema fences visible to connections/statements opened before recovery, not only
+new JS epoch checks. The new canonical store captures namespace epochs before
+its asynchronous mutation queue. A synchronous transaction-scoped permit grants
+only the current owner statement and is removed before commit; a legacy writer
+cannot interleave while the permit exists. Rollback/crash cannot publish a grant.
+Historical turn callbacks and result snapshots lacking that epoch are refused.
+This models supported old owner paths, not arbitrary SQL/processes with the same
+OS privileges or an adversary that changes the schema.
+
+Ordinary subsequent prepare/snapshot/Test/result-ref/Await use only the new
+physical source and epoch refs while retaining the registered logical repository
+and publication identity. Native Test imports immutable objects from the private
+repository under the existing dev lease; canonical composition does not take
+old shared Task result refs as current authority. Contour database copies retain
+history but do not gain the production data-root capability. An isolated source
+and its retained WIP are not implicitly retired by generic Task cleanup; artifact
+retirement remains a separate, explicit owning prerequisite.
+
+The first successor claim reuses the verified snapshot, with zero prepare/ensure.
+Its SQL binding/assignment commit and exact lost-event/reply recovery remain with
+the existing claim owner. Two recovery intents have one winner; stale/foreign
+caller/hash/CAS/source refuse. The normal previous-executor busy guard stays in
+force and requires a naturally free short handoff window. Delivery, installed
+capability verification, fresh guards, actual recovery and managed takeover are
+required after independent exact-source acceptance; this ADR grants none itself.
 
 ## Verification and retirement of compatibility
 

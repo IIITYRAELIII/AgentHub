@@ -11,6 +11,7 @@ import { backup, DatabaseSync } from "node:sqlite";
 import { setTimeout as delay } from "node:timers/promises";
 
 import { taskRepositoryKey } from "../../domain/task-git-reference.mjs";
+import { claimCustodyNamespaces, withClaimCustodySqlPermit } from "./claim-custody-fence.mjs";
 
 const WINDOWS_RENAME_RETRY_MS = 5_000;
 
@@ -117,6 +118,16 @@ function sanitizeTestContourDatabase(databaseFile, {
     let remappedJournalRecords = 0;
     let isolatedWorkspaces = 0;
     const detachedGitReferences = [];
+    // Only this already copied database is changed. The immutable custody
+    // descriptor remains historical; a different data root cannot use its
+    // production source capability (the Git owner validates that root).
+    const custody = claimCustodyNamespaces(database).map(state => ({ taskId: state.taskId,
+      epoch: state.namespace.epoch, fenceRequestId: state.requestId, operationId: "isolated-contour-data-copy" }));
+    const detachedReferenceWrite = operation => {
+      const visit = index => index === custody.length ? operation()
+        : withClaimCustodySqlPermit(database, custody[index], () => visit(index + 1));
+      return visit(0);
+    };
     database.exec("BEGIN IMMEDIATE");
     try {
       // A Stream with an empty workingDirectory inherits the Workspace one before
@@ -151,7 +162,7 @@ function sanitizeTestContourDatabase(databaseFile, {
           if (pathInsideOrSame(detached, original)) {
             throw new Error(`Detached Task Git root is inside its production repository: ${original}`);
           }
-          updateReference.run(detached, original);
+          detachedReferenceWrite(() => updateReference.run(detached, original));
           detachedGitReferences.push({ originalProjectRoot: original, detachedProjectRoot: detached });
         }
       }

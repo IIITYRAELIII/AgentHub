@@ -50,6 +50,7 @@ export async function claimCustodyFixture(t, { dataDir = null } = {}) {
   });
   const task = await stores.tasks.create({ text: "Preserve accepted source", bucket: "workspace", workspaceId: workspace.id });
   const workspaces = new TaskGitWorkspaceService({ dataDir: dataDir ?? path.join(root, "data"), recordTiming: () => {},
+    readClaimCustodyNamespace: taskId => stores.catalog.claimCustodyNamespaceForTask(taskId),
     prepareDependencies: async () => { throw new Error("Custody must not repeat dependency preparation"); } });
   const source = await workspaces.prepare({ taskId: task.id, taskNumber: task.taskNumber, projectRoot: repository });
   await mkdir(path.join(source.projectRoot, "WIP"));
@@ -73,8 +74,8 @@ export async function claimCustodyFixture(t, { dataDir = null } = {}) {
     async assertRetired(cohort) { assert.equal(cohort.kind, "primary-runtime-cohort"); if (!retired) throw new Error("Legacy runtime cohort is still alive"); return { retired: true, members: cohort.members }; },
   };
   let runs = [successor, manager].map(s => ({ id: `${s.id}-run`, streamId: s.id, provider: "codex", threadId: `${s.id}-thread`, turnId: `${s.id}-turn`, status: "running" }));
-  const service = (s = stores, startup = false) => {
-    const hub = new HubMcpService({ workspaceCatalog: s.catalog, taskBoard: s.tasks, taskGitWorkspaces: workspaces,
+  const service = (s = stores, startup = false, taskGit = workspaces) => {
+    const hub = new HubMcpService({ workspaceCatalog: s.catalog, taskBoard: s.tasks, taskGitWorkspaces: taskGit,
       claimCustodyRuntime: runtime, workLog: { threadTurns: async () => [] }, secret: "fixture-secret", attachmentDirectory: root,
       reconcilePendingOnStartup: startup, taskLifecycle: {}, releasePreflight: { async preflight() { return {}; } },
       releasePlanner: { async plan() { return { ready: [] }; } }, releaseCompleter: { async completeRelease() { return {}; } } });
