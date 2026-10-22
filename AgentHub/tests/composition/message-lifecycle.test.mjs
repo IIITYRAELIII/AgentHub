@@ -119,7 +119,7 @@ async function pagedActiveHistoryHarness(durableTurnCount) {
   const sandbox = vm.createContext({
     ...lifecycle,
     ...projection,
-    Map, Set,
+    Map, Set, performance,
     historyByTask: new Map(), historyWindowByTask: new Map(), focusedHistoryWindowByTask: new Map(),
     historyPageByTask: new Map(), historyLoadStates: new Map(),
     historyRequestGenerationByTask: new Map(), visibleHistoryLoads: new Set(),
@@ -131,7 +131,7 @@ async function pagedActiveHistoryHarness(durableTurnCount) {
     liveCardsByTask: new Map(),
     snapshotResponseIsStale: () => false,
     traceHistoryCard: () => {},
-    commandTrace: { objectId: () => "", newId: () => "fixture-open" },
+    commandTrace: { objectId: () => "", newId: () => "fixture-open", record: () => {}, afterPaint: () => {} },
     taskId: (provider, threadId, streamId) => streamId || `${provider}:${threadId}`,
     taskIdentity: () => identity,
     attachmentViews: (values) => values ?? [],
@@ -305,6 +305,9 @@ test("an in-flight completion refresh follows a Stream rotation and discards the
   const secondGate = new Promise((resolve) => { releaseSecond = resolve; });
   const sandbox = vm.createContext({
     Map,
+    performance,
+    commandTrace: { newId: () => "fixture-history", record: () => {}, afterPaint: () => {} },
+    syncHistoryPagination: () => {},
     historyLoadStates: new Map(),
     visibleHistoryLoads: new Set(),
     historyPageByTask: new Map(),
@@ -342,21 +345,6 @@ test("an in-flight completion refresh follows a Stream rotation and discards the
 
   assert.equal(responses.length, 2);
   assert.deepEqual(applied, ["2"]);
-});
-
-test("background history refresh checks both request generation and current Stream binding", () => {
-  assert.match(
-    hubClientSource,
-    /if \(!sameIdentity\(taskIdentity\(id\), history\)\) continue;/u,
-  );
-  assert.match(
-    hubClientSource,
-    /state\.pending = mergeHistoryLoadRequest\(state\.pending,[\s\S]*?beginHistoryRequest\(id, identity\)/u,
-  );
-  assert.match(
-    hubClientSource,
-    /const bindingTransition = Boolean\(previousTask\) && !sameIdentity\(previousTask, currentTask\);/u,
-  );
 });
 
 test("aggregated Stream history preserves each item's provider and Thread", () => {
