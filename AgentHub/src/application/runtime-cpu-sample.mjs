@@ -90,6 +90,7 @@ export function createRuntimeCpuSample({ trace, instanceId, createSession = () =
       record("runtime-cpu-sample", "started", common);
       let resolve;
       active = new Promise(done => { resolve = done; });
+      let sampleStarted = null;
       let completed = false;
       const complete = (outcome, profile, interrupted = false) => {
         if (completed) return;
@@ -97,10 +98,13 @@ export function createRuntimeCpuSample({ trace, instanceId, createSession = () =
         if (timer) clearTimeoutImpl(timer);
         timer = null;
         try {
+          const finished = monotonicClock();
+          const elapsed = Math.max(0, finished - started);
+          const sampleWindowMs = sampleStarted == null ? 0 : Math.max(0, finished - sampleStarted);
           const summary = profile ? summarizeRuntimeCpuProfile(profile) : null;
-          const elapsed = Math.max(0, monotonicClock() - started);
           record("runtime-cpu-sample", outcome, { ...common, interrupted,
-            elapsedMs: elapsed, timerOverrunMs: Math.max(0, elapsed - durationMs),
+            elapsedMs: elapsed, sampleWindowMs,
+            timerOverrunMs: interrupted ? 0 : Math.max(0, sampleWindowMs - durationMs),
             ...(summary ? { sampledMs: summary.sampledMs, samples: summary.samples,
               nodes: summary.nodes, truncated: summary.truncated } : {}) }, elapsed);
           for (const [rank, hotspot] of (summary?.hotspots ?? []).entries()) {
@@ -141,6 +145,7 @@ export function createRuntimeCpuSample({ trace, instanceId, createSession = () =
             if (error) { complete("failed"); return; }
             post("Profiler.start", {}, error => {
               if (error) { complete("failed"); return; }
+              sampleStarted = monotonicClock();
               timer = setTimeoutImpl(() => finish?.(), durationMs);
               timer.unref?.();
             });
