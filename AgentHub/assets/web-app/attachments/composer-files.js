@@ -15,8 +15,9 @@
   let database;
   let openingDatabase;
 
-  function measurePreparation(action, operation) {
+  function measurePreparation(action, operation, uploadId) {
     const trace = globalThis.AgentHubCommandTrace;
+    if (uploadId && trace?.upload) return trace.upload(action, operation, { uploadId });
     return trace ? trace.measure("ui-interaction", action, operation) : operation();
   }
 
@@ -164,7 +165,7 @@
 
   async function storeFile(record) {
     const deadline = Date.now() + STORAGE_TIMEOUT_MS;
-    const db = await measurePreparation("attachment-storage-open", () => openDatabase());
+    const db = await measurePreparation("attachment-storage-open", () => openDatabase(), record.uploadId);
     await measurePreparation("attachment-storage-write", () => storageTransaction(db, "readwrite", (store, _setResult, abort) => {
       const cursor = store.openCursor();
       let retainedBytes = 0;
@@ -186,13 +187,16 @@
         } catch (error) { abort(error); }
       };
       cursor.onerror = () => abort(cursor.error ?? storageError("failed"));
-    }, deadline));
-    const stored = await measurePreparation("attachment-storage-read", () => readStoredRecord(db, record.blobId, deadline));
+    }, deadline), record.uploadId);
+    const stored = await measurePreparation("attachment-storage-read", () => readStoredRecord(db, record.blobId, deadline), record.uploadId);
     await measurePreparation("attachment-storage-verify", async () => {
-      if (!await verifiedRecord(stored, descriptor(record)) || Boolean(stored.uploadStarted) !== Boolean(record.uploadStarted)) {
+      if (!await verifiedRecord(stored, descriptor(record))
+        || Boolean(stored.uploadStarted) !== Boolean(record.uploadStarted)
+        || (stored.uploadAttemptId ?? stored.uploadId) !== (record.uploadAttemptId ?? record.uploadId)
+        || (stored.uploadAttemptedAt ?? null) !== (record.uploadAttemptedAt ?? null)) {
         throw storageError("verification");
       }
-    });
+    }, record.uploadId);
     // The committed read has already finished inside its storage deadline.
     // Hashing the returned Blob may be delayed by a suspended/busy page; elapsed
     // wall time cannot invalidate the now verified durable bytes.
@@ -204,18 +208,18 @@
     return value;
   }
 
-  async function prepare(file, metadata) {
+  async function prepare(file, metadata, { uploadId = crypto.randomUUID() } = {}) {
+    if (!UUID.test(uploadId)) throw new TypeError("Invalid upload identity");
     const retainedBytes = [...entries.values()].reduce((total, record) => total + record.size, 0);
     if (retainedBytes + preparingBytes + file.size > STORE_MAX_BYTES || entries.size + preparingFiles >= STORE_MAX_FILES) throw new Error("Локальный лимит вложений исчерпан. Удали ненужные вложения из черновиков.");
     preparingBytes += file.size;
     preparingFiles += 1;
     try {
-      const uploadId = crypto.randomUUID();
       const record = { ...metadata, uploadId, blobId: uploadId, chunkBytes: CHUNK_BYTES,
-        chunkHashes: await measurePreparation("attachment-hash", () => hashesFor(file)), blob: file, storedAt: Date.now() };
+        chunkHashes: await measurePreparation("attachment-hash", () => hashesFor(file), uploadId), blob: file, storedAt: Date.now() };
       let durable = true;
       let failure = null;
-      try { await measurePreparation("attachment-local-save", () => storeFile(record)); }
+      try { await measurePreparation("attachment-local-save", () => storeFile(record), uploadId); }
       catch (error) { durable = false; failure = storageFailureFrom(error); }
       staged.add(uploadId);
       return remember(record, durable, failure);
@@ -258,13 +262,53 @@
       entries.delete(id);
     }
   }
+  async function persistUploadAttempt(record, attempt) {
+    if (record.uploadAttemptWrite) return record.uploadAttemptWrite;
+    record.pendingUploadAttempt = attempt;
+    const write = async () => {
+      if (!record.durable && !record.uploadAttemptPersistenceFailed) {
+        // Memory-only bytes can still be sent, but never claim reload recovery.
+        Object.assign(record, attempt);
+        delete record.pendingUploadAttempt;
+        return;
+      }
+      try {
+        await storeFile({ ...record, ...attempt, dataUrl: undefined, durable: undefined,
+          storageFailure: undefined, pendingUploadAttempt: undefined, uploadAttemptWrite: undefined });
+      } catch (error) {
+        record.durable = false;
+        record.uploadAttemptPersistenceFailed = true;
+        record.storageFailure = storageFailureFrom(error);
+        throw error; // No begin may leave without its durable original-attempt deadline.
+      }
+      record.durable = true;
+      delete record.uploadAttemptPersistenceFailed;
+      record.storageFailure = null;
+      Object.assign(record, attempt);
+      delete record.pendingUploadAttempt;
+    };
+    record.uploadAttemptWrite = write();
+    try { await record.uploadAttemptWrite; }
+    finally { delete record.uploadAttemptWrite; }
+  }
   async function markUploadStarted(value) {
     const record = resolve(value);
-    if (!record || record.uploadStarted) return;
-    record.uploadStarted = true;
-    try { await storeFile({ ...record, dataUrl: undefined, durable: undefined, storageFailure: undefined }); }
-    catch (error) { record.durable = false; record.storageFailure = storageFailureFrom(error); }
+    if (!record || record.uploadStarted && !record.pendingUploadAttempt) return;
+    await persistUploadAttempt(record, record.pendingUploadAttempt ?? {
+      uploadStarted: true, uploadAttemptId: record.uploadAttemptId ?? record.uploadId, uploadAttemptedAt: Date.now(),
+    });
   }
+  async function restartUploadAttempt(value, expectedAttemptId) {
+    const record = resolve(value);
+    if (!record || !record.uploadStarted || (record.uploadAttemptId ?? record.uploadId) !== expectedAttemptId) {
+      throw new Error("Попытка загрузки изменилась. Исходный файл не отправлен повторно.");
+    }
+    await persistUploadAttempt(record, record.pendingUploadAttempt ?? {
+      uploadStarted: true, uploadAttemptId: crypto.randomUUID(), uploadAttemptedAt: Date.now(),
+    });
+  }
+  function storageFailure(value) { return resolve(value)?.storageFailure ?? null; }
 
-  globalThis.AgentHubComposerFiles = Object.freeze({ prepare, resolve, hydrate, serialized, durable, storageFailure, hashesFor, markUploadStarted, settle, prune });
+  globalThis.AgentHubComposerFiles = Object.freeze({ prepare, resolve, hydrate, serialized, durable, storageFailure,
+    hashesFor, markUploadStarted, restartUploadAttempt, settle, prune });
 })();

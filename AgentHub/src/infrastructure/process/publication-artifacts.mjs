@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { cp, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { cp, lstat, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -70,9 +70,33 @@ export function createPublicationArtifactSteps({
   prepareRuntimeImpl,
   installRuntimeImpl,
   verifyRuntimeImpl,
+  runtimePublication = null,
   loadWorker = (file) => import(pathToFileURL(path.join(sourceRoot, "cloudflare-worker", file)).href),
 } = {}) {
-  const artifactIdentity = (identity) => ({ revision: identity.revision, sourceRoot, runtimeRoot, protocol: 1 });
+  const preparedInput = runtimePublication === null ? null : structuredClone(runtimePublication);
+  if (preparedInput !== null && (typeof preparedInput !== "object" || Array.isArray(preparedInput)
+    || Object.keys(preparedInput).sort().join(",") !== "generation,operationId,sourceCommit,version"
+    || typeof preparedInput.operationId !== "string"
+    || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/u.test(preparedInput.operationId)
+    || !Number.isSafeInteger(preparedInput.generation) || preparedInput.generation < 1
+    || typeof preparedInput.sourceCommit !== "string"
+    || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u.test(preparedInput.sourceCommit)
+    || typeof preparedInput.version !== "string"
+    || !/^\d+(?:\.\d+){3}$/u.test(preparedInput.version))) {
+    throw new Error("Invalid frozen runtime publication input");
+  }
+  const artifactIdentity = (identity) => {
+    if (preparedInput && identity.revision !== preparedInput.sourceCommit) {
+      throw new Error("Frozen runtime publication source differs from the candidate");
+    }
+    return { revision: identity.revision, sourceRoot, runtimeRoot, protocol: 1,
+      ...(preparedInput ? { runtimePublication: preparedInput } : {}) };
+  };
+  const runtimeReceipt = ({ releaseId, releaseRoot, manifestHash }) => ({
+    schema: 1, phase: "PREPARED", operationId: preparedInput.operationId,
+    generation: preparedInput.generation, sourceCommit: preparedInput.sourceCommit,
+    releaseId, version: preparedInput.version, releaseRoot, manifestSha256: manifestHash,
+  });
   // Keep paths short enough for Wrangler's nested Windows temporary files;
   // the complete identity is still checked in every manifest.
   const directory = (identity, component) => path.join(runtimeRoot, "publication-artifacts", sha(JSON.stringify(artifactIdentity(identity))).slice(0, 32), component);
@@ -134,6 +158,12 @@ export function createPublicationArtifactSteps({
       throw new Error("Prepared runtime manifest changed");
     }
     await verifyRuntimeManifest(releaseRoot, releaseId);
+    const manifest = await json(path.join(releaseRoot, "runtime-manifest.json"));
+    if (preparedInput && (manifest.publicationRevision !== preparedInput.sourceCommit
+      || manifest.sourceRoot !== path.resolve(sourceRoot)
+      || (manifest.releaseVersion ?? manifest.version) !== preparedInput.version)) {
+      throw new Error("Prepared runtime differs from the frozen publication input");
+    }
     return { runtimeRoot, releaseRoot, releaseId };
   }
 
@@ -189,7 +219,7 @@ export function createPublicationArtifactSteps({
       });
     }
     if (has("Сборка runtime-релиза")) {
-      await ensure(identity, "runtime", async () => {
+      await ensure(identity, "runtime", async (output) => {
         const releaseId = `publication-${sha(JSON.stringify(artifactIdentity(identity))).slice(0, 32)}`;
         const releaseRoot = runtimeReleaseDirectory(runtimeRoot, releaseId);
         const existing = await json(path.join(releaseRoot, "runtime-manifest.json")).catch(absent);
@@ -198,9 +228,26 @@ export function createPublicationArtifactSteps({
             throw new Error("Existing prepared runtime belongs to another candidate");
           }
           await verifyRuntimeManifest(releaseRoot, releaseId);
-        } else await prepareRuntimeImpl({ sourceRoot, runtimeRoot, releaseId, publicationRevision: identity.revision,
-          mobileAssetsRoot: has("Сборка Agent Hub Mobile") ? mobileRoot : null });
-        return { releaseId, manifestHash: sha(await readFile(path.join(releaseRoot, "runtime-manifest.json"))) };
+        } else {
+          // A body without its manifest is partial evidence, never a new build.
+          if (await lstat(releaseRoot).catch(absent)) throw new Error("Existing prepared runtime is incomplete");
+          await prepareRuntimeImpl({ sourceRoot, runtimeRoot, releaseId, publicationRevision: identity.revision,
+            ...(preparedInput ? { expectedReleaseVersion: preparedInput.version } : {}),
+            mobileAssetsRoot: has("Сборка Agent Hub Mobile") ? mobileRoot : null });
+        }
+        const manifest = await json(path.join(releaseRoot, "runtime-manifest.json"));
+        const manifestHash = sha(await readFile(path.join(releaseRoot, "runtime-manifest.json")));
+        if (preparedInput) {
+          if (manifest.publicationRevision !== preparedInput.sourceCommit
+            || manifest.sourceRoot !== path.resolve(sourceRoot)
+            || (manifest.releaseVersion ?? manifest.version) !== preparedInput.version) {
+            throw new Error("Prepared runtime differs from the frozen publication input");
+          }
+          await verifyRuntimeManifest(releaseRoot, releaseId);
+          await writeFile(path.join(output, "prepared-runtime.json"),
+            `${JSON.stringify(runtimeReceipt({ releaseId, releaseRoot, manifestHash }), null, 2)}\n`, "utf8");
+        }
+        return { releaseId, manifestHash };
       });
       await runtimeArtifact(identity);
     }
@@ -275,6 +322,21 @@ print(json.dumps(values, ensure_ascii=False))`;
   }
 
   return {
+    // Derive the packager's input from the SAME verified runtime artifact and
+    // original operation/generation. It is part of that immutable payload,
+    // not a second preparation/allocation or acceptance ledger.
+    async preparedRuntimeReceipt(identity) {
+      if (!preparedInput) throw new Error("Frozen runtime publication input is required");
+      const runtime = await runtimeArtifact(identity);
+      const artifact = await read(identity, "runtime");
+      const receiptFile = path.join(payload(identity, "runtime"), "prepared-runtime.json");
+      const bytes = await readFile(receiptFile);
+      const receipt = JSON.parse(bytes);
+      if (JSON.stringify(receipt) !== JSON.stringify(runtimeReceipt({ ...runtime, manifestHash: artifact.result.manifestHash }))) {
+        throw new Error("Prepared runtime receipt differs from the original artifact");
+      }
+      return { receipt, receiptFile, receiptSha256: sha(bytes) };
+    },
     async steps(steps, identity) {
       const old = await journal?.read?.();
       if (old?.identity?.revision === identity.revision && !old.identity.artifactProtocol

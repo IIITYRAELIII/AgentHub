@@ -35,6 +35,27 @@ function codexTurnService(overrides = {}) {
   });
 }
 
+test("pending naming failure is a pre-provider rejection, preserving the exact run and message", async () => {
+  const failure = new Error("native name unconfirmed");
+  failure.code = "HUB_THREAD_NAMING_PENDING";
+  let effects = 0;
+  let completed = 0;
+  const service = codexTurnService({
+    ensureThreadNamed: async (reference) => {
+      assert.deepEqual(reference, { provider: "codex", threadId: "exact-thread" }); throw failure;
+    },
+    sendRpc: async () => { effects += 1; },
+    completeRun: async () => { completed += 1; },
+  });
+  const run = { threadId: "exact-thread", clientUserMessageId: "original-message", collaborationMode: "default" };
+  await assert.rejects(service.launch(run, '{"kind":"interstream"}'), (error) => error === failure);
+  assert.equal(effects, 0);
+  assert.equal(completed, 1);
+  assert.equal(run.threadId, "exact-thread");
+  assert.equal(run.clientUserMessageId, "original-message");
+  assert.equal(run.turnId, undefined);
+});
+
 test("Codex turn service steers one exact active turn", async () => {
   const calls = [];
   const service = codexTurnService({

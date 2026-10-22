@@ -7,8 +7,9 @@ import { attachmentUploadLimits } from "../../domain/attachment-upload-policy.mj
 
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/u;
 const HASH = /^[a-f0-9]{64}$/u;
-function failure(message, statusCode = 400) {
-  return Object.assign(new Error(message), { statusCode });
+const TOMBSTONE_MS = 7 * 24 * 60 * 60 * 1000;
+function failure(message, statusCode = 400, state = null) {
+  return Object.assign(new Error(message), { statusCode, ...(state ? { state } : {}) });
 }
 const digest = (body) => createHash("sha256").update(body).digest("hex");
 const owners = new Map();
@@ -100,14 +101,22 @@ export class AttachmentUploadService {
     await rename(temporary, path.join(directory, "index.json"));
   }
   async #expire(user, records) {
-    const expired = records.filter((record) => record.expiresAt <= this.#now());
-    if (!expired.length) return records;
+    const now = this.#now();
+    const expired = records.filter((record) => record.status !== "expired" && record.expiresAt <= now);
+    const purged = records.filter((record) => record.status === "expired" && record.tombstoneUntil <= now);
+    if (!expired.length && !purged.length) return records;
     for (const record of expired) {
       await rm(path.join(this.#directory(user), this.#id(record.uploadId)), { recursive: true, force: true });
     }
-    const active = records.filter((record) => record.expiresAt > this.#now());
-    await this.#save(user, active);
-    return active;
+    const retained = records.filter((record) => record.expiresAt > now || record.status === "expired" && record.tombstoneUntil > now)
+      .map((record) => record.expiresAt > now ? record : {
+        uploadId: record.uploadId, status: "expired", received: [], expiresAt: record.expiresAt,
+        tombstoneUntil: record.tombstoneUntil ?? now + TOMBSTONE_MS,
+      });
+    retained.push(...expired.map((record) => ({ uploadId: record.uploadId, status: "expired", received: [],
+      expiresAt: record.expiresAt, tombstoneUntil: now + TOMBSTONE_MS })));
+    await this.#save(user, retained);
+    return retained;
   }
   async #cleanupNextUser() {
     if (!this.#cursor) {
@@ -151,6 +160,7 @@ export class AttachmentUploadService {
     const records = await this.#expire(user, await this.#load(user));
     const record = records.find((item) => item.uploadId === id);
     if (!record) throw failure("Upload not found or expired", 404);
+    if (record.status === "expired") throw failure("Upload expired", 410, "expired");
     return { records, record };
   }
   begin(userId, metadata) {
@@ -160,18 +170,28 @@ export class AttachmentUploadService {
       const name = String(metadata?.name ?? "");
       const type = attachmentContentType(name, metadata?.type);
       const size = Number(metadata?.size);
+      const attemptedAtMs = metadata?.attemptedAtMs;
       if (!name || name.length > 1024 || !Number.isSafeInteger(size) || size < 1) throw failure("Invalid upload metadata");
       if (size > this.#limits.maxBytes) throw failure("Attachment exceeds upload limit", 413);
+      const now = this.#now();
+      if (attemptedAtMs !== undefined && (!Number.isSafeInteger(attemptedAtMs) || attemptedAtMs < 1
+        || attemptedAtMs > now + 5 * 60_000)) throw failure("Invalid upload attempt time");
       const records = await this.#expire(user, await this.#load(user));
       const previous = records.find((record) => record.uploadId === uploadId);
       if (previous) {
+        if (["expired", "cancelled"].includes(previous.status)) throw failure("Upload no longer available", 410, previous.status);
         if (previous.name !== name || previous.type !== type || previous.size !== size) throw failure("Upload metadata conflict", 409);
+        if (previous.attemptedAtMs !== attemptedAtMs) throw failure("Upload attempt conflict", 409);
         return this.#verifiedView(user, previous);
       }
-      if (records.length >= this.#limits.maxUploads || records.reduce((total, item) => total + (item.status === "cancelled" ? 0 : item.size), 0) + size > this.#limits.maxTotalBytes) {
+      if (attemptedAtMs !== undefined && now >= attemptedAtMs + this.#limits.ttlMs) throw failure("Upload attempt expired", 410, "expired");
+      const active = records.filter((item) => item.status === "uploading" || item.status === "ready");
+      if (active.length >= this.#limits.maxUploads || active.reduce((total, item) => total + item.size, 0) + size > this.#limits.maxTotalBytes) {
         throw failure("Upload quota exceeded", 429);
       }
-      const record = { uploadId, name, type, size, status: "uploading", received: [], expiresAt: this.#now() + this.#limits.ttlMs };
+      const record = { uploadId, name, type, size, status: "uploading", received: [], attemptedAtMs,
+        expiresAt: Math.min(now + this.#limits.ttlMs,
+          attemptedAtMs === undefined ? Infinity : attemptedAtMs + this.#limits.ttlMs) };
       records.push(record);
       await this.#save(user, records);
       return this.#view(record);

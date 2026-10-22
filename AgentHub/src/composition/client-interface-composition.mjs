@@ -30,6 +30,7 @@ const BUG_REPORT_SCAN_INTERVAL_MS = 5 * 60_000;
 
 export async function createClientInterfaceComposition({
   config,
+  recordCommandTrace = null,
   token,
   botMenu,
   statusHeaderDirectory,
@@ -156,6 +157,7 @@ export async function createClientInterfaceComposition({
     menuButtonRequests: miniAppMenuButtonRequests,
     loadGatewaySettings: loadDirectGatewaySettings,
     DirectGatewayControllerClass: DirectGatewayController,
+    recordCommandTrace,
     MiniAppPublisherClass: MiniAppPublisher,
     QuickTunnelControllerClass: QuickTunnelController,
     controlHandler: handleDesktopControl,

@@ -116,7 +116,152 @@ export function selectedCompositionFilePlan(raw) {
   return files;
 }
 
-export async function prepareSelectedCompositionFiles({ root, journalRoot, files, readBlob }) {
+// Only Git's built-in, bounded EOL serialization is supported. These reads
+// never invoke clean/smudge, ident or encoding transformations.
+export async function readSelectedCheckoutAuthority(git, paths) {
+  // The Git caller owns one process-tree guard; its children are sequential.
+  const rawConfig = await git(["config", "--null", "--get-regexp", "^core\\.(autocrlf|eol|safecrlf)$"],
+    { acceptableExitCodes: [1] });
+  const rawAttrs = paths.length ? await git(["check-attr", "-z", "text", "eol", "filter",
+    "working-tree-encoding", "ident", "--", ...paths]) : "";
+  const config = { autocrlf: null, eol: null, safecrlf: null };
+  for (const entry of String(rawConfig).split("\0").filter(Boolean)) {
+    const split = entry.indexOf("\n");
+    const key = entry.slice(0, split).replace(/^core\./u, "");
+    if (split < 0 || !Object.hasOwn(config, key)) throw new Error("Selected checkout config is malformed");
+    config[key] = entry.slice(split + 1);
+  }
+  const fields = String(rawAttrs).split("\0");
+  if (fields.at(-1) === "") fields.pop();
+  const attributes = paths.map((name) => ({ path: name }));
+  if (fields.length !== paths.length * 15) throw new Error("Selected checkout attributes are incomplete");
+  for (let i = 0; i < fields.length; i += 3) {
+    const row = attributes.find((entry) => entry.path === fields[i]);
+    if (!row || Object.hasOwn(row, fields[i + 1])) throw new Error("Selected checkout attributes are ambiguous");
+    row[fields[i + 1]] = fields[i + 2];
+  }
+  return { version: 1, platform: process.platform, config, attributes };
+}
+
+function checkoutBytes(bytes, authority, name) {
+  const attrs = authority.attributes.find((row) => row.path === name);
+  const { autocrlf, eol, safecrlf } = authority.config;
+  if (!attrs || ![null, "true", "false", "input"].includes(autocrlf)
+      || ![null, "native", "lf", "crlf"].includes(eol)
+      || ![null, "true", "false", "warn"].includes(safecrlf)
+      || !["set", "unset", "unspecified", "auto"].includes(attrs.text)
+      || !["unspecified", "lf", "crlf"].includes(attrs.eol)
+      || ["filter", "ident", "working-tree-encoding"].some((key) =>
+        !["unspecified", "unset"].includes(attrs[key]))) {
+    throw new Error(`Selected checkout has unsupported transformation: ${name}`);
+  }
+  if (attrs.text === "unset") return bytes;
+  const explicit = attrs.text === "set" || attrs.eol !== "unspecified";
+  if (!explicit && attrs.text !== "auto" && !["true", "input"].includes(autocrlf)) return bytes;
+  if (!explicit && bytes.subarray(0, 8000).includes(0)) return bytes;
+  // Git's auto mode preserves existing CR-containing blobs; forced text with
+  // such a blob would require a normalization decision outside this protocol.
+  if (bytes.includes(13)) {
+    if (!explicit) return bytes;
+    throw new Error(`Selected checkout requires unsupported raw text normalization: ${name}`);
+  }
+  if (bytes.includes(0) || bytes.some((value) => (value < 32 && value !== 9 && value !== 10) || value === 127)) {
+    throw new Error(`Selected checkout text classification is unsupported: ${name}`);
+  }
+  const outputEol = attrs.eol !== "unspecified" ? attrs.eol
+    : autocrlf === "true" ? "crlf" : autocrlf === "input" ? "lf"
+      : eol && eol !== "native" ? eol : authority.platform === "win32" ? "crlf" : "lf";
+  return outputEol === "crlf" ? Buffer.from(bytes.toString("latin1").replace(/\n/gu, "\r\n"), "latin1") : bytes;
+}
+
+function checkedBlob(bytes, id, name) {
+  if (!Buffer.isBuffer(bytes) || bytes.length > MAX_FILE_BYTES || !SHA.test(id)
+      || createHash("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest("hex") !== id) {
+    throw new Error(`Selected composition pinned blob changed or exceeds its bound: ${name}`);
+  }
+  return bytes;
+}
+
+// Old clean CRLF can precede an LF attribute. Capture that bounded clean
+// serialization separately from the NEW checkout format, without filters.
+function normalizedCrlfBytes(bytes, authority, name) {
+  checkoutBytes(bytes, authority, name);
+  const attrs = authority.attributes.find((row) => row.path === name);
+  const normalizesText = attrs.text !== "unset" && (attrs.text === "set"
+    || attrs.text === "auto" || attrs.eol !== "unspecified"
+    || ["true", "input"].includes(authority.config.autocrlf));
+  if (!normalizesText || bytes.includes(13) || bytes.includes(0)
+      || bytes.some((value) => (value < 32 && value !== 9 && value !== 10) || value === 127)) return null;
+  return Buffer.from(bytes.toString("latin1").replace(/\n/gu, "\r\n"), "latin1");
+}
+
+async function assertCheckout(record, readCheckout) {
+  if (typeof readCheckout !== "function"
+      || JSON.stringify(await readCheckout(record.files.map((file) => file.path))) !== JSON.stringify(record.checkout)) {
+    throw new Error("Selected composition checkout authority changed");
+  }
+}
+
+// Historical release evidence validates the sealed logical/serialization record,
+// not a later rolling dev checkout. Live application/recovery adds physical and
+// current-authority checks below; this reader cannot materialize anything.
+export async function verifySelectedCompositionRecord(record, { root, journalRoot, files, readBlob } = {}) {
+  if (record.version !== 2 || typeof root !== "string" || path.resolve(record.root) !== path.resolve(root)
+      || (journalRoot && path.resolve(record.journalRoot) !== path.resolve(journalRoot))
+      || !Array.isArray(files) || files.length > MAX_FILES || typeof readBlob !== "function"
+      || record.checkout?.version !== 1 || !["win32", "linux", "darwin"].includes(record.checkout.platform)
+      || JSON.stringify(record.files.map(({ path, kind, oldBlob, newBlob }) => ({ path, kind, oldBlob, newBlob })))
+        !== JSON.stringify(files)) {
+    throw new Error("Selected composition materialization version or Git plan is unsupported");
+  }
+  for (const [index, file] of record.files.entries()) {
+    filePath(record.root, file.path);
+    if (file.temp !== path.join(record.journalRoot, `new-${index}`)
+        || file.backup !== path.join(record.journalRoot, `old-${index}`)) {
+      throw new Error("Selected composition materialization paths changed");
+    }
+    const next = checkedBlob(await readBlob(file.newBlob), file.newBlob, file.path);
+    const staged = checkoutBytes(next, record.checkout, file.path);
+    if (digest(next) !== file.newGitSha256 || digest(staged) !== file.newSha256) {
+      throw new Error("Selected composition staged serialization changed");
+    }
+    if (file.kind === "M") {
+      const old = checkedBlob(await readBlob(file.oldBlob), file.oldBlob, file.path);
+      const oldPhysical = file.oldSerialization === "raw" ? old
+        : file.oldSerialization === "checkout" ? checkoutBytes(old, record.checkout, file.path)
+          : file.oldSerialization === "normalized-crlf" ? normalizedCrlfBytes(old, record.checkout, file.path) : null;
+      if (!oldPhysical || digest(old) !== file.oldGitSha256 || digest(oldPhysical) !== file.oldSha256) {
+        throw new Error("Selected composition old serialization changed");
+      }
+    }
+  }
+  return record;
+}
+
+export async function verifySelectedCompositionFiles(record, binding = {}) {
+  await verifySelectedCompositionRecord(record, binding);
+  await assertCheckout(record, binding.readCheckout);
+  for (const file of record.files) {
+    await assertBytes(file.temp, file.newSha256, "staged");
+    if (file.kind === "M") {
+      if (binding.phase === "before_cas") await assertBytes(filePath(record.root, file.path), file.oldSha256, "old tracked");
+      if (await existing(file.backup)) await assertBytes(file.backup, file.oldSha256, "backup");
+    } else if (binding.phase === "before_cas" && await existing(filePath(record.root, file.path))) {
+      throw new Error("Selected composition added path is already occupied");
+    }
+    if (binding.phase === "applied") {
+      const target = filePath(record.root, file.path);
+      await assertParents(record.root, target);
+      if (!await sameFile(target, file.temp)) throw new Error("Selected composition applied target ownership changed");
+      await assertBytes(target, file.newSha256, "owned target");
+      if (file.kind === "M" && !await existing(file.backup)) throw new Error("Selected composition applied backup missing");
+    }
+  }
+  await assertCheckout(record, binding.readCheckout);
+  return record;
+}
+
+export async function prepareSelectedCompositionFiles({ root, journalRoot, files, readBlob, readCheckout }) {
   if (!Array.isArray(files) || files.length > MAX_FILES || typeof readBlob !== "function") {
     throw new Error("Selected composition file plan is invalid");
   }
@@ -131,18 +276,22 @@ export async function prepareSelectedCompositionFiles({ root, journalRoot, files
     await discardIncompletePreparation(journalRoot, files.length);
     await mkdir(journalRoot, { recursive: false });
   }
+  const checkout = await readCheckout(files.map((file) => file.path));
   const prepared = [];
   for (const [index, file] of files.entries()) {
     const target = filePath(worktree, file.path);
     await assertParents(worktree, target);
-    const newBytes = await readBlob(file.newBlob);
+    const newGit = checkedBlob(await readBlob(file.newBlob), file.newBlob, file.path);
+    const newBytes = checkoutBytes(newGit, checkout, file.path);
     if (!Buffer.isBuffer(newBytes) || newBytes.length > MAX_FILE_BYTES) {
       throw new Error(`Selected composition blob exceeds its bound: ${file.path}`);
     }
     const temp = path.join(journalRoot, `new-${index}`);
     const backup = path.join(journalRoot, `old-${index}`);
     await writeExclusive(temp, newBytes);
-    const oldBytes = file.kind === "M" ? await readBlob(file.oldBlob) : null;
+    const oldBytes = file.kind === "M" ? checkedBlob(await readBlob(file.oldBlob), file.oldBlob, file.path) : null;
+    let oldPhysical = oldBytes;
+    let oldSerialization = "raw";
     if (oldBytes && (!Buffer.isBuffer(oldBytes) || oldBytes.length > MAX_FILE_BYTES)) {
       throw new Error(`Selected composition old blob exceeds its bound: ${file.path}`);
     }
@@ -151,15 +300,27 @@ export async function prepareSelectedCompositionFiles({ root, journalRoot, files
       throw new Error(`Selected composition added path is already occupied: ${file.path}`);
     }
     if (file.kind === "M") {
-      if (!current?.isFile() || current.isSymbolicLink()) {
+      if (!current?.isFile() || current.isSymbolicLink() || current.size > MAX_FILE_BYTES) {
         throw new Error(`Selected composition tracked path shape changed: ${file.path}`);
       }
-      await assertBytes(target, digest(oldBytes), "old tracked");
+      oldPhysical = await readFile(target);
+      const converted = checkoutBytes(oldBytes, checkout, file.path);
+      const normalizedCrlf = normalizedCrlfBytes(oldBytes, checkout, file.path);
+      if (oldPhysical.equals(oldBytes)) oldSerialization = "raw";
+      else if (oldPhysical.equals(converted)) oldSerialization = "checkout";
+      else if (normalizedCrlf && oldPhysical.equals(normalizedCrlf)) {
+        oldSerialization = "normalized-crlf";
+      } else {
+        throw new Error(`Selected composition old tracked bytes changed: ${target}`);
+      }
+      await assertBytes(target, digest(oldPhysical), "old tracked");
     }
-    prepared.push({ ...file, oldSha256: oldBytes ? digest(oldBytes) : null,
+    prepared.push({ ...file, oldSerialization, oldGitSha256: oldBytes ? digest(oldBytes) : null,
+      newGitSha256: digest(newGit), oldSha256: oldPhysical ? digest(oldPhysical) : null,
       newSha256: digest(newBytes), temp, backup });
   }
-  const record = { version: 1, root: worktree, journalRoot: path.resolve(journalRoot), files: prepared };
+  const record = { version: 2, root: worktree, journalRoot: path.resolve(journalRoot), checkout, files: prepared };
+  await verifySelectedCompositionFiles(record, { root: worktree, files, readBlob, readCheckout, phase: "before_cas" });
   const recordPath = path.join(journalRoot, "record.json");
   const temporaryRecord = path.join(journalRoot, `record.json.tmp-${randomUUID()}`);
   await writeExclusive(temporaryRecord, Buffer.from(`${JSON.stringify(record)}\n`, "utf8"));
@@ -173,9 +334,9 @@ export async function prepareSelectedCompositionFiles({ root, journalRoot, files
   return record;
 }
 
-export async function readSelectedCompositionFiles(journalRoot, expected = null) {
+export async function readSelectedCompositionFiles(journalRoot, expected = null, binding = {}) {
   const record = JSON.parse(await readFile(path.join(journalRoot, "record.json"), "utf8"));
-  if (record.version !== 1 || path.resolve(record.journalRoot) !== path.resolve(journalRoot)
+  if (record.version !== 2 || path.resolve(record.journalRoot) !== path.resolve(journalRoot)
       || !Array.isArray(record.files) || record.files.length > MAX_FILES
       || (expected && JSON.stringify(record) !== JSON.stringify(expected))) {
     throw new Error("Selected composition materialization identity changed");
@@ -190,13 +351,15 @@ export async function readSelectedCompositionFiles(journalRoot, expected = null)
     }
     await assertBytes(file.temp, file.newSha256, "staged");
   }
-  return record;
+  return verifySelectedCompositionFiles(record, binding);
 }
 
-export async function applySelectedCompositionFiles(record, { beforeLink = null } = {}) {
+export async function applySelectedCompositionFiles(record, { beforeLink = null, ...binding } = {}) {
+  await verifySelectedCompositionFiles(record, binding);
   for (const file of record.files) {
     const target = filePath(record.root, file.path);
     await assertParents(record.root, target);
+    await assertCheckout(record, binding.readCheckout);
     await assertBytes(file.temp, file.newSha256, "staged");
     if (file.kind === "M" && !await existing(file.backup)) {
       await assertBytes(target, file.oldSha256, "old tracked");
@@ -208,6 +371,7 @@ export async function applySelectedCompositionFiles(record, { beforeLink = null 
     if (file.kind === "M") await assertBytes(file.backup, file.oldSha256, "backup");
     if (!await existing(target)) {
       if (beforeLink) await beforeLink(file, target);
+      await assertCheckout(record, binding.readCheckout);
       await link(file.temp, target); // Atomic EEXIST refusal on a late collision.
     }
     if (!await sameFile(target, file.temp)) {
@@ -217,9 +381,11 @@ export async function applySelectedCompositionFiles(record, { beforeLink = null 
   }
 }
 
-export async function rollbackSelectedCompositionFiles(record) {
+export async function rollbackSelectedCompositionFiles(record, binding = {}) {
+  await verifySelectedCompositionFiles(record, binding);
   const foreign = [];
   for (const file of [...record.files].reverse()) {
+    await assertCheckout(record, binding.readCheckout);
     const target = filePath(record.root, file.path);
     const present = await existing(target);
     if (present) {

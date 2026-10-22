@@ -88,3 +88,16 @@ test("TaskObserverController pauses its owned timer", () => {
   state.controller.pause(run);
   assert.equal(run.observerTimer, null);
 });
+
+test("observer preserves uncertain ownership and clears its display only from exact active evidence", async () => {
+  const run = { turnId: "exact", observer: false, activityUnknown: true };
+  const pending = fixture({ snapshot: { turnId: "exact", activityUnknown: true } });
+  await pending.controller.poll(run);
+  assert.equal(run.activityUnknown, true);
+  const active = fixture({ snapshot: { turnId: "exact", running: true } });
+  await active.controller.poll(run);
+  assert.equal(run.activityUnknown, false);
+  const missing = fixture({ snapshot: null });
+  await missing.controller.poll(run);
+  assert.equal(run.activityUnknown, true);
+});

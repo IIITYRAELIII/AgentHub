@@ -61,7 +61,7 @@ export class RunCoordinator {
     hasDeferredBacklog = () => false,
     isMaintenanceActive = () => false,
     isManagedMaintenanceActive = isMaintenanceActive,
-    isRestartPending = () => false,
+    isRuntimeStopping = () => false,
     scheduleDeferred = () => {},
     setProgressStage = () => {},
     noteRunActivity = () => {},
@@ -94,7 +94,7 @@ export class RunCoordinator {
     this.hasDeferredBacklog = hasDeferredBacklog;
     this.isMaintenanceActive = isMaintenanceActive;
     this.isManagedMaintenanceActive = isManagedMaintenanceActive;
-    this.isRestartPending = isRestartPending;
+    this.isRuntimeStopping = isRuntimeStopping;
     this.scheduleDeferred = scheduleDeferred;
     this.setProgressStage = setProgressStage;
     this.noteRunActivity = noteRunActivity;
@@ -139,7 +139,7 @@ export class RunCoordinator {
   }
 
   admissionBarrier(target, options = {}) {
-    if (this.isRestartPending()) return "runtime-restart";
+    if (this.isRuntimeStopping()) return "runtime-restart";
     return this.maintenanceBarrier(target, options);
   }
 
@@ -259,6 +259,13 @@ export class RunCoordinator {
   } = {}) {
     if (!target?.provider) {
       throw new Error("run target requires provider");
+    }
+    if (this.isRuntimeStopping()) {
+      return this.queue(input, temporaryFiles, {
+        target,
+        clientUserMessageId: target.clientUserMessageId,
+        reason: "runtime-restart",
+      });
     }
     this.notifyInputStart(target);
     if (this.isMaintenanceActive(target)) {
@@ -520,7 +527,8 @@ export class RunCoordinator {
     const admissionBarrier = this.admissionBarrier(target, {
       exactManagedSteer: followUpMode === "steer" && Boolean(existingRun),
     });
-    if (admissionBarrier && !(followUpMode === "steer" && existingRun)) {
+    if (admissionBarrier && (admissionBarrier === "runtime-restart"
+      || !(followUpMode === "steer" && existingRun))) {
       return this.queue(input, attachments, {
         target,
         executionOwner: TASK_EXECUTION_OWNERS.HUB,
@@ -591,10 +599,13 @@ export class RunCoordinator {
   }
 
   steer(request) {
-    return this.serialize(request.target, () => this.steerUnlocked(request));
+    return this.withPendingAdmission(request.target, () => (
+      this.serialize(request.target, () => this.steerUnlocked(request))
+    ));
   }
 
   async steerUnlocked({ input, target, clientUserMessageId }) {
+    if (this.isRuntimeStopping()) throw runtimeRestartPendingError();
     const existingRun = this.activeRun(target);
     const expectedRunId = String(target?.steerTargetRunId ?? "").trim();
     const expectedTurnId = String(target?.steerTargetTurnId ?? "").trim();
@@ -699,16 +710,16 @@ export class RunCoordinator {
     followUpMode = "",
   }) {
     const existingRun = this.activeRun(target);
-    const maintenanceBarrier = this.maintenanceBarrier(target, {
+    const admissionBarrier = this.admissionBarrier(target, {
       exactManagedSteer: followUpMode === "steer" && Boolean(existingRun),
     });
-    if (maintenanceBarrier) {
+    if (admissionBarrier) {
       return this.queue(input, attachments, {
         target,
         executionOwner: TASK_EXECUTION_OWNERS.HUB,
         clientUserMessageId,
         clientProjectionIntent,
-        reason: "context-maintenance",
+        reason: admissionBarrier,
       });
     }
     const externalActivity = existingRun

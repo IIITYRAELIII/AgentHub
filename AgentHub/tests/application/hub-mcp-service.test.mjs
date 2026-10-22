@@ -4,8 +4,12 @@ import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import test from "node:test";
+import { createHash } from "node:crypto";
+import { createReleaseOperation } from "../../src/domain/release-operation.mjs";
+import { WorkspaceReleaseOperationAdapter } from "../../src/application/workspace-release-operation-adapter.mjs";
 
 import { HubMcpService } from "../../src/application/hub-mcp-service.mjs";
+import { measureTaskOperation, withTaskOperationTiming } from "../../src/infrastructure/process/task-operation-timing.mjs";
 import { TaskIntegrationConflictError, TaskIntegrationRejectedError, TaskAwaitIntegrationError, TaskWithdrawalBusyError } from "../../src/application/task-lifecycle-service.mjs";
 import { ReleaseCandidateFrozenError, TaskAbsorptionCompositionError } from "../../src/domain/task-board-task.mjs";
 import { TaskBoardService } from "../../src/application/task-board-service.mjs";
@@ -41,11 +45,15 @@ function claimOnlyTaskGit(overrides = {}) {
   return service;
 }
 
+import { readPreparationSourceClosure, ReleasePreparationRejectedError } from "../../src/application/release-preparation-admission.mjs";
+import { preparationEnvelope } from "../helpers/release-preparation-envelope.mjs";
+
 async function fixture(context, {
   releaseWorkflowEnabled = false,
   taskGitWorkspacesFactory = null,
   taskOperationReconciliation = null,
   releaseOperations = null,
+  measureOperation = measureTaskOperation,
 } = {}) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-mcp-"));
   context.after(() => rm(directory, { recursive: true, force: true }));
@@ -154,7 +162,8 @@ async function fixture(context, {
     operation.interstreamContentHash = contentHash;
     return operation;
   };
-  workspaceCatalog.completeMcpOperation = (requestId, result) => {
+  workspaceCatalog.completeMcpOperation = (requestId, result, { validate = null } = {}) => {
+    validate?.();
     const operation = operations.get(requestId);
     if (["hub_stream_message_send", "hub_task_start", "hub_task_reassign"].includes(operation.toolName)
       && !operation.interstreamContentHash) {
@@ -163,6 +172,7 @@ async function fixture(context, {
     Object.assign(operations.get(requestId), {
       status: "succeeded", operationStatus: "succeeded", receiptState: "succeeded", result,
     });
+    return operations.get(requestId);
   };
   workspaceCatalog.failMcpOperation = (requestId, error) => {
     Object.assign(operations.get(requestId), {
@@ -202,6 +212,7 @@ async function fixture(context, {
   workspaceCatalog.runMutation = (operation, options) => workspaceMutations.run(operation, options);
   workspaceCatalog.mutationDiagnostics = () => workspaceMutations.diagnostics();
   const taskBoard = {
+    selectedCompositionForRelease: () => null,
     snapshot: () => [...tasks.values()].map((task) => ({ ...task, attachments: task.attachments ?? [] })),
     task: (id) => tasks.get(id) ?? null,
     create: ({ text, sourceDetails = {}, bucket = "backlog", workspaceId = null }) => {
@@ -419,6 +430,7 @@ async function fixture(context, {
       })
     : defaultTaskGitWorkspaces;
   const service = new HubMcpService({
+    measureOperation,
     workspaceCatalog, taskBoard, workLog, attachmentDirectory, secret: "secret",
     taskGitWorkspaces, taskOperationReconciliation, releaseOperations,
     releasePlanner: {
@@ -529,6 +541,132 @@ async function fixture(context, {
   };
 }
 
+async function preparationFixture(t) {
+  const setup = await fixture(t, { releaseWorkflowEnabled: true });
+  const envelope = preparationEnvelope(setup.projectRoot);
+  envelope.sourceClosureHash = (await readPreparationSourceClosure()).hash;
+  setup.tasks.get("task-current").workflowStatus = "awaiting_implementation";
+  let calls = 0;
+  setup.service.releasePreflight.prepareCurrentAwaitSet = async ({ validate, commitPrepared, requestId }) => {
+    calls += 1;
+    assert.equal(setup.operations.get(requestId).status, "pending", "intake precedes composer");
+    await validate();
+    return commitPrepared({ planRevision: envelope.planRevision, taskIds: ["task-current"],
+      releaseCandidates: [{ repositoryRoot: setup.projectRoot, preReleaseHead: "8".repeat(40),
+        tree: envelope.repositories[0].approvedTree, baseCommit: envelope.repositories[0].approvedBaseCommit,
+        manifestHash: "9".repeat(64), manifest: { preflightRequestId: requestId } }] });
+  };
+  return { ...setup, envelope, calls: () => calls,
+    args: { context_token: setup.token, request_id: "prepare-original", preparation: envelope } };
+}
+
+test("preparation-only genuine RM admission persists exact terminal and duplicate original does not compose again", async (t) => {
+  const setup = await preparationFixture(t);
+  const before = structuredClone(setup.tasks.get("task-current"));
+  const first = await setup.service.call("hub_release_prepare", setup.args);
+  assert.equal(first.requestId, "prepare-original");
+  assert.equal(first.kind, "preparation-only");
+  assert.deepEqual(await setup.service.call("hub_release_prepare", setup.args), first);
+  assert.equal(setup.calls(), 1);
+  assert.deepEqual(setup.tasks.get("task-current"), before);
+  assert.equal(setup.releaseCalls.length, 0);
+  const receipt = await setup.service.call("hub_release_prepare_get", { context_token: setup.token,
+    preparation_request_id: first.requestId, expected_arguments_hash: first.argumentsHash });
+  assert.equal(receipt.status, "succeeded");
+  assert.deepEqual(receipt.result, first);
+  await assert.rejects(setup.service.call("hub_release_prepare", { ...setup.args,
+    preparation: { ...setup.envelope, planRevision: "changed" } }), /another operation/);
+  assert.equal(setup.calls(), 1);
+});
+
+test("preparation-only non-RM and forged caller refuse before receipt or effects", async (t) => {
+  const setup = await preparationFixture(t);
+  const nonRM = setup.service.contextToken({ provider: "codex", threadId: "thread-2" });
+  await assert.rejects(setup.service.call("hub_release_prepare", { ...setup.args, context_token: nonRM }), /Release Manager/);
+  await assert.rejects(setup.service.call("hub_release_prepare", { ...setup.args, context_token: "forged" }));
+  assert.equal(setup.operations.size, 0);
+  assert.equal(setup.calls(), 0);
+});
+
+for (const stale of ["row", "source"]) test(`preparation-only stale ${stale} pins refuse without composer`, async (t) => {
+  const setup = await preparationFixture(t);
+  if (stale === "row") setup.tasks.get("task-current").revision += 1;
+  else setup.envelope.sourceClosureHash = "0".repeat(64);
+  await assert.rejects(setup.service.call("hub_release_prepare", setup.args), { code: "RELEASE_PREPARATION_REJECTED" });
+  assert.equal(setup.operations.get("prepare-original").status, "failed");
+  assert.equal(setup.calls(), 0);
+});
+
+test("preparation-only response loss after durable terminal reads original without current checkpoint inference", async (t) => {
+  const setup = await preparationFixture(t);
+  const compose = setup.service.releasePreflight.prepareCurrentAwaitSet;
+  setup.service.releasePreflight.prepareCurrentAwaitSet = async (request) => {
+    await compose(request);
+    throw new Error("transport response lost");
+  };
+  const result = await setup.service.call("hub_release_prepare", setup.args);
+  assert.equal(setup.operations.get("prepare-original").status, "succeeded");
+  assert.deepEqual(await setup.service.call("hub_release_prepare", setup.args), result);
+  assert.equal(setup.calls(), 1);
+  await assert.rejects(setup.service.call("hub_release_prepare_get", { context_token: setup.token,
+    preparation_request_id: "prepare-original", expected_arguments_hash: "0".repeat(64) }), /identity/);
+});
+
+test("preparation-only ambiguous terminal write preserves UNKNOWN and exact readback cannot replay", async (t) => {
+  const setup = await preparationFixture(t);
+  setup.workspaceCatalog.completeMcpOperation = () => { throw new Error("durable write outcome unavailable"); };
+  await assert.rejects(setup.service.call("hub_release_prepare", setup.args), { code: "AWAIT_ACCEPTANCE_UNKNOWN" });
+  const original = setup.operations.get("prepare-original");
+  assert.equal(original.status, "unknown");
+  const receipt = await setup.service.call("hub_release_prepare_get", { context_token: setup.token,
+    preparation_request_id: original.requestId, expected_arguments_hash: original.argumentsHash });
+  assert.equal(receipt.status, "unknown");
+  assert.equal(receipt.result, null);
+  await assert.rejects(setup.service.call("hub_release_prepare", setup.args), /unknown/);
+  assert.equal(setup.calls(), 1);
+});
+
+test("preparation-only original tracing survives rejection without arguments or secrets", async (t) => {
+  const setup = await preparationFixture(t);
+  const spans = [];
+  setup.service.taskGitWorkspaces.withOperationTrace = (identity, operation) => (
+    withTaskOperationTiming({ ...identity, record: (span) => spans.push(span) }, operation)
+  );
+  setup.envelope.sourceClosureHash = "0".repeat(64);
+  await assert.rejects(setup.service.call("hub_release_prepare", setup.args));
+  assert.ok(spans.some((span) => span.stage === "mcp:admission" && span.phase === "end"));
+  assert.ok(spans.some((span) => span.stage === "preparation:pins" && span.outcome === "error"));
+  assert.ok(spans.some((span) => span.stage === "trace-summary"));
+  assert.ok(spans.every((span) => span.operationId === "prepare-original"));
+  assert.equal(JSON.stringify(spans).includes(setup.token), false);
+  assert.equal(JSON.stringify(spans).includes("sourceClosureHash"), false);
+});
+
+test("preparation-only final row CAS refusal is definitive before terminal receipt", async (t) => {
+  const setup = await preparationFixture(t);
+  const original = setup.workspaceCatalog.completeMcpOperation;
+  setup.workspaceCatalog.completeMcpOperation = (...args) => {
+    setup.tasks.get("task-current").revision += 1;
+    return original(...args);
+  };
+  await assert.rejects(setup.service.call("hub_release_prepare", setup.args), ReleasePreparationRejectedError);
+  assert.equal(setup.operations.get("prepare-original").status, "failed");
+});
+
+test("MCP admission timing injection retains one context and original receipt", async t => {
+  const { service, token, operations } = await fixture(t, { measureOperation: measureTaskOperation });
+  const events = [];
+  const args = { context_token: token, task_id: "task-current", title: "timed", request_id: "timed-admission" };
+  await withTaskOperationTiming({ operationId: args.request_id, taskId: args.task_id, record: event => events.push(event) },
+    () => service.call("hub_task_update", args));
+  assert.equal(operations.get(args.request_id).status, "succeeded");
+  assert.ok(events.some(event => event.stage === "mcp:admission" && event.phase === "end" && event.outcome === "ok"));
+  assert.ok(events.every(event => event.operationId === args.request_id && event.taskId === args.task_id));
+  const prior = JSON.stringify(operations.get(args.request_id));
+  await service.call("hub_task_update", args);
+  assert.equal(JSON.stringify(operations.get(args.request_id)), prior);
+});
+
 test("a proved conflict is a terminal MCP failure and exact retry preserves its diagnostics", async (t) => {
   const { service, token, operations } = await fixture(t, { releaseWorkflowEnabled: true });
   let calls = 0;
@@ -541,7 +679,7 @@ test("a proved conflict is a terminal MCP failure and exact retry preserves its 
   const args = { context_token: token, task_id: "task-current", status: "testing", request_id: "conflict" };
   await assert.rejects(service.call("hub_task_status_update", args), /app.txt/);
   assert.equal(operations.get("conflict").status, "failed");
-  await assert.rejects(service.call("hub_task_status_update", args), /dev restored/);
+  await assert.rejects(service.call("hub_task_status_update", args), /dev unchanged/);
   assert.equal(calls, 1);
 });
 
@@ -1155,8 +1293,8 @@ test("Task status and unknown-operation schemas expose the exact squash transfer
   }
 });
 
-test("Release Manager routes selected composition preview and exact confirm to one owner", async (context) => {
-  const { service, token, streamWorkingDirectory, tasks } = await fixture(context, {
+test("Release Manager cannot reopen fresh selected-materialization preview or confirmation after native cutover", async (context) => {
+  const { service, token, tasks, operations } = await fixture(context, {
     releaseWorkflowEnabled: true,
   });
   const calls = [];
@@ -1174,24 +1312,16 @@ test("Release Manager routes selected composition preview and exact confirm to o
     selected_proof_bundle_sha256: "a".repeat(64),
     selected_proof_commit: "b".repeat(40),
   };
-  await service.call("hub_task_status_update", { ...common, request_id: "selected-preview" });
-  await service.call("hub_task_status_update", { ...common, request_id: "selected-confirm",
+  const before = structuredClone(tasks.get("task-current"));
+  await assert.rejects(service.call("hub_task_status_update", { ...common, request_id: "selected-preview" }),
+    { code: "TASK_NATIVE_GIT_REQUIRED" });
+  await assert.rejects(service.call("hub_task_status_update", { ...common, request_id: "selected-confirm",
     selected_preview_request_id: "selected-preview",
-    expected_selected_preview_hash: "f".repeat(64) });
-  assert.equal(calls.length, 2);
-  assert.deepEqual(calls.map(({ authority, operationId, expectedPreviewHash }) => ({
-    authority, operationId, expectedPreviewHash,
-  })), [
-    { authority: { workspaceId: "workspace-1", streamId: "stream-1", provider: "codex",
-      threadId: "thread-1", proofRequestId: "selected-preview" },
-    operationId: "selected-preview", expectedPreviewHash: null },
-    { authority: { workspaceId: "workspace-1", streamId: "stream-1", provider: "codex",
-      threadId: "thread-1", proofRequestId: "selected-preview" },
-    operationId: "selected-confirm", expectedPreviewHash: "f".repeat(64) },
-  ]);
-  assert.equal(calls[0].projectRoot, streamWorkingDirectory);
-  assert.equal(calls[0].bundlePath, common.selected_proof_bundle_path);
-  assert.equal(calls[1].bundleSha256, common.selected_proof_bundle_sha256);
+    expected_selected_preview_hash: "f".repeat(64) }), { code: "TASK_NATIVE_GIT_REQUIRED" });
+  assert.equal(calls.length, 0);
+  assert.deepEqual(tasks.get("task-current"), before);
+  assert.equal(operations.get("selected-preview").status, "failed");
+  assert.equal(operations.get("selected-confirm").status, "failed");
 });
 
 test("Release Manager forwards one complete hash-confirmed squash transfer", async (context) => {
@@ -1602,6 +1732,7 @@ test("HubMcpService exposes cursor events and one durable release operation owne
   });
   assert.equal(ack.operationId, "release-operation-1");
   assert.equal(calls[0][1].authorization.validationMode, "full");
+  assert.equal(Object.hasOwn(calls[0][1].authorization, "releaseMetadata"), false);
   const snapshot = await service.call("hub_release_get", {
     context_token: token, operation_id: ack.operationId,
   });
@@ -1614,6 +1745,74 @@ test("HubMcpService exposes cursor events and one durable release operation owne
   const tools = service.tools().map((tool) => tool.name);
   assert.equal(tools.includes("hub_release_preflight"), false);
   assert.equal(tools.includes("hub_release_complete"), false);
+});
+
+test("HubMcpService forwards original-addressed reviewed-main recovery through the same authenticated continuation", async context => {
+  const calls = [];
+  const { service, token } = await fixture(context, { releaseOperations: {
+    get: operationId => ({ operation: { operationId, workspaceId: "workspace-1", state: "failed", revision: 699 } }),
+    continue: async (...args) => { calls.push(args); return { accepted: true, operationId: args[0] }; },
+    setEventDelivery() {},
+  } });
+  const reviewedMain = { expectedRevision: 699, approvedRepositories: [{ projectRoot: "D:/repo",
+    approvedLocalMainCommit: "a".repeat(40), approvedOriginMainCommit: "a".repeat(40) }] };
+  const input = { context_token: token, request_id: "original-main-rebind", operation_id: "original", reviewed_main: reviewedMain };
+  assert.equal((await service.call("hub_release_continue", input)).accepted, true);
+  assert.deepEqual(calls, [["original", { requestId: input.request_id, reviewedMain }]]);
+});
+
+test("HubMcpService carries exact release metadata through the domain and byte-checking composition owner", async (context) => {
+  let admitted;
+  const { service, token, projectRoot } = await fixture(context, { releaseOperations: {
+    start: (input) => {
+      admitted = createReleaseOperation({ ...input, operationId: input.requestId,
+        runnerVersion: "test", createdAt: "2026-10-18T00:00:00.000Z" });
+      return { accepted: true, operationId: admitted.operationId };
+    },
+    get() {}, continue() {}, setEventDelivery() {},
+  } });
+  const bytes = Buffer.from("release notes\r\n", "utf8");
+  const sourcePath = path.join(projectRoot, "CHANGELOG.md");
+  await writeFile(sourcePath, bytes);
+  const releaseMetadata = {
+    sourcePath, byteLength: bytes.length,
+    rawSha256: createHash("sha256").update(bytes).digest("hex"),
+    canonicalSha256: createHash("sha256").update("release notes\n").digest("hex"),
+  };
+  const args = {
+    context_token: token, request_id: "release-metadata", task_ids: ["task-current"],
+    validation_mode: "full", approved_targets: [{ targetId: "production", kind: "agent-hub-publication" }],
+    release_metadata: releaseMetadata,
+  };
+  const schema = service.tools().find((item) => item.name === "hub_release_run").inputSchema;
+  await service.call("hub_release_run", args);
+  assert.deepEqual(admitted.authorization.releaseMetadata, releaseMetadata);
+  assert.deepEqual(schema.properties.release_metadata.required,
+    ["sourcePath", "byteLength", "rawSha256", "canonicalSha256"]);
+  assert.equal(schema.required.includes("release_metadata"), false);
+  assert.equal(admitted.streamId, "stream-1");
+  assert.equal(admitted.threadId, "thread-1");
+  let preparations = 0;
+  const adapter = new WorkspaceReleaseOperationAdapter({
+    releasePreflight: {
+      prepareOperationGeneration: async ({ changelogContent }) => {
+        preparations += 1;
+        assert.deepEqual(changelogContent, bytes);
+        return { releaseCandidates: [], planRevision: "plan" };
+      },
+      validateOperationGeneration() {}, operationSelection() {}, withAwaitTransition() {},
+    },
+    publication: { publish: () => assert.fail("composition cannot publish"), readback() {} },
+    finalization: { finalize: () => assert.fail("composition cannot finalize") },
+  });
+  await adapter.compose({ operation: admitted, generation: 1 });
+  await writeFile(sourcePath, Buffer.from("RELEASE notes\r\n")); // same length, different digest
+  await assert.rejects(adapter.compose({ operation: admitted, generation: 2 }), /metadata artifact identity changed/u);
+  assert.equal(preparations, 1);
+  await assert.rejects(service.call("hub_release_run", {
+    ...args, request_id: "release-malformed-metadata",
+    release_metadata: { ...releaseMetadata, rawSha256: "invalid" },
+  }), /release metadata digest is invalid/u);
 });
 
 test("HubMcpService restricts release execution to Release Manager Streams", async (context) => {
@@ -1638,6 +1837,10 @@ test("HubMcpService restricts release execution to Release Manager Streams", asy
 
 test("Release Manager reconciliation forwards one exact unknown operation and requires confirmation", async (context) => {
   const calls = [];
+  const omittedNativeArguments = { initialNativeTest: undefined, nativeResolutionReview: undefined,
+    selectedBundlePath: undefined, selectedBundleSha256: undefined, selectedPublishedResolution: undefined,
+    selectedAbsorptionHandoff: undefined, selectedProofCommit: undefined, selectedPreviewRequestId: undefined,
+    expectedSelectedPreviewHash: undefined };
   const { service, token } = await fixture(context, {
     taskOperationReconciliation: {
       reconcileUnknownWorkflow: async (value) => {
@@ -1661,6 +1864,7 @@ test("Release Manager reconciliation forwards one exact unknown operation and re
     resolved: true, outcome: "succeeded",
   });
   assert.deepEqual(calls, [{
+    ...omittedNativeArguments,
     workspaceId: "workspace-1",
     taskId: "task-current",
     operationRequestId: "original-status-request",
@@ -1692,6 +1896,7 @@ test("Release Manager reconciliation forwards one exact unknown operation and re
     resolved: true, outcome: "succeeded",
   });
   assert.deepEqual(calls[1], {
+    ...omittedNativeArguments,
     workspaceId: "workspace-1",
     taskId: "task-current",
     operationRequestId: "original-status-request",
@@ -1720,6 +1925,7 @@ test("Release Manager reconciliation forwards one exact unknown operation and re
     resolved: true, outcome: "succeeded",
   });
   assert.deepEqual(calls[2], {
+    ...omittedNativeArguments,
     workspaceId: "workspace-1",
     taskId: "task-current",
     operationRequestId: "original-status-request",
@@ -2265,6 +2471,16 @@ test("hub_stream_history projects active content and deterministic lifecycle sta
   assert.equal(repeated.cursor, first.cursor);
   assert.equal(repeated.revision, first.revision);
 
+  firstRun.activityUnknown = true;
+  const unknown = await service.call("hub_stream_history", {
+    context_token: token, stream_id: "stream-3", cursor: first.cursor,
+  });
+  assert.equal(unknown.state, "unknown");
+  assert.equal(unknown.turns[0].active, false);
+  assert.equal(unknown.turns[0].status, "unknown");
+  assert.equal(unknown.turns[0].canStop, true);
+  firstRun.activityUnknown = false;
+
   historyRecordsByThread.set("thread-3", [{
     provider: "codex", threadId: "thread-3", turnId: "turn-foreign-1",
     title: "Persisted too early", prompt: "Inspect foreign state", body: "Persisted partial",
@@ -2693,4 +2909,14 @@ test("HubMcpService rejects non-file attachment sources", async (context) => {
     }),
     /regular file/u,
   );
+});
+
+test("HubMcpService exposes unconfirmed managed ownership as unknown and keeps the Stream reserved", async context => {
+  const { service, token } = await fixture(context);
+  service.setActiveRuns(() => [{ id: "uncertain", provider: "codex", threadId: "thread-1", status: "running", activityUnknown: true }]);
+  const active = await service.call("hub_active_runs_list", { context_token: token });
+  assert.equal(active.runs[0].status, "unknown");
+  assert.equal(active.runs[0].activityUnknown, true);
+  const streams = await service.call("hub_parallel_streams_list", { context_token: token });
+  assert.equal(streams.streams.find(s => s.id === "stream-1").available, false);
 });

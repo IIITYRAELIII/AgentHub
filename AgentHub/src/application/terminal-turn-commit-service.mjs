@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import { normalizeProviderRunTerminalStatus } from "../domain/provider-run-terminal.mjs";
+import { providerTurnAcceptance } from "../domain/task-runs.mjs";
 
 import {
   consistentInterstreamRecordIdentity,
@@ -166,6 +168,14 @@ export class TerminalTurnCommitService {
     }
     const finalAnswer = String(completion.finalAnswer ?? "").trim();
     const durableCompletion = structuredClone(completion);
+    if (run?.providerStart) {
+      // Accounting retains its original admission timestamp. Command delivery
+      // keeps the separately observed provider acceptance, including unknown time.
+      const exactRun = run.provider === completion.provider && run.threadId === completion.threadId
+        && run.turnId === completion.turnId;
+      durableCompletion.providerAcceptedAt = exactRun ? providerTurnAcceptance(run).acceptedAt : null;
+    }
+    durableCompletion.status = normalizeProviderRunTerminalStatus(completion.status) ?? completion.status;
     const completionRootMessage = (Array.isArray(durableCompletion.userMessages)
       ? durableCompletion.userMessages
       : []).find((message) => message?.role === "user") ?? null;
@@ -195,6 +205,7 @@ export class TerminalTurnCommitService {
       text: body,
       updatedAt: completion.completedAt,
       startedAt: completion.startedAt || null,
+      status: durableCompletion.status,
     };
     const commandId = normalizeInterstreamClientUserMessageId(
       run?.clientUserMessageId ?? completion.clientUserMessageId,
@@ -211,7 +222,7 @@ export class TerminalTurnCommitService {
         provider: completion.provider,
         threadId: completion.threadId,
         turnId: completion.turnId,
-        status: completion.status,
+        status: durableCompletion.status,
         finalAnswer,
         usageIdentity: usageIdentity(completion),
         lastMessage,
@@ -277,7 +288,7 @@ export class TerminalTurnCommitService {
       status,
       finalAnswer: answer,
       usageIdentity: current.usageIdentity,
-      lastMessage: answer ? { text: answer, updatedAt: completedAt,
+      lastMessage: answer ? { text: answer, updatedAt: completedAt, status,
         startedAt: completion.startedAt ?? null } : null,
       payload: { ...structuredClone(current.payload), completion, history },
       expectedTerminalRevision: current.terminalRevision,
@@ -448,7 +459,8 @@ export class TerminalTurnCommitService {
       history.clientUserMessageId ?? completion.clientUserMessageId ?? "",
     );
     if (!clientUserMessageId) return false;
-    const normalizedStatus = String(terminal.status ?? completion.status ?? "completed").trim().toLowerCase();
+    const normalizedStatus = normalizeProviderRunTerminalStatus(terminal.status ?? completion.status)
+      ?? String(terminal.status ?? completion.status ?? "completed").trim().toLowerCase();
     const commandState = normalizedStatus === "completed"
       ? "completed"
       : normalizedStatus.includes("cancel") || normalizedStatus === "aborted" ? "cancelled" : "failed";
@@ -472,6 +484,14 @@ export class TerminalTurnCommitService {
           terminalRevision: terminal.terminalRevision,
           status: terminal.status,
           runId: history.id ?? null,
+          ...(Object.hasOwn(completion, "providerAcceptedAt") ? {
+            providerAcceptedAt: completion.providerAcceptedAt,
+            deliveredAt: completion.providerAcceptedAt,
+            admittedAt: completion.startedAt ?? history.startedAt ?? null,
+          } : {}),
+          startedAt: Object.hasOwn(completion, "providerAcceptedAt")
+            ? completion.providerAcceptedAt : completion.startedAt ?? history.startedAt ?? null,
+          completedAt: completion.completedAt ?? null,
         },
       });
       if (outcome?.conflict) {

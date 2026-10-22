@@ -65,7 +65,9 @@ export function createRuntimeOrchestrationComposition({
     rateLimitTelemetry,
     providerLogin,
     usageSyncAuto,
+    storageRetention,
     taskSyncStore,
+    taskDiffs,
     messagePins,
     workspaceCatalogStore,
     preTurnInstructions,
@@ -186,6 +188,7 @@ export function createRuntimeOrchestrationComposition({
 
   const providerRuntimeWiring = ports.providerRuntime.bind(createProviderRuntimeWiring({
     observation: {
+      ensureThreadNamed: provider.hubThreadNaming.recoverThreadNaming,
       dataDir: config.dataDir,
       recordingContourRoot: config.testContourRecording?.root ?? null,
       claudeOutputPollIntervalMs,
@@ -274,6 +277,7 @@ export function createRuntimeOrchestrationComposition({
     scheduleBugReportScan,
     rateLimitTelemetry,
     usageSyncAuto,
+    storageRetention,
     testContourJournalSync,
     providerLogin,
   });
@@ -331,6 +335,7 @@ export function createRuntimeOrchestrationComposition({
 
   const restartWiring = ports.runtimeRestart.bind(createRuntimeRestartWiring({
     taskRuns,
+    runCoordinator,
     agentProviders,
     backgroundJobs,
     streamMaintenance,
@@ -341,6 +346,7 @@ export function createRuntimeOrchestrationComposition({
       getRestartRequest: () => hostState.restartRequest,
       setRestartRequest: (value) => hostState.setRestartRequest(value),
       completeRestartOperation: (operationId) => restartRequestService.complete(operationId),
+      checkpointRestartOperation: (...args) => restartRequestService.checkpoint(...args),
       failRestartOperation: (error) => restartRequestService.fail(undefined, error),
       isStopping: () => hostState.stopping,
       setStopping: (value) => hostState.setStopping(value),
@@ -367,9 +373,11 @@ export function createRuntimeOrchestrationComposition({
       botMenu,
       journalStartupReady,
       runtimeStateCoordinator,
+      storageRetention,
       telegramDeliveryService,
       mediaController,
       taskSyncStore,
+      taskDiffs,
       workspaceCatalogStore,
       deliveryOutbox,
       backgroundJobStore,

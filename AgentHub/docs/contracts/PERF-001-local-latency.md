@@ -1,5 +1,47 @@
 # PERF-001 — Local command latency
 
+## Bounded background storage work
+
+Policy v1 admits at most three artifact units per pass and checks a cooperative
+20-second budget between units, with bounded metadata/head lists/file size and
+persisted discovery progress. It does not abandon an in-flight destructive child
+or claim that hashing a large admitted transport has a hard 20-second deadline.
+Owner discovery reads a flat artifact directory; no per-turn recursive scan of
+archives, history or user work is introduced. Runtime health exposes cached
+status only. Filesystem free-space observations remain distinct from logical
+byte counts and can include concurrent allocations. See ADR-0126.
+
+Policy v2 runtime-body batches remove at most 64 files/256 MiB and check a
+cooperative ten-second deletion budget after bounded metadata preflight. Asset
+bytes are hashed only for the admitted batch, through retained deletion handles;
+there is no repeated whole-body hash before every batch. The original partial
+operation remains pending between batches, and shutdown drains its actual child.
+The shared installation lease is scoped to the physical runtime root, outside
+ordinary provider/message admission. Install no longer sweeps prepared bodies.
+
+Repeated journal projection may reuse a verified rendering only within the
+existing usage worker lifetime. Its bounded scalar receipt is not source
+authority: the current SQLite journal revision/index, clean dirty set, exact
+scope/version/device settings, freshly resolved Workspace bindings, freshly read
+account catalog and generation-fenced facts revision must still match. Workspace
+resolution and unknown-Thread assignment are never skipped. A single SQLite
+read snapshot rechecks journal/facts/dirty and pricing/image markers after
+asynchronous callbacks, both when consuming and establishing a reuse receipt.
+Marker drift requires a canonical full rebuild with the original revision CAS;
+pre-callback version observations never authorize reuse.
+Rolling-window future-record/24h boundaries and local midnight expire reuse;
+backward or invalid clocks fail closed. Restart, a failed/stale render and changed
+inputs reconstruct through the canonical renderer and existing revision CAS.
+The receipt retains hashes/scalars only, not another HTML or facts cache.
+Matching facts are checked through their indexed revision/generation metadata;
+no facts are hydrated on this path, including when the existing facts payload
+cache declined retention at its byte limit. A miss still uses that bounded cache
+and the canonical renderer. Content-free retained byte/count scalars are not
+payloads and do not widen its retention limit.
+Content-free reuse-check/window and render measurements distinguish eliminated
+render work from preserved ledger reads, callbacks and queue waits. A no-dirty
+result alone never establishes unchanged projection inputs.
+
 ## Bounded Codex trace and fact projections
 
 Codex rollout preview retains at most 256 groups, 128 activities per group,
@@ -66,7 +108,40 @@ shares the already scheduled durable write instead of serializing and fsyncing
 the complete bounded cache again. A changed value or eviction-order change is
 still persisted, and a failed write remains retryable with the same content.
 
+Admission resets an absent or already-empty diff without promoting an empty
+cache entry or evicting another Stream's diff. This reset still awaits the
+existing write fence and persists any dirty remembered updates; a real stale
+diff is cleared durably. Ordinary cache set/eviction ordering is unchanged.
+The existing restart drain flushes remembered diffs. Persistence errors propagate
+through admission instead of becoming successful diagnostics.
+Content-free child spans retain the original command ID through diff encoding,
+queue wait, open/write/fsync/rename, settlement and an unchanged persistence
+fence; eligibility and the pre-dispatch durable save have separate spans.
+These elapsed spans do not classify filesystem or callback wait as CPU work.
+
 ## Unified performance evidence
+
+Restart readiness checkpoints use the original restart operation ID and bounded
+content-free blocker run IDs/counts, pending-admission state and request time.
+Changed observations distinguish waiting from ready/cutover; unchanged repeated
+checks do not flood traces. Existing command IDs retain durable intake, dispatch
+and provider-acceptance timings. These observations neither close admission nor
+attribute inclusive waiting time to CPU/network work. Sink failure cannot change
+restart or message delivery, and source/fixture timings are not live latency proof.
+
+Runtime snapshot projection and compaction resolve only their referenced command
+IDs through the existing ledger. They do not hydrate unrelated active or hot
+terminal records before filtering. Full startup/reconnect overlay remains a
+canonical recovery read. This eliminates unnecessary enumeration, not mandatory
+run persistence or its error/recovery fence. Original-command measurements must
+still distinguish snapshot encoding, worker/queue waits and durable writes; a
+file size or inclusive wall duration alone does not identify CPU or fsync cost.
+
+Local submission, durable Hub acceptance, preparation/queueing and exact provider
+acceptance are distinct visible boundaries. Rendering a durable ACK does not
+wait for full snapshot/history synchronization. A preparing run may own admission
+and cancellation without being labelled a running provider. First text and usage
+enrichment are not prerequisites for displaying an accepted provider turn.
 
 Client interactions, navigation, control ACKs, request and rendering durations,
 long main-thread tasks, startup, terminal-outbox phases and existing runtime
@@ -76,6 +151,23 @@ telemetry accepts bounded batches with allowlisted content-free fields through
 the existing authenticated transport; it cannot persist message bodies, DOM
 text, request URLs or arbitrary error text. Telemetry requests do not trace
 themselves. Backpressure drops diagnostics, never application commands.
+For the public Worker upload transport, the local SQLite worker is not in the
+request path: attachment-only failure spans use a separate authenticated,
+bounded Journal Durable Object trace owner. A 24-hour browser cache retries
+those spans after endpoint loss without changing upload or command outcomes.
+The Worker trace is queried by exact upload ID and is not merged into local
+runtime health statistics. See MSG-002 and ADR-0083.
+
+Selected-Stream visibility diagnostics retain the original snapshot request
+identity across the server's bounded run-source/gate observation, the client's
+accepted or rejected snapshot decision, and its later rendered viewport state.
+The client records only document identity and predecessor, selected provider,
+Thread, Stream, turn and command IDs, run/provider-start presence, exact final
+revision, model-link state, and whether the live card is in view, offscreen or
+absent. A code marker identifies a loaded client path only when release evidence
+maps it to one reviewed immutable asset digest; a server release ID alone is
+not evidence of client bytes. A missing trace can mean a page close, failed
+transport or diagnostic backpressure, not an idle provider.
 
 A blocking operation records a started marker before awaiting and a terminal
 measurement with the same `operationSpanId`. Missing terminal measurements are

@@ -21,7 +21,7 @@ function noLinks(file, missing = false) {
 }
 
 export class RecordingContourProvider {
-  constructor({ root, provider }) {
+  constructor({ root, provider, readOnly = false }) {
     if (!root || !path.isAbsolute(root) || !["codex", "claude"].includes(provider)) throw new Error("Explicit recording root and provider are required");
     this.root = path.resolve(root);
     noLinks(this.root);
@@ -33,8 +33,8 @@ export class RecordingContourProvider {
     this.provider = provider;
     const databaseFile = path.join(this.root, "recording-provider.sqlite");
     for (const suffix of ["", "-wal", "-shm"]) noLinks(`${databaseFile}${suffix}`, true);
-    this.db = new DatabaseSync(databaseFile);
-    this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=1000;
+    this.db = new DatabaseSync(databaseFile, { readOnly });
+    if (!readOnly) this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=1000;
       CREATE TABLE IF NOT EXISTS threads(provider TEXT, id TEXT, value_json TEXT NOT NULL, PRIMARY KEY(provider,id));
       CREATE TABLE IF NOT EXISTS thread_names(provider TEXT, thread_id TEXT, name TEXT NOT NULL, PRIMARY KEY(provider,thread_id));
       CREATE TABLE IF NOT EXISTS turns(provider TEXT, thread_id TEXT, id TEXT, value_json TEXT NOT NULL, PRIMARY KEY(provider,thread_id,id));
@@ -46,7 +46,8 @@ export class RecordingContourProvider {
         this.paths.map(thread.cwd, "project");
         const stored = this.db.prepare("SELECT value_json FROM threads WHERE provider=? AND id=?").get(provider, thread.id);
         if (stored && fingerprint(JSON.parse(stored.value_json)) !== fingerprint(thread)) throw new Error("Seeded Thread identity changed");
-        this.db.prepare("INSERT OR IGNORE INTO threads VALUES(?,?,?)").run(provider, thread.id, JSON.stringify(thread));
+        if (readOnly && !stored) throw new Error("Recording Thread seed is unavailable");
+        if (!readOnly) this.db.prepare("INSERT OR IGNORE INTO threads VALUES(?,?,?)").run(provider, thread.id, JSON.stringify(thread));
       }
     } catch (error) { this.db.close(); throw error; }
   }
@@ -115,4 +116,33 @@ export class RecordingContourProvider {
     const record = this.db.prepare("SELECT canonical_json,execution_json,turn_id FROM commands WHERE provider=? AND client_id=?").get(this.provider, clientUserMessageId);
     return record ? { canonical: JSON.parse(record.canonical_json), execution: JSON.parse(record.execution_json), turnId: record.turn_id } : null;
   }
+  recordedTurn(threadId, turnId) {
+    const thread = this.thread(threadId);
+    const turn = thread.turns.find((value) => value.id === identity(turnId, "turn ID"));
+    if (!turn) return null;
+    const records = this.db.prepare("SELECT * FROM commands WHERE provider=? AND thread_id=? AND turn_id=?")
+      .all(this.provider, threadId, turnId);
+    if (records.length !== 1) throw new Error("Recorded turn lacks one exact command");
+    const row = records[0];
+    const canonical = JSON.parse(row.canonical_json);
+    const seed = JSON.parse(this.db.prepare("SELECT value_json FROM threads WHERE provider=? AND id=?")
+      .get(this.provider, threadId).value_json);
+    if (fingerprint(canonical) !== row.fingerprint || canonical.provider !== this.provider
+      || canonical.threadId !== threadId || canonical.streamId !== thread.streamId
+      || canonical.projectRoot !== seed.cwd
+      || canonical.clientUserMessageId !== row.client_id || turn.clientUserMessageId !== row.client_id
+      || fingerprint(this.paths.executionView(canonical)) !== fingerprint(JSON.parse(row.execution_json))
+      || !["inProgress", "completed", "failed", "interrupted"].includes(turn.status)) {
+      throw new Error("Recorded turn command identity changed");
+    }
+    return turn;
+  }
+}
+
+// Read the isolated adapter's canonical receipt; captured production rollouts
+// and an arbitrary App Server status never supply this evidence.
+export function readRecordingContourCodexTurn(root, run) {
+  const provider = new RecordingContourProvider({ root, provider: "codex", readOnly: true });
+  try { return provider.recordedTurn(run.threadId, run.turnId); }
+  finally { provider.close(); }
 }

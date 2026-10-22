@@ -3,6 +3,7 @@ import path from "node:path";
 
 import { normalizedTaskGitReferences } from "./task-git-reference.mjs";
 import { normalizedTaskSquashTransfer } from "./task-squash-transfer.mjs";
+import { selectedCompositionFields, selectedCompositionIdentity } from "./task-selected-composition.mjs";
 
 const OPERATIONS = new Set(["added", "modified", "deleted"]);
 
@@ -70,6 +71,11 @@ export function taskReleasePlanRevision(workspaceId, tasks = [], { legacy = fals
       id: task.id,
       taskRevision: legacy ? task.revision : (task.releaseRevision ?? task.revision),
       gitReferences: normalizedTaskGitReferences(task.gitReferences),
+      ...(task.selectedCompositions?.length ? { selectedCompositions: task.selectedCompositions
+        .map((item) => ({ projectRoot: canonicalRoot(item.projectRoot),
+          identity: selectedCompositionIdentity({ taskId: task.id,
+            resultCommit: item.selectedComposition?.taskCommit, ...item }) }))
+        .sort((a, b) => a.projectRoot.localeCompare(b.projectRoot)) } : {}),
       ...(task.squashTransfer ? {
         squashTransferHash: normalizedTaskSquashTransfer(task.squashTransfer).transferHash,
       } : {}),
@@ -108,6 +114,8 @@ export function taskReleasePlan(workspaceId, tasks = []) {
     projectRoot: reference.projectRoot,
     branch: reference.branch,
     resultCommit: reference.resultCommit,
+    ...selectedCompositionFields({ taskId: task.id, resultCommit: reference.resultCommit,
+      ...task.selectedCompositions?.find((item) => canonicalRoot(item.projectRoot) === canonicalRoot(reference.projectRoot)) }),
     ...(task.squashTransfer ? {
       ...(Number.isInteger(Number(task.resultReleaseRevision)) && Number(task.resultReleaseRevision) > 0
         ? { resultReleaseRevision: Number(task.resultReleaseRevision) }

@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import path from "node:path";
+import { selectedCompositionFields } from "./task-selected-composition.mjs";
 
 export const MAX_RELEASE_METADATA_BYTES = 8 * 1024 * 1024;
 
@@ -57,6 +59,10 @@ function stable(value) {
 
 export function releaseIdentitySha256(value) {
   return createHash("sha256").update(JSON.stringify(stable(value))).digest("hex");
+}
+
+export function releaseSelectionSha256(results) {
+  return releaseIdentitySha256(normalizedResults(results).map(({ tree, ...result }) => result));
 }
 
 function uniqueTextList(value, name) {
@@ -119,6 +125,7 @@ function normalizedResults(value) {
   return (Array.isArray(value) ? value : []).map((entry) => ({
     taskId: requiredText(entry?.taskId, "selected result taskId"),
     resultCommit: requiredText(entry?.resultCommit, "selected result commit"),
+    ...selectedCompositionFields(entry),
     ...(optionalText(entry?.tree) ? { tree: optionalText(entry.tree) } : {}),
     acceptanceRevision: Number.isSafeInteger(Number(entry?.acceptanceRevision))
       ? Number(entry.acceptanceRevision)
@@ -172,6 +179,80 @@ export function releaseOperationIsTerminal(operation) {
   return TERMINAL_STATES.has(String(operation?.state ?? ""));
 }
 
+const repositoryKey = value => {
+  const resolved = path.resolve(value).replaceAll("\\", "/");
+  return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+};
+
+export function reviewedMainBinding(operation, value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)
+      || !Number.isSafeInteger(value.expectedRevision) || value.expectedRevision < 1
+      || !Array.isArray(value.approvedRepositories) || !value.approvedRepositories.length
+      || value.approvedRepositories.length > 32) throw new TypeError("Invalid reviewed-main binding");
+  const roots = new Set(operation.authorization.approvedTargets.map(target => {
+    if (target.kind !== "agent-hub-publication" || !target.repositoryRoot) {
+      throw new Error("Reviewed-main binding requires original repository publication targets");
+    }
+    return repositoryKey(target.repositoryRoot);
+  }));
+  const seen = new Set();
+  const approvedRepositories = value.approvedRepositories.map(entry => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)
+        || typeof entry.projectRoot !== "string" || !entry.projectRoot.trim()) {
+      throw new TypeError("Reviewed-main repository must be a primitive string");
+    }
+    const key = repositoryKey(entry.projectRoot);
+    if (!roots.has(key) || seen.has(key)) throw new Error("Reviewed-main repository binding is foreign or duplicated");
+    seen.add(key);
+    for (const field of ["approvedLocalMainCommit", "approvedOriginMainCommit"]) {
+      if (typeof entry[field] !== "string" || !/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/u.test(entry[field])) {
+        throw new TypeError("Reviewed-main commit must be a primitive exact Git commit string");
+      }
+    }
+    return { projectRoot: entry.projectRoot, approvedLocalMainCommit: entry.approvedLocalMainCommit,
+      approvedOriginMainCommit: entry.approvedOriginMainCommit };
+  }).sort((a, b) => repositoryKey(a.projectRoot).localeCompare(repositoryKey(b.projectRoot)));
+  if (seen.size !== roots.size) throw new Error("Reviewed-main binding must cover every original repository");
+  return { expectedRevision: value.expectedRevision, approvedRepositories };
+}
+
+export function staleReviewedMainFailure(operation) {
+  return operation?.state === "failed" && operation.owner == null
+    && operation.currentGeneration > 0 && operation.lastError?.step === "compose"
+    && (operation.lastError.code === "RELEASE_MAIN_APPROVAL_STALE"
+      || operation.lastError.message?.startsWith("explicit reviewed-main approval is stale for "));
+}
+
+function normalizedReviewedMain(value, operation) {
+  if (value == null) return null;
+  const { identitySha256, ...contents } = value;
+  const binding = reviewedMainBinding(operation, { expectedRevision: value.priorRevision,
+    approvedRepositories: value.approvedRepositories });
+  if (typeof value.requestId !== "string" || !value.requestId.trim()
+      || value.authorizationFingerprint !== operation.authorization.fingerprint
+      || releaseIdentitySha256(contents) !== identitySha256
+      || releaseIdentitySha256(binding.approvedRepositories) !== releaseIdentitySha256(value.approvedRepositories)
+      || !value.priorFailure?.completedAt || !value.planRevision
+      || !Number.isSafeInteger(value.priorGeneration) || value.priorGeneration < 1 || value.priorGeneration > operation.currentGeneration
+      || !Array.isArray(value.selectedResults) || !Array.isArray(value.preparedCandidates)
+      || JSON.stringify(value.selectedResults.map(item => item.taskId).sort()) !== JSON.stringify(operation.authorization.taskIds)
+      || !Array.isArray(value.readbacks) || value.readbacks.length !== operation.authorization.approvedTargets.length
+      || operation.authorization.approvedTargets.some(target => value.readbacks.filter(item =>
+        item.targetId === target.targetId && item.generation === value.priorGeneration && item.evidence?.status === "not_applied").length !== 1)) {
+    throw new Error("Reviewed-main recovery identity changed");
+  }
+  return structuredClone(value);
+}
+
+export function releaseApprovedTargets(operation) {
+  return operation.authorization.approvedTargets.map(target => {
+    const approval = operation.reviewedMain?.approvedRepositories.find(entry =>
+      repositoryKey(entry.projectRoot) === repositoryKey(target.repositoryRoot));
+    return approval ? { ...target, approvedLocalMainCommit: approval.approvedLocalMainCommit,
+      approvedOriginMainCommit: approval.approvedOriginMainCommit } : target;
+  });
+}
+
 export function createReleaseOperation({
   operationId,
   requestId,
@@ -194,6 +275,7 @@ export function createReleaseOperation({
   nextAction = "compose authorized candidate",
   lastError = null,
   migration = null,
+  reviewedMain = null,
 } = {}) {
   const normalizedState = requiredText(state, "release operation state");
   if (!Object.values(RELEASE_OPERATION_STATES).includes(normalizedState)) {
@@ -228,6 +310,7 @@ export function createReleaseOperation({
     ...(migration && typeof migration === "object" && !Array.isArray(migration)
       ? { migration: structuredClone(migration) } : {}),
   };
+  if (reviewedMain != null) operation.reviewedMain = normalizedReviewedMain(reviewedMain, operation);
   if (releaseOperationIsTerminal(operation)) operation.completedAt = operation.updatedAt;
   return operation;
 }
@@ -251,11 +334,18 @@ export function restoreReleaseOperation(value) {
 export function transitionReleaseOperation(current, patch = {}, {
   expectedRevision = current?.revision,
   updatedAt = new Date().toISOString(),
+  reviewedMainRecovery = null,
 } = {}) {
   const operation = restoreReleaseOperation(current);
   if (!operation) throw new TypeError("valid current release operation is required");
   if (expectedRevision !== operation.revision) return { operation, applied: false, reason: "stale-revision" };
-  if (releaseOperationIsTerminal(operation)) return { operation, applied: false, reason: "terminal" };
+  const recovery = reviewedMainRecovery == null ? null : normalizedReviewedMain(reviewedMainRecovery, operation);
+  if (recovery && (!staleReviewedMainFailure(operation) || recovery.priorRevision !== operation.revision
+      || recovery.priorGeneration !== operation.currentGeneration
+      || releaseIdentitySha256(recovery.priorFailure) !== releaseIdentitySha256({ completedAt: operation.completedAt, error: operation.lastError })
+      || patch.state !== "compose")) throw new Error("Reviewed-main recovery does not match original failed operation");
+  if (releaseOperationIsTerminal(operation) && !recovery) return { operation, applied: false, reason: "terminal" };
+  if (patch.reviewedMain !== undefined) throw new Error("reviewedMain requires its recovery boundary");
   for (const name of ["operationId", "requestId", "workspaceId", "streamId", "threadId", "authorization", "runnerVersion"]) {
     if (patch[name] !== undefined && releaseIdentitySha256(patch[name]) !== releaseIdentitySha256(operation[name])) {
       throw new Error(`${name} is immutable`);
@@ -263,7 +353,7 @@ export function transitionReleaseOperation(current, patch = {}, {
   }
   const state = requiredText(patch.state ?? operation.state, "release operation state");
   if (!Object.values(RELEASE_OPERATION_STATES).includes(state)) throw new TypeError(`unsupported release operation state: ${state}`);
-  if (state !== operation.state && !STATE_TRANSITIONS.get(operation.state)?.has(state)) {
+  if (state !== operation.state && !recovery && !STATE_TRANSITIONS.get(operation.state)?.has(state)) {
     return { operation, applied: false, reason: "invalid-transition" };
   }
   const next = {
@@ -283,6 +373,7 @@ export function transitionReleaseOperation(current, patch = {}, {
     lastError: patch.lastError === undefined ? operation.lastError : normalizedError(patch.lastError),
     revision: operation.revision + 1,
     updatedAt: timestamp(updatedAt),
+    ...(recovery ? { reviewedMain: recovery, completedAt: null } : {}),
   };
   if (state !== RELEASE_OPERATION_STATES.WAITING) {
     next.resumeState = null;

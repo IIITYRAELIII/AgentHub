@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { normalizeProviderRunTerminalStatus } from "../domain/provider-run-terminal.mjs";
 import { codexSubagentActivity } from "../domain/run-activity.mjs";
 import {
   interstreamOriginAuthor,
@@ -811,7 +812,9 @@ export function mergeCompletedTaskHistory(history, completedTurn = {}, {
 
   current.active = false;
   current.completed = true;
-  current.status = "completed";
+  current.status = normalizeProviderRunTerminalStatus(completedTurn.status)
+    ?? normalizeProviderRunTerminalStatus(current.status)
+    ?? "completed";
   current.answer = answer;
   const terminalRevision = Number(completedTurn.terminalRevision);
   if (Number.isSafeInteger(terminalRevision) && terminalRevision > 0) {

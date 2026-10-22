@@ -8,7 +8,7 @@ const TRACE_MEASUREMENTS = [
   "workerThreadId", "accountingRecordsRead", "changedDayCount", "inspected", "candidateCount", "updated", "revisionReadMs", "projectionReadMs", "ledgerReadMs", "normalizeMs",
   "metadataReadMs", "recordReadMs",
   "workspaceResolveMs", "workspaceReadMs", "factsReadMs", "accountCatalogReadMs", "renderMs",
-  "lazyBuildMs", "commitMs", "aggregateMs",
+  "lazyBuildMs", "commitMs", "aggregateMs", "reuseCheckMs", "reuseWindowMs", "factsRevisionReadMs", "reuseReceiptFailed",
   "expectedRevision", "revision",
 ];
 
@@ -96,7 +96,7 @@ export class WorkLogUsageSyncWorkerStore {
           ...Object.fromEntries(TRACE_MEASUREMENTS
             .filter((key) => Number.isFinite(source?.[key]) && source[key] >= 0)
             .map((key) => [key, source[key]])),
-          ...Object.fromEntries(["conflict", "projectionDeferred"]
+          ...Object.fromEntries(["conflict", "projectionDeferred", "projectionReused"]
             .filter((key) => typeof value?.[key] === "boolean")
             .map((key) => [key, value[key]])),
         },

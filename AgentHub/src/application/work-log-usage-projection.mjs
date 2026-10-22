@@ -1015,6 +1015,34 @@ export function buildWorkLogAccountUsageSummary(turns = {}, {
     });
 }
 
+// The rendered panel exposes membership/totals, not its moving from/to
+// timestamps. Between these exact boundaries its HTML is stable. Derive the
+// window from the SAME normalized local/sync records as the summary owner.
+// This is a disposable reuse guard, never another attribution/pricing owner.
+export function workLogAccountUsageWindow(turns, {
+  syncedUsageEvents = [], localDeviceId = "", now = Date.now(),
+} = {}) {
+  const from = Number(now);
+  if (!Number.isSafeInteger(from)) return null;
+  const midnight = new Date(from);
+  midnight.setHours(24, 0, 0, 0);
+  let until = midnight.getTime();
+  const observe = record => {
+    const timestamp = Date.parse(record?.completedAt || record?.startedAt || "");
+    if (!Number.isFinite(timestamp)) return;
+    if (timestamp > from) until = Math.min(until, timestamp);
+    // At the exact 24h boundary membership is still inclusive. Conservatively
+    // refuse reuse AT that boundary too, including fractional caller clocks.
+    const expiry = timestamp + 24 * 60 * 60 * 1_000;
+    if (expiry >= from) until = Math.min(until, expiry);
+  };
+  for (const record of Object.values(turns)) observe(record);
+  for (const record of syncedUsageRecords(syncedUsageEvents)) {
+    if (record && record.syncDeviceId !== String(localDeviceId ?? "").trim()) observe(record);
+  }
+  return { from, until };
+}
+
 const ACCOUNT_PROVIDER_PRESENTATION = Object.freeze({
   claude: Object.freeze({ title: "Claude", tone: "claude" }),
   codex: Object.freeze({ title: "Codex", tone: "codex" }),

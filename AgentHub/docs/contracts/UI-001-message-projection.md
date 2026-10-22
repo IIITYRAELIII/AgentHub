@@ -1,5 +1,20 @@
 # UI-001 — Canonical message projection
 
+Task cleanup confirmation projects ignored local paths directly from the owning
+server preview, separately from Git clean/dirty state. The existing scrollable
+preview exposes those preserved paths without deriving deletion authority in
+the browser; cancellation sends no mutation and confirmation retains the exact
+server cleanup token (ADR-0126).
+
+Durable command state and terminal revision override the original intake receipt
+on live refresh, SSE reconnect and reload. Historical provider acceptance does
+not imply current execution. Known saved/queued/starting/running, structured
+provider retry, terminal error and unknown outcomes remain distinct; durations
+use observed timestamps and never establish an outcome. No failed input is
+automatically resubmitted. Retained unknown occupancy stays visible in the
+activity rail with its exact Stop target and queue reason, without a running
+animation or an active claim in Stream history.
+
 ## Explicit Codex trace details
 
 A shortened rollout preview exposes “All stages” only on explicit expansion.
@@ -25,6 +40,17 @@ visibly rather than guessing offsets. All three hashes remain mandatory on
 navigation. Legacy citations already bound to shortened content are not rewritten.
 
 ## Invariants
+
+- Local sending is visible before a transport response. The exact durable Hub
+  ACK updates that same command immediately, before snapshot/history refresh;
+  its final selected state and displayed delivery label must agree. Explicit
+  queue intent remains queue-owned. An ACK does not imply provider execution.
+- Explicit provider-start preparation is shown as preparation while preserving
+  occupied admission and cancellation/queue intent. An exact accepted/observed
+  provider turn is shown running even with no answer text. Legacy exact-bound
+  accepted responses keep their existing authority; a missing optional marker
+  alone is not evidence of rejection. Terminal state remains absorbing after
+  reordered snapshots or reconnect. See ADR-0123.
 
 - The Codex picker contains every selectable ID from the last complete successful
   provider catalog, excluding provider-hidden entries. A failed or incomplete
@@ -73,7 +99,9 @@ navigation. Legacy citations already bound to shortened content are not rewritte
   complete per-turn projection. The App Server adapter retains its exact source
   occurrence when `clientUserMessageId` arrives later; this same-source evidence
   replaces the earlier unkeyed entity and preserves Hub payload/origin.
-- `unknown` is displayed as unknown and never inferred as running.
+- `unknown` is displayed as unknown and never inferred as running. A retained
+  uncertain managed run still exposes Stop for its original identity; the
+  presentation flag never releases admission or removes its live content.
 - Successful message intake updates the existing message or queue projection
   without a separate acceptance toast. A refresh failure after acceptance cannot
   duplicate the send or produce an acceptance toast; errors remain diagnostic
@@ -304,6 +332,15 @@ same classifier. Receipt snapshots are bounded. A durable waiting command with
 an explicit non-`message-intake` conflict restores the queue after its receipt
 leaves the window, ahead of its original client projection intent. Otherwise
 the durable explicit projection intent restores the chosen surface.
+An explicit queued/deferred receipt with a non-`message-intake` conflict also
+overrides conversation intent when Hub has accepted durable storage
+(`accepted=true`) but the provider has not accepted the input. In particular,
+`runtime-restart` remains queue-owned and visibly says it awaits Hub restart,
+both on the direct ACK and after snapshot/reload or receipt eviction. This is
+not provider preparation or running, and does not relax the restart barrier.
+A scheduled restart alone emits no such admission barrier: ordinary input keeps
+its normal intake/steer/queue semantics. The restart explanation applies to the
+actual stopping/cutover fence (ADR-0127), never to the pending request alone.
 Legacy rows without that field use exact `conflictKind=message-intake` only as a
 temporary compatibility boundary; remove it after every retained active command
 has an explicit projection intent. Text, time and display order cannot choose
@@ -380,6 +417,16 @@ pending. These previews are labelled as preparation, are cancellable, and are
 excluded from serialized/sendable attachments. Send waits for that draft's
 pending preparation or explicit cancellation; another Stream's preparation
 cannot block it. Settling or invalidating the operation releases its preview URL.
+Preparation failure retains the original selected files and their previews in
+the live draft with an explicit retry action. Retry repeats only failed work,
+keeps its upload identity and does not admit a message. Successful siblings are
+not discarded because another file failed. Unresolved preparation still blocks
+send and managed reload until successful preparation or explicit removal.
+If retained bytes outlive a transport receipt, explicit send/resume may recover
+under MSG-002 with one saved fresh transport attempt, preserving the logical
+attachment and request identities, text and sibling files. Recovery is visible;
+an expired session is never extended. A preview without original bytes cannot
+claim recovery after reload. Receipt uncertainty cannot admit another message.
 An explicit retry of the unchanged restored payload reuses the original request
 identity and uploads recovered attachments again. If browser privacy or quota
 policy, serialization normalization or a configured bound prevents exact atomic
@@ -407,6 +454,12 @@ also absorbs later legacy revision `0`, while a positive revision may upgrade
 legacy revision `0`. At the same revision, the durable canonical projection wins
 over a temporary terminal overlay; a higher overlay revision still wins over
 older durable history. `unknown` is a distinct state and is never projected as active.
+The live card and Stream/composer running state use that same exact terminal
+fence: canonical terminal history cannot be revived by a later raw active
+snapshot for its provider/Thread/turn. A snapshot final reference requires a
+positive safe-integer revision before it absorbs a run; a foreign or missing
+identity and revision `0` alone do not prove terminal state. A new exact turn
+remains active even while the previous turn's final is visible.
 The client considers final content caught up only on exact text equality for the
 exact provider turn. Prefix equality never proves that a complete final was
 rendered and cannot stop history refresh or remove a completion overlay.
@@ -571,6 +624,29 @@ revision cache without re-projecting conversations.
 Snapshot receipt alone is not display evidence: acknowledgement is emitted only
 after `applyOpened` rendered a terminal card with the same exact identity and
 revision. Startup snapshot-before-history therefore cannot clear unread state.
+The existing opened-history evidence is rechecked after paint with the same
+selected chat, visible document and exact rendered terminal identity. Returning
+to a visible document or rendering an already-opened history retries an
+unconfirmed acknowledgement with its original operation ID; it never invents
+read evidence from a click or snapshot. Pending and retry entries remain
+single-flight and retain that ID while their exact final is current in the
+canonical conversation collection; a fixed-capacity eviction cannot discard
+unresolved operations. Removing a conversation or replacing its final retires
+that entry through the same snapshot owner; an absent final reference in an
+otherwise current conversation does not prove replacement. The current criterion is rendering in
+the selected visible chat, not scrolling the whole final into the viewport.
+Viewport intersection is measured separately and does not redefine that rule.
+A confirmed server cursor from the acknowledgement or the additive content-free
+`readCursor` snapshot tuple is mirrored only as a client projection. Full and
+delta snapshots cannot revive an answer covered by that cursor, and a newer
+final remains unread. A delayed acknowledgement updates both marker surfaces
+only through the current exact final projection; it cannot clear a newer final
+or downgrade an active run. The server account cursor remains the sole durable
+owner; a new document recovers its state through the ordinary snapshot.
+The original acknowledgement ID correlates render/paint, control transport,
+final resolution, cursor queue wait/write/contention, confirmed receipt and
+after-paint marker state on tabs/cards. These bounded content-free observations
+are diagnostic, not additional read authority.
 The persisted cursor is monotonic even when an older request finishes last:
 `answerAtMs` orders different completion times, a higher revision orders the same
 turn at an equal time, and the exact `turnId` is the deterministic tie-break for
@@ -610,3 +686,11 @@ hydration starts strictly as background work and is never awaited by mark-read.
   and jump only to their annotation card. This guard is removed only if a future
   authoritative provider export supplies exact item and range identity; local
   text matching is not a migration path.
+
+A successful health response with authoritative `ready=true` opens the working
+interface even when an optional integration failed. Failed integrations remain
+in a separate non-blocking diagnostic with the existing generation-fenced retry.
+A slow or failed health read after readiness does not reopen the startup overlay;
+the connection owner retains its own diagnostic. An authoritative `ready=false`
+response still opens startup, including a replacement runtime with no stage
+metadata yet. A queued restart request alone does not prove replacement began.

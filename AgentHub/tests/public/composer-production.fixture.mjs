@@ -1,8 +1,11 @@
 import { readFile } from "node:fs/promises";
 import { after } from "node:test";
 import vm from "node:vm";
+import { pathToFileURL } from "node:url";
 
-const WEB_APP_ROOT = new URL("../../assets/web-app/", import.meta.url);
+const WEB_APP_ROOT = process.env.AGENT_HUB_TEST_WEB_APP_ROOT
+  ? pathToFileURL(`${process.env.AGENT_HUB_TEST_WEB_APP_ROOT.replace(/[\\/]+$/u, "")}/`)
+  : new URL("../../assets/web-app/", import.meta.url);
 const composerDraftSource = await readFile(
   new URL("messages/composer-draft-reconciliation.js", WEB_APP_ROOT),
   "utf8",
@@ -126,7 +129,8 @@ let sharedBrowserPromise = null;
 function sharedBrowser() {
   if (!sharedBrowserPromise) {
     const pending = (async () => {
-      const { chromium } = await import("playwright-core");
+      const { chromium } = await import(process.env.AGENT_HUB_TEST_PLAYWRIGHT_MODULE
+        ? pathToFileURL(process.env.AGENT_HUB_TEST_PLAYWRIGHT_MODULE).href : "playwright-core");
       return process.platform === "win32"
         ? chromium.launch({ channel: "msedge", headless: true })
         : chromium.launch({ headless: true });
@@ -189,6 +193,7 @@ async function launchBrowser() {
 async function openFixture(page, {
   persistedDrafts = null,
   fixtureSnapshot = snapshot(),
+  fixtureHistory = null,
   expectedTaskId = "stream-a",
   recoveryAuthorityAvailable = true,
   holdRecoveryAuthority = false,
@@ -201,7 +206,7 @@ async function openFixture(page, {
     if (message.type() === "error") diagnostics.push(message.text());
   });
   await page.addInitScript(({
-    initialSnapshot, initialDrafts, authorityAvailable, holdAuthority, attachmentOpenFailure,
+    initialSnapshot, initialHistory, initialDrafts, authorityAvailable, holdAuthority, attachmentOpenFailure,
   }) => {
     // Opening the attachment database fails. This covers only the open step:
     // the product treats that rejection as "not durable". The error code is set
@@ -296,6 +301,7 @@ async function openFixture(page, {
     const write = (key, value) => localStorage.setItem(key, JSON.stringify(value));
     window.__agentHubFixture = {
       snapshot: read("fixture:snapshot", initialSnapshot),
+      history: initialHistory,
       mode: localStorage.getItem("fixture:send-mode") || "reject",
       log: read("fixture:bridge-log", []),
       uploadSequence: Number(localStorage.getItem("fixture:upload-sequence")) || 0,
@@ -348,7 +354,10 @@ async function openFixture(page, {
             || fixture.snapshot.tasks.find((entry) => entry.provider === message.params.provider
               && entry.threadId === message.params.threadId)?.streamId
             || null;
-          const history = {
+          const fixtureHistoryMatches = fixture.history?.provider === message.params.provider
+            && fixture.history?.threadId === message.params.threadId
+            && fixture.history?.streamId === streamId;
+          const history = fixtureHistoryMatches ? fixture.history : {
             provider: message.params.provider,
             threadId: message.params.threadId,
             streamId,
@@ -398,6 +407,7 @@ async function openFixture(page, {
     };
   }, {
     initialSnapshot: fixtureSnapshot,
+    initialHistory: fixtureHistory,
     initialDrafts: persistedDrafts,
     authorityAvailable: recoveryAuthorityAvailable,
     holdAuthority: holdRecoveryAuthority,
@@ -413,18 +423,25 @@ async function openFixture(page, {
     if (requestUrl.pathname === "/api/attachment-upload") {
       if (!chunkedUpload) { await route.fulfill({ status: 404, body: "{}" }); return; }
       const protocol = "agent-hub-attachment-upload-v1";
-      const policy = { protocol, chunkBytes: 1024 * 1024, maxBytes: 128 * 1024 * 1024, maxTotalBytes: 256 * 1024 * 1024 };
+      const policy = { protocol, chunkBytes: 1024 * 1024, maxBytes: 128 * 1024 * 1024,
+        maxTotalBytes: 256 * 1024 * 1024, expiresInMs: 30 * 60_000, supportsBeginRecovery: true };
       const method = route.request().method();
       const id = requestUrl.searchParams.get("id");
       let value = policy;
       let status = 200;
       if (method === "POST" && !id) {
+        const mode = await page.evaluate(() => localStorage.getItem("fixture:upload-mode"));
+        if (mode === "drop-begin-once") {
+          await page.evaluate(() => localStorage.removeItem("fixture:upload-mode"));
+          await route.abort("failed");
+          return;
+        }
         const metadata = route.request().postDataJSON();
         if (!uploads.has(metadata.uploadId)) uploads.set(metadata.uploadId, { ...metadata, protocol, status: "uploading", received: [] });
         value = uploads.get(metadata.uploadId);
       } else if (id) {
         value = uploads.get(id);
-        if (!value) { status = 404; value = { error: "Upload missing" }; }
+        if (!value) { status = 404; value = { error: "Upload missing", state: "absent" }; }
         else if (method === "PUT") {
           const mode = await page.evaluate(() => localStorage.getItem("fixture:upload-mode"));
           if (mode === "fail-once") {
@@ -445,7 +462,8 @@ async function openFixture(page, {
         log.push(entry); localStorage.setItem("fixture:upload-log", JSON.stringify(log));
       }, { method, id, index: requestUrl.searchParams.get("index"), value,
         size: method === "PUT" ? route.request().postDataBuffer().length : 0 });
-      await route.fulfill({ status, contentType: "application/json", body: JSON.stringify(value) });
+      await route.fulfill({ status, contentType: "application/json", body: JSON.stringify(value),
+        headers: { "Server-Timing": "auth;dur=2.5, body;dur=3.5, owner;dur=4.5" } });
       return;
     }
     if (requestUrl.pathname === "/api/attachment") {

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { CommandTraceService } from "../../src/application/command-trace-service.mjs";
 
 import {
   USAGE_SYNC_AUTO_TIMER_NAME,
@@ -28,6 +29,7 @@ function fixture({
   delayPush = false,
   failPush = false,
   failBackfill = false,
+  trace = null,
   now = () => new Date("2026-08-20T04:00:00.000Z"),
 } = {}) {
   const events = [];
@@ -124,6 +126,7 @@ function fixture({
       if (failBackfill) throw new Error("backfill locked");
       return accountBackfillResult;
     },
+    trace,
     suggestedDeviceLabel: async () => "SidorukSV",
     projectRoot: "D:/projects/Utilities",
     projectionProjectRoots: ["D:/projects/Utilities"],
@@ -156,6 +159,48 @@ test("UsageSyncAutoService quietly skips when no remote is configured and resche
   ]);
 });
 
+test("scheduled usage sync never runs the legacy ambient account writer", async () => {
+  const state = fixture({ failBackfill: true });
+  for (let index = 0; index < 2; index += 1) assert.equal((await state.service.sync()).synced, true);
+  assert.equal(state.events.filter(([name]) => name === "account-backfill").length, 0);
+  assert.equal(state.events.filter(([name]) => name === "push").length, 2);
+  assert.equal(state.events.filter(([name]) => name === "import-project").length, 2);
+});
+
+test("auto-sync timing follows one coalesced operation and cannot change its outcome", async () => {
+  const spans = [];
+  const trace = new CommandTraceService({ store: { appendBestEffort(span) {
+    spans.push(span); throw new Error("telemetry offline");
+  } }, logger: { warn() {} } });
+  const state = fixture({ delayPush: true, trace });
+  const first = state.service.sync();
+  assert.equal(first, state.service.sync());
+  await new Promise(resolve => setImmediate(resolve));
+  state.releasePush({ ok: true, added: 1, rejected: 0 });
+  assert.equal((await first).synced, true);
+  assert.equal(new Set(spans.map(s => s.commandId)).size, 1);
+  for (const stage of ["usage-sync-config", "usage-sync-snapshot", "usage-sync-push", "usage-sync-import", "usage-sync-total"]) {
+    assert.ok(spans.some(s => s.stage === stage && s.outcome === "succeeded"), stage);
+  }
+  assert.ok(spans.every(s => Number.isFinite(s.monotonicDurationMs) && s.monotonicDurationMs >= 0));
+  for (const completed of spans.filter(s => s.outcome !== "started")) {
+    assert.ok(spans.some(s => s.outcome === "started" && s.metadata.operationSpanId === completed.metadata.operationSpanId));
+  }
+  assert.ok(spans.every(s => !JSON.stringify(s).includes("sync.example") && !JSON.stringify(s).includes("turn-1")));
+});
+
+test("failed push retains failed timing and never advances cursors or triggers legacy recovery", async () => {
+  const spans = [];
+  const trace = new CommandTraceService({ store: { appendBestEffort: s => { spans.push(s); return true; } } });
+  const state = fixture({ failPush: true, trace });
+  await assert.rejects(state.service.sync(), /offline/u);
+  assert.equal(state.events.filter(([name]) => name === "remember-push" || name === "remember-pull" || name === "account-backfill").length, 0);
+  assert.ok(spans.some(s => s.stage === "usage-sync-push" && s.outcome === "failed"));
+  assert.ok(spans.some(s => s.stage === "usage-sync-total" && s.outcome === "failed"));
+  assert.equal(new Set(spans.map(s => s.commandId)).size, 1);
+  assert.equal(state.events.filter(([name]) => name === "schedule").length, 1);
+});
+
 test("UsageSyncAutoService keeps default remote URL idle until enrollment", async () => {
   const state = fixture({ enrolledAt: "" });
 
@@ -178,8 +223,6 @@ test("UsageSyncAutoService pushes, pulls, imports and remembers remote results",
   assert.deepEqual(state.events.map(([name]) => name), [
     "load-config",
     "client",
-    "account-backfill",
-    "info",
     "snapshot",
     "push",
     "remember-push",
@@ -540,22 +583,16 @@ test("UsageSyncAutoService exposes and confirms the device nickname", async () =
   });
 });
 
-test("UsageSyncAutoService warns and still syncs when account backfill fails", async () => {
+test("UsageSyncAutoService ignores retired ambient backfill even when it would fail", async () => {
   const state = fixture({ failBackfill: true });
 
   const result = await state.service.sync();
 
   assert.equal(result.synced, true);
-  assert.deepEqual(result.accountBackfill, {
-    applied: false,
-    failed: true,
-    reason: "backfill locked",
-  });
+  assert.equal(result.accountBackfill, undefined);
   assert.deepEqual(state.events.map(([name]) => name), [
     "load-config",
     "client",
-    "account-backfill",
-    "warn",
     "snapshot",
     "push",
     "remember-push",

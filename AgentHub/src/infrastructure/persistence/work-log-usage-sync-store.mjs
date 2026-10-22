@@ -726,6 +726,16 @@ export class WorkLogUsageSyncStore {
   // Disposable read model for repeated journal projections. The revision is
   // maintained by SQLite triggers, so writes from another connection are
   // observed without rereading every fact after an unrelated journal edit.
+  projectionFactsIdentity() {
+    return this.#enqueue(database => {
+      const values = Object.fromEntries(database.prepare(`
+        SELECT key, value FROM usage_sync_meta
+        WHERE key IN ('facts_revision', 'local_store_generation')
+      `).all().map(row => [row.key, String(row.value ?? "")]));
+      return { revision: values.facts_revision ?? "", generation: values.local_store_generation ?? "" };
+    });
+  }
+
   projectionFacts() {
     return this.#enqueue((database) => {
       database.exec("BEGIN");
@@ -733,10 +743,12 @@ export class WorkLogUsageSyncStore {
         const revision = String(database.prepare(`
           SELECT value FROM usage_sync_meta WHERE key = 'facts_revision'
         `).get()?.value ?? "");
-        if (revision && this.#projectionFactsCache?.revision === revision) {
+        const generation = this.#localStoreGeneration(database);
+        if (revision && this.#projectionFactsCache?.revision === revision
+          && this.#projectionFactsCache?.generation === generation) {
           database.exec("COMMIT");
           return { facts: this.#projectionFactsCache.facts, sourceRead: false,
-            cacheBytes: this.#projectionFactsCache.cacheBytes, cacheRetained: true };
+            cacheBytes: this.#projectionFactsCache.cacheBytes, cacheRetained: true, revision, generation };
         }
         const facts = [
           ...this.#readAll(database),
@@ -746,8 +758,8 @@ export class WorkLogUsageSyncStore {
         const cacheBytes = Buffer.byteLength(JSON.stringify(facts));
         const cacheRetained = cacheBytes <= PROJECTION_FACT_CACHE_BYTE_LIMIT;
         database.exec("COMMIT");
-        this.#projectionFactsCache = cacheRetained ? { revision, facts, cacheBytes } : null;
-        return { facts, sourceRead: true, cacheBytes, cacheRetained };
+        this.#projectionFactsCache = cacheRetained ? { revision, generation, facts, cacheBytes } : null;
+        return { facts, sourceRead: true, cacheBytes, cacheRetained, revision, generation };
       } catch (error) {
         if (database.isTransaction) database.exec("ROLLBACK");
         throw error;

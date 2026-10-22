@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 import { ReleaseGitWorkspaceService } from "../../../src/infrastructure/filesystem/release-git-workspace.mjs";
+import { taskRepositoryKey } from "../../../src/domain/task-git-reference.mjs";
 
 const exec = promisify(execFile);
 async function git(cwd, ...args) {
@@ -58,6 +60,33 @@ async function snapshot(directory) {
   return files;
 }
 
+test("composition validation excludes unrelated branch payloads without changing source or prepared state", { timeout: 60000 }, async t => {
+  const f = await fixture(t);
+  const unrelated = await f.result("unrelated-payload", randomBytes(256_000));
+  const blob = await git(f.primary, "rev-parse", `${unrelated}:app.txt`);
+  await f.service.prepareCandidate(f.request);
+  const before = await snapshot(f.dataDir), refs = await git(f.primary, "show-ref");
+  const prior = new Set(await readdir(os.tmpdir()));
+  let inspections = 0;
+  const proof = await f.service.validateCandidate({ ...f.request, validateBeforeCommit: async () => {
+    const temporary = (await readdir(os.tmpdir())).filter(name => name.startsWith("ah-composition-") && !prior.has(name));
+    assert.equal(temporary.length, 1);
+    const repository = path.join(os.tmpdir(), temporary[0], "release-repositories", taskRepositoryKey(f.primary), "repository");
+    await git(repository, "cat-file", "-e", `${f.left}^{commit}`);
+    await assert.rejects(git(repository, "cat-file", "-e", `${unrelated}^{commit}`));
+    await assert.rejects(git(repository, "cat-file", "-e", blob));
+    await assert.rejects(readFile(path.join(repository, ".git", "objects", "info", "alternates")), { code: "ENOENT" });
+    inspections++;
+  } });
+  assert.ok(inspections > 0);
+  assert.equal(proof.status, "validated");
+  assert.equal(proof.tree, await git(f.primary, "rev-parse", `${f.left}^{tree}`));
+  assert.deepEqual(await snapshot(f.dataDir), before);
+  assert.equal(await git(f.primary, "show-ref"), refs);
+  assert.equal(await git(f.primary, "status", "--porcelain"), "");
+  assert.deepEqual((await readdir(os.tmpdir())).filter(name => name.startsWith("ah-composition-") && !prior.has(name)), []);
+});
+
 test("composition validation uses canonical selected bytes without changing a prepared or frozen holder", async (t) => {
   const f = await fixture(t);
   const existing = await f.service.prepareCandidate(f.request);
@@ -88,7 +117,7 @@ test("composition conflict leaves last good candidate and primary untouched", as
   await assert.rejects(f.service.validateCandidate({
     ...f.request, planRevision: "conflicting-plan",
     frozenTasks: [...f.request.frozenTasks, { taskId: "right", taskRevision: 1, baseCommit: f.request.approvedBaseCommit, resultCommit: right }],
-  }), /PreRelease delta/u);
+  }), { code: "RELEASE_NATIVE_MERGE_CONFLICT" });
   assert.deepEqual(await snapshot(f.dataDir), before);
   assert.equal(await git(f.primary, "status", "--porcelain"), "");
 });

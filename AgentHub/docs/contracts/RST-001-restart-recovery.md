@@ -1,5 +1,42 @@
 # RST-001 — Restart and maintenance recovery
 
+## Background storage policy (ADR-0126)
+
+Normal installed startup schedules versioned storage maintenance after actual
+ready, then periodically; update installation itself does not launch the runtime.
+Test/recording/acceptance isolation and development do not construct production
+cleanup owners. Active user work defers admission. Storage maintenance reuses the
+existing maintenance-operation store in its own runtime scope; it is neither a
+user turn, a dispatch reservation nor a restart UI marker.
+
+Bounded owner discovery and previews precede durable artifact admission. A lost
+reply remains with the SAME original child and is reconciled, never replayed as a
+new delete. Unknown resources do not starve every other owner. Shutdown stops new
+admission and drains the actual effect before closing stores or releasing the
+instance lock; a timeout does not prove the child stopped. Policy v1 owns
+redundant completed/published native merge transports. Policy v2 adds only
+explicitly retired runtime bodies with exact current-pointer custody, fresh
+current/rollback/running/prepared/source pins and original child identity. The
+reviewed owner-list append preserves v1 pending intents. Partial batches remain
+attached to the same admitted child; unknown outcomes are not replayed as new
+deletion. An older or unknown registry/version defers without clearing state.
+Policy v3 appends only redundant release-generation bundle transports after the
+original release owner proves its exact current generation completed, all approved
+publication targets applied and hash-bound validation/finalization receipts applied.
+The release filesystem owner rechecks original capture/clone/object connectivity
+under its existing per-generation lease and native single-file deletion custody.
+Known v1/v2 registries preserve pending children when appending this owner; unknown
+registries and rollback remain fail-closed. No replay/publication/Task transition,
+recursive generation deletion or age-based legacy adoption follows from this policy.
+Other persistent artifacts
+remain under their existing cleanup contracts and are preserved until those
+owners supply their own verified eligibility/effect adapters.
+
+Catalog reads during startup must not indirectly launch optional historical
+pricing backfill. Its existing post-readiness coordinator remains the owner;
+mandatory terminal projection recovery and its durable ACK fences still finish
+before readiness, with the existing replacement deadline unchanged.
+
 ## Identity and owner
 
 Restart and compaction are persisted operations with `operationId`, kind, exact
@@ -34,6 +71,9 @@ Provider recovery read, reconnect or reattach failure is likewise unknown: a
 generic recovery exception and a local `interrupted` bookkeeping decision do
 not create provider terminal evidence or release the manual session. Only the
 provider/process completion owner may commit the exact terminal outcome.
+The narrowly scoped ADR-0125 recovery interruption uses that same cancellation
+and terminal owner after fresh provider/native inactivity and exact interrupt
+rejection; a startup/read exception or idle status alone still cannot release.
 
 ## Invariants
 
@@ -57,18 +97,35 @@ provider/process completion owner may commit the exact terminal outcome.
   Terminal reconciliation accounts their usage without emitting a user response
   or changing the last message. Inline compaction inside an ordinary turn and
   legacy operations lacking that marker do not authorize suppressing its final.
-- Ordinary and new-turn admission is blocked by an exact active maintenance
+- Ordinary and new-turn admission is blocked by an exact active Stream context-maintenance
   operation. An explicit steer targeting an exact active managed turn may be
   admitted during provider-internal compaction, but its provider dispatch waits
   durably for that compaction to settle. Hub-owned compaction and rotation
   reservations remain admission barriers.
 - A restart requested with no selected Stream and Thread is persisted under the
   explicit runtime scope; a target naming only one of them is rejected.
-- Restart is a barrier over durable finals, command receipts, delivery outbox and
-  maintenance reconciliation.
-- Once a restart operation is persisted, new durable commands remain queued in
-  their exact lanes. The old runtime cannot admit them after the run that the
-  restart is draining reaches terminal state.
+- Restart waits for durable finals, command receipts, delivery outbox and
+  maintenance reconciliation. A pending/scheduled request does not block intake,
+  ordinary starts, steering or queued dispatch, and never causes automatic Stop
+  or pause. User Stop/pause retains its authority (ADR-0127).
+- One durable restart launches one owned RuntimeHost tree. Windows restart never
+  submits an escaping WMI start, retries an ownership timeout or adds a fallback
+  launch. The controlled path uses a direct detached host and retains exact
+  cleanup ownership until lock/ready proof. Cold `--spawn-independent` uses
+  synchronous native process creation with explicit job breakaway; denied
+  breakaway fails visibly, with no WMI fallback or delayed launch. Cold start
+  cannot carry a managed restart operation identity.
+  The expected release is persisted before launch; exact operation/release/PID/
+  instance evidence fences readiness. The old owner recovers only after confirmed
+  cleanup of its owned replacement. See ADR-0114.
+- Only the synchronous transition into actual stopping closes provider admission.
+  Its readiness check includes existing pending admission/steer ownership, active
+  blocking runs, background jobs and maintenance, with no asynchronous gap before
+  the stopping fence. An admission already underway protects its run through
+  registration/launch; a later input remains durable in its exact lane and original
+  identity without a provider-start claim. Every real input/queued dispatch factory
+  receives that stopping fence. Ordinary terminal completion still wakes the queue
+  while a restart is pending; the restart rechecks safety rather than starving it.
 - A replacement runtime finalizes the persisted restart and marks its instance
   ready before it starts deferred-input timers. Queued commands are then
   admitted once under their original `clientUserMessageId`.
@@ -98,6 +155,9 @@ provider/process completion owner may commit the exact terminal outcome.
   Concurrent Thread checks share one bounded process snapshot per runtime
   cadence. Queue retries use capped exponential backoff with jitter; an exact
   completion or wake cancels that delay and rechecks the lane head immediately.
+- Retained uncertain run ownership is projected as unknown while preserving the
+  exact Stop target and replay fence. Only an exact fresh active snapshot clears
+  that uncertainty; no terminal is manufactured from reconnect failure.
 - Process death does not preserve local `running` as fact. Recovery reconciles
   provider state or records an honest terminal timeout/unknown result.
 - An exact Codex turn whose rollout has only `task_started` remains unknown
@@ -130,9 +190,9 @@ provider/process completion owner may commit the exact terminal outcome.
   measured time since the wait began and says the previous process still
   answers only after a successful health response. A snapshot served after a
   failed restart carries its recent persisted reason, shown once per operation,
-  until a later restart settles successfully; that reason is part of the
-  snapshot source revision, so neither a failure, a later success nor the end
-  of its notice window can be hidden by a cached unchanged snapshot. Known failed
+  until a later restart settles successfully; elapsed time is not delivery and
+  cannot expire this terminal reason. It is part of the snapshot source revision,
+  so neither a failure nor a later success can be hidden by an unchanged cache. Known failed
   startup details remain available during ordinary connection loss. Fresh
   health and the canonical connection state remain the reconnect authority.
 - The startup screen retains failed-stage details and exposes authenticated
@@ -163,6 +223,13 @@ external processes, rollout files, Git repositories and media jobs are not
 execution authority. Excluded operations retain their evidence and explicitly
 report exclusion; they must not report successful remote work. Recording
 delivery receipts retain their original idempotency identity across restart.
+
+The literal Codex recording adapter recovers a turn from its own isolated
+SQLite command and turn rows. A read-only projection checks the seeded Thread,
+exact command fingerprint and mapped execution identity before supplying that
+turn to the ordinary snapshot and terminal owner. This profile never consumes
+captured production rollout status. Outside the explicit recording profile,
+Codex recovery still requires the exact native rollout terminal event.
 
 Recovery checks must separately report queue/terminal/delivery behavior, source
 immutability, exact replacement identity and excluded effects. Synthetic shell
@@ -232,3 +299,28 @@ hash remains unknown without cleanup. The final SQLite commit still waits for
 the ordinary squash Git proof and records both hashes in the existing lifecycle
 outcome. No bootstrap-specific registry or direct database/ref recovery path is
 introduced.
+
+The frontend startup overlay follows authoritative health readiness. A ready
+runtime with a failed optional capability remains usable and exposes that
+failure separately with the existing targeted retry. Failed or delayed health
+reads do not turn an already-ready runtime into an asserted startup/restart;
+connection diagnostics remain owned by the ordinary banner. A fresh unready
+health response still blocks, including before startup stages are available.
+Queued restart intent is waiting, not evidence that replacement started.
+Telegram transport failures retain bounded allowlisted cause codes in their
+existing error/health diagnostic; messages, credential-bearing URLs, tokens and
+request bodies never contribute to that summary. An old generic fetch failure
+without retained cause codes cannot be retrospectively diagnosed by a later
+successful request.
+
+A preserved direct gateway awaiting the existing owner's verified configuration
+handoff may report `DIRECT_GATEWAY_CONFIG_HANDOFF_REQUIRED`. This exact refusal
+does not prevent independently configured Worker or quick-tunnel startup. The
+existing Mini App lifecycle starts those services once in the same generation;
+only their actual publication callbacks may select a fallback menu URL. Other
+gateway failures keep their existing failure behavior. The original handoff
+error still rejects the cached transport-startup promise after independent work,
+so main readiness or Worker availability never becomes full gateway readiness.
+Gateway health recovery does not replay Worker startup or settle that promise.
+Shutdown/generation changes fence late publication and menu callbacks. No new
+retry loop, gateway writer, process authority or restart is introduced.

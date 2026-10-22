@@ -8,13 +8,33 @@ import path from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 
-import { releaseOperationPublicationArguments } from "../../../release-operation-publication-runner.mjs";
+import { releaseOperationPublicationArguments, releaseOperationRuntimePublicationInput } from "../../../release-operation-publication-runner.mjs";
 import { ReleaseGitWorkspaceService } from "../../../src/infrastructure/filesystem/release-git-workspace.mjs";
 import { agentHubCalendarVersion } from "../../../src/infrastructure/filesystem/release-version.mjs";
 import { ReleaseOperationStore } from "../../../src/infrastructure/persistence/release-operation-store.mjs";
 import { ReleaseOperationPublication } from "../../../src/infrastructure/process/release-operation-publication.mjs";
 
 const execute = promisify(execFile);
+
+test("runtime receipt wiring preserves original generation and refuses a mismatched frozen candidate", () => {
+  const operation = { operationId: "fefefefe-fefe-4efe-8efe-fefefefefefe" };
+  const generation = { operationId: operation.operationId, generation: 2 };
+  const candidate = { commit: "a".repeat(40), manifest: { publication: {
+    head: "a".repeat(40), releaseVersion: "2026.8.24", runtimeReleaseVersion: "2026.8.24.8",
+  } } };
+  assert.deepEqual(releaseOperationRuntimePublicationInput({ operation, generation, candidate }), {
+    operationId: operation.operationId, generation: 2, sourceCommit: candidate.commit, version: "2026.8.24.8",
+  });
+  for (const changed of [
+    { ...candidate, commit: "b".repeat(40) },
+    { ...candidate, manifest: { publication: { ...candidate.manifest.publication, runtimeReleaseVersion: "2026.8.25.8" } } },
+    { ...candidate, manifest: { publication: { ...candidate.manifest.publication, runtimeReleaseVersion: ["2026.8.24.8"] } } },
+  ]) assert.throws(() => releaseOperationRuntimePublicationInput({ operation, generation, candidate: changed }), /binding differs/u);
+  assert.throws(() => releaseOperationRuntimePublicationInput({ operation,
+    generation: { ...generation, operationId: "other" }, candidate }), /binding differs/u);
+  assert.equal(releaseOperationRuntimePublicationInput({ operation, generation,
+    candidate: { commit: candidate.commit, manifest: { publication: { releaseVersion: "2026.8.24" } } } }), null);
+});
 
 async function git(cwd, ...args) {
   return (await execute("git", args, { cwd, encoding: "utf8", windowsHide: true })).stdout.trim();
@@ -63,7 +83,7 @@ test("stable publication runner preserves the initiating Stream and Thread for s
   ]);
 });
 
-test("stable runner process publishes the exact SQLite generation to an isolated Git endpoint", { timeout: 60000 }, async (t) => {
+test("stable runner refuses publication when the exact generation lacks the required contour", { timeout: 60000 }, async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "release-operation-runner-process-"));
   t.after(() => rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
   const remote = path.join(root, "origin.git");
@@ -92,11 +112,18 @@ test("stable runner process publishes the exact SQLite generation to an isolated
   await git(primary, "push", "-u", "origin", "main");
   const baseCommit = await git(primary, "rev-parse", "HEAD");
   await git(primary, "worktree", "add", "-b", "HUB-runner-process", taskRoot, "main");
-  await writeFile(path.join(taskRoot, "CHANGELOG.md"), "task notes\n", "utf8");
-  await git(taskRoot, "add", "CHANGELOG.md");
+  await writeFile(path.join(taskRoot, "AgentHub", "task.txt"), "Task result\n", "utf8");
+  await git(taskRoot, "add", "AgentHub/task.txt");
   await git(taskRoot, "commit", "-m", "task result");
   const resultCommit = await git(taskRoot, "rev-parse", "HEAD");
   const generationWorkspaces = new ReleaseGitWorkspaceService({ dataDir: path.join(root, "generation-data") });
+  const frozenTasks = [{ taskId: "task-process", taskRevision: 3, baseCommit, resultCommit,
+    integrations: [{ commit: resultCommit, parent: baseCommit, order: 1 }] }];
+  const prepared = await generationWorkspaces.prepareCandidate({ planRevision: "plan-process",
+    projectRoot: primary, workspaceId: "workspace-process", approvedBaseCommit: baseCommit, frozenTasks });
+  const changelogContent = Buffer.from("release notes\n");
+  await writeFile(path.join(prepared.releaseRoot, "CHANGELOG.md"), changelogContent);
+  await git(prepared.releaseRoot, "add", "CHANGELOG.md");
   const candidate = await generationWorkspaces.prepareGeneration({
     operationId: "operation-process",
     generation: 1,
@@ -104,13 +131,8 @@ test("stable runner process publishes the exact SQLite generation to an isolated
     projectRoot: primary,
     workspaceId: "workspace-process",
     approvedBaseCommit: baseCommit,
-    frozenTasks: [{
-      taskId: "task-process",
-      taskRevision: 3,
-      baseCommit,
-      resultCommit,
-      integrations: [{ commit: resultCommit, parent: baseCommit, order: 1 }],
-    }],
+    frozenTasks,
+    changelogContent,
   });
   const dataDir = path.join(root, "operation-data");
   await mkdir(dataDir, { recursive: true });
@@ -154,10 +176,15 @@ test("stable runner process publishes the exact SQLite generation to an isolated
     environment: { ...process.env, LOCALAPPDATA: path.join(root, "local-app-data") },
     runnerFile: path.resolve("release-operation-publication-runner.mjs"),
   });
-  const effect = await publication.publish({ operation, generation, target });
-  assert.equal(effect.status, "applied");
-  assert.equal(effect.revision, candidate.preReleaseHead);
-  assert.equal(await git(remote, "rev-parse", "refs/heads/main"), candidate.preReleaseHead);
+  await assert.rejects(publication.publish({ operation, generation, target }), {
+    code: "RELEASE_VALIDATION_FAILED",
+  });
+  assert.equal(await git(remote, "rev-parse", "refs/heads/main"), baseCommit);
+  const effect = await publication.readback({ operation, generation, target });
+  assert.equal(effect.status, "not_applied");
+  assert.equal(effect.revision, baseCommit);
+  assert.equal(await git(candidate.releaseRoot, "rev-parse", "HEAD"), candidate.preReleaseHead);
+  assert.equal(await git(candidate.releaseRoot, "status", "--porcelain", "--untracked-files=no"), "");
 });
 
 test("publication launches the stable owner runner and reads its exact generation effect", async (t) => {
@@ -184,6 +211,8 @@ test("publication launches the stable owner runner and reads its exact generatio
     dataDir: path.join(root, "data"),
     runtimeRoot: path.join(root, "runtime"),
     runnerFile,
+    environment: { AGENT_HUB_RESTART_OPERATION_ID: "completed-parent-restart",
+      AGENT_HUB_RESTART_LAUNCHER_PID: "123", SYNTHETIC_KEEP: "retained" },
     readPublicationStateImpl: async () => null,
     gitRemoteHeadImpl: async () => "base-commit",
     processAliveImpl: () => false,
@@ -216,6 +245,9 @@ test("publication launches the stable owner runner and reads its exact generatio
   assert.equal(spawnCalls[0].options.cwd, path.join(candidateRoot, "AgentHub"));
   assert.equal(spawnCalls[0].options.detached, true);
   assert.equal(spawnCalls[0].options.windowsHide, true);
+  assert.equal(spawnCalls[0].options.env.AGENT_HUB_RESTART_OPERATION_ID, undefined);
+  assert.equal(spawnCalls[0].options.env.AGENT_HUB_RESTART_LAUNCHER_PID, undefined);
+  assert.equal(spawnCalls[0].options.env.SYNTHETIC_KEEP, "retained");
 });
 
 test("publication readback stays unknown while the exact runner is alive", async (t) => {

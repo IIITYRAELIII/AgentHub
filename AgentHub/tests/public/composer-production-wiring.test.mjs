@@ -205,7 +205,7 @@ test("late rejection cannot downgrade an exact canonical admission", { timeout: 
       accepted: true, conflictKind: "message-intake", clientProjectionIntent: "conversation",
       displayText: "accepted before transport failure",
     });
-    await page.waitForFunction(() => document.querySelector(".chat-log")?.textContent.includes("Принято"));
+    await page.waitForFunction(() => document.querySelector(".chat-log")?.textContent.includes("Сохранено в Hub"));
     await page.evaluate(() => window.__rejectHeldSend());
     await page.waitForFunction(() => window.__toastHistory.includes("Введите сообщение"));
     assert.equal(await page.locator("[data-composer-input]").inputValue(), "");
@@ -237,6 +237,7 @@ for (const { now, expectedTime } of [
     const initial = snapshot();
     initial.tasks[0] = { ...initial.tasks[0], running: true, run: {
       id: "run-live", turnId: "turn-live", operationKind: "user-turn",
+      projectionState: "active",
       providerStart: { state: "observed", turnId: "turn-live" },
       clientUserMessageId: "root", prompt: "Root question",
       startedAt: "2026-09-09T15:51:11.165Z", submittedAt: "2026-09-09T15:51:10.190Z",
@@ -1762,7 +1763,7 @@ test("production overlapping and duplicate annotation operations do not advance 
   }
 });
 
-test("production mixed Blob preparation failure preserves recovery revision and exact retry", {
+test("production failed Blob batch stays visible until explicit removal and preserves unchanged recovery identity", {
   timeout: 120_000,
 }, async () => {
   const browser = await launchBrowser();
@@ -1774,11 +1775,11 @@ test("production mixed Blob preparation failure preserves recovery revision and 
     const originalId = (await bridgeCalls(page, "send-message")).at(-1).params.clientUserMessageId;
     await page.evaluate(() => {
       const original = window.AgentHubComposerFiles;
-      window.AgentHubComposerFiles = { ...original, prepare: async (file, metadata) => {
+      window.AgentHubComposerFiles = { ...original, prepare: async (file, metadata, options) => {
         if (file.name === "broken.png") {
           throw new Error("Не удалось прочитать broken.png");
         }
-        return original.prepare(file, metadata);
+        return original.prepare(file, metadata, options);
       } };
     });
     await page.locator("[data-file-input]").setInputFiles([
@@ -1788,6 +1789,12 @@ test("production mixed Blob preparation failure preserves recovery revision and 
     await page.waitForFunction(() => window.__toastHistory.some((message) => message.includes("broken.png")));
     assert.equal(await page.locator("[data-composer-input]").inputValue(), "reader failure retry");
     assert.equal(await page.locator("[data-attachment-index]").count(), 0);
+    assert.equal(await page.locator("[data-attachment-preparing]").count(), 2,
+      "failure cannot silently discard the successful file or the unread original");
+    assert.equal(await page.locator("[data-composer-send]").isDisabled(), true);
+    await page.locator('[data-attachment-preparation-remove][aria-label="Удалить good.png"]').click();
+    await page.locator('[data-attachment-preparation-remove][aria-label="Удалить broken.png"]').click();
+    assert.equal(await page.locator("[data-attachment-preparing]").count(), 0);
     await page.evaluate(() => localStorage.setItem("fixture:send-mode", "accept"));
     await page.locator("[data-composer]").evaluate((form) => form.requestSubmit());
     await page.waitForFunction(() => {

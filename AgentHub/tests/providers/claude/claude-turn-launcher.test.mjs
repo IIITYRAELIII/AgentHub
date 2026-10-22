@@ -16,6 +16,9 @@ test("ClaudeTurnLauncher owns session setup and detached run invocation", async 
     reasoningId: "high",
   };
   const launcher = new ClaudeTurnLauncher({
+    ensureThreadNamed: async (reference) => {
+      assert.deepEqual(reference, { provider: "claude", threadId: run.threadId }); return "Workspace - C1 1";
+    },
     taskRuns: { reindex: (...args) => events.push(["reindex", ...args]) },
     turnTemporaryFiles: temporaryFiles,
     taskSnapshots: { read: async () => ({ sessionId: run.threadId, sessionRoot: projectRoot }) },
@@ -34,6 +37,7 @@ test("ClaudeTurnLauncher owns session setup and detached run invocation", async 
   await launcher.start(run, [{ type: "text", text: "Проверка" }], ["temporary.png"]);
 
   assert.match(run.turnId, /^[0-9a-f-]{36}$/u);
+  assert.equal(run.taskTitle, "Workspace - C1 1");
   assert.deepEqual(temporaryFiles.get(run.turnId), ["temporary.png"]);
   assert.equal(events[0][0], "reindex");
   assert.deepEqual(events[1], ["developer-context", run.threadId, undefined]);

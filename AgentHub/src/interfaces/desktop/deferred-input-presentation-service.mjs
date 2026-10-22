@@ -1,5 +1,6 @@
 import { userTaskReferencePromptDetails } from "../../application/task-history.mjs";
 import { deferredInputText } from "../../domain/deferred-input.mjs";
+import { providerTurnAcceptance } from "../../domain/task-runs.mjs";
 
 export function deferredInputAttachments(item, describeAttachments) {
   const files = item.persistentFiles ? describeAttachments?.(item.temporaryFiles ?? []) ?? [] : [];
@@ -36,12 +37,7 @@ export class DeferredInputPresentationService {
       return this.receipts.updateResult(identity, { ...base, ...started });
     }
     if (state === "started") {
-      const acceptedTurnId = String(started?.providerStart?.turnId ?? "").trim();
-      const providerAccepted = Boolean(acceptedTurnId)
-        && acceptedTurnId === String(started?.turnId ?? "").trim()
-        && ["accepted-awaiting-first-event", "observed"].includes(
-          String(started?.providerStart?.state ?? ""),
-        );
+      const { accepted: providerAccepted, acceptedAt } = providerTurnAcceptance(started);
       return this.receipts.updateResult(identity, {
         accepted: true,
         providerAccepted,
@@ -55,7 +51,10 @@ export class DeferredInputPresentationService {
         threadId: started?.threadId ?? item.threadId,
         turnId: started?.turnId ?? null,
         clientUserMessageId: item.clientUserMessageId,
-        deliveredAt: started?.startedAt ?? item.dispatchingAt ?? null,
+        admittedAt: started?.startedAt ?? item.dispatchingAt ?? null,
+        providerAcceptedAt: acceptedAt,
+        startedAt: acceptedAt,
+        deliveredAt: acceptedAt,
         attachments: deferredInputAttachments(item, this.describeAttachments),
       });
     }

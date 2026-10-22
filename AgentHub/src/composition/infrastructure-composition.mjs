@@ -9,7 +9,9 @@ import { promisify } from "node:util";
 
 import { RunJournalService } from "../application/run-journal-service.mjs";
 import { HubMcpService } from "../application/hub-mcp-service.mjs";
+import { measureTaskOperation } from "../infrastructure/process/task-operation-timing.mjs";
 import { TaskLifecycleService } from "../application/task-lifecycle-service.mjs";
+import { createNativeMergeReviewVerifier } from "../application/native-merge-review.mjs";
 import { McpAdmissionCoordinator } from "../application/mcp-admission-coordinator.mjs";
 import { TurnEndNotificationRegistry } from "../application/turn-end-notifications.mjs";
 import { createWorkLogUsageStore } from "../application/work-log-usage-store.mjs";
@@ -430,9 +432,10 @@ export async function createHubInfrastructure({
     logFile: path.join(logDirectory, "agent-hub.log"), maxBytes: config.logMaxBytes,
     maxFiles: config.logMaxFiles, mirror: process.stdout.isTTY || process.stderr.isTTY,
   });
+  const verifyNativeResolutionReview = createNativeMergeReviewVerifier({ workspaceCatalog: workspaceCatalogStore, taskBoard });
   const taskGitWorkspaces = new TaskGitWorkspaceService({ dataDir: config.dataDir,
-    contourExternalEffects, recordTiming: recordTaskTiming });
-  const releaseGitWorkspaces = new ReleaseGitWorkspaceService({ dataDir: config.dataDir, contourExternalEffects });
+    contourExternalEffects, recordTiming: recordTaskTiming, verifyNativeResolutionReview });
+  const releaseGitWorkspaces = new ReleaseGitWorkspaceService({ dataDir: config.dataDir, contourExternalEffects, verifyNativeResolutionReview });
   const registeredReleaseProjectRoots = workspaceCatalogStore.hierarchy()
     .filter((workspace) => workspace.settings?.releaseWorkflowEnabled === true)
     .map((workspace) => ({
@@ -457,6 +460,7 @@ export async function createHubInfrastructure({
   }
   const taskReleasePlanner = new TaskReleasePlanService({ taskBoard, taskGitWorkspaces });
   const workspaceReleasePreflight = new WorkspaceReleasePreflightService({
+    measureOperation: measureTaskOperation,
     releasePlanner: taskReleasePlanner,
     taskGitWorkspaces,
     releaseGitWorkspaces,
@@ -485,6 +489,7 @@ export async function createHubInfrastructure({
     store: releaseOperationStore,
     dataDir: config.dataDir,
     runnerVersion: AGENT_HUB_VERSION,
+    reportDiagnostic: diagnostic => console.warn("Historical release entry unavailable", diagnostic),
   }));
   const releaseOperationPublication = new ReleaseOperationPublication({
     dataDir: config.dataDir,
@@ -508,6 +513,7 @@ export async function createHubInfrastructure({
     readTarget: (input) => releaseOperationAdapter.readTarget(input),
     finalize: (input) => releaseOperationAdapter.finalize(input),
     reservePublication: (input) => releaseOperationAdapter.reservePublication(input),
+    withReviewedMainRecovery: (input) => releaseOperationAdapter.withReviewedMainRecovery(input),
     requestCorrection: createReleaseCorrectionRequester({ taskBoard, taskLifecycle }),
     cleanupGeneration: (input) => releaseOperationAdapter.cleanupGeneration(input),
     processAlive: processIsAlive,
@@ -522,6 +528,7 @@ export async function createHubInfrastructure({
   taskLifecycle.setReleaseOperationPrepare((taskId) => releaseOperations.prepareForTaskAcceptance(taskId));
   releaseOperations.recover();
   const hubMcpService = new HubMcpService({
+    measureOperation: measureTaskOperation,
     workspaceCatalog: workspaceCatalogStore,
     taskBoard,
     taskLifecycle,

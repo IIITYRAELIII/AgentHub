@@ -423,7 +423,14 @@ test("local control client survives App Server exit during delayed startup and s
     return context?.usedTokens === 92_592 && context?.compaction?.status === "completed"
       ? snapshot
       : null;
-  }, "desktop context compaction", 5_000);
+  }, "desktop context compaction", 5_000).catch(async error => {
+    const snapshot = await callDesktopControl("snapshot", {}, { runtimeRoot });
+    const task = snapshot.tasks.find(item => item.threadId === firstThreadId);
+    throw new Error(`${error.message}; compaction readback=${JSON.stringify({
+      running: task?.running, context: task?.context,
+      run: task?.run && { turnId: task.run.turnId, operationKind: task.run.operationKind },
+    })}`, { cause: error });
+  });
   assert.equal(
     compactedSnapshot.tasks.find((item) => item.threadId === firstThreadId)?.context?.compaction?.id,
     compacted.compactionId,
@@ -1328,6 +1335,11 @@ test("local control client survives App Server exit during delayed startup and s
     const snapshot = await callDesktopControl("snapshot", {}, { runtimeRoot });
     return snapshot.tasks.find((item) => item.threadId === firstThreadId)?.running ? snapshot : null;
   }, "desktop cancellable turn", 5_000);
+  await waitFor(async () => {
+    const state = await readRuntimeState(dataDir);
+    return state.activeRuns.find(run => run.threadId === firstThreadId
+      && run.clientUserMessageId === cancelStart.clientUserMessageId && run.turnId) ?? null;
+  }, "exact provider cancellation target", 5_000);
   const cancelResult = await callDesktopControl("cancel-run", {
     provider: "codex",
     threadId: firstThreadId,

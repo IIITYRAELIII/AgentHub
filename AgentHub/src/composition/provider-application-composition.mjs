@@ -3,9 +3,8 @@ import { retargetTelegramClientSelections } from "../application/client-task-sel
 import { StreamContextMaintenanceService } from "../application/stream-context-maintenance-service.mjs";
 import { UsageSyncAutoService } from "../application/usage-sync-auto-service.mjs";
 import { UsageSyncRemoteClient } from "../infrastructure/http/usage-sync-remote-client.mjs";
-import { applyWorkLogAccountBackfill } from "../infrastructure/persistence/work-log-account-backfill.mjs";
+import { agentHubRuntimeHealth } from "../application/runtime-health.mjs";
 import { MaintenanceOperationStore } from "../infrastructure/persistence/maintenance-operation-store.mjs";
-import { readClaudeAccount } from "../providers/claude/claude-account.mjs";
 import { ClaudeContextMaintenanceService } from "../providers/claude/claude-context-maintenance-service.mjs";
 import { processIsAlive } from "../providers/claude/claude-run-io.mjs";
 import { readClaudeSessionSnapshot } from "../providers/claude/claude-session-reader.mjs";
@@ -27,6 +26,7 @@ import { createHubThreadNamingService } from "../application/hub-thread-naming-s
 import { createProviderProcessComposition } from "./provider-process-composition.mjs";
 import { createProviderSnapshotComposition } from "./provider-snapshot-composition.mjs";
 import { createProviderStartupComposition } from "./provider-startup-composition.mjs";
+import { createStorageRetentionComposition } from "./storage-retention-composition.mjs";
 
 export function resumePostTurnWork({
   maintenance,
@@ -34,11 +34,10 @@ export function resumePostTurnWork({
   wakeDeferredInputs,
   scheduleDeferredRestartIfReady,
 }) {
+  wakeDeferredInputs();
   if (restartPending) {
     void Promise.resolve(maintenance).finally(scheduleDeferredRestartIfReady);
-    return "restart";
   }
-  wakeDeferredInputs();
   return "deferred-inputs";
 }
 import { createRunAccountingComposition } from "./run-accounting-composition.mjs";
@@ -146,13 +145,7 @@ export async function createProviderApplicationComposition({
     projectRoot: config.projectRoot,
     projectionProjectRoots: globalWorkLogProjectRoots,
     suggestedDeviceLabel: suggestUsageSyncDeviceLabel,
-    accountBackfill: async () => {
-      const claudeAccount = await readClaudeAccount();
-      return applyWorkLogAccountBackfill({
-        databaseFile: journalDatabaseFile,
-        providerAccounts: claudeAccount ? [{ provider: "claude", ...claudeAccount }] : [],
-      });
-    },
+    trace: commandTraceService,
     isStopping: () => hostState.stopping,
   });
 
@@ -182,6 +175,17 @@ export async function createProviderApplicationComposition({
     canonicalizeProjectRoots,
   });
   const maintenanceOperations = new MaintenanceOperationStore({ dataDir: config.dataDir });
+  const storageRetention = createStorageRetentionComposition({ config, store: maintenanceOperations,
+    taskBoard: infrastructure.taskBoard, taskGitWorkspaces: infrastructure.taskGitWorkspaces,
+    releaseGitWorkspaces: infrastructure.releaseGitWorkspaces, releaseOperations: infrastructure.releaseOperations,
+    timers: runtimeTimers, readReady: () => agentHubRuntimeHealth.snapshot().ready,
+    readBusy: () => runtimeData.taskRuns.size > 0, isStopping: () => hostState.stopping,
+    health: agentHubRuntimeHealth });
+  agentHubRuntimeHealth.setDiagnosticSource("restart", () => {
+    const settled = maintenanceOperations.latestSettledRestart();
+    return settled ? { operationId: settled.operationId, status: settled.status,
+      completedAt: settled.completedAt } : null;
+  });
   hubMcpService.setActiveRuns(() => runtimeData.taskRuns.values());
   hubMcpService.setDeferredInputs(() => runtimeData.deferredInputs.diagnostics());
 
@@ -338,6 +342,7 @@ export async function createProviderApplicationComposition({
     ),
     workspaceCatalog: workspaceCatalogStore,
     selectionStore,
+    nameCreatedThread: hubThreadNaming.nameCreatedThread,
     deferredInputs: runtimeData.deferredInputs,
     invalidateCatalog: invalidateTaskCatalog,
     retargetClientSelections: (binding) => retargetTelegramClientSelections(hostState, binding),
@@ -401,6 +406,7 @@ export async function createProviderApplicationComposition({
     saveState: api.saveState,
   });
   const providerSnapshots = createProviderSnapshotComposition({
+    recordingContourRoot: config.testContourRecording?.root ?? null,
     readClaudeSessionSnapshot,
     findProject,
     saveState: api.saveState,
@@ -585,6 +591,7 @@ export async function createProviderApplicationComposition({
     runtimeTimers,
     commandTraceService,
     usageSyncAuto,
+    storageRetention,
     defaultNotificationChatId,
     ...providerProcess,
     ...accounting,
@@ -614,5 +621,6 @@ export async function createProviderApplicationComposition({
     ...providerOperations,
     ...providerCatalog,
     providerStartup,
+    hubThreadNaming,
   };
 }

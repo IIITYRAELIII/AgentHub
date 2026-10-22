@@ -104,7 +104,7 @@ async function canonicalProof(cwd, dataDir, integrationCommit, devAfterTree) {
   }, { guardTaskId: survivorId });
 }
 
-test("historical five-Task replay fails closed when its source result deletes a path", async (t) => {
+test("historical five-Task proof retains complete source witnesses without applying dev", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "ah-selected-composition-"));
   t.after(() => rm(root, { recursive: true, force: true, maxRetries: 3 }));
   const primary = path.join(root, "primary");
@@ -159,10 +159,12 @@ test("historical five-Task replay fails closed when its source result deletes a 
   await git(primary, ["update-ref", "refs/heads/main", MAIN]);
   await git(primary, ["checkout", "main"]);
 
-  await assert.rejects(
-    canonicalProof(primary, path.join(root, "task-data"), integrationCommit, devAfterTree),
-    /squash transfer cannot delete a source result path/u,
-  );
+  const proof = await canonicalProof(primary, path.join(root, "task-data"), integrationCommit, devAfterTree);
+  assert.equal(proof.source.resultCommit, "03d67ba0704cecadd3d4a0eea10ec27a1fe8ba70");
+  assert.equal(proof.survivor.resultCommit, REVIEWED_RESULT);
+  assert.deepEqual(proof.sourceWitnesses.map(witness => witness.path).sort(),
+    await changedPaths(primary, proof.source.baseCommit, proof.source.resultCommit));
+  assert.ok(proof.sourceWitnesses.every(witness => !witness.source || witness.survivor));
   assert.equal(await value(primary, ["status", "--porcelain"]), "");
   assert.equal(await value(primary, ["rev-parse", "HEAD"]), MAIN);
 });
@@ -381,11 +383,12 @@ test("mandatory results advance before an earlier ordinary integration and rollb
     projectRoot: root, approvedBaseCommit: main, frozenTasks: [ordinaryTask, taskA, taskB],
   });
   assert.equal(await value(accepted.releaseRoot, ["rev-parse", `${accepted.preReleaseHead}^{tree}`]), combinedTree);
-  assert.deepEqual(accepted.netProjectedTaskIds.sort(), ["task-a", "task-b", "task-ordinary"]);
+  assert.deepEqual(accepted.manifest.tasks.map(task => task.taskId).sort(), ["task-a", "task-b", "task-ordinary"]);
+  assert.equal(accepted.manifest.compositionPolicy, "main-selected-git-merge-v1");
   await assert.rejects(service.prepareCandidate({
     workspaceId: "workspace", planRevision: "conflicting-mandatory",
     projectRoot: root, approvedBaseCommit: main, frozenTasks: [ordinaryTask, taskA, conflictTask],
-  }), /Exact squash result advance failed/u);
+  }), { code: "RELEASE_NATIVE_MERGE_CONFLICT" });
   const readback = await service.prepareCandidate({
     workspaceId: "workspace", planRevision: "two-mandatory",
     projectRoot: root, approvedBaseCommit: main, frozenTasks: [ordinaryTask, taskA, taskB],

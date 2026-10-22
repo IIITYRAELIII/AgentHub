@@ -9464,6 +9464,10 @@ html[data-surface="mobile"] .chat-history-loader[data-armed] .chat-history-load 
   text-align: center;
 }
 
+button.attachment-preparing-label {
+  padding-inline: 0.1rem;
+}
+
 .attachment-file.attachment-open {
   cursor: pointer;
 }
@@ -10863,6 +10867,17 @@ html[data-surface="mobile"] .chat-stop-bottom > span {
 .themed-select-option[data-disabled="true"] {
   cursor: default;
   opacity: 0.42;
+}
+
+.themed-select-action {
+  background: transparent;
+  border-top: 1px solid var(--line-strong);
+  border-radius: 0;
+  display: block;
+  margin-top: 0.3rem;
+  text-align: left;
+  white-space: normal;
+  width: 100%;
 }
 
 .setting-field .themed-select {

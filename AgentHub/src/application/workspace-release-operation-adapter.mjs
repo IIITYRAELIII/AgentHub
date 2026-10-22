@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import { selectedCompositionFields, selectedCompositionIdentity } from "../domain/task-selected-composition.mjs";
 
 function requiredMethod(value, name) {
   if (typeof value?.[name] !== "function") throw new TypeError(`${name} is required`);
@@ -19,6 +20,7 @@ async function releaseMetadataBytes(metadata) {
   return bytes;
 }
 function approvedRepositories(operation) {
+  if (operation.reviewedMain) return operation.reviewedMain.approvedRepositories;
   return operation.authorization.approvedTargets.flatMap((target) => (
     target.repositoryRoot && target.approvedLocalMainCommit && target.approvedOriginMainCommit
       ? [{
@@ -35,6 +37,7 @@ function selectionIdentity(value) {
     taskId: String(item.taskId),
     resultCommit: String(item.resultCommit),
     acceptanceRevision: Number(item.acceptanceRevision),
+    selectedCompositionIdentity: selectedCompositionIdentity(item),
   })).sort((left, right) => left.taskId.localeCompare(right.taskId)));
 }
 
@@ -67,6 +70,7 @@ export class WorkspaceReleaseOperationAdapter {
       candidate.frozenTasks.map((task) => ({
         taskId: task.taskId,
         resultCommit: task.resultCommit,
+        ...selectedCompositionFields(task),
         acceptanceRevision: task.resultReleaseRevision ?? task.taskRevision,
       }))
     ));
@@ -88,8 +92,13 @@ export class WorkspaceReleaseOperationAdapter {
         frozenTasks: candidate.frozenTasks,
         manifest: candidate.manifest,
       })),
-      sourceFingerprint: `${prepared.planRevision}:${operation.authorization.fingerprint}`,
+      sourceFingerprint: `${prepared.planRevision}:${operation.authorization.fingerprint}${operation.reviewedMain ? `:${operation.reviewedMain.identitySha256}` : ""}`,
     };
+  }
+
+  withReviewedMainRecovery(input) {
+    requiredMethod(this.releasePreflight, "withReviewedMainRecovery");
+    return this.releasePreflight.withReviewedMainRecovery(input);
   }
 
   validate({ operation, generation }) {
