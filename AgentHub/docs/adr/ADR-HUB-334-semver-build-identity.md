@@ -67,3 +67,13 @@ no historical opaque executable or production update is required.
 S2 owns final compatible source composition, public artifact freeze, actual
 Android build/device verification, download/update acceptance and delivery.
 Source tests do not claim a public 2.0.0 package or installed version.
+
+## Publication consumer correction
+
+`prepareCommittedAgentHubReleaseVersion` requires the original expected public
+version and never selects a next patch implicitly. The full publication CLI
+uses the same canonical freeze owner as changed publication and passes its
+returned immutable version into validation. Only new freeze/preparation selects
+a version. After normal metadata save, retry validates that same selected value;
+missing original identity refuses before any metadata write or effect stage.
+No additional version receipt, counter or publication path is introduced.

@@ -29,7 +29,7 @@ REPOSITORY = "IIITYRAELIII/AgentHub"
 PACKAGE_ASSET = "AgentHub-win32-x64.zip"
 ASSET_HOSTS = {"release-assets.githubusercontent.com", "objects.githubusercontent.com"}
 VERSION_SCHEME = "semver-build-v1"
-_NUMBER = r"(?:0|[1-9]\d*)"
+_NUMBER = r"(?:0|[1-9][0-9]*)"
 _SEMVER = re.compile(rf"({_NUMBER})\.({_NUMBER})\.({_NUMBER})(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?")
 
 
@@ -57,7 +57,7 @@ def valid_artifact_version(value: str) -> bool:
         return False
     if re.fullmatch(r"[0-9]+(?:\.[0-9]+){2,3}", value):
         return True  # Historical immutable receipt grammar; not upgrade authority.
-    match = re.fullmatch(r"(.+)\+build\.([1-9]\d*)", value)
+    match = re.fullmatch(r"(.+)\+build\.([1-9][0-9]*)", value)
     if not match:
         return False
     try:

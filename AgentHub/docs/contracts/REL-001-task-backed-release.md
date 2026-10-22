@@ -30,6 +30,11 @@ new intent; an admitted freeze always reuses its saved version. A selected
 prerelease can stabilize without changing its core. Stable public discovery
 continues to refuse prereleases; this does not introduce a beta update channel.
 
+Full publication uses that same freeze owner and passes its original expected
+version into committed-metadata validation. Validation/retry never selects a
+next patch; absent original expectation refuses without writing metadata. Core
+and build numbers use the same ASCII-only grammar in producer and recipient.
+
 Public version, internal releaseId and artifact version are distinct. The new
 artifact is `<publicVersion>+build.N`; manifest and package descriptors also bind
 `versionScheme: semver-build-v1`, `publicVersion` and integer `buildNumber`.

@@ -5,6 +5,7 @@ import hashlib
 import io
 from pathlib import Path
 import tempfile
+import zipfile
 from unittest.mock import patch
 import install_release as installer
 import unittest
@@ -80,6 +81,50 @@ class SemanticPackageTests(_base.PackageCheckpointTests):
             with self.assertRaisesRegex(ValueError, "Prerelease"):
                 installer.fetch_release("latest", Path(scratch))
         self.assertEqual(len(requests), 2)
+
+    def test_non_ascii_decimal_core_refuses_before_namespace_or_assets(self):
+        original_manifest, original_receipt = dict(self.manifest), dict(self.receipt)
+        for position in range(3):
+            for digit in ("\u0660", "\uff11"):
+                for component in (digit, "1"+digit):
+                    core = ["2", "0", "1"]
+                    core[position] = component
+                    public = ".".join(core)
+                    artifact = public+"+build.30000001"
+                    with self.subTest(public=public):
+                        self.manifest = {**original_manifest, "version": public, "publicVersion": public,
+                                         "releaseVersion": artifact}
+                        self.receipt = {**original_receipt, "version": artifact}
+                        self.manifest_file.write_text(json.dumps(self.manifest), encoding="utf-8")
+                        self.receipt["manifestSha256"] = __import__("build_release").file_hash(self.manifest_file)
+                        self.save_receipt()
+                        self.assertFalse(valid_artifact_version(artifact))
+                        with self.assertRaises(ValueError):
+                            semantic_fields(self.manifest)
+                        with self.assertRaises(ValueError):
+                            self.run_stage()
+                        self.assertFalse(self.output.exists())
+        self.manifest, self.receipt = original_manifest, original_receipt
+
+    def test_receiver_rejects_non_ascii_core_before_extraction(self):
+        self.run_stage()
+        original = self.namespace/"assets/AgentHub-win32-x64.zip"
+        with zipfile.ZipFile(original) as source:
+            content = {item.filename: source.read(item) for item in source.infolist()}
+        for position in range(3):
+            core = ["2", "0", "1"]
+            core[position] = "1\u0660"
+            public = ".".join(core)
+            descriptor = json.loads(content["package-manifest.json"])
+            descriptor.update(publicVersion=public, version=public+"+build.30000001")
+            archive = self.root/f"non-ascii-{position}.zip"
+            with zipfile.ZipFile(archive, "w") as target:
+                for name, raw in content.items():
+                    target.writestr(name, json.dumps(descriptor).encode() if name == "package-manifest.json" else raw)
+            destination = self.root/f"invalid-consumer-{position}"
+            with self.assertRaisesRegex(ValueError, "Semantic"):
+                extract_verified(archive, hashlib.sha256(archive.read_bytes()).hexdigest(), destination)
+            self.assertFalse(destination.exists())
 
     def test_build_drift_and_unknown_scheme_refuse_before_packaging(self):
         for changes in [{"buildNumber": 30000002}, {"publicVersion": "2.0.1"}, {"versionScheme": "unknown"}]:

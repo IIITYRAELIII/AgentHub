@@ -4,6 +4,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { execFileSync } from "node:child_process";
+import { prepareCommittedAgentHubReleaseVersion } from "../../src/infrastructure/filesystem/release-version.mjs";
 import { fileURLToPath } from "node:url";
 
 import {
@@ -37,6 +39,41 @@ test.after(() => {
   if (previousLocalAppData === undefined) delete process.env.LOCALAPPDATA;
   else process.env.LOCALAPPDATA = previousLocalAppData;
   fs.rmSync(fixtureLocalAppData, { recursive: true, force: true });
+});
+
+test("full publication validates original selected version after normal save without selecting another patch", async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "hub-selected-version-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const pkg = { name: "agent-hub", version: "2.0.0" };
+  fs.writeFileSync(path.join(root, "package.json"), JSON.stringify(pkg));
+  fs.writeFileSync(path.join(root, "package-lock.json"), JSON.stringify({ ...pkg, packages: { "": pkg } }));
+  const git = (...args) => execFileSync("git", args, { cwd: root, encoding: "utf8", windowsHide: true });
+  git("init", "--initial-branch=main");
+  const save = () => {
+    git("add", "package.json", "package-lock.json");
+    git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "Save original selected version");
+  };
+  save();
+  let effects = 0;
+  // The existing freeze owner is represented by its immutable public value.
+  // The actual consumer and filesystem version owner execute unchanged.
+  const ports = { exclusive: action => action(), before: async () => assert.equal(git("status", "--porcelain"), ""),
+    freezeVersion: async () => "2.0.1",
+    prepareVersion: options => prepareCommittedAgentHubReleaseVersion({ root, ...options }),
+    run: async () => { effects++; throw new Error("synthetic stage boundary"); },
+    record: async () => assert.fail("no publication in this fixture"), restart: async () => assert.fail("no restart") };
+  await assert.rejects(publishAll(["--skip-tests", "--skip-worker", "--skip-restart"], ports), /release-коммит/u);
+  assert.equal(effects, 0);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(root, "package.json"))).version, "2.0.1");
+  save();
+  const before = fs.readFileSync(path.join(root, "package.json"));
+  await assert.rejects(publishAll(["--skip-tests", "--skip-worker", "--skip-restart"], ports), /synthetic stage boundary/u);
+  assert.equal(effects, 1);
+  assert.deepEqual(fs.readFileSync(path.join(root, "package.json")), before);
+  assert.equal(git("status", "--porcelain"), "");
+  // Missing original expected value is not permission to choose a new version.
+  await assert.rejects(prepareCommittedAgentHubReleaseVersion({ root }), /expected version/u);
+  assert.deepEqual(fs.readFileSync(path.join(root, "package.json")), before);
 });
 
 test("publication rejects a dirty AgentHub working tree", async () => {

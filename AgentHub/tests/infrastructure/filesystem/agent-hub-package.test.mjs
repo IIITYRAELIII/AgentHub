@@ -100,7 +100,7 @@ test("publication preflight stops after preparing an uncommitted calendar versio
       packages: { "": { name: "agent-hub", version: "2026.8.23" } },
     }), "utf8");
     await assert.rejects(
-      prepareCommittedAgentHubReleaseVersion({ root, now: new Date(2026, 7, 24, 12) }),
+      prepareCommittedAgentHubReleaseVersion({ root, expectedVersion: "2.0.0", now: new Date(2026, 7, 24, 12) }),
       /автоматически повышена до v2\.0\.0/u,
     );
   } finally {

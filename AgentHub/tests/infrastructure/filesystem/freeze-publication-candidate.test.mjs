@@ -6,6 +6,8 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
+import { publishAll } from "../../../publish-all.mjs";
+import { prepareCommittedAgentHubReleaseVersion } from "../../../src/infrastructure/filesystem/release-version.mjs";
 import { freezePreparedPublication } from "../../../publish-changed.mjs";
 import { releaseOperationRuntimePublicationInput } from "../../../release-operation-publication-runner.mjs";
 import { ReleaseGitWorkspaceService, assertReleaseCandidateContourSource } from "../../../src/infrastructure/filesystem/release-git-workspace.mjs";
@@ -95,6 +97,32 @@ test("new semantic freeze selects minor once and resume retains the original ver
   assert.equal(manifest.publication.releaseVersion, "2.1.0");
   const repeated = await f.freeze({ releaseType: "major" });
   assert.equal(repeated.manifestHash, frozen.manifestHash);
+});
+
+test("full consumer reuses the actual frozen original version through canonical freeze owner", async t => {
+  const f = await fixture(t);
+  await writeFile(path.join(f.candidate.releaseRoot, "CHANGELOG.md"), f.changelogContent);
+  const frozen = await f.freeze(); // Ordinary owner selects and commits 2.0.0 once.
+  const packageFile = path.join(f.candidate.releaseRoot, "AgentHub/package.json");
+  const raw = await readFile(packageFile);
+  let stages = 0;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    await assert.rejects(publishAll(["--skip-tests", "--skip-worker", "--skip-restart"], {
+      exclusive: action => action(),
+      freezeVersion: async () => (await import("../../../publish-changed.mjs")).freezePreparedPublication({
+        repositoryRoot: f.candidate.releaseRoot, workspaceId: "workspace",
+        readPlan: async () => ({ revision: "plan" }), createReleaseWorkspace: () => f.service,
+        assertCleanTree: async () => assert.equal(await git(f.candidate.releaseRoot, "status", "--porcelain"), ""),
+        assertCurrentRevision: async () => assert.equal(await git(f.candidate.releaseRoot, "rev-parse", "HEAD"), frozen.preReleaseHead),
+      }),
+      prepareVersion: options => prepareCommittedAgentHubReleaseVersion({ root: path.dirname(packageFile), ...options }),
+      run: async () => { stages++; throw new Error("synthetic effect boundary"); },
+    }), /synthetic effect boundary/u);
+    assert.deepEqual(await readFile(packageFile), raw);
+    assert.equal(await git(f.candidate.releaseRoot, "rev-parse", "HEAD"), frozen.preReleaseHead);
+  }
+  assert.equal(stages, 2);
+  assert.equal(JSON.parse(raw).version, "2.0.0");
 });
 
 function assertLineEndings(bytes, expected) {

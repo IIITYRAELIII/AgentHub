@@ -247,6 +247,7 @@ export async function publishAll(args = process.argv.slice(2), {
   revision = currentRevision,
   ensureWorkerDependency = ensureWrangler,
   prepareVersion = async () => ({ changed: false }),
+  freezeVersion = null,
   checkpoint = null,
   journal = null,
   runtimeRoot = defaultRuntimeRoot(),
@@ -256,7 +257,8 @@ export async function publishAll(args = process.argv.slice(2), {
   return exclusive(async () => {
     const options = parseArguments(args);
     await before();
-    await prepareVersion();
+    const expectedVersion = freezeVersion ? await freezeVersion() : null;
+    await prepareVersion(expectedVersion == null ? {} : { expectedVersion });
     const head = checkpoint ? await revision({ cwd: REPOSITORY_ROOT }) : null;
     if (!options.skipWorker) await ensureWorkerDependency();
     const steps = publicationSteps({
@@ -308,6 +310,9 @@ if (invokedFile === fileURLToPath(import.meta.url)) {
       await assertCleanPublicationTree({ cwd: REPOSITORY_ROOT });
       await assertCurrentPublicationRevision({ cwd: REPOSITORY_ROOT });
     },
+    // Reuse the canonical freeze owner, including its original manifest on
+    // retry. Dynamic import avoids a static cycle with the shared step helpers.
+    freezeVersion: async () => (await import("./publish-changed.mjs")).freezePreparedPublication(),
     prepareVersion: prepareCommittedAgentHubReleaseVersion,
   }).catch((error) => {
     console.error(`\nПубликация остановлена: ${error.message}`);

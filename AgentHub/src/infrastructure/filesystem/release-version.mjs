@@ -98,6 +98,12 @@ export async function prepareAgentHubReleaseVersion({ writeFileImpl = writeFile,
 }
 
 export async function prepareCommittedAgentHubReleaseVersion(options = {}) {
+  // Publication validates the original selected/frozen version. Selecting a
+  // new public version belongs to the existing freeze/preparation owner only.
+  if (typeof options.expectedVersion !== "string" || !options.expectedVersion
+      || options.expectedVersion !== options.expectedVersion.trim()) {
+    throw new Error("Publication requires its original expected version");
+  }
   const result = await prepareAgentHubReleaseVersion(options);
   if (result.changed) {
     throw new Error(
