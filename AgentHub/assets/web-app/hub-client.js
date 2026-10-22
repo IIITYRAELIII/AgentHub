@@ -1280,7 +1280,7 @@ function syncHistoryPagination(taskIdValue) {
   const page = historyPageByTask.get(taskIdValue);
   agentHub.setHistoryPagination(taskIdValue, {
     hasOlder: page?.nextBefore != null,
-    loading: page?.loading === true,
+    loading: page?.loading === true || (!page && visibleHistoryLoads.has(taskIdValue)),
     messageTotal: page?.messageTotal,
   });
 }
@@ -3318,9 +3318,11 @@ async function settleOpenedTaskHistory(id, identity) {
 }
 
 function mergeHistoryLoadRequest(previous, next) {
-  if (!previous) return next;
+  if (!previous || !sameIdentity(previous.identity, next.identity)) return next;
   return {
     ...next,
+    traceId: previous.traceId,
+    queuedAt: previous.queuedAt,
     refreshSource: previous.refreshSource || next.refreshSource,
     preserveScroll: previous.preserveScroll || next.preserveScroll,
   };
@@ -3338,7 +3340,8 @@ function enqueueTaskHistoryLoad(id, identity, {
   }
   state.pending = mergeHistoryLoadRequest(state.pending, {
     identity: stableIdentity(identity),
-    request: beginHistoryRequest(id, identity),
+    traceId: commandTrace.newId(),
+    queuedAt: performance.now(),
     refreshSource,
     preserveScroll,
     onlyWhenSelected,
@@ -3346,20 +3349,35 @@ function enqueueTaskHistoryLoad(id, identity, {
   if (state.running) return state.running;
   state.running = (async () => {
     visibleHistoryLoads.add(id);
+    syncHistoryPagination(id);
     try {
       while (state.pending) {
         const pending = state.pending;
         state.pending = null;
+        // Coalesced notifications for this identity request a later read, not
+        // cancellation of the page already being read. Fence only dispatched
+        // reads; explicit pagination and a changed Thread still supersede it.
+        const request = beginHistoryRequest(id, pending.identity);
         const settled = await settleOptionalRead(() => backgroundHttpScheduler.run(
-          () => control("task-history", {
-            ...pending.identity,
-            limit: 20,
-            includeActive: true,
-            refreshSource: pending.refreshSource,
-            knownVersion: historyPageByTask.get(id)?.version ?? "",
-          }),
+          () => {
+            commandTrace.record("ui-control", "history-queue", performance.now() - pending.queuedAt,
+              pending.traceId, { ...pending.identity, clientAssetRevision: "hub333.history.1" });
+            return control("task-history", {
+              ...pending.identity,
+              clientTraceId: pending.traceId,
+              limit: 20,
+              includeActive: true,
+              refreshSource: pending.refreshSource,
+              knownVersion: historyPageByTask.get(id)?.version ?? "",
+            });
+          },
         ));
-        if (settled.status === "rejected" || !currentHistoryRequest(pending.request)) continue;
+        const current = currentHistoryRequest(request);
+        commandTrace.record("ui-control", "history-page-decision", 0, pending.traceId,
+          { ...pending.identity, clientAssetRevision: "hub333.history.1",
+            decision: settled.status === "rejected" ? "failed" : current ? "current" : "superseded",
+            count: settled.value?.items?.length ?? 0 });
+        if (settled.status === "rejected" || !current) continue;
         const history = verifiedTaskHistory(settled.value, pending.identity);
         if (!sameIdentity(taskIdentity(id), history)) continue;
         if (pending.onlyWhenSelected && selectedTaskId !== id) continue;
@@ -3373,10 +3391,23 @@ function enqueueTaskHistoryLoad(id, identity, {
           skipSnapshot: true,
           selectTask: false,
         });
+        const paintedPage = historyPageByTask.get(id);
+        commandTrace.afterPaint("ui-render", "history-page-paint", pending.queuedAt, pending.traceId,
+          { ...pending.identity, clientAssetRevision: "hub333.history.1", count: history.items?.length ?? 0 },
+          () => {
+            const pane = document.querySelector("[data-chat-pane]");
+            const visible = selectedTaskId === id && pane?.dataset.streamChatTaskId === id
+              && pane.getClientRects().length > 0 && document.documentElement.dataset.view === "chat";
+            const superseded = !sameIdentity(taskIdentity(id), pending.identity)
+              || historyPageByTask.get(id) !== paintedPage;
+            return { outcome: visible && !superseded ? "succeeded" : "cancelled",
+              metadata: { render: superseded ? "superseded" : visible ? "viewport" : "hidden" } };
+          });
       }
     } finally {
       visibleHistoryLoads.delete(id);
       if (historyLoadStates.get(id) === state) historyLoadStates.delete(id);
+      syncHistoryPagination(id);
     }
   })();
   return state.running;

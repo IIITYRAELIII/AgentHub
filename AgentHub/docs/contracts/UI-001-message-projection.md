@@ -238,6 +238,15 @@ reducer and live-card filtering, preserving one user entity without presenting
 an intermediate agent response as a final. Older loaded pages and request/Stream
 generation fences retain their existing ownership.
 
+Repeated snapshot notifications for the same provider/Thread/Stream coalesce a
+following history read without invalidating the page already in flight. Only
+dispatched reads advance its request generation; Thread rotation and explicit
+pagination still reject superseded responses. An initial background read exposes
+the existing loading indicator until the canonical page arrives, while retaining
+visible receipt/user projections. A refresh never hides already loaded history.
+Content-free queue, response-decision and visible-paint measurements retain that
+history request's original trace identity through the existing trace owner.
+
 Opening history shares a bounded transport envelope with optional global
 snapshot data. If that snapshot leaves insufficient space, the server returns
 `snapshot: null` and `snapshotDeferred: true`, preserving the complete quote and
