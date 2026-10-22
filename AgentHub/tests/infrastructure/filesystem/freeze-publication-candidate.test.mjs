@@ -6,7 +6,8 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
-import { publishAll } from "../../../publish-all.mjs";
+import { publishAll, publicationSteps, runStep } from "../../../publish-all.mjs";
+import { parseRuntimeArguments } from "../../../src/runtime/runtime-manager.mjs";
 import { prepareCommittedAgentHubReleaseVersion } from "../../../src/infrastructure/filesystem/release-version.mjs";
 import { freezePreparedPublication } from "../../../publish-changed.mjs";
 import { releaseOperationRuntimePublicationInput } from "../../../release-operation-publication-runner.mjs";
@@ -109,8 +110,9 @@ test("full consumer reuses the actual frozen original version through canonical 
   for (let attempt = 0; attempt < 2; attempt++) {
     await assert.rejects(publishAll(["--skip-tests", "--skip-worker", "--skip-restart"], {
       exclusive: action => action(),
+      revision: async () => git(f.candidate.releaseRoot, "rev-parse", "HEAD"),
       freezeVersion: async () => (await import("../../../publish-changed.mjs")).freezePreparedPublication({
-        repositoryRoot: f.candidate.releaseRoot, workspaceId: "workspace",
+        repositoryRoot: f.candidate.releaseRoot, workspaceId: "workspace", includeArtifactVersion: true,
         readPlan: async () => ({ revision: "plan" }), createReleaseWorkspace: () => f.service,
         assertCleanTree: async () => assert.equal(await git(f.candidate.releaseRoot, "status", "--porcelain"), ""),
         assertCurrentRevision: async () => assert.equal(await git(f.candidate.releaseRoot, "rev-parse", "HEAD"), frozen.preReleaseHead),
@@ -123,6 +125,55 @@ test("full consumer reuses the actual frozen original version through canonical 
   }
   assert.equal(stages, 2);
   assert.equal(JSON.parse(raw).version, "2.0.0");
+});
+
+test("full consumer passes the same frozen artifact to real Android input and runtime parser", async t => {
+  const f = await fixture(t);
+  await writeFile(path.join(f.candidate.releaseRoot, "CHANGELOG.md"), f.changelogContent);
+  const frozen = await f.freeze();
+  const options = { repositoryRoot: f.candidate.releaseRoot, workspaceId: "workspace", includeArtifactVersion: true,
+    readPlan: async () => ({ revision: "plan" }), createReleaseWorkspace: () => f.service,
+    assertCleanTree: async () => {}, assertCurrentRevision: async () => {} };
+  const value = await freezePreparedPublication(options);
+  const original = JSON.parse(await readFile(frozen.manifestFile, "utf8")).publication;
+  assert.deepEqual(value, { releaseVersion: original.releaseVersion, runtimeReleaseVersion: original.runtimeReleaseVersion, head: original.head });
+  const actual = path.resolve(import.meta.dirname, "../../..");
+  const runner = path.join(f.primary, "..", "android-input");
+  for (const file of ["AndroidApp/build.ps1", "release-version.mjs", "src/domain/agent-hub-version.mjs", "src/infrastructure/filesystem/release-version.mjs"]) {
+    await mkdir(path.dirname(path.join(runner, file)), { recursive: true });
+    await writeFile(path.join(runner, file), await readFile(path.join(actual, file)));
+  }
+  const pkg = JSON.parse(await readFile(path.join(actual, "package.json"), "utf8"));
+  await writeFile(path.join(runner, "package.json"), JSON.stringify({ name: "agent-hub", version: value.releaseVersion,
+    type: "module", scripts: { "android:build": pkg.scripts["android:build"] } }));
+  const logFile = path.join(runner, "android-input.log");
+  let calls = 0;
+  await assert.rejects(publishAll(["--skip-tests", "--skip-worker", "--skip-restart"], {
+    exclusive: action => action(), revision: async () => original.head,
+    freezeVersion: () => freezePreparedPublication(options),
+    prepareVersion: version => prepareCommittedAgentHubReleaseVersion({ root: path.join(f.candidate.releaseRoot, "AgentHub"), ...version }),
+    run: async step => {
+      calls++;
+      assert.equal(step.label, "Сборка Agent Hub Mobile");
+      assert.deepEqual(step.args.slice(-3), ["--", "-ArtifactVersion", original.runtimeReleaseVersion]);
+      // Execute actual npm → actual wrapper → actual frozen identity parser.
+      // A deliberately absent SDK stops before Gradle or any APK/build output.
+      await runStep({ ...step, cwd: runner, logFile, timeoutMs: 30_000,
+        env: { ANDROID_SDK_ROOT: path.join(runner, "absent-sdk"), ANDROID_HOME: path.join(runner, "absent-sdk") } });
+    },
+  }), /процесс завершён/u);
+  const log = await readFile(logFile, "utf8");
+  assert.match(log, /Android SDK API 36 was not found/u);
+  assert.doesNotMatch(log, /require -ArtifactVersion|Invalid frozen Android artifact|differs from frozen/u);
+  assert.equal(calls, 1);
+  const runtime = publicationSteps({ frozenVersion: value }).find(step => step.label === "Сборка runtime-релиза");
+  const parsed = parseRuntimeArguments(["deploy", ...runtime.args.slice(runtime.args.indexOf("--") + 1)]);
+  assert.equal(parsed.expectedReleaseVersion, original.runtimeReleaseVersion);
+  assert.equal(parsed.publicationRevision, original.head);
+  for (const args of [["deploy", "--expected-release-version", original.runtimeReleaseVersion],
+    ["status", "--expected-release-version", original.runtimeReleaseVersion, "--publication-revision", original.head]]) {
+    assert.throws(() => parseRuntimeArguments(args), /Frozen deploy/u);
+  }
 });
 
 function assertLineEndings(bytes, expected) {

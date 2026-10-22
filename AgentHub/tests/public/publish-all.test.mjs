@@ -58,7 +58,8 @@ test("full publication validates original selected version after normal save wit
   // The existing freeze owner is represented by its immutable public value.
   // The actual consumer and filesystem version owner execute unchanged.
   const ports = { exclusive: action => action(), before: async () => assert.equal(git("status", "--porcelain"), ""),
-    freezeVersion: async () => "2.0.1",
+    freezeVersion: async () => ({ releaseVersion: "2.0.1", runtimeReleaseVersion: "2.0.1+build.42", head: git("rev-parse", "HEAD").trim() }),
+    revision: async () => git("rev-parse", "HEAD").trim(),
     prepareVersion: options => prepareCommittedAgentHubReleaseVersion({ root, ...options }),
     run: async () => { effects++; throw new Error("synthetic stage boundary"); },
     record: async () => assert.fail("no publication in this fixture"), restart: async () => assert.fail("no restart") };
@@ -74,6 +75,19 @@ test("full publication validates original selected version after normal save wit
   // Missing original expected value is not permission to choose a new version.
   await assert.rejects(prepareCommittedAgentHubReleaseVersion({ root }), /expected version/u);
   assert.deepEqual(fs.readFileSync(path.join(root, "package.json")), before);
+});
+
+test("full frozen source/public/build mismatch refuses before metadata or effect stages", async () => {
+  const good = { releaseVersion: "2.0.0", runtimeReleaseVersion: "2.0.0+build.42", head: "a".repeat(40) };
+  for (const [value, revision] of [[{ ...good, releaseVersion: "2.0.1" }, good.head],
+    [{ ...good, runtimeReleaseVersion: "2.0.0+build.43", extra: 1 }, good.head],
+    [{ ...good }, "b".repeat(40)], ["2.0.0", good.head]]) {
+    let writes = 0, stages = 0;
+    await assert.rejects(publishAll([], { exclusive: action => action(), freezeVersion: async () => value,
+      revision: async () => revision, prepareVersion: async () => { writes++; }, run: async () => { stages++; } }), /[Ff]rozen/u);
+    assert.equal(writes, 0);
+    assert.equal(stages, 0);
+  }
 });
 
 test("publication rejects a dirty AgentHub working tree", async () => {

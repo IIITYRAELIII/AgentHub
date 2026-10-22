@@ -703,20 +703,29 @@ export async function runtimeStatus({ runtimeRoot = defaultRuntimeRoot(), requir
   };
 }
 
-function parseCli(args) {
+export function parseRuntimeArguments(args) {
   const command = args[0] ?? "status";
   let runtimeRoot = defaultRuntimeRoot();
+  let expectedReleaseVersion = null, publicationRevision = null;
   for (let index = 1; index < args.length; index += 1) {
     if (args[index] === "--runtime-root" && args[index + 1]) runtimeRoot = path.resolve(args[++index]);
+    else if (args[index] === "--expected-release-version" && args[index + 1] && expectedReleaseVersion === null) expectedReleaseVersion = args[++index];
+    else if (args[index] === "--publication-revision" && args[index + 1] && publicationRevision === null) publicationRevision = args[++index];
     else throw new Error(`Unknown argument: ${args[index]}`);
   }
-  return { command, runtimeRoot };
+  if (expectedReleaseVersion !== null || publicationRevision !== null) {
+    if (command !== "deploy" || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u.test(publicationRevision ?? "")) {
+      throw new Error("Frozen deploy requires its original source and artifact version");
+    }
+    artifactVersionIdentity(expectedReleaseVersion);
+  }
+  return { command, runtimeRoot, expectedReleaseVersion, publicationRevision };
 }
 
 export async function main(args = process.argv.slice(2)) {
-  const { command, runtimeRoot } = parseCli(args);
+  const { command, runtimeRoot, expectedReleaseVersion, publicationRevision } = parseRuntimeArguments(args);
   if (command === "deploy") {
-    const result = await deployRuntime({ runtimeRoot });
+    const result = await deployRuntime({ runtimeRoot, expectedReleaseVersion, publicationRevision });
     await prepareRuntimeConfig({ runtimeRoot });
     console.log(`Runtime release deployed: ${result.releaseId}`);
   } else if (command === "activate") {

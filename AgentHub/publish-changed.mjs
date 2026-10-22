@@ -2,6 +2,7 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import { artifactVersionIdentity } from "./src/domain/agent-hub-version.mjs";
 
 import { callDesktopControl } from "./desktop-control.mjs";
 import { publicationRuntimeStatus } from "./src/runtime/runtime-publication-start.mjs";
@@ -505,6 +506,7 @@ export async function publishChanged(args = process.argv.slice(2), {
 }
 
 export async function freezePreparedPublication({
+  includeArtifactVersion = false,
   workspaceId = "",
   repositoryRoot = REPOSITORY_ROOT,
   readPlan = readCandidatePublicationReleasePlan,
@@ -547,6 +549,16 @@ export async function freezePreparedPublication({
   if (!releaseVersion) throw new Error("frozen release version is missing from the immutable manifest");
   await assertCleanTree({ cwd: repositoryRoot });
   await assertCurrentRevision({ cwd: repositoryRoot });
+  if (includeArtifactVersion) {
+    const runtimeReleaseVersion = frozenManifest.publication?.runtimeReleaseVersion;
+    const identity = artifactVersionIdentity(runtimeReleaseVersion);
+    const head = frozenManifest.publication?.head;
+    if (identity.publicVersion !== releaseVersion || head !== frozen.preReleaseHead
+        || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u.test(head ?? "")) {
+      throw new Error("Frozen public/source/artifact version binding changed");
+    }
+    return { releaseVersion, runtimeReleaseVersion, head };
+  }
   return releaseVersion;
 }
 

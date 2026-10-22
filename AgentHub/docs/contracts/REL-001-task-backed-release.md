@@ -34,6 +34,10 @@ Full publication uses that same freeze owner and passes its original expected
 version into committed-metadata validation. Validation/retry never selects a
 next patch; absent original expectation refuses without writing metadata. Core
 and build numbers use the same ASCII-only grammar in producer and recipient.
+Full publication also binds the same immutable artifact version and source head
+before stages. Android consumes that artifact as its code/name input; runtime
+deploy passes its original expected version and source to the existing lease
+owner. Neither stage allocates an independent semantic build.
 
 Public version, internal releaseId and artifact version are distinct. The new
 artifact is `<publicVersion>+build.N`; manifest and package descriptors also bind

@@ -77,3 +77,12 @@ returned immutable version into validation. Only new freeze/preparation selects
 a version. After normal metadata save, retry validates that same selected value;
 missing original identity refuses before any metadata write or effect stage.
 No additional version receipt, counter or publication path is introduced.
+
+The optional complete freeze return is a projection of the same immutable
+publication record (`releaseVersion`, `runtimeReleaseVersion`, `head`), not a
+new receipt. Full publication checks the public/artifact relationship and current
+source head before metadata validation or stages, then binds that projection
+into its existing checkpoint identity. Android receives -ArtifactVersion from
+that record. Runtime deploy receives the same expected artifact/source pair and
+uses the existing preparation lease/refusal; neither builder chooses a new N.
+The default public-only freeze return remains compatible for unchanged callers.
