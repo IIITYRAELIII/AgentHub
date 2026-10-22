@@ -8,7 +8,7 @@ const WORKSPACE_MUTATIONS = new Set([
   "bindMcpOperationInterstreamContentHash",
   "completeMcpOperation", "failMcpOperation", "recordClaimAdmissionRefusal", "cancelMcpOperation", "beginMcpOperationReconciliation",
   "markMcpOperationUnknown", "completeUnknownMcpOperation", "failUnknownMcpOperation",
-  "checkpointMcpPreparation", "settleMcpPreparationFailure",
+  "checkpointMcpPreparation", "settleMcpPreparationFailure", "checkpointClaimCustody",
   "mergeWorkspaces", "createWorkspaceFromStream", "createStream", "renameStream",
   "archiveStream", "updateStreamSettings", "updateStreamDeveloperRules", "moveStream",
   "moveStreamToStart", "reorderStream", "moveStreamOrdered", "bindThread", "rebindThread",
@@ -18,7 +18,7 @@ const WORKSPACE_MUTATIONS = new Set([
 
 const WORKSPACE_READS = new Set([
   "archivedWorkspaces", "releaseWorkflowEnabledForThread", "workspaceDeveloperRules", "workspaceEvents",
-  "mcpOperation", "pendingMcpOperations", "mcpOperations", "interstreamOriginForClientMessage",
+  "claimCustodyForOriginal", "claimCustodyForTask", "mcpOperation", "pendingMcpOperations", "mcpOperations", "interstreamOriginForClientMessage",
   "workspace", "workspaceBySystemKey", "stream", "streamDeveloperRules", "developerRulesForThread",
   "developerRulesForStream", "thread", "activeThread", "threadsForStream", "resolveThread", "hierarchy",
   "meta", "threadNaming", "mutationDiagnostics", "close",

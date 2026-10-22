@@ -701,3 +701,30 @@ bounded already-published-notes archive can substitute for a nonexistent process
 guard; every real guard still refuses. Drift remains UNKNOWN. The same durable
 workflow outcome settles the same receipt; repeated terminal reconciliation
 performs a read without re-composing or re-archiving.
+
+
+## Explicit forward custody of an unsealed claim
+
+An explicitly authorized RM may use the existing `hub_task_operation_reconcile`
+with `claim_custody` to prepare and then fence one exact unsealed claim. This is
+withdrawal of future continuation, never historical NO_EFFECT. The old receipt,
+error, argument identity and UNKNOWN remain unchanged. Dedicated immutable stage
+state and terminal receipts commit in the existing MCP ledger, not a new journal.
+Original/caller/hash/Task/source/WIP/authorization and exact successor ID are
+pinned; changed or partially admitted evidence refuses without guessing effects.
+
+Fence requires positive complete legacy-cohort retirement through an exact
+externally retained native QUERY handle; missing job names or root PIDs do not
+prove it. Ordinary tools cannot acquire a valid witness from inside that job.
+The native port verifies the actual witness process/capture/source and local
+nonce-bound pipe, not caller-supplied retirement flags. A lost witness before the
+fence commit refuses; the committed positive certificate survives later collector
+exit. There is no forced stop or automatic independent launch mechanism.
+
+Only ordinary successor `hub_task_claim` with the declared ID and
+`forward_custody_request_id` assigns the Task. It retains the current executor's
+active/queued-work guard through the SQL commit and uses the existing managed
+Git owner for read-only source reuse. Original dependency preparation is not
+replayed, and its response says so. Late originals are fenced before any binding
+or baseline update, including receipt writes; exact post-commit retry reuses the
+same binding and assignment. See [ADR-0131](../decisions/ADR-0131-claim-forward-custody.md).

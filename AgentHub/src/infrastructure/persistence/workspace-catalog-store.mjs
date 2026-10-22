@@ -3,6 +3,8 @@ import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { AsyncSqliteMutationQueue } from "./async-sqlite-mutation-queue.mjs";
+import { claimCustodyHash, claimCustodyState, assertClaimCustodyOriginal, TaskClaimCustodyRejectedError, TaskClaimContinuationWithdrawnError } from "../../domain/claim-forward-custody.mjs";
+import { readClaimCustodyFence, configureClaimCustodyBindingFences } from "./claim-custody-fence.mjs";
 import { claimAdmissionNoEffectEvidence } from "../../domain/task-board-task.mjs";
 
 import { normalizeInterstreamOrigin } from "../../domain/interstream-message.mjs";
@@ -31,7 +33,7 @@ import {
   withReleasePrimaryWorkspaceRule,
 } from "../../domain/release-primary-workspace-policy.mjs";
 
-const SCHEMA_VERSION = 13;
+const SCHEMA_VERSION = 14;
 export const DEVELOPER_RULES_MAX_BYTES = 32 * 1024;
 const SOURCES = new Set(["created", "discovered", "migration", "rebirth"]);
 const DEVELOPER_RULE_SCOPES = new Set(["workspace", "stream"]);
@@ -120,6 +122,7 @@ function configure(database) {
       status TEXT NOT NULL CHECK (status IN ('pending', 'succeeded', 'failed')),
       receipt_state TEXT NOT NULL DEFAULT 'pending',
       preparation_state_json TEXT,
+      claim_custody_json TEXT,
       result_json TEXT,
       error_text TEXT NOT NULL DEFAULT '',
       created_at_ms INTEGER NOT NULL,
@@ -185,12 +188,38 @@ function configure(database) {
   `);
   const streamColumns = database.prepare("PRAGMA table_info(hub_streams)").all();
   const operationColumns = database.prepare("PRAGMA table_info(hub_mcp_operations)").all();
+  if (!operationColumns.some((column) => column.name === "claim_custody_json")) {
+    database.exec("ALTER TABLE hub_mcp_operations ADD COLUMN claim_custody_json TEXT");
+  }
+  database.exec(`
+    CREATE TRIGGER IF NOT EXISTS hub_claim_withdrawn_receipt_update
+    BEFORE UPDATE ON hub_mcp_operations
+    WHEN EXISTS (SELECT 1 FROM hub_mcp_operations fence
+      WHERE json_extract(fence.claim_custody_json, '$.phase') = 'fenced'
+        AND json_extract(fence.claim_custody_json, '$.original.requestId') = OLD.request_id)
+    BEGIN SELECT RAISE(ABORT, 'Task claim future continuation was withdrawn; historical receipt is immutable'); END;
+    CREATE TRIGGER IF NOT EXISTS hub_claim_custody_identity_update
+    BEFORE UPDATE ON hub_mcp_operations
+    WHEN OLD.claim_custody_json IS NOT NULL AND (
+      NEW.claim_custody_json IS NOT OLD.claim_custody_json OR NEW.request_id IS NOT OLD.request_id
+      OR NEW.workspace_id IS NOT OLD.workspace_id OR NEW.stream_id IS NOT OLD.stream_id
+      OR NEW.provider IS NOT OLD.provider OR NEW.provider_thread_id IS NOT OLD.provider_thread_id
+      OR NEW.tool_name IS NOT OLD.tool_name OR NEW.arguments_hash IS NOT OLD.arguments_hash)
+    BEGIN SELECT RAISE(ABORT, 'Durable claim custody identity is immutable'); END;
+    CREATE UNIQUE INDEX IF NOT EXISTS hub_claim_custody_original_idx
+      ON hub_mcp_operations(json_extract(claim_custody_json, '$.original.requestId'))
+      WHERE json_extract(claim_custody_json, '$.phase') = 'fenced';
+    CREATE UNIQUE INDEX IF NOT EXISTS hub_claim_custody_task_idx
+      ON hub_mcp_operations(json_extract(claim_custody_json, '$.taskId'), json_extract(claim_custody_json, '$.taskRevision'))
+      WHERE json_extract(claim_custody_json, '$.phase') = 'fenced';
+  `);
   if (!operationColumns.some((column) => column.name === "preparation_state_json")) {
     database.exec("ALTER TABLE hub_mcp_operations ADD COLUMN preparation_state_json TEXT");
   }
   if (!operationColumns.some((column) => column.name === "interstream_content_hash")) {
     database.exec("ALTER TABLE hub_mcp_operations ADD COLUMN interstream_content_hash TEXT NOT NULL DEFAULT ''");
   }
+  configureClaimCustodyBindingFences(database);
   if (!streamColumns.some((column) => column.name === "settings_json")) {
     database.exec("ALTER TABLE hub_streams ADD COLUMN settings_json TEXT NOT NULL DEFAULT '{}'");
   }
@@ -336,6 +365,7 @@ function mcpOperationFromRow(row) {
     error: String(row.error_text ?? ""),
     createdAtMs: Number(row.created_at_ms) || 0,
     completedAtMs: row.completed_at_ms == null ? null : Number(row.completed_at_ms),
+    ...(row.claim_custody_json == null ? {} : { claimCustody: JSON.parse(row.claim_custody_json) }),
     ...(row.preparation_state_json == null ? {} : { preparationState: JSON.parse(row.preparation_state_json) }),
   };
 }
@@ -871,6 +901,7 @@ export class WorkspaceCatalogStore {
 
   bindMcpOperationInterstreamContentHash(requestId, contentHash) {
     const id = safeIdentifier(requestId, "MCP request id");
+    if (this.claimCustodyForOriginal(id)) throw new TaskClaimContinuationWithdrawnError();
     const hash = safeIdentifier(contentHash, "interstream content hash");
     if (!/^[a-f0-9]{64}$/u.test(hash)) throw new Error("invalid interstream content hash");
     const operation = this.mcpOperation(id);
@@ -906,6 +937,7 @@ export class WorkspaceCatalogStore {
       });
     }
     const id = safeIdentifier(requestId, "MCP request id");
+    if (this.claimCustodyForOriginal(id)) throw new TaskClaimContinuationWithdrawnError();
     const operation = this.mcpOperation(id);
     if (
       operation
@@ -924,11 +956,69 @@ export class WorkspaceCatalogStore {
     ).get(id));
   }
 
+  claimCustodyForOriginal(requestId) {
+    return readClaimCustodyFence(this.#database, "original", requestId);
+  }
+
+  claimCustodyForTask(taskId) {
+    return readClaimCustodyFence(this.#database, "task", taskId);
+  }
+
+  checkpointClaimCustody(state) {
+    return this.#transaction(() => {
+      const receipt = this.mcpOperation(state.requestId);
+      if (!claimCustodyState({ ...receipt, claimCustody: state })) throw new TaskClaimCustodyRejectedError("Invalid custody intake identity");
+      if (receipt.claimCustody) {
+        if (claimCustodyHash(receipt.claimCustody) !== claimCustodyHash(state)) throw new TaskClaimCustodyRejectedError("Custody stage changed");
+        return receipt;
+      }
+      const actor = this.stream(receipt.streamId);
+      if (actor?.settings?.releaseManager !== true || actor.workspaceId !== state.workspaceId
+          || !["pending", "unknown"].includes(receipt.status) || receipt.operationStatus !== "pending") throw new TaskClaimCustodyRejectedError("Exact Release Manager intake required");
+      const original = this.mcpOperation(state.original.requestId);
+      assertClaimCustodyOriginal(original, state.envelope, state.taskId, state.original.requestId);
+      if (claimCustodyHash(original) !== state.originalHash) throw new TaskClaimCustodyRejectedError("Historical original changed");
+      const row = this.#database.prepare("SELECT * FROM hub_board_tasks WHERE id = ?").get(state.taskId);
+      if (!row || row.status === "done" || row.status === "starting" || row.workspace_id !== state.workspaceId
+          || row.stream_id !== state.envelope.expected_owner_stream_id || Number(row.row_revision) !== state.taskRevision) {
+        throw new TaskClaimCustodyRejectedError("Pinned Task owner or revision changed");
+      }
+      for (const table of ["hub_task_turn_bindings", "hub_task_lifecycle_transitions", "hub_task_lifecycle_outcomes"]) {
+        if (this.#database.prepare(`SELECT 1 FROM ${table} WHERE operation_id = ?`).get(original.requestId)) {
+          throw new TaskClaimCustodyRejectedError("Original has admitted effects requiring their own custody review");
+        }
+      }
+      if (this.claimCustodyForOriginal(original.requestId) || this.claimCustodyForTask(state.taskId)) {
+        throw new TaskClaimCustodyRejectedError("Another forward custody intent already won");
+      }
+      if (state.phase === "fenced") {
+        const plan = claimCustodyState(this.mcpOperation(state.planRequestId));
+        if (!plan || plan.phase !== "planned" || plan.planHash !== state.planHash
+            || plan.originalHash !== state.originalHash || claimCustodyHash(plan.envelope) !== claimCustodyHash(state.envelope)
+            || claimCustodyHash(plan.source) !== claimCustodyHash(state.source)
+            || claimCustodyHash(plan.cohort) !== claimCustodyHash(state.cohort)
+            || state.retirement?.retired !== true) throw new TaskClaimCustodyRejectedError("Fence differs from its durable plan");
+      } else {
+        const { planHash, result, ...body } = state;
+        if (planHash !== claimCustodyHash(body)) throw new TaskClaimCustodyRejectedError("Plan hash differs");
+      }
+      const changed = this.#database.prepare(`
+        UPDATE hub_mcp_operations SET claim_custody_json = ?, result_json = ?, status = 'succeeded',
+          receipt_state = 'succeeded', completed_at_ms = ?, error_text = ''
+        WHERE request_id = ? AND status = 'pending' AND receipt_state IN ('pending', 'unknown') AND claim_custody_json IS NULL
+      `).run(JSON.stringify(state), JSON.stringify(state.result), this.#nowMs(), state.requestId);
+      if (Number(changed.changes) !== 1) throw new Error("Custody stage CAS failed");
+      return this.mcpOperation(state.requestId);
+    });
+  }
+
   recordClaimAdmissionRefusal({ receipt, task, claimArguments, busyReason } = {}) {
+    if (this.claimCustodyForOriginal(receipt?.requestId)) throw new TaskClaimContinuationWithdrawnError();
     if (receipt?.replayed !== false || receipt.status !== "pending" || receipt.operationStatus !== "pending") {
       throw new Error("Claim refusal requires a fresh MCP intake");
     }
     return this.#transaction(() => {
+      if (this.claimCustodyForOriginal(receipt.requestId)) throw new TaskClaimContinuationWithdrawnError();
       const current = this.mcpOperation(receipt.requestId);
       const row = this.#database.prepare("SELECT * FROM hub_board_tasks WHERE id = ?").get(task.id);
       if (!current || current.status !== "pending" || current.operationStatus !== "pending" || current.result !== null
@@ -963,6 +1053,7 @@ export class WorkspaceCatalogStore {
 
   failMcpOperation(requestId, error, evidence = null) {
     const id = safeIdentifier(requestId, "MCP request id");
+    if (this.claimCustodyForOriginal(id)) throw new TaskClaimContinuationWithdrawnError();
     const updated = this.#database.prepare(`
       UPDATE hub_mcp_operations
       SET status = 'failed', receipt_state = 'failed', result_json = ?, error_text = ?, completed_at_ms = ?
@@ -977,6 +1068,7 @@ export class WorkspaceCatalogStore {
 
   cancelMcpOperation(requestId, { taskId, cancellationRequestId } = {}) {
     const id = safeIdentifier(requestId, "MCP request id");
+    if (this.claimCustodyForOriginal(id)) throw new TaskClaimContinuationWithdrawnError();
     const task = safeIdentifier(taskId, "Task id");
     const cancellation = safeIdentifier(cancellationRequestId, "cancellation request id");
     const operation = this.mcpOperation(id);
@@ -1012,6 +1104,7 @@ export class WorkspaceCatalogStore {
 
   beginMcpOperationReconciliation(requestId) {
     const id = safeIdentifier(requestId, "MCP request id");
+    if (this.claimCustodyForOriginal(id)) throw new TaskClaimContinuationWithdrawnError();
     const updated = this.#database.prepare(`
       UPDATE hub_mcp_operations SET receipt_state = 'reconciling'
       WHERE request_id = ? AND receipt_state IN ('pending', 'reconciling')
@@ -1024,6 +1117,7 @@ export class WorkspaceCatalogStore {
 
   markMcpOperationUnknown(requestId, error) {
     const id = safeIdentifier(requestId, "MCP request id");
+    if (this.claimCustodyForOriginal(id)) throw new TaskClaimContinuationWithdrawnError();
     this.#database.prepare(`
       UPDATE hub_mcp_operations
       SET receipt_state = 'unknown', error_text = ?, completed_at_ms = ?
@@ -1038,6 +1132,7 @@ export class WorkspaceCatalogStore {
     workspaceId, toolName, result, reconciliation,
   } = {}) {
     const id = safeIdentifier(requestId, "MCP request id");
+    if (this.claimCustodyForOriginal(id)) throw new TaskClaimContinuationWithdrawnError();
     const workspace = safeIdentifier(workspaceId, "workspace id");
     const tool = safeIdentifier(toolName, "MCP tool name");
     this.#database.exec("BEGIN IMMEDIATE");
@@ -1076,6 +1171,7 @@ export class WorkspaceCatalogStore {
     workspaceId, toolName, error, reconciliation,
   } = {}) {
     const id = safeIdentifier(requestId, "MCP request id");
+    if (this.claimCustodyForOriginal(id)) throw new TaskClaimContinuationWithdrawnError();
     const workspace = safeIdentifier(workspaceId, "workspace id");
     const tool = safeIdentifier(toolName, "MCP tool name");
     this.#database.exec("BEGIN IMMEDIATE");

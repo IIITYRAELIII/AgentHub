@@ -2718,3 +2718,16 @@ promotion/CAS retain ordinary rollback. Terminal repetition reads the same
 outcome without new Git effects. This migration is removable once the pending
 ordinary native Awaits lacking their own preparation intent are settled; it
 does not relax ordinary dirty-checkout rejection or authorize publication.
+
+
+## Managed source custody after a forward claim fence
+
+ADR-0131 does not admit a new Git result, acceptance, release or cleanup. The
+existing Task Git owner holds its Task lease across ordinary prepare-to-claim;
+a forward successor instead verifies the exact already managed clean source,
+registered base/branch and declared ignored WIP inventory under that lease.
+It performs no dependency ensure, branch alignment or source materialization.
+A durable exact-cohort retirement certificate and existing claim writer authorize
+only the predeclared successor binding. WIP/history and the legacy UNKNOWN remain
+preserved, and active/queued previous-executor work still blocks actual assignment.
+Publication/installed capability and the public release set are unaffected.

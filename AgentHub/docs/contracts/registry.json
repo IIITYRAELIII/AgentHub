@@ -240,7 +240,15 @@
         "src/application/release-preparation-admission.mjs",
         "src/domain/release-preparation.mjs",
         "src/infrastructure/filesystem/release-preparation-guard.mjs",
-        "tests/interfaces/mcp/hub-mcp-recovery-endpoint.test.mjs"
+        "tests/interfaces/mcp/hub-mcp-recovery-endpoint.test.mjs",
+        "src/domain/claim-forward-custody.mjs",
+        "src/infrastructure/persistence/claim-custody-fence.mjs",
+        "src/infrastructure/filesystem/claim-source-custody.mjs",
+        "src/infrastructure/process/claim-custody-runtime.mjs",
+        "tools/claim-custody-native-witness.mjs",
+        "tests/application/hub-mcp-claim-custody.test.mjs",
+        "tests/fixtures/claim-custody-public-fixture.mjs",
+        "tests/infrastructure/process/claim-custody-runtime.native.test.mjs"
       ]
     },
     {

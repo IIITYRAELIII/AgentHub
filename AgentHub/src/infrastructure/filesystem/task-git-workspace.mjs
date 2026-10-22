@@ -29,6 +29,7 @@ import {
 } from "./selected-composition-materializer.mjs";
 import { TaskDependencyPendingError } from "../../domain/task-board-task.mjs";
 import { prepareTaskWorktreeDependencies } from "./task-worktree-dependencies.mjs";
+import { readClaimCustodyWip } from "./claim-source-custody.mjs";
 import { withInterprocessLocks as acquireInterprocessLocks } from "../process/interprocess-lock.mjs";
 import {
   measureTaskOperation, measureTaskOperationAwait, recordTaskOperationTiming, withTaskOperationTiming,
@@ -2836,6 +2837,30 @@ export class TaskGitWorkspaceService {
         || JSON.stringify(record.initialNativeTest) !== JSON.stringify(evidence))) throw new Error("Initial native Test original dev/source intent changed");
     const dev = await git(["rev-parse", `refs/heads/${this.devBranch}^{commit}`], managed);
     if (dev !== identity.devCommit && dev !== record?.target) throw new Error("Initial native Test exact dev changed");
+  }
+
+  async reuseClaimWorkspaceOwned({ taskId, taskNumber, source, lease } = {}) {
+    this.#assertAvailable("reuseClaimWorkspaceOwned");
+    await requiredGuardLease(lease).assertOwned();
+    await this.#assertNoProcessTreeGuard(taskId);
+    const repoRoot = await this.managedRepositoryRoot(source.projectRoot, { taskId, taskNumber });
+    if (!repoRoot) throw new Error("Custody source is not this managed Task workspace");
+    const taskRoot = await worktreeRoot(source.projectRoot);
+    const git = args => this.#runOwned(args, { cwd: taskRoot, lease });
+    const headCommit = await git(["rev-parse", "HEAD^{commit}"]);
+    if (headCommit !== source.headCommit || await git(["rev-parse", "HEAD^{tree}"]) !== source.tree
+        || await git(["status", "--porcelain=v1", "--untracked-files=all"])) throw new Error("Custody source identity or clean state changed");
+    const inventory = await readClaimCustodyWip(taskRoot, source.wipPaths);
+    if (inventory.digest !== source.wipDigest
+        || (await readClaimCustodyWip(taskRoot, source.wipPaths)).digest !== inventory.digest) throw new Error("Custody WIP differs from the saved handoff");
+    const baseRef = taskBaseRef(normalizedTaskId(taskId), taskRepositoryKey(repoRoot));
+    const baseCommit = await git(["rev-parse", `${baseRef}^{commit}`]);
+    const branch = await git(["symbolic-ref", "--quiet", "--short", "HEAD"]);
+    if ((source.baseCommit && source.baseCommit !== baseCommit) || (source.branch && source.branch !== branch)
+        || (source.repositoryRoot && source.repositoryRoot !== repoRoot)) throw new Error("Custody registered source baseline changed");
+    await requiredGuardLease(lease).assertOwned();
+    return { taskId, repositoryRoot: repoRoot, projectRoot: canonicalPath(source.projectRoot), branch,
+      baseRef, baseCommit, headCommit, gitBaseline: { repoRoot, tree: baseCommit }, wipDigest: inventory.digest };
   }
 
   async managedRepositoryRoot(projectRoot, { taskId, taskNumber = null } = {}) {

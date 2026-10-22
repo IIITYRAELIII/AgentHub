@@ -232,11 +232,18 @@ function sanitizeTestContourDatabase(databaseFile, {
         remappedJournalRecords = records.length;
       }
       if (tableExists(database, "hub_mcp_operations")) {
+        // Forward-withdrawn originals remain historical UNKNOWN even in a data
+        // clone. Their copied native/source pins cannot authorize this root.
+        const custodyExclusion = tableColumns(database,"hub_mcp_operations").has("claim_custody_json")
+          ? `AND NOT EXISTS (SELECT 1 FROM hub_mcp_operations fence
+              WHERE json_extract(fence.claim_custody_json, '$.phase') = 'fenced'
+                AND json_extract(fence.claim_custody_json, '$.original.requestId') = hub_mcp_operations.request_id)`
+          : "";
         database.prepare(`
           UPDATE hub_mcp_operations
           SET status = 'failed', error_text = 'Detached during Test Contour clone',
               completed_at_ms = ?
-          WHERE status = 'pending'
+          WHERE status = 'pending' ${custodyExclusion}
         `).run(nowMs);
       }
       if (tableExists(database, "journal_store_meta")) {

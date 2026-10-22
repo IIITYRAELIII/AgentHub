@@ -321,10 +321,10 @@ export class TaskBoardService {
 
   claim({
     id, workspaceId, streamId, provider, threadId, turnId, operationId,
-    operationKind = "claim", gitBaseline = null,
+    operationKind = "claim", gitBaseline = null, forwardCustodyRequestId = null, validateClaimAdmission = null,
   } = {}) {
     const result = this.store.claim(id, {
-      workspaceId, streamId, provider, threadId, turnId, operationId, operationKind, gitBaseline,
+      workspaceId, streamId, provider, threadId, turnId, operationId, operationKind, gitBaseline, forwardCustodyRequestId, validateClaimAdmission,
     });
     return this.#resolved(result, (task) => {
       const event = this.#event("task.claimed", task, { provider, threadId, turnId, operationId, operationKind });

@@ -8,6 +8,7 @@ import { homedir } from "node:os";
 import { promisify } from "node:util";
 
 import { RunJournalService } from "../application/run-journal-service.mjs";
+import { createClaimCustodyRuntime } from "../infrastructure/process/claim-custody-runtime.mjs";
 import { HubMcpService } from "../application/hub-mcp-service.mjs";
 import { measureTaskOperation } from "../infrastructure/process/task-operation-timing.mjs";
 import { TaskLifecycleService } from "../application/task-lifecycle-service.mjs";
@@ -548,6 +549,7 @@ export async function createHubInfrastructure({
   taskLifecycle.setReleaseOperationPrepare((taskId) => releaseOperations.prepareForTaskAcceptance(taskId));
   releaseOperations.recover();
   const hubMcpService = new HubMcpService({
+    claimCustodyRuntime: createClaimCustodyRuntime({ dataDir: config.dataDir }),
     measureOperation: measureTaskOperation,
     workspaceCatalog: workspaceCatalogStore,
     taskBoard,
