@@ -1472,21 +1472,21 @@ export class MiniAppServer {
         const id = url.searchParams.get("id");
         let result;
         if (method === "GET") {
-          result = id ? await measured("owner", () => this.#attachmentUploads.status(owner, id))
+          result = id ? await measured("owner", () => this.#attachmentUploads.status(owner, id, timings))
             : this.#attachmentUploads.capabilities();
         } else if (method === "POST" && id && url.searchParams.get("complete") === "1") {
-          result = await measured("owner", () => this.#attachmentUploads.complete(owner, id));
+          result = await measured("owner", () => this.#attachmentUploads.complete(owner, id, timings));
         } else if (method === "POST" && !id) {
           const metadata = await measured("body", () => readJsonBody(request));
-          result = await measured("owner", () => this.#attachmentUploads.begin(owner, metadata));
+          result = await measured("owner", () => this.#attachmentUploads.begin(owner, metadata, timings));
         } else if (method === "PUT" && id) {
           const index = url.searchParams.get("index");
           if (!/^\d+$/u.test(index ?? "")) throw new Error("Некорректный номер части");
           const chunk = await measured("body", () => readBinaryBody(request, this.#attachmentUploadLimits.chunkBytes));
           result = await measured("owner", () => this.#attachmentUploads.putChunk(owner, id, Number(index), chunk,
-            String(request.headers["x-agent-hub-chunk-sha256"] ?? "")));
+            String(request.headers["x-agent-hub-chunk-sha256"] ?? ""), timings));
         } else if (method === "DELETE" && id) {
-          result = await measured("owner", () => this.#attachmentUploads.cancel(owner, id));
+          result = await measured("owner", () => this.#attachmentUploads.cancel(owner, id, timings));
         } else {
           timedJson(405, { error: "Unsupported upload operation" });
           return;

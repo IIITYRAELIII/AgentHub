@@ -14,7 +14,9 @@ test("origin records an authenticated paired upload receipt with bounded timings
   const events = [], response = new EventEmitter();
   response.statusCode = 200; response.writableFinished = false; response.setHeader = () => {};
   const h = { ...headers(), authorization: "private-auth", cookie: "private-cookie", "x-agent-hub-file-name": "private-name" };
-  const timings = { auth: 1, body: 2, owner: 3 };
+  const timings = { auth: 1, body: 2, owner: 3, ownerQueue: 4, storageRead: 5, storageSync: 6,
+    ownerLoopMax: 7, storageWrite: -1, storageClose: Infinity, storagePublish: 86_400_001,
+    privatePath: "private-diagnostic" };
   observeAuthorizedUpload({ request: { method: "PUT", url: "/api/attachment-upload?id=irrelevant&index=0&secret=private-query", headers: h },
     response, record: value => events.push(value), timings });
   response.writableFinished = true; response.emit("finish"); response.emit("close");
@@ -23,6 +25,13 @@ test("origin records an authenticated paired upload receipt with bounded timings
   assert.equal(events[0].metadata.httpRequestId, h["x-agent-hub-upload-request-id"]);
   assert.equal(events[1].metadata.operationSpanId, events[0].metadata.operationSpanId);
   assert.equal(events[1].metadata.serverOwnerMs, 3);
+  assert.equal(events[1].metadata.serverOwnerQueueMs, 4);
+  assert.equal(events[1].metadata.serverStorageReadMs, 5);
+  assert.equal(events[1].metadata.serverStorageSyncMs, 6);
+  assert.equal(events[1].metadata.serverOwnerLoopMaxMs, 7);
+  for (const name of ["serverStorageWriteMs", "serverStorageCloseMs", "serverStoragePublishMs", "serverPrivatePathMs"]) {
+    assert.equal(events[1].metadata[name], undefined);
+  }
   assert.equal(events[1].metadata.action, "origin-chunk");
   assert.equal(JSON.stringify(events).includes("private-"), false);
 });
