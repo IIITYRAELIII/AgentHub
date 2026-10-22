@@ -76,3 +76,43 @@ test("preparation schema migration keeps legacy UNKNOWN without invented owner e
     assert.deepEqual(reopened.mcpOperation("original"), before);
   } finally { reopened.close(); }
 });
+
+test("preparation failure settlement refuses stale invocation, revision and original identity", async t => {
+  const { store, identity, state } = await fixture(t);
+  store.checkpointMcpPreparation("original", { identity, expectedRevision: 0, state });
+  const settle = options => store.settleMcpPreparationFailure("original", { identity,
+    ownerId: state.ownerId, expectedRevision: 1, error: new Error("old invocation"), ...options });
+  const before = store.mcpOperation("original");
+  settle({ ownerId: "unowned" });
+  settle({ expectedRevision: 0 });
+  for (const key of ["workspaceId", "streamId", "provider", "threadId", "argumentsHash"]) {
+    settle({ identity: { ...identity, [key]: "foreign" } });
+  }
+  assert.deepEqual(store.mcpOperation("original"), before);
+  settle({});
+  const unknown = store.mcpOperation("original");
+  assert.equal(unknown.receiptState, "unknown");
+  assert.equal(unknown.error, "old invocation");
+  store.checkpointMcpPreparation("original", { identity, expectedRevision: 1, resume: true,
+    state: { ...state, revision: 2, ownerId: "winner" } });
+  const winner = store.mcpOperation("original");
+  settle({ definite: true });
+  assert.deepEqual(store.mcpOperation("original"), winner);
+  store.completeMcpOperation("original", { original: "result" });
+  const terminal = store.mcpOperation("original");
+  settle({ ownerId: "winner", expectedRevision: 2 });
+  assert.deepEqual(store.mcpOperation("original"), terminal);
+});
+
+test("preparation failure settlement keeps typed failure in the exact current owner", async t => {
+  const { store, identity, state } = await fixture(t);
+  store.checkpointMcpPreparation("original", { identity, expectedRevision: 0, state });
+  store.settleMcpPreparationFailure("original", { identity, ownerId: state.ownerId,
+    expectedRevision: 1, error: new Error("definitive original refusal"), definite: true });
+  const failed = store.mcpOperation("original");
+  assert.equal(failed.status, "failed");
+  assert.equal(failed.error, "definitive original refusal");
+  store.settleMcpPreparationFailure("original", { identity, ownerId: state.ownerId,
+    expectedRevision: 1, error: new Error("late failure") });
+  assert.deepEqual(store.mcpOperation("original"), failed);
+});

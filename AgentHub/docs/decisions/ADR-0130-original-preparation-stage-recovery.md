@@ -17,6 +17,13 @@ revision, prior raw state, legal phase transition and invocation owner. A
 resumer changes owner only after acquiring those same leases. Slow Git and
 source verification stay outside SQL retry.
 
+Caught failure settlement also compares the original identity, invocation owner,
+revision and prior raw checkpoint inside the existing catalog transaction.
+A refusal before owner transfer changes no receipt. A delayed prior invocation
+cannot replace a newer owner's reconciling/terminal receipt or error. Lost
+checkpoint replies use exact nonce readback and that same settlement CAS; outer
+intake/replay refusal does not write stage-backed failures by request ID alone.
+
 `checking` precedes every candidate effect; `paused` records a completed caught
 pre-compose interruption. Both can resume under original identity and fresh
 guards. The original error is retained even after eventual success. A newer

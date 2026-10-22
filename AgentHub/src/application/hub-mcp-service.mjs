@@ -56,6 +56,15 @@ const MUTATING_TOOLS = new Set([
 // Only the synchronous input boundary below can produce this proof of no effects.
 class TaskInputValidationError extends Error {}
 
+function definiteMcpMutationFailure(error) {
+  return error instanceof ReleasePreparationRejectedError || error instanceof TaskInputValidationError
+    || error instanceof TaskIntegrationConflictError || error instanceof TaskAwaitIntegrationError
+    || error instanceof TaskDependencyPendingError || error instanceof TaskWithdrawalDependencyError
+    || error instanceof TaskLifecycleBeginRejectedError || error instanceof TaskWithdrawalBusyError
+    || error instanceof ReleaseCandidateFrozenError || error instanceof TaskAbsorptionCompositionError
+    || error instanceof TaskSquashTransferRejectedError || error instanceof TaskIntegrationRejectedError;
+}
+
 function validatedTaskInput(title, description, { combined = false } = {}) {
   try {
     const normalizedTitle = normalizedTaskTitle(title);
@@ -1837,12 +1846,7 @@ export class HubMcpService {
     if (argumentsHash(recovered) !== original.argumentsHash) {
       throw new ReleasePreparationRejectedError("Preparation recovery original envelope differs");
     }
-    try { return await this.#prepareRelease(context, recovered, { record }); }
-    catch (error) {
-      // A recovery failure is not a new intake or administrative terminal.
-      await this.workspaceCatalog.markMcpOperationUnknown(original.requestId, error);
-      throw error;
-    }
+    return this.#prepareRelease(context, recovered, { record });
   }
 
   async #prepareRelease(context, args, recovery = null) {
@@ -1928,8 +1932,21 @@ export class HubMcpService {
         return result;
       },
     }); } catch (error) {
+      let pauseFailed = false;
       if (owned && state.phase === "checking") {
-        await checkpoint("paused", { originalError: state.originalError ?? String(error.message).slice(0, 2000) });
+        try {
+          await checkpoint("paused", { originalError: state.originalError ?? String(error.message).slice(0, 2000) });
+        } catch { pauseFailed = true; }
+      }
+      // A checkpoint can commit before its reply is lost. Read back this
+      // invocation's nonce, then settle only through the store's revision CAS.
+      // A caller refused before owner transfer has no receipt to mutate.
+      const current = this.workspaceCatalog.mcpOperation(args.request_id);
+      if (current?.preparationState?.ownerId === ownerId) {
+        await Promise.resolve(this.workspaceCatalog.settleMcpPreparationFailure(args.request_id, {
+          identity, ownerId, expectedRevision: current.preparationState.revision, error,
+          definite: !recovery && !pauseFailed && definiteMcpMutationFailure(error),
+        })).catch(() => {});
       }
       throw error;
     }
@@ -2580,7 +2597,9 @@ export class HubMcpService {
     ]);
     if (started.replayed && !resumable.has(toolName)) {
       const reason = new Error("MCP operation outcome requires authoritative reconciliation; blind replay is forbidden");
-      await this.workspaceCatalog.markMcpOperationUnknown?.(requestId, reason);
+      if (toolName !== "hub_release_prepare" || !started.preparationState) {
+        await this.workspaceCatalog.markMcpOperationUnknown?.(requestId, reason);
+      }
       throw reason;
     }
     const pending = (async () => {
@@ -2609,6 +2628,9 @@ export class HubMcpService {
         if (toolName === "hub_release_prepare") {
           const terminal = this.workspaceCatalog.mcpOperation(requestId);
           if (terminal?.status === "succeeded" && terminal.argumentsHash === argumentsHash(args)) return terminal.result;
+          // Stage-backed failures belong exclusively to the invocation owner.
+          // This outer intake may resume after a newer owner has acquired it.
+          if (terminal?.preparationState) throw error;
         }
         if (!effectCompleted && checklistMutation) {
           const reconciled = await this.#reconcileTaskChecklist(context, args).catch(() => null);
@@ -2629,11 +2651,7 @@ export class HubMcpService {
           )).catch(() => {});
           throw new Error(`MCP effect completed but receipt reconciliation is required for request_id ${requestId}`);
         }
-        if (error instanceof ReleasePreparationRejectedError || error instanceof TaskInputValidationError || error instanceof TaskIntegrationConflictError || error instanceof TaskAwaitIntegrationError
-            || error instanceof TaskDependencyPendingError || error instanceof TaskWithdrawalDependencyError
-            || error instanceof TaskLifecycleBeginRejectedError || error instanceof TaskWithdrawalBusyError
-            || error instanceof ReleaseCandidateFrozenError || error instanceof TaskAbsorptionCompositionError
-             || error instanceof TaskSquashTransferRejectedError || error instanceof TaskIntegrationRejectedError) {
+        if (definiteMcpMutationFailure(error)) {
           await this.workspaceCatalog.failMcpOperation(requestId, error);
           throw error;
         }

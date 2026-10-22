@@ -599,3 +599,39 @@ for (const failure of ["sql-terminal", "mcp-receipt"]) {
     assert.deepEqual((await f.run(task, input)).result, wire(result.result));
   });
 }
+
+
+test("reviewer concurrent lock refusal cannot poison current preparation owner", { timeout:240_000 }, async t => {
+  const f=await preparationRecoveryFixture(t); await f.bootstrap();
+  const staleEntered=Promise.withResolvers(), refuseStale=Promise.withResolvers();
+  const composeEntered=Promise.withResolvers(), finishCompose=Promise.withResolvers();
+  const awaitBoundary=f.preflight.withAwaitTransition.bind(f.preflight);
+  let first=true;
+  f.preflight.withAwaitTransition=async (...args)=>{
+    if(first){first=false;staleEntered.resolve();await refuseStale.promise;throw new Error("Workspace Await lock acquisition refused before owner transfer");}
+    return awaitBoundary(...args);
+  };
+  let effects=0;
+  const prepare=f.releaseGit.prepareCandidate.bind(f.releaseGit);
+  f.releaseGit.prepareCandidate=async (...args)=>{effects++;composeEntered.resolve();await finishCompose.promise;return prepare(...args);};
+  const stale=f.invoke("hub_release_prepare_resume",f.resumeArgs).then(value=>({value}),error=>({error:error.message}));
+  await staleEntered.promise;
+  const winner=f.invoke("hub_release_prepare_resume",f.resumeArgs).then(value=>({value}),error=>({error:error.message}));
+  await composeEntered.promise;
+  const owned=f.catalog.mcpOperation(f.originalId);
+  refuseStale.resolve();const refused=await stale;
+  const afterRefusal=f.catalog.mcpOperation(f.originalId);
+  finishCompose.resolve();const completed=await winner;
+  const final=f.catalog.mcpOperation(f.originalId);
+  console.log(JSON.stringify({reviewerRace:{owned:{status:owned.status,phase:owned.preparationState.phase,revision:owned.preparationState.revision,ownerId:owned.preparationState.ownerId},refused,
+    afterRefusal:{status:afterRefusal.status,error:afterRefusal.error,phase:afterRefusal.preparationState.phase,revision:afterRefusal.preparationState.revision,ownerId:afterRefusal.preparationState.ownerId},completed,
+    final:{status:final.status,phase:final.preparationState.phase,revision:final.preparationState.revision}}}));
+  assert.equal(afterRefusal.receiptState,owned.receiptState,"unowned lock refusal changed the live invocation's receipt");
+  assert.deepEqual(afterRefusal,owned);
+  assert.match(refused.error,/lock acquisition refused/u);
+  assert.equal(effects,1);
+  assert.deepEqual(await f.invoke("hub_release_prepare_resume",f.resumeArgs),completed.value);
+  assert.equal(effects,1);
+  assert.deepEqual(f.catalog.mcpOperation(f.originalId),final);
+  assert.ok(completed.value,"the actual owned winner must complete");
+});

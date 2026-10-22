@@ -1113,6 +1113,31 @@ export class WorkspaceCatalogStore {
     });
   }
 
+  settleMcpPreparationFailure(requestId, { identity, ownerId, expectedRevision, error, definite = false } = {}) {
+    const id = safeIdentifier(requestId, "MCP request id");
+    return this.#transaction(() => {
+      const row = this.#database.prepare("SELECT * FROM hub_mcp_operations WHERE request_id = ?").get(id);
+      const current = mcpOperationFromRow(row);
+      if (!current || current.toolName !== "hub_release_prepare" || current.operationStatus !== "pending"
+          || !["pending", "reconciling"].includes(current.receiptState)
+          || typeof ownerId !== "string" || !ownerId || !Number.isSafeInteger(expectedRevision)
+          || current.preparationState?.ownerId !== ownerId || current.preparationState.revision !== expectedRevision
+          || ["workspaceId", "streamId", "provider", "threadId", "argumentsHash"].some(key => (
+            current[key] !== identity?.[key]
+          ))) return current;
+      const receiptState = definite === true ? "failed" : "unknown";
+      const updated = this.#database.prepare(`UPDATE hub_mcp_operations
+        SET status = ?, receipt_state = ?, error_text = ?, completed_at_ms = ?
+        WHERE request_id = ? AND status = 'pending' AND arguments_hash = ?
+          AND receipt_state = ? AND preparation_state_json IS ?`).run(
+        definite === true ? "failed" : "pending", receiptState,
+        String(error?.message ?? error ?? "preparation outcome is unknown").slice(0, 4000), this.#nowMs(),
+        id, identity.argumentsHash, row.receipt_state, row.preparation_state_json);
+      if (Number(updated.changes) !== 1) throw new Error("Original preparation failure owner CAS changed");
+      return this.mcpOperation(id);
+    });
+  }
+
   mcpOperation(requestId) {
     const id = safeIdentifier(requestId, "MCP request id");
     return mcpOperationFromRow(this.#database.prepare(
