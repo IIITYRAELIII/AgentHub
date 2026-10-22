@@ -49,7 +49,9 @@ export function observeAuthorizedUpload({ request, response, record, timings, re
     const metadata = { ...common.metadata, statusCode: response.statusCode,
       ...(!completed ? { failureKind: "aborted" } : {}) };
     for (const [name, value] of Object.entries(timings)) {
-      if (["auth", "body", "owner"].includes(name) && Number.isFinite(value) && value >= 0 && value <= 86_400_000) {
+      if (["auth", "body", "owner", "ownerQueue", "ownerLoopMax", "storageRead", "storageOpen",
+        "storageWrite", "storageSync", "storageClose", "storageRename", "storagePublish", "storageCleanup"].includes(name)
+          && Number.isFinite(value) && value >= 0 && value <= 86_400_000) {
         metadata[`server${name[0].toUpperCase()}${name.slice(1)}Ms`] = value;
       }
     }
