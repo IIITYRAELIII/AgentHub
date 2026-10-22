@@ -1,0 +1,38 @@
+{
+  "schema": 2,
+  "mode": "reviewed-future-link-only-cutover",
+  "files": [],
+  "documentation": {
+    "target": "UTILITY_INVENTORY.md",
+    "replaceEntry": "AgentHub",
+    "source": "AgentHub/distribution/utilities-README.md",
+    "url": "https://github.com/IIITYRAELIII/AgentHub"
+  },
+  "standaloneInstaller": {
+    "source": "AgentHub/distribution/install_release.py",
+    "repository": "IIITYRAELIII/AgentHub",
+    "guide": "AgentHub/distribution/INSTALL.md",
+    "releaseAssets": ["AgentHub-win32-x64.zip", "AgentHub-win32-x64.zip.json"]
+  },
+  "componentHandoff": {
+    "utilitiesImportRegistration": null,
+    "preserveParticipantDecisions": true,
+    "legacyDecisionIds": ["agent-hub", "tool:agent-hub", "app:agent-hub", "runtime:agent-hub"],
+    "preserveOptionalComponentDecisions": true,
+    "updateOwner": "standalone AgentHub release installer",
+    "uninstallRuntime": false,
+    "removeRuntimeDataOrConfig": false,
+    "rewriteOldReceipts": false
+  },
+  "requiredBeforeReplacement": [
+    "exact standalone source history and mapping accepted",
+    "versioned public package and checksum accessible and validated",
+    "fresh install, update and rollback verified with the standalone installer without Utilities sources",
+    "existing installation update, configuration, sync endpoint/auth/cursors and participant choices preserved",
+    "legacy Utilities component decisions retained without an uninstall or a second update owner",
+    "existing release owner owns current source/origin cutover",
+    "original Utilities operations, active Task refs and frozen provenance preserved"
+  ],
+  "appliesChanges": false,
+  "removesCurrentSource": false
+}

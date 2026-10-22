@@ -10,6 +10,31 @@ authorization, terminal attempt, immutable generations and all receipts remain
 history; `reviewedMain` and the recovery event are appended by the same store.
 UNKNOWN/partial/applied/live/source-owned effects refuse. No work executes inside
 rebinding; ordinary composition and publication guards still own the next attempt.
+New publication freezes persist both the calendar publication version and the
+canonical next runtime artifact version in their existing immutable manifest and
+freeze intent. This observation reserves nothing. The original generation runner
+passes the exact operation/generation/commit/artifact version to the existing
+artifact owner, whose installation lease compares that expectation before any
+preparation or allocation. A competing allocation refuses rather than retargeting
+the frozen input. Freeze retry and lost-reply artifact reuse retain the original
+version. Historical generations lacking this field keep their original executor
+identity; they are not rewritten or granted a new packaging receipt.
+
+## Frozen standalone artifact preparation
+
+The existing publication artifact checkpoint may bind an explicit original
+operation/generation/source and runtime artifact version. Canonical preparation
+checks that version against its next suffix under the same installation lease
+before copying, compiling Host or installing locked dependencies. A different
+result refuses instead of changing the frozen version or manifest. Publication
+version remains distinct from the runtime artifact version.
+
+The packager's PREPARED receipt is derived from that same hash-pinned artifact
+and verified runtime, not from a second allocation or acceptance owner. Reuse
+validates the original source/version/manifest and complete payload before any
+new preparation. A lost preparation reply may reuse its verified completed body;
+a partial body without a manifest or changed inputs remains preserved/refused.
+This receipt grants no Git, installation, restart or remote publication authority.
 
 ## Native transport retirement (ADR-0126)
 

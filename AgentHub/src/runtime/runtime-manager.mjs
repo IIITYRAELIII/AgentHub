@@ -23,6 +23,7 @@ import { protectRuntimeConfig, protectRuntimeDirectory } from "../infrastructure
 import { buildWindowsRuntimeHost, runtimeHostSourceHash } from "../infrastructure/process/runtime-host-builder.mjs";
 import { processIsAlive } from "../infrastructure/process/process-liveness.mjs";
 import { writeTextAtomic } from "../infrastructure/persistence/state-store.mjs";
+import { migrateUsageSyncServerSetting } from "../infrastructure/filesystem/usage-sync-settings-migration.mjs";
 import { captureRuntimeReleaseBinding, readRuntimePointer, withRuntimeInstallationLease } from "../infrastructure/filesystem/runtime-installation-custody.mjs";
 import { runtimePointerTransition, runtimeRollbackPointer } from "../infrastructure/filesystem/runtime-release-retention-policy.mjs";
 
@@ -472,6 +473,7 @@ async function installPreparedRuntimeOwned({
     const previousPointer = JSON.parse(priorPointerText ?? "{}");
     const installed = await captureRuntimeReleaseBinding(releaseRoot, releaseId);
     const transition = runtimePointerTransition({ pointer: previousPointer, installed });
+    await migrateUsageSyncServerSetting({ layout, previousReleaseId: previousPointer.current });
     const stableFiles = await installStableRuntimeFiles(layout, releaseRoot, {
       beforeCommit: beforeStableLauncherCommit,
       commitFile: commitStableFile,

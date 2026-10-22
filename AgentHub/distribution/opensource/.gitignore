@@ -1,0 +1,26 @@
+# Private configuration/state and generated artifacts are never source exports.
+AgentHub/config*.json
+!AgentHub/config.example.json
+AgentHub/.env*
+!AgentHub/.env.example
+AgentHub/Bugs/
+AgentHub/data/
+AgentHub/runtime/
+AgentHub/releases/
+AgentHub/models/
+AgentHub/*.secret
+AgentHub/*.token
+AgentHub/*.log
+AgentHub/*-venv/
+AgentHub/.venv*/
+AgentHub/assets/mobile/
+AgentHub/cloudflare-worker/.dev.vars
+AgentHub/cloudflare-worker/.wrangler/
+AgentHub/VSCodeExtension/*.vsix
+**/node_modules/
+**/__pycache__/
+*.py[cod]
+**/WIP/
+**/bin/
+**/obj/
+**/dist/

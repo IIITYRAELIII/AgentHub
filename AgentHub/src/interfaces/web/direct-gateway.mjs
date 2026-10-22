@@ -4,6 +4,7 @@ import { request } from "node:https";
 import { isIP } from "node:net";
 import path from "node:path";
 import { createUploadGatewayObserver } from "./upload-transport-trace.mjs";
+import { handoffDirectGateway } from "../../infrastructure/process/direct-gateway-handoff.mjs";
 
 const STARTUP_GRACE_MS = 1_500;
 const HEALTH_CHECK_INTERVAL_MS = 15_000;
@@ -115,7 +116,7 @@ ${pool}    header_up X-Forwarded-For {remote_host}
   header {
     Strict-Transport-Security "max-age=31536000; includeSubDomains"
     X-Frame-Options "DENY"
-    Referrer-Policy "strict-origin-when-cross-origin"
+    ?Referrer-Policy "strict-origin-when-cross-origin"
     -Server
   }
 }`;
@@ -164,11 +165,13 @@ export class DirectGatewayController {
   #probe;
   #settings;
   #spawn;
+  #handoff;
   #startup = null;
 
   constructor(settings, {
     spawnImpl = spawn,
     probeImpl = probeExistingDirectGateway,
+    handoffImpl = handoffDirectGateway,
     logger = console,
     recordCommandTrace = null,
     healthCheckIntervalMs = HEALTH_CHECK_INTERVAL_MS,
@@ -180,6 +183,7 @@ export class DirectGatewayController {
     this.#settings = settings;
     this.#spawn = spawnImpl;
     this.#probe = probeImpl;
+    this.#handoff = handoffImpl;
     this.logger = logger;
     this.recordCommandTrace = recordCommandTrace;
     this.healthCheckIntervalMs = Math.max(1, Number(healthCheckIntervalMs) || HEALTH_CHECK_INTERVAL_MS);
@@ -195,15 +199,6 @@ export class DirectGatewayController {
       this.#ensureHealthCheck();
       return this.#settings.publicUrl;
     }
-    const { workingDirectory } = this.#settings;
-    await mkdir(workingDirectory, { recursive: true });
-    const caddyfile = path.join(workingDirectory, "Caddyfile");
-    const desiredConfig = directGatewayCaddyfile(this.#settings);
-    const existingConfig = await readFile(caddyfile, "utf8").catch(() => "");
-    if (existingConfig === desiredConfig && await this.#probe(this.#settings)) {
-      this.#ensureHealthCheck();
-      return this.#settings.publicUrl;
-    }
     try {
       await this.#launch();
     } finally {
@@ -216,7 +211,7 @@ export class DirectGatewayController {
     if (this.#startup) return this.#startup;
     this.#startup = this.#launchOnce();
     try {
-      await this.#startup;
+      return await this.#startup;
     } finally {
       this.#startup = null;
     }
@@ -226,15 +221,23 @@ export class DirectGatewayController {
     const { executable, workingDirectory } = this.#settings;
     const caddyfile = path.join(workingDirectory, "Caddyfile");
     const desiredConfig = directGatewayCaddyfile(this.#settings);
-    const previousConfig = await readFile(caddyfile, "utf8").catch(error => {
-      if (error.code === "ENOENT") return null;
+    await mkdir(workingDirectory, { recursive: true });
+    const existingConfig = await readFile(caddyfile, "utf8").catch(error => {
+      if (error.code === "ENOENT") return "";
       throw error;
     });
-    if (previousConfig !== null && previousConfig !== desiredConfig) {
-      const error = new Error("Direct gateway configuration requires the existing release owner's verified handoff");
-      error.code = "DIRECT_GATEWAY_CONFIG_HANDOFF_REQUIRED";
-      throw error;
+    const healthy = await this.#probe(this.#settings);
+    if (this.#closing) return false;
+    if (healthy && existingConfig === desiredConfig) return false;
+    if (existingConfig && existingConfig !== desiredConfig) {
+      const receipt = await this.#handoff(this.#settings, { configFile: caddyfile, existingConfig });
+      this.logger.log(receipt.stopped
+        ? `Managed gateway configuration handoff: PID ${receipt.pid} exited`
+        : "Managed gateway configuration handoff: prior process absent");
+    } else if (healthy) {
+      throw new Error("Live gateway configuration identity is unavailable");
     }
+    if (this.#closing) return false;
     await writeFile(caddyfile, desiredConfig, "utf8");
     const child = this.#spawn(executable, ["run", "--config", caddyfile, "--adapter", "caddyfile"], {
       cwd: workingDirectory,
@@ -282,6 +285,7 @@ export class DirectGatewayController {
       this.logger.warn(`Direct gateway exited (${signal ?? code ?? "unknown"}); scheduling recovery`);
       this.#ensureHealthCheck(this.recoveryDelayMs, { replace: true });
     });
+    return true;
   }
 
   #ensureHealthCheck(delayMs = this.healthCheckIntervalMs, { replace = false } = {}) {
@@ -295,11 +299,8 @@ export class DirectGatewayController {
       this.#healthTimer = null;
       if (this.#closing) return;
       try {
-        const healthy = await this.#probe(this.#settings);
-        if (!healthy && (!this.#child || this.#child.exitCode != null)) {
-          this.logger.warn("Direct gateway health check failed; restarting Caddy");
-          await this.#launch();
-          this.logger.log(`Direct Agent Hub gateway recovered at ${this.#settings.publicUrl}`);
+        if (!this.#child || this.#child.exitCode != null) {
+          if (await this.#launch()) this.logger.log(`Direct Agent Hub gateway recovered at ${this.#settings.publicUrl}`);
         }
       } catch (error) {
         this.logger.error(`Cannot recover direct gateway: ${error.message}`);
@@ -316,6 +317,7 @@ export class DirectGatewayController {
       this.cancelHealthCheck(this.#healthTimer);
       this.#healthTimer = null;
     }
+    await this.#startup?.catch(() => {});
     const child = this.#child;
     this.#child = null;
     if (!child || child.exitCode != null) return;

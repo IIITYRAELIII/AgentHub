@@ -51,6 +51,7 @@ export function createRuntimeRestartComposition({
   workLogUsageStore,
   rateLimitHistoryStore,
   providerTurnTelemetryStore,
+  fileTransferService,
   taskReadStateStore,
   runtimeStateStore,
   commandTrace,
@@ -85,6 +86,9 @@ export function createRuntimeRestartComposition({
 
   const runtimeResources = new RuntimeResourceRegistry({
     captureException: (error, context) => sentryDiagnostics.captureException(error, context),
+    quiesce: [
+      { name: "file transfer", run: () => fileTransferService?.quiesce() },
+    ],
     drain: [
       { name: "storage retention", run: () => storageRetention?.close?.() },
       { name: "journal startup", run: () => journalStartupReady },
@@ -117,10 +121,14 @@ export function createRuntimeRestartComposition({
     releaseLock: [
       { name: "instance lock", run: () => instanceGuard.release() },
     ],
+    recover: [
+      { name: "file transfer", run: () => fileTransferService?.resume() },
+    ],
     finalize: [
       { name: "work log usage", run: () => workLogUsageStore.close() },
       { name: "rate limit history", run: () => rateLimitHistoryStore.close() },
       { name: "provider turn telemetry", run: () => providerTurnTelemetryStore?.close?.() },
+      { name: "file transfer", run: () => fileTransferService?.close?.() },
       { name: "task sync store", run: () => taskSyncStore.close() },
       { name: "message pin store", run: () => messagePins?.close?.() },
       { name: "workspace catalog store", run: () => workspaceCatalogStore.close() },
