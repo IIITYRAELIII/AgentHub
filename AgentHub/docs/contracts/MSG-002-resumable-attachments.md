@@ -168,6 +168,17 @@ outside this change. Native Telegram bot-file intake keeps its upstream getFile 
 large files must be attached through Hub's web interface. Running a separate
 local Telegram Bot API server is outside this change.
 
+Local finalization processes at most one protocol part per read/write buffer,
+retaining ordered per-part and final hashes, fsync, atomic publication and the
+original receipt. It does not fragment a small multi-part file into dozens of
+serialized 64 KiB I/O round trips. Existing origin traces and Server-Timing also
+separate owner-queue wait, storage read/open/write/sync/close/rename/publication
+and cleanup awaits. These durations include scheduling delay, not just device
+work; the per-request owner event-loop maximum is separate and must not be
+subtracted as an attribution formula. Incomplete monitor sampling can report
+zero. Timings use a finite scalar vocabulary, survive failed operations through
+the existing trace owner, and never authorize a receipt or alter an outcome.
+
 Upload diagnostics distinguish client session/auth wait, capabilities, durable
 attempt recording, begin/status/part/complete, response parsing and paused
 manual-resume time. Client HTTP spans end at response headers: they are not
