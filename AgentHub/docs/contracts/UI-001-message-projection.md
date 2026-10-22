@@ -387,6 +387,14 @@ An exact local preparation cancellation before transport begins is a known
 non-submission, not a transport timeout, and may restore the unchanged draft
 through the existing composer recovery owner.
 
+Composer pending sends are scoped to their exact current Task identity. A paused
+upload or unresolved send keeps that Task fenced against duplicate submission,
+but cannot disable another Stream's composer. Independent sends retain separate
+original requests and drafts; a late completion releases only its matching
+request and Task. Every unresolved send still retains its attachment bytes and
+blocks managed runtime reload. Switching Streams never resumes, cancels or
+replays an upload or message.
+
 Composer recovery uses the same exact `clientUserMessageId`. A transport timeout
 or connection loss leaves the cleared composer unchanged and shows the command
 as `unknown` while snapshot reconciliation is pending. Only an authoritative
