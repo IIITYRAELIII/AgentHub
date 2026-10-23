@@ -17,6 +17,7 @@ import {
   interstreamDisplayText,
 } from "../domain/interstream-message.mjs";
 import { canonicalMcpValue, mcpArgumentsHash } from "../domain/mcp-arguments-hash.mjs";
+import { MAX_RELEASE_METADATA_BYTES } from "../domain/release-operation.mjs";
 import { taskProjectRoot } from "../domain/task-project-root.mjs";
 import { normalizedInitialNativeTest } from "../domain/task-git-reference.mjs";
 import {
@@ -835,6 +836,18 @@ export class HubMcpService {
         workspace_id: { type: "string", description: "Defaults to the caller Workspace." },
         task_ids: { type: "array", minItems: 1, items: { type: "string" } },
         validation_mode: { type: "string", enum: ["focused", "full"] },
+        release_metadata: {
+          type: "object",
+          description: "Exact prepared CHANGELOG artifact identity; the existing release owner verifies its bytes before composition.",
+          additionalProperties: false,
+          properties: {
+            sourcePath: { type: "string", minLength: 1 },
+            byteLength: { type: "integer", minimum: 1, maximum: MAX_RELEASE_METADATA_BYTES },
+            rawSha256: { type: "string", pattern: "^[a-f0-9]{64}$" },
+            canonicalSha256: { type: "string", pattern: "^[a-f0-9]{64}$" },
+          },
+          required: ["sourcePath", "byteLength", "rawSha256", "canonicalSha256"],
+        },
         approved_targets: {
           type: "array",
           minItems: 1,
@@ -858,6 +871,13 @@ export class HubMcpService {
       }, ["operation_id"]),
       tool("hub_release_continue", "Wake an existing waiting release operation without changing its original authorization or creating a new operation.", {
         operation_id: { type: "string" },
+        reviewed_main: { type: "object", additionalProperties: false, required: ["expectedRevision", "approvedRepositories"], properties: {
+          expectedRevision: { type: "integer", minimum: 1 },
+          approvedRepositories: { type: "array", minItems: 1, maxItems: 32, items: { type: "object", additionalProperties: false,
+            required: ["projectRoot", "approvedLocalMainCommit", "approvedOriginMainCommit"], properties: {
+              projectRoot: { type: "string" }, approvedLocalMainCommit: { type: "string" }, approvedOriginMainCommit: { type: "string" },
+            } } },
+        } },
       }, ["operation_id"]),
       tool("hub_events_list", "Read bounded persistent Workspace events after a cursor; this never holds a long poll.", {
         workspace_id: { type: "string", description: "Defaults to the caller Workspace." },
@@ -1949,6 +1969,7 @@ export class HubMcpService {
         taskIds: Array.isArray(args.task_ids) ? args.task_ids : [],
         validationMode: requiredText(args.validation_mode, "validation mode", 32),
         approvedTargets: Array.isArray(args.approved_targets) ? args.approved_targets : [],
+        ...(args.release_metadata !== undefined ? { releaseMetadata: args.release_metadata } : {}),
       },
     });
   }
@@ -1963,7 +1984,9 @@ export class HubMcpService {
     const operationId = requiredText(args.operation_id, "operation id", 200);
     const snapshot = this.#releaseOperation().get(operationId);
     this.#workspace(context, snapshot.operation.workspaceId);
-    return this.#releaseOperation().continue(operationId);
+    return this.#releaseOperation().continue(operationId, {
+      requestId: args.request_id, reviewedMain: args.reviewed_main,
+    });
   }
 
 

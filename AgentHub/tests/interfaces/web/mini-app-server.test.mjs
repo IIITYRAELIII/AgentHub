@@ -34,8 +34,15 @@ test("resumable upload HTTP authenticates, resumes chunks and streams the comple
     let url = `${address.url}api/attachment-upload`;
     const headers = { Authorization: `webview ${createLocalWebviewSession(secret).token}` };
     assert.equal((await fetch(url)).status, 401);
-    const capabilities = await (await fetch(url, { headers })).json();
+    const capabilitiesResponse = await fetch(url, { headers });
+    const capabilities = await capabilitiesResponse.json();
     assert.equal(capabilities.protocol, "agent-hub-attachment-upload-v1");
+    assert.equal(capabilities.supportsBeginRecovery, true);
+    assert.match(capabilitiesResponse.headers.get("server-timing"), /auth;dur=[0-9.]+, body;dur=[0-9.]+, owner;dur=[0-9.]+/u);
+    const absent = await fetch(`${url}?id=bbbbbbbb-cccc-dddd-eeee-ffffffffffff`, { headers });
+    assert.equal(absent.status, 404);
+    assert.equal((await absent.json()).state, "absent");
+    assert.match(absent.headers.get("server-timing"), /owner;dur=[0-9.]+/u);
     const preflight = await fetch(url, { method: "OPTIONS", headers: {
       Origin: "vscode-webview://agent-hub-test", "Access-Control-Request-Method": "PUT" } });
     assert.match(preflight.headers.get("access-control-allow-methods"), /PUT, DELETE/u);

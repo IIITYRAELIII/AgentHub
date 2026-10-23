@@ -295,3 +295,43 @@ test("process probes are cached and concurrent calls are coalesced", async () =>
   }), TASK_EXECUTION_OWNERS.CLI);
   assert.equal(calls, 1);
 });
+
+test("recovery process absence bypasses cached and in-flight ordinary observations", async () => {
+  const activity = { running: true, lastActivityAtMs: 0 };
+  const options = { rolloutPath: "C:/fresh-recovery.jsonl", platform: "win32", nowMs: 100_000 };
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const old = codexObservedRuntimeActive(activity, { ...options, probe: async () => {
+    await gate;
+    return snapshot([40], [{ processId: 40, parentProcessId: 1,
+      name: "codex.exe", commandLine: "codex.exe resume thread" }]);
+  } });
+  let freshCalls = 0;
+  const fresh = () => codexObservedRuntimeActive(activity, { ...options,
+    nowMs: 100_001, forceFresh: true,
+    probe: async () => { freshCalls += 1; return snapshot([], []); } });
+  assert.equal(await fresh(), false);
+  assert.equal(await fresh(), false);
+  assert.equal(freshCalls, 2);
+  release();
+  assert.equal(await old, true);
+  assert.equal(await codexObservedRuntimeActive(activity, { ...options, nowMs: 100_002,
+    probe: async () => assert.fail("Newer cached evidence must survive older completion") }), false);
+});
+
+test("fresh recovery requires both explicit idle provider and successful native absence", async () => {
+  let probes = 0;
+  const options = { rolloutPath: "C:/strict-recovery.jsonl", platform: "win32",
+    forceFresh: true, probe: async () => { probes += 1; return snapshot([], []); } };
+  assert.equal((await resolveCodexTaskActivity({ threadStatus: { type: "idle" },
+    activity: { running: false } }, options)).state, "inactive");
+  assert.equal(probes, 1, "Even an inactive/empty rollout requires a native probe");
+  assert.equal((await resolveCodexTaskActivity({ threadStatus: { type: "active" } }, options)).state, "active");
+  assert.equal((await resolveCodexTaskActivity({ threadStatus: { type: "notLoaded" } }, options)).state, "unknown");
+  assert.equal((await resolveCodexTaskActivity({ threadStatus: { type: "idle" } }, {
+    ...options, probe: async () => { throw new Error("denied"); },
+  })).state, "unknown");
+  assert.equal((await resolveCodexTaskActivity({ threadStatus: { type: "idle" } }, {
+    ...options, rolloutPath: null,
+  })).state, "unknown");
+});

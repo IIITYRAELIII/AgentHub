@@ -84,10 +84,10 @@ html[data-mobile-dialogs-enabled] {
   --mobile-navigation-surface-3: var(--surface-3);
   --mobile-navigation-text: var(--text);
   --mobile-navigation-soft: var(--text-soft);
-  --mobile-navigation-muted: var(--text-muted);
+  --mobile-navigation-muted: var(--text-soft);
   --mobile-navigation-line: var(--line);
   --mobile-navigation-line-strong: var(--line-strong);
-  --mobile-navigation-accent: var(--accent);
+  --mobile-navigation-accent: var(--text);
   --mobile-navigation-hover: var(--surface-1);
   --mobile-navigation-selected: var(--surface-2);
 }

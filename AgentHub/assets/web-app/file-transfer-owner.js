@@ -29,7 +29,8 @@
   let opener = null;
   let snapshot = null;
   let selectedTtl = null;
-  let pendingCreateRequestId = "";
+  let context = null;
+  let revokeContext = null;
   let pollTimer = null;
   const knownShares = new Map();
 
@@ -90,9 +91,32 @@
     if (pollTimer) clearTimeout(pollTimer);
     pollTimer = null;
   }
+  function isCurrent(owner, revision = owner?.revision) {
+    return owner !== null && owner === context && dialog.open && owner.revision === revision;
+  }
+  function invalidate() {
+    context = null;
+    revokeContext = null;
+    stopPolling();
+    if (revokeDialog.open) revokeDialog.close();
+  }
+  function closeOwner() {
+    invalidate();
+    dialog.close();
+  }
+  function showRevoke() {
+    if (!isCurrent(context) || !snapshot?.share) return;
+    revokeContext = { owner: context, shareId: snapshot.share.id };
+    revokeDialog.querySelector("[data-transfer-confirm-revoke]").disabled = false;
+    revokeDialog.showModal();
+  }
   function schedulePoll() {
     stopPolling();
-    if (dialog.open) pollTimer = setTimeout(() => void refresh({ quiet: true }), 900);
+    const owner = context;
+    const revision = owner?.revision;
+    if (isCurrent(owner, revision)) pollTimer = setTimeout(() => {
+      if (isCurrent(owner, revision)) void refresh({ quiet: true, owner });
+    }, 900);
   }
   function renderCreate() {
     const options = snapshot.ttlOptions || [];
@@ -106,7 +130,7 @@
     body.querySelector("[data-transfer-ttl]")?.addEventListener("change", (event) => {
       selectedTtl = Number(event.target.value);
     });
-    setActions(button("Отмена", () => dialog.close()), button("Создать ссылку", () => void create(), "primary"));
+    setActions(button("Отмена", closeOwner), button("Создать ссылку", () => void create(), "primary"));
   }
   function renderPreparing(artifact) {
     const processed = Number(artifact?.preparedBytes) || 0;
@@ -121,7 +145,7 @@
         </div>
         <p class="file-transfer-owner-helper">${determinate ? `${formatBytes(processed)} из ${formatBytes(total)}. ` : ""}Можно закрыть окно: подготовка сохранится на сервере.</p>
       </section>`;
-    setActions(button("Закрыть", () => dialog.close()));
+    setActions(button("Закрыть", closeOwner));
     schedulePoll();
   }
   function renderReady(share) {
@@ -138,17 +162,21 @@
           <div><dt>SHA-256</dt><dd><code>${escapeHtml(share.sha256 || "—")}</code></dd></div>
         </dl>
       </section>`;
+    const owner = context;
+    const revision = owner?.revision;
     const copy = button("Копировать ссылку", async () => {
       const status = body.querySelector("[data-transfer-copy-status]");
       try {
         await navigator.clipboard.writeText(share.url);
+        if (!isCurrent(owner, revision)) return;
         status.textContent = "Ссылка скопирована";
       } catch {
+        if (!isCurrent(owner, revision)) return;
         body.querySelector("[data-transfer-url]")?.select();
         status.textContent = "Не удалось скопировать ссылку. Поле оставлено выделенным.";
       }
     }, "primary");
-    setActions(copy, button("Отозвать ссылку", () => revokeDialog.showModal(), "danger"));
+    setActions(copy, button("Отозвать ссылку", showRevoke, "danger"));
   }
   function renderShare(share) {
     const states = {
@@ -176,8 +204,8 @@
     const terminal = ["completed", "expired", "revoked", "failed", "ambiguous_terminal"].includes(share.state);
     setActions(
       terminal ? button("Создать новую ссылку", renderCreate, "primary") : null,
-      ["claimed", "downloading"].includes(share.state) ? button("Отозвать ссылку", () => revokeDialog.showModal(), "danger") : null,
-      button("Закрыть", () => dialog.close()),
+      ["claimed", "downloading"].includes(share.state) ? button("Отозвать ссылку", showRevoke, "danger") : null,
+      button("Закрыть", closeOwner),
     );
     if (["claimed", "downloading", "revoking", "expiring"].includes(share.state)) schedulePoll();
   }
@@ -186,7 +214,7 @@
       <h3 id="file-transfer-owner-state-title">Не удалось получить актуальный статус</h3>
       <p>Не создавайте новую ссылку, пока статус не обновится.</p>
     </section>`;
-    setActions(button("Обновить статус", () => void refresh(), "primary"), button("Закрыть", () => dialog.close()));
+    setActions(button("Обновить статус", () => void refresh(), "primary"), button("Закрыть", closeOwner));
   }
   function render() {
     stopPolling();
@@ -196,61 +224,104 @@
     else if (["preparing", "publishing"].includes(artifact?.state)) renderPreparing(artifact);
     else renderCreate();
   }
-  async function refresh({ quiet = false } = {}) {
+  async function refresh({ quiet = false, owner = context } = {}) {
+    if (!isCurrent(owner)) return;
+    const revision = ++owner.revision;
     try {
-      snapshot = await request("status", { path: currentPath });
-      knownShares.set(currentPath, Boolean(snapshot.share));
-      if (pendingCreateRequestId && snapshot.artifact?.state === "ready" && !snapshot.share) {
-        const created = await request("create", {
-          artifactId: snapshot.artifact.id, requestId: pendingCreateRequestId, ttlMs: selectedTtl,
+      const latest = await owner.request("status", { path: owner.path });
+      if (!isCurrent(owner, revision)) return;
+      knownShares.set(owner.path, Boolean(latest.share));
+      const intent = owner.pendingCreate;
+      if (intent && latest.artifact?.state === "ready" && !latest.share) {
+        if (intent.artifactId && intent.artifactId !== latest.artifact.id) {
+          renderUnknown();
+          return;
+        }
+        intent.artifactId = latest.artifact.id;
+        const created = await owner.request("create", {
+          artifactId: intent.artifactId, requestId: intent.requestId, ttlMs: intent.ttlMs,
         });
-        pendingCreateRequestId = "";
-        snapshot.share = created.share;
+        if (!isCurrent(owner, revision) || owner.pendingCreate !== intent) return;
+        owner.pendingCreate = null;
+        latest.share = created.share;
       }
+      if (latest.share) owner.pendingCreate = null;
+      snapshot = latest;
+      knownShares.set(owner.path, Boolean(snapshot.share));
       render();
     } catch {
-      if (!quiet || dialog.open) renderUnknown();
+      if (isCurrent(owner, revision) && (!quiet || dialog.open)) renderUnknown();
     }
   }
   async function create() {
-    if (!selectedTtl) return;
+    const owner = context;
+    if (!isCurrent(owner) || !selectedTtl) return;
+    const revision = ++owner.revision;
+    stopPolling();
     setActions();
     const priorArtifact = snapshot.artifact?.state === "ready" ? snapshot.artifact : null;
+    const intent = owner.pendingCreate ?? {
+      requestId: requestId(), ttlMs: selectedTtl, artifactId: priorArtifact?.id ?? null,
+    };
+    owner.pendingCreate = intent;
     try {
       if (!priorArtifact) {
-        pendingCreateRequestId = requestId();
-        const prepared = await request("prepare", { path: currentPath, requestId: requestId() });
+        const prepared = await owner.request("prepare", { path: owner.path, requestId: requestId() });
+        if (!isCurrent(owner, revision) || owner.pendingCreate !== intent) return;
+        intent.artifactId = prepared.artifact.id;
         snapshot.artifact = prepared.artifact;
         renderPreparing(snapshot.artifact);
         return;
       }
-      const created = await request("create", {
-        artifactId: priorArtifact.id, requestId: pendingCreateRequestId || requestId(), ttlMs: selectedTtl,
+      if (intent.artifactId !== priorArtifact.id) {
+        renderUnknown();
+        return;
+      }
+      const created = await owner.request("create", {
+        artifactId: intent.artifactId, requestId: intent.requestId, ttlMs: intent.ttlMs,
       });
-      pendingCreateRequestId = "";
+      if (!isCurrent(owner, revision) || owner.pendingCreate !== intent) return;
+      owner.pendingCreate = null;
       snapshot.share = created.share;
+      knownShares.set(owner.path, Boolean(snapshot.share));
       render();
-    } catch { await refresh(); }
+    } catch {
+      if (isCurrent(owner, revision)) await refresh({ owner });
+    }
   }
   async function revoke() {
+    const confirmation = revokeContext;
+    const owner = confirmation?.owner;
+    if (!isCurrent(owner) || !confirmation.shareId) return;
+    const revision = ++owner.revision;
+    stopPolling();
     const control = revokeDialog.querySelector("[data-transfer-confirm-revoke]");
     control.disabled = true;
     try {
-      await request("revoke", { shareId: snapshot.share.id });
+      await owner.request("revoke", { shareId: confirmation.shareId });
+      if (!isCurrent(owner, revision) || revokeContext !== confirmation) return;
       revokeDialog.close();
-      await refresh();
+      revokeContext = null;
+      await refresh({ owner });
     } catch {
+      if (!isCurrent(owner, revision) || revokeContext !== confirmation) return;
       revokeDialog.close();
+      revokeContext = null;
       renderUnknown();
-    } finally { control.disabled = false; }
+    } finally {
+      if (revokeContext === confirmation) control.disabled = false;
+    }
   }
   revokeDialog.querySelector("[data-transfer-confirm-revoke]").addEventListener("click", () => void revoke());
   dialog.addEventListener("close", () => {
-    stopPolling();
+    // A close event queued by the previous opening must not invalidate a new one.
+    if (dialog.open) return;
+    invalidate();
     opener?.focus?.({ preventScroll: true });
     opener = null;
   });
-  dialog.addEventListener("cancel", () => { if (revokeDialog.open) revokeDialog.close(); });
+  dialog.querySelector("form").addEventListener("submit", invalidate);
+  dialog.addEventListener("cancel", invalidate);
 
   window.AgentHubFileTransferOwner = Object.freeze({
     configure(handler) { request = handler; },
@@ -269,14 +340,16 @@
     async open({ path, trigger }) {
       if (!request || !String(path ?? "").trim()) return;
       currentPath = String(path).trim();
-      pendingCreateRequestId = "";
+      invalidate();
+      const owner = { path: currentPath, request, revision: 0, pendingCreate: null };
+      context = owner;
       opener = trigger instanceof HTMLElement ? trigger : document.activeElement;
       snapshot = { file: { name: currentPath.split(/[\\/]/u).at(-1) || "Файл", size: 0 }, artifact: null, share: null, ttlOptions: [] };
       body.innerHTML = `${fileSummary(snapshot.file)}<p role="status">Получаем актуальный статус…</p>`;
-      setActions(button("Отмена", () => dialog.close()));
+      setActions(button("Отмена", closeOwner));
       dialog.showModal();
       dialog.querySelector("h2")?.focus?.();
-      await refresh();
+      await refresh({ owner });
     },
   });
 })();

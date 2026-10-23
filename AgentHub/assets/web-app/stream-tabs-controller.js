@@ -302,7 +302,7 @@
 
   function attentionStreamCount(tasks) {
     return (tasks ?? []).reduce((count, task) => (
-      count + (task?.running || task?.activityUnknown || task?.unread ? 1 : 0)
+      count + (task?.running || task?.preparing || task?.activityUnknown || task?.unread ? 1 : 0)
     ), 0);
   }
 
@@ -310,7 +310,7 @@
     const active = [];
     const recent = [];
     for (const task of tasks ?? []) {
-      if (task?.running || task?.activityUnknown || task?.unread) active.push(task);
+      if (task?.running || task?.preparing || task?.activityUnknown || task?.unread) active.push(task);
       else recent.push(task);
     }
     return { active, recent };
@@ -511,6 +511,7 @@
     const answerReady = Boolean(task?.unread);
     const statusLabel = [
       task?.activityUnknown ? "Состояние уточняется · поток занят" : "",
+      task?.preparing ? "Подготовка хода" : "",
       running ? "Ход выполняется" : "",
       answerReady ? "Ответ готов" : "",
     ].filter(Boolean).join(" · ") || String(task?.statusLabel ?? "");

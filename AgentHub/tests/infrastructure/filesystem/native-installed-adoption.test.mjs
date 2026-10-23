@@ -11,7 +11,7 @@ import { ReleaseGitWorkspaceService } from "../../../src/infrastructure/filesyst
 import { readNativeUpstreamAdoptions } from "../../../src/infrastructure/filesystem/native-upstream-adoption.mjs";
 import { installedNativeHistoryBaseline, assertInstalledLocalSourceBaseline } from "../../../src/infrastructure/filesystem/local-source-baseline.mjs";
 import { assertNativeTaskHistories } from "../../../src/infrastructure/filesystem/native-release-merge.mjs";
-import { localSourceSelectionHash } from "../../../src/domain/release-base-provenance.mjs";
+import { localSourceSelectionHash, normalizedReleaseBaseProvenance } from "../../../src/domain/release-base-provenance.mjs";
 import { defaultRuntimeRoot } from "../../../src/infrastructure/filesystem/runtime-layout.mjs";
 import { WorkspaceCatalogStore } from "../../../src/infrastructure/persistence/workspace-catalog-store.mjs";
 import { TaskBoardStore } from "../../../src/infrastructure/persistence/task-board-store.mjs";
@@ -36,7 +36,7 @@ async function commit(root, message) {
   await git(root, ["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", message]);
   return git(root, ["rev-parse", "HEAD"]);
 }
-async function fixture(t, owningTaskId = "11111111-1111-4111-8111-111111111111", owningTaskRevision = 2) {
+async function fixture(t, owningTaskId = "11111111-1111-4111-8111-111111111111", owningTaskRevision = 2, agreedOrigin = false) {
   const root = await mkdtemp(path.join(os.tmpdir(), "hub-native-adoption-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const environment = { ...process.env, LOCALAPPDATA: path.join(root, "state"), XDG_STATE_HOME: path.join(root, "state") };
@@ -49,7 +49,7 @@ async function fixture(t, owningTaskId = "11111111-1111-4111-8111-111111111111",
   await save(primary, "AgentHub/server.mjs", "export const repair = 0;\n");
   await save(primary, "AgentHub/package.json", JSON.stringify({ name: "agent-hub", version: "2026.10.11" }) + "\n");
   await save(primary, "AgentHub/package-lock.json", JSON.stringify({ name: "agent-hub", version: "2026.10.11", packages: { "": { name: "agent-hub", version: "2026.10.11" } } }) + "\n");
-  const main = await commit(primary, "agreed main");
+  let main = await commit(primary, "agreed main");
   await git(primary, ["push", "origin", "main"]);
   const own = path.join(root, "own");
   await git(primary, ["worktree", "add", "-b", "own", own, main]);
@@ -58,26 +58,32 @@ async function fixture(t, owningTaskId = "11111111-1111-4111-8111-111111111111",
   await save(own, "AgentHub/package-lock.json", JSON.stringify({ name: "agent-hub", version: "2026.10.12", packages: { "": { name: "agent-hub", version: "2026.10.12" } } }) + "\n");
   const published = await commit(own, "OWN publication");
   await git(own, ["push", "origin", "HEAD:main"]);
+  if (agreedOrigin) {
+    await git(primary, ["merge", "--ff-only", published]);
+    await save(primary, "TEAM_SKILLS/[Ж]/accepted.md", "Already agreed repository metadata.\n");
+    main = await commit(primary, "already accepted main after publication");
+    await git(primary, ["push", "origin", "main"]);
+  }
   const carry = path.join(root, "carry");
-  await git(primary, ["worktree", "add", "-b", "carry", carry, published]);
+  await git(primary, ["worktree", "add", "-b", "carry", carry, agreedOrigin ? main : published]);
   await save(carry, "AgentHub/server.mjs", "export const repair = 1;\n");
   const source = await commit(carry, "installed local repair");
   const external = path.join(root, "external");
-  await git(primary, ["worktree", "add", "-b", "external", external, published]);
+  await git(primary, ["worktree", "add", "-b", "external", external, agreedOrigin ? main : published]);
   await save(external, "CHANGELOG.md", "# History\n\nApproved external notes.\n\nPublished OWN notes.\n");
   await save(external, "AgentHub/incoming.mjs", "export const incoming = true;\n");
   const adopted = await commit(external, "approved external code");
-  await git(external, ["push", "origin", "HEAD:main"]);
+  if (!agreedOrigin) await git(external, ["push", "origin", "HEAD:main"]);
   const dataDir = path.join(runtimeRoot, "data"), publication = { generation: "own-publication", repositories: [{ root: primary, revision: published }] };
   const service = new TaskGitWorkspaceService({ dataDir, readPublication: async () => publication, recordTiming: () => {} });
   const task = await service.prepare({ taskId: owningTaskId, taskNumber: "HUB-1", projectRoot: primary });
   await git(task.projectRoot, ["sparse-checkout", "disable"]);
   await git(task.projectRoot, ["merge", "--ff-only", source]);
-  await git(task.projectRoot, ["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "merge", "--no-ff", "--no-edit", adopted]);
+  if (!agreedOrigin) await git(task.projectRoot, ["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "merge", "--no-ff", "--no-edit", adopted]);
   await save(task.projectRoot, "AgentHub/selected.mjs", "export const selected = true;\n");
   const result = await commit(task.projectRoot, "selected correction");
   const tasks = [{ taskId: task.taskId, taskRevision: owningTaskRevision, baseCommit: main, resultCommit: result }];
-  const receipt = await service.recordExplicitUpstreamAdoption({ taskId: task.taskId, branch: task.branch,
+  const receipt = agreedOrigin ? null : await service.recordExplicitUpstreamAdoption({ taskId: task.taskId, branch: task.branch,
     projectRoot: primary, taskBaseCommit: main, acceptedLocalMainCommit: main, adoptedCommit: adopted,
     snapshotCommit: result, requestId: "fixture-explicit-adoption" });
   const release = path.join(runtimeRoot, "releases", "installed-repair"), physical = Buffer.from("export const repair = 1;\n");
@@ -98,7 +104,7 @@ async function fixture(t, owningTaskId = "11111111-1111-4111-8111-111111111111",
     task, tasks, result, receipt, service, candidate, port, adoptions, p, request, release };
 }
 
-test("ordinary Await checks native authority inside actual Task persistence and terminal repeat has no Git effects", { timeout: 300000 }, async t => {
+async function terminalAuthority(t, agreedOrigin = false) {
   for (const drift of [true, false]) await t.test(drift ? "origin drift before Task CAS" : "success and same-original repeat", async child => {
     const sqlRoot = await mkdtemp(path.join(os.tmpdir(), "hub-ordinary-terminal-"));
     const catalog = new WorkspaceCatalogStore({ databaseFile: path.join(sqlRoot, "tasks.sqlite") });
@@ -112,7 +118,7 @@ test("ordinary Await checks native authority inside actual Task persistence and 
     const created = store.create({ text: "Fix", bucket: "workspace", workspaceId: workspace.id });
     await board.claim({ id: created.id, workspaceId: workspace.id, streamId: stream.id,
       provider: "codex", threadId: "fixture", turnId: "turn", operationId: "claim" });
-    const f = await fixture(child, created.id, board.task(created.id).revision + 1);
+    const f = await fixture(child, created.id, board.task(created.id).revision + 1, agreedOrigin);
     await catalog.runMutation(() => catalog.updateWorkspaceSettings(workspace.id,
       { workingDirectory: f.primary, releaseWorkflowEnabled: true }));
     await board.beginLifecycleTransition({ id: created.id, operationId: "test", kind: "workflow",
@@ -140,10 +146,18 @@ test("ordinary Await checks native authority inside actual Task persistence and 
     });
     f.service.measureOperation = async (stage, operation) => {
       if (stage === "persistence" && ready && drift && !injected) {
-        injected++;
-        await save(f.external, "AgentHub/late-origin.mjs", "unapproved before terminal CAS\n");
-        await commit(f.external, "origin drift inside actual persistence admission");
-        await git(f.external, ["push", "origin", "HEAD:main"]);
+        const changeOrigin = async () => {
+          if (injected) return;
+          injected++;
+          await save(f.external, "AgentHub/late-origin.mjs", "unapproved before terminal CAS\n");
+          await commit(f.external, "origin drift inside actual persistence admission");
+          await git(f.external, ["push", "origin", "HEAD:main"]);
+        };
+        if (process.env.HUB_TEST_LATE_NATIVE_HISTORY === "1") {
+          const key = Symbol.for("agent-hub.test.after-native-history");
+          globalThis[key] = changeOrigin;
+          child.after(() => { delete globalThis[key]; });
+        } else await changeOrigin();
       }
       return operation();
     };
@@ -157,7 +171,7 @@ test("ordinary Await checks native authority inside actual Task persistence and 
     const request = { taskId: task.id, operationId: "ordinary-await", status: "awaiting_implementation",
       projectRoot: f.primary, expectedRevision: task.revision, expectedWorkflowStatus: "testing" };
     if (drift) {
-      await assert.rejects(lifecycle.updateWorkflowStatus(request), /identity changed/);
+      await assert.rejects(lifecycle.updateWorkflowStatus(request), agreedOrigin ? /agreed main origin changed/ : /identity changed/);
       assert.equal(injected, 1);
       assert.equal(terminalCalls, 0);
       assert.equal(board.task(task.id).revision, task.revision);
@@ -179,6 +193,62 @@ test("ordinary Await checks native authority inside actual Task persistence and 
       assert.deepEqual(await readFile(prepared.checkpointFile), checkpoint);
     }
   });
+}
+
+test("ordinary Await checks native authority inside actual Task persistence and terminal repeat has no Git effects",
+  { timeout: 300000 }, t => terminalAuthority(t));
+
+test("already agreed main origin reaches actual Await terminal CAS without invented adoption receipts",
+  { timeout: 300000 }, t => terminalAuthority(t, true));
+
+test("late native history completion keeps origin fencing before the actual Task CAS", { timeout: 240000 }, async () => {
+  const environment = { ...process.env, HUB_TEST_LATE_NATIVE_HISTORY: "1" };
+  delete environment.NODE_TEST_CONTEXT;
+  const result = await run(process.execPath, ["--import",
+    new URL("../../helpers/native-history-observer.mjs", import.meta.url).href,
+    "--test", "--test-name-pattern=^already agreed main origin reaches", import.meta.filename],
+  { env: environment, windowsHide: true, timeout: 180000, maxBuffer: 4 * 1024 * 1024 });
+  assert.equal(result.stderr, "");
+  assert.match(result.stdout, /tests 3/u);
+  assert.match(result.stdout, /pass 3/u);
+  assert.match(result.stdout, /fail 0/u);
+});
+
+test("already agreed main origin survives Test and candidate reuse but refuses drift and malformed authority", { timeout: 240000 }, async t => {
+  const f = await fixture(t, undefined, undefined, true);
+  assert.deepEqual(f.adoptions, []);
+  assert.equal(f.p.approvedOriginMainCommit, f.main);
+  assert.deepEqual(f.p.adoptions, []);
+  const verify = (provenance = f.p, extra = {}) => assertInstalledLocalSourceBaseline({ provenance, git: f.port,
+    repositoryRoot: f.primary, primaryMainCommit: f.main, publishedRevision: f.published,
+    planRevision: "exact", tasks: f.tasks, runtimeRoot: f.runtimeRoot, ...extra });
+  for (const adoptions of [null, {}, "", false]) {
+    assert.throws(() => normalizedReleaseBaseProvenance({ ...f.p, adoptions }), /adoption pins/);
+  }
+  assert.throws(() => normalizedReleaseBaseProvenance({ ...f.p, approvedOriginMainCommit: f.adopted }), /adoption pins/);
+  await assert.rejects(verify(f.p, { git: async (args, options) => {
+    if (args[0] === "merge-base" && args[2] === f.main && args[3] === f.source) throw new Error("source lacks agreed main");
+    return f.port(args, options);
+  } }), /source lacks agreed main/);
+  const snapshot = await f.service.snapshot({ taskId: f.task.taskId, taskNumber: "HUB-1", projectRoot: f.task.projectRoot });
+  assert.equal((await f.service.mergeIntoDev(snapshot)).integrated, true);
+  const derived = await f.candidate.deriveInstalledLocalSourceBaselineForSelection({ projectRoot: f.primary,
+    planRevision: "exact", tasks: f.tasks, publishedRevision: f.published, adoptions: [] });
+  assert.deepEqual(derived, f.p);
+  const first = await f.candidate.prepareCandidate(f.request);
+  assert.equal((await f.candidate.prepareCandidate(f.request)).manifestHash, first.manifestHash);
+  assert.equal(await git(first.releaseRoot, ["show", "HEAD:AgentHub/server.mjs"]), "export const repair = 1;");
+  assert.equal(await git(first.releaseRoot, ["show", "HEAD:AgentHub/selected.mjs"]), "export const selected = true;");
+  const checkpointFile = (await f.candidate.frozenCandidate(f.primary)).checkpointFile;
+  const checkpoint = await readFile(checkpointFile);
+  await assert.rejects(f.candidate.prepareCandidate({ ...f.request, validateBeforeCommit: async () => {
+    await git(f.external, ["push", "origin", "HEAD:main"]);
+  } }), /agreed main origin changed/);
+  assert.deepEqual(await readFile(checkpointFile), checkpoint);
+  assert.equal((await f.candidate.frozenCandidate(f.primary)).preReleaseHead, first.preReleaseHead);
+  await assert.rejects(verify(), /agreed main origin changed/);
+  assert.equal(await git(f.primary, ["rev-parse", "main"]), f.main);
+  assert.equal(await git(f.primary, ["status", "--porcelain=v1"]), "");
 });
 
 test("ordinary Await derives exact selected adoption and installed source through existing owners", { timeout: 120000 }, async t => {

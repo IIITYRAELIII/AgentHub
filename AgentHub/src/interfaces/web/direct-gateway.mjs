@@ -3,6 +3,7 @@ import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import { request } from "node:https";
 import { isIP } from "node:net";
 import path from "node:path";
+import { createUploadGatewayObserver } from "./upload-transport-trace.mjs";
 import { handoffDirectGateway } from "../../infrastructure/process/direct-gateway-handoff.mjs";
 
 const STARTUP_GRACE_MS = 1_500;
@@ -101,12 +102,15 @@ export async function loadDirectGatewaySettings(filePath, { localUrl } = {}) {
   };
 }
 
-function caddySite(domain, upstreamUrl) {
+function caddySite(domain, upstreamUrl, localHub = false) {
   const backend = new URL(upstreamUrl);
+  // Node's owned Hub upstream expires idle sockets after five seconds. Keep
+  // this pool shorter; unrelated operator-defined upstreams retain their policy.
+  const pool = localHub ? "    transport http {\n      keepalive 2s\n    }\n" : "";
   return `${domain} {
   encode zstd gzip
   reverse_proxy ${backend.host} {
-    header_up X-Forwarded-For {remote_host}
+${pool}    header_up X-Forwarded-For {remote_host}
     header_up -CF-Connecting-IP
   }
   header {
@@ -119,7 +123,7 @@ function caddySite(domain, upstreamUrl) {
 }
 
 export function directGatewayCaddyfile({ domain, localUrl, routes = [] }) {
-  const sites = [caddySite(domain, localUrl), ...routes.map((route) => (
+  const sites = [caddySite(domain, localUrl, true), ...routes.map((route) => (
     caddySite(route.domain, route.upstreamUrl)
   ))];
   return `{
@@ -169,6 +173,7 @@ export class DirectGatewayController {
     probeImpl = probeExistingDirectGateway,
     handoffImpl = handoffDirectGateway,
     logger = console,
+    recordCommandTrace = null,
     healthCheckIntervalMs = HEALTH_CHECK_INTERVAL_MS,
     recoveryDelayMs = RECOVERY_DELAY_MS,
     startupGraceMs = STARTUP_GRACE_MS,
@@ -180,6 +185,7 @@ export class DirectGatewayController {
     this.#probe = probeImpl;
     this.#handoff = handoffImpl;
     this.logger = logger;
+    this.recordCommandTrace = recordCommandTrace;
     this.healthCheckIntervalMs = Math.max(1, Number(healthCheckIntervalMs) || HEALTH_CHECK_INTERVAL_MS);
     this.recoveryDelayMs = Math.max(1, Number(recoveryDelayMs) || RECOVERY_DELAY_MS);
     this.startupGraceMs = Math.max(0, Number(startupGraceMs) || 0);
@@ -245,8 +251,10 @@ export class DirectGatewayController {
     });
     this.#child = child;
     let output = "";
+    const observeUpload = createUploadGatewayObserver(this.recordCommandTrace);
     const consume = (chunk) => {
       output = `${output}${String(chunk)}`.slice(-16_384);
+      try { observeUpload(chunk); } catch { /* Diagnostics cannot affect the gateway process owner. */ }
     };
     child.stdout?.on("data", consume);
     child.stderr?.on("data", consume);

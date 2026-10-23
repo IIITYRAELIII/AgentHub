@@ -532,6 +532,7 @@ export async function createHubInfrastructure({
     readTarget: (input) => releaseOperationAdapter.readTarget(input),
     finalize: (input) => releaseOperationAdapter.finalize(input),
     reservePublication: (input) => releaseOperationAdapter.reservePublication(input),
+    withReviewedMainRecovery: (input) => releaseOperationAdapter.withReviewedMainRecovery(input),
     requestCorrection: createReleaseCorrectionRequester({ taskBoard, taskLifecycle }),
     cleanupGeneration: (input) => releaseOperationAdapter.cleanupGeneration(input),
     processAlive: processIsAlive,

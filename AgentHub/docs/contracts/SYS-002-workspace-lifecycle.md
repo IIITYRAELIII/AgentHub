@@ -78,6 +78,13 @@ See ADR-0067.
 
 ## Provider Thread names
 
+Exact Thread resolution reads its current durable Thread/Stream/Workspace binding
+without loading their settings or counting every sibling Stream. An unnamed
+Stream still displays an ordinal only when more than one live sibling exists;
+archive, rename and rebinding changes are visible on the next point read.
+Provider catalog projection does not admit historical pricing repair. The
+existing startup coordinator owns that optional work after readiness.
+
 - A new Hub-created Thread uses `Workspace - Stream N` (ASCII hyphen). An
   explicitly named Stream contributes its name; an unnamed Stream uses
   `Поток <Stream ordinal>`. N is the exact binding's durable `position`, not the

@@ -1347,39 +1347,68 @@ function el(tag, props = {}, children = []) {
    полоса активности не успевает пройти свой цикл. Узел с тем же ключом
    переиспользуется, а его анимации продолжаются с накопленного времени. */
 const STREAM_STATUS_LAYER_SELECTOR = ".stream-tab-status-layer";
-const STREAM_STATUS_ANIMATION_PREFIX = "stream-";
+const STREAM_STATUS_ANIMATION_NAME = /(?:^|-)stream-/u;
 let reusableWorkspaceCards = new Map();
 let reusableStreamTabs = new Map();
 let adoptedCardAnimations = [];
+const renderedCardAnswerIdentities = new WeakMap();
 
 function statusAnimationKey(animation) {
   return `${animation.animationName} ${animation.effect?.pseudoElement ?? ""}`;
 }
 
-function statusAnimationTimes(node) {
+function statusAnimationSnapshot(node) {
   const times = new Map();
+  const answerKeys = new Set();
+  let answerAnimating = false;
   for (const animation of node.getAnimations?.({ subtree: true }) ?? []) {
-    if (!String(animation.animationName ?? "").startsWith(STREAM_STATUS_ANIMATION_PREFIX)) continue;
+    if (!STREAM_STATUS_ANIMATION_NAME.test(String(animation.animationName ?? ""))) continue;
     const time = Number(animation.currentTime);
     if (Number.isFinite(time)) times.set(statusAnimationKey(animation), time);
+    if (Number.isFinite(animation.effect?.getTiming().iterations)) {
+      answerKeys.add(statusAnimationKey(animation));
+      if (node.hasAttribute("data-answer-arrived")
+        && ["running", "paused"].includes(animation.playState)) answerAnimating = true;
+    }
   }
-  return times;
+  return { times, answerKeys, answerAnimating };
+}
+
+function cardAnswerIdentity(tasks) {
+  const unread = tasks.filter((task) => task?.unread);
+  if (!unread.length) return "";
+  const identities = unread.map((task) => [task.id, observedAnswerFinalIdentityByTaskId.get(task.id)]);
+  if (identities.some(([, identity]) => !identity)) return "";
+  return JSON.stringify(identities.sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0));
 }
 
 function indexRenderedCards(container, selector, attribute) {
   const index = new Map();
   for (const node of container?.querySelectorAll(selector) ?? []) {
     const key = node.getAttribute(attribute);
-    if (key && !index.has(key)) index.set(key, { node, times: statusAnimationTimes(node) });
+    if (key && !index.has(key)) index.set(key, {
+      node,
+      ...statusAnimationSnapshot(node),
+      answerIdentity: renderedCardAnswerIdentities.get(node) ?? "",
+    });
   }
   return index;
 }
 
-function adoptRenderedCard(index, key, next) {
+function adoptRenderedCard(index, key, next, answerIdentity = "") {
   const previous = index.get(key);
+  renderedCardAnswerIdentities.set(next, answerIdentity);
   if (!previous || previous.node.tagName !== next.tagName) return next;
   index.delete(key);
   const node = previous.node;
+  const sameAnswer = Boolean(answerIdentity) && previous.answerIdentity === answerIdentity;
+  // Обновление той же непрочитанной ревизии не обрывает конечную вспышку.
+  // После её завершения, чтения или смены final прежний эффект не переносится.
+  if (sameAnswer && previous.answerAnimating && !next.hasAttribute("data-running")
+    && (next.hasAttribute("data-unread") || next.hasAttribute("data-answer-ready"))) {
+    next.setAttribute("data-answer-arrived", "");
+  }
+  renderedCardAnswerIdentities.set(node, answerIdentity);
   /* Наблюдатель видимости помечает карточку своим атрибутом, и рендер им не
      владеет: при обновлении он сохраняется. */
   for (const attribute of [...node.attributes]) {
@@ -1397,7 +1426,10 @@ function adoptRenderedCard(index, key, next) {
   const nextLayer = next.querySelector(STREAM_STATUS_LAYER_SELECTOR);
   if (keptLayer && nextLayer) nextLayer.replaceWith(keptLayer);
   node.replaceChildren(...next.childNodes);
-  if (previous.times.size) adoptedCardAnimations.push(previous);
+  const times = next.hasAttribute("data-answer-arrived") && !sameAnswer
+    ? new Map([...previous.times].filter(([key]) => !previous.answerKeys.has(key)))
+    : previous.times;
+  if (times.size) adoptedCardAnimations.push({ node, times });
   return node;
 }
 
@@ -1646,7 +1678,11 @@ let composerDraftRestoreInitialization = null;
 let composerDraftRestoreReady = false;
 let composerRecoveryAuthorityTail = Promise.resolve();
 let composerRecoveryAuthorityDatabase = null;
-let pendingComposerRequest = null;
+const pendingComposerRequests = new Map();
+
+function currentPendingComposerRequest() {
+  return pendingComposerRequests.get(state.selectedId) ?? null;
+}
 const retryComposerRequests = new Map();
 const composerDraftReconciliation = window.AgentHubComposerDraftReconciliation.create({
   drafts,
@@ -1914,9 +1950,10 @@ function updateComposerTaskGenerations(previousTasks, nextTasks) {
 function removeComposerTask(taskId) {
   const id = String(taskId ?? "").trim();
   if (!id) return;
-  if (pendingComposerRequest?.taskId === id) {
-    recordRecoveryInvalidation(id, pendingComposerRequest.requestId);
-    pendingComposerRequest = null;
+  const pending = pendingComposerRequests.get(id);
+  if (pending) {
+    recordRecoveryInvalidation(id, pending.requestId);
+    pendingComposerRequests.delete(id);
   }
   composerDraftReconciliation.remove(id);
   discardAttachmentPreviews(id);
@@ -3430,7 +3467,7 @@ function renderComposerQuickMessages() {
       "data-quick-message-scope": entry.scope,
       title: `${entry.title}. ${actionCopy.title}`,
       "aria-label": `${entry.title}. ${actionCopy.title}`,
-      disabled: Boolean(pendingComposerRequest),
+      disabled: Boolean(currentPendingComposerRequest()),
     }, [
       el("span", { class: "composer-quick-message-scope", text: quickMessageScopeLabel(entry.scope) }),
       el("span", { class: "composer-quick-message-label", text: entry.title }),
@@ -4060,7 +4097,7 @@ function renderTaskWorkspaceItem({ id, name, kind, tasks }, { folderMember = fal
       text: formatRelativeTime(lastActivity),
       title: lastActivity ? new Date(lastActivity).toLocaleString("ru-RU") : "",
     }),
-  ]));
+  ]), cardAnswerIdentity(tasks));
 }
 
 function representativeStreamTask(stream) {
@@ -4216,6 +4253,7 @@ function renderActivityRail() {
     streamId: String(selectedTask?.streamId ?? "").trim() || null,
   });
   const entries = activityStreamEntries(state.tasks);
+  const reusableActivityCards = indexRenderedCards(activityRail, ".activity-stream-item", "data-activity-task-id");
   const sections = window.AgentHubStreamTabs.activityStreamSections(entries);
   activityRailCount.textContent = "Активно";
   if (activityStreamHeading) {
@@ -4239,7 +4277,7 @@ function renderActivityRail() {
       modelLabel: task?.modelLabel,
     });
     const title = `${presentation.statusLabel ? `${presentation.statusLabel}. ` : ""}${activityTitle}. ${providerModelTitle}`;
-    return el("button", {
+    return adoptRenderedCard(reusableActivityCards, task.id, el("button", {
       type: "button",
       class: "stream-tab activity-stream-item",
       "data-activity-task-id": task.id,
@@ -4260,10 +4298,11 @@ function renderActivityRail() {
     }, [
       el("span", { class: "stream-tab-status-layer", "aria-hidden": "true" }),
       renderStreamStatusCard(task, activityTitle, presentation),
-    ]);
+    ]), cardAnswerIdentity([task]));
   };
   activityStreamList.replaceChildren(...sections.active.map(renderEntry));
   activityRecentList.replaceChildren(...sections.recent.map(renderEntry));
+  resumeAdoptedCardAnimations();
   applyActivityRailState();
 }
 
@@ -4435,7 +4474,7 @@ function renderStreamTabs() {
     }, [
       el("span", { class: "stream-tab-status-layer", "aria-hidden": "true" }),
       el("span", { class: "stream-tab-card" }, content()),
-    ]));
+    ]), cardAnswerIdentity(task ? [task] : []));
     overflowItems.push(el("button", {
       ...attributes,
       class: "stream-overflow-item",
@@ -6663,7 +6702,8 @@ function renderedMessageAuthor(message, role) {
 
 function pruneComposerFiles() {
   const attachments = [...drafts.values()].flatMap((draft) => draft.attachments ?? []);
-  attachments.push(...(pendingComposerRequest?.attachments ?? []), ...(window.AgentHubRetainedUploadAttachments?.() ?? []));
+  attachments.push(...[...pendingComposerRequests.values()].flatMap((pending) => pending.attachments ?? []),
+    ...(window.AgentHubRetainedUploadAttachments?.() ?? []));
   window.AgentHubComposerFiles.prune(attachments.map((file) => file.blobId).filter(Boolean));
 }
 window.AgentHubPruneComposerFiles = pruneComposerFiles;
@@ -8527,7 +8567,10 @@ function renderQueueForTask(taskId, container) {
           ? el("div", { class: "queue-status", text: "Связь с Codex временно недоступна; сообщение сохранено и будет отправлено автоматически." })
           : entry.waitReason === "context-maintenance" || entry.conflictKind === "context-maintenance"
             ? el("div", { class: "queue-status", text: "Ожидает завершения свёртки или ротации контекста; сообщение сохранено в очереди." })
-          : null,
+            : ["queued", "pending", "paused"].includes(entry.state)
+              && (entry.waitReason || entry.conflictKind) === "runtime-restart"
+              ? el("div", { class: "queue-status", text: "Ожидает перезапуска Hub; сообщение сохранено в очереди." })
+              : null,
       entry.lastError ? el("div", { class: "queue-error", text: entry.lastError }) : null,
       entryAnnotations.length
         ? el("div", { class: "queue-annotation-list" }, entryAnnotations.map((annotation, index) => {
@@ -8635,9 +8678,9 @@ function updateSendState() {
     || currentTaskReferences().length > 0
     || currentAnnotations().length > 0;
   const preparing = currentAttachmentPreviews().length > 0;
-  composerSend.disabled = !draftFilled || !state.selectedId || Boolean(pendingComposerRequest) || preparing;
+  composerSend.disabled = !draftFilled || !state.selectedId || Boolean(currentPendingComposerRequest()) || preparing;
   composerQuickMessages?.querySelectorAll("button").forEach((button) => {
-    button.disabled = !state.selectedId || Boolean(pendingComposerRequest) || preparing;
+    button.disabled = !state.selectedId || Boolean(currentPendingComposerRequest()) || preparing;
   });
 }
 
@@ -8734,7 +8777,7 @@ function sendComposerRequest({
   clearComposer = false,
   restoreOnReject = false,
 } = {}) {
-  if (!state.selectedId || pendingComposerRequest) return;
+  if (!state.selectedId || currentPendingComposerRequest()) return;
   if (currentAttachmentPreviews().length) {
     showToast("Вложения ещё готовятся. Дождись подготовки или удали их перед отправкой.");
     return;
@@ -8764,7 +8807,7 @@ function sendComposerRequest({
     ? retry.requestId
     : globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`;
   if (retry && retry.fingerprint !== fingerprint) retryComposerRequests.delete(state.selectedId);
-  pendingComposerRequest = {
+  pendingComposerRequests.set(state.selectedId, {
     requestId,
     fingerprint,
     taskId: state.selectedId,
@@ -8776,7 +8819,7 @@ function sendComposerRequest({
     composerTransfer: requestComposerTransfer,
     restoreOnReject,
     editRevision: composerDraftReconciliation.revision(state.selectedId),
-  };
+  });
   if (clearComposer) {
     // Sending is itself a composition boundary. A FileReader or annotation
     // hash that started from the pre-send draft must not reapply that draft
@@ -8801,7 +8844,7 @@ function sendComposerRequest({
     messageOrigin: requestMessageOrigin,
     composerTransfer: requestComposerTransfer,
     followUpMode: MessageView.composerFollowUpMode(task, { steerWhileRunning }),
-    deferWhileRunning: task?.running === true && !steerWhileRunning,
+    deferWhileRunning: (task?.running === true || task?.canStop === true) && !steerWhileRunning,
     draftStream: task?.draftStream === true,
     streamId: task?.streamId ?? null,
     settings: task?.draftStream ? { ...task.streamSettings } : null,
@@ -8857,14 +8900,15 @@ function insertQuickMessage(entry) {
 }
 
 function completeComposerSend(requestId, { outcome = "unknown", taskId = "" } = {}) {
-  const pending = pendingComposerRequest;
+  const pending = taskId ? pendingComposerRequests.get(taskId) ?? null
+    : [...pendingComposerRequests.values()].find((entry) => entry.requestId === requestId) ?? null;
   const completion = composerDraftReconciliation.complete({
     pending,
     requestId,
     taskId,
     outcome,
   });
-  pendingComposerRequest = completion.pending;
+  if (pending && completion.matched) pendingComposerRequests.delete(pending.taskId);
   updateSendState();
   return completion;
 }
@@ -8895,6 +8939,7 @@ function currentAttachmentPreviews(taskId = state.selectedId) {
 function disposeAttachmentPreview(entry) {
   if (!attachmentPreparationPreviews.delete(entry)) return;
   for (const item of entry.items) if (item.url) URL.revokeObjectURL(item.url);
+  window.AgentHubComposerFiles.settle(entry.items.flatMap((item) => item.result ? [item.result] : []));
 }
 
 function discardAttachmentPreviews(taskId) {
@@ -8945,14 +8990,19 @@ function renderAttachments() {
     for (const item of previews) {
       strip.append(el("div", {
         class: `attachment attachment-preparing${item.url ? " attachment-image" : " attachment-file"}`,
-        "data-attachment-preparing": "", "aria-busy": "true", title: item.name,
+        "data-attachment-preparing": "", "data-attachment-preparation-id": item.uploadId,
+        "aria-busy": String(item.preparing), title: item.name,
       }, [
         item.url ? el("img", { src: item.url, alt: item.name })
           : el("span", { class: "attachment-file-card", text: item.name }),
-        el("span", { class: "attachment-preparing-label", role: "status", text: "Подготовка…" }),
+        !item.preparing && item.failed ? el("button", {
+          type: "button", class: "attachment-preparing-label", "data-attachment-preparation-retry": item.uploadId,
+          text: "Сбой · Повторить", "aria-label": `Повторить подготовку ${item.name}`,
+        }) : el("span", { class: "attachment-preparing-label", role: "status",
+          text: item.preparing ? "Подготовка…" : "Файл подготовлен" }),
         el("button", {
-          type: "button", class: "attachment-remove", "data-attachment-preparation-remove": "",
-          title: "Отменить подготовку вложений", "aria-label": "Отменить подготовку вложений", text: "×",
+          type: "button", class: "attachment-remove", "data-attachment-preparation-remove": item.uploadId,
+          title: "Удалить вложение", "aria-label": `Удалить ${item.name}`, text: "×",
         }),
       ]));
     }
@@ -9117,8 +9167,28 @@ function formatAttachmentSize(value) {
 }
 
 attachmentsBox.addEventListener("click", (event) => {
-  if (event.target.closest("[data-attachment-preparation-remove]")) {
-    advanceComposerAsyncOperationFence(state.selectedId);
+  const retry = event.target.closest("[data-attachment-preparation-retry]");
+  if (retry) {
+    const entry = [...attachmentPreparationPreviews].find((candidate) => candidate.operation.taskId === state.selectedId
+      && candidate.items.some((item) => item.uploadId === retry.dataset.attachmentPreparationRetry));
+    if (entry) void entry.retry();
+    return;
+  }
+  const preparationRemove = event.target.closest("[data-attachment-preparation-remove]");
+  if (preparationRemove) {
+    const entry = [...attachmentPreparationPreviews].find((candidate) => candidate.operation.taskId === state.selectedId
+      && candidate.items.some((item) => item.uploadId === preparationRemove.dataset.attachmentPreparationRemove));
+    if (!entry) return;
+    const index = entry.items.findIndex((item) => item.uploadId === preparationRemove.dataset.attachmentPreparationRemove);
+    const [item] = entry.items.splice(index, 1);
+    item.removed = true;
+    if (item.url) URL.revokeObjectURL(item.url);
+    if (item.result) window.AgentHubComposerFiles.settle([item.result]);
+    if (!entry.items.length) disposeAttachmentPreview(entry);
+    else if (!entry.busy && entry.items.every((candidate) => candidate.result)) void entry.retry();
+    pruneComposerFiles();
+    renderAttachments();
+    updateSendState();
     return;
   }
   const taskReferenceRemove = event.target.closest("[data-task-reference-index]");
@@ -9131,9 +9201,10 @@ attachmentsBox.addEventListener("click", (event) => {
   const remove = event.target.closest("[data-attachment-index]");
   if (!remove) return;
   const index = Number(remove.dataset.attachmentIndex);
-  advanceComposerAsyncOperationFence(state.selectedId);
   setAttachments(attachments.filter((_, i) => i !== index));
-  saveDraft({ userEdited: true });
+  // Removing one ready file is not a cancellation of other selected Files.
+  // The edit revision still invalidates recovery of the old complete draft.
+  saveDraft({ userEdited: true, preserveAttachmentPreviews: true });
 });
 
 async function readAttachmentFiles(files) {
@@ -9179,76 +9250,98 @@ async function readAttachmentFiles(files) {
     else if (oversized) showToast(`Общий лимит вложений: ${Math.floor(policy.maxTotalBytes / 1024 / 1024)} МБ.`);
     return;
   }
-  pendingAttachmentPreparations += 1;
   const preview = { operation, items: accepted.map((file) => {
     let url = "";
     if (file.type.startsWith("image/")) {
       try { url = URL.createObjectURL(file); } catch { /* Preparation still owns file validation. */ }
     }
-    return { name: file.name, size: file.size, url };
+    return { file, name: file.name, size: file.size, url, uploadId: crypto.randomUUID(), preparing: true };
   }) };
   attachmentPreparationPreviews.add(preview);
-  renderAttachments();
-  updateSendState();
-  let settled;
-  try {
-    settled = await Promise.allSettled(accepted.map((file) => window.AgentHubComposerFiles.prepare(file, {
-      name: file.name,
-      type: file.type || "application/octet-stream",
-      size: file.size,
-    })));
-  } finally {
-    pendingAttachmentPreparations -= 1;
-    disposeAttachmentPreview(preview);
+  preview.retry = async () => {
+    if (preview.busy || !attachmentPreparationPreviews.has(preview)) return;
+    preview.busy = true;
+    pendingAttachmentPreparations += 1;
+    for (const item of preview.items) item.preparing = !item.result;
     renderAttachments();
     updateSendState();
-  }
-  const failed = settled.find((result) => result.status === "rejected");
-  if (failed) {
-    window.AgentHubComposerFiles.settle(settled.filter((result) => result.status === "fulfilled").map((result) => result.value));
-    pruneComposerFiles();
-    showToast(failed.reason?.message ?? "Не удалось прочитать вложение");
-    return;
-  }
-  const loaded = settled.map((result) => result.value);
-  const canonical = window.AgentHubComposerDraftReconciliation.recoveryAttachments(loaded, {
-    maxCount: limit,
-    maxBytes: DRAFT_ATTACHMENT_MAX_BYTES,
-    maxTotalBytes: policy.maxTotalBytes - existingBytes,
-  });
-  if (!canonical) {
-    window.AgentHubComposerFiles.settle(loaded);
-    pruneComposerFiles();
-    showToast("Вложение не прошло проверку целостности.");
-    return;
-  }
-  if ((attachmentOperationSequences.get(operation.taskId) ?? 0) === operationSequence
-    && composerTaskOperationCurrent(operation, { allowDraftEdits: true })) {
-    // Independent pastes append to the current composition. Never replay the
-    // pre-read text/attachments over edits or another completed paste.
-    const current = composerDraftSnapshot(operation.taskId);
-    let bytes = current.attachments.reduce((sum, item) => sum + (Number(item?.size) || 0), 0);
-    const additions = [];
-    for (const item of canonical) {
-      if (current.attachments.length + additions.length >= limit) break;
-      if (bytes + item.size > policy.maxTotalBytes) { oversized += 1; continue; }
-      additions.push(item);
-      bytes += item.size;
+    try {
+      await Promise.all(preview.items.map(async (item) => {
+        if (item.result) return;
+        try {
+          item.result = await window.AgentHubComposerFiles.prepare(item.file, {
+            name: item.file.name, type: item.file.type || "application/octet-stream", size: item.file.size,
+          }, { uploadId: item.uploadId });
+          item.failed = null;
+        } catch (error) { item.failed = error; }
+        finally {
+          item.preparing = false;
+          if ((item.removed || !attachmentPreparationPreviews.has(preview)) && item.result) {
+            window.AgentHubComposerFiles.settle([item.result]);
+            pruneComposerFiles();
+          }
+        }
+      }));
+      if (!attachmentPreparationPreviews.has(preview)
+        || (attachmentOperationSequences.get(operation.taskId) ?? 0) !== operationSequence
+        || !composerTaskOperationCurrent(operation, { allowDraftEdits: true })) {
+        disposeAttachmentPreview(preview);
+        window.AgentHubComposerFiles.settle(preview.items.flatMap((item) => item.result ? [item.result] : []));
+        pruneComposerFiles();
+        return;
+      }
+      const failed = preview.items.find((item) => item.failed);
+      if (failed) {
+        // Keep the original File, preview and successful siblings in this live draft.
+        // Explicit retry performs only the failed work; no message exists yet.
+        showToast(failed.failed?.message ?? "Не удалось прочитать вложение");
+        return;
+      }
+      const loaded = preview.items.map((item) => item.result);
+      const canonical = window.AgentHubComposerDraftReconciliation.recoveryAttachments(loaded, {
+        maxCount: limit,
+        maxBytes: DRAFT_ATTACHMENT_MAX_BYTES,
+        maxTotalBytes: policy.maxTotalBytes - existingBytes,
+      });
+      if (!canonical) {
+        window.AgentHubComposerFiles.settle(loaded);
+        for (const item of preview.items) { item.result = null; item.failed = new Error("Вложение не прошло проверку целостности."); }
+        showToast("Вложение не прошло проверку целостности.");
+        return;
+      }
+      // Independent pastes append to the current composition. Never replay the
+      // pre-read text/attachments over edits or another completed paste.
+      const current = composerDraftSnapshot(operation.taskId);
+      let bytes = current.attachments.reduce((sum, item) => sum + (Number(item?.size) || 0), 0);
+      const additions = [];
+      for (const item of canonical) {
+        if (current.attachments.length + additions.length >= limit) break;
+        if (bytes + item.size > policy.maxTotalBytes) { oversized += 1; continue; }
+        additions.push(item);
+        bytes += item.size;
+      }
+      if (additions.length > 0) {
+        composerDraftReconciliation.save(operation.taskId, {
+          ...current,
+          attachments: [...current.attachments, ...additions],
+        }, { userEdited: true });
+        if (state.selectedId === operation.taskId) restoreDraft();
+      }
+      if (additions.length < canonical.length && !oversized) showToast(`Можно приложить не больше ${limit} файлов.`);
+      window.AgentHubComposerFiles.settle(loaded);
+      disposeAttachmentPreview(preview);
+      pruneComposerFiles();
+      if (selected.length > room) showToast(`Можно приложить не больше ${limit} файлов.`);
+      else if (unsafe) showToast("Часть файлов отклонена: небезопасное имя или тип.");
+      else if (oversized) showToast(`Общий лимит вложений: ${Math.floor(policy.maxTotalBytes / 1024 / 1024)} МБ.`);
+    } finally {
+      preview.busy = false;
+      pendingAttachmentPreparations -= 1;
+      renderAttachments();
+      updateSendState();
     }
-    if (additions.length > 0) {
-      composerDraftReconciliation.save(operation.taskId, {
-        ...current,
-        attachments: [...current.attachments, ...additions],
-      }, { userEdited: true });
-      if (state.selectedId === operation.taskId) restoreDraft();
-    }
-    if (additions.length < canonical.length && !oversized) showToast(`Можно приложить не больше ${limit} файлов.`);
-  }
-  window.AgentHubComposerFiles.settle(loaded);
-  pruneComposerFiles();
-  if (selected.length > room) showToast(`Можно приложить не больше ${limit} файлов.`);
-  else if (unsafe) showToast("Часть файлов отклонена: небезопасное имя или тип.");
-  else if (oversized) showToast(`Общий лимит вложений: ${Math.floor(policy.maxTotalBytes / 1024 / 1024)} МБ.`);
+  };
+  await preview.retry();
 }
 
 document.querySelector("[data-action='attach']").addEventListener("click", () => fileInput.click());
@@ -9405,7 +9498,7 @@ annotationsBox.addEventListener("keydown", (event) => {
     return;
   }
   event.preventDefault();
-  if (event.repeat || pendingComposerRequest) return;
+  if (event.repeat || currentPendingComposerRequest()) return;
   submitComposer({ steerWhileRunning: event.metaKey });
 });
 
@@ -9781,10 +9874,10 @@ function composerDraftSnapshot(taskId) {
   );
 }
 
-function saveDraft({ userEdited = false } = {}) {
+function saveDraft({ userEdited = false, preserveAttachmentPreviews = false } = {}) {
   if (!state.selectedId) return;
   const draft = composerDraftSnapshot(state.selectedId);
-  if (userEdited && !window.AgentHubComposerDraftReconciliation.hasDraftContent(draft)
+  if (userEdited && !preserveAttachmentPreviews && !window.AgentHubComposerDraftReconciliation.hasDraftContent(draft)
     && window.AgentHubComposerDraftReconciliation.hasDraftContent(drafts.get(state.selectedId))) {
     advanceComposerAsyncOperationFence(state.selectedId);
   }
@@ -9821,7 +9914,7 @@ function prepareForRuntimeReload() {
     draftsPersisted,
     drafts: drafts.values(),
     modalOpen,
-    requestPending: Boolean(pendingComposerRequest) || pendingAttachmentPreparations > 0,
+    requestPending: pendingComposerRequests.size > 0 || pendingAttachmentPreparations > 0 || attachmentPreparationPreviews.size > 0,
     bugReportAttachments,
     bugReportSending,
   })) return false;

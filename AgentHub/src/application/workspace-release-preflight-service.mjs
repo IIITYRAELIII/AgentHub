@@ -506,6 +506,78 @@ export class WorkspaceReleasePreflightService {
     )).sort((left, right) => left.taskId.localeCompare(right.taskId));
   }
 
+  async withReviewedMainRecovery({ workspaceId, taskIds, approvedRepositories, commit } = {}) {
+    requiredFunction(commit, "reviewed-main recovery commit");
+    return this.withAwaitTransition(workspaceId, async () => {
+      const verifyMain = async ({ repository, approval, publishedRevision }) => {
+        const audit = await this.releaseGitWorkspaces.inspectMainChanges({ projectRoot: repository.projectRoot, publishedRevision,
+          approvedLocalMainCommit: approval.approvedLocalMainCommit, approvedOriginMainCommit: approval.approvedOriginMainCommit });
+        if (!audit.approved || audit.approvalRequired || canonicalRoot(audit.projectRoot) !== canonicalRoot(repository.projectRoot)
+            || audit.publishedRevision !== publishedRevision || audit.localMain !== approval.approvedLocalMainCommit
+            || audit.originMain !== approval.approvedOriginMainCommit) {
+          throw new Error("Reviewed-main recovery approval is stale");
+        }
+      };
+      const capture = async () => {
+        const plan = await this.releasePlanner.plan(workspaceId, { selectedTaskIds: taskIds });
+        if (plan.blocked?.length) throw new Error("Reviewed-main recovery selected plan is blocked");
+        const repositories = readyRepositories(plan.ready);
+        const selectedIds = [...new Set(repositories.flatMap(repository => repository.frozenTasks.map(task => task.taskId)))].sort();
+        if (JSON.stringify(selectedIds) !== JSON.stringify([...taskIds].sort())) throw new Error("Reviewed-main recovery selected membership changed");
+        const approvals = approvedRepositoryEntries(approvedRepositories);
+        if (approvals.size !== repositories.length) throw new Error("Reviewed-main recovery repository membership changed");
+        const publication = await this.readPublicationState();
+        const preparedCandidates = [], selectedResults = [], mainChecks = [];
+        for (const repository of repositories) {
+          const approval = approvals.get(canonicalRoot(repository.projectRoot));
+          if (!approval) throw new Error("Reviewed-main recovery repository approval is missing");
+          await this.releaseGitWorkspaces.assertPrimaryInvariant(repository.projectRoot, { phase: "reviewed-main recovery" });
+          const publishedRevision = publicationBaselineFor(repository, publication).publishedRevision;
+          const evidence = await this.taskGitWorkspaces.releaseIntegrationEvidence({ projectRoot: repository.projectRoot, tasks: repository.frozenTasks });
+          const base = await this.taskGitWorkspaces.releaseBaseEvidence({ projectRoot: repository.projectRoot, publishedBaseCommit: publishedRevision, tasks: repository.frozenTasks });
+          const mainCheck = { repository, approval, publishedRevision };
+          await verifyMain(mainCheck);
+          if (base.baseCommit !== approval.approvedLocalMainCommit) {
+            throw new Error("Reviewed-main recovery approval is stale");
+          }
+          mainChecks.push(mainCheck);
+          const prepared = await this.releaseGitWorkspaces.frozenCandidate(repository.projectRoot);
+          if (!prepared.manifestHash || !prepared.preReleaseHead || prepared.planRevision !== plan.revision
+              || !sameFrozenTasks(prepared.manifest?.tasks, evidence.tasks)) {
+            throw new Error("Reviewed-main recovery prepared candidate or selected evidence changed");
+          }
+          const provenance = prepared.manifest.baseProvenance;
+          if (provenance?.kind === LOCAL_SOURCE_BASELINE_PROVENANCE) {
+            await this.releaseGitWorkspaces.validateLocalSourceBaseline({ projectRoot: repository.projectRoot,
+              provenance, planRevision: plan.revision, tasks: evidence.tasks });
+          } else if (prepared.baseCommit !== base.baseCommit) {
+            throw new Error("Reviewed-main recovery prepared base differs from agreed main");
+          }
+          if (provenance?.publishedBaseCommit !== publishedRevision
+              || (provenance?.approvedLocalMainCommit ?? provenance?.agreedMainCommit) !== approval.approvedLocalMainCommit
+              || (provenance?.approvedOriginMainCommit ?? provenance?.agreedMainCommit) !== approval.approvedOriginMainCommit) {
+            throw new Error("Reviewed-main recovery sealed provenance differs from approval");
+          }
+          selectedResults.push(...evidence.tasks.map(task => ({ taskId: task.taskId, resultCommit: task.resultCommit,
+            ...selectedCompositionFields(task), acceptanceRevision: task.resultReleaseRevision ?? task.taskRevision })));
+          preparedCandidates.push({ repositoryRoot: repository.projectRoot, commit: prepared.preReleaseHead,
+            manifestHash: prepared.manifestHash, baseEvidenceHash: taskGitIdentityHash(base) });
+        }
+        // Every awaited prepared/source check, including later repositories,
+        // precedes the final current-main/origin fence for ALL provenance kinds.
+        for (const check of mainChecks) await verifyMain(check);
+        return { approvedRepositories, planRevision: plan.revision, publicationHash: taskGitIdentityHash(publication),
+          selectedResults: selectedResults.sort((a, b) => a.taskId.localeCompare(b.taskId)), preparedCandidates };
+      };
+      const authority = await capture();
+      return commit(authority, async () => {
+        if (taskGitIdentityHash(await capture()) !== taskGitIdentityHash(authority)) {
+          throw new Error("Reviewed-main recovery authority changed before commit");
+        }
+      });
+    });
+  }
+
   async validateOperationGeneration({ workspaceId, generation } = {}) {
     if (!generation?.candidates?.length) throw new Error("release operation generation has no candidates");
     const planRevision = String(generation.candidates[0].planRevision ?? "").trim();
@@ -724,11 +796,12 @@ export class WorkspaceReleasePreflightService {
         canonicalRoot(item.projectRoot) === canonicalRoot(repository.projectRoot)
       ));
       let localSource = preparationRepository?.localSourceBaseline ?? null;
-      if (!preparation && !generationIdentity && base.adoptions?.length) {
+      if (!preparation && !generationIdentity && (base.adoptions?.length
+          || !reviewed && base.baseCommit !== base.publishedBaseCommit)) {
         requiredMethod(this.releaseGitWorkspaces, "deriveInstalledLocalSourceBaselineForSelection");
         localSource = await this.releaseGitWorkspaces.deriveInstalledLocalSourceBaselineForSelection({
           projectRoot: repository.projectRoot, planRevision: plan.revision, tasks: evidence.tasks,
-          publishedRevision: base.publishedBaseCommit, adoptions: base.adoptions,
+          publishedRevision: base.publishedBaseCommit, adoptions: base.adoptions ?? [],
         });
       }
       if (!preparation && generationIdentity) {

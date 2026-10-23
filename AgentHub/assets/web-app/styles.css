@@ -9464,6 +9464,10 @@ html[data-surface="mobile"] .chat-history-loader[data-armed] .chat-history-load 
   text-align: center;
 }
 
+button.attachment-preparing-label {
+  padding-inline: 0.1rem;
+}
+
 .attachment-file.attachment-open {
   cursor: pointer;
 }

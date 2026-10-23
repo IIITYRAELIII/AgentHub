@@ -18,6 +18,7 @@ function harness({
   saveState = null,
   commandTrace = null,
   recordProviderTerminal = null,
+  persistTaskDiff = null,
 } = {}) {
   const events = [];
   const taskRuns = new TaskRunRegistry();
@@ -35,7 +36,7 @@ function harness({
     normalizeCodexModel: (value) => String(value).toLowerCase(),
     modelLabel: (value) => value.toUpperCase(),
     claudeModelLabels: {}, reasoningLabels: { high: "High" },
-    persistTaskDiff: async () => events.push("diff"),
+    persistTaskDiff: persistTaskDiff ?? (async () => events.push("diff")),
     syncRun: (_run, options) => events.push(options?.active === false ? "sync-complete" : "sync-start"),
     invalidateCatalog: () => events.push("catalog"),
     saveState: saveState ?? (async () => events.push("save")),
@@ -76,6 +77,22 @@ test("managed run lifecycle commits the exact prepared launch capability", async
 
   assert.equal(authorizedTarget.threadId, "thread-exact");
   assert.equal(committedRun, run);
+});
+
+test("admission propagates the exact diff fence failure and original command context before provider launch", async () => {
+  const failure = Object.assign(new Error("diff persistence failed"), {code:"EIO"});
+  let context;
+  const {service,taskRuns,events} = harness({
+    persistTaskDiff:async (_key,_value,options)=>{context=options;throw failure;},
+  });
+  await assert.rejects(service.begin("fixture", {
+    clientUserMessageId:"original-command",clientSource:"mcp",
+  }), failure);
+  assert.equal(context.commandId,"original-command");
+  assert.equal(context.transport,"mcp");
+  assert.equal(context.admission,true);
+  assert.equal(taskRuns.size,0);
+  assert.equal(events.includes("clear-diff"),false);
 });
 
 test("managed run lifecycle adoption cannot mint a launch capability", async () => {

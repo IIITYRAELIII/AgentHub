@@ -6,7 +6,10 @@ import path from "node:path";
 import { ReleaseCandidateFrozenError } from "../../domain/task-board-task.mjs";
 import { ReleasePreparationRejectedError } from "../../domain/release-preparation.mjs";
 import { assertPreparationCheckpoint } from "./release-preparation-guard.mjs";
-import { assertInstalledLocalSourceBaseline, installedNativeHistoryBaseline } from "./local-source-baseline.mjs";
+import { ReleaseGenerationTransportRetention } from "./release-generation-transport-retention.mjs";
+import { createSelectedGitBundle } from "./selected-git-bundle.mjs";
+import { assertInstalledLocalSourceBaseline, installedNativeHistoryBaseline,
+  assertInstalledAgreedMainOrigin } from "./local-source-baseline.mjs";
 import { readNativeUpstreamAdoptions, assertNativeUpstreamOrigin } from "./native-upstream-adoption.mjs";
 import { inspectPublishedNotesArchive, archivePublishedNotesCheckout } from "./native-await-published-notes-recovery.mjs";
 import { defaultRuntimeRoot } from "./runtime-layout.mjs";
@@ -47,16 +50,17 @@ const AWAIT_UNKNOWN_OUTCOME_CODES = new Set([
   "AWAIT_ACCEPTANCE_UNKNOWN",
 ]);
 
-function runGit(args, { cwd, timeoutMs = 120_000, rawOutput = false, acceptableExitCodes = [], input = null } = {}) {
+function runGit(args, { cwd, timeoutMs = 120_000, rawOutput = false, acceptableExitCodes = [], input = null, stdoutFd = null } = {}) {
+  if (stdoutFd !== null && (!Number.isSafeInteger(stdoutFd) || stdoutFd < 3)) throw new TypeError("Invalid owned Git output descriptor");
   return new Promise((resolve, reject) => {
-    const child = spawn("git", args, { cwd, windowsHide: true, stdio: [input == null ? "ignore" : "pipe", "pipe", "pipe"] });
+    const child = spawn("git", args, { cwd, windowsHide: true, stdio: [input == null ? "ignore" : "pipe", stdoutFd ?? "pipe", "pipe"] });
     const stdout = [];
     const stderr = [];
     const timer = setTimeout(() => {
       child.kill();
       reject(new Error(`git ${args[0]} timed out after ${timeoutMs} ms`));
     }, timeoutMs);
-    child.stdout.on("data", (chunk) => stdout.push(chunk));
+    child.stdout?.on("data", (chunk) => stdout.push(chunk));
     child.stderr.on("data", (chunk) => stderr.push(chunk));
     child.on("error", (error) => {
       clearTimeout(timer);
@@ -672,6 +676,25 @@ export class ReleaseGitWorkspaceService {
     assertContourGitAvailable(this.#contourExternalEffects, "release-git", operation);
   }
 
+  storageRetentionOwner({ readGeneration, isStopping } = {}) {
+    this.#assertAvailable("storageRetentionOwner");
+    return new ReleaseGenerationTransportRetention({ dataDir: this.dataDir, readGeneration, isStopping,
+      withGenerationLease: (key, action) => withInterprocessLocks([
+        path.join(this.dataDir, "locks", `release-generation-${key}`),
+      ], action, { timeoutMs: 250 }),
+      gitAt: async (root, args, { lease, ...options } = {}) => {
+        await lease.assertOwned();
+        if (["GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_SHALLOW_FILE",
+          "GIT_DIR", "GIT_COMMON_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"].some(name => process.env[name])) {
+          throw new Error("Release retention requires its ordinary local Git object/index context");
+        }
+        const result = await runGit(["--no-lazy-fetch", "--no-replace-objects", "--no-optional-locks",
+          "-c", "core.fsmonitor=false", ...args], { ...options, cwd: root });
+        await lease.assertOwned();
+        return result;
+      } });
+  }
+
   async assertPrimaryInvariant(projectRoot, { phase = "release" } = {}) {
     this.#assertAvailable("assertPrimaryInvariant");
     const snapshot = await primarySnapshot(projectRoot);
@@ -801,7 +824,7 @@ export class ReleaseGitWorkspaceService {
         : await mkdtemp(path.join(layout.root, "clone-source-"));
       const bundle = this.#validationBundle ?? path.join(transportRoot, "source.bundle");
       try {
-        if (transportRoot) await runGit(["bundle", "create", bundle, "--all"], {
+        if (transportRoot) await runGit(["bundle", "create", bundle, "refs/heads/main"], {
           cwd: sourceRoot, timeoutMs: 300_000,
         });
         await runGit([
@@ -882,9 +905,12 @@ export class ReleaseGitWorkspaceService {
       // hooks. Git's clone protection remains enabled for the bundle transport.
       // The live primary still supplies identity and invariant checks.
       const bundle = path.join(temporaryRoot, "source.bundle");
-      await runGit(["bundle", "create", bundle, "--all"], {
-        cwd: await repositoryRoot(projectRoot), timeoutMs: 300_000,
-      });
+      const sourceRoot = await repositoryRoot(projectRoot);
+      const mainCommit = await runGit(["rev-parse", "refs/heads/main"], { cwd: sourceRoot });
+      await createSelectedGitBundle({ root: temporaryRoot, sourceRoot, bundle, mainCommit,
+        inputs: [mainCommit, String(approvedBaseCommit ?? "").trim(),
+          ...normalizedFrozenTasks(frozenTasks).map(task => task.resultCommit)],
+        gitAt: (cwd, args, options) => runGit(args, { ...options, cwd, timeoutMs: 300_000 }) });
       isolated.#validationBundle = bundle;
       const candidate = await isolated.prepareCandidate({
         planRevision, projectRoot, workspaceId, frozenTasks, approvedBaseCommit, baseProvenance,
@@ -934,6 +960,9 @@ export class ReleaseGitWorkspaceService {
       if (historyAuthority?.adoptions.length) await assertNativeUpstreamOrigin({
         git: (args, options = {}) => runGit(args, { ...options, cwd: projectRoot }),
         adoptions: historyAuthority.adoptions, originCommit: manifest.baseProvenance.approvedOriginMainCommit });
+      else if (manifest.baseProvenance?.adoptions) await assertInstalledAgreedMainOrigin({
+        provenance: manifest.baseProvenance,
+        git: (args, options = {}) => runGit(args, { ...options, cwd: projectRoot }) });
       const binding = { kind: "native-prepared-release-v1", releaseRoot: source.releaseRoot,
         commit: source.preReleaseHead, tree: source.tree, manifestHash: source.manifestHash,
         checkpointSha256: sha256(await readFile(source.checkpointFile)),
@@ -1007,15 +1036,14 @@ export class ReleaseGitWorkspaceService {
         }
         const bundle = path.join(generationDataDir, "source.bundle");
         if (!ephemeral && !await fileExists(bundle)) {
-          const temporaryBundle = `${bundle}.${process.pid}.${randomUUID()}.tmp`;
-          try {
-            await runGit(["bundle", "create", temporaryBundle, "--all"], {
-              cwd: sourceRoot, timeoutMs: 300_000,
-            });
-            await rename(temporaryBundle, bundle);
-          } finally {
-            await rm(temporaryBundle, { force: true });
-          }
+          const mainCommit = await runGit(["rev-parse", "refs/heads/main"], { cwd: sourceRoot });
+          const inputs = [mainCommit, String(approvedBaseCommit ?? "").trim(),
+            ...normalizedFrozenTasks(frozenTasks).map(task => task.resultCommit)];
+          // The prepared candidate is fetched by exact identity below. Capture
+          // only main/base/selected result ancestry, never unrelated source refs.
+          // Preserve partial output for this original generation's recovery.
+          await createSelectedGitBundle({ root: generationDataDir, sourceRoot, bundle, inputs, mainCommit,
+            gitAt: (cwd, args, options) => runGit(args, { ...options, cwd, timeoutMs: 300_000 }) });
         }
         const isolated = new ReleaseGitWorkspaceService({
           dataDir: generationDataDir,
@@ -1117,6 +1145,15 @@ export class ReleaseGitWorkspaceService {
 
   async discardGenerationCandidate(candidate) {
     this.#assertAvailable("discardGenerationCandidate");
+    const key = path.basename(String(candidate?.generationRoot ?? ""));
+    if (!/^[a-f0-9]{24}$/u.test(key)) throw new Error("release generation cleanup identity required");
+    return withInterprocessLocks([path.join(this.dataDir, "locks", `release-generation-${key}`)],
+      lease => this.#discardGenerationCandidate(candidate, lease));
+  }
+
+  async #discardGenerationCandidate(candidate, lease) {
+    this.#assertAvailable("discardGenerationCandidate");
+    await lease.assertOwned();
     const releaseGenerationsRoot = path.join(this.dataDir, "release-gens");
     const generationRoot = canonicalPath(String(candidate?.generationRoot ?? ""));
     if (!generationRoot || samePath(generationRoot, releaseGenerationsRoot)
@@ -1176,6 +1213,7 @@ export class ReleaseGitWorkspaceService {
         }
       }
     }
+    await lease.assertOwned();
     await rm(generationRoot, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
   }
 
@@ -1433,7 +1471,7 @@ export class ReleaseGitWorkspaceService {
   }
 
   async deriveInstalledLocalSourceBaselineForSelection({ projectRoot, planRevision, tasks,
-    publishedRevision, adoptions }) {
+    publishedRevision, adoptions = [] }) {
     const initial = await primarySnapshot(projectRoot);
     await this.assertPrimaryInvariant(initial.root, { phase: "ordinary Await installed source binding" });
     if (publishedRevision !== await durablePublishedRevision(this.#environment, initial.root)) {
@@ -1444,14 +1482,14 @@ export class ReleaseGitWorkspaceService {
       localMainCommit: initial.mainCommit });
     const pins = actual.map(({ taskId, resultCommit, recordRef, recordHash, adoptedCommit, acceptedLocalMainCommit }) =>
       ({ taskId, resultCommit, recordRef, recordHash, adoptedCommit, acceptedLocalMainCommit }));
-    if (!pins.length || JSON.stringify(pins) !== JSON.stringify(adoptions)) {
+    if (JSON.stringify(pins) !== JSON.stringify(adoptions)) {
       throw new Error("Ordinary Await selected adoption evidence changed");
     }
     const provenance = await installedNativeHistoryBaseline({ git,
       sourceGit: (cwd, args) => runGit(args, { cwd, timeoutMs: 300_000 }),
       repositoryRoot: initial.root, primaryMainCommit: initial.mainCommit, publishedRevision,
       runtimeRoot: defaultRuntimeRoot({ environment: this.#environment }), planRevision, tasks, adoptions: actual });
-    if (!provenance) throw new Error("Ordinary adopted Await has no verified installed source baseline");
+    if (!provenance && pins.length) throw new Error("Ordinary adopted Await has no verified installed source baseline");
     return provenance;
   }
 
@@ -1590,7 +1628,7 @@ export class ReleaseGitWorkspaceService {
       };
       await validatePreparationMain();
       await assertPreparationCheckpoint({ guard: preparationGuard, clone, initial, checkpoint, git });
-      await git(["fetch", "--prune", "workspace", "+refs/heads/*:refs/remotes/workspace/*"]);
+      await git(["fetch", "--prune", "workspace", "+refs/heads/main:refs/remotes/workspace/main"]);
       for (const commit of [baseCommit, ...tasks.map((task) => task.resultCommit)]) {
         if (await gitMaybe(["cat-file", "-e", `${commit}^{commit}`], { cwd: clone.releaseRoot }) === null) {
           await git(["fetch", "workspace", commit]);
@@ -1688,6 +1726,8 @@ export class ReleaseGitWorkspaceService {
         if (historyAuthority?.adoptions.length) await assertNativeUpstreamOrigin({
           git: (args, options = {}) => runGit(args, { ...options, cwd: initial.root }),
           adoptions: historyAuthority.adoptions, originCommit: localSource.approvedOriginMainCommit });
+        else if (localSource?.adoptions) await assertInstalledAgreedMainOrigin({ provenance: localSource,
+          git: (args, options = {}) => runGit(args, { ...options, cwd: initial.root }) });
         if (nativeAwaitRecovery) {
           const remote = await git(["ls-remote", "origin", "refs/heads/main"]);
           if (remote.split(/\s/u)[0] !== nativeAwaitRecovery.originMainCommit) {
@@ -1842,7 +1882,9 @@ export class ReleaseGitWorkspaceService {
         if (baseBinding.provenance?.kind === LOCAL_SOURCE_BASELINE_PROVENANCE) {
           await this.validateLocalSourceBaseline({ projectRoot: marker.primaryRoot, ...baseBinding });
         }
-        const result = await freezePreparedPublicationCandidate({ ...options, layout, marker, workspaceId,
+        const result = await freezePreparedPublicationCandidate({
+          runtimeRoot: defaultRuntimeRoot({ environment: this.#environment }),
+          ...options, layout, marker, workspaceId,
           validateBeforeCommit: async () => {
             await options.validateBeforeCommit?.();
             if (baseBinding.provenance?.kind === LOCAL_SOURCE_BASELINE_PROVENANCE) {

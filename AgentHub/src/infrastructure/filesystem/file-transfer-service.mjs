@@ -120,6 +120,9 @@ export class FileTransferService {
   #intakes = new Set();
   #closing = false;
   #closePromise;
+  #quiescing = false;
+  #quiescePromise;
+  #gcIntervalMs = null;
 
   constructor({ dataDir, roots, store, policy, keyring }) {
     this.#artifactsDirectory = path.join(path.resolve(dataDir), "file-transfers", "artifacts");
@@ -220,6 +223,7 @@ export class FileTransferService {
 
   prepare(input) {
     if (this.#closing) return Promise.reject(transferError("transfer-service-closed", 503));
+    if (this.#quiescing) return Promise.reject(transferError("transfer-service-quiescing", 503));
     const intake = this.#prepare(input).finally(() => this.#intakes.delete(intake));
     this.#intakes.add(intake);
     return intake;
@@ -613,6 +617,7 @@ export class FileTransferService {
 
   gc() {
     if (this.#closing) return Promise.reject(transferError("transfer-service-closed", 503));
+    if (this.#quiescing) return Promise.reject(transferError("transfer-service-quiescing", 503));
     const collection = this.#collect().finally(() => this.#collections.delete(collection));
     this.#collections.add(collection);
     return collection;
@@ -631,11 +636,34 @@ export class FileTransferService {
   }
 
   startOperationalGc(intervalMs = 15 * 60_000) {
-    if (this.#closing || this.#gcTimer) return;
+    if (this.#closing || this.#quiescing || this.#gcTimer) return;
+    this.#gcIntervalMs = Math.max(60_000, Number(intervalMs) || 0);
     const collect = () => { void this.gc().catch(() => {}); };
     collect();
-    this.#gcTimer = setInterval(collect, Math.max(60_000, Number(intervalMs) || 0));
+    this.#gcTimer = setInterval(collect, this.#gcIntervalMs);
     this.#gcTimer.unref?.();
+  }
+
+  async #drainWork() {
+    // Intakes can still register their admitted background copy. Collections
+    // own both filesystem deletion and the final durable deletion receipt.
+    await Promise.allSettled([...this.#intakes, ...this.#collections, this.#initializing]);
+    await Promise.allSettled(this.#preparations.values());
+  }
+
+  quiesce() {
+    if (this.#closing) return this.close();
+    this.#quiescing = true;
+    if (this.#gcTimer) clearInterval(this.#gcTimer);
+    this.#gcTimer = null;
+    return this.#quiescePromise ??= this.#drainWork();
+  }
+
+  resume() {
+    if (this.#closing || !this.#quiescing) return;
+    this.#quiescing = false;
+    this.#quiescePromise = undefined;
+    if (this.#gcIntervalMs !== null) this.startOperationalGc(this.#gcIntervalMs);
   }
 
   close() {
@@ -644,10 +672,7 @@ export class FileTransferService {
     if (this.#gcTimer) clearInterval(this.#gcTimer);
     this.#gcTimer = null;
     this.#closePromise = (async () => {
-      // Intakes can still register their admitted background copy. Collections
-      // own both filesystem deletion and the final durable deletion receipt.
-      await Promise.allSettled([...this.#intakes, ...this.#collections, this.#initializing]);
-      await Promise.allSettled(this.#preparations.values());
+      await this.#drainWork();
       await this.#store.close();
     })();
     return this.#closePromise;

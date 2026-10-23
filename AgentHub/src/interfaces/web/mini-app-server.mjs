@@ -2,6 +2,8 @@ import { createReadStream, readFileSync, statSync } from "node:fs";
 import { mkdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
 import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
+import { createHttpReadTiming } from "./http-read-timing.mjs";
+import { observeAuthorizedUpload, UPLOAD_TRACE_HEADERS } from "./upload-transport-trace.mjs";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { pipeline } from "node:stream/promises";
@@ -427,8 +429,9 @@ function varyHeader(...values) {
 export function createJsonResponder({ compress = gzip, maxConcurrentCompressions = 2 } = {}) {
   let activeCompressions = 0;
   return function json(response, statusCode, value, method = "GET", options = {}) {
-    const { acceptEncoding = "", headers = {}, ...sendOptions } = options;
-    const body = Buffer.from(`${JSON.stringify(value)}\n`, "utf8");
+    const { acceptEncoding = "", headers = {}, timing = null, ...sendOptions } = options;
+    const encode = () => Buffer.from(`${JSON.stringify(value)}\n`, "utf8");
+    const body = timing ? timing.sync("http-json-encode", encode) : encode();
     const wantsGzip = body.length >= JSON_GZIP_MIN_BYTES
       && acceptedEncodingQuality(acceptEncoding, "gzip") > 0;
     const deliver = (responseBody, compressed) => {
@@ -454,11 +457,13 @@ export function createJsonResponder({ compress = gzip, maxConcurrentCompressions
       return;
     }
     activeCompressions += 1;
+    const compressionFinished = timing?.start("http-json-compress");
     let settled = false;
     const finish = (error, compressedBody) => {
       if (settled) return;
       settled = true;
       activeCompressions -= 1;
+      compressionFinished?.(error ? "failed" : "succeeded");
       try {
         deliver(error ? body : compressedBody, !error);
       } catch {
@@ -970,6 +975,10 @@ export class MiniAppServer {
     const method = String(request.method ?? "GET").toUpperCase();
     const url = new URL(request.url ?? "/", `http://${this.#host}`);
     if (await this.#fileTransferRoutes.handlePublic(request, response, method, url)) return;
+    const readTiming = route => createHttpReadTiming({
+      commandId: url.searchParams.get("clientTraceId"), route, response,
+      record: this.#recordCommandTrace, receivedAtMs: transportReceivedAtMs,
+    });
     const webviewCors = applyVscodeWebviewCors(
       request,
       response,
@@ -984,6 +993,7 @@ export class MiniAppServer {
           "X-Agent-Hub-Attachment-Name",
           "X-Agent-Hub-File-Name",
           "X-Agent-Hub-Chunk-Sha256",
+          ...UPLOAD_TRACE_HEADERS,
           "X-Agent-Hub-Transfer-CSRF",
         ].join(", "),
         "Access-Control-Allow-Methods": "GET, HEAD, POST, PUT, DELETE, OPTIONS",
@@ -1102,6 +1112,7 @@ export class MiniAppServer {
       }
       const authorization = await this.#authorize(request, response);
       if (!authorization) return;
+      const timing = readTiming("snapshot");
       if (!this.#controlHandler) {
         json(response, 503, { error: "Снимок Agent Hub недоступен." }, method);
         return;
@@ -1109,7 +1120,7 @@ export class MiniAppServer {
       try {
         const knownVersion = String(url.searchParams.get("knownVersion") ?? "").slice(0, 128);
         const boundedVersion = (name) => String(url.searchParams.get(name) ?? "").slice(0, 128);
-        const result = await this.#controlHandler({
+        const read = () => this.#controlHandler({
           action: "snapshot",
           params: {
             knownVersion,
@@ -1121,10 +1132,12 @@ export class MiniAppServer {
             messageReceiptsVersion: boundedVersion("messageReceiptsVersion"),
             messagePinsVersion: boundedVersion("messagePinsVersion"),
           },
-          context: authorization,
+          context: { ...authorization, ...(timing ? { commandId: timing.commandId, transportReceivedAtMs } : {}) },
         });
+        const result = timing ? await timing.measure("http-snapshot-read", read) : await read();
         json(response, 200, result, method, {
           acceptEncoding: request.headers["accept-encoding"],
+          timing,
         });
       } catch (error) {
         json(response, 400, { error: String(error?.message ?? error) }, method);
@@ -1448,10 +1461,21 @@ export class MiniAppServer {
       return;
     }
     if (url.pathname === "/api/attachment-upload") {
+      const authStarted = performance.now();
       const authorization = await this.#authorize(request, response);
       if (!authorization) return;
+      const timings = { auth: performance.now() - authStarted, body: 0, owner: 0 };
+      observeAuthorizedUpload({ request, response, record: this.#recordCommandTrace, timings, receivedAtMs: transportReceivedAtMs });
+      const timedJson = (status, value) => json(response, status, value, method, { headers: {
+        "Server-Timing": Object.entries(timings).map(([name, duration]) => `${name};dur=${duration.toFixed(2)}`).join(", "),
+      } });
+      const measured = async (key, operation) => {
+        const started = performance.now();
+        try { return await operation(); }
+        finally { timings[key] += performance.now() - started; }
+      };
       if (!this.#attachmentUploads) {
-        json(response, 503, { error: "Загрузка файлов недоступна." }, method);
+        timedJson(503, { error: "Загрузка файлов недоступна." });
         return;
       }
       try {
@@ -1459,26 +1483,29 @@ export class MiniAppServer {
         const id = url.searchParams.get("id");
         let result;
         if (method === "GET") {
-          result = id ? await this.#attachmentUploads.status(owner, id) : this.#attachmentUploads.capabilities();
+          result = id ? await measured("owner", () => this.#attachmentUploads.status(owner, id, timings))
+            : this.#attachmentUploads.capabilities();
         } else if (method === "POST" && id && url.searchParams.get("complete") === "1") {
-          result = await this.#attachmentUploads.complete(owner, id);
+          result = await measured("owner", () => this.#attachmentUploads.complete(owner, id, timings));
         } else if (method === "POST" && !id) {
-          result = await this.#attachmentUploads.begin(owner, await readJsonBody(request));
+          const metadata = await measured("body", () => readJsonBody(request));
+          result = await measured("owner", () => this.#attachmentUploads.begin(owner, metadata, timings));
         } else if (method === "PUT" && id) {
           const index = url.searchParams.get("index");
           if (!/^\d+$/u.test(index ?? "")) throw new Error("Некорректный номер части");
-          result = await this.#attachmentUploads.putChunk(owner, id, Number(index),
-            await readBinaryBody(request, this.#attachmentUploadLimits.chunkBytes),
-            String(request.headers["x-agent-hub-chunk-sha256"] ?? ""));
+          const chunk = await measured("body", () => readBinaryBody(request, this.#attachmentUploadLimits.chunkBytes));
+          result = await measured("owner", () => this.#attachmentUploads.putChunk(owner, id, Number(index), chunk,
+            String(request.headers["x-agent-hub-chunk-sha256"] ?? ""), timings));
         } else if (method === "DELETE" && id) {
-          result = await this.#attachmentUploads.cancel(owner, id);
+          result = await measured("owner", () => this.#attachmentUploads.cancel(owner, id, timings));
         } else {
-          json(response, 405, { error: "Unsupported upload operation" }, method);
+          timedJson(405, { error: "Unsupported upload operation" });
           return;
         }
-        json(response, 200, { ok: true, ...result }, method);
+        timedJson(200, { ok: true, ...result });
       } catch (error) {
-        json(response, error.statusCode ?? 400, { ok: false, error: String(error?.message ?? error) }, method);
+        timedJson(error.statusCode ?? 400, { ok: false, error: String(error?.message ?? error),
+          ...(error.state ? { state: error.state } : error.statusCode === 404 ? { state: "absent" } : {}) });
       }
       return;
     }
@@ -1687,7 +1714,9 @@ export class MiniAppServer {
     if (url.pathname === "/health") {
       // The probe stays unauthenticated, so it reports liveness and state without
       // the startup error text, which carries local paths and provider messages.
-      const { capabilities, startup, ...summary } = this.#health.snapshot();
+      const timing = readTiming("health");
+      const read = () => this.#health.snapshot();
+      const { capabilities, startup, ...summary } = timing ? timing.sync("http-health-read", read) : read();
       json(response, 200, {
         ok: true,
         ...summary,
@@ -1705,7 +1734,7 @@ export class MiniAppServer {
             operations: startup.operations.map(({ error: _error, ...operation }) => operation),
           },
         } : {}),
-      }, method);
+      }, method, { timing });
       return;
     }
     if (url.pathname === "/api/mobile/update" || url.pathname === "/api/mobile/update.apk") {
@@ -1890,7 +1919,9 @@ export class MiniAppServer {
       request.on("close", () => this.#clients.delete(response));
       return;
     }
-    const assetBundle = await this.#activeAssetBundle();
+    const timing = readTiming("static");
+    const bundle = () => this.#activeAssetBundle();
+    const assetBundle = timing ? await timing.measure("http-asset-binding", bundle) : await bundle();
     const descriptor = this.#staticDescriptor(url.pathname, assetBundle);
     if (!descriptor) {
       send(response, 404, "text/plain; charset=utf-8", "Not Found\n", method);
@@ -1898,7 +1929,8 @@ export class MiniAppServer {
     }
     const telegramRuntime = this.#telegramRuntimeAllowed(request);
     try {
-      const body = await this.#staticBody(url.pathname, assetBundle);
+      const read = () => this.#staticBody(url.pathname, assetBundle);
+      const body = timing ? await timing.measure("http-asset-read", read) : await read();
       send(
         response,
         200,
@@ -2041,7 +2073,7 @@ function applyVscodeWebviewCors(request, response, enabled) {
   const origin = vscodeWebviewCorsOrigin(request, enabled);
   if (!origin) return false;
   response.setHeader("Access-Control-Allow-Origin", origin);
-  response.setHeader("Access-Control-Expose-Headers", "Content-Type, ETag");
+  response.setHeader("Access-Control-Expose-Headers", "Content-Type, ETag, Server-Timing, X-Agent-Hub-Upload-Request-Id");
   response.setHeader("Vary", "Origin");
   return true;
 }

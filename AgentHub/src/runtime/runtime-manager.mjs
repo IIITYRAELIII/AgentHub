@@ -23,6 +23,8 @@ import { protectRuntimeConfig, protectRuntimeDirectory } from "../infrastructure
 import { buildWindowsRuntimeHost, runtimeHostSourceHash } from "../infrastructure/process/runtime-host-builder.mjs";
 import { processIsAlive } from "../infrastructure/process/process-liveness.mjs";
 import { writeTextAtomic } from "../infrastructure/persistence/state-store.mjs";
+import { captureRuntimeReleaseBinding, readRuntimePointer, withRuntimeInstallationLease } from "../infrastructure/filesystem/runtime-installation-custody.mjs";
+import { runtimePointerTransition, runtimeRollbackPointer } from "../infrastructure/filesystem/runtime-release-retention-policy.mjs";
 
 const SOURCE_ROOT = path.resolve(import.meta.dirname, "..", "..");
 const TOP_LEVEL_FILES = new Set([
@@ -45,6 +47,10 @@ const TOP_LEVEL_FILES = new Set([
 ]);
 
 const RUNTIME_MODULE_ASSETS = [
+  ["src/infrastructure/filesystem/sealed-runtime-release.mjs",
+    "src/infrastructure/filesystem/sealed-runtime-release.cs"],
+  ["src/infrastructure/filesystem/sealed-transport-delete.mjs",
+    "src/infrastructure/filesystem/sealed-transport-delete.cs"],
   ["src/infrastructure/persistence/windows-delete-verified-entry.mjs",
     "src/infrastructure/persistence/windows-delete-verified-entry.cs"],
 ];
@@ -148,10 +154,12 @@ async function sameFileContents(left, right) {
 
 async function releaseManifest(releaseRoot, names) {
   const files = [];
+  const directories = [];
   async function visit(relative) {
     const full = path.join(releaseRoot, relative);
     const info = await stat(full);
     if (info.isDirectory()) {
+      directories.push(relative.replaceAll("\\", "/"));
       for (const child of await readdir(full)) await visit(path.join(relative, child));
       return;
     }
@@ -162,27 +170,11 @@ async function releaseManifest(releaseRoot, names) {
     });
   }
   for (const name of names) await visit(name);
-  return files.sort((left, right) => left.path.localeCompare(right.path));
+  return { files: files.sort((left, right) => left.path.localeCompare(right.path)), directories: directories.sort() };
 }
 
 function newReleaseId(now = new Date()) {
   return `${now.toISOString().replace(/[-:.TZ]/g, "").slice(0, 14)}-${randomUUID().slice(0, 8)}`;
-}
-
-async function pruneRuntimeReleases(layout, keep, {
-  removeRelease = (target) => rm(target, { recursive: true, force: true }),
-  onWarning = (error, target) => console.warn(`Cannot prune runtime release ${target}: ${error.message}`),
-} = {}) {
-  for (const entry of await readdir(layout.releasesDir, { withFileTypes: true })) {
-    if (!entry.isDirectory() || keep.has(entry.name)) continue;
-    const target = path.join(layout.releasesDir, entry.name);
-    try {
-      await removeRelease(target);
-    } catch (error) {
-      if (!["EBUSY", "EPERM", "EACCES"].includes(error?.code)) throw error;
-      onWarning(error, target);
-    }
-  }
 }
 
 async function pruneReplacedStableFiles(layout) {
@@ -300,14 +292,21 @@ async function installStableRuntimeFiles(layout, releaseRoot, {
   }
 }
 
-export async function prepareRuntime({
+export async function prepareRuntime(options = {}) {
+  const runtimeRoot = options.runtimeRoot ?? defaultRuntimeRoot();
+  return withRuntimeInstallationLease(runtimeRoot, lease => prepareRuntimeOwned({ ...options, runtimeRoot, lease }));
+}
+
+async function prepareRuntimeOwned({
   sourceRoot = SOURCE_ROOT,
   runtimeRoot = defaultRuntimeRoot(),
   releaseId = newReleaseId(),
   publicationRevision = null,
+  expectedReleaseVersion = null,
   mobileAssetsRoot = null,
   beforeManifest,
   installProductionDependencies = installLockedRuntimeDependencies,
+  lease,
 } = {}) {
   const layout = runtimeLayout(runtimeRoot);
   const releaseRoot = runtimeReleaseDirectory(runtimeRoot, releaseId);
@@ -316,6 +315,21 @@ export async function prepareRuntime({
   await protectRuntimeDirectory(layout.root);
   await mkdir(layout.releasesDir, { recursive: true });
   await protectRuntimeDirectory(layout.releasesDir);
+  const pointer = await readRuntimePointer(runtimeRoot);
+  if (pointer.runtimeRetention?.retired?.some?.(entry => entry.releaseId === releaseId && entry.operationId)) {
+    throw new Error("Partially retired runtime cannot be prepared again");
+  }
+  // A frozen publication may require one exact allocator result. Check it
+  // under the existing installation lease, before copying, compiling or npm ci.
+  // Reuse of an already prepared body belongs to the publication checkpoint.
+  let frozenReleaseVersion = null;
+  if (expectedReleaseVersion !== null) {
+    const packageVersion = readAgentHubVersion({ packageFile: path.join(sourceRoot, "package.json") });
+    frozenReleaseVersion = await nextRuntimeReleaseVersion({ releasesDir: layout.releasesDir, packageVersion });
+    if (typeof expectedReleaseVersion !== "string" || expectedReleaseVersion !== frozenReleaseVersion) {
+      throw new Error(`Frozen runtime version differs from the next allocated version: ${frozenReleaseVersion}`);
+    }
+  }
   await mkdir(staging, { recursive: true });
   try {
     const names = await releaseFileNames(sourceRoot);
@@ -386,17 +400,18 @@ export async function prepareRuntime({
     const manifest = {
       releaseId,
       version: packageVersion,
-      releaseVersion: await nextRuntimeReleaseVersion({
+      releaseVersion: frozenReleaseVersion ?? await nextRuntimeReleaseVersion({
         releasesDir: layout.releasesDir,
         packageVersion,
       }),
       createdAt: new Date().toISOString(),
       sourceRoot: path.resolve(sourceRoot),
       ...(publicationRevision ? { publicationRevision } : {}),
-      files: await releaseManifest(staging, names),
+      ...await releaseManifest(staging, names),
     };
     await verifyRuntimeImportClosure(staging, manifest.files);
     await writeFile(path.join(staging, "runtime-manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+    await lease.assertOwned();
     await rename(staging, releaseRoot);
     // Staging is created below the already protected releases directory, so
     // every copied file inherits the owner-only ACL. Running icacls /T with
@@ -424,9 +439,14 @@ export async function verifyInstalledRuntime({ runtimeRoot = defaultRuntimeRoot(
   return true;
 }
 
-export async function installPreparedRuntime({
+export async function installPreparedRuntime(options = {}) {
+  const runtimeRoot = options.runtimeRoot ?? defaultRuntimeRoot();
+  return withRuntimeInstallationLease(runtimeRoot, lease => installPreparedRuntimeOwned({ ...options, runtimeRoot, lease }));
+}
+
+async function installPreparedRuntimeOwned({
   runtimeRoot = defaultRuntimeRoot(), releaseId, releaseRoot = runtimeReleaseDirectory(runtimeRoot, releaseId),
-  removeRelease, onPruneWarning, beforeStableLauncherCommit, beforePointerCommit, commitStableFile,
+  beforeStableLauncherCommit, beforePointerCommit, commitStableFile, lease,
   writePointer = atomicJson, protectPointer = protectRuntimeConfig,
   restorePointer = async (target, priorText) => {
     if (priorText === null) await rm(target, { force: true });
@@ -450,17 +470,16 @@ export async function installPreparedRuntime({
       throw error;
     });
     const previousPointer = JSON.parse(priorPointerText ?? "{}");
+    const installed = await captureRuntimeReleaseBinding(releaseRoot, releaseId);
+    const transition = runtimePointerTransition({ pointer: previousPointer, installed });
     const stableFiles = await installStableRuntimeFiles(layout, releaseRoot, {
       beforeCommit: beforeStableLauncherCommit,
       commitFile: commitStableFile,
     });
-    const pointer = {
-      current: releaseId,
-      previous: previousPointer.current ?? previousPointer.previous ?? null,
-      updatedAt: new Date().toISOString(),
-    };
+    const pointer = transition.pointer;
     try {
       await beforePointerCommit?.({ layout, releaseId, releaseRoot, pointer });
+      await lease.assertOwned();
       await writePointer(layout.currentFile, pointer);
       await protectPointer(layout.currentFile);
       await stableFiles.cleanup();
@@ -486,11 +505,9 @@ export async function installPreparedRuntime({
       }
       throw error;
     }
-    await pruneRuntimeReleases(
-      layout,
-      new Set([pointer.current, pointer.previous].filter(Boolean)),
-      { removeRelease, onWarning: onPruneWarning },
-    );
+    // Prepared, running, unpublished and legacy bodies are not disposable by
+    // exclusion from two pointer IDs. The after-ready owner retires only exact
+    // known bindings through its original durable maintenance operation.
     for (const entry of await readdir(layout.root, { withFileTypes: true })) {
       if (entry.isFile() && /^config(?:\\..+)?\\.json$/iu.test(entry.name)) {
         await protectRuntimeConfig(path.join(layout.root, entry.name));
@@ -502,6 +519,8 @@ export async function installPreparedRuntime({
       releaseRoot,
       stableUpdateDeferred: false,
       blockedStableTarget: null,
+      pruningDeferred: true,
+      retentionReason: transition.deferred ?? "after-ready-runtime-owner",
     };
 }
 
@@ -632,15 +651,16 @@ export async function activateRuntime({
 }
 
 export async function rollbackRuntime({ runtimeRoot = defaultRuntimeRoot() } = {}) {
+  return withRuntimeInstallationLease(runtimeRoot, lease => rollbackRuntimeOwned(runtimeRoot, lease));
+}
+
+async function rollbackRuntimeOwned(runtimeRoot, lease) {
   const layout = runtimeLayout(runtimeRoot);
   const pointer = JSON.parse(await readFile(layout.currentFile, "utf8"));
   if (!pointer.previous) throw new Error("No previous runtime release is available");
   await access(runtimeReleaseDirectory(runtimeRoot, pointer.previous));
-  await atomicJson(layout.currentFile, {
-    current: pointer.previous,
-    previous: pointer.current,
-    updatedAt: new Date().toISOString(),
-  });
+  await lease.assertOwned();
+  await atomicJson(layout.currentFile, runtimeRollbackPointer({ pointer }));
   return { current: pointer.previous, previous: pointer.current };
 }
 

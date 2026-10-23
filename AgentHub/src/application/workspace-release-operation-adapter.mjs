@@ -20,6 +20,7 @@ async function releaseMetadataBytes(metadata) {
   return bytes;
 }
 function approvedRepositories(operation) {
+  if (operation.reviewedMain) return operation.reviewedMain.approvedRepositories;
   return operation.authorization.approvedTargets.flatMap((target) => (
     target.repositoryRoot && target.approvedLocalMainCommit && target.approvedOriginMainCommit
       ? [{
@@ -91,8 +92,13 @@ export class WorkspaceReleaseOperationAdapter {
         frozenTasks: candidate.frozenTasks,
         manifest: candidate.manifest,
       })),
-      sourceFingerprint: `${prepared.planRevision}:${operation.authorization.fingerprint}`,
+      sourceFingerprint: `${prepared.planRevision}:${operation.authorization.fingerprint}${operation.reviewedMain ? `:${operation.reviewedMain.identitySha256}` : ""}`,
     };
+  }
+
+  withReviewedMainRecovery(input) {
+    requiredMethod(this.releasePreflight, "withReviewedMainRecovery");
+    return this.releasePreflight.withReviewedMainRecovery(input);
   }
 
   validate({ operation, generation }) {

@@ -103,6 +103,9 @@ export function createCommandTraceComposition({
         return { ready: false, deferred: true };
       }
     },
-    close: () => { sampler?.stop(); return store.close(); },
+    close: async () => {
+      try { await sampler?.stop(); } catch { /* Diagnostic failure cannot skip trace-worker shutdown. */ }
+      return store.close();
+    },
   });
 }

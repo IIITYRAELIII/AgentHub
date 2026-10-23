@@ -73,6 +73,18 @@ test("ProviderTaskActivityService starts Codex only when discovery requires App 
   assert.equal(result.context.rolloutPath, "C:/discovered.jsonl");
 });
 
+test("fresh Codex recovery reads current provider status even with a known rollout", async () => {
+  const state = fixture();
+  const result = await state.service.readCodex({ threadId: "original" }, { forceFresh: true });
+  assert.deepEqual(state.events, [
+    ["known-path", "original"],
+    ["read-thread", "original", { fresh: true, includeTurns: false }],
+    ["read-rollout", "C:/discovered.jsonl"],
+  ]);
+  assert.equal(result.source.threadStatus.type, "active");
+  assert.equal(result.context.forceFresh, true);
+});
+
 test("ProviderTaskActivityService resolves stale Claude transcript activity from external process evidence", async () => {
   const stale = { sessionId: "claude-stale", activityUnknown: true, active: false };
   const absent = fixture({

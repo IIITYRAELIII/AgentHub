@@ -7,6 +7,7 @@ import path from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 import { freezePreparedPublication } from "../../../publish-changed.mjs";
+import { releaseOperationRuntimePublicationInput } from "../../../release-operation-publication-runner.mjs";
 import { ReleaseGitWorkspaceService, assertReleaseCandidateContourSource } from "../../../src/infrastructure/filesystem/release-git-workspace.mjs";
 
 const execute = promisify(execFile);
@@ -53,6 +54,36 @@ const freezeThroughPublicWrapper = (fixture, options = {}) => freezePreparedPubl
   assertCleanTree: async () => {},
   assertCurrentRevision: async () => {},
   ...options,
+});
+
+test("freeze pins the artifact version separately and retry never reallocates it", async (t) => {
+  const f = await fixture(t);
+  const runtimeRoot = path.join(f.primary, "..", "runtime");
+  const releases = path.join(runtimeRoot, "releases");
+  const add = async (name, releaseVersion) => {
+    const root = path.join(releases, name);
+    await mkdir(root, { recursive: true });
+    await writeFile(path.join(root, "runtime-manifest.json"), JSON.stringify({
+      version: "2026.8.24", releaseVersion,
+    }));
+  };
+  await add("prior", "2026.8.24.7");
+  await writeFile(path.join(f.candidate.releaseRoot, "CHANGELOG.md"), f.changelogContent);
+  const frozen = await f.freeze({ runtimeRoot });
+  const manifest = JSON.parse(await readFile(frozen.manifestFile, "utf8"));
+  assert.equal(manifest.publication.releaseVersion, "2026.8.24");
+  assert.equal(manifest.publication.runtimeReleaseVersion, "2026.8.24.8");
+  assert.deepEqual(releaseOperationRuntimePublicationInput({
+    operation: { operationId: "fefefefe-fefe-4efe-8efe-fefefefefefe" },
+    generation: { operationId: "fefefefe-fefe-4efe-8efe-fefefefefefe", generation: 2 },
+    candidate: { commit: frozen.preReleaseHead, manifest },
+  }), { operationId: "fefefefe-fefe-4efe-8efe-fefefefefefe", generation: 2,
+    sourceCommit: frozen.preReleaseHead, version: "2026.8.24.8" });
+  await add("later", "2026.8.24.9");
+  const repeat = await f.freeze({ runtimeRoot });
+  assert.equal(repeat.manifestHash, frozen.manifestHash);
+  assert.equal(JSON.parse(await readFile(repeat.manifestFile, "utf8")).publication.runtimeReleaseVersion,
+    "2026.8.24.8");
 });
 
 function assertLineEndings(bytes, expected) {

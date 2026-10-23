@@ -65,7 +65,9 @@ export function createRuntimeOrchestrationComposition({
     rateLimitTelemetry,
     providerLogin,
     usageSyncAuto,
+    storageRetention,
     taskSyncStore,
+    taskDiffs,
     messagePins,
     workspaceCatalogStore,
     preTurnInstructions,
@@ -276,6 +278,7 @@ export function createRuntimeOrchestrationComposition({
     scheduleBugReportScan,
     rateLimitTelemetry,
     usageSyncAuto,
+    storageRetention,
     testContourJournalSync,
     providerLogin,
   });
@@ -333,6 +336,7 @@ export function createRuntimeOrchestrationComposition({
 
   const restartWiring = ports.runtimeRestart.bind(createRuntimeRestartWiring({
     taskRuns,
+    runCoordinator,
     agentProviders,
     backgroundJobs,
     streamMaintenance,
@@ -370,9 +374,11 @@ export function createRuntimeOrchestrationComposition({
       botMenu,
       journalStartupReady,
       runtimeStateCoordinator,
+      storageRetention,
       telegramDeliveryService,
       mediaController,
       taskSyncStore,
+      taskDiffs,
       workspaceCatalogStore,
       deliveryOutbox,
       backgroundJobStore,

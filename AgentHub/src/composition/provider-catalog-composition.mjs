@@ -95,7 +95,6 @@ export function createProviderCatalogComposition({
   claudeTaskSnapshots,
   claudeRuntimeOwner,
   claudeRunAdmission,
-  backfillWorkLogPricingMetadata,
   readCodexThreadTitleHistories,
   rememberCodexRolloutPath,
   capturedCodexExecutionOwner,
@@ -123,7 +122,6 @@ export function createProviderCatalogComposition({
   clock = () => Date.now(),
 }) {
   const codexCatalogProjection = new CodexCatalogProjectionService({
-    backfillPricing: backfillWorkLogPricingMetadata,
     readTitleHistories: readCodexThreadTitleHistories,
     findProject,
     rememberRolloutPath: rememberCodexRolloutPath,
@@ -198,7 +196,7 @@ export function createProviderCatalogComposition({
       steerCodexTurn: (...args) => codexTurnService.steer(...args),
       findCodexTurnByClientMessage: (...args) => codexTurnService.findByClientMessage(...args),
       cancelCodexProviderRun: (...args) => providerCancellationService.cancelCodex(...args),
-      readCodexTaskActivity: (target) => providerTaskActivity.readCodex(target),
+      readCodexTaskActivity: (...args) => providerTaskActivity.readCodex(...args),
       readCodexTaskSnapshot,
       completeObservedCodexRun: (...args) => codexCompletionService.completeObserved(...args),
       completeManagedCodexRun: (...args) => codexCompletionService.completeManaged(...args),

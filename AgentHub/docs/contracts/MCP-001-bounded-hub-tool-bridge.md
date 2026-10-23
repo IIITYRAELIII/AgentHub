@@ -1,5 +1,27 @@
 # MCP-001 — Bounded Agent Hub tool bridge
 
+`hub_release_continue` optionally carries `reviewed_main` with exact positive
+integer `expectedRevision` and bounded original-repository primitive-string Git
+pins. Under the existing genuine RM authorization and original MCP request
+identity, the same release owner verifies and persists ADR-0128 recovery. This
+does not mutate original authorization or add a release/tool/status writer.
+Ordinary terminal continuation remains refused; ambiguous original effects
+cannot receive not-applied credit from the caller envelope.
+
+Task cleanup previews include ignored local data separately from ordinary Git
+dirty state. Confirmed Complete/Delete cannot discard those paths merely because
+Git status is clean or a dirty-worktree option is set; the owning artifact must
+first prove retirement (ADR-0126). Background storage policy adds no public MCP
+mutation or fresh receipt replay route and cannot close Tasks, publish results,
+or reinterpret UNKNOWN operations as no effect.
+
+`hub_release_run` optionally accepts `release_metadata` with the existing
+`sourcePath`, `byteLength`, `rawSha256` and `canonicalSha256` artifact identity.
+It forwards this unchanged as authorization `releaseMetadata` to the same durable
+release owner. The existing domain bound and composition byte/digest checks apply;
+omitting the field preserves the existing authorization. It grants no additional
+publication authority and does not introduce another operation or publisher.
+
 ## Current corrected candidates and historical release facts (2026-10-14)
 
 A new candidate is admitted from the exact CURRENT normally accepted results.
@@ -245,6 +267,13 @@ HTTP admission still terminates in bounded time. The deadline applies only to
 `agent_hub`; unrelated long-running tools retain their own policy.
 
 ## Recovery and retry
+
+Closing and restarting the same MCP server owner preserves its first successfully
+advertised loopback port and capability URL. A surviving App Server can therefore
+reconnect using its existing launch configuration. If another listener occupies
+that port, recovery refuses instead of silently selecting a different endpoint;
+direct HTTP success on a new port is not proof that an agent's tool catalog has
+recovered. This retains the same context authorization and operation receipts.
 
 A failed dynamic `functions.exec` call that contains an `agent_hub` MCP call
 reloads the Codex MCP transport before a later attempt and wakes durable input

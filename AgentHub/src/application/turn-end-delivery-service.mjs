@@ -552,13 +552,14 @@ export class TurnEndDeliveryService {
   async #deliverProjectionBatch(items) {
     const prepared = [];
     const deliveries = [];
-    for (const item of items) {
+    const staging = [];
+    for (const [index, item] of items.entries()) {
       let arrive;
       const staged = new Promise((resolve) => { arrive = resolve; });
       const delivery = this.deliverOutbox(item, {
         projectionOnly: true,
         waitForProjection: (completion) => new Promise((resolve, reject) => {
-          prepared.push({ completion, resolve, reject, delivery });
+          prepared.push({ index, completion, resolve, reject, delivery });
           arrive();
         }),
       }).catch((error) => {
@@ -568,10 +569,12 @@ export class TurnEndDeliveryService {
         );
       }).finally(() => arrive());
       deliveries.push(delivery);
-      // History and ledger writes keep their existing order. Only the shared
-      // journal projection is deferred; each durable claim remains projecting.
-      await staged;
+      // Each exact revision retains its history/ledger ordering. Independent
+      // revisions in this already-bounded page need not await each other's IO.
+      staging.push(staged);
     }
+    await Promise.all(staging);
+    prepared.sort((left, right) => left.index - right.index);
     let projectionError = null;
     if (prepared.length) {
       try {
@@ -587,8 +590,9 @@ export class TurnEndDeliveryService {
     }
     for (const entry of prepared) {
       entry.resolve(projectionError ? { error: projectionError } : { projected: true });
-      await entry.delivery;
     }
+    // Admit all persistence fences together so the existing state owner can
+    // coalesce them. Each delivery still awaits its own durable save before ACK.
     await Promise.all(deliveries);
   }
 

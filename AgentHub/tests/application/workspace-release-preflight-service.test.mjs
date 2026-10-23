@@ -58,10 +58,84 @@ function localSourceFixture() {
   return { ...f, envelope, candidate, p, verified: () => verified };
 }
 
-test("ordinary Await derives adopted installed source before candidate and rechecks before Task CAS", async () => {
-  for (const drift of [false, true, "missing-authority"]) {
+test("reviewed-main recovery rechecks the sealed source and exact selection inside the existing Await boundary", async () => {
+  const f = localSourceFixture();
+  f.service.releaseGitWorkspaces.inspectMainChanges = async () => ({ projectRoot: f.projectRoot,
+    publishedRevision: f.p.publishedBaseCommit, localMain: f.p.agreedMainCommit, originMain: f.p.agreedMainCommit,
+    approvalRequired: false, approved: true });
+  const approvedRepositories = [{ projectRoot: f.projectRoot, approvedLocalMainCommit: f.p.agreedMainCommit,
+    approvedOriginMainCommit: f.p.agreedMainCommit }];
+  let commitCount = 0;
+  const result = await f.service.withReviewedMainRecovery({ workspaceId: "workspace-1", taskIds: f.plan.ready.map(t => t.taskId),
+    approvedRepositories, commit: async (authority, validate) => {
+      assert.equal(authority.preparedCandidates[0].commit, f.candidate.preReleaseHead);
+      assert.deepEqual(authority.approvedRepositories, approvedRepositories);
+      await validate(); commitCount++; return "committed";
+    } });
+  assert.equal(result, "committed"); assert.equal(commitCount, 1); assert.equal(f.verified(), 2);
+  assert.deepEqual(f.locks, ["workspace-1"]);
+  assert.equal(f.calls.some(([name]) => ["prepare-candidate", "prepare-dev"].includes(name)), false);
+});
+
+for (const drift of ["main", "selection", "manifest"]) test(`reviewed-main recovery refuses ${drift} drift after original readback`, async () => {
+  const f = localSourceFixture(); let origin = f.p.agreedMainCommit;
+  f.service.releaseGitWorkspaces.inspectMainChanges = async () => ({ projectRoot: f.projectRoot,
+    publishedRevision: f.p.publishedBaseCommit, localMain: f.p.agreedMainCommit, originMain: origin,
+    approvalRequired: false, approved: true });
+  await assert.rejects(f.service.withReviewedMainRecovery({ workspaceId: "workspace-1", taskIds: f.plan.ready.map(t => t.taskId),
+    approvedRepositories: [{ projectRoot: f.projectRoot, approvedLocalMainCommit: f.p.agreedMainCommit, approvedOriginMainCommit: origin }],
+    commit: async (_authority, validate) => {
+      if (drift === "main") origin = "a".repeat(40);
+      if (drift === "selection") f.plan.revision = "new-plan";
+      if (drift === "manifest") f.candidate.manifestHash = "a".repeat(64);
+      await validate(); assert.fail("changed authority may not commit");
+    } }), /stale|changed/u);
+});
+
+for (const localSource of [false, true]) for (const drift of [false, true]) {
+  test(`reviewed-main recovery fences earlier repository after final prepared await (local=${localSource}, drift=${drift})`, async () => {
+    const f = fixture({ publishedRevision: "f".repeat(40) });
+    const roots = [f.projectRoot, path.resolve("D:/second-reviewed-repository")];
+    const agreed = "a".repeat(40), changed = "b".repeat(40), published = "f".repeat(40);
+    const origins = new Map(roots.map(root => [root, agreed]));
+    f.plan.ready = roots.map((projectRoot, index) => ({ taskId: `selected-${index}`, taskRevision: 7,
+      projectRoot, resultCommit: "c".repeat(40) }));
+    f.service.readPublicationState = async () => ({ repositories: roots.map(root => ({ root, revision: published })) });
+    f.service.taskGitWorkspaces.releaseIntegrationEvidence = async ({ tasks }) => ({ tasks });
+    f.service.taskGitWorkspaces.releaseBaseEvidence = async () => ({ baseCommit: agreed, publishedBaseCommit: published });
+    f.service.releaseGitWorkspaces.assertPrimaryInvariant = async () => ({});
+    f.service.releaseGitWorkspaces.inspectMainChanges = async ({ projectRoot }) => ({ projectRoot,
+      publishedRevision: published, localMain: agreed, originMain: origins.get(projectRoot), approved: true, approvalRequired: false });
+    let checkpoints = 0, committed = 0;
+    f.service.releaseGitWorkspaces.validateLocalSourceBaseline = async request => ({ provenance: request.provenance });
+    f.service.releaseGitWorkspaces.frozenCandidate = async projectRoot => {
+      checkpoints++;
+      if (drift && checkpoints === 4) origins.set(roots[0], changed);
+      const tasks = f.plan.ready.filter(task => task.projectRoot === projectRoot);
+      const provenance = localSource ? { schemaVersion: 1, kind: "installed-local-source-v1",
+        publishedBaseCommit: published, agreedMainCommit: agreed, sourceBaseCommit: "d".repeat(40),
+        sourceBaseTree: "e".repeat(40), sourcePatchSha256: "e".repeat(64), installedReleaseId: "retained",
+        installedManifestSha256: "e".repeat(64), planRevision: f.plan.revision,
+        selectionHash: localSourceSelectionHash(tasks), approvedOriginMainCommit: agreed, adoptions: [] }
+        : { schemaVersion: 1, kind: "explicit-reviewed-main-v1", publishedBaseCommit: published,
+          approvedLocalMainCommit: agreed, approvedOriginMainCommit: agreed };
+      return { planRevision: f.plan.revision, manifestHash: "e".repeat(64), preReleaseHead: "c".repeat(40),
+        baseCommit: localSource ? provenance.sourceBaseCommit : agreed, manifest: { tasks, baseProvenance: provenance } };
+    };
+    const pending = f.service.withReviewedMainRecovery({ workspaceId: "workspace-1",
+      taskIds: f.plan.ready.map(task => task.taskId), approvedRepositories: roots.map(projectRoot => ({ projectRoot,
+        approvedLocalMainCommit: agreed, approvedOriginMainCommit: agreed })),
+      commit: async (_authority, validate) => { await validate(); committed++; } });
+    if (drift) { await assert.rejects(pending, /approval is stale/u); assert.equal(committed, 0); }
+    else { await pending; assert.equal(committed, 1); }
+  });
+}
+
+test("ordinary Await derives installed source with incoming or agreed-main origin and rechecks before Task CAS", async () => {
+  for (const incoming of [true, false]) for (const drift of [false, true, "missing-authority"]) {
     const f = localSourceFixture();
-    const adoptions = [{ taskId: "task-current", recordHash: "receipt" }];
+    if (!incoming) f.p.agreedMainCommit = "a".repeat(40);
+    const adoptions = incoming ? [{ taskId: "task-current", recordHash: "receipt" }] : [];
     f.service.taskGitWorkspaces.releaseBaseEvidence = async () => ({
       baseCommit: f.p.agreedMainCommit, publishedBaseCommit: f.p.publishedBaseCommit, adoptions,
     });
@@ -256,6 +330,7 @@ function fixture({
       },
     },
     releaseGitWorkspaces: {
+      deriveInstalledLocalSourceBaselineForSelection: async () => null,
       withAwaitTransition: async (workspaceId, operation) => {
         locks.push(workspaceId);
         return operation();

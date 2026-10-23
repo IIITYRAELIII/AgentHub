@@ -14,7 +14,7 @@ function turn(threadId, id, answer, completed = true) {
 }
 
 async function setup(page) {
-  const state = { snapshot: snapshot(), calls: [], turns: new Map(), held: null, traces: [], pages: new Map() };
+  const state = { snapshot: snapshot(), calls: [], turns: new Map(), held: null, traces: [], traceFailures: [], pages: new Map() };
   Object.assign(state.snapshot.tasks[0], { lastAnswerTurnId: "old-turn", lastAnswerRevision: 1,
     latestFinal: { provider: "codex", threadId: "thread-a", turnId: "old-turn", revision: 1 } });
   state.turns.set("thread-a", [turn("thread-a", "old-turn", "Yesterday answer")]);
@@ -41,8 +41,13 @@ async function setup(page) {
   });
   const diagnostics = await openFixture(page, { fixtureSnapshot: state.snapshot });
   await page.route("**/api/command-trace/client-events", async (route) => {
-    state.traces.push(...clientPerformanceTraceSpans(route.request().postDataJSON()));
-    await route.fulfill({ status: 200, contentType: "application/json", body: "{}" });
+    try {
+      state.traces.push(...clientPerformanceTraceSpans(route.request().postDataJSON()));
+      await route.fulfill({ status: 200, contentType: "application/json", body: "{}" });
+    } catch (error) {
+      state.traceFailures.push(error.message);
+      await route.fulfill({ status: 400, contentType: "application/json", body: "{}" });
+    }
   });
   await page.exposeFunction("rotationDesktopControl", async (message) => {
     state.calls.push({ kind: message.action, ...message.params });
@@ -198,6 +203,13 @@ for (const oldFirst of [true, false]) test(`production Desktop → representativ
     await page.evaluate(async () => {
       while (window.AgentHubCommandTrace.diagnostics().pending) await window.AgentHubCommandTrace.flush();
     });
+    await page.waitForFunction(() => {
+      const trace = window.AgentHubCommandTrace;
+      const state = trace.diagnostics();
+      if (state.pending && !state.flushing) void trace.flush();
+      return !state.pending && !state.flushing;
+    });
+    assert.deepEqual(state.traceFailures, []);
     const correlated = state.traces.filter((span) => span.commandId === "new-turn-client");
     const retrieval = correlated.find((span) => span.metadata.action === "history-retrieved");
     const paint = correlated.find((span) => span.metadata.action === "history-terminal-paint" && span.outcome === "succeeded");

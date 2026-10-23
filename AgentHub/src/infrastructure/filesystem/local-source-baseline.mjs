@@ -35,8 +35,45 @@ function sourceMatches(source, physical, relative) {
   return normalized(source).equals(normalized(physical));
 }
 
+async function assertInheritedRepositoryFiles({ git, sourceCommit, agreedMainCommit }) {
+  const outside = async commit => {
+    const raw = Buffer.from(await git(["ls-tree", "-r", "-z", "--full-tree", commit], { rawOutput: true }));
+    if (raw.length > 4 * 1024 * 1024 || (raw.length && raw.at(-1) !== 0)) reject("repository inventory is malformed or exceeds bound");
+    const paths = new Set(), retained = [];
+    let offset = 0, count = 0;
+    while (offset < raw.length) {
+      const end = raw.indexOf(0, offset);
+      const record = raw.subarray(offset, end);
+      const tab = record.indexOf(9);
+      if (tab < 0 || !/^(?:100644 blob|100755 blob|120000 blob|160000 commit) (?:[a-f0-9]{40}|[a-f0-9]{64})$/u
+        .test(record.subarray(0, tab).toString("utf8")) || tab + 1 === record.length
+        || ++count > 16_384) reject("repository inventory is malformed or exceeds bound");
+      const name = record.subarray(tab + 1);
+      const key = name.toString("hex");
+      if (paths.has(key)) reject("repository inventory has ambiguous paths");
+      paths.add(key);
+      if (!name.subarray(0, 9).equals(Buffer.from("AgentHub/"))) retained.push(record.toString("base64"));
+      offset = end + 1;
+    }
+    return retained.sort();
+  };
+  const source = await outside(sourceCommit);
+  const agreed = await outside(agreedMainCommit);
+  if (JSON.stringify(source) !== JSON.stringify(agreed)) reject("repository files differ from agreed main");
+}
+
 // Read-only verifier inside the existing candidate owner. No base/ref, runtime
 // overlay, adoption, receipt or additional recovery registry is written here.
+export async function assertInstalledAgreedMainOrigin({ provenance, git }) {
+  const p = normalizedReleaseBaseProvenance(provenance);
+  if (p?.kind !== LOCAL_SOURCE_BASELINE_PROVENANCE || !Array.isArray(p.adoptions) || p.adoptions.length) {
+    reject("missing exact agreed main origin authority");
+  }
+  if (await git(["rev-parse", "refs/heads/main^{commit}"]) !== p.agreedMainCommit
+      || String(await git(["ls-remote", "origin", "refs/heads/main"])).split(/\s/u)[0]
+        !== p.approvedOriginMainCommit) reject("agreed main origin changed");
+}
+
 export async function assertInstalledLocalSourceBaseline({
   provenance, git, primaryMainCommit, publishedRevision, planRevision, tasks, runtimeRoot,
   adoptionGit = git, repositoryRoot = null,
@@ -53,9 +90,20 @@ export async function assertInstalledLocalSourceBaseline({
     const pins = adoptions.map(({ taskId, resultCommit, recordRef, recordHash, adoptedCommit, acceptedLocalMainCommit }) =>
       ({ taskId, resultCommit, recordRef, recordHash, adoptedCommit, acceptedLocalMainCommit }));
     if (JSON.stringify(pins) !== JSON.stringify(p.adoptions)) reject("selected adoption receipts changed");
-    await assertNativeUpstreamOrigin({ git: adoptionGit, adoptions, originCommit: p.approvedOriginMainCommit });
-    await adoptionGit(["merge-base", "--is-ancestor", publishedRevision, p.approvedOriginMainCommit]);
   } else if (String(await git(["ls-remote", "origin", "refs/heads/main"])).split(/\s/u)[0] !== publishedRevision) reject("origin differs from the pinned OWN publication");
+  const validateOrigin = async () => {
+    if (!p.adoptions) return;
+    await adoptionGit(["merge-base", "--is-ancestor", publishedRevision, p.approvedOriginMainCommit]);
+    if (adoptions.length) {
+      await assertNativeUpstreamOrigin({ git: adoptionGit, adoptions, originCommit: p.approvedOriginMainCommit });
+    } else {
+      // No new incoming is adopted when origin is the exact already agreed main.
+      // Seal that identity; an existing envelope cannot switch back to published.
+      await git(["merge-base", "--is-ancestor", p.agreedMainCommit, p.sourceBaseCommit]);
+      await assertInstalledAgreedMainOrigin({ provenance: p, git: adoptionGit });
+    }
+  };
+  await validateOrigin();
   await git(["merge-base", "--is-ancestor", publishedRevision, p.sourceBaseCommit]);
   if (String(await git(["rev-parse", `${p.sourceBaseCommit}^{tree}`])) !== p.sourceBaseTree) reject("source tree changed");
   const patch = await git(["diff", "--binary", "--full-index", "--no-renames", publishedRevision, p.sourceBaseCommit], { rawOutput: true });
@@ -83,8 +131,16 @@ export async function assertInstalledLocalSourceBaseline({
   }));
   let runtimeFiles = 0;
   let hostChanged = false;
+  let repositoryFilesVerified = false;
   for (const file of changed) {
-    if (!file.startsWith("AgentHub/")) reject("carry contains another component");
+    if (!file.startsWith("AgentHub/")) {
+      if (!repositoryFilesVerified) {
+        await assertInheritedRepositoryFiles({ git, sourceCommit: p.sourceBaseCommit,
+          agreedMainCommit: primaryMainCommit });
+        repositoryFilesVerified = true;
+      }
+      continue;
+    }
     const relative = file.slice("AgentHub/".length);
     if (relative.startsWith("RuntimeHost/") && !hostInputs.has(relative)) reject(`unsupported Host source: ${relative}`);
     if (metadata(relative)) continue;
@@ -113,8 +169,7 @@ export async function assertInstalledLocalSourceBaseline({
       if (!sourceMatches(source, await regular(path.join(manifest.sourceRoot, relative)), relative)) reject("Host Git source differs from compiled inputs");
     }
   }
-  if (p.adoptions) await assertNativeUpstreamOrigin({ git: adoptionGit, adoptions,
-    originCommit: p.approvedOriginMainCommit });
+  await validateOrigin();
   return { provenance: p, runtimeFiles, hostChanged, ...(p.adoptions ? { adoptions } : {}) };
 }
 
@@ -134,6 +189,8 @@ export async function installedNativeHistoryBaseline({ git, sourceGit, repositor
   const sourceBaseTree = await sourceGit(manifest.sourceRoot, ["rev-parse", "HEAD^{tree}"]);
   if (await sourceGit(manifest.sourceRoot, ["status", "--porcelain=v1", "-z", "--untracked-files=all"])) reject("retained source checkout changed");
   if (sourceBaseCommit === publishedRevision) return null;
+  const agreedOrigin = !adoptions.length && primaryMainCommit !== publishedRevision
+    && String(await git(["ls-remote", "origin", "refs/heads/main"])).split(/\s/u)[0] === primaryMainCommit;
   const p = { schemaVersion: 1, kind: LOCAL_SOURCE_BASELINE_PROVENANCE, publishedBaseCommit: publishedRevision,
     agreedMainCommit: primaryMainCommit, sourceBaseCommit, sourceBaseTree,
     sourcePatchSha256: sha(await git(["diff", "--binary", "--full-index", "--no-renames", publishedRevision, sourceBaseCommit], { rawOutput: true })),
@@ -142,7 +199,7 @@ export async function installedNativeHistoryBaseline({ git, sourceGit, repositor
       approvedOriginMainCommit: adoptions[0].adoptedCommit,
       adoptions: adoptions.map(({ taskId, resultCommit, recordRef, recordHash, adoptedCommit, acceptedLocalMainCommit }) =>
         ({ taskId, resultCommit, recordRef, recordHash, adoptedCommit, acceptedLocalMainCommit })),
-    } : {}) };
+    } : agreedOrigin ? { approvedOriginMainCommit: primaryMainCommit, adoptions: [] } : {}) };
   return (await assertInstalledLocalSourceBaseline({ provenance: p, git, repositoryRoot, primaryMainCommit,
     publishedRevision, planRevision, tasks, runtimeRoot })).provenance;
 }

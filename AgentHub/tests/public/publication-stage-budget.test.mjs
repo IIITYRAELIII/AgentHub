@@ -32,17 +32,18 @@ function harness() {
   };
 }
 
-test("full tests continue past the former 15 minute deadline while reporting progress", async () => {
+test("full tests have no overall execution deadline while reporting progress", async () => {
   const h = harness();
   const step = publicationSteps()[0];
   const done = runStep(step, h.options);
-  for (let index = 0; index < 4; index += 1) {
+  const outcome = done.then(() => null, (error) => error);
+  for (let index = 0; index < 37; index += 1) {
     h.advance(5 * 60_000);
     h.child.stdout.emit("data", "");
   }
   assert.deepEqual(h.killed, []);
   h.child.emit("exit", 0);
-  await done;
+  assert.equal(await outcome, null);
 });
 
 test("idle full test stops its process tree and cannot report success from a termination race", async () => {

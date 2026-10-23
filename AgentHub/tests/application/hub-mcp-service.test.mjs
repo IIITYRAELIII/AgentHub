@@ -4,6 +4,9 @@ import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import test from "node:test";
+import { createHash } from "node:crypto";
+import { createReleaseOperation } from "../../src/domain/release-operation.mjs";
+import { WorkspaceReleaseOperationAdapter } from "../../src/application/workspace-release-operation-adapter.mjs";
 
 import { HubMcpService } from "../../src/application/hub-mcp-service.mjs";
 import { measureTaskOperation, withTaskOperationTiming } from "../../src/infrastructure/process/task-operation-timing.mjs";
@@ -1729,6 +1732,7 @@ test("HubMcpService exposes cursor events and one durable release operation owne
   });
   assert.equal(ack.operationId, "release-operation-1");
   assert.equal(calls[0][1].authorization.validationMode, "full");
+  assert.equal(Object.hasOwn(calls[0][1].authorization, "releaseMetadata"), false);
   const snapshot = await service.call("hub_release_get", {
     context_token: token, operation_id: ack.operationId,
   });
@@ -1741,6 +1745,74 @@ test("HubMcpService exposes cursor events and one durable release operation owne
   const tools = service.tools().map((tool) => tool.name);
   assert.equal(tools.includes("hub_release_preflight"), false);
   assert.equal(tools.includes("hub_release_complete"), false);
+});
+
+test("HubMcpService forwards original-addressed reviewed-main recovery through the same authenticated continuation", async context => {
+  const calls = [];
+  const { service, token } = await fixture(context, { releaseOperations: {
+    get: operationId => ({ operation: { operationId, workspaceId: "workspace-1", state: "failed", revision: 699 } }),
+    continue: async (...args) => { calls.push(args); return { accepted: true, operationId: args[0] }; },
+    setEventDelivery() {},
+  } });
+  const reviewedMain = { expectedRevision: 699, approvedRepositories: [{ projectRoot: "D:/repo",
+    approvedLocalMainCommit: "a".repeat(40), approvedOriginMainCommit: "a".repeat(40) }] };
+  const input = { context_token: token, request_id: "original-main-rebind", operation_id: "original", reviewed_main: reviewedMain };
+  assert.equal((await service.call("hub_release_continue", input)).accepted, true);
+  assert.deepEqual(calls, [["original", { requestId: input.request_id, reviewedMain }]]);
+});
+
+test("HubMcpService carries exact release metadata through the domain and byte-checking composition owner", async (context) => {
+  let admitted;
+  const { service, token, projectRoot } = await fixture(context, { releaseOperations: {
+    start: (input) => {
+      admitted = createReleaseOperation({ ...input, operationId: input.requestId,
+        runnerVersion: "test", createdAt: "2026-10-18T00:00:00.000Z" });
+      return { accepted: true, operationId: admitted.operationId };
+    },
+    get() {}, continue() {}, setEventDelivery() {},
+  } });
+  const bytes = Buffer.from("release notes\r\n", "utf8");
+  const sourcePath = path.join(projectRoot, "CHANGELOG.md");
+  await writeFile(sourcePath, bytes);
+  const releaseMetadata = {
+    sourcePath, byteLength: bytes.length,
+    rawSha256: createHash("sha256").update(bytes).digest("hex"),
+    canonicalSha256: createHash("sha256").update("release notes\n").digest("hex"),
+  };
+  const args = {
+    context_token: token, request_id: "release-metadata", task_ids: ["task-current"],
+    validation_mode: "full", approved_targets: [{ targetId: "production", kind: "agent-hub-publication" }],
+    release_metadata: releaseMetadata,
+  };
+  const schema = service.tools().find((item) => item.name === "hub_release_run").inputSchema;
+  await service.call("hub_release_run", args);
+  assert.deepEqual(admitted.authorization.releaseMetadata, releaseMetadata);
+  assert.deepEqual(schema.properties.release_metadata.required,
+    ["sourcePath", "byteLength", "rawSha256", "canonicalSha256"]);
+  assert.equal(schema.required.includes("release_metadata"), false);
+  assert.equal(admitted.streamId, "stream-1");
+  assert.equal(admitted.threadId, "thread-1");
+  let preparations = 0;
+  const adapter = new WorkspaceReleaseOperationAdapter({
+    releasePreflight: {
+      prepareOperationGeneration: async ({ changelogContent }) => {
+        preparations += 1;
+        assert.deepEqual(changelogContent, bytes);
+        return { releaseCandidates: [], planRevision: "plan" };
+      },
+      validateOperationGeneration() {}, operationSelection() {}, withAwaitTransition() {},
+    },
+    publication: { publish: () => assert.fail("composition cannot publish"), readback() {} },
+    finalization: { finalize: () => assert.fail("composition cannot finalize") },
+  });
+  await adapter.compose({ operation: admitted, generation: 1 });
+  await writeFile(sourcePath, Buffer.from("RELEASE notes\r\n")); // same length, different digest
+  await assert.rejects(adapter.compose({ operation: admitted, generation: 2 }), /metadata artifact identity changed/u);
+  assert.equal(preparations, 1);
+  await assert.rejects(service.call("hub_release_run", {
+    ...args, request_id: "release-malformed-metadata",
+    release_metadata: { ...releaseMetadata, rawSha256: "invalid" },
+  }), /release metadata digest is invalid/u);
 });
 
 test("HubMcpService restricts release execution to Release Manager Streams", async (context) => {
