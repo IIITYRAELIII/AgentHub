@@ -58,6 +58,7 @@ export async function executeRelease(input, {
       || typeof request.task_id !== "string" || !request.task_id.trim())) {
     throw new Error("Release acceptance requires an addressed Task Await request");
   }
+  const addressedTaskId = input.action === "accept" ? request.task_id.trim() : null;
   const runtime = await openRuntime();
   try {
     const token = runtime.service.contextToken({ provider: input.provider, threadId: input.threadId, streamId: input.streamId });
@@ -70,7 +71,7 @@ export async function executeRelease(input, {
         // Wait for only addressed local work (including normal Task wakes); do not replay the call or
         // settle its unknown receipt from a successful release readback.
         await runtime.operations.drainAddressed({
-          ...(input.action === "accept" ? { taskId: request.task_id }
+          ...(input.action === "accept" ? { taskId: addressedTaskId }
             : input.action === "run" ? { requestId: request.request_id } : { operationId: request.operation_id }),
         });
       }
@@ -83,7 +84,7 @@ export async function executeRelease(input, {
     try { onAccepted(result); } catch (error) { replyError = error; }
     let snapshot;
     if (input.action === "accept") {
-      await runtime.operations.drainAddressed({ taskId: request.task_id });
+      await runtime.operations.drainAddressed({ taskId: addressedTaskId });
       snapshot = result;
     } else snapshot = await runtime.operations.drain(result.operationId);
     if (replyError) throw replyError;

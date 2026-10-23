@@ -25,6 +25,7 @@ import { ReleaseOperationStore } from "../../../src/infrastructure/persistence/r
 import { executeRelease, openReleaseRuntime, parseReleaseArguments } from "../../../release.mjs";
 import { createReleaseOperationServices } from "../../../src/composition/release-operation-composition.mjs";
 import { taskGitIdentityHash } from "../../../src/domain/task-git-reference.mjs";
+import { mcpArgumentsHash } from "../../../src/domain/mcp-arguments-hash.mjs";
 
 const exec = promisify(execFile);
 const hash = "b".repeat(64);
@@ -354,8 +355,9 @@ test("source acceptance retains Task-woken owner lifetime through success and lo
   const root = await mkdtemp(path.join(os.tmpdir(), "accept-lifetime-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const requestFile = path.join(root, "request.json");
-  await writeFile(requestFile, JSON.stringify({ task_id: "selected", status: "awaiting_implementation", request_id: "one-await" }));
-  for (const loss of [null, "receipt", "ack"]) {
+  const cases = ["selected", " selected "].flatMap(taskId => [null, "receipt", "ack"].map(loss => ({ taskId, loss })));
+  for (const { taskId, loss } of cases) {
+    await writeFile(requestFile, JSON.stringify({ task_id: taskId, status: "awaiting_implementation", request_id: "one-await" }));
     let release, entered, closed = false;
     const barrier = new Promise(resolve => { release = resolve; });
     const started = new Promise(resolve => { entered = resolve; });
@@ -383,8 +385,85 @@ test("source acceptance retains Task-woken owner lifetime through success and lo
     assert.equal(closed, true);
     assert.equal(calls.length, 1, "no public call replay");
     assert.equal(calls[0][0], "hub_task_status_update");
+    assert.equal(calls[0][1].task_id, taskId, "public business arguments remain exact");
   }
 });
+
+for (const padded of [false, true]) {
+test(`public Task ${padded ? "padded" : "canonical"} identity retains admitted owner through lost Await receipt`, { timeout: 180000 }, async t => {
+  const f = await fixture(t, { releaseManager: true });
+  const task = await f.create("task-receipt-lifetime");
+  await f.status(task, "testing", "lifetime-test");
+  const before = structuredClone(f.board.task(task.id));
+  const store = new ReleaseOperationStore({ dataDir: path.dirname(f.databaseFile) });
+  const make = (requestId, taskId) => {
+    const op = store.create({ requestId, workspaceId: f.workspaceId, streamId: f.streamId,
+      threadId: "fixture-thread", runnerVersion: "fixture",
+      authorization: { taskIds: [taskId], validationMode: "full", approvedTargets: [{ targetId: "fixture", kind: "fixture", repositoryRoot: f.primary }] } }).operation;
+    return store.transition(op.operationId, { state: "waiting", resumeState: "compose",
+      waitReason: { code: "validation_failed", message: "controlled prior correction wait" } }).operation;
+  };
+  const original = make("existing-selected-release", task.id);
+  const foreign = make("unrelated-release", "foreign-task"), foreignBefore = store.snapshot(foreign.operationId);
+  let enteredResolve, releaseResolve, held = true, runtime;
+  const entered = new Promise(resolve => { enteredResolve = resolve; });
+  const release = new Promise(resolve => { releaseResolve = resolve; });
+  const closes = [], composed = [];
+  const open = async () => {
+    const taskRuntime = await f.open();
+    const raw = taskRuntime.fixtureCatalog, complete = raw.completeMcpOperation.bind(raw);
+    raw.completeMcpOperation = async (id, ...args) => {
+      if (id === "reviewer-task-lost-receipt") {
+        await entered; throw new Error("controlled public Await receipt persistence failure");
+      }
+      return complete(id, ...args);
+    };
+    runtime = await openReleaseRuntime({ openTaskRuntime: async () => taskRuntime });
+    runtime.operations.compose = async input => {
+      composed.push(input.operation.operationId); enteredResolve(); await release;
+      throw Object.assign(new Error("controlled fixture preparation refusal"), { code: "RELEASE_PREPARATION_REJECTED" });
+    };
+    const close = runtime.close;
+    runtime.close = () => { closes.push({ held }); close(); };
+    return runtime;
+  };
+  const requestFile = path.join(f.root, "request.json");
+  const request = { task_id: padded ? ` ${task.id} ` : task.id, status: "awaiting_implementation",
+    expected_task_revision: before.revision, expected_workflow_status: "testing", request_id: "reviewer-task-lost-receipt" };
+  const requestBytes = JSON.stringify(request);
+  await writeFile(requestFile, requestBytes);
+  const attempt = executeRelease({ action: "accept", requestFile, provider: "codex", threadId: "fixture-thread", streamId: f.streamId },
+    { openRuntime: open }).then(value => ({ value }), error => ({ error: error.message }));
+  await Promise.race([entered, attempt.then(result => { throw new Error("fixture failed before owner barrier: " + JSON.stringify(result)); })]);
+  await new Promise(resolve => setTimeout(resolve, 100));
+  const earlyClosed = closes.some(entry => entry.held);
+  held = false; releaseResolve();
+  const result = await attempt;
+  await runtime.operations.drain(original.operationId);
+  const final = store.snapshot(original.operationId);
+  const drainBefore = { snapshot: store.snapshot(original.operationId), composed: [...composed] };
+  await runtime.operations.drainAddressed({ taskId: task.id });
+  assert.deepEqual(store.snapshot(original.operationId), drainBefore.snapshot);
+  assert.deepEqual(composed, drainBefore.composed, "drain cannot schedule another composition");
+  assert.equal(earlyClosed, false, "stores must stay open through the addressed Task owner lifetime");
+  assert.match(result.error, /receipt reconciliation/u);
+  assert.equal(f.catalog.mcpOperation(request.request_id).status, "unknown");
+  assert.equal(f.catalog.mcpOperation(request.request_id).argumentsHash, mcpArgumentsHash(request));
+  assert.equal(await readFile(requestFile, "utf8"), requestBytes);
+  assert.equal(f.board.task(task.id).workflowStatus, "awaiting_implementation");
+  assert.equal(final.operation.state, "waiting");
+  assert.equal(final.operation.waitReason.code, "preparation_refused");
+  assert.equal(final.operation.lastError.message, "controlled fixture preparation refusal");
+  assert.deepEqual(final.operation.authorization, original.authorization);
+  assert.equal(final.generations.length, 0);
+  assert.deepEqual([...new Set(composed)], [original.operationId]);
+  assert.deepEqual(closes, [{ held: false }]);
+  assert.deepEqual(store.snapshot(foreign.operationId), foreignBefore);
+  t.diagnostic(JSON.stringify({ padded, earlyClosed, closes, mcpStatus: "unknown", taskStatus: "awaiting_implementation",
+    originalArgumentsHashUnchanged: true, originalAuthorizationExact: true, foreignFullSnapshotExact: true,
+    explicitDrainNoAdditionalScheduling: true, ownerState: final.operation.state }));
+});
+}
 
 test("public native source entry retains original operation timing on success and admission failure", { timeout: 180_000 }, async t => {
   const f = await fixture(t), events = [];
