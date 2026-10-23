@@ -49,7 +49,6 @@ export async function executeRelease(input, {
 } = {}) {
   if (!Object.hasOwn(tools, input.action)) throw new Error("Unsupported release action");
   const bytes = await readFile(input.requestFile);
-  if (bytes.length > 1024 * 1024) throw new Error("Release request exceeds its input bound");
   const request = JSON.parse(bytes.toString("utf8"));
   if (!request || typeof request !== "object" || Array.isArray(request) || Object.hasOwn(request, "context_token")) {
     throw new Error("Release request must contain business arguments, not a caller token");
@@ -57,7 +56,20 @@ export async function executeRelease(input, {
   const runtime = await openRuntime();
   try {
     const token = runtime.service.contextToken({ provider: input.provider, threadId: input.threadId, streamId: input.streamId });
-    const result = await runtime.service.call(tools[input.action], { ...request, context_token: token });
+    let result;
+    try {
+      result = await runtime.service.call(tools[input.action], { ...request, context_token: token });
+    } catch (error) {
+      if (input.action !== "get") {
+        // The public MCP receipt can fail after durable release admission.
+        // Wait for only this original's local work; do not replay the call or
+        // settle its unknown receipt from a successful release readback.
+        await runtime.operations.drainAddressed({
+          ...(input.action === "run" ? { requestId: request.request_id } : { operationId: request.operation_id }),
+        });
+      }
+      throw error;
+    }
     if (input.action === "get" || result.accepted === false) return result;
     // The durable acknowledgement is visible before waiting; a lost client
     // response is read through the same public get, never a fresh release ID.

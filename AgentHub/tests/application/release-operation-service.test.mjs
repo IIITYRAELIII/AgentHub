@@ -94,6 +94,35 @@ test("release operation acknowledges before work and finishes one exact generati
   assert.deepEqual(cleaned, [["done", 1, snapshot.generations[0].identitySha256]]);
 });
 
+test("addressed drain waits for admitted work by request or operation without waking work", async t => {
+  for (const selector of ["requestId", "operationId"]) {
+    const scheduled = [];
+    let releaseCompose, entered = false, drained = false;
+    const held = new Promise(resolve => { releaseCompose = resolve; });
+    const f = await fixture(t, { schedule: callback => scheduled.push(callback),
+      compose: async () => { entered = true; await held; return generation(); } });
+    const ack = start(f.service);
+    const before = f.store.snapshot(ack.operationId);
+    await f.service.drainAddressed({ requestId: "foreign-request" });
+    await f.service.drainAddressed({ operationId: "foreign-operation" });
+    assert.deepEqual(f.store.snapshot(ack.operationId), before);
+    assert.equal(scheduled.length, 1);
+    assert.equal(entered, false, "drain cannot start scheduled work itself");
+    const pending = f.service.drainAddressed({ [selector]: selector === "requestId" ? "request-1" : ack.operationId })
+      .then(() => { drained = true; });
+    scheduled.shift()();
+    await waitUntil(() => entered);
+    assert.equal(drained, false, "the original owner must retain its lifetime through held compose");
+    releaseCompose();
+    await pending;
+    assert.equal(f.service.get(ack.operationId).operation.state, "done");
+    const terminal = f.store.snapshot(ack.operationId);
+    await f.service.drainAddressed({ operationId: ack.operationId });
+    assert.deepEqual(f.store.snapshot(ack.operationId), terminal);
+    assert.equal(scheduled.length, 0, "terminal readback does not reschedule work");
+  }
+});
+
 test("retention proof reads only the exact completed, validated and published generation", async t => {
   const scheduled = [];
   const f = await fixture(t, { schedule: callback => scheduled.push(callback) });

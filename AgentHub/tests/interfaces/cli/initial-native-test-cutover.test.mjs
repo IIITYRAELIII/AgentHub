@@ -1280,3 +1280,99 @@ test("isolated preparation unresolved current child guard blocks another transfe
   assert.deepEqual(preparationLegacyIdentity(retained), f.legacy);
   await assert.rejects(f.releaseGit.frozenCandidate(f.primary), /ENOENT|incomplete|publication requires/u);
 });
+
+test("reviewer lost public MCP receipt keeps stores alive until the addressed owner drains", { timeout: 180000 }, async t => {
+  const f = await fixture(t, { releaseManager: true });
+  const task = await f.create("lost-mcp-receipt");
+  await mkdir(path.join(task.root, "AgentHub"));
+  await writeFile(path.join(task.root, "AgentHub/package.json"), JSON.stringify({ name: "agent-hub", version: "2026.10.12" }));
+  await writeFile(path.join(task.root, "AgentHub/package-lock.json"), JSON.stringify({ name: "agent-hub", version: "2026.10.12", packages: { "": { name: "agent-hub", version: "2026.10.12" } } }));
+  await commit(task.root, "fixture metadata");
+  await f.status(task, "testing", "test");
+  await f.status(task, "awaiting_implementation", "await");
+  const previous = { LOCALAPPDATA: process.env.LOCALAPPDATA, XDG_STATE_HOME: process.env.XDG_STATE_HOME };
+  process.env.LOCALAPPDATA = path.join(f.root, "state"); process.env.XDG_STATE_HOME = process.env.LOCALAPPDATA;
+  t.after(() => { for (const [k,v] of Object.entries(previous)) { if (v === undefined) delete process.env[k]; else process.env[k]=v; } });
+  await mkdir(path.join(process.env.LOCALAPPDATA, "AgentHub"), { recursive:true });
+  await writeFile(path.join(process.env.LOCALAPPDATA, "AgentHub/publication-state.json"), JSON.stringify(f.publication));
+  let enteredResolve, releaseResolve;
+  const entered = new Promise(resolve => { enteredResolve=resolve; });
+  const release = new Promise(resolve => { releaseResolve=resolve; });
+  let held=true, runtime, operationId, published=0;
+  const closed=[];
+  const open = async () => {
+    runtime = await openReleaseRuntime({
+      createServices: args => createReleaseOperationServices({ ...args,
+        publication: { publish: async () => { published++; return {status:"applied"}; }, readback: async()=>({status:"not_applied"}) },
+        finalization: { finalize: async()=>({status:"fixture-terminal"}) } }),
+      openTaskRuntime: async () => {
+        const r=await openTaskAwaitCutoverRuntime({config:{dataDir:path.dirname(f.databaseFile),taskBoard:{autoPlaceConfidence:0.8}},
+          openStores: async options => {
+            const raw=await openTaskOperationReconciliationStores(options);
+            const complete=raw.workspaceCatalogStore.completeMcpOperation.bind(raw.workspaceCatalogStore);
+            raw.workspaceCatalogStore.completeMcpOperation=async (id,...args)=> {
+              if(id==="reviewer-lost-mcp-receipt") { await entered; throw new Error("controlled MCP receipt persistence reply failure"); }
+              return complete(id,...args);
+            };
+            return raw;
+          },
+        });
+        r.service.releasePreflight.validateOperationGeneration=async()=>({status:"ready"});
+        return r;
+      },
+    });
+    const compose=runtime.operations.compose;
+    runtime.operations.compose=async input=> { operationId=input.operation.operationId; enteredResolve(); await release; return compose(input); };
+    const close=runtime.close;
+    runtime.close=()=> { closed.push({composeStillHeld:held,operationId}); return close(); };
+    return runtime;
+  };
+  const file=path.join(f.root,"request.json");
+  await writeFile(file,JSON.stringify({request_id:"reviewer-lost-mcp-receipt",task_ids:[task.id],validation_mode:"full",
+    approved_targets:[{targetId:"fixture",kind:"fixture",repositoryRoot:f.primary,
+      approvedLocalMainCommit:f.main,approvedOriginMainCommit:f.main}]}));
+  const attempt=executeRelease({action:"run",provider:"codex",threadId:"fixture-thread",streamId:f.streamId,requestFile:file},{openRuntime:open})
+    .then(value=>({value}),error=>({error:String(error.message)}));
+  await Promise.race([entered,attempt.then(result=>{throw new Error("fixture failed before owner barrier: "+JSON.stringify(result));})]);
+  await new Promise(resolve=>setTimeout(resolve,100));
+  const earlyClosed=closed.some(item=>item.composeStillHeld);
+  held=false; releaseResolve();
+  const result=await attempt;
+  const final=await runtime.operations.drain(operationId);
+  const proof={earlyClosed,closed,returnedError:result.error,operationState:final.operation.state,
+    ownerError:final.operation.lastError,mcpStatus:f.catalog.mcpOperation("reviewer-lost-mcp-receipt").status,published};
+  console.log("REVIEWER_MCP_ACK_PROOF "+JSON.stringify(proof));
+  assert.equal(earlyClosed,false,"task/catalog stores must remain open until the admitted same-original owner drains");
+  assert.equal(final.operation.state,"done",JSON.stringify(final.operation.lastError));
+  assert.equal(proof.mcpStatus,"unknown","release completion must not invent a terminal MCP receipt");
+  assert.equal(published,1,"drain must not repeat publication");
+  assert.match(result.error,/receipt reconciliation/u);
+});
+test("reviewer valid public get arguments do not gain a new file-size restriction", { timeout: 60000 }, async t => {
+  const f=await fixture(t,{releaseManager:true});
+  const store=new ReleaseOperationStore({dataDir:path.dirname(f.databaseFile)});
+  const op=store.create({requestId:"reviewer-existing-operation",workspaceId:f.workspaceId,streamId:f.streamId,
+    threadId:"fixture-thread",runnerVersion:"fixture",authorization:{taskIds:["fixture-task"],validationMode:"full",
+      approvedTargets:[{targetId:"fixture",kind:"fixture",repositoryRoot:f.primary}]}}).operation;
+  const request={operation_id:op.operationId};
+  const file=path.join(f.root,"get.json");
+  const open=()=>openReleaseRuntime({openTaskRuntime:()=>openTaskAwaitCutoverRuntime({config:{
+    dataDir:path.dirname(f.databaseFile),taskBoard:{autoPlaceConfidence:0.8}}})});
+  const input={action:"get",provider:"codex",threadId:"fixture-thread",streamId:f.streamId,requestFile:file};
+  await writeFile(file,JSON.stringify(request));
+  const compact=await executeRelease(input,{openRuntime:open});
+  const encoded=JSON.stringify(request)+" ".repeat(1024*1024);
+  assert.deepEqual(JSON.parse(encoded),request);
+  await writeFile(file,encoded);
+  const runtime=await open();
+  let direct;
+  try {
+    const token=runtime.service.contextToken({provider:input.provider,threadId:input.threadId,streamId:input.streamId});
+    direct=await runtime.service.call("hub_release_get",{...JSON.parse(encoded),context_token:token});
+  } finally {runtime.close();}
+  assert.deepEqual(direct,compact);
+  const actual=await executeRelease(input,{openRuntime:open}).then(value=>({value}),error=>({error:error.message}));
+  console.log("REVIEWER_INPUT_SIZE_PROOF "+JSON.stringify({sameBusinessArgs:true,inputBytes:Buffer.byteLength(encoded),
+    directPublicGetEqual:true,consumerError:actual.error,operationUnchanged:JSON.stringify(store.snapshot(op.operationId))===JSON.stringify(compact)}));
+  assert.equal(actual.error,undefined,"ordinary source consumer must preserve existing public business arguments without an unrequested physical-file limit");
+});

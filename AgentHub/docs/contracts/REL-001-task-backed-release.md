@@ -21,6 +21,12 @@ terminal refusal, preserving the original operation's recovery semantics. The
 normal owner emits its durable acknowledgement and runs to its saved wait/terminal
 boundary without a pipeline execution timeout. It does not recover unrelated
 operations. No separate entry/driver/config is generated per transition.
+If the public MCP receipt fails after release admission, the consumer reads the
+durable identity of its addressed local pending work and drains that owner before
+closing stores. It rethrows the original failure and retains the unknown receipt;
+it neither repeats the mutation nor wakes other operations. `get` remains a read.
+JSON record and caller-token checks preserve the public business argument contract
+without an additional CLI file-size restriction.
 
 An approved repository's optional `nativeResolutionReview` accepts the existing
 single review or `{bundlePath,bundleSha256,reviews}` for multiple already reviewed
