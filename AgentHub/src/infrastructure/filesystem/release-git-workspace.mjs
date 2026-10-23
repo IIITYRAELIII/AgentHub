@@ -1867,6 +1867,31 @@ export class ReleaseGitWorkspaceService {
           const bytes = await readFile(file);
           return { sha256: sha256(bytes), bytes: bytes.length, value: JSON.parse(bytes) };
         };
+        // Native journals contain complete index/automatic inventories. Their
+        // evidence digest must not inherit the small parsed checkpoint bound;
+        // the native sequencer still owns parsing and semantic validation.
+        const nativeRecordHash = async file => {
+          const entry = await lstat(file).catch(error => { if (error.code === "ENOENT") return null; throw error; });
+          if (!entry) return null;
+          if (!entry.isFile() || entry.isSymbolicLink()) throw new Error("Forward preparation effect record is unsafe");
+          const sameFile = info => info.isFile() && !info.isSymbolicLink()
+            && ["dev", "ino", "size", "mtimeMs", "ctimeMs"].every(key => info[key] === entry[key]);
+          const handle = await open(file, "r");
+          try {
+            if (!sameFile(await handle.stat())) throw new Error("Forward native effect record changed");
+            const digest = createHash("sha256");
+            let bytes = 0;
+            for await (const chunk of handle.createReadStream({ autoClose: false, highWaterMark: 64 * 1024 })) {
+              bytes += chunk.length;
+              if (bytes > entry.size) throw new Error("Forward native effect record changed");
+              digest.update(chunk);
+            }
+            if (bytes !== entry.size || !sameFile(await handle.stat()) || !sameFile(await lstat(file))) {
+              throw new Error("Forward native effect record changed");
+            }
+            return digest.digest("hex");
+          } finally { await handle.close(); }
+        };
         const journalRecord = await boundedRecord(journalFile), journal = journalRecord?.value;
         const checkpointBytes = await readFile(clone.checkpointFile).catch(error => {
           if (this.#isolationContext && error.code === "ENOENT") return null; throw error;
@@ -1880,10 +1905,10 @@ export class ReleaseGitWorkspaceService {
         for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
           const folder = path.join(nativeRoot, entry.name), info = await lstat(folder);
           if (!info.isDirectory() || info.isSymbolicLink()) throw new Error("Forward native root custody changed");
-          const merge = await boundedRecord(path.join(folder, "merge.json"));
+          const mergeHash = await nativeRecordHash(path.join(folder, "merge.json"));
           const bundle = await lstat(path.join(folder, "source.bundle")).catch(error => { if (error.code === "ENOENT") return null; throw error; });
           if (bundle && (!bundle.isFile() || bundle.isSymbolicLink())) throw new Error("Forward native transport custody changed");
-          native.push({ root: entry.name, mergeHash: merge?.sha256 ?? null,
+          native.push({ root: entry.name, mergeHash,
             transport: bundle ? { bytes: bundle.size, dev: bundle.dev, ino: bundle.ino, mtimeMs: bundle.mtimeMs } : null });
         }
         const inventory = { schemaVersion: 1, checkpointHash: checkpointBytes === null ? null : sha256(checkpointBytes),

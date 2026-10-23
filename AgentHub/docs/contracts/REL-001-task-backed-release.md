@@ -22,6 +22,13 @@ waits for ordinary continuation. Explicit unknown candidate/acceptance effects
 remain unknown and cannot be blindly continued. Completed stages and the original
 authorization remain unchanged. ADR-0131 recovery remains legacy-only.
 
+Forward effect inventory streams the digest of retained native merge journals:
+their complete index/automatic path inventories are not small checkpoint records.
+Regular-file identity and stable bytes are checked across the read; directories,
+links and changed files refuse. Native parsing, selected identity and reviewed
+resolution validation remain with the existing sequencer. Inventory alone never
+adopts a journal or repeats a completed candidate.
+
 Forward preparation may retain one exact original-bound `historicalChangelog`
 record in closed installed-local-source provenance (ADR-0131). The original
 operation/envelope and selected result, historical installed manifest/release,

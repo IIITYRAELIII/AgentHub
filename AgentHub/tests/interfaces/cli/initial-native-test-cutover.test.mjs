@@ -1129,6 +1129,54 @@ test("ordinary public resume consumes established isolated custody without anoth
   assert.deepEqual(f.catalog.mcpOperation(f.originalId), completed);
 });
 
+test("ordinary isolated resume inventories large native evidence and still refuses non-files", { timeout: 240000 }, async t => {
+  const f = await legacyForwardFixture(t);
+  await assert.rejects(f.forward(runtime => {
+    const checkpoint = runtime.fixtureCatalog.checkpointMcpPreparationForward.bind(runtime.fixtureCatalog);
+    runtime.fixtureCatalog.checkpointMcpPreparationForward = (...args) => {
+      if (args[1].state.phase === "completed") throw new Error("controlled terminal reply lost before commit");
+      return checkpoint(...args);
+    };
+  }, isolationObserver), /unknown/u);
+  const candidate = await f.releaseGit.frozenCandidate(f.primary);
+  const retained = path.join(path.dirname(candidate.releaseRoot), "native-merges", "retained-evidence");
+  const mergeFile = path.join(retained, "merge.json");
+  await mkdir(mergeFile, { recursive: true });
+  const input = () => ({ provider: "codex", threadId: "fixture-thread", streamId: f.streamId,
+    requestId: f.originalId, expectedArgumentsHash: f.legacy.argumentsHash,
+    expectedPreparationRevision: f.catalog.mcpOperation(f.originalId).preparationState.revision });
+  const checkpointBefore = await readFile(candidate.checkpointFile);
+  const reflogBefore = await git(candidate.releaseRoot, "reflog", "show", "--format=%H", "PreRelease");
+  await assert.rejects(executePreparationResume(input(), { openRuntime: f.open }), /effect record is unsafe/u);
+  assert.deepEqual(await readFile(candidate.checkpointFile), checkpointBefore);
+  await rm(mergeFile, { recursive: true });
+  // Full index/automatic inventories scale with repository paths, even for one
+  // selected conflict. This is retained evidence, not a new selected result.
+  const stages = Array.from({ length: 3000 }, (_, index) => ({
+    path: `AgentHub/retained/${String(index).padStart(4, "0")}-${"native-path".repeat(8)}.mjs`,
+    mode: "100644", blob: "a".repeat(40), stage: 0,
+  }));
+  const bytes = Buffer.from(JSON.stringify({ version: 1, identity: { policy: "retained-native-evidence" },
+    next: 0, head: f.main, merges: [], merging: true,
+    conflict: { paths: ["base.txt"], stages, automatic: stages } }));
+  assert.ok(bytes.length > 512 * 1024);
+  await writeFile(mergeFile, bytes);
+  const digest = createHash("sha256").update(bytes).digest("hex");
+  const result = await executePreparationResume(input(), { openRuntime: f.open });
+  assert.equal(result.kind, "forward-preparation-completed");
+  const completed = f.catalog.mcpOperation(f.originalId);
+  assert.ok(completed.preparationState.events.some(event =>
+    event.inventory?.native?.some(entry => entry.root === "retained-evidence" && entry.mergeHash === digest)));
+  assert.deepEqual(await readFile(mergeFile), bytes);
+  assert.deepEqual(await readFile(candidate.checkpointFile), checkpointBefore);
+  assert.equal(await git(candidate.releaseRoot, "reflog", "show", "--format=%H", "PreRelease"), reflogBefore);
+  assert.deepEqual(preparationLegacyIdentity(completed), f.legacy);
+  const openDefault = () => openTaskAwaitCutoverRuntime({ config: { dataDir: path.dirname(f.databaseFile),
+    taskBoard: { autoPlaceConfidence: 0.8 } } });
+  assert.deepEqual(await executePreparationResume(input(), { openRuntime: openDefault }), result);
+  assert.deepEqual(f.catalog.mcpOperation(f.originalId), completed);
+});
+
 test("ordinary isolated resume reads a committed composing stage after its response was lost", { timeout: 240000 }, async t => {
   const f = await legacyForwardFixture(t);
   await assert.rejects(f.forward(runtime => {
