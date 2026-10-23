@@ -2,6 +2,7 @@ import { createReadStream } from 'node:fs';
 import { lstat, readFile, readdir, realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
+import { randomUUID } from 'node:crypto';
 
 export const STAGES = {
   'release-candidate-contour': ['Проверка кандидата', 'Проверка точного кандидата в изолированном окружении.'],
@@ -32,7 +33,7 @@ export function describeTest(name) {
 }
 
 export class TestLog {
-  cases = []; tail = []; totalLines = 0; pending = ''; detailNext = false; detail = null;
+  cases = []; tail = []; totalLines = 0; pending = ''; detailNext = false; detail = null; groups = [];
   append(text) {
     this.pending += text;
     let end;
@@ -43,12 +44,16 @@ export class TestLog {
   }
   line(raw) {
     const line = raw.replace(/\x1b\[[0-9;]*m/gu, '');
+    const text = line.trimStart(), indent = line.length - text.length;
     this.totalLines++; this.tail.push(line);
     if (this.tail.length > 200) this.tail.shift(); // Display window; full log remains downloadable.
-    if (line.startsWith('test at ')) { this.detailNext = true; return; }
-    const match = line.match(/^[✔✖﹣]\s+(.+?)\s+\(([\d.]+)ms\)(?:\s+#.*)?$/u);
+    if (text.startsWith('test at ')) { this.detailNext = true; return; }
+    if (text.startsWith('▶ ')) { this.groups.push({ indent, name: text.slice(2) }); this.detail = null; this.detailNext = false; return; }
+    const match = text.match(/^[✔✖﹣]\s+(.+?)\s+\(([\d.]+)ms\)(?:\s+#.*)?$/u);
     if (match) {
-      const status = line[0] === '✔' ? 'passed' : line[0] === '✖' ? 'failed' : 'skipped';
+      const status = text[0] === '✔' ? 'passed' : text[0] === '✖' ? 'failed' : 'skipped';
+      const group = this.groups.findLastIndex(item => item.indent === indent && item.name === match[1]);
+      if (!this.detailNext && group !== -1) { this.groups.splice(group); this.detail = null; return; }
       if (this.detailNext && status === 'failed') {
         this.detail = this.cases.findLast(item => item.status === 'failed' && item.name === match[1]) ?? null;
       } else {
@@ -57,7 +62,7 @@ export class TestLog {
       }
       this.detailNext = false; return;
     }
-    if (/^[ℹ✔✖]|^==>|^> /u.test(line)) { this.detail = null; this.detailNext = false; }
+    if (/^[ℹ✔✖]|^==>|^> /u.test(text)) { this.detail = null; this.detailNext = false; }
     else if (this.detail) this.detail.details += line + '\n';
   }
 }
@@ -91,7 +96,7 @@ export class ProgressReader {
     const status = await json(await containedFile(folder, path.join(folder, 'publication-status.json')));
     const logFile = await containedFile(folder, path.resolve(status.logFile));
     const info = await stat(logFile), key = `${folder}:${info.dev}:${info.ino}`;
-    if (key !== this.key || info.size < this.offset) { this.key = key; this.offset = 0; this.log = new TestLog(); this.decoder = new StringDecoder('utf8'); }
+    if (key !== this.key || info.size < this.offset) { this.key = key; this.run = randomUUID(); this.offset = 0; this.log = new TestLog(); this.decoder = new StringDecoder('utf8'); }
     if (info.size > this.offset) {
       for await (const chunk of createReadStream(logFile, { start: this.offset, end: info.size - 1 })) this.log.append(this.decoder.write(chunk));
       this.offset = info.size;
@@ -99,7 +104,7 @@ export class ProgressReader {
     const result = await containedJson(folder, path.join(folder, 'result.json')).catch(error => error.code === 'ENOENT' ? null : Promise.reject(error));
     const counts = { passed: 0, failed: 0, skipped: 0 };
     for (const item of this.log.cases) counts[item.status]++;
-    return { run: this.key, operationId: this.operationId, generation: runner.generation,
+    return { run: this.run, operationId: this.operationId, generation: runner.generation,
       observedAt: new Date().toISOString(), startedAt: runner.startedAt, status: status.status,
       currentStep: status.currentStep, error: status.error ?? null, finishedAt: status.finishedAt ?? result?.finishedAt ?? result?.completedAt ?? null, terminalResultPresent: Boolean(result),
       steps: (status.steps ?? []).map(item => ({ ...item, title: STAGES[item.stageId]?.[0] ?? item.label, description: STAGES[item.stageId]?.[1] ?? 'Штатный этап pipeline.' })),

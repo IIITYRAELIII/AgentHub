@@ -4,6 +4,7 @@ import { mkdtemp, mkdir, writeFile, appendFile, readFile, rm, stat } from 'node:
 import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
+import { spawnSync } from 'node:child_process';
 import { TestLog, ProgressReader } from '../../release-progress/reader.mjs';
 import { startMonitor } from '../../release-progress/server.mjs';
 
@@ -69,4 +70,57 @@ test('local HTTP exposes observation only, rejects foreign origins and preserves
   assert.equal(await (await fetch(url + '/log.txt')).text(), bytes.toString());
   const badHost = await new Promise(resolve => { const req = http.get(url + '/api/status', { headers: { Host: 'foreign.invalid' } }, response => { response.resume(); resolve(response.statusCode); }); req.on('error', () => resolve(0)); });
   assert.equal(badHost, 403); assert.deepEqual(await readFile(f.log), bytes); assert.equal((await stat(f.log)).mtimeMs, before.mtimeMs);
+});
+
+test('HTTP projection replaces equal and larger result sets after detected same-file truncation', async t => {
+  const f = await fixture(t);
+  const old = `✖ ${'old failure '.repeat(30)} (12ms)\n`;
+  await writeFile(f.log, old);
+  const { server, url } = await startMonitor({ runtimeRoot: f.root, operationId: 'original' });
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const first = await (await fetch(url + '/api/status')).json();
+  const inode = (await stat(f.log)).ino;
+  await writeFile(f.log, '✔ replacement (2ms)\n');
+  const equal = await (await fetch(url + `/api/status?run=${encodeURIComponent(first.run)}&after=1`)).json();
+  assert.equal((await stat(f.log)).ino, inode);
+  assert.equal(equal.reset, true);
+  assert.notEqual(equal.run, first.run);
+  assert.deepEqual(equal.cases.map(item => item.name), ['replacement']);
+  assert.equal(equal.failures.length, 0);
+  await writeFile(f.log, old);
+  const appended = await (await fetch(url + `/api/status?run=${encodeURIComponent(equal.run)}&after=1`)).json();
+  await writeFile(f.log, '✔ next alpha (1ms)\n✔ next beta (2ms)\n✔ next gamma (3ms)\n');
+  const larger = await (await fetch(url + `/api/status?run=${encodeURIComponent(appended.run)}&after=${appended.totalCases}`)).json();
+  assert.equal(larger.reset, true);
+  assert.ok(larger.totalCases > appended.totalCases);
+  assert.deepEqual(larger.cases.map(item => item.name), ['next alpha', 'next beta', 'next gamma']);
+  await appendFile(f.log, '✔ next delta (4ms)\n');
+  const delta = await (await fetch(url + `/api/status?run=${encodeURIComponent(larger.run)}&after=3`)).json();
+  assert.equal(delta.reset, false); assert.equal(delta.run, larger.run);
+  assert.deepEqual(delta.cases.map(item => item.name), ['next delta']);
+});
+
+test('actual Node nested spec results retain leaf names, statuses and failure details without suite duplicates', async t => {
+  const f = await fixture(t), file = path.join(f.root, 'nested.test.mjs');
+  await writeFile(file, `import { describe, it } from 'node:test';
+import assert from 'node:assert/strict';
+describe('outer suite', () => {
+  it('leaf alpha', () => {});
+  describe('inner suite', () => {
+    it('leaf beta', () => {});
+    it('leaf failure', () => assert.equal('actual', 'expected'));
+  });
+});
+it('root leaf', () => {});
+`);
+  const env = { ...process.env }; delete env.NODE_TEST_CONTEXT;
+  const child = spawnSync(process.execPath, ['--test', '--test-reporter=spec', file], { env, encoding: 'utf8' });
+  assert.equal(child.status, 1); assert.equal(child.stderr, '');
+  assert.match(child.stdout, /ℹ tests 4/u); assert.match(child.stdout, /ℹ suites 2/u);
+  const log = new TestLog();
+  for (let offset = 0; offset < child.stdout.length; offset += 7) log.append(child.stdout.slice(offset, offset + 7));
+  assert.deepEqual(log.cases.map(item => item.name), ['leaf alpha', 'leaf beta', 'leaf failure', 'root leaf']);
+  assert.deepEqual(log.cases.map(item => item.status), ['passed', 'passed', 'failed', 'passed']);
+  assert.match(log.cases[2].details, /AssertionError/u);
+  assert.ok(log.cases.every(item => Number.isFinite(item.durationMs)));
 });
