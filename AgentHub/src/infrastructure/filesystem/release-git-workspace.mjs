@@ -1557,7 +1557,7 @@ export class ReleaseGitWorkspaceService {
     planRevision, projectRoot, workspaceId = null, preflightRequestId = null,
     frozenTasks = [], approvedBaseCommit = null, baseProvenance = null,
     validateBeforeCommit = null, preserveFrozen = false, commitPrepared = null, preparationGuard = null,
-    nativeResolutionReview = null, nativeAwaitRecovery = null,
+    nativeResolutionReview = null, nativeAwaitRecovery = null, forwardPreparation = null,
   } = {}) {
     this.#assertAvailable("prepareCandidate");
     const revision = String(planRevision ?? "").trim();
@@ -1604,9 +1604,101 @@ export class ReleaseGitWorkspaceService {
         assertClone: repositoryRoot => assertReleaseCloneForPublication({ repositoryRoot }),
         readJson, writeJson: writeJsonAtomic,
       }) : null;
-      const clone = await this.#ensureClone(initial);
+      // Forward custody never recreates a missing clone or rewrites its marker
+      // before accounting for the original effects. Missing/partial stays put.
+      if (forwardPreparation && nativeAwaitRecovery) throw new Error("Forward preparation cannot archive another Await original");
+      const clone = forwardPreparation
+        ? { ...layout, ...await assertReleaseCloneForPublication({ repositoryRoot: layout.releaseRoot }) }
+        : await this.#ensureClone(initial);
       const git = (args, options = {}) => runGit(args, { ...options, cwd: clone.releaseRoot, timeoutMs: 300_000 });
       const checkpoint = await readJson(clone.checkpointFile);
+      if (forwardPreparation) {
+        if (!preparationGuard || !preflightRequestId || typeof commitPrepared !== "function"
+            || typeof forwardPreparation.observeEffects !== "function") throw new Error("Forward preparation owning boundaries are incomplete");
+        const journalFile = path.join(layout.root, "native-preparation.json");
+        const boundedRecord = async file => {
+          const entry = await lstat(file).catch(error => { if (error.code === "ENOENT") return null; throw error; });
+          if (!entry) return null;
+          if (!entry.isFile() || entry.isSymbolicLink() || entry.size > 512 * 1024) throw new Error("Forward preparation effect record is unsafe or oversized");
+          const bytes = await readFile(file);
+          return { sha256: sha256(bytes), bytes: bytes.length, value: JSON.parse(bytes) };
+        };
+        const journalRecord = await boundedRecord(journalFile), journal = journalRecord?.value;
+        const checkpointBytes = await readFile(clone.checkpointFile);
+        const nativeRoot = path.join(layout.root, "native-merges");
+        const nativeInfo = await lstat(nativeRoot).catch(error => { if (error.code === "ENOENT") return null; throw error; });
+        if (nativeInfo && (!nativeInfo.isDirectory() || nativeInfo.isSymbolicLink())) throw new Error("Forward native staging custody changed");
+        const entries = await readdir(nativeRoot, { withFileTypes: true }).catch(error => { if (error.code === "ENOENT") return []; throw error; });
+        if (entries.length > 64) throw new Error("Forward native inventory exceeds its explicit bound");
+        const native = [];
+        for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+          const folder = path.join(nativeRoot, entry.name), info = await lstat(folder);
+          if (!info.isDirectory() || info.isSymbolicLink()) throw new Error("Forward native root custody changed");
+          const merge = await boundedRecord(path.join(folder, "merge.json"));
+          const bundle = await lstat(path.join(folder, "source.bundle")).catch(error => { if (error.code === "ENOENT") return null; throw error; });
+          if (bundle && (!bundle.isFile() || bundle.isSymbolicLink())) throw new Error("Forward native transport custody changed");
+          native.push({ root: entry.name, mergeHash: merge?.sha256 ?? null,
+            transport: bundle ? { bytes: bundle.size, dev: bundle.dev, ino: bundle.ino, mtimeMs: bundle.mtimeMs } : null });
+        }
+        const inventory = { schemaVersion: 1, checkpointHash: sha256(checkpointBytes),
+          markerHash: sha256(await readFile(clone.markerFile)),
+          journalHash: journalRecord?.sha256 ?? null, native,
+          refsHash: sha256(await git(["for-each-ref", "--format=%(refname)%00%(objectname)"])),
+          checkoutHead: await git(["rev-parse", "HEAD^{commit}"]),
+          checkoutTree: await git(["rev-parse", "HEAD^{tree}"]),
+          checkoutIndexHash: sha256(await git(["ls-files", "--stage", "-z"])),
+          checkoutDirtyHash: sha256(await git(["status", "--porcelain=v1", "-z", "--untracked-files=all"])) };
+        await forwardPreparation.observeEffects(inventory);
+        await validateBeforeCommit();
+        // A committed candidate with a lost reply is adopted exactly once,
+        // without composing, fetching, checking out or creating another body.
+        if (checkpoint?.preflightRequestId === preflightRequestId) {
+          const source = await this.frozenCandidate(initial.root);
+          const manifest = JSON.parse(await readFile(source.manifestFile, "utf8"));
+          const p = manifest.preparationIdentity;
+          const allowedSources = [forwardPreparation.originalEnvelope, { sourceCommit: preparationGuard.sourceCommit,
+            sourceTree: preparationGuard.sourceTree, sourceClosureHash: preparationGuard.sourceClosureHash }];
+          if (source.checkpointPhase !== "prepared" || manifest.compositionPolicy !== NATIVE_RELEASE_POLICY
+              || source.planRevision !== revision || source.baseCommit !== baseCommit
+              || source.tree !== preparationGuard.approvedTree || manifest.workspaceId !== workspaceId
+              || stableManifest(normalizedFrozenTasks(manifest.tasks)) !== stableManifest(tasks)
+              || stableManifest(manifest.baseProvenance) !== stableManifest(provenance)
+              || p?.argumentsHash !== preparationGuard.argumentsHash || p.publicationHash !== preparationGuard.publicationHash
+              || ![preparationGuard.checkpointHash, forwardPreparation.originalEnvelope.repositories[0].checkpointHash]
+                .includes(p.previousCheckpointHash)
+              || !allowedSources.some(s => s.sourceCommit === p.sourceCommit && s.sourceTree === p.sourceTree
+                && s.sourceClosureHash === p.sourceClosureHash)
+              || !journal || journal.requestId !== preflightRequestId || !["prepared", "completed"].includes(journal.phase)
+              || journal.manifestHash !== source.manifestHash || journal.target !== source.preReleaseHead
+              || journal.targetTree !== source.tree) throw new Error("Original committed preparation candidate cannot be adopted exactly");
+          const authority = await this.#nativeHistoryAuthority({ projectRoot: initial.root, provenance,
+            planRevision: revision, tasks });
+          await assertNativePreparedComposition({ git, baseCommit, tasks, historyAuthority: authority,
+            merges: manifest.merges, head: source.preReleaseHead, tree: source.tree,
+            identity: { policy: NATIVE_RELEASE_POLICY, workspaceId, planRevision: revision, baseCommit, tasks },
+            verifyReview: this.verifyNativeResolutionReview });
+          const current = await primarySnapshot(initial.root);
+          const remote = await git(["ls-remote", "origin", "refs/heads/main"]);
+          if (current.mainCommit !== preparationGuard.primaryMainCommit || current.headCommit !== initial.headCommit
+              || current.branchRef !== initial.branchRef || current.dirty.indexFingerprint !== initial.dirty.indexFingerprint
+              || current.dirty.fingerprint !== initial.dirty.fingerprint
+              || remote.split(/\s/u)[0] !== preparationGuard.originMainCommit) throw new Error("Forward adoption current main/origin changed");
+          if (localSource) await assertInstalledLocalSourceBaseline({ provenance: localSource, git,
+            repositoryRoot: initial.root, adoptionGit: (args, options = {}) => runGit(args, { ...options, cwd: initial.root }),
+            primaryMainCommit: current.mainCommit, publishedRevision: published, planRevision: revision,
+            tasks, runtimeRoot: defaultRuntimeRoot({ environment: this.#environment }) });
+          await validateBeforeCommit();
+          const result = { ...source, manifest, frozenTasks: tasks, mergedTaskIds: tasks.map(task => task.taskId),
+            reused: true, forwardAdoptedOriginal: true };
+          if (journal.phase !== "completed") await writeJsonAtomic(journalFile, { ...journal, phase: "completed" });
+          await commitPrepared(result);
+          return result;
+        }
+        if (journal && !["completed", "rolled_back"].includes(journal.phase)) {
+          throw Object.assign(new Error("Original preparation has partial promotion without a complete candidate; preserve its journal"),
+            { code: "AWAIT_PREPARATION_UNKNOWN" });
+        }
+      }
       if (nativeAwaitRecovery?.predecessor && !checkpoint) {
         if (await runGit(["rev-parse", "HEAD^{commit}"], { cwd: clone.releaseRoot }) !== initial.mainCommit
             || await runGit(["symbolic-ref", "HEAD"], { cwd: clone.releaseRoot }) !== "refs/heads/main"
@@ -1831,6 +1923,13 @@ export class ReleaseGitWorkspaceService {
       try {
         await validate();
         await requireCheckout(composition.head);
+        // Forward completion must not outlive unfinished native bookkeeping.
+        // The same in-memory rollback boundary and lease remain live; on an
+        // interrupted forward SQL write the exact candidate is adopted later.
+        if (forwardPreparation && journal?.manifestHash === manifestHash) {
+          journal.phase = "completed";
+          await writeJsonAtomic(journalFile, journal);
+        }
         if (commitPrepared) await commitPrepared(result);
       } catch (error) {
         if (AWAIT_UNKNOWN_OUTCOME_CODES.has(error?.code) || reused) throw error;

@@ -406,6 +406,22 @@ export async function executeTaskAwaitCutover(input, {
   }
 }
 
+// Source-only preparation recovery consumes the same default factory and
+// genuine caller capabilities as the existing local native cutover consumer.
+// An ordinary serialized MCP call cannot supply this terminal observer.
+export async function executePreparationForward(input, {
+  openRuntime = openTaskAwaitCutoverRuntime, inspectOriginalExecution,
+} = {}) {
+  if (typeof inspectOriginalExecution !== "function") throw new TypeError("Original invocation terminal observer is required");
+  const runtime = await openRuntime();
+  try {
+    const token = runtime.service.contextToken({ provider: input.provider, threadId: input.threadId, streamId: input.streamId });
+    return await runtime.service.callPreparationForward({ context_token: token, request_id: input.requestId,
+      expected_arguments_hash: input.expectedArgumentsHash, expected_preparation_revision: input.expectedPreparationRevision,
+      original_preparation: input.originalPreparation, preparation: input.preparation }, { inspectOriginalExecution });
+  } finally { runtime.close(); }
+}
+
 if (path.resolve(process.argv[1] ?? "") === path.resolve(moduleFile)) {
   executeTaskAwaitCutover(parseTaskAwaitCutoverArguments(process.argv.slice(2)))
     .then((result) => process.stdout.write(`${JSON.stringify(result, null, 2)}\n`))

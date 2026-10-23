@@ -435,6 +435,42 @@ Old reviewed invoker bytes are immutable. The extended source closure receives
 one affected review and a separate concrete fresh RM operational disposition
 before live loading/effects.
 
+### Explicit legacy forward custody (ADR-0131)
+
+The existing local source consumer may explicitly continue a stage-less UNKNOWN
+preparation through `executePreparationForward` and the same default owners.
+It requires the exact original envelope/hash/caller, current complete selection
+and publication, genuine RM authority and an independently verified terminal
+observer for the original invocation and its native child work. Serialized MCP
+arguments, absent roots/jobs/candidates, later bootstrap and current references
+cannot supply that authority. The concrete frozen observer/entry is separately
+reviewed; insufficient evidence refuses before effects.
+
+Existing Await/Task/repository leases and identity/revision CAS append a bounded
+forward segment to the same operation's preparation column. It retains legacy
+UNKNOWN/status/result/error/timestamps unchanged, with separate current custody,
+owner epoch, effect inventory and proved forward completion. A persistent SQL
+fence also applies to older connections. Old resume does not acquire this mode.
+No second intake, journal or publisher exists. Exact completed retry reads the
+same forward result; source/selection/publication drift refuses.
+
+The canonical Git owner inventories retained candidate/journal/refs/index/native
+staging before effects. It adopts an exactly verified complete candidate from the
+same original without recomposition; known native staging uses the existing
+convergent merge owner. Partial promotion without complete candidate proof is
+retained and specifically refused. A new epoch alone does not justify effects,
+and no absence is recast as historical NO_EFFECT. Terminal selected-row/RM/owner
+validation remains inside the existing catalog transaction. The result is new
+recovery completion with a retained unknown segment, never rewritten history or
+proof of publication/install/Task completion.
+Existing dev is inspected read-only under its repository lease before custody
+transfer and integration reads. Missing/dirty/unfinished dev or pending
+bootstrap/withdrawal/block state refuses without implicit recovery, merge abort
+or worktree creation. Ordinary strict `prepareDev` is unchanged.
+
+Affected checks: `node --test tests/infrastructure/persistence/preparation-stage-checkpoint.test.mjs`
+and `node --test --test-name-pattern="forward preparation" tests/interfaces/cli/initial-native-test-cutover.test.mjs`.
+
 ## Native Git composition cutover (HUB-303)
 
 Delivery of an independently reviewed native owner before installation uses the

@@ -39,6 +39,8 @@ import { createWorkspaceCatalogMutationOwner } from "./sqlite-mutation-owner.mjs
 
 import { assertPreparationRows, readPreparationSourceClosure, ReleasePreparationRejectedError,
   validatePreparationEnvelope, preparationSourceRoot } from "./release-preparation-admission.mjs";
+import { FORWARD_PREPARATION, preparationLegacyIdentity, preparationLegacyHash,
+  validatePreparationForward, inspectPreparationForwardCustody } from "./release-preparation-forward.mjs";
 
 const CONTEXT_TOKEN_VERSION = 1;
 const MAX_REGISTERED_CONTEXT_CAPABILITIES = 1_000;
@@ -975,6 +977,114 @@ export class HubMcpService {
     return this.#dispatch(context, toolName, args);
   }
 
+  // Local frozen-source consumer, like callTaskStatusCutover. Serialized MCP
+  // arguments cannot manufacture the observer or silently upgrade old resume.
+  // The existing default factory/store/preflight/Git owners remain unchanged.
+  async callPreparationForward(args, { inspectOriginalExecution } = {}) {
+    await this.#startupReconciliation;
+    const context = this.#authorize(args.context_token);
+    if (!this.#isReleaseManager(context)) throw new ReleasePreparationRejectedError("Forward preparation requires Release Manager authority");
+    if (Object.keys(args).some(key => !["context_token", "request_id", "expected_arguments_hash",
+      "expected_preparation_revision", "original_preparation", "preparation"].includes(key))
+        || !Number.isSafeInteger(args.expected_preparation_revision) || args.expected_preparation_revision < 0) {
+      throw new ReleasePreparationRejectedError("Invalid exact forward preparation command");
+    }
+    const originalRead = this.#preparationReadback(context, { preparation_request_id: args.request_id,
+      expected_arguments_hash: args.expected_arguments_hash });
+    const record = this.workspaceCatalog.mcpOperation(originalRead.requestId);
+    if (record.streamId !== context.streamId || record.provider !== context.provider || record.threadId !== context.auditThreadId) {
+      throw new ReleasePreparationRejectedError("Forward preparation original caller differs");
+    }
+    const { original, current: envelope } = validatePreparationForward({ record, requestId: args.request_id,
+      originalPreparation: args.original_preparation, preparation: args.preparation });
+    if (record.preparationState?.phase === "completed") return record.preparationState.result;
+    if ((record.preparationState?.revision ?? 0) !== args.expected_preparation_revision) {
+      throw new ReleasePreparationRejectedError("Forward preparation revision changed");
+    }
+    const identity = { workspaceId: context.workspaceId, streamId: context.streamId, provider: context.provider,
+      threadId: context.auditThreadId, argumentsHash: record.argumentsHash };
+    const legacyHash = preparationLegacyHash(record), legacy = preparationLegacyIdentity(record);
+    const ownerId = randomUUID(), sourceRoot = record.preparationState?.sourceRoot ?? preparationSourceRoot();
+    let state = record.preparationState ?? null, owned = false;
+    const checkRows = () => {
+      const row = this.workspaceCatalog.mcpOperation(args.request_id);
+      if (!this.#isReleaseManager(context) || preparationLegacyHash(row) !== legacyHash
+          || row.receiptState !== "unknown" || owned && (row.preparationState?.ownerId !== ownerId
+            || row.preparationState?.revision !== state.revision)) {
+        throw new ReleasePreparationRejectedError("Forward preparation original/current owner changed");
+      }
+      assertPreparationRows(envelope, this.taskBoard, context.workspaceId);
+    };
+    const validate = async () => {
+      checkRows();
+      const root = await lstat(sourceRoot);
+      if (!root.isDirectory() || root.isSymbolicLink()
+          || state?.sourceRootIdentity && state.sourceRootIdentity !== `${root.dev}:${root.ino}`
+          || (await readPreparationSourceClosure(sourceRoot)).hash !== envelope.sourceClosureHash) {
+        throw new ReleasePreparationRejectedError("Forward preparation source closure/custody changed");
+      }
+    };
+    const checkpoint = async (phase, details = {}, transfer = false) => {
+      const next = { ...state, schemaVersion: 2, kind: FORWARD_PREPARATION, legacy, originalPreparation: original,
+        envelope, sourceRoot, ownerId, revision: (state?.revision ?? 0) + 1,
+        epoch: transfer ? (state?.epoch ?? 0) + 1 : state.epoch, phase,
+        ...details, events: [...(state?.events ?? []), { phase, ownerId, at: new Date().toISOString(),
+          ...(transfer ? { envelope } : {}), ...details }] };
+      const row = await this.workspaceCatalog.checkpointMcpPreparationForward(args.request_id, {
+        identity, expectedRevision: state?.revision ?? 0, legacyHash, state: next, transfer,
+        ...(transfer || phase === "completed" ? { validate: checkRows } : {}) });
+      state = row.preparationState;
+    };
+    const run = async () => {
+      await validate();
+      try { return await this.releasePreflight.prepareCurrentAwaitSet({
+        workspaceId: context.workspaceId, envelope, requestId: args.request_id,
+        argumentsHash: record.argumentsHash, validate,
+        ownPreparation: async ({ devInventory }) => {
+          const custody = await inspectPreparationForwardCustody(inspectOriginalExecution, {
+            requestId: args.request_id, argumentsHash: record.argumentsHash, originalPreparation: original,
+            previousForward: state ? { ownerId: state.ownerId, epoch: state.epoch, phase: state.phase } : null });
+          const root = await lstat(sourceRoot);
+          await validate();
+          await checkpoint("checking", { custody, devInventory, sourceRootIdentity: `${root.dev}:${root.ino}` }, true);
+          owned = true;
+        },
+        beforeCompose: async () => { await validate(); await checkpoint("composing"); },
+        forwardPreparation: { originalEnvelope: original,
+          observeEffects: async inventory => { await validate(); await checkpoint("composing", { inventory }); } },
+        commitPrepared: async prepared => {
+          await validate();
+          const result = { schemaVersion: 1, kind: "forward-preparation-completed", requestId: args.request_id,
+            argumentsHash: record.argumentsHash, retainedLegacyOutcome: "unknown", workspaceId: context.workspaceId,
+            planRevision: prepared.planRevision, taskIds: prepared.taskIds,
+            sourceCommit: envelope.sourceCommit, sourceTree: envelope.sourceTree, sourceClosureHash: envelope.sourceClosureHash,
+            publicationHash: envelope.publicationHash, candidates: prepared.releaseCandidates.map(candidate => ({
+              repositoryRoot: candidate.repositoryRoot, preReleaseHead: candidate.preReleaseHead, tree: candidate.tree,
+              baseCommit: candidate.baseCommit, manifestHash: candidate.manifestHash,
+              preflightRequestId: candidate.manifest?.preflightRequestId })) };
+          if (Buffer.byteLength(JSON.stringify(result)) > 48 * 1024) throw new Error("Forward result exceeds receipt budget");
+          try { await checkpoint("completed", { result }); }
+          catch (cause) {
+            const after = this.workspaceCatalog.mcpOperation(args.request_id);
+            if (after?.preparationState?.ownerId === ownerId && after.preparationState.phase === "completed"
+                && JSON.stringify(after.preparationState.result) === JSON.stringify(result)) return after.preparationState.result;
+            throw Object.assign(new Error("Forward terminal persistence outcome is unknown", { cause }), { code: "AWAIT_ACCEPTANCE_UNKNOWN" });
+          }
+          return result;
+        },
+      }); } catch (error) {
+        const after = this.workspaceCatalog.mcpOperation(args.request_id);
+        if (after?.preparationState?.ownerId === ownerId && after.preparationState.phase === "completed") return after.preparationState.result;
+        if (owned && after?.preparationState?.ownerId === ownerId && after.preparationState.revision === state.revision) {
+          await checkpoint("blocked", { error: String(error.message).slice(0, 2000) }).catch(() => {});
+        }
+        throw error;
+      }
+    };
+    return this.taskGitWorkspaces.withOperationTrace
+      ? this.taskGitWorkspaces.withOperationTrace({ operationId: args.request_id }, run) : run();
+  }
+
   async callTaskStatusCutover(args = {}, { verifySource, inspectInstalledNativeOwner } = {}) {
     await this.#startupReconciliation;
     const context = this.#authorize(args.context_token);
@@ -1816,6 +1926,10 @@ export class HubMcpService {
       recovery: operation.preparationState ? {
         revision: operation.preparationState.revision, phase: operation.preparationState.phase,
         originalError: operation.preparationState.originalError ?? null,
+        ...(operation.preparationState.kind === FORWARD_PREPARATION ? {
+          kind: FORWARD_PREPARATION, retainedLegacyOutcome: "unknown", epoch: operation.preparationState.epoch,
+          ...(operation.preparationState.phase === "completed" ? { result: operation.preparationState.result } : {}),
+        } : {}),
         ...(["composing", "terminal-intent"].includes(operation.preparationState.phase)
           ? { missingEvidence: "original committed candidate or rollback outcome is not proved by this stage" } : {}),
       } : { revision: 0, phase: null, missingEvidence: "original owner stage checkpoint was not persisted" } };

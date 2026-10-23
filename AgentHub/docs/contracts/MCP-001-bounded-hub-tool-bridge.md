@@ -90,6 +90,13 @@ terminal persistence and readback without arguments, file contents or secrets.
 
 Native preparation uses the exact agreed-main composition and verified ordered merge history. The prior approved tree, checkpoint/ref/manifest, source closure, Task CAS and immutable terminal receipt remain mandatory. Legacy per-file owned-union projection is not a native composition authority. Existing timing is injected by composition into the application owners.
 
+The explicit local-source forward consumer in ADR-0131 retains the original
+UNKNOWN and appends its current custody/effects/completion to that same row.
+It requires a non-serializable authoritative invocation/children terminal
+observer plus existing leases/CAS. Ordinary MCP resume and serialized arguments
+cannot manufacture this proof. Readback reports forward completion separately
+from the retained legacy outcome; no automatic initial prepare replay occurs.
+
 ## Native Git Task/release cutover (HUB-303)
 
 The existing local task-await-cutover entry admits one explicitly reviewed

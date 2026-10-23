@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile, unlink } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 import { createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
-import { executeTaskAwaitCutover, inspectTaskAwaitCutoverSource, inspectInstalledNativeTestOwner, openTaskAwaitCutoverRuntime,
+import { executeTaskAwaitCutover, executePreparationForward, inspectTaskAwaitCutoverSource, inspectInstalledNativeTestOwner, openTaskAwaitCutoverRuntime,
   parseTaskAwaitCutoverArguments } from "../../../task-await-cutover.mjs";
 import { TaskBoardService } from "../../../src/application/task-board-service.mjs";
 import { TaskReleasePlanService } from "../../../src/application/task-release-plan-service.mjs";
@@ -18,6 +18,7 @@ import { TaskGitWorkspaceService } from "../../../src/infrastructure/filesystem/
 import { ReleaseGitWorkspaceService } from "../../../src/infrastructure/filesystem/release-git-workspace.mjs";
 import { openTaskOperationReconciliationStores } from "../../../src/interfaces/cli/task-operation-reconciliation-runtime.mjs";
 import { preparationHash, readPreparationSourceClosure } from "../../../src/application/release-preparation-admission.mjs";
+import { preparationLegacyIdentity } from "../../../src/domain/release-preparation.mjs";
 
 const exec = promisify(execFile);
 const hash = "b".repeat(64);
@@ -238,6 +239,170 @@ async function preparationRecoveryFixture(t, { checkingReplyLost = false } = {})
   return { ...f, task, before, candidate, oldDev, acceptedMain, originalId, original, envelope, invoke,
     prepare, resumeArgs, bootstrap };
 }
+
+async function legacyForwardFixture(t) {
+  const f = await preparationRecoveryFixture(t);
+  // Reproduce the pre-checkpoint schema: keep the actual UNKNOWN/refusal and
+  // successful audit, remove only the newer fixture's owner stage column value.
+  const db = new DatabaseSync(f.databaseFile);
+  try { db.prepare("UPDATE hub_mcp_operations SET preparation_state_json=NULL WHERE request_id=?").run(f.originalId); }
+  finally { db.close(); }
+  const legacy = f.catalog.mcpOperation(f.originalId);
+  assert.equal(legacy.status, "unknown"); assert.equal(legacy.preparationState, undefined);
+  await f.bootstrap();
+  const observe = async request => ({ kind: "preparation-invocation-terminal-v1", requestId: request.requestId,
+    argumentsHash: request.argumentsHash, originalSourceClosureHash: request.originalPreparation.sourceClosureHash,
+    terminalEvidenceSha256: createHash("sha256").update(JSON.stringify(legacy)).digest("hex"),
+    joinedInvocation: true, joinedChildren: true });
+  const forward = (customize = () => {}, inspect = observe) => executePreparationForward({
+    provider: "codex", threadId: "fixture-thread", streamId: f.streamId, requestId: f.originalId,
+    expectedArgumentsHash: legacy.argumentsHash,
+    expectedPreparationRevision: f.catalog.mcpOperation(f.originalId).preparationState?.revision ?? 0,
+    originalPreparation: f.envelope, preparation: f.envelope,
+  }, { openRuntime: async () => { const runtime = await f.open(); customize(runtime); return runtime; }, inspectOriginalExecution: inspect });
+  return { ...f, legacy, forward, observe };
+}
+
+test("forward preparation public consumer preserves legacy UNKNOWN and refuses unproved old invocation", { timeout: 240_000 }, async t => {
+  const f = await legacyForwardFixture(t), before = structuredClone(f.board.task(f.task.id));
+  const oldDev = await git(f.primary, "rev-parse", "dev");
+  await assert.rejects(f.forward(() => {}, async () => ({ joinedInvocation: false })), /not proved/u);
+  assert.deepEqual(f.catalog.mcpOperation(f.originalId), f.legacy);
+  const result = await f.forward();
+  assert.equal(result.kind, "forward-preparation-completed");
+  assert.equal(result.retainedLegacyOutcome, "unknown");
+  assert.equal(result.candidates[0].tree, f.envelope.repositories[0].approvedTree);
+  const row = f.catalog.mcpOperation(f.originalId);
+  assert.deepEqual(preparationLegacyIdentity(row), f.legacy);
+  assert.equal(row.preparationState.phase, "completed");
+  assert.deepEqual(row.preparationState.events[0].envelope, f.envelope);
+  const candidate = await f.releaseGit.frozenCandidate(f.primary);
+  const reflog = await git(candidate.releaseRoot, "reflog", "show", "--format=%H", "PreRelease");
+  assert.deepEqual(await f.forward(() => {}, () => assert.fail("terminal retry is read-only")), result);
+  assert.deepEqual(f.catalog.mcpOperation(f.originalId), row);
+  assert.equal(await git(candidate.releaseRoot, "reflog", "show", "--format=%H", "PreRelease"), reflog);
+  assert.deepEqual(f.board.task(f.task.id), before);
+  assert.equal(await git(f.primary, "rev-parse", "dev"), oldDev);
+  assert.equal(await git(f.primary, "rev-parse", "main"), f.acceptedMain);
+  const read = await f.invoke("hub_release_prepare_get", { preparation_request_id: f.originalId,
+    expected_arguments_hash: f.legacy.argumentsHash });
+  assert.equal(read.status, "unknown"); assert.deepEqual(read.recovery.result, result);
+  const stale = new DatabaseSync(f.databaseFile);
+  try {
+    assert.throws(() => stale.prepare("UPDATE hub_mcp_operations SET receipt_state='succeeded' WHERE request_id=?").run(f.originalId), /immutable/u);
+    assert.throws(() => stale.prepare("UPDATE hub_mcp_operations SET preparation_state_json=NULL WHERE request_id=?").run(f.originalId), /immutable/u);
+  } finally { stale.close(); }
+});
+
+for (const boundary of ["transfer-reply", "terminal-before", "terminal-after"]) {
+  test(`forward preparation ${boundary} recovery uses one candidate and retains unknown history`, { timeout: 240_000 }, async t => {
+    const f = await legacyForwardFixture(t);
+    const attempt = f.forward(runtime => {
+      const checkpoint = runtime.fixtureCatalog.checkpointMcpPreparationForward.bind(runtime.fixtureCatalog);
+      runtime.fixtureCatalog.checkpointMcpPreparationForward = (...args) => {
+        const phase = args[1].state.phase;
+        if (boundary === "terminal-before" && phase === "completed") throw new Error("lost terminal before commit");
+        const result = checkpoint(...args);
+        if (boundary === "transfer-reply" && args[1].transfer || boundary === "terminal-after" && phase === "completed") {
+          throw new Error("lost exact owner reply");
+        }
+        return result;
+      };
+    });
+    if (boundary === "terminal-after") await attempt;
+    else await assert.rejects(attempt, /lost exact owner reply|unknown/u);
+    const partial = f.catalog.mcpOperation(f.originalId);
+    assert.deepEqual(preparationLegacyIdentity(partial), f.legacy);
+    const candidate = await f.releaseGit.frozenCandidate(f.primary);
+    const reflog = await git(candidate.releaseRoot, "reflog", "show", "--format=%H", "PreRelease");
+    const result = await f.forward();
+    assert.equal(f.catalog.mcpOperation(f.originalId).preparationState.phase, "completed");
+    assert.deepEqual(preparationLegacyIdentity(f.catalog.mcpOperation(f.originalId)), f.legacy);
+    if (boundary !== "transfer-reply") {
+      assert.equal(result.candidates[0].preReleaseHead, candidate.preReleaseHead);
+      assert.equal(await git(candidate.releaseRoot, "reflog", "show", "--format=%H", "PreRelease"), reflog);
+    }
+  });
+}
+
+test("forward preparation refused lease invocation cannot change a newer live owner", { timeout: 240_000 }, async t => {
+  const f = await legacyForwardFixture(t);
+  let refuseA, startedA, releaseB;
+  const aEntered = new Promise(resolve => { startedA = resolve; });
+  const bHeld = new Promise(resolve => { releaseB = resolve; });
+  const aMayRefuse = new Promise(resolve => { refuseA = resolve; });
+  const a = f.forward(runtime => {
+    const refused = new WorkspaceReleasePreflightService({
+      releasePlanner: new TaskReleasePlanService({ taskBoard: f.board, taskGitWorkspaces: f.taskGit }),
+      taskGitWorkspaces: f.taskGit, releaseGitWorkspaces: f.releaseGit, readPublicationState: async () => f.publication,
+      resolveReleaseValidationSource: () => assert.fail("No Contour"), validateProductionCandidate: () => assert.fail("No publication"),
+    });
+    refused.withAwaitTransition = async () => { startedA(); await aMayRefuse; throw new Error("A refused before Await acquisition"); };
+    runtime.service.releasePreflight = refused;
+  });
+  const aOutcome = assert.rejects(a, /A refused before Await acquisition/u);
+  await aEntered;
+  let bReady;
+  const ready = new Promise(resolve => { bReady = resolve; });
+  const b = f.forward(runtime => {
+    const checkpoint = runtime.fixtureCatalog.checkpointMcpPreparationForward.bind(runtime.fixtureCatalog);
+    runtime.fixtureCatalog.checkpointMcpPreparationForward = async (...args) => {
+      const row = checkpoint(...args);
+      if (args[1].state.phase === "composing" && args[1].state.inventory) {
+        bReady(row); await bHeld;
+      }
+      return row;
+    };
+  });
+  try {
+    const live = await ready;
+    assert.equal(live.preparationState.phase, "composing");
+    refuseA(); await aOutcome;
+    assert.deepEqual(f.catalog.mcpOperation(f.originalId), live);
+  } finally { refuseA(); releaseB(); }
+  const result = await b;
+  assert.equal(result.kind, "forward-preparation-completed");
+  assert.deepEqual(preparationLegacyIdentity(f.catalog.mcpOperation(f.originalId)), f.legacy);
+});
+
+test("forward preparation refuses unfinished dev without implicit recovery or custody transfer", { timeout: 240_000 }, async t => {
+  const f = await legacyForwardFixture(t);
+  const dev = await f.taskGit.prepareDev(f.primary);
+  const file = await git(dev.projectRoot, "rev-parse", "--git-path", "index.lock");
+  const marker = path.resolve(dev.projectRoot, file);
+  await writeFile(marker, "owned interrupted fixture\n", { flag: "wx" });
+  try {
+    await assert.rejects(f.forward(), /unfinished dev Git operation: index.lock/u);
+    assert.equal(await readFile(marker, "utf8"), "owned interrupted fixture\n");
+    assert.deepEqual(f.catalog.mcpOperation(f.originalId), f.legacy);
+  } finally { await unlink(marker); }
+});
+
+test("forward preparation preserves partial native promotion instead of replaying effects", { timeout: 240_000 }, async t => {
+  const f = await legacyForwardFixture(t);
+  await assert.rejects(f.forward(runtime => {
+    const checkpoint = runtime.fixtureCatalog.checkpointMcpPreparationForward.bind(runtime.fixtureCatalog);
+    runtime.fixtureCatalog.checkpointMcpPreparationForward = (...args) => {
+      if (args[1].state.phase === "completed") throw new Error("terminal write lost");
+      return checkpoint(...args);
+    };
+  }), /unknown/u);
+  const candidate = await f.releaseGit.frozenCandidate(f.primary);
+  const file = path.join(path.dirname(candidate.checkpointFile), "native-preparation.json");
+  const journal = JSON.parse(await readFile(file, "utf8"));
+  // Exact native crash position: candidate ref moved, original checkpoint not
+  // committed yet. Retain both actual identities; this is not a rollback proof.
+  assert.ok(journal.before.checkpointBytes);
+  await writeFile(candidate.checkpointFile, Buffer.from(journal.before.checkpointBytes, "base64"));
+  await writeFile(file, JSON.stringify({ ...journal, phase: "prepared" }, null, 2) + "\n");
+  const checkpointBefore = await readFile(candidate.checkpointFile), journalBefore = await readFile(file);
+  const refsBefore = await git(candidate.releaseRoot, "show-ref");
+  await assert.rejects(f.forward(), /partial promotion/u);
+  assert.deepEqual(await readFile(candidate.checkpointFile), checkpointBefore);
+  assert.deepEqual(await readFile(file), journalBefore);
+  assert.equal(await git(candidate.releaseRoot, "show-ref"), refsBefore);
+  assert.deepEqual(preparationLegacyIdentity(f.catalog.mcpOperation(f.originalId)), f.legacy);
+});
 
 test("preparation recovery actual ancestry refusal after main audit resumes same SQLite original after guarded bootstrap", { timeout: 240_000 }, async t => {
   const f = await preparationRecoveryFixture(t);

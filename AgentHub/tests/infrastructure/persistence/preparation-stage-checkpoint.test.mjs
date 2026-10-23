@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
 import { WorkspaceCatalogStore } from "../../../src/infrastructure/persistence/workspace-catalog-store.mjs";
+import { FORWARD_PREPARATION, preparationLegacyIdentity, preparationLegacyHash } from "../../../src/domain/release-preparation.mjs";
 
 async function fixture(t) {
   const root = await mkdtemp(path.join(os.tmpdir(), "hub-prepare-stage-"));
@@ -67,6 +68,8 @@ test("preparation schema migration keeps legacy UNKNOWN without invented owner e
   const before = f.store.mcpOperation("original");
   f.store.close();
   const legacy = new DatabaseSync(f.databaseFile);
+  // The emulated old schema had neither the column nor its new writer fence.
+  legacy.exec("DROP TRIGGER hub_preparation_forward_legacy_fence");
   legacy.exec("ALTER TABLE hub_mcp_operations DROP COLUMN preparation_state_json"); legacy.close();
   const reopened = new WorkspaceCatalogStore({ databaseFile: f.databaseFile }); await reopened.load();
   try {
@@ -75,6 +78,37 @@ test("preparation schema migration keeps legacy UNKNOWN without invented owner e
       expectedRevision: 0, state: f.state, resume: true }), /resumable owner stage/u);
     assert.deepEqual(reopened.mcpOperation("original"), before);
   } finally { reopened.close(); }
+});
+
+test("forward preparation preserves legacy bytes, epochs and event prefix across old connections", async t => {
+  const f = await fixture(t);
+  f.store.markMcpOperationUnknown("original", new Error("actual legacy uncertainty"));
+  const legacy = f.store.mcpOperation("original"), legacyHash = preparationLegacyHash(legacy);
+  const old = new DatabaseSync(f.databaseFile);
+  try {
+  const first = { schemaVersion: 2, kind: FORWARD_PREPARATION, revision: 1, epoch: 1,
+    ownerId: "first", phase: "checking", legacy, originalPreparation: {}, envelope: {},
+    sourceRoot: "retained", sourceRootIdentity: "volume:file", events: [{ phase: "checking", ownerId: "first" }] };
+  const write = (state, transfer = false) => f.store.checkpointMcpPreparationForward("original", {
+    identity: f.identity, expectedRevision: state.revision - 1, legacyHash, state, transfer, validate: () => {} });
+  write(first, true);
+  const before = f.store.mcpOperation("original");
+  for (const changed of [
+    { ...first, revision: 2, phase: "composing", ownerId: "foreign", events: [...first.events, {}] },
+    { ...first, revision: 2, phase: "composing", events: [{ changed: true }, {}] },
+    { ...first, revision: 2, epoch: 2, phase: "composing", events: [...first.events, {}] },
+  ]) assert.throws(() => write(changed), /owner\/history/u);
+  assert.deepEqual(f.store.mcpOperation("original"), before);
+  const winner = { ...first, revision: 2, epoch: 2, ownerId: "winner",
+    events: [...first.events, { phase: "checking", ownerId: "winner" }] };
+  write(winner, true);
+  assert.throws(() => write({ ...first, revision: 2, events: [...first.events, {}] }), /CAS changed/u);
+  for (const sql of ["receipt_state='reconciling'", "status='failed'", "error_text='late old catch'",
+    "preparation_state_json=NULL", "preparation_state_json='{}'"]) {
+    assert.throws(() => old.exec(`UPDATE hub_mcp_operations SET ${sql} WHERE request_id='original'`), /immutable/u);
+  }
+  assert.deepEqual(preparationLegacyIdentity(f.store.mcpOperation("original")), legacy);
+  } finally { old.close(); }
 });
 
 test("preparation failure settlement refuses stale invocation, revision and original identity", async t => {

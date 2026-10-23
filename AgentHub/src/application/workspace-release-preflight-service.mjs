@@ -329,7 +329,7 @@ export class WorkspaceReleasePreflightService {
   }
 
   async prepareCurrentAwaitSet({ workspaceId, envelope, requestId, argumentsHash, validate, commitPrepared,
-    ownPreparation = null, beforeCompose = null }) {
+    ownPreparation = null, beforeCompose = null, forwardPreparation = null }) {
     requiredFunction(validate, "preparation validator");
     requiredFunction(commitPrepared, "preparation terminal receipt");
     requiredMethod(this.taskGitWorkspaces, "withTaskLocks");
@@ -364,10 +364,12 @@ export class WorkspaceReleasePreflightService {
               (repositoryLease) => ownRepository(index + 1, repositoryLease),
             );
             await verify();
-            await ownPreparation?.();
+            const devInventory = forwardPreparation
+              ? await this.taskGitWorkspaces.inspectForwardPreparationDevOwned(repositories[0].projectRoot, { lease: ownedLease }) : null;
+            await ownPreparation?.({ devInventory });
             return this.#prepareAwaitSet({ workspaceId, expectedPlanRevision: envelope.planRevision,
               preserveFrozen: true, lease: ownedLease,
-              preparation: { envelope, requestId, argumentsHash, validate: verify, beforeCompose },
+              preparation: { envelope, requestId, argumentsHash, validate: verify, beforeCompose, forwardPreparation },
               commitPrepared: async (prepared) => {
                 await verify();
                 return commitPrepared(prepared);
@@ -747,6 +749,7 @@ export class WorkspaceReleasePreflightService {
         projectRoot: repository.projectRoot,
         tasks: repository.frozenTasks,
         ...(lease ? { lease } : {}),
+        ...(preparation?.forwardPreparation ? { forwardPreparation: true } : {}),
       });
       if (preparation) {
         const bound = preparation.envelope.tasks.filter((item) => (
@@ -861,7 +864,7 @@ export class WorkspaceReleasePreflightService {
           sourceCommit: preparation.envelope.sourceCommit, sourceTree: preparation.envelope.sourceTree,
           sourceClosureHash: preparation.envelope.sourceClosureHash,
           publicationHash: preparation.envelope.publicationHash,
-        } } : {}),
+        }, ...(preparation.forwardPreparation ? { forwardPreparation: preparation.forwardPreparation } : {}) } : {}),
         ...(generationIdentity ?? {}),
         ...(generationIdentity ? { freezePublication: freezeGeneration } : {}),
         ...(generationIdentity ? { ephemeral: ephemeralGeneration } : {}),

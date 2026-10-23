@@ -6,6 +6,8 @@ import test from "node:test";
 import { preparationEnvelope } from "../helpers/release-preparation-envelope.mjs";
 import { readPreparationSourceClosure, validatePreparationEnvelope } from "../../src/application/release-preparation-admission.mjs";
 import { localSourceSelectionHash } from "../../src/domain/release-base-provenance.mjs";
+import { mcpArgumentsHash } from "../../src/domain/mcp-arguments-hash.mjs";
+import { validatePreparationForward, inspectPreparationForwardCustody } from "../../src/application/release-preparation-forward.mjs";
 
 test("preparation-only local source binding is exact and keeps native review bounded", () => {
   const value = preparationEnvelope();
@@ -44,6 +46,25 @@ test("preparation-only input requires exact bounded sets and no publication/sele
     mutation(changed);
     assert.throws(() => validatePreparationEnvelope(changed), { code: "RELEASE_PREPARATION_REJECTED" });
   }
+});
+
+test("forward preparation binds old arguments and cannot expand selection or publication", async () => {
+  const originalPreparation = preparationEnvelope(), requestId = "original";
+  const record = { requestId, toolName: "hub_release_prepare", operationStatus: "pending", receiptState: "unknown", status: "unknown",
+    argumentsHash: mcpArgumentsHash({ request_id: requestId, preparation: originalPreparation }) };
+  const check = preparation => validatePreparationForward({ record, originalPreparation, preparation, requestId });
+  assert.deepEqual(check(originalPreparation).original, originalPreparation);
+  const current = structuredClone(originalPreparation); current.tasks[0].rowRevision++;
+  current.sourceCommit = "e".repeat(40); current.sourceTree = "f".repeat(40); current.sourceClosureHash = "a".repeat(64);
+  assert.deepEqual(check(current).current, current);
+  for (const change of [v => { v.tasks[0].resultCommit = "9".repeat(40); },
+    v => { v.tasks[0].taskRevision++; }, v => { v.publicationHash = "e".repeat(64); },
+    v => { v.repositories[0].publishedRevision = "e".repeat(40); }]) {
+    const value = structuredClone(current); change(value); assert.throws(() => check(value), /selection or publication/u);
+  }
+  const request = { requestId, argumentsHash: record.argumentsHash, originalPreparation };
+  await assert.rejects(inspectPreparationForwardCustody(null, request), /unavailable/u);
+  await assert.rejects(inspectPreparationForwardCustody(async () => ({ kind: "missing-job", joinedInvocation: true }), request), /not proved/u);
 });
 
 test("preparation-only runtime closure detects added/changed source and excludes documentation", async (t) => {

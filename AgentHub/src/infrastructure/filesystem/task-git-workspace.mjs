@@ -2494,6 +2494,44 @@ export class TaskGitWorkspaceService {
     return this.#withClearDevLock(repoRoot, lease, (owned) => this.#prepareDevOwned(projectRoot, repoRoot, owned));
   }
 
+  // Forward preparation inventories the existing dev under the same already
+  // held repository lease. It never creates a worktree, aborts a merge, clears a
+  // block or runs bootstrap recovery as a side effect of reading integration.
+  async inspectForwardPreparationDevOwned(projectRoot, { lease } = {}) {
+    this.#assertAvailable("inspectForwardPreparationDevOwned");
+    await requiredGuardLease(lease).assertOwned();
+    const repoRoot = await repositoryRoot(projectRoot);
+    if (!lease.repositoryLockKeys?.has(taskRepositoryKey(repoRoot))) throw new Error("Forward dev inspection requires its repository lease");
+    await this.#assertRepositoryProcessTreeClear(repoRoot);
+    const devRoot = await worktreeForBranch(repoRoot, this.devBranch);
+    if (!devRoot || !pathInside(this.devWorktreesRoot, devRoot)) throw new Error("Forward preparation requires the existing managed dev");
+    const info = await lstat(devRoot);
+    if (!info.isDirectory() || info.isSymbolicLink()) throw new Error("Forward managed dev custody changed");
+    for (const file of [this.#withdrawalFile(repoRoot), this.#devBootstrapRecoveryFile(repoRoot),
+      await this.#integrationBlockFile(repoRoot)]) {
+      if (await access(file).then(() => true, error => { if (error.code === "ENOENT") return false; throw error; })) {
+        throw new Error("Forward preparation preserves pending dev recovery; use its original owner first");
+      }
+    }
+    for (const name of ["MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "rebase-apply", "rebase-merge", "sequencer", "index.lock"]) {
+      const file = path.resolve(await runGit(["rev-parse", "--git-path", name], { cwd: devRoot }));
+      if (await access(file).then(() => true, error => { if (error.code === "ENOENT") return false; throw error; })) {
+        throw new Error(`Forward preparation preserves unfinished dev Git operation: ${name}`);
+      }
+    }
+    const mainCommit = await localMainCommit(repoRoot);
+    const headCommit = await runGit(["rev-parse", "HEAD^{commit}"], { cwd: devRoot });
+    const branch = await runGit(["symbolic-ref", "HEAD"], { cwd: devRoot });
+    const reference = await runGit(["rev-parse", `refs/heads/${this.devBranch}^{commit}`], { cwd: repoRoot });
+    const dirty = await runGit(["status", "--porcelain=v1", "-z", "--untracked-files=all"], { cwd: devRoot });
+    if (headCommit !== reference || branch !== `refs/heads/${this.devBranch}` || dirty
+        || await gitMaybe(["merge-base", "--is-ancestor", mainCommit, headCommit], { cwd: devRoot }) === null) {
+      throw new Error("Forward preparation requires exact clean dev containing accepted main");
+    }
+    return { repositoryRoot: repoRoot, projectRoot: devRoot, branch: this.devBranch, mainCommit,
+      headCommit, acceptedMainIntegrated: true, forwardReadOnly: true };
+  }
+
   async synchronizeMainIntoDev({ projectRoot, publishedRevision = null } = {}) {
     this.#assertAvailable("synchronizeMainIntoDev");
     const expectedMainCommit = exactCommitId(publishedRevision, "published revision");
@@ -4906,9 +4944,10 @@ export class TaskGitWorkspaceService {
     });
   }
 
-  async releaseIntegrationEvidence({ projectRoot, tasks = [], lease = null } = {}) {
+  async releaseIntegrationEvidence({ projectRoot, tasks = [], lease = null, forwardPreparation = false } = {}) {
     this.#assertAvailable("releaseIntegrationEvidence");
-    const dev = await this.prepareDev(projectRoot, { lease });
+    const dev = forwardPreparation ? await this.inspectForwardPreparationDevOwned(projectRoot, { lease })
+      : await this.prepareDev(projectRoot, { lease });
     const firstParentHistory = String(await runGit([
       "log", "--first-parent", "--reverse", "--format=%H%x00%P", dev.headCommit,
     ], { cwd: dev.projectRoot })).split(/\r?\n/u).filter(Boolean).map((line, order) => {

@@ -5,6 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import { AsyncSqliteMutationQueue } from "./async-sqlite-mutation-queue.mjs";
 
 import { normalizeInterstreamOrigin } from "../../domain/interstream-message.mjs";
+import { FORWARD_PREPARATION, preparationLegacyIdentity, preparationLegacyHash } from "../../domain/release-preparation.mjs";
 
 import {
   EXPERIMENTS_SYSTEM_KEY,
@@ -30,7 +31,7 @@ import {
   withReleasePrimaryWorkspaceRule,
 } from "../../domain/release-primary-workspace-policy.mjs";
 
-const SCHEMA_VERSION = 13;
+const SCHEMA_VERSION = 14;
 export const DEVELOPER_RULES_MAX_BYTES = 32 * 1024;
 const SOURCES = new Set(["created", "discovered", "migration", "rebirth"]);
 const DEVELOPER_RULE_SCOPES = new Set(["workspace", "stream"]);
@@ -201,6 +202,19 @@ function configure(database) {
     database.exec("ALTER TABLE hub_mcp_operations ADD COLUMN receipt_state TEXT NOT NULL DEFAULT 'pending'");
     database.exec("UPDATE hub_mcp_operations SET receipt_state = status");
   }
+  database.exec(`CREATE TRIGGER IF NOT EXISTS hub_preparation_forward_legacy_fence
+    BEFORE UPDATE ON hub_mcp_operations
+    WHEN json_extract(OLD.preparation_state_json, '$.kind') = 'original-preparation-forward-v1'
+      AND (json_extract(NEW.preparation_state_json, '$.kind') IS NOT 'original-preparation-forward-v1'
+        OR json_extract(NEW.preparation_state_json, '$.schemaVersion') IS NOT 2
+        OR NEW.request_id IS NOT OLD.request_id OR NEW.workspace_id IS NOT OLD.workspace_id
+        OR NEW.stream_id IS NOT OLD.stream_id OR NEW.provider IS NOT OLD.provider
+        OR NEW.provider_thread_id IS NOT OLD.provider_thread_id OR NEW.tool_name IS NOT OLD.tool_name
+        OR NEW.arguments_hash IS NOT OLD.arguments_hash OR NEW.interstream_content_hash IS NOT OLD.interstream_content_hash
+        OR NEW.status IS NOT OLD.status OR NEW.receipt_state IS NOT OLD.receipt_state
+        OR NEW.result_json IS NOT OLD.result_json OR NEW.error_text IS NOT OLD.error_text
+        OR NEW.created_at_ms IS NOT OLD.created_at_ms OR NEW.completed_at_ms IS NOT OLD.completed_at_ms)
+    BEGIN SELECT RAISE(ABORT, 'Legacy preparation history is immutable during forward continuation'); END;`);
 }
 
 function workspaceFromRow(row) {
@@ -1109,6 +1123,51 @@ export class WorkspaceCatalogStore {
           AND preparation_state_json IS ?`).run(JSON.stringify(state), resume ? "reconciling" : current.receiptState,
         id, identity.argumentsHash, row.receipt_state, row.preparation_state_json);
       if (Number(updated.changes) !== 1) throw new Error("Original preparation checkpoint CAS failed");
+      return this.mcpOperation(id);
+    });
+  }
+
+  // Append only to the EXISTING original's preparation column. In particular,
+  // never convert legacy UNKNOWN to reconciling/success or erase its error.
+  checkpointMcpPreparationForward(requestId, { identity, expectedRevision, legacyHash, state,
+    transfer = false, validate = null } = {}) {
+    const id = safeIdentifier(requestId, "MCP request id");
+    return this.#transaction(() => {
+      const row = this.#database.prepare("SELECT * FROM hub_mcp_operations WHERE request_id = ?").get(id);
+      const current = mcpOperationFromRow(row), prior = current?.preparationState;
+      if (!current || current.toolName !== "hub_release_prepare" || current.status !== "unknown"
+          || current.operationStatus !== "pending" || current.receiptState !== "unknown"
+          || ["workspaceId", "streamId", "provider", "threadId", "argumentsHash"].some(key => current[key] !== identity?.[key])
+          || preparationLegacyHash(current) !== legacyHash
+          || (prior?.revision ?? 0) !== expectedRevision) throw new Error("Forward preparation original/revision CAS changed");
+      if (state?.kind !== FORWARD_PREPARATION || state.schemaVersion !== 2
+          || state.revision !== expectedRevision + 1 || !state.ownerId
+          || !Number.isSafeInteger(state.epoch) || state.epoch < 1
+          || !["checking", "composing", "blocked", "completed"].includes(state.phase)
+          || !Array.isArray(state.events) || state.events.length > 64
+          || Buffer.byteLength(JSON.stringify(state)) > 128 * 1024
+          || JSON.stringify(state.legacy) !== JSON.stringify(preparationLegacyIdentity(current))) {
+        throw new Error("Invalid bounded forward preparation checkpoint");
+      }
+      if (prior ? prior.kind !== FORWARD_PREPARATION || prior.phase === "completed"
+          || JSON.stringify(state.events.slice(0, -1)) !== JSON.stringify(prior.events)
+          || state.events.length !== prior.events.length + 1
+          || JSON.stringify(state.originalPreparation) !== JSON.stringify(prior.originalPreparation)
+          || state.sourceRoot !== prior.sourceRoot || state.sourceRootIdentity !== prior.sourceRootIdentity
+          || (transfer ? state.epoch !== prior.epoch + 1 || state.phase !== "checking"
+            : state.epoch !== prior.epoch || state.ownerId !== prior.ownerId)
+        : !transfer || state.epoch !== 1 || state.phase !== "checking" || state.events.length !== 1) {
+        throw new Error("Forward preparation owner/history transition changed");
+      }
+      if (transfer || state.phase === "completed") {
+        if (typeof validate !== "function") throw new TypeError("Forward terminal row validator is required");
+        const checked = validate();
+        if (checked?.then) throw new TypeError("Forward terminal row validator must be synchronous");
+      }
+      const updated = this.#database.prepare(`UPDATE hub_mcp_operations SET preparation_state_json = ?
+        WHERE request_id = ? AND status = 'pending' AND receipt_state = 'unknown'
+          AND preparation_state_json IS ?`).run(JSON.stringify(state), id, row.preparation_state_json);
+      if (Number(updated.changes) !== 1) throw new Error("Forward preparation checkpoint CAS failed");
       return this.mcpOperation(id);
     });
   }
