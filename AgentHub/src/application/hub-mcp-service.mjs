@@ -757,9 +757,7 @@ export class HubMcpService {
         selected_proof_bundle_sha256: { type: "string", pattern: "^[0-9a-f]{64}$" },
         selected_published_resolution: { type: "object", description: "Historical original reconciliation envelope; new selected materialization admission is closed." },
         selected_absorption_handoff: { type: "object", description: "Authenticated saved/stopped handoff for ordinary native Test, bound to exact Task CAS and the original receipt." },
-        native_resolution_review: { type: "object", additionalProperties: false,
-          properties: { requestId: { type: "string", maxLength: 200 }, text: { type: "string", maxLength: 16000 } },
-          required: ["requestId", "text"], description: "Exact independent inter-Stream verdict for a native compatibility resolution." },
+        native_resolution_review: { type: "object", description: "Exact independent inter-Stream verdict, or {bundlePath,bundleSha256,reviews} for reviewed Await prefixes. The existing sequencer authenticates every exact binding." },
         selected_proof_commit: { type: "string", pattern: "^[0-9a-f]{40}$" },
         selected_preview_request_id: { type: "string", description: "Exact original preview request_id on confirmation." },
         expected_selected_preview_hash: { type: "string", pattern: "^[0-9a-f]{64}$", description: "Omit for preview; exact returned hash is required for confirmation." },
@@ -1733,14 +1731,15 @@ export class HubMcpService {
     if (nativeResolutionReview != null) {
       if (!this.#isReleaseManager(context)
           || !["testing", "awaiting_implementation"].includes(status)
-          || expectedRevision == null || expectedWorkflowStatus == null
-          || typeof nativeResolutionReview !== "object" || Array.isArray(nativeResolutionReview)
-          || Object.keys(nativeResolutionReview).sort().join(",") !== "requestId,text"
-          || typeof nativeResolutionReview.requestId !== "string" || !nativeResolutionReview.requestId.trim()
-          || nativeResolutionReview.requestId.length > 200
-          || typeof nativeResolutionReview.text !== "string" || nativeResolutionReview.text.length > 16000) {
+          || expectedRevision == null || expectedWorkflowStatus == null) {
         throw new TaskInputValidationError("Native resolution review requires exact RM Test/Await CAS and authenticated verdict");
       }
+      try {
+        const review = normalizedNativeResolution(nativeResolutionReview);
+        if (review.reviews && status !== "awaiting_implementation") {
+          throw new TypeError("Native resolution bundles require Await");
+        }
+      } catch (error) { throw new TaskInputValidationError(error.message); }
     }
     const workflowStatus = requiredText(status, "task workflow status", 40);
     const squashValues = [

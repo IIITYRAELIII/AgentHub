@@ -181,8 +181,13 @@ immutable authorization. See REL-001 for metadata and original capture fences.
 
 
 RM Test/Await with exact Task/workflow CAS may include `native_resolution_review`
-for necessary compatibility changes beyond Git conflict paths. Its bounded text
+for necessary compatibility changes beyond Git conflict paths. The exact review
 and original review request ID are canonically bound by the same status receipt.
+Await also accepts the existing digest-bound bundle of multiple exact reviews;
+Test retains the single-review input. Closed record validation, genuine RM/CAS,
+every authenticated review and the native sequencer's full Git checks still apply.
+The ordinary source release consumer's `accept` action forwards these same public
+Await business arguments. It adds no Task/status authority or alternate writer.
 The native owner recomputes the full Git merge diff and accepts only the exact
 independent authenticated inter-Stream ACCEPT binding. Reconciliation includes
 the original argument unchanged; it cannot substitute a newer verdict. This does

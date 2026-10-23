@@ -455,13 +455,14 @@ export class ReleaseOperationService {
     return this.get(id);
   }
 
-  async drainAddressed({ requestId, operationId } = {}) {
+  async drainAddressed({ requestId, operationId, taskId } = {}) {
     // Local lifetime bookkeeping is not recovery/admission. Read the durable
     // identity of work already scheduled by this consumer and never wake it.
     const pending = new Set([...this.#scheduled, ...this.#running]);
     for (const id of pending) {
       const original = this.store.get(id);
       if (original && (operationId ? original.operationId === operationId
+        : taskId ? original.authorization.taskIds.includes(taskId)
         : typeof requestId === "string" && original.requestId === requestId)) {
         await this.drain(id);
       }

@@ -24,6 +24,7 @@ import { WorkspaceReleaseOperationAdapter } from "../../../src/application/works
 import { ReleaseOperationStore } from "../../../src/infrastructure/persistence/release-operation-store.mjs";
 import { executeRelease, openReleaseRuntime, parseReleaseArguments } from "../../../release.mjs";
 import { createReleaseOperationServices } from "../../../src/composition/release-operation-composition.mjs";
+import { taskGitIdentityHash } from "../../../src/domain/task-git-reference.mjs";
 
 const exec = promisify(execFile);
 const hash = "b".repeat(64);
@@ -256,7 +257,133 @@ test("source release CLI rejects malformed business input before opening the mut
     }), /business arguments/u);
   }
   assert.equal(opens, 0);
+  for (const request of [{ task_id: "one", status: "done" }, { status: "awaiting_implementation" }]) {
+    await writeFile(requestFile, JSON.stringify(request));
+    await assert.rejects(executeRelease({ action: "accept", requestFile }, {
+      openRuntime: async () => { opens += 1; throw new Error("must not open"); },
+    }), /addressed Task Await/u);
+  }
+  assert.equal(opens, 0);
   assert.throws(() => parseReleaseArguments(["continue", "--provider", "codex", "--provider", "codex"]), /Invalid release/u);
+});
+
+test("source acceptance carries all reviewed prefixes through public Await and immutable SQLite retry", { timeout: 240000 }, async t => {
+  const f = await fixture(t, { releaseManager: true });
+  const a = await f.create("bundle-a"), b = await f.create("bundle-b");
+  await f.status(a, "testing", "bundle-test-a");
+  await f.status(a, "awaiting_implementation", "bundle-await-a");
+  await f.status(b, "testing", "bundle-test-b");
+  const before = structuredClone(f.board.task(b.id));
+  const plan = await f.preflight.releasePlanner.plan(f.workspaceId, { acceptingTask: { id: b.id, revision: before.revision } });
+  const frozen = plan.ready.map(entry => ({ taskId: entry.taskId, taskRevision: entry.taskRevision,
+    taskNumber: entry.taskNumber ?? null, projectRoot: entry.projectRoot, branch: entry.branch,
+    resultCommit: entry.resultCommit })).sort((left, right) => left.taskId.localeCompare(right.taskId));
+  const evidence = await f.taskGit.releaseIntegrationEvidence({ projectRoot: f.primary, tasks: frozen });
+  const identity = { policy: "main-selected-git-merge-v1", workspaceId: f.workspaceId,
+    planRevision: plan.revision, baseCommit: f.main, tasks: evidence.tasks };
+  const proof = path.join(f.root, "reviewed-proof");
+  await git(f.root, "clone", "--no-local", f.primary, proof);
+  await git(proof, "checkout", "--detach", f.main);
+  const reviews = [], bindings = new Map();
+  let prefix = f.main;
+  for (const [index, task] of evidence.tasks.entries()) {
+    await git(proof, "-c", "user.name=Fixture", "-c", "user.email=fixture@local.invalid",
+      "merge", "--no-ff", "--no-edit", task.resultCommit);
+    await writeFile(path.join(proof, "owner-compat.txt"), `reviewed prefix ${index}\n`);
+    await git(proof, "add", "owner-compat.txt");
+    await git(proof, "-c", "user.name=Fixture", "-c", "user.email=fixture@local.invalid", "commit", "--amend", "--no-edit");
+    const commit = await git(proof, "rev-parse", "HEAD"), tree = await git(proof, "rev-parse", "HEAD^{tree}");
+    const automaticTree = (await git(proof, "merge-tree", "--write-tree", prefix, task.resultCommit)).split(/\r?\n/u)[0];
+    const diff = (await exec("git", ["diff", "--binary", "--full-index", "--no-renames", automaticTree, tree],
+      { cwd: proof, windowsHide: true, encoding: "buffer" })).stdout;
+    const binding = { identityHash: taskGitIdentityHash(identity), parents: [prefix, task.resultCommit],
+      commit, tree, automaticTree, diffSha256: createHash("sha256").update(diff).digest("hex") };
+    const requestId = `verified-prefix-${index}`;
+    bindings.set(requestId, binding);
+    reviews.push({ requestId, text: `<native-merge-review>${JSON.stringify({ kind: "native-merge-review-v1", verdict: "ACCEPT", binding })}</native-merge-review>` });
+    prefix = commit;
+  }
+  assert.equal(reviews.length, 2);
+  const bundlePath = path.join(f.root, "reviewed-prefixes.bundle");
+  await git(proof, "update-ref", "refs/heads/reviewed", prefix);
+  await git(proof, "bundle", "create", bundlePath, "refs/heads/reviewed");
+  const native_resolution_review = { bundlePath,
+    bundleSha256: createHash("sha256").update(await readFile(bundlePath)).digest("hex"), reviews };
+  const verified = new Set();
+  // Existing authenticated-review port is controlled; all Git, lifecycle, MCP
+  // receipt, candidate promotion and SQLite persistence below are real owners.
+  f.releaseGit.verifyNativeResolutionReview = async (review, binding, actualIdentity) => {
+    assert.deepEqual(binding, bindings.get(review.requestId));
+    assert.deepEqual(actualIdentity, identity); verified.add(review.requestId);
+  };
+  const requestFile = path.join(f.root, "accept-request.json");
+  const request = { request_id: "one-bundle-await", task_id: b.id, status: "awaiting_implementation",
+    expected_task_revision: before.revision, expected_workflow_status: "testing", native_resolution_review };
+  const open = () => openReleaseRuntime({ openTaskRuntime: f.open });
+  const invoke = async (body, openRuntime = open) => {
+    await writeFile(requestFile, JSON.stringify(body));
+    return executeRelease(parseReleaseArguments(["accept", "--provider", "codex", "--thread", "fixture-thread",
+      "--stream", f.streamId, "--request-file", requestFile]), { openRuntime });
+  };
+  for (const [suffix, patch] of [["array", { native_resolution_review: [] }],
+    ["cas", { expected_task_revision: null }], ["test", { status: "testing" }]]) {
+    await assert.rejects(invoke({ ...request, ...patch, request_id: `invalid-${suffix}` }));
+    assert.deepEqual(f.board.task(b.id), before);
+  }
+  await assert.rejects(invoke({ ...request, request_id: "tampered-bundle-await",
+    native_resolution_review: { ...native_resolution_review, bundleSha256: "0".repeat(64) } }), /digest changed/u);
+  assert.deepEqual(f.board.task(b.id), before);
+  const accepted = await invoke(request);
+  assert.equal(accepted.workflowStatus, "awaiting_implementation");
+  assert.equal(accepted.revision, before.revision + 1);
+  assert.deepEqual([...verified].sort(), [...bindings.keys()].sort());
+  const candidate = (await f.releaseGit.initialNativeTestCandidate(f.primary)).candidate;
+  assert.equal(candidate.preReleaseHead, prefix);
+  assert.equal((await readFile(path.join(candidate.releaseRoot, "owner-compat.txt"), "utf8")).replace(/\r\n/gu, "\n"), "reviewed prefix 1\n");
+  const reflog = await git(candidate.releaseRoot, "reflog", "show", "--format=%H", "PreRelease");
+  const reopenDefault = () => openReleaseRuntime({ openTaskRuntime: () => openTaskAwaitCutoverRuntime({
+    config: { dataDir: path.dirname(f.databaseFile), taskBoard: { autoPlaceConfidence: 0.8 } },
+  }) });
+  assert.deepEqual(wire(await invoke(request, reopenDefault)), wire(accepted));
+  assert.equal(await git(candidate.releaseRoot, "reflog", "show", "--format=%H", "PreRelease"), reflog);
+  assert.equal(await git(f.primary, "rev-parse", "main"), f.main);
+  assert.equal(f.catalog.mcpOperation(request.request_id).status, "succeeded");
+});
+
+test("source acceptance retains Task-woken owner lifetime through success and lost public replies", async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "accept-lifetime-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const requestFile = path.join(root, "request.json");
+  await writeFile(requestFile, JSON.stringify({ task_id: "selected", status: "awaiting_implementation", request_id: "one-await" }));
+  for (const loss of [null, "receipt", "ack"]) {
+    let release, entered, closed = false;
+    const barrier = new Promise(resolve => { release = resolve; });
+    const started = new Promise(resolve => { entered = resolve; });
+    const result = { id: "selected", workflowStatus: "awaiting_implementation" };
+    const calls = [];
+    const pending = executeRelease({ action: "accept", requestFile, provider: "codex", threadId: "owner", streamId: "owner" }, {
+      openRuntime: async () => ({
+        service: { contextToken: () => "fixture-token", call: async (tool, args) => {
+          calls.push([tool, args]);
+          if (loss === "receipt") throw new Error("lost receipt response");
+          return result;
+        } },
+        operations: { drainAddressed: async selector => {
+          assert.deepEqual(selector, { taskId: "selected" }); entered(); await barrier;
+        } },
+        close: () => { closed = true; },
+      }),
+      onAccepted: () => { if (loss === "ack") throw new Error("lost ack response"); },
+    });
+    await started;
+    assert.equal(closed, false);
+    release();
+    if (loss) await assert.rejects(pending, new RegExp(`lost ${loss} response`, "u"));
+    else assert.equal(await pending, result);
+    assert.equal(closed, true);
+    assert.equal(calls.length, 1, "no public call replay");
+    assert.equal(calls[0][0], "hub_task_status_update");
+  }
 });
 
 test("public native source entry retains original operation timing on success and admission failure", { timeout: 180_000 }, async t => {
