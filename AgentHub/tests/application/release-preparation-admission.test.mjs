@@ -91,6 +91,10 @@ test("forward isolated-effects evidence is distinct from terminal proof and bind
     legacyInvocationTerminal: true, writeTargetsHash: request.isolationPlan.writeTargetsHash,
     reason: "Retained legacy child custody unknown" };
   assert.deepEqual(await inspectPreparationForwardCustody(async () => proof, request), proof);
+  assert.deepEqual(JSON.parse(JSON.stringify(await inspectPreparationForwardCustody(async () => proof, request))), proof);
+  for (const container of [[], new Date(0), new Map(), () => {}]) {
+    await assert.rejects(inspectPreparationForwardCustody(async () => Object.assign(container, proof), request), /not proved/u);
+  }
   for (const change of [{ joinedChildren: true }, { legacyInvocationTerminal: false }, { writeTargetsHash: "f".repeat(64) },
     { authorizationSha256: "" }, { argumentsHash: "f".repeat(64) }, { reason: "" }]) {
     await assert.rejects(inspectPreparationForwardCustody(async () => ({ ...proof, ...change }), request), /not proved/u);

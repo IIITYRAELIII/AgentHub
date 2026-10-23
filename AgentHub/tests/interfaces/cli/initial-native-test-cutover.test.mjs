@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile, unlink } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, rm, writeFile, unlink } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -809,6 +809,40 @@ const isolationObserver = async request => ({ kind: "preparation-effects-isolate
   isolationEvidenceSha256: "1".repeat(64), authorizationSha256: "2".repeat(64),
   legacyInvocationTerminal: true, writeTargetsHash: request.isolationPlan.writeTargetsHash,
   reason: "Fixture legacy native-child custody is unknown; isolate future targets" });
+
+test("isolated preparation proof record refuses arrays before transfer and persists complete valid evidence", { timeout: 240_000 }, async t => {
+  const f = await legacyForwardFixture(t), before = f.catalog.mcpOperation(f.originalId);
+  const old = await f.releaseGit.frozenCandidate(f.primary);
+  const oldCheckpoint = await readFile(old.checkpointFile);
+  const oldHead = await git(old.releaseRoot, "rev-parse", "PreRelease");
+  let plan, expectedProof;
+  const observe = async request => {
+    plan = request.isolationPlan;
+    expectedProof = await isolationObserver(request);
+    return expectedProof;
+  };
+  await assert.rejects(f.forward(() => {}, async request => Object.assign([], await observe(request))), /not proved/u);
+  assert.deepEqual(f.catalog.mcpOperation(f.originalId), before);
+  await assert.rejects(lstat(plan.dataDir), { code: "ENOENT" });
+  assert.deepEqual(await readFile(old.checkpointFile), oldCheckpoint);
+  assert.equal(await git(old.releaseRoot, "rev-parse", "PreRelease"), oldHead);
+  assert.deepEqual(await f.releaseGit.frozenCandidate(f.primary), old);
+
+  const result = await f.forward(() => {}, observe);
+  const row = f.catalog.mcpOperation(f.originalId);
+  assert.equal(row.preparationState.phase, "completed");
+  assert.deepEqual(row.preparationState.custody, expectedProof);
+  assert.deepEqual(row.preparationState.events[0].custody, expectedProof);
+  assert.deepEqual(JSON.parse(JSON.stringify(row.preparationState.custody)), expectedProof);
+  assert.deepEqual(preparationLegacyIdentity(row), f.legacy);
+  const candidate = await f.releaseGit.frozenCandidate(f.primary);
+  assert.notEqual(candidate.releaseRoot, old.releaseRoot);
+  assert.equal(candidate.releaseRoot, result.candidates[0].releaseRoot);
+  const reflog = await git(candidate.releaseRoot, "reflog", "show", "--format=%H", "PreRelease");
+  assert.deepEqual(await f.forward(() => {}, () => assert.fail("Completed retry must remain read-only")), result);
+  assert.deepEqual(f.catalog.mcpOperation(f.originalId), row);
+  assert.equal(await git(candidate.releaseRoot, "reflog", "show", "--format=%H", "PreRelease"), reflog);
+});
 
 test("isolated preparation excludes old Git writers and fences old SQLite connections and authority replacement", { timeout: 240_000 }, async t => {
   const f = await legacyForwardFixture(t), old = await f.releaseGit.frozenCandidate(f.primary);

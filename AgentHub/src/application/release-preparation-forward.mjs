@@ -49,7 +49,9 @@ export async function inspectPreparationForwardCustody(inspect, request) {
   if (proof?.kind === "preparation-effects-isolated-v1") {
     const keys = ["kind", "requestId", "argumentsHash", "originalSourceClosureHash", "isolationEvidenceSha256",
       "authorizationSha256", "legacyInvocationTerminal", "writeTargetsHash", "reason"];
-    if (Object.keys(proof).length !== keys.length || keys.some(key => !Object.hasOwn(proof, key))
+    if (!proof || typeof proof !== "object" || Array.isArray(proof)
+        || ![Object.prototype, null].includes(Object.getPrototypeOf(proof))
+        || Object.keys(proof).length !== keys.length || keys.some(key => !Object.hasOwn(proof, key))
         || proof.requestId !== request.requestId || proof.argumentsHash !== request.argumentsHash
         || proof.originalSourceClosureHash !== request.originalPreparation.sourceClosureHash
         || proof.legacyInvocationTerminal !== true || !request.isolationPlan
