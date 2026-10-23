@@ -17,7 +17,6 @@ import {
   interstreamDisplayText,
 } from "../domain/interstream-message.mjs";
 import { canonicalMcpValue, mcpArgumentsHash } from "../domain/mcp-arguments-hash.mjs";
-import { MAX_RELEASE_METADATA_BYTES } from "../domain/release-operation.mjs";
 import { taskProjectRoot } from "../domain/task-project-root.mjs";
 import { normalizedInitialNativeTest } from "../domain/task-git-reference.mjs";
 import {
@@ -860,7 +859,7 @@ export class HubMcpService {
           additionalProperties: false,
           properties: {
             sourcePath: { type: "string", minLength: 1 },
-            byteLength: { type: "integer", minimum: 1, maximum: MAX_RELEASE_METADATA_BYTES },
+            byteLength: { type: "integer", minimum: 1 },
             rawSha256: { type: "string", pattern: "^[a-f0-9]{64}$" },
             canonicalSha256: { type: "string", pattern: "^[a-f0-9]{64}$" },
           },
@@ -1091,7 +1090,6 @@ export class HubMcpService {
               preReleaseHead: candidate.preReleaseHead, tree: candidate.tree,
               baseCommit: candidate.baseCommit, manifestHash: candidate.manifestHash,
               preflightRequestId: candidate.manifest?.preflightRequestId })) };
-          if (Buffer.byteLength(JSON.stringify(result)) > 48 * 1024) throw new Error("Forward result exceeds receipt budget");
           try { await checkpoint("completed", { result }); }
           catch (cause) {
             const after = this.workspaceCatalog.mcpOperation(args.request_id);
@@ -2088,9 +2086,6 @@ export class HubMcpService {
             tree: candidate.tree, baseCommit: candidate.baseCommit, manifestHash: candidate.manifestHash,
             preflightRequestId: candidate.manifest?.preflightRequestId,
           })) };
-        if (Buffer.byteLength(JSON.stringify(result)) > 48 * 1024) {
-          throw new ReleasePreparationRejectedError("Preparation terminal receipt exceeds its exact retention budget");
-        }
         try {
           // This is provisional while candidate rollback is still live, not terminal authority.
           await checkpoint("terminal-intent", { result });

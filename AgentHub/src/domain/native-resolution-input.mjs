@@ -5,8 +5,7 @@ export function normalizedNativeResolution(value) {
     && Object.keys(v).length === keys.length && keys.every(key => Object.hasOwn(v, key));
   const review = v => {
     if (!record(v, ["requestId", "text"]) || typeof v.requestId !== "string"
-        || !v.requestId.trim() || v.requestId.length > 200 || typeof v.text !== "string"
-        || !v.text.trim() || Buffer.byteLength(v.text) > 32 * 1024) {
+        || !v.requestId.trim() || typeof v.text !== "string" || !v.text.trim()) {
       throw new TypeError("Invalid exact native review");
     }
     return { requestId: v.requestId, text: v.text };
@@ -14,8 +13,8 @@ export function normalizedNativeResolution(value) {
   if (record(value, ["requestId", "text"])) return review(value);
   if (!record(value, ["bundlePath", "bundleSha256", "reviews"])
       || typeof value.bundlePath !== "string" || !value.bundlePath.trim()
-      || value.bundlePath.length > 2048 || !/^[a-f0-9]{64}$/u.test(value.bundleSha256)
-      || !Array.isArray(value.reviews) || !value.reviews.length || value.reviews.length > 32) {
+      || !/^[a-f0-9]{64}$/u.test(value.bundleSha256)
+      || !Array.isArray(value.reviews) || !value.reviews.length) {
     throw new TypeError("Invalid exact native resolution bundle");
   }
   const reviews = value.reviews.map(review);

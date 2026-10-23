@@ -74,7 +74,7 @@ async function gitRemoteHead(candidate) {
 // current origin ancestry, without fetching or depending on the old object.
 async function candidateAbsentFromRemote(candidate, remote) {
   const git = promisify(execFile);
-  const options = { encoding: "utf8", windowsHide: true, maxBuffer: 16 * 1024 * 1024 };
+  const options = { encoding: "utf8", windowsHide: true, maxBuffer: Infinity };
   const args = ["--no-replace-objects", "--no-optional-locks", "-C", candidate.repositoryRoot];
   const run = async tail => (await git("git", [...args, ...tail], options)).stdout.trim();
   try {
@@ -85,13 +85,33 @@ async function candidateAbsentFromRemote(candidate, remote) {
       if (error.code === "ENOENT") return null; throw error;
     });
     if (grafts) return false;
-    const rows = (await run(["rev-list", "--parents", "--max-count=100001", remote, "--"]))
-      .split("\n").map(row => row.trim().split(/\s+/u));
-    if (!rows.length || rows.length > 100000 || rows[0][0] !== remote
-        || rows.some(row => row.some(oid => !/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/u.test(oid)))) return false;
-    const commits = new Set(rows.map(row => row[0]));
-    if (commits.size !== rows.length || rows.some(row => row.slice(1).some(parent => !commits.has(parent)))) return false;
-    return !commits.has(candidate.commit);
+    return await new Promise(resolve => {
+      const child = spawn("git", [...args, "rev-list", "--parents", remote, "--"], {
+        windowsHide: true, stdio: ["ignore", "pipe", "ignore"],
+      });
+      const commits = new Set(), missingParents = new Set();
+      let pending = "", valid = true;
+      const row = line => {
+        const [commit, ...parents] = line.trim().split(/\s+/u);
+        if (![commit, ...parents].every(oid => /^[a-f0-9]{40}(?:[a-f0-9]{24})?$/u.test(oid))
+            || commits.has(commit) || !commits.size && commit !== remote) { valid = false; return; }
+        commits.add(commit); missingParents.delete(commit);
+        for (const parent of parents) if (!commits.has(parent)) missingParents.add(parent);
+      };
+      child.stdout.setEncoding("utf8");
+      child.stdout.on("data", chunk => {
+        pending += chunk;
+        let end;
+        while ((end = pending.indexOf("\n")) >= 0) {
+          row(pending.slice(0, end)); pending = pending.slice(end + 1);
+        }
+      });
+      child.once("error", () => resolve(false));
+      child.once("close", code => {
+        if (pending) row(pending);
+        resolve(code === 0 && valid && commits.size > 0 && missingParents.size === 0 && !commits.has(candidate.commit));
+      });
+    });
   } catch { return false; }
 }
 

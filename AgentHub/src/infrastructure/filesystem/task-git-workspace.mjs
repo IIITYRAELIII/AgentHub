@@ -261,7 +261,7 @@ function runTaskGitCommandUntraced(args, {
     };
     const abort = () => terminate("was fenced");
     signal?.addEventListener?.("abort", abort, { once: true });
-    const timer = setTimeout(() => terminate("timed out"), timeoutMs);
+    const timer = timeoutMs == null ? null : setTimeout(() => terminate("timed out"), timeoutMs);
     child.stdout?.on("data", (chunk) => stdout.push(chunk));
     child.stderr.on("data", (chunk) => stderr.push(chunk));
     child.on("error", (error) => {

@@ -939,7 +939,8 @@ export class WorkspaceCatalogStore {
       && INTERSTREAM_MESSAGE_TOOLS.has(operation.toolName)
       && !operation.interstreamContentHash
     ) throw new Error("MCP interstream operation has no admitted content hash");
-    const resultJson = compactMcpOperationResult(result);
+    const resultJson = operation?.toolName === "hub_release_prepare"
+      ? JSON.stringify(result ?? null) : compactMcpOperationResult(result);
     const updated = this.#database.prepare(`
       UPDATE hub_mcp_operations
       SET status = 'succeeded', receipt_state = 'succeeded', result_json = ?, error_text = '', completed_at_ms = ?
@@ -1119,9 +1120,8 @@ export class WorkspaceCatalogStore {
       }
       if (state?.schemaVersion !== 1 || state.revision !== expectedRevision + 1
           || !["checking", "paused", "composing", "terminal-intent"].includes(state.phase)
-          || typeof state.ownerId !== "string" || !state.ownerId
-          || Buffer.byteLength(JSON.stringify(state)) > 128 * 1024) {
-        throw new Error("Invalid bounded preparation owner checkpoint");
+          || typeof state.ownerId !== "string" || !state.ownerId) {
+        throw new Error("Invalid preparation owner checkpoint");
       }
       const prior = current.preparationState;
       const allowed = resume ? ["checking"] : prior == null ? ["checking"]
@@ -1169,10 +1169,9 @@ export class WorkspaceCatalogStore {
           || state.revision !== expectedRevision + 1 || !state.ownerId
           || !Number.isSafeInteger(state.epoch) || state.epoch < 1
           || !["checking", "composing", "blocked", "completed"].includes(state.phase)
-          || !Array.isArray(state.events) || state.events.length > 64
-          || Buffer.byteLength(JSON.stringify(state)) > 128 * 1024
+          || !Array.isArray(state.events)
           || JSON.stringify(state.legacy) !== JSON.stringify(preparationLegacyIdentity(current))) {
-        throw new Error("Invalid bounded forward preparation checkpoint");
+        throw new Error("Invalid forward preparation checkpoint");
       }
       if (prior ? prior.kind !== FORWARD_PREPARATION || prior.phase === "completed"
           || JSON.stringify(state.events.slice(0, -1)) !== JSON.stringify(prior.events)

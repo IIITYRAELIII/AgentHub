@@ -23,6 +23,17 @@ import { taskRepositoryKey } from "../../../src/domain/task-git-reference.mjs";
 
 const execFileAsync = promisify(execFile);
 
+test("release Git can omit a wall clock cutoff while retaining explicit abort", async () => {
+  assert.equal(await runTaskGitCommand(["-e", "setTimeout(() => process.stdout.write('completed'), 25)"], {
+    executable: process.execPath, timeoutMs: null,
+  }), "completed");
+  const controller = new AbortController();
+  controller.abort(new Error("exact lease lost"));
+  await assert.rejects(runTaskGitCommand(["-e", "throw new Error('must not start')"], {
+    executable: process.execPath, timeoutMs: null, signal: controller.signal,
+  }), /exact lease lost/u);
+});
+
 for (const advancedRemote of [false, true]) test(`combined Tasks accept published ancestry with advanced remote=${advancedRemote} and reject unproven history`, { timeout: 90_000 }, async (context) => {
   const root = await repository(context);
   const originalMain = await git(root, "rev-parse", "main");

@@ -3,7 +3,6 @@ import path from "node:path";
 import { selectedCompositionFields } from "./task-selected-composition.mjs";
 import { normalizedNativeResolution } from "./native-resolution-input.mjs";
 
-export const MAX_RELEASE_METADATA_BYTES = 8 * 1024 * 1024;
 
 export const RELEASE_OPERATION_STATES = Object.freeze({
   COMPOSE: "compose",
@@ -103,7 +102,7 @@ function normalizedReleaseMetadata(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("releaseMetadata must be an object");
   const sourcePath = requiredText(value.sourcePath, "release metadata source path");
   const byteLength = Number(value.byteLength);
-  if (!Number.isSafeInteger(byteLength) || byteLength < 1 || byteLength > MAX_RELEASE_METADATA_BYTES) {
+  if (!Number.isSafeInteger(byteLength) || byteLength < 1) {
     throw new TypeError("release metadata size is invalid or too large");
   }
   const rawSha256 = requiredText(value.rawSha256, "release metadata raw digest");
@@ -219,11 +218,9 @@ export function reviewedMainBinding(operation, value) {
   return { expectedRevision: value.expectedRevision, approvedRepositories };
 }
 
-export function staleReviewedMainFailure(operation) {
+export function failedComposeRecoveryEligible(operation) {
   return operation?.state === "failed" && operation.owner == null
-    && operation.currentGeneration > 0 && operation.lastError?.step === "compose"
-    && (operation.lastError.code === "RELEASE_MAIN_APPROVAL_STALE"
-      || operation.lastError.message?.startsWith("explicit reviewed-main approval is stale for "));
+    && operation.currentGeneration > 0 && operation.lastError?.step === "compose";
 }
 
 function normalizedReviewedMain(value, operation) {
@@ -343,7 +340,7 @@ export function transitionReleaseOperation(current, patch = {}, {
   if (!operation) throw new TypeError("valid current release operation is required");
   if (expectedRevision !== operation.revision) return { operation, applied: false, reason: "stale-revision" };
   const recovery = reviewedMainRecovery == null ? null : normalizedReviewedMain(reviewedMainRecovery, operation);
-  if (recovery && (!staleReviewedMainFailure(operation) || recovery.priorRevision !== operation.revision
+  if (recovery && (!failedComposeRecoveryEligible(operation) || recovery.priorRevision !== operation.revision
       || recovery.priorGeneration !== operation.currentGeneration
       || releaseIdentitySha256(recovery.priorFailure) !== releaseIdentitySha256({ completedAt: operation.completedAt, error: operation.lastError })
       || patch.state !== "compose")) throw new Error("Reviewed-main recovery does not match original failed operation");

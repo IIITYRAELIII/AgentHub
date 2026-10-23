@@ -53,7 +53,7 @@ const AWAIT_UNKNOWN_OUTCOME_CODES = new Set([
   "AWAIT_ACCEPTANCE_UNKNOWN",
 ]);
 
-function runGit(args, { cwd, timeoutMs = 120_000, rawOutput = false, acceptableExitCodes = [], input = null, stdoutFd = null } = {}) {
+function runGit(args, { cwd, timeoutMs = null, rawOutput = false, acceptableExitCodes = [], input = null, stdoutFd = null } = {}) {
   if (stdoutFd !== null && (!Number.isSafeInteger(stdoutFd) || stdoutFd < 3)) throw new TypeError("Invalid owned Git output descriptor");
   const guarded = guardedPreparationGit(lease => {
     const invocation = preparationGitInvocation(args, cwd);
@@ -70,7 +70,7 @@ function runGit(args, { cwd, timeoutMs = 120_000, rawOutput = false, acceptableE
       windowsHide: true, stdio: [input == null ? "ignore" : "pipe", stdoutFd ?? "pipe", "pipe"] });
     const stdout = [];
     const stderr = [];
-    const timer = setTimeout(() => {
+    const timer = timeoutMs == null ? null : setTimeout(() => {
       child.kill();
       reject(new Error(`git ${args[0]} timed out after ${timeoutMs} ms`));
     }, timeoutMs);
@@ -92,14 +92,14 @@ function runGit(args, { cwd, timeoutMs = 120_000, rawOutput = false, acceptableE
   });
 }
 
-function runGitWithInput(args, input, { cwd, timeoutMs = 120_000 } = {}) {
+function runGitWithInput(args, input, { cwd, timeoutMs = null } = {}) {
   return new Promise((resolve, reject) => {
     const invocation = preparationGitInvocation(args, cwd);
     const child = spawn("git", invocation.args, { cwd, ...(invocation.env ? { env: invocation.env } : {}),
       windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
     const stdout = [];
     const stderr = [];
-    const timer = setTimeout(() => {
+    const timer = timeoutMs == null ? null : setTimeout(() => {
       child.kill();
       reject(new Error(`git ${args[0]} timed out after ${timeoutMs} ms`));
     }, timeoutMs);
@@ -318,13 +318,13 @@ async function inspectRemoteObjectsInIsolation({
   try {
     await runGit(["init", "--bare", "."], { cwd: objectRoot });
     await runGit(["fetch", "--no-tags", "--force", originUrl,
-      "refs/heads/main:refs/heads/review-origin"], { cwd: objectRoot, timeoutMs: 300_000 });
+      "refs/heads/main:refs/heads/review-origin"], { cwd: objectRoot, timeoutMs: null });
     const fetchedMain = await runGit(["rev-parse", "refs/heads/review-origin^{commit}"], { cwd: objectRoot });
     if (fetchedMain !== remoteMain) {
       throw new Error("publication freeze recovery reviewed origin changed during isolated verification");
     }
     await runGit(["fetch", "--no-tags", "--force", releaseRoot,
-      `${frozenHead}:refs/heads/review-frozen`], { cwd: objectRoot, timeoutMs: 300_000 });
+      `${frozenHead}:refs/heads/review-frozen`], { cwd: objectRoot, timeoutMs: null });
     if (await gitMaybe(["merge-base", "--is-ancestor", frozenHead, remoteMain], { cwd: objectRoot }) !== null) {
       throw new Error("publication freeze recovery candidate acquired a foreign publication effect");
     }
@@ -751,14 +751,14 @@ export class ReleaseGitWorkspaceService {
       const clone = await this.#ensureClone(primary);
       await runGit(["fetch", "workspace", "+refs/heads/main:refs/remotes/workspace/main"], {
         cwd: clone.releaseRoot,
-        timeoutMs: 300_000,
+        timeoutMs: null,
       });
       await runGit(["fetch", "--prune", "origin", "+refs/heads/main:refs/remotes/origin/main"], {
         cwd: clone.releaseRoot,
-        timeoutMs: 300_000,
+        timeoutMs: null,
       });
       if (await gitMaybe(["cat-file", "-e", `${baseline}^{commit}`], { cwd: clone.releaseRoot }) === null) {
-        await runGit(["fetch", "workspace", baseline], { cwd: clone.releaseRoot, timeoutMs: 300_000 });
+        await runGit(["fetch", "workspace", baseline], { cwd: clone.releaseRoot, timeoutMs: null });
       }
       const localMain = primary.mainCommit;
       const originMain = await runGit(["rev-parse", "refs/remotes/origin/main^{commit}"], { cwd: clone.releaseRoot });
@@ -862,14 +862,14 @@ export class ReleaseGitWorkspaceService {
       const bundle = this.#validationBundle ?? path.join(transportRoot, "source.bundle");
       try {
         if (transportRoot) await runGit(["bundle", "create", bundle, "refs/heads/main"], {
-          cwd: sourceRoot, timeoutMs: 300_000,
+          cwd: sourceRoot, timeoutMs: null,
         });
         await runGit([
           "-c", "core.longpaths=true", "clone", "--single-branch", "--branch", "main",
           "--no-local", "--no-hardlinks", "--no-checkout",
           ...(this.#validationReferenceRoot ? ["--reference-if-able", this.#validationReferenceRoot] : []),
           bundle, layout.releaseRoot,
-        ], { cwd: layout.root, timeoutMs: 300_000 });
+        ], { cwd: layout.root, timeoutMs: null });
       } finally {
         if (transportRoot) {
           if (!pathInside(layout.root, transportRoot) || path.dirname(transportRoot) !== layout.root) throw new Error("Clone transport escaped its owned root");
@@ -892,7 +892,7 @@ export class ReleaseGitWorkspaceService {
           "0".repeat(40)], { cwd: layout.releaseRoot });
       } else await runGit(["fetch", "origin", "+refs/heads/main:refs/remotes/origin/main"], {
         cwd: layout.releaseRoot,
-        timeoutMs: 300_000,
+        timeoutMs: null,
       });
       await runGit(["checkout", "--no-overwrite-ignore", "main"], { cwd: layout.releaseRoot });
       if (await runGit(["rev-parse", "HEAD^{commit}"], { cwd: layout.releaseRoot }) !== primary.mainCommit) {
@@ -956,7 +956,7 @@ export class ReleaseGitWorkspaceService {
       await createSelectedGitBundle({ root: temporaryRoot, sourceRoot, bundle, mainCommit,
         inputs: [mainCommit, String(approvedBaseCommit ?? "").trim(),
           ...normalizedFrozenTasks(frozenTasks).map(task => task.resultCommit)],
-        gitAt: (cwd, args, options) => runGit(args, { ...options, cwd, timeoutMs: 300_000 }) });
+        gitAt: (cwd, args, options) => runGit(args, { ...options, cwd, timeoutMs: null }) });
       isolated.#validationBundle = bundle;
       const candidate = await isolated.prepareCandidate({
         planRevision, projectRoot, workspaceId, frozenTasks, approvedBaseCommit, baseProvenance,
@@ -1098,7 +1098,7 @@ export class ReleaseGitWorkspaceService {
           // only main/base/selected result ancestry, never unrelated source refs.
           // Preserve partial output for this original generation's recovery.
           await createSelectedGitBundle({ root: generationDataDir, sourceRoot, bundle, inputs, mainCommit,
-            gitAt: (cwd, args, options) => runGit(args, { ...options, cwd, timeoutMs: 300_000 }) });
+            gitAt: (cwd, args, options) => runGit(args, { ...options, cwd, timeoutMs: null }) });
         }
         const isolated = new ReleaseGitWorkspaceService({
           dataDir: generationDataDir,
@@ -1392,7 +1392,7 @@ export class ReleaseGitWorkspaceService {
         checkpointBytes: journal.before.checkpointBytes === null ? null
           : Buffer.from(journal.before.checkpointBytes, "base64") } : observedBefore;
       await runGit(["fetch", "--no-tags", candidate.releaseRoot, candidate.preReleaseHead], {
-        cwd: clone.releaseRoot, timeoutMs: 300_000,
+        cwd: clone.releaseRoot, timeoutMs: null,
       }).catch((error) => {
         throw new Error(`Await promotion could not import ${candidate.releaseRoot}@${candidate.preReleaseHead}: ${error.message}`, { cause: error });
       });
@@ -1533,7 +1533,7 @@ export class ReleaseGitWorkspaceService {
     if (publishedRevision !== await durablePublishedRevision(this.#environment, initial.root)) {
       throw new Error("Ordinary Await published baseline changed");
     }
-    const git = (args, options = {}) => runGit(args, { ...options, cwd: initial.root, timeoutMs: 300_000 });
+    const git = (args, options = {}) => runGit(args, { ...options, cwd: initial.root, timeoutMs: null });
     const actual = await readNativeUpstreamAdoptions({ git, tasks, repositoryRoot: initial.root,
       localMainCommit: initial.mainCommit });
     const pins = actual.map(({ taskId, resultCommit, recordRef, recordHash, adoptedCommit, acceptedLocalMainCommit }) =>
@@ -1542,7 +1542,7 @@ export class ReleaseGitWorkspaceService {
       throw new Error("Ordinary Await selected adoption evidence changed");
     }
     const provenance = await installedNativeHistoryBaseline({ git,
-      sourceGit: (cwd, args) => runGit(args, { cwd, timeoutMs: 300_000 }),
+      sourceGit: (cwd, args) => runGit(args, { cwd, timeoutMs: null }),
       repositoryRoot: initial.root, primaryMainCommit: initial.mainCommit, publishedRevision,
       runtimeRoot: defaultRuntimeRoot({ environment: this.#environment }), planRevision, tasks, adoptions: actual });
     if (!provenance && pins.length) throw new Error("Ordinary adopted Await has no verified installed source baseline");
@@ -1568,7 +1568,7 @@ export class ReleaseGitWorkspaceService {
       primaryMainCommit: initial.mainCommit,
       publishedRevision: await durablePublishedRevision(this.#environment, initial.root),
       runtimeRoot: defaultRuntimeRoot({ environment: this.#environment }),
-      git: (args, options = {}) => runGit(args, { ...options, cwd: initial.root, timeoutMs: 300_000 }),
+      git: (args, options = {}) => runGit(args, { ...options, cwd: initial.root, timeoutMs: null }),
     });
   }
 
@@ -1638,8 +1638,8 @@ export class ReleaseGitWorkspaceService {
     const checkpointFile = path.join(legacyRoot, "checkpoint.json");
     for (const file of [checkpointFile, path.join(legacyRoot, "native-preparation.json")]) {
       const entry = await lstat(file).catch(error => { if (error.code === "ENOENT") return null; throw error; });
-      if (entry && (!entry.isFile() || entry.isSymbolicLink() || entry.size > 512 * 1024)) {
-        throw new Error(`Legacy preparation inventory record is unsafe or oversized: ${file}`);
+      if (entry && (!entry.isFile() || entry.isSymbolicLink())) {
+        throw new Error(`Legacy preparation inventory record is unsafe: ${file}`);
       }
     }
     const checkpoint = await readFile(checkpointFile), legacyCheckpoint = JSON.parse(checkpoint.toString("utf8"));
@@ -1775,7 +1775,7 @@ export class ReleaseGitWorkspaceService {
         sourceRoot: options.projectRoot, bundle, mainCommit: main,
         inputs: [...new Set([main, isolation.originMainCommit, options.approvedBaseCommit,
           ...options.frozenTasks.map(task => task.resultCommit)])],
-        gitAt: (cwd, args, extra) => runGit(args, { ...extra, cwd, timeoutMs: 300_000 }) });
+        gitAt: (cwd, args, extra) => runGit(args, { ...extra, cwd, timeoutMs: null }) });
       await runGit(["bundle", "verify", bundle], { cwd: options.projectRoot });
       isolated.#validationBundle = bundle;
       const result = await isolated.prepareCandidate(options);
@@ -1854,21 +1854,21 @@ export class ReleaseGitWorkspaceService {
         ? { ...layout, ...await assertReleaseCloneForPublication({ repositoryRoot: layout.releaseRoot }) }
         : await this.#ensureClone(initial);
       if (this.#isolationContext) await this.#assertIsolationClone(clone, this.#isolationContext);
-      const git = (args, options = {}) => runGit(args, { ...options, cwd: clone.releaseRoot, timeoutMs: 300_000 });
+      const git = (args, options = {}) => runGit(args, { ...options, cwd: clone.releaseRoot, timeoutMs: null });
       const checkpoint = await readJson(clone.checkpointFile);
       if (forwardPreparation) {
         if (!preparationGuard || !preflightRequestId || typeof commitPrepared !== "function"
             || typeof forwardPreparation.observeEffects !== "function") throw new Error("Forward preparation owning boundaries are incomplete");
         const journalFile = path.join(layout.root, "native-preparation.json");
-        const boundedRecord = async file => {
+        const readEffectRecord = async file => {
           const entry = await lstat(file).catch(error => { if (error.code === "ENOENT") return null; throw error; });
           if (!entry) return null;
-          if (!entry.isFile() || entry.isSymbolicLink() || entry.size > 512 * 1024) throw new Error("Forward preparation effect record is unsafe or oversized");
+          if (!entry.isFile() || entry.isSymbolicLink()) throw new Error("Forward preparation effect record is unsafe");
           const bytes = await readFile(file);
           return { sha256: sha256(bytes), bytes: bytes.length, value: JSON.parse(bytes) };
         };
         // Native journals contain complete index/automatic inventories. Their
-        // evidence digest must not inherit the small parsed checkpoint bound;
+        // evidence digest is streamed independently of parsed checkpoints;
         // the native sequencer still owns parsing and semantic validation.
         const nativeRecordHash = async file => {
           const entry = await lstat(file).catch(error => { if (error.code === "ENOENT") return null; throw error; });
@@ -1892,7 +1892,7 @@ export class ReleaseGitWorkspaceService {
             return digest.digest("hex");
           } finally { await handle.close(); }
         };
-        const journalRecord = await boundedRecord(journalFile), journal = journalRecord?.value;
+        const journalRecord = await readEffectRecord(journalFile), journal = journalRecord?.value;
         const checkpointBytes = await readFile(clone.checkpointFile).catch(error => {
           if (this.#isolationContext && error.code === "ENOENT") return null; throw error;
         });
@@ -2024,7 +2024,7 @@ export class ReleaseGitWorkspaceService {
         root: mergeRoot, sourceRoot: clone.releaseRoot, baseCommit, tasks, identity,
         resolutionReview: nativeResolutionReview, verifyReview: this.verifyNativeResolutionReview,
         deliveredHead: checkpoint?.preReleaseHead ?? null,
-        gitAt: (cwd, args, options = {}) => runGit(args, { ...options, cwd, timeoutMs: 300_000 }),
+        gitAt: (cwd, args, options = {}) => runGit(args, { ...options, cwd, timeoutMs: null }),
         readJson, writeJson: writeJsonAtomic,
       }).catch(error => {
         // Only private native staging has changed at this boundary. Keep its
@@ -2410,7 +2410,7 @@ export class ReleaseGitWorkspaceService {
       runGit(["rev-parse", "refs/heads/PreRelease^{commit}"], { cwd: layout.releaseRoot }),
       runGit(["--no-optional-locks", "status", "--porcelain=v1", "--untracked-files=all"], { cwd: layout.releaseRoot }),
       runGit(["ls-files", "--unmerged"], { cwd: layout.releaseRoot }),
-      runGit(["ls-remote", "origin", "refs/heads/main"], { cwd: layout.releaseRoot, timeoutMs: 300_000 }),
+      runGit(["ls-remote", "origin", "refs/heads/main"], { cwd: layout.releaseRoot, timeoutMs: null }),
       runGit(["rev-parse", "refs/remotes/origin/main^{commit}"], { cwd: layout.releaseRoot }),
       runGit(["remote", "get-url", "origin"], { cwd: layout.releaseRoot }),
     ]);
@@ -2660,7 +2660,7 @@ export class ReleaseGitWorkspaceService {
         readFile(publicationRunPath),
         readFile(publicationStepPath).catch((error) => error?.code === "ENOENT" ? null : Promise.reject(error)),
         readFile(publicationRun.logFile),
-        runGit(["ls-remote", "origin", "refs/heads/main"], { cwd: layout.releaseRoot, timeoutMs: 300_000 }),
+        runGit(["ls-remote", "origin", "refs/heads/main"], { cwd: layout.releaseRoot, timeoutMs: null }),
         runGit(["rev-parse", "refs/remotes/origin/main^{commit}"], { cwd: layout.releaseRoot }),
         runGit(["remote", "get-url", "origin"], { cwd: layout.releaseRoot }),
       ]);
@@ -2766,7 +2766,7 @@ export class ReleaseGitWorkspaceService {
       phase: "missing-provenance current observation",
     });
     const [remoteLine, releaseTracking, originUrl] = await Promise.all([
-      runGit(["ls-remote", "origin", "refs/heads/main"], { cwd: layout.releaseRoot, timeoutMs: 300_000 }),
+      runGit(["ls-remote", "origin", "refs/heads/main"], { cwd: layout.releaseRoot, timeoutMs: null }),
       runGit(["rev-parse", "refs/remotes/origin/main^{commit}"], { cwd: layout.releaseRoot }),
       runGit(["remote", "get-url", "origin"], { cwd: layout.releaseRoot }),
     ]);
@@ -2875,7 +2875,7 @@ export class ReleaseGitWorkspaceService {
     const [currentRun, currentCheckpoint, remoteLine] = await Promise.all([
       readPublicationRunStatus(publicationRunPaths(this.#environment).statusFile),
       readPublicationCheckpoint(publicationCheckpointFile(this.#environment)),
-      runGit(["ls-remote", "origin", "refs/heads/main"], { cwd: layout.releaseRoot, timeoutMs: 300_000 }),
+      runGit(["ls-remote", "origin", "refs/heads/main"], { cwd: layout.releaseRoot, timeoutMs: null }),
     ]);
     if (currentRun && !PUBLICATION_TERMINAL_STATUSES.has(currentRun.status)) {
       throw new Error("publication freeze recovery refuses an active or ambiguous publication run");
@@ -2891,7 +2891,7 @@ export class ReleaseGitWorkspaceService {
     }
     if (remoteMain !== identity.originMain) {
       await runGit(["fetch", "--no-write-fetch-head", "origin", remoteMain], {
-        cwd: layout.releaseRoot, timeoutMs: 300_000,
+        cwd: layout.releaseRoot, timeoutMs: null,
       });
       if (await gitMaybe(["merge-base", "--is-ancestor", identity.frozenHead, remoteMain], {
         cwd: layout.releaseRoot,
@@ -3017,7 +3017,7 @@ export class ReleaseGitWorkspaceService {
         : Promise.resolve(null),
       recoveryMode === FAILED_FROZEN_RECOVERY_MODE ? readFile(admittedLogFile) : Promise.resolve(null),
       runGit(["remote", "get-url", "origin"], { cwd: layout.releaseRoot }),
-      runGit(["ls-remote", "origin", "refs/heads/main"], { cwd: layout.releaseRoot, timeoutMs: 300_000 }),
+      runGit(["ls-remote", "origin", "refs/heads/main"], { cwd: layout.releaseRoot, timeoutMs: null }),
       runGit(["rev-parse", "refs/remotes/origin/main^{commit}"], { cwd: layout.releaseRoot }),
     ]);
     if (sha256(stateBytes) !== identity.publicationStateSha256 || sha256(originUrl) !== identity.originUrlSha256
@@ -3297,7 +3297,7 @@ export class ReleaseGitWorkspaceService {
     const layout = this.#layout(initial.projectRoot);
     return withInterprocessLocks([path.join(this.dataDir, "locks", `release-git-${layout.repositoryKey}`)], async () => {
       await runGit(["fetch", "--no-tags", "--no-recurse-submodules", "origin",
-        "+refs/heads/main:refs/remotes/origin/main"], { cwd: initial.projectRoot, timeoutMs: 300_000 });
+        "+refs/heads/main:refs/remotes/origin/main"], { cwd: initial.projectRoot, timeoutMs: null });
       const originMain = await runGit(["rev-parse", "refs/remotes/origin/main^{commit}"], { cwd: initial.projectRoot });
       if (originMain !== target) throw new Error("published primary origin changed");
       await runGit(["merge-base", "--is-ancestor", initial.headCommit, target], { cwd: initial.projectRoot });
@@ -3322,7 +3322,7 @@ export class ReleaseGitWorkspaceService {
     return withInterprocessLocks([lock], async () => {
       await runGit(["fetch", "origin", "+refs/heads/main:refs/remotes/origin/main"], {
         cwd: initial.root,
-        timeoutMs: 300_000,
+        timeoutMs: null,
       });
       const originMain = await runGit(["rev-parse", "refs/remotes/origin/main^{commit}"], { cwd: initial.root });
       if (target && originMain !== target) {
@@ -3355,7 +3355,7 @@ export class ReleaseGitWorkspaceService {
         };
       }
       if (initial.headCommit !== originMain) {
-        await runGit(["merge", "--ff-only", "--no-edit", originMain], { cwd: initial.root, timeoutMs: 300_000 });
+        await runGit(["merge", "--ff-only", "--no-edit", originMain], { cwd: initial.root, timeoutMs: null });
       }
       const final = await primarySnapshot(initial.root);
       await this.assertPrimaryInvariant(final.root, { phase: "post-release verification" });

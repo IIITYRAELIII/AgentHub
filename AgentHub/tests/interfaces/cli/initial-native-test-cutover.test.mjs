@@ -225,9 +225,9 @@ test("source release CLI uses shared default owners for run, refusal, terminal r
   store.transition(legacy.operationId, { state: "compose" });
   const oldCompose = store.beginStep({ operationId: legacy.operationId, generation: 2,
     stepId: "compose", input: { authorization: legacy.authorization, priorGeneration: 1 } }).receipt;
-  store.finishStep(oldCompose, { status: "failed", error: `explicit reviewed-main approval is stale for ${f.primary}` });
+  store.finishStep(oldCompose, { status: "failed", error: `ENOENT: retained metadata unavailable for ${f.primary}` });
   const failed = store.transition(legacy.operationId, { state: "failed", lastError: {
-    step: "compose", message: `explicit reviewed-main approval is stale for ${f.primary}` } }).operation;
+    step: "compose", message: `ENOENT: retained metadata unavailable for ${f.primary}` } }).operation;
   const prior = store.snapshot(legacy.operationId);
   const recovered = await command("continue", { operation_id: legacy.operationId, request_id: "legacy-current-main",
     reviewed_main: { expectedRevision: failed.revision, approvedRepositories: [{ projectRoot: f.primary,
@@ -1196,7 +1196,7 @@ test("ordinary isolated resume inventories large native evidence and still refus
       if (args[1].state.phase === "completed") throw new Error("controlled terminal reply lost before commit");
       return checkpoint(...args);
     };
-  }, isolationObserver), /unknown/u);
+  }, async request => ({ ...await isolationObserver(request), reason: "Exact retained evidence ".repeat(7000) })), /unknown/u);
   const candidate = await f.releaseGit.frozenCandidate(f.primary);
   const retained = path.join(path.dirname(candidate.releaseRoot), "native-merges", "retained-evidence");
   const mergeFile = path.join(retained, "merge.json");
@@ -1220,6 +1220,9 @@ test("ordinary isolated resume inventories large native evidence and still refus
     conflict: { paths: ["base.txt"], stages, automatic: stages } }));
   assert.ok(bytes.length > 512 * 1024);
   await writeFile(mergeFile, bytes);
+  const parsedJournalFile = path.join(path.dirname(candidate.releaseRoot), "native-preparation.json");
+  const parsedJournal = Buffer.concat([await readFile(parsedJournalFile), Buffer.from(" ".repeat(600 * 1024))]);
+  await writeFile(parsedJournalFile, parsedJournal);
   const digest = createHash("sha256").update(bytes).digest("hex");
   const result = await executePreparationResume(input(), { openRuntime: f.open });
   assert.equal(result.kind, "forward-preparation-completed");
@@ -1227,6 +1230,7 @@ test("ordinary isolated resume inventories large native evidence and still refus
   assert.ok(completed.preparationState.events.some(event =>
     event.inventory?.native?.some(entry => entry.root === "retained-evidence" && entry.mergeHash === digest)));
   assert.deepEqual(await readFile(mergeFile), bytes);
+  assert.deepEqual(await readFile(parsedJournalFile), parsedJournal);
   assert.deepEqual(await readFile(candidate.checkpointFile), checkpointBefore);
   assert.equal(await git(candidate.releaseRoot, "reflog", "show", "--format=%H", "PreRelease"), reflogBefore);
   assert.deepEqual(preparationLegacyIdentity(completed), f.legacy);

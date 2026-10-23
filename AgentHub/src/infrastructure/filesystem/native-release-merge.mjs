@@ -1,5 +1,5 @@
 import path from "node:path";
-import { mkdir, lstat, readFile, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, lstat, open, readFile, writeFile } from "node:fs/promises";
 import { createSelectedGitBundle } from "./selected-git-bundle.mjs";
 import { createHash } from "node:crypto";
 import { taskGitIdentityHash } from "../../domain/task-git-reference.mjs";
@@ -44,9 +44,8 @@ export async function assertNativeTaskHistories({ git, baseCommit, tasks, histor
       throw failure(`Task ${task.taskId} requires a main-based result or explicit historical migration`);
     }
     const rows = String(await git([
-      "rev-list", "--first-parent", "--parents", "--max-count=513", task.resultCommit, ...bases.map(b => `^${b}`),
+      "rev-list", "--first-parent", "--parents", task.resultCommit, ...bases.map(b => `^${b}`),
     ])).split(/\r?\n/u).filter(Boolean).map((row) => row.split(" "));
-    if (rows.length > 512) throw failure(`Task ${task.taskId} history exceeds the native merge bound`);
     for (const [commit] of rows) owned.add(commit);
     histories.push({ task, rows });
     const adopted = (historyAuthority?.adoptions ?? []).filter(a => a.taskId === task.taskId
@@ -107,9 +106,9 @@ export async function assertNativeTaskHistories({ git, baseCommit, tasks, histor
           || String(await git(["rev-parse", `${d.sourceCommit}^{tree}`])) !== d.sourceTree) {
         throw failure(`Task ${task.taskId} absorbed history differs from its accepted durable proof`);
       }
-      const sourceRows = String(await git(["rev-list", "--first-parent", "--parents", "--max-count=513",
+      const sourceRows = String(await git(["rev-list", "--first-parent", "--parents",
         d.sourceCommit, `^${baseCommit}`])).split(/\r?\n/u).filter(Boolean).map(row => row.split(" "));
-      if (sourceRows.length > 512 || sourceRows.some(row => row.length !== 2)
+      if (sourceRows.some(row => row.length !== 2)
           || await maybe(git, ["merge-base", "--is-ancestor", d.baseCommit, d.sourceCommit]) === null) {
         throw failure(`Task ${task.taskId} absorbed source requires explicit historical migration`);
       }
@@ -312,19 +311,35 @@ export async function mergeSelectedResults({
       choices.push({ review, binding });
     }
     const info = await lstat(input.bundlePath);
-    if (!info.isFile() || info.isSymbolicLink() || info.size > 512 * 1024 * 1024) {
-      throw failure("Native resolution bundle is not a bounded regular file");
+    if (!info.isFile() || info.isSymbolicLink()) {
+      throw failure("Native resolution bundle is not a regular file");
     }
-    const bytes = await readFile(input.bundlePath);
-    if (createHash("sha256").update(bytes).digest("hex") !== input.bundleSha256) {
-      throw failure("Native resolution bundle digest changed");
-    }
+    const same = (a, b) => a.isFile() && !a.isSymbolicLink()
+      && ["dev", "ino", "size", "mtimeMs", "ctimeMs"].every(key => a[key] === b[key]);
+    const verifyBundle = async (file, entry) => {
+      if (!entry.isFile() || entry.isSymbolicLink() || entry.size !== info.size) {
+        throw failure("Retained native resolution bundle changed");
+      }
+      const handle = await open(file, "r");
+      try {
+        if (!same(await handle.stat(), entry)) throw failure("Retained native resolution bundle changed");
+        const hash = createHash("sha256");
+        let length = 0;
+        for await (const chunk of handle.createReadStream({ autoClose: false, highWaterMark: 64 * 1024 })) {
+          hash.update(chunk); length += chunk.length;
+        }
+        if (length !== entry.size || !same(await handle.stat(), entry) || !same(await lstat(file), entry)
+            || hash.digest("hex") !== input.bundleSha256) {
+          throw failure("Native resolution bundle digest changed");
+        }
+      } finally { await handle.close(); }
+    };
+    await verifyBundle(input.bundlePath, info);
     const bundle = path.join(root, `reviewed-${input.bundleSha256}.bundle`);
-    try { await writeFile(bundle, bytes, { flag: "wx" }); }
+    try { await copyFile(input.bundlePath, bundle, 1); }
     catch (error) { if (error.code !== "EEXIST") throw error; }
-    const retained = await lstat(bundle);
-    if (!retained.isFile() || retained.isSymbolicLink() || retained.size !== bytes.length
-        || !(await readFile(bundle)).equals(bytes)) throw failure("Retained native resolution bundle changed");
+    await verifyBundle(bundle, await lstat(bundle));
+    if (!same(await lstat(input.bundlePath), info)) throw failure("Native resolution bundle changed");
     await git(["fetch", "--no-tags", bundle, ...choices.map(choice => choice.binding.commit)]);
   }
   const reviewFor = (before, result, target) => input?.reviews

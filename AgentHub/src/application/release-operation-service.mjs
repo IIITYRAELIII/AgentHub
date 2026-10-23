@@ -6,7 +6,7 @@ import {
   releaseIdentitySha256,
   releaseOperationIsTerminal,
   reviewedMainBinding,
-  staleReviewedMainFailure,
+  failedComposeRecoveryEligible,
   releaseApprovedTargets,
 } from "../domain/release-operation.mjs";
 
@@ -294,7 +294,7 @@ export class ReleaseOperationService {
     if (!current) throw new Error("release operation was not found");
     const binding = reviewedMainBinding(current, reviewedMain);
     if (binding.expectedRevision !== current.revision) return { accepted: false, reason: "stale-revision", operation: current };
-    if (!staleReviewedMainFailure(current)) return { accepted: false, reason: "ineligible", operation: current };
+    if (!failedComposeRecoveryEligible(current)) return { accepted: false, reason: "ineligible", operation: current };
     if (typeof requestId !== "string" || !requestId.trim()) throw new TypeError("Recovery requestId must be a primitive string");
     if (typeof this.withReviewedMainRecovery !== "function") throw new Error("Reviewed-main recovery verification is unavailable");
     return this.withReviewedMainRecovery({ workspaceId: current.workspaceId,

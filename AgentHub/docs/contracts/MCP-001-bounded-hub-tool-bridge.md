@@ -95,8 +95,9 @@ context; non-RM fails before mutation intake. The preparation original is
 separate from succeeded Task Await and is canonically argument-bound by the
 existing MCP ledger. Terminal persistence occurs inside existing candidate
 rollback ownership, through that same receipt owner, with all selected row CAS
-checked in its SQLite transaction. Exact terminal result stays below 48 KiB,
-so receipt compaction cannot discard candidate/source/request binding.
+checked in its SQLite transaction. The exact preparation terminal result is retained
+in full by that original receipt owner; generic response compaction cannot discard
+candidate/source/request binding. Internal preparation data has no extra byte budget.
 
 This command performs bounded explicit composition without validation,
 publication or installation. UNKNOWN cannot automatically replay Git.

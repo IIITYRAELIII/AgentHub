@@ -21,7 +21,7 @@ async function regular(file) {
     if (error.code === "ENOENT") reject("required source or installed artifact is absent");
     throw error;
   });
-  if (!info.isFile() || info.isSymbolicLink() || info.size > 16 * 1024 * 1024) reject("source evidence must be a bounded regular file");
+  if (!info.isFile() || info.isSymbolicLink()) reject("source evidence must be a regular file");
   return readFile(file);
 }
 
@@ -39,16 +39,15 @@ function sourceMatches(source, physical, relative) {
 async function assertInheritedRepositoryFiles({ git, sourceCommit, agreedMainCommit }) {
   const outside = async commit => {
     const raw = Buffer.from(await git(["ls-tree", "-r", "-z", "--full-tree", commit], { rawOutput: true }));
-    if (raw.length > 4 * 1024 * 1024 || (raw.length && raw.at(-1) !== 0)) reject("repository inventory is malformed or exceeds bound");
+    if (raw.length && raw.at(-1) !== 0) reject("repository inventory is malformed");
     const paths = new Set(), retained = [];
-    let offset = 0, count = 0;
+    let offset = 0;
     while (offset < raw.length) {
       const end = raw.indexOf(0, offset);
       const record = raw.subarray(offset, end);
       const tab = record.indexOf(9);
       if (tab < 0 || !/^(?:100644 blob|100755 blob|120000 blob|160000 commit) (?:[a-f0-9]{40}|[a-f0-9]{64})$/u
-        .test(record.subarray(0, tab).toString("utf8")) || tab + 1 === record.length
-        || ++count > 16_384) reject("repository inventory is malformed or exceeds bound");
+        .test(record.subarray(0, tab).toString("utf8")) || tab + 1 === record.length) reject("repository inventory is malformed");
       const name = record.subarray(tab + 1);
       const key = name.toString("hex");
       if (paths.has(key)) reject("repository inventory has ambiguous paths");
@@ -142,7 +141,7 @@ export async function assertInstalledLocalSourceBaseline({
   await git(["merge-base", "--is-ancestor", publishedRevision, p.sourceBaseCommit]);
   if (String(await git(["rev-parse", `${p.sourceBaseCommit}^{tree}`])) !== p.sourceBaseTree) reject("source tree changed");
   const patch = await git(["diff", "--binary", "--full-index", "--no-renames", publishedRevision, p.sourceBaseCommit], { rawOutput: true });
-  if (patch.length > 4 * 1024 * 1024 || sha(patch) !== p.sourcePatchSha256) reject("source patch changed or exceeds migration bound");
+  if (sha(patch) !== p.sourcePatchSha256) reject("source patch changed");
   const current = JSON.parse(await regular(path.join(runtimeRoot, "current.json")));
   if (current.current !== p.installedReleaseId) reject("installed release changed");
   const releaseRoot = path.join(runtimeRoot, "releases", p.installedReleaseId);
@@ -150,16 +149,14 @@ export async function assertInstalledLocalSourceBaseline({
   if (sha(manifestBytes) !== p.installedManifestSha256) reject("installed manifest changed");
   const manifest = JSON.parse(manifestBytes);
   if (manifest.releaseId !== p.installedReleaseId || !Array.isArray(manifest.files)
-      || manifest.files.length > 16384 || manifest.files.some(file => typeof file.path !== "string"
+      || manifest.files.some(file => typeof file.path !== "string"
         || !/^[a-f0-9]{64}$/u.test(file.sha256) || !Number.isSafeInteger(file.bytes) || file.bytes < 0)) reject("installed identity changed");
   const files = new Map(manifest.files.map(file => [file.path, file]));
   if (files.size !== manifest.files.length) reject("duplicate runtime paths");
   const changed = String(await git(["diff", "--name-only", "--no-renames", "-z", publishedRevision, p.sourceBaseCommit]))
     .split("\0").filter(Boolean);
-  if (changed.length > 512) reject("carry exceeds migration path bound");
   const entries = String(await git(["ls-tree", "-r", "-z", p.sourceBaseCommit, "--", "AgentHub"]))
     .split("\0").filter(Boolean);
-  if (entries.length > 8192) reject("source inventory exceeds migration bound");
   const modes = new Map(entries.map(entry => {
     const split = entry.indexOf("\t");
     return [entry.slice(split + 1), entry.slice(0, 6)];

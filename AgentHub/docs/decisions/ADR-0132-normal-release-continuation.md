@@ -56,3 +56,30 @@ accepts reviewed native resolution input without repeating the initial observer.
 The existing local consumer's `--resume-preparation` mode calls that same public
 method with the original ID/hash/revision. Initial UNKNOWN without transferred
 isolation still refuses; this is not generic replay or claim-custody recovery.
+
+
+## Internal release data and definite compose recovery
+
+Correct internal preparation envelopes, source inventories, parsed owner journals,
+review bundles, selected histories and exact receipts are not rejected by an
+arbitrary size, record-count or Git execution deadline. File evidence is hashed
+in chunks; native bundles are copied privately and reverified before import.
+Complete remote ancestry is streamed and must still be closed and exact.
+Lease loss/abort, operation identity, format, hash, membership, CAS and no-overwrite
+checks remain mandatory. Event-delivery batch sizes only yield/reschedule work;
+they do not reject or truncate release evidence. External wire/projection and
+closed historical migration bounds are not changed by this ordinary path.
+
+A terminal failed compose with its exact failed step receipt may use the existing
+reviewed_main continuation after the cause is fixed, not only a stale-main error.
+The same original still requires fresh authority/selection/candidate checks,
+unchanged authorization, no next immutable generation and authoritative terminal
+not-applied publication receipts/readbacks. Unknown/partial effects remain
+ineligible. No receipt is rewritten and no new recovery owner is introduced.
+
+Runtime allocation validates every available declared Android metadata body.
+Multiple retained manifests may reference one identical SHA-256/size content;
+that content needs at least one verified physical copy. A missing duplicate is
+not required for allocation, while tampered bytes or missing unique content refuse.
+This does not restore a missing file or certify completeness/installation of any
+retained runtime body. No runtime files, pointers or manifests are changed.

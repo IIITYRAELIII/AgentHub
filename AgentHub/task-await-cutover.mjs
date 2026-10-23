@@ -173,7 +173,7 @@ export function parseTaskAwaitCutoverArguments(argv) {
 
 async function git(args, root = workspaceRoot) {
   const result = await execFileAsync("git", ["-C", root, ...args], {
-    encoding: "utf8", timeout: 10_000, windowsHide: true,
+    encoding: "utf8", windowsHide: true,
   });
   return String(result.stdout ?? "").trim();
 }

@@ -5,7 +5,6 @@ import test from "node:test";
 import {
   createCandidateGeneration,
   createReleaseOperation,
-  MAX_RELEASE_METADATA_BYTES,
   RELEASE_OPERATION_STATES,
   restoreReleaseOperation,
   transitionReleaseOperation,
@@ -54,7 +53,7 @@ test("release operation keeps authorization immutable and uses explicit waiting 
 });
 
 test("release operation preserves repository-scale release metadata bytes and exact digests", () => {
-  const bytes = Buffer.alloc(1_981_700, 0x61);
+  const bytes = Buffer.alloc(9 * 1024 * 1024, 0x61);
   const rawSha256 = createHash("sha256").update(bytes).digest("hex");
   const created = operation({
     authorization: {
@@ -72,7 +71,7 @@ test("release operation preserves repository-scale release metadata bytes and ex
   assert.equal(created.authorization.releaseMetadata.byteLength, bytes.length);
   assert.equal(created.authorization.releaseMetadata.sourcePath, "C:/owned/release/CHANGELOG.md");
   assert.equal(created.authorization.releaseMetadata.rawSha256, rawSha256);
-  assert.ok(bytes.length < MAX_RELEASE_METADATA_BYTES);
+  assert.ok(bytes.length > 8 * 1024 * 1024);
 });
 
 test("reviewed native transport remains bound to original release authorization across persistence", () => {

@@ -430,10 +430,10 @@ Its distinct original request binds the following strict versioned envelope:
 
 Commits/trees use 40 lowercase hexadecimal characters; digests use 64. Task
 editorial `rowRevision` and release `taskRevision` are distinct. Sets must be
-unique and complete, at most 128 Tasks/eight repositories/48 KiB. Unknown/missing
+unique and complete without a separate internal count/byte ceiling. Unknown/missing
 fields reject. Source inventory includes every regular file under runtime
 `src` and top-level JS/package entrypoints, with normalized relative path,
-raw length and SHA-256; links reject. Bounds are 4096 files/32 MiB. This is an
+raw length and SHA-256; links and non-files reject. File hashing is streamed. This is an
 explicit preparation check, never a snapshot/startup/background scan.
 
 The existing Await -> selected Task -> repository ownership encloses fresh plan,
@@ -592,7 +592,7 @@ Ref reachability in that clone is not a new selected-result prerequisite.
 
 Dev is preview only. The exact accepted set and its required descriptors remain
 Hub authority. Test-only branches are excluded. A result's bounded first-parent
-history (at most 512 commits) must start from accepted main; an unselected merge
+history must start from accepted main; its complete ancestry is checked without a commit-count ceiling. An unselected merge
 side is refused. An explicitly accepted absorption is admitted only through its
 exact ordered parents and the existing authenticated saved/stopped handoff,
 durable selected receipt and bounded source history. A checklist link, equality
@@ -811,7 +811,7 @@ from the stable runner checkout or an older repository snapshot.
 The durable metadata envelope carries a bounded source path, byte length and raw
 plus canonical digests rather than base64-expanding the document through the
 control transport. Composition re-reads and verifies the complete supported
-repository release notes up to 8 MiB; callers do not truncate or summarize them.
+repository release notes without a separate byte ceiling; callers do not truncate or summarize them.
 
 An already imported evidence-only orphan checkpoint may later receive a
 `primarySynchronizationProof` annotation from the primary synchronization owner.
@@ -2802,3 +2802,30 @@ promotion/CAS retain ordinary rollback. Terminal repetition reads the same
 outcome without new Git effects. This migration is removable once the pending
 ordinary native Awaits lacking their own preparation intent are settled; it
 does not relax ordinary dirty-checkout rejection or authorize publication.
+
+
+## Internal release data and definite compose recovery
+
+Correct internal preparation envelopes, source inventories, parsed owner journals,
+review bundles, selected histories and exact receipts are not rejected by an
+arbitrary size, record-count or Git execution deadline. File evidence is hashed
+in chunks; native bundles are copied privately and reverified before import.
+Complete remote ancestry is streamed and must still be closed and exact.
+Lease loss/abort, operation identity, format, hash, membership, CAS and no-overwrite
+checks remain mandatory. Event-delivery batch sizes only yield/reschedule work;
+they do not reject or truncate release evidence. External wire/projection and
+closed historical migration bounds are not changed by this ordinary path.
+
+A terminal failed compose with its exact failed step receipt may use the existing
+reviewed_main continuation after the cause is fixed, not only a stale-main error.
+The same original still requires fresh authority/selection/candidate checks,
+unchanged authorization, no next immutable generation and authoritative terminal
+not-applied publication receipts/readbacks. Unknown/partial effects remain
+ineligible. No receipt is rewritten and no new recovery owner is introduced.
+
+Runtime allocation validates every available declared Android metadata body.
+Multiple retained manifests may reference one identical SHA-256/size content;
+that content needs at least one verified physical copy. A missing duplicate is
+not required for allocation, while tampered bytes or missing unique content refuse.
+This does not restore a missing file or certify completeness/installation of any
+retained runtime body. No runtime files, pointers or manifests are changed.

@@ -8,6 +8,49 @@ import { readPreparationSourceClosure, validatePreparationEnvelope } from "../..
 import { localSourceSelectionHash } from "../../src/domain/release-base-provenance.mjs";
 import { mcpArgumentsHash } from "../../src/domain/mcp-arguments-hash.mjs";
 import { validatePreparationForward, inspectPreparationForwardCustody } from "../../src/application/release-preparation-forward.mjs";
+import { normalizedNativeResolution } from "../../src/domain/native-resolution-input.mjs";
+import { WorkspaceCatalogStore } from "../../src/infrastructure/persistence/workspace-catalog-store.mjs";
+
+test("original preparation receipt retains complete large terminal bindings", async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "hub-large-preparation-receipt-"));
+  const store = new WorkspaceCatalogStore({ databaseFile: path.join(root, "journal.sqlite") });
+  t.after(async () => { store.close(); await rm(root, { recursive: true, force: true }); });
+  await store.load();
+  const { workspace, stream } = store.createWorkspaceWithStream({ name: "Fixture" });
+  store.beginMcpOperation({ requestId: "exact-original", workspaceId: workspace.id, streamId: stream.id,
+    provider: "codex", threadId: "thread", toolName: "hub_release_prepare", argumentsHash: "a".repeat(64) });
+  const result = { kind: "preparation-only", requestId: "exact-original", argumentsHash: "a".repeat(64),
+    candidates: Array.from({ length: 1000 }, (_, i) => ({ repositoryRoot: `D:/repo-${i}`, manifestHash: "b".repeat(64),
+      preReleaseHead: "c".repeat(40), tree: "d".repeat(40) })) };
+  assert.ok(Buffer.byteLength(JSON.stringify(result)) > 64 * 1024);
+  store.completeMcpOperation("exact-original", result);
+  assert.deepEqual(store.mcpOperation("exact-original").result, result);
+});
+
+test("valid internal preparation sets and reviews have no arbitrary data ceilings", () => {
+  const value = preparationEnvelope();
+  value.tasks = Array.from({ length: 160 }, (_, i) => ({ ...value.tasks[0], taskId: `task-${i}` }));
+  value.repositories = Array.from({ length: 12 }, (_, i) => ({ ...value.repositories[0], projectRoot: `D:/repo-${i}` }));
+  value.repositories[0].nativeResolutionReview = { bundlePath: "D:/owned.bundle", bundleSha256: "a".repeat(64),
+    reviews: Array.from({ length: 40 }, (_, i) => ({ requestId: `review-${i}`, text: "exact proof ".repeat(4000) })) };
+  assert.ok(Buffer.byteLength(JSON.stringify(value)) > 48 * 1024);
+  assert.deepEqual(validatePreparationEnvelope(value), value);
+  assert.deepEqual(normalizedNativeResolution(value.repositories[0].nativeResolutionReview), value.repositories[0].nativeResolutionReview);
+  value.tasks.push(value.tasks[0]);
+  assert.throws(() => validatePreparationEnvelope(value), /Task set/u);
+});
+
+test("source closure streams complete valid inventories beyond former file and byte budgets", async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "hub-large-closure-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await mkdir(path.join(root, "src"));
+  for (let i = 0; i < 4100; i++) await writeFile(path.join(root, "src", `${i}.mjs`), "x");
+  await writeFile(path.join(root, "large.mjs"), Buffer.alloc(33 * 1024 * 1024, 120));
+  const result = await readPreparationSourceClosure(root);
+  assert.equal(result.files, 4101);
+  assert.equal(result.bytes, 4100 + 33 * 1024 * 1024);
+  assert.deepEqual(await readPreparationSourceClosure(root), result);
+});
 
 test("preparation-only local source binding is exact and keeps native review bounded", () => {
   const value = preparationEnvelope();

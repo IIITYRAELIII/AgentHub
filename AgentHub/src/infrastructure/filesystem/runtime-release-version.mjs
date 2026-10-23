@@ -19,6 +19,7 @@ export async function nextRuntimeReleaseVersion({
     throw error;
   });
   let maximumSequence = 0;
+  const mobileGroups = new Map();
   const semantic = !calendarVersion(packageVersion);
   if (semantic) {
     if (!Number.isSafeInteger(allocationFloor) || allocationFloor < 0) throw new Error("Invalid allocation floor");
@@ -46,11 +47,10 @@ export async function nextRuntimeReleaseVersion({
       const mobileEntry = manifest.files.filter(item => item.path === "assets/mobile/update.json");
       if (mobileEntry.length > 1) throw new Error("Ambiguous retained Android metadata");
       if (mobileEntry.length) {
-        const raw = await readFileImpl(path.join(releasesDir, entry.name, "assets", "mobile", "update.json"));
-        if (raw.length !== mobileEntry[0].bytes || createHash("sha256").update(raw).digest("hex") !== mobileEntry[0].sha256) {
-          throw new Error("Retained Android metadata integrity mismatch");
-        }
-        maximumSequence = Math.max(maximumSequence, buildNumber(JSON.parse(raw).versionCode));
+        const metadata = mobileEntry[0];
+        const key = `${metadata.sha256}:${metadata.bytes}`;
+        if (!mobileGroups.has(key)) mobileGroups.set(key, { metadata, files: [] });
+        mobileGroups.get(key).files.push(path.join(releasesDir, entry.name, "assets", "mobile", "update.json"));
       }
       continue;
     }
@@ -59,6 +59,26 @@ export async function nextRuntimeReleaseVersion({
       ? 1
       : agentHubReleaseSequence(packageVersion, manifest.releaseVersion);
     maximumSequence = Math.max(maximumSequence, sequence);
+  }
+  for (const { metadata, files } of mobileGroups.values()) {
+    let verified = false, missing = null;
+    for (const file of files) {
+      const raw = await readFileImpl(file).catch(error => {
+        if (error.code !== "ENOENT") throw error;
+        missing ??= error;
+        return null;
+      });
+      if (raw === null) continue;
+      if (raw.length !== metadata.bytes || createHash("sha256").update(raw).digest("hex") !== metadata.sha256) {
+        throw new Error("Retained Android metadata integrity mismatch");
+      }
+      maximumSequence = Math.max(maximumSequence, buildNumber(JSON.parse(raw).versionCode));
+      verified = true;
+    }
+    // Allocation needs the exact declared metadata content once, not every
+    // duplicate physical copy. Missing unique content still refuses. This is
+    // not a certificate of completeness/installation for any retained body.
+    if (!verified) throw missing ?? new Error("Retained Android metadata is unavailable");
   }
   return semantic ? artifactVersion(packageVersion, maximumSequence + 1) : `${packageVersion}.${maximumSequence + 1}`;
 }
