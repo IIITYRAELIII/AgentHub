@@ -396,6 +396,54 @@ test("generation promotion reopens its original target after lost SQLite respons
   assert.equal(await git(f.primary, "rev-parse", "main"), f.base);
 });
 
+test("publication generation resumes its exact materialized notes before freeze intent", { timeout: 120_000 }, async t => {
+  const f = await fixture(t, { versioned: true }), a = await f.result("A", "a.txt", "accepted\n");
+  const prepared = await f.service.prepareCandidate(f.request([a]));
+  const notes = Buffer.from("exact consolidated release notes\n");
+  const operationId = "original-materialized-notes";
+  const key = createHash("sha256").update(`${operationId}:1:${f.primary}`).digest("hex").slice(0, 24);
+  const generationRoot = path.join(f.root, "data", "release-gens", key);
+  const repositoryKey = path.basename(path.dirname(prepared.releaseRoot));
+  const repository = path.join(generationRoot, "release-repositories", repositoryKey, "repository");
+  const notesFile = path.join(repository, "CHANGELOG.md");
+  const checkpointFile = path.join(path.dirname(repository), "checkpoint.json");
+  const request = { ...f.request([a]), operationId, generation: 1, changelogContent: notes };
+  await assert.rejects(f.service.prepareGeneration({ ...request, validateBeforeCommit: async () => {
+    const content = await readFile(notesFile).catch(error => { if (error.code === "ENOENT") return null; throw error; });
+    if (content?.equals(notes)) throw new Error("controlled refusal after notes materialization before freeze intent");
+  } }), /controlled refusal after notes materialization/u);
+  const checkpoint = await readFile(checkpointFile);
+  assert.equal(JSON.parse(checkpoint).phase, "prepared");
+  assert.equal(JSON.parse(checkpoint).publicationFreeze, undefined);
+  assert.deepEqual(await readFile(notesFile), notes);
+  const beforeHead = await git(repository, "rev-parse", "HEAD");
+  const beforeReflog = await git(repository, "reflog", "show", "--format=%H", "PreRelease");
+  const reopened = new ReleaseGitWorkspaceService({ dataDir: path.join(f.root, "data"), environment: f.environment });
+  await assert.rejects(reopened.prepareGeneration({ ...request, changelogContent: Buffer.from("different request\n") }),
+    { code: "RELEASE_PREPARED_CANDIDATE_STALE" });
+  const foreign = Buffer.from("foreign physical notes\n");
+  await writeFile(notesFile, foreign);
+  await assert.rejects(reopened.prepareGeneration(request), /exact clean PreRelease/u);
+  assert.deepEqual(await readFile(notesFile), foreign);
+  assert.deepEqual(await readFile(checkpointFile), checkpoint);
+  await writeFile(notesFile, notes);
+  const extra = path.join(repository, "foreign.txt");
+  await writeFile(extra, "unbound bytes\n");
+  await assert.rejects(reopened.prepareGeneration(request), /exact clean PreRelease/u);
+  assert.equal(await readFile(extra, "utf8"), "unbound bytes\n");
+  assert.equal(await git(repository, "rev-parse", "HEAD"), beforeHead);
+  assert.equal(await git(repository, "reflog", "show", "--format=%H", "PreRelease"), beforeReflog);
+  await rm(extra);
+  const result = await reopened.prepareGeneration(request);
+  assert.deepEqual(await readFile(notesFile), notes);
+  assert.equal(result.checkpointPhase, "frozen");
+  const finalReflog = await git(repository, "reflog", "show", "--format=%H", "PreRelease");
+  assert.equal((await reopened.prepareGeneration(request)).preReleaseHead, result.preReleaseHead);
+  assert.equal(await git(repository, "reflog", "show", "--format=%H", "PreRelease"), finalReflog);
+  assert.equal(await git(f.primary, "rev-parse", "HEAD"), f.base);
+  assert.equal(await git(prepared.releaseRoot, "rev-parse", "HEAD"), prepared.preReleaseHead);
+});
+
 test("publication generation retains dirty preparation and binds its immutable input after correction", { timeout: 120_000 }, async t => {
   const f = await fixture(t, { versioned: true }), a = await f.result("A", "a.txt", "accepted\n");
   const prepared = await f.service.prepareCandidate(f.request([a]));

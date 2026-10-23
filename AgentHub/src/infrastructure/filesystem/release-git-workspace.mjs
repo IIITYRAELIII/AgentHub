@@ -1139,7 +1139,7 @@ export class ReleaseGitWorkspaceService {
               manifestHash: localCheckpoint.manifestHash, preReleaseHead: identity.preparedCandidate.commit,
               tree: identity.preparedCandidate.tree, frozenTasks: normalizedFrozenTasks(frozenTasks),
               mergedTaskIds: frozenTasks.map(task => task.taskId) };
-            if (!localCheckpoint.publicationFreeze) await isolated.frozenCandidate(sourceRoot);
+            if (!localCheckpoint.publicationFreeze) await isolated.frozenCandidate(sourceRoot, { changelogContent });
             await validatePrepared();
           } else {
             candidate = await isolated.promoteGenerationCandidate({ projectRoot: sourceRoot,
