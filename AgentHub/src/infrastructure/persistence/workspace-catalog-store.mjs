@@ -1044,7 +1044,7 @@ export class WorkspaceCatalogStore {
     });
   }
 
-  recordClaimAdmissionRefusal({ receipt, task, claimArguments, busyReason } = {}) {
+  recordClaimAdmissionRefusal({ receipt, task, claimArguments, busyReason, lockAdmission = null } = {}) {
     if (this.claimCustodyForOriginal(receipt?.requestId)) throw new TaskClaimContinuationWithdrawnError();
     if (receipt?.replayed !== false || receipt.status !== "pending" || receipt.operationStatus !== "pending") {
       throw new Error("Claim refusal requires a fresh MCP intake");
@@ -1063,8 +1063,10 @@ export class WorkspaceCatalogStore {
         throw new Error("Claim refusal cannot overwrite admitted, changed or foreign Task state");
       }
       const evidence = {
-        version: 1, kind: "task-claim-executor-busy-v1", code: "TASK_CLAIM_EXECUTOR_BUSY",
-        taskId: task.id, taskRevision: task.revision, ownerStreamId: task.streamId, busyReason, claimArguments,
+        version: 1,
+        ...(lockAdmission ? { kind: "task-claim-lock-admission-v1", code: "TASK_CLAIM_LOCK_ADMISSION_TIMEOUT", lockAdmission }
+          : { kind: "task-claim-executor-busy-v1", code: "TASK_CLAIM_EXECUTOR_BUSY", busyReason }),
+        taskId: task.id, taskRevision: task.revision, ownerStreamId: task.streamId, claimArguments,
         ...Object.fromEntries(["requestId", "workspaceId", "streamId", "provider", "threadId", "toolName",
           "argumentsHash", "createdAtMs"].map(key => [key, receipt[key]])),
       };

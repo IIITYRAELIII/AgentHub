@@ -30,7 +30,7 @@ import {
   TaskLifecycleBeginRejectedError,
   TaskLifecycleNoEffectError,
   TaskOperationReconciliationRefusedError,
-  workflowAdmissionNoEffectEvidence, claimAdmissionNoEffectEvidence, TaskClaimExecutorBusyError,
+  workflowAdmissionNoEffectEvidence, claimAdmissionNoEffectEvidence, claimAdmissionRefusalError, TaskClaimExecutorBusyError,
   ReleaseCandidateFrozenError,
   TaskAbsorptionCompositionError,
 } from "../domain/task-board-task.mjs";
@@ -550,7 +550,7 @@ export class HubMcpService {
       await this.workspaceCatalog.beginMcpOperationReconciliation?.(receipt.requestId);
       const claimRefusal = receipt.toolName === "hub_task_claim" ? this.#claimAdmissionRefusal(receipt) : null;
       if (claimRefusal) {
-        await this.workspaceCatalog.failMcpOperation(receipt.requestId, new TaskClaimExecutorBusyError(), {
+        await this.workspaceCatalog.failMcpOperation(receipt.requestId, claimAdmissionRefusalError(claimRefusal), {
           outcome: "NO_EFFECT", evidence: claimRefusal,
         });
         reconciled += 1;
@@ -1166,10 +1166,13 @@ export class HubMcpService {
         if (!this.#isReleaseManager(context)) throw new TaskOperationReconciliationRefusedError(new Error("Task operation reconciliation requires a Release Manager Stream"));
         if (args.confirm_reconcile !== true) throw new TaskOperationReconciliationRefusedError(new Error("Task operation reconciliation requires explicit confirmation"));
         if (args.claim_custody != null) return this.#claimCustody(context, args);
-        if (!this.taskOperationReconciliation) throw new TaskOperationReconciliationRefusedError(new Error("Task operation reconciliation is unavailable"));
         if (this.#pendingMutations.has(args.operation_request_id)) {
           throw new TaskOperationReconciliationRefusedError(new Error("Original workflow worker is still active"));
         }
+        if (this.workspaceCatalog.mcpOperation(args.operation_request_id)?.toolName === "hub_task_claim") {
+          return this.#reconcileSealedClaimRefusal(context, args);
+        }
+        if (!this.taskOperationReconciliation) throw new TaskOperationReconciliationRefusedError(new Error("Task operation reconciliation is unavailable"));
         return this.taskOperationReconciliation.reconcileUnknownWorkflow({
           workspaceId: context.workspaceId,
           taskId: args.task_id,
@@ -1713,7 +1716,21 @@ export class HubMcpService {
       return this.taskGitWorkspaces.withTaskLock(task.id, async lease => {
         const guarded = this.#claimLease(lease, task.id, operationId);
         await guarded.assertOwned();
-        const workspace = await this.taskGitWorkspaces.prepareOwned({ taskId: task.id, taskNumber: task.taskNumber, projectRoot, dependencyMode, dependencyOverrideReason, lease: guarded });
+        let workspace;
+        try {
+          workspace = await this.taskGitWorkspaces.prepareOwned({ taskId: task.id, taskNumber: task.taskNumber,
+            projectRoot, dependencyMode, dependencyOverrideReason, lease: guarded, claimOperationId: operationId });
+        } catch (error) {
+          const lockAdmission = await this.taskGitWorkspaces.claimAdmissionNoEffectEvidence?.({
+            taskId: task.id, projectRoot, operationId, error,
+          });
+          if (lockAdmission?.kind === "task-git-dev-lock-admission-v1") {
+            await guarded.assertOwned();
+            await this.workspaceCatalog.recordClaimAdmissionRefusal({ receipt: context.admissionReceipt, task, lockAdmission,
+              claimArguments: Object.fromEntries(Object.entries(args).filter(([key]) => key !== "context_token")) });
+          }
+          throw error;
+        }
         await guarded.assertOwned();
         return this.#writeClaim(context, task, active, operationId, workspace);
       });
@@ -2784,8 +2801,9 @@ export class HubMcpService {
     }));
     if (started.status === "succeeded") return claimCustodyState(started)?.result ?? started.result;
     if (started.status === "failed") {
-      if (toolName === "hub_task_claim" && this.#claimAdmissionRefusal(started, args.task_id)) {
-        throw new TaskClaimExecutorBusyError();
+      const proof = toolName === "hub_task_claim" ? this.#claimAdmissionRefusal(started, args.task_id) : null;
+      if (proof) {
+        throw claimAdmissionRefusalError(proof);
       }
       throw new Error(started.error || "previous MCP operation failed");
     }
@@ -2794,8 +2812,8 @@ export class HubMcpService {
     if (started.status === "unknown" && toolName === "hub_task_claim" && !custodyConsume) {
       const reconciled = await this.#reconcileClaimAdmissionNoEffect(context, args, started).catch(() => null);
       if (reconciled) {
-        const terminal = reconciled.evidence?.evidence?.kind === "task-claim-executor-busy-v1"
-          ? new TaskClaimExecutorBusyError() : new Error(reconciled.error);
+        const terminal = reconciled.evidence?.evidence
+          ? claimAdmissionRefusalError(reconciled.evidence.evidence) : new Error(reconciled.error);
         await this.workspaceCatalog.failUnknownMcpOperation(requestId, {
           workspaceId: context.workspaceId,
           toolName,
@@ -2894,7 +2912,7 @@ export class HubMcpService {
         const claimRefusal = toolName === "hub_task_claim"
           ? this.#claimAdmissionRefusal(this.workspaceCatalog.mcpOperation(requestId), args.task_id) : null;
         if (claimRefusal) {
-          const refusal = new TaskClaimExecutorBusyError();
+          const refusal = claimAdmissionRefusalError(claimRefusal);
           try {
             await this.workspaceCatalog.failMcpOperation(requestId, refusal, { outcome: "NO_EFFECT", evidence: claimRefusal });
           } catch (settlementError) {
@@ -2955,7 +2973,7 @@ export class HubMcpService {
 
   async #reconcileClaimAdmissionNoEffect(context, args, receipt) {
     const proof = this.#claimAdmissionRefusal(receipt, args.task_id);
-    if (proof) return { error: new TaskClaimExecutorBusyError().message,
+    if (proof) return { error: claimAdmissionRefusalError(proof).message,
       evidence: { outcome: "NO_EFFECT", evidence: proof } };
     if (typeof this.taskBoard.claimBindingForOperation !== "function"
       || typeof this.taskGitWorkspaces?.claimAdmissionNoEffectEvidence !== "function"
@@ -2986,6 +3004,35 @@ export class HubMcpService {
         || this.taskBoard.lifecycleTransition?.(receipt.requestId)
         || this.taskBoard.lifecycleOutcome?.(receipt.requestId)) return null;
     return proof;
+  }
+
+  async #reconcileSealedClaimRefusal(context, args) {
+    const refuse = message => { throw new TaskOperationReconciliationRefusedError(new Error(message)); };
+    if (Object.keys(args).some(key => !["context_token", "request_id", "task_id", "operation_request_id",
+      "project_root", "confirm_reconcile"].includes(key))) refuse("Claim refusal readback accepts no workflow or operator proof fields");
+    const receipt = this.workspaceCatalog.mcpOperation(args.operation_request_id);
+    const proof = this.#claimAdmissionRefusal(receipt, args.task_id);
+    if (!receipt || receipt.workspaceId !== context.workspaceId || !proof
+        || this.workspaceCatalog.claimCustodyForOriginal?.(receipt.requestId)) {
+      refuse("Claim requires exact durable pre-admission owner evidence; unsealed or admitted originals remain unknown");
+    }
+    const root = proof.lockAdmission?.repositoryRoot;
+    const locator = value => process.platform === "win32" ? path.resolve(value).toLowerCase() : path.resolve(value);
+    if (root && (typeof args.project_root !== "string" || locator(args.project_root) !== locator(root))) {
+      refuse("Claim refusal repository locator does not match the sealed owner");
+    }
+    if (receipt.status === "unknown") {
+      await this.workspaceCatalog.failUnknownMcpOperation(receipt.requestId, {
+        workspaceId: context.workspaceId, toolName: "hub_task_claim", error: claimAdmissionRefusalError(proof),
+        reconciliation: { outcome: "NO_EFFECT", evidence: proof },
+      });
+    } else if (receipt.status === "pending" || receipt.status === "reconciling") {
+      await this.workspaceCatalog.beginMcpOperationReconciliation(receipt.requestId);
+      await this.workspaceCatalog.failMcpOperation(receipt.requestId, claimAdmissionRefusalError(proof), {
+        outcome: "NO_EFFECT", evidence: proof,
+      });
+    } else if (receipt.status !== "failed") refuse("Claim receipt is not a refused original");
+    return { taskId: proof.taskId, operationId: receipt.requestId, outcome: "NO_EFFECT", evidence: proof };
   }
 
   #hasPreparedTaskStart(context, args, requestId) {

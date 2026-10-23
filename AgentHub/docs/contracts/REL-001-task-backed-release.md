@@ -1271,6 +1271,15 @@ repository mismatch or other error stays unknown. The compatibility classifier
 may be removed only after supported journals can no longer contain unknown claim
 receipts from that source version.
 
+Ordinary claim's first repository-lock timeout is terminal only when its live
+Task Git owner proves that the preparation callback never entered and the Task
+lease remains owned. The existing MCP receipt seals that exact refusal before
+the Task lease is released; its Task CAS and operation identity exclude prior
+assignment/lifecycle admission. Durable readback fences late claim writers and
+never repeats preparation. Timeouts after preparation entry or in dependency
+work retain UNKNOWN semantics. Historical unsealed timeouts require their own
+positive original-bound proof; the new type alone does not settle them.
+
 Dependency proof traversal is bounded before queue growth and directory
 expansion: each source or hidden package lock is at most 16 MiB, with at most
 16 nested `node_modules` levels, 10,000 physical package roots, 5,000 entries
