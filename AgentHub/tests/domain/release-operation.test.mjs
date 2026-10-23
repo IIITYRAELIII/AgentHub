@@ -7,6 +7,7 @@ import {
   createReleaseOperation,
   RELEASE_OPERATION_STATES,
   restoreReleaseOperation,
+  reviewedMainBinding,
   transitionReleaseOperation,
 } from "../../src/domain/release-operation.mjs";
 
@@ -27,6 +28,27 @@ function operation(overrides = {}) {
     ...overrides,
   });
 }
+
+test("reviewed main accepts complete large repository membership and refuses foreign or duplicate inputs", () => {
+  const targets = Array.from({ length: 33 }, (_, index) => ({
+    targetId: `original-${index}`, kind: "agent-hub-publication", repositoryRoot: `/synthetic-original-${index}`,
+  }));
+  const approvedRepositories = targets.map(target => ({ projectRoot: target.repositoryRoot,
+    approvedLocalMainCommit: "a".repeat(40), approvedOriginMainCommit: "b".repeat(40) }));
+  const original = { authorization: { approvedTargets: targets } };
+  const before = structuredClone(original);
+  const input = { expectedRevision: 735, approvedRepositories };
+  assert.equal(reviewedMainBinding(original, input).approvedRepositories.length, 33);
+  assert.throws(() => reviewedMainBinding(original, { ...input,
+    approvedRepositories: approvedRepositories.slice(1) }), /cover every original repository/u);
+  assert.throws(() => reviewedMainBinding(original, { ...input,
+    approvedRepositories: [...approvedRepositories.slice(1), approvedRepositories[1]] }), /foreign or duplicated/u);
+  assert.throws(() => reviewedMainBinding(original, { ...input,
+    approvedRepositories: [{ ...approvedRepositories[0], projectRoot: "/foreign" }, ...approvedRepositories.slice(1)] }), /foreign or duplicated/u);
+  assert.throws(() => reviewedMainBinding(original, { ...input,
+    approvedRepositories: [{ ...approvedRepositories[0], approvedLocalMainCommit: "bad" }, ...approvedRepositories.slice(1)] }), /commit/u);
+  assert.deepEqual(original, before);
+});
 
 test("release operation keeps authorization immutable and uses explicit waiting resume state", () => {
   const created = operation();

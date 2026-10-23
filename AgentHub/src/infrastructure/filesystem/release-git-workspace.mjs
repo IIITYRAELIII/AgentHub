@@ -1900,7 +1900,6 @@ export class ReleaseGitWorkspaceService {
         const nativeInfo = await lstat(nativeRoot).catch(error => { if (error.code === "ENOENT") return null; throw error; });
         if (nativeInfo && (!nativeInfo.isDirectory() || nativeInfo.isSymbolicLink())) throw new Error("Forward native staging custody changed");
         const entries = await readdir(nativeRoot, { withFileTypes: true }).catch(error => { if (error.code === "ENOENT") return []; throw error; });
-        if (entries.length > 64) throw new Error("Forward native inventory exceeds its explicit bound");
         const native = [];
         for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
           const folder = path.join(nativeRoot, entry.name), info = await lstat(folder);

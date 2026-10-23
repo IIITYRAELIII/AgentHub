@@ -189,8 +189,7 @@ const repositoryKey = value => {
 export function reviewedMainBinding(operation, value) {
   if (!value || typeof value !== "object" || Array.isArray(value)
       || !Number.isSafeInteger(value.expectedRevision) || value.expectedRevision < 1
-      || !Array.isArray(value.approvedRepositories) || !value.approvedRepositories.length
-      || value.approvedRepositories.length > 32) throw new TypeError("Invalid reviewed-main binding");
+      || !Array.isArray(value.approvedRepositories) || !value.approvedRepositories.length) throw new TypeError("Invalid reviewed-main binding");
   const roots = new Set(operation.authorization.approvedTargets.map(target => {
     if (target.kind !== "agent-hub-publication" || !target.repositoryRoot) {
       throw new Error("Reviewed-main binding requires original repository publication targets");

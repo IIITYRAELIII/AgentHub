@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { lstat, mkdir, mkdtemp, readFile, rm, writeFile, unlink } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, readdir, rm, writeFile, unlink } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -1188,7 +1188,7 @@ test("ordinary public resume consumes established isolated custody without anoth
   assert.deepEqual(f.catalog.mcpOperation(f.originalId), completed);
 });
 
-test("ordinary isolated resume inventories large native evidence and still refuses non-files", { timeout: 240000 }, async t => {
+test("ordinary isolated resume inventories large native evidence across retained directories and still refuses non-files", { timeout: 240000 }, async t => {
   const f = await legacyForwardFixture(t);
   await assert.rejects(f.forward(runtime => {
     const checkpoint = runtime.fixtureCatalog.checkpointMcpPreparationForward.bind(runtime.fixtureCatalog);
@@ -1224,9 +1224,18 @@ test("ordinary isolated resume inventories large native evidence and still refus
   const parsedJournal = Buffer.concat([await readFile(parsedJournalFile), Buffer.from(" ".repeat(600 * 1024))]);
   await writeFile(parsedJournalFile, parsedJournal);
   const digest = createHash("sha256").update(bytes).digest("hex");
+  const nativeRoot = path.dirname(retained);
+  const existing = await readdir(nativeRoot);
+  for (let index = existing.length; index < 65; index++) {
+    await mkdir(path.join(nativeRoot, `retained-directory-${index}`));
+  }
+  const directories = (await readdir(nativeRoot)).sort();
+  assert.equal(directories.length, 65);
   const result = await executePreparationResume(input(), { openRuntime: f.open });
   assert.equal(result.kind, "forward-preparation-completed");
+  assert.deepEqual((await readdir(nativeRoot)).sort(), directories);
   const completed = f.catalog.mcpOperation(f.originalId);
+  assert.ok(completed.preparationState.events.some(event => event.inventory?.native?.length === 65));
   assert.ok(completed.preparationState.events.some(event =>
     event.inventory?.native?.some(entry => entry.root === "retained-evidence" && entry.mergeHash === digest)));
   assert.deepEqual(await readFile(mergeFile), bytes);
