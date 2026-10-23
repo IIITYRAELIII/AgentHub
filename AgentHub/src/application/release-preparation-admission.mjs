@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { canonicalMcpValue } from "../domain/mcp-arguments-hash.mjs";
 import { ReleasePreparationRejectedError } from "../domain/release-preparation.mjs";
 import { LOCAL_SOURCE_BASELINE_PROVENANCE, normalizedReleaseBaseProvenance } from "../domain/release-base-provenance.mjs";
+import { normalizedNativeResolution } from "../domain/native-resolution-input.mjs";
 export { ReleasePreparationRejectedError } from "../domain/release-preparation.mjs";
 
 export const preparationHash = (value) => createHash("sha256")
@@ -69,9 +70,8 @@ export function validatePreparationEnvelope(value) {
           || p.planRevision !== value.planRevision) throw new ReleasePreparationRejectedError("Local source baseline pins disagree");
     }
     if (repository.nativeResolutionReview != null) {
-      object(repository.nativeResolutionReview, ["requestId", "text"], "native review");
-      text(repository.nativeResolutionReview.requestId, "native review id", 200);
-      text(repository.nativeResolutionReview.text, "native review text", 32 * 1024);
+      try { normalizedNativeResolution(repository.nativeResolutionReview); }
+      catch { throw new ReleasePreparationRejectedError("Invalid native resolution input"); }
     }
     text(repository.projectRoot, "repository root", 2048);
     for (const key of ["checkpointHash", "manifestHash"]) digest(repository[key], 64, key);

@@ -45,7 +45,7 @@ export function parseTaskAwaitCutoverArguments(argv) {
   for (let index = 0; index < argv.length; index += 1) {
     const name = argv[index];
     if (!name.startsWith("--")) throw new Error(`Unexpected argument: ${name}`);
-    if (name === "--confirm-cutover" || name === "--squash-bootstrap" || name === "--initial-native-test" || name === "--returned-native-test") {
+    if (name === "--confirm-cutover" || name === "--squash-bootstrap" || name === "--initial-native-test" || name === "--returned-native-test" || name === "--resume-preparation") {
       input[name.slice(2)] = true;
       continue;
     }
@@ -53,6 +53,19 @@ export function parseTaskAwaitCutoverArguments(argv) {
     if (!value || value.startsWith("--")) throw new Error(`Missing value for ${name}`);
     input[name.slice(2)] = value;
     index += 1;
+  }
+  if (input["resume-preparation"]) {
+    const allowed = new Set(["resume-preparation", "provider", "thread", "stream", "request",
+      "expected-arguments-hash", "expected-preparation-revision", "native-resolution-review-file"]);
+    if (Object.keys(input).some(key => !allowed.has(key))) throw new Error("Preparation continuation cannot change selection or original arguments");
+    const expectedPreparationRevision = Number(required(input, "expected-preparation-revision"));
+    const expectedArgumentsHash = required(input, "expected-arguments-hash");
+    if (!Number.isSafeInteger(expectedPreparationRevision) || expectedPreparationRevision < 0
+        || !/^[a-f0-9]{64}$/u.test(expectedArgumentsHash)) throw new Error("Invalid original preparation continuation identity");
+    return { resumePreparation: true, provider: required(input, "provider"), threadId: required(input, "thread"),
+      streamId: required(input, "stream"), requestId: required(input, "request"), expectedArgumentsHash,
+      expectedPreparationRevision, ...(input["native-resolution-review-file"]
+        ? { nativeResolutionReviewFile: path.resolve(input["native-resolution-review-file"]) } : {}) };
   }
   const parsed = {
     workspaceId: required(input, "workspace"),
@@ -424,8 +437,21 @@ export async function executePreparationForward(input, {
   } finally { runtime.close(); }
 }
 
+export async function executePreparationResume(input, { openRuntime = openTaskAwaitCutoverRuntime } = {}) {
+  const review = input.nativeResolutionReviewFile
+    ? JSON.parse(await readFile(input.nativeResolutionReviewFile, "utf8")) : input.nativeResolutionReview;
+  const runtime = await openRuntime();
+  try {
+    const token = runtime.service.contextToken({ provider: input.provider, threadId: input.threadId, streamId: input.streamId });
+    return await runtime.service.call("hub_release_prepare_resume", { context_token: token, request_id: input.requestId,
+      expected_arguments_hash: input.expectedArgumentsHash, expected_preparation_revision: input.expectedPreparationRevision,
+      ...(review == null ? {} : { native_resolution_review: review }) });
+  } finally { runtime.close(); }
+}
+
 if (path.resolve(process.argv[1] ?? "") === path.resolve(moduleFile)) {
-  executeTaskAwaitCutover(parseTaskAwaitCutoverArguments(process.argv.slice(2)))
+  const input = parseTaskAwaitCutoverArguments(process.argv.slice(2));
+  (input.resumePreparation ? executePreparationResume(input) : executeTaskAwaitCutover(input))
     .then((result) => process.stdout.write(`${JSON.stringify(result, null, 2)}\n`))
     .catch((error) => {
       process.stderr.write(`${error.stack || error.message}\n`);

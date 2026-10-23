@@ -1,5 +1,22 @@
 # MCP-001 — Bounded Agent Hub tool bridge
 
+## Normal release continuation (ADR-0132)
+
+`hub_release_run` keeps preparation inside the existing durable release owner.
+Approved repositories may include an exact authenticated native resolution input
+(`nativeResolutionReview`), either a single review or a digest-bound bundle with
+multiple reviews. This is part of immutable operation authorization; it is not
+a force flag or caller-declared conflict allowlist.
+
+`hub_release_prepare_resume` may continue an already established isolated forward
+segment using its saved original envelope/custody and exact revision. Optional
+`native_resolution_review` changes only that forward segment's review input.
+The owner regenerates the exact isolation plan under existing leases, validates
+the stored proof and reads actual Git before effects. An untransferred legacy
+UNKNOWN, missing isolation or changed proof still refuses. Terminal repetition
+is read-only. The existing local consumer supports `--resume-preparation`; no
+new one-shot entry/driver/config is needed. Historical UNKNOWN is retained.
+
 `hub_release_continue` optionally carries `reviewed_main` with exact positive
 integer `expectedRevision` and bounded original-repository primitive-string Git
 pins. Under the existing genuine RM authorization and original MCP request

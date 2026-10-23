@@ -75,6 +75,24 @@ test("release operation preserves repository-scale release metadata bytes and ex
   assert.ok(bytes.length < MAX_RELEASE_METADATA_BYTES);
 });
 
+test("reviewed native transport remains bound to original release authorization across persistence", () => {
+  const nativeResolutionReview = { bundlePath: "C:/owned/reviewed.bundle", bundleSha256: "a".repeat(64),
+    reviews: [{ requestId: "authenticated-review", text: "exact retained reviewer message" }] };
+  const authorization = { taskIds: ["task-1"], validationMode: "full", approvedTargets: [{
+    targetId: "git", kind: "git", repositoryRoot: "C:/primary", nativeResolutionReview }] };
+  const created = operation({ authorization });
+  const reopened = restoreReleaseOperation(JSON.parse(JSON.stringify(created)));
+  assert.deepEqual(reopened.authorization.approvedTargets[0].nativeResolutionReview, nativeResolutionReview);
+  assert.equal(reopened.authorization.fingerprint, created.authorization.fingerprint);
+  const changed = structuredClone(authorization);
+  changed.approvedTargets[0].nativeResolutionReview.bundleSha256 = "b".repeat(64);
+  assert.notEqual(operation({ authorization: changed }).authorization.fingerprint, created.authorization.fingerprint);
+  assert.throws(() => transitionReleaseOperation(created, { authorization: changed }), /immutable/u);
+  const malformed = structuredClone(authorization);
+  malformed.approvedTargets[0].nativeResolutionReview = Object.assign([], nativeResolutionReview);
+  assert.throws(() => operation({ authorization: malformed }), /Invalid exact native resolution bundle/u);
+});
+
 test("release operation rejects invalid regressions and terminal replay", () => {
   const created = operation();
   const invalid = transitionReleaseOperation(created, { state: "publish" });

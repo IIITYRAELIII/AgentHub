@@ -5,6 +5,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { createHash } from "node:crypto";
 import { ReleaseGitWorkspaceService } from "../../../src/infrastructure/filesystem/release-git-workspace.mjs";
 import { mergeSelectedResults } from "../../../src/infrastructure/filesystem/native-release-merge.mjs";
 import { runTaskGitCommand } from "../../../src/infrastructure/filesystem/task-git-workspace.mjs";
@@ -18,7 +19,7 @@ async function commit(root, message) {
   await git(root, "-c", "user.name=Fixture", "-c", "user.email=fixture@local.invalid", "commit", "-m", message);
   return git(root, "rev-parse", "HEAD");
 }
-async function fixture(t) {
+async function fixture(t, { versioned = false } = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), "ng-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const origin = path.join(root, "origin.git");
@@ -28,9 +29,15 @@ async function fixture(t) {
   await writeFile(path.join(primary, ".gitattributes"), "* text eol=lf\n");
   await writeFile(path.join(primary, ".gitignore"), "private.txt\nprivate-dir/\n");
   await writeFile(path.join(primary, "shared.txt"), "first\nsecond\nthird\n");
+  if (versioned) {
+    await mkdir(path.join(primary, "AgentHub"));
+    await writeFile(path.join(primary, "AgentHub/package.json"), JSON.stringify({ name: "agent-hub", version: "2026.10.12" }));
+    await writeFile(path.join(primary, "AgentHub/package-lock.json"), JSON.stringify({ name: "agent-hub", version: "2026.10.12", packages: { "": { name: "agent-hub", version: "2026.10.12" } } }));
+  }
   const base = await commit(primary, "main");
   await git(primary, "push", "origin", "main");
-  const service = new ReleaseGitWorkspaceService({ dataDir: path.join(root, "data") });
+  const environment = { ...process.env, LOCALAPPDATA: path.join(root, "state"), XDG_STATE_HOME: path.join(root, "state") };
+  const service = new ReleaseGitWorkspaceService({ dataDir: path.join(root, "data"), environment });
   const branches = new Map();
   const result = async (id, file, text, start = base) => {
     let folder = branches.get(id);
@@ -45,7 +52,7 @@ async function fixture(t) {
   };
   const request = (tasks, plan = "selected") => ({ projectRoot: primary,
     workspaceId: "fixture", planRevision: plan, approvedBaseCommit: base, frozenTasks: tasks });
-  return { root, primary, base, service, result, request, branches };
+  return { root, primary, base, service, result, request, branches, environment };
 }
 
 test("reopen rejects a forged completed native prefix even with exact merge parents", { timeout: 60000 }, async t => {
@@ -78,6 +85,99 @@ test("reopen rejects a forged completed native prefix even with exact merge pare
   await git(original.root, "checkout", "--detach", original.head);
   await writeFile(stateFile, bytes);
   assert.equal((await mergeSelectedResults(request)).head, original.head);
+});
+
+test("one native sequencer call consumes reviewed resolutions and reopens a lost journal reply", { timeout: 120000 }, async t => {
+  const f = await fixture(t);
+  const a = await f.result("A", "shared.txt", "selected A\n");
+  const b = await f.result("B", "shared.txt", "selected B\n");
+  await writeFile(path.join(f.primary, "shared.txt"), "new accepted main\n");
+  const baseCommit = await commit(f.primary, "new main");
+  const tasks = [a, b], identity = { baseCommit, tasks };
+  const proofRoot = path.join(f.root, "proof"), bindings = new Map();
+  const readJson = pathname => readFile(pathname, "utf8").then(JSON.parse, error => {
+    if (error.code === "ENOENT") return null; throw error;
+  });
+  const writeJson = (pathname, value) => writeFile(pathname, JSON.stringify(value));
+  const request = { root: proofRoot, sourceRoot: f.primary, baseCommit, tasks, identity,
+    gitAt: (cwd, args, options = {}) => runTaskGitCommand(args, { ...options, cwd }), readJson, writeJson,
+    verifyReview: async (review, binding) => bindings.set(review.requestId, binding) };
+  await assert.rejects(mergeSelectedResults(request), { code: "RELEASE_NATIVE_MERGE_CONFLICT" });
+  for (const [index, task] of tasks.entries()) {
+    await writeFile(path.join(proofRoot, "repository", "shared.txt"), `reviewed ${task.taskId}\n`);
+    await commit(path.join(proofRoot, "repository"), `resolve ${task.taskId}`);
+    const result = mergeSelectedResults({ ...request,
+      resolutionReview: { requestId: `review-${task.taskId}`, text: "reviewed exact result" } });
+    if (index === 0) await assert.rejects(result, { code: "RELEASE_NATIVE_MERGE_CONFLICT" });
+    else await result;
+  }
+  const proof = await readJson(path.join(proofRoot, "merge.json"));
+  const bundlePath = path.join(f.root, "reviewed.bundle");
+  await git(path.join(proofRoot, "repository"), "update-ref", "refs/heads/accepted", proof.head);
+  await git(path.join(proofRoot, "repository"), "bundle", "create", bundlePath, "refs/heads/accepted");
+  const reviews = [...bindings].map(([requestId, binding]) => ({ requestId,
+    text: `<native-merge-review>${JSON.stringify({ kind: "native-merge-review-v1", verdict: "ACCEPT", binding })}</native-merge-review>` }));
+  const resolutionReview = { bundlePath,
+    bundleSha256: createHash("sha256").update(await readFile(bundlePath)).digest("hex"), reviews };
+  let loseReply = true, loseAbortReply = true;
+  const actual = { ...request, root: path.join(f.root, "actual"), resolutionReview,
+    gitAt: async (cwd, args, options = {}) => {
+      const result = await runTaskGitCommand(args, { ...options, cwd });
+      if (loseAbortReply && args[0] === "merge" && args[1] === "--abort") {
+        loseAbortReply = false;
+        throw new Error("lost conflict abort reply");
+      }
+      return result;
+    },
+    verifyReview: async (review, binding) => {
+      const declaration = JSON.parse(/<native-merge-review>([^]*?)<\/native-merge-review>/u.exec(review.text)[1]);
+      assert.deepEqual(declaration.binding, binding);
+    },
+    writeJson: async (pathname, value) => {
+      if (loseReply && value.next === 1 && value.merging === false) {
+        loseReply = false;
+        throw new Error("lost journal reply after reviewed checkout");
+      }
+      await writeJson(pathname, value);
+    } };
+  await assert.rejects(mergeSelectedResults({ ...actual, resolutionReview: null }), { code: "RELEASE_NATIVE_MERGE_CONFLICT" });
+  const issued = path.join(actual.root, "repository", "shared.txt");
+  const untouched = await readFile(issued);
+  await writeFile(issued, "executor unfinished resolution\n");
+  await assert.rejects(mergeSelectedResults(actual), /unsaved executor resolution/u);
+  assert.equal(await readFile(issued, "utf8"), "executor unfinished resolution\n");
+  await writeFile(issued, untouched);
+  await assert.rejects(mergeSelectedResults(actual), /lost conflict abort reply/u);
+  assert.equal(await git(path.join(actual.root, "repository"), "rev-parse", "HEAD"), baseCommit);
+  assert.equal((await readJson(path.join(actual.root, "merge.json"))).conflict.reviewedResolution.binding.commit, proof.merges[0].commit);
+  await assert.rejects(mergeSelectedResults(actual), /lost journal reply/u);
+  const interrupted = await readJson(path.join(actual.root, "merge.json"));
+  assert.equal(interrupted.next, 0);
+  assert.equal(interrupted.merging, true);
+  assert.equal(await git(path.join(actual.root, "repository"), "rev-parse", "HEAD"), proof.merges[0].commit);
+  const completed = await mergeSelectedResults(actual);
+  assert.equal(completed.head, proof.head);
+  assert.equal(completed.tree, await git(path.join(proofRoot, "repository"), "rev-parse", "HEAD^{tree}"));
+  assert.equal(completed.merges.length, 2);
+  const reflog = await git(completed.root, "reflog", "--format=%H");
+  assert.equal((await mergeSelectedResults(actual)).head, completed.head);
+  assert.equal(await git(completed.root, "reflog", "--format=%H"), reflog);
+  const tampered = { ...actual, resolutionReview: { ...resolutionReview, bundleSha256: "0".repeat(64) } };
+  await assert.rejects(mergeSelectedResults(tampered), /digest changed/u);
+  assert.equal(await git(completed.root, "reflog", "--format=%H"), reflog);
+  assert.equal(await git(f.primary, "rev-parse", "HEAD"), baseCommit);
+});
+
+test("normal publication generation prepares its candidate without a separate prepare command", { timeout: 120000 }, async t => {
+  const f = await fixture(t, { versioned: true }), a = await f.result("A", "a.txt", "accepted\n");
+  const request = { ...f.request([a]), operationId: "one-command", generation: 1 };
+  const generated = await f.service.prepareGeneration(request);
+  assert.equal(generated.manifest.tasks[0].resultCommit, a.resultCommit);
+  const reflog = await git(generated.releaseRoot, "reflog", "show", "PreRelease");
+  const reopened = new ReleaseGitWorkspaceService({ dataDir: path.join(f.root, "data"), environment: f.environment });
+  assert.equal((await reopened.prepareGeneration(request)).preReleaseHead, generated.preReleaseHead);
+  assert.equal(await git(generated.releaseRoot, "reflog", "show", "PreRelease"), reflog);
+  assert.equal(await git(f.primary, "rev-parse", "HEAD"), f.base);
 });
 
 test("native merge selects exact independent main branches and complete corrections", { timeout: 60000 }, async (t) => {
@@ -296,34 +396,31 @@ test("generation promotion reopens its original target after lost SQLite respons
   assert.equal(await git(f.primary, "rev-parse", "main"), f.base);
 });
 
-test("publication generation refuses stale prepared head result and base", { timeout: 120_000 }, async t => {
-  const f = await fixture(t), a = await f.result("A", "a.txt", "accepted\n");
+test("publication generation retains dirty preparation and binds its immutable input after correction", { timeout: 120_000 }, async t => {
+  const f = await fixture(t, { versioned: true }), a = await f.result("A", "a.txt", "accepted\n");
   const prepared = await f.service.prepareCandidate(f.request([a]));
   const checkpointFile = path.join(path.dirname(prepared.releaseRoot), "checkpoint.json");
   const checkpoint = await readFile(checkpointFile);
   const request = { ...f.request([a]), operationId: "prepared-original", generation: 1 };
-  await assert.rejects(f.service.prepareGeneration({ ...request, planRevision: "stale" }),
-    { code: "RELEASE_PREPARED_CANDIDATE_STALE" });
-  const notes = path.join(prepared.releaseRoot, "CHANGELOG.md");
-  await writeFile(notes, "prepared notes\n");
-  await assert.rejects(f.service.prepareGeneration({ ...request, changelogContent: Buffer.from("foreign notes\n") }),
-    { code: "RELEASE_PREPARED_CANDIDATE_STALE" });
   const foreign = path.join(prepared.releaseRoot, "foreign.txt");
   await writeFile(foreign, "unbound source bytes\n");
-  await assert.rejects(f.service.prepareGeneration({ ...request, changelogContent: Buffer.from("prepared notes\n") }),
-    { code: "RELEASE_PREPARED_CANDIDATE_STALE" });
-  await rm(foreign); await rm(notes);
+  await assert.rejects(f.service.prepareGeneration(request), /Native release checkout changed; foreign bytes retained/u);
+  assert.equal(await readFile(foreign, "utf8"), "unbound source bytes\n");
+  assert.deepEqual(await readFile(checkpointFile), checkpoint);
+  await rm(foreign);
+  const frozen = await f.service.prepareGeneration(request);
+  const frozenReflog = await git(frozen.releaseRoot, "reflog", "show", "--format=%H", "PreRelease");
+  for (const changed of [{ planRevision: "stale" }, { changelogContent: Buffer.from("foreign notes\n") },
+    { approvedBaseCommit: a.resultCommit }]) {
+    await assert.rejects(f.service.prepareGeneration({ ...request, ...changed }), { code: "RELEASE_PREPARED_CANDIDATE_STALE" });
+  }
   const corrected = await f.result("A", "a.txt", "corrected\n");
   await assert.rejects(f.service.prepareGeneration({ ...request, frozenTasks: [corrected] }),
     { code: "RELEASE_PREPARED_CANDIDATE_STALE" });
-  await git(prepared.releaseRoot, "update-ref", "refs/heads/PreRelease", a.resultCommit, prepared.preReleaseHead);
-  await assert.rejects(f.service.prepareGeneration(request), { code: "RELEASE_PREPARED_CANDIDATE_STALE" });
-  await git(prepared.releaseRoot, "update-ref", "refs/heads/PreRelease", prepared.preReleaseHead, a.resultCommit);
-  await writeFile(path.join(f.primary, "new-main.txt"), "new agreed base\n");
-  const newBase = await commit(f.primary, "advance main in private fixture");
-  await assert.rejects(f.service.prepareGeneration({ ...request, approvedBaseCommit: newBase }),
-    { code: "RELEASE_PREPARED_CANDIDATE_STALE" });
-  assert.deepEqual(await readFile(checkpointFile), checkpoint);
-  assert.equal(await git(prepared.releaseRoot, "rev-parse", "HEAD"), prepared.preReleaseHead);
-  assert.equal(await git(prepared.releaseRoot, "show", "HEAD:a.txt"), "accepted");
+  // A frozen generation owns its own bytes, independently of later preparation.
+  await writeFile(foreign, "later preparation WIP\n");
+  assert.equal((await f.service.prepareGeneration(request)).preReleaseHead, frozen.preReleaseHead);
+  assert.equal(await readFile(foreign, "utf8"), "later preparation WIP\n");
+  assert.equal(await git(frozen.releaseRoot, "reflog", "show", "--format=%H", "PreRelease"), frozenReflog);
+  assert.equal(await git(f.primary, "rev-parse", "HEAD"), f.base);
 });

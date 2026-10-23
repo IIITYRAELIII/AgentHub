@@ -7,7 +7,7 @@ import test from "node:test";
 import { promisify } from "node:util";
 import { createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
-import { executeTaskAwaitCutover, executePreparationForward, inspectTaskAwaitCutoverSource, inspectInstalledNativeTestOwner, openTaskAwaitCutoverRuntime,
+import { executeTaskAwaitCutover, executePreparationForward, executePreparationResume, inspectTaskAwaitCutoverSource, inspectInstalledNativeTestOwner, openTaskAwaitCutoverRuntime,
   parseTaskAwaitCutoverArguments } from "../../../task-await-cutover.mjs";
 import { TaskBoardService } from "../../../src/application/task-board-service.mjs";
 import { TaskReleasePlanService } from "../../../src/application/task-release-plan-service.mjs";
@@ -19,6 +19,9 @@ import { ReleaseGitWorkspaceService } from "../../../src/infrastructure/filesyst
 import { openTaskOperationReconciliationStores } from "../../../src/interfaces/cli/task-operation-reconciliation-runtime.mjs";
 import { preparationHash, readPreparationSourceClosure } from "../../../src/application/release-preparation-admission.mjs";
 import { preparationLegacyIdentity } from "../../../src/domain/release-preparation.mjs";
+import { ReleaseOperationService } from "../../../src/application/release-operation-service.mjs";
+import { WorkspaceReleaseOperationAdapter } from "../../../src/application/workspace-release-operation-adapter.mjs";
+import { ReleaseOperationStore } from "../../../src/infrastructure/persistence/release-operation-store.mjs";
 
 const exec = promisify(execFile);
 const hash = "b".repeat(64);
@@ -108,6 +111,89 @@ async function fixture(t, { releaseManager = false } = {}) {
     },
   };
 }
+
+test("ordinary preparation continuation CLI retains original identity and rejects mixed cutover authority", () => {
+  const argv = ["--resume-preparation", "--provider", "codex", "--thread", "thread",
+    "--stream", "stream", "--request", "original", "--expected-arguments-hash", "a".repeat(64),
+    "--expected-preparation-revision", "4", "--native-resolution-review-file", "reviewed.json"];
+  const parsed = parseTaskAwaitCutoverArguments(argv);
+  assert.equal(parsed.requestId, "original");
+  assert.equal(parsed.expectedPreparationRevision, 4);
+  assert.equal(parsed.resumePreparation, true);
+  assert.equal(parsed.nativeResolutionReviewFile, path.resolve("reviewed.json"));
+  assert.throws(() => parseTaskAwaitCutoverArguments([...argv, "--confirm-cutover"]), /cannot change selection/u);
+  assert.throws(() => parseTaskAwaitCutoverArguments([...argv, "--task", "foreign"]), /cannot change selection/u);
+});
+
+test("public run and continue use default Git SQLite owners for base update and candidate preparation", { timeout: 180000 }, async t => {
+  const f = await fixture(t, { releaseManager: true });
+  const task = await f.create("normal-release");
+  await mkdir(path.join(task.root, "AgentHub"));
+  await writeFile(path.join(task.root, "AgentHub/package.json"), JSON.stringify({ name: "agent-hub", version: "2026.10.12" }));
+  await writeFile(path.join(task.root, "AgentHub/package-lock.json"), JSON.stringify({ name: "agent-hub", version: "2026.10.12", packages: { "": { name: "agent-hub", version: "2026.10.12" } } }));
+  await commit(task.root, "release metadata fixture");
+  await f.status(task, "testing", "normal-test");
+  await f.status(task, "awaiting_implementation", "normal-await");
+  await writeFile(path.join(f.primary, "main-docs.txt"), "new accepted main\n");
+  await commit(f.primary, "accepted main");
+  const main = await git(f.primary, "rev-parse", "HEAD");
+  const oldDev = await git(f.primary, "rev-parse", "dev");
+  const previousEnv = { LOCALAPPDATA: process.env.LOCALAPPDATA, XDG_STATE_HOME: process.env.XDG_STATE_HOME };
+  process.env.LOCALAPPDATA = path.join(f.root, "state");
+  process.env.XDG_STATE_HOME = process.env.LOCALAPPDATA;
+  t.after(() => { for (const [key, value] of Object.entries(previousEnv)) {
+    if (value === undefined) delete process.env[key]; else process.env[key] = value;
+  } });
+  await mkdir(path.join(process.env.LOCALAPPDATA, "AgentHub"), { recursive: true });
+  await writeFile(path.join(process.env.LOCALAPPDATA, "AgentHub/publication-state.json"), JSON.stringify(f.publication));
+  const runtime = await openTaskAwaitCutoverRuntime({ config: { dataDir: path.dirname(f.databaseFile), taskBoard: { autoPlaceConfidence: 0.8 } } });
+  try {
+  let publishes = 0, validations = 0;
+  const publication = { publish: async () => { publishes += 1; return { status: "applied", revision: "fixture-published" }; },
+    readback: async () => ({ status: publishes ? "applied" : "not_applied" }) };
+  const adapter = new WorkspaceReleaseOperationAdapter({ releasePreflight: runtime.service.releasePreflight,
+    publication, finalization: { finalize: async () => ({ status: "fixture-terminal" }) } });
+  const store = new ReleaseOperationStore({ dataDir: path.dirname(f.databaseFile) });
+  const operations = new ReleaseOperationService({ store, processAlive: pid => pid === process.pid,
+    compose: input => adapter.compose(input),
+    validate: async ({ generation }) => {
+      validations += 1;
+      for (const candidate of generation.candidates) {
+        const owner = new ReleaseGitWorkspaceService({ dataDir: candidate.generationRoot });
+        assert.equal((await owner.frozenCandidate(f.primary)).preReleaseHead, candidate.commit);
+      }
+      return { status: "ready" };
+    },
+    publishTarget: input => adapter.publishTarget(input), readTarget: input => adapter.readTarget(input),
+    finalize: input => adapter.finalize(input), reservePublication: input => adapter.reservePublication(input),
+  });
+  runtime.service.releaseOperations = operations;
+  const token = runtime.service.contextToken({ provider: "codex", threadId: "fixture-thread", streamId: f.streamId });
+  const ack = await runtime.service.call("hub_release_run", { context_token: token, request_id: "one-normal-release",
+    task_ids: [task.id], validation_mode: "full", approved_targets: [{ targetId: "fixture", kind: "fixture",
+      repositoryRoot: f.primary, approvedLocalMainCommit: main, approvedOriginMainCommit: main }] });
+  const refused = await operations.drain(ack.operationId);
+  assert.equal(refused.operation.state, "waiting");
+  assert.equal(refused.operation.waitReason.code, "preparation_refused");
+  assert.equal(store.latestStep(ack.operationId, 1, "compose").status, "failed");
+  assert.equal(await git(f.primary, "rev-parse", "dev"), oldDev);
+  assert.equal(publishes, 0);
+  await git(f.primary, "push", "origin", "main");
+  await runtime.service.call("hub_release_continue", { context_token: token, request_id: "same-normal-release-continue", operation_id: ack.operationId });
+  const done = await operations.drain(ack.operationId);
+  assert.equal(done.operation.state, "done", JSON.stringify(done.operation.lastError));
+  assert.equal(done.generations.length, 1);
+  assert.equal(publishes, 1); assert.equal(validations, 1);
+  assert.equal(await git(f.primary, "rev-parse", "HEAD"), main);
+  assert.equal(await git(f.primary, "status", "--porcelain=v1"), "");
+  await git(f.primary, "merge-base", "--is-ancestor", main, "dev");
+  assert.equal(done.operation.authorization.fingerprint, refused.operation.authorization.fingerprint);
+  assert.equal((await runtime.service.call("hub_release_run", { context_token: token, request_id: "one-normal-release",
+    task_ids: [task.id], validation_mode: "full", approved_targets: [{ targetId: "fixture", kind: "fixture",
+      repositoryRoot: f.primary, approvedLocalMainCommit: main, approvedOriginMainCommit: main }] })).operationId, ack.operationId);
+  assert.equal(publishes, 1);
+  } finally { runtime.close(); }
+});
 
 test("public native source entry retains original operation timing on success and admission failure", { timeout: 180_000 }, async t => {
   const f = await fixture(t), events = [];
@@ -1005,6 +1091,57 @@ test("isolated preparation actual default factory reads registered root and same
     assert.equal(candidate.tree, result.candidates[0].tree);
   } finally { runtime.close(); }
   assert.deepEqual(f.catalog.mcpOperation(f.originalId), row);
+});
+
+test("ordinary public resume consumes established isolated custody without another observer or operator", { timeout: 240000 }, async t => {
+  const f = await legacyForwardFixture(t);
+  await assert.rejects(f.invoke("hub_release_prepare_resume", { request_id: f.originalId,
+    expected_arguments_hash: f.legacy.argumentsHash, expected_preparation_revision: 0 }), /resumable owner stage/u);
+  assert.deepEqual(f.catalog.mcpOperation(f.originalId), f.legacy);
+  await assert.rejects(f.forward(runtime => {
+    const checkpoint = runtime.fixtureCatalog.checkpointMcpPreparationForward.bind(runtime.fixtureCatalog);
+    runtime.fixtureCatalog.checkpointMcpPreparationForward = (...args) => {
+      if (args[1].state.phase === "completed") throw new Error("controlled terminal reply lost before commit");
+      return checkpoint(...args);
+    };
+  }, isolationObserver), /unknown/u);
+  const blocked = f.catalog.mcpOperation(f.originalId);
+  assert.equal(blocked.preparationState.phase, "blocked");
+  const candidate = await f.releaseGit.frozenCandidate(f.primary);
+  const reflog = await git(candidate.releaseRoot, "reflog", "show", "--format=%H", "PreRelease");
+  const input = { provider: "codex", threadId: "fixture-thread", streamId: f.streamId,
+    requestId: f.originalId, expectedArgumentsHash: f.legacy.argumentsHash,
+    expectedPreparationRevision: blocked.preparationState.revision };
+  const result = await executePreparationResume(input, { openRuntime: f.open });
+  assert.equal(result.kind, "forward-preparation-completed");
+  assert.deepEqual(preparationLegacyIdentity(f.catalog.mcpOperation(f.originalId)), f.legacy);
+  assert.equal(await git(candidate.releaseRoot, "reflog", "show", "--format=%H", "PreRelease"), reflog);
+  const completed = f.catalog.mcpOperation(f.originalId);
+  const openDefault = () => openTaskAwaitCutoverRuntime({ config: { dataDir: path.dirname(f.databaseFile),
+    taskBoard: { autoPlaceConfidence: 0.8 } } });
+  assert.deepEqual(await executePreparationResume({ ...input,
+    expectedPreparationRevision: completed.preparationState.revision }, { openRuntime: openDefault }), result);
+  assert.deepEqual(f.catalog.mcpOperation(f.originalId), completed);
+});
+
+test("ordinary isolated resume reads a committed composing stage after its response was lost", { timeout: 240000 }, async t => {
+  const f = await legacyForwardFixture(t);
+  await assert.rejects(f.forward(runtime => {
+    const checkpoint = runtime.fixtureCatalog.checkpointMcpPreparationForward.bind(runtime.fixtureCatalog);
+    runtime.fixtureCatalog.checkpointMcpPreparationForward = (...args) => {
+      const row = checkpoint(...args);
+      if (args[1].state.phase === "composing") throw new Error("composing checkpoint committed but response lost");
+      return row;
+    };
+  }, isolationObserver), /response lost/u);
+  const original = f.catalog.mcpOperation(f.originalId);
+  assert.equal(original.preparationState.phase, "composing");
+  const result = await executePreparationResume({ provider: "codex", threadId: "fixture-thread", streamId: f.streamId,
+    requestId: f.originalId, expectedArgumentsHash: f.legacy.argumentsHash,
+    expectedPreparationRevision: original.preparationState.revision }, { openRuntime: f.open });
+  assert.equal(result.kind, "forward-preparation-completed");
+  assert.deepEqual(preparationLegacyIdentity(f.catalog.mcpOperation(f.originalId)), f.legacy);
+  assert.equal(f.catalog.mcpOperation(f.originalId).preparationState.phase, "completed");
 });
 
 

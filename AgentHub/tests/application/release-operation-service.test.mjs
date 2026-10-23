@@ -211,6 +211,62 @@ test("stale prepared candidate waits for normal preparation on the original oper
   assert.equal(start(f.service).operationId, ack.operationId);
 });
 
+test("definite preparation refusal continues the same release without replaying completed steps", async t => {
+  let ready = false, composeCalls = 0;
+  const f = await fixture(t, { compose: async () => {
+    composeCalls += 1;
+    if (!ready) throw Object.assign(new Error("owned native conflict"), { code: "RELEASE_PREPARATION_REJECTED" });
+    return generation();
+  } });
+  const ack = start(f.service);
+  const refused = await f.service.drain(ack.operationId);
+  assert.equal(refused.operation.state, "waiting");
+  assert.equal(refused.operation.waitReason.code, "preparation_refused");
+  assert.equal(f.store.latestStep(ack.operationId, 1, "compose").status, "failed");
+  ready = true;
+  f.service.continue(ack.operationId);
+  const done = await f.service.drain(ack.operationId);
+  assert.equal(done.operation.state, "done");
+  assert.equal(done.operation.authorization.fingerprint, refused.operation.authorization.fingerprint);
+  const calls = [...f.calls];
+  f.service.continue(ack.operationId);
+  await f.service.drain(ack.operationId);
+  assert.equal(composeCalls, 2);
+  assert.deepEqual(f.calls, calls);
+});
+
+test("ambiguous preparation effect remains unknown and cannot be blindly continued", async t => {
+  let calls = 0;
+  const f = await fixture(t, { compose: async () => {
+    calls += 1;
+    throw Object.assign(new Error("candidate CAS response lost"), { code: "AWAIT_PREPARATION_UNKNOWN" });
+  } });
+  const ack = start(f.service);
+  const unknown = await f.service.drain(ack.operationId);
+  assert.equal(unknown.operation.waitReason.code, "preparation_effect_unknown");
+  assert.equal(f.store.latestStep(ack.operationId, 1, "compose").status, "unknown");
+  assert.equal(f.service.continue(ack.operationId).accepted, false);
+  assert.equal(calls, 1);
+});
+
+test("lost generation persistence reply reads exact SQLite result without another composition", async t => {
+  const f = await fixture(t);
+  const put = f.store.putGeneration.bind(f.store);
+  let calls = 0;
+  f.store.putGeneration = (...args) => {
+    calls += 1;
+    put(...args);
+    throw new Error("generation committed but reply lost");
+  };
+  const ack = start(f.service);
+  const done = await f.service.drain(ack.operationId);
+  assert.equal(done.operation.state, "done");
+  assert.equal(done.generations.length, 1);
+  assert.equal(calls, 1);
+  assert.deepEqual(f.calls.filter(([step]) => step === "compose"), [["compose", 1]]);
+  assert.equal(f.store.latestStep(ack.operationId, 1, "compose").status, "applied");
+});
+
 test("validation failure waits for a correction and continues as generation two", async (t) => {
   let validation = 0;
   let resultVersion = 1;

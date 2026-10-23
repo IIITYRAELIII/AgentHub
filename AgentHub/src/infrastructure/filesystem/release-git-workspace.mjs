@@ -1024,7 +1024,7 @@ export class ReleaseGitWorkspaceService {
     operationId, generation, planRevision, projectRoot, workspaceId = null,
     frozenTasks = [], approvedBaseCommit = null, baseProvenance = null,
     validateBeforeCommit = null, changelogContent = undefined, freezePublication = true,
-    ephemeral = false,
+    ephemeral = false, nativeResolutionReview = null,
   } = {}) {
     this.#assertAvailable("prepareGeneration");
     const operation = String(operationId ?? "").trim();
@@ -1069,7 +1069,16 @@ export class ReleaseGitWorkspaceService {
             throw Object.assign(new Error("Original generation prepared input changed"), { code: "RELEASE_PREPARED_CANDIDATE_STALE" });
           }
           if (!localCheckpoint?.publicationFreeze) {
-            preparedSource = await this.#preparedGenerationSource(preparedInput);
+            try { preparedSource = await this.#preparedGenerationSource(preparedInput); }
+            catch (error) {
+              if (error.code !== "RELEASE_PREPARED_CANDIDATE_STALE" || existingPrepared) throw error;
+              // Composition is an ordinary stage of this operation. The same
+              // candidate owner verifies/reuses its Git checkpoint; no external
+              // preparation command or disposable operator is required.
+              await this.prepareCandidate({ ...preparedInput, nativeResolutionReview,
+                validateBeforeCommit, preserveFrozen: true });
+              preparedSource = await this.#preparedGenerationSource(preparedInput);
+            }
             if (existingPrepared && stableManifest(existingPrepared) !== stableManifest(preparedSource.binding)) {
               throw Object.assign(new Error("Original generation prepared PreRelease changed"), { code: "RELEASE_PREPARED_CANDIDATE_STALE" });
             }
@@ -3101,14 +3110,15 @@ export class ReleaseGitWorkspaceService {
     return { checkpointSha256: sha256(bytes), candidate: await this.frozenCandidate(projectRoot) };
   }
 
-  async frozenCandidate(projectRoot, { changelogContent = undefined } = {}) {
+  async frozenCandidate(projectRoot, { changelogContent = undefined, allowAbsent = false } = {}) {
     this.#assertAvailable("frozenCandidate");
     const authority = this.#readPreparationAuthority(canonicalPath(projectRoot));
     if (authority && !preparationGitIsolationActive()) return withPreparationGitIsolation(authority.isolation.dataDir,
-      () => this.frozenCandidate(projectRoot, { changelogContent }));
+      () => this.frozenCandidate(projectRoot, { changelogContent, allowAbsent }));
     const primary = await primarySnapshot(projectRoot);
     const layout = this.#layout(primary.root);
     const checkpoint = await readJson(layout.checkpointFile);
+    if (allowAbsent && checkpoint === null) return null;
     if (!checkpoint?.planRevision || !checkpoint?.manifestHash
         || !checkpoint?.baseCommit || !checkpoint?.preReleaseHead) {
       throw new Error(`release checkpoint is incomplete: ${layout.checkpointFile}`);

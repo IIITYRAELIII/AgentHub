@@ -3,6 +3,7 @@ import { mkdir, lstat, readFile, writeFile } from "node:fs/promises";
 import { createSelectedGitBundle } from "./selected-git-bundle.mjs";
 import { createHash } from "node:crypto";
 import { taskGitIdentityHash } from "../../domain/task-git-reference.mjs";
+import { normalizedNativeResolution } from "../../domain/native-resolution-input.mjs";
 import { selectedCompositionFields, normalizedSelectedAbsorption, selectedAbsorptionHandoff }
   from "../../domain/task-selected-composition.mjs";
 
@@ -147,6 +148,33 @@ async function requireClean(git) {
   }
 }
 
+async function requireUntouchedConflict(git, before, result, conflict) {
+  if (JSON.stringify(await entries(git, ["ls-files", "--stage", "-z"])) !== JSON.stringify(conflict.stages)
+      || String(await git(["ls-files", "--others", "--exclude-standard", "-z"], { rawOutput: true }))) {
+    throw failure("Native conflict contains unsaved executor work", "RELEASE_NATIVE_CHECKOUT_CHANGED");
+  }
+  const modified = String(await git(["diff-files", "--name-only", "-z"], { rawOutput: true })).split("\0").filter(Boolean);
+  if (modified.some(file => !conflict.paths.includes(file))) {
+    throw failure("Native automatic worktree bytes changed", "RELEASE_NATIVE_CHECKOUT_CHANGED");
+  }
+  const output = String(await git(["merge-tree", "--write-tree", "--name-only", "-z", before, result],
+    { acceptableExitCodes: [1] })).split("\0");
+  const automaticTree = output[0];
+  for (const file of conflict.paths) {
+    // Git's ordinary text conflict uses HEAD in the checkout and the exact
+    // first-parent OID in merge-tree. Refuse other driver/marker shapes rather
+    // than replacing an executor's uncommitted resolution.
+    const body = String(await git(["show", `${automaticTree}:${file}`], { rawOutput: true }));
+    const marker = `<<<<<<< ${before}\n`;
+    if (!body.includes(marker)) throw failure("Native conflict requires explicit owned resolution", "RELEASE_NATIVE_CHECKOUT_CHANGED");
+    const expected = Buffer.from(body.replaceAll(marker, "<<<<<<< HEAD\n"));
+    const blob = createHash("sha1").update(`blob ${expected.length}\0`).update(expected).digest("hex");
+    if (String(await git(["hash-object", `--path=${file}`, file])) !== blob) {
+      throw failure("Native conflict contains unsaved executor resolution", "RELEASE_NATIVE_CHECKOUT_CHANGED");
+    }
+  }
+}
+
 // Reopen must prove completed native steps from Git objects, rather than trusting
 // a mutable journal's next/head counters. Git identifies the actual conflict
 // boundary; additional compatibility bytes require an exact independent review.
@@ -262,6 +290,46 @@ export async function mergeSelectedResults({
     await writeJson(stateFile, state);
   }
   const git = (args, options) => gitAt(repository, args, options);
+  const input = resolutionReview == null ? null : normalizedNativeResolution(resolutionReview);
+  const choices = [];
+  if (input?.reviews) {
+    // Authenticate before importing any supplied object. A bundle imports no
+    // source configuration/hooks and cannot move the primary or selected refs.
+    for (const review of input.reviews) {
+      let binding;
+      try { binding = JSON.parse(/<native-merge-review>\s*([^]*?)\s*<\/native-merge-review>/u.exec(review.text)?.[1]).binding; }
+      catch { throw failure("Native resolution review is malformed", "RELEASE_NATIVE_REVIEW_REQUIRED"); }
+      if (binding?.identityHash !== taskGitIdentityHash(identity)
+          || !Array.isArray(binding.parents) || binding.parents.length !== 2
+          || !tasks.some(task => task.resultCommit === binding.parents[1])
+          || ![binding.commit, binding.tree, binding.automaticTree, ...binding.parents].every(c => /^[a-f0-9]{40}$/u.test(c))
+          || !/^[a-f0-9]{64}$/u.test(binding.diffSha256)
+          || choices.some(choice => choice.binding.parents[0] === binding.parents[0]
+            && choice.binding.parents[1] === binding.parents[1]) || typeof verifyReview !== "function") {
+        throw failure("Native resolution differs from the selected identity", "RELEASE_NATIVE_REVIEW_REQUIRED");
+      }
+      await verifyReview(review, binding, identity);
+      choices.push({ review, binding });
+    }
+    const info = await lstat(input.bundlePath);
+    if (!info.isFile() || info.isSymbolicLink() || info.size > 512 * 1024 * 1024) {
+      throw failure("Native resolution bundle is not a bounded regular file");
+    }
+    const bytes = await readFile(input.bundlePath);
+    if (createHash("sha256").update(bytes).digest("hex") !== input.bundleSha256) {
+      throw failure("Native resolution bundle digest changed");
+    }
+    const bundle = path.join(root, `reviewed-${input.bundleSha256}.bundle`);
+    try { await writeFile(bundle, bytes, { flag: "wx" }); }
+    catch (error) { if (error.code !== "EEXIST") throw error; }
+    const retained = await lstat(bundle);
+    if (!retained.isFile() || retained.isSymbolicLink() || retained.size !== bytes.length
+        || !(await readFile(bundle)).equals(bytes)) throw failure("Retained native resolution bundle changed");
+    await git(["fetch", "--no-tags", bundle, ...choices.map(choice => choice.binding.commit)]);
+  }
+  const reviewFor = (before, result, target) => input?.reviews
+    ? choices.find(choice => choice.binding.parents[0] === before && choice.binding.parents[1] === result
+      && (!target || choice.binding.commit === target))?.review ?? null : input;
   if (state.version !== 1 || !Number.isInteger(state.next) || state.next < 0
       || state.next > tasks.length || state.merges?.length !== state.next) {
     throw failure("Native merge journal progress changed", "RELEASE_NATIVE_CHECKOUT_CHANGED");
@@ -278,7 +346,7 @@ export async function mergeSelectedResults({
     const previous = index === 0 ? baseCommit : state.merges[index - 1].commit;
     await requireClean(git);
     const reviewedResolution = await verifyMergeStep(git, previous, tasks[index].resultCommit, currentHead,
-      { identity, review: resolutionReview, verifyReview, evidenceRoot: root });
+      { identity, review: reviewFor(previous, tasks[index].resultCommit, currentHead), verifyReview, evidenceRoot: root });
     if (!reviewedResolution) throw failure("Native merge amendment lacks exact review", "RELEASE_NATIVE_REVIEW_REQUIRED");
     state.merges[index] = { taskId: tasks[index].taskId, resultCommit: tasks[index].resultCommit,
       commit: currentHead, resolved: true, reviewedResolution };
@@ -302,13 +370,15 @@ export async function mergeSelectedResults({
       const head = String(await git(["rev-parse", "HEAD^{commit}"]));
       if (head !== state.head) {
         const parents = String(await git(["show", "-s", "--format=%P", head])).split(" ");
-        const automatic = await maybe(git, ["merge-tree", "--write-tree", state.head, task.resultCommit]);
         if (parents.length !== 2 || parents[0] !== state.head || parents[1] !== task.resultCommit
-            || !automatic || automatic.split(/\r?\n/u)[0] !== String(await git(["rev-parse", `${head}^{tree}`]))) {
+            || await maybe(git, ["rev-parse", "--verify", "MERGE_HEAD"]) !== null) {
           throw failure("Interrupted native merge has no exact automatic readback", "RELEASE_NATIVE_CHECKOUT_CHANGED");
         }
         await requireClean(git);
-        state.merges.push({ taskId: task.taskId, resultCommit: task.resultCommit, commit: head });
+        const reviewedResolution = await verifyMergeStep(git, state.head, task.resultCommit, head,
+          { identity, review: reviewFor(state.head, task.resultCommit, head), verifyReview, evidenceRoot: root });
+        state.merges.push({ taskId: task.taskId, resultCommit: task.resultCommit, commit: head,
+          ...(reviewedResolution ? { resolved: true, reviewedResolution } : {}) });
         state.head = head;
         state.next += 1;
         state.merging = false;
@@ -326,7 +396,26 @@ export async function mergeSelectedResults({
       }
     }
     if (state.conflict) {
-      const head = String(await git(["rev-parse", "HEAD^{commit}"]));
+      let head = String(await git(["rev-parse", "HEAD^{commit}"]));
+      const choice = choices.find(item => item.binding.parents[0] === state.head
+        && item.binding.parents[1] === task.resultCommit);
+      if (head === state.head && choice) {
+        const mergeHead = await maybe(git, ["rev-parse", "--verify", "MERGE_HEAD"]);
+        if (mergeHead === task.resultCommit) await requireUntouchedConflict(git, state.head, task.resultCommit, state.conflict);
+        else if (mergeHead || !state.conflict.reviewedResolution) {
+          throw failure("Native conflict operation changed", "RELEASE_NATIVE_CHECKOUT_CHANGED");
+        } else await requireClean(git);
+        const accepted = await verifyMergeStep(git, state.head, task.resultCommit, choice.binding.commit,
+          { identity, review: choice.review, verifyReview, evidenceRoot: root });
+        // Retain the accepted boundary BEFORE abort/checkout, so either side of
+        // a lost local response is read back through this same journal.
+        state.conflict.reviewedResolution = accepted;
+        await writeJson(stateFile, state);
+        if (mergeHead) await git(["merge", "--abort"]);
+        await requireClean(git);
+        await git(["checkout", "--detach", "--no-overwrite-ignore", choice.binding.commit]);
+        head = String(await git(["rev-parse", "HEAD^{commit}"]));
+      }
       const parents = String(await git(["show", "-s", "--format=%P", head])).split(" ");
       if (head === state.head || await maybe(git, ["rev-parse", "--verify", "MERGE_HEAD"]) !== null) {
         throw failure(`Resolve the native Git merge for Task ${task.taskId} in ${repository}`,
@@ -337,7 +426,7 @@ export async function mergeSelectedResults({
       }
       await requireClean(git);
       const reviewedResolution = await verifyMergeStep(git, state.head, task.resultCommit, head,
-        { identity, review: resolutionReview, verifyReview, evidenceRoot: root });
+        { identity, review: reviewFor(state.head, task.resultCommit, head), verifyReview, evidenceRoot: root });
       state.merges.push({ taskId: task.taskId, resultCommit: task.resultCommit, commit: head, resolved: true,
         ...(reviewedResolution ? { reviewedResolution } : {}) });
       state.head = head;
@@ -354,6 +443,25 @@ export async function mergeSelectedResults({
     if (await maybe(git, ["merge-base", "--is-ancestor", task.resultCommit, state.head]) !== null) {
       state.merges.push({ taskId: task.taskId, resultCommit: task.resultCommit, commit: state.head, contained: true });
       state.next += 1;
+      await writeJson(stateFile, state);
+      continue;
+    }
+    const choice = choices.find(item => item.binding.parents[0] === state.head
+      && item.binding.parents[1] === task.resultCommit);
+    if (choice) {
+      const reviewedResolution = await verifyMergeStep(git, state.head, task.resultCommit, choice.binding.commit,
+        { identity, review: choice.review, verifyReview, evidenceRoot: root });
+      // The existing intent/readback handles a lost checkout or journal reply.
+      // Checkout retains Git's ignored/untracked collision protection.
+      state.merging = true;
+      await writeJson(stateFile, state);
+      await git(["checkout", "--detach", "--no-overwrite-ignore", choice.binding.commit]);
+      await requireClean(git);
+      state.merges.push({ taskId: task.taskId, resultCommit: task.resultCommit,
+        commit: choice.binding.commit, resolved: true, reviewedResolution });
+      state.head = choice.binding.commit;
+      state.next += 1;
+      state.merging = false;
       await writeJson(stateFile, state);
       continue;
     }

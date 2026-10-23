@@ -1762,11 +1762,11 @@ export class TaskGitWorkspaceService {
     await this.#runOwned(["branch", "-m", branch], { cwd: root, lease });
   }
 
-  async #prepareDevOwned(projectRoot, repoRoot, lease, { allowUnadoptedLocalMain = false } = {}) {
-    return measureTaskOperation("prepare-dev", () => this.#prepareDevOwnedTraced(projectRoot, repoRoot, lease, { allowUnadoptedLocalMain }));
+  async #prepareDevOwned(projectRoot, repoRoot, lease, { allowUnadoptedLocalMain = false, synchronizeAcceptedMain = false } = {}) {
+    return measureTaskOperation("prepare-dev", () => this.#prepareDevOwnedTraced(projectRoot, repoRoot, lease, { allowUnadoptedLocalMain, synchronizeAcceptedMain }));
   }
 
-  async #prepareDevOwnedTraced(projectRoot, repoRoot, lease, { allowUnadoptedLocalMain }) {
+  async #prepareDevOwnedTraced(projectRoot, repoRoot, lease, { allowUnadoptedLocalMain, synchronizeAcceptedMain }) {
     await requiredGuardLease(lease).assertOwned();
     const mainCommit = await localMainCommit(repoRoot);
     const repoKey = taskRepositoryKey(repoRoot);
@@ -1785,6 +1785,14 @@ export class TaskGitWorkspaceService {
       "merge-base", "--is-ancestor", mainCommit, headCommit,
     ], { cwd: devRoot }) !== null;
     if (!containsAcceptedMain && !allowUnadoptedLocalMain) {
+      if (synchronizeAcceptedMain) {
+        const synchronized = await this.#synchronizeMainIntoDevOwned({ repoRoot,
+          expectedMainCommit: mainCommit, observedMainCommit: mainCommit, lease });
+        if (synchronized.integrated) return { ...synchronized, acceptedMainIntegrated: true };
+        throw Object.assign(new Error(synchronized.reason || "Accepted main conflicts with managed dev"),
+          { code: "RELEASE_PREPARATION_REJECTED", conflicts: synchronized.conflicts,
+            conflictRoot: devRoot });
+      }
       throw new Error(
         `managed dev ${headCommit} does not contain accepted local main ${mainCommit}; explicit adoption required`,
       );
@@ -2488,10 +2496,10 @@ export class TaskGitWorkspaceService {
     };
   }
 
-  async prepareDev(projectRoot, { lease = null } = {}) {
+  async prepareDev(projectRoot, { lease = null, synchronizeAcceptedMain = false } = {}) {
     this.#assertAvailable("prepareDev");
     const repoRoot = await repositoryRoot(projectRoot);
-    return this.#withClearDevLock(repoRoot, lease, (owned) => this.#prepareDevOwned(projectRoot, repoRoot, owned));
+    return this.#withClearDevLock(repoRoot, lease, (owned) => this.#prepareDevOwned(projectRoot, repoRoot, owned, { synchronizeAcceptedMain }));
   }
 
   // Forward preparation inventories the existing dev under the same already
@@ -4944,10 +4952,10 @@ export class TaskGitWorkspaceService {
     });
   }
 
-  async releaseIntegrationEvidence({ projectRoot, tasks = [], lease = null, forwardPreparation = false } = {}) {
+  async releaseIntegrationEvidence({ projectRoot, tasks = [], lease = null, forwardPreparation = false, synchronizeAcceptedMain = false } = {}) {
     this.#assertAvailable("releaseIntegrationEvidence");
     const dev = forwardPreparation ? await this.inspectForwardPreparationDevOwned(projectRoot, { lease })
-      : await this.prepareDev(projectRoot, { lease });
+      : await this.prepareDev(projectRoot, { lease, synchronizeAcceptedMain });
     const firstParentHistory = String(await runGit([
       "log", "--first-parent", "--reverse", "--format=%H%x00%P", dev.headCommit,
     ], { cwd: dev.projectRoot })).split(/\r?\n/u).filter(Boolean).map((line, order) => {

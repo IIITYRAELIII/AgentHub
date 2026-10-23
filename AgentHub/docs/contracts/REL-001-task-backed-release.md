@@ -1,5 +1,27 @@
 # REL-001 — Task-backed Workspace release
 
+## Normal release continuation (ADR-0132)
+
+The existing `hub_release_run` / `hub_release_continue` owner prepares a missing
+native candidate itself, then validates, freezes and publishes its immutable
+generation. A separate manual preparation/operator package is not a prerequisite
+for an ordinary transition. Exact selection/publication/base checks precede
+release changes. Release integration may synchronize already accepted main into
+managed dev under its normal lease/process guards; primary bytes remain intact.
+Ordinary Task integration retains its explicit adoption boundary.
+
+An approved repository's optional `nativeResolutionReview` accepts the existing
+single review or `{bundlePath,bundleSha256,reviews}` for multiple already reviewed
+prefixes. The sequencer authenticates each receipt and selected identity before
+import, then verifies full Git parents/tree/diff before checkout. It executes all
+matching prefixes in one call and reads its saved intent/Git after response loss.
+A bundle does not adopt a private journal or grant new publication authority.
+
+Definite preparation refusals persist failed step receipts while the same release
+waits for ordinary continuation. Explicit unknown candidate/acceptance effects
+remain unknown and cannot be blindly continued. Completed stages and the original
+authorization remain unchanged. ADR-0131 recovery remains legacy-only.
+
 Forward preparation may retain one exact original-bound `historicalChangelog`
 record in closed installed-local-source provenance (ADR-0131). The original
 operation/envelope and selected result, historical installed manifest/release,

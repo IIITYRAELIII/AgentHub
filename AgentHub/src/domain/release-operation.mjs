@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { selectedCompositionFields } from "./task-selected-composition.mjs";
+import { normalizedNativeResolution } from "./native-resolution-input.mjs";
 
 export const MAX_RELEASE_METADATA_BYTES = 8 * 1024 * 1024;
 
@@ -86,6 +87,8 @@ function normalizedTargets(value) {
         ? { approvedLocalMainCommit: optionalText(entry.approvedLocalMainCommit) } : {}),
       ...(optionalText(entry.approvedOriginMainCommit)
         ? { approvedOriginMainCommit: optionalText(entry.approvedOriginMainCommit) } : {}),
+      ...(entry.nativeResolutionReview != null
+        ? { nativeResolutionReview: normalizedNativeResolution(entry.nativeResolutionReview) } : {}),
     };
   }).sort((left, right) => left.targetId.localeCompare(right.targetId));
   if (!targets.length) throw new TypeError("approvedTargets requires at least one target");
