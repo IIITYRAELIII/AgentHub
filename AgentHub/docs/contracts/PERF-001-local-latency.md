@@ -121,6 +121,28 @@ These elapsed spans do not classify filesystem or callback wait as CPU work.
 
 ## Unified performance evidence
 
+Explicitly traced snapshot GETs carry their existing client trace ID to the
+HTTP owner; diagnostic health/static probes may supply the same bounded
+`clientTraceId` query field. The response echoes only that identity. Existing
+trace records separate route/read waiting, synchronous JSON encoding, response
+finish and disconnect, with no URL or payload retention. Thread CPU and loop
+active/idle deltas over an asynchronous span describe the shared window, not
+exclusive CPU attribution to that request. Synchronous encode deltas cover that
+specific operation. No pre-callback network queue duration is invented.
+
+The existing runtime health sampling tick may take one internal CPU sample per
+process when its measured event-loop p95 reaches two seconds. It opens no TCP
+debugger endpoint and executes no debugger evaluation. Sampling targets fifteen
+seconds at a ten-millisecond interval; a delayed stop callback is reported as
+timer overrun rather than a hard deadline. Shutdown stops and drains that sample
+before closing the existing trace worker. Only twenty bounded code-location
+stacks and counters are retained through that worker; raw profiles, source text,
+values, absolute paths and unknown external function names are discarded.
+Failure is diagnostic-only and does not retry or change application outcomes.
+This temporary owning-operator diagnostic is removable once the common runtime
+stall is localized and its corrected production path has verified AFTER evidence;
+it is not itself a latency fix or a new event-loop monitor.
+
 Restart readiness checkpoints use the original restart operation ID and bounded
 content-free blocker run IDs/counts, pending-admission state and request time.
 Changed observations distinguish waiting from ready/cutover; unchanged repeated
