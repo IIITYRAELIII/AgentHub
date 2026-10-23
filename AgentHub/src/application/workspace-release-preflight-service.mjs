@@ -366,6 +366,10 @@ export class WorkspaceReleasePreflightService {
             await verify();
             const devInventory = forwardPreparation
               ? await this.taskGitWorkspaces.inspectForwardPreparationDevOwned(repositories[0].projectRoot, { lease: ownedLease }) : null;
+            if (forwardPreparation) forwardPreparation.repositoryLease = {
+              ...ownedLease, beginProcessTreeGuard: context => ownedLease.beginProcessTreeGuard({ ...context,
+                scope: "repository", repositoryRoot: repositories[0].projectRoot }),
+            };
             await ownPreparation?.({ devInventory });
             return this.#prepareAwaitSet({ workspaceId, expectedPlanRevision: envelope.planRevision,
               preserveFrozen: true, lease: ownedLease,

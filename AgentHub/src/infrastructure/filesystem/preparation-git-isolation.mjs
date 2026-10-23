@@ -20,8 +20,17 @@ export async function assertPlainIsolationPath(value) {
   }
 }
 export const preparationGitIsolationActive = () => Boolean(contexts.getStore());
-export function withPreparationGitIsolation(dataDir, operation) {
-  return contexts.run({ dataDir }, operation);
+export function withPreparationGitIsolation(dataDir, operation, lease = null) {
+  return contexts.run({ dataDir, lease, gitTail: Promise.resolve() }, operation);
+}
+export function guardedPreparationGit(operation) {
+  const active = contexts.getStore();
+  if (!active?.lease) return null;
+  // The existing guard has one active child per owned repository. This queue
+  // is scoped to this root/invocation, never a global execution lane.
+  const result = active.gitTail.then(() => operation(active.lease));
+  active.gitTail = result.catch(() => {});
+  return result;
 }
 export function preparationGitInvocation(args, cwd) {
   const active = contexts.getStore();

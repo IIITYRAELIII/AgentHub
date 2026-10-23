@@ -102,3 +102,17 @@ Leases, current main/dev/selection/publication validation and native resolution
 review remain mandatory. Future publication still uses the ordinary frozen
 candidate pipeline. This is not authority to isolate unrelated operations or
 protect against arbitrary malicious code with the user's privileges.
+
+The isolated path is specifically an exclusion of legacy write targets. An
+unexpected same-original candidate or partial promotion already in that legacy
+namespace is preserved and refused before transfer at its exact root; it is not
+silently recomposed into a second candidate. Exact imported-candidate handling
+would require its separately checked owning proof. The unchanged terminal path
+can still adopt its proved complete original. Once isolation is owned, loss of
+its response reuses the same independent candidate/head without duplication.
+
+New preparation Git effects use the existing TaskGit repository process guard
+under the same already-held lease. The scoped Git queue permits one child per
+guard without a global lane. An interrupted current child leaves that existing
+guard unresolved and the next admission refuses; isolation of the old invocation
+is never reused as proof that a newer invocation or child has completed.

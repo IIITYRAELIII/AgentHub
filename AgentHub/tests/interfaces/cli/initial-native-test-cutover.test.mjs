@@ -934,3 +934,65 @@ test("isolated preparation preserves partial native promotion without falling ba
   await assert.rejects(f.releaseGit.frozenCandidate(f.primary), /ENOENT|incomplete/u);
   assert.deepEqual(preparationLegacyIdentity(f.catalog.mcpOperation(f.originalId)), f.legacy);
 });
+
+
+test("isolated preparation refuses an unexpected same-original legacy candidate before transfer or duplicate", { timeout: 240_000 }, async t => {
+  const f = await legacyForwardFixture(t), old = await f.releaseGit.frozenCandidate(f.primary);
+  const bytes = Buffer.from(JSON.stringify({ ...JSON.parse(await readFile(old.checkpointFile, "utf8")),
+    preflightRequestId: f.originalId }));
+  await writeFile(old.checkpointFile, bytes);
+  const current = structuredClone(f.envelope);
+  current.repositories[0].checkpointHash = createHash("sha256").update(bytes).digest("hex");
+  await assert.rejects(executePreparationForward({ provider: "codex", threadId: "fixture-thread", streamId: f.streamId,
+    requestId: f.originalId, expectedArgumentsHash: f.legacy.argumentsHash, expectedPreparationRevision: 0,
+    originalPreparation: f.envelope, preparation: current }, { openRuntime: f.open,
+    inspectOriginalExecution: isolationObserver }), /Preserve same-original legacy candidate.promotion/u);
+  assert.deepEqual(f.catalog.mcpOperation(f.originalId), f.legacy);
+  assert.deepEqual(await readFile(old.checkpointFile), bytes);
+});
+
+
+test("isolated preparation actual default factory reads registered root and same completed original", { timeout: 240_000 }, async t => {
+  const f = await legacyForwardFixture(t), result = await f.forward(() => {}, isolationObserver);
+  const row = f.catalog.mcpOperation(f.originalId);
+  const openDefault = () => openTaskAwaitCutoverRuntime({ config: { dataDir: path.dirname(f.databaseFile),
+    taskBoard: { autoPlaceConfidence: 0.8 } } });
+  const replay = await executePreparationForward({ provider: "codex", threadId: "fixture-thread", streamId: f.streamId,
+    requestId: f.originalId, expectedArgumentsHash: f.legacy.argumentsHash,
+    expectedPreparationRevision: row.preparationState.revision, originalPreparation: f.envelope, preparation: f.envelope },
+  { openRuntime: openDefault, inspectOriginalExecution: () => assert.fail("Completed retry does not retransfer") });
+  assert.deepEqual(replay, result);
+  const runtime = await openDefault();
+  try {
+    const candidate = await runtime.service.releasePreflight.releaseGitWorkspaces.frozenCandidate(f.primary);
+    assert.equal(candidate.releaseRoot, result.candidates[0].releaseRoot);
+    assert.equal(candidate.preReleaseHead, result.candidates[0].preReleaseHead);
+    assert.equal(candidate.tree, result.candidates[0].tree);
+  } finally { runtime.close(); }
+  assert.deepEqual(f.catalog.mcpOperation(f.originalId), row);
+});
+
+
+test("isolated preparation unresolved current child guard blocks another transfer", { timeout: 240_000 }, async t => {
+  const f = await legacyForwardFixture(t), own = f.taskGit.withTaskRepositoryRecoveryLock.bind(f.taskGit);
+  let injected = false;
+  f.taskGit.withTaskRepositoryRecoveryLock = (taskId, root, lease, operation) => own(taskId, root, lease, owned => operation({
+    ...owned, beginProcessTreeGuard: async context => {
+      const guard = await owned.beginProcessTreeGuard(context);
+      if (!injected && context.cwd.includes("release-prep") && context.args.includes("clone")) {
+        injected = true;
+        return { ...guard, clear: async () => {
+          throw Object.assign(new Error("controlled current child completion lost"), { processTreeStopped: false });
+        } };
+      }
+      return guard;
+    },
+  }));
+  await assert.rejects(f.forward(() => {}, isolationObserver), /current child completion lost|completion is unproven/u);
+  assert.equal(injected, true);
+  const retained = f.catalog.mcpOperation(f.originalId);
+  await assert.rejects(f.forward(() => {}, isolationObserver), /process-tree guard/u);
+  assert.deepEqual(f.catalog.mcpOperation(f.originalId), retained);
+  assert.deepEqual(preparationLegacyIdentity(retained), f.legacy);
+  await assert.rejects(f.releaseGit.frozenCandidate(f.primary), /ENOENT|incomplete|publication requires/u);
+});

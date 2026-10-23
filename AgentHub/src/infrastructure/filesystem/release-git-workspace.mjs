@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { preparationIsolationLayout, isolationDigest, assertPlainIsolationPath,
-  withPreparationGitIsolation, preparationGitInvocation, preparationGitIsolationActive } from "./preparation-git-isolation.mjs";
+  withPreparationGitIsolation, preparationGitInvocation, preparationGitIsolationActive, guardedPreparationGit } from "./preparation-git-isolation.mjs";
 import { createHash, randomUUID } from "node:crypto";
 import { copyFile, link, lstat, mkdir, mkdtemp, open, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -10,6 +10,7 @@ import { ReleasePreparationRejectedError } from "../../domain/release-preparatio
 import { assertPreparationCheckpoint } from "./release-preparation-guard.mjs";
 import { ReleaseGenerationTransportRetention } from "./release-generation-transport-retention.mjs";
 import { createSelectedGitBundle } from "./selected-git-bundle.mjs";
+import { runOwnedGit } from "./task-git-workspace.mjs";
 import { assertInstalledLocalSourceBaseline, installedNativeHistoryBaseline,
   assertInstalledAgreedMainOrigin } from "./local-source-baseline.mjs";
 import { readNativeUpstreamAdoptions, assertNativeUpstreamOrigin } from "./native-upstream-adoption.mjs";
@@ -54,6 +55,15 @@ const AWAIT_UNKNOWN_OUTCOME_CODES = new Set([
 
 function runGit(args, { cwd, timeoutMs = 120_000, rawOutput = false, acceptableExitCodes = [], input = null, stdoutFd = null } = {}) {
   if (stdoutFd !== null && (!Number.isSafeInteger(stdoutFd) || stdoutFd < 3)) throw new TypeError("Invalid owned Git output descriptor");
+  const guarded = guardedPreparationGit(lease => {
+    const invocation = preparationGitInvocation(args, cwd);
+    // runOwnedGit merges its environment with process.env; explicit undefined
+    // removes inherited Git keys instead of accidentally reintroducing them.
+    const env = { ...Object.fromEntries(Object.keys(process.env).filter(key => /^GIT_/iu.test(key))
+      .map(key => [key, undefined])), ...invocation.env };
+    return runOwnedGit(invocation.args, { lease, cwd, timeoutMs, rawOutput, acceptableExitCodes, input, stdoutFd, env });
+  });
+  if (guarded) return guarded;
   return new Promise((resolve, reject) => {
     const invocation = preparationGitInvocation(args, cwd);
     const child = spawn("git", invocation.args, { cwd, ...(invocation.env ? { env: invocation.env } : {}),
@@ -1599,7 +1609,21 @@ export class ReleaseGitWorkspaceService {
     const layout = preparationIsolationLayout(this.dataDir, projectRoot, requestId, argumentsHash);
     await assertPlainIsolationPath(layout.dataDir);
     const legacyRoot = path.join(this.releaseRepositoriesRoot, taskRepositoryKey(projectRoot));
-    const checkpoint = await readFile(path.join(legacyRoot, "checkpoint.json"));
+    await assertPlainIsolationPath(legacyRoot);
+    const checkpointFile = path.join(legacyRoot, "checkpoint.json");
+    for (const file of [checkpointFile, path.join(legacyRoot, "native-preparation.json")]) {
+      const entry = await lstat(file).catch(error => { if (error.code === "ENOENT") return null; throw error; });
+      if (entry && (!entry.isFile() || entry.isSymbolicLink() || entry.size > 512 * 1024)) {
+        throw new Error(`Legacy preparation inventory record is unsafe or oversized: ${file}`);
+      }
+    }
+    const checkpoint = await readFile(checkpointFile), legacyCheckpoint = JSON.parse(checkpoint.toString("utf8"));
+    const legacyJournal = await readJson(path.join(legacyRoot, "native-preparation.json"));
+    // Isolation excludes late legacy writes; it must not silently manufacture
+    // another candidate if this original already has an unadopted legacy body.
+    // Resumes of our isolated body use previousIsolation above and remain exact.
+    const legacyOriginalEffect = legacyCheckpoint.preflightRequestId === requestId
+      || legacyJournal?.requestId === requestId && !["completed", "rolled_back"].includes(legacyJournal.phase);
     const primary = await primarySnapshot(projectRoot);
     const configHash = sha256(await readFile(path.join(primary.commonDir, "config")));
     const inheritedConfigHash = sha256(await runGit(["config", "--null", "--show-origin", "--show-scope", "--list"],
@@ -1627,7 +1651,8 @@ export class ReleaseGitWorkspaceService {
     return { schemaVersion: 1, kind: "preparation-isolated-git-v1", ...layout, projectRoot,
       requestId, argumentsHash, originalSourceClosureHash: originalPreparation.sourceClosureHash,
       originMainCommit: repository.originMainCommit, previousCheckpointHash: repository.checkpointHash,
-      legacyCheckpointHash: sha256(checkpoint), legacyConfigurationHash: configHash,
+      legacyCheckpointHash: sha256(checkpoint), legacyOriginalEffect,
+      legacyJournalHash: legacyJournal ? isolationDigest(legacyJournal) : null, legacyConfigurationHash: configHash,
       inheritedConfigHash, inheritedGitEnvironment,
       targets, writeTargetsHash: isolationDigest(targets) };
   }
@@ -1690,6 +1715,10 @@ export class ReleaseGitWorkspaceService {
       contourExternalEffects: this.#contourExternalEffects, environment: this.#environment,
       verifyNativeResolutionReview: this.verifyNativeResolutionReview });
     isolated.#isolationContext = isolation;
+    const lease = options.forwardPreparation.repositoryLease;
+    if (typeof lease?.assertOwned !== "function" || typeof lease?.beginProcessTreeGuard !== "function") {
+      throw new Error("Isolated preparation requires its existing repository process guard lease");
+    }
     return withPreparationGitIsolation(expected.dataDir, async () => {
       await mkdir(expected.dataDir, { recursive: true });
       for (const name of ["identity.json", "source.bundle", "empty-gitconfig"]) {
@@ -1725,7 +1754,7 @@ export class ReleaseGitWorkspaceService {
       isolated.#validationBundle = bundle;
       const result = await isolated.prepareCandidate(options);
       return result;
-    });
+    }, lease);
   }
 
   async prepareCandidate({

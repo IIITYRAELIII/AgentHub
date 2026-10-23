@@ -1051,6 +1051,9 @@ export class HubMcpService {
           const root = await lstat(sourceRoot);
           await validate();
           const isolation = custody.kind === "preparation-effects-isolated-v1" ? isolationPlan : null;
+          if (isolation && !state?.isolation && isolation.legacyOriginalEffect) {
+            throw new ReleasePreparationRejectedError(`Preserve same-original legacy candidate/promotion at ${isolation.targets.legacyCandidate.root}; exact owned import is required before isolation`);
+          }
           if (isolation && !state?.isolation && isolation.legacyCheckpointHash !== envelope.repositories[0].checkpointHash) {
             throw new ReleasePreparationRejectedError("Legacy checkpoint changed before isolated custody transfer");
           }
