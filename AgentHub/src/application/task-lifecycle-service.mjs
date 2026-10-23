@@ -4,6 +4,7 @@ import { selectedCompositionFields, selectedAbsorptionHandoff, normalizedSelecte
 import { realpathSync } from "node:fs";
 import path from "node:path";
 
+import { TaskLifecycleNoEffectError, TaskLifecycleBeginRejectedError } from "../domain/task-board-task.mjs";
 import { taskProjectRoot } from "../domain/task-project-root.mjs";
 import { TaskAbsorptionCompositionError } from "../domain/task-board-task.mjs";
 import { normalizedTaskSquashCutover } from "../domain/task-squash-cutover.mjs";
@@ -827,6 +828,7 @@ export class TaskLifecycleService {
   async #updateWorkflowStatusLocked({
     taskId, status, operationId, binding = {}, projectRoot = null,
     expectedRevision = null, expectedWorkflowStatus = null, operationEvidence = null,
+    admissionReceipt = null,
     selectedAbsorptionHandoff: handoffInput = null,
   } = {}, { releaseWorkflow = false } = {}) {
     const handoff = selectedAbsorptionHandoff(handoffInput);
@@ -841,6 +843,7 @@ export class TaskLifecycleService {
       const history = prior?.kind === "native-task-integration-v1" ? prior.absorptionHistory ?? prior : null;
       return this.#updateWorkflowStatusWithLease({
         taskId, status, operationId, binding, projectRoot, expectedRevision, expectedWorkflowStatus,
+        admissionReceipt,
         operationEvidence: handoff ? { ...(operationEvidence ?? {}), nativeAbsorptionInput:
           this.#selectedAbsorptionBinding(task, handoffInput, operationId) }
           : history ? { ...(operationEvidence ?? {}), nativeAbsorptionHistory: history } : operationEvidence,
@@ -851,19 +854,39 @@ export class TaskLifecycleService {
       : this.#withLock(taskId, operation, { git: releaseWorkflow });
   }
 
+  async #refuseWorkflowAdmission({ taskId, admissionReceipt, projectRoot, status,
+    expectedRevision, expectedWorkflowStatus }, lease) {
+    await this.#assertOwned(lease);
+    const root = projectRoot || this.#projectRoot(this.#task(taskId));
+    const outcome = await this.#mutation(() => this.taskBoard.recordWorkflowAdmissionRefusal({
+      taskId, receipt: admissionReceipt, projectRoot: root ? path.resolve(root) : null,
+      targetWorkflowStatus: status,
+      expectedRevision: expectedRevision == null ? null : Number(expectedRevision),
+      expectedWorkflowStatus: expectedWorkflowStatus == null ? null : String(expectedWorkflowStatus).trim(),
+    }), admissionReceipt.requestId);
+    throw new TaskLifecycleNoEffectError(outcome.result.noEffect);
+  }
+
   async #updateWorkflowStatusWithLease({
     taskId, status, operationId, binding = {}, projectRoot = null,
     expectedRevision = null, expectedWorkflowStatus = null, operationEvidence = null,
+    admissionReceipt = null,
+
     initialNativeTestSource = null, initialNativeTestRecovery = false, nativeAwaitRecovery = null,
   } = {}, { releaseWorkflow = false, lease = {} } = {}) {
       const task = this.#task(taskId);
       const workflowStatus = String(status ?? "").trim();
-      if (expectedRevision != null && task.revision !== Number(expectedRevision)) {
-        throw new Error("Task workflow cutover revision changed");
-      }
-      if (expectedWorkflowStatus != null
-          && task.workflowStatus !== String(expectedWorkflowStatus).trim()) {
-        throw new Error("Task workflow cutover status changed");
+      const revisionChanged = expectedRevision != null && task.revision !== Number(expectedRevision);
+      const statusChanged = expectedWorkflowStatus != null
+        && task.workflowStatus !== String(expectedWorkflowStatus).trim();
+      if (revisionChanged || statusChanged) {
+        // A replay, missing receipt, lost lease or existing admission cannot
+        // manufacture a new certificate for an old ambiguous operation.
+        if (admissionReceipt?.replayed === false) {
+          return this.#refuseWorkflowAdmission({ taskId: task.id, admissionReceipt, projectRoot,
+            status: workflowStatus, expectedRevision, expectedWorkflowStatus }, lease);
+        }
+        throw new Error(revisionChanged ? "Task workflow cutover revision changed" : "Task workflow cutover status changed");
       }
       const snapshotsResult = releaseWorkflow && workflowStatus === "testing";
       const withdrawsResult = releaseWorkflow && ["new", "in_progress", "blocked"].includes(workflowStatus)
@@ -924,7 +947,8 @@ export class TaskLifecycleService {
         [acceptedReference] = references;
       }
       await this.#assertOwned(lease);
-      await this.#mutation(() => this.taskBoard.beginLifecycleTransition({
+      try {
+        await this.#mutation(() => this.taskBoard.beginLifecycleTransition({
         id: task.id,
         operationId,
         kind: "workflow",
@@ -947,7 +971,20 @@ export class TaskLifecycleService {
             } : {}),
           },
         } : {}),
-      }), operationId);
+        }), operationId);
+      } catch (error) {
+        const current = this.#task(task.id);
+        if (error instanceof TaskLifecycleBeginRejectedError && admissionReceipt?.replayed === false
+            && !(releaseWorkflow && task.workflowStatus === "blocked" && workflowStatus !== "blocked")
+            && ((expectedRevision != null && current.revision !== Number(expectedRevision))
+              || (expectedWorkflowStatus != null && current.workflowStatus !== String(expectedWorkflowStatus).trim()))) {
+          // BEGIN rolled back, and no preparation/effects preceded it. Seal the
+          // original CAS refusal rather than leaving a receipt-only crash gap.
+          return this.#refuseWorkflowAdmission({ taskId: task.id, admissionReceipt, projectRoot,
+            status: workflowStatus, expectedRevision, expectedWorkflowStatus }, lease);
+        }
+        throw error;
+      }
       try {
         if (withdrawsResult) {
           const references = task.gitReferences ?? [];

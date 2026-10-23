@@ -329,6 +329,52 @@ change the arguments hash and fail closed. An already failed transition or
 authoritative outcome settles only the original receipt without Git replay;
 pending Git work still requires its existing process-tree guard and owner.
 
+Ordinary workflow CAS refusal on a fresh MCP intake seals a bounded `NO_EFFECT`
+outcome in the existing Task lifecycle owner before throwing. It binds the exact
+request/arguments hash, Workspace/Stream/provider/Thread intake identity, target,
+expected and observed CAS, and repository (nullable for database-only workflows).
+Only a current owned pre-admission boundary may issue it: an existing transition
+or outcome, replayed intake, lost lease or prior preparation excludes issuance.
+The terminal outcome fences any later begin using that operation ID. A refusal
+at BEGIN's CAS is sealed only after rollback and only when no preparation/effects
+preceded BEGIN. Typed errors alone are not a substitute for this owner evidence.
+
+The MCP receipt records `failed` with structural `NO_EFFECT` evidence. A crash
+after outcome commit but before receipt settlement is recovered by pending-startup
+readback or canonical original-ID reconciliation of an unknown receipt, without
+Git/status replay. Reconciliation retains the exact optional CAS argument shape
+and original identity. Its own identity/confirmation/active-worker refusal before
+effects terminalizes only its own receipt; the ambiguous original remains unknown.
+An exact immutable admission refusal settles through the existing SQLite receipt
+CAS only, before release/Git reconciliation locks: database-only workspaces are
+supported with release workflow disabled. `project_root` may be omitted only when
+that owner proof records a null root; a supplied locator in that case grants no
+Git authority. A recorded non-null root still requires an exact locator. Ordinary
+Git recovery still requires its configured root, enabled workflow and owner locks.
+Failures once recovery/settlement begins retain ordinary unknown semantics.
+Legacy missing-admission cases without positive durable owner evidence remain
+unsupported/unknown: absent transitions, error text, timings or current refs are
+not certificates. No operator proof register or new historical recovery API is
+introduced. See ADR-0085.
+
+A claim refused because its previous executor has active or queued work seals
+`task-claim-executor-busy-v1` in that original MCP receipt before Git preparation
+or Task assignment. The existing catalog SQLite transaction binds the fresh
+intake identity, full claim argument shape, observed Task revision/executor and
+the active/queued reason; it rejects prior assignment or lifecycle admission.
+The receipt then becomes terminal `failed` with structural `NO_EFFECT` and
+`TASK_CLAIM_EXECUTOR_BUSY`. Task claim writes are fenced by that same durable
+refusal. Queued input without a Stream ID uses its exact existing Thread binding.
+No context capability or message/file payload is retained in this evidence.
+
+Startup readback and exact same-ID retry recover a lost terminal receipt write
+from the sealed proof, without preparing Git or assigning the Task again. The
+same ID remains refused even after the former executor becomes idle. A typed
+error alone, legacy error text, current executor state, a prior assignment or a
+partial preparation cannot acquire this proof; ambiguous cases remain UNKNOWN.
+No new table, receipt owner, public reconciliation tool or legacy settlement
+permission is introduced. See ADR-0124.
+
 An ordinary original native Test whose merge is already exactly applied may
 finish after a metadata-only Task revision advance. Its original argument hash
 must contain no explicit CAS, cutover, absorption or review family. Recovery
@@ -672,3 +718,43 @@ bounded already-published-notes archive can substitute for a nonexistent process
 guard; every real guard still refuses. Drift remains UNKNOWN. The same durable
 workflow outcome settles the same receipt; repeated terminal reconciliation
 performs a read without re-composing or re-archiving.
+
+
+## Explicit forward custody of an unsealed claim
+
+An explicitly authorized RM may use the existing `hub_task_operation_reconcile`
+with `claim_custody` to prepare and then fence one exact unsealed claim. This is
+withdrawal of future continuation, never historical NO_EFFECT. The old receipt,
+error, argument identity and UNKNOWN remain unchanged. Dedicated immutable stage
+state and terminal receipts commit in the existing MCP ledger, not a new journal.
+Original/caller/hash/Task/source/WIP/authorization and exact successor ID are
+pinned; changed or partially admitted evidence refuses without guessing effects.
+
+Fence requires positive complete legacy-cohort retirement through an exact
+externally retained native QUERY handle; missing job names or root PIDs do not
+prove it. Ordinary tools cannot acquire a valid witness from inside that job.
+The native port verifies the actual witness process/capture/source and local
+nonce-bound pipe, not caller-supplied retirement flags. A lost witness before the
+fence commit refuses; the committed positive certificate survives later collector
+exit. There is no forced stop or automatic independent launch mechanism.
+
+An explicitly scoped RM authorization may instead select
+`claim_custody.admission=isolated-source-v1` in the prepare envelope. The existing
+Task Git owner stages full independent Git objects and hash-verified WIP under a
+new custody epoch outside legacy source/ref/cleanup paths. The existing catalog
+atomically checks the complete Task-keyed SQL inventory and commits the fence;
+persistent data triggers protect current Task/binding/lifecycle/result/receipt
+writers, including old open connections, cached statements and replace/delete
+paths. Only the new canonical store can use a synchronous transaction-scoped
+epoch permit, cleared before commit. Effects before the fence cause refusal;
+late supported legacy writes are rejected or confined to the old checkout.
+The historical UNKNOWN is unchanged. This is the exact authorized historical
+claim scope in ADR-0131, not a default substitute for missing retirement proof.
+
+Only ordinary successor `hub_task_claim` with the declared ID and
+`forward_custody_request_id` assigns the Task. It retains the current executor's
+active/queued-work guard through the SQL commit and uses the existing managed
+Git owner for read-only source reuse. Original dependency preparation is not
+replayed, and its response says so. Late originals are fenced before any binding
+or baseline update, including receipt writes; exact post-commit retry reuses the
+same binding and assignment. See [ADR-0131](../decisions/ADR-0131-claim-forward-custody.md).

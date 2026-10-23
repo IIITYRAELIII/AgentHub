@@ -17,6 +17,7 @@ import {
   interstreamDisplayText,
 } from "../domain/interstream-message.mjs";
 import { canonicalMcpValue, mcpArgumentsHash } from "../domain/mcp-arguments-hash.mjs";
+import { claimCustodyHash, claimCustodyState, assertClaimCustodyOriginal, TaskClaimCustodyRejectedError, TaskClaimContinuationWithdrawnError } from "../domain/claim-forward-custody.mjs";
 import { MAX_RELEASE_METADATA_BYTES } from "../domain/release-operation.mjs";
 import { taskProjectRoot } from "../domain/task-project-root.mjs";
 import { normalizedInitialNativeTest } from "../domain/task-git-reference.mjs";
@@ -27,6 +28,9 @@ import {
   TASK_TITLE_MAX_LENGTH,
   TaskDependencyPendingError,
   TaskLifecycleBeginRejectedError,
+  TaskLifecycleNoEffectError,
+  TaskOperationReconciliationRefusedError,
+  workflowAdmissionNoEffectEvidence, claimAdmissionNoEffectEvidence, TaskClaimExecutorBusyError,
   ReleaseCandidateFrozenError,
   TaskAbsorptionCompositionError,
 } from "../domain/task-board-task.mjs";
@@ -59,7 +63,7 @@ const MUTATING_TOOLS = new Set([
 class TaskInputValidationError extends Error {}
 
 function definiteMcpMutationFailure(error) {
-  return error instanceof ReleasePreparationRejectedError || error instanceof TaskInputValidationError
+  return error instanceof TaskClaimCustodyRejectedError || error instanceof ReleasePreparationRejectedError || error instanceof TaskInputValidationError
     || error instanceof TaskIntegrationConflictError || error instanceof TaskAwaitIntegrationError
     || error instanceof TaskDependencyPendingError || error instanceof TaskWithdrawalDependencyError
     || error instanceof TaskLifecycleBeginRejectedError || error instanceof TaskWithdrawalBusyError
@@ -479,7 +483,7 @@ export class HubMcpService {
     workspaceCatalog, taskBoard, workLog, attachmentDirectory, secret, releasePlanner, releasePreflight, releaseCompleter,
     releaseOperations = null,
     taskGitWorkspaces = null, taskLifecycle = null,
-    taskOperationReconciliation = null,
+    taskOperationReconciliation = null, claimCustodyRuntime = null,
     measureOperation = async (_stage, operation) => operation(),
     reconcilePendingOnStartup = true,
   } = {}) {
@@ -514,6 +518,7 @@ export class HubMcpService {
     this.releasePlanner = releasePlanner;
     this.releaseOperations = releaseOperations;
     this.taskGitWorkspaces = taskGitWorkspaces;
+    this.claimCustodyRuntime = claimCustodyRuntime;
     this.taskLifecycle = taskLifecycle ?? new TaskLifecycleService({
       taskBoard, workspaceCatalog: this.workspaceCatalog, taskGitWorkspaces, releasePreflight,
     });
@@ -543,11 +548,32 @@ export class HubMcpService {
     ]);
     let reconciled = 0;
     for (const receipt of this.workspaceCatalog.pendingMcpOperations()) {
+      if (this.workspaceCatalog.claimCustodyForOriginal?.(receipt.requestId)) continue;
       await this.workspaceCatalog.beginMcpOperationReconciliation?.(receipt.requestId);
+      const claimRefusal = receipt.toolName === "hub_task_claim" ? this.#claimAdmissionRefusal(receipt) : null;
+      if (claimRefusal) {
+        await this.workspaceCatalog.failMcpOperation(receipt.requestId, new TaskClaimExecutorBusyError(), {
+          outcome: "NO_EFFECT", evidence: claimRefusal,
+        });
+        reconciled += 1;
+        continue;
+      }
       const expectedKind = lifecycleKinds.get(receipt.toolName);
       const transition = expectedKind ? this.taskBoard.lifecycleTransition?.(receipt.requestId) : null;
       const outcome = expectedKind ? this.taskBoard.lifecycleOutcome?.(receipt.requestId) : null;
       const exactOutcome = outcome?.operationId === receipt.requestId && outcome?.kind === expectedKind;
+      if (outcome?.result?.noEffect) {
+        const proof = !transition && workflowAdmissionNoEffectEvidence(outcome, receipt);
+        if (proof) {
+          await this.workspaceCatalog.failMcpOperation(receipt.requestId, new TaskLifecycleNoEffectError(proof), {
+            outcome: "NO_EFFECT", evidence: proof,
+          });
+        } else {
+          await this.workspaceCatalog.markMcpOperationUnknown(receipt.requestId, new Error("Workflow refusal identity is not authoritative"));
+        }
+        reconciled += 1;
+        continue;
+      }
       if (exactOutcome) {
         if (expectedKind === "workflow" && outcome.result?.rollback?.completed === true) {
           await this.workspaceCatalog.failMcpOperation(
@@ -736,6 +762,7 @@ export class HubMcpService {
       tool("hub_task_claim", "Bind a Dashboard Task to the exact current provider turn, assign its dedicated Git branch/worktree, and make the current Stream its executor. Continue repository work only in the returned gitWorkspace.projectRoot.", {
         task_id: { type: "string" },
         dependency_mode: { type: "string", enum: ["skip", "ensure", "verify"], description: "Default skip: prepare only Git. Before running dependency-dependent tests/builds use ensure; use verify for suspected dependency damage. Existing matching dependencies are reused." },
+        forward_custody_request_id: { type: "string", description: "Exact durable forward fence; uses preserved workspace without prepare/dependency replay. Historical original stays UNKNOWN." },
         dependency_override_reason: { type: "string", maxLength: 2000, description: "Only for an explicit user instruction to bypass a prerequisite release wait, e.g. Task consolidation. Persist that instruction here; ordinary start is not an override." },
       }, ["task_id"]),
       tool("hub_task_status_update", "Change workflow status only after exact Git result evidence is integrated. Test/Await/Done fail closed when no result or integration fails. Await also composes the accepted result into PreRelease before it commits: a composition conflict leaves the Task in Test with the last good candidate.", {
@@ -766,7 +793,16 @@ export class HubMcpService {
       tool("hub_task_operation_reconcile", "Release Manager-only reconciliation of one exact unknown Task workflow operation. A real unresolved process guard requires trusted proof; exact pending withdrawal or squash state can reconcile without inventing one. An already terminal lifecycle settles its original receipt without Git replay.", {
         task_id: { type: "string" },
         operation_request_id: { type: "string" },
-        project_root: { type: "string" },
+        claim_custody: { type: "object", description: "Explicit RM forward ownership recovery, not historical NO_EFFECT. The default requires exact positive legacy retirement. Separately authorized isolated-source-v1 instead stages an independent full-object source/ref authority and fences legacy SQL writers. Two distinct exact request IDs.",
+          properties: { action: { type: "string", enum: ["prepare", "fence"] },
+            admission: { type: "string", enum: ["isolated-source-v1"] },
+            authorization_id: { type: "string" }, handoff_id: { type: "string" },
+            expected_original: { type: "object" }, original_arguments: { type: "object" },
+            expected_task_revision: { type: "integer", minimum: 1 }, expected_owner_stream_id: { type: "string" },
+            successor_claim_request_id: { type: "string" }, source: { type: "object" }, runtime_witness: { type: "object", description: "Exact independently retained read-only native witness artifact: sourcePath/rawSha256. No caller-supplied retirement boolean." },
+            plan_request_id: { type: "string" }, expected_plan_hash: { type: "string", pattern: "^[a-f0-9]{64}$" } },
+          required: ["action"], additionalProperties: false },
+        project_root: { type: "string", description: "Required for Git reconciliation or an owner refusal with a recorded root. May be omitted only for an exact durable pre-admission refusal whose recorded root is null; a supplied locator grants no Git authority in that case." },
         guard_id: { type: "string", description: "Required for an actually guarded pending operation. Exact persisted Task withdrawal or squash state without a process guard can reconcile without it." },
         proof_kind: { type: "string", enum: ["system-restart-after-guard"], description: "Required when recovering a process-tree guard." },
         proof_summary: { type: "string", description: "Required when recovering a process-tree guard." },
@@ -802,7 +838,7 @@ export class HubMcpService {
         selected_preview_request_id: { type: "string" },
         expected_selected_preview_hash: { type: "string", pattern: "^[0-9a-f]{64}$" },
         confirm_reconcile: { type: "boolean", description: "Must be true because this settles the original unknown receipt and may recover a guarded process boundary." },
-      }, ["task_id", "operation_request_id", "project_root", "confirm_reconcile"]),
+      }, ["task_id", "operation_request_id", "confirm_reconcile"]),
       tool("hub_task_legacy_git_adopt", "Release Manager-only migration for a legacy Await Task with no Git reference. It verifies terminal Stream evidence and exact non-changelog patch equivalence to a named commit already in local main before recording immutable Task evidence.", {
         task_id: { type: "string" },
         expected_task_revision: { type: "integer", minimum: 1 },
@@ -971,7 +1007,7 @@ export class HubMcpService {
         : operation();
     }
     if (MUTATING_TOOLS.has(toolName)) {
-      const operation = () => this.#dispatch(context, toolName, args);
+      const operation = (admissionReceipt) => this.#dispatch({ ...context, admissionReceipt }, toolName, args);
       return this.#mutate(context, toolName, args, operation);
     }
     return this.#dispatch(context, toolName, args);
@@ -1262,9 +1298,13 @@ export class HubMcpService {
       case "hub_task_status_update":
         return this.#updateTaskWorkflowStatus(context, args);
       case "hub_task_operation_reconcile":
-        if (!this.#isReleaseManager(context)) throw new Error("Task operation reconciliation requires a Release Manager Stream");
-        if (args.confirm_reconcile !== true) throw new Error("Task operation reconciliation requires explicit confirmation");
-        if (!this.taskOperationReconciliation) throw new Error("Task operation reconciliation is unavailable");
+        if (!this.#isReleaseManager(context)) throw new TaskOperationReconciliationRefusedError(new Error("Task operation reconciliation requires a Release Manager Stream"));
+        if (args.confirm_reconcile !== true) throw new TaskOperationReconciliationRefusedError(new Error("Task operation reconciliation requires explicit confirmation"));
+        if (args.claim_custody != null) return this.#claimCustody(context, args);
+        if (!this.taskOperationReconciliation) throw new TaskOperationReconciliationRefusedError(new Error("Task operation reconciliation is unavailable"));
+        if (this.#pendingMutations.has(args.operation_request_id)) {
+          throw new TaskOperationReconciliationRefusedError(new Error("Original workflow worker is still active"));
+        }
         return this.taskOperationReconciliation.reconcileUnknownWorkflow({
           workspaceId: context.workspaceId,
           taskId: args.task_id,
@@ -1641,24 +1681,186 @@ export class HubMcpService {
     }));
   }
 
-  async #claimTask(context, { task_id: taskId, request_id: operationId, dependency_mode: dependencyMode = "skip", dependency_override_reason: dependencyOverrideReason = null } = {}) {
+  #assertClaimContinuation(taskId, operationId, fenceId = null) {
+    if (this.workspaceCatalog.claimCustodyForOriginal?.(operationId)) throw new TaskClaimContinuationWithdrawnError();
+    const reserved = this.workspaceCatalog.claimCustodyForTask?.(taskId);
+    if (reserved && (reserved.requestId !== fenceId || reserved.successorClaimRequestId !== operationId)) {
+      throw new TaskClaimCustodyRejectedError("Task has an unconsumed forward custody fence");
+    }
+  }
+
+  #claimLease(lease, taskId, operationId, fenceId = null) {
+    return new Proxy(lease, { get: (target, key) => {
+      if (key === "assertOwned") return async () => {
+        await target.assertOwned();
+        this.#assertClaimContinuation(taskId, operationId, fenceId);
+      };
+      const value = Reflect.get(target, key, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    } });
+  }
+
+  #custodyTask(context, taskId, envelope) {
     const task = this.#task(context, taskId);
+    if (task.revision !== envelope.expected_task_revision || task.streamId !== envelope.expected_owner_stream_id
+        || ["done", "starting"].includes(task.status)) throw new TaskClaimCustodyRejectedError("Pinned Task owner or revision changed");
+    return task;
+  }
+
+  #custodyBusy(task) {
+    return this.#activeRuns().some(run => run.streamId === task.streamId)
+      || this.#deferredInputs().some(input => input.streamId === task.streamId
+        || (input.provider && input.threadId && this.workspaceCatalog.resolveThread({ provider: input.provider, threadId: input.threadId })?.streamId === task.streamId));
+  }
+
+  async #claimCustody(context, args) {
+    if (Object.keys(args).some(k => !["context_token", "request_id", "task_id", "operation_request_id", "confirm_reconcile", "claim_custody"].includes(k))) {
+      throw new TaskClaimCustodyRejectedError("Unexpected custody command argument");
+    }
+    const input = args.claim_custody;
+    if (!input || !["prepare", "fence"].includes(input.action)) throw new TaskClaimCustodyRejectedError("Invalid custody action");
+    if (!this.taskGitWorkspaces?.reuseClaimWorkspaceOwned || !this.taskGitWorkspaces?.withTaskLock) {
+      throw new TaskClaimCustodyRejectedError("Canonical custody capabilities are unavailable");
+    }
+    if (this.#pendingMutations.has(args.operation_request_id)) throw new TaskClaimCustodyRejectedError("Original claim worker is still live");
+    let plan = null;
+    if (input.action === "fence") {
+      if (Object.keys(input).some(k => !["action", "plan_request_id", "expected_plan_hash"].includes(k))) throw new TaskClaimCustodyRejectedError("Unexpected fence argument");
+      plan = claimCustodyState(this.workspaceCatalog.mcpOperation(input.plan_request_id));
+      if (!plan || plan.phase !== "planned" || plan.planHash !== input.expected_plan_hash
+          || plan.taskId !== args.task_id || plan.original.requestId !== args.operation_request_id
+          || plan.workspaceId !== context.workspaceId || plan.actorStreamId !== context.streamId
+          || plan.actorThreadId !== context.auditThreadId || plan.actorProvider !== context.provider) throw new TaskClaimCustodyRejectedError("Exact durable custody plan differs");
+    }
+    const envelope = plan?.envelope ?? input;
+    const isolated = envelope.admission === "isolated-source-v1";
+    if ((!isolated && (!this.claimCustodyRuntime?.capture || !this.claimCustodyRuntime?.assertRetired))
+        || (isolated && (!this.taskGitWorkspaces.planIndependentClaimNamespace || !this.taskGitWorkspaces.stageIndependentClaimNamespaceOwned))) {
+      throw new TaskClaimCustodyRejectedError("Canonical admission guarantee is unavailable");
+    }
+    const original = this.workspaceCatalog.mcpOperation(args.operation_request_id);
+    assertClaimCustodyOriginal(original, envelope, args.task_id, args.operation_request_id);
+    if (original.workspaceId !== context.workspaceId) throw new TaskClaimCustodyRejectedError("Original belongs to another Workspace");
+    return this.taskGitWorkspaces.withTaskLock(args.task_id, async lease => {
+      const task = this.#custodyTask(context, args.task_id, envelope);
+      if (this.workspaceCatalog.claimCustodyForOriginal?.(original.requestId)
+          || this.workspaceCatalog.claimCustodyNamespaceForTask?.(task.id)) throw new TaskClaimCustodyRejectedError("Another custody disposition already owns this Task");
+      if (this.#pendingMutations.has(original.requestId)) throw new TaskClaimCustodyRejectedError("Original claim is still live");
+      const workspace = await this.taskGitWorkspaces.reuseClaimWorkspaceOwned({ taskId: task.id, taskNumber: task.taskNumber, source: plan?.source ?? envelope.source, lease });
+      const source = { ...envelope.source, ...workspace };
+      if (plan && (claimCustodyHash(source) !== claimCustodyHash(plan.source)
+          || claimCustodyHash(original) !== plan.originalHash)) throw new TaskClaimCustodyRejectedError("Pinned custody source or original changed");
+      const cohort = isolated ? null : plan?.cohort ?? await this.claimCustodyRuntime.capture({ original, witness: envelope.runtime_witness ?? null });
+      const retirement = !isolated && plan ? await this.claimCustodyRuntime.assertRetired(cohort) : null;
+      if (!isolated && plan && retirement?.retired !== true) throw new TaskClaimCustodyRejectedError("Legacy cohort retirement is not proved");
+      const namespace = isolated ? plan
+        ? await this.taskGitWorkspaces.stageIndependentClaimNamespaceOwned({ state: plan, lease })
+        : this.taskGitWorkspaces.planIndependentClaimNamespace({ taskId: task.id, source,
+          requestId: args.request_id, originalHash: claimCustodyHash(original) }) : null;
+      if (isolated && plan) await this.taskGitWorkspaces.reuseClaimWorkspaceOwned({ taskId: task.id, taskNumber: task.taskNumber, source, lease });
+      await lease.assertOwned();
+      // Re-read after the native/runtime wait, without refreshing expected pins.
+      this.#custodyTask(context, task.id, envelope);
+      const state = { version: 1, kind: "claim-forward-custody-v1", phase: plan ? "fenced" : "planned",
+        requestId: args.request_id, argumentsHash: context.admissionReceipt.argumentsHash,
+        workspaceId: context.workspaceId, actorStreamId: context.streamId, actorThreadId: context.auditThreadId, actorProvider: context.provider,
+        taskId: task.id, taskRevision: task.revision, original, originalHash: claimCustodyHash(original),
+        envelope, source, cohort, successorClaimRequestId: envelope.successor_claim_request_id,
+        ...(isolated ? { namespace, taskState: plan?.taskState ?? this.workspaceCatalog.claimCustodyTaskSnapshot(task.id) } : {}),
+        ...(plan ? { planRequestId: plan.requestId, planHash: plan.planHash, retirement } : {}) };
+      if (plan) state.successorArgumentsHash = mcpArgumentsHash({ request_id: state.successorClaimRequestId,
+        task_id: state.taskId, forward_custody_request_id: state.requestId,
+        ...(Object.hasOwn(envelope.original_arguments,"dependency_mode") ? { dependency_mode: envelope.original_arguments.dependency_mode } : {}) });
+      if (!plan) state.planHash = claimCustodyHash(state);
+      state.result = { kind: plan ? "claim-custody-fence" : "claim-custody-plan", requestId: state.requestId,
+        originalRequestId: original.requestId, taskId: task.id, taskRevision: task.revision, planHash: state.planHash,
+        successorClaimRequestId: state.successorClaimRequestId, historicalOutcome: "UNKNOWN_UNCHANGED" };
+      return (await this.workspaceCatalog.checkpointClaimCustody(state)).result;
+    });
+  }
+
+  async #consumeClaimCustody(context, args) {
+    const fence = claimCustodyState(this.workspaceCatalog.mcpOperation(args.forward_custody_request_id));
+    if (!fence || fence.phase !== "fenced" || fence.taskId !== args.task_id || fence.workspaceId !== context.workspaceId
+        || fence.successorClaimRequestId !== args.request_id || fence.original.provider !== context.provider
+        || fence.original.streamId !== context.streamId || fence.original.threadId !== context.auditThreadId
+        || fence.original.threadId !== context.threadId || args.dependency_override_reason != null
+        || args.dependency_mode !== fence.envelope.original_arguments.dependency_mode
+        || Object.keys(args).some(k => !["context_token", "request_id", "task_id", "dependency_mode", "forward_custody_request_id"].includes(k))) {
+      throw new TaskClaimCustodyRejectedError("Successor claim differs from the explicit forward disposition");
+    }
+    return this.taskGitWorkspaces.withTaskLock(args.task_id, async lease => {
+      const guarded = this.#claimLease(lease, args.task_id, args.request_id, fence.requestId);
+      await guarded.assertOwned();
+      if (claimCustodyHash(this.workspaceCatalog.mcpOperation(fence.original.requestId)) !== fence.originalHash) throw new TaskClaimCustodyRejectedError("Historical original changed");
+      // Whole-cohort retirement was positively proved by the native port and
+      // committed with this immutable fence. It is monotonic: closing the own
+      // read-only collector after commit cannot revive the retired invocation.
+      const isolated = fence.envelope.admission === "isolated-source-v1";
+      if (!isolated && fence.retirement?.retired !== true) throw new TaskClaimCustodyRejectedError("Durable retirement certificate differs");
+      const task = this.#task(context, args.task_id);
+      const workspace = isolated
+        ? await this.taskGitWorkspaces.readIndependentClaimNamespaceOwned({ state: fence, lease: guarded, exactInitial: true })
+        : await this.taskGitWorkspaces.reuseClaimWorkspaceOwned({ taskId: task.id, taskNumber: task.taskNumber, source: fence.source, lease: guarded });
+      if (!isolated && claimCustodyHash({ ...fence.source, ...workspace }) !== claimCustodyHash(fence.source)) throw new TaskClaimCustodyRejectedError("Custody source or registered baseline differs");
+      const bound = this.taskBoard.claimBindingForOperation(args.request_id);
+      if (bound) {
+        if (bound.taskId !== task.id || bound.workspaceId !== context.workspaceId || bound.provider !== context.provider
+            || bound.threadId !== context.threadId || task.streamId !== context.streamId || task.revision !== fence.taskRevision + 1) {
+          throw new TaskClaimCustodyRejectedError("Committed custody binding or Task changed");
+        }
+        return { ...compactTask(task), claimedTurnId: bound.turnId,
+          claimCustody: { fenceRequestId: fence.requestId, sourceReuse: "readonly", dependencyPreparation: "not-replayed" },
+          gitWorkspace: Object.fromEntries(["branch", "projectRoot", "baseCommit", "headCommit"].map(k => [k, workspace[k]])) };
+      }
+      this.#custodyTask(context, task.id, fence.envelope);
+      if (this.#custodyBusy(task)) throw new Error("Previous executor became active; exact custody claim may be reopened after its normal terminal");
+      await guarded.assertOwned();
+      return this.#writeClaim(context, task, this.#currentRun(context), args.request_id, workspace, fence.requestId);
+    });
+  }
+
+  async #claimTask(context, args = {}) {
+    const { task_id: taskId, request_id: operationId, dependency_mode: dependencyMode = "skip", dependency_override_reason: dependencyOverrideReason = null } = args;
+    const task = this.#task(context, taskId);
+    const namespace = this.workspaceCatalog.claimCustodyNamespaceForTask?.(taskId);
+    if (namespace && context.streamId !== namespace.original.streamId) {
+      throw new TaskClaimCustodyRejectedError("Foreign claim cannot prepare the successor source namespace");
+    }
     const active = this.#currentRun(context);
     if (task.status === "done") throw new Error("Closed Tasks are an archive; claim an open Task");
+    if (args.forward_custody_request_id) return this.#consumeClaimCustody(context, args);
     if (task.streamId && task.streamId !== context.streamId) {
-      const threads = new Set((this.workspaceCatalog.stream(task.streamId)?.threads ?? []).map((thread) => (
-        `${thread.provider}\0${thread.threadId}`
-      )));
-      if (this.#activeRuns().some((run) => run.streamId === task.streamId)
-          || this.#deferredInputs().some((input) => input.streamId === task.streamId
-            || threads.has(`${input.provider}\0${input.threadId}`))) {
-        throw new Error("The other executor must finish its active and queued work before Task handoff");
+      const busyReason = this.#activeRuns().some(run => run.streamId === task.streamId) ? "active"
+        : this.#deferredInputs().some(input => input.streamId === task.streamId
+          || (input.provider && input.threadId && this.workspaceCatalog.resolveThread({
+            provider: input.provider, threadId: input.threadId,
+          })?.streamId === task.streamId)) ? "queued" : null;
+      if (busyReason) {
+        requiredMethod(this.workspaceCatalog, "recordClaimAdmissionRefusal");
+        await this.workspaceCatalog.recordClaimAdmissionRefusal({ receipt: context.admissionReceipt, task, busyReason,
+          claimArguments: Object.fromEntries(Object.entries(args).filter(([key]) => key !== "context_token")) });
+        throw new TaskClaimExecutorBusyError();
       }
     }
     const projectRoot = this.#taskProjectRoot(context);
+    if (this.taskGitWorkspaces?.withTaskLock && projectRoot) {
+      return this.taskGitWorkspaces.withTaskLock(task.id, async lease => {
+        const guarded = this.#claimLease(lease, task.id, operationId);
+        await guarded.assertOwned();
+        const workspace = await this.taskGitWorkspaces.prepareOwned({ taskId: task.id, taskNumber: task.taskNumber, projectRoot, dependencyMode, dependencyOverrideReason, lease: guarded });
+        await guarded.assertOwned();
+        return this.#writeClaim(context, task, active, operationId, workspace);
+      });
+    }
     const gitWorkspace = this.taskGitWorkspaces && projectRoot
       ? await this.taskGitWorkspaces.prepare({ taskId: task.id, taskNumber: task.taskNumber, projectRoot, dependencyMode, dependencyOverrideReason })
       : null;
+    return this.#writeClaim(context, task, active, operationId, gitWorkspace);
+  }
+
+  async #writeClaim(context, task, active, operationId, gitWorkspace, forwardCustodyRequestId = null) {
+    this.#assertClaimContinuation(task.id, operationId, forwardCustodyRequestId);
     if (gitWorkspace) active.gitBaseline = gitWorkspace.gitBaseline;
     const claimed = await this.taskBoard.claim({
       id: task.id,
@@ -1669,11 +1871,17 @@ export class HubMcpService {
       turnId: active.turnId,
       operationId,
       operationKind: "claim",
-      gitBaseline: active.gitBaseline ?? null,
+      gitBaseline: active.gitBaseline ?? null, forwardCustodyRequestId,
+      validateClaimAdmission: forwardCustodyRequestId ? () => {
+        if (this.#custodyBusy(task)) throw new Error("Previous executor became active before custody assignment commit");
+        this.#assertClaimContinuation(task.id, operationId, forwardCustodyRequestId);
+      } : null,
     });
     return {
       ...compactTask(claimed),
       claimedTurnId: active.turnId,
+      ...(forwardCustodyRequestId ? { claimCustody: { fenceRequestId: forwardCustodyRequestId,
+        sourceReuse: "readonly", dependencyPreparation: "not-replayed" } } : {}),
       gitWorkspace: gitWorkspace ? {
         branch: gitWorkspace.branch,
         projectRoot: gitWorkspace.projectRoot,
@@ -1860,6 +2068,8 @@ export class HubMcpService {
       ),
       expectedRevision,
       expectedWorkflowStatus,
+      admissionReceipt: context.admissionReceipt ?? null,
+
       selectedAbsorptionHandoff,
       operationEvidence: nativeResolutionReview ? { nativeResolutionReview } : null,
     };
@@ -2687,6 +2897,7 @@ export class HubMcpService {
 
   async #mutate(context, toolName, args, operation) {
     const requestId = requiredText(args.request_id, "request id", 200);
+    if (toolName === "hub_task_claim") this.#assertClaimContinuation(args.task_id, requestId, args.forward_custody_request_id);
     const checklistMutation = toolName === "hub_task_checklist_update";
     if (checklistMutation) {
       this.#taskChecklistPayload(context, {
@@ -2710,12 +2921,20 @@ export class HubMcpService {
       toolName,
       argumentsHash: argumentsHash(args),
     }));
-    if (started.status === "succeeded") return started.result;
-    if (started.status === "failed") throw new Error(started.error || "previous MCP operation failed");
-    if (started.status === "unknown" && toolName === "hub_task_claim") {
+    if (started.status === "succeeded") return claimCustodyState(started)?.result ?? started.result;
+    if (started.status === "failed") {
+      if (toolName === "hub_task_claim" && this.#claimAdmissionRefusal(started, args.task_id)) {
+        throw new TaskClaimExecutorBusyError();
+      }
+      throw new Error(started.error || "previous MCP operation failed");
+    }
+    const custodyConsume = toolName === "hub_task_claim" && Boolean(args.forward_custody_request_id);
+    const custodyStage = toolName === "hub_task_operation_reconcile" && Boolean(args.claim_custody);
+    if (started.status === "unknown" && toolName === "hub_task_claim" && !custodyConsume) {
       const reconciled = await this.#reconcileClaimAdmissionNoEffect(context, args, started).catch(() => null);
       if (reconciled) {
-        const terminal = new Error(reconciled.error);
+        const terminal = reconciled.evidence?.evidence?.kind === "task-claim-executor-busy-v1"
+          ? new TaskClaimExecutorBusyError() : new Error(reconciled.error);
         await this.workspaceCatalog.failUnknownMcpOperation(requestId, {
           workspaceId: context.workspaceId,
           toolName,
@@ -2725,7 +2944,7 @@ export class HubMcpService {
         throw terminal;
       }
     }
-    if (started.status === "unknown") {
+    if (started.status === "unknown" && !custodyConsume && !custodyStage) {
       throw new Error(`MCP operation outcome is unknown; reconcile authoritatively before retrying request_id ${requestId}`);
     }
     const inFlight = this.#pendingMutations.get(requestId);
@@ -2734,7 +2953,7 @@ export class HubMcpService {
       "hub_task_start", "hub_task_reassign", "hub_task_status_update", "hub_task_complete", "hub_task_delete",
       "hub_task_checklist_update",
     ]);
-    if (started.replayed && !resumable.has(toolName)) {
+    if (started.replayed && !resumable.has(toolName) && !custodyConsume && !custodyStage) {
       const reason = new Error("MCP operation outcome requires authoritative reconciliation; blind replay is forbidden");
       if (toolName !== "hub_release_prepare" || !started.preparationState) {
         await this.workspaceCatalog.markMcpOperationUnknown?.(requestId, reason);
@@ -2752,7 +2971,9 @@ export class HubMcpService {
             return reconciled;
           }
         }
-        const result = await operation();
+        const existingRefusal = toolName === "hub_task_status_update" ? this.#workflowAdmissionRefusal(started) : null;
+        if (existingRefusal) throw new TaskLifecycleNoEffectError(existingRefusal);
+        const result = await operation(started);
         effectCompleted = true;
         if (toolName === "hub_release_prepare") {
           const terminal = this.workspaceCatalog.mcpOperation(requestId);
@@ -2761,9 +2982,28 @@ export class HubMcpService {
           }
           return terminal.result;
         }
-        await this.workspaceCatalog.completeMcpOperation(requestId, result);
+        if (args.claim_custody && toolName === "hub_task_operation_reconcile") {
+          const durable = claimCustodyState(this.workspaceCatalog.mcpOperation(requestId));
+          if (!durable) throw new Error("Custody stage is not durable");
+          return durable.result;
+        }
+        if (custodyConsume && started.status === "unknown") {
+          await this.workspaceCatalog.completeUnknownMcpOperation(requestId, { workspaceId: context.workspaceId, toolName,
+            result, reconciliation: { kind: "forward-claim-binding-reuse-v1", fenceRequestId: args.forward_custody_request_id } });
+        } else await this.workspaceCatalog.completeMcpOperation(requestId, result);
         return result;
       } catch (error) {
+        // An own stage may have committed before a reply/storage exception. Its
+        // dedicated ledger column survives compaction and is the exact readback.
+        if (args.claim_custody && toolName === "hub_task_operation_reconcile") {
+          const durable = claimCustodyState(this.workspaceCatalog.mcpOperation(requestId));
+          if (durable) return durable.result;
+        }
+        if (this.workspaceCatalog.claimCustodyForOriginal?.(requestId)) throw new TaskClaimContinuationWithdrawnError();
+        if (!effectCompleted && custodyConsume && this.taskBoard.claimBindingForOperation(requestId)) {
+          await this.workspaceCatalog.markMcpOperationUnknown(requestId,new Error(`Custody assignment committed before outer completion: ${error.message}`));
+          throw error;
+        }
         if (toolName === "hub_release_prepare") {
           const terminal = this.workspaceCatalog.mcpOperation(requestId);
           if (terminal?.status === "succeeded" && terminal.argumentsHash === argumentsHash(args)) return terminal.result;
@@ -2789,6 +3029,33 @@ export class HubMcpService {
             new Error(`effect completed but durable receipt failed: ${error.message}`),
           )).catch(() => {});
           throw new Error(`MCP effect completed but receipt reconciliation is required for request_id ${requestId}`);
+        }
+        const claimRefusal = toolName === "hub_task_claim"
+          ? this.#claimAdmissionRefusal(this.workspaceCatalog.mcpOperation(requestId), args.task_id) : null;
+        if (claimRefusal) {
+          const refusal = new TaskClaimExecutorBusyError();
+          try {
+            await this.workspaceCatalog.failMcpOperation(requestId, refusal, { outcome: "NO_EFFECT", evidence: claimRefusal });
+          } catch (settlementError) {
+            await Promise.resolve(this.workspaceCatalog.markMcpOperationUnknown?.(requestId, settlementError)).catch(() => {});
+            throw settlementError;
+          }
+          throw refusal;
+        }
+        const workflowRefusal = toolName === "hub_task_status_update" ? this.#workflowAdmissionRefusal(started) : null;
+        const reconciliationRefusal = toolName === "hub_task_operation_reconcile"
+          && error instanceof TaskOperationReconciliationRefusedError;
+        if (workflowRefusal || reconciliationRefusal) {
+          try {
+            await this.workspaceCatalog.failMcpOperation(requestId, error, {
+              outcome: "NO_EFFECT",
+              ...(workflowRefusal ? { evidence: workflowRefusal } : { code: error.code }),
+            });
+          } catch (settlementError) {
+            await Promise.resolve(this.workspaceCatalog.markMcpOperationUnknown?.(requestId, settlementError)).catch(() => {});
+            throw settlementError;
+          }
+          throw error;
         }
         if (definiteMcpMutationFailure(error)) {
           await this.workspaceCatalog.failMcpOperation(requestId, error);
@@ -2820,7 +3087,15 @@ export class HubMcpService {
     return pending;
   }
 
+  #workflowAdmissionRefusal(receipt) {
+    if (this.taskBoard.lifecycleTransition?.(receipt.requestId)) return null;
+    return workflowAdmissionNoEffectEvidence(this.taskBoard.lifecycleOutcome?.(receipt.requestId), receipt);
+  }
+
   async #reconcileClaimAdmissionNoEffect(context, args, receipt) {
+    const proof = this.#claimAdmissionRefusal(receipt, args.task_id);
+    if (proof) return { error: new TaskClaimExecutorBusyError().message,
+      evidence: { outcome: "NO_EFFECT", evidence: proof } };
     if (typeof this.taskBoard.claimBindingForOperation !== "function"
       || typeof this.taskGitWorkspaces?.claimAdmissionNoEffectEvidence !== "function"
       || typeof this.workspaceCatalog.failUnknownMcpOperation !== "function") return null;
@@ -2841,6 +3116,15 @@ export class HubMcpService {
         ...evidence,
       },
     };
+  }
+
+  #claimAdmissionRefusal(receipt, taskId = null) {
+    const proof = claimAdmissionNoEffectEvidence(receipt, taskId);
+    if (!proof || typeof this.taskBoard.claimBindingForOperation !== "function"
+        || this.taskBoard.claimBindingForOperation(receipt.requestId)
+        || this.taskBoard.lifecycleTransition?.(receipt.requestId)
+        || this.taskBoard.lifecycleOutcome?.(receipt.requestId)) return null;
+    return proof;
   }
 
   #hasPreparedTaskStart(context, args, requestId) {
