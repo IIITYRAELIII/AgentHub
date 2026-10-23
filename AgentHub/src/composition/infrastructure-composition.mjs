@@ -18,11 +18,8 @@ import { createWorkLogUsageStore } from "../application/work-log-usage-store.mjs
 import { TaskBoardService } from "../application/task-board-service.mjs";
 import { TaskReleasePlanService } from "../application/task-release-plan-service.mjs";
 import { WorkspaceReleasePreflightService } from "../application/workspace-release-preflight-service.mjs";
-import { ReleaseOperationService } from "../application/release-operation-service.mjs";
-import { ReleaseOperationCommandService } from "../application/release-operation-command-service.mjs";
-import { ReleaseOperationFinalization } from "../application/release-operation-finalization.mjs";
+import { createReleaseOperationServices } from "./release-operation-composition.mjs";
 import { importLegacyReleaseOperations } from "../infrastructure/persistence/release-operation-legacy-import.mjs";
-import { WorkspaceReleaseOperationAdapter } from "../application/workspace-release-operation-adapter.mjs";
 import { StreamHandoffService } from "../application/stream-handoff-service.mjs";
 import { AGENT_HUB_VERSION } from "../infrastructure/filesystem/agent-hub-package.mjs";
 import { samePath } from "../infrastructure/filesystem/config.mjs";
@@ -55,8 +52,6 @@ import { SingleInstanceGuard } from "../infrastructure/process/instance-lock.mjs
 import { captureProcess } from "../infrastructure/process/process-capture.mjs";
 import { RuntimeCommandServer } from "../infrastructure/process/runtime-command.mjs";
 import { createRepositoryProductionValidationAdapter } from "../infrastructure/process/repository-production-validation.mjs";
-import { ReleaseOperationPublication } from "../infrastructure/process/release-operation-publication.mjs";
-import { processIsAlive } from "../infrastructure/process/process-liveness.mjs";
 import {
   copyWindowsFileObject,
   revealWindowsFile,
@@ -513,41 +508,17 @@ export async function createHubInfrastructure({
     runnerVersion: AGENT_HUB_VERSION,
     reportDiagnostic: diagnostic => console.warn("Historical release entry unavailable", diagnostic),
   }));
-  const releaseOperationPublication = new ReleaseOperationPublication({
+  const { operations: releaseOperations, commands: releaseOperationCommands } = createReleaseOperationServices({
+    store: releaseOperationStore,
     dataDir: config.dataDir,
     runtimeRoot: runtimeCommandRoot,
-  });
-  const releaseOperationFinalization = new ReleaseOperationFinalization({
-    taskBoard,
-    releaseGitWorkspaces,
-    taskGitWorkspaces,
-  });
-  const releaseOperationAdapter = new WorkspaceReleaseOperationAdapter({
     releasePreflight: workspaceReleasePreflight,
-    publication: releaseOperationPublication,
-    finalization: releaseOperationFinalization,
-  });
-  const releaseOperations = new ReleaseOperationService({
-    store: releaseOperationStore,
-    compose: (input) => releaseOperationAdapter.compose(input),
-    validate: (input) => releaseOperationAdapter.validate(input),
-    publishTarget: (input) => releaseOperationAdapter.publishTarget(input),
-    readTarget: (input) => releaseOperationAdapter.readTarget(input),
-    finalize: (input) => releaseOperationAdapter.finalize(input),
-    reservePublication: (input) => releaseOperationAdapter.reservePublication(input),
-    withReviewedMainRecovery: (input) => releaseOperationAdapter.withReviewedMainRecovery(input),
+    taskBoard, taskLifecycle,
+    workspaceCatalog: workspaceCatalogStore,
+    taskGitWorkspaces, releaseGitWorkspaces,
     requestCorrection: createReleaseCorrectionRequester({ taskBoard, taskLifecycle }),
-    cleanupGeneration: (input) => releaseOperationAdapter.cleanupGeneration(input),
-    processAlive: processIsAlive,
     runnerVersion: AGENT_HUB_VERSION,
   });
-  const releaseOperationCommands = new ReleaseOperationCommandService({
-    releaseOperations,
-    workspaceCatalog: workspaceCatalogStore,
-    taskBoard,
-  });
-  taskLifecycle.setReleaseOperationWake((taskId) => releaseOperations.wakeForTask(taskId));
-  taskLifecycle.setReleaseOperationPrepare((taskId) => releaseOperations.prepareForTaskAcceptance(taskId));
   releaseOperations.recover();
   const hubMcpService = new HubMcpService({
     measureOperation: measureTaskOperation,

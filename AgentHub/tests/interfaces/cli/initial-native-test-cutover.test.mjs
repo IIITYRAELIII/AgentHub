@@ -22,6 +22,8 @@ import { preparationLegacyIdentity } from "../../../src/domain/release-preparati
 import { ReleaseOperationService } from "../../../src/application/release-operation-service.mjs";
 import { WorkspaceReleaseOperationAdapter } from "../../../src/application/workspace-release-operation-adapter.mjs";
 import { ReleaseOperationStore } from "../../../src/infrastructure/persistence/release-operation-store.mjs";
+import { executeRelease, openReleaseRuntime, parseReleaseArguments } from "../../../release.mjs";
+import { createReleaseOperationServices } from "../../../src/composition/release-operation-composition.mjs";
 
 const exec = promisify(execFile);
 const hash = "b".repeat(64);
@@ -125,7 +127,7 @@ test("ordinary preparation continuation CLI retains original identity and reject
   assert.throws(() => parseTaskAwaitCutoverArguments([...argv, "--task", "foreign"]), /cannot change selection/u);
 });
 
-test("public run and continue use default Git SQLite owners for base update and candidate preparation", { timeout: 180000 }, async t => {
+test("source release CLI uses shared default owners for run, refusal, terminal recovery and readonly retry", { timeout: 240000 }, async t => {
   const f = await fixture(t, { releaseManager: true });
   const task = await f.create("normal-release");
   await mkdir(path.join(task.root, "AgentHub"));
@@ -146,46 +148,57 @@ test("public run and continue use default Git SQLite owners for base update and 
   } });
   await mkdir(path.join(process.env.LOCALAPPDATA, "AgentHub"), { recursive: true });
   await writeFile(path.join(process.env.LOCALAPPDATA, "AgentHub/publication-state.json"), JSON.stringify(f.publication));
-  const runtime = await openTaskAwaitCutoverRuntime({ config: { dataDir: path.dirname(f.databaseFile), taskBoard: { autoPlaceConfidence: 0.8 } } });
-  try {
+  const published = new Set();
   let publishes = 0, validations = 0;
-  const publication = { publish: async () => { publishes += 1; return { status: "applied", revision: "fixture-published" }; },
-    readback: async () => ({ status: publishes ? "applied" : "not_applied" }) };
-  const adapter = new WorkspaceReleaseOperationAdapter({ releasePreflight: runtime.service.releasePreflight,
-    publication, finalization: { finalize: async () => ({ status: "fixture-terminal" }) } });
+  const publication = { publish: async ({ operation }) => {
+    published.add(operation.operationId); publishes += 1; return { status: "applied", revision: "fixture-published" };
+  }, readback: async ({ operation }) => ({ status: published.has(operation.operationId) ? "applied" : "not_applied" }) };
   const store = new ReleaseOperationStore({ dataDir: path.dirname(f.databaseFile) });
-  const operations = new ReleaseOperationService({ store, processAlive: pid => pid === process.pid,
-    compose: input => adapter.compose(input),
-    validate: async ({ generation }) => {
-      validations += 1;
-      for (const candidate of generation.candidates) {
-        const owner = new ReleaseGitWorkspaceService({ dataDir: candidate.generationRoot });
-        assert.equal((await owner.frozenCandidate(f.primary)).preReleaseHead, candidate.commit);
-      }
-      return { status: "ready" };
+  const open = () => openReleaseRuntime({
+    createServices: args => createReleaseOperationServices({ ...args, publication,
+      finalization: { finalize: async () => ({ status: "fixture-terminal" }) } }),
+    openTaskRuntime: async () => {
+      const runtime = await openTaskAwaitCutoverRuntime({ config: { dataDir: path.dirname(f.databaseFile),
+        taskBoard: { autoPlaceConfidence: 0.8 } } });
+      runtime.service.releasePreflight.validateOperationGeneration = async ({ generation }) => {
+        validations += 1;
+        for (const candidate of generation.candidates) {
+          const owner = new ReleaseGitWorkspaceService({ dataDir: candidate.generationRoot });
+          assert.equal((await owner.frozenCandidate(f.primary)).preReleaseHead, candidate.commit);
+        }
+        return { status: "ready" };
+      };
+      return runtime;
     },
-    publishTarget: input => adapter.publishTarget(input), readTarget: input => adapter.readTarget(input),
-    finalize: input => adapter.finalize(input), reservePublication: input => adapter.reservePublication(input),
   });
-  runtime.service.releaseOperations = operations;
-  const token = runtime.service.contextToken({ provider: "codex", threadId: "fixture-thread", streamId: f.streamId });
-  await assert.rejects(runtime.service.call("hub_release_run", { context_token: token, request_id: "invalid-native-release",
+  const requestFile = path.join(f.root, "release-request.json");
+  const accepted = [];
+  const command = async (action, request, loseReply = false) => {
+    await writeFile(requestFile, JSON.stringify(request));
+    return executeRelease(parseReleaseArguments([action, "--provider", "codex", "--thread", "fixture-thread",
+      "--stream", f.streamId, "--request-file", requestFile]), { openRuntime: open, onAccepted: ack => {
+        accepted.push(ack);
+        if (loseReply) throw new Error("controlled durable reply lost");
+      } });
+  };
+  await assert.rejects(command("run", { request_id: "invalid-native-release",
     task_ids: [task.id], validation_mode: "full", approved_targets: [{ targetId: "fixture", kind: "fixture",
       repositoryRoot: f.primary, nativeResolutionReview: [] }] }), /Invalid exact native resolution bundle/u);
-  assert.equal(runtime.workspaceCatalog.mcpOperation("invalid-native-release").status, "failed");
+  assert.equal(f.catalog.mcpOperation("invalid-native-release").status, "failed");
   assert.deepEqual(store.active(), []);
-  const ack = await runtime.service.call("hub_release_run", { context_token: token, request_id: "one-normal-release",
+  const runInput = { request_id: "one-normal-release",
     task_ids: [task.id], validation_mode: "full", approved_targets: [{ targetId: "fixture", kind: "fixture",
-      repositoryRoot: f.primary, approvedLocalMainCommit: main, approvedOriginMainCommit: main }] });
-  const refused = await operations.drain(ack.operationId);
+      repositoryRoot: f.primary, approvedLocalMainCommit: main, approvedOriginMainCommit: main }] };
+  await assert.rejects(command("run", runInput, true), /durable reply lost/u);
+  const refused = await command("get", { operation_id: accepted.at(-1).operationId });
+  const operationId = refused.operation.operationId;
   assert.equal(refused.operation.state, "waiting");
   assert.equal(refused.operation.waitReason.code, "preparation_refused");
-  assert.equal(store.latestStep(ack.operationId, 1, "compose").status, "failed");
+  assert.equal(store.latestStep(operationId, 1, "compose").status, "failed");
   assert.equal(await git(f.primary, "rev-parse", "dev"), oldDev);
   assert.equal(publishes, 0);
   await git(f.primary, "push", "origin", "main");
-  await runtime.service.call("hub_release_continue", { context_token: token, request_id: "same-normal-release-continue", operation_id: ack.operationId });
-  const done = await operations.drain(ack.operationId);
+  const done = await command("continue", { request_id: "same-normal-release-continue", operation_id: operationId });
   assert.equal(done.operation.state, "done", JSON.stringify(done.operation.lastError));
   assert.equal(done.generations.length, 1);
   assert.equal(publishes, 1); assert.equal(validations, 1);
@@ -193,11 +206,57 @@ test("public run and continue use default Git SQLite owners for base update and 
   assert.equal(await git(f.primary, "status", "--porcelain=v1"), "");
   await git(f.primary, "merge-base", "--is-ancestor", main, "dev");
   assert.equal(done.operation.authorization.fingerprint, refused.operation.authorization.fingerprint);
-  assert.equal((await runtime.service.call("hub_release_run", { context_token: token, request_id: "one-normal-release",
-    task_ids: [task.id], validation_mode: "full", approved_targets: [{ targetId: "fixture", kind: "fixture",
-      repositoryRoot: f.primary, approvedLocalMainCommit: main, approvedOriginMainCommit: main }] })).operationId, ack.operationId);
+  assert.equal((await command("run", runInput)).operation.operationId, operationId);
   assert.equal(publishes, 1);
-  } finally { runtime.close(); }
+  assert.ok(accepted.length >= 2, "durable acknowledgement is emitted before drain");
+  const legacy = store.create({ requestId: "legacy-terminal", workspaceId: f.workspaceId,
+    streamId: f.streamId, threadId: "fixture-thread", runnerVersion: "old-runner",
+    authorization: { taskIds: [task.id], validationMode: "full", approvedTargets: [{
+      targetId: "legacy", kind: "agent-hub-publication", repositoryRoot: f.primary,
+      approvedLocalMainCommit: f.main, approvedOriginMainCommit: f.main }] } }).operation;
+  const originalGeneration = store.putGeneration({ ...done.generations[0], operationId: legacy.operationId,
+    generation: 1, runnerVersion: legacy.runnerVersion, sourceFingerprint: "retained-original" }).generation;
+  store.transition(legacy.operationId, { state: "validate", currentGeneration: 1 });
+  store.transition(legacy.operationId, { state: "publish", publicationEffects: { generation: 1,
+    publishStarted: { generation: 1, candidate: originalGeneration.identitySha256 } } });
+  const oldPublish = store.beginStep({ operationId: legacy.operationId, generation: 1,
+    stepId: "publish:legacy", input: { candidate: originalGeneration.identitySha256 } }).receipt;
+  store.finishStep(oldPublish, { status: "failed", effect: { status: "not_applied" }, error: "pre-effect failure" });
+  store.transition(legacy.operationId, { state: "compose" });
+  const oldCompose = store.beginStep({ operationId: legacy.operationId, generation: 2,
+    stepId: "compose", input: { authorization: legacy.authorization, priorGeneration: 1 } }).receipt;
+  store.finishStep(oldCompose, { status: "failed", error: `explicit reviewed-main approval is stale for ${f.primary}` });
+  const failed = store.transition(legacy.operationId, { state: "failed", lastError: {
+    step: "compose", message: `explicit reviewed-main approval is stale for ${f.primary}` } }).operation;
+  const prior = store.snapshot(legacy.operationId);
+  const recovered = await command("continue", { operation_id: legacy.operationId, request_id: "legacy-current-main",
+    reviewed_main: { expectedRevision: failed.revision, approvedRepositories: [{ projectRoot: f.primary,
+      approvedLocalMainCommit: main, approvedOriginMainCommit: main }] } });
+  assert.equal(recovered.operation.state, "done", JSON.stringify(recovered.operation.lastError));
+  assert.deepEqual(recovered.operation.authorization, prior.operation.authorization);
+  assert.deepEqual(recovered.generations[0], originalGeneration);
+  assert.equal(recovered.operation.reviewedMain.priorRevision, failed.revision);
+  assert.equal(recovered.operation.reviewedMain.requestId, "legacy-current-main");
+  assert.equal(publishes, 2);
+  const beforeRead = store.snapshot(legacy.operationId);
+  assert.deepEqual(await command("get", { operation_id: legacy.operationId }), beforeRead);
+  assert.deepEqual(store.snapshot(legacy.operationId), beforeRead);
+  assert.equal(publishes, 2);
+});
+
+test("source release CLI rejects malformed business input before opening the mutation runtime", async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "release-cli-input-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const requestFile = path.join(root, "request.json");
+  let opens = 0;
+  for (const value of [[], null, { context_token: "foreign" }]) {
+    await writeFile(requestFile, JSON.stringify(value));
+    await assert.rejects(executeRelease({ action: "continue", requestFile }, {
+      openRuntime: async () => { opens += 1; throw new Error("must not open"); },
+    }), /business arguments/u);
+  }
+  assert.equal(opens, 0);
+  assert.throws(() => parseReleaseArguments(["continue", "--provider", "codex", "--provider", "codex"]), /Invalid release/u);
 });
 
 test("public native source entry retains original operation timing on success and admission failure", { timeout: 180_000 }, async t => {

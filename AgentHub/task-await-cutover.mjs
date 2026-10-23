@@ -294,6 +294,7 @@ export async function openTaskAwaitCutoverRuntime({
     reconcilePendingOnStartup: false,
   });
   return {
+    config,
     service,
     taskBoard,
     workspaceCatalog: workspaceCatalogStore,

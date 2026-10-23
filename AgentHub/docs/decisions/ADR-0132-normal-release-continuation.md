@@ -7,6 +7,15 @@ An agent does not construct an entry/driver/config package for each transition.
 The existing operation, candidate checkpoint, Git sequencer and authenticated
 review receipts remain the authorities. There is no new release coordinator.
 
+The normal source consumer is `node release.mjs run|continue|get` with the
+initiating provider/thread/stream and a JSON file of the same public business
+arguments. Both it and Hub startup construct the existing ReleaseOperation graph
+through one shared composition function. The local default runtime retains the
+preparation authority/original readports and does not start the full Hub or use
+the running desktop transport. The public authenticated continuation forwards
+`reviewed_main` before terminal refusal for the existing stale-main recovery;
+there is no raw-state repair, alternate publisher or per-attempt operator package.
+
 Before release-side changes the owner checks the selected plan, publication and
 the supplied exact main/origin approval. It then synchronizes accepted local
 main into managed dev through its existing guarded Git owner. This is enabled

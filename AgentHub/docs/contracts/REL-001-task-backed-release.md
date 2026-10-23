@@ -10,6 +10,18 @@ release changes. Release integration may synchronize already accepted main into
 managed dev under its normal lease/process guards; primary bytes remain intact.
 Ordinary Task integration retains its explicit adoption boundary.
 
+The source/default `node release.mjs run|continue|get --provider <provider>
+--thread <thread> --stream <stream> --request-file <JSON>` consumes ordinary
+public tool business arguments. It connects the same release composition used
+by the running Hub to the existing authority-aware local default Git/SQLite
+runtime; it does not redirect to an older desktop endpoint or start another Hub.
+The generated caller capability is never read from that JSON. `continue` forwards
+`reviewed_main` and its request ID through the authenticated public method before
+terminal refusal, preserving the original operation's recovery semantics. The
+normal owner emits its durable acknowledgement and runs to its saved wait/terminal
+boundary without a pipeline execution timeout. It does not recover unrelated
+operations. No separate entry/driver/config is generated per transition.
+
 An approved repository's optional `nativeResolutionReview` accepts the existing
 single review or `{bundlePath,bundleSha256,reviews}` for multiple already reviewed
 prefixes. The sequencer authenticates each receipt and selected identity before

@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "baseline": {
-    "rootProductionModules": 32,
+    "rootProductionModules": 33,
     "rootTestModules": 0
   },
   "publicRootModules": [
@@ -20,6 +20,7 @@
     "release-operation-publication-runner.mjs",
     "release-freeze-recovery.mjs",
     "release-version.mjs",
+    "release.mjs",
     "request-safe-restart.mjs",
     "runtime-manager.mjs",
     "runtime-manifest-verifier.mjs",
