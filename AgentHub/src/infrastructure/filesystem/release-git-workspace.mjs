@@ -1471,7 +1471,8 @@ export class ReleaseGitWorkspaceService {
   }
 
   async deriveInstalledLocalSourceBaselineForSelection({ projectRoot, planRevision, tasks,
-    publishedRevision, adoptions = [] }) {
+    publishedRevision, adoptions = [] } = {}) {
+    this.#assertAvailable("deriveInstalledLocalSourceBaselineForSelection");
     const initial = await primarySnapshot(projectRoot);
     await this.assertPrimaryInvariant(initial.root, { phase: "ordinary Await installed source binding" });
     if (publishedRevision !== await durablePublishedRevision(this.#environment, initial.root)) {
@@ -1493,7 +1494,8 @@ export class ReleaseGitWorkspaceService {
     return provenance;
   }
 
-  async validateLocalSourceBaseline({ projectRoot, provenance, planRevision, tasks }) {
+  async validateLocalSourceBaseline({ projectRoot, provenance, planRevision, tasks } = {}) {
+    this.#assertAvailable("validateLocalSourceBaseline");
     const initial = await primarySnapshot(projectRoot);
     await this.assertPrimaryInvariant(initial.root, { phase: "local source baseline verification" });
     return assertInstalledLocalSourceBaseline({ provenance, planRevision, tasks,
@@ -1521,7 +1523,8 @@ export class ReleaseGitWorkspaceService {
     return null;
   }
 
-  async inspectNativeAwaitRecovery({ projectRoot, original, frozenTasks }) {
+  async inspectNativeAwaitRecovery({ projectRoot, original, frozenTasks } = {}) {
+    this.#assertAvailable("inspectNativeAwaitRecovery");
     const primary = await primarySnapshot(projectRoot);
     const layout = { ...this.#layout(primary.root), primaryRoot: primary.root };
     return withInterprocessLocks([path.join(this.dataDir, "locks", `release-git-${layout.repositoryKey}`)], async () => {
@@ -1540,7 +1543,8 @@ export class ReleaseGitWorkspaceService {
     });
   }
 
-  async archivedNativeAwaitOriginal({ projectRoot, operationId }) {
+  async archivedNativeAwaitOriginal({ projectRoot, operationId } = {}) {
+    this.#assertAvailable("archivedNativeAwaitOriginal");
     const primary = await primarySnapshot(projectRoot), layout = this.#layout(primary.root);
     return withInterprocessLocks([path.join(this.dataDir, "locks", `release-git-${layout.repositoryKey}`)], async () => {
       const journal = await readJson(path.join(layout.root, "native-preparation.json"));

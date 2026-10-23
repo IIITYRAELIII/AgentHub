@@ -23,14 +23,15 @@ test("ownership confirmation rejects another release and another restart operati
  readFileImpl:async()=>JSON.stringify({pid:3,instanceToken:"new",ready:true,...locks.shift()}),isAlive:()=>true,delayImpl:async()=>{now++;}});
  assert.equal(now,2);assert.equal(lock.restartOperationId,"r");
 });
-test("real factory passes restart reservation to ordinary and deferred admission",async t=>{
+test("real factory permits pending restart and fences ordinary and deferred admission only at cutover",async t=>{
  const directory=await mkdtemp(path.join(os.tmpdir(),"hub-restart-factory-"));t.after(()=>rm(directory,{recursive:true,force:true}));
- const noop=()=>{};const port=new Proxy(noop,{get:()=>port});let reserved=true;
- const services=new Proxy({attachmentDirectory:directory,isRestartPending:()=>reserved,composerTransfers:port,taskBoard:port,workspaceCatalog:port,taskRuns:port,providers:port},{get:(o,k)=>k in o?o[k]:port});
+ const noop=()=>{};const port=new Proxy(noop,{get:()=>port});let stopping=false;
+ const services=new Proxy({attachmentDirectory:directory,isRestartPending:()=>true,isRuntimeStopping:()=>stopping,composerTransfers:port,taskBoard:port,workspaceCatalog:port,taskRuns:port,providers:port},{get:(o,k)=>k in o?o[k]:port});
  const result=createDesktopRunRouterWiring({config:{dataDir:directory},constants:{taskExecutionOwners:{HUB:"hub"}},state:port,services,desktop:port});
- assert.equal(result.runCoordinator.admissionBarrier({}),"runtime-restart");
+ assert.equal(result.runCoordinator.admissionBarrier({}),null);
+ stopping=true;assert.equal(result.runCoordinator.admissionBarrier({}),"runtime-restart");
  await assert.rejects(result.runCoordinator.startDeferred({provider:"codex",threadId:"t",streamId:"s",input:"input"}),e=>e.code==="ERR_RUNTIME_RESTART_PENDING");
- reserved=false;assert.equal(result.runCoordinator.admissionBarrier({}),null);
+ stopping=false;assert.equal(result.runCoordinator.admissionBarrier({}),null);
 });
 test("a terminal restart failure releases only its current overlay wait",()=>{
  const health={ready:true,diagnostics:{restart:{operationId:"r",status:"failed",completedAt:new Date(3000).toISOString()}}};

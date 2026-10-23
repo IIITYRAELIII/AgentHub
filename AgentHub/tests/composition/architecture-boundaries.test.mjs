@@ -14,6 +14,7 @@ import { TaskBoardService } from "../../src/application/task-board-service.mjs";
 import { createPersistenceMutationCapabilities } from "../../src/composition/persistence-mutation-composition.mjs";
 import { TaskBoardStore } from "../../src/infrastructure/persistence/task-board-store.mjs";
 import { WorkspaceCatalogStore } from "../../src/infrastructure/persistence/workspace-catalog-store.mjs";
+import { ProviderTaskActivityService } from "../../src/application/provider-task-activity-service.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "..", "..");
 const COMPOSITION_ROOT = path.join(ROOT, "src", "composition", "agent-hub-composition.mjs");
@@ -109,6 +110,7 @@ async function productionModules(directory = ROOT) {
   const result = [];
   for (const entry of await readdir(directory, { withFileTypes: true })) {
     if (entry.isDirectory()) {
+      if (directory === ROOT && entry.name === "tests") continue;
       if (!IGNORED_DIRECTORIES.has(entry.name)) result.push(...await productionModules(path.join(directory, entry.name)));
     } else if (entry.name.endsWith(".mjs") && !entry.name.endsWith(".test.mjs")) {
       result.push(path.join(directory, entry.name));
@@ -588,10 +590,6 @@ test("src modules obey the architectural dependency matrix", async () => {
 
 test("provider activity and selected external watch have explicit owners", async () => {
   const source = await compositionSource();
-  const activity = await readFile(
-    path.join(ROOT, "src", "application", "provider-task-activity-service.mjs"),
-    "utf8",
-  );
   const watch = await readFile(
     path.join(ROOT, "src", "application", "selected-task-watch-service.mjs"),
     "utf8",
@@ -601,8 +599,8 @@ test("provider activity and selected external watch have explicit owners", async
   assert.equal(source.includes("async function readCodexTaskActivity"), false);
   assert.equal(source.includes("async function readClaudeTaskActivity"), false);
   assert.equal(source.includes("selectedTaskWatchInFlight"), false);
-  assert.equal(activity.includes("async readCodex(target)"), true);
-  assert.equal(activity.includes("async readClaude(target)"), true);
+  assert.equal(typeof ProviderTaskActivityService.prototype.readCodex, "function");
+  assert.equal(typeof ProviderTaskActivityService.prototype.readClaude, "function");
   assert.equal(watch.includes("this.inFlight = false"), true);
   assert.equal(watch.includes("const current = this.#candidates()"), true);
   assert.equal(watch.includes("const currentRun = this.taskRuns.forTask(task)"), true);

@@ -302,7 +302,7 @@ test("Markdown details safely render historical and new messages with native dis
     assert.equal(await details.evaluate((node) => node.open), true);
     for (const width of [1366, 390]) {
       await page.setViewportSize({ width, height: 900 });
-      if (width === 390) await page.locator('[data-mobile-button="chat"]').click();
+      if (width === 390) await page.evaluate(() => window.AgentHub.showSelectedTask());
       const geometry = await details.locator("pre").evaluate((node) => ({
         wide: node.scrollWidth > node.clientWidth,
         outside: node.getBoundingClientRect().right > innerWidth + 1,
@@ -438,7 +438,7 @@ test("persisted rotation renders once after missed snapshots and page reload", a
           { id: "after", role: "user", threadId: "thread-new", turnId: "turn-after",
             text: "Сообщение после ротации", time: "2026-09-10T20:56:00.000Z" },
         ], currentTask);
-        if (viewport.width < 600) await page.locator('[data-mobile-button="chat"]').click();
+        if (viewport.width < 600) await page.evaluate(() => window.AgentHub.showSelectedTask());
         assert.equal(await page.locator(".msg-maintenance").count(), 1);
         assert.match(await page.locator(".msg-maintenance").textContent(), /Ротация завершена/u);
         assert.equal(await page.locator(".msg-agent").count(), 1, "rotation is not a second agent turn");
@@ -520,7 +520,7 @@ test("compaction without provider turn renders a system marker and unknown compl
     for (const viewport of [{ width: 1366, height: 900 }, { width: 390, height: 844 }]) {
       await page.setViewportSize(viewport);
       await seedMessages(page, [preparationMarker], preparation);
-      if (viewport.width < 600) await page.locator('[data-mobile-button="chat"]').click();
+      if (viewport.width < 600) await page.evaluate(() => window.AgentHub.showSelectedTask());
       assert.match(await page.locator(".msg-maintenance").textContent(), /Подготовка обслуживания контекста/u);
       assert.equal(await page.locator(".msg-agent").count(), 0);
       assert.equal(await page.locator("[data-context-label]").textContent(), "подготовка…");

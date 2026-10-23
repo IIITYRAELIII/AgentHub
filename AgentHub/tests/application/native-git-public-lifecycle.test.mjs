@@ -644,7 +644,9 @@ test("public durable release composes native immutable generation with separatel
   const stale = await f.release(a, published);
   assert.equal(stale.operation.waitReason.code, "prepared_candidate_stale");
   assert.equal(stale.generations.length, 0);
-  await f.preflight.prepareAwaitSet({ workspaceId: f.workspace.id });
+  await f.preflight.prepareAwaitSet({ workspaceId: f.workspace.id, reviewedMainApprovals: {
+    approvedRepositories: [{ projectRoot: f.primary, approvedLocalMainCommit: f.base, approvedOriginMainCommit: published }],
+  } });
   const snapshot = await f.continueRelease(stale.operation.operationId);
   assert.equal(snapshot.operation.operationId, stale.operation.operationId);
   assert.equal(snapshot.operation.state, "waiting", JSON.stringify(snapshot.operation.lastError));

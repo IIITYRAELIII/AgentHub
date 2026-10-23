@@ -1331,6 +1331,7 @@ export class TaskGitWorkspaceService {
   }
 
   storageRetentionOwner({ taskBoard, isStopping } = {}) {
+    this.#assertAvailable("storageRetentionOwner");
     return new NativeMergeTransportRetention({ dataDir: this.dataDir, taskBoard, taskGitWorkspaces: this,
       isStopping, gitAt: (cwd, args, options = {}) => this.#runOwned(args, {
         ...options, cwd, guardRepositoryRoot: cwd, timeoutMs: 60_000,

@@ -923,7 +923,7 @@ test("VS Code shared WebView applies deferred task history and requests the exac
     liveCardsByTask: new Map(),
     snapshotResponseIsStale: () => false,
     traceHistoryCard: () => {},
-    commandTrace: { objectId: () => "", newId: () => "fixture-open" },
+    commandTrace: { objectId: () => "", newId: () => "fixture-open", now: () => 0 },
     taskId: (_provider, _threadId, streamId) => streamId,
     historyMessages: (history) => history.items,
     setHistoryWindow: (id, items) => applied.push([id, ...items.map((item) => item.id)]),
@@ -944,7 +944,8 @@ test("VS Code shared WebView applies deferred task history and requests the exac
     updateHistoryCatchUp: () => {},
   });
   vm.runInContext(
-    `${functionSource(clientSource, "applyOpened", "function acknowledgeDisplayedFinal")};`
+    `${functionSource(clientSource, "stableIdentity", "function taskOpenParams")};`
+      + `${functionSource(clientSource, "applyOpened", "function acknowledgeDisplayedFinal")};`
       + "globalThis.applyDeferredOpen = applyOpened;",
     sandbox,
   );
@@ -984,7 +985,26 @@ test("task list keeps active duration live and metadata badges readable", () => 
   const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
   const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
   const styles = fs.readFileSync(require.resolve("../assets/web-app/styles.css"), "utf8");
-  assert.match(client, /startedAt:\s*running\s*\?\s*task\.run\?\.startedAt/u);
+  const timingSandbox = {
+    window: {
+      AgentHubMessageProjection: { userRunActivity: run => ({ running: Boolean(run), canStop: Boolean(run) }) },
+      AgentHubStreamTabs: { resolveTaskHierarchy: () => ({}), streamModelLabel: () => '' },
+    },
+    taskId: () => 'task', projectedActiveUserRun: (_id, value) => value.running ? value.run : null,
+    readMarker: { cursorCovers: () => false, threadIdentity: () => '' },
+    confirmedReadCursorByThread: new Map(), runtimeShortLabels: {},
+  };
+  vm.runInNewContext(fs.readFileSync(path.join(WEB_APP_ROOT, 'messages/lifecycle.js'), 'utf8'), timingSandbox);
+  timingSandbox.activeRunSubmissionTiming = timingSandbox.AgentHubMessageLifecycle.activeRunSubmissionTiming;
+  vm.runInNewContext(functionSource(client, 'modelTask', 'function emptyStreamModels') + '\nglobalThis.projectTask = modelTask;', timingSandbox);
+  const sourceTask = { running: true, run: { turnId: 'turn', startedAt: '2026-10-24T01:00:00Z' } };
+  const project = () => timingSandbox.projectTask(sourceTask, {}, 'task', 'task');
+  assert.equal(project().startedAt, sourceTask.run.startedAt);
+  sourceTask.run.providerStart = { state: 'queued', turnId: 'turn' };
+  assert.equal(project().startedAt, null, 'queued provider launch cannot start the active duration');
+  sourceTask.run.providerStart = { state: 'observed', turnId: 'turn', acceptedAt: '2026-10-24T01:01:00Z' };
+  assert.equal(project().startedAt, sourceTask.run.providerStart.acceptedAt);
+  sourceTask.running = false; assert.equal(project().startedAt, null);
   assert.match(app, /function formatRunningDuration\(/u);
   assert.match(app, /data-task-started-at/u);
   assert.match(app, /setInterval\(refreshTaskDurations,\s*1_000\)/u);
@@ -2068,7 +2088,7 @@ test("active commentary stays live while interrupted commentary remains in histo
   );
 });
 
-test("manual context compaction reports completion and stays on the fast refresh loop", () => {
+test("manual context compaction reports completion and stays on the fast refresh loop", async () => {
   const client = fs.readFileSync(require.resolve("../assets/web-app/hub-client.js"), "utf8");
   const app = fs.readFileSync(require.resolve("../assets/web-app/app.js"), "utf8");
   const styles = fs.readFileSync(require.resolve("../assets/web-app/styles.css"), "utf8");
@@ -2081,7 +2101,20 @@ test("manual context compaction reports completion and stays on the fast refresh
   assert.match(client, /Ротация контекста…/u);
   assert.match(client, /activeMaintenanceByTask/u);
   assert.match(client, /rememberMaintenanceEvent/u);
-  assert.match(client, /task\.running \|\| task\.context\?\.compacting \|\| task\.maintenance/u);
+  for (const [task, expectedDelay] of [[{}, 5000], [{ running: true }, 1200],
+    [{ activityUnknown: true }, 1200], [{ context: { compacting: true } }, 1200], [{ maintenance: {} }, 1200]]) {
+    const delays = [], sandbox = {
+      window: { clearTimeout() {}, setTimeout: (_fn, delay) => delays.push(delay), AgentHubSnapshotTransport: { requestParams: () => ({}) } },
+      refreshing: false, refreshRequested: false, refreshTimer: null, composerRecoveryBarrier: Promise.resolve(),
+      lastSnapshot: { tasks: [task] }, prepareSnapshotTransport: async () => {}, control: async () => ({ notModified: true }),
+      snapshotResponseIsStale: () => false, refreshConnectionLatency() {}, resetConnectionFailures() {},
+      applySnapshotConnection() {}, considerDisplayedFinal() {}, selectedTaskId: null,
+      refreshVisibleTaskHistories: async () => {}, recordTransientConnectionFailure: () => assert.fail('unexpected refresh failure'),
+      visibleStreamTaskIds: new Set(), historyNeedsCatchUp: () => false,
+    };
+    vm.runInNewContext(functionSource(client, 'refresh(', 'agentHub.on("connection:retry"') + '\nglobalThis.runRefresh = refresh;', sandbox);
+    await sandbox.runRefresh(); assert.deepEqual(delays, [expectedDelay]);
+  }
   assert.match(app, /message\.kind === "maintenance"/u);
   assert.match(styles, /\.msg-maintenance \.msg-body/u);
   // Context labels and the preparation/start/compaction/measurement transitions
@@ -2126,7 +2159,20 @@ test("active chat input stays in the manual queue until an explicit action", () 
   assert.match(app, /data-action": "queue-steer"/u);
   assert.match(app, /data-action": "queue-edit"/u);
   assert.match(app, /followUpMode: MessageView\.composerFollowUpMode\(task, \{ steerWhileRunning \}\)/u);
-  assert.match(app, /deferWhileRunning: task\?\.running === true && !steerWhileRunning/u);
+  const sandbox = { state: { selectedId: 'task' }, currentPendingComposerRequest: () => null,
+    currentAttachmentPreviews: () => [], currentTask: () => sandbox.task,
+    performance: { now: () => 0 }, window: { AgentHubComposerDraftReconciliation: { recoveryFingerprint: () => 'payload' } },
+    retryComposerRequests: new Map(), pendingComposerRequests: new Map(),
+    composerDraftReconciliation: { revision: () => 0 }, emit: (_name, request) => { sandbox.request = request; }, updateSendState() {},
+  };
+  vm.runInNewContext(fs.readFileSync(path.join(WEB_APP_ROOT, 'message-view-controller.js'), 'utf8'), sandbox);
+  sandbox.MessageView = sandbox.AgentHubMessageView;
+  vm.runInNewContext(functionSource(app, 'sendComposerRequest', 'function submitComposer') + '\nglobalThis.send = sendComposerRequest;', sandbox);
+  for (const [task, steerWhileRunning, deferred] of [[{ running: true }, false, true],
+    [{ canStop: true }, false, true], [{ running: true }, true, false], [{}, false, false]]) {
+    sandbox.task = task; sandbox.send({ rawText: 'fixture', steerWhileRunning });
+    assert.equal(sandbox.request.deferWhileRunning, deferred);
+  }
   assert.doesNotMatch(app, /followUpModeButton|renderFollowUpMode|Изменить ход/u);
   assert.doesNotMatch(html, /data-follow-up-mode/u);
   assert.match(client, /control\("deferred-input", \{ id, action: "queue" \}\)/u);
