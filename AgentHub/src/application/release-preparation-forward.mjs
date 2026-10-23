@@ -3,6 +3,7 @@ import { preparationHash, validatePreparationEnvelope, ReleasePreparationRejecte
   from "./release-preparation-admission.mjs";
 
 import { FORWARD_PREPARATION } from "../domain/release-preparation.mjs";
+import { assertHistoricalChangelogOriginal } from "../domain/release-base-provenance.mjs";
 export { FORWARD_PREPARATION, preparationLegacyIdentity, preparationLegacyHash }
   from "../domain/release-preparation.mjs";
 const reject = message => { throw new ReleasePreparationRejectedError(message); };
@@ -35,6 +36,13 @@ export function validatePreparationForward({ record, originalPreparation, prepar
     if (preparationHash(prior.originalPreparation) !== preparationHash(original)
         || preparationHash(withoutReview(prior.envelope)) !== preparationHash(withoutReview(current))) {
       reject("Forward preparation current basis changed; preserve its original effects");
+    }
+  }
+  for (const repository of current.repositories) {
+    if (repository.localSourceBaseline?.historicalChangelog) {
+      try { assertHistoricalChangelogOriginal(repository.localSourceBaseline,
+        { requestId, argumentsHash: record.argumentsHash, originalPreparation: original }, current.tasks, repository.projectRoot); }
+      catch { reject("Historical root CHANGELOG original or selection authority changed"); }
     }
   }
   return { original, current };

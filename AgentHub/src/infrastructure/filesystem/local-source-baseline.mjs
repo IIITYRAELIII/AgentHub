@@ -2,7 +2,8 @@ import { createHash } from "node:crypto";
 import { lstat, readFile } from "node:fs/promises";
 import path from "node:path";
 import { LOCAL_SOURCE_BASELINE_PROVENANCE, localSourceSelectionHash,
-  normalizedReleaseBaseProvenance } from "../../domain/release-base-provenance.mjs";
+  normalizedReleaseBaseProvenance, assertHistoricalChangelogOriginal } from "../../domain/release-base-provenance.mjs";
+import { runtimeRetirementCandidates } from "./runtime-release-retention-policy.mjs";
 import { runtimeHostSourceHash } from "../process/runtime-host-builder.mjs";
 import { ReleasePreparationRejectedError } from "../../domain/release-preparation.mjs";
 import { readNativeUpstreamAdoptions, assertNativeUpstreamOrigin } from "./native-upstream-adoption.mjs";
@@ -74,9 +75,43 @@ export async function assertInstalledAgreedMainOrigin({ provenance, git }) {
         !== p.approvedOriginMainCommit) reject("agreed main origin changed");
 }
 
+export async function assertHistoricalChangelog({ provenance, originalAuthority, tasks, repositoryRoot, git, runtimeRoot }) {
+  const p = normalizedReleaseBaseProvenance(provenance), binding = p?.historicalChangelog;
+  if (!binding) return [];
+  assertHistoricalChangelogOriginal(p, originalAuthority, tasks, repositoryRoot);
+  const pointer = JSON.parse(await regular(path.join(runtimeRoot, "current.json")));
+  if (runtimeRetirementCandidates({ pointer, runningReleaseId: pointer.current }).reason !== null) reject("historical runtime retention is unproved");
+  const retained = [pointer.runtimeRetention.current, pointer.runtimeRetention.previous, ...pointer.runtimeRetention.retired].filter(Boolean);
+  if (retained.filter(r => r.releaseId === p.installedReleaseId && r.manifestSha256 === p.installedManifestSha256).length !== 1
+      || retained.filter(r => r.releaseId === binding.installedReleaseId && r.manifestSha256 === binding.installedManifestSha256).length !== 1
+      || binding.installedReleaseId === pointer.current) reject("historical installed manifest is not an exact retained binding");
+  const bytes = await regular(path.join(runtimeRoot, "releases", binding.installedReleaseId, "runtime-manifest.json"));
+  if (sha(bytes) !== binding.installedManifestSha256) reject("historical installed manifest changed");
+  const manifest = JSON.parse(bytes.toString("utf8"));
+  if (manifest.releaseId !== binding.installedReleaseId || typeof manifest.publicationRevision !== "string"
+      || manifest.publicationRevision !== binding.sourceCommit || typeof manifest.sourceRoot !== "string"
+      || !path.isAbsolute(manifest.sourceRoot)) reject("historical source manifest identity changed");
+  const readGit = (args, options) => git(["--no-optional-locks", "--no-lazy-fetch", "--no-replace-objects",
+    "-c", "core.fsmonitor=false", ...args], options);
+  const root = await lstat(manifest.sourceRoot);
+  if (!root.isDirectory() || root.isSymbolicLink()
+      || await readGit(["-C", manifest.sourceRoot, "rev-parse", "HEAD^{commit}"]) !== binding.sourceCommit
+      || await readGit(["-C", manifest.sourceRoot, "rev-parse", "HEAD^{tree}"]) !== binding.sourceTree
+      || await readGit(["-C", manifest.sourceRoot, "status", "--porcelain=v1", "-z", "--untracked-files=all"])) reject("historical source HEAD/tree/clean custody changed");
+  await readGit(["merge-base", "--is-ancestor", binding.sourceCommit, p.sourceBaseCommit]);
+  const expected = `${binding.mode} blob ${binding.blob}\t${binding.path}\0`;
+  for (const commit of [binding.sourceCommit, binding.resultCommit]) {
+    if (String(await readGit(["--literal-pathspecs", "ls-tree", "--full-tree", "-z", commit, "--", binding.path], { rawOutput: true })) !== expected) {
+      reject("historical root CHANGELOG path/mode/blob changed");
+    }
+  }
+  return [{ taskId: binding.taskId, resultCommit: binding.resultCommit, path: binding.path, mode: binding.mode, blob: binding.blob }];
+}
+
 export async function assertInstalledLocalSourceBaseline({
   provenance, git, primaryMainCommit, publishedRevision, planRevision, tasks, runtimeRoot,
   adoptionGit = git, repositoryRoot = null,
+  originalAuthority = null,
 }) {
   const p = normalizedReleaseBaseProvenance(provenance);
   if (p?.kind !== LOCAL_SOURCE_BASELINE_PROVENANCE) reject("missing provenance");
@@ -184,7 +219,8 @@ export async function assertInstalledLocalSourceBaseline({
     if (installedSource !== p.sourceBaseCommit) metadataBases.push(installedSource);
   }
   await validateOrigin();
-  return { provenance: p, runtimeFiles, hostChanged, metadataBases, ...(p.adoptions ? { adoptions } : {}) };
+  const changelogEntries = await assertHistoricalChangelog({ provenance: p, originalAuthority, tasks, repositoryRoot, git, runtimeRoot });
+  return { provenance: p, runtimeFiles, hostChanged, metadataBases, ...(changelogEntries.length ? { changelogEntries } : {}), ...(p.adoptions ? { adoptions } : {}) };
 }
 
 // Test uses the same installed-byte proof as preparation. Only the manifest's

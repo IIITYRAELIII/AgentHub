@@ -247,7 +247,8 @@ export async function openTaskAwaitCutoverRuntime({
     ?? new TaskGitWorkspaceService({ dataDir: config.dataDir, verifyNativeResolutionReview });
   const releaseGitWorkspaces = suppliedReleaseGitWorkspaces
     ?? new ReleaseGitWorkspaceService({ dataDir: config.dataDir, verifyNativeResolutionReview,
-      readPreparationAuthority: root => workspaceCatalogStore.preparationIsolationAuthority(root) });
+      readPreparationAuthority: root => workspaceCatalogStore.preparationIsolationAuthority(root),
+      readPreparationOriginal: id => workspaceCatalogStore.mcpOperation(id) });
   const releasePlanner = new TaskReleasePlanService({ taskBoard, taskGitWorkspaces });
   const releasePreflight = suppliedReleasePreflight ?? new WorkspaceReleasePreflightService({
     measureOperation: measureTaskOperation,

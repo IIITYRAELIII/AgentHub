@@ -1,5 +1,15 @@
 # REL-001 — Task-backed Workspace release
 
+Forward preparation may retain one exact original-bound `historicalChangelog`
+record in closed installed-local-source provenance (ADR-0131). The original
+operation/envelope and selected result, historical installed manifest/release,
+current installed authority, clean ancestor source HEAD/tree and exact root
+`CHANGELOG.md` mode/blob are independently verified. Canonical retention must
+still bind the historical and current manifests. Derived native permission is
+only for that path and result; it never widens history/adoption/package-version
+authority. Normal candidate readback/reuse/generation/freeze preserve and verify
+the same binding. Missing or altered proof refuses; UNKNOWN history is unchanged.
+
 ## Original stale-main recovery
 
 ADR-0128 defines one narrow exception to generic terminal refusal. Existing RM

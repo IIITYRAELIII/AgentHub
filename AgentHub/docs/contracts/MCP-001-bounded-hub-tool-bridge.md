@@ -99,6 +99,14 @@ leases/CAS. Isolation never supplies `joinedChildren=true` or settles UNKNOWN.
 Ordinary MCP resume and serialized arguments cannot manufacture either proof. Readback reports forward completion separately
 from the retained legacy outcome; no automatic initial prepare replay occurs.
 
+The optional exact `historicalChangelog` candidate-provenance binding in
+ADR-0131 does not add an MCP command or replace original custody evidence. It
+uses the existing original operation reader and exact original argument hash;
+before transfer, the local forward owner checks the original installed manifest
+and selection independently of current installed authority. It admits only the
+bound root notes path/mode/blob for that selected result, never package versions
+or unselected history, and remains bound through normal candidate readback/freeze.
+
 ## Native Git Task/release cutover (HUB-303)
 
 The existing local task-await-cutover entry admits one explicitly reviewed

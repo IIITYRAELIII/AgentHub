@@ -1041,6 +1041,15 @@ export class HubMcpService {
         workspaceId: context.workspaceId, envelope, requestId: args.request_id,
         argumentsHash: record.argumentsHash, validate,
         ownPreparation: async ({ devInventory }) => {
+          for (const repository of envelope.repositories) {
+            if (repository.localSourceBaseline?.historicalChangelog) {
+              await this.releasePreflight.releaseGitWorkspaces.validateLocalSourceBaseline({
+                projectRoot: repository.projectRoot, provenance: repository.localSourceBaseline,
+                planRevision: envelope.planRevision, tasks: envelope.tasks,
+                originalAuthority: { requestId: args.request_id, argumentsHash: record.argumentsHash, originalPreparation: original },
+              });
+            }
+          }
           const isolationPlan = await this.releasePreflight.releaseGitWorkspaces.planPreparationIsolation({
             requestId: args.request_id, argumentsHash: record.argumentsHash, originalPreparation: original,
             preparation: envelope, devInventory, previousIsolation: state?.isolation ?? null });

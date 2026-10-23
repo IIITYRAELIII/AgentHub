@@ -60,7 +60,10 @@ export async function assertNativeTaskHistories({ git, baseCommit, tasks, histor
       const entry = await metadataEntry(git, task.resultCommit, file);
       const known = [];
       for (const b of metadataBases) known.push(await metadataEntry(git, b, file));
-      if (entry === null || !known.includes(entry)) throw failure(`Task ${task.taskId} changes release-owned CHANGELOG metadata`);
+      const historical = file === "CHANGELOG.md" && (historyAuthority?.changelogEntries ?? []).some(bound =>
+        bound.taskId === task.taskId && bound.resultCommit === task.resultCommit && bound.path === file
+          && bound.mode === "100644" && entry === `${bound.mode} ${bound.blob}`);
+      if (entry === null || !known.includes(entry) && !historical) throw failure(`Task ${task.taskId} changes release-owned CHANGELOG metadata`);
     }
     const packages = String(await git(["diff", "--name-only", "--no-renames", "-z", taskBase, task.resultCommit,
       "--", "package.json", "package-lock.json", ":(glob)**/package.json", ":(glob)**/package-lock.json",

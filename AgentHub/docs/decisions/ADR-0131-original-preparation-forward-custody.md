@@ -116,3 +116,29 @@ under the same already-held lease. The scoped Git queue permits one child per
 guard without a global lane. An interrupted current child leaves that existing
 guard unresolved and the next admission refuses; isolation of the old invocation
 is never reused as proof that a newer invocation or child has completed.
+
+## Retained root CHANGELOG after an installed-source transition
+
+An original selected result can inherit exact release-owned root notes from its
+then-installed source while a later installed repair carries newer agreed-main
+notes. Forward preparation may bind one `historicalChangelog` record in the
+existing closed local-source provenance. It binds the same original request and
+argument hash, its original installed manifest/release, one selected result and
+revision, exact source commit/tree, and `CHANGELOG.md` mode/blob. The existing
+operation reader supplies the immutable original envelope; a caller field alone
+is not original authority. Admission verifies it before custody transfer.
+
+The original envelope must name that installed manifest; current installed-source
+authority remains independently verified. Canonical runtime retention must still
+bind both manifests. The retained hash-pinned manifest must name the exact plain,
+clean source HEAD/tree, an ancestor of the current source base. Both that endpoint
+and that exact selected result must carry the same root notes mode/blob. Missing,
+foreign, dirty, altered or nonancestor evidence refuses without another endpoint.
+
+The resulting native authority is path/result scoped. It never adds a historical
+commit to history `bases`, `metadataBases` or adoptions: those also govern package
+versions. Package-version checks and unselected merge-side refusal are unchanged.
+The binding stays inside the normal candidate manifest/checkpoint, survives
+normalization/reuse/generation/freeze, and is reverified through the same original
+record and retained source on readback. There is no second journal, historical
+UNKNOWN settlement, publication permission or release-history rewrite.

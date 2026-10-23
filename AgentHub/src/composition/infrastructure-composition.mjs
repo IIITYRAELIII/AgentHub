@@ -456,7 +456,8 @@ export async function createHubInfrastructure({
   const taskGitWorkspaces = new TaskGitWorkspaceService({ dataDir: config.dataDir,
     contourExternalEffects, recordTiming: recordTaskTiming, verifyNativeResolutionReview });
   const releaseGitWorkspaces = new ReleaseGitWorkspaceService({ dataDir: config.dataDir, contourExternalEffects, verifyNativeResolutionReview,
-    readPreparationAuthority: root => workspaceCatalogStore.preparationIsolationAuthority(root) });
+    readPreparationAuthority: root => workspaceCatalogStore.preparationIsolationAuthority(root),
+    readPreparationOriginal: id => workspaceCatalogStore.mcpOperation(id) });
   const registeredReleaseProjectRoots = workspaceCatalogStore.hierarchy()
     .filter((workspace) => workspace.settings?.releaseWorkflowEnabled === true)
     .map((workspace) => ({

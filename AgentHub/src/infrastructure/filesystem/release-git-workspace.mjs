@@ -12,7 +12,7 @@ import { ReleaseGenerationTransportRetention } from "./release-generation-transp
 import { createSelectedGitBundle } from "./selected-git-bundle.mjs";
 import { runOwnedGit } from "./task-git-workspace.mjs";
 import { assertInstalledLocalSourceBaseline, installedNativeHistoryBaseline,
-  assertInstalledAgreedMainOrigin } from "./local-source-baseline.mjs";
+  assertInstalledAgreedMainOrigin, assertHistoricalChangelog } from "./local-source-baseline.mjs";
 import { readNativeUpstreamAdoptions, assertNativeUpstreamOrigin } from "./native-upstream-adoption.mjs";
 import { inspectPublishedNotesArchive, archivePublishedNotesCheckout } from "./native-await-published-notes-recovery.mjs";
 import { defaultRuntimeRoot } from "./runtime-layout.mjs";
@@ -672,16 +672,19 @@ export class ReleaseGitWorkspaceService {
   #validationReferenceRoot = null;
   #isolationContext = null;
   #readPreparationAuthority;
+  #readPreparationOriginal;
 
   constructor({
     dataDir, contourExternalEffects = null, environment = process.env,
     recoveryEvidenceWrite = (handle, value) => handle.writeFile(value, "utf8"),
     recoveryPhase = async () => {}, verifyNativeResolutionReview = null,
     readPreparationAuthority = () => null,
+    readPreparationOriginal = () => null,
   } = {}) {
     this.#contourExternalEffects = assertContourExternalEffects(contourExternalEffects);
     this.#environment = environment;
     this.#readPreparationAuthority = readPreparationAuthority;
+    this.#readPreparationOriginal = readPreparationOriginal;
     this.#recoveryEvidenceWrite = recoveryEvidenceWrite;
     this.#recoveryPhase = recoveryPhase;
     this.dataDir = canonicalPath(String(dataDir ?? ""));
@@ -1092,6 +1095,7 @@ export class ReleaseGitWorkspaceService {
           dataDir: generationDataDir,
           contourExternalEffects: this.#contourExternalEffects,
           environment: this.#environment,
+          readPreparationOriginal: this.#readPreparationOriginal,
           verifyNativeResolutionReview: this.verifyNativeResolutionReview,
         });
         if (ephemeral) isolated.#validationReferenceRoot = sourceRoot;
@@ -1536,10 +1540,21 @@ export class ReleaseGitWorkspaceService {
     return provenance;
   }
 
-  async validateLocalSourceBaseline({ projectRoot, provenance, planRevision, tasks }) {
+  #historicalChangelogOriginal(provenance) {
+    if (!provenance?.historicalChangelog) return null;
+    const row = this.#readPreparationOriginal(provenance.historicalChangelog.requestId);
+    if (!row || row.toolName !== "hub_release_prepare" || row.status !== "unknown" || row.receiptState !== "unknown"
+        || row.operationStatus !== "pending" || row.preparationState?.kind !== "original-preparation-forward-v1") {
+      throw new Error("Historical root CHANGELOG original record is unavailable");
+    }
+    return { requestId: row.requestId, argumentsHash: row.argumentsHash, originalPreparation: row.preparationState.originalPreparation };
+  }
+
+  async validateLocalSourceBaseline({ projectRoot, provenance, planRevision, tasks, originalAuthority = null }) {
     const initial = await primarySnapshot(projectRoot);
     await this.assertPrimaryInvariant(initial.root, { phase: "local source baseline verification" });
     return assertInstalledLocalSourceBaseline({ provenance, planRevision, tasks,
+      originalAuthority: originalAuthority ?? this.#historicalChangelogOriginal(provenance),
       repositoryRoot: initial.root,
       primaryMainCommit: initial.mainCommit,
       publishedRevision: await durablePublishedRevision(this.#environment, initial.root),
@@ -1552,6 +1567,7 @@ export class ReleaseGitWorkspaceService {
     if (provenance?.kind === LOCAL_SOURCE_BASELINE_PROVENANCE) {
       const verified = await this.validateLocalSourceBaseline({ projectRoot, provenance, planRevision, tasks });
       return { bases: [verified.provenance.sourceBaseCommit], metadataBases: verified.metadataBases,
+        ...(verified.changelogEntries ? { changelogEntries: verified.changelogEntries } : {}),
         adoptions: verified.adoptions ?? [] };
     }
     const initial = await primarySnapshot(projectRoot);
@@ -1713,6 +1729,7 @@ export class ReleaseGitWorkspaceService {
     await assertPlainIsolationPath(expected.dataDir);
     const isolated = new ReleaseGitWorkspaceService({ dataDir: expected.dataDir,
       contourExternalEffects: this.#contourExternalEffects, environment: this.#environment,
+      readPreparationOriginal: this.#readPreparationOriginal,
       verifyNativeResolutionReview: this.verifyNativeResolutionReview });
     isolated.#isolationContext = isolation;
     const lease = options.forwardPreparation.repositoryLease;
@@ -1904,6 +1921,7 @@ export class ReleaseGitWorkspaceService {
               || current.dirty.fingerprint !== initial.dirty.fingerprint
               || remote.split(/\s/u)[0] !== preparationGuard.originMainCommit) throw new Error("Forward adoption current main/origin changed");
           if (localSource) await assertInstalledLocalSourceBaseline({ provenance: localSource, git,
+            originalAuthority: this.#historicalChangelogOriginal(localSource),
             repositoryRoot: initial.root, adoptionGit: (args, options = {}) => runGit(args, { ...options, cwd: initial.root }),
             primaryMainCommit: current.mainCommit, publishedRevision: published, planRevision: revision,
             tasks, runtimeRoot: defaultRuntimeRoot({ environment: this.#environment }) });
@@ -1954,6 +1972,7 @@ export class ReleaseGitWorkspaceService {
       }
       const validateLocalSource = async () => {
         if (localSource) await assertInstalledLocalSourceBaseline({ provenance: localSource, git,
+          originalAuthority: this.#historicalChangelogOriginal(localSource),
           repositoryRoot: initial.root,
           adoptionGit: (args, options = {}) => runGit(args, { ...options, cwd: initial.root }),
           primaryMainCommit: (await primarySnapshot(initial.root)).mainCommit,
@@ -3180,6 +3199,13 @@ export class ReleaseGitWorkspaceService {
       throw new Error("release checkpoint Workspace identity disagrees with the immutable manifest");
     }
     const manifestTasks = normalizedFrozenTasks(manifest.tasks ?? []);
+    if (manifestBaseProvenance?.historicalChangelog) {
+      await assertHistoricalChangelog({ provenance: manifestBaseProvenance, tasks: manifestTasks,
+        repositoryRoot: primary.root, originalAuthority: this.#historicalChangelogOriginal(manifestBaseProvenance),
+        runtimeRoot: defaultRuntimeRoot({ environment: this.#environment }),
+        git: (args, options = {}) => runGit(args, { ...options, cwd: primary.root }),
+      });
+    }
     const selectedTasks = manifestTasks.filter((task) => task.selectedCompositionRequired);
     if (manifest.compositionPolicy !== NATIVE_RELEASE_POLICY
         && (String(manifest.projectionPolicy ?? "").includes("mandatory-selected-v1") !== Boolean(selectedTasks.length)
