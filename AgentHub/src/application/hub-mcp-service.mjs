@@ -42,6 +42,8 @@ import { assertPreparationRows, readPreparationSourceClosure, ReleasePreparation
 import { FORWARD_PREPARATION, preparationLegacyIdentity, preparationLegacyHash,
   validatePreparationForward, inspectPreparationForwardCustody } from "./release-preparation-forward.mjs";
 
+import { normalizedNativeResolution } from "../domain/native-resolution-input.mjs";
+
 const CONTEXT_TOKEN_VERSION = 1;
 const MAX_REGISTERED_CONTEXT_CAPABILITIES = 1_000;
 const STREAM_HISTORY_CURSOR_VERSION = 1;
@@ -2235,6 +2237,14 @@ export class HubMcpService {
 
   #runReleaseOperation(context, args) {
     const workspaceId = this.#workspace(context, args.workspace_id).id;
+    // This validation is before ReleaseOperation.start and cannot have a
+    // release effect. Do not turn a malformed review input into UNKNOWN.
+    for (const target of Array.isArray(args.approved_targets) ? args.approved_targets : []) {
+      if (target?.nativeResolutionReview != null) {
+        try { normalizedNativeResolution(target.nativeResolutionReview); }
+        catch (cause) { throw new ReleasePreparationRejectedError(cause.message); }
+      }
+    }
     return this.#releaseOperation().start({
       requestId: requiredText(args.request_id, "request id", 200),
       workspaceId,

@@ -169,6 +169,11 @@ test("public run and continue use default Git SQLite owners for base update and 
   });
   runtime.service.releaseOperations = operations;
   const token = runtime.service.contextToken({ provider: "codex", threadId: "fixture-thread", streamId: f.streamId });
+  await assert.rejects(runtime.service.call("hub_release_run", { context_token: token, request_id: "invalid-native-release",
+    task_ids: [task.id], validation_mode: "full", approved_targets: [{ targetId: "fixture", kind: "fixture",
+      repositoryRoot: f.primary, nativeResolutionReview: [] }] }), /Invalid exact native resolution bundle/u);
+  assert.equal(runtime.workspaceCatalog.mcpOperation("invalid-native-release").status, "failed");
+  assert.deepEqual(store.active(), []);
   const ack = await runtime.service.call("hub_release_run", { context_token: token, request_id: "one-normal-release",
     task_ids: [task.id], validation_mode: "full", approved_targets: [{ targetId: "fixture", kind: "fixture",
       repositoryRoot: f.primary, approvedLocalMainCommit: main, approvedOriginMainCommit: main }] });
