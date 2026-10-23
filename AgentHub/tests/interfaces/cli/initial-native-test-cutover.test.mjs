@@ -807,7 +807,8 @@ const isolationObserver = async request => ({ kind: "preparation-effects-isolate
   requestId: request.requestId, argumentsHash: request.argumentsHash,
   originalSourceClosureHash: request.originalPreparation.sourceClosureHash,
   isolationEvidenceSha256: "1".repeat(64), authorizationSha256: "2".repeat(64),
-  legacyInvocationTerminal: true, writeTargetsHash: request.isolationPlan.writeTargetsHash });
+  legacyInvocationTerminal: true, writeTargetsHash: request.isolationPlan.writeTargetsHash,
+  reason: "Fixture legacy native-child custody is unknown; isolate future targets" });
 
 test("isolated preparation excludes old Git writers and fences old SQLite connections and authority replacement", { timeout: 240_000 }, async t => {
   const f = await legacyForwardFixture(t), old = await f.releaseGit.frozenCandidate(f.primary);

@@ -48,11 +48,12 @@ export async function inspectPreparationForwardCustody(inspect, request) {
   const proof = await inspect(request);
   if (proof?.kind === "preparation-effects-isolated-v1") {
     const keys = ["kind", "requestId", "argumentsHash", "originalSourceClosureHash", "isolationEvidenceSha256",
-      "authorizationSha256", "legacyInvocationTerminal", "writeTargetsHash"];
+      "authorizationSha256", "legacyInvocationTerminal", "writeTargetsHash", "reason"];
     if (Object.keys(proof).length !== keys.length || keys.some(key => !Object.hasOwn(proof, key))
         || proof.requestId !== request.requestId || proof.argumentsHash !== request.argumentsHash
         || proof.originalSourceClosureHash !== request.originalPreparation.sourceClosureHash
         || proof.legacyInvocationTerminal !== true || !request.isolationPlan
+        || typeof proof.reason !== "string" || !proof.reason.trim() || proof.reason.length > 512
         || proof.writeTargetsHash !== request.isolationPlan.writeTargetsHash
         || ![proof.isolationEvidenceSha256, proof.authorizationSha256].every(v => /^[a-f0-9]{64}$/u.test(v))) {
       reject("Preparation future write-target isolation is not proved");
