@@ -455,7 +455,8 @@ export async function createHubInfrastructure({
   const verifyNativeResolutionReview = createNativeMergeReviewVerifier({ workspaceCatalog: workspaceCatalogStore, taskBoard });
   const taskGitWorkspaces = new TaskGitWorkspaceService({ dataDir: config.dataDir,
     contourExternalEffects, recordTiming: recordTaskTiming, verifyNativeResolutionReview });
-  const releaseGitWorkspaces = new ReleaseGitWorkspaceService({ dataDir: config.dataDir, contourExternalEffects, verifyNativeResolutionReview });
+  const releaseGitWorkspaces = new ReleaseGitWorkspaceService({ dataDir: config.dataDir, contourExternalEffects, verifyNativeResolutionReview,
+    readPreparationAuthority: root => workspaceCatalogStore.preparationIsolationAuthority(root) });
   const registeredReleaseProjectRoots = workspaceCatalogStore.hierarchy()
     .filter((workspace) => workspace.settings?.releaseWorkflowEnabled === true)
     .map((workspace) => ({

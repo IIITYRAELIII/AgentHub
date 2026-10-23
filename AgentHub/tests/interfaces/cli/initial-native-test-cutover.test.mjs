@@ -52,7 +52,8 @@ async function fixture(t, { releaseManager = false } = {}) {
   const publication = { generation: "fixture", repositories: [{ root: primary, revision: main }] };
   const board = new TaskBoardService({ store, workspaceCatalog: catalog });
   const taskGit = new TaskGitWorkspaceService({ dataDir, readPublication: async () => publication, recordTiming: () => {} });
-  const releaseGit = new ReleaseGitWorkspaceService({ dataDir });
+  const releaseGit = new ReleaseGitWorkspaceService({ dataDir,
+    readPreparationAuthority: projectRoot => catalog.preparationIsolationAuthority(projectRoot) });
   const preflight = new WorkspaceReleasePreflightService({
     releasePlanner: new TaskReleasePlanService({ taskBoard: board, taskGitWorkspaces: taskGit }),
     taskGitWorkspaces: taskGit, releaseGitWorkspaces: releaseGit, readPublicationState: async () => publication,
@@ -799,4 +800,137 @@ test("reviewer concurrent lock refusal cannot poison current preparation owner",
   assert.equal(effects,1);
   assert.deepEqual(f.catalog.mcpOperation(f.originalId),final);
   assert.ok(completed.value,"the actual owned winner must complete");
+});
+
+
+const isolationObserver = async request => ({ kind: "preparation-effects-isolated-v1",
+  requestId: request.requestId, argumentsHash: request.argumentsHash,
+  originalSourceClosureHash: request.originalPreparation.sourceClosureHash,
+  isolationEvidenceSha256: "1".repeat(64), authorizationSha256: "2".repeat(64),
+  legacyInvocationTerminal: true, writeTargetsHash: request.isolationPlan.writeTargetsHash });
+
+test("isolated preparation excludes old Git writers and fences old SQLite connections and authority replacement", { timeout: 240_000 }, async t => {
+  const f = await legacyForwardFixture(t), old = await f.releaseGit.frozenCandidate(f.primary);
+  const db = new DatabaseSync(f.databaseFile);
+  let raced = false, result;
+  try { result = await f.forward(runtime => {
+    const checkpoint = runtime.fixtureCatalog.checkpointMcpPreparationForward.bind(runtime.fixtureCatalog);
+    runtime.fixtureCatalog.checkpointMcpPreparationForward = async (...args) => {
+      const row = checkpoint(...args);
+      if (args[1].state.phase === "composing" && !raced) {
+        raced = true;
+        // Existing legacy writer can still touch its own refs/checkpoint after
+        // transfer. Neither target is used as the new candidate's authority.
+        await git(old.releaseRoot, "update-ref", "refs/heads/PreRelease", f.main);
+        await writeFile(old.checkpointFile, JSON.stringify({ oldWriter: "late" }));
+        assert.throws(() => db.prepare("UPDATE hub_mcp_operations SET receipt_state='succeeded' WHERE request_id=?").run(f.originalId), /immutable/u);
+        assert.throws(() => db.prepare("DELETE FROM hub_mcp_operations WHERE request_id=?").run(f.originalId), /deleted/u);
+        assert.throws(() => db.prepare("INSERT OR REPLACE INTO hub_mcp_operations SELECT * FROM hub_mcp_operations WHERE request_id=?").run(f.originalId), /replaced/u);
+        assert.throws(() => db.prepare("UPDATE hub_mcp_operations SET preparation_state_json=json_remove(preparation_state_json,'$.isolation') WHERE request_id=?").run(f.originalId), /immutable/u);
+      }
+      return row;
+    };
+  }, isolationObserver); } finally { db.close(); }
+  const current = await f.releaseGit.frozenCandidate(f.primary);
+  assert.notEqual(current.releaseRoot, old.releaseRoot);
+  assert.equal(result.candidates[0].releaseRoot, current.releaseRoot);
+  assert.equal(current.tree, f.envelope.repositories[0].approvedTree);
+  assert.deepEqual(JSON.parse(await readFile(old.checkpointFile, "utf8")), { oldWriter: "late" });
+  assert.deepEqual(preparationLegacyIdentity(f.catalog.mcpOperation(f.originalId)), f.legacy);
+  const reflog = await git(current.releaseRoot, "reflog", "show", "--format=%H", "PreRelease");
+  assert.deepEqual(await f.forward(() => {}, () => assert.fail("Completed retry must not inspect or compose")), result);
+  assert.equal(await git(current.releaseRoot, "reflog", "show", "--format=%H", "PreRelease"), reflog);
+  const common = await git(current.releaseRoot, "rev-parse", "--git-common-dir");
+  assert.equal(path.resolve(current.releaseRoot, common), path.join(current.releaseRoot, ".git"));
+  await assert.rejects(readFile(path.join(current.releaseRoot, ".git", "objects", "info", "alternates")), { code: "ENOENT" });
+  const alternate = path.join(current.releaseRoot, ".git", "objects", "info", "alternates");
+  await mkdir(path.dirname(alternate), { recursive: true });
+  await writeFile(alternate, path.join(old.releaseRoot, ".git", "objects") + "\n");
+  try { await assert.rejects(f.releaseGit.frozenCandidate(f.primary), /object.common store is shared/u); }
+  finally { await unlink(alternate); }
+  const originalHooks = await git(current.releaseRoot, "config", "--local", "--get", "core.hooksPath");
+  await git(current.releaseRoot, "config", "core.hooksPath", f.root);
+  try { await assert.rejects(f.releaseGit.frozenCandidate(f.primary), /configuration changed/u); }
+  finally { await git(current.releaseRoot, "config", "core.hooksPath", originalHooks); }
+  const reconciled = await f.releaseGit.reconcile({ projectRoots: [f.primary] });
+  assert.equal(reconciled.repositories.find(item => item.source === "registered_workspace").releaseRoot, current.releaseRoot);
+  const origin = path.join(f.root, "origin.git"), tree = await git(origin, "rev-parse", `${f.acceptedMain}^{tree}`);
+  const incoming = await git(origin, "-c", "user.name=Incoming", "-c", "user.email=incoming@local.invalid",
+    "commit-tree", tree, "-p", f.acceptedMain, "-m", "new unapproved incoming");
+  await git(origin, "update-ref", "refs/heads/main", incoming, f.acceptedMain);
+  const audit = await f.releaseGit.inspectMainChanges({ projectRoot: f.primary, publishedRevision: f.main,
+    approvedLocalMainCommit: f.acceptedMain, approvedOriginMainCommit: f.acceptedMain });
+  assert.equal(audit.approved, false); assert.equal(audit.approvalRequired, true);
+  assert.ok(audit.commits.some(item => item.commit === incoming));
+});
+
+for (const boundary of ["before-transfer", "after-transfer", "before-terminal", "after-terminal"]) {
+  test(`isolated preparation ${boundary} preserves custody and reuses one independent candidate`, { timeout: 240_000 }, async t => {
+    const f = await legacyForwardFixture(t);
+    const inspect = boundary === "before-transfer" ? async () => { throw new Error("before custody transfer"); } : isolationObserver;
+    const attempt = f.forward(runtime => {
+      const checkpoint = runtime.fixtureCatalog.checkpointMcpPreparationForward.bind(runtime.fixtureCatalog);
+      runtime.fixtureCatalog.checkpointMcpPreparationForward = (...args) => {
+        if (boundary === "before-terminal" && args[1].state.phase === "completed") throw new Error("terminal reply lost");
+        const row = checkpoint(...args);
+        if (boundary === "after-transfer" && args[1].transfer || boundary === "after-terminal" && args[1].state.phase === "completed") {
+          throw new Error("after owned commit");
+        }
+        return row;
+      };
+    }, inspect);
+    if (boundary === "after-terminal") await attempt;
+    else await assert.rejects(attempt, /custody transfer|owned commit|unknown/u);
+    assert.deepEqual(preparationLegacyIdentity(f.catalog.mcpOperation(f.originalId)), f.legacy);
+    const result = await f.forward(() => {}, isolationObserver);
+    const candidate = await f.releaseGit.frozenCandidate(f.primary);
+    assert.equal(result.candidates[0].tree, candidate.tree);
+    assert.equal(f.catalog.mcpOperation(f.originalId).preparationState.phase, "completed");
+    assert.deepEqual(await f.forward(() => {}, () => assert.fail("Read only")), result);
+  });
+}
+
+
+test("isolated preparation does not inherit hooks or mutable object alternates", { timeout: 240_000 }, async t => {
+  const f = await legacyForwardFixture(t), hooks = path.join(f.root, "inherited-hooks"), touched = path.join(f.root, "hook-ran");
+  await mkdir(hooks);
+  await writeFile(path.join(hooks, "post-checkout"), `#!/bin/sh\nprintf unsafe > '${touched.replaceAll("\\", "/")}'\n`);
+  const names = ["GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0", "GIT_ALTERNATE_OBJECT_DIRECTORIES"];
+  const saved = Object.fromEntries(names.map(name => [name, process.env[name]]));
+  try {
+    process.env.GIT_CONFIG_COUNT = "1"; process.env.GIT_CONFIG_KEY_0 = "core.hooksPath"; process.env.GIT_CONFIG_VALUE_0 = hooks;
+    process.env.GIT_ALTERNATE_OBJECT_DIRECTORIES = path.join(f.primary, ".git", "objects");
+    const result = await f.forward(() => {}, isolationObserver), candidate = await f.releaseGit.frozenCandidate(f.primary);
+    assert.equal(result.candidates[0].releaseRoot, candidate.releaseRoot);
+    await assert.rejects(readFile(touched), { code: "ENOENT" });
+    assert.equal(await git(candidate.releaseRoot, "config", "--local", "--get", "core.fsmonitor"), "false");
+    await assert.rejects(readFile(path.join(candidate.releaseRoot, ".git", "objects", "info", "alternates")), { code: "ENOENT" });
+  } finally {
+    for (const name of names) { if (saved[name] === undefined) delete process.env[name]; else process.env[name] = saved[name]; }
+  }
+});
+
+
+test("isolated preparation preserves partial native promotion without falling back to legacy authority", { timeout: 240_000 }, async t => {
+  const f = await legacyForwardFixture(t);
+  await assert.rejects(f.forward(runtime => {
+    const checkpoint = runtime.fixtureCatalog.checkpointMcpPreparationForward.bind(runtime.fixtureCatalog);
+    runtime.fixtureCatalog.checkpointMcpPreparationForward = (...args) => {
+      if (args[1].state.phase === "completed") throw new Error("lost terminal before commit");
+      return checkpoint(...args);
+    };
+  }, isolationObserver), /unknown/u);
+  const candidate = await f.releaseGit.frozenCandidate(f.primary);
+  const journalFile = path.join(path.dirname(candidate.checkpointFile), "native-preparation.json");
+  const journal = JSON.parse(await readFile(journalFile, "utf8"));
+  assert.equal(journal.before.checkpointBytes, null);
+  await unlink(candidate.checkpointFile);
+  await writeFile(journalFile, JSON.stringify({ ...journal, phase: "prepared" }) + "\n");
+  const original = await readFile(journalFile), refs = await git(candidate.releaseRoot, "show-ref");
+  await assert.rejects(f.forward(() => {}, isolationObserver), /partial promotion/u);
+  assert.deepEqual(await readFile(journalFile), original);
+  assert.equal(await git(candidate.releaseRoot, "show-ref"), refs);
+  await assert.rejects(readFile(candidate.checkpointFile), { code: "ENOENT" });
+  await assert.rejects(f.releaseGit.frozenCandidate(f.primary), /ENOENT|incomplete/u);
+  assert.deepEqual(preparationLegacyIdentity(f.catalog.mcpOperation(f.originalId)), f.legacy);
 });

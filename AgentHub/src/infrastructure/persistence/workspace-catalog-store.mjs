@@ -31,7 +31,7 @@ import {
   withReleasePrimaryWorkspaceRule,
 } from "../../domain/release-primary-workspace-policy.mjs";
 
-const SCHEMA_VERSION = 14;
+const SCHEMA_VERSION = 15;
 export const DEVELOPER_RULES_MAX_BYTES = 32 * 1024;
 const SOURCES = new Set(["created", "discovered", "migration", "rebirth"]);
 const DEVELOPER_RULE_SCOPES = new Set(["workspace", "stream"]);
@@ -215,6 +215,20 @@ function configure(database) {
         OR NEW.result_json IS NOT OLD.result_json OR NEW.error_text IS NOT OLD.error_text
         OR NEW.created_at_ms IS NOT OLD.created_at_ms OR NEW.completed_at_ms IS NOT OLD.completed_at_ms)
     BEGIN SELECT RAISE(ABORT, 'Legacy preparation history is immutable during forward continuation'); END;`);
+  database.exec(`CREATE TRIGGER IF NOT EXISTS hub_preparation_forward_delete_fence
+    BEFORE DELETE ON hub_mcp_operations
+    WHEN json_extract(OLD.preparation_state_json, '$.kind') = 'original-preparation-forward-v1'
+    BEGIN SELECT RAISE(ABORT, 'Forward preparation authority cannot be deleted'); END;
+    CREATE TRIGGER IF NOT EXISTS hub_preparation_forward_replace_fence
+    BEFORE INSERT ON hub_mcp_operations
+    WHEN EXISTS (SELECT 1 FROM hub_mcp_operations WHERE request_id=NEW.request_id
+      AND json_extract(preparation_state_json, '$.kind')='original-preparation-forward-v1')
+    BEGIN SELECT RAISE(ABORT, 'Forward preparation authority cannot be replaced'); END;
+    CREATE TRIGGER IF NOT EXISTS hub_preparation_isolation_identity_fence
+    BEFORE UPDATE ON hub_mcp_operations
+    WHEN json_extract(OLD.preparation_state_json, '$.isolation') IS NOT NULL
+      AND json_extract(NEW.preparation_state_json, '$.isolation') IS NOT json_extract(OLD.preparation_state_json, '$.isolation')
+    BEGIN SELECT RAISE(ABORT, 'Forward preparation isolation authority is immutable'); END;`);
 }
 
 function workspaceFromRow(row) {
@@ -1127,6 +1141,17 @@ export class WorkspaceCatalogStore {
     });
   }
 
+  preparationIsolationAuthority(projectRoot) {
+    const rows = this.#database.prepare(`SELECT request_id, arguments_hash, preparation_state_json FROM hub_mcp_operations
+      WHERE json_extract(preparation_state_json, '$.kind') = 'original-preparation-forward-v1'
+        AND json_extract(preparation_state_json, '$.isolation.projectRoot') = ?`).all(projectRoot);
+    if (rows.length > 1) throw new Error("Multiple preparation isolation authorities require an explicit owner disposition");
+    if (!rows.length) return null;
+    const state = JSON.parse(rows[0].preparation_state_json);
+    return { requestId: rows[0].request_id, argumentsHash: rows[0].arguments_hash,
+      phase: state.phase, isolation: state.isolation };
+  }
+
   // Append only to the EXISTING original's preparation column. In particular,
   // never convert legacy UNKNOWN to reconciling/success or erase its error.
   checkpointMcpPreparationForward(requestId, { identity, expectedRevision, legacyHash, state,
@@ -1154,6 +1179,7 @@ export class WorkspaceCatalogStore {
           || state.events.length !== prior.events.length + 1
           || JSON.stringify(state.originalPreparation) !== JSON.stringify(prior.originalPreparation)
           || state.sourceRoot !== prior.sourceRoot || state.sourceRootIdentity !== prior.sourceRootIdentity
+          || JSON.stringify(state.isolation ?? null) !== JSON.stringify(prior.isolation ?? null)
           || (transfer ? state.epoch !== prior.epoch + 1 || state.phase !== "checking"
             : state.epoch !== prior.epoch || state.ownerId !== prior.ownerId)
         : !transfer || state.epoch !== 1 || state.phase !== "checking" || state.events.length !== 1) {

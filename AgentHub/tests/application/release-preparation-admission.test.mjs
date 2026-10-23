@@ -80,3 +80,20 @@ test("preparation-only runtime closure detects added/changed source and excludes
   await symlink(path.join(root, "src"), path.join(root, "src", "link"), process.platform === "win32" ? "junction" : "dir");
   await assert.rejects(readPreparationSourceClosure(root), /link/);
 });
+
+
+test("forward isolated-effects evidence is distinct from terminal proof and binds the owner target plan", async () => {
+  const request = { requestId: "original", argumentsHash: "a".repeat(64),
+    originalPreparation: { sourceClosureHash: "b".repeat(64) }, isolationPlan: { writeTargetsHash: "c".repeat(64) } };
+  const proof = { kind: "preparation-effects-isolated-v1", requestId: request.requestId,
+    argumentsHash: request.argumentsHash, originalSourceClosureHash: request.originalPreparation.sourceClosureHash,
+    isolationEvidenceSha256: "d".repeat(64), authorizationSha256: "e".repeat(64),
+    legacyInvocationTerminal: true, writeTargetsHash: request.isolationPlan.writeTargetsHash };
+  assert.deepEqual(await inspectPreparationForwardCustody(async () => proof, request), proof);
+  for (const change of [{ joinedChildren: true }, { legacyInvocationTerminal: false }, { writeTargetsHash: "f".repeat(64) },
+    { authorizationSha256: "" }, { argumentsHash: "f".repeat(64) }]) {
+    await assert.rejects(inspectPreparationForwardCustody(async () => ({ ...proof, ...change }), request), /not proved/u);
+  }
+  await assert.rejects(inspectPreparationForwardCustody(proof, request), /unavailable/u);
+  await assert.rejects(inspectPreparationForwardCustody(async () => ({ ...proof, kind: "preparation-invocation-terminal-v1" }), request), /not proved/u);
+});

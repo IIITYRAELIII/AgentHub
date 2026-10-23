@@ -1,4 +1,6 @@
 import { spawn } from "node:child_process";
+import { preparationIsolationLayout, isolationDigest, assertPlainIsolationPath,
+  withPreparationGitIsolation, preparationGitInvocation, preparationGitIsolationActive } from "./preparation-git-isolation.mjs";
 import { createHash, randomUUID } from "node:crypto";
 import { copyFile, link, lstat, mkdir, mkdtemp, open, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -53,7 +55,9 @@ const AWAIT_UNKNOWN_OUTCOME_CODES = new Set([
 function runGit(args, { cwd, timeoutMs = 120_000, rawOutput = false, acceptableExitCodes = [], input = null, stdoutFd = null } = {}) {
   if (stdoutFd !== null && (!Number.isSafeInteger(stdoutFd) || stdoutFd < 3)) throw new TypeError("Invalid owned Git output descriptor");
   return new Promise((resolve, reject) => {
-    const child = spawn("git", args, { cwd, windowsHide: true, stdio: [input == null ? "ignore" : "pipe", stdoutFd ?? "pipe", "pipe"] });
+    const invocation = preparationGitInvocation(args, cwd);
+    const child = spawn("git", invocation.args, { cwd, ...(invocation.env ? { env: invocation.env } : {}),
+      windowsHide: true, stdio: [input == null ? "ignore" : "pipe", stdoutFd ?? "pipe", "pipe"] });
     const stdout = [];
     const stderr = [];
     const timer = setTimeout(() => {
@@ -80,7 +84,9 @@ function runGit(args, { cwd, timeoutMs = 120_000, rawOutput = false, acceptableE
 
 function runGitWithInput(args, input, { cwd, timeoutMs = 120_000 } = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn("git", args, { cwd, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
+    const invocation = preparationGitInvocation(args, cwd);
+    const child = spawn("git", invocation.args, { cwd, ...(invocation.env ? { env: invocation.env } : {}),
+      windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
     const stdout = [];
     const stderr = [];
     const timer = setTimeout(() => {
@@ -654,14 +660,18 @@ export class ReleaseGitWorkspaceService {
   #recoveryPhase;
   #validationBundle = null;
   #validationReferenceRoot = null;
+  #isolationContext = null;
+  #readPreparationAuthority;
 
   constructor({
     dataDir, contourExternalEffects = null, environment = process.env,
     recoveryEvidenceWrite = (handle, value) => handle.writeFile(value, "utf8"),
     recoveryPhase = async () => {}, verifyNativeResolutionReview = null,
+    readPreparationAuthority = () => null,
   } = {}) {
     this.#contourExternalEffects = assertContourExternalEffects(contourExternalEffects);
     this.#environment = environment;
+    this.#readPreparationAuthority = readPreparationAuthority;
     this.#recoveryEvidenceWrite = recoveryEvidenceWrite;
     this.#recoveryPhase = recoveryPhase;
     this.dataDir = canonicalPath(String(dataDir ?? ""));
@@ -715,6 +725,9 @@ export class ReleaseGitWorkspaceService {
     projectRoot, publishedRevision, approvedLocalMainCommit = null, approvedOriginMainCommit = null,
   } = {}) {
     this.#assertAvailable("inspectMainChanges");
+    const authority = this.#readPreparationAuthority(canonicalPath(projectRoot));
+    if (authority && !preparationGitIsolationActive()) return withPreparationGitIsolation(authority.isolation.dataDir,
+      () => this.inspectMainChanges({ projectRoot, publishedRevision, approvedLocalMainCommit, approvedOriginMainCommit }));
     const baseline = String(publishedRevision ?? "").trim();
     if (!baseline) throw new Error("main review requires the last published revision");
     const primary = await primarySnapshot(projectRoot);
@@ -795,7 +808,15 @@ export class ReleaseGitWorkspaceService {
 
   #layout(primaryRoot) {
     const repositoryKey = taskRepositoryKey(primaryRoot);
-    const root = path.join(this.releaseRepositoriesRoot, repositoryKey);
+    const authority = this.#readPreparationAuthority(primaryRoot);
+    let storage = this.releaseRepositoriesRoot;
+    if (authority) {
+      const expected = preparationIsolationLayout(this.dataDir, primaryRoot, authority.requestId, authority.argumentsHash);
+      if (authority.isolation?.dataDir !== expected.dataDir || authority.isolation.projectRoot !== primaryRoot
+          || authority.isolation.key !== expected.key) throw new Error("Preparation candidate routing identity changed");
+      storage = path.join(expected.dataDir, "release-repositories");
+    }
+    const root = path.join(storage, repositoryKey);
     return {
       repositoryKey,
       root,
@@ -807,12 +828,15 @@ export class ReleaseGitWorkspaceService {
 
   async #ensureClone(primary) {
     const layout = this.#layout(primary.root);
-    if (!pathInside(this.releaseRepositoriesRoot, layout.releaseRoot)) {
+    const authority = this.#readPreparationAuthority(primary.root);
+    const allowedStorage = authority ? path.join(authority.isolation.dataDir, "release-repositories") : this.releaseRepositoriesRoot;
+    if (!pathInside(allowedStorage, layout.releaseRoot)) {
       throw new Error("release clone escaped its Agent Hub-owned root");
     }
     const gitFile = path.join(layout.releaseRoot, ".git");
     let created = false;
     if (!await fileExists(gitFile) && !await stat(gitFile).catch(() => null)) {
+      if (authority) throw new Error("Registered isolated candidate is missing; preserve its original recovery");
       const upstream = await gitMaybe(["remote", "get-url", "origin"], { cwd: primary.root });
       if (!upstream) throw new Error(`release repository has no origin remote: ${primary.root}`);
       await mkdir(layout.root, { recursive: true });
@@ -842,9 +866,18 @@ export class ReleaseGitWorkspaceService {
       await runGit(["remote", "rename", "origin", "workspace"], { cwd: layout.releaseRoot });
       if (!this.#validationBundle) await runGit(["remote", "set-url", "workspace", sourceRoot], { cwd: layout.releaseRoot });
       await runGit(["config", "core.longpaths", "true"], { cwd: layout.releaseRoot });
+      if (this.#isolationContext) {
+        for (const [key, value] of [["core.hooksPath", path.join(this.dataDir, "empty-hooks")],
+          ["core.fsmonitor", "false"], ["gc.auto", "0"], ["maintenance.auto", "false"]]) {
+          await runGit(["config", key, value], { cwd: layout.releaseRoot });
+        }
+      }
       created = true;
       await runGit(["remote", "add", "origin", upstream], { cwd: layout.releaseRoot });
-      await runGit(["fetch", "origin", "+refs/heads/main:refs/remotes/origin/main"], {
+      if (this.#isolationContext) {
+        await runGit(["update-ref", "refs/remotes/origin/main", this.#isolationContext.originMainCommit,
+          "0".repeat(40)], { cwd: layout.releaseRoot });
+      } else await runGit(["fetch", "origin", "+refs/heads/main:refs/remotes/origin/main"], {
         cwd: layout.releaseRoot,
         timeoutMs: 300_000,
       });
@@ -875,7 +908,7 @@ export class ReleaseGitWorkspaceService {
     const marker = {
       schemaVersion: 1,
       kind: "agent-hub-owned-release-clone",
-      managedRoot: this.releaseRepositoriesRoot,
+      managedRoot: path.dirname(layout.root),
       primaryRoot: primary.root,
       primaryGitCommonDir: primary.commonDir,
       releaseRoot,
@@ -1553,6 +1586,148 @@ export class ReleaseGitWorkspaceService {
     });
   }
 
+  async planPreparationIsolation({ requestId, argumentsHash, originalPreparation, preparation, devInventory, previousIsolation = null }) {
+    if (previousIsolation) {
+      const expected = preparationIsolationLayout(this.dataDir, preparation.repositories[0].projectRoot, requestId, argumentsHash);
+      if (previousIsolation.key !== expected.key || previousIsolation.dataDir !== expected.dataDir) {
+        throw new Error("Retained preparation isolation namespace changed");
+      }
+      await assertPlainIsolationPath(expected.dataDir);
+      return structuredClone(previousIsolation);
+    }
+    const repository = preparation.repositories[0], projectRoot = canonicalPath(repository.projectRoot);
+    const layout = preparationIsolationLayout(this.dataDir, projectRoot, requestId, argumentsHash);
+    await assertPlainIsolationPath(layout.dataDir);
+    const legacyRoot = path.join(this.releaseRepositoriesRoot, taskRepositoryKey(projectRoot));
+    const checkpoint = await readFile(path.join(legacyRoot, "checkpoint.json"));
+    const primary = await primarySnapshot(projectRoot);
+    const configHash = sha256(await readFile(path.join(primary.commonDir, "config")));
+    const inheritedConfigHash = sha256(await runGit(["config", "--null", "--show-origin", "--show-scope", "--list"],
+      { cwd: primary.root, rawOutput: true }));
+    const inheritedGitEnvironment = Object.entries(process.env).filter(([key]) => /^GIT_/iu.test(key))
+      .map(([key, value]) => ({ key, valueHash: sha256(value) })).sort((a, b) => a.key.localeCompare(b.key));
+    const targets = { legacyGit: primary.commonDir, legacyDevWorktree: devInventory?.projectRoot ?? null,
+      legacyCandidate: { root: legacyRoot, checkout: path.join(legacyRoot, "repository"),
+        checkpoint: path.join(legacyRoot, "checkpoint.json"), journal: path.join(legacyRoot, "native-preparation.json"),
+        marker: path.join(legacyRoot, "repository", ".git", RELEASE_MARKER),
+        staging: path.join(legacyRoot, "native-merges"), evidence: path.join(legacyRoot, "evidence") },
+      newGitAndMetadata: layout.dataDir, sql: { database: path.join(this.dataDir, "journal.sqlite"),
+        table: "hub_mcp_operations", requestId,
+        field: "preparation_state_json", legacyFence: "hub_preparation_forward_legacy_fence" },
+      excluded: ["primary refs/index/worktree", "dev mutation", "legacy candidate writes", "remote ref writes",
+        "publication state/receipts", "Task status"],
+      locks: { owner: "existing Await/Task/repository/candidate leases",
+        paths: path.join(this.dataDir, "locks"), processGuards: path.join(this.dataDir, "task-process-tree-guards") },
+      localGit: "independent bundle objects; no global/system/env path configuration/templates/hooks/fsmonitor/auto-maintenance",
+      remoteReads: "existing credential owner; ls-remote only, no ref writes",
+      excludedPublication: { state: publicationStateFile(this.#environment),
+        run: publicationRunPaths(this.#environment).statusFile, checkpoint: publicationCheckpointFile(this.#environment),
+        operations: path.join(this.dataDir, "runtime.sqlite") },
+      diagnostics: "existing original-ID timing/log append; no candidate or publication authority" };
+    return { schemaVersion: 1, kind: "preparation-isolated-git-v1", ...layout, projectRoot,
+      requestId, argumentsHash, originalSourceClosureHash: originalPreparation.sourceClosureHash,
+      originMainCommit: repository.originMainCommit, previousCheckpointHash: repository.checkpointHash,
+      legacyCheckpointHash: sha256(checkpoint), legacyConfigurationHash: configHash,
+      inheritedConfigHash, inheritedGitEnvironment,
+      targets, writeTargetsHash: isolationDigest(targets) };
+  }
+
+  async inspectIsolationMainPins({ projectRoot, publishedRevision, approvedLocalMainCommit, approvedOriginMainCommit }) {
+    const primary = await primarySnapshot(projectRoot);
+    const origin = (await runGit(["ls-remote", "origin", "refs/heads/main"], { cwd: primary.root })).split(/\s/u)[0];
+    if (primary.mainCommit !== approvedLocalMainCommit || origin !== approvedOriginMainCommit) {
+      throw new Error("Isolated preparation reviewed main/origin pins changed");
+    }
+    return { projectRoot: primary.root, publishedRevision, localMain: primary.mainCommit,
+      originMain: origin, approved: true, approvalRequired: false };
+  }
+
+  async #assertIsolationClone(clone, isolation) {
+    await assertPlainIsolationPath(clone.releaseRoot);
+    await assertPlainIsolationPath(clone.releaseGitCommonDir);
+    if (!samePath(clone.releaseGitCommonDir, path.join(clone.releaseRoot, ".git"))) throw new Error("Isolation candidate is a linked worktree");
+    for (const file of ["objects/info/alternates", "objects/info/http-alternates", "commondir"]) {
+      const entry = await lstat(path.join(clone.releaseGitCommonDir, file)).catch(error => {
+        if (error.code === "ENOENT") return null; throw error;
+      });
+      if (entry) throw new Error(`Isolated Git object/common store is shared: ${file}`);
+    }
+    let count = 0;
+    const verifyObjects = async root => {
+      await assertPlainIsolationPath(root);
+      for (const name of await readdir(root)) {
+        if (++count > 100000) throw new Error("Isolation object custody inventory exceeds its bound");
+        const file = path.join(root, name), entry = await lstat(file);
+        if (entry.isSymbolicLink()) throw new Error(`Isolation object path is redirected: ${file}`);
+        if (entry.isDirectory()) await verifyObjects(file);
+        else if (!entry.isFile() || entry.nlink !== 1) throw new Error(`Isolation object file is shared: ${file}`);
+      }
+    };
+    await verifyObjects(path.join(clone.releaseGitCommonDir, "objects"));
+    for (const file of ["config", RELEASE_MARKER]) {
+      const entry = await lstat(path.join(clone.releaseGitCommonDir, file));
+      if (!entry.isFile() || entry.isSymbolicLink() || entry.nlink !== 1) throw new Error(`Isolated Git control file is shared: ${file}`);
+    }
+    const git = args => runGit(args, { cwd: clone.releaseRoot });
+    const allowed = /^(?:core\.(?:repositoryformatversion|filemode|bare|logallrefupdates|symlinks|ignorecase|longpaths|hookspath|fsmonitor)|gc\.auto|maintenance\.auto|remote\.(?:workspace|origin)\.(?:url|fetch)|branch\.main\.(?:remote|merge))$/u;
+    const keys = String(await git(["config", "--local", "--null", "--name-only", "--list"])).split("\0").filter(Boolean);
+    if (keys.some(key => !allowed.test(key))) throw new Error("Isolated Git contains an unowned configuration/helper");
+    for (const [key, expected] of [["core.hooksPath", path.join(isolation.dataDir, "empty-hooks")],
+      ["core.fsmonitor", "false"], ["gc.auto", "0"], ["maintenance.auto", "false"]]) {
+      if (await git(["config", "--local", "--get", key]) !== expected) throw new Error(`Isolated Git configuration changed: ${key}`);
+    }
+    await assertPlainIsolationPath(path.join(isolation.dataDir, "empty-hooks"));
+    if ((await readdir(path.join(isolation.dataDir, "empty-hooks"))).length) throw new Error("Isolation hooks directory changed");
+    await git(["fsck", "--full", "--strict"]);
+  }
+
+  async #prepareIsolatedCandidate(options, isolation) {
+    const expected = preparationIsolationLayout(this.dataDir, canonicalPath(options.projectRoot),
+      options.preflightRequestId, options.preparationGuard.argumentsHash);
+    if (isolation.key !== expected.key || isolation.dataDir !== expected.dataDir) throw new Error("Isolation candidate owner identity changed");
+    await assertPlainIsolationPath(expected.dataDir);
+    const isolated = new ReleaseGitWorkspaceService({ dataDir: expected.dataDir,
+      contourExternalEffects: this.#contourExternalEffects, environment: this.#environment,
+      verifyNativeResolutionReview: this.verifyNativeResolutionReview });
+    isolated.#isolationContext = isolation;
+    return withPreparationGitIsolation(expected.dataDir, async () => {
+      await mkdir(expected.dataDir, { recursive: true });
+      for (const name of ["identity.json", "source.bundle", "empty-gitconfig"]) {
+        const entry = await lstat(path.join(expected.dataDir, name)).catch(error => {
+          if (error.code === "ENOENT") return null; throw error;
+        });
+        if (entry && (!entry.isFile() || entry.isSymbolicLink() || entry.nlink !== 1)) {
+          throw new Error(`Isolation file custody changed: ${name}`);
+        }
+      }
+      const identityFile = path.join(expected.dataDir, "identity.json");
+      const identity = await readJson(identityFile);
+      if (identity && stableManifest(identity) !== stableManifest(isolation)) throw new Error("Isolated preparation identity changed");
+      if (!identity) {
+        if ((await readdir(expected.dataDir)).length) throw new Error("Unregistered isolation output requires exact owner readback");
+        await writeFile(identityFile, stableManifest(isolation), { flag: "wx" });
+      }
+      await mkdir(path.join(expected.dataDir, "empty-hooks"), { recursive: true });
+      await assertPlainIsolationPath(path.join(expected.dataDir, "empty-hooks"));
+      const config = path.join(expected.dataDir, "empty-gitconfig");
+      if (!await fileExists(config)) await writeFile(config, "", { flag: "wx" });
+      if ((await readFile(config)).length || (await readdir(path.join(expected.dataDir, "empty-hooks"))).length) {
+        throw new Error("Isolation Git config/hooks changed");
+      }
+      const bundle = path.join(expected.dataDir, "source.bundle");
+      const main = options.preparationGuard.primaryMainCommit;
+      if (!await fileExists(bundle)) await createSelectedGitBundle({ root: expected.dataDir,
+        sourceRoot: options.projectRoot, bundle, mainCommit: main,
+        inputs: [...new Set([main, isolation.originMainCommit, options.approvedBaseCommit,
+          ...options.frozenTasks.map(task => task.resultCommit)])],
+        gitAt: (cwd, args, extra) => runGit(args, { ...extra, cwd, timeoutMs: 300_000 }) });
+      await runGit(["bundle", "verify", bundle], { cwd: options.projectRoot });
+      isolated.#validationBundle = bundle;
+      const result = await isolated.prepareCandidate(options);
+      return result;
+    });
+  }
+
   async prepareCandidate({
     planRevision, projectRoot, workspaceId = null, preflightRequestId = null,
     frozenTasks = [], approvedBaseCommit = null, baseProvenance = null,
@@ -1560,6 +1735,19 @@ export class ReleaseGitWorkspaceService {
     nativeResolutionReview = null, nativeAwaitRecovery = null, forwardPreparation = null,
   } = {}) {
     this.#assertAvailable("prepareCandidate");
+    const isolation = forwardPreparation?.readIsolation?.();
+    if (isolation && !this.#isolationContext) return this.#prepareIsolatedCandidate({
+      planRevision, projectRoot, workspaceId, preflightRequestId, frozenTasks, approvedBaseCommit, baseProvenance,
+      validateBeforeCommit, preserveFrozen, commitPrepared, preparationGuard, nativeResolutionReview,
+      nativeAwaitRecovery, forwardPreparation }, isolation);
+    const authority = this.#readPreparationAuthority(canonicalPath(projectRoot));
+    if (authority && !preparationGitIsolationActive()) return withPreparationGitIsolation(authority.isolation.dataDir,
+      () => this.prepareCandidate({ planRevision, projectRoot, workspaceId, preflightRequestId, frozenTasks,
+        approvedBaseCommit, baseProvenance, validateBeforeCommit, preserveFrozen, commitPrepared, preparationGuard,
+        nativeResolutionReview, nativeAwaitRecovery, forwardPreparation }));
+    if (authority && authority.phase !== "completed" && preflightRequestId !== authority.requestId) {
+      throw new Error("Isolated original preparation still owns this candidate");
+    }
     const revision = String(planRevision ?? "").trim();
     const initial = await primarySnapshot(projectRoot);
     await this.assertPrimaryInvariant(initial.root, { phase: "native release preparation" });
@@ -1607,9 +1795,10 @@ export class ReleaseGitWorkspaceService {
       // Forward custody never recreates a missing clone or rewrites its marker
       // before accounting for the original effects. Missing/partial stays put.
       if (forwardPreparation && nativeAwaitRecovery) throw new Error("Forward preparation cannot archive another Await original");
-      const clone = forwardPreparation
+      const clone = forwardPreparation && !this.#isolationContext
         ? { ...layout, ...await assertReleaseCloneForPublication({ repositoryRoot: layout.releaseRoot }) }
         : await this.#ensureClone(initial);
+      if (this.#isolationContext) await this.#assertIsolationClone(clone, this.#isolationContext);
       const git = (args, options = {}) => runGit(args, { ...options, cwd: clone.releaseRoot, timeoutMs: 300_000 });
       const checkpoint = await readJson(clone.checkpointFile);
       if (forwardPreparation) {
@@ -1624,7 +1813,9 @@ export class ReleaseGitWorkspaceService {
           return { sha256: sha256(bytes), bytes: bytes.length, value: JSON.parse(bytes) };
         };
         const journalRecord = await boundedRecord(journalFile), journal = journalRecord?.value;
-        const checkpointBytes = await readFile(clone.checkpointFile);
+        const checkpointBytes = await readFile(clone.checkpointFile).catch(error => {
+          if (this.#isolationContext && error.code === "ENOENT") return null; throw error;
+        });
         const nativeRoot = path.join(layout.root, "native-merges");
         const nativeInfo = await lstat(nativeRoot).catch(error => { if (error.code === "ENOENT") return null; throw error; });
         if (nativeInfo && (!nativeInfo.isDirectory() || nativeInfo.isSymbolicLink())) throw new Error("Forward native staging custody changed");
@@ -1640,7 +1831,7 @@ export class ReleaseGitWorkspaceService {
           native.push({ root: entry.name, mergeHash: merge?.sha256 ?? null,
             transport: bundle ? { bytes: bundle.size, dev: bundle.dev, ino: bundle.ino, mtimeMs: bundle.mtimeMs } : null });
         }
-        const inventory = { schemaVersion: 1, checkpointHash: sha256(checkpointBytes),
+        const inventory = { schemaVersion: 1, checkpointHash: checkpointBytes === null ? null : sha256(checkpointBytes),
           markerHash: sha256(await readFile(clone.markerFile)),
           journalHash: journalRecord?.sha256 ?? null, native,
           refsHash: sha256(await git(["for-each-ref", "--format=%(refname)%00%(objectname)"])),
@@ -1719,7 +1910,13 @@ export class ReleaseGitWorkspaceService {
         }
       };
       await validatePreparationMain();
-      await assertPreparationCheckpoint({ guard: preparationGuard, clone, initial, checkpoint, git });
+      if (this.#isolationContext) {
+        if (checkpoint || await gitMaybe(["rev-parse", "refs/heads/PreRelease^{commit}"], { cwd: clone.releaseRoot })
+            || await git(["rev-parse", "HEAD^{commit}"]) !== initial.mainCommit
+            || await git(["status", "--porcelain=v1", "-z", "--untracked-files=all"])) {
+          throw new ReleasePreparationRejectedError("Isolated first candidate checkpoint/ref/checkout is not pristine");
+        }
+      } else await assertPreparationCheckpoint({ guard: preparationGuard, clone, initial, checkpoint, git });
       await git(["fetch", "--prune", "workspace", "+refs/heads/main:refs/remotes/workspace/main"]);
       for (const commit of [baseCommit, ...tasks.map((task) => task.resultCommit)]) {
         if (await gitMaybe(["cat-file", "-e", `${commit}^{commit}`], { cwd: clone.releaseRoot }) === null) {
@@ -2858,6 +3055,9 @@ export class ReleaseGitWorkspaceService {
 
   async frozenCandidate(projectRoot, { changelogContent = undefined } = {}) {
     this.#assertAvailable("frozenCandidate");
+    const authority = this.#readPreparationAuthority(canonicalPath(projectRoot));
+    if (authority && !preparationGitIsolationActive()) return withPreparationGitIsolation(authority.isolation.dataDir,
+      () => this.frozenCandidate(projectRoot, { changelogContent }));
     const primary = await primarySnapshot(projectRoot);
     const layout = this.#layout(primary.root);
     const checkpoint = await readJson(layout.checkpointFile);
@@ -2880,6 +3080,8 @@ export class ReleaseGitWorkspaceService {
       throw new Error("release checkpoint reviewed-main provenance disagrees with its immutable manifest");
     }
     const marker = await assertReleaseCloneForPublication({ repositoryRoot: layout.releaseRoot });
+    if (authority || this.#isolationContext) await this.#assertIsolationClone({ ...layout, ...marker },
+      authority?.isolation ?? this.#isolationContext);
     for (const operation of ["MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "rebase-apply", "rebase-merge", "sequencer", "index.lock"]) {
       const pending = await lstat(path.join(marker.releaseGitCommonDir, operation)).catch((error) => {
         if (error.code === "ENOENT") return null;
@@ -3131,7 +3333,13 @@ export class ReleaseGitWorkspaceService {
         if (auditedRoots.some((item) => samePath(item, snapshot.root))) continue;
         auditedRoots.push(snapshot.root);
         const layout = this.#layout(snapshot.root);
-        const checkpoint = checkpoints.find((item) => samePath(item.manifest.primaryRoot, snapshot.root)) ?? null;
+        let checkpoint = checkpoints.find((item) => samePath(item.manifest.primaryRoot, snapshot.root)) ?? null;
+        if (this.#readPreparationAuthority(snapshot.root)) {
+          const selected = await readJson(layout.checkpointFile);
+          const selectedManifest = selected?.manifestFile ? await readJson(selected.manifestFile) : null;
+          checkpoint = selectedManifest ? { repositoryKey: layout.repositoryKey, checkpointFile: layout.checkpointFile,
+            checkpoint: selected, manifest: selectedManifest } : null;
+        }
         const failure = primaryInvariantFailure(snapshot, "startup reconciliation");
         const legacyFailure = snapshot.legacyLinkedHolders.length
           ? `legacy linked release holder detected for registered primary Workspace (${snapshot.root})`
@@ -3207,6 +3415,7 @@ export class ReleaseGitWorkspaceService {
     }
 
     for (const checkpoint of checkpoints) {
+      if (this.#readPreparationAuthority(canonicalPath(checkpoint.manifest.primaryRoot))) continue;
       if (auditedRoots.some((item) => samePath(item, checkpoint.manifest.primaryRoot))) continue;
       try {
         const primary = await this.assertPrimaryInvariant(checkpoint.manifest.primaryRoot, {

@@ -1041,16 +1041,28 @@ export class HubMcpService {
         workspaceId: context.workspaceId, envelope, requestId: args.request_id,
         argumentsHash: record.argumentsHash, validate,
         ownPreparation: async ({ devInventory }) => {
+          const isolationPlan = await this.releasePreflight.releaseGitWorkspaces.planPreparationIsolation({
+            requestId: args.request_id, argumentsHash: record.argumentsHash, originalPreparation: original,
+            preparation: envelope, devInventory, previousIsolation: state?.isolation ?? null });
           const custody = await inspectPreparationForwardCustody(inspectOriginalExecution, {
             requestId: args.request_id, argumentsHash: record.argumentsHash, originalPreparation: original,
+            isolationPlan,
             previousForward: state ? { ownerId: state.ownerId, epoch: state.epoch, phase: state.phase } : null });
           const root = await lstat(sourceRoot);
           await validate();
-          await checkpoint("checking", { custody, devInventory, sourceRootIdentity: `${root.dev}:${root.ino}` }, true);
+          const isolation = custody.kind === "preparation-effects-isolated-v1" ? isolationPlan : null;
+          if (isolation && !state?.isolation && isolation.legacyCheckpointHash !== envelope.repositories[0].checkpointHash) {
+            throw new ReleasePreparationRejectedError("Legacy checkpoint changed before isolated custody transfer");
+          }
+          if (state?.isolation && JSON.stringify(state.isolation) !== JSON.stringify(isolation)) {
+            throw new ReleasePreparationRejectedError("Forward isolation authority cannot be replaced");
+          }
+          await checkpoint("checking", { custody, devInventory, ...(isolation ? { isolation } : {}),
+            sourceRootIdentity: `${root.dev}:${root.ino}` }, true);
           owned = true;
         },
         beforeCompose: async () => { await validate(); await checkpoint("composing"); },
-        forwardPreparation: { originalEnvelope: original,
+        forwardPreparation: { originalEnvelope: original, readIsolation: () => state?.isolation ?? null,
           observeEffects: async inventory => { await validate(); await checkpoint("composing", { inventory }); } },
         commitPrepared: async prepared => {
           await validate();
@@ -1059,7 +1071,8 @@ export class HubMcpService {
             planRevision: prepared.planRevision, taskIds: prepared.taskIds,
             sourceCommit: envelope.sourceCommit, sourceTree: envelope.sourceTree, sourceClosureHash: envelope.sourceClosureHash,
             publicationHash: envelope.publicationHash, candidates: prepared.releaseCandidates.map(candidate => ({
-              repositoryRoot: candidate.repositoryRoot, preReleaseHead: candidate.preReleaseHead, tree: candidate.tree,
+              repositoryRoot: candidate.repositoryRoot, releaseRoot: candidate.releaseRoot,
+              preReleaseHead: candidate.preReleaseHead, tree: candidate.tree,
               baseCommit: candidate.baseCommit, manifestHash: candidate.manifestHash,
               preflightRequestId: candidate.manifest?.preflightRequestId })) };
           if (Buffer.byteLength(JSON.stringify(result)) > 48 * 1024) throw new Error("Forward result exceeds receipt budget");

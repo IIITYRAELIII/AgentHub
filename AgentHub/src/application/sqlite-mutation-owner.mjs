@@ -18,7 +18,7 @@ const WORKSPACE_MUTATIONS = new Set([
 
 const WORKSPACE_READS = new Set([
   "archivedWorkspaces", "releaseWorkflowEnabledForThread", "workspaceDeveloperRules", "workspaceEvents",
-  "mcpOperation", "pendingMcpOperations", "mcpOperations", "interstreamOriginForClientMessage",
+  "preparationIsolationAuthority", "mcpOperation", "pendingMcpOperations", "mcpOperations", "interstreamOriginForClientMessage",
   "workspace", "workspaceBySystemKey", "stream", "streamDeveloperRules", "developerRulesForThread",
   "developerRulesForStream", "thread", "activeThread", "threadsForStream", "resolveThread", "hierarchy",
   "meta", "threadNaming", "mutationDiagnostics", "close",

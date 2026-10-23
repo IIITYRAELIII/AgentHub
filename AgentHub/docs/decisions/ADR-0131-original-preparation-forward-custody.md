@@ -20,7 +20,7 @@ Selection, plan and publication cannot change. The new mechanism may bind its
 own reviewed source/current installed base; neither old arguments nor old source
 receipts are relabelled. There is no new MCP intake, publisher or operation ID.
 
-A non-serializable terminal observer is mandatory. It must verify completion of
+The terminal-evidence path requires a non-serializable observer verifying completion of
 the exact old execution and its native child work using authoritative execution
 evidence. An absent PID, missing job/candidate, current references, provider turn
 completion alone or a user-supplied boolean is insufficient. The concrete frozen
@@ -70,4 +70,35 @@ main audit, normal bootstrap, retained UNKNOWN history, unproved invocation
 refusal, lost transfer/terminal replies, committed-candidate adoption, old SQLite
 connections and epoch/history CAS. Failures are controlled injections, not claims
 of actual OS-kill testing or live production recovery. A concrete original with
-insufficient invocation/child completion evidence must still refuse.
+insufficient invocation/child completion evidence must still refuse the terminal
+path. The separately authorized isolation path below never invents that proof.
+
+## Explicit isolated effects (2026-10-23 decision)
+
+The same local observer may instead return `preparation-effects-isolated-v1`.
+It proves the exact original invocation terminal and binds the RM authorization
+and finite owner-generated future write-target inventory. It does NOT assert
+`joinedChildren`, terminal legacy outcome or NO_EFFECT. Serialized MCP inputs
+cannot select or manufacture this evidence. The original state/event history
+records the reason, proof and immutable isolation plan in its existing column.
+
+The existing candidate owner allocates a full independent root by exact original
+identity, using a bounded path key plus full identity collision check. A selected
+OID-only Git bundle transports verified objects; no linked worktree, alternate,
+shared mutable object store, imported config or template/hooks is allowed.
+Native merge/checkpoint/journal/marker/index/ref effects stay inside that root.
+Inherited config and Git environment are recorded only by hashes; local commands
+ignore system/global/Git-path configuration and disable hooks/fsmonitor/automatic
+maintenance. Read-only remote authentication remains with its existing owner.
+No remote ref/publication writes are admitted by preparation.
+
+The existing operation column is also the durable candidate routing authority.
+Production and local default factories read it; frozen candidate reads therefore
+cannot be redirected by late legacy checkpoint/ref writes. Its SQL identity is
+fenced against old UPDATE, DELETE and INSERT/REPLACE (including connections with
+recursive triggers disabled). Missing/ambiguous identity, unsafe path, altered
+config, unverified objects or partial preparation is retained and refused.
+Leases, current main/dev/selection/publication validation and native resolution
+review remain mandatory. Future publication still uses the ordinary frozen
+candidate pipeline. This is not authority to isolate unrelated operations or
+protect against arbitrary malicious code with the user's privileges.

@@ -93,8 +93,10 @@ Native preparation uses the exact agreed-main composition and verified ordered m
 The explicit local-source forward consumer in ADR-0131 retains the original
 UNKNOWN and appends its current custody/effects/completion to that same row.
 It requires a non-serializable authoritative invocation/children terminal
-observer plus existing leases/CAS. Ordinary MCP resume and serialized arguments
-cannot manufacture this proof. Readback reports forward completion separately
+observer, or separately authorized `preparation-effects-isolated-v1` evidence
+binding the exact original and finite future write-target plan, plus existing
+leases/CAS. Isolation never supplies `joinedChildren=true` or settles UNKNOWN.
+Ordinary MCP resume and serialized arguments cannot manufacture either proof. Readback reports forward completion separately
 from the retained legacy outcome; no automatic initial prepare replay occurs.
 
 ## Native Git Task/release cutover (HUB-303)

@@ -46,6 +46,19 @@ export function validatePreparationForward({ record, originalPreparation, prepar
 export async function inspectPreparationForwardCustody(inspect, request) {
   if (typeof inspect !== "function") reject("Original invocation terminal observer is unavailable");
   const proof = await inspect(request);
+  if (proof?.kind === "preparation-effects-isolated-v1") {
+    const keys = ["kind", "requestId", "argumentsHash", "originalSourceClosureHash", "isolationEvidenceSha256",
+      "authorizationSha256", "legacyInvocationTerminal", "writeTargetsHash"];
+    if (Object.keys(proof).length !== keys.length || keys.some(key => !Object.hasOwn(proof, key))
+        || proof.requestId !== request.requestId || proof.argumentsHash !== request.argumentsHash
+        || proof.originalSourceClosureHash !== request.originalPreparation.sourceClosureHash
+        || proof.legacyInvocationTerminal !== true || !request.isolationPlan
+        || proof.writeTargetsHash !== request.isolationPlan.writeTargetsHash
+        || ![proof.isolationEvidenceSha256, proof.authorizationSha256].every(v => /^[a-f0-9]{64}$/u.test(v))) {
+      reject("Preparation future write-target isolation is not proved");
+    }
+    return structuredClone(proof);
+  }
   const keys = ["kind", "requestId", "argumentsHash", "originalSourceClosureHash", "terminalEvidenceSha256",
     "joinedInvocation", "joinedChildren"];
   if (!proof || typeof proof !== "object" || Array.isArray(proof)

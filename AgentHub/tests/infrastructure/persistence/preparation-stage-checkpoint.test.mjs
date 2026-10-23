@@ -69,8 +69,13 @@ test("preparation schema migration keeps legacy UNKNOWN without invented owner e
   f.store.close();
   const legacy = new DatabaseSync(f.databaseFile);
   // The emulated old schema had neither the column nor its new writer fence.
-  legacy.exec("DROP TRIGGER hub_preparation_forward_legacy_fence");
-  legacy.exec("ALTER TABLE hub_mcp_operations DROP COLUMN preparation_state_json"); legacy.close();
+  try {
+    for (const name of ["hub_preparation_forward_legacy_fence", "hub_preparation_forward_delete_fence",
+      "hub_preparation_forward_replace_fence", "hub_preparation_isolation_identity_fence"]) {
+      legacy.exec(`DROP TRIGGER ${name}`);
+    }
+    legacy.exec("ALTER TABLE hub_mcp_operations DROP COLUMN preparation_state_json");
+  } finally { legacy.close(); }
   const reopened = new WorkspaceCatalogStore({ databaseFile: f.databaseFile }); await reopened.load();
   try {
     assert.deepEqual(reopened.mcpOperation("original"), before);

@@ -441,8 +441,15 @@ The existing local source consumer may explicitly continue a stage-less UNKNOWN
 preparation through `executePreparationForward` and the same default owners.
 It requires the exact original envelope/hash/caller, current complete selection
 and publication, genuine RM authority and an independently verified terminal
-observer for the original invocation and its native child work. Serialized MCP
-arguments, absent roots/jobs/candidates, later bootstrap and current references
+observer for the original invocation and its native child work. An explicitly
+authorized isolation observer may instead bind the original invocation terminal,
+authorization and finite future write-target inventory without claiming child
+completion. Its independent full Git root/objects/index/refs and metadata are
+registered by this same candidate owner. The existing operation's append-only
+preparation column supplies routing; late legacy refs/checkpoints cannot replace
+it. Persistent SQL fences include old-connection UPDATE/DELETE/INSERT-REPLACE.
+Unsafe/shared Git paths/config/hooks/objects and ambiguous effects refuse. See
+the isolated-effects decision in ADR-0131. Serialized MCP arguments, absent roots/jobs/candidates, later bootstrap and current references
 cannot supply that authority. The concrete frozen observer/entry is separately
 reviewed; insufficient evidence refuses before effects.
 
@@ -469,7 +476,7 @@ bootstrap/withdrawal/block state refuses without implicit recovery, merge abort
 or worktree creation. Ordinary strict `prepareDev` is unchanged.
 
 Affected checks: `node --test tests/infrastructure/persistence/preparation-stage-checkpoint.test.mjs`
-and `node --test --test-name-pattern="forward preparation" tests/interfaces/cli/initial-native-test-cutover.test.mjs`.
+and `node --test --test-name-pattern="forward preparation|isolated preparation" tests/interfaces/cli/initial-native-test-cutover.test.mjs`.
 
 ## Native Git composition cutover (HUB-303)
 

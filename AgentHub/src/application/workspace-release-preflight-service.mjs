@@ -776,7 +776,8 @@ export class WorkspaceReleasePreflightService {
         const provenance = reviewedBaseProvenance({
           repository, publishedRevision: baseline.publishedRevision, approval,
         });
-        const audit = await this.releaseGitWorkspaces.inspectMainChanges({
+        const audit = await this.releaseGitWorkspaces[preparation?.forwardPreparation?.readIsolation?.()
+          ? "inspectIsolationMainPins" : "inspectMainChanges"]({
           projectRoot: repository.projectRoot,
           publishedRevision: baseline.publishedRevision,
           approvedLocalMainCommit: provenance.approvedLocalMainCommit,
