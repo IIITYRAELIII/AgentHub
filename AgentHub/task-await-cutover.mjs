@@ -244,7 +244,8 @@ export async function openTaskAwaitCutoverRuntime({
   });
   const verifyNativeResolutionReview = createNativeMergeReviewVerifier({ workspaceCatalog: workspaceCatalogStore, taskBoard });
   const taskGitWorkspaces = suppliedTaskGitWorkspaces
-    ?? new TaskGitWorkspaceService({ dataDir: config.dataDir, verifyNativeResolutionReview });
+    ?? new TaskGitWorkspaceService({ dataDir: config.dataDir, verifyNativeResolutionReview,
+      readClaimCustodyNamespace: id => workspaceCatalogStore.claimCustodyNamespaceForTask(id) });
   const releaseGitWorkspaces = suppliedReleaseGitWorkspaces
     ?? new ReleaseGitWorkspaceService({ dataDir: config.dataDir, verifyNativeResolutionReview,
       readPreparationAuthority: root => workspaceCatalogStore.preparationIsolationAuthority(root),
