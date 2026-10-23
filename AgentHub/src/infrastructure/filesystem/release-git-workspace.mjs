@@ -749,7 +749,8 @@ export class ReleaseGitWorkspaceService {
     const lock = path.join(this.dataDir, "locks", `release-git-${layout.repositoryKey}`);
     return withInterprocessLocks([lock], async () => {
       const clone = await this.#ensureClone(primary);
-      await runGit(["fetch", "workspace", "+refs/heads/main:refs/remotes/workspace/main"], {
+      const workspace = authority?.phase === "completed" ? primary.root : "workspace";
+      await runGit(["fetch", workspace, "+refs/heads/main:refs/remotes/workspace/main"], {
         cwd: clone.releaseRoot,
         timeoutMs: null,
       });
@@ -758,7 +759,7 @@ export class ReleaseGitWorkspaceService {
         timeoutMs: null,
       });
       if (await gitMaybe(["cat-file", "-e", `${baseline}^{commit}`], { cwd: clone.releaseRoot }) === null) {
-        await runGit(["fetch", "workspace", baseline], { cwd: clone.releaseRoot, timeoutMs: null });
+        await runGit(["fetch", workspace, baseline], { cwd: clone.releaseRoot, timeoutMs: null });
       }
       const localMain = primary.mainCommit;
       const originMain = await runGit(["rev-parse", "refs/remotes/origin/main^{commit}"], { cwd: clone.releaseRoot });
@@ -1997,10 +1998,14 @@ export class ReleaseGitWorkspaceService {
           throw new ReleasePreparationRejectedError("Isolated first candidate checkpoint/ref/checkout is not pristine");
         }
       } else await assertPreparationCheckpoint({ guard: preparationGuard, clone, initial, checkpoint, git });
-      await git(["fetch", "--prune", "workspace", "+refs/heads/main:refs/remotes/workspace/main"]);
+      // The original isolation bundle remains historical evidence. Once its
+      // owner completed, ordinary later selections read their exact objects
+      // from the registered primary without changing either repository's config.
+      const workspace = authority?.phase === "completed" && !forwardPreparation ? initial.root : "workspace";
+      await git(["fetch", "--prune", workspace, "+refs/heads/main:refs/remotes/workspace/main"]);
       for (const commit of [baseCommit, ...tasks.map((task) => task.resultCommit)]) {
         if (await gitMaybe(["cat-file", "-e", `${commit}^{commit}`], { cwd: clone.releaseRoot }) === null) {
-          await git(["fetch", "workspace", commit]);
+          await git(["fetch", workspace, commit]);
         }
       }
       const validateLocalSource = async () => {

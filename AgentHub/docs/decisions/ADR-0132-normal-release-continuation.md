@@ -58,6 +58,15 @@ mechanism/source evidence and native resolution reviews are not repeated merely
 because an agent turn changed. Changed code still receives affected review;
 fresh guards execute inside the owning code before effects.
 
+After isolated preparation completes, ordinary new candidates keep that same
+registered independent root but fetch exact current selected Git objects and
+agreed main from the registered primary. The initial isolation bundle cannot
+contain later Task results and remains immutable historical transport. Its stored
+workspace URL is not rewritten; only the completed-authority ordinary invocation
+selects the current input path under existing Git isolation and candidate locks.
+Original forward invocations retain their frozen input. Reading current immutable
+inputs grants no primary, remote-publication or legacy-receipt write authority.
+
 After the initial isolated transfer, ordinary `hub_release_prepare_resume`
 regenerates the same leased isolation plan and reuses its stored custody. It
 accepts reviewed native resolution input without repeating the initial observer.

@@ -1363,6 +1363,71 @@ test("isolated preparation actual default factory reads registered root and same
   assert.deepEqual(f.catalog.mcpOperation(f.originalId), row);
 });
 
+test("completed preparation authority imports later Task results through ordinary default Await", { timeout: 360_000 }, async t => {
+  const f = await legacyForwardFixture(t), result = await f.forward(() => {}, isolationObserver);
+  const original = f.catalog.mcpOperation(f.originalId);
+  const isolation = original.preparationState.isolation;
+  const bundle = path.join(isolation.dataDir, "source.bundle"), bundleBytes = await readFile(bundle);
+  const oldCandidate = result.candidates[0];
+  const workspaceUrl = await git(oldCandidate.releaseRoot, "remote", "get-url", "workspace");
+  assert.equal(workspaceUrl, bundle);
+  // Model the already reviewed/published main; the old isolated source snapshot
+  // stays immutable while later independent Task results are created normally.
+  f.publication.repositories[0].revision = f.acceptedMain;
+  const previousEnv = { LOCALAPPDATA: process.env.LOCALAPPDATA, XDG_STATE_HOME: process.env.XDG_STATE_HOME };
+  process.env.LOCALAPPDATA = path.join(f.root, "state");
+  process.env.XDG_STATE_HOME = process.env.LOCALAPPDATA;
+  t.after(() => { for (const [key, value] of Object.entries(previousEnv)) {
+    if (value === undefined) delete process.env[key]; else process.env[key] = value;
+  } });
+  await mkdir(path.join(process.env.LOCALAPPDATA, "AgentHub"), { recursive: true });
+  await writeFile(path.join(process.env.LOCALAPPDATA, "AgentHub/publication-state.json"), JSON.stringify(f.publication));
+  const later = await f.create("later-selected-result");
+  await f.status(later, "testing", "later-result-test");
+  const before = structuredClone(f.board.task(later.id)), commit = before.gitReferences[0].resultCommit;
+  await assert.rejects(git(oldCandidate.releaseRoot, "cat-file", "-e", `${commit}^{commit}`));
+  const primaryBefore = await git(f.primary, "status", "--porcelain=v1");
+  const primaryHead = await git(f.primary, "rev-parse", "HEAD");
+  const openDefault = () => openTaskAwaitCutoverRuntime({ config: { dataDir: path.dirname(f.databaseFile),
+    taskBoard: { autoPlaceConfidence: 0.8 } } });
+  const input = { task_id: later.id, status: "awaiting_implementation", request_id: "later-result-await",
+    expected_task_revision: before.revision, expected_workflow_status: "testing" };
+  const runtime = await openDefault();
+  let accepted, candidate;
+  try {
+    const token = runtime.service.contextToken({ provider: "codex", threadId: "fixture-thread", streamId: f.streamId });
+    accepted = await runtime.service.call("hub_task_status_update", { context_token: token, ...input });
+    candidate = await runtime.service.releasePreflight.releaseGitWorkspaces.frozenCandidate(f.primary);
+  } finally { runtime.close(); }
+  assert.equal(accepted.workflowStatus, "awaiting_implementation");
+  assert.equal(candidate.releaseRoot, oldCandidate.releaseRoot);
+  await git(candidate.releaseRoot, "merge-base", "--is-ancestor", commit, candidate.preReleaseHead);
+  await assert.rejects(readFile(path.join(candidate.releaseRoot, ".git", "objects", "info", "alternates")), { code: "ENOENT" });
+  assert.deepEqual(await readFile(bundle), bundleBytes);
+  assert.equal(await git(candidate.releaseRoot, "remote", "get-url", "workspace"), workspaceUrl);
+  assert.deepEqual(f.catalog.mcpOperation(f.originalId), original);
+  assert.equal(await git(f.primary, "status", "--porcelain=v1"), primaryBefore);
+  assert.equal(await git(f.primary, "rev-parse", "HEAD"), primaryHead);
+  const reflog = await git(candidate.releaseRoot, "reflog", "show", "--format=%H", "PreRelease");
+  const reopened = await openDefault();
+  try {
+    const token = reopened.service.contextToken({ provider: "codex", threadId: "fixture-thread", streamId: f.streamId });
+    assert.deepEqual(wire(await reopened.service.call("hub_task_status_update", { context_token: token, ...input })), wire(accepted));
+    await writeFile(path.join(f.primary, "later-main.txt"), "reviewed local main\n");
+    await commitFile();
+    async function commitFile() { await git(f.primary, "add", "later-main.txt");
+      await git(f.primary, "-c", "user.name=Fixture", "-c", "user.email=fixture@local.invalid", "commit", "-m", "later accepted local main"); }
+    const localMain = await git(f.primary, "rev-parse", "HEAD");
+    const audit = await reopened.service.releasePreflight.releaseGitWorkspaces.inspectMainChanges({ projectRoot: f.primary,
+      publishedRevision: f.acceptedMain, approvedLocalMainCommit: localMain, approvedOriginMainCommit: f.acceptedMain });
+    assert.equal(audit.approved, true); assert.equal(audit.localMain, localMain); assert.equal(audit.originMain, f.acceptedMain);
+    assert.equal(await git(f.primary, "rev-parse", "HEAD"), localMain);
+  } finally { reopened.close(); }
+  assert.equal(await git(candidate.releaseRoot, "reflog", "show", "--format=%H", "PreRelease"), reflog);
+  assert.deepEqual(await readFile(bundle), bundleBytes);
+  assert.deepEqual(f.catalog.mcpOperation(f.originalId), original);
+});
+
 test("ordinary public resume consumes established isolated custody without another observer or operator", { timeout: 240000 }, async t => {
   const f = await legacyForwardFixture(t);
   await assert.rejects(f.invoke("hub_release_prepare_resume", { request_id: f.originalId,

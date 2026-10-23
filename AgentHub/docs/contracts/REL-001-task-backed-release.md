@@ -10,7 +10,7 @@ release changes. Release integration may synchronize already accepted main into
 managed dev under its normal lease/process guards; primary bytes remain intact.
 Ordinary Task integration retains its explicit adoption boundary.
 
-The source/default `node release.mjs run|continue|get --provider <provider>
+The source/default `node release.mjs run|continue|get|accept --provider <provider>
 --thread <thread> --stream <stream> --request-file <JSON>` consumes ordinary
 public tool business arguments. It connects the same release composition used
 by the running Hub to the existing authority-aware local default Git/SQLite
@@ -39,6 +39,14 @@ Definite preparation refusals persist failed step receipts while the same releas
 waits for ordinary continuation. Explicit unknown candidate/acceptance effects
 remain unknown and cannot be blindly continued. Completed stages and the original
 authorization remain unchanged. ADR-0131 recovery remains legacy-only.
+
+A completed isolated preparation remains the registered candidate authority for
+ordinary later acceptance. Its original source bundle is retained unchanged;
+future exact selected results and agreed main are read from the registered primary
+through the same hardened Git owner. The original forward segment still uses its
+frozen transport. No remote configuration, primary refs/index/worktree, old receipt,
+isolation proof or publication authority is replaced. Current selection, source,
+main approval, leases and CAS remain required before promotion.
 
 Forward effect inventory streams the digest of retained native merge journals:
 their complete index/automatic path inventories are not small checkpoint records.
