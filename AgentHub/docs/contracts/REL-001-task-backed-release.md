@@ -2368,3 +2368,18 @@ blob-to-serialization relations. Historical projection does not authorize
 movement or use later rolling-dev bytes/configuration. Live recovery requires
 version 2 and fresh physical/configuration checks; legacy pending recovery
 refuses while preserving its original and data.
+
+## Standalone local release observation
+
+The optional `release-progress/server.mjs` projects only the requested existing
+ReleaseOperation execution and its latest recorded generation. It reads runner
+metadata, publication status and the original test log without opening mutation
+stores or invoking release control. It binds literal loopback Host/Origin and
+resolves log paths within the selected execution directory. The screen retains
+exact test names, durations, failure details and source stage states, with a full
+log download; generic area descriptions grant no new test coverage. Missing or
+stale observations remain explicit and never imply terminal success or failure.
+The monitor cannot start, retry, cancel, publish or install a release. No estimated
+percentage or completion time is fabricated from a growing test log.
+
+Affected check: `node --test tests/interfaces/release-progress.test.mjs`.
