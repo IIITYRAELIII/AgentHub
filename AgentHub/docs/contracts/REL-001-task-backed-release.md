@@ -48,6 +48,15 @@ frozen transport. No remote configuration, primary refs/index/worktree, old rece
 isolation proof or publication authority is replaced. Current selection, source,
 main approval, leases and CAS remain required before promotion.
 
+Before-effect validation reads adoption refs once per invocation for the whole
+selected set, then validates the exact selected receipts. Metadata paths for an
+immutable base/result pair come from one combined diff; per-file mode, blob and
+package-version checks remain mandatory. Equal base OIDs need no self-ancestry
+query, but result ancestry still validates commit existence even for an empty
+result. An invariant assertion may consume the primary snapshot just acquired at
+that boundary. These local read reductions do not cache refs, worktree/index,
+publication or plan authority across boundaries: promotion and retry re-read them.
+
 Forward effect inventory streams the digest of retained native merge journals:
 their complete index/automatic path inventories are not small checkpoint records.
 Regular-file identity and stable bytes are checked across the read; directories,
