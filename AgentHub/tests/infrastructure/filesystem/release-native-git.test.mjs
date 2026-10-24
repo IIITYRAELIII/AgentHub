@@ -197,7 +197,7 @@ test("native checkout preserves ignored private bytes and uses Git EOL", { timeo
   assert.equal((await readFile(path.join(next.releaseRoot, "a.txt"))).toString(), "first\nsecond\n");
 });
 
-test("proven Task CAS refusal restores candidate through Git; unknown outcome retains original target", { timeout: 60000 }, async (t) => {
+test("proven Task CAS refusal restores candidate through Git; unknown outcome retains original target", async (t) => {
   const f = await fixture(t);
   const a = await f.result("A", "a.txt", "a\n");
   const prior = await f.service.prepareCandidate(f.request([a], "prior"));
