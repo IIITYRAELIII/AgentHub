@@ -24,6 +24,23 @@ export function readClaimCustodyFence(database, scope, id) {
   return null;
 }
 
+// The declared request ID, not an untrusted Task or forward argument, owns the
+// intake reservation in the existing ledger's global request-ID namespace.
+export function readClaimCustodySuccessor(database, requestId) {
+  const rows = database.prepare(`SELECT * FROM hub_mcp_operations
+    WHERE claim_custody_json IS NOT NULL
+      AND json_extract(claim_custody_json, '$.successorClaimRequestId') = ?
+    ORDER BY CASE json_extract(claim_custody_json, '$.phase') WHEN 'fenced' THEN 0 ELSE 1 END, created_at_ms`).all(requestId);
+  const states = rows.map(row => {
+    const state = claimCustodyState({ requestId: row.request_id, workspaceId: row.workspace_id,
+      streamId: row.stream_id, threadId: row.provider_thread_id, provider: row.provider, argumentsHash: row.arguments_hash,
+      toolName: row.tool_name, claimCustody: JSON.parse(row.claim_custody_json) });
+    if (!state) throw new TaskClaimCustodyRejectedError("Invalid declared successor authority");
+    return state;
+  });
+  return states[0] ?? null;
+}
+
 export function configureClaimCustodyBindingFences(database) {
   const hasBindings = database.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'hub_task_turn_bindings'").get();
   if (!hasBindings || !database.prepare("PRAGMA table_info(hub_mcp_operations)").all().some(c => c.name === "claim_custody_json")) return;
@@ -73,6 +90,30 @@ export function withClaimCustodySqlPermit(database, authority, operation) {
 export function configureClaimCustodyNamespaceFences(database) {
   const columns = database.prepare("PRAGMA table_info(hub_mcp_operations)").all();
   if (!columns.some(c => c.name === "claim_custody_write_json")) return;
+  database.exec(`CREATE INDEX IF NOT EXISTS hub_mcp_claim_custody_successor
+    ON hub_mcp_operations(json_extract(claim_custody_json, '$.successorClaimRequestId'))
+    WHERE claim_custody_json IS NOT NULL`);
+  // This also applies to old open connections/cached INSERT/UPSERT/REPLACE
+  // statements. No foreign tool can occupy or rekey the declared successor ID.
+  for (const event of ["INSERT", "UPDATE"]) database.exec(`
+    CREATE TRIGGER IF NOT EXISTS hub_claim_successor_intake_${event.toLowerCase()}
+    BEFORE ${event} ON hub_mcp_operations
+    WHEN EXISTS (SELECT 1 FROM hub_mcp_operations authority
+      WHERE authority.claim_custody_json IS NOT NULL
+        AND json_extract(authority.claim_custody_json, '$.successorClaimRequestId') = NEW.request_id
+        AND (json_extract(authority.claim_custody_json, '$.phase') IS NOT 'fenced'
+          OR NEW.tool_name IS NOT 'hub_task_claim'
+          OR NEW.workspace_id IS NOT json_extract(authority.claim_custody_json, '$.workspaceId')
+          OR NEW.stream_id IS NOT json_extract(authority.claim_custody_json, '$.original.streamId')
+          OR NEW.provider IS NOT json_extract(authority.claim_custody_json, '$.original.provider')
+          OR NEW.provider_thread_id IS NOT json_extract(authority.claim_custody_json, '$.original.threadId')
+          OR NEW.arguments_hash IS NOT json_extract(authority.claim_custody_json, '$.successorArgumentsHash'))
+        AND NOT (json_extract(authority.claim_custody_json, '$.phase') = 'planned'
+          AND EXISTS (SELECT 1 FROM hub_mcp_operations fence WHERE fence.claim_custody_json IS NOT NULL
+            AND json_extract(fence.claim_custody_json, '$.phase') = 'fenced'
+            AND json_extract(fence.claim_custody_json, '$.planRequestId') = authority.request_id)))
+    BEGIN SELECT RAISE(ABORT, 'MCP request_id was already used for another operation: declared successor authority'); END;
+  `);
   const tables = database.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all();
   const scoped = [];
   for (const { name } of tables) {
