@@ -63,7 +63,7 @@ function argumentsHash(value) {
   return createHash("sha256").update(JSON.stringify(canonical(value)), "utf8").digest("hex");
 }
 
-test("squash cutover preserves dirty bytes and resumes exact staged Git state", { timeout: 90_000 }, async (context) => {
+test("squash cutover preserves dirty bytes and resumes exact staged Git state", async (context) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-squash-cutover-"));
   const dataDir = `${root}-data`;
   const reviewed = `${root}-reviewed`;
