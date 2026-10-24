@@ -2753,3 +2753,13 @@ base, publication lineage and normal lifecycle receipts. Old shared Task refs
 never become current successor authority. Generic cleanup cannot retire this
 retained custody snapshot/WIP; its owning retirement must be proved separately.
 The general busy guard and fresh operational authorization still apply.
+
+For a separately authorized open/new unassigned intake, the same Git owner may
+pin the registered project local-main commit as both source and base when no
+deterministic Task source/ref artifacts exist. An existing source/WIP must be
+preserved through its exact managed-source pins instead. The base is staged as
+full independent objects in the same epoch; no Task prepare/ensure, shared ref
+reset or assignment is replayed. Empty Task WIP is valid only for this explicitly
+identified registered-base origin. Later ordinary Test/result/Await retain the
+logical registered repository and publication lineage. A discovered artifact or
+changed source/Task state before the fence refuses instead of being discarded.

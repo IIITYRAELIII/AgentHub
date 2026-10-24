@@ -1002,6 +1002,11 @@ export class WorkspaceCatalogStore {
           || row.stream_id !== state.envelope.expected_owner_stream_id || Number(row.row_revision) !== state.taskRevision) {
         throw new TaskClaimCustodyRejectedError("Pinned Task owner or revision changed");
       }
+      if (row.stream_id === null && (row.status !== "open" || row.workflow_status !== "new"
+          || state.envelope.admission !== "isolated-source-v1"
+          || this.#database.prepare("SELECT 1 FROM hub_task_git_references WHERE task_id = ?").get(state.taskId))) {
+        throw new TaskClaimCustodyRejectedError("Unassigned custody requires an exact new Task and independent authority");
+      }
       for (const table of ["hub_task_turn_bindings", "hub_task_lifecycle_transitions", "hub_task_lifecycle_outcomes"]) {
         if (this.#database.prepare(`SELECT 1 FROM ${table} WHERE operation_id = ?`).get(original.requestId)) {
           throw new TaskClaimCustodyRejectedError("Original has admitted effects requiring their own custody review");

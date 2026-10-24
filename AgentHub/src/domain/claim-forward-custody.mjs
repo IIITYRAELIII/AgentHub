@@ -46,7 +46,9 @@ export function assertClaimCustodyOriginal(original, envelope, taskId, operation
       || Object.keys(args).some(k => !["task_id", "request_id", "dependency_mode", "dependency_override_reason"].includes(k))
       || mcpArgumentsHash(args) !== original.argumentsHash) reject("Original claim argument identity differs");
   if (!Number.isSafeInteger(envelope.expected_task_revision) || envelope.expected_task_revision < 1
-      || !envelope.expected_owner_stream_id || !envelope.successor_claim_request_id
+      || !(typeof envelope.expected_owner_stream_id === "string" && envelope.expected_owner_stream_id
+        || envelope.expected_owner_stream_id === null && envelope.admission === "isolated-source-v1")
+      || !envelope.successor_claim_request_id
       || envelope.successor_claim_request_id === original.requestId
       || typeof envelope.authorization_id !== "string" || !envelope.authorization_id || envelope.authorization_id.length > 200
        || typeof envelope.handoff_id !== "string" || !envelope.handoff_id || envelope.handoff_id.length > 200

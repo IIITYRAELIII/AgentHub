@@ -2926,12 +2926,56 @@ export class TaskGitWorkspaceService {
     if (dev !== identity.devCommit && dev !== record?.target) throw new Error("Initial native Test exact dev changed");
   }
 
-  async reuseClaimWorkspaceOwned({ taskId, taskNumber, source, lease } = {}) {
+  async #readCustodyWip(root, source) {
+    if (source.origin === "registered-base") {
+      if (!Array.isArray(source.wipPaths) || source.wipPaths.length || source.wipDigest !== claimCustodyHash([])) {
+        throw new Error("Registered base cannot replace discovered Task WIP");
+      }
+      return { digest: claimCustodyHash([]), records: [] };
+    }
+    return readClaimCustodyWip(root, source.wipPaths);
+  }
+
+  async #reuseUnassignedBase({ taskId, taskNumber, source, lease, registeredProjectRoot }) {
+    const id = normalizedTaskId(taskId);
+    if (!registeredProjectRoot || !samePath(source.projectRoot, registeredProjectRoot)) {
+      throw new Error("Unassigned base must be the current registered project root");
+    }
+    const repoRoot = await repositoryRoot(registeredProjectRoot);
+    const repoKey = taskRepositoryKey(repoRoot);
+    const branch = taskBranchName(id, repoRoot, taskNumber);
+    // No existing Task artifact is discarded or silently replaced by local main.
+    // An interrupted old prepare must be pinned through the managed-source route.
+    const priorRoot = await lstat(path.join(this.taskWorktreesRoot, id)).catch(error => {
+      if (error.code === "ENOENT") return null;
+      throw error;
+    });
+    const refs = (await this.#runOwned(["for-each-ref", "--format=%(refname)"], { cwd: repoRoot, lease })).split(/\r?\n/);
+    if (priorRoot || refs.some(ref => ref === `refs/heads/${branch}`
+        || ref === `refs/heads/${taskBranchName(id, repoRoot)}` || ref.includes(`/${id}/`) || ref.endsWith(`/${id}`))) {
+      throw new Error("Discovered prior Task source or refs require an exact preserved managed-source handoff");
+    }
+    const headCommit = await localMainCommit(repoRoot);
+    const tree = await this.#runOwned(["rev-parse", `${headCommit}^{tree}`], { cwd: repoRoot, lease });
+    if (source.headCommit !== headCommit || source.baseCommit !== headCommit || source.tree !== tree || source.branch !== branch
+        || source.repositoryRoot && !samePath(source.repositoryRoot, repoRoot)) throw new Error("Pinned registered base changed");
+    const pinned = { ...source, origin: "registered-base" };
+    await this.#readCustodyWip(await worktreeRoot(registeredProjectRoot), pinned);
+    await requiredGuardLease(lease).assertOwned();
+    return { taskId, origin: "registered-base", repositoryRoot: repoRoot, projectRoot: canonicalPath(registeredProjectRoot),
+      branch, baseRef: taskBaseRef(id, repoKey), baseCommit: headCommit, headCommit,
+      gitBaseline: { repoRoot, tree: headCommit }, wipDigest: source.wipDigest };
+  }
+
+  async reuseClaimWorkspaceOwned({ taskId, taskNumber, source, lease, unassigned = false, registeredProjectRoot = null } = {}) {
     this.#assertAvailable("reuseClaimWorkspaceOwned");
     await requiredGuardLease(lease).assertOwned();
     await this.#assertNoProcessTreeGuard(taskId);
     const repoRoot = await this.managedRepositoryRoot(source.projectRoot, { taskId, taskNumber });
+    if (!repoRoot && unassigned) return this.#reuseUnassignedBase({ taskId, taskNumber, source, lease, registeredProjectRoot });
     if (!repoRoot) throw new Error("Custody source is not this managed Task workspace");
+    if (source.origin === "registered-base" || unassigned && (!registeredProjectRoot
+        || !samePath(repoRoot, await repositoryRoot(registeredProjectRoot)))) throw new Error("Custody registered repository differs");
     const taskRoot = await worktreeRoot(source.projectRoot);
     const git = args => this.#runOwned(args, { cwd: taskRoot, lease });
     const headCommit = await git(["rev-parse", "HEAD^{commit}"]);
@@ -3009,11 +3053,11 @@ export class TaskGitWorkspaceService {
       throw new Error("Independent source did not materialize its exact clean tree");
     }
     const sourceRoot = await worktreeRoot(source.projectRoot);
-    const wip = await readClaimCustodyWip(sourceRoot, source.wipPaths);
+    const wip = await this.#readCustodyWip(sourceRoot, source);
     if (wip.digest !== source.wipDigest) throw new Error("Legacy WIP changed before snapshot");
     await copyClaimCustodyWip(sourceRoot, root, wip);
     await copyClaimCustodyWip(sourceRoot, path.join(parent, "retained-wip"), wip);
-    if ((await readClaimCustodyWip(root, source.wipPaths)).digest !== wip.digest) throw new Error("Independent WIP copy differs");
+    if ((await this.#readCustodyWip(root, source)).digest !== wip.digest) throw new Error("Independent WIP copy differs");
     const baseRef = `${namespace.refPrefix}/base`;
     const base = await gitMaybe(["rev-parse", "--verify", baseRef], { cwd: root });
     if (base && base !== source.baseCommit) throw new Error("Private base changed");
@@ -3058,7 +3102,7 @@ export class TaskGitWorkspaceService {
         || await runGit(["rev-parse", `${workspace.baseRef}^{commit}`], { cwd: root }) !== workspace.baseCommit) throw new Error("Namespace branch/base authority changed");
     if (exactInitial && (headCommit !== workspace.headCommit
         || await runGit(["status", "--porcelain=v1", "--untracked-files=all"], { cwd: root })
-        || (await readClaimCustodyWip(root, state.source.wipPaths)).digest !== state.source.wipDigest)) throw new Error("Initial namespace snapshot changed before takeover");
+        || (await this.#readCustodyWip(root, state.source)).digest !== state.source.wipDigest)) throw new Error("Initial namespace snapshot changed before takeover");
     return { ...workspace, headCommit };
   }
 

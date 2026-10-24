@@ -146,6 +146,35 @@ force and requires a naturally free short handoff window. Delivery, installed
 capability verification, fresh guards, actual recovery and managed takeover are
 required after independent exact-source acceptance; this ADR grants none itself.
 
+## Explicit unassigned intake continuation
+
+The separate scoped RM decision of 2026-10-24 permits the same forward-only
+mechanism for the captured unassigned functional-test Task and original S6
+claim. Its old UNKNOWN is not a lock-timeout NO_EFFECT proof. There is no UUID
+allowlist in production: each operation still binds explicit authorization,
+original identity, nullable expected owner, exact Task revision and one genuine
+successor. A null owner is accepted only with independent-source admission for
+an open/new Task without accepted Git results. A missing owner pin is invalid.
+
+The existing Git owner first reuses a pinned discovered managed source/WIP, if
+one exists. Otherwise it may pin exact local main/base/tree of the actual
+registered project, with the ordinary Task branch identity and empty Task WIP.
+It checks for prior deterministic Task directories and Task refs under the Task
+lease before and after staging. Discovered artifacts are preserved and refuse
+base substitution; they require their own exact managed-source handoff. Shared
+Workspace WIP is not silently treated as Task WIP. This base source is copied by
+immutable object identity into the same independent full-object epoch, without
+calling prepare, ensure, alignment or assignment. A late old prepare/cleanup can
+reach only its old deterministic namespace. The original/base history, logical
+repository and publication lineage remain intact.
+
+The existing atomic Task-state inventory, persistent SQL/receipt fences, stage
+receipts, one-winner CAS and exact reopen/claim recovery apply unchanged. A null
+previous executor has no active/queued work; assigned-owner busy guards retain
+their behavior. Changes before the fence refuse instead of refreshing pins.
+Source acceptance still requires matching delivery, actual capability, fresh
+operational guards and the genuine declared successor claim.
+
 ## Verification and retirement of compatibility
 
 Focused tests use public MCP, real disposable SQLite and managed Git, including
