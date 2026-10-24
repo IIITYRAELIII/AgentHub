@@ -90,16 +90,20 @@ test("old open cached SQL cannot assign, overwrite, delete, publish a result, or
   assert.deepEqual(f.catalog.mcpOperation(f.original.requestId), f.original);
 });
 
-test("a pre-fence committed Task mutation without a revision bump is preserved and refuses takeover", { timeout: 90000 }, async t => {
+test("a pre-fence committed Task-linked mutation without a revision bump is preserved and refuses takeover", { timeout: 90000 }, async t => {
   let legacy;
   t.after(() => legacy?.close());
   const f = await fixture(t);
   const plan = await f.hub.call("hub_task_operation_reconcile", f.prepare);
   legacy = new DatabaseSync(path.join(f.root, "hub.sqlite"));
-  legacy.prepare("UPDATE hub_board_tasks SET corrected_text='late preserved requirement' WHERE id=?").run(f.prior.id);
-  await assert.rejects(f.hub.call("hub_task_operation_reconcile", f.fence(plan)), /Pinned Task owner or revision changed/);
+  legacy.prepare(`INSERT INTO hub_task_work_log
+    (id, task_id, provider, provider_thread_id, turn_id, operation_id, project_root, summary, status, changed_files_json, created_at_ms)
+    VALUES ('late-work', ?, 'codex', 'late-thread', 'late-turn', 'late-operation', ?, 'late preserved evidence', 'succeeded', '[]', 1)`)
+    .run(f.prior.id, f.source.repositoryRoot);
+  assert.equal(f.tasks.task(f.prior.id).revision, f.prior.revision);
+  await assert.rejects(f.hub.call("hub_task_operation_reconcile", f.fence(plan)), /Task state.*changed before fence/);
   assert.equal(f.catalog.claimCustodyForOriginal(f.original.requestId), null);
-  assert.equal(legacy.prepare("SELECT corrected_text FROM hub_board_tasks WHERE id=?").get(f.prior.id).corrected_text, "late preserved requirement");
+  assert.equal(legacy.prepare("SELECT summary FROM hub_task_work_log WHERE id='late-work'").get().summary, "late preserved evidence");
   assert.deepEqual(f.catalog.mcpOperation(f.original.requestId), f.original);
 });
 
