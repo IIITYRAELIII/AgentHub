@@ -1,5 +1,12 @@
 # REL-001 — Task-backed Workspace release
 
+Both publication CLIs use the existing prepared freeze adapter from
+`src/composition/publication-freeze.mjs`; `publish-changed.mjs` preserves its public re-export.
+The adapter imports neither CLI. Extracting this same function breaks the
+full/changed import cycle without a second freeze owner, allocation, receipt or
+changed default repository root. Its optional complete frozen public/artifact/
+source projection and all lease, manifest, revision and retry guards remain.
+
 ## Original stale-main recovery
 
 ADR-0128 defines one narrow exception to generic terminal refusal. Existing RM

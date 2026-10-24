@@ -3,6 +3,7 @@ import { createWriteStream, mkdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { artifactVersionIdentity, calendarVersion } from "./src/domain/agent-hub-version.mjs";
+import { freezePreparedPublication } from "./src/composition/publication-freeze.mjs";
 
 import { callDesktopControl, readDesktopControlEndpoint } from "./desktop-control.mjs";
 import { ensureWrangler } from "./wrangler-runner.mjs";
@@ -334,8 +335,8 @@ if (invokedFile === fileURLToPath(import.meta.url)) {
       await assertCurrentPublicationRevision({ cwd: REPOSITORY_ROOT });
     },
     // Reuse the canonical freeze owner, including its original manifest on
-    // retry. Dynamic import avoids a static cycle with the shared step helpers.
-    freezeVersion: async () => (await import("./publish-changed.mjs")).freezePreparedPublication({ includeArtifactVersion: true }),
+    // retry. The shared freeze adapter never imports either publication CLI.
+    freezeVersion: () => freezePreparedPublication({ includeArtifactVersion: true }),
     prepareVersion: prepareCommittedAgentHubReleaseVersion,
   }).catch((error) => {
     console.error(`\nПубликация остановлена: ${error.message}`);

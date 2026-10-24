@@ -256,6 +256,7 @@
         "test-suite.mjs",
         "tests/test-cache-inputs.json",
         "publish-all.mjs",
+        "src/composition/publication-freeze.mjs",
         "publish-changed.mjs",
         "test-contour.mjs",
         "src/application/task-operation-reconciliation-service.mjs",
