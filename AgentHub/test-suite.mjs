@@ -6,7 +6,6 @@ import { fileURLToPath } from "node:url";
 import {
   explainTestInputFingerprint,
   fingerprintTestInputs,
-  parallelTestExecution,
 } from "./src/infrastructure/persistence/test-input-fingerprint.mjs";
 
 import {
@@ -14,10 +13,17 @@ import {
   testFileCheckpointStore,
 } from "./src/infrastructure/persistence/test-file-checkpoint.mjs";
 import { clearInheritedPublicationOwnership } from "./src/infrastructure/process/publication-lock.mjs";
+import { testResourceAdmission } from "./src/infrastructure/process/test-resource-admission.mjs";
 import { prepareTaskWorktreeDependencies } from "./src/infrastructure/filesystem/task-worktree-dependencies.mjs";
 import { runTaskGitCommand } from "./src/infrastructure/filesystem/task-git-workspace.mjs";
 
 const ROOT = import.meta.dirname;
+const RUNNER_INPUTS = [
+  "src/infrastructure/persistence/test-file-checkpoint.mjs",
+  "src/infrastructure/process/test-resource-admission.mjs",
+  "src/infrastructure/process/test-resource-monitor.mjs",
+  "src/infrastructure/process/test-resource-accounting.cs",
+].map((file) => path.join(ROOT, file));
 const TEST_RUNNER_FILE = fileURLToPath(import.meta.url);
 // WIP не содержит поставляемого кода. Без этого исключения случайный
 // *.test.mjs во временных материалах молча попадал бы в группу unit.
@@ -104,7 +110,7 @@ function run(command, args, { cwd = ROOT, env } = {}) {
 }
 
 export async function testFingerprint(file, { cwd = ROOT, root = cwd, declaration, ...options } = {}) {
-  return fingerprintTestInputs(file, { cwd, root, declaration, runnerFile: TEST_RUNNER_FILE, ...options });
+  return fingerprintTestInputs(file, { cwd, root, declaration, runnerFile: TEST_RUNNER_FILE, runnerInputs: RUNNER_INPUTS, ...options });
 }
 
 export async function runWindowsTestFile(file, {
@@ -114,17 +120,29 @@ export async function runWindowsTestFile(file, {
   env,
 } = {}) {
   const args = ["--test", "--test-concurrency=1", ...(isolation ? ["--test-isolation=none"] : []), file];
+  return runIsolatedTestCommand(process.execPath, args, { cwd, execute, env });
+}
+
+export async function runIsolatedTestCommand(command, args, { cwd = ROOT, execute = run, env } = {}) {
   // A failed assertion and an OS failure share exit code 1. Neither proves a
   // transient failure; retries require a new explicit run and reuse successes.
   // Keep the disposable owner short: deep Git refs in Windows fixtures still
   // have to fit below MAX_PATH when they create repositories under os.tmpdir().
   const childRoot = await mkdtemp(path.join(os.tmpdir(), "ah-"));
   try {
-    await execute(process.execPath, args, {
+    await execute(command, args, {
       cwd,
       env: {
         ...env,
         LOCALAPPDATA: childRoot,
+        APPDATA: childRoot,
+        // USERPROFILE is Windows OS identity, not fixture state. Replacing it
+        // breaks Edge's KnownFolder resolution even with a private browser
+        // profile. HOME/application state and explicit fixture dirs are private.
+        HOME: childRoot,
+        XDG_CONFIG_HOME: childRoot,
+        XDG_STATE_HOME: childRoot,
+        XDG_CACHE_HOME: childRoot,
         TEMP: childRoot,
         TMP: childRoot,
         TMPDIR: childRoot,
@@ -156,20 +174,18 @@ async function declaredFingerprint(file, cwd, manifest) {
     }
   }
   return explainTestInputFingerprint(file, {
-    cwd, root: ROOT, declaration, browserFile, runnerFile: TEST_RUNNER_FILE,
+    cwd, root: ROOT, declaration, browserFile, runnerFile: TEST_RUNNER_FILE, runnerInputs: RUNNER_INPUTS,
   });
 }
 
-export function boundedTestFileConcurrency({
-  availableParallelism = os.availableParallelism(),
-  freeMemory = os.freemem(),
-} = {}) {
-  return availableParallelism >= 4 && freeMemory >= 4 * 1024 ** 3 ? 2 : 1;
-}
-
-function executionPolicy(file, cwd, manifest) {
-  const key = path.relative(ROOT, path.resolve(cwd, file)).split(path.sep).join("/");
-  return parallelTestExecution(manifest.files[key]) ?? { parallel: false, shared: [] };
+export function testExecutionPolicy(declaration) {
+  // Cache proof and isolation have different owners. Each file gets a separate
+  // process/temp root; only named, observed shared resources conflict.
+  const shared = declaration?.execution?.shared ?? [];
+  if (!Array.isArray(shared) || shared.some((value) => typeof value !== "string" || !/^[a-z0-9._-]+$/u.test(value))) {
+    throw new Error("Invalid test shared-resource declaration");
+  }
+  return { parallel: true, shared: [...shared] };
 }
 
 export async function prepareTestDependencies({
@@ -206,50 +222,27 @@ export async function runTestSuite(mode, {
   checkpoint = checkpointIdentity ? testFileCheckpointStore() : null,
   execute = run,
   discover = discoverTestFiles,
-  testConcurrency = boundedTestFileConcurrency(),
+  testConcurrency = Infinity,
+  createAdmission = execute === run ? testResourceAdmission : async () => null,
   prepareDependencies = prepareTestDependencies,
+  report = (value) => console.log(`Test resource admission: ${JSON.stringify(value)}`),
+  onFile = (value) => console.log(`Test file timing: ${JSON.stringify(value)}`),
 } = {}) {
-  const options = { checkpointIdentity, checkpoint, execute, discover, testConcurrency };
+  const admission = await createAdmission();
+  let operationError = null;
+  try {
   if (mode === "all") {
-    // Frozen generation clones contain tracked inputs, not node_modules.
-    // The existing dependency owner installs once and reuses verified markers.
-    await prepareDependencies();
-    const failures = [];
-    const stages = [
-      ["syntax", () => runCheckpointedTestFiles(["syntax-check.mjs"], {
-        suite: "syntax",
-        identity: checkpointIdentity,
-        checkpoint,
-        // Cheap discovery/contract preflight is deliberately repeated.
-        fingerprint: async () => null,
-        run: () => execute(process.execPath, ["--no-warnings", "--experimental-vm-modules", "syntax-check.mjs"]),
-      })],
-      ["architecture", () => runTestSuite("architecture", options)],
-      ["unit", () => runTestSuite("unit", options)],
-      ["visual", () => runTestSuite("visual", options)],
-      ["installer", () => runCheckpointedTestFiles(["install_test.py"], {
-        suite: "installer",
-        identity: checkpointIdentity,
-        checkpoint,
-        // Python and host installer state are not covered by a Node fingerprint.
-        fingerprint: async () => null,
-        run: () => execute(python, ["-m", "unittest", "install_test.py"]),
-      })],
-      ["e2e", () => runTestSuite("e2e", options)],
-      ["vscode", () => runTestSuite("vscode", options)],
-    ];
-    for (const [stage, execute] of stages) {
-      try {
-        await execute();
-      } catch (error) {
-        failures.push({ stage, error });
-      }
+    try {
+      await runCheckpointedTestFiles(["locked-dependencies"], {
+        suite: "dependencies", admission, onFile,
+        fingerprint: async () => null, run: prepareDependencies,
+      });
+    } catch (error) {
+      // Keep the existing dependency owner's error identity. No validation or
+      // publication may start after a failed locked preparation.
+      if (error instanceof AggregateError && error.errors.length === 1) throw error.errors[0];
+      throw error;
     }
-    if (failures.length) {
-      const summary = failures.map(({ stage, error }) => `${stage}: ${error.message}`).join("\n\n");
-      throw new AggregateError(failures.map(({ error }) => error), `Полная проверка не пройдена:\n${summary}`);
-    }
-    return;
   }
   const allTestFiles = await discover();
   const architectureFiles = allTestFiles.filter((file) => file.startsWith("tests/composition/"));
@@ -273,40 +266,63 @@ export async function runTestSuite(mode, {
       env: { AGENT_HUB_TEST_PROFILES: "reliability" },
     },
   };
-  const selected = suites[mode];
-  if (!selected) throw new Error(`Неизвестная группа тестов: ${mode}.`);
-  if (selected.files.length === 0) throw new Error(`Группа тестов ${mode} пуста.`);
-
+  const selectedModes = mode === "all" ? ["architecture", "unit", "visual", "e2e", "vscode"] : [mode];
+  const entries = new Map();
+  for (const name of selectedModes) {
+    const selected = suites[name];
+    if (!selected) throw new Error(`Неизвестная группа тестов: ${name}.`);
+    if (!selected.files.length) throw new Error(`Группа тестов ${name} пуста.`);
+    for (const file of selected.files) {
+      const key = path.relative(ROOT, path.resolve(selected.cwd, file)).split(path.sep).join("/");
+      entries.set(key, { ...selected, file, suite: name });
+    }
+  }
+  if (mode === "all") entries.set("install_test.py", { suite: "installer" });
   const manifest = await testManifest();
-  if (checkpointIdentity) {
-    await runCheckpointedTestFiles(selected.files, {
-      suite: mode,
-      identity: checkpointIdentity,
-      checkpoint,
-      fingerprint: (file) => declaredFingerprint(file, selected.cwd, manifest),
-      concurrency: testConcurrency,
-      execution: (file) => executionPolicy(file, selected.cwd, manifest),
-      run: (file) => runWindowsTestFile(file, { ...selected, execute }),
-    });
-    return;
+  const failures = [];
+    if (mode === "all") {
+      try {
+        await runCheckpointedTestFiles(["syntax-check.mjs"], {
+          suite: "syntax", identity: checkpointIdentity, checkpoint,
+          fingerprint: async () => null, admission,
+          onFile,
+          run: () => execute(process.execPath, ["--no-warnings", "--experimental-vm-modules", "syntax-check.mjs"]),
+        });
+      } catch (error) { failures.push(error); }
+    }
+    try {
+      await runCheckpointedTestFiles([...entries.keys()], {
+        suite: mode,
+        suiteForFile: (file) => entries.get(file).suite,
+        identity: checkpointIdentity, checkpoint,
+        fingerprint: (key) => {
+          const entry = entries.get(key);
+          return !checkpointIdentity || entry.suite === "installer" ? null
+            : declaredFingerprint(entry.file, entry.cwd, manifest);
+        },
+        concurrency: testConcurrency,
+        admission,
+        onFile,
+        execution: (key) => testExecutionPolicy(manifest.files[key]),
+        run: (key) => {
+          const entry = entries.get(key);
+          return entry.suite === "installer" ? runIsolatedTestCommand(python, ["-m", "unittest", "install_test.py"], { execute })
+            : runWindowsTestFile(entry.file, { ...entry, execute });
+        },
+      });
+    } catch (error) { failures.push(error); }
+  if (failures.length) throw new AggregateError(failures, `Проверка ${mode} не пройдена:\n${failures.map((error) => error.message).join("\n\n")}`);
+  } catch (error) {
+    operationError = error;
+    throw error;
+  } finally {
+    if (admission) {
+      try { report(await admission.close()); } catch (error) {
+        if (operationError) throw new AggregateError([operationError, error], "Test execution and accounting closure failed");
+        throw error;
+      }
+    }
   }
-
-  if (["visual", "cosmetic", "stress", "reliability"].includes(mode)
-    || (process.platform === "win32" && ["architecture", "unit"].includes(mode))) {
-    // Separate processes release SQLite and antivirus-observed temporary files
-    // before the next test module starts. A single process can retain a Windows
-    // file handle briefly even with test concurrency set to one.
-    await runCheckpointedTestFiles(selected.files, {
-      suite: mode,
-      concurrency: testConcurrency,
-      execution: (file) => executionPolicy(file, selected.cwd, manifest),
-      run: (file) => runWindowsTestFile(file, { ...selected, execute }),
-    });
-    return;
-  }
-
-  const concurrency = mode === "e2e" ? "1" : "4";
-  await execute(process.execPath, ["--test", `--test-concurrency=${concurrency}`, ...selected.files], selected);
 }
 
 const invokedFile = process.argv[1] ? path.resolve(process.argv[1]) : "";

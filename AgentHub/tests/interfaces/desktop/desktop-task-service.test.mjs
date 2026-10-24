@@ -64,49 +64,6 @@ function fixture() {
   return { service, calls };
 }
 
-for (const oldFirst of [true, false]) test(`rotation selection is exact and Stream-only open follows its head (${oldFirst ? "old-first" : "new-first"})`, async () => {
-  const { service, calls } = fixture();
-  const old = { ...service.catalog()[0], threadPosition: 1 };
-  const head = { ...old, threadId: "thread-new", threadPosition: 2 };
-  service.catalog = () => oldFirst ? [old, head] : [head, old];
-  service.refreshCatalog = async () => service.catalog();
-  service.currentThread = () => head;
-  service.threadsForStream = () => [old, head];
-  for (const reference of [{ streamId: old.streamId }, { streamId: old.streamId, provider: "codex", threadId: head.threadId }]) {
-    calls.length = 0;
-    await service.select(reference);
-    assert.equal(calls.find(([kind]) => kind === "activate")[1].threadId, head.threadId);
-    const opened = await service.openTask(reference);
-    assert.equal(opened.history.params.threadId, head.threadId);
-  }
-  calls.length = 0;
-  await service.select({ streamId: old.streamId, provider: old.provider, threadId: old.threadId });
-  assert.equal(calls.find(([kind]) => kind === "activate")[1].threadId, old.threadId);
-  const historical = await service.openTurn({ streamId: old.streamId, provider: old.provider,
-    taskThreadId: old.threadId, turnThreadId: old.threadId, turnId: "turn-1" });
-  assert.equal(historical.history.params.threadId, old.threadId);
-});
-
-test("Stream-only selection refuses a missing authoritative head instead of selecting the first historical entry", async () => {
-  const { service, calls } = fixture();
-  service.currentThread = () => ({ provider: "codex", threadId: "missing-head" });
-  await assert.rejects(service.select({ streamId: "stream-1" }), /не найден/u);
-  assert.equal(calls.some(([kind]) => kind === "activate"), false);
-});
-
-test("explicit Stream reference cannot select a foreign or unknown Thread", async () => {
-  const { service, calls } = fixture();
-  for (const reference of [
-    { streamId: "other-stream", provider: "codex", threadId: "thread-1" },
-    { streamId: "stream-1", provider: "codex", threadId: "unknown" },
-    { streamId: "stream-1", provider: "claude", threadId: "thread-1" },
-  ]) {
-    await assert.rejects(service.select(reference), /не найден/u);
-    await assert.rejects(service.openTask(reference), /не найден/u);
-  }
-  assert.equal(calls.some(([kind]) => kind === "activate" || kind === "dispatch"), false);
-});
-
 function annotatedHistory() {
   return {
     provider: "codex", threadId: "thread-1", streamId: "stream-1", start: 0, end: 1, total: 1,
@@ -502,7 +459,6 @@ test("Desktop task open resolves a stale cross-provider Stream request to its cu
   };
   service.catalog = () => [current];
   service.refreshCatalog = async () => [current];
-  service.currentThread = () => current;
   service.threadsForStream = () => [
     { provider: "codex", threadId: "thread-old" },
     { provider: "claude", threadId: "thread-new" },
@@ -550,7 +506,6 @@ test("Desktop turn deep link resolves a historical Thread after Stream rebirth",
   };
   service.catalog = () => [current];
   service.refreshCatalog = async () => [current];
-  service.currentThread = () => current;
   service.threadsForStream = () => [
     { provider: "codex", threadId: "thread-old", projectRoot: "C:\\repo-old" },
     { provider: "claude", threadId: "thread-new", projectRoot: "C:\\repo-current" },

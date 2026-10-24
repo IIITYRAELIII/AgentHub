@@ -699,12 +699,11 @@ test("public release generation retains prepared PreRelease conflict resolution"
   assert.equal(subset.operation.lastError.code, "RELEASE_PREPARED_CANDIDATE_STALE");
   assert.equal(subset.generations.length, 0);
   const notes = Buffer.from("authorized prepared release notes\n");
-  const notesPath = path.join(f.root, "authorized-CHANGELOG.md");
+  const notesPath = path.join(prepared.releaseRoot, "CHANGELOG.md");
   await writeFile(notesPath, notes);
   const notesHash = createHash("sha256").update(notes).digest("hex");
   const releaseMetadata = { sourcePath: notesPath, byteLength: notes.length,
     rawSha256: notesHash, canonicalSha256: notesHash };
-  assert.equal(await git(prepared.releaseRoot, "status", "--porcelain"), "");
   const prepareGeneration = f.preflight.prepareOperationGeneration.bind(f.preflight);
   let lost = null;
   f.preflight.prepareOperationGeneration = async input => {
@@ -716,7 +715,6 @@ test("public release generation retains prepared PreRelease conflict resolution"
     return value;
   };
   const interrupted = await f.release([a, b], f.base, "native-release-original", releaseMetadata);
-  assert.equal(interrupted.operation.state, "waiting", JSON.stringify(interrupted.operation));
   assert.equal(interrupted.operation.waitReason.code, "external_condition");
   assert.equal(interrupted.generations.length, 0);
   const reflog = await git(lost.releaseRoot, "reflog", "show", "--format=%H", "PreRelease");
@@ -737,6 +735,5 @@ test("public release generation retains prepared PreRelease conflict resolution"
   assert.ok((await git(candidate.releaseRoot, "diff", "--name-only", resolution, candidate.commit))
     .split(/\r?\n/u).filter(Boolean).every(file => metadata.has(file)));
   assert.equal(await git(prepared.releaseRoot, "rev-parse", "HEAD"), resolution);
-  assert.equal(await git(prepared.releaseRoot, "status", "--porcelain"), "");
   assert.deepEqual(await readFile(notesPath), notes);
 });

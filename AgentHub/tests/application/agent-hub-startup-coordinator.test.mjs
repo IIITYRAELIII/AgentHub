@@ -38,6 +38,47 @@ function coordinator(overrides = {}) {
   return { service, calls, health };
 }
 
+test("actual automatic initialize heals its startup failure without replaying completed ports", async () => {
+  let running = false;
+  const { service, health, calls } = coordinator({
+    initializeProvider: async () => { throw Object.assign(new Error("Codex executable missing (ENOENT)"), { code: "ENOENT" }); },
+    providerIsRunning: () => running,
+  });
+  await service.start();
+  const before = [...calls];
+  running = true; // A running process alone is deliberately insufficient.
+  assert.equal(health.snapshot().ready, false);
+  service.providerInitialized();
+  await service.waitForBackgroundWork();
+  assert.equal(health.snapshot().ready, true);
+  assert.equal(health.snapshot().startup.operations.find(operation => operation.id === "provider").state, "completed");
+  assert.deepEqual(calls.slice(before.length), ["backfill"]);
+  service.providerInitialized();
+  await service.waitForBackgroundWork();
+  assert.deepEqual(calls.slice(before.length), ["backfill"]);
+});
+
+test("automatic initialize cannot erase an unrelated recovery failure", async () => {
+  let running = false;
+  const { service, health } = coordinator({ telegramEnabled: false,
+    waitForever: async () => {},
+    initializeProvider: async () => { throw new Error("old provider unavailable"); },
+    providerIsRunning: () => running,
+    recoverRuns: async () => { throw new Error("original recovery persistence failure"); },
+  });
+  await service.start(); running = true; service.providerInitialized();
+  assert.equal(health.snapshot().ready, false);
+  assert.equal(health.snapshot().startup.operations.find(operation => operation.id === "runs").error, "original recovery persistence failure");
+  assert.equal(health.snapshot().capabilities.find(capability => capability.name === "provider").error, "original recovery persistence failure");
+  const failure = service.captureRunRecoveryFailure();
+  service.runsRecovered({ ...failure, completedAtMs: failure.completedAtMs + 1 });
+  assert.equal(health.snapshot().ready, false);
+  // Only the matching successful canonical recovery can settle its own failure.
+  service.runsRecovered(failure);
+  assert.equal(health.snapshot().ready, true);
+  await service.waitForBackgroundWork();
+});
+
 test("failed provider retries once without repeating completed startup work", async () => {
   let available = false;
   let starts = 0;

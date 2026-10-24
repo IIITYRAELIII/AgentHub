@@ -1,3 +1,5 @@
+import { mcpArgumentsHash } from "./mcp-arguments-hash.mjs";
+
 export const TASK_BUCKETS = Object.freeze(["backlog", "workspace", "notes"]);
 export const TASK_STATUSES = Object.freeze(["open", "started", "done"]);
 export const TASK_WORKFLOW_STATUSES = Object.freeze([
@@ -24,6 +26,61 @@ export class TaskLifecycleBeginRejectedError extends Error {
     super(message);
     this.code = "TASK_LIFECYCLE_BEGIN_REJECTED";
   }
+}
+
+export class TaskClaimExecutorBusyError extends Error {
+  constructor() {
+    super("The other executor must finish its active and queued work before Task handoff");
+    this.code = "TASK_CLAIM_EXECUTOR_BUSY";
+  }
+}
+
+export class TaskClaimLockAdmissionError extends Error {
+  constructor() {
+    super("Task claim timed out before repository preparation; no Task assignment or source preparation was admitted");
+    this.code = "TASK_CLAIM_LOCK_ADMISSION_TIMEOUT";
+  }
+}
+
+export function claimAdmissionRefusalError(proof) {
+  return proof?.kind === "task-claim-lock-admission-v1"
+    ? new TaskClaimLockAdmissionError() : new TaskClaimExecutorBusyError();
+}
+
+// Issued by the live claim owner before prepare/claim. Historical error strings
+// and the current executor are never sufficient to construct this certificate.
+export function claimAdmissionNoEffectEvidence(receipt, taskId = null) {
+  const proof = receipt?.result?.evidence ?? receipt?.result?.operatorReconciliation?.evidence;
+  if (!proof || proof.version !== 1 || receipt.toolName !== "hub_task_claim"
+      || !Number.isSafeInteger(proof.taskRevision) || proof.taskRevision < 1
+      || !Number.isSafeInteger(proof.createdAtMs)
+      || typeof proof.taskId !== "string" || !proof.taskId || proof.taskId.length > 200
+      || (taskId !== null && proof.taskId !== taskId)) return null;
+  if (proof.kind === "task-claim-executor-busy-v1") {
+    if (proof.code !== "TASK_CLAIM_EXECUTOR_BUSY" || !["active", "queued"].includes(proof.busyReason)
+        || typeof proof.ownerStreamId !== "string" || !proof.ownerStreamId || proof.ownerStreamId.length > 200
+        || proof.ownerStreamId === proof.streamId) return null;
+  } else if (proof.kind === "task-claim-lock-admission-v1") {
+    const admission = proof.lockAdmission;
+    if (proof.code !== "TASK_CLAIM_LOCK_ADMISSION_TIMEOUT" || admission?.version !== 1
+        || admission.kind !== "task-git-dev-lock-admission-v1" || admission.phase !== "before-prepare"
+        || admission.operationId !== receipt.requestId || admission.taskId !== proof.taskId
+        || !/^[a-f0-9]{12}$/u.test(admission.repositoryKey)
+        || [admission.repositoryRoot, admission.lockPath].some(value => typeof value !== "string"
+          || !value || value.length > 4000 || value.includes("\0"))
+        || !admission.lockPath.replaceAll("\\", "/").endsWith(`/locks/task-git-dev-${admission.repositoryKey}.lock`)) return null;
+  } else return null;
+  for (const key of ["requestId", "workspaceId", "streamId", "provider", "threadId", "toolName", "argumentsHash", "createdAtMs"]) {
+    if (proof[key] !== receipt[key]) return null;
+  }
+  const args = proof.claimArguments;
+  if (!args || args.task_id !== proof.taskId || args.request_id !== proof.requestId
+      || Object.keys(args).some(key => !["task_id", "request_id", "dependency_mode", "dependency_override_reason"].includes(key))
+      || (args.dependency_mode !== undefined && !["skip", "ensure", "verify"].includes(args.dependency_mode))
+      || (args.dependency_override_reason != null && (typeof args.dependency_override_reason !== "string"
+        || args.dependency_override_reason.length > 2000))
+      || proof.argumentsHash !== mcpArgumentsHash(args)) return null;
+  return proof;
 }
 
 export class TaskDependencyPendingError extends Error {
@@ -211,4 +268,11 @@ export function messageWithTaskReferences(text, references = []) {
     "",
     request,
   ].join("\n");
+}
+
+export class TaskOperationReconciliationRefusedError extends Error {
+  constructor(cause) {
+    super(cause.message, { cause });
+    this.code = "TASK_RECONCILIATION_REFUSED";
+  }
 }

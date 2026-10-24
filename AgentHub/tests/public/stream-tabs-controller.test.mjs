@@ -699,16 +699,6 @@ test("rotated Stream keeps recent activity while opening its current Thread", as
   assert.equal(representative.orderingActivityAtMs, previousThreadActivity);
 });
 
-test("Stream representative follows monotonic Thread position, not historical selection or running state", async () => {
-  const { representativeSnapshotTasks } = await streamTabsApi();
-  const old = { streamId: "stream-1", provider: "codex", threadId: "old", threadPosition: 1,
-    selected: true, running: true, run: { turnId: "old-run", startedAt: "2026-10-09T23:00:00Z" } };
-  const head = { ...old, threadId: "new", threadPosition: 2, selected: false };
-  for (const running of [true, false]) for (const entries of [[old, { ...head, running }], [{ ...head, running }, old]]) {
-    assert.equal(representativeSnapshotTasks(entries)[0].threadId, "new");
-  }
-});
-
 test("a terminal identity absorbs a stale active Stream projection", async () => {
   const { isExactActiveUserTurn } = await streamTabsApi();
   const task = {

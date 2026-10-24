@@ -6,8 +6,9 @@ const WORKSPACE_MUTATIONS = new Set([
   "archiveWorkspace", "restoreWorkspace", "deleteArchivedWorkspace",
   "updateWorkspaceDeveloperRules", "recordWorkspaceEvent", "beginMcpOperation",
   "bindMcpOperationInterstreamContentHash",
-  "completeMcpOperation", "failMcpOperation", "cancelMcpOperation", "beginMcpOperationReconciliation",
+  "completeMcpOperation", "failMcpOperation", "recordClaimAdmissionRefusal", "cancelMcpOperation", "beginMcpOperationReconciliation",
   "markMcpOperationUnknown", "completeUnknownMcpOperation", "failUnknownMcpOperation",
+  "checkpointClaimCustody",
   "mergeWorkspaces", "createWorkspaceFromStream", "createStream", "renameStream",
   "archiveStream", "updateStreamSettings", "updateStreamDeveloperRules", "moveStream",
   "moveStreamToStart", "reorderStream", "moveStreamOrdered", "bindThread", "rebindThread",
@@ -17,7 +18,7 @@ const WORKSPACE_MUTATIONS = new Set([
 
 const WORKSPACE_READS = new Set([
   "archivedWorkspaces", "releaseWorkflowEnabledForThread", "workspaceDeveloperRules", "workspaceEvents",
-  "mcpOperation", "pendingMcpOperations", "mcpOperations", "interstreamOriginForClientMessage",
+  "claimCustodyForOriginal", "claimCustodyForTask", "claimCustodyNamespaceForTask", "claimCustodyTaskSnapshot", "mcpOperation", "pendingMcpOperations", "mcpOperations", "interstreamOriginForClientMessage",
   "workspace", "workspaceBySystemKey", "stream", "streamDeveloperRules", "developerRulesForThread",
   "developerRulesForStream", "thread", "activeThread", "threadsForStream", "resolveThread", "hierarchy",
   "meta", "threadNaming", "mutationDiagnostics", "close",
@@ -79,7 +80,7 @@ function createMutationOwner(store, { scope, mutations, reads, managedEffects = 
         if (typeof value !== "function") return undefined;
         return (...args) => store.runMutation(
           () => value.apply(store, args),
-          { requestId: mutationIdentity(scope, property, args) },
+          { requestId: mutationIdentity(scope, property, args), method: property, args },
         );
       }
       if (typeof property === "string" && managedEffects.has(property)) {

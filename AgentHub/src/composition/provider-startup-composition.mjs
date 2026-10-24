@@ -69,12 +69,12 @@ export function createProviderStartupComposition({
     }
   }
 
-  async function attachCodexThread() {
+  async function attachCodexThread({ sendRpc: request = sendRpc } = {}) {
     const threadId = getThreadId();
     if (threadId) {
       let resumed = false;
       try {
-        const result = await sendRpc("thread/resume", {
+        const result = await request("thread/resume", {
           threadId,
           ...codexThreadSandboxSettings(config.codexSandboxMode),
         });
@@ -88,7 +88,7 @@ export function createProviderStartupComposition({
         applyCodexThreadSettings(threadId, result);
         await saveState();
         void reconcileCodexThreadSubscriptions({
-          sendRpc,
+          sendRpc: request,
           selectedThreadId: threadId,
           activeRuns: taskRuns.values(),
         }).catch((error) => logger.warn?.("Cannot reconcile Codex thread subscriptions:", error.message));
@@ -109,9 +109,13 @@ export function createProviderStartupComposition({
           logger.error(`Keeping active task ${threadId}; recovery will inspect its saved turn.`);
           return false;
         }
+        // An idle executable replacement must not create/replace a user Thread.
+        // The next ordinary command retains the canonical resume/admission path.
+        if (request !== sendRpc) return false;
         selectionStore.setThread(null, { provider: "codex" });
       }
     }
+    if (request !== sendRpc) return false;
     await createThread();
     return true;
   }

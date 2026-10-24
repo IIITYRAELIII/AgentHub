@@ -561,28 +561,10 @@ test("samePath normalizes equivalent paths", () => {
 });
 
 test("Mini App pilot is loopback-only and enabled by default", () => {
-  const fileTransfer = {
-    enabled: false,
-    publicBaseUrl: "",
-    trustedProxyAddresses: [],
-    maxBytes: 2 * 1024 ** 3,
-    storageBytes: 20 * 1024 ** 3,
-    ownerBytes: 4 * 1024 ** 3,
-    freeBytes: 1024 ** 3,
-    maxArtifacts: 64,
-    maxPreparations: 2,
-    maxStreams: 4,
-    maxRequests: 256,
-    requestsPerMinute: 60,
-    preparationTtlMs: 60 * 60_000,
-    sessionTtlMs: 6 * 60 * 60_000,
-    idleTtlMs: 15 * 60_000,
-  };
   assert.deepEqual(miniAppSettings(), {
     enabled: true,
     host: "127.0.0.1",
     port: 8787,
-    fileTransfer,
     quickTunnel: {
       enabled: false,
       provider: "cloudflare",
@@ -624,7 +606,6 @@ test("Mini App pilot is loopback-only and enabled by default", () => {
     enabled: false,
     host: "localhost",
     port: 9000,
-    fileTransfer,
     quickTunnel: {
       enabled: true,
       provider: "pinggy",

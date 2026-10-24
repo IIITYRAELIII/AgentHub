@@ -38,7 +38,9 @@ export async function assertNativeTaskHistories({ git, baseCommit, tasks, histor
   const histories = [];
   for (const task of tasks) {
     const taskBase = task.baseCommit || baseCommit;
-    if (await maybe(git, ["merge-base", "--is-ancestor", taskBase, baseCommit]) === null
+    // The result ancestry check below still proves both commit objects exist,
+    // including an empty result. Equal base OIDs need no additional self-query.
+    if (taskBase !== baseCommit && await maybe(git, ["merge-base", "--is-ancestor", taskBase, baseCommit]) === null
         || await maybe(git, ["merge-base", "--is-ancestor", taskBase, task.resultCommit]) === null) {
       throw failure(`Task ${task.taskId} requires a main-based result or explicit historical migration`);
     }
@@ -52,19 +54,24 @@ export async function assertNativeTaskHistories({ git, baseCommit, tasks, histor
       && a.resultCommit === task.resultCommit);
     const metadataBases = [...new Set([taskBase, ...(historyAuthority?.metadataBases ?? []),
       ...adopted.map(a => a.adoptedCommit)])];
-    const metadata = String(await git([
+    // One immutable tree diff supplies both metadata classes. Keep all existing
+    // per-file mode/blob/version checks and re-read at every owning boundary.
+    const changedMetadata = String(await git([
       "diff", "--name-only", "--no-renames", "-z", taskBase, task.resultCommit,
-      "--", "CHANGELOG.md", ":(glob)**/CHANGELOG.md",
-    ], { rawOutput: true }));
-    for (const file of metadata.split("\0").filter(Boolean)) {
+      "--", "CHANGELOG.md", ":(glob)**/CHANGELOG.md", "package.json", "package-lock.json",
+      ":(glob)**/package.json", ":(glob)**/package-lock.json",
+    ], { rawOutput: true })).split("\0").filter(Boolean);
+    // Literal root pathspecs also cover descendants of a directory with that
+    // name. Preserve that existing ownership check, not just basename matches.
+    const matchesMetadata = (file, names) => names.some(name => file.startsWith(`${name}/`)
+      || path.posix.basename(file) === name);
+    for (const file of changedMetadata.filter(file => matchesMetadata(file, ["CHANGELOG.md"]))) {
       const entry = await metadataEntry(git, task.resultCommit, file);
       const known = [];
       for (const b of metadataBases) known.push(await metadataEntry(git, b, file));
       if (entry === null || !known.includes(entry)) throw failure(`Task ${task.taskId} changes release-owned CHANGELOG metadata`);
     }
-    const packages = String(await git(["diff", "--name-only", "--no-renames", "-z", taskBase, task.resultCommit,
-      "--", "package.json", "package-lock.json", ":(glob)**/package.json", ":(glob)**/package-lock.json",
-    ], { rawOutput: true })).split("\0").filter(Boolean);
+    const packages = changedMetadata.filter(file => matchesMetadata(file, ["package.json", "package-lock.json"]));
     for (const file of packages) {
       const priors = [];
       for (const b of metadataBases) priors.push(await maybe(git, ["show", `${b}:${file}`]));

@@ -218,21 +218,9 @@ test("combined closure rejects missing source commits, dirty work and a separate
     targetWorkflowStatus: "in_progress", expectedRevision: f.taskBoard.task(a.task.id).revision });
   f.taskBoard.commitWorkflowTransition({ operationId: "legacy-claim", replaceGitReferences: false });
   await assert.rejects(f.lifecycle.complete(options), /does not contain all source/);
-  const sourceHead = await git(a.root, "rev-parse", "HEAD");
-  const targetBefore = await git(b.root, "rev-parse", "HEAD");
-  const sourceBefore = f.taskBoard.task(a.task.id);
-  await git(b.root, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "merge", "--no-ff", "--no-edit", sourceHead);
-  const combinedHead = await git(b.root, "rev-parse", "HEAD");
+  await git(b.root, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "merge", "--no-ff", "--no-edit", await git(a.root, "rev-parse", "HEAD"));
+  await assert.rejects(f.status(b.task.id, "testing", "test-combined"), { code: "RELEASE_NATIVE_HISTORY_REQUIRED" });
   await assert.rejects(f.lifecycle.complete(options), /Surviving Task changed after Test/u);
-  // Known managed dev ancestry is valid for Test preview, but does not prove absorption.
-  const tested = await f.status(b.task.id, "testing", "test-combined");
-  assert.equal(tested.task.gitReferences[0].resultCommit, combinedHead);
-  assert.equal(await git(b.root, "show", "-s", "--format=%P", combinedHead), `${targetBefore} ${sourceHead}`);
-  assert.equal(await git(b.root, "show", `${combinedHead}:a.txt`), "A");
-  assert.equal(await git(b.root, "show", `${combinedHead}:b.txt`), "B");
-  await assert.rejects(f.lifecycle.complete(options), /Source Task still has a separate dev integration/u);
-  assert.deepEqual(f.taskBoard.task(a.task.id), sourceBefore);
-  assert.equal(f.taskBoard.lifecycleOutcome(options.operationId), null);
   await writeFile(path.join(a.root, "unfinished.txt"), "unsaved\n");
   await assert.rejects(f.lifecycle.complete(options), /Save the source/);
   assert.notEqual(f.taskBoard.task(a.task.id).status, "done");
@@ -386,7 +374,6 @@ for (const committed of [false, true]) test(`old conflict keeps immutable accept
   await writeFile(path.join(b.root, "app.txt"), "B\n");
   await assert.rejects(f.status(b.task.id, "testing", "conflict-b"), TaskIntegrationConflictError);
   const d1 = await git(f.primary, "rev-parse", "dev");
-  const bBefore = await git(b.root, "rev-parse", "HEAD");
   await assert.rejects(git(b.root, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "merge", "--no-commit", d1));
   await writeFile(path.join(b.root, "app.txt"), "A and B\n");
   if (committed) {
@@ -395,15 +382,8 @@ for (const committed of [false, true]) test(`old conflict keeps immutable accept
   }
   await f.status(a.task.id, "in_progress", "return-a");
   const before = await git(f.primary, "rev-parse", "dev");
-  assert.equal(before, d1);
-  const acceptedA = f.taskBoard.task(a.task.id).gitReferences;
-  const resolved = await f.status(b.task.id, "testing", "finish-b");
-  const result = resolved.task.gitReferences[0].resultCommit;
-  assert.equal(await git(b.root, "show", "-s", "--format=%P", result), `${bBefore} ${d1}`);
-  assert.equal(await git(b.root, "show", `${result}:app.txt`), "A and B");
-  assert.equal(await git(f.primary, "show", `${testedA.task.gitReferences[0].resultCommit}:app.txt`), "A");
-  assert.deepEqual(f.taskBoard.task(a.task.id).gitReferences, acceptedA);
-  await git(f.primary, "merge-base", "--is-ancestor", before, "dev");
+  await assert.rejects(f.status(b.task.id, "testing", "finish-b"), { code: "RELEASE_NATIVE_HISTORY_REQUIRED" });
+  assert.equal(await git(f.primary, "rev-parse", "dev"), before);
   await git(f.primary, "merge-base", "--is-ancestor", testedA.task.gitReferences[0].resultCommit, "dev");
 });
 

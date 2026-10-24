@@ -12,11 +12,12 @@ test("failed startup exposes details and retry/restart controls inside the overl
     page.on("pageerror", (error) => errors.push(error.message));
     const health = {
       ready: false, status: "unready",
+      capabilities: [{ name: "provider", critical: true, state: "failed", error: "Signature check timed out <not markup>" }],
       startup: {
         startedAtMs: 1000, completedAtMs: 42000,
         operations: [
           { id: "web", label: "Web", state: "completed" },
-          { id: "provider", label: "Инициализация провайдера", state: "failed", error: "Signature check timed out <not markup>" },
+          { id: "provider", label: "Инициализация провайдера", state: "failed", error: "" },
         ],
       },
     };
@@ -24,7 +25,7 @@ test("failed startup exposes details and retry/restart controls inside the overl
       const url = new URL(route.request().url());
       if (url.hostname !== "startup.test") return route.abort();
       if (url.pathname === "/") return route.fulfill({
-        contentType: "text/html", body: '<link rel="stylesheet" href="/startup-screen.css"><script type="module" src="/startup-screen.js"></script>',
+        contentType: "text/html", body: '<title>Agent Hub Startup</title><link rel="stylesheet" href="/startup-screen.css"><script type="module" src="/startup-screen.js"></script>',
       });
       if (url.pathname === "/health") return route.fulfill({ json: health });
       const name = url.pathname.slice(1);
@@ -46,6 +47,8 @@ test("failed startup exposes details and retry/restart controls inside the overl
     await page.goto("https://startup.test/");
     const screen = page.locator(".hub-startup-screen");
     await screen.waitFor({ state: "visible" });
+    assert.equal(page.url(), "https://startup.test/"); assert.equal(await page.title(), "Agent Hub Startup");
+    if (process.env.HUB348_STARTUP_SCREENSHOT) await page.screenshot({ path: process.env.HUB348_STARTUP_SCREENSHOT });
     assert.match(await page.locator(".hub-startup-errors").innerText(), /Signature check timed out <not markup>/u);
     assert.equal(await page.locator(".hub-startup-errors not").count(), 0);
     await page.getByRole("button", { name: "Повторить упавшие этапы" }).click();
@@ -78,6 +81,7 @@ test("failed startup exposes details and retry/restart controls inside the overl
     assert.equal(await page.locator(".hub-startup-completed-item").count(), 1);
     health.ready = true;
     health.status = "ready";
+    health.capabilities[0] = { name: "provider", critical: true, state: "ready", error: "" };
     health.startup.operations[1].state = "completed";
     await screen.waitFor({ state: "hidden" });
 

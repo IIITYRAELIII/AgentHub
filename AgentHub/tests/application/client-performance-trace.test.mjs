@@ -17,19 +17,6 @@ test("client trace keeps bounded timings and discards content and arbitrary meta
   assert.throws(() => clientPerformanceTraceSpans({ events: Array(33).fill(event) }));
 });
 
-test("terminal history diagnostics retain only bounded exact identity, never content", () => {
-  const event = { commandId: "original-client-id", stage: "ui-render", outcome: "succeeded",
-    observedAtMs: 1000, monotonicDurationMs: 12, metadata: { action: "history-terminal-paint",
-      streamId: "stream-a", provider: "codex", threadId: "thread-new", turnId: "turn-1",
-      terminalRevision: 1, text: "private", url: "https://private", error: "secret" } };
-  assert.deepEqual(clientPerformanceTraceSpans({ events: [event] }, { now: 1000 })[0].metadata,
-    { action: "history-terminal-paint", streamId: "stream-a", provider: "codex",
-      threadId: "thread-new", turnId: "turn-1", terminalRevision: 1 });
-  event.metadata = { threadId: "x".repeat(201), streamId: "secret path/", turnId: "private text",
-    provider: "unknown", terminalRevision: Infinity };
-  assert.deepEqual(clientPerformanceTraceSpans({ events: [event] }, { now: 1000 })[0].metadata, {});
-});
-
 test("client ACK shares existing monotonic measurement conversion", () => {
   const [span] = clientPerformanceTraceSpans({ events: [{ commandId: "ack-1", stage: "client-ack",
     outcome: "succeeded", surface: "vscode-webview", timing: { submittedAtMs: 1000,

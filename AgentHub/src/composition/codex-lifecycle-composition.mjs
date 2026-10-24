@@ -6,6 +6,8 @@ import { CodexAppServerLifecycle } from "../providers/codex/codex-app-server-lif
 import { CodexLifecycleController } from "../providers/codex/codex-lifecycle-controller.mjs";
 import { agentHubRuntimeHealth } from "../application/runtime-health.mjs";
 import { runCodexAppServerCompatibilityCanary } from "./codex-app-server-canary.mjs";
+import { observeAgentHubProviderInitialized, observeAgentHubProviderInitializing,
+  observeAgentHubProviderInitializationFailure, observeAgentHubRunRecovery } from "../application/agent-hub-startup-coordinator.mjs";
 
 export function createCodexLifecycleComposition({
   config,
@@ -20,6 +22,9 @@ export function createCodexLifecycleComposition({
     autoUpdateEnabled: config.codexExecutableAutoUpdate,
     versionPin: config.codexExecutableVersionPin,
     activeRuns: runtimeDependencies.activeRuns,
+    executableArgs: config.codexExecutableArgs,
+    rpcTimeoutMs,
+    canRecoverUnavailableSelection: () => !runtime.running,
     runCanary: (candidate) => runCodexAppServerCompatibilityCanary(candidate, {
       dataDir: config.dataDir,
       executableArgs: config.codexExecutableArgs,
@@ -30,8 +35,14 @@ export function createCodexLifecycleComposition({
   const runtime = new CodexAppServerLifecycle({
     resolveExecutable: () => executableUpdates.selectForStart(),
     verifyExecutableForLaunch: (command) => executableUpdates.verifySelectedForLaunch(command),
-    onStartupSuccess: () => executableUpdates.markStartupSuccess(),
+    onStartupSuccess: async () => {
+      await executableUpdates.markStartupSuccess();
+      observeAgentHubProviderInitialized();
+    },
     onStartupFailure: (error) => executableUpdates.markStartupFailure(error),
+    bindSpawnedProcess: child => executableUpdates.bindSpawnedProcess(child),
+    onInitializationPending: observeAgentHubProviderInitializing,
+    onInitializationFailure: observeAgentHubProviderInitializationFailure,
     unavailableMcpOverrides: async () => {
       const existing = await unavailableLocalMcpOverrides();
       return { ...existing, args: [...existing.args, ...hubMcpServer.codexArgs()] };
@@ -45,7 +56,7 @@ export function createCodexLifecycleComposition({
     providerSelected: runtimeDependencies.providerSelected,
     activeRuns: runtimeDependencies.activeRuns,
     setStage: runtimeDependencies.setStage,
-    recoverRuns: runtimeDependencies.recoverRuns,
+    recoverRuns: () => observeAgentHubRunRecovery(runtimeDependencies.recoverRuns),
     startTyping: runtimeDependencies.startTyping,
     attachSelectedThread: runtimeDependencies.attachSelectedThread,
     scheduleRetry: (operation, delayMs) => setTimeout(() => void operation(), delayMs),
@@ -63,6 +74,7 @@ export function createCodexLifecycleComposition({
     executableUpdates.startBackgroundChecks({
       canCheck: () => Boolean(agentHubRuntimeHealth.snapshot().startup?.completedAtMs)
         && !runtimeDependencies.isStopping(),
+      onPrepared: () => runtime.applyPreparedUpdate(),
     });
     await runtime.start();
   }
@@ -70,6 +82,8 @@ export function createCodexLifecycleComposition({
   async function stop() {
     executableUpdates.stopBackgroundChecks();
     await runtime.stop();
+    await executableUpdates.releaseUnboundSelection();
+    await executableUpdates.waitForCustodyRelease();
   }
 
   async function restartAfterCrash() {
@@ -77,7 +91,7 @@ export function createCodexLifecycleComposition({
   }
 
   function sendRpc(method, params = {}, options = {}) {
-    return transport.request(method, params, {
+    return runtime.request(method, params, {
       ...options,
       timeoutMs: options.timeoutMs ?? rpcTimeoutMs,
     });
@@ -88,7 +102,7 @@ export function createCodexLifecycleComposition({
   }
 
   function readThread(threadId, options = {}) {
-    return transport.readThread(threadId, options);
+    return runtime.readThread(threadId, options);
   }
 
   function sendNotification(method, params = {}) {

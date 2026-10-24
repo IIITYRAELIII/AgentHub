@@ -16,6 +16,7 @@ import process from "node:process";
 import { spawn } from "node:child_process";
 
 import { readAgentHubVersion } from "../infrastructure/filesystem/agent-hub-package.mjs";
+import { artifactVersionIdentity, SEMVER_BUILD_SCHEME } from "../domain/agent-hub-version.mjs";
 import { defaultRuntimeRoot, runtimeLayout, runtimeReleaseDirectory } from "../infrastructure/filesystem/runtime-layout.mjs";
 import { verifyRuntimeImportClosure, verifyRuntimeManifest } from "../infrastructure/filesystem/runtime-manifest-verifier.mjs";
 import { nextRuntimeReleaseVersion } from "../infrastructure/filesystem/runtime-release-version.mjs";
@@ -47,6 +48,10 @@ const TOP_LEVEL_FILES = new Set([
 ]);
 
 const RUNTIME_MODULE_ASSETS = [
+  ["src/infrastructure/process/test-resource-monitor.mjs",
+    "src/infrastructure/process/test-resource-accounting.cs"],
+  ["src/infrastructure/process/codex-executable-custody.mjs",
+    "src/infrastructure/process/codex-executable-custody.cs"],
   ["src/infrastructure/filesystem/sealed-runtime-release.mjs",
     "src/infrastructure/filesystem/sealed-runtime-release.cs"],
   ["src/infrastructure/filesystem/sealed-transport-delete.mjs",
@@ -323,9 +328,14 @@ async function prepareRuntimeOwned({
   // under the existing installation lease, before copying, compiling or npm ci.
   // Reuse of an already prepared body belongs to the publication checkpoint.
   let frozenReleaseVersion = null;
+  const allocationPackageVersion = readAgentHubVersion({ packageFile: path.join(sourceRoot, "package.json") });
+  const expected = typeof expectedReleaseVersion === "string" && expectedReleaseVersion.includes("+build.")
+    ? artifactVersionIdentity(expectedReleaseVersion) : null;
+  frozenReleaseVersion = await nextRuntimeReleaseVersion({
+    releasesDir: layout.releasesDir, packageVersion: allocationPackageVersion,
+    ...(expected ? { allocationFloor: expected.buildNumber - 1 } : {}),
+  });
   if (expectedReleaseVersion !== null) {
-    const packageVersion = readAgentHubVersion({ packageFile: path.join(sourceRoot, "package.json") });
-    frozenReleaseVersion = await nextRuntimeReleaseVersion({ releasesDir: layout.releasesDir, packageVersion });
     if (typeof expectedReleaseVersion !== "string" || expectedReleaseVersion !== frozenReleaseVersion) {
       throw new Error(`Frozen runtime version differs from the next allocated version: ${frozenReleaseVersion}`);
     }
@@ -397,13 +407,16 @@ async function prepareRuntimeOwned({
       names.push("node_modules");
     }
     const packageVersion = readAgentHubVersion({ packageFile: path.join(sourceRoot, "package.json") });
+    const allocatedVersion = frozenReleaseVersion ?? await nextRuntimeReleaseVersion({
+      releasesDir: layout.releasesDir, packageVersion,
+    });
+    const semanticBuild = allocatedVersion.includes("+build.") ? artifactVersionIdentity(allocatedVersion) : null;
     const manifest = {
       releaseId,
       version: packageVersion,
-      releaseVersion: frozenReleaseVersion ?? await nextRuntimeReleaseVersion({
-        releasesDir: layout.releasesDir,
-        packageVersion,
-      }),
+      releaseVersion: allocatedVersion,
+      ...(semanticBuild ? { versionScheme: SEMVER_BUILD_SCHEME,
+        publicVersion: packageVersion, buildNumber: semanticBuild.buildNumber } : {}),
       createdAt: new Date().toISOString(),
       sourceRoot: path.resolve(sourceRoot),
       ...(publicationRevision ? { publicationRevision } : {}),
@@ -692,20 +705,29 @@ export async function runtimeStatus({ runtimeRoot = defaultRuntimeRoot(), requir
   };
 }
 
-function parseCli(args) {
+export function parseRuntimeArguments(args) {
   const command = args[0] ?? "status";
   let runtimeRoot = defaultRuntimeRoot();
+  let expectedReleaseVersion = null, publicationRevision = null;
   for (let index = 1; index < args.length; index += 1) {
     if (args[index] === "--runtime-root" && args[index + 1]) runtimeRoot = path.resolve(args[++index]);
+    else if (args[index] === "--expected-release-version" && args[index + 1] && expectedReleaseVersion === null) expectedReleaseVersion = args[++index];
+    else if (args[index] === "--publication-revision" && args[index + 1] && publicationRevision === null) publicationRevision = args[++index];
     else throw new Error(`Unknown argument: ${args[index]}`);
   }
-  return { command, runtimeRoot };
+  if (expectedReleaseVersion !== null || publicationRevision !== null) {
+    if (command !== "deploy" || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u.test(publicationRevision ?? "")) {
+      throw new Error("Frozen deploy requires its original source and artifact version");
+    }
+    artifactVersionIdentity(expectedReleaseVersion);
+  }
+  return { command, runtimeRoot, expectedReleaseVersion, publicationRevision };
 }
 
 export async function main(args = process.argv.slice(2)) {
-  const { command, runtimeRoot } = parseCli(args);
+  const { command, runtimeRoot, expectedReleaseVersion, publicationRevision } = parseRuntimeArguments(args);
   if (command === "deploy") {
-    const result = await deployRuntime({ runtimeRoot });
+    const result = await deployRuntime({ runtimeRoot, expectedReleaseVersion, publicationRevision });
     await prepareRuntimeConfig({ runtimeRoot });
     console.log(`Runtime release deployed: ${result.releaseId}`);
   } else if (command === "activate") {

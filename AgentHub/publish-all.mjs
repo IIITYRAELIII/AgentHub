@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { createWriteStream, mkdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
+import { artifactVersionIdentity, calendarVersion } from "./src/domain/agent-hub-version.mjs";
 
 import { callDesktopControl, readDesktopControlEndpoint } from "./desktop-control.mjs";
 import { ensureWrangler } from "./wrangler-runner.mjs";
@@ -71,6 +72,7 @@ export function publicationSteps({
   testContour = false,
   fullTestCheckpointId = "",
   workerChangedFiles = null,
+  frozenVersion = null,
 } = {}) {
   return [
     ...(!skipTests ? [
@@ -87,8 +89,12 @@ export function publicationSteps({
     ...(!skipTests && testContour
       ? [npmStep("Тестовый контур Agent Hub", ["run", "contour:verify", "--", "--require-installed"])]
       : []),
-    npmStep("Сборка Agent Hub Mobile", ["run", "android:build"]),
-    npmStep("Сборка runtime-релиза", ["run", "runtime:deploy"]),
+    npmStep("Сборка Agent Hub Mobile", ["run", "android:build",
+      ...(frozenVersion?.runtimeReleaseVersion.includes("+build.")
+        ? ["--", "-ArtifactVersion", frozenVersion.runtimeReleaseVersion] : [])]),
+    npmStep("Сборка runtime-релиза", ["run", "runtime:deploy",
+      ...(frozenVersion ? ["--", "--expected-release-version", frozenVersion.runtimeReleaseVersion,
+        "--publication-revision", frozenVersion.head] : [])]),
     ...(!skipWorker ? [
       npmStep("Развёртывание Mini App Worker", ["run", "worker:deploy"]),
       {
@@ -247,6 +253,7 @@ export async function publishAll(args = process.argv.slice(2), {
   revision = currentRevision,
   ensureWorkerDependency = ensureWrangler,
   prepareVersion = async () => ({ changed: false }),
+  freezeVersion = null,
   checkpoint = null,
   journal = null,
   runtimeRoot = defaultRuntimeRoot(),
@@ -256,17 +263,35 @@ export async function publishAll(args = process.argv.slice(2), {
   return exclusive(async () => {
     const options = parseArguments(args);
     await before();
-    await prepareVersion();
-    const head = checkpoint ? await revision({ cwd: REPOSITORY_ROOT }) : null;
+    const frozen = freezeVersion ? await freezeVersion() : null;
+    const frozenVersion = frozen && typeof frozen === "object" ? { ...frozen } : null;
+    if (frozenVersion) {
+      const fields = Object.keys(frozenVersion).sort();
+      if (JSON.stringify(fields) !== JSON.stringify(["head", "releaseVersion", "runtimeReleaseVersion"])
+          || typeof frozenVersion.releaseVersion !== "string"
+          || typeof frozenVersion.head !== "string"
+          || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u.test(frozenVersion.head)
+          || artifactVersionIdentity(frozenVersion.runtimeReleaseVersion).publicVersion !== frozenVersion.releaseVersion) {
+        throw new Error("Invalid frozen public/source/artifact version binding");
+      }
+    } else if (typeof frozen === "string" && !calendarVersion(frozen)) {
+      throw new Error("Semantic full publication requires its frozen artifact version");
+    }
+    const expectedVersion = frozenVersion?.releaseVersion ?? frozen;
+    const head = checkpoint || frozenVersion ? await revision({ cwd: REPOSITORY_ROOT }) : null;
+    if (frozenVersion && frozenVersion.head !== head) throw new Error("Frozen publication source revision changed");
+    await prepareVersion(expectedVersion == null ? {} : { expectedVersion });
     if (!options.skipWorker) await ensureWorkerDependency();
     const steps = publicationSteps({
       ...options,
       fullTestCheckpointId: head ? `full:${head}` : "",
+      frozenVersion,
     });
     const identity = {
       mode: "full", revision: head, worktreeRoot: REPOSITORY_ROOT, runtimeRoot,
       validationMode: options.skipTests ? "quick" : "full",
       labels: steps.map((step) => step.label),
+      ...(frozenVersion ? { frozenVersion } : {}),
     };
     try {
       await runPublicationSteps(steps, {
@@ -308,6 +333,9 @@ if (invokedFile === fileURLToPath(import.meta.url)) {
       await assertCleanPublicationTree({ cwd: REPOSITORY_ROOT });
       await assertCurrentPublicationRevision({ cwd: REPOSITORY_ROOT });
     },
+    // Reuse the canonical freeze owner, including its original manifest on
+    // retry. Dynamic import avoids a static cycle with the shared step helpers.
+    freezeVersion: async () => (await import("./publish-changed.mjs")).freezePreparedPublication({ includeArtifactVersion: true }),
     prepareVersion: prepareCommittedAgentHubReleaseVersion,
   }).catch((error) => {
     console.error(`\nПубликация остановлена: ${error.message}`);

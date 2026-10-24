@@ -509,6 +509,11 @@ function primaryInvariantFailure(snapshot, phase) {
   return null;
 }
 
+function assertPrimarySnapshot(snapshot, phase) {
+  const failure = primaryInvariantFailure(snapshot, phase);
+  if (failure) throw new Error(failure);
+}
+
 function publicPrimaryEvidence(snapshot) {
   return {
     projectRoot: snapshot.root,
@@ -698,8 +703,7 @@ export class ReleaseGitWorkspaceService {
   async assertPrimaryInvariant(projectRoot, { phase = "release" } = {}) {
     this.#assertAvailable("assertPrimaryInvariant");
     const snapshot = await primarySnapshot(projectRoot);
-    const failure = primaryInvariantFailure(snapshot, phase);
-    if (failure) throw new Error(failure);
+    assertPrimarySnapshot(snapshot, phase);
     return publicPrimaryEvidence(snapshot);
   }
 
@@ -718,7 +722,7 @@ export class ReleaseGitWorkspaceService {
     const baseline = String(publishedRevision ?? "").trim();
     if (!baseline) throw new Error("main review requires the last published revision");
     const primary = await primarySnapshot(projectRoot);
-    await this.assertPrimaryInvariant(primary.root, { phase: "main review" });
+    assertPrimarySnapshot(primary, "main review");
     const layout = this.#layout(primary.root);
     const lock = path.join(this.dataDir, "locks", `release-git-${layout.repositoryKey}`);
     return withInterprocessLocks([lock], async () => {
@@ -780,7 +784,7 @@ export class ReleaseGitWorkspaceService {
         approvalRequired: (commits.length > 0 || localMain !== originMain) && !approved,
       };
       const finalPrimary = await primarySnapshot(primary.root);
-      await this.assertPrimaryInvariant(finalPrimary.root, { phase: "main review" });
+      assertPrimarySnapshot(finalPrimary, "main review");
       if (
         finalPrimary.headCommit !== primary.headCommit
         || finalPrimary.mainCommit !== primary.mainCommit
@@ -1474,7 +1478,8 @@ export class ReleaseGitWorkspaceService {
     publishedRevision, adoptions = [] } = {}) {
     this.#assertAvailable("deriveInstalledLocalSourceBaselineForSelection");
     const initial = await primarySnapshot(projectRoot);
-    await this.assertPrimaryInvariant(initial.root, { phase: "ordinary Await installed source binding" });
+    this.#assertAvailable("assertPrimaryInvariant");
+    assertPrimarySnapshot(initial, "ordinary Await installed source binding");
     if (publishedRevision !== await durablePublishedRevision(this.#environment, initial.root)) {
       throw new Error("Ordinary Await published baseline changed");
     }
@@ -1497,7 +1502,8 @@ export class ReleaseGitWorkspaceService {
   async validateLocalSourceBaseline({ projectRoot, provenance, planRevision, tasks } = {}) {
     this.#assertAvailable("validateLocalSourceBaseline");
     const initial = await primarySnapshot(projectRoot);
-    await this.assertPrimaryInvariant(initial.root, { phase: "local source baseline verification" });
+    this.#assertAvailable("assertPrimaryInvariant");
+    assertPrimarySnapshot(initial, "local source baseline verification");
     return assertInstalledLocalSourceBaseline({ provenance, planRevision, tasks,
       repositoryRoot: initial.root,
       primaryMainCommit: initial.mainCommit,
@@ -1566,7 +1572,7 @@ export class ReleaseGitWorkspaceService {
     this.#assertAvailable("prepareCandidate");
     const revision = String(planRevision ?? "").trim();
     const initial = await primarySnapshot(projectRoot);
-    await this.assertPrimaryInvariant(initial.root, { phase: "native release preparation" });
+    assertPrimarySnapshot(initial, "native release preparation");
     const baseCommit = String(approvedBaseCommit ?? "").trim();
     const localSource = baseProvenance?.kind === LOCAL_SOURCE_BASELINE_PROVENANCE
       ? normalizedBaseProvenance(baseProvenance, baseCommit) : null;
@@ -1707,7 +1713,7 @@ export class ReleaseGitWorkspaceService {
         if (typeof validateBeforeCommit === "function") await validateBeforeCommit();
         await validatePreparationMain();
         const current = await primarySnapshot(initial.root);
-        await this.assertPrimaryInvariant(initial.root, { phase: "native release promotion" });
+        assertPrimarySnapshot(current, "native release promotion");
         if (current.mainCommit !== (localSource?.agreedMainCommit ?? baseCommit) || current.headCommit !== initial.headCommit
             || current.branchRef !== initial.branchRef
             || current.dirty.indexFingerprint !== initial.dirty.indexFingerprint

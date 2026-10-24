@@ -10,6 +10,8 @@ export class CodexAppServerLifecycle {
   #timeoutHealthCheck = null;
   #startedWithRollback = false;
   #startupTimings = {};
+  #updateFlight = null;
+  #updateCompletion = null;
 
   constructor(dependencies) {
     this.#d = dependencies;
@@ -55,6 +57,14 @@ export class CodexAppServerLifecycle {
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
     });
+    try { d.bindSpawnedProcess?.(child); }
+    catch (error) {
+      // Spawn already created this exact owned child. A custody bind failure
+      // must not strand it outside the transport owner.
+      child.once("error", () => {});
+      child.kill();
+      throw error;
+    }
     await new Promise((resolve, reject) => {
       child.once("spawn", resolve);
       child.once("error", reject);
@@ -131,6 +141,11 @@ export class CodexAppServerLifecycle {
   }
 
   async start() {
+    if (this.#updateFlight) await this.#updateFlight;
+    return this.#start();
+  }
+
+  async #start() {
     try {
       await this.transport.start();
       this.#startedWithRollback = false;
@@ -151,14 +166,28 @@ export class CodexAppServerLifecycle {
       }
     }
   }
-  async stop() { await this.transport.stop(); }
-  request(method, params = {}, options = {}) { return this.transport.request(method, params, options); }
-  readThread(threadId, options = {}) { return this.transport.readThread(threadId, options); }
+  async stop() {
+    await this.#updateCompletion?.catch(() => {});
+    await this.transport.stop();
+  }
+  request(method, params = {}, options = {}) {
+    return this.#updateFlight ? this.#updateFlight.then(() => this.transport.request(method, params, options))
+      : this.transport.request(method, params, options);
+  }
+  readThread(threadId, options = {}) {
+    return this.#updateFlight ? this.#updateFlight.then(() => this.transport.readThread(threadId, options))
+      : this.transport.readThread(threadId, options);
+  }
   invalidateThreadRead(threadId) { this.transport.invalidateThreadRead(threadId); }
   notify(method, params = {}) { this.transport.notify(method, params); }
   respond(id, result) { return this.transport.respond(id, result); }
 
   async initialize({ attachSelectedThread = true } = {}) {
+    if (this.#updateFlight) await this.#updateFlight;
+    return this.#initialize({ attachSelectedThread });
+  }
+
+  async #initialize({ attachSelectedThread = true, request = null } = {}) {
     const initializeOnce = async () => {
       const phaseStartedAt = performance.now();
       const initialized = await this.transport.initialize({
@@ -171,7 +200,7 @@ export class CodexAppServerLifecycle {
       });
       if (initialized.newlyInitialized) this.#startupTimings.initializeMs = Math.round(performance.now() - phaseStartedAt);
       if (initialized.newlyInitialized) this.notify("initialized");
-      if (attachSelectedThread) await this.#d.attachSelectedThread();
+      if (attachSelectedThread) await this.#d.attachSelectedThread(request ? { sendRpc: request } : undefined);
       return initialized;
     };
     try {
@@ -199,6 +228,41 @@ export class CodexAppServerLifecycle {
         );
       }
     }
+  }
+
+  applyPreparedUpdate() {
+    const d = this.#d;
+    if (this.#updateCompletion) return this.#updateCompletion;
+    const lostTransport = !this.transport.running;
+    if (d.isStopping() || this.#restarting || this.#timeoutRestarting
+      || (!lostTransport && d.activeRuns().some(run => run.provider === "codex" && !["completed", "failed", "cancelled", "aborted"].includes(run.status)))
+      || this.transport.pending?.size || Object.values(this.transport.requestQueues ?? {}).some(queue => queue.length)) return Promise.resolve(false);
+    // Set the provider-local RPC fence synchronously before yielding. Newly
+    // admitted commands keep their original identities and wait; no replay.
+    this.#updateFlight = Promise.resolve().then(async () => {
+      if (d.isStopping() || (!lostTransport && d.activeRuns().some(run => run.provider === "codex"
+        && !["completed", "failed", "cancelled", "aborted"].includes(run.status)))) return false;
+      this.#restarting = true;
+      try {
+        d.onInitializationPending?.();
+        await this.transport.stop();
+        await this.#start();
+        await this.#initialize({ attachSelectedThread: d.providerSelected(),
+          request: (method, params, options) => this.transport.request(method, params, options) });
+        return true;
+      } catch (error) {
+        d.onInitializationFailure?.(error);
+        throw error;
+      } finally { this.#restarting = false; }
+    }).finally(() => { this.#updateFlight = null; });
+    // Existing recovery may issue reads through the ordinary port. Run it only
+    // for lost transport, after removing the RPC fence; exact run lanes remain
+    // occupied and no old user command is resubmitted.
+    this.#updateCompletion = this.#updateFlight.then(async applied => {
+      if (applied && lostTransport) await d.recoverRuns();
+      return applied;
+    }).finally(() => { this.#updateCompletion = null; });
+    return this.#updateCompletion;
   }
 
   async restartAfterCrash({ required = false } = {}) {

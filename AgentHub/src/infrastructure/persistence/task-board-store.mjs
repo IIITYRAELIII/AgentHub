@@ -2,6 +2,9 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { readClaimCustodyFence, configureClaimCustodyBindingFences, configureClaimCustodyNamespaceFences,
+  claimCustodySqlConnection, captureClaimCustodySqlAuthorities } from "./claim-custody-fence.mjs";
+import { claimCustodyState, TaskClaimCustodyRejectedError, TaskClaimContinuationWithdrawnError } from "../../domain/claim-forward-custody.mjs";
 import { nativeTestMetadataDrift } from "../../domain/native-test-terminal-recovery.mjs";
 import { AsyncSqliteMutationQueue } from "./async-sqlite-mutation-queue.mjs";
 
@@ -339,6 +342,7 @@ function configure(database) {
       PRIMARY KEY (source_kind, source_id)
     ) WITHOUT ROWID;
   `);
+  configureClaimCustodyBindingFences(database);
   const tableExists = (name) => Boolean(database.prepare(`
     SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?
   `).get(name));
@@ -437,7 +441,7 @@ function configure(database) {
       WHEN status = 'started' AND start_destination_stream_id IS NOT stream_id THEN 'prepared'
       ELSE 'completed'
     END
-    WHERE start_effect_state IS NULL
+    WHERE start_effect_state IS NULL AND start_request_id IS NOT NULL
   `);
   if (!taskColumns.some((column) => column.name === "workflow_status")) {
     database.exec("ALTER TABLE hub_board_tasks ADD COLUMN workflow_status TEXT NOT NULL DEFAULT 'new'");
@@ -830,6 +834,7 @@ export class TaskBoardStore {
   #revision = 0;
   #checklistEventDrain = null;
   #mutations = new AsyncSqliteMutationQueue();
+  #custodyWriteAuthorities = [];
 
   constructor({ databaseFile, now = () => Date.now(), idFactory = randomUUID, readOnly = false } = {}) {
     if (!databaseFile) throw new TypeError("databaseFile is required");
@@ -846,6 +851,8 @@ export class TaskBoardStore {
         configure(this.#database);
         this.#migrateLegacyReleaseRegistry();
         this.#removeReleaseRegistry();
+        configureClaimCustodyNamespaceFences(this.#database);
+        this.#database = claimCustodySqlConnection(this.#database, () => this.#custodyWriteAuthorities);
       }
     } catch (error) {
       this.#database.close();
@@ -2240,7 +2247,15 @@ export class TaskBoardStore {
   }
 
   runMutation(operation, options = {}) {
-    return this.#mutations.run(operation, options);
+    const authorities = captureClaimCustodySqlAuthorities(this.#database, options.method, options.args ?? []);
+    return this.#mutations.run(() => {
+      this.#custodyWriteAuthorities = authorities;
+      try {
+        const result = operation();
+        if (result?.then) throw new TypeError("Task SQL mutation must remain synchronous");
+        return result;
+      } finally { this.#custodyWriteAuthorities = []; }
+    }, options);
   }
 
   mutationDiagnostics() {
@@ -2400,7 +2415,7 @@ export class TaskBoardStore {
 
   claim(id, {
     workspaceId, streamId, provider, threadId, turnId, operationId,
-    operationKind = "claim", gitBaseline = null,
+    operationKind = "claim", gitBaseline = null, forwardCustodyRequestId = null, validateClaimAdmission = null,
   } = {}) {
     const taskId = String(id ?? "").trim();
     const identity = [provider, threadId, turnId, operationId].map((value) => String(value ?? "").trim());
@@ -2414,6 +2429,9 @@ export class TaskBoardStore {
     return this.#withDatabase((database) => {
       database.exec("BEGIN IMMEDIATE");
       try {
+      if (validateClaimAdmission != null) {
+        if (typeof validateClaimAdmission !== "function" || validateClaimAdmission()?.then) throw new TypeError("Claim admission validator must be synchronous");
+      }
       const current = this.#taskRow(database, taskId);
       if (current.status === "done") throw new Error("Closed Tasks are an archive; claim an open Task");
       if (String(current.workspace_id ?? "") !== String(workspaceId ?? "")) {
@@ -2421,6 +2439,33 @@ export class TaskBoardStore {
       }
       if (current.status === "starting" && String(current.start_request_id ?? "").trim()) {
         throw new Error("prepared Task launch must be cancelled before claim");
+      }
+      const claimReceiptTable = database.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'hub_mcp_operations'").get();
+      if (claimReceiptTable && database.prepare(`
+        SELECT 1 FROM hub_mcp_operations WHERE request_id = ?
+          AND (json_extract(result_json, '$.evidence.kind') IN ('task-claim-executor-busy-v1', 'task-claim-lock-admission-v1')
+            OR json_extract(result_json, '$.operatorReconciliation.evidence.kind') IN ('task-claim-executor-busy-v1', 'task-claim-lock-admission-v1'))
+      `).get(String(operationId))) throw new Error("Task claim was durably refused before admission");
+      if (readClaimCustodyFence(database, "original", operationId)) throw new TaskClaimContinuationWithdrawnError();
+      const reservation = readClaimCustodyFence(database, "task", taskId);
+      if (reservation && (reservation.requestId !== forwardCustodyRequestId
+          || reservation.successorClaimRequestId !== operationId)) throw new TaskClaimCustodyRejectedError("Task is reserved by a forward custody fence");
+      if (forwardCustodyRequestId) {
+        const raw = database.prepare("SELECT * FROM hub_mcp_operations WHERE request_id = ?").get(forwardCustodyRequestId);
+        const fence = raw && claimCustodyState({ requestId: raw.request_id, workspaceId: raw.workspace_id,
+          streamId: raw.stream_id, threadId: raw.provider_thread_id, provider: raw.provider, toolName: raw.tool_name,
+          argumentsHash: raw.arguments_hash, claimCustody: JSON.parse(raw.claim_custody_json ?? "null") });
+        if (!fence || fence.phase !== "fenced" || fence.taskId !== taskId || fence.workspaceId !== workspaceId
+            || fence.successorClaimRequestId !== operationId || fence.original.provider !== provider
+            || fence.original.threadId !== threadId || fence.original.streamId !== streamId
+            || Number(current.row_revision) !== fence.taskRevision || current.stream_id !== fence.envelope.expected_owner_stream_id) {
+          throw new TaskClaimCustodyRejectedError("Custody assignment identity or Task CAS differs");
+        }
+        const intake = database.prepare("SELECT * FROM hub_mcp_operations WHERE request_id = ?").get(operationId);
+        if (!intake || intake.tool_name !== "hub_task_claim" || intake.workspace_id !== workspaceId || intake.stream_id !== streamId
+            || intake.provider !== provider || intake.provider_thread_id !== threadId || intake.arguments_hash !== fence.successorArgumentsHash
+            || intake.status !== "pending" || !["pending", "unknown"].includes(intake.receipt_state)) throw new TaskClaimCustodyRejectedError("Custody successor intake differs");
+        if (baselineJson !== gitBaselineJson(fence.namespace?.workspace?.gitBaseline ?? fence.source.gitBaseline)) throw new TaskClaimCustodyRejectedError("Custody baseline differs");
       }
       const bound = database.prepare(`
         SELECT * FROM hub_task_turn_bindings

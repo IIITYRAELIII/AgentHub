@@ -204,20 +204,6 @@ errors without changing the response; complete action-handler spans include
 the subsequent awaited processing. Aborted requests and paint measurements
 cancelled by a hidden surface have explicit diagnostic outcomes. They never
 claim that a Hub command was cancelled or that hidden content became visible.
-For a materialized terminal history page carrying an exact root-user
-`clientUserMessageId`, `history-retrieved` and `history-terminal-paint` join the
-existing server `terminal-history` span under that original command identity.
-Only bounded Stream/provider/Thread/turn identity and terminal revision pass the
-client telemetry allowlist. Retrieval is not paint; paint is recorded only for
-the selected visible chat after the exact terminal message has been rendered,
-using the existing two-frame paint opportunity (not a compositor guarantee).
-At completion it revalidates the existing navigation generation, selected chat,
-route, materialized page and exact connected visible terminal/revision. Stream,
-view, historical navigation or revision supersession cancels the paired
-diagnostic with `failureKind=superseded`, never claiming an old successful paint.
-Unknown original identity emits no invented command correlation. UTC endpoints
-permit cross-process correlation with clock-skew limitations; the client render
-duration remains monotonic. No history polling or delivery authority is added.
 Configuration and infrastructure construction precede the trace worker. Their
 monotonic durations and original UTC endpoints are captured before the work and
 submitted to that same worker once it exists, marked `bufferedUntilTraceReady`.
@@ -283,17 +269,28 @@ requests or repository publication. Queue/lease time, stage duration, retries,
 waiting reason and per-target effect are separate measurements; transport timeout
 is not operation latency and cannot create a second operation.
 
-Release validation may run at most two test-file processes concurrently, and
-only when the host reports at least four logical CPUs and 4 GiB of free memory.
-A file is parallel-eligible only when its reviewed v2 input declaration proves
-disposable filesystem, lock, Git, port and browser-profile ownership; every
-child receives a unique temporary environment root. Undeclared files remain
-exclusive, and matching shared-resource tags serialize only the files that name
-that resource. This bound protects Hub CPU and memory headroom while allowing
-independent Git and browser fixtures to overlap. Cache decisions report a
+Release validation admits independent files against a target of 40% of total
+machine CPU capacity and 40% of physical RAM for the whole test process tree,
+including Git, browsers and helpers. Other applications reduce available
+headroom. Admission uses measured CPU and resident memory plus reservations for
+new, not-yet-sampled work; there is no fixed file/worker ceiling. This is a
+cooperative budget, not an OS throttle: indivisible running tests can overshoot
+and are never killed, suspended or retried merely for doing so. Measurements
+report overshoots. Accounting failure stops new admission and drains started
+tests with their original outcomes/checkpoints.
+
+Every file receives a separate process and disposable temp/home/state root.
+Database, Git, endpoint and browser fixtures own their temporary resources;
+only actual shared mutable resources require matching serialization tags.
+Parallel safety is independent from cache eligibility. A missing cache
+declaration means uncached execution, not exclusive execution. The full runner
+has one checkpoint owner across concurrent groups; syntax preflight and locked
+dependency preparation remain prerequisites. Every selected file still runs
+exactly once or reuses a content-proven success. Cache decisions report a
 stable content-free reason (`absent`, `fingerprint changed`, or the exact
 uncacheable policy reason); they never print environment values or fabricate
-reusable evidence.
+reusable evidence. See ADR-0346. Existing frozen/admitted generations retain
+their original runner; this policy applies only to subsequent compositions.
 
 Codex rollout activity fallback runs outside the main Hub event loop. Concurrent
 reads of the same rollout and read options share one in-flight operation. A cold

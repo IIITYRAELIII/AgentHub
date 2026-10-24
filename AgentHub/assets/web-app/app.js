@@ -10928,7 +10928,7 @@ function renderServerStatus(payload = {}) {
       : "Состояние процесса пока недоступно.";
   serverStateDot?.toggleAttribute("data-online", active);
   serverFacts.replaceChildren(
-    serverFact("Версия", processInfo.version ? `v${processInfo.version}` : "—"),
+    serverFact("Версия", processInfo.versionLabel || (processInfo.version ? `v${processInfo.version}` : "—")),
     serverFact("PID", processInfo.pid ? String(processInfo.pid) : "—"),
     serverFact("Запущен", formatServerStartedAt(processInfo.startedAt)),
     serverFact("Работает", formatRunningDuration(processInfo.startedAt)),

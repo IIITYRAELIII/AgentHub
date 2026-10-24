@@ -461,7 +461,7 @@ test("shipped Telegram viewer opens a user-upload through the production publish
       }]);
     });
 
-    await page.locator('[data-mobile-stream-id="stream-1"]').first().click();
+    await page.locator('[data-mobile-button="chat"]').click();
     await page.locator('.msg-user[data-turn-id="turn-telegram-image"] .attachment-image')
       .first()
       .click();
@@ -657,7 +657,7 @@ test("a delayed Telegram open cannot displace the current viewer generation", as
         })),
       }]);
     });
-    await page.locator('[data-mobile-stream-id="stream-1"]').first().click();
+    await page.locator('[data-mobile-button="chat"]').click();
     const images = page.locator('.msg-agent[data-turn-id="turn-telegram-race"] .attachment-image');
     const aControlResponse = page.waitForResponse((response) => {
       if (!response.url().endsWith("/api/control")) return false;
@@ -825,7 +825,7 @@ test("Telegram fetch and image settlement share the viewer absolute deadline", a
         }],
       }]);
     });
-    await page.locator('[data-mobile-stream-id="stream-1"]').first().click();
+    await page.locator('[data-mobile-button="chat"]').click();
     await page.locator('.msg-agent[data-turn-id="turn-telegram-deadline"] .attachment-image').click();
     const openedAuthority = await page.evaluate(() => window.AgentHub.attachmentViewerLoadAuthority());
     assert.equal(openedAuthority.current, true);

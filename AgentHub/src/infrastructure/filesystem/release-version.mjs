@@ -1,32 +1,8 @@
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { calendarVersion, compareSemanticVersions, semanticVersion } from "../../domain/agent-hub-version.mjs";
 
 const AGENT_HUB_ROOT = path.resolve(import.meta.dirname, "..", "..", "..");
-const CALENDAR_VERSION_PATTERN = /^(\d{4})\.(\d{1,2})\.(\d{1,2})$/u;
-
-function calendarVersionParts(value) {
-  const match = CALENDAR_VERSION_PATTERN.exec(String(value ?? "").trim());
-  if (!match) return null;
-  const parts = match.slice(1).map(Number);
-  const [year, month, day] = parts;
-  const date = new Date(year, month - 1, day);
-  return date.getFullYear() === year
-    && date.getMonth() === month - 1
-    && date.getDate() === day
-    ? parts
-    : null;
-}
-
-function compareCalendarVersions(left, right) {
-  const leftParts = calendarVersionParts(left);
-  const rightParts = calendarVersionParts(right);
-  if (!leftParts || !rightParts) return null;
-  for (let index = 0; index < leftParts.length; index += 1) {
-    if (leftParts[index] !== rightParts[index]) return leftParts[index] - rightParts[index];
-  }
-  return 0;
-}
-
 function serializedJson(value, source) {
   const newline = source.includes("\r\n") ? "\r\n" : "\n";
   return `${JSON.stringify(value, null, 2).replaceAll("\n", newline)}${newline}`;
@@ -52,6 +28,7 @@ export async function inspectAgentHubReleaseVersion({
   root = AGENT_HUB_ROOT,
   now = new Date(),
   expectedVersion = null,
+  releaseType = "patch",
   readFileImpl = readFile,
 } = {}) {
   const packageFile = path.join(root, "package.json");
@@ -64,14 +41,19 @@ export async function inspectAgentHubReleaseVersion({
   const lockMetadata = JSON.parse(lockSource);
   assertAgentHubMetadata(packageMetadata, lockMetadata);
 
-  const version = expectedVersion == null
-    ? agentHubCalendarVersion(now)
-    : String(expectedVersion).trim();
-  if (!calendarVersionParts(version)) throw new Error("Agent Hub frozen release version is invalid");
   const previousVersion = String(packageMetadata.version ?? "").trim();
-  const comparison = compareCalendarVersions(previousVersion, version);
+  const version = expectedVersion == null
+    ? nextAgentHubPublicVersion(previousVersion, releaseType)
+    : String(expectedVersion).trim();
+  if (!calendarVersion(version)) semanticVersion(version);
+  if (calendarVersion(previousVersion) && !calendarVersion(version) && semanticVersion(version).core[0] < 2) {
+    throw new Error("First installer semantic version must be 2.0.0 or a later supported version");
+  }
+  const comparison = calendarVersion(previousVersion) && !calendarVersion(version)
+    ? -1 : !calendarVersion(previousVersion) && calendarVersion(version)
+      ? 1 : compareSemanticVersions(previousVersion, version);
   if (comparison !== null && comparison > 0) {
-    throw new Error(`Agent Hub version ${previousVersion} is newer than local release date ${version}`);
+    throw new Error(`Agent Hub version ${previousVersion} is newer than selected release ${version}`);
   }
 
   const lockVersion = String(lockMetadata.version ?? "").trim();
@@ -96,6 +78,18 @@ export async function inspectAgentHubReleaseVersion({
   };
 }
 
+export function nextAgentHubPublicVersion(previousVersion, releaseType = "patch") {
+  if (!["major", "minor", "patch"].includes(releaseType)) throw new Error("Unknown semantic release type");
+  if (calendarVersion(previousVersion)) return "2.0.0"; // Explicit first-installer decision.
+  const previous = semanticVersion(previousVersion);
+  if (previous.metadata) throw new Error("Package public version must not include a build");
+  if (previous.prerelease.length && releaseType === "patch") return previous.core.join(".");
+  const core = [...previous.core], index = { major: 0, minor: 1, patch: 2 }[releaseType];
+  core[index] += 1;
+  for (let i = index + 1; i < 3; i++) core[i] = 0;
+  const result = core.join("."); semanticVersion(result); return result;
+}
+
 export async function prepareAgentHubReleaseVersion({ writeFileImpl = writeFile, ...options } = {}) {
   const result = await inspectAgentHubReleaseVersion(options);
   for (const update of result.writes) await writeFileImpl(update.file, update.content, "utf8");
@@ -104,6 +98,12 @@ export async function prepareAgentHubReleaseVersion({ writeFileImpl = writeFile,
 }
 
 export async function prepareCommittedAgentHubReleaseVersion(options = {}) {
+  // Publication validates the original selected/frozen version. Selecting a
+  // new public version belongs to the existing freeze/preparation owner only.
+  if (typeof options.expectedVersion !== "string" || !options.expectedVersion
+      || options.expectedVersion !== options.expectedVersion.trim()) {
+    throw new Error("Publication requires its original expected version");
+  }
   const result = await prepareAgentHubReleaseVersion(options);
   if (result.changed) {
     throw new Error(

@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 
 import {
-  boundedTestFileConcurrency,
+  testExecutionPolicy,
   testFingerprint,
   runWindowsTestFile,
   runTestSuite,
@@ -124,14 +124,27 @@ test("test execution never retries an assertion or an unclassified OS error", as
   }
 });
 
-test("test process concurrency requires both CPU and memory headroom", () => {
-  const gib = 1024 ** 3;
-  assert.equal(boundedTestFileConcurrency({ availableParallelism: 8, freeMemory: 8 * gib }), 2);
-  assert.equal(boundedTestFileConcurrency({ availableParallelism: 3, freeMemory: 8 * gib }), 1);
-  assert.equal(boundedTestFileConcurrency({ availableParallelism: 8, freeMemory: 3 * gib }), 1);
+test("a changed runner accounting input invalidates otherwise identical successful test evidence", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "ah-runner-input-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await writeFile(path.join(root, "test.mjs"), "export const valid = true;\n");
+  const accounting = path.join(root, "accounting.cs");
+  await writeFile(accounting, "first accounting implementation");
+  const options = { cwd: root, runnerInputs: [accounting] };
+  const first = await testFingerprint("test.mjs", options);
+  assert.match(first, /^[a-f0-9]{64}$/u);
+  await writeFile(accounting, "corrected accounting implementation");
+  assert.notEqual(await testFingerprint("test.mjs", options), first);
 });
 
-test("parallel admission requires a complete valid isolation declaration", () => {
+test("parallel execution is independent from cache eligibility", () => {
+  assert.deepEqual(testExecutionPolicy(undefined), { parallel: true, shared: [] });
+  assert.deepEqual(testExecutionPolicy({ builtins: ["child_process"] }), { parallel: true, shared: [] });
+  assert.deepEqual(testExecutionPolicy({ builtins: ["child_process"], execution: { shared: ["fixture"] } }), { parallel: true, shared: ["fixture"] });
+  assert.throws(() => testExecutionPolicy({ execution: { shared: ["invalid resource"] } }), /shared-resource/u);
+});
+
+test("legacy cache declarations retain validated shared-resource ownership", () => {
   assert.equal(parallelTestExecution({ execution: { parallel: true } }), null);
   assert.equal(parallelTestExecution({
     execution: {
@@ -172,6 +185,8 @@ test("each test process receives a disposable environment root", async () => {
         assert.notEqual(env.LOCALAPPDATA, "must-not-be-inherited");
         assert.equal(env.LOCALAPPDATA, env.TEMP);
         assert.equal(env.TEMP, env.TMP);
+        for (const name of ["APPDATA", "HOME", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME"]) assert.equal(env[name], env.TEMP);
+        assert.equal(Object.hasOwn(env, "USERPROFILE"), false, "Windows OS identity stays intact for native browser KnownFolders");
         assert.ok(path.basename(env.LOCALAPPDATA).length <= 10);
         await access(env.LOCALAPPDATA);
         roots.push(env.LOCALAPPDATA);

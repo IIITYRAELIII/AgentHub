@@ -11,6 +11,7 @@ import { createPublicationArtifactSteps } from "./src/infrastructure/process/pub
 import { publicationCheckpointStore } from "./src/infrastructure/persistence/publication-checkpoint.mjs";
 import { publicationRunStore } from "./src/infrastructure/persistence/publication-run-store.mjs";
 import { ReleaseOperationStore } from "./src/infrastructure/persistence/release-operation-store.mjs";
+import { artifactVersionIdentity } from "./src/domain/agent-hub-version.mjs";
 
 function requiredEnvironment(name) {
   const value = String(process.env[name] ?? "").trim();
@@ -39,9 +40,7 @@ export function releaseOperationRuntimePublicationInput({ operation, generation,
     || publication.head !== candidate.commit
     || typeof publication.releaseVersion !== "string"
     || typeof publication.runtimeReleaseVersion !== "string"
-    || !/^\d+(?:\.\d+){2}$/u.test(publication.releaseVersion)
-    || !publication.runtimeReleaseVersion.startsWith(`${publication.releaseVersion}.`)
-    || !/^[1-9]\d*$/u.test(publication.runtimeReleaseVersion.slice(publication.releaseVersion.length + 1))) {
+    || artifactVersionIdentity(publication.runtimeReleaseVersion).publicVersion !== publication.releaseVersion) {
     throw new Error("Frozen runtime publication binding differs from the candidate generation");
   }
   return {

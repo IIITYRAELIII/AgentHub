@@ -509,15 +509,16 @@ test("missing-provenance recovery binds receipt bytes, historical adoption and o
   })), /historical selected Task adoption is not exact/u);
 });
 
-test("historical adoption survives advanced primary while ordinary stale adoption refuses", { timeout: 240000 }, async (context) => {
+test("historical adoption survives advanced primary while native composition keeps current agreed main", { timeout: 240000 }, async (context) => {
   const f = await legacyFrozenFixture(context, { advancePrimary: true });
   const before = await candidateState(f);
-  await assert.rejects(f.tasks.releaseBaseEvidence({
+  const currentBase = await f.tasks.releaseBaseEvidence({
     projectRoot: f.primaryRoot, publishedBaseCommit: f.published,
     tasks: f.frozenTasks.map(({ taskId, resultCommit }) => ({ taskId, resultCommit })),
-  }), /accepted local main changed/u);
-  assert.equal(await git(f.primaryRoot, "rev-parse", "refs/heads/main"), f.advanced);
-  assert.deepEqual(await candidateState(f), before);
+  });
+  assert.equal(currentBase.baseCommit, f.advanced);
+  assert.equal(currentBase.compositionPolicy, "main-selected-git-merge-v1");
+  assert.deepEqual(currentBase.adoptions, []);
   const historical = await f.tasks.historicalUpstreamAdoptionEvidence({
     projectRoot: f.primaryRoot, publishedBaseCommit: f.published,
     tasks: f.frozenTasks, expected: f.missingProvenanceRecovery.expectedAdoption, recoveryKind: RECOVERY_KIND,
@@ -918,19 +919,14 @@ test("advanced bases require an immutable provenance envelope before candidate e
   }), /without immutable provenance/u);
   assert.deepEqual(await candidateState(f), before);
 
-  // Current ordinary admission verifies and retains this exact adoption while
-  // keeping agreed local main as its base; historical recovery is separate.
+  // Historical adoption evidence remains readable by recovery. It cannot
+  // select a different base for the current ordinary native composer.
   const base = await f.tasks.releaseBaseEvidence({
     projectRoot: f.primaryRoot, publishedBaseCommit: f.published,
     tasks: f.frozenTasks.map(({ taskId, resultCommit }) => ({ taskId, resultCommit })),
   });
   assert.equal(base.baseCommit, f.published);
-  assert.equal(base.compositionPolicy, "main-selected-git-merge-v1");
-  assert.deepEqual(base.adoptions, [{
-    taskId: TASK_ID, resultCommit: f.resultCommit,
-    recordRef: f.adoption.recordRef, recordHash: f.adoption.recordHash,
-    adoptedCommit: f.upstream, acceptedLocalMainCommit: f.published,
-  }]);
+  assert.deepEqual(base.adoptions, []);
   const recovered = await guarded.recoverFreezingPublicationCandidate(f.request({
     confirm: true,
     expectedProofHash: (await guarded.recoverFreezingPublicationCandidate(f.request())).proofHash,
@@ -940,14 +936,10 @@ test("advanced bases require an immutable provenance envelope before candidate e
     planRevision: "a".repeat(64), projectRoot: f.primaryRoot, workspaceId: f.workspaceId,
     approvedBaseCommit: f.upstream, frozenTasks: f.frozenTasks,
   }), /exact agreed local main/u);
-  const abandoned = await candidateState(f);
-  // A legacy Task row without its registered base is not current adoption
-  // authority merely because historical abandonment succeeded.
   await assert.rejects(guarded.prepareCandidate({
     projectRoot: f.primaryRoot, workspaceId: f.workspaceId, expectedPlanRevision: "a".repeat(64),
     planRevision: "a".repeat(64), approvedBaseCommit: f.published, frozenTasks: f.frozenTasks,
-  }), /Native upstream adoption receipt or current Git identity changed/u);
-  assert.deepEqual(await candidateState(f), abandoned);
+  }), { code: "RELEASE_NATIVE_HISTORY_REQUIRED" });
   assert.equal((JSON.parse(await readFile(f.checkpointFile, "utf8"))).phase, "abandoned");
 });
 
