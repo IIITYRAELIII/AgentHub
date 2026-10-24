@@ -24,7 +24,9 @@ async function fixture(t) {
   const root = await mkdtemp(path.join(os.tmpdir(), "hub-installed-notes-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const gitAt = async (cwd, args, options = {}) => {
-    const { stdout } = await exec("git", args, { cwd, windowsHide: true, encoding: "buffer" });
+    const pending = exec("git", args, { cwd, windowsHide: true, encoding: "buffer" });
+    pending.child.stdin.end(options.input ?? "");
+    const { stdout } = await pending;
     return options.rawOutput ? stdout : stdout.toString("utf8").trim();
   };
   const save = async (cwd, file, bytes) => {

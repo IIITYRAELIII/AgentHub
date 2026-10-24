@@ -17,7 +17,9 @@ import { ReleasePreparationRejectedError } from "../../../src/domain/release-pre
 const run = promisify(execFile);
 const hash = value => createHash("sha256").update(value).digest("hex");
 async function git(root, args, options = {}) {
-  const { stdout } = await run("git", args, { cwd: root, windowsHide: true, encoding: "buffer", maxBuffer: 8 * 1024 * 1024 });
+  const pending = run("git", args, { cwd: root, windowsHide: true, encoding: "buffer", maxBuffer: 8 * 1024 * 1024 });
+  pending.child.stdin.end(options.input ?? "");
+  const { stdout } = await pending;
   return options.rawOutput ? stdout : stdout.toString("utf8").trim();
 }
 async function save(root, name, value) {
@@ -187,13 +189,20 @@ async function hostFixture(t, { changed = "RuntimeHost/AgentHub.RuntimeHost.cs",
     agreedMainCommit: "1".repeat(40), sourceBaseCommit: "4".repeat(40), sourceBaseTree: "5".repeat(40),
     sourcePatchSha256: hash(patch), installedReleaseId: "installed-host", installedManifestSha256: hash(manifest),
     planRevision: "exact-plan", selectionHash: localSourceSelectionHash(tasks) };
-  const gitPort = async args => {
+  const sourceOid = bytes => createHash("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest("hex");
+  const blobs = new Map([...sources.values()].map(bytes => [sourceOid(bytes), bytes]));
+  const gitPort = async (args, options = {}) => {
     if (args[0] === "ls-remote") return p.publishedBaseCommit + "\trefs/heads/main";
     if (args[0] === "merge-base") return "";
     if (args[0] === "rev-parse") return p.sourceBaseTree;
     if (args[0] === "diff") return args.includes("--binary") ? patch : "AgentHub/" + changed + "\0";
     if (args[0] === "ls-tree") return [...new Set([...sources.keys(), changed])]
-      .map(name => "100644 blob " + "a".repeat(40) + "\tAgentHub/" + name + "\0").join("");
+      .map(name => "100644 blob " + (sources.has(name) ? sourceOid(sources.get(name)) : "a".repeat(40)) + "\tAgentHub/" + name + "\0").join("");
+    if (args[0] === "cat-file" && args[1] === "--batch") return Buffer.concat(String(options.input).trim().split("\n").map(oid => {
+      assert.ok(blobs.has(oid), "unexpected Git object " + oid);
+      const bytes = blobs.get(oid);
+      return Buffer.concat([Buffer.from(`${oid} blob ${bytes.length}\n`), bytes, Buffer.from("\n")]);
+    }));
     if (args[0] === "show") {
       const name = args[1].split(":AgentHub/")[1];
       assert.ok(sources.has(name), "unexpected Git source read " + name);

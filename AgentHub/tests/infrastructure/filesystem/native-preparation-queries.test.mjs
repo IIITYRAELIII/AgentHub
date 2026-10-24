@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -8,6 +9,8 @@ import { promisify } from "node:util";
 import { assertNativeTaskHistories } from "../../../src/infrastructure/filesystem/native-release-merge.mjs";
 import { readNativeUpstreamAdoptions } from "../../../src/infrastructure/filesystem/native-upstream-adoption.mjs";
 import { taskRepositoryKey } from "../../../src/domain/task-git-reference.mjs";
+import { assertInstalledLocalSourceBaseline } from "../../../src/infrastructure/filesystem/local-source-baseline.mjs";
+import { LOCAL_SOURCE_BASELINE_PROVENANCE, localSourceSelectionHash } from "../../../src/domain/release-base-provenance.mjs";
 
 const exec = promisify(execFile);
 async function fixture(t, directory = null) {
@@ -87,3 +90,61 @@ for (const directory of ["CHANGELOG.md", "package.json", "package-lock.json"]) {
       tasks: [{ taskId: "directory", baseCommit: f.base, resultCommit: result }] }), /release-owned/u);
   });
 }
+
+test("installed source uses one binary-safe object batch and still refuses changed bytes, framing and current authority", async t => {
+  const f = await fixture(t), digest = b => createHash("sha256").update(b).digest("hex");
+  const origin = path.join(f.root, ".git", "fixture-origin");
+  await f.git(["init", "--bare", "--initial-branch=main", origin]);
+  await f.git(["remote", "add", "origin", origin]);
+  await f.git(["push", "origin", "main"]);
+  await f.git(["switch", "-c", "installed-source"]);
+  const runtimeRoot = path.join(f.root, ".git", "fixture-runtime"), release = path.join(runtimeRoot, "releases", "repair");
+  const files = [];
+  for (let i = 0; i < 64; i++) {
+    const relative = `files/${i}.bin`, bytes = Buffer.from(`binary-${i}\0\n0123456789 blob 999\n\u0416`);
+    await f.save(`AgentHub/${relative}`, bytes);
+    await mkdir(path.dirname(path.join(release, relative)), { recursive: true });
+    await writeFile(path.join(release, relative), bytes);
+    files.push({ path: relative, bytes: bytes.length, sha256: digest(bytes) });
+  }
+  const source = await f.commit(), tree = await f.git(["rev-parse", `${source}^{tree}`]);
+  const manifest = Buffer.from(JSON.stringify({ releaseId: "repair", files }));
+  await writeFile(path.join(release, "runtime-manifest.json"), manifest);
+  const pointer = path.join(runtimeRoot, "current.json"), pointerBytes = Buffer.from(JSON.stringify({ current: "repair" }));
+  await writeFile(pointer, pointerBytes);
+  const provenance = { schemaVersion: 1, kind: LOCAL_SOURCE_BASELINE_PROVENANCE,
+    publishedBaseCommit: f.result, agreedMainCommit: f.result, sourceBaseCommit: source, sourceBaseTree: tree,
+    sourcePatchSha256: digest(await f.git(["diff", "--binary", "--full-index", "--no-renames", f.result, source], { rawOutput: true })),
+    installedReleaseId: "repair", installedManifestSha256: digest(manifest), planRevision: "batch", selectionHash: localSourceSelectionHash([]) };
+  const request = { provenance, git: f.git, primaryMainCommit: f.result, publishedRevision: f.result,
+    planRevision: "batch", tasks: [], runtimeRoot };
+  const started = performance.now();f.calls.length = 0;
+  const result = await assertInstalledLocalSourceBaseline(request);
+  const firstCalls = structuredClone(f.calls);
+  console.log(JSON.stringify({ proof: "installed-source-64", elapsedMs: performance.now() - started,
+    commands: firstCalls.length, show: firstCalls.filter(a => a[0] === "show").length,
+    batches: firstCalls.filter(a => a[0] === "cat-file" && a.includes("--batch")).length }));
+  assert.equal(result.runtimeFiles, 64);
+  assert.equal(firstCalls.filter(a => a[0] === "show").length, 0);
+  assert.equal(firstCalls.filter(a => a[0] === "cat-file" && a.includes("--batch")).length, 1);
+  for (const corrupt of [b => b.subarray(0, b.length - 1), b => Buffer.concat([b, Buffer.from("foreign")]),
+    b => { const out = Buffer.from(b); out[0] = out[0] === 97 ? 98 : 97; return out; },
+    b => { const out = Buffer.from(b); out[out.indexOf(10) + 1] ^= 1; return out; }]) {
+    await assert.rejects(assertInstalledLocalSourceBaseline({ ...request, git: async (args, options) => {
+      const value = await f.git(args, options);
+      return args[0] === "cat-file" && args.includes("--batch") ? corrupt(value) : value;
+    } }), /Git source batch/u);
+  }
+  const target = path.join(release, files[0].path), saved = await readFile(target);
+  await writeFile(target, Buffer.from("tampered"));
+  await assert.rejects(assertInstalledLocalSourceBaseline(request), /installed bytes changed/u);
+  await writeFile(target, saved);
+  await writeFile(pointer, JSON.stringify({ current: "foreign" }));
+  f.calls.length = 0;
+  await assert.rejects(assertInstalledLocalSourceBaseline(request), /installed release changed/u);
+  assert.equal(f.calls.filter(a => a[0] === "cat-file" && a.includes("--batch")).length, 0);
+  await writeFile(pointer, pointerBytes);
+  assert.equal((await assertInstalledLocalSourceBaseline(request)).runtimeFiles, 64);
+  assert.deepEqual(await readFile(path.join(release, "runtime-manifest.json")), manifest);
+  assert.deepEqual(await readFile(pointer), pointerBytes);
+});

@@ -36,6 +36,37 @@ function sourceMatches(source, physical, relative) {
   return normalized(source).equals(normalized(physical));
 }
 
+// One invocation-local object read, not a cache of mutable installation facts.
+// OID framing handles arbitrary binary/newline bytes without interpreting paths
+// as cat-file input. Check every returned object's identity/type/length/content.
+async function sourceBlobs(git, entries, paths) {
+  const requested = new Map();
+  for (const file of paths) {
+    const entry = entries.get(file);
+    if (!entry || entry.type !== "blob" || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u.test(entry.oid)) reject("Git source entry is absent or malformed");
+    requested.set(entry.oid, null);
+  }
+  if (!requested.size) return new Map();
+  const raw = Buffer.from(await git(["cat-file", "--batch"], {
+    input: [...requested.keys()].join("\n") + "\n", rawOutput: true,
+  }));
+  let offset = 0;
+  for (const oid of requested.keys()) {
+    const end = raw.indexOf(10, offset);
+    if (end < offset) reject("Git source batch is truncated");
+    const header = /^([a-f0-9]+) blob (0|[1-9][0-9]*)$/u.exec(raw.subarray(offset, end).toString("utf8"));
+    const size = header ? Number(header[2]) : NaN;
+    if (!header || header[1] !== oid || !Number.isSafeInteger(size) || size > raw.length - end - 2) reject("Git source batch identity or size changed");
+    const body = raw.subarray(end + 1, end + 1 + size);
+    offset = end + size + 2;
+    if (raw[offset - 1] !== 10 || createHash(oid.length === 40 ? "sha1" : "sha256")
+      .update(`blob ${size}\0`).update(body).digest("hex") !== oid) reject("Git source batch bytes changed");
+    requested.set(oid, body);
+  }
+  if (offset !== raw.length) reject("Git source batch has trailing data");
+  return new Map(paths.map(file => [file, requested.get(entries.get(file).oid)]));
+}
+
 async function assertInheritedRepositoryFiles({ git, sourceCommit, agreedMainCommit }) {
   const outside = async commit => {
     const raw = Buffer.from(await git(["ls-tree", "-r", "-z", "--full-tree", commit], { rawOutput: true }));
@@ -161,6 +192,18 @@ export async function assertInstalledLocalSourceBaseline({
     const split = entry.indexOf("\t");
     return [entry.slice(split + 1), entry.slice(0, 6)];
   }));
+  const objects = new Map(entries.map(entry => {
+    const split = entry.indexOf("\t"), [mode, type, oid] = entry.slice(0, split).split(" ");
+    return [entry.slice(split + 1), { mode, type, oid }];
+  }));
+  const runtimePaths = changed.filter(file => file.startsWith("AgentHub/") && !metadata(file.slice(9))
+    && !file.slice(9).startsWith("RuntimeHost/") && !hostInputs.has(file.slice(9)));
+  for (const file of runtimePaths) {
+    if (modes.get(file) !== "100644") reject("carry requires regular non-executable Git source entries");
+  }
+  const needsHost = changed.some(file => file.startsWith("AgentHub/") && hostInputs.has(file.slice(9)));
+  const sources = await sourceBlobs(git, objects, [...new Set([...runtimePaths,
+    ...(needsHost ? [...hostInputs].map(relative => `AgentHub/${relative}`) : [])])]);
   let runtimeFiles = 0;
   let hostChanged = false;
   let repositoryFilesVerified = false;
@@ -183,7 +226,7 @@ export async function assertInstalledLocalSourceBaseline({
     if (!installed) reject(`carry path is absent from the installed runtime: ${relative}`);
     const physical = await regular(path.join(releaseRoot, relative));
     if (sha(physical) !== installed.sha256 || physical.length !== installed.bytes) reject(`installed bytes changed: ${relative}`);
-    const source = Buffer.from(await git(["show", `${p.sourceBaseCommit}:${file}`], { rawOutput: true }));
+    const source = sources.get(file);
     if (!sourceMatches(source, physical, relative)) reject(`source differs from installed bytes: ${relative}`);
     runtimeFiles += 1;
   }
@@ -197,7 +240,7 @@ export async function assertInstalledLocalSourceBaseline({
     if (sha(bytes) !== expected.sha256 || bytes.length !== expected.bytes
         || (await runtimeHostSourceHash(manifest.sourceRoot)) !== bytes.toString("utf8").trim()) reject("compiled Host source changed");
     for (const relative of hostInputs) {
-      const source = Buffer.from(await git(["show", `${p.sourceBaseCommit}:AgentHub/${relative}`], { rawOutput: true }));
+      const source = sources.get(`AgentHub/${relative}`);
       if (!sourceMatches(source, await regular(path.join(manifest.sourceRoot, relative)), relative)) reject("Host Git source differs from compiled inputs");
     }
   }

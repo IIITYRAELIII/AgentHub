@@ -272,6 +272,18 @@ test("ordinary Await derives exact selected adoption and installed source throug
   await assert.rejects(f.candidate.deriveInstalledLocalSourceBaselineForSelection(request), /identity changed/);
 });
 
+test("installed source object batch reaches actual TaskGit Test through the existing owned process lane", async t => {
+  const f = await fixture(t);
+  const snapshot = await f.service.snapshot({ taskId: f.task.taskId, taskNumber: "HUB-1", projectRoot: f.task.projectRoot });
+  const integrated = await f.service.mergeIntoDev(snapshot);
+  assert.equal(integrated.integrated, true);
+  for (const name of ["server", "incoming", "selected"]) {
+    assert.ok(await git(integrated.dev.projectRoot, ["show", `HEAD:AgentHub/${name}.mjs`]));
+  }
+  assert.equal(await git(f.primary, ["rev-parse", "main"]), f.main);
+  assert.equal(await git(f.primary, ["status", "--porcelain=v1"]), "");
+});
+
 test("native installed source and exact ordinary adoption survive Test, candidate reuse and generation", { timeout: 240000 }, async t => {
   const f = await fixture(t);
   await assert.rejects(assertNativeTaskHistories({ git: f.port, baseCommit: f.main, tasks: f.tasks }), /release-owned/);

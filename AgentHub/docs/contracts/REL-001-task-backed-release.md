@@ -56,6 +56,12 @@ query, but result ancestry still validates commit existence even for an empty
 result. An invariant assertion may consume the primary snapshot just acquired at
 that boundary. These local read reductions do not cache refs, worktree/index,
 publication or plan authority across boundaries: promotion and retry re-read them.
+Installed-source verification reads selected Git blobs in one invocation-local
+OID batch, checking each object's type, length and content hash. The current
+runtime pointer, manifest digest and every physical file are still read and
+verified at each boundary; compiled Host inputs and binary/LFS/text comparison
+rules retain their existing owner. No installation result is cached or inferred
+from the source batch.
 
 Forward effect inventory streams the digest of retained native merge journals:
 their complete index/automatic path inventories are not small checkpoint records.
