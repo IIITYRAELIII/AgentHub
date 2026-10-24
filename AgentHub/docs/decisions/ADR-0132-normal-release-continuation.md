@@ -100,3 +100,19 @@ that content needs at least one verified physical copy. A missing duplicate is
 not required for allocation, while tampered bytes or missing unique content refuse.
 This does not restore a missing file or certify completeness/installation of any
 retained runtime body. No runtime files, pointers or manifests are changed.
+
+## Native runtime closure before delivery
+
+An automatic native merge may correctly retain a newer base's deletion while a
+selected importer still needs that historical module. The existing artifact/RC
+relative-import invariant therefore also runs on the completed immutable native
+tree before candidate promotion and Task acceptance. It reuses canonical source
+membership, verified invocation-local Git blob batches and the existing import
+parser; it neither builds a runtime nor starts the product. Generic repositories
+without an Agent Hub package keep their own validation boundary.
+
+Failure retains the completed, undelivered private merge and the previous
+candidate/checkpoint/Task state. Its normal independently reviewed last-merge
+amendment is consumed on ordinary Await retry. No selected result, prior receipt,
+journal progress, primary or frozen generation is rewritten to make closure pass;
+the existing late artifact/RC checks remain required.

@@ -21,6 +21,29 @@ import { captureRuntimeReleaseBinding } from "../../src/infrastructure/filesyste
 
 const ROOT = path.resolve(import.meta.dirname, "..", "..");
 
+test("canonical runtime source membership retains JSON and assets but excludes test and tooling imports", async t => {
+  const { sourceRoot, runtimeRoot } = await fixture();
+  t.after(() => rm(path.dirname(runtimeRoot), { recursive: true, force: true }));
+  await mkdir(path.join(sourceRoot, "assets/runtime"), { recursive: true });
+  await mkdir(path.join(sourceRoot, "tools"), { recursive: true });
+  await writeFile(path.join(sourceRoot, "agent-hub-server.mjs"),
+    'import "./package.json";\nimport "./assets/runtime/entry.MJS";\nimport "./src/application/service.mjs";\n');
+  await writeFile(path.join(sourceRoot, "assets/runtime/entry.MJS"), 'import "./data.json";\n');
+  await writeFile(path.join(sourceRoot, "assets/runtime/data.json"), '{}\n');
+  for (const file of ["syntax-check.mjs", "helper.test.mjs", "helper.test.cjs", "helper.e2e.test.mjs",
+    "src/application/ignored.test.mjs", "tools/ignored.mjs"]) {
+    await writeFile(path.join(sourceRoot, file), 'import "./deliberately-absent.mjs";\n');
+  }
+  const prepared = await prepareRuntime({ sourceRoot, runtimeRoot, releaseId: "source-membership" });
+  const manifest = JSON.parse(await readFile(path.join(prepared.releaseRoot, "runtime-manifest.json"), "utf8"));
+  const included = new Set(manifest.files.map(entry => entry.path));
+  for (const file of ["package.json", "assets/runtime/entry.MJS", "assets/runtime/data.json",
+    "src/application/service.mjs"]) assert.ok(included.has(file), file);
+  for (const file of ["syntax-check.mjs", "helper.test.mjs", "helper.test.cjs", "helper.e2e.test.mjs",
+    "src/application/ignored.test.mjs", "tools/ignored.mjs"]) assert.equal(included.has(file), false, file);
+  await assert.rejects(readFile(path.join(runtimeRoot, "current.json")), /ENOENT/u);
+});
+
 test("frozen runtime version refuses before build and uses the canonical next suffix", async t => {
   const { sourceRoot, runtimeRoot } = await fixture();
   t.after(() => rm(path.dirname(runtimeRoot), { recursive: true, force: true }));

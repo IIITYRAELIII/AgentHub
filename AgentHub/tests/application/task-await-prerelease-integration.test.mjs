@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
+import { createHash } from "node:crypto";
 import { TaskBoardService } from "../../src/application/task-board-service.mjs";
 import { TaskLifecycleService } from "../../src/application/task-lifecycle-service.mjs";
 import { TaskReleasePlanService } from "../../src/application/task-release-plan-service.mjs";
@@ -13,6 +14,7 @@ import { TaskBoardStore } from "../../src/infrastructure/persistence/task-board-
 import { WorkspaceCatalogStore } from "../../src/infrastructure/persistence/workspace-catalog-store.mjs";
 import { TaskGitWorkspaceService } from "../../src/infrastructure/filesystem/task-git-workspace.mjs";
 import { ReleaseGitWorkspaceService } from "../../src/infrastructure/filesystem/release-git-workspace.mjs";
+import { taskGitIdentityHash } from "../../src/domain/task-git-reference.mjs";
 
 const exec = promisify(execFile);
 async function git(cwd, ...args) {
@@ -23,7 +25,7 @@ async function commit(cwd, message) {
   await git(cwd, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", message);
 }
 
-async function fixture(t) {
+async function fixture(t, { recordTiming = () => {} } = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), "hub-await-integration-"));
   const primary = path.join(root, "primary");
   const origin = path.join(root, "origin.git");
@@ -60,7 +62,7 @@ async function fixture(t) {
     hierarchy: () => [workspace], workspace: () => workspace, stream: () => null,
   };
   const taskBoard = new TaskBoardService({ store, workspaceCatalog });
-  const taskGitWorkspaces = new TaskGitWorkspaceService({ dataDir, recordTiming: () => {} });
+  const taskGitWorkspaces = new TaskGitWorkspaceService({ dataDir, recordTiming });
   const releaseGitWorkspaces = new ReleaseGitWorkspaceService({ dataDir });
   const releasePlanner = new TaskReleasePlanService({ taskBoard, taskGitWorkspaces });
   const forbidden = () => assert.fail("Await must not start publication, production validation or the test contour");
@@ -92,6 +94,128 @@ async function acceptAndPrepare(fixture, task, operationId) {
   const prepared = await fixture.releasePreflight.prepareAwaitSet({ workspaceId: fixture.workspace.id });
   return { response, prepared, candidate: prepared.releaseCandidates[0] };
 }
+
+test("Await refuses a missing native runtime import before promotion and accepts its reviewed private amendment", async t => {
+  const timings = [];
+  const f = await fixture(t, { recordTiming: event => timings.push(event) });
+  const relative = "AgentHub/src/direct-gateway-handoff.mjs";
+  const helper = "export const handoff = () => 'exact selected helper';\n";
+  await mkdir(path.join(f.primary, "AgentHub/src"));
+  await writeFile(path.join(f.primary, relative), helper);
+  await writeFile(path.join(f.primary, "AgentHub/src/gateway.mjs"), "export const before = true;\n");
+  await commit(f.primary, "original runtime helper");
+  const original = await git(f.primary, "rev-parse", "HEAD");
+  await git(f.primary, "push", "origin", "main");
+  f.publication.repositories[0].revision = original;
+  const lastGood = await f.releaseGitWorkspaces.prepareCandidate({
+    projectRoot: f.primary, workspaceId: f.workspace.id, planRevision: "last-good",
+    approvedBaseCommit: original, frozenTasks: [],
+  });
+  const checkpointFile = path.join(path.dirname(lastGood.releaseRoot), "checkpoint.json");
+  const checkpointBefore = await readFile(checkpointFile);
+  const task = await f.testedTask("Gateway", "AgentHub/src/gateway.mjs",
+    "import { handoff } from './direct-gateway-handoff.mjs';\nexport const gateway = handoff;\n");
+  const taskBefore = f.taskBoard.task(task.id);
+  const selected = taskBefore.gitReferences[0].resultCommit;
+  // The selected result retains this helper unchanged from its historical base;
+  // the newer runtime base deleted it. Git's automatic merge keeps that deletion.
+  await git(f.primary, "rm", relative);
+  await commit(f.primary, "installed runtime removed old helper");
+  const current = await git(f.primary, "rev-parse", "HEAD");
+  await git(f.primary, "push", "origin", "main");
+  f.publication.repositories[0].revision = current;
+  await f.taskGitWorkspaces.synchronizeMainIntoDev({ projectRoot: f.primary, publishedRevision: current });
+  const primaryBefore = await git(f.primary, "status", "--porcelain=v1");
+  await assert.rejects(f.lifecycle.updateWorkflowStatus({
+    taskId: task.id, status: "awaiting_implementation", operationId: "missing-runtime-import",
+  }), error => error.code === "TASK_AWAIT_INTEGRATION_FAILED"
+    && /missing relative imports.*gateway\.mjs -> \.\/direct-gateway-handoff\.mjs/u.test(error.message));
+  assert.deepEqual(f.taskBoard.task(task.id), taskBefore, "no Task CAS before runtime closure");
+  const refusalTiming = timings.find(event => event.operationId === "missing-runtime-import"
+    && event.stage === "preparation:runtime-import-closure" && event.phase === "end");
+  assert.equal(refusalTiming?.outcome, "error");
+  assert.ok(Number.isFinite(refusalTiming.durationMs));
+  assert.equal(refusalTiming.taskId, task.id);
+  assert.equal(f.taskBoard.lifecycleTransition("missing-runtime-import").phase, "failed");
+  assert.deepEqual(await readFile(checkpointFile), checkpointBefore);
+  assert.equal(await git(lastGood.releaseRoot, "rev-parse", "HEAD"), lastGood.preReleaseHead);
+  assert.equal(await git(lastGood.releaseRoot, "rev-parse", "refs/heads/PreRelease"), lastGood.preReleaseHead);
+  const nativeRoot = path.join(path.dirname(lastGood.releaseRoot), "native-merges");
+  let capture;
+  for (const name of await readdir(nativeRoot)) {
+    const folder = path.join(nativeRoot, name);
+    const state = JSON.parse(await readFile(path.join(folder, "merge.json"), "utf8"));
+    if (state.identity.tasks.some(entry => entry.taskId === task.id)) capture = { folder, state };
+  }
+  assert.ok(capture, "the issued private capture is retained");
+  assert.equal(capture.state.next, 1);
+  assert.equal(capture.state.conflict, null);
+  const repository = path.join(capture.folder, "repository");
+  const automatic = capture.state.head;
+  assert.equal(await git(repository, "rev-parse", "HEAD"), automatic);
+  assert.equal(await git(repository, "status", "--porcelain=v1"), "");
+  await assert.rejects(readFile(path.join(repository, relative)), /ENOENT/u);
+  assert.equal(await git(repository, "show", `${selected}:${relative}`), helper.trim());
+  const oldJournal = await readFile(path.join(capture.folder, "merge.json"));
+  // A normal amended merge, not a journal edit or altered selected Task result.
+  await writeFile(path.join(repository, relative), helper);
+  await git(repository, "add", relative);
+  await git(repository, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+    "commit", "--amend", "--no-edit");
+  const amended = await git(repository, "rev-parse", "HEAD");
+  const tree = await git(repository, "rev-parse", "HEAD^{tree}");
+  const automaticTree = await git(repository, "rev-parse", `${automatic}^{tree}`);
+  const diff = (await exec("git", ["diff", "--binary", "--full-index", "--no-renames", automaticTree, tree],
+    { cwd: repository, windowsHide: true, encoding: "buffer" })).stdout;
+  const expectedBinding = {
+    identityHash: taskGitIdentityHash(capture.state.identity),
+    parents: [current, selected], commit: amended, tree, automaticTree,
+    diffSha256: createHash("sha256").update(diff).digest("hex"),
+  };
+  await assert.rejects(f.lifecycle.updateWorkflowStatus({
+    taskId: task.id, status: "awaiting_implementation", operationId: "unreviewed-runtime-amendment",
+  }), /Native compatibility correction requires exact independent review/u);
+  assert.deepEqual(await readFile(path.join(capture.folder, "merge.json")), oldJournal);
+  assert.deepEqual(await readFile(checkpointFile), checkpointBefore);
+  assert.deepEqual(f.taskBoard.task(task.id), taskBefore);
+  let checks = 0;
+  f.releaseGitWorkspaces.verifyNativeResolutionReview = async (review, binding) => {
+    assert.deepEqual(review, { requestId: "review-exact-amendment", text: "synthetic independent review port" });
+    assert.deepEqual(binding, expectedBinding);
+    checks += 1;
+  };
+  const accepted = await f.lifecycle.updateWorkflowStatus({ taskId: task.id,
+    status: "awaiting_implementation", operationId: "reviewed-runtime-amendment",
+    operationEvidence: { nativeResolutionReview: {
+      requestId: "review-exact-amendment", text: "synthetic independent review port",
+    } },
+  });
+  assert.equal(accepted.task.workflowStatus, "awaiting_implementation");
+  assert.ok(checks > 0);
+  assert.equal(await git(lastGood.releaseRoot, "rev-parse", "refs/heads/PreRelease"), amended);
+  assert.equal(await git(lastGood.releaseRoot, "show", `HEAD:${relative}`), helper.trim());
+  const finalState = JSON.parse(await readFile(path.join(capture.folder, "merge.json"), "utf8"));
+  assert.equal(finalState.head, amended);
+  assert.equal(finalState.merges[0].reviewedResolution.binding.commit, amended);
+  const checkpointAfter = await readFile(checkpointFile);
+  const journalAfter = await readFile(path.join(capture.folder, "merge.json"));
+  const reflogAfter = await git(repository, "reflog", "--format=%H %gs");
+  const terminal = f.taskBoard.lifecycleOutcome("reviewed-runtime-amendment");
+  assert.equal(terminal.taskId, task.id);
+  assert.equal(terminal.result.task.workflowStatus, "awaiting_implementation");
+  // This lower-level public lifecycle service refuses a terminal mutation;
+  // the existing command/receipt owner supplies original-request readback.
+  await assert.rejects(f.lifecycle.updateWorkflowStatus({ taskId: task.id, status: "awaiting_implementation",
+    operationId: "reviewed-runtime-amendment", operationEvidence: { nativeResolutionReview: {
+      requestId: "review-exact-amendment", text: "synthetic independent review port",
+    } } }), { code: "TASK_LIFECYCLE_BEGIN_REJECTED" });
+  assert.deepEqual(f.taskBoard.lifecycleOutcome("reviewed-runtime-amendment"), terminal);
+  assert.deepEqual(await readFile(checkpointFile), checkpointAfter);
+  assert.deepEqual(await readFile(path.join(capture.folder, "merge.json")), journalAfter);
+  assert.equal(await git(repository, "reflog", "--format=%H %gs"), reflogAfter);
+  assert.equal(await git(f.primary, "rev-parse", "HEAD"), current);
+  assert.equal(await git(f.primary, "status", "--porcelain=v1"), primaryBefore);
+});
 
 test("editorial Task changes reuse prepared and frozen candidate identities", { timeout: 90000 }, async (t) => {
   const f = await fixture(t);

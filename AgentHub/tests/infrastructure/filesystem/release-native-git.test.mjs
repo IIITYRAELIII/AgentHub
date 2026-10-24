@@ -87,6 +87,17 @@ test("reopen rejects a forged completed native prefix even with exact merge pare
   assert.equal((await mergeSelectedResults(request)).head, original.head);
 });
 
+test("native runtime closure does not impose Agent Hub readiness on an unrelated repository", async t => {
+  const f = await fixture(t);
+  const selected = await f.result("OtherProduct", "AgentHub/other.mjs", 'import "./not-a-runtime-module.mjs";\n');
+  const candidate = await f.service.prepareCandidate(f.request([selected]));
+  assert.equal(await git(candidate.releaseRoot, "show", "HEAD:AgentHub/other.mjs"),
+    'import "./not-a-runtime-module.mjs";');
+  assert.equal(candidate.manifest.tasks[0].resultCommit, selected.resultCommit);
+  assert.equal(await git(f.primary, "rev-parse", "HEAD"), f.base);
+  assert.equal(await git(f.primary, "status", "--porcelain=v1"), "");
+});
+
 test("one native sequencer call consumes reviewed resolutions and reopens a lost journal reply", { timeout: 120000 }, async t => {
   const f = await fixture(t);
   const a = await f.result("A", "shared.txt", "selected A\n");

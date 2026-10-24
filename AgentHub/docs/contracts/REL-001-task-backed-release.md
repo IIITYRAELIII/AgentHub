@@ -653,6 +653,18 @@ parents/selection/diff/tree or post-review amendments refuse. Ordinary resolutio
 without additional automatic-path changes keep their existing behavior. The same
 binding is retained and rechecked by native Test, Await, prepared generation and
 historical readback; old receipts remain unchanged. See ADR-0108.
+
+After native selected composition completes, the existing first-party runtime
+relative-import closure is checked against that exact immutable Git tree before
+PreRelease promotion/checkpoint or Task acceptance. It shares the canonical
+runtime source membership and import parser used by artifact preparation; it
+does not run providers, build/install a runtime or validate unrelated products.
+A missing module is a definite preparation refusal. The completed private native
+capture remains undelivered, so its existing exact independently reviewed final
+merge amendment can resume through normal Await. This does not waive history,
+selection, review, origin, metadata, lease or terminal CAS guards. Artifact/RC
+closure checks still run at their existing later boundaries.
+
 A failed original remains
 failed; a subsequent Test is a new request using that saved resolution. An
 uncertain CAS or SQLite terminal write stays UNKNOWN on its original identity.
