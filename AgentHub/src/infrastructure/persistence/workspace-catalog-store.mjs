@@ -4,7 +4,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { AsyncSqliteMutationQueue } from "./async-sqlite-mutation-queue.mjs";
 import { claimCustodyHash, claimCustodyState, assertClaimCustodyOriginal, TaskClaimCustodyRejectedError, TaskClaimContinuationWithdrawnError } from "../../domain/claim-forward-custody.mjs";
-import { readClaimCustodyFence, configureClaimCustodyBindingFences, configureClaimCustodyNamespaceFences,
+import { readClaimCustodyFence, readClaimCustodySuccessor, configureClaimCustodyBindingFences, configureClaimCustodyNamespaceFences,
   claimCustodyNamespaces, claimCustodyTaskSnapshot, assertNoPendingClaimCustodyWriters } from "./claim-custody-fence.mjs";
 import { claimAdmissionNoEffectEvidence } from "../../domain/task-board-task.mjs";
 
@@ -886,6 +886,13 @@ export class WorkspaceCatalogStore {
     const hash = safeIdentifier(argumentsHash, "MCP arguments hash");
     this.#database.exec("BEGIN IMMEDIATE");
     try {
+    const successor = readClaimCustodySuccessor(this.#database, id);
+    if (successor && (successor.phase !== "fenced" || tool !== "hub_task_claim"
+        || successor.workspaceId !== workspace || successor.original.streamId !== stream
+        || successor.original.provider !== normalizedProvider || successor.original.threadId !== normalizedThreadId
+        || successor.successorArgumentsHash !== hash)) {
+      throw new TaskClaimCustodyRejectedError("MCP request_id was already used for another operation: declared successor authority");
+    }
     const inserted = this.#database.prepare(`
       INSERT OR IGNORE INTO hub_mcp_operations (
         request_id, workspace_id, stream_id, provider, provider_thread_id,
@@ -1043,6 +1050,11 @@ export class WorkspaceCatalogStore {
       }
       if (this.claimCustodyForOriginal(original.requestId) || this.claimCustodyForTask(state.taskId)) {
         throw new TaskClaimCustodyRejectedError("Another forward custody intent already won");
+      }
+      const reservedSuccessor = readClaimCustodySuccessor(this.#database, state.successorClaimRequestId);
+      if (this.mcpOperation(state.successorClaimRequestId)
+          || reservedSuccessor && !(state.phase === "fenced" && reservedSuccessor.requestId === state.planRequestId)) {
+        throw new TaskClaimCustodyRejectedError("Declared successor ID is already occupied or belongs to another custody intent");
       }
       if (state.phase === "fenced") {
         const plan = claimCustodyState(this.mcpOperation(state.planRequestId));

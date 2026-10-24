@@ -808,3 +808,12 @@ Independent full history/refs and the existing SQL/receipt fences protect the
 one declared successor. Base pinning never repeats prepare/ensure, discards
 discovered Task artifacts or changes the historical UNKNOWN. An unassigned Task
 has no previous-executor busy lane; all assigned-owner guards remain unchanged.
+
+The existing MCP ledger reserves the declared successor by request ID across
+its entire mutating-tool namespace, independently of caller-supplied Task or
+forward fields. Intake checks the exact tool/caller/arguments hash inside the
+existing receipt transaction; a planned successor cannot be consumed before
+its matching fence. Persistent SQL guards also reject old cached receipt
+insert/replace/rekey paths. An occupied ID refuses custody preparation rather
+than replacing a receipt or selecting another ID. Exact genuine replay remains
+readback of that same assignment and receipt.

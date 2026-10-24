@@ -175,6 +175,16 @@ their behavior. Changes before the fence refuse instead of refreshing pins.
 Source acceptance still requires matching delivery, actual capability, fresh
 operational guards and the genuine declared successor claim.
 
+The declaration is resolved by its request ID in the existing MCP ledger before
+any fresh receipt insert, not only through untrusted Task/forward arguments.
+The indexed lookup and receipt write use one SQLite transaction. Tool, actor and
+complete arguments hash must match the fenced successor; planned declarations
+cannot be consumed early. Persistent INSERT/UPDATE guards protect the same
+global ID against old cached insert/replace/rekey statements. A preoccupied ID
+or another intent's declaration refuses preparation without changing its row.
+This adds no ID registry or replay identity. Unrelated operation IDs retain their
+ordinary behavior, and genuine exact retry/reopen retains one assignment.
+
 ## Verification and retirement of compatibility
 
 Focused tests use public MCP, real disposable SQLite and managed Git, including

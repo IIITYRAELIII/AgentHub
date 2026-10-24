@@ -13,7 +13,8 @@ async function fixture(t) {
   const owner = new DatabaseSync(file);
   owner.exec(`PRAGMA journal_mode=WAL;
     CREATE TABLE hub_mcp_operations(request_id TEXT PRIMARY KEY, claim_custody_json TEXT,
-      claim_custody_write_json TEXT, result_json TEXT, receipt_state TEXT);
+      claim_custody_write_json TEXT, result_json TEXT, receipt_state TEXT,
+      tool_name TEXT, workspace_id TEXT, stream_id TEXT, provider TEXT, provider_thread_id TEXT, arguments_hash TEXT);
     CREATE TABLE hub_board_tasks(id TEXT PRIMARY KEY, value TEXT);
     CREATE TABLE hub_task_turn_bindings(task_id TEXT, operation_id TEXT PRIMARY KEY, baseline_json TEXT);
     CREATE TABLE hub_task_lifecycle_transitions(task_id TEXT, operation_id TEXT PRIMARY KEY, value TEXT);

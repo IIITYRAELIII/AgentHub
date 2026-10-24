@@ -411,6 +411,7 @@
         "tests/infrastructure/process/claim-custody-runtime.native.test.mjs",
         "tests/application/hub-mcp-claim-isolated-custody.test.mjs",
         "tests/application/hub-mcp-claim-unassigned-custody.test.mjs",
+        "tests/application/hub-mcp-claim-successor-admission.test.mjs",
         "tests/infrastructure/persistence/claim-custody-namespace-sql.test.mjs"
       ]
     },
