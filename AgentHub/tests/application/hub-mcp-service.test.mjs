@@ -54,9 +54,13 @@ async function fixture(context, {
   taskOperationReconciliation = null,
   releaseOperations = null,
   measureOperation = measureTaskOperation,
+  beforeRemoveDirectory = async () => {},
 } = {}) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-mcp-"));
-  context.after(() => rm(directory, { recursive: true, force: true }));
+  context.after(async () => {
+    await beforeRemoveDirectory();
+    await rm(directory, { recursive: true, force: true });
+  });
   const projectRoot = path.join(directory, "project");
   const streamWorkingDirectory = path.join(directory, "stream-working-directory");
   const workspaceWorkingDirectory = path.join(directory, "workspace-working-directory");
@@ -2076,6 +2080,7 @@ test("HubMcpService claim keeps an unproven process-tree guard before every Task
 }, async (context) => {
   let guarded;
   const state = await fixture(context, {
+    beforeRemoveDirectory: () => guarded?.close(),
     taskGitWorkspacesFactory: async ({ directory, streamWorkingDirectory }) => {
       await initializeTaskGitRepository(streamWorkingDirectory);
       guarded = await unprovenProcessTaskGit({

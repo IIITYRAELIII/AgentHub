@@ -153,7 +153,9 @@ test("Task work advances live PreRelease while the prior frozen commit remains i
   assert.equal(await git(candidate.releaseRoot, "rev-parse", `${frozen.preReleaseHead}^{tree}`), frozenTree);
 });
 
-test("Await membership prepares the candidate and fences changed agreed-main evidence before acceptance", { timeout: 90000 }, async (t) => {
+// Await, return and re-acceptance exercise finite Git/SQLite transitions. Await
+// their assertions and cleanup instead of cancelling the scenario by wall time.
+test("Await membership prepares the candidate and fences changed agreed-main evidence before acceptance", async (t) => {
   const { root, origin, taskBoard, taskGitWorkspaces, lifecycle, testedTask, primary } = await fixture(t);
   const unaccepted = await testedTask("Unaccepted", "unaccepted.txt", "not accepted\n");
   const accepted = await testedTask("Accepted", "accepted.txt", "accepted\n");
@@ -292,7 +294,7 @@ test("Await leaves PreRelease unchanged after SQLite rejection and rebuilds it a
   )), []);
 });
 
-test("concurrent Await acceptances serialize in existing PreRelease without cloning a hooked primary", { timeout: 120000 }, async (t) => {
+test("concurrent Await acceptances serialize in existing PreRelease without cloning a hooked primary", async (t) => {
   const f = await fixture(t);
   const seed = await f.testedTask("Seed", "seed.txt", "seed\n");
   const { candidate } = await acceptAndPrepare(f, seed, "seed");
@@ -414,7 +416,7 @@ test("same-status Await refuses an unrecognized native candidate ref rewind", { 
   assert.equal(await git(candidate.releaseRoot, "rev-parse", "PreRelease"), candidate.baseCommit);
 });
 
-test("a frozen candidate keeps its identity while a later Await enters the next generation", { timeout: 90000 }, async (t) => {
+test("a frozen candidate keeps its identity while a later Await enters the next generation", async (t) => {
   const f = await fixture(t);
   const accepted = await f.testedTask("Accepted", "accepted.txt", "accepted\n");
   const { prepared, candidate } = await acceptAndPrepare(f, accepted, "accept-freeze-retry");
