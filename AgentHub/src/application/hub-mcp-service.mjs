@@ -797,7 +797,7 @@ export class HubMcpService {
             admission: { type: "string", enum: ["isolated-source-v1"] },
             authorization_id: { type: "string" }, handoff_id: { type: "string" },
             expected_original: { type: "object" }, original_arguments: { type: "object" },
-            expected_task_revision: { type: "integer", minimum: 1 }, expected_owner_stream_id: { type: "string" },
+            expected_task_revision: { type: "integer", minimum: 1 }, expected_owner_stream_id: { type: ["string", "null"] },
             successor_claim_request_id: { type: "string" }, source: { type: "object" }, runtime_witness: { type: "object", description: "Exact independently retained read-only native witness artifact: sourcePath/rawSha256. No caller-supplied retirement boolean." },
             plan_request_id: { type: "string" }, expected_plan_hash: { type: "string", pattern: "^[a-f0-9]{64}$" } },
           required: ["action"], additionalProperties: false },
@@ -1008,6 +1008,11 @@ export class HubMcpService {
         : operation();
     }
     if (MUTATING_TOOLS.has(toolName)) {
+      // A declared successor ID already belongs to its exact actor/envelope.
+      // Reject a foreign intake before it can occupy that ID in the MCP ledger.
+      if (toolName === "hub_task_claim" && args.forward_custody_request_id && !this.workspaceCatalog.mcpOperation(args.request_id)) {
+        this.#claimCustodySuccessor(context, args);
+      }
       const operation = (admissionReceipt) => this.#dispatch({ ...context, admissionReceipt }, toolName, args);
       return this.#mutate(context, toolName, args, operation);
     }
@@ -1707,10 +1712,14 @@ export class HubMcpService {
     const task = this.#task(context, taskId);
     if (task.revision !== envelope.expected_task_revision || task.streamId !== envelope.expected_owner_stream_id
         || ["done", "starting"].includes(task.status)) throw new TaskClaimCustodyRejectedError("Pinned Task owner or revision changed");
+    if (task.streamId === null && (task.status !== "open" || task.workflowStatus !== "new" || task.gitReferences?.length)) {
+      throw new TaskClaimCustodyRejectedError("Unassigned custody requires an exact new Task without accepted results");
+    }
     return task;
   }
 
   #custodyBusy(task) {
+    if (task.streamId === null) return false;
     return this.#activeRuns().some(run => run.streamId === task.streamId)
       || this.#deferredInputs().some(input => input.streamId === task.streamId
         || (input.provider && input.threadId && this.workspaceCatalog.resolveThread({ provider: input.provider, threadId: input.threadId })?.streamId === task.streamId));
@@ -1749,7 +1758,10 @@ export class HubMcpService {
       if (this.workspaceCatalog.claimCustodyForOriginal?.(original.requestId)
           || this.workspaceCatalog.claimCustodyNamespaceForTask?.(task.id)) throw new TaskClaimCustodyRejectedError("Another custody disposition already owns this Task");
       if (this.#pendingMutations.has(original.requestId)) throw new TaskClaimCustodyRejectedError("Original claim is still live");
-      const workspace = await this.taskGitWorkspaces.reuseClaimWorkspaceOwned({ taskId: task.id, taskNumber: task.taskNumber, source: plan?.source ?? envelope.source, lease });
+      const reuse = source => this.taskGitWorkspaces.reuseClaimWorkspaceOwned({ taskId: task.id, taskNumber: task.taskNumber,
+        source, lease, unassigned: task.streamId === null,
+        registeredProjectRoot: task.streamId === null ? this.#taskProjectRoot(context, original.streamId, task.workspaceId) : null });
+      const workspace = await reuse(plan?.source ?? envelope.source);
       const source = { ...envelope.source, ...workspace };
       if (plan && (claimCustodyHash(source) !== claimCustodyHash(plan.source)
           || claimCustodyHash(original) !== plan.originalHash)) throw new TaskClaimCustodyRejectedError("Pinned custody source or original changed");
@@ -1760,7 +1772,7 @@ export class HubMcpService {
         ? await this.taskGitWorkspaces.stageIndependentClaimNamespaceOwned({ state: plan, lease })
         : this.taskGitWorkspaces.planIndependentClaimNamespace({ taskId: task.id, source,
           requestId: args.request_id, originalHash: claimCustodyHash(original) }) : null;
-      if (isolated && plan) await this.taskGitWorkspaces.reuseClaimWorkspaceOwned({ taskId: task.id, taskNumber: task.taskNumber, source, lease });
+      if (isolated && plan) await reuse(source);
       await lease.assertOwned();
       // Re-read after the native/runtime wait, without refreshing expected pins.
       this.#custodyTask(context, task.id, envelope);
@@ -1782,7 +1794,7 @@ export class HubMcpService {
     });
   }
 
-  async #consumeClaimCustody(context, args) {
+  #claimCustodySuccessor(context, args) {
     const fence = claimCustodyState(this.workspaceCatalog.mcpOperation(args.forward_custody_request_id));
     if (!fence || fence.phase !== "fenced" || fence.taskId !== args.task_id || fence.workspaceId !== context.workspaceId
         || fence.successorClaimRequestId !== args.request_id || fence.original.provider !== context.provider
@@ -1792,6 +1804,11 @@ export class HubMcpService {
         || Object.keys(args).some(k => !["context_token", "request_id", "task_id", "dependency_mode", "forward_custody_request_id"].includes(k))) {
       throw new TaskClaimCustodyRejectedError("Successor claim differs from the explicit forward disposition");
     }
+    return fence;
+  }
+
+  async #consumeClaimCustody(context, args) {
+    const fence = this.#claimCustodySuccessor(context, args);
     return this.taskGitWorkspaces.withTaskLock(args.task_id, async lease => {
       const guarded = this.#claimLease(lease, args.task_id, args.request_id, fence.requestId);
       await guarded.assertOwned();

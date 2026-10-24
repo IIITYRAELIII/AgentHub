@@ -798,3 +798,13 @@ Git owner for read-only source reuse. Original dependency preparation is not
 replayed, and its response says so. Late originals are fenced before any binding
 or baseline update, including receipt writes; exact post-commit retry reuses the
 same binding and assignment. See [ADR-0131](../decisions/ADR-0131-claim-forward-custody.md).
+
+An independently authorized unassigned original may explicitly pin
+`expected_owner_stream_id=null` only with `isolated-source-v1`. Missing/empty
+owner pins remain invalid. The Task must remain open/new without accepted Git
+results. The same owner preserves discovered managed source/WIP, or pins the
+actual registered local-main base only when no prior Task root/refs exist.
+Independent full history/refs and the existing SQL/receipt fences protect the
+one declared successor. Base pinning never repeats prepare/ensure, discards
+discovered Task artifacts or changes the historical UNKNOWN. An unassigned Task
+has no previous-executor busy lane; all assigned-owner guards remain unchanged.

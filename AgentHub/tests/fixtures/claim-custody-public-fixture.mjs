@@ -12,10 +12,11 @@ import { TaskBoardStore } from "../../src/infrastructure/persistence/task-board-
 import { WorkspaceCatalogStore } from "../../src/infrastructure/persistence/workspace-catalog-store.mjs";
 import { TaskGitWorkspaceService } from "../../src/infrastructure/filesystem/task-git-workspace.mjs";
 import { mcpArgumentsHash } from "../../src/domain/mcp-arguments-hash.mjs";
+import { taskBranchName } from "../../src/domain/task-git-reference.mjs";
 
 const run = promisify(execFile);
 const hash = value => createHash("sha256").update(value).digest("hex");
-export async function claimCustodyFixture(t, { dataDir = null } = {}) {
+export async function claimCustodyFixture(t, { dataDir = null, unassigned = false, prepared = false } = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), "claim-custody-"));
   const repository = path.join(root, "repo");
   await mkdir(repository);
@@ -52,11 +53,17 @@ export async function claimCustodyFixture(t, { dataDir = null } = {}) {
   const workspaces = new TaskGitWorkspaceService({ dataDir: dataDir ?? path.join(root, "data"), recordTiming: () => {},
     readClaimCustodyNamespace: taskId => stores.catalog.claimCustodyNamespaceForTask(taskId),
     prepareDependencies: async () => { throw new Error("Custody must not repeat dependency preparation"); } });
-  const source = await workspaces.prepare({ taskId: task.id, taskNumber: task.taskNumber, projectRoot: repository });
-  await mkdir(path.join(source.projectRoot, "WIP"));
-  await writeFile(path.join(source.projectRoot, "WIP", "useful.txt"), "unfinished evidence\n");
+  const source = unassigned && !prepared ? {
+    taskId: task.id, projectRoot: repository, repositoryRoot: repository,
+    branch: taskBranchName(task.id, repository, task.taskNumber),
+    headCommit: await git(repository, "rev-parse", "HEAD"), baseCommit: await git(repository, "rev-parse", "HEAD"),
+  } : await workspaces.prepare({ taskId: task.id, taskNumber: task.taskNumber, projectRoot: repository });
+  if (!unassigned || prepared) {
+    await mkdir(path.join(source.projectRoot, "WIP"));
+    await writeFile(path.join(source.projectRoot, "WIP", "useful.txt"), "unfinished evidence\n");
+  }
   const wip = [{ path: "WIP/useful.txt", type: "file", bytes: 20, sha256: hash("unfinished evidence\n") }];
-  await stores.tasks.claim({ id: task.id, workspaceId: workspace.id, streamId: owner.id,
+  if (!unassigned) await stores.tasks.claim({ id: task.id, workspaceId: workspace.id, streamId: owner.id,
     provider: "codex", threadId: `${owner.id}-thread`, turnId: "previous-turn", operationId: "previous-claim", gitBaseline: source.gitBaseline });
   const prior = stores.tasks.task(task.id);
   const originalArgs = { request_id: "legacy-claim", task_id: task.id, dependency_mode: "ensure" };
@@ -88,10 +95,11 @@ export async function claimCustodyFixture(t, { dataDir = null } = {}) {
     operation_request_id: original.requestId, confirm_reconcile: true, claim_custody: { action: "prepare",
       authorization_id: "explicit-forward-only-authorization", handoff_id: "saved-stopped-source-handoff",
       expected_original: Object.fromEntries(["workspaceId", "streamId", "provider", "threadId", "argumentsHash", "createdAtMs"].map(k => [k, original[k]])),
-      original_arguments: originalArgs, expected_task_revision: prior.revision, expected_owner_stream_id: owner.id,
+      original_arguments: originalArgs, expected_task_revision: prior.revision, expected_owner_stream_id: unassigned ? null : owner.id,
       successor_claim_request_id: "custody-successor-claim", source: { projectRoot: source.projectRoot,
         headCommit: source.headCommit, tree: await git(source.projectRoot, "rev-parse", "HEAD^{tree}"),
-        wipPaths: ["WIP"], wipDigest: hash(JSON.stringify(wip)) },
+        ...(unassigned ? { baseCommit: source.baseCommit, branch: source.branch } : {}),
+        wipPaths: unassigned && !prepared ? [] : ["WIP"], wipDigest: hash(JSON.stringify(unassigned && !prepared ? [] : wip)) },
     } };
   const fence = plan => ({ context_token: managerToken, request_id: "custody-fence", task_id: task.id,
     operation_request_id: original.requestId, confirm_reconcile: true,
@@ -99,7 +107,7 @@ export async function claimCustodyFixture(t, { dataDir = null } = {}) {
   const consume = { context_token: successorToken, request_id: "custody-successor-claim", task_id: task.id,
     dependency_mode: "ensure", forward_custody_request_id: "custody-fence" };
   return { ...stores, root, source, prior, original, originalArgs, prepare, fence, consume, hub, open, service,
-    workspaces, git, successor, managerToken, successorToken, runtime,
+    workspaces, git, successor, manager, managerToken, successorToken, runtime,
     retire() { retired = true; }, busy() { runs.push({ id: "busy", streamId: owner.id, provider: "codex", threadId: `${owner.id}-thread`, turnId: "busy", status: "running" }); },
     idle() { runs = runs.filter(run => run.id !== "busy"); },
     prepares: () => prepares, stores };
