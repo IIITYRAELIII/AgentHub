@@ -92,6 +92,16 @@ async function inheritedRepositoryFixture(t) {
       provenance: await provenance(), ...extra }) };
 }
 
+test("valid installed source evidence is verified beyond the former record byte ceiling", async t => {
+  const f = await fixture(t);
+  const large = Buffer.concat([f.manifest, Buffer.alloc(17 * 1024 * 1024, 32)]);
+  await save(f.release, "runtime-manifest.json", large);
+  const result = await f.verify({ provenance: { ...f.p, installedManifestSha256: hash(large) } });
+  assert.equal(result.runtimeFiles, 1);
+  assert.deepEqual(await readFile(path.join(f.release, "runtime-manifest.json")), large);
+  await assert.rejects(f.verify(), /installed manifest changed/u);
+});
+
 test("installed source preserves exact inherited repository files from agreed main", { timeout: 90000 }, async t => {
   const f = await inheritedRepositoryFixture(t);
   const result = await f.verifyInherited();

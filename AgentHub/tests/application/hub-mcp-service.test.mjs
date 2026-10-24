@@ -1302,6 +1302,31 @@ test("Task status and unknown-operation schemas expose the exact squash transfer
   }
 });
 
+test("public Await forwards a complete reviewed bundle only with exact RM CAS", async context => {
+  const { service, token, tasks, operations } = await fixture(context, { releaseWorkflowEnabled: true });
+  const calls = [];
+  service.taskLifecycle.updateWorkflowStatus = async input => {
+    calls.push(input); return { task: { ...tasks.get("task-current"), workflowStatus: input.status } };
+  };
+  const review = { bundlePath: "owned.bundle", bundleSha256: "a".repeat(64),
+    reviews: [{ requestId: "first", text: "exact first receipt" }, { requestId: "second", text: "exact second receipt" }] };
+  const input = { context_token: token, task_id: "task-current", status: "awaiting_implementation",
+    expected_task_revision: 1, expected_workflow_status: "testing", native_resolution_review: review };
+  assert.equal((await service.call("hub_task_status_update", { ...input, request_id: "all-prefixes" })).workflowStatus,
+    "awaiting_implementation");
+  assert.deepEqual(calls[0].operationEvidence, { nativeResolutionReview: review });
+  const foreignToken = service.contextToken({ provider: "codex", threadId: "thread-2", streamId: "stream-2" });
+  for (const [suffix, patch] of [["array", { native_resolution_review: [] }],
+    ["extra", { native_resolution_review: { ...review, force: true } }],
+    ["duplicate", { native_resolution_review: { ...review, reviews: [review.reviews[0], review.reviews[0]] } }],
+    ["cas", { expected_task_revision: null }], ["test", { status: "testing" }],
+    ["foreign", { context_token: foreignToken }]]) {
+    await assert.rejects(service.call("hub_task_status_update", { ...input, ...patch, request_id: `bundle-${suffix}` }));
+    assert.equal(operations.get(`bundle-${suffix}`).status, "failed");
+  }
+  assert.equal(calls.length, 1);
+});
+
 test("Release Manager cannot reopen fresh selected-materialization preview or confirmation after native cutover", async (context) => {
   const { service, token, tasks, operations } = await fixture(context, {
     releaseWorkflowEnabled: true,

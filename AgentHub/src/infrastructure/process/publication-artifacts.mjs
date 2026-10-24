@@ -71,7 +71,7 @@ export function createPublicationArtifactSteps({
   sourceRoot, runtimeRoot, journal, run,
   home = os.homedir(),
   capture = async (command, args) => (await executeFile(command, args, {
-    cwd: sourceRoot, encoding: "utf8", windowsHide: true, timeout: 120_000, maxBuffer: 4 * 1024 * 1024,
+    cwd: sourceRoot, encoding: "utf8", windowsHide: true, maxBuffer: Infinity,
     env: { ...process.env, PYTHONUTF8: "1", WRANGLER_SEND_METRICS: "false" },
   })).stdout,
   prepareRuntimeImpl,

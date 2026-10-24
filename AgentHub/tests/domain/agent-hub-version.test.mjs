@@ -80,6 +80,25 @@ test("unknown and partial retained allocation refuses without deleting evidence"
   await mkdir(path.join(root, "unknown"));
   await assert.rejects(nextRuntimeReleaseVersion({ releasesDir: root, packageVersion: "2.0.0" }), /Unknown/);
 });
+
+test("allocator verifies shared Android content without requiring every retained duplicate body", async t => {
+  const root = await fixture(t), raw = Buffer.from(JSON.stringify({ versionCode: 100 }));
+  const metadata = { path: "assets/mobile/update.json", bytes: raw.length, sha256: createHash("sha256").update(raw).digest("hex") };
+  for (const name of ["retired", "current"]) {
+    await mkdir(path.join(root, name));
+    await writeFile(path.join(root, name, "runtime-manifest.json"), JSON.stringify({
+      releaseId: name, version: "2026.10.12", releaseVersion: "2026.10.12.31", files: [metadata] }));
+  }
+  await mkdir(path.join(root, "current/assets/mobile"), { recursive: true });
+  const file = path.join(root, "current/assets/mobile/update.json");
+  await writeFile(file, raw);
+  assert.equal(await nextRuntimeReleaseVersion({ releasesDir: root, packageVersion: "2.0.0", allocationFloor: 10 }), "2.0.0+build.101");
+  await writeFile(file, Buffer.from("tampered"));
+  await assert.rejects(nextRuntimeReleaseVersion({ releasesDir: root, packageVersion: "2.0.0" }), /integrity/u);
+  await rm(file);
+  await assert.rejects(nextRuntimeReleaseVersion({ releasesDir: root, packageVersion: "2.0.0" }), { code: "ENOENT" });
+  await assert.rejects(readFile(path.join(root, "retired/assets/mobile/update.json")), { code: "ENOENT" });
+});
 test("release metadata inspection migrates without editing Task files; old frozen calendar remains exact", async t => {
   const root = await fixture(t);
   const pkg = { name: "agent-hub", version: "2026.10.12" };

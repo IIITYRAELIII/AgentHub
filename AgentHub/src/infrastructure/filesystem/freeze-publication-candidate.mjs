@@ -17,7 +17,7 @@ const samePath = (a, b) => process.platform === "win32"
 async function git(root, args, environment = {}) {
   return String((await execute("git", args, {
     cwd: root, env: { ...process.env, ...environment }, windowsHide: true,
-    timeout: 120_000, maxBuffer: 4 * 1024 * 1024, encoding: "utf8",
+    maxBuffer: Infinity, encoding: "utf8",
   })).stdout).trimEnd();
 }
 

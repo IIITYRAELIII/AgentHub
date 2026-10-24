@@ -18,7 +18,6 @@ import {
 } from "../domain/interstream-message.mjs";
 import { canonicalMcpValue, mcpArgumentsHash } from "../domain/mcp-arguments-hash.mjs";
 import { claimCustodyHash, claimCustodyState, assertClaimCustodyOriginal, TaskClaimCustodyRejectedError, TaskClaimContinuationWithdrawnError } from "../domain/claim-forward-custody.mjs";
-import { MAX_RELEASE_METADATA_BYTES } from "../domain/release-operation.mjs";
 import { taskProjectRoot } from "../domain/task-project-root.mjs";
 import { normalizedInitialNativeTest } from "../domain/task-git-reference.mjs";
 import {
@@ -45,6 +44,8 @@ import { assertPreparationRows, readPreparationSourceClosure, ReleasePreparation
   validatePreparationEnvelope, preparationSourceRoot } from "./release-preparation-admission.mjs";
 import { FORWARD_PREPARATION, preparationLegacyIdentity, preparationLegacyHash,
   validatePreparationForward, inspectPreparationForwardCustody } from "./release-preparation-forward.mjs";
+
+import { normalizedNativeResolution } from "../domain/native-resolution-input.mjs";
 
 const CONTEXT_TOKEN_VERSION = 1;
 const MAX_REGISTERED_CONTEXT_CAPABILITIES = 1_000;
@@ -783,9 +784,7 @@ export class HubMcpService {
         selected_proof_bundle_sha256: { type: "string", pattern: "^[0-9a-f]{64}$" },
         selected_published_resolution: { type: "object", description: "Historical original reconciliation envelope; new selected materialization admission is closed." },
         selected_absorption_handoff: { type: "object", description: "Authenticated saved/stopped handoff for ordinary native Test, bound to exact Task CAS and the original receipt." },
-        native_resolution_review: { type: "object", additionalProperties: false,
-          properties: { requestId: { type: "string", maxLength: 200 }, text: { type: "string", maxLength: 16000 } },
-          required: ["requestId", "text"], description: "Exact independent inter-Stream verdict for a native compatibility resolution." },
+        native_resolution_review: { type: "object", description: "Exact independent inter-Stream verdict, or {bundlePath,bundleSha256,reviews} for reviewed Await prefixes. The existing sequencer authenticates every exact binding." },
         selected_proof_commit: { type: "string", pattern: "^[0-9a-f]{40}$" },
         selected_preview_request_id: { type: "string", description: "Exact original preview request_id on confirmation." },
         expected_selected_preview_hash: { type: "string", pattern: "^[0-9a-f]{64}$", description: "Omit for preview; exact returned hash is required for confirmation." },
@@ -879,9 +878,10 @@ export class HubMcpService {
         preparation_request_id: { type: "string" },
         expected_arguments_hash: { type: "string", pattern: "^[a-f0-9]{64}$" },
       }, ["preparation_request_id", "expected_arguments_hash"]),
-      tool("hub_release_prepare_resume", "Resume the SAME original preparation only from its durable before-compose owner stage under existing Await/Task/repository leases. request_id is the original ID, never a new intake. Legacy or ambiguous compose effects remain UNKNOWN.", {
+      tool("hub_release_prepare_resume", "Continue the SAME preparation from its saved owner stage, or its already established isolated forward custody. The owner checks fresh leases, source, selection and actual Git; an untransferred legacy UNKNOWN cannot resume.", {
         expected_arguments_hash: { type: "string", pattern: "^[a-f0-9]{64}$" },
         expected_preparation_revision: { type: "integer", minimum: 0 },
+        native_resolution_review: { type: "object", description: "Optional exact reviewed resolution bundle for an already isolated legacy forward original; does not replace original arguments." },
       }, ["expected_arguments_hash", "expected_preparation_revision"]),
       tool("hub_release_run", "Persist one authorized release operation and return its operation id immediately. The durable owner continues compose, validation, publication and finalization without holding this MCP request open.", {
         workspace_id: { type: "string", description: "Defaults to the caller Workspace." },
@@ -893,7 +893,7 @@ export class HubMcpService {
           additionalProperties: false,
           properties: {
             sourcePath: { type: "string", minLength: 1 },
-            byteLength: { type: "integer", minimum: 1, maximum: MAX_RELEASE_METADATA_BYTES },
+            byteLength: { type: "integer", minimum: 1 },
             rawSha256: { type: "string", pattern: "^[a-f0-9]{64}$" },
             canonicalSha256: { type: "string", pattern: "^[a-f0-9]{64}$" },
           },
@@ -912,6 +912,7 @@ export class HubMcpService {
               environment: { type: "string" },
               approvedLocalMainCommit: { type: "string" },
               approvedOriginMainCommit: { type: "string" },
+              nativeResolutionReview: { type: "object", description: "Exact authenticated review, or {bundlePath,bundleSha256,reviews} for already reviewed native resolutions. The sequencer verifies each binding before checkout." },
             },
             required: ["targetId", "kind"],
           },
@@ -1123,7 +1124,6 @@ export class HubMcpService {
               preReleaseHead: candidate.preReleaseHead, tree: candidate.tree,
               baseCommit: candidate.baseCommit, manifestHash: candidate.manifestHash,
               preflightRequestId: candidate.manifest?.preflightRequestId })) };
-          if (Buffer.byteLength(JSON.stringify(result)) > 48 * 1024) throw new Error("Forward result exceeds receipt budget");
           try { await checkpoint("completed", { result }); }
           catch (cause) {
             const after = this.workspaceCatalog.mcpOperation(args.request_id);
@@ -1939,14 +1939,15 @@ export class HubMcpService {
     if (nativeResolutionReview != null) {
       if (!this.#isReleaseManager(context)
           || !["testing", "awaiting_implementation"].includes(status)
-          || expectedRevision == null || expectedWorkflowStatus == null
-          || typeof nativeResolutionReview !== "object" || Array.isArray(nativeResolutionReview)
-          || Object.keys(nativeResolutionReview).sort().join(",") !== "requestId,text"
-          || typeof nativeResolutionReview.requestId !== "string" || !nativeResolutionReview.requestId.trim()
-          || nativeResolutionReview.requestId.length > 200
-          || typeof nativeResolutionReview.text !== "string" || nativeResolutionReview.text.length > 16000) {
+          || expectedRevision == null || expectedWorkflowStatus == null) {
         throw new TaskInputValidationError("Native resolution review requires exact RM Test/Await CAS and authenticated verdict");
       }
+      try {
+        const review = normalizedNativeResolution(nativeResolutionReview);
+        if (review.reviews && status !== "awaiting_implementation") {
+          throw new TypeError("Native resolution bundles require Await");
+        }
+      } catch (error) { throw new TaskInputValidationError(error.message); }
     }
     const workflowStatus = requiredText(status, "task workflow status", 40);
     const squashValues = [
@@ -2172,7 +2173,7 @@ export class HubMcpService {
 
   async #resumePreparation(context, args) {
     if (Object.keys(args).some(key => !["context_token", "request_id", "expected_arguments_hash",
-      "expected_preparation_revision"].includes(key))
+      "expected_preparation_revision", "native_resolution_review"].includes(key))
         || !Number.isSafeInteger(args.expected_preparation_revision) || args.expected_preparation_revision < 0) {
       throw new ReleasePreparationRejectedError("Unexpected preparation recovery argument");
     }
@@ -2184,6 +2185,39 @@ export class HubMcpService {
       throw new ReleasePreparationRejectedError("Preparation recovery original caller differs");
     }
     if (record.status === "succeeded") return record.result;
+    const forward = record.preparationState;
+    if (forward?.kind === FORWARD_PREPARATION) {
+      if (forward.phase === "completed") return forward.result;
+      if (forward.revision !== args.expected_preparation_revision
+          || !["checking", "blocked", "composing"].includes(forward.phase)
+          || !forward.isolation || forward.custody?.kind !== "preparation-effects-isolated-v1") {
+        throw new ReleasePreparationRejectedError("Original preparation has no established resumable isolated custody");
+      }
+      const preparation = structuredClone(forward.envelope);
+      if (args.native_resolution_review != null) {
+        if (preparation.repositories.length !== 1) throw new ReleasePreparationRejectedError("Native review requires one exact forward repository");
+        preparation.repositories[0].nativeResolutionReview = args.native_resolution_review;
+      }
+      // The one-time observer already transferred future-effect custody. Reuse
+      // that proof only after the normal leased owner regenerates the SAME
+      // isolation plan. No new serialized proof, force flag or historical
+      // descendant certificate is accepted by this ordinary continuation.
+      return this.callPreparationForward({ context_token: args.context_token, request_id: args.request_id,
+        expected_arguments_hash: args.expected_arguments_hash,
+        expected_preparation_revision: args.expected_preparation_revision,
+        original_preparation: forward.originalPreparation, preparation }, {
+        inspectOriginalExecution: async request => {
+          if (JSON.stringify(request.isolationPlan) !== JSON.stringify(forward.isolation)
+              || request.previousForward?.ownerId !== forward.ownerId
+              || request.previousForward?.epoch !== forward.epoch
+              || request.previousForward?.phase !== forward.phase) {
+            throw new ReleasePreparationRejectedError("Established isolated preparation custody changed");
+          }
+          return structuredClone(forward.custody);
+        },
+      });
+    }
+    if (args.native_resolution_review != null) throw new ReleasePreparationRejectedError("Native forward review cannot change an ordinary original envelope");
     if (!["pending", "unknown"].includes(record.status) || !record.preparationState
         || !Number.isSafeInteger(args.expected_preparation_revision)
         || args.expected_preparation_revision !== record.preparationState.revision
@@ -2261,9 +2295,6 @@ export class HubMcpService {
             tree: candidate.tree, baseCommit: candidate.baseCommit, manifestHash: candidate.manifestHash,
             preflightRequestId: candidate.manifest?.preflightRequestId,
           })) };
-        if (Buffer.byteLength(JSON.stringify(result)) > 48 * 1024) {
-          throw new ReleasePreparationRejectedError("Preparation terminal receipt exceeds its exact retention budget");
-        }
         try {
           // This is provisional while candidate rollback is still live, not terminal authority.
           await checkpoint("terminal-intent", { result });
@@ -2410,6 +2441,14 @@ export class HubMcpService {
 
   #runReleaseOperation(context, args) {
     const workspaceId = this.#workspace(context, args.workspace_id).id;
+    // This validation is before ReleaseOperation.start and cannot have a
+    // release effect. Do not turn a malformed review input into UNKNOWN.
+    for (const target of Array.isArray(args.approved_targets) ? args.approved_targets : []) {
+      if (target?.nativeResolutionReview != null) {
+        try { normalizedNativeResolution(target.nativeResolutionReview); }
+        catch (cause) { throw new ReleasePreparationRejectedError(cause.message); }
+      }
+    }
     return this.#releaseOperation().start({
       requestId: requiredText(args.request_id, "request id", 200),
       workspaceId,

@@ -1,5 +1,22 @@
 # MCP-001 — Bounded Agent Hub tool bridge
 
+## Normal release continuation (ADR-0132)
+
+`hub_release_run` keeps preparation inside the existing durable release owner.
+Approved repositories may include an exact authenticated native resolution input
+(`nativeResolutionReview`), either a single review or a digest-bound bundle with
+multiple reviews. This is part of immutable operation authorization; it is not
+a force flag or caller-declared conflict allowlist.
+
+`hub_release_prepare_resume` may continue an already established isolated forward
+segment using its saved original envelope/custody and exact revision. Optional
+`native_resolution_review` changes only that forward segment's review input.
+The owner regenerates the exact isolation plan under existing leases, validates
+the stored proof and reads actual Git before effects. An untransferred legacy
+UNKNOWN, missing isolation or changed proof still refuses. Terminal repetition
+is read-only. The existing local consumer supports `--resume-preparation`; no
+new one-shot entry/driver/config is needed. Historical UNKNOWN is retained.
+
 `hub_release_continue` optionally carries `reviewed_main` with exact positive
 integer `expectedRevision` and bounded original-repository primitive-string Git
 pins. Under the existing genuine RM authorization and original MCP request
@@ -78,8 +95,9 @@ context; non-RM fails before mutation intake. The preparation original is
 separate from succeeded Task Await and is canonically argument-bound by the
 existing MCP ledger. Terminal persistence occurs inside existing candidate
 rollback ownership, through that same receipt owner, with all selected row CAS
-checked in its SQLite transaction. Exact terminal result stays below 48 KiB,
-so receipt compaction cannot discard candidate/source/request binding.
+checked in its SQLite transaction. The exact preparation terminal result is retained
+in full by that original receipt owner; generic response compaction cannot discard
+candidate/source/request binding. Internal preparation data has no extra byte budget.
 
 This command performs bounded explicit composition without validation,
 publication or installation. UNKNOWN cannot automatically replay Git.
@@ -163,8 +181,13 @@ immutable authorization. See REL-001 for metadata and original capture fences.
 
 
 RM Test/Await with exact Task/workflow CAS may include `native_resolution_review`
-for necessary compatibility changes beyond Git conflict paths. Its bounded text
+for necessary compatibility changes beyond Git conflict paths. The exact review
 and original review request ID are canonically bound by the same status receipt.
+Await also accepts the existing digest-bound bundle of multiple exact reviews;
+Test retains the single-review input. Closed record validation, genuine RM/CAS,
+every authenticated review and the native sequencer's full Git checks still apply.
+The ordinary source release consumer's `accept` action forwards these same public
+Await business arguments. It adds no Task/status authority or alternate writer.
 The native owner recomputes the full Git merge diff and accepts only the exact
 independent authenticated inter-Stream ACCEPT binding. Reconciliation includes
 the original argument unchanged; it cannot substitute a newer verdict. This does

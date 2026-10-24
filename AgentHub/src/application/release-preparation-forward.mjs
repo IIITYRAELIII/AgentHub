@@ -63,7 +63,7 @@ export async function inspectPreparationForwardCustody(inspect, request) {
         || proof.requestId !== request.requestId || proof.argumentsHash !== request.argumentsHash
         || proof.originalSourceClosureHash !== request.originalPreparation.sourceClosureHash
         || proof.legacyInvocationTerminal !== true || !request.isolationPlan
-        || typeof proof.reason !== "string" || !proof.reason.trim() || proof.reason.length > 512
+        || typeof proof.reason !== "string" || !proof.reason.trim()
         || proof.writeTargetsHash !== request.isolationPlan.writeTargetsHash
         || ![proof.isolationEvidenceSha256, proof.authorizationSha256].every(v => /^[a-f0-9]{64}$/u.test(v))) {
       reject("Preparation future write-target isolation is not proved");

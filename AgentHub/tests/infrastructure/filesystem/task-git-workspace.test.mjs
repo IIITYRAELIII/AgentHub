@@ -23,6 +23,17 @@ import { taskRepositoryKey } from "../../../src/domain/task-git-reference.mjs";
 
 const execFileAsync = promisify(execFile);
 
+test("release Git can omit a wall clock cutoff while retaining explicit abort", async () => {
+  assert.equal(await runTaskGitCommand(["-e", "setTimeout(() => process.stdout.write('completed'), 25)"], {
+    executable: process.execPath, timeoutMs: null,
+  }), "completed");
+  const controller = new AbortController();
+  controller.abort(new Error("exact lease lost"));
+  await assert.rejects(runTaskGitCommand(["-e", "throw new Error('must not start')"], {
+    executable: process.execPath, timeoutMs: null, signal: controller.signal,
+  }), /exact lease lost/u);
+});
+
 for (const advancedRemote of [false, true]) test(`combined Tasks accept published ancestry with advanced remote=${advancedRemote} and reject unproven history`, { timeout: 90_000 }, async (context) => {
   const root = await repository(context);
   const originalMain = await git(root, "rev-parse", "main");
@@ -1958,6 +1969,34 @@ test("ordinary Task integration cannot bypass a divergent accepted local-main ba
   await assert.rejects(git(root, "merge-base", "--is-ancestor", localMain, devHeadBefore));
   await assert.rejects(git(root, "merge-base", "--is-ancestor", snapshot.headCommit, devHeadBefore));
   assert.equal(await git(dev.projectRoot, "status", "--porcelain=v1", "--untracked-files=all"), "");
+});
+
+test("release integration synchronizes accepted main once without changing the primary checkout", async context => {
+  const root = await repository(context);
+  const dataDir = path.join(root, "..", `${path.basename(root)}-release-data`);
+  context.after(() => rm(dataDir, { recursive: true, force: true }));
+  const service = new TaskGitWorkspaceService({ dataDir });
+  const dev = await service.prepareDev(root);
+  await writeFile(path.join(dev.projectRoot, "dev-only.txt"), "retained dev\n");
+  await git(dev.projectRoot, "add", "dev-only.txt");
+  await git(dev.projectRoot, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "dev");
+  const prior = await git(dev.projectRoot, "rev-parse", "HEAD");
+  await writeFile(path.join(root, "main-only.txt"), "accepted main\n");
+  await git(root, "add", "main-only.txt");
+  await git(root, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "main");
+  const main = await git(root, "rev-parse", "HEAD");
+  await writeFile(path.join(root, "private-local.txt"), "primary bytes\n");
+  const primaryStatus = await git(root, "status", "--porcelain=v1");
+  await service.releaseIntegrationEvidence({ projectRoot: root, synchronizeAcceptedMain: true });
+  const integrated = await git(dev.projectRoot, "rev-parse", "HEAD");
+  assert.equal(await git(dev.projectRoot, "show", "-s", "--format=%P", integrated), `${prior} ${main}`);
+  const reflog = await git(root, "reflog", "show", "dev");
+  await service.releaseIntegrationEvidence({ projectRoot: root, synchronizeAcceptedMain: true });
+  assert.equal(await git(root, "reflog", "show", "dev"), reflog);
+  assert.equal(await git(root, "rev-parse", "HEAD"), main);
+  assert.equal(await git(root, "status", "--porcelain=v1"), primaryStatus);
+  assert.equal(await readFile(path.join(root, "private-local.txt"), "utf8"), "primary bytes\n");
+  assert.equal(await readFile(path.join(dev.projectRoot, "dev-only.txt"), "utf8"), "retained dev\n");
 });
 
 test("historical reviewed bootstrap does not authorize a fresh native result", async (context) => {

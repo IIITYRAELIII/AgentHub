@@ -80,6 +80,7 @@ function approvedRepositoryEntries(entries = []) {
       projectRoot,
       approvedLocalMainCommit: String(entry?.approvedLocalMainCommit ?? entry?.localMainCommit ?? "").trim(),
       approvedOriginMainCommit: String(entry?.approvedOriginMainCommit ?? entry?.originMainCommit ?? "").trim(),
+      ...(entry.nativeResolutionReview ? { nativeResolutionReview: entry.nativeResolutionReview } : {}),
     };
     if (!approval.approvedLocalMainCommit || !approval.approvedOriginMainCommit) {
       throw new Error(`approved release main commits for ${projectRoot} require both local and origin commits`);
@@ -749,25 +750,6 @@ export class WorkspaceReleasePreflightService {
           phase: "Await PreRelease rebuild",
         });
       }
-      const evidence = await this.taskGitWorkspaces.releaseIntegrationEvidence({
-        projectRoot: repository.projectRoot,
-        tasks: repository.frozenTasks,
-        ...(lease ? { lease } : {}),
-        ...(preparation?.forwardPreparation ? { forwardPreparation: true } : {}),
-      });
-      if (preparation) {
-        const bound = preparation.envelope.tasks.filter((item) => (
-          canonicalRoot(item.projectRoot) === canonicalRoot(repository.projectRoot)
-        )).map(({ taskId, taskRevision, baseCommit, resultCommit }) => (
-          { taskId, taskRevision, baseCommit, resultCommit }
-        )).sort((a, b) => a.taskId.localeCompare(b.taskId));
-        const actual = evidence.tasks.map(({ taskId, taskRevision, baseCommit, resultCommit }) => (
-          { taskId, taskRevision, baseCommit, resultCommit }
-        )).sort((a, b) => a.taskId.localeCompare(b.taskId));
-        if (JSON.stringify(actual) !== JSON.stringify(bound)) {
-          throw new ReleasePreparationRejectedError("Preparation registered Task base/result evidence changed");
-        }
-      }
       const base = await this.taskGitWorkspaces.releaseBaseEvidence({
         projectRoot: repository.projectRoot,
         publishedBaseCommit: publicationBaselineFor(repository, publication).publishedRevision,
@@ -792,15 +774,35 @@ export class WorkspaceReleasePreflightService {
             || audit.publishedRevision !== provenance.publishedBaseCommit
             || audit.localMain !== provenance.approvedLocalMainCommit
             || audit.originMain !== provenance.approvedOriginMainCommit) {
-          throw new Error(`explicit reviewed-main approval is stale for ${repository.projectRoot}`);
+          throw new ReleasePreparationRejectedError(`explicit reviewed-main approval is stale for ${repository.projectRoot}`);
         }
         // Native composition starts at the explicitly agreed local main.
         // Reviewing origin does not silently adopt it as a different base.
-        reviewed = { provenance, adoption: null };
+        reviewed = { provenance, adoption: null, nativeResolutionReview: approval.nativeResolutionReview };
       }
       baseChecks.push({ repository, base, reviewed });
       if (reviewed && reviewed.provenance.approvedLocalMainCommit !== base.baseCommit) {
-        throw new Error("Native release agreed main changed after its explicit approval");
+        throw new ReleasePreparationRejectedError("Native release agreed main changed after its explicit approval");
+      }
+      const evidence = await this.taskGitWorkspaces.releaseIntegrationEvidence({
+        projectRoot: repository.projectRoot,
+        tasks: repository.frozenTasks,
+        ...(lease ? { lease } : {}),
+        ...(preparation?.forwardPreparation ? { forwardPreparation: true } : {}),
+        ...(generationIdentity ? { synchronizeAcceptedMain: true } : {}),
+      });
+      if (preparation) {
+        const bound = preparation.envelope.tasks.filter((item) => (
+          canonicalRoot(item.projectRoot) === canonicalRoot(repository.projectRoot)
+        )).map(({ taskId, taskRevision, baseCommit, resultCommit }) => (
+          { taskId, taskRevision, baseCommit, resultCommit }
+        )).sort((a, b) => a.taskId.localeCompare(b.taskId));
+        const actual = evidence.tasks.map(({ taskId, taskRevision, baseCommit, resultCommit }) => (
+          { taskId, taskRevision, baseCommit, resultCommit }
+        )).sort((a, b) => a.taskId.localeCompare(b.taskId));
+        if (JSON.stringify(actual) !== JSON.stringify(bound)) {
+          throw new ReleasePreparationRejectedError("Preparation registered Task base/result evidence changed");
+        }
       }
       const preparationRepository = preparation?.envelope.repositories.find((item) => (
         canonicalRoot(item.projectRoot) === canonicalRoot(repository.projectRoot)
@@ -815,8 +817,8 @@ export class WorkspaceReleasePreflightService {
         });
       }
       if (!preparation && generationIdentity) {
-        const prepared = await this.releaseGitWorkspaces.frozenCandidate(repository.projectRoot);
-        if (prepared.manifest?.baseProvenance?.kind === LOCAL_SOURCE_BASELINE_PROVENANCE) {
+        const prepared = await this.releaseGitWorkspaces.frozenCandidate(repository.projectRoot, { allowAbsent: true });
+        if (prepared?.manifest?.baseProvenance?.kind === LOCAL_SOURCE_BASELINE_PROVENANCE) {
           if (prepared.planRevision !== plan.revision || !sameFrozenTasks(prepared.manifest.tasks, evidence.tasks)) {
             throw new ReleasePreparationRejectedError("Installed local source selection changed");
           }
@@ -863,7 +865,7 @@ export class WorkspaceReleasePreflightService {
         ...(baseProvenance ? { baseProvenance } : {}),
         preserveFrozen,
         ...(nativeAwaitRecovery ? { nativeAwaitRecovery } : {}),
-        nativeResolutionReview: preparationRepository?.nativeResolutionReview ?? nativeResolutionReview,
+        nativeResolutionReview: preparationRepository?.nativeResolutionReview ?? reviewed?.nativeResolutionReview ?? nativeResolutionReview,
         ...(preparation ? { preflightRequestId: preparation.requestId, preparationGuard: {
           ...preparationRepository, argumentsHash: preparation.argumentsHash,
           sourceCommit: preparation.envelope.sourceCommit, sourceTree: preparation.envelope.sourceTree,

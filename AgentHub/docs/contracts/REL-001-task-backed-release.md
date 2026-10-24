@@ -1,5 +1,60 @@
 # REL-001 — Task-backed Workspace release
 
+## Normal release continuation (ADR-0132)
+
+The existing `hub_release_run` / `hub_release_continue` owner prepares a missing
+native candidate itself, then validates, freezes and publishes its immutable
+generation. A separate manual preparation/operator package is not a prerequisite
+for an ordinary transition. Exact selection/publication/base checks precede
+release changes. Release integration may synchronize already accepted main into
+managed dev under its normal lease/process guards; primary bytes remain intact.
+Ordinary Task integration retains its explicit adoption boundary.
+
+The source/default `node release.mjs run|continue|get|accept --provider <provider>
+--thread <thread> --stream <stream> --request-file <JSON>` consumes ordinary
+public tool business arguments. It connects the same release composition used
+by the running Hub to the existing authority-aware local default Git/SQLite
+runtime; it does not redirect to an older desktop endpoint or start another Hub.
+The generated caller capability is never read from that JSON. `continue` forwards
+`reviewed_main` and its request ID through the authenticated public method before
+terminal refusal, preserving the original operation's recovery semantics. The
+normal owner emits its durable acknowledgement and runs to its saved wait/terminal
+boundary without a pipeline execution timeout. It does not recover unrelated
+operations. No separate entry/driver/config is generated per transition.
+If the public MCP receipt fails after release admission, the consumer reads the
+durable identity of its addressed local pending work and drains that owner before
+closing stores. It rethrows the original failure and retains the unknown receipt;
+it neither repeats the mutation nor wakes other operations. `get` remains a read.
+JSON record and caller-token checks preserve the public business argument contract
+without an additional CLI file-size restriction.
+
+An approved repository's optional `nativeResolutionReview` accepts the existing
+single review or `{bundlePath,bundleSha256,reviews}` for multiple already reviewed
+prefixes. The sequencer authenticates each receipt and selected identity before
+import, then verifies full Git parents/tree/diff before checkout. It executes all
+matching prefixes in one call and reads its saved intent/Git after response loss.
+A bundle does not adopt a private journal or grant new publication authority.
+
+Definite preparation refusals persist failed step receipts while the same release
+waits for ordinary continuation. Explicit unknown candidate/acceptance effects
+remain unknown and cannot be blindly continued. Completed stages and the original
+authorization remain unchanged. ADR-0131 recovery remains legacy-only.
+
+A completed isolated preparation remains the registered candidate authority for
+ordinary later acceptance. Its original source bundle is retained unchanged;
+future exact selected results and agreed main are read from the registered primary
+through the same hardened Git owner. The original forward segment still uses its
+frozen transport. No remote configuration, primary refs/index/worktree, old receipt,
+isolation proof or publication authority is replaced. Current selection, source,
+main approval, leases and CAS remain required before promotion.
+
+Forward effect inventory streams the digest of retained native merge journals:
+their complete index/automatic path inventories are not small checkpoint records.
+Regular-file identity and stable bytes are checked across the read; directories,
+links and changed files refuse. Native parsing, selected identity and reviewed
+resolution validation remain with the existing sequencer. Inventory alone never
+adopts a journal or repeats a completed candidate.
+
 Forward preparation may retain one exact original-bound `historicalChangelog`
 record in closed installed-local-source provenance (ADR-0131). The original
 operation/envelope and selected result, historical installed manifest/release,
@@ -383,10 +438,10 @@ Its distinct original request binds the following strict versioned envelope:
 
 Commits/trees use 40 lowercase hexadecimal characters; digests use 64. Task
 editorial `rowRevision` and release `taskRevision` are distinct. Sets must be
-unique and complete, at most 128 Tasks/eight repositories/48 KiB. Unknown/missing
+unique and complete without a separate internal count/byte ceiling. Unknown/missing
 fields reject. Source inventory includes every regular file under runtime
 `src` and top-level JS/package entrypoints, with normalized relative path,
-raw length and SHA-256; links reject. Bounds are 4096 files/32 MiB. This is an
+raw length and SHA-256; links and non-files reject. File hashing is streamed. This is an
 explicit preparation check, never a snapshot/startup/background scan.
 
 The existing Await -> selected Task -> repository ownership encloses fresh plan,
@@ -545,7 +600,7 @@ Ref reachability in that clone is not a new selected-result prerequisite.
 
 Dev is preview only. The exact accepted set and its required descriptors remain
 Hub authority. Test-only branches are excluded. A result's bounded first-parent
-history (at most 512 commits) must start from accepted main; an unselected merge
+history must start from accepted main; its complete ancestry is checked without a commit-count ceiling. An unselected merge
 side is refused. An explicitly accepted absorption is admitted only through its
 exact ordered parents and the existing authenticated saved/stopped handoff,
 durable selected receipt and bounded source history. A checklist link, equality
@@ -764,7 +819,7 @@ from the stable runner checkout or an older repository snapshot.
 The durable metadata envelope carries a bounded source path, byte length and raw
 plus canonical digests rather than base64-expanding the document through the
 control transport. Composition re-reads and verifies the complete supported
-repository release notes up to 8 MiB; callers do not truncate or summarize them.
+repository release notes without a separate byte ceiling; callers do not truncate or summarize them.
 
 An already imported evidence-only orphan checkpoint may later receive a
 `primarySynchronizationProof` annotation from the primary synchronization owner.
@@ -2797,3 +2852,29 @@ base, publication lineage and normal lifecycle receipts. Old shared Task refs
 never become current successor authority. Generic cleanup cannot retire this
 retained custody snapshot/WIP; its owning retirement must be proved separately.
 The general busy guard and fresh operational authorization still apply.
+
+## Internal release data and definite compose recovery
+
+Correct internal preparation envelopes, source inventories, parsed owner journals,
+review bundles, selected histories and exact receipts are not rejected by an
+arbitrary size, record-count or Git execution deadline. File evidence is hashed
+in chunks; native bundles are copied privately and reverified before import.
+Complete remote ancestry is streamed and must still be closed and exact.
+Lease loss/abort, operation identity, format, hash, membership, CAS and no-overwrite
+checks remain mandatory. Event-delivery batch sizes only yield/reschedule work;
+they do not reject or truncate release evidence. External wire/projection and
+closed historical migration bounds are not changed by this ordinary path.
+
+A terminal failed compose with its exact failed step receipt may use the existing
+reviewed_main continuation after the cause is fixed, not only a stale-main error.
+The same original still requires fresh authority/selection/candidate checks,
+unchanged authorization, no next immutable generation and authoritative terminal
+not-applied publication receipts/readbacks. Unknown/partial effects remain
+ineligible. No receipt is rewritten and no new recovery owner is introduced.
+
+Runtime allocation validates every available declared Android metadata body.
+Multiple retained manifests may reference one identical SHA-256/size content;
+that content needs at least one verified physical copy. A missing duplicate is
+not required for allocation, while tampered bytes or missing unique content refuse.
+This does not restore a missing file or certify completeness/installation of any
+retained runtime body. No runtime files, pointers or manifests are changed.
