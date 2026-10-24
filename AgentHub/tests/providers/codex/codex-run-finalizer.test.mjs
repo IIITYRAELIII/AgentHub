@@ -7,6 +7,7 @@ import { ManagedRunLifecycleService } from "../../../src/application/managed-run
 import { StreamContextMaintenanceService } from "../../../src/application/stream-context-maintenance-service.mjs";
 import { StreamMaintenanceRegistry } from "../../../src/application/stream-maintenance-registry.mjs";
 import { DeferredInputStore } from "../../../src/application/deferred-input-store.mjs";
+import { CodexCompletionService } from "../../../src/providers/provider-completion-services.mjs";
 
 function fixture({
   existingCompletion = null,
@@ -252,10 +253,10 @@ test("CodexRunFinalizer releases admission when durable channel materialization 
 });
 
 for (const rejectReleaseSave of [false, true]) test(
-  `durable completion starts maintenance and wakes queued input with ${rejectReleaseSave ? "failed admission save" : "blocked outbox"}`,
+  `observed completion with hook usage starts maintenance and wakes queued input with ${rejectReleaseSave ? "failed admission save" : "blocked outbox"}`,
   async () => {
   const state = fixture();
-  const value = { ...run(), id: "run-1", status: "finishing" };
+  const value = { ...run(), id: "run-1", status: "running", executionOwner: "desktop" };
   state.turnStarts.set(turnEndKey(value), { startedAt: value.startedAt });
   const registry = new StreamMaintenanceRegistry();
   const deferredInputs = new DeferredInputStore();
@@ -306,11 +307,26 @@ for (const rejectReleaseSave of [false, true]) test(
   state.finalizer.markRunCompleted = lifecycle.markCompleted.bind(lifecycle);
   state.finalizer.completeRun = lifecycle.complete.bind(lifecycle);
   state.finalizer.deliverTerminal = () => { state.events.push(["outbox"]); return delivery; };
-  const finalizing = state.finalizer.finalize(value, { answer: "Final" })
+  const completion = new CodexCompletionService({
+    runForTask: () => value,
+    consumeTracker: () => ({ usage: {}, reported: false }),
+    waitForCompletion: async () => ({ usageReported: true, usage: { inputTokens: 12 }, model: "hook-model" }),
+    finalizeDelivery: state.finalizer.finalize.bind(state.finalizer),
+    finishProgress: async () => {}, completedAnswer: async () => "unused",
+    rememberSeenTurn: async () => {}, rememberLastMessage: () => {},
+  });
+  const finalizing = completion.completeObserved(value, {
+    snapshot: { status: "completed" }, answer: "Final", completedTurnId: value.turnId,
+  })
     .then((result) => ({ result }), (error) => ({ error }));
   try {
     await new Promise((resolve) => setImmediate(resolve));
     assert.equal(value.admissionReleased === true, !rejectReleaseSave);
+    const recorded = state.events.find(([name]) => name === "record")[1];
+    assert.deepEqual(recorded.usage, { inputTokens: 12 });
+    assert.equal(recorded.usageReported, true);
+    assert.equal(recorded.threadId, value.threadId);
+    assert.equal(recorded.turnId, value.turnId);
     assert.deepEqual(saves, [
       { status: "completed", terminalRevision: 1, hasTurnStart: true },
       { status: "completed", terminalRevision: 1, hasTurnStart: false },
