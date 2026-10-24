@@ -17,7 +17,7 @@ async function fixture(t, options = {}) {
 test("public unassigned custody preserves UNKNOWN and admits one declared successor from an independent base", { timeout: 90000 }, async t => {
   const f = await fixture(t);
   assert.equal(f.prior.streamId, null);
-  await f.catalog.updateStreamSettings(f.manager.id, { workingDirectory: path.join(f.root, "manager-only-source") });
+  await f.catalog.updateStreamSettings(f.manager.id, { ...f.manager.settings, workingDirectory: path.join(f.root, "manager-only-source") });
   const plan = await f.hub.call("hub_task_operation_reconcile", f.prepare);
   assert.deepEqual(f.tasks.task(f.prior.id), f.prior);
   await f.hub.call("hub_task_operation_reconcile", f.fence(plan));
