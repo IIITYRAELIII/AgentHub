@@ -406,6 +406,7 @@
         "src/infrastructure/process/claim-custody-runtime.mjs",
         "tools/claim-custody-native-witness.mjs",
         "tests/application/hub-mcp-claim-custody.test.mjs",
+        "tests/application/hub-mcp-claim-lock-admission.test.mjs",
         "tests/fixtures/claim-custody-public-fixture.mjs",
         "tests/infrastructure/process/claim-custody-runtime.native.test.mjs",
         "tests/application/hub-mcp-claim-isolated-custody.test.mjs",

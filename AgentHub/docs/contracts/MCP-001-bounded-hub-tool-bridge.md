@@ -390,6 +390,23 @@ The receipt then becomes terminal `failed` with structural `NO_EFFECT` and
 refusal. Queued input without a Stream ID uses its exact existing Thread binding.
 No context capability or message/file payload is retained in this evidence.
 
+A fresh ordinary claim whose first repository-dev-lock acquisition expires
+before the preparation callback enters may seal `task-claim-lock-admission-v1`
+through that same catalog transaction. The live Git owner binds its actual
+acquisition failure, exact operation/Task/repository key and physical lock path
+while the Task lease still holds. The original receipt binds the complete caller
+and argument identity and observed Task CAS, then becomes terminal `failed` with
+`NO_EFFECT` and `TASK_CLAIM_LOCK_ADMISSION_TIMEOUT`. Task-lock timeouts, dependency
+work, failures after callback entry, forged typed errors and legacy error text
+do not acquire this proof. No shorter timeout, retry or lock removal is added.
+
+The existing RM `hub_task_operation_reconcile` can read or settle this sealed
+claim refusal using the original operation ID and exact recorded repository
+locator, without workflow/Git recovery or new assignment. Active original workers,
+foreign identities and admitted claims refuse. Same-ID retry and startup readback
+recover a lost terminal write from the same seal. An unsealed historical timeout
+is not retroactively proved by this future refusal type or a currently empty Task.
+
 Startup readback and exact same-ID retry recover a lost terminal receipt write
 from the sealed proof, without preparing Git or assigning the Task again. The
 same ID remains refused even after the former executor becomes idle. A typed

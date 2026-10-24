@@ -2444,8 +2444,8 @@ export class TaskBoardStore {
       const claimReceiptTable = database.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'hub_mcp_operations'").get();
       if (claimReceiptTable && database.prepare(`
         SELECT 1 FROM hub_mcp_operations WHERE request_id = ?
-          AND (json_extract(result_json, '$.evidence.kind') = 'task-claim-executor-busy-v1'
-            OR json_extract(result_json, '$.operatorReconciliation.evidence.kind') = 'task-claim-executor-busy-v1')
+          AND (json_extract(result_json, '$.evidence.kind') IN ('task-claim-executor-busy-v1', 'task-claim-lock-admission-v1')
+            OR json_extract(result_json, '$.operatorReconciliation.evidence.kind') IN ('task-claim-executor-busy-v1', 'task-claim-lock-admission-v1'))
       `).get(String(operationId))) throw new Error("Task claim was durably refused before admission");
       if (readClaimCustodyFence(database, "original", operationId)) throw new TaskClaimContinuationWithdrawnError();
       const reservation = readClaimCustodyFence(database, "task", taskId);

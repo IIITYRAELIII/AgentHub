@@ -27,11 +27,11 @@ import {
   applySelectedCompositionFiles, prepareSelectedCompositionFiles, readSelectedCompositionFiles,
   selectedCompositionFilePlan,
 } from "./selected-composition-materializer.mjs";
-import { TaskDependencyPendingError } from "../../domain/task-board-task.mjs";
+import { TaskDependencyPendingError, TaskClaimLockAdmissionError } from "../../domain/task-board-task.mjs";
 import { prepareTaskWorktreeDependencies } from "./task-worktree-dependencies.mjs";
 import { readClaimCustodyWip, copyClaimCustodyWip } from "./claim-source-custody.mjs";
 import { claimCustodyHash } from "../../domain/claim-forward-custody.mjs";
-import { withInterprocessLocks as acquireInterprocessLocks } from "../process/interprocess-lock.mjs";
+import { withInterprocessLocks as acquireInterprocessLocks, interprocessLockAdmissionTimeoutPath } from "../process/interprocess-lock.mjs";
 import {
   measureTaskOperation, measureTaskOperationAwait, recordTaskOperationTiming, withTaskOperationTiming,
 } from "../process/task-operation-timing.mjs";
@@ -612,6 +612,7 @@ async function assertNoTaskChangelogChanges(root) {
 
 export class TaskGitWorkspaceService {
   #contourExternalEffects;
+  #claimLockAdmissionErrors = new WeakMap();
 
   constructor({
     dataDir,
@@ -1471,10 +1472,13 @@ export class TaskGitWorkspaceService {
     });
   }
 
-  async claimAdmissionNoEffectEvidence({ taskId, projectRoot, error } = {}) {
+  async claimAdmissionNoEffectEvidence({ taskId, projectRoot, operationId = null, error } = {}) {
     this.#assertAvailable("claimAdmissionNoEffectEvidence");
     const id = normalizedTaskId(taskId);
     const repositoryRootValue = await repositoryIdentityFromPath(projectRoot);
+    const lockAdmission = this.#claimLockAdmissionErrors.get(error);
+    if (lockAdmission && lockAdmission.taskId === id && lockAdmission.operationId === operationId
+        && samePath(lockAdmission.repositoryRoot, repositoryRootValue)) return lockAdmission;
     const message = String(error?.message ?? error ?? "");
     const currentPrefix = `${CLAIM_REPOSITORY_GUARD_ERROR_PREFIX} (`;
     const legacyPrefix = `mutation effect is not authoritatively disproved: ${currentPrefix}`;
@@ -2800,13 +2804,13 @@ export class TaskGitWorkspaceService {
     return this.withTaskLock(params.taskId, (lease) => this.prepareOwned({ ...params, lease }));
   }
 
-  async prepareOwned({ taskId, taskNumber = null, projectRoot, lease = null, dependencyMode = "skip", dependencyOverrideReason = null } = {}) {
+  async prepareOwned({ taskId, taskNumber = null, projectRoot, lease = null, dependencyMode = "skip", dependencyOverrideReason = null, claimOperationId = null } = {}) {
     return measureTaskOperation("prepare-task", () => this.#prepareOwned({
-      taskId, taskNumber, projectRoot, lease, dependencyMode, dependencyOverrideReason,
+      taskId, taskNumber, projectRoot, lease, dependencyMode, dependencyOverrideReason, claimOperationId,
     }));
   }
 
-  async #prepareOwned({ taskId, taskNumber, projectRoot, lease, dependencyMode, dependencyOverrideReason }) {
+  async #prepareOwned({ taskId, taskNumber, projectRoot, lease, dependencyMode, dependencyOverrideReason, claimOperationId }) {
     this.#assertAvailable("prepareOwned");
     if (!["skip", "ensure", "verify"].includes(dependencyMode)) throw new Error("Invalid Task dependency mode");
     const id = normalizedTaskId(taskId);
@@ -2833,7 +2837,9 @@ export class TaskGitWorkspaceService {
     const selectedWorktreeRoot = await worktreeRoot(selectedRoot);
     const selection = taskSparseCheckoutSelection(selectedWorktreeRoot, selectedRoot);
     const repoRoot = await repositoryRoot(projectRoot);
+    let prepareEntered = false;
     const workspace = await this.#withClearDevLock(repoRoot, lease, async (ownedLease) => {
+      prepareEntered = true;
       if (dependencyOverrideReason != null) {
         const reason = String(dependencyOverrideReason).trim();
         if (!reason || reason.length > 2000) throw new Error("Dependency override requires a concise explicit user instruction");
@@ -2905,6 +2911,21 @@ export class TaskGitWorkspaceService {
         headCommit,
         gitBaseline: { repoRoot, tree: baseCommit },
       };
+    }).catch(async error => {
+      const repositoryKey = taskRepositoryKey(repoRoot);
+      const lockPath = path.join(this.dataDir, "locks", `task-git-dev-${repositoryKey}.lock`);
+      const timedOutPath = interprocessLockAdmissionTimeoutPath(error);
+      if (!prepareEntered && typeof claimOperationId === "string" && claimOperationId
+          && timedOutPath && samePath(timedOutPath, lockPath)) {
+        await requiredGuardLease(lease).assertOwned();
+        const refusal = new TaskClaimLockAdmissionError();
+        this.#claimLockAdmissionErrors.set(refusal, Object.freeze({
+          version: 1, kind: "task-git-dev-lock-admission-v1", phase: "before-prepare",
+          taskId: id, operationId: claimOperationId, repositoryRoot: repoRoot, repositoryKey, lockPath,
+        }));
+        throw refusal;
+      }
+      throw error;
     });
     if (dependencyMode !== "skip") {
       const taskRoot = await worktreeRoot(workspace.projectRoot);
