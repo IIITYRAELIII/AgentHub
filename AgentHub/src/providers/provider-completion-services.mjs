@@ -26,7 +26,7 @@ export class CodexCompletionService {
     run.status = "finishing";
     await this.#d.rememberSeenTurn(run, completedTurnId);
     this.#rememberTerminalAnswer(run, completedTurnId, answer, snapshot);
-    const resolvedTracker = tracker ?? this.#d.consumeTracker(completedTurnId);
+    let resolvedTracker = tracker ?? this.#d.consumeTracker(completedTurnId);
     if (run.executionOwner !== TASK_EXECUTION_OWNERS.HUB) {
       const hooked = await this.#d.waitForCompletion({
         provider: "codex",
