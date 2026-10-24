@@ -6,6 +6,9 @@ import { normalizedTaskGitReferences, normalizedInitialNativeTest } from "../dom
 import { taskProjectRoot } from "../domain/task-project-root.mjs";
 import { normalizedTaskSquashTransfer } from "../domain/task-squash-transfer.mjs";
 import { normalizedTaskSquashCutover } from "../domain/task-squash-cutover.mjs";
+import { TaskLifecycleNoEffectError, TaskOperationReconciliationRefusedError,
+  workflowAdmissionNoEffectEvidence } from "../domain/task-board-task.mjs";
+
 import { normalizePublishedResolution } from "../domain/published-resolution.mjs";
 import { selectedAbsorptionHandoff } from "../domain/task-selected-composition.mjs";
 import { sameTaskWorkflowState as sameTaskState, nativeTestMetadataDrift } from "../domain/native-test-terminal-recovery.mjs";
@@ -325,10 +328,11 @@ export class TaskOperationReconciliationService {
     const receipt = this.workspaceCatalog.mcpOperation(operationId);
     const transition = this.taskBoard.lifecycleTransition(operationId);
     const outcome = this.taskBoard.lifecycleOutcome(operationId);
-    const root = path.resolve(requiredText(projectRoot, "project root"));
+    const root = projectRoot == null ? null : path.resolve(requiredText(projectRoot, "project root"));
     const guardText = String(guardId ?? "").trim();
     const exactGuardId = guardText ? requiredText(guardText, "guard id", 200) : null;
     const targetWorkflowStatus = transition?.targetWorkflowStatus
+      ?? outcome?.result?.noEffect?.targetWorkflowStatus
       ?? outcome?.result?.task?.workflowStatus
       ?? null;
     const squash = squashArguments(options);
@@ -347,6 +351,21 @@ export class TaskOperationReconciliationService {
       workspace,
       stream: task.streamId ? this.workspaceCatalog.stream(task.streamId) : null,
     });
+    if (outcome?.result?.noEffect) {
+      const proof = !transition && workflowAdmissionNoEffectEvidence(outcome, receipt);
+      if (!proof || proof.taskId !== task.id || proof.workspaceId !== workspace.id
+          || receipt.operationStatus !== "pending" || receipt.receiptState !== "unknown"
+          || (proof.projectRoot !== null && (!root || !samePath(root, proof.projectRoot))) || squash || cutover
+          || (workflowCas?.expected_task_revision ?? null) !== proof.expectedRevision
+          || (workflowCas?.expected_workflow_status ?? null) !== proof.expectedWorkflowStatus
+          || receipt.argumentsHash !== workflowArgumentsHash({
+            operationId, taskId: task.id, status: proof.targetWorkflowStatus, identityArguments: workflowCas,
+          })) throw new Error("Workflow refusal identity does not match the original operation");
+      return { workspace, task, receipt, transition, outcome, operationId, projectRoot: proof.projectRoot,
+        guardId: exactGuardId, state: "no_effect", noEffect: proof };
+    }
+    if (!root) throw new Error("Unknown workflow operation identity requires a project root");
+
     const metadataRecovery = !squash && !selected && !initial && !cutover && !workflowCas
       && options.nativeResolutionReview == null && !exactGuardId && nativeTestMetadataDrift(task, transition);
     const receiptSettled = !transition && (outcome?.result?.evidence?.nativeTerminalRecovery
@@ -537,6 +556,14 @@ export class TaskOperationReconciliationService {
   }
 
   async #settle(identity, { recovery = null } = {}) {
+    if (identity.state === "no_effect") {
+      const reconciliation = { outcome: "NO_EFFECT", durableState: "workflow_admission_refusal", evidence: identity.noEffect };
+      const receipt = await this.workspaceCatalog.failUnknownMcpOperation(identity.operationId, {
+        workspaceId: identity.workspace.id, toolName: "hub_task_status_update",
+        error: new TaskLifecycleNoEffectError(identity.noEffect), reconciliation,
+      });
+      return { resolved: true, outcome: "failed", receipt, reconciliation };
+    }
     if (identity.state === "succeeded") {
       const originalResult = identity.squash ? {
         task: identity.outcome.result.task,
@@ -588,6 +615,20 @@ export class TaskOperationReconciliationService {
   }
 
   async reconcileUnknownWorkflow(options = {}) {
+    let initial;
+    try {
+      initial = this.#identity(options);
+      if (initial.state !== "no_effect" && initial.workspace.settings?.releaseWorkflowEnabled !== true) {
+        throw new Error("Unknown workflow reconciliation requires an enabled release workflow");
+      }
+    } catch (error) {
+      throw new TaskOperationReconciliationRefusedError(error);
+    }
+    // Immutable pre-admission refusal has no Git/process effects to recover.
+    // The existing receipt owner's exact UNKNOWN CAS is the only mutation;
+    // the terminal outcome already fences any later lifecycle admission.
+    // Settlement errors remain ambiguous, not a new pre-effect certificate.
+    if (initial.state === "no_effect") return this.#settle(initial);
     return this.taskLifecycle.withUnknownWorkflowReconciliationLock({
       taskId: requiredText(options.taskId, "task id", 200),
       sourceTaskId: options.squashSourceTaskId
@@ -596,6 +637,8 @@ export class TaskOperationReconciliationService {
       operationId: requiredText(options.operationRequestId, "operation request id", 300),
       projectRoot: path.resolve(requiredText(options.projectRoot, "project root")),
     }, async (lease) => {
+      let effectsStarted = false;
+      try {
       let identity = this.#identity(options);
       const needsRecovery = identity.state === "pending" || identity.withdrawal;
       if (identity.state === "pending" && !identity.guardId && !identity.withdrawal
@@ -612,6 +655,7 @@ export class TaskOperationReconciliationService {
         summary: requiredText(options.proofSummary, "proof summary", 1_000),
       } : null;
       const settle = async (terminal, recovery = null) => {
+        effectsStarted = true;
         if (terminal.state === "succeeded" && terminal.withdrawal) {
           try {
             const finalized = await this.taskLifecycle.reconcileUnknownWorkflowStatusOwned({
@@ -632,6 +676,7 @@ export class TaskOperationReconciliationService {
       };
       if (identity.state !== "pending") return settle(identity);
       let recoveryResult = null;
+      effectsStarted = true;
       try {
         recoveryResult = await this.taskLifecycle.reconcileUnknownWorkflowStatusOwned({
           taskId: identity.task.id,
@@ -668,6 +713,10 @@ export class TaskOperationReconciliationService {
         return { resolved: false, outcome: "unknown", error: "Workflow reconciliation did not reach a durable terminal state" };
       }
       return settle(identity, recoveryResult?.recovery ?? null);
+      } catch (error) {
+        if (!effectsStarted) throw new TaskOperationReconciliationRefusedError(error);
+        throw error;
+      }
     });
   }
 }

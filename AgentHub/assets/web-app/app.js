@@ -1678,7 +1678,11 @@ let composerDraftRestoreInitialization = null;
 let composerDraftRestoreReady = false;
 let composerRecoveryAuthorityTail = Promise.resolve();
 let composerRecoveryAuthorityDatabase = null;
-let pendingComposerRequest = null;
+const pendingComposerRequests = new Map();
+
+function currentPendingComposerRequest() {
+  return pendingComposerRequests.get(state.selectedId) ?? null;
+}
 const retryComposerRequests = new Map();
 const composerDraftReconciliation = window.AgentHubComposerDraftReconciliation.create({
   drafts,
@@ -1946,9 +1950,10 @@ function updateComposerTaskGenerations(previousTasks, nextTasks) {
 function removeComposerTask(taskId) {
   const id = String(taskId ?? "").trim();
   if (!id) return;
-  if (pendingComposerRequest?.taskId === id) {
-    recordRecoveryInvalidation(id, pendingComposerRequest.requestId);
-    pendingComposerRequest = null;
+  const pending = pendingComposerRequests.get(id);
+  if (pending) {
+    recordRecoveryInvalidation(id, pending.requestId);
+    pendingComposerRequests.delete(id);
   }
   composerDraftReconciliation.remove(id);
   discardAttachmentPreviews(id);
@@ -3462,7 +3467,7 @@ function renderComposerQuickMessages() {
       "data-quick-message-scope": entry.scope,
       title: `${entry.title}. ${actionCopy.title}`,
       "aria-label": `${entry.title}. ${actionCopy.title}`,
-      disabled: Boolean(pendingComposerRequest),
+      disabled: Boolean(currentPendingComposerRequest()),
     }, [
       el("span", { class: "composer-quick-message-scope", text: quickMessageScopeLabel(entry.scope) }),
       el("span", { class: "composer-quick-message-label", text: entry.title }),
@@ -6697,7 +6702,8 @@ function renderedMessageAuthor(message, role) {
 
 function pruneComposerFiles() {
   const attachments = [...drafts.values()].flatMap((draft) => draft.attachments ?? []);
-  attachments.push(...(pendingComposerRequest?.attachments ?? []), ...(window.AgentHubRetainedUploadAttachments?.() ?? []));
+  attachments.push(...[...pendingComposerRequests.values()].flatMap((pending) => pending.attachments ?? []),
+    ...(window.AgentHubRetainedUploadAttachments?.() ?? []));
   window.AgentHubComposerFiles.prune(attachments.map((file) => file.blobId).filter(Boolean));
 }
 window.AgentHubPruneComposerFiles = pruneComposerFiles;
@@ -8672,9 +8678,9 @@ function updateSendState() {
     || currentTaskReferences().length > 0
     || currentAnnotations().length > 0;
   const preparing = currentAttachmentPreviews().length > 0;
-  composerSend.disabled = !draftFilled || !state.selectedId || Boolean(pendingComposerRequest) || preparing;
+  composerSend.disabled = !draftFilled || !state.selectedId || Boolean(currentPendingComposerRequest()) || preparing;
   composerQuickMessages?.querySelectorAll("button").forEach((button) => {
-    button.disabled = !state.selectedId || Boolean(pendingComposerRequest) || preparing;
+    button.disabled = !state.selectedId || Boolean(currentPendingComposerRequest()) || preparing;
   });
 }
 
@@ -8771,7 +8777,7 @@ function sendComposerRequest({
   clearComposer = false,
   restoreOnReject = false,
 } = {}) {
-  if (!state.selectedId || pendingComposerRequest) return;
+  if (!state.selectedId || currentPendingComposerRequest()) return;
   if (currentAttachmentPreviews().length) {
     showToast("Вложения ещё готовятся. Дождись подготовки или удали их перед отправкой.");
     return;
@@ -8801,7 +8807,7 @@ function sendComposerRequest({
     ? retry.requestId
     : globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`;
   if (retry && retry.fingerprint !== fingerprint) retryComposerRequests.delete(state.selectedId);
-  pendingComposerRequest = {
+  pendingComposerRequests.set(state.selectedId, {
     requestId,
     fingerprint,
     taskId: state.selectedId,
@@ -8813,7 +8819,7 @@ function sendComposerRequest({
     composerTransfer: requestComposerTransfer,
     restoreOnReject,
     editRevision: composerDraftReconciliation.revision(state.selectedId),
-  };
+  });
   if (clearComposer) {
     // Sending is itself a composition boundary. A FileReader or annotation
     // hash that started from the pre-send draft must not reapply that draft
@@ -8894,14 +8900,15 @@ function insertQuickMessage(entry) {
 }
 
 function completeComposerSend(requestId, { outcome = "unknown", taskId = "" } = {}) {
-  const pending = pendingComposerRequest;
+  const pending = taskId ? pendingComposerRequests.get(taskId) ?? null
+    : [...pendingComposerRequests.values()].find((entry) => entry.requestId === requestId) ?? null;
   const completion = composerDraftReconciliation.complete({
     pending,
     requestId,
     taskId,
     outcome,
   });
-  pendingComposerRequest = completion.pending;
+  if (pending && completion.matched) pendingComposerRequests.delete(pending.taskId);
   updateSendState();
   return completion;
 }
@@ -9491,7 +9498,7 @@ annotationsBox.addEventListener("keydown", (event) => {
     return;
   }
   event.preventDefault();
-  if (event.repeat || pendingComposerRequest) return;
+  if (event.repeat || currentPendingComposerRequest()) return;
   submitComposer({ steerWhileRunning: event.metaKey });
 });
 
@@ -9907,7 +9914,7 @@ function prepareForRuntimeReload() {
     draftsPersisted,
     drafts: drafts.values(),
     modalOpen,
-    requestPending: Boolean(pendingComposerRequest) || pendingAttachmentPreparations > 0 || attachmentPreparationPreviews.size > 0,
+    requestPending: pendingComposerRequests.size > 0 || pendingAttachmentPreparations > 0 || attachmentPreparationPreviews.size > 0,
     bugReportAttachments,
     bugReportSending,
   })) return false;

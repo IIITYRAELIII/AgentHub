@@ -1394,6 +1394,15 @@ repository mismatch or other error stays unknown. The compatibility classifier
 may be removed only after supported journals can no longer contain unknown claim
 receipts from that source version.
 
+Ordinary claim's first repository-lock timeout is terminal only when its live
+Task Git owner proves that the preparation callback never entered and the Task
+lease remains owned. The existing MCP receipt seals that exact refusal before
+the Task lease is released; its Task CAS and operation identity exclude prior
+assignment/lifecycle admission. Durable readback fences late claim writers and
+never repeats preparation. Timeouts after preparation entry or in dependency
+work retain UNKNOWN semantics. Historical unsealed timeouts require their own
+positive original-bound proof; the new type alone does not settle them.
+
 Dependency proof traversal is bounded before queue growth and directory
 expansion: each source or hidden package lock is at most 16 MiB, with at most
 16 nested `node_modules` levels, 10,000 physical package roots, 5,000 entries
@@ -1635,6 +1644,22 @@ unknown historical effect. A foreign legacy intent leaves both its recovery
 evidence and the current Task status unchanged.
 
 ## Task Git reference and CAS
+
+Ordinary expected revision/status refusal before lifecycle admission seals a
+bounded `NO_EFFECT` outcome through the existing Task SQLite owner. It cannot
+overwrite an admitted/terminal operation or authorize replay. Fresh-intake and
+lease authority must still hold, and preparation/effects must not have started.
+The MCP classifier/startup/canonical original-ID reconciler use the exact sealed
+identity, not an error string or present-day Task/Git state. A crash between that
+outcome and receipt settlement never requires repeating the refused operation.
+Exact immutable refusal settlement is only the existing SQLite receipt CAS,
+including database-only/null-root workspaces; it does not acquire release/Git
+authority or invoke recovery. Ordinary Git reconciliation keeps its existing
+workflow, root, process guard and owner requirements.
+Legacy missing-admission UNKNOWN without this evidence remains UNKNOWN; no manual
+certificate, guard bypass, SQL repair or historical effects inference is allowed.
+The reconciler's own proven pre-effect refusal is terminal without altering the
+original ambiguous operation. See MCP-001 and ADR-0085.
 
 The server-side Git boundary owns:
 
@@ -2826,6 +2851,41 @@ outcome without new Git effects. This migration is removable once the pending
 ordinary native Awaits lacking their own preparation intent are settled; it
 does not relax ordinary dirty-checkout rejection or authorize publication.
 
+
+## Managed source custody after a forward claim fence
+
+ADR-0131 does not admit a new Git result, acceptance, release or cleanup. The
+existing Task Git owner holds its Task lease across ordinary prepare-to-claim;
+a forward successor instead verifies the exact already managed clean source,
+registered base/branch and declared ignored WIP inventory under that lease.
+It performs no dependency ensure, branch alignment or source materialization.
+A durable exact-cohort retirement certificate and existing claim writer authorize
+only the predeclared successor binding. WIP/history and the legacy UNKNOWN remain
+preserved, and active/queued previous-executor work still blocks actual assignment.
+Publication/installed capability and the public release set are unaffected.
+
+The explicitly authorized `isolated-source-v1` forward-custody admission stages
+an independent full-object Git source and hash-verified retained WIP under an
+owner-bound epoch. Original/base history is pinned; no alternates, common mutable
+Git, linked checkout or old deterministic ref namespace grants authority. The old
+root remains preserved at capture but is not immutable. Persistent SQL fences
+isolate every supported old Task writer; an atomic full Task-state pin detects
+intervening effects. Ordinary Test imports private objects through the existing
+native owner and writes epoch result refs while preserving logical repository,
+base, publication lineage and normal lifecycle receipts. Old shared Task refs
+never become current successor authority. Generic cleanup cannot retire this
+retained custody snapshot/WIP; its owning retirement must be proved separately.
+The general busy guard and fresh operational authorization still apply.
+
+For a separately authorized open/new unassigned intake, the same Git owner may
+pin the registered project local-main commit as both source and base when no
+deterministic Task source/ref artifacts exist. An existing source/WIP must be
+preserved through its exact managed-source pins instead. The base is staged as
+full independent objects in the same epoch; no Task prepare/ensure, shared ref
+reset or assignment is replayed. Empty Task WIP is valid only for this explicitly
+identified registered-base origin. Later ordinary Test/result/Await retain the
+logical registered repository and publication lineage. A discovered artifact or
+changed source/Task state before the fence refuses instead of being discarded.
 
 ## Internal release data and definite compose recovery
 

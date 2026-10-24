@@ -1916,7 +1916,7 @@ test("Release Manager reconciliation forwards one exact unknown operation and re
   }]);
   const schema = service.tools().find((tool) => tool.name === "hub_task_operation_reconcile").inputSchema;
   assert.deepEqual(schema.required, [
-    "context_token", "request_id", "task_id", "operation_request_id", "project_root", "confirm_reconcile",
+    "context_token", "request_id", "task_id", "operation_request_id", "confirm_reconcile",
   ]);
   const terminalArgs = { ...args, request_id: "reconcile-command-terminal" };
   delete terminalArgs.guard_id;

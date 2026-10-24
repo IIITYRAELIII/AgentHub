@@ -54,7 +54,21 @@
 
     async function json(path, init, action = "request", identity = {}) {
       const response = await exchange(path, init, action, identity);
-      const value = await trace("response-json", () => response.json().catch(() => ({})), identity);
+      let value;
+      try {
+        value = await trace("response-json", () => response.json(), identity);
+      } catch {
+        // HTTP headers do not prove that the exact receipt body was received.
+        // Keep the persisted attempt for explicit status reconciliation; never
+        // turn a lost body into an empty receipt and an identity/hash conflict.
+        if (!response.ok) throw httpError(response.status, {}, action);
+        const error = new Error("Не удалось прочитать подтверждение загрузки. Файл сохранён в черновике; продолжите загрузку.");
+        error.attachmentUploadAction = action;
+        error.attachmentUploadStatus = response.status;
+        error.attachmentUploadTerminal = false;
+        error.attachmentUploadReceiptUnconfirmed = true;
+        throw error;
+      }
       return trace("receipt", () => {
         if (!response.ok) {
           throw httpError(response.status, value, action);

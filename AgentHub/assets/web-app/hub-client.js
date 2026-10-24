@@ -1698,6 +1698,7 @@ async function readSnapshot(params = {}) {
 
 function snapshotQuery(params = {}) {
   return new URLSearchParams({
+    clientTraceId: String(params?.clientTraceId ?? ""),
     knownVersion: String(params?.knownVersion ?? ""),
     compactSnapshot: params?.compactSnapshot === true ? "1" : "0",
     snapshotProtocol: String(params?.snapshotProtocol ?? 3),
