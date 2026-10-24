@@ -11,6 +11,8 @@ import { readNativeUpstreamAdoptions } from "../../../src/infrastructure/filesys
 import { taskRepositoryKey } from "../../../src/domain/task-git-reference.mjs";
 import { assertInstalledLocalSourceBaseline } from "../../../src/infrastructure/filesystem/local-source-baseline.mjs";
 import { LOCAL_SOURCE_BASELINE_PROVENANCE, localSourceSelectionHash } from "../../../src/domain/release-base-provenance.mjs";
+import { ReleaseGitWorkspaceService } from "../../../src/infrastructure/filesystem/release-git-workspace.mjs";
+import { createContourExternalEffectsPort } from "../../../src/ports/contour-external-effects.mjs";
 
 const exec = promisify(execFile);
 async function fixture(t, directory = null) {
@@ -41,6 +43,26 @@ async function fixture(t, directory = null) {
   await save("code.txt", "selected result\n");
   const result = await commit();
   return { root, calls, git, save, commit, base, result };
+}
+
+for (const method of ["deriveInstalledLocalSourceBaselineForSelection", "validateLocalSourceBaseline"]) {
+  test(`installed source contour policy excludes ${method} before authority access`, async t => {
+    const f = await fixture(t), exclusions = [];
+    const dataDir = path.join(f.root, ".git", "fixture-data");
+    const service = new ReleaseGitWorkspaceService({
+      dataDir, environment: { LOCALAPPDATA: path.join(f.root, ".git", "fixture-local") },
+      contourExternalEffects: createContourExternalEffectsPort(event => exclusions.push(event)),
+      readPreparationAuthority: () => { throw new Error("unexpected preparation authority access"); },
+      readPreparationOriginal: () => { throw new Error("unexpected original custody access"); },
+    });
+    await assert.rejects(service[method]({ projectRoot: f.root, planRevision: "fixture", tasks: [],
+      publishedRevision: null, provenance: null }), { code: "CONTOUR_EXTERNAL_EFFECT_EXCLUDED" });
+    assert.deepEqual(exclusions, [{ skipped: true, status: "excluded", reason: "test-contour-external-effect",
+      kind: "release-git", operation: "assertPrimaryInvariant", targets: [] }]);
+    await assert.rejects(readFile(path.join(dataDir, "release-repositories")), { code: "ENOENT" });
+    assert.equal(await f.git(["rev-parse", "HEAD"]), f.result);
+    assert.equal(await f.git(["status", "--porcelain=v1"]), "");
+  });
 }
 
 test("adoption namespace is read once per boundary and selected malformed refs never become cached absence", async t => {

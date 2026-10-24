@@ -1534,6 +1534,7 @@ export class ReleaseGitWorkspaceService {
   async deriveInstalledLocalSourceBaselineForSelection({ projectRoot, planRevision, tasks,
     publishedRevision, adoptions = [] }) {
     const initial = await primarySnapshot(projectRoot);
+    this.#assertAvailable("assertPrimaryInvariant");
     assertPrimarySnapshot(initial, "ordinary Await installed source binding");
     if (publishedRevision !== await durablePublishedRevision(this.#environment, initial.root)) {
       throw new Error("Ordinary Await published baseline changed");
@@ -1566,6 +1567,7 @@ export class ReleaseGitWorkspaceService {
 
   async validateLocalSourceBaseline({ projectRoot, provenance, planRevision, tasks, originalAuthority = null }) {
     const initial = await primarySnapshot(projectRoot);
+    this.#assertAvailable("assertPrimaryInvariant");
     assertPrimarySnapshot(initial, "local source baseline verification");
     return assertInstalledLocalSourceBaseline({ provenance, planRevision, tasks,
       originalAuthority: originalAuthority ?? this.#historicalChangelogOriginal(provenance),
