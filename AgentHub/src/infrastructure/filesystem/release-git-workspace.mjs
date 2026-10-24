@@ -9,7 +9,8 @@ import { assertPreparationCheckpoint } from "./release-preparation-guard.mjs";
 import { ReleaseGenerationTransportRetention } from "./release-generation-transport-retention.mjs";
 import { createSelectedGitBundle } from "./selected-git-bundle.mjs";
 import { assertInstalledLocalSourceBaseline, installedNativeHistoryBaseline,
-  assertInstalledAgreedMainOrigin } from "./local-source-baseline.mjs";
+  assertInstalledAgreedMainOrigin, sourceBlobs } from "./local-source-baseline.mjs";
+import { isRuntimeSourceFile, isRuntimeSourceModule, verifyRuntimeImportClosure } from "./runtime-manifest-verifier.mjs";
 import { readNativeUpstreamAdoptions, assertNativeUpstreamOrigin } from "./native-upstream-adoption.mjs";
 import { inspectPublishedNotesArchive, archivePublishedNotesCheckout } from "./native-await-published-notes-recovery.mjs";
 import { defaultRuntimeRoot } from "./runtime-layout.mjs";
@@ -30,7 +31,7 @@ import { selectedCompositionFields, selectedCompositionIdentity } from "../../do
 import { canonicalPath } from "./config.mjs";
 import { withInterprocessLocks } from "../process/interprocess-lock.mjs";
 import { withPublicationLock } from "../process/publication-lock.mjs";
-import { recordTaskOperationTiming } from "../process/task-operation-timing.mjs";
+import { measureTaskOperation, recordTaskOperationTiming } from "../process/task-operation-timing.mjs";
 import { publicationCheckpointFile, readPublicationCheckpoint } from "../persistence/publication-checkpoint.mjs";
 import {
   failedFrozenPublicationEvidence,
@@ -49,6 +50,46 @@ const AWAIT_UNKNOWN_OUTCOME_CODES = new Set([
   "AWAIT_PREPARATION_UNKNOWN",
   "AWAIT_ACCEPTANCE_UNKNOWN",
 ]);
+
+async function assertNativeRuntimeImportClosure(gitAt, composition) {
+  // Inspect immutable native objects, never a dirty checkout, installed runtime
+  // or moving selected branch. Existing verified batch reads keep this one
+  // inventory + bounded-by-input object traversal, not one Git child per file.
+  const git = (args, options) => gitAt(composition.root,
+    ["--no-optional-locks", "--no-lazy-fetch", "--no-replace-objects", "-c", "core.fsmonitor=false", ...args], options);
+  const entries = new Map(String(await git(["ls-tree", "-r", "-z", "--full-tree", composition.head]))
+    .split("\0").filter(Boolean).map(row => {
+      const tab = row.indexOf("\t");
+      const [mode, type, oid] = row.slice(0, tab).split(" ");
+      return [row.slice(tab + 1), { mode, type, oid }];
+    }));
+  const regular = file => entries.get(file)?.type === "blob"
+    && ["100644", "100755"].includes(entries.get(file).mode);
+  const packageFiles = ["package.json", "AgentHub/package.json"].filter(regular);
+  const packages = await sourceBlobs(git, entries, packageFiles);
+  for (const file of packageFiles) {
+    let metadata;
+    try { metadata = JSON.parse(packages.get(file).toString("utf8")); }
+    catch { continue; } // Other products keep their own package validation.
+    if (metadata?.name !== "agent-hub") continue;
+    const prefix = file.slice(0, -"package.json".length);
+    const files = [...entries.keys()].filter(name => name.startsWith(prefix) && regular(name))
+      .map(name => name.slice(prefix.length));
+    const modules = files.filter(isRuntimeSourceModule).map(name => prefix + name);
+    const sources = await sourceBlobs(git, entries, modules);
+    // Membership is the same canonical runtime source selection, including
+    // non-module targets; tests/tools cannot satisfy a shipped relative import.
+    const included = files.filter(isRuntimeSourceFile);
+    try {
+      await verifyRuntimeImportClosure(composition.root, included, {
+        readModule: name => sources.get(prefix + name).toString("utf8"),
+      });
+    } catch (error) {
+      throw new ReleasePreparationRejectedError(
+        `Native runtime import closure failed in ${composition.root}: ${error.message}`, { cause: error });
+    }
+  }
+}
 
 function runGit(args, { cwd, timeoutMs = 120_000, rawOutput = false, acceptableExitCodes = [], input = null, stdoutFd = null } = {}) {
   if (stdoutFd !== null && (!Number.isSafeInteger(stdoutFd) || stdoutFd < 3)) throw new TypeError("Invalid owned Git output descriptor");
@@ -1681,6 +1722,8 @@ export class ReleaseGitWorkspaceService {
           || baseCommit !== preparationGuard.approvedBaseCommit)) {
         throw new ReleasePreparationRejectedError("Full selected/joint preparation tree differs from the reviewed tree");
       }
+      await measureTaskOperation("preparation:runtime-import-closure", () => assertNativeRuntimeImportClosure(
+        (cwd, args, options = {}) => runGit(args, { ...options, cwd }), composition));
       const cutover = archive?.cutover ?? await this.#nativeCutover(clone, checkpoint);
       const manifest = {
         schemaVersion: 2, compositionPolicy: NATIVE_RELEASE_POLICY,

@@ -38,7 +38,7 @@ function sourceMatches(source, physical, relative) {
 // One invocation-local object read, not a cache of mutable installation facts.
 // OID framing handles arbitrary binary/newline bytes without interpreting paths
 // as cat-file input. Check every returned object's identity/type/length/content.
-async function sourceBlobs(git, entries, paths) {
+export async function sourceBlobs(git, entries, paths) {
   const requested = new Map();
   for (const file of paths) {
     const entry = entries.get(file);

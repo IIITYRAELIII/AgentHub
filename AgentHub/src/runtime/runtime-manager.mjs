@@ -18,7 +18,7 @@ import { spawn } from "node:child_process";
 import { readAgentHubVersion } from "../infrastructure/filesystem/agent-hub-package.mjs";
 import { artifactVersionIdentity, SEMVER_BUILD_SCHEME } from "../domain/agent-hub-version.mjs";
 import { defaultRuntimeRoot, runtimeLayout, runtimeReleaseDirectory } from "../infrastructure/filesystem/runtime-layout.mjs";
-import { verifyRuntimeImportClosure, verifyRuntimeManifest } from "../infrastructure/filesystem/runtime-manifest-verifier.mjs";
+import { isRuntimeSourceFile, isRuntimeSourceModule, verifyRuntimeImportClosure, verifyRuntimeManifest } from "../infrastructure/filesystem/runtime-manifest-verifier.mjs";
 import { nextRuntimeReleaseVersion } from "../infrastructure/filesystem/runtime-release-version.mjs";
 import { protectRuntimeConfig, protectRuntimeDirectory } from "../infrastructure/filesystem/runtime-security.mjs";
 import { buildWindowsRuntimeHost, runtimeHostSourceHash } from "../infrastructure/process/runtime-host-builder.mjs";
@@ -28,25 +28,6 @@ import { captureRuntimeReleaseBinding, readRuntimePointer, withRuntimeInstallati
 import { runtimePointerTransition, runtimeRollbackPointer } from "../infrastructure/filesystem/runtime-release-retention-policy.mjs";
 
 const SOURCE_ROOT = path.resolve(import.meta.dirname, "..", "..");
-const TOP_LEVEL_FILES = new Set([
-  "AGENT_HUB_GUIDE.md",
-  "package.json",
-  "package-lock.json",
-  "RuntimeHost.release-acceptance-v1.json",
-  "codex-process-ancestry.ps1",
-  "codex-rollout-processes.ps1",
-  "claude-session-processes.ps1",
-  "requirements.txt",
-  "requirements-tts.txt",
-  "attachment_thumbnail.py",
-  "runtime-launch.sh",
-  "start.ps1",
-  "transcribe.py",
-  "whisper_runtime.py",
-  "tts_worker.py",
-  "work-log.css",
-]);
-
 const RUNTIME_MODULE_ASSETS = [
   ["src/infrastructure/process/test-resource-monitor.mjs",
     "src/infrastructure/process/test-resource-accounting.cs"],
@@ -79,12 +60,7 @@ async function releaseFileNames(sourceRoot) {
   const topLevel = entries
     .filter((entry) => (
       (entry.isFile() && (
-        TOP_LEVEL_FILES.has(entry.name)
-        || ((entry.name.endsWith(".mjs") || entry.name.endsWith(".cjs"))
-          && !entry.name.endsWith(".test.mjs")
-          && !entry.name.endsWith(".test.cjs")
-          && !entry.name.endsWith(".e2e.test.mjs")
-          && entry.name !== "syntax-check.mjs")
+        isRuntimeSourceFile(entry.name)
       ))
       || (entry.isDirectory() && entry.name === "assets")
     ))
@@ -98,10 +74,7 @@ async function releaseFileNames(sourceRoot) {
       if (entry.isDirectory()) {
         await visitInternal(child);
       } else if (
-        (entry.name.endsWith(".mjs") || entry.name.endsWith(".cjs"))
-        && !entry.name.endsWith(".test.mjs")
-        && !entry.name.endsWith(".test.cjs")
-        && !entry.name.endsWith(".e2e.test.mjs")
+        isRuntimeSourceModule(child)
       ) {
         internal.push(child);
       }
