@@ -45,7 +45,7 @@ function fixture({ sourceSurvives = false } = {}) {
       switchProject: (...args) => calls.push(["selection", ...args]),
     },
   };
-  return { actions: createWorkspaceActions(services), calls };
+  return { actions: createWorkspaceActions(services), calls, services };
 }
 
 test("workspace merge reassigns board cards to the surviving Workspace", async () => {
@@ -133,10 +133,21 @@ test("archiving a Workspace is blocked while one of its Threads is running", asy
 });
 
 test("permanent Workspace deletion crosses the mutation boundary once", async () => {
-  const { actions, calls } = fixture();
-  assert.deepEqual(await actions.deleteArchivedWorkspace({
-    workspaceId: "source", confirmationName: "Source",
-  }), { id: "source", deleted: true });
+  const { actions, calls, services } = fixture();
+  const gate = Promise.withResolvers();
+  let admissions = 0;
+  services.workspaceMutation = async (operation) => {
+    admissions += 1;
+    await gate.promise;
+    return operation();
+  };
+  const removal = actions.deleteArchivedWorkspace({ workspaceId: "source", confirmationName: "Source" });
+  try {
+    assert.equal(admissions, 1);
+    assert.deepEqual(calls, [], "deletion must wait for the shared mutation owner");
+  } finally { gate.resolve(); await removal; }
+  assert.deepEqual(await removal, { id: "source", deleted: true });
+  assert.equal(admissions, 1);
   assert.deepEqual(calls, [["delete", { workspaceId: "source", confirmationName: "Source" }]]);
 });
 

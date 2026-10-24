@@ -119,10 +119,12 @@ test("SelectedTaskWatchService never applies a stale snapshot after task switch"
   state.delaySnapshot();
   const watching = state.service.watch();
   state.setSelected({ streamId: "stream-2", provider: "codex", threadId: "thread-2" });
-  state.releaseSnapshot({ active: true, turnId: "turn-1" });
+  state.releaseSnapshot({ active: true, turnId: "turn-1", prompt: "Old selected Thread question" });
 
   assert.equal(await watching, false);
   assert.equal(state.events.some(([name]) => name === "create"), false);
+  assert.equal(state.events.some(([name]) => name === "observe"), false);
+  assert.equal(state.events.some(([name]) => name === "save"), false);
 });
 
 test("SelectedTaskWatchService never overlays a managed run started during snapshot read", async () => {

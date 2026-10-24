@@ -34,6 +34,76 @@ function admissionFixture({ handoff = "PACKAGE", consume = null } = {}) {
   return { composition, launches, consumed };
 }
 
+function startTurnFixture() {
+  const target = { provider: "codex", streamId: "original-stream", threadId: "original-thread", projectRoot: "D:/isolated" };
+  const calls = [];
+  const refused = { accepted: false, reason: "existing-active-run" };
+  const admitted = { accepted: true, runId: "original-run", clientUserMessageId: "original-client", run: { id: "original-run" } };
+  const pendingInputs = new Map([["saved-original", { id: "saved-original" }]]);
+  const queuedInputs = new Map([["queued-original", { id: "queued-original" }]]);
+  const forbidden = (method) => (...args) => { calls.push({ method, args }); throw new Error(`Unexpected ${method}`); };
+  const composition = createRunAdmissionComposition({
+    config: { deferredInputTtlHours: 1 }, pendingInputs, queuedInputs,
+    stageLaunchAdmission: forbidden("stage-provider-launch"), abortLaunchAdmission: forbidden("abort-provider-launch"),
+    agentProviders: { call: forbidden("provider") },
+    runCoordinator: {
+      start: async (...args) => { calls.push({ method: "start", args }); return refused; },
+      startDeferred: async (...args) => { calls.push({ method: "startDeferred", args }); return { accepted: true }; },
+      acceptClientInput: async (...args) => { calls.push({ method: "acceptClientInput", args }); return admitted; },
+    },
+    getSelectedTask: () => target, getActiveThreadTitle: () => "Selected task", getChatId: () => null,
+  });
+  return { composition, target, calls, refused, admitted, pendingInputs, queuedInputs };
+}
+
+test("public startTurn enters the one normal admission owner before returning its refusal", async () => {
+  for (const explicitTarget of [true, false]) {
+    const state = startTurnFixture();
+    const input = [{ type: "text", text: "original input" }];
+    const attachments = ["D:/isolated/original-attachment.png"];
+    const result = await state.composition.startTurn(input, attachments, {
+      ...(explicitTarget ? { target: state.target } : {}),
+      telegramDeliveryRequested: false, forceSpeechButton: true, persistentFiles: true,
+    });
+    assert.equal(result, state.refused, "ordinary admission refusal must propagate unchanged");
+    assert.deepEqual(state.calls.map(({ method }) => method), ["start"]);
+    const [actualInput, actualAttachments, options] = state.calls[0].args;
+    assert.equal(actualInput, input);
+    assert.equal(actualAttachments, attachments);
+    assert.deepEqual(options, {
+      forceSpeechButton: true, persistentFiles: true,
+      allowRepositoryConflict: false, allowUnknownExternalActivity: false,
+      target: { ...state.target,
+        ...(!explicitTarget ? { taskTitle: "Selected task", chatId: null } : {}),
+        telegramDeliveryRequested: false, clientSource: "desktop" },
+    });
+    assert.deepEqual([...state.pendingInputs.keys()], ["saved-original"]);
+    assert.deepEqual([...state.queuedInputs.keys()], ["queued-original"]);
+  }
+});
+
+test("public startTurn preserves the original durable identity through client admission only", async () => {
+  const state = startTurnFixture();
+  const input = "original durable input";
+  const attachments = ["D:/isolated/original-attachment.txt"];
+  const result = await state.composition.startTurn(input, attachments, {
+    target: state.target, telegramDeliveryRequested: false,
+    clientUserMessageId: "original-client", messageFingerprint: "original-fingerprint", followUpMode: "steer",
+  });
+  assert.deepEqual(result, { accepted: true, runId: "original-run", clientUserMessageId: "original-client" });
+  assert.deepEqual(state.calls.map(({ method }) => method), ["acceptClientInput"]);
+  const [request] = state.calls[0].args;
+  assert.equal(request.input, input);
+  assert.equal(request.attachments, attachments);
+  assert.deepEqual(request, {
+    input, attachments,
+    target: { ...state.target, telegramDeliveryRequested: false, clientSource: "desktop" },
+    clientUserMessageId: "original-client", messageFingerprint: "original-fingerprint", followUpMode: "steer",
+  });
+  assert.deepEqual([...state.pendingInputs.keys()], ["saved-original"]);
+  assert.deepEqual([...state.queuedInputs.keys()], ["queued-original"]);
+});
+
 test("standalone automatic compaction is internal but mid-turn compaction is not", () => {
   const compaction = { origin: "automatic", turnId: "compact-turn" };
   assert.equal(contextCompactionRunIsInternal({
