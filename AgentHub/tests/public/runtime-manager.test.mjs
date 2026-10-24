@@ -117,6 +117,35 @@ test("semantic frozen build survives clock advance and competing allocation refu
   assert.deepEqual(await readFile(path.join(prepared.releaseRoot, "runtime-manifest.json")), raw);
 });
 
+test("semantic frozen preparation observes retained pre-migration suffixes without rewriting them", async t => {
+  const { sourceRoot, runtimeRoot } = await fixture();
+  t.after(() => rm(path.dirname(runtimeRoot), { recursive: true, force: true }));
+  await writeFile(path.join(sourceRoot, "package.json"), JSON.stringify({ name: "agent-hub", version: "2.0.0" }));
+  const priorFiles = [];
+  for (const n of [1, 2]) {
+    const old = path.join(runtimeRoot, "releases", `legacy-${n}`);
+    await mkdir(old, { recursive: true });
+    const file = path.join(old, "runtime-manifest.json");
+    const bytes = Buffer.from(JSON.stringify({ releaseId: `legacy-${n}`, version: "2.0.0",
+      releaseVersion: `2.0.0.${n}`, files: [] }));
+    await writeFile(file, bytes); priorFiles.push({ file, bytes });
+  }
+  let calls = 0;
+  const options = { sourceRoot, runtimeRoot, expectedReleaseVersion: "2.0.0+build.3",
+    beforeManifest: async () => { calls++; } };
+  const prepared = await prepareRuntime({ ...options, releaseId: "semantic-after-legacy" });
+  const raw = await readFile(path.join(prepared.releaseRoot, "runtime-manifest.json"));
+  const manifest = JSON.parse(raw);
+  assert.equal(manifest.releaseVersion, options.expectedReleaseVersion);
+  assert.equal(manifest.versionScheme, "semver-build-v1");
+  assert.equal(manifest.buildNumber, 3);
+  await assert.rejects(prepareRuntime({ ...options, releaseId: "competing-after-legacy" }), /Frozen runtime version/u);
+  assert.equal(calls, 1);
+  await assert.rejects(stat(path.join(runtimeRoot, "releases/competing-after-legacy")), /ENOENT/u);
+  assert.deepEqual(await readFile(path.join(prepared.releaseRoot, "runtime-manifest.json")), raw);
+  for (const prior of priorFiles) assert.deepEqual(await readFile(prior.file), prior.bytes);
+});
+
 test("prepared runtime carries its retirement owner and refuses wrong native custody", async (t) => {
   if (process.platform !== "win32") return t.skip("Native Windows custody");
   const { sourceRoot, runtimeRoot } = await fixture();

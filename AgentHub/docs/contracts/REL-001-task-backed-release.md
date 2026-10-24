@@ -57,6 +57,18 @@ evidence. Original artifact reuse happens before new preparation. Android takes
 versionName from the same public version and versionCode from the same frozen N;
 its builder does not allocate another semantic build.
 
+The allocator alone recognizes the pre-migration producer's retained
+`<stable numeric public version>.N` manifests, including `2.0.0.1`/`2.0.0.2`
+(ADR-HUB-334-retained-suffix-allocation). The exact public prefix, canonical ASCII
+core/suffix and platform-bounded N must match; all three new semantic metadata
+fields must be absent, including explicit nulls. These old suffixes contribute
+to the same global maximum alongside verified Android codes and the frozen floor.
+Release-directory identity, inventory, Android byte/hash and partial-allocation
+guards still apply. This read-only allocation migration neither rewrites old
+manifests/receipts nor broadens artifact, installer or update identity parsing;
+every new semantic artifact remains `<publicVersion>+build.N`. Unknown or partial
+new metadata is refused, not skipped or normalized into another identity.
+
 The recipient verifies current and candidate manifests before ordinary update:
 recognized calendar identity may migrate to semantic major 2 or later; semantic
 precedence may not decrease and build must increase. SemVer build metadata alone

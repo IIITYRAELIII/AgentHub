@@ -256,7 +256,7 @@
         "test-suite.mjs",
         "tests/test-cache-inputs.json",
         "publish-all.mjs",
-        "src/composition/publication-freeze.mjs",
+        "src/composition/publication-freeze.mjs", "src/infrastructure/filesystem/runtime-release-version.mjs", "tests/infrastructure/filesystem/runtime-release-version.test.mjs", "tests/public/runtime-manager.test.mjs", "docs/decisions/ADR-HUB-334-retained-suffix-allocation.md",
         "publish-changed.mjs",
         "test-contour.mjs",
         "src/application/task-operation-reconciliation-service.mjs",

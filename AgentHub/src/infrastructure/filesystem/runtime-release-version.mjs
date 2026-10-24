@@ -3,7 +3,25 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 
 import { agentHubReleaseSequence } from "./agent-hub-package.mjs";
-import { artifactVersion, calendarVersion, manifestVersionIdentity, buildNumber } from "../../domain/agent-hub-version.mjs";
+import { artifactVersion, calendarVersion, manifestVersionIdentity, buildNumber, semanticVersion } from "../../domain/agent-hub-version.mjs";
+
+function retainedBuildNumber(manifest) {
+  // The pre-migration producer appended .N to any stable numeric package
+  // version, including 2.0.0. Observe that suffix only for allocation;
+  // it is not a new artifact identity or permission to install old metadata.
+  const core = "(?:0|[1-9][0-9]*)";
+  const legacy = typeof manifest.releaseVersion === "string"
+    ? new RegExp(`^(${core}\\.${core}\\.${core})\\.([1-9][0-9]*)$`, "u").exec(manifest.releaseVersion) : null;
+  if (legacy && !calendarVersion(legacy[1])) {
+    if (manifest.version !== legacy[1]
+        || ["versionScheme", "publicVersion", "buildNumber"].some(key => Object.hasOwn(manifest, key))) {
+      throw new Error("Invalid retained pre-migration version metadata");
+    }
+    semanticVersion(legacy[1]);
+    return buildNumber(agentHubReleaseSequence(manifest.version, manifest.releaseVersion));
+  }
+  return manifestVersionIdentity(manifest).buildNumber;
+}
 
 export async function nextRuntimeReleaseVersion({
   releasesDir,
@@ -42,7 +60,7 @@ export async function nextRuntimeReleaseVersion({
     }
     if (semantic) {
       if (manifest.releaseId !== entry.name || !Array.isArray(manifest.files)) throw new Error("Foreign retained runtime allocation");
-      maximumSequence = Math.max(maximumSequence, manifestVersionIdentity(manifest).buildNumber);
+      maximumSequence = Math.max(maximumSequence, retainedBuildNumber(manifest));
       const mobileEntry = manifest.files.filter(item => item.path === "assets/mobile/update.json");
       if (mobileEntry.length > 1) throw new Error("Ambiguous retained Android metadata");
       if (mobileEntry.length) {
