@@ -2271,9 +2271,10 @@ test("frozen candidate readback is phase-aware and feeds release completion with
   assert.equal(pending, null);
 });
 
-// Thirteen real Git histories are prepared, frozen, corrected and reverted;
-// retain a bounded margin over the measured 116-second isolated execution.
-test("a frozen 13-Task candidate accepts one descendant result delta with exact native Task history", { timeout: 180000 }, async (context) => {
+// This exercises finite real Git histories, not a latency contract. An overall
+// stopwatch can cancel progressing Git work and start cleanup before it drains.
+// Keep command-level failure handling and await the complete scenario instead.
+test("a frozen 13-Task candidate accepts one descendant result delta with exact native Task history", async (context) => {
   const setup = await fixture(context);
   await writeFile(path.join(setup.primary, "CHANGELOG.md"), "previous\n", "utf8");
   setup.baseCommit = await commit(setup.primary, "release base");
@@ -2417,7 +2418,7 @@ test("prepared candidate natively composes an additional exact correction", { ti
     refreshed.preReleaseHead)).split("\n").filter(Boolean), ["AgentHub/shared.txt"]);
 });
 
-test("operation lineage rejects an unrelated result and accepts a descendant net correction", { timeout: 30000 }, async (context) => {
+test("operation lineage rejects an unrelated result and accepts a descendant net correction", async (context) => {
   const setup = await fixture(context);
   const neighborResult = await taskResult(setup, context, {
     branch: "HUB-lineage-neighbor", file: "AgentHub/neighbor.txt", content: "neighbor\n",
