@@ -23,14 +23,19 @@ an assertion or native-command timeout. Historical failures remain unchanged.
 
 ## Decision
 
-Remove aggregate test-case timeout options from37 directly cancelled
+Remove aggregate test-case timeout options from49 directly cancelled
 correctness definitions. For the recorded late-native-history failure, also
 remove its related outer240-second and called300-second Node-case timers,
 alongside the180-second execFile timer that actually terminated the nested
 Node test. That command contains two full authority scenarios. Its environment,
 observer, output framing, maxBuffer and all original assertions remain.
 The related240/300-second timers are not falsely reported as having fired in
-that original observation. No replacement larger deadline is introduced.
+that original observation. The GEN11 compatibility-cleanup case also has its
+related aggregate240-second clock removed: the incomplete file reported a
+240416.915ms failed case, but retained data do not establish its exact exception.
+The unchanged case completed158733.6271ms in an addressed observer run; this is
+not a product latency SLO or proof of the historical pending phase.
+No replacement larger deadline is introduced.
 
 This refines ADR-0118's statement that test-local limits remain: actual bounded
 commands, lease loss/cancellation semantics, readiness polling, output-idle
@@ -51,7 +56,7 @@ for an otherwise silent stuck owned test tree.
 ## Evidence and limits
 
 The immutable GEN11 is not edited or retargeted. The exact-edit manifest binds
-the39 scenario definitions and one nested whole-Node timer; inverse application
+the52 scenario definitions and one nested whole-Node timer; inverse application
 reconstructs every entire original test file. Syntax and independent review do
 not establish a passing whole suite. The later ordinary Test/Await composition
 and a new generation of the same prescribed pipeline must execute the cases

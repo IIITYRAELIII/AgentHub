@@ -182,7 +182,7 @@ test("one operation generation isolates source bundles per repository", async (c
   assert.equal((await readFile(path.join(secondArchive, "evidence", `${secondCandidate.manifestHash}.json`))).length > 0, true);
 });
 
-test("partial generation transport is preserved on failure and is never overwritten by retry", { timeout: 60000 }, async context => {
+test("partial generation transport is preserved on failure and is never overwritten by retry", async context => {
   const f = await fixture(context);
   const selected = await taskResult(f, context, { branch: "HUB-partial-transport", file: "selected.txt" });
   const input = { projectRoot: f.primary, workspaceId: "workspace", planRevision: "partial-transport-plan",

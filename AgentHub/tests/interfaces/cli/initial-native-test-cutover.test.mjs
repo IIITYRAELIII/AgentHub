@@ -201,7 +201,7 @@ test("initial native Test parser requires the full reviewed identity and keeps l
 });
 
 for (const failure of ["sql-terminal", "mcp-receipt"]) {
-  test(`public CLI returned native Test preserves prior Await and recovers ${failure} on its original`, { timeout: 240_000 }, async t => {
+  test(`public CLI returned native Test preserves prior Await and recovers ${failure} on its original`, async t => {
     const f = await fixture(t), neighbor = await f.create("neighbor");
     await f.status(neighbor, "testing", "neighbor-test"); await f.status(neighbor, "awaiting_implementation", "neighbor-await");
     const task = await f.create("correction");
@@ -279,7 +279,7 @@ test("initial native Test closes bootstrap only for a verified ready installed n
   await assert.rejects(inspectInstalledNativeTestOwner({ runtimeRoot: root }), /mismatch/u);
 });
 
-test("public CLI initial native Test retains the prepared accepted candidate and ordinary Await", { timeout: 180_000 }, async t => {
+test("public CLI initial native Test retains the prepared accepted candidate and ordinary Await", async t => {
   const f = await fixture(t), accepted = await f.create("accepted");
   await f.status(accepted, "testing", "accepted-test"); await f.status(accepted, "awaiting_implementation", "accepted-await");
   const prepared = await f.releaseGit.initialNativeTestCandidate(f.primary);
@@ -336,7 +336,7 @@ test("public CLI initial native Test refuses stale and foreign source, caller, T
   assert.equal(f.catalog.mcpOperation("guard-original"), null);
 });
 
-test("public CLI native Test and Await preserve primary hooks without invoking clone configuration", { timeout: 180_000 }, async t => {
+test("public CLI native Test and Await preserve primary hooks without invoking clone configuration", async t => {
   const f = await fixture(t), accepted = await f.create("accepted-before-hooks");
   await f.status(accepted, "testing", "before-hooks-test");
   await f.status(accepted, "awaiting_implementation", "before-hooks-await");

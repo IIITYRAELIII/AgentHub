@@ -21,6 +21,7 @@ import { WorkspaceReleaseOperationAdapter } from "../../src/application/workspac
 import { ReleaseOperationStore } from "../../src/infrastructure/persistence/release-operation-store.mjs";
 import { ReleaseOperationCommandService } from "../../src/application/release-operation-command-service.mjs";
 import { createNativeMergeReviewVerifier } from "../../src/application/native-merge-review.mjs";
+import { e2eFailureArtifactDirectory } from "../../e2e/telegram-harness.mjs";
 
 const exec = promisify(execFile);
 async function git(cwd, ...args) {
@@ -55,6 +56,34 @@ async function fixture(t, { releaseMetadata = false, compatibilityFiles = false 
   const databaseFile = path.join(root, "hub.sqlite"), dataDir = path.join(root, "data");
   let catalog, store, board, taskGit, releaseGit, preflight, lifecycle, service, token;
   let releaseStore, releaseOperations;
+  const ownedReleases = [];
+  const retainRelease = (owner, store, operationId) => {
+    if (!ownedReleases.some(item => item.owner === owner && item.operationId === operationId)) {
+      ownedReleases.push({ owner, store, operationId });
+    }
+  };
+  const joinReleases = async () => {
+    if (!ownedReleases.length) return;
+    // Preserve bounded original identities before a cancelled case can close
+    // the stores beneath its already admitted release work.
+    try {
+      const observations = ownedReleases.map(item => {
+        try {
+          const current = item.store.get(item.operationId);
+          return { operationId: item.operationId, state: current?.state,
+            step: current?.step, generation: current?.currentGeneration,
+            owner: current?.owner ? { processId: current.owner.processId, epoch: current.owner.epoch } : null };
+        } catch (error) { return { operationId: item.operationId, readError: error?.code ?? error?.name }; }
+      });
+      const directory = e2eFailureArtifactDirectory(path.resolve(import.meta.dirname, "../.."), root);
+      await mkdir(directory, { recursive: true });
+      const file = path.join(directory, "native-public-release-drain.json");
+      await writeFile(file, JSON.stringify({ stage: "join-owned-releases-before-store-close",
+        observedAt: new Date().toISOString(), observations }), "utf8");
+      t.diagnostic(`Preserved native public release identities: ${file}`);
+    } catch { /* optional diagnostics never change the original outcome */ }
+    for (const item of ownedReleases) await item.owner.drain(item.operationId);
+  };
   let workspace, stream;
   const publication = { generation: "fixture", repositories: [{ root: primary, revision: base }] };
   const open = async () => {
@@ -99,12 +128,13 @@ async function fixture(t, { releaseMetadata = false, compatibilityFiles = false 
     token = service.contextToken({ provider: "codex", threadId: "fixture-thread" });
   };
   await open();
-  t.after(async () => { store.close(); catalog.close(); await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }); });
+  t.after(async () => { await joinReleases(); store.close(); catalog.close(); await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }); });
   return {
     root, primary, base, workspace,
     get board() { return board; }, get taskGit() { return taskGit; }, get lifecycle() { return lifecycle; }, get catalog() { return catalog; },
     get preflight() { return preflight; },
     async continueRelease(operationId) {
+      retainRelease(releaseOperations, releaseStore, operationId);
       await service.call("hub_release_continue", { context_token: token, operation_id: operationId, request_id: "prepared-release-continue" });
       return releaseOperations.drain(operationId);
     },
@@ -205,6 +235,7 @@ async function fixture(t, { releaseMetadata = false, compatibilityFiles = false 
         streamId: stream.id, threadId: "fixture-thread", taskIds: args.task_ids, validationMode: args.validation_mode,
         approvedTargets: args.approved_targets, releaseMetadata }) : service.call("hub_release_run", args);
       const ack = await admit();
+      retainRelease(releaseOperations, releaseStore, ack.operationId);
       const snapshot = await releaseOperations.drain(ack.operationId);
       const replay = await admit();
       assert.equal(replay.operationId, ack.operationId);
@@ -212,7 +243,7 @@ async function fixture(t, { releaseMetadata = false, compatibilityFiles = false 
       assert.equal(read.operation.operationId, ack.operationId);
       return snapshot;
     },
-    async reopen() { store.close(); catalog.close(); await open(); },
+    async reopen() { await joinReleases(); store.close(); catalog.close(); await open(); },
     async create(name) {
       const task = store.create({ text: name, bucket: "workspace", workspaceId: workspace.id });
       const prepared = await taskGit.prepare({ taskId: task.id, taskNumber: task.taskNumber, projectRoot: primary });
@@ -530,7 +561,7 @@ test("public native conflict keeps dev and resumes the ordinary resolution commi
   assert.equal(await git(f.primary, "show", "dev:shared.txt"), "A+B");
 });
 
-test("public Test and Await accept only the exact reviewed automatic compatibility cleanup", { timeout: 240000 }, async t => {
+test("public Test and Await accept only the exact reviewed automatic compatibility cleanup", async t => {
   const f = await fixture(t, { compatibilityFiles: true, releaseMetadata: true }), a = await f.create("A"), b = await f.create("B");
   for (const file of ["test-one.js", "test-two.js"]) {
     await writeFile(path.join(a.root, file), "// header\nfunction check() {}\n// middle\n\n// footer\n");

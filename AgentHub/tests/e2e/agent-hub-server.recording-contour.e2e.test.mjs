@@ -21,7 +21,7 @@ import { LocalTaskSyncStore } from "../../src/infrastructure/persistence/task-sy
 import { messageRequestFingerprint } from "../../src/infrastructure/persistence/message-receipts.mjs";
 import { captureSqliteCohort } from "../../src/runtime/sqlite-cohort-snapshot.mjs";
 import { prepareRecordingContourCohort } from "../../src/runtime/test-contour-cohort-preparation.mjs";
-import { stopPid } from "../../e2e/telegram-harness.mjs";
+import { diagnosticTail, e2eFailureArtifactDirectory, E2eChildProcessOwner, stopPid } from "../../e2e/telegram-harness.mjs";
 
 const sourceRoot = path.resolve(import.meta.dirname, "../..");
 const threadId = "10000000-0000-4000-8000-000000000182";
@@ -218,19 +218,22 @@ test("recording queued command survives Hub replacement and commits the same pro
   assert.equal(loaded.apiKey, undefined); assert.equal(loaded.nodeOptions, undefined);
   let child; let stderr = "";
   let commandReader = null;
+  let originalTurnId = null;
+  let failed = false;
+  let phase = "first-start";
+  const historyObservation = { attempts: 0, lastError: null, lastSuccess: null };
+  const owner = new E2eChildProcessOwner({ label: "recording replacement Hub", timeoutMs: 1500 });
   const stop = async () => {
     commandReader?.close(); commandReader = null;
-    if (!child || child.exitCode !== null || child.signalCode !== null) return;
-    const exited = once(child, "exit"); child.kill("SIGTERM");
-    await Promise.race([exited, delay(1500)]);
-    if (child.exitCode === null && child.signalCode === null) { await stopPid(child.pid); await Promise.race([exited, delay(1500)]); }
+    if (!child) return;
+    await owner.stop();
     assert.ok(child.exitCode !== null || child.signalCode !== null, "owned Hub must exit before fixture cleanup");
   };
   const start = () => {
     stderr = "";
-    child = spawn(process.execPath, [path.join(sourceRoot, "agent-hub-main.mjs")], {
-      cwd: runtimeRoot, env: environment, windowsHide: true, stdio: ["ignore", "ignore", "pipe"],
-    });
+    child = owner.start(() => spawn(process.execPath, [path.join(sourceRoot, "agent-hub-main.mjs")], {
+      cwd: runtimeRoot, env: environment, windowsHide: true, stdio: ["ignore", "pipe", "pipe"],
+    }));
     child.stderr.setEncoding("utf8"); child.stderr.on("data", (chunk) => { stderr = (stderr + chunk).slice(-12000); });
   };
   const waitFor = async (predicate, label) => {
@@ -263,6 +266,8 @@ test("recording queued command survives Hub replacement and commits the same pro
       const state = await readRuntimeState(path.join(runtimeRoot, "data"));
       return state.activeRuns?.some((run) => run.turnId === value.turn_id) ? value : null;
     }, "recorded command and persisted active run");
+    originalTurnId = command.turn_id;
+    phase = "command-and-active-run-observed";
     assert.equal(command.thread_id, threadId);
     assert.equal(JSON.parse(command.canonical_json).clientUserMessageId, clientUserMessageId);
     assert.equal(JSON.parse(command.canonical_json).streamId, f.target.streamId);
@@ -278,18 +283,34 @@ test("recording queued command survives Hub replacement and commits the same pro
     assert.ok(receipt.firstAttemptId);
     assert.equal([...telegram.messages.values()].some((message) => message.text === f.delivery.body.text), false);
 
+    phase = "first-stop";
     await stop();
+    phase = "explicit-provider-terminal";
     const provider = new RecordingContourProvider({ root: f.prepared.recording.root, provider: "codex" });
     const answer = "Explicit literal terminal after owned Hub replacement";
     try { provider.finish({ threadId, turnId: command.turn_id, status: "completed", answer }); }
     finally { provider.close(); }
+    phase = "second-start";
     start();
+    phase = "recovered-terminal-history";
+    historyObservation.startedAt = new Date().toISOString();
     const history = await waitFor(async () => {
+      historyObservation.attempts += 1;
       try {
         const result = await callDesktopControl("task-history", { provider: "codex", threadId, limit: 20 }, { runtimeRoot, timeoutMs: 600 });
+        historyObservation.lastSuccess = { observedAt: new Date().toISOString(),
+          provider: result.provider ?? null, threadId: result.threadId ?? null,
+          items: result.items?.slice(-20).map(item => ({ id: item.id, status: item.status,
+            completed: item.completed, messages: item.messages?.length ?? 0 })) ?? [] };
         return result.items?.some((item) => item.messages?.some((message) => message.role === "agent" && message.text === answer)) ? result : null;
-      } catch { return null; }
+      } catch (error) {
+        historyObservation.lastError = { observedAt: new Date().toISOString(),
+          name: error?.name ?? null, code: error?.code ?? null, message: diagnosticTail(error?.message, 1024) };
+        return null;
+      }
     }, "recovered terminal history");
+    historyObservation.completedAt = new Date().toISOString();
+    phase = "terminal-once-and-ledger-checks";
     const exchange = history.items.find((item) => item.messages.some((message) => message.text === answer));
     assert.equal(exchange.id, command.turn_id);
     assert.equal(exchange.messages.filter((message) => message.role === "user" && message.clientUserMessageId === clientUserMessageId).length, 1);
@@ -325,5 +346,53 @@ test("recording queued command survives Hub replacement and commits the same pro
 
 
     for (const [name, expected] of f.before) assert.equal(await hash(path.join(f.captured.dataDirectory, name)), expected);
-  } finally { await stop(); }
+  } catch (error) {
+    failed = true;
+    throw error;
+  } finally {
+    try { await stop(); }
+    finally {
+      if (failed) {
+        // This is a best-effort, bounded read of this test's isolated state.
+        // Keep it outside the disposable TEMP tree before fixture cleanup.
+        try {
+          const observations = { phase, originalTurnId, threadId,
+            streamId: f.target.streamId, clientUserMessageId, historyObservation };
+          try {
+            const state = await readRuntimeState(path.join(runtimeRoot, "data"));
+            observations.runs = state.activeRuns?.slice(-16).map(run => ({ provider: run.provider,
+              threadId: run.threadId, turnId: run.turnId, status: run.status, stage: run.stage }));
+            observations.command = ledger(path.join(runtimeRoot, "data", "message-command-ledger.sqlite"));
+          } catch (error) { observations.runtimeReadError = diagnosticTail(error?.message, 1024); }
+          let provider;
+          try {
+            provider = new RecordingContourProvider({ root: f.prepared.recording.root, provider: "codex", readOnly: true });
+            const turn = originalTurnId ? provider.recordedTurn(threadId, originalTurnId) : null;
+            observations.providerTurn = turn ? { id: turn.id, status: turn.status, items: turn.items?.length ?? 0 } : null;
+          } catch (error) { observations.providerReadError = diagnosticTail(error?.message, 1024); }
+          finally { provider?.close(); }
+          let trace;
+          try {
+            trace = new DatabaseSync(path.join(runtimeRoot, "data", "command-traces.sqlite"), { readOnly: true, timeout: 1000 });
+            observations.startupSpans = trace.prepare("SELECT stage,outcome,observed_at_ms,monotonic_duration_ms,metadata_json FROM command_trace_spans WHERE stage LIKE 'startup-%' ORDER BY rowid DESC LIMIT 64")
+              .all().map(span => {
+                const metadata = JSON.parse(span.metadata_json);
+                return { stage: span.stage, outcome: span.outcome, observedAt: span.observed_at_ms,
+                  durationMs: span.monotonic_duration_ms,
+                  metadata: Object.fromEntries(["pid", "instanceId", "releaseId", "operationSpanId", "startupTraceId", "startedAtMs"]
+                    .filter(key => Object.hasOwn(metadata, key)).map(key => [key, metadata[key]])) };
+              });
+          } catch (error) { observations.startupReadError = diagnosticTail(error?.message, 1024); }
+          finally { trace?.close(); }
+          const directory = e2eFailureArtifactDirectory(sourceRoot, runtimeRoot);
+          await mkdir(directory, { recursive: true });
+          const artifact = path.join(directory, "recording-recovery-diagnostics.json");
+          await writeFile(artifact, JSON.stringify(owner.diagnostics(observations), null, 2), "utf8");
+          t.diagnostic(`Preserved recording recovery diagnostics: ${artifact}`);
+        } catch {
+          // Optional evidence must not replace the original assertion/error.
+        }
+      }
+    }
+  }
 });

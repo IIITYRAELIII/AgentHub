@@ -24,7 +24,7 @@ import { unprovenProcessTaskGit } from "../../helpers/task-git-unproven-process.
 
 const execFileAsync = promisify(execFile);
 
-for (const advancedRemote of [false, true]) test(`combined Tasks accept published ancestry with advanced remote=${advancedRemote} and reject unproven history`, { timeout: 90_000 }, async (context) => {
+for (const advancedRemote of [false, true]) test(`combined Tasks accept published ancestry with advanced remote=${advancedRemote} and reject unproven history`, async (context) => {
   const root = await repository(context);
   const originalMain = await git(root, "rev-parse", "main");
   const dataDir = path.join(root, "..", `${path.basename(root)}-published-history`);
@@ -136,7 +136,7 @@ test("combined Task rejects unpublished remote fast-forward inside its first-par
   await assert.rejects(access(path.join((await service.prepareDev(root)).projectRoot, "remote-only.txt")));
 });
 
-for (const coversRemote of [false, true]) test(`published ancestry validates exact receipt coverage of fast-forward remote: ${coversRemote}`, { timeout: 90_000 }, async (context) => {
+for (const coversRemote of [false, true]) test(`published ancestry validates exact receipt coverage of fast-forward remote: ${coversRemote}`, async (context) => {
   const root = await repository(context);
   const originalMain = await git(root, "rev-parse", "main");
   const dataDir = path.join(root, "..", `${path.basename(root)}-receipt-coverage`);
@@ -251,7 +251,7 @@ test("withdrawal removes only its Task and ordinary Test reintegrates its full r
   assert.equal(await git(root, "symbolic-ref", "HEAD"), "refs/heads/main");
 });
 
-test("withdrawal proves rollback after a rejected lifecycle commit", { timeout: 90_000 }, async (context) => {
+test("withdrawal proves rollback after a rejected lifecycle commit", async (context) => {
   const { root, service, a, b, firstA, withdraw } = await withdrawalFixture(context);
   const before = await git(root, "rev-parse", "dev");
   await assert.rejects(withdraw(a, { commitWorkflow: async () => { throw new Error("CAS rejected"); } }), /CAS rejected/u);
@@ -269,7 +269,7 @@ test("withdrawal proves rollback after a rejected lifecycle commit", { timeout: 
   assert.equal(repeated.integration.integrated, true);
 });
 
-test("withdrawal retains ambiguous intent and resumes the same lifecycle without replaying Git", { timeout: 90_000 }, async (context) => {
+test("withdrawal retains ambiguous intent and resumes the same lifecycle without replaying Git", async (context) => {
   const { root, service, a, withdraw } = await withdrawalFixture(context);
   let unknown = false;
   await assert.rejects(withdraw(a, {
@@ -326,7 +326,7 @@ test("withdrawing a Task based on another result preserves that ancestor Task", 
   await git(root, "merge-base", "--is-ancestor", firstA.snapshot.headCommit, "dev");
 });
 
-test("dependent Task withdraws first and waits for proven publication before claim or Test", { timeout: 90_000 }, async (context) => {
+test("dependent Task withdraws first and waits for proven publication before claim or Test", async (context) => {
   const { root, service, a, b, firstA, tasks, withdraw, publish } = await withdrawalFixture(context, { dependent: "first-parent" });
   const before = await git(root, "rev-parse", "dev");
   await assert.rejects(withdraw(a), (error) => error.code === "TASK_WITHDRAWAL_DEPENDENCY" && error.blockedTaskIds[0] === b.taskId);

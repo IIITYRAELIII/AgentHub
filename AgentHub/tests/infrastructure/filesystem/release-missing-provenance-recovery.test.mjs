@@ -407,7 +407,7 @@ test("accepted recovery alone cannot recover the legacy missing-provenance candi
   assert.deepEqual(await candidateState(f), before);
 });
 
-test("missing-provenance recovery binds receipt bytes, historical adoption and old bytes through preview, confirm and replay", { timeout: 180000 }, async (context) => {
+test("missing-provenance recovery binds receipt bytes, historical adoption and old bytes through preview, confirm and replay", async (context) => {
   const f = await legacyFrozenFixture(context);
   const before = await candidateState(f);
   const preview = await f.service().recoverFreezingPublicationCandidate(f.request());
@@ -509,7 +509,7 @@ test("missing-provenance recovery binds receipt bytes, historical adoption and o
   })), /historical selected Task adoption is not exact/u);
 });
 
-test("historical adoption survives advanced primary while ordinary stale adoption refuses", { timeout: 240000 }, async (context) => {
+test("historical adoption survives advanced primary while ordinary stale adoption refuses", async (context) => {
   const f = await legacyFrozenFixture(context, { advancePrimary: true });
   const before = await candidateState(f);
   await assert.rejects(f.tasks.releaseBaseEvidence({

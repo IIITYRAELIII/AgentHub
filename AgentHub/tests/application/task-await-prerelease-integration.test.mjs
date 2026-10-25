@@ -338,7 +338,7 @@ test("concurrent Await acceptances serialize in existing PreRelease without clon
   assert.equal(await git(f.primary, "config", "--local", "--get", "core.hooksPath"), hooks);
 });
 
-test("ambiguous Await preserves its pending operation and rebuilds the candidate during recovery", { timeout: 90000 }, async (t) => {
+test("ambiguous Await preserves its pending operation and rebuilds the candidate during recovery", async (t) => {
   const f = await fixture(t);
   const task = await f.testedTask("Recover", "recover.txt", "recover\n");
   const commitStatus = f.taskBoard.commitWorkflowTransition.bind(f.taskBoard);
