@@ -297,6 +297,15 @@ Every file receives a separate process and disposable temp/home/state root.
 The runner observes child `close` before removing that root. A cleanup failure
 remains a failure and retains its OS code, phase and owned path; when execution
 also failed, both original errors remain available without replaying the test.
+The existing per-file timing event reports bounded failure codes, execution versus
+cleanup phase, owned temporary paths and the original Node child spawn/exit/close
+observations as soon as that file settles, before remaining files finish. It excludes
+arguments, environment values, output and arbitrary error text; truncated paths
+are explicitly marked and are not exact identities for holder queries.
+Native process-guard fixtures revoke only after the real descendant is ready;
+their controlled late mutation and child-close receipts replace elapsed sleeps
+as fixture readiness and cleanup evidence. Guard, lease and recovery assertions
+remain authoritative.
 Local-control E2E failure diagnostics use the checkout's ignored WIP artifact
 area outside that disposable root. Bounded redacted process output, generation
 timestamps, control-attempt outcomes and existing startup trace scalars survive

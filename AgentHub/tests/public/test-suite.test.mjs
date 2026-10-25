@@ -20,6 +20,22 @@ import {
 } from "../../src/infrastructure/persistence/test-input-fingerprint.mjs";
 import { withPublicationLock } from "../../src/infrastructure/process/publication-lock.mjs";
 
+test("isolated file failure retains the actual owned Node close receipt after cleanup", async () => {
+  let observed;
+  await assert.rejects(runIsolatedTestCommand(process.execPath, ["-e", "process.exit(3)"]), error => {
+    observed = error;
+    return true;
+  });
+  assert.equal(observed.testPhase, "execution");
+  assert.equal(observed.testExecutionSucceeded, false);
+  assert.ok(Number.isSafeInteger(observed.testChild.pid));
+  assert.equal(observed.testChild.code, 3);
+  assert.ok(Date.parse(observed.testChild.requestedAt) <= Date.parse(observed.testChild.spawnedAt));
+  assert.ok(Date.parse(observed.testChild.spawnedAt) <= Date.parse(observed.testChild.exitedAt));
+  assert.ok(Date.parse(observed.testChild.exitedAt) <= Date.parse(observed.testChild.closedAt));
+  await assert.rejects(access(observed.testRoot), { code: "ENOENT" });
+});
+
 test("cold full-test checkout installs locked development dependencies once before every suite", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "ah-test-deps-"));
   t.after(() => rm(root, { recursive: true, force: true }));

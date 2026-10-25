@@ -39,6 +39,39 @@ export function testFileCheckpointStore(file = testFileCheckpointFile()) {
   };
 }
 
+function testFailureFacts(error, depth = 0) {
+  if (!error || typeof error !== "object") return { name: "NonErrorFailure" };
+  try {
+    const facts = Object.fromEntries(
+      ["name", "code", "signal", "syscall", "killed", "testPhase", "testExecutionSucceeded", "processTreeStopped"]
+        .filter(key => ["string", "number", "boolean"].includes(typeof error[key]))
+        .map(key => [key, typeof error[key] === "string" ? error[key].slice(0, 128) : error[key]]));
+    if (typeof error.testRoot === "string") {
+      facts.testRoot = error.testRoot.slice(0, 1024);
+      if (error.testRoot.length > 1024) facts.testRootTruncated = true;
+      if (typeof error.path === "string") {
+        const relative = path.relative(error.testRoot, error.path);
+        if (!path.isAbsolute(relative) && relative !== ".." && !relative.startsWith(`..${path.sep}`)) {
+          facts.path = error.path.slice(0, 1024);
+          if (error.path.length > 1024) facts.pathTruncated = true;
+        }
+      }
+    }
+    if (error.testChild) facts.child = Object.fromEntries(
+      ["pid", "requestedAt", "spawnedAt", "exitedAt", "closedAt", "code", "signal", "errorCode"]
+        .filter(key => ["string", "number"].includes(typeof error.testChild[key]))
+        .map(key => [key, typeof error.testChild[key] === "string" ? error.testChild[key].slice(0, 128) : error.testChild[key]]));
+    if (depth < 2) {
+      if (error.cause) facts.cause = testFailureFacts(error.cause, depth + 1);
+      if (Array.isArray(error.errors)) {
+        facts.errors = error.errors.slice(0, 4).map(value => testFailureFacts(value, depth + 1));
+        if (error.errors.length > 4) facts.omittedErrors = error.errors.length - 4;
+      }
+    }
+    return facts;
+  } catch { return { name: "UninspectableFailure" }; }
+}
+
 export async function runCheckpointedTestFiles(files, {
   suite,
   suiteForFile = () => suite,
@@ -174,7 +207,9 @@ export async function runCheckpointedTestFiles(files, {
       const finishedAt = now();
       await persistState();
       onFile({ file: item.file, suite: item.suiteName, waitMs: startedAt - item.queuedAt,
-        runMs: finishedAt - startedAt, outcome: error ? "failed" : "passed" });
+        runMs: finishedAt - startedAt, outcome: error ? "failed" : "passed",
+        ...(error ? { failure: testFailureFacts(error) } : {}),
+      });
     }
     return error;
   };

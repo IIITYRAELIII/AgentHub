@@ -24,7 +24,14 @@ export async function initializeTaskGitRepository(root) {
   ], { cwd: root, windowsHide: true });
 }
 
-export async function unprovenProcessTaskGit({ context, root, dataDir, taskId }) {
+export async function unprovenProcessTaskGit({ context, root, dataDir, taskId,
+  abortWhenReady = true, removeProcessGuard,
+  readSystemBootIdentity = () => ({
+    source: "Win32_OperatingSystem.LastBootUpTime",
+    executablePath: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+    bootTime: "2100-01-01T00:00:00.000Z",
+  }),
+}) {
   const parentScript = path.join(root, "guard-parent.mjs");
   const childScript = path.join(root, "guard-child.mjs");
   const pidFile = path.join(root, "guard-child.pid");
@@ -101,7 +108,7 @@ export async function unprovenProcessTaskGit({ context, root, dataDir, taskId })
         if (!match || descendantPid != null) return;
         descendantPid = Number(match[1]);
         readyResolve(descendantPid);
-        interruptWhenReady.abort();
+        if (abortWhenReady) interruptWhenReady.abort();
       });
       child.once("error", readyReject);
       child.once("close", () => {
@@ -116,11 +123,8 @@ export async function unprovenProcessTaskGit({ context, root, dataDir, taskId })
   let descendantStopped = false;
   const service = new TaskGitWorkspaceService({
     dataDir,
-    readSystemBootIdentity: () => ({
-      source: "Win32_OperatingSystem.LastBootUpTime",
-      executablePath: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
-      bootTime: "2100-01-01T00:00:00.000Z",
-    }),
+    readSystemBootIdentity,
+    removeProcessGuard,
     runCommand: async (args, options) => {
       if (!intercepted && args[0] === "worktree" && args[1] === "add") {
         intercepted = true;
@@ -181,6 +185,11 @@ export async function unprovenProcessTaskGit({ context, root, dataDir, taskId })
   context.after(close);
   return {
     service,
+    ownedCommand: {
+      args: [parentScript, childScript, pidFile, staleMutation, releaseMutation],
+      spawnProcess: failingTaskkillSpawn,
+      ready: () => descendantPid != null,
+    },
     guardSeen: () => guardSeenBeforeSpawn,
     staleMutation,
     close,

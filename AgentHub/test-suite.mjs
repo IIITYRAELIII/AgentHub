@@ -91,18 +91,29 @@ export async function discoverTestFiles(directory = ROOT) {
   return result.toSorted();
 }
 
-function run(command, args, { cwd = ROOT, env } = {}) {
+function run(command, args, { cwd = ROOT, env, onChild } = {}) {
   return new Promise((resolve, reject) => {
     const childEnvironment = { ...process.env, ...(env ?? {}) };
     clearInheritedPublicationOwnership(childEnvironment);
+    const identity = { requestedAt: new Date().toISOString() };
+    const observe = () => { try { onChild?.({ ...identity }); } catch { /* Diagnostic only. */ } };
     const child = spawn(command, args, {
       cwd,
       stdio: "inherit",
       windowsHide: true,
       env: childEnvironment,
     });
-    child.once("error", reject);
+    identity.pid = child.pid ?? null;
+    observe();
+    child.once("spawn", () => { identity.spawnedAt = new Date().toISOString(); observe(); });
+    child.once("exit", (code, signal) => {
+      Object.assign(identity, { exitedAt: new Date().toISOString(), code, signal });
+      observe();
+    });
+    child.once("error", (error) => { identity.errorCode = error.code ?? null; observe(); reject(error); });
     child.once("close", (code, signal) => {
+      Object.assign(identity, { closedAt: new Date().toISOString(), code, signal });
+      observe();
       if (code === 0) resolve();
       else reject(new Error(`Тестовый этап завершён с ${signal ?? `кодом ${code}`}.`));
     });
@@ -131,9 +142,15 @@ export async function runIsolatedTestCommand(command, args, { cwd = ROOT, execut
   const childRoot = await mkdtemp(path.join(os.tmpdir(), "ah-"));
   let executionFailed = false;
   let executionError;
+  let cleanupError;
+  let childIdentity = null;
   try {
     await execute(command, args, {
       cwd,
+      onChild: (identity) => { childIdentity = Object.fromEntries(
+        ["pid", "requestedAt", "spawnedAt", "exitedAt", "closedAt", "code", "signal", "errorCode"]
+          .filter((key) => ["string", "number"].includes(typeof identity?.[key]))
+          .map((key) => [key, typeof identity[key] === "string" ? identity[key].slice(0, 128) : identity[key]])); },
       env: {
         ...env,
         LOCALAPPDATA: childRoot,
@@ -153,23 +170,31 @@ export async function runIsolatedTestCommand(command, args, { cwd = ROOT, execut
   } catch (error) {
     executionFailed = true;
     executionError = error;
-    throw error;
-  } finally {
-    try {
-      await rm(childRoot, { recursive: true, force: true });
-    } catch (cleanupError) {
-      // A known temporary root does not prove that every native handle closed.
-      // Keep both original outcomes; cleanup never authorizes a test retry.
-      cleanupError.testPhase = "cleanup";
-      cleanupError.testRoot = childRoot;
-      cleanupError.testExecutionSucceeded = !executionFailed;
-      if (executionFailed) {
-        throw new AggregateError([executionError, cleanupError],
-          "Test execution and temporary-root cleanup failed", { cause: executionError });
-      }
-      throw cleanupError;
-    }
   }
+  try {
+    await rm(childRoot, { recursive: true, force: true });
+  } catch (error) {
+    cleanupError = error;
+    // A known temporary root does not prove that every native handle closed.
+    // Keep both original outcomes; cleanup never authorizes a test retry.
+    cleanupError.testPhase = "cleanup";
+    cleanupError.testRoot = childRoot;
+    cleanupError.testExecutionSucceeded = !executionFailed;
+  }
+  if (!executionFailed && !cleanupError) return;
+  const failure = executionFailed && cleanupError
+    ? new AggregateError([executionError, cleanupError],
+      "Test execution and temporary-root cleanup failed", { cause: executionError })
+    : executionFailed ? executionError : cleanupError;
+  // The existing per-file reporter emits these facts immediately. The native
+  // child close receipt does not certify unrelated Windows service handles.
+  if (failure && typeof failure === "object" && Object.isExtensible(failure)) {
+    failure.testRoot ??= childRoot;
+    failure.testPhase ??= cleanupError ? "execution-and-cleanup" : "execution";
+    failure.testExecutionSucceeded ??= !executionFailed;
+    failure.testChild = childIdentity;
+  }
+  throw failure;
 }
 
 async function testManifest() {

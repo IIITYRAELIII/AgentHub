@@ -20,6 +20,7 @@ import {
 import { prepareTaskWorktreeDependencies } from "../../../src/infrastructure/filesystem/task-worktree-dependencies.mjs";
 import { canonicalPath } from "../../../src/infrastructure/filesystem/config.mjs";
 import { taskRepositoryKey } from "../../../src/domain/task-git-reference.mjs";
+import { unprovenProcessTaskGit } from "../../helpers/task-git-unproven-process.mjs";
 
 const execFileAsync = promisify(execFile);
 
@@ -1185,43 +1186,25 @@ test("unproven merge process-tree termination persistently blocks the integratio
 test("durable process-tree guard rejects replacement admission until operator proof", {
   skip: process.platform !== "win32" ? "Windows taskkill contract" : false,
 }, async (context) => {
-  const root = await repository(context);
-  const dataDir = path.join(root, "..", `${path.basename(root)}-guard-data`);
+  const cleanups = [];
+  let guarded;
+  let dataDir;
+  context.after(async () => {
+    await guarded?.close();
+    for (const cleanup of cleanups) await cleanup();
+    if (dataDir) await rm(dataDir, { recursive: true, force: true });
+  });
+  const fixtureContext = { after: cleanup => cleanups.push(cleanup) };
+  const root = await repository(fixtureContext);
+  dataDir = path.join(root, "..", `${path.basename(root)}-guard-data`);
   const taskId = "32323232-3232-4232-8232-323232323232";
-  const parentScript = path.join(root, "guard-parent.mjs");
-  const childScript = path.join(root, "guard-child.mjs");
   const pidFile = path.join(root, "guard-child.pid");
   const staleMutation = path.join(root, "stale-descendant-mutation.txt");
-  await writeFile(childScript, `
-    import { writeFileSync } from "node:fs";
-    setTimeout(() => writeFileSync(process.argv[2], "stale mutation attempted"), 350);
-    setInterval(() => {}, 1000);
-  `, "utf8");
-  await writeFile(parentScript, `
-    import { spawn } from "node:child_process";
-    import { writeFileSync } from "node:fs";
-    const child = spawn(process.execPath, [process.argv[2], process.argv[4]], {
-      detached: true, stdio: "ignore",
-    });
-    child.unref();
-    writeFileSync(process.argv[3], String(child.pid));
-    setInterval(() => {}, 1000);
-  `, "utf8");
-  const failingTaskkillSpawn = (executable, args, options) => {
-    if (String(executable).toLowerCase() === "taskkill") {
-      const killer = new EventEmitter();
-      killer.kill = () => {};
-      queueMicrotask(() => killer.emit("close", 1));
-      return killer;
-    }
-    return spawn(executable, args, options);
-  };
-  let descendantPid = null;
   let replacementMutation = false;
   let bootTime = new Date("2000-01-01T00:00:00.000Z");
   let removeFailure = true;
-  const service = new TaskGitWorkspaceService({
-    dataDir,
+  guarded = await unprovenProcessTaskGit({
+    context: fixtureContext, root, dataDir, taskId, abortWhenReady: false,
     readSystemBootIdentity: () => ({
       source: "Win32_OperatingSystem.LastBootUpTime",
       executablePath: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
@@ -1235,32 +1218,32 @@ test("durable process-tree guard rejects replacement admission until operator pr
       return unlink(file);
     },
   });
-  context.after(async () => {
-    if (descendantPid) try { process.kill(descendantPid, "SIGKILL"); } catch {}
-    await rm(dataDir, { recursive: true, force: true });
-  });
+  const service = guarded.service;
 
   await assert.rejects(service.withTaskLock(taskId, async (lease) => {
-    await runOwnedGit([parentScript, childScript, pidFile, staleMutation], {
+    await runOwnedGit(guarded.ownedCommand.args, {
       lease,
       executable: process.execPath,
       cwd: root,
       timeoutMs: 5_000,
-      spawnProcess: failingTaskkillSpawn,
+      spawnProcess: guarded.ownedCommand.spawnProcess,
     });
   }, {
     staleMs: 180,
     retryDelayMs: 2,
-    renewLease: async () => false,
+    // Revoke only after the real descendant exists; elapsed lease renewal is
+    // not proof that the parent completed its native startup under load.
+    renewLease: async () => !guarded.ownedCommand.ready(),
   }), /process-tree completion is unproven|process tree stop is unproven/u);
-  descendantPid = Number(await readFile(pidFile, "utf8"));
+  assert.equal(guarded.ownedCommand.ready(), true);
+  assert.ok(Number(await readFile(pidFile, "utf8")) > 0);
 
   await assert.rejects(
     service.withTaskLock(taskId, async () => { replacementMutation = true; }),
     /unresolved process-tree guard requires operator proof/u,
   );
   assert.equal(replacementMutation, false);
-  await wait(500);
+  assert.equal(await guarded.waitForStaleMutation(), "stale mutation attempted");
   assert.equal(await readFile(staleMutation, "utf8"), "stale mutation attempted");
 
   const guardDirectory = path.join(dataDir, "task-process-tree-guards", taskId);
@@ -1275,9 +1258,7 @@ test("durable process-tree guard rejects replacement admission until operator pr
     },
   }), /system boot does not postdate/u);
 
-  process.kill(descendantPid, "SIGKILL");
-  descendantPid = null;
-  await wait(100);
+  await guarded.close();
   bootTime = new Date("2100-01-01T00:00:00.000Z");
   await assert.rejects(service.recoverProcessTreeGuard(taskId, {
     repositoryRoot: root,
