@@ -13,6 +13,8 @@ import { WorkspaceCatalogStore } from "../../src/infrastructure/persistence/work
 import { readRuntimeState } from "../../src/infrastructure/persistence/runtime-state-store.mjs";
 import {
   CHAT_ID,
+  diagnosticTail,
+  e2eFailureArtifactDirectory,
   delay,
   E2eChildProcessOwner,
   FakeTelegramApi,
@@ -122,6 +124,7 @@ test("local control client survives App Server exit during delayed startup and s
   let stderr = "";
   let bot = null;
   let testCompleted = false;
+  const controlWaits = [];
   const botOwner = new E2eChildProcessOwner({ label: "local-control Agent Hub" });
   const startBot = () => {
     bot = botOwner.start(() => spawn(process.execPath, [BOT_FILE], {
@@ -147,16 +150,31 @@ test("local control client survives App Server exit during delayed startup and s
     if (bot === current) bot = null;
   };
   const waitForControl = async (label) => {
+    const observation = { label, startedAt: new Date().toISOString(), attempts: 0, lastError: null };
+    controlWaits.push(observation);
     try {
       const snapshot = await waitFor(
-        () => callDesktopControl("snapshot", {}, { runtimeRoot }).catch(() => null),
+        async () => {
+          observation.attempts += 1;
+          try {
+            return await callDesktopControl("snapshot", {}, { runtimeRoot });
+          } catch (error) {
+            observation.lastError = { code: error.cause?.code ?? error.code ?? null,
+              message: diagnosticTail(error.message, 1024), observedAt: new Date().toISOString() };
+            throw error;
+          }
+        },
         label,
         8_000,
       );
       botOwner.recordEndpointOwner(snapshot.server?.process ?? null);
+      observation.completedAt = new Date().toISOString();
+      observation.outcome = "succeeded";
       return snapshot;
     } catch (error) {
-      throw botOwner.failure(error, { stage: label });
+      observation.completedAt = new Date().toISOString();
+      observation.outcome = "failed";
+      throw botOwner.failure(error, { stage: label, controlWaits });
     }
   };
   startBot();
@@ -173,8 +191,27 @@ test("local control client survives App Server exit during delayed startup and s
     if (testCompleted) {
       await rm(runtimeRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     } else {
-      const diagnosticPath = path.join(runtimeRoot, "e2e-process-diagnostics.json");
-      await writeFile(diagnosticPath, `${JSON.stringify(botOwner.diagnostics(), null, 2)}\n`, "utf8");
+      // The outer file runner removes TEMP after the failed child. Keep only
+      // bounded diagnostics in the checkout's existing ignored WIP artifact area.
+      const diagnosticDirectory = e2eFailureArtifactDirectory(ROOT, runtimeRoot);
+      await mkdir(diagnosticDirectory, { recursive: true });
+      const diagnosticPath = path.join(diagnosticDirectory, "e2e-process-diagnostics.json");
+      let startupSpans;
+      let traceDatabase;
+      try {
+        traceDatabase = new DatabaseSync(path.join(dataDir, "command-traces.sqlite"), { readOnly: true });
+        startupSpans = traceDatabase.prepare("SELECT * FROM command_trace_spans WHERE stage LIKE 'startup-%' ORDER BY rowid DESC LIMIT 64")
+          .all().map((span) => {
+            const metadata = JSON.parse(span.metadata_json);
+            return { stage: span.stage, outcome: span.outcome, observedAt: span.observed_at_ms,
+              durationMs: span.monotonic_duration_ms,
+              metadata: Object.fromEntries(["pid", "instanceId", "releaseId", "operationSpanId", "startupTraceId", "startedAtMs"]
+                .filter((key) => Object.hasOwn(metadata, key)).map((key) => [key, metadata[key]])) };
+          });
+      } catch (error) {
+        startupSpans = { unavailable: diagnosticTail(error.message, 1024) };
+      } finally { traceDatabase?.close(); }
+      await writeFile(diagnosticPath, `${JSON.stringify(botOwner.diagnostics({ controlWaits, startupSpans }), null, 2)}\n`, "utf8");
       t.diagnostic(`Preserved local-control failure diagnostics: ${diagnosticPath}`);
     }
     if (cleanupError) throw cleanupError;

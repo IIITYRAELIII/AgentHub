@@ -102,7 +102,7 @@ function run(command, args, { cwd = ROOT, env } = {}) {
       env: childEnvironment,
     });
     child.once("error", reject);
-    child.once("exit", (code, signal) => {
+    child.once("close", (code, signal) => {
       if (code === 0) resolve();
       else reject(new Error(`Тестовый этап завершён с ${signal ?? `кодом ${code}`}.`));
     });
@@ -129,6 +129,8 @@ export async function runIsolatedTestCommand(command, args, { cwd = ROOT, execut
   // Keep the disposable owner short: deep Git refs in Windows fixtures still
   // have to fit below MAX_PATH when they create repositories under os.tmpdir().
   const childRoot = await mkdtemp(path.join(os.tmpdir(), "ah-"));
+  let executionFailed = false;
+  let executionError;
   try {
     await execute(command, args, {
       cwd,
@@ -148,8 +150,25 @@ export async function runIsolatedTestCommand(command, args, { cwd = ROOT, execut
         TMPDIR: childRoot,
       },
     });
+  } catch (error) {
+    executionFailed = true;
+    executionError = error;
+    throw error;
   } finally {
-    await rm(childRoot, { recursive: true, force: true });
+    try {
+      await rm(childRoot, { recursive: true, force: true });
+    } catch (cleanupError) {
+      // A known temporary root does not prove that every native handle closed.
+      // Keep both original outcomes; cleanup never authorizes a test retry.
+      cleanupError.testPhase = "cleanup";
+      cleanupError.testRoot = childRoot;
+      cleanupError.testExecutionSucceeded = !executionFailed;
+      if (executionFailed) {
+        throw new AggregateError([executionError, cleanupError],
+          "Test execution and temporary-root cleanup failed", { cause: executionError });
+      }
+      throw cleanupError;
+    }
   }
 }
 

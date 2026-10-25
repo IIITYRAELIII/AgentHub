@@ -578,7 +578,14 @@ async function reviewedDevBootstrapFixture(context, {
   if (modeMismatch) await git(workspace.projectRoot, "update-index", "--chmod=+x", "app.txt");
   await git(workspace.projectRoot, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "Task union basis");
   const taskParent = await git(workspace.projectRoot, "rev-parse", "HEAD^{commit}");
-  await assert.rejects(git(workspace.projectRoot, "merge", "--no-ff", "--no-commit", mainCommit));
+  await assert.rejects(git(workspace.projectRoot,
+    "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+    "merge", "--no-ff", "--no-commit", mainCommit), (error) => {
+    assert.equal(error.code, 1);
+    assert.match(error.stdout, /CONFLICT \(content\): Merge conflict in (?:app\.txt|CHANGELOG\.md)/u);
+    return true;
+  });
+  assert.equal(await git(workspace.projectRoot, "rev-parse", "MERGE_HEAD"), mainCommit);
   await writeFile(path.join(workspace.projectRoot, "app.txt"), ambiguousProof ? "dev accepted\n" : "reviewed union\n", "utf8");
   await writeFile(
     path.join(workspace.projectRoot, "CHANGELOG.md"),

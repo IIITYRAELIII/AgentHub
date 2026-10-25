@@ -2303,11 +2303,18 @@ test("prompt template editor keeps rejected drafts and persists a successful ret
   const rejectedUpdateGate = new Promise((resolve) => { releaseRejectedUpdate = resolve; });
   let observeSuccessfulUpdate;
   const successfulUpdateObserved = new Promise((resolve) => { observeSuccessfulUpdate = resolve; });
+  const workspace = { id: "workspace-1", name: "Agent HUB", settings: {} };
+  const task = {
+    provider: "codex", threadId: "thread-1", streamId: "stream-1", selected: true,
+    workspaceId: workspace.id, workspaceName: workspace.name,
+    streamName: "Dialog", streamOrdinal: 1, title: "Dialog",
+    running: false, unread: false, streamSettings: {},
+  };
   const snapshot = () => ({
     apiVersion: 3,
     version: `prompt-editor-${JSON.stringify(serverQuickMessages).length}`,
     server: { status: "online" },
-    tasks: [], workspaces: [], archivedWorkspaces: [], boardTasks: [],
+    tasks: [task], workspaces: [workspace], archivedWorkspaces: [], boardTasks: [],
     boardLayout: { columnOrder: [] }, deferredInputs: [], messageReceipts: [], pendingApprovals: [],
     settings: {
       provider: "codex", models: [], modelOptionsByProvider: {}, reasoningOptions: [],
@@ -2319,7 +2326,14 @@ test("prompt template editor keeps rejected drafts and persists a successful ret
     await openStreamTabsDomFixture(page, {
       includeHubClient: true,
       initialSettings: { quickMessages: serverQuickMessages },
+      snapshot,
       control: async (request) => {
+        if (request.action === "open-task" || request.action === "task-history") {
+          const history = { provider: task.provider, threadId: task.threadId, streamId: task.streamId,
+            items: [], start: 0, end: 0, total: 0, messageTotal: 0, nextBefore: null, version: "empty" };
+          return { body: { ok: true, result: request.action === "task-history" ? history
+            : { history, snapshot: snapshot() } } };
+        }
         if (request.action !== "update-setting" || request.params?.name !== "quickMessages") {
           return { status: 200, body: { ok: true, result: snapshot() } };
         }
@@ -2336,15 +2350,6 @@ test("prompt template editor keeps rejected drafts and persists a successful ret
         observeSuccessfulUpdate();
         return { status: 200, body: { ok: true, result: snapshot() } };
       },
-    });
-    await page.evaluate(() => {
-      window.AgentHub.setWorkspaces([{ id: "workspace-1", name: "Agent HUB", settings: {} }]);
-      window.AgentHub.setTasks([{
-        id: "task-1", selected: true, workspaceId: "workspace-1", workspaceName: "Agent HUB",
-        streamId: "stream-1", streamName: "Dialog", streamOrdinal: 1, provider: "codex",
-        agentLabel: "Codex", status: "ready", statusLabel: "Готов", running: false,
-        unread: false, streamSettings: {},
-      }]);
     });
     await page.locator('[data-panel-open="settings"]').click();
     const editor = await openPromptTemplatesForm(page, "global");

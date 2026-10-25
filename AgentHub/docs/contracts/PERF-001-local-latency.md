@@ -294,6 +294,13 @@ report overshoots. Accounting failure stops new admission and drains started
 tests with their original outcomes/checkpoints.
 
 Every file receives a separate process and disposable temp/home/state root.
+The runner observes child `close` before removing that root. A cleanup failure
+remains a failure and retains its OS code, phase and owned path; when execution
+also failed, both original errors remain available without replaying the test.
+Local-control E2E failure diagnostics use the checkout's ignored WIP artifact
+area outside that disposable root. Bounded redacted process output, generation
+timestamps, control-attempt outcomes and existing startup trace scalars survive
+outer cleanup; neither missing diagnostics nor a timeout proves a startup cause.
 Database, Git, endpoint and browser fixtures own their temporary resources;
 only actual shared mutable resources require matching serialization tags.
 Parallel safety is independent from cache eligibility. A missing cache

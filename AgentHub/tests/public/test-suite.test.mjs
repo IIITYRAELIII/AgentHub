@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
 import { access, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -8,6 +10,7 @@ import {
   testExecutionPolicy,
   testFingerprint,
   runWindowsTestFile,
+  runIsolatedTestCommand,
   runTestSuite,
   prepareTestDependencies,
 } from "../../test-suite.mjs";
@@ -121,6 +124,56 @@ test("test execution never retries an assertion or an unclassified OS error", as
       execute: async () => { calls += 1; throw failure; },
     }), (error) => error === failure);
     assert.equal(calls, 1);
+  }
+});
+
+test("native busy temp cleanup preserves execution and cleanup outcomes without replay", {
+  skip: process.platform !== "win32",
+}, async () => {
+  for (const executionError of [null, new assert.AssertionError({ message: "original assertion" }),
+    Object.assign(new Error("original OS failure"), { code: "EPERM" })]) {
+    let holder;
+    let root;
+    let calls = 0;
+    let observed;
+    try {
+      await runIsolatedTestCommand("fixture", [], { execute: async (_command, _args, { env }) => {
+        calls += 1;
+        root = env.TEMP;
+        const script = "$f=[IO.File]::Open($env:AH_TEST_LOCK_FILE,'OpenOrCreate','ReadWrite','None');"
+          + "try{[Console]::WriteLine('locked');[Console]::Out.Flush();[Console]::ReadLine()|Out-Null}finally{$f.Dispose()}";
+        holder = spawn(path.join(process.env.SystemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
+          ["-NoProfile", "-NonInteractive", "-Command", script], { windowsHide: true,
+            stdio: ["pipe", "pipe", "pipe"], env: { ...process.env, AH_TEST_LOCK_FILE: path.join(root, "owned.lock") } });
+        const ready = await Promise.race([
+          once(holder.stdout, "data").then(([chunk]) => String(chunk)),
+          once(holder, "exit").then(([code]) => { throw new Error(`lock holder exited ${code}`); }),
+          once(holder, "error").then(([error]) => { throw error; }),
+        ]);
+        assert.match(ready, /locked/u);
+        if (executionError) throw executionError;
+      } });
+    } catch (error) {
+      observed = error;
+    } finally {
+      if (holder && holder.exitCode === null) {
+        const closed = once(holder, "close");
+        holder.stdin.end("release\n");
+        await closed;
+      }
+      if (root) await rm(root, { recursive: true, force: true });
+    }
+    assert.equal(calls, 1);
+    const cleanupError = executionError ? observed.errors[1] : observed;
+    if (executionError) {
+      assert.ok(observed instanceof AggregateError);
+      assert.equal(observed.cause, executionError);
+      assert.equal(observed.errors[0], executionError);
+    }
+    assert.equal(cleanupError.code, "EBUSY");
+    assert.equal(cleanupError.testPhase, "cleanup");
+    assert.equal(cleanupError.testRoot, root);
+    assert.equal(cleanupError.testExecutionSucceeded, !executionError);
   }
 });
 

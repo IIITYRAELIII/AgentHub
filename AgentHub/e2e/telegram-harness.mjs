@@ -81,6 +81,10 @@ export async function cleanupE2eTemporaryRoot(temporaryRoot) {
   await rm(temporaryRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 }
 
+export function e2eFailureArtifactDirectory(checkoutRoot, runtimeRoot) {
+  return path.join(checkoutRoot, "WIP", "e2e-diagnostics", path.basename(runtimeRoot));
+}
+
 export class E2eChildProcessOwner {
   #current = null;
   #generation = 0;
@@ -117,6 +121,7 @@ export class E2eChildProcessOwner {
 
     const generation = ++this.#generation;
     let child;
+    const spawnRequestedAt = new Date().toISOString();
     try {
       child = spawnChild();
     } catch (error) {
@@ -132,13 +137,19 @@ export class E2eChildProcessOwner {
       generation,
       child,
       pid: Number.isSafeInteger(child.pid) ? child.pid : null,
+      spawnRequestedAt,
+      spawnedAt: null,
+      exitedAt: null,
+      closedAt: null,
       spawnError: null,
       exit: null,
       close: null,
       stderr: "",
+      stdout: "",
       endpointOwner: null,
     };
     this.#current = record;
+    child.once("spawn", () => { record.spawnedAt = new Date().toISOString(); });
     child.once("error", (error) => {
       record.spawnError = {
         name: String(error?.name ?? "Error"),
@@ -147,14 +158,20 @@ export class E2eChildProcessOwner {
       };
     });
     child.once("exit", (code, signal) => {
+      record.exitedAt = new Date().toISOString();
       record.exit = { code: code ?? null, signal: signal ?? null };
     });
     child.once("close", (code, signal) => {
+      record.closedAt = new Date().toISOString();
       record.close = { code: code ?? null, signal: signal ?? null };
     });
     child.stderr?.setEncoding?.("utf8");
     child.stderr?.on?.("data", (chunk) => {
       record.stderr = diagnosticTail(`${record.stderr}${chunk}`);
+    });
+    child.stdout?.setEncoding?.("utf8");
+    child.stdout?.on?.("data", (chunk) => {
+      record.stdout = diagnosticTail(`${record.stdout}${chunk}`);
     });
     return child;
   }
@@ -184,6 +201,7 @@ export class E2eChildProcessOwner {
       spawnError: latest?.spawnError ?? null,
       endpointOwner: latest?.endpointOwner ?? null,
       stderr: latest?.stderr ?? "",
+      stdout: latest?.stdout ?? "",
       generations: [
         ...this.#history.map((item) => this.#snapshot(item)),
         ...(record ? [this.#snapshot(record)] : []),
@@ -226,6 +244,10 @@ export class E2eChildProcessOwner {
     return {
       generation: record.generation,
       pid: record.pid,
+      spawnRequestedAt: record.spawnRequestedAt,
+      spawnedAt: record.spawnedAt,
+      exitedAt: record.exitedAt,
+      closedAt: record.closedAt,
       exitCode: record.child?.exitCode ?? null,
       signalCode: record.child?.signalCode ?? null,
       exit: record.exit,
@@ -233,6 +255,7 @@ export class E2eChildProcessOwner {
       spawnError: record.spawnError,
       endpointOwner: record.endpointOwner,
       stderr: record.stderr,
+      stdout: record.stdout,
     };
   }
 
