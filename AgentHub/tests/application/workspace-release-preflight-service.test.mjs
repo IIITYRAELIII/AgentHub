@@ -1847,7 +1847,13 @@ test("ordinary native Await persists agreed main independently of historical ado
   const PUBLISHED = "1".repeat(40);
   const ADOPTED = "2".repeat(40);
   const RESULT = "3".repeat(40);
-  const { calls, projectRoot, service } = fixture({ publishedRevision: PUBLISHED });
+  const { calls, projectRoot, service, plan } = fixture({ publishedRevision: PUBLISHED });
+  plan.ready[0].resultCommit = RESULT;
+  const integrationEvidence = service.taskGitWorkspaces.releaseIntegrationEvidence;
+  service.taskGitWorkspaces.releaseIntegrationEvidence = async request => {
+    const evidence = await integrationEvidence(request);
+    return { ...evidence, tasks: evidence.tasks.map(item => ({ ...item, resultCommit: RESULT })) };
+  };
   const adoption = {
     taskId: "task-1", resultCommit: RESULT,
     recordRef: `refs/agent-hub/upstream-adoptions/task-1/repo-key/${RESULT}/${ADOPTED}`,
@@ -1856,6 +1862,16 @@ test("ordinary native Await persists agreed main independently of historical ado
   service.taskGitWorkspaces.releaseBaseEvidence = async ({ publishedBaseCommit }) => ({
     publishedBaseCommit, baseCommit: ADOPTED, adoptions: [adoption],
   });
+  let derivations = 0;
+  service.releaseGitWorkspaces.deriveInstalledLocalSourceBaselineForSelection = async request => {
+    assert.equal(request.projectRoot, projectRoot);
+    assert.equal(request.planRevision, plan.revision);
+    assert.equal(request.publishedRevision, PUBLISHED);
+    assert.equal(request.tasks[0].resultCommit, RESULT);
+    assert.deepEqual(request.adoptions, [adoption]);
+    derivations++;
+    return null; // This fixture has no installed local-source migration.
+  };
   const envelope = {
     schemaVersion: 1, kind: "agreed-main-native-git-v1",
     publishedBaseCommit: PUBLISHED, agreedMainCommit: ADOPTED,
@@ -1872,6 +1888,7 @@ test("ordinary native Await persists agreed main independently of historical ado
   };
   await service.prepareAwaitSet({ workspaceId: "workspace-1", validateOnly: true });
   assert.deepEqual(validated.baseProvenance, envelope);
+  assert.equal(derivations, 2);
 
   // Equality with published main still keeps explicit native provenance.
   service.taskGitWorkspaces.releaseBaseEvidence = async ({ publishedBaseCommit }) => ({
@@ -1881,5 +1898,6 @@ test("ordinary native Await persists agreed main independently of historical ado
   await service.prepareAwaitSet({ workspaceId: "workspace-1" });
   assert.deepEqual(calls.find(([name]) => name === "prepare-candidate")[1].baseProvenance,
     { schemaVersion: 1, kind: "agreed-main-native-git-v1", publishedBaseCommit: PUBLISHED, agreedMainCommit: PUBLISHED });
+  assert.equal(derivations, 2);
   assert.equal(projectRoot, path.resolve("D:/repo"));
 });

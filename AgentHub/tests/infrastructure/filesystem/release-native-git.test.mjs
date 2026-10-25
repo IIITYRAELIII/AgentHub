@@ -80,7 +80,7 @@ test("reopen rejects a forged completed native prefix even with exact merge pare
   assert.equal((await mergeSelectedResults(request)).head, original.head);
 });
 
-test("native merge selects exact independent main branches and complete corrections", { timeout: 60000 }, async (t) => {
+test("native merge selects exact independent main branches and complete corrections", async (t) => {
   const f = await fixture(t);
   const a = await f.result("A", "a.txt", "a1\n");
   const b = await f.result("B", "b.txt", "b1\n");

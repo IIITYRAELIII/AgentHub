@@ -17,7 +17,9 @@ import { ReleasePreparationRejectedError } from "../../../src/domain/release-pre
 const run = promisify(execFile);
 const hash = value => createHash("sha256").update(value).digest("hex");
 async function git(root, args, options = {}) {
-  const { stdout } = await run("git", args, { cwd: root, windowsHide: true, encoding: "buffer", maxBuffer: 8 * 1024 * 1024 });
+  const pending = run("git", args, { cwd: root, windowsHide: true, encoding: "buffer", maxBuffer: 8 * 1024 * 1024 });
+  if (options.input != null) pending.child.stdin.end(options.input);
+  const { stdout } = await pending;
   return options.rawOutput ? stdout : stdout.toString("utf8").trim();
 }
 async function save(root, name, value) {
