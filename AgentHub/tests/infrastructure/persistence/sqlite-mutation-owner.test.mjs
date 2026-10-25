@@ -9,6 +9,7 @@ import { RunJournalService } from "../../../src/application/run-journal-service.
 import { createStreamAgentSettingsService } from "../../../src/application/stream-agent-settings-service.mjs";
 import { StreamHandoffService } from "../../../src/application/stream-handoff-service.mjs";
 import { TaskBoardService } from "../../../src/application/task-board-service.mjs";
+import { HubMcpService } from "../../../src/application/hub-mcp-service.mjs";
 import { WorkspaceReleaseService } from "../../../src/application/workspace-release-service.mjs";
 import { taskReleasePlan } from "../../../src/domain/task-release-snapshot.mjs";
 import { ProviderTaskCatalogBuilder } from "../../../src/providers/provider-task-catalog-builder.mjs";
@@ -381,4 +382,65 @@ test("composed checklist writes share the canonical Task owner and exact retry i
   assert.equal(linkedActionIdentities.length, 2);
   assert.equal(new Set(linkedActionIdentities).size, 1);
   assert.ok(rawTasks.mutationDiagnostics().retries > 0);
+});
+
+test("public MCP checklist success has a durable receipt and exact replay after owner reopen", async (context) => {
+  const { root, databaseFile, rawWorkspace, rawTasks, taskBoard, workspace, stream } = await fixture(context);
+  await rawWorkspace.runMutation(() => rawWorkspace.bindThread({
+    provider: "codex", threadId: "checklist-public-thread", streamId: stream.id,
+  }));
+  const open = (board) => new HubMcpService({
+    workspaceCatalog: rawWorkspace, taskBoard: board, workLog: { threadTurns: () => [] },
+    attachmentDirectory: path.join(root, "attachments"), secret: "synthetic-checklist-owner",
+    releasePreflight: {
+      preflight: () => assert.fail("Checklist does not prepare a release"),
+      withAwaitTransition: () => assert.fail("Checklist does not change Await"),
+    },
+    releaseCompleter: { completeRelease: () => assert.fail("Checklist does not publish") },
+    reconcilePendingOnStartup: false,
+  });
+  const service = open(taskBoard);
+  const context_token = service.contextToken({ provider: "codex", threadId: "checklist-public-thread" });
+  const parent = await taskBoard.create({
+    text: "Public checklist parent", source: "test", bucket: "workspace", workspaceId: workspace.id,
+  });
+  const args = { context_token, task_id: parent.id, operation: "add", text: "Preserve transferred requirement",
+    expected_task_revision: parent.revision, request_id: "public-checklist-owner-add" };
+  const first = await underContention(databaseFile, () => service.call("hub_task_checklist_update", args));
+  assert.equal(first.replayed, false, "A fresh successful write must not need failure reconciliation");
+  assert.equal(first.task.checklist.length, 1);
+  assert.equal(first.task.checklist[0].text, args.text);
+  assert.equal(first.task.revision, parent.revision + 1);
+  const receipt = rawWorkspace.mcpOperation(args.request_id);
+  assert.equal(receipt.status, "succeeded");
+  assert.equal(receipt.receiptState, "succeeded");
+  assert.deepEqual(receipt.result, JSON.parse(JSON.stringify(first)));
+
+  rawTasks.close();
+  const reopened = new TaskBoardStore({ databaseFile });
+  try {
+    const board = new TaskBoardService({ store: reopened, workspaceCatalog: rawWorkspace });
+    const restored = open(board);
+    const replay = await restored.call("hub_task_checklist_update", args);
+    assert.equal(replay.itemId, first.itemId);
+    assert.equal(board.task(parent.id).revision, first.task.revision);
+    assert.equal(board.task(parent.id).checklist.length, 1);
+    assert.equal(rawWorkspace.mcpOperation(args.request_id).receiptState, "succeeded");
+    await assert.rejects(() => restored.call("hub_task_checklist_update", {
+      ...args, text: "Changed same identity",
+    }), /another operation/u);
+    const beforeRefusal = board.task(parent.id);
+    await assert.rejects(() => restored.call("hub_task_checklist_update", {
+      ...args, text: "Stale revision", request_id: "public-checklist-owner-stale",
+    }), /revision changed/u);
+    assert.deepEqual(board.task(parent.id), beforeRefusal);
+  } finally { reopened.close(); }
+});
+
+test("ordinary SQL owner still rejects an asynchronous callback", async (context) => {
+  const { rawTasks } = await fixture(context);
+  await assert.rejects(rawTasks.runMutation(() => Promise.resolve("not a synchronous SQL result")),
+    /Task SQL mutation must remain synchronous/u);
+  const task = await rawTasks.runMutation(() => rawTasks.create({ text: "Later valid mutation", triageStatus: "disabled" }));
+  assert.equal(rawTasks.task(task.id).title, "Later valid mutation");
 });
