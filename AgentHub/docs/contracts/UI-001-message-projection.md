@@ -572,6 +572,14 @@ placed after the source answer and restored on first snapshot and reload without
 creating a user turn. The bound target Thread and completion time are recorded
 after successful catalog binding. Readiness is the fresh `idle` readback of the
 exact target after creation and item injection, with no generated model turn.
+A live Stream representative follows its highest durable Thread position before
+historical selection or retained running state. Stream-only Desktop navigation
+uses the catalog owner's current binding, independently of catalog ordering;
+an explicit retained provider/Thread reference selects that exact catalog entry.
+A historical turn route retains its exact history page while the head evolves.
+Selecting the Stream explicitly resumes head-history navigation. Retained links
+whose Thread no longer has a catalog entry still resolve through their owning
+Stream lineage; the exact historical turn body remains provider/Thread scoped.
 A rotation that stopped before switching produces no completed rotation marker.
 Percentages name their historical stage. The post-compaction estimate is shown
 with an explicit estimated label only when bound to that exact compaction and
