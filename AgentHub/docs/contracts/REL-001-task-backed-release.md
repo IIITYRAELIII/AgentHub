@@ -664,6 +664,22 @@ without additional automatic-path changes keep their existing behavior. The same
 binding is retained and rechecked by native Test, Await, prepared generation and
 historical readback; old receipts remain unchanged. See ADR-0108.
 
+An accepted commit being an ancestor does not prove that its changes still exist.
+After the complete selected set is merged, and on prepared-candidate readback,
+the native owner checks each selected delta against its original Task base using
+a counterfactual Git merge in objects only. Clean changes that would have to be
+reintroduced are a definite refusal before promotion/Task CAS or freeze. A later
+selected correction may restore an earlier contained regression before this
+final check. Genuine overlapping conflict choices retain native resolution
+authority; this check is not a claim of semantic equivalence of arbitrary code.
+An authenticated compatibility correction permits only the exact mode/blob
+afterimage bound by its verified merge diff, never another body at that path.
+Text conflict resolution also preserves Git's clean context outside its marker
+ranges; replacing a whole conflicted file does not grant permission to discard
+those bytes. Such extra changes use the existing exact compatibility-review
+boundary. No content overlay, new publisher, external path allowlist or ignored
+preservation failure is introduced. See ADR-HUB-329-selected-content-preservation.
+
 After native selected composition completes, the existing first-party runtime
 relative-import closure is checked against that exact immutable Git tree before
 PreRelease promotion/checkpoint or Task acceptance. It shares the canonical
