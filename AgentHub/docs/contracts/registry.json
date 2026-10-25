@@ -269,6 +269,9 @@
       "title": "Task-backed Workspace release",
       "document": "REL-001-task-backed-release.md",
       "paths": [
+        "release-progress/**",
+        "tests/interfaces/release-progress*.test.mjs",
+        "src/infrastructure/process/release-progress-monitor.mjs",
         "assets/web-app/hub-client.js",
         "assets/web-app/task-board.js",
         "src/application/sqlite-mutation-owner.mjs",
@@ -363,8 +366,7 @@
         "src/composition/release-operation-composition.mjs",
         "src/domain/native-resolution-input.mjs",
         "release.mjs",
-        "docs/decisions/ADR-0132-normal-release-continuation.md",
-        "release-progress/**"
+        "docs/decisions/ADR-0132-normal-release-continuation.md"
       ]
     },
     {

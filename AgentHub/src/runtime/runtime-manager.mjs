@@ -30,6 +30,8 @@ import { runtimePointerTransition, runtimeRollbackPointer } from "../infrastruct
 
 const SOURCE_ROOT = path.resolve(import.meta.dirname, "..", "..");
 const RUNTIME_MODULE_ASSETS = [
+  ...['server.mjs', 'reader.mjs', 'identity.mjs', 'index.html', 'app.js', 'style.css']
+    .map(name => ['src/infrastructure/process/release-progress-monitor.mjs', `release-progress/${name}`]),
   ["src/infrastructure/filesystem/sealed-runtime-release.mjs",
     "src/infrastructure/filesystem/sealed-runtime-release.cs"],
   ["src/infrastructure/filesystem/sealed-transport-delete.mjs",

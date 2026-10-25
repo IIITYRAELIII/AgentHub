@@ -5,6 +5,7 @@ import { WorkspaceReleaseOperationAdapter } from "../application/workspace-relea
 import { ReleaseOperationStore } from "../infrastructure/persistence/release-operation-store.mjs";
 import { ReleaseOperationPublication } from "../infrastructure/process/release-operation-publication.mjs";
 import { processIsAlive } from "../infrastructure/process/process-liveness.mjs";
+import { createReleaseProgressObserver } from "../infrastructure/process/release-progress-monitor.mjs";
 
 // Both normal consumers use the same existing durable owner and publication
 // adapter. Construction does not recover/wake unrelated operations.
@@ -12,6 +13,7 @@ export function createReleaseOperationServices({
   dataDir, runtimeRoot, releasePreflight, taskBoard, taskLifecycle,
   workspaceCatalog, taskGitWorkspaces, releaseGitWorkspaces,
   runnerVersion, requestCorrection,
+  observeOperation = createReleaseProgressObserver({ runtimeRoot }),
   store = new ReleaseOperationStore({ dataDir }),
   publication = new ReleaseOperationPublication({ dataDir, runtimeRoot }),
   finalization = new ReleaseOperationFinalization({ taskBoard, releaseGitWorkspaces, taskGitWorkspaces }),
@@ -30,6 +32,7 @@ export function createReleaseOperationServices({
     cleanupGeneration: input => adapter.cleanupGeneration(input),
     processAlive: processIsAlive,
     runnerVersion,
+    observeOperation,
   });
   const commands = new ReleaseOperationCommandService({ releaseOperations: operations, workspaceCatalog, taskBoard });
   taskLifecycle.setReleaseOperationWake(taskId => operations.wakeForTask(taskId));

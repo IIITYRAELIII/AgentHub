@@ -21,6 +21,44 @@ import { captureRuntimeReleaseBinding } from "../../src/infrastructure/filesyste
 
 const ROOT = path.resolve(import.meta.dirname, "..", "..");
 
+test('release progress canonical artifact contains the independent viewer and launches only its prepared files', async t => {
+  const { sourceRoot, runtimeRoot } = await fixture();
+  t.after(() => rm(path.dirname(sourceRoot), { recursive: true, force: true }));
+  const files = ['src/infrastructure/process/release-progress-monitor.mjs',
+    ...['server.mjs', 'reader.mjs', 'identity.mjs', 'index.html', 'app.js', 'style.css'].map(name => `release-progress/${name}`)];
+  for (const file of files) {
+    await mkdir(path.dirname(path.join(sourceRoot, file)), { recursive: true });
+    await cp(path.join(ROOT, file), path.join(sourceRoot, file));
+  }
+  await writeFile(path.join(sourceRoot, 'release-progress/unrelated.txt'), 'not an observer asset');
+  const prepared = await prepareRuntime({ sourceRoot, runtimeRoot, releaseId: 'monitor-shipment' });
+  const manifest = JSON.parse(await readFile(path.join(prepared.releaseRoot, 'runtime-manifest.json'), 'utf8'));
+  for (const file of files) {
+    assert.ok(manifest.files.some(entry => entry.path.replaceAll('\\', '/') === file));
+    assert.deepEqual(await readFile(path.join(prepared.releaseRoot, file)), await readFile(path.join(sourceRoot, file)));
+  }
+  assert.equal(manifest.files.some(entry => entry.path.includes('unrelated.txt')), false);
+  const { startMonitor } = await import(pathToFileURL(path.join(prepared.releaseRoot, 'release-progress/server.mjs')).href);
+  const viewer = await startMonitor({ runtimeRoot, operationId: 'prepared-original' });
+  t.after(() => new Promise(resolve => viewer.server.close(resolve)));
+  const { ensureReleaseProgressMonitor } = await import(pathToFileURL(path.join(prepared.releaseRoot, files[0])).href);
+  const reused = await ensureReleaseProgressMonitor({ runtimeRoot, operationId: 'prepared-original', port: viewer.server.address().port });
+  assert.equal(reused.reused, true); assert.equal(reused.pid, process.pid);
+  assert.equal((await fetch(reused.url)).status, 200);
+  assert.equal((await (await fetch(reused.url + '/api/identity')).json()).operationId, 'prepared-original');
+  assert.equal((await fetch(reused.url + '/api/status')).status, 503);
+});
+
+test('release progress missing mandatory asset refuses canonical preparation without a pointer', async t => {
+  const { sourceRoot, runtimeRoot } = await fixture();
+  t.after(() => rm(path.dirname(sourceRoot), { recursive: true, force: true }));
+  const file = 'src/infrastructure/process/release-progress-monitor.mjs';
+  await mkdir(path.dirname(path.join(sourceRoot, file)), { recursive: true });
+  await cp(path.join(ROOT, file), path.join(sourceRoot, file));
+  await assert.rejects(prepareRuntime({ sourceRoot, runtimeRoot, releaseId: 'missing-monitor' }), /Runtime module asset is missing/);
+  await assert.rejects(readFile(path.join(runtimeRoot, 'current.json')), { code: 'ENOENT' });
+});
+
 test("canonical runtime source membership retains JSON and assets but excludes test and tooling imports", async t => {
   const { sourceRoot, runtimeRoot } = await fixture();
   t.after(() => rm(path.dirname(runtimeRoot), { recursive: true, force: true }));

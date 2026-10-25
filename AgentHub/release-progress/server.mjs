@@ -4,11 +4,13 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ProgressReader } from './reader.mjs';
+import { monitorIdentity } from './identity.mjs';
 
 const assets = { '/': ['index.html', 'text/html; charset=utf-8'], '/app.js': ['app.js', 'text/javascript; charset=utf-8'], '/style.css': ['style.css', 'text/css; charset=utf-8'] };
 export async function startMonitor({ runtimeRoot, operationId, port = 0, title = 'Выпуск Agent Hub' }) {
   if (!runtimeRoot || typeof operationId !== 'string' || !operationId.trim()) throw new Error('Нужны runtimeRoot и operationId.');
   const reader = new ProgressReader({ runtimeRoot, operationId });
+  const identity = await monitorIdentity(runtimeRoot, operationId);
   let pending;
   const snapshot = () => pending ??= reader.snapshot().finally(() => { pending = null; });
   const server = http.createServer(async (req, res) => {
@@ -20,6 +22,10 @@ export async function startMonitor({ runtimeRoot, operationId, port = 0, title =
     if (req.method !== 'GET') { res.writeHead(405, { Allow: 'GET' }).end(); return; }
     const url = new URL(req.url, `http://${address}`);
     try {
+      if (url.pathname === '/api/identity') {
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' })
+          .end(JSON.stringify({ ...identity, pid: process.pid })); return;
+      }
       if (url.pathname === '/favicon.ico') { res.writeHead(204).end(); return; }
       if (assets[url.pathname]) {
         const [name, mime] = assets[url.pathname];
@@ -52,5 +58,15 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     if (!key || process.argv[i + 1] == null || key in options) throw new Error('Неизвестный или повторный аргумент.');
     options[key] = key === 'port' ? Number(process.argv[i + 1]) : process.argv[i + 1];
   }
-  const { url } = await startMonitor(options); console.log(url);
+  try {
+    const { url } = await startMonitor(options);
+    if (process.connected) process.send({ type: 'ready' });
+    console.log(url);
+  } catch (error) {
+    if (process.connected) {
+      process.send({ type: error.code === 'EADDRINUSE' ? 'occupied' : 'failed' }, () => {
+        if (process.connected) process.disconnect();
+      });
+    } else throw error;
+  }
 }

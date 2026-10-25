@@ -163,6 +163,7 @@ export class ReleaseOperationService {
     requestCorrection = null,
     cleanupGeneration = null,
     withReviewedMainRecovery = null,
+    observeOperation = null,
   } = {}) {
     for (const name of [
       "create", "get", "snapshot", "transition", "acquire", "heartbeat", "release",
@@ -205,6 +206,7 @@ export class ReleaseOperationService {
     this.requestCorrection = requestCorrection;
     this.cleanupGeneration = cleanupGeneration;
     this.withReviewedMainRecovery = withReviewedMainRecovery;
+    this.observeOperation = observeOperation;
   }
 
   start({ requestId, workspaceId, streamId, threadId, authorization } = {}) {
@@ -212,6 +214,7 @@ export class ReleaseOperationService {
       requestId, workspaceId, streamId, threadId, authorization,
       runnerVersion: this.runnerVersion,
     });
+    this.#observe(created.operation.operationId);
     this.#schedule(created.operation.operationId);
     return {
       accepted: true,
@@ -261,9 +264,13 @@ export class ReleaseOperationService {
   }
 
   continue(operationId, options = {}) {
+    // Addressed observation also works while the original is waiting on an
+    // external condition. It neither resumes nor publishes that condition.
+    const observed = this.store.get(requiredText(operationId, "operationId"));
+    if (!observed) throw new Error("release operation was not found");
+    this.#observe(observed.operationId);
     if (options.reviewedMain != null) return this.#recoverReviewedMain(operationId, options);
-    const current = this.store.get(requiredText(operationId, "operationId"));
-    if (!current) throw new Error("release operation was not found");
+    const current = observed;
     if (releaseOperationIsTerminal(current)) return { accepted: false, operation: current, reason: "terminal" };
     let operation = current;
     if (current.state === RELEASE_OPERATION_STATES.WAITING) {
@@ -287,6 +294,16 @@ export class ReleaseOperationService {
     }
     this.#schedule(operation.operationId);
     return { accepted: true, operationId: operation.operationId, state: operation.state, revision: operation.revision };
+  }
+
+  #observe(operationId) {
+    try {
+      Promise.resolve(this.observeOperation?.(operationId)).catch(() => {
+        console.warn('Release progress monitor unavailable: MONITOR_OBSERVATION_FAILED');
+      });
+    } catch {
+      console.warn('Release progress monitor unavailable: MONITOR_OBSERVATION_FAILED');
+    }
   }
 
   async #recoverReviewedMain(operationId, { requestId, reviewedMain }) {

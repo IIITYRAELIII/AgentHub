@@ -2939,3 +2939,17 @@ The monitor cannot start, retry, cancel, publish or install a release. No estima
 percentage or completion time is fabricated from a growing test log.
 
 Affected check: `node --test tests/interfaces/release-progress.test.mjs`.
+
+An explicit start/continue observes that same original operation through the
+separate loopback viewer at port 58268, including the first continue after an OS
+restart. This observation is not publication admission. Launch/reuse is bounded,
+independent of the Hub lifetime and cannot veto an already durable release
+admission, start a second publisher, retry a release or wake one at Windows login.
+Concurrent launches converge on the listener; an unknown/foreign listener is
+preserved. New viewers bind physical runtime-root plus original operation before
+execution logs exist. The accepted pre-autolaunch 7ffd process may be reused by
+its exact globally unique original operation until it exits; that legacy path
+does not claim a verified physical root. No monitor replacement/kill follows.
+The canonical artifact includes all required viewer files or refuses preparation.
+Affected checks: `tests/interfaces/release-progress-autostart.test.mjs` and the
+`release progress` scenarios in `tests/public/runtime-manager.test.mjs`.
