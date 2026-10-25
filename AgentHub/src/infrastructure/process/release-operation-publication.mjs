@@ -1,7 +1,7 @@
 import { spawn, execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { createHash } from "node:crypto";
-import { mkdir, open, readFile, stat, lstat, writeFile } from "node:fs/promises";
+import { mkdir, open, readFile, lstat, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { processIsAlive } from "./process-liveness.mjs";
@@ -52,13 +52,11 @@ function publicationFailure(saved, exitCode, targetId) {
 }
 
 async function gitRemoteHead(candidate) {
-  const checkout = await stat(candidate.releaseRoot).then(() => candidate.releaseRoot, error => {
-    if (error.code !== "ENOENT") throw error;
-    return candidate.repositoryRoot;
-  });
+  // The immutable clone deliberately has no remotes. The registered repository
+  // owns origin; ls-remote only observes it and does not change primary Git state.
   return new Promise((resolve) => {
     const child = spawn("git", ["ls-remote", "--exit-code", "origin", "refs/heads/main"], {
-      cwd: checkout,
+      cwd: candidate.repositoryRoot,
       windowsHide: true,
       stdio: ["ignore", "pipe", "ignore"],
     });

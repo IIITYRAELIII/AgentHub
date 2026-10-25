@@ -90,6 +90,11 @@ authorization, terminal attempt, immutable generations and all receipts remain
 history; `reviewedMain` and the recovery event are appended by the same store.
 UNKNOWN/partial/applied/live/source-owned effects refuse. No work executes inside
 rebinding; ordinary composition and publication guards still own the next attempt.
+Publication readback observes `origin/main` through the registered repository's
+origin. A frozen standalone clone intentionally has no remotes and is not a
+remote-identity authority. The read-only `ls-remote` changes neither primary
+HEAD/index/worktree nor frozen Git configuration; unavailable origin remains
+UNKNOWN and exact candidate/approved-main/effect checks remain mandatory.
 New publication freezes persist both the public semantic version and the
 canonical next runtime artifact version in their existing immutable manifest and
 freeze intent. This observation reserves nothing. The original generation runner

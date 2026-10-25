@@ -44,6 +44,47 @@ function identity(value) {
   return createHash("sha256").update(String(value)).digest("hex");
 }
 
+test("publication readback uses the registered origin when the frozen checkout has no remote", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "release-readback-origin-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const remote = path.join(root, "origin.git");
+  const primary = path.join(root, "primary");
+  const frozen = path.join(root, "frozen");
+  await git(root, "init", "--bare", "--initial-branch=main", remote);
+  await git(root, "clone", remote, primary);
+  await git(primary, "config", "user.name", "Agent Hub Test");
+  await git(primary, "config", "user.email", "agent-hub@example.invalid");
+  await writeFile(path.join(primary, "result.txt"), "base\n");
+  await git(primary, "add", "result.txt");
+  await git(primary, "commit", "-m", "base");
+  const baseCommit = await git(primary, "rev-parse", "HEAD");
+  await git(primary, "push", "origin", "main");
+  await writeFile(path.join(primary, "result.txt"), "candidate\n");
+  await git(primary, "commit", "-am", "candidate");
+  const commit = await git(primary, "rev-parse", "HEAD");
+  await git(root, "clone", "--no-local", primary, frozen);
+  await git(frozen, "remote", "remove", "origin");
+  const generation = { generation: 1, identitySha256: "frozen-origin-proof",
+    candidates: [{ repositoryRoot: primary, releaseRoot: frozen, commit, baseCommit }] };
+  const operation = { operationId: "registered-origin-readback" };
+  const target = { targetId: "production", kind: "agent-hub-publication", repositoryRoot: primary };
+  const publication = new ReleaseOperationPublication({
+    dataDir: path.join(root, "data"), runtimeRoot: path.join(root, "runtime"),
+    readPublicationStateImpl: async () => null,
+  });
+  assert.deepEqual(await publication.readback({ operation, generation, target }), {
+    status: "not_applied", revision: baseCommit,
+  });
+  await git(primary, "push", "origin", "main");
+  assert.deepEqual(await publication.readback({ operation, generation, target }), {
+    status: "partial", revision: commit, source: "origin-readback",
+  });
+  assert.equal(await git(primary, "rev-parse", "HEAD"), commit);
+  assert.equal(await git(primary, "status", "--porcelain=v1"), "");
+  assert.equal(await git(frozen, "rev-parse", "HEAD"), commit);
+  assert.equal(await git(frozen, "remote"), "");
+});
+
 test("stable publication runner preserves the initiating Stream and Thread for start and resume", () => {
   const operation = {
     workspaceId: "workspace-1",
