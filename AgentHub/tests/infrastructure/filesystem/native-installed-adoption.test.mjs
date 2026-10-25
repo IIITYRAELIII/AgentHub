@@ -200,18 +200,18 @@ async function terminalAuthority(t, agreedOrigin = false) {
 }
 
 test("ordinary Await checks native authority inside actual Task persistence and terminal repeat has no Git effects",
-  { timeout: 300000 }, t => terminalAuthority(t));
+  t => terminalAuthority(t));
 
 test("already agreed main origin reaches actual Await terminal CAS without invented adoption receipts",
-  { timeout: 300000 }, t => terminalAuthority(t, true));
+  t => terminalAuthority(t, true));
 
-test("late native history completion keeps origin fencing before the actual Task CAS", { timeout: 240000 }, async () => {
+test("late native history completion keeps origin fencing before the actual Task CAS", async () => {
   const environment = { ...process.env, HUB_TEST_LATE_NATIVE_HISTORY: "1" };
   delete environment.NODE_TEST_CONTEXT;
   const result = await run(process.execPath, ["--import",
     new URL("../../helpers/native-history-observer.mjs", import.meta.url).href,
     "--test", "--test-name-pattern=^already agreed main origin reaches", import.meta.filename],
-  { env: environment, windowsHide: true, timeout: 180000, maxBuffer: 4 * 1024 * 1024 });
+  { env: environment, windowsHide: true, maxBuffer: 4 * 1024 * 1024 });
   assert.equal(result.stderr, "");
   assert.match(result.stdout, /tests 3/u);
   assert.match(result.stdout, /pass 3/u);
@@ -276,7 +276,7 @@ test("ordinary Await derives exact selected adoption and installed source throug
   await assert.rejects(f.candidate.deriveInstalledLocalSourceBaselineForSelection(request), /identity changed/);
 });
 
-test("native installed source and exact ordinary adoption survive Test, candidate reuse and generation", { timeout: 240000 }, async t => {
+test("native installed source and exact ordinary adoption survive Test, candidate reuse and generation", async t => {
   const f = await fixture(t);
   await assert.rejects(assertNativeTaskHistories({ git: f.port, baseCommit: f.main, tasks: f.tasks }), /release-owned/);
   const snapshot = await f.service.snapshot({ taskId: f.task.taskId, taskNumber: "HUB-1", projectRoot: f.task.projectRoot });

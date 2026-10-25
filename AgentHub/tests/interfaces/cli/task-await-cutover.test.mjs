@@ -376,7 +376,7 @@ test("Await cutover rejects missing, mismatched or ambiguous Task result authori
   }
 });
 
-test("disposable public squash bootstrap reaches real Test then canonical Await candidate", { timeout: 120_000 }, async (t) => {
+test("disposable public squash bootstrap reaches real Test then canonical Await candidate", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-bootstrap-admission-"));
   const repositoryRoot = path.join(root, "repository");
   const reviewedRoot = path.join(root, "reviewed");

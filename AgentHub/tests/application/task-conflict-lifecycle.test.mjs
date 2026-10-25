@@ -143,7 +143,7 @@ test("real conflict saves a terminal failed lifecycle with file and revision evi
   assert.equal(f.timings.find(event => event.operationId === "test-b" && event.stage === "workflow" && event.phase === "end").outcome, "error");
 });
 
-test("correction preserves its accepted result without touching another pending withdrawal", { timeout: 90000 }, async (t) => {
+test("correction preserves its accepted result without touching another pending withdrawal", async (t) => {
   const f = await fixture(t);
   const a = await f.create("A"), b = await f.create("B");
   await writeFile(path.join(a.root, "a.txt"), "A\n");
@@ -204,7 +204,7 @@ test("native consolidation without an authenticated handoff refuses Test and pre
   assert.equal(await readFile(path.join(a.root, "a.txt"), "utf8"), "source work\n");
 });
 
-test("combined closure rejects missing source commits, dirty work and a separate source integration", { timeout: 90000 }, async (t) => {
+test("combined closure rejects missing source commits, dirty work and a separate source integration", async (t) => {
   const f = await fixture(t);
   const a = await f.create("Source"), b = await f.create("Target");
   await writeFile(path.join(a.root, "a.txt"), "A\n");
@@ -293,7 +293,7 @@ test("a sibling branch cannot hide an unapproved upstream merge", { timeout: 900
   assert.equal(await git(f.primary, "rev-parse", "dev"), before);
 });
 
-test("an accepted prerequisite remains available to its dependent during correction", { timeout: 90000 }, async (t) => {
+test("an accepted prerequisite remains available to its dependent during correction", async (t) => {
   const f = await fixture(t);
   const a = await f.create("Prerequisite"), b = await f.create("Dependent");
   await writeFile(path.join(a.root, "a.txt"), "A\n");
@@ -309,7 +309,7 @@ test("an accepted prerequisite remains available to its dependent during correct
   assert.equal(f.taskBoard.task(b.task.id).workflowStatus, "in_progress");
 });
 
-test("a corrected prerequisite remains accepted so its dependent can resume immediately", { timeout: 90000 }, async (t) => {
+test("a corrected prerequisite remains accepted so its dependent can resume immediately", async (t) => {
   const f = await fixture(t);
   const a = await f.create("A");
   await writeFile(path.join(a.root, "a.txt"), "A\n");
@@ -340,7 +340,7 @@ test("a corrected prerequisite remains accepted so its dependent can resume imme
   await f.taskGitWorkspaces.prepare({ taskId: b.task.id, taskNumber: b.task.taskNumber, projectRoot: f.primary });
 });
 
-test("correction does not cascade into a dependent accepted Task", { timeout: 90000 }, async (t) => {
+test("correction does not cascade into a dependent accepted Task", async (t) => {
   const f = await fixture(t);
   const a = await f.create("A");
   await writeFile(path.join(a.root, "a.txt"), "A\n");
@@ -378,7 +378,7 @@ test("a conflict diagnostic longer than 4000 characters still has a confirmed te
   assert.equal(f.taskBoard.lifecycleTransition("large-conflict").phase, "failed");
 });
 
-for (const committed of [false, true]) test(`old conflict keeps immutable accepted code (committed=${committed})`, { timeout: 90000 }, async (t) => {
+for (const committed of [false, true]) test(`old conflict keeps immutable accepted code (committed=${committed})`, async (t) => {
   const f = await fixture(t);
   const a = await f.create("A"), b = await f.create("B");
   await writeFile(path.join(a.root, "app.txt"), "A\n");

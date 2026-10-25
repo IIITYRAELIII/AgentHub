@@ -21,7 +21,7 @@ import { retainedLegacySelectedPreview, retainLegacySelectedOriginal } from "../
 const exec = promisify(execFile);
 const TASK_ID = "367ffe17-f69f-4886-b9be-901558ecace2";
 
-test("retained selected Test proof survives its exact partial native publication but refuses foreign origin", { timeout: 90000 }, async t => {
+test("retained selected Test proof survives its exact partial native publication but refuses foreign origin", async t => {
   const f = await fixture(t);
   const preview = await retainedLegacySelectedPreview(f, { taskId: TASK_ID, expectedTaskRevision: 1,
     authority: { workspaceId: "workspace", streamId: "rm", provider: "codex", threadId: "thread", proofRequestId: "retained-published" } });
@@ -84,7 +84,7 @@ test("retained selected Test proof survives its exact partial native publication
   assert.equal(rows(), before);
 });
 
-test("retained selected acceptance uses OWN historical facts after terminal and later selection changes", { timeout: 90000 }, async t => {
+test("retained selected acceptance uses OWN historical facts after terminal and later selection changes", async t => {
   const f = await fixture(t);
   const preview = await retainedLegacySelectedPreview(f, { taskId: TASK_ID, expectedTaskRevision: 1,
     authority: { workspaceId: "workspace", streamId: "rm", provider: "codex", threadId: "thread", proofRequestId: "terminal-published" } });
@@ -324,7 +324,7 @@ test("retained v1 original completes after cutover while fresh preview and missi
   assert.equal(await git(f.root, "rev-parse", "dev"), f.proof);
 });
 
-test("retained v2 completion keeps its seal and refuses paired downgrade", { timeout: 90000 }, async t => {
+test("retained v2 completion keeps its seal and refuses paired downgrade", async t => {
   const f = await fixture(t);
   const preview = await retainedLegacySelectedPreview(f, { taskId: TASK_ID, expectedTaskRevision: 1,
     authority: { workspaceId: "workspace", streamId: "rm", provider: "codex", threadId: "thread", proofRequestId: "retained-v2" } });

@@ -135,7 +135,7 @@ async function registeredTaskBranch(setup, context, { taskId, startCommit, baseC
   return { branch, taskRoot };
 }
 
-test("one operation generation isolates source bundles per repository", { timeout: 60000 }, async (context) => {
+test("one operation generation isolates source bundles per repository", async (context) => {
   const first = await fixture(context);
   const second = await fixture(context);
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "rg-"));
@@ -202,7 +202,7 @@ test("partial generation transport is preserved on failure and is never overwrit
   }
 });
 
-test("new permanent release captures keep exact selected history without unrelated refs or object payloads", { timeout: 60000 }, async context => {
+test("new permanent release captures keep exact selected history without unrelated refs or object payloads", async context => {
   const f = await fixture(context);
   const selected = await taskResult(f, context, { branch: "HUB-selected-transport", file: "selected.txt" });
   const other = await taskResult(f, context, { branch: "HUB-unselected-heavy", file: "unselected.bin", content: randomBytes(256_000) });

@@ -293,6 +293,13 @@ and are never killed, suspended or retried merely for doing so. Measurements
 report overshoots. Accounting failure stops new admission and drains started
 tests with their original outcomes/checkpoints.
 
+The recorded native-Git correctness scenarios do not assert a total wall-clock
+latency SLO over fixture creation plus several independently bounded operations.
+Their aggregate Node-case and nested whole-scenario stopwatches are removed;
+actual command, lease, readiness and explicitly timed behavior bounds remain.
+All original behavioral assertions still execute, and historical cancellations
+remain failures. See ADR-HUB-314-native-correctness-stopwatches.
+
 Every file receives a separate process and disposable temp/home/state root.
 The runner observes child `close` before removing that root. A cleanup failure
 remains a failure and retains its OS code, phase and owned path; when execution

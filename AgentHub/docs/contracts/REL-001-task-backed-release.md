@@ -1947,8 +1947,12 @@ or proofless entries are not evidence. A failed file has no unconditional retry.
 The full-test stage has no aggregate execution deadline. Its ten-minute
 output-idle watchdog and local test, network, build and readiness bounds remain;
 those bounds report failure, not an inferred external outcome. Other publication
-steps keep their finite execution bounds. See ADR-0118. The two cosmetic
-browser matrices run in `test:visual`, affected focused UI validation and full
+steps keep their finite execution bounds. See ADR-0118.
+The later ADR-HUB-314-native-correctness-stopwatches removes only aggregate
+stopwatches on the recorded native-Git correctness scenarios and their nested
+whole-scenario Node command. It does not remove command/lease/readiness bounds,
+time-specific behavioral assertions, required cases or failure aggregation.
+The two cosmetic browser matrices run in `test:visual`, affected focused UI validation and full
 validation exactly once, rather than every ordinary unit run. See ADR-0034.
 The process-per-file runner overlaps at most two files after CPU/memory admission
 and only for an explicit execution declaration proving distinct disposable

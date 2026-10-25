@@ -230,7 +230,7 @@ async function withdrawalFixture(context, { dependent = false } = {}) {
   return { root, service, a, b, firstA, firstB, tasks, withdraw, publish(value) { publication = value; } };
 }
 
-test("withdrawal removes only its Task and ordinary Test reintegrates its full result", { timeout: 90_000 }, async (context) => {
+test("withdrawal removes only its Task and ordinary Test reintegrates its full result", async (context) => {
   const { root, service, a, b, firstA, firstB, withdraw } = await withdrawalFixture(context);
   await writeFile(path.join(a.projectRoot, "unfinished.txt"), "keep my edits\n", "utf8");
   const result = await withdraw(a);

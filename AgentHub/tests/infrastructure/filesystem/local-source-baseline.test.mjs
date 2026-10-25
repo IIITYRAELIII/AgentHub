@@ -301,7 +301,7 @@ test("installed local source rejects substituted pins, selection, source and act
   assert.equal(await git(f.primary, ["status", "--porcelain=v1"]), "");
 });
 
-test("native candidate retains installed local source and selected result through reuse, generation and freeze", { timeout: 180000 }, async t => {
+test("native candidate retains installed local source and selected result through reuse, generation and freeze", async t => {
   const f = await fixture(t);
   const service = new ReleaseGitWorkspaceService({ dataDir: path.join(f.root, "data"), environment: f.environment });
   const request = { projectRoot: f.primary, workspaceId: "workspace", planRevision: f.p.planRevision,

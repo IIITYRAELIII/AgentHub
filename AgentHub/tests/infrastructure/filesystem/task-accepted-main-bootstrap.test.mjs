@@ -367,7 +367,7 @@ test("late unrelated ignored file survives post-CAS materialization and replay",
   assert.equal(await readFile(path.join(f.devRoot, "vendor-private", "owned.txt"), "utf8"), "late private\n");
 });
 
-test("bootstrap refuses rename destinations, file-directory replacements and type changes before effects", { timeout: 90_000 }, async (context) => {
+test("bootstrap refuses rename destinations, file-directory replacements and type changes before effects", async (context) => {
   for (const change of ["rename", "file-to-directory", "directory-to-file", "symlink", "mode"]) {
     const f = await fixture(context, { withTrackedDirectory: change === "directory-to-file" });
     if (change === "rename") {

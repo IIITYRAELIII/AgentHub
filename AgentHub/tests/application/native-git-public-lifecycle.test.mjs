@@ -238,7 +238,7 @@ for (const scenario of [
   { name: "source Await", priorSource: "await" },
   { name: "both Await and UNKNOWN reopen", priorSource: "await", priorSurvivor: "await", unknown: true },
 ]) {
-  test(`public returned native absorption preserves ${scenario.name} prior results`, { timeout: 360_000 }, async t => {
+  test(`public returned native absorption preserves ${scenario.name} prior results`, async t => {
     const f = await fixture(t), a = await f.absorption(scenario);
     const input = await a.handoff("returned-saved-stopped"), before = f.board.task(a.survivor.id);
     const sql = (query, method, ...args) => {
@@ -318,7 +318,7 @@ for (const scenario of [
   });
 }
 
-test("public fresh native absorption binds authenticated handoff through Test Await and combined closure", { timeout: 360_000 }, async t => {
+test("public fresh native absorption binds authenticated handoff through Test Await and combined closure", async t => {
   const f = await fixture(t, { releaseMetadata: true }), { source, survivor, handoff, declaration, itemId } = await f.absorption();
   const input = await handoff("saved-stopped");
   await assert.rejects(f.status(survivor, "testing", "missing-handoff"), { code: "RELEASE_NATIVE_HISTORY_REQUIRED" });
