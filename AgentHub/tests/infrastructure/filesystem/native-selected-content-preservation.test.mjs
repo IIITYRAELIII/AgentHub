@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { runTaskGitCommand } from "../../../src/infrastructure/filesystem/task-git-workspace.mjs";
+import { runTaskGitCommand, TaskGitWorkspaceService } from "../../../src/infrastructure/filesystem/task-git-workspace.mjs";
 import { ReleaseGitWorkspaceService } from "../../../src/infrastructure/filesystem/release-git-workspace.mjs";
 import { taskGitIdentityHash } from "../../../src/domain/task-git-reference.mjs";
 import { assertNativePreparedComposition, mergeSelectedResults, NATIVE_RELEASE_POLICY }
@@ -75,6 +75,28 @@ test("canonical preparation refuses missing selected content before promotion an
   assert.equal(await service.frozenCandidate(f.sourceRoot, { allowAbsent: true }), null);
   assert.equal(await gitAt(f.sourceRoot, ["rev-parse", "HEAD"]), regressed);
   assert.equal(await gitAt(f.sourceRoot, ["status", "--porcelain=v1"]), "");
+});
+
+test("native Test combines independent Task bases without treating prior dev content as a deletion", async t => {
+  const f = await fixture(t);
+  const service = new TaskGitWorkspaceService({ dataDir: path.join(f.root, "task-data"),
+    readPublication: async () => null });
+  const firstId = "11111111-1111-4111-8111-111111111111";
+  const secondId = "22222222-2222-4222-8222-222222222222";
+  const first = await service.prepare({ taskId: firstId, projectRoot: f.sourceRoot });
+  const second = await service.prepare({ taskId: secondId, projectRoot: f.sourceRoot });
+  assert.equal(first.baseCommit, f.base);
+  assert.equal(second.baseCommit, f.base);
+  await writeFile(path.join(first.projectRoot, "first.txt"), "first independent result\n");
+  await commit(first.projectRoot, "first Task result");
+  await service.snapshotAndMerge({ taskId: firstId, projectRoot: first.projectRoot });
+  await writeFile(path.join(second.projectRoot, "second.txt"), "second independent result\n");
+  await commit(second.projectRoot, "second Task result");
+  await assert.rejects(gitAt(second.projectRoot, ["cat-file", "-e", "HEAD:first.txt"]));
+  await service.snapshotAndMerge({ taskId: secondId, projectRoot: second.projectRoot });
+  assert.equal(await gitAt(f.sourceRoot, ["show", "dev:first.txt"]), "first independent result");
+  assert.equal(await gitAt(f.sourceRoot, ["show", "dev:second.txt"]), "second independent result");
+  assert.equal(await gitAt(f.sourceRoot, ["rev-parse", "main"]), f.base);
 });
 
 test("preserved selected code coexists with later unrelated changes", async t => {
