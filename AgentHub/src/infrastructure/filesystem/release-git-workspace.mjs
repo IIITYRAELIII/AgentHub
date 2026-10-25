@@ -189,14 +189,31 @@ async function dirtyState(root) {
 
 async function primarySnapshot(projectRoot) {
   const root = await repositoryRoot(projectRoot);
-  const [branchRef, headCommit, mainCommit, commonDir, worktrees, dirty] = await Promise.all([
-    gitMaybe(["symbolic-ref", "--quiet", "HEAD"], { cwd: root }),
-    runGit(["rev-parse", "HEAD^{commit}"], { cwd: root }),
-    gitMaybe(["rev-parse", "refs/heads/main^{commit}"], { cwd: root }),
+  const [revisions, commonDir, worktrees, dirty] = await Promise.all([
+    // --not marks main independently of HEAD, including when main is absent.
+    // Only OIDs/ref names are batched: rev-parse does not quote path outputs.
+    runGit(["rev-parse", "--revs-only", "HEAD^{commit}", "--not",
+      "refs/heads/main^{commit}", "--not", "--symbolic-full-name", "HEAD"], { cwd: root }),
     gitCommonDir(root),
     runGit(["worktree", "list", "--porcelain"], { cwd: root }),
     dirtyState(root),
   ]);
+  const fields = revisions.split("\n");
+  const headCommit = fields.shift();
+  const main = fields[0]?.startsWith("^") ? fields.shift() : null;
+  const branch = fields.shift();
+  const oid = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u;
+  if (!oid.test(headCommit ?? "") || fields.length
+      || !(branch === undefined || branch === "HEAD" || branch.startsWith("refs/"))
+      || (main !== null && (!main.startsWith("^") || !oid.test(main.slice(1))))) {
+    throw new Error("Cannot resolve the primary HEAD/main revisions");
+  }
+  // An absent main stops rev-parse's option parsing; an ambiguous HEAD name
+  // can omit its symbolic form. Preserve symbolic-ref's own semantics there,
+  // including recursive refs and a genuinely detached HEAD.
+  const branchRef = branch === undefined || branch === "HEAD"
+    ? await gitMaybe(["symbolic-ref", "--quiet", "HEAD"], { cwd: root }) : branch;
+  const mainCommit = main === null ? null : main.slice(1);
   const linked = parseWorktrees(worktrees);
   const legacyLinkedHolders = linked.filter((item) => (
     !samePath(item.path, root)

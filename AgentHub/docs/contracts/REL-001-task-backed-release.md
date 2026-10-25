@@ -2434,6 +2434,12 @@ or three-way application therefore leaves the last good `PreRelease` and its
 checkpoint intact. This is audit evidence, not a second readiness authority;
 retry may reuse it only when the complete frozen identity and head match.
 
+Each primary snapshot resolves HEAD, optional main and the symbolic HEAD ref in
+one invocation-local revision query. Missing main stays distinct from missing
+HEAD; detached, unborn and non-primary holders still refuse. Dirty-path reads,
+physical-byte hashes, exact index entries and worktree-holder checks retain
+their existing independent semantics and run again at the same boundaries.
+
 The registered primary must own and remain attached to `refs/heads/main` before
 preflight, after candidate preparation, during retry, after publication and at
 startup reconciliation. Release code must not switch, detach, reset, stash,
