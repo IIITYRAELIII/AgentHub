@@ -36,6 +36,61 @@ test("isolated file failure retains the actual owned Node close receipt after cl
   await assert.rejects(access(observed.testRoot), { code: "ENOENT" });
 });
 
+test("diagnostic annotation preserves original failures and caller-owned fields", async () => {
+  const failures = [];
+  for (const key of ["testRoot", "testPhase", "testExecutionSucceeded", "testChild"]) {
+    const readonly = new Error("original readonly failure");
+    Object.defineProperty(readonly, key, { value: { caller: true }, writable: false });
+    failures.push(readonly);
+    const accessor = new Error("original accessor failure");
+    Object.defineProperty(accessor, key, {
+      get() { assert.fail("diagnostics must not read caller accessors"); },
+      set() { assert.fail("diagnostics must not write caller accessors"); },
+    });
+    failures.push(accessor);
+  }
+  failures.push(Object.preventExtensions(new Error("original nonextensible failure")));
+  for (const trap of ["has", "getOwnPropertyDescriptor", "defineProperty", "isExtensible"]) {
+    failures.push(new Proxy(new Error("original inspection failure"), {
+      [trap]() { throw new Error("diagnostic inspection refused"); },
+    }));
+  }
+  for (const original of failures) {
+    let calls = 0;
+    let root;
+    let observed;
+    try {
+      await runIsolatedTestCommand("fixture", [], { execute: async (_command, _args, { env }) => {
+        calls += 1;
+        root = env.TEMP;
+        throw original;
+      } });
+    } catch (error) { observed = error; }
+    assert.equal(observed, original);
+    assert.equal(calls, 1);
+    await assert.rejects(access(root), { code: "ENOENT" });
+  }
+});
+
+test("child diagnostic inspection never changes the execution outcome", async () => {
+  for (const original of [null, new Error("original execution failure")]) {
+    let calls = 0;
+    let root;
+    let observed;
+    try {
+      await runIsolatedTestCommand("fixture", [], { execute: async (_command, _args, { env, onChild }) => {
+        calls += 1;
+        root = env.TEMP;
+        onChild(Object.defineProperty({}, "pid", { get() { throw new Error("diagnostic getter refused"); } }));
+        if (original) throw original;
+      } });
+    } catch (error) { observed = error; }
+    assert.equal(observed, original ?? undefined);
+    assert.equal(calls, 1);
+    await assert.rejects(access(root), { code: "ENOENT" });
+  }
+});
+
 test("cold full-test checkout installs locked development dependencies once before every suite", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "ah-test-deps-"));
   t.after(() => rm(root, { recursive: true, force: true }));

@@ -134,6 +134,19 @@ export async function runWindowsTestFile(file, {
   return runIsolatedTestCommand(process.execPath, args, { cwd, execute, env });
 }
 
+function annotateTestFailure(failure, facts) {
+  if (!failure || typeof failure !== "object") return;
+  for (const [key, value] of Object.entries(facts)) {
+    try {
+      // Caller-owned fields, accessors and failed proxy inspection must never
+      // change the original execution or cleanup outcome.
+      if (!(key in failure)) Object.defineProperty(failure, key, {
+        value, writable: true, configurable: true, enumerable: true,
+      });
+    } catch { /* Optional diagnostics cannot replace the original failure. */ }
+  }
+}
+
 export async function runIsolatedTestCommand(command, args, { cwd = ROOT, execute = run, env } = {}) {
   // A failed assertion and an OS failure share exit code 1. Neither proves a
   // transient failure; retries require a new explicit run and reuse successes.
@@ -147,10 +160,16 @@ export async function runIsolatedTestCommand(command, args, { cwd = ROOT, execut
   try {
     await execute(command, args, {
       cwd,
-      onChild: (identity) => { childIdentity = Object.fromEntries(
-        ["pid", "requestedAt", "spawnedAt", "exitedAt", "closedAt", "code", "signal", "errorCode"]
-          .filter((key) => ["string", "number"].includes(typeof identity?.[key]))
-          .map((key) => [key, typeof identity[key] === "string" ? identity[key].slice(0, 128) : identity[key]])); },
+      onChild: (identity) => {
+        try {
+          const facts = {};
+          for (const key of ["pid", "requestedAt", "spawnedAt", "exitedAt", "closedAt", "code", "signal", "errorCode"]) {
+            const value = identity?.[key];
+            if (["string", "number"].includes(typeof value)) facts[key] = typeof value === "string" ? value.slice(0, 128) : value;
+          }
+          childIdentity = facts;
+        } catch { /* Optional child observations cannot change execution. */ }
+      },
       env: {
         ...env,
         LOCALAPPDATA: childRoot,
@@ -177,9 +196,9 @@ export async function runIsolatedTestCommand(command, args, { cwd = ROOT, execut
     cleanupError = error;
     // A known temporary root does not prove that every native handle closed.
     // Keep both original outcomes; cleanup never authorizes a test retry.
-    cleanupError.testPhase = "cleanup";
-    cleanupError.testRoot = childRoot;
-    cleanupError.testExecutionSucceeded = !executionFailed;
+    annotateTestFailure(cleanupError, {
+      testPhase: "cleanup", testRoot: childRoot, testExecutionSucceeded: !executionFailed,
+    });
   }
   if (!executionFailed && !cleanupError) return;
   const failure = executionFailed && cleanupError
@@ -188,12 +207,10 @@ export async function runIsolatedTestCommand(command, args, { cwd = ROOT, execut
     : executionFailed ? executionError : cleanupError;
   // The existing per-file reporter emits these facts immediately. The native
   // child close receipt does not certify unrelated Windows service handles.
-  if (failure && typeof failure === "object" && Object.isExtensible(failure)) {
-    failure.testRoot ??= childRoot;
-    failure.testPhase ??= cleanupError ? "execution-and-cleanup" : "execution";
-    failure.testExecutionSucceeded ??= !executionFailed;
-    failure.testChild = childIdentity;
-  }
+  annotateTestFailure(failure, {
+    testRoot: childRoot, testPhase: cleanupError ? "execution-and-cleanup" : "execution",
+    testExecutionSucceeded: !executionFailed, testChild: childIdentity,
+  });
   throw failure;
 }
 
