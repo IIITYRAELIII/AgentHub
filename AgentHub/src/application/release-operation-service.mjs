@@ -264,13 +264,12 @@ export class ReleaseOperationService {
   }
 
   continue(operationId, options = {}) {
+    if (options.reviewedMain != null) return this.#recoverReviewedMain(operationId, options);
     // Addressed observation also works while the original is waiting on an
     // external condition. It neither resumes nor publishes that condition.
-    const observed = this.store.get(requiredText(operationId, "operationId"));
-    if (!observed) throw new Error("release operation was not found");
-    this.#observe(observed.operationId);
-    if (options.reviewedMain != null) return this.#recoverReviewedMain(operationId, options);
-    const current = observed;
+    const current = this.store.get(requiredText(operationId, "operationId"));
+    if (!current) throw new Error("release operation was not found");
+    this.#observe(current.operationId);
     if (releaseOperationIsTerminal(current)) return { accepted: false, operation: current, reason: "terminal" };
     let operation = current;
     if (current.state === RELEASE_OPERATION_STATES.WAITING) {
@@ -309,6 +308,7 @@ export class ReleaseOperationService {
   async #recoverReviewedMain(operationId, { requestId, reviewedMain }) {
     const current = this.store.get(requiredText(operationId, "operationId"));
     if (!current) throw new Error("release operation was not found");
+    this.#observe(current.operationId);
     const binding = reviewedMainBinding(current, reviewedMain);
     if (binding.expectedRevision !== current.revision) return { accepted: false, reason: "stale-revision", operation: current };
     if (!failedComposeRecoveryEligible(current)) return { accepted: false, reason: "ineligible", operation: current };
