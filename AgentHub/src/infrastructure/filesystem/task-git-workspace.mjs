@@ -1473,8 +1473,9 @@ export class TaskGitWorkspaceService {
     });
   }
 
-  async claimAdmissionNoEffectEvidence({ taskId, projectRoot, operationId = null, error } = {}) {
+  async claimAdmissionNoEffectEvidence(params = {}) {
     this.#assertAvailable("claimAdmissionNoEffectEvidence");
+    const { taskId, projectRoot, operationId = null, error } = params;
     const id = normalizedTaskId(taskId);
     const repositoryRootValue = await repositoryIdentityFromPath(projectRoot);
     const lockAdmission = this.#claimLockAdmissionErrors.get(error);
@@ -2968,8 +2969,9 @@ export class TaskGitWorkspaceService {
       gitBaseline: { repoRoot, tree: headCommit }, wipDigest: source.wipDigest };
   }
 
-  async reuseClaimWorkspaceOwned({ taskId, taskNumber, source, lease, unassigned = false, registeredProjectRoot = null } = {}) {
+  async reuseClaimWorkspaceOwned(params = {}) {
     this.#assertAvailable("reuseClaimWorkspaceOwned");
+    const { taskId, taskNumber, source, lease, unassigned = false, registeredProjectRoot = null } = params;
     await requiredGuardLease(lease).assertOwned();
     await this.#assertNoProcessTreeGuard(taskId);
     const repoRoot = await this.managedRepositoryRoot(source.projectRoot, { taskId, taskNumber });
@@ -2995,14 +2997,18 @@ export class TaskGitWorkspaceService {
       baseRef, baseCommit, headCommit, gitBaseline: { repoRoot, tree: baseCommit }, wipDigest: inventory.digest };
   }
 
-  planIndependentClaimNamespace({ taskId, source, requestId, originalHash }) {
+  planIndependentClaimNamespace(params) {
+    this.#assertAvailable("planIndependentClaimNamespace");
+    const { taskId, source, requestId, originalHash } = params;
     const epoch = claimCustodyHash({ taskId, requestId, originalHash, source });
     return { epoch, root: path.join(this.dataDir, "task-custody", epoch.slice(0, 32), "repository"),
       repositoryKey: taskRepositoryKey(source.repositoryRoot), logicalRepositoryRoot: source.repositoryRoot,
       refPrefix: `refs/agent-hub/task-custody/${epoch.slice(0, 32)}` };
   }
 
-  async stageIndependentClaimNamespaceOwned({ state, lease }) {
+  async stageIndependentClaimNamespaceOwned(params) {
+    this.#assertAvailable("stageIndependentClaimNamespaceOwned");
+    const { state, lease } = params;
     await requiredGuardLease(lease).assertOwned();
     const { source, namespace } = state;
     const root = namespace.root;
@@ -3079,7 +3085,9 @@ export class TaskGitWorkspaceService {
     return result;
   }
 
-  async readIndependentClaimNamespaceOwned({ state, lease, exactInitial = false }) {
+  async readIndependentClaimNamespaceOwned(params) {
+    this.#assertAvailable("readIndependentClaimNamespaceOwned");
+    const { state, lease, exactInitial = false } = params;
     await requiredGuardLease(lease).assertOwned();
     const { namespace } = state;
     const expected = this.planIndependentClaimNamespace({ taskId: state.taskId, source: state.source,

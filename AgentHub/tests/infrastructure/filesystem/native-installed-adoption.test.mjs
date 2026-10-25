@@ -13,6 +13,8 @@ import { installedNativeHistoryBaseline, assertInstalledLocalSourceBaseline } fr
 import { assertNativeTaskHistories } from "../../../src/infrastructure/filesystem/native-release-merge.mjs";
 import { localSourceSelectionHash, normalizedReleaseBaseProvenance } from "../../../src/domain/release-base-provenance.mjs";
 import { defaultRuntimeRoot } from "../../../src/infrastructure/filesystem/runtime-layout.mjs";
+import { readAgentHubVersion } from "../../../src/infrastructure/filesystem/agent-hub-package.mjs";
+import { nextRuntimeReleaseVersion } from "../../../src/infrastructure/filesystem/runtime-release-version.mjs";
 import { WorkspaceCatalogStore } from "../../../src/infrastructure/persistence/workspace-catalog-store.mjs";
 import { TaskBoardStore } from "../../../src/infrastructure/persistence/task-board-store.mjs";
 import { TaskBoardService } from "../../../src/application/task-board-service.mjs";
@@ -87,8 +89,10 @@ async function fixture(t, owningTaskId = "11111111-1111-4111-8111-111111111111",
     projectRoot: primary, taskBaseCommit: main, acceptedLocalMainCommit: main, adoptedCommit: adopted,
     snapshotCommit: result, requestId: "fixture-explicit-adoption" });
   const release = path.join(runtimeRoot, "releases", "installed-repair"), physical = Buffer.from("export const repair = 1;\n");
+  const version = readAgentHubVersion({ packageFile: path.join(carry, "AgentHub", "package.json") });
+  const releaseVersion = await nextRuntimeReleaseVersion({ releasesDir: path.dirname(release), packageVersion: version });
   await save(release, "server.mjs", physical);
-  const manifest = Buffer.from(JSON.stringify({ releaseId: "installed-repair", sourceRoot: path.join(carry, "AgentHub"),
+  const manifest = Buffer.from(JSON.stringify({ releaseId: "installed-repair", version, releaseVersion, sourceRoot: path.join(carry, "AgentHub"),
     files: [{ path: "server.mjs", bytes: physical.length, sha256: sha(physical) }] }));
   await save(release, "runtime-manifest.json", manifest);
   await save(runtimeRoot, "current.json", JSON.stringify({ current: "installed-repair" }));

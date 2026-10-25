@@ -87,6 +87,50 @@ test("recording Git owners deny every executable public operation before argumen
   assert.equal(changed, false);
 });
 
+test("recording claim custody entries refuse before reading supplied arguments or lease ports", async (t) => {
+  const { root, recording, policy } = await fixture(t);
+  const methods = ["claimAdmissionNoEffectEvidence", "reuseClaimWorkspaceOwned",
+    "planIndependentClaimNamespace", "stageIndependentClaimNamespaceOwned", "readIndependentClaimNamespaceOwned"];
+  let argumentReads = 0;
+  const forbidden = new Proxy({}, { get() {
+    argumentReads += 1;
+    throw new Error("Recording refusal must precede argument and lease access");
+  } });
+  const owner = new TaskGitWorkspaceService({ dataDir: root, contourExternalEffects: policy,
+    runCommand: () => assert.fail("Recording custody must not run Git"),
+    prepareDependencies: () => assert.fail("Recording custody must not prepare dependencies"),
+    readClaimCustodyNamespace: () => assert.fail("Recording custody must not read live authority"),
+  });
+  for (const method of methods) {
+    await assert.rejects(async () => owner[method](forbidden),
+      { code: "CONTOUR_EXTERNAL_EFFECT_EXCLUDED", operation: method });
+  }
+  assert.equal(argumentReads, 0);
+  const records = (await readFile(path.join(recording, "external-effects.jsonl"), "utf8"))
+    .trim().split("\n").map(line => JSON.parse(line));
+  assert.deepEqual(records.map(row => row.operation), methods);
+  assert.ok(records.every(row => row.kind === "task-git" && row.status === "excluded"));
+});
+
+test("ordinary claim custody keeps deterministic planning and the existing owned lease boundary", async (t) => {
+  const { root } = await fixture(t);
+  const owner = new TaskGitWorkspaceService({ dataDir: root });
+  const input = { taskId: "ordinary-custody-task", requestId: "ordinary-plan",
+    originalHash: "a".repeat(64), source: { repositoryRoot: path.join(root, "source") } };
+  const first = owner.planIndependentClaimNamespace(input);
+  assert.deepEqual(owner.planIndependentClaimNamespace(input), first);
+  assert.equal(first.logicalRepositoryRoot, input.source.repositoryRoot);
+  assert.equal(path.dirname(first.root), path.join(root, "task-custody", first.epoch.slice(0, 32)));
+  assert.notEqual(owner.planIndependentClaimNamespace({ ...input, requestId: "different-plan" }).epoch, first.epoch);
+  let leaseChecks = 0;
+  const failure = new Error("ordinary lease witness");
+  const lease = { assertOwned() { leaseChecks += 1; throw failure; }, beginProcessTreeGuard() {} };
+  for (const method of ["reuseClaimWorkspaceOwned", "stageIndependentClaimNamespaceOwned", "readIndependentClaimNamespaceOwned"]) {
+    await assert.rejects(owner[method]({ lease }), error => error === failure);
+  }
+  assert.equal(leaseChecks, 3);
+});
+
 async function fixture(t) {
   const root = await mkdtemp(path.join(os.tmpdir(), "contour-references-"));
   t.after(() => rm(root, { recursive: true, force: true }));

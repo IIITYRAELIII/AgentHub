@@ -11,6 +11,8 @@ import { LOCAL_SOURCE_BASELINE_PROVENANCE, localSourceSelectionHash,
 import { assertInstalledLocalSourceBaseline } from "../../../src/infrastructure/filesystem/local-source-baseline.mjs";
 import { ReleaseGitWorkspaceService } from "../../../src/infrastructure/filesystem/release-git-workspace.mjs";
 import { defaultRuntimeRoot } from "../../../src/infrastructure/filesystem/runtime-layout.mjs";
+import { readAgentHubVersion } from "../../../src/infrastructure/filesystem/agent-hub-package.mjs";
+import { nextRuntimeReleaseVersion } from "../../../src/infrastructure/filesystem/runtime-release-version.mjs";
 import { runtimeHostSourceHash } from "../../../src/infrastructure/process/runtime-host-builder.mjs";
 import { ReleasePreparationRejectedError } from "../../../src/domain/release-preparation.mjs";
 
@@ -59,9 +61,11 @@ async function fixture(t, { conflict = false } = {}) {
   const environment = { ...process.env, LOCALAPPDATA: path.join(root, "state"), XDG_STATE_HOME: path.join(root, "state") };
   const runtimeRoot = defaultRuntimeRoot({ environment });
   const release = path.join(runtimeRoot, "releases", "installed-repair");
+  const version = readAgentHubVersion({ packageFile: path.join(carry, "AgentHub", "package.json") });
+  const releaseVersion = await nextRuntimeReleaseVersion({ releasesDir: path.dirname(release), packageVersion: version });
   const physical = Buffer.from("export const repair = 1;\r\n");
   await save(release, "server.mjs", physical);
-  const manifest = Buffer.from(JSON.stringify({ releaseId: "installed-repair",
+  const manifest = Buffer.from(JSON.stringify({ releaseId: "installed-repair", version, releaseVersion,
     files: [{ path: "server.mjs", bytes: physical.length, sha256: hash(physical) }] }));
   await save(release, "runtime-manifest.json", manifest);
   await save(runtimeRoot, "current.json", JSON.stringify({ current: "installed-repair" }));
@@ -179,13 +183,20 @@ async function hostFixture(t, { changed = "RuntimeHost/AgentHub.RuntimeHost.cs",
     agreedMainCommit: "1".repeat(40), sourceBaseCommit: "4".repeat(40), sourceBaseTree: "5".repeat(40),
     sourcePatchSha256: hash(patch), installedReleaseId: "installed-host", installedManifestSha256: hash(manifest),
     planRevision: "exact-plan", selectionHash: localSourceSelectionHash(tasks) };
-  const gitPort = async args => {
+  const sourceOid = bytes => createHash("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest("hex");
+  const blobs = new Map([...sources.values()].map(bytes => [sourceOid(bytes), bytes]));
+  const gitPort = async (args, options = {}) => {
     if (args[0] === "ls-remote") return p.publishedBaseCommit + "\trefs/heads/main";
     if (args[0] === "merge-base") return "";
     if (args[0] === "rev-parse") return p.sourceBaseTree;
     if (args[0] === "diff") return args.includes("--binary") ? patch : "AgentHub/" + changed + "\0";
     if (args[0] === "ls-tree") return [...new Set([...sources.keys(), changed])]
-      .map(name => "100644 blob " + "a".repeat(40) + "\tAgentHub/" + name + "\0").join("");
+      .map(name => "100644 blob " + (sources.has(name) ? sourceOid(sources.get(name)) : "a".repeat(40)) + "\tAgentHub/" + name + "\0").join("");
+    if (args[0] === "cat-file" && args[1] === "--batch") return Buffer.concat(String(options.input).trim().split("\n").map(oid => {
+      assert.ok(blobs.has(oid), "unexpected Git object " + oid);
+      const bytes = blobs.get(oid);
+      return Buffer.concat([Buffer.from(`${oid} blob ${bytes.length}\n`), bytes, Buffer.from("\n")]);
+    }));
     if (args[0] === "show") {
       const name = args[1].split(":AgentHub/")[1];
       assert.ok(sources.has(name), "unexpected Git source read " + name);

@@ -198,7 +198,11 @@ test("reviewed CHANGELOG-only conflict requires exact resolved tree and preserve
   const reviewedChangelogFile = path.join(path.dirname(f.root), "reviewed-changelog.md");
   await writeFile(reviewedChangelogFile, resolution);
 
-  await assert.rejects(git(f.devRoot, "merge", "--no-ff", "--no-commit", f.main));
+  await assert.rejects(git(f.devRoot, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+    "merge", "--no-ff", "--no-commit", f.main),
+  (error) => error.code === 1 && /CONFLICT \(content\).*CHANGELOG\.md/u.test(error.stdout));
+  assert.equal(await git(f.devRoot, "rev-parse", "MERGE_HEAD"), f.main);
+  assert.equal(await git(f.devRoot, "diff", "--name-only", "--diff-filter=U"), "CHANGELOG.md");
   await writeFile(path.join(f.devRoot, "CHANGELOG.md"), resolution);
   await git(f.devRoot, "add", "--", "CHANGELOG.md");
   const expectedResolvedTree = await git(f.devRoot, "write-tree");

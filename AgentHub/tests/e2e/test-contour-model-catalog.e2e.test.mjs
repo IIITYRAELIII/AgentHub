@@ -9,11 +9,17 @@ import {once} from 'node:events';
 import {ProviderModelCatalogService} from '../../src/application/provider-model-catalog-service.mjs';
 const sourceRoot=path.resolve(import.meta.dirname,'../..');
 
-test('Test Contour exposes its synthetic model through provider catalog discovery and preserves real paging',async()=>{
+for (const keepAliveAfterEof of [false,true]) {
+test(`Test Contour exposes its synthetic model through provider catalog discovery and preserves real paging${keepAliveAfterEof ? ' with an EOF-resistant owned backend' : ''}`,async()=>{
   const root=await mkdtemp(path.join(tmpdir(),'agent-hub-contour-models-'));
   const fake=path.join(root,'fake.mjs'), real=path.join(root,'real.mjs');
   await copyFile(path.join(sourceRoot,'e2e/fake-codex-app-server.mjs'),fake);
   await writeFile(real,`import {createInterface} from 'node:readline';
+import {writeFileSync} from 'node:fs';
+process.stdin.once('end',()=>{
+ writeFileSync('real-eof.json',JSON.stringify({pid:process.pid,eof:true}));
+ if(${keepAliveAfterEof})setInterval(()=>{},1000);
+});
 createInterface({input:process.stdin}).on('line', line=>{
  const {id,method,params={}}=JSON.parse(line); if(id===undefined)return;
  const result=method==='model/list' ? params.invalid ? {bad:true,nextCursor:null}
@@ -67,6 +73,9 @@ createInterface({input:process.stdin}).on('line', line=>{
   } finally {
     const exited=once(child,'exit'); child.stdin.end();
     const [code]=await exited; assert.equal(code,0,stderr);
+    const eof=JSON.parse(await readFile(path.join(root,'real-eof.json'),'utf8'));
+    assert.equal(eof.eof,true,'Owned real backend must receive transport EOF before forced shutdown');
     await rm(root,{recursive:true,force:true});
   }
 });
+}
