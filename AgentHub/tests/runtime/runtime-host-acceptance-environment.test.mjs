@@ -15,7 +15,7 @@ import { recordingContourEnvironment } from "../../src/infrastructure/filesystem
 const execute = promisify(execFile);
 const root = path.resolve(import.meta.dirname, "..", "..");
 
-test("compiled RuntimeHost reapplies isolated environment from persistent marker after WMI restart", { skip: process.platform !== "win32", timeout: 20_000 }, async (t) => {
+test("compiled RuntimeHost reapplies isolated environment from persistent marker after WMI restart", { skip: process.platform !== "win32" }, async (t) => {
   const temporary = await mkdtemp(path.join(os.tmpdir(), "acceptance-host-environment-"));
   t.after(() => rm(temporary, { recursive: true, force: true }));
   const binary = path.join(temporary, "probe.exe");
@@ -70,7 +70,7 @@ test("compiled RuntimeHost reapplies isolated environment from persistent marker
   assert.equal(ordinary.executableOverridePresent, true);
 });
 
-test("compiled RuntimeHost verifies and persists recording acceptance profile across independent launches", { skip: process.platform !== "win32", timeout: 25_000 }, async (t) => {
+test("compiled RuntimeHost verifies and persists recording acceptance profile across independent launches", { skip: process.platform !== "win32" }, async (t) => {
   const temporary = await mkdtemp(path.join(os.tmpdir(), "recording-host-environment-"));
   t.after(() => rm(temporary, { recursive: true, force: true }));
   const binary = path.join(temporary, "probe.exe");

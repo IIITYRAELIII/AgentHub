@@ -55,7 +55,7 @@ test("close during gateway observation drains startup without handoff or launch"
 });
 
 test("real Caddy orphan handoff preserves upstream privacy and refuses a live parent", {
-  skip: process.platform !== "win32" || !caddy, timeout: 60_000,
+  skip: process.platform !== "win32" || !caddy,
 }, async t => {
   const root = await mkdtemp(path.join(os.tmpdir(), "gateway real handoff-"));
   const executable = path.join(root, "caddy.exe"), configFile = path.join(root, "Caddyfile");

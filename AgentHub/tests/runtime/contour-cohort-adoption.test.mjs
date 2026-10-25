@@ -52,7 +52,7 @@ async function oldRoot(f, label, full = true) {
   return { root, files };
 }
 
-test("adoption rebase preserves source and canonical bytes, with old cohort retained", { timeout: 10000 }, async (t) => {
+test("adoption rebase preserves source and canonical bytes, with old cohort retained", {  }, async (t) => {
   const f = await fixture(t), old = await oldRoot(f, "canonical");
   const before = await Promise.all(COHORT_FILES.map((name) => hash(path.join(f.prepared.root, "data", name))));
   const staged = await stageContourAdoption({ root: old.root, preparedRoot: f.prepared.root });
@@ -74,7 +74,7 @@ test("adoption rebase preserves source and canonical bytes, with old cohort reta
   assert.equal((await readContourAdoption(old.root)).phase, "activated");
 });
 
-test("every interrupted component rename restores old profile and DB sidecars without deleting candidate evidence", { timeout: 15000 }, async (t) => {
+test("every interrupted component rename restores old profile and DB sidecars without deleting candidate evidence", {  }, async (t) => {
   const f = await fixture(t);
   for (let stop = 1; stop <= 10; stop++) {
     const old = await oldRoot(f, `crash-${stop}`);
@@ -90,7 +90,7 @@ test("every interrupted component rename restores old profile and DB sidecars wi
   }
 });
 
-test("candidate preparation failure leaves canonical cohort untouched and never stops its runtime", { timeout: 10000 }, async (t) => {
+test("candidate preparation failure leaves canonical cohort untouched and never stops its runtime", {  }, async (t) => {
   const f = await fixture(t), old = await oldRoot(f, "preparation-failure", false);
   let stops = 0;
   await assert.rejects(adoptRecordingTestContour({ root: old.root, preparedRoot: f.prepared.root,
@@ -101,7 +101,7 @@ test("candidate preparation failure leaves canonical cohort untouched and never 
   for (const [name, value] of Object.entries(old.files)) assert.equal(await readFile(path.join(old.root, name), "utf8"), value);
 });
 
-test("interruption after stop preserves the removed old runtime state and untouched data", { timeout: 10000 }, async (t) => {
+test("interruption after stop preserves the removed old runtime state and untouched data", {  }, async (t) => {
   const f = await fixture(t), old = await oldRoot(f, "stopped");
   const staged = await stageContourAdoption({ root: old.root, preparedRoot: f.prepared.root });
   await snapshotContourAdoptionControl(old.root, staged);
@@ -110,7 +110,7 @@ test("interruption after stop preserves the removed old runtime state and untouc
   for (const [name, value] of Object.entries(old.files)) assert.equal(await readFile(path.join(old.root, name), "utf8"), value);
 });
 
-test("an old candidate manager is rejected before any legacy contour stop", { timeout: 10000 }, async (t) => {
+test("an old candidate manager is rejected before any legacy contour stop", {  }, async (t) => {
   const f = await fixture(t), old = await oldRoot(f, "old-manager", false);
   const candidateSource = path.join(f.temporary, "old-source");
   await mkdir(path.join(candidateSource, "src/runtime"), { recursive: true });
@@ -135,7 +135,7 @@ async function bindOperation(root, adoption) {
   return operation;
 }
 
-test("same-operation stop interruption recovers before resolving a new source", { timeout: 10000 }, async (t) => {
+test("same-operation stop interruption recovers before resolving a new source", {  }, async (t) => {
   const f = await fixture(t), old = await oldRoot(f, "same-operation", false);
   await writeFile(path.join(old.root, "test-contour-state.json"), "{}");
   const adoption = await stageContourAdoption({ root: old.root, preparedRoot: f.prepared.root });
@@ -148,7 +148,7 @@ test("same-operation stop interruption recovers before resolving a new source", 
   for (const [name, value] of Object.entries(old.files)) assert.equal(await readFile(path.join(old.root, name), "utf8"), value);
 });
 
-test("stale adoption A cannot stop a live later operation B or rename its data", { timeout: 10000 }, async (t) => {
+test("stale adoption A cannot stop a live later operation B or rename its data", {  }, async (t) => {
   const f = await fixture(t), old = await oldRoot(f, "superseded", false);
   const adoption = await stageContourAdoption({ root: old.root, preparedRoot: f.prepared.root });
   const a = await bindOperation(old.root, adoption);

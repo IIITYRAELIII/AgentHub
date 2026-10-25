@@ -1,5 +1,14 @@
 # PERF-001 — Local command latency
 
+## Isolated Windows test-root cleanup
+
+ADR-HUB-314-owned-windows-cleanup permits the existing isolated test owner to
+use Node's bounded recursive-removal retries (three, 100ms linear delay) on its
+own minted Windows temporary root after command close. Execution and assertions
+are never retried. Actual removal is required before successful checkpoint;
+persistent cleanup failure still fails and retains both original errors.
+This is not a claim that any historical BITS/Edge holder has been identified.
+
 ## Bounded background storage work
 
 Policy v1 admits at most three artifact units per pass and checks a cooperative

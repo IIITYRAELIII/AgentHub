@@ -7,7 +7,6 @@ import { RecordingContourProvider } from "../../src/providers/recording-contour-
 import { prepareRecordingContourEnvironment } from "../../src/infrastructure/filesystem/test-contour-recording-environment.mjs";
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
-import { once } from "node:events";
 import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -21,7 +20,7 @@ import { LocalTaskSyncStore } from "../../src/infrastructure/persistence/task-sy
 import { messageRequestFingerprint } from "../../src/infrastructure/persistence/message-receipts.mjs";
 import { captureSqliteCohort } from "../../src/runtime/sqlite-cohort-snapshot.mjs";
 import { prepareRecordingContourCohort } from "../../src/runtime/test-contour-cohort-preparation.mjs";
-import { diagnosticTail, e2eFailureArtifactDirectory, E2eChildProcessOwner, stopPid } from "../../e2e/telegram-harness.mjs";
+import { diagnosticTail, e2eFailureArtifactDirectory, E2eChildProcessOwner } from "../../e2e/telegram-harness.mjs";
 
 const sourceRoot = path.resolve(import.meta.dirname, "../..");
 const threadId = "10000000-0000-4000-8000-000000000182";
@@ -98,7 +97,7 @@ function ledger(file) {
   finally { db.close(); }
 }
 
-test("recording boot fixture prepares owned SQLite, paused queue and exact marker", { timeout: 10000 }, async (t) => {
+test("recording boot fixture prepares owned SQLite, paused queue and exact marker", {  }, async (t) => {
   const f = await preparedFixture(t);
   assert.equal(f.prepared.manifest.phase, "prepared");
   assert.equal(f.prepared.manifest.bootable, false);
@@ -141,34 +140,45 @@ async function runtimeEnvironment(f, { telegramApiBaseUrl = null } = {}) {
   return environment;
 }
 
-test("recording full Hub shell restores the same paused command across restart", { timeout: 25000 }, async (t) => {
+test("recording full Hub shell restores the same paused command across restart", {  }, async (t) => {
   const f = await preparedFixture(t);
   const runtimeRoot = f.prepared.root;
   const environment = await runtimeEnvironment(f);
   let child; let stderr = "";
+  let failed = false;
+  let originalError;
+  const observations = [];
+  const owner = new E2eChildProcessOwner({ label: "paused recording Hub", timeoutMs: 1500 });
   const stop = async () => {
-    if (!child || child.exitCode !== null || child.signalCode !== null) return;
-    const exited = once(child, "exit");
-    child.kill("SIGTERM");
-    await Promise.race([exited, delay(1500)]);
-    if (child.exitCode === null && child.signalCode === null) { await stopPid(child.pid); await Promise.race([exited, delay(1500)]); }
+    if (!child) return;
+    await owner.stop();
     assert.ok(child.exitCode !== null || child.signalCode !== null, "owned Hub process must exit before root cleanup");
   };
   // Stop the owned process in finally before the fixture removes its root.
   try {
     for (let generation = 0; generation < 2; generation++) {
       stderr = "";
-      child = spawn(process.execPath, [path.join(sourceRoot, "agent-hub-main.mjs")], {
-        cwd: runtimeRoot, env: environment, windowsHide: true, stdio: ["ignore", "ignore", "pipe"],
-      });
+      const observation = { generation, startedAt: new Date().toISOString(), attempts: 0, lastError: null, lastSuccess: null };
+      observations.push(observation);
+      child = owner.start(() => spawn(process.execPath, [path.join(sourceRoot, "agent-hub-main.mjs")], {
+        cwd: runtimeRoot, env: environment, windowsHide: true, stdio: ["ignore", "pipe", "pipe"],
+      }));
       child.stderr.setEncoding("utf8");
       child.stderr.on("data", (chunk) => { stderr = (stderr + chunk).slice(-12000); });
       const deadline = Date.now() + 8000;
       let snapshot;
       while (Date.now() < deadline) {
         assert.ok(child.exitCode === null && child.signalCode === null, stderr);
+        observation.attempts += 1;
+        observation.lastAttemptAt = new Date().toISOString();
         try { snapshot = await callDesktopControl("snapshot", { compactSnapshot: true, snapshotProtocol: 4 }, { runtimeRoot, timeoutMs: 600 }); }
-        catch { await delay(100); continue; }
+        catch (error) {
+          observation.lastError = { observedAt: new Date().toISOString(), name: error?.name ?? null,
+            code: error?.code ?? null, message: diagnosticTail(error?.message, 1024) };
+          await delay(100); continue;
+        }
+        observation.lastSuccess = { observedAt: new Date().toISOString(), apiVersion: snapshot?.apiVersion ?? null,
+          hasExactThread: Boolean(snapshot?.collectionDeltas?.conversations?.reset?.some(task => task.threadId === threadId)) };
         const providerStarted = await stat(path.join(f.prepared.recording.root, "recording-provider.sqlite")).then(() => true, () => false);
         if (providerStarted && snapshot.collectionDeltas?.conversations?.reset?.some((task) => task.threadId === threadId)) break;
         await delay(100);
@@ -194,11 +204,33 @@ test("recording full Hub shell restores the same paused command across restart",
       } finally { provider.close(); }
     }
     for (const [name, expected] of f.before) assert.equal(await hash(path.join(f.captured.dataDirectory, name)), expected);
-  } finally { await stop(); }
+  } catch (error) {
+    failed = true;
+    originalError = error;
+    throw error;
+  } finally {
+    try { await stop(); }
+    catch (error) {
+      if (!originalError) throw error;
+      throw new AggregateError([originalError, error], "Paused recording assertion and owned stop failed", { cause: originalError });
+    }
+    finally {
+      if (failed) {
+        try {
+          const directory = e2eFailureArtifactDirectory(sourceRoot, runtimeRoot);
+          await mkdir(directory, { recursive: true });
+          const artifact = path.join(directory, "recording-paused-startup-diagnostics.json");
+          await writeFile(artifact, JSON.stringify(owner.diagnostics({ threadId, streamId: f.target.streamId,
+            clientUserMessageId, observations }), null, 2), "utf8");
+          t.diagnostic(`Preserved paused recording startup diagnostics: ${artifact}`);
+        } catch { /* Optional diagnostics must preserve the original failure. */ }
+      }
+    }
+  }
 });
 
 
-test("recording queued command survives Hub replacement and commits the same provider terminal once", { timeout: 25000 }, async (t) => {
+test("recording queued command survives Hub replacement and commits the same provider terminal once", {  }, async (t) => {
   const f = await preparedFixture(t, { paused: false, withSidecars: true });
   const runtimeRoot = f.prepared.root;
   const telegram = new LoopbackTelegramApi({ userId: 42, chatId: 84 });

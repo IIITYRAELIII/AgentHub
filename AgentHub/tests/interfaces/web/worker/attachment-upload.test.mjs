@@ -119,7 +119,7 @@ test("authenticated Worker upload traces persist content-free failure spans acro
   assert.equal((await worker.default.fetch(new Request(`https://hub.test/api/attachment-upload-trace?id=${uploadId}`), f.env)).status, 401);
 });
 
-test("resumable Worker upload persists immutable parts across recreation and publishes only complete bytes", { timeout: 20_000 }, async () => {
+test("resumable Worker upload persists immutable parts across recreation and publishes only complete bytes", {  }, async () => {
   const f = fixture();
   const id = randomUUID();
   const a = Buffer.alloc(MiB, 71);
@@ -170,7 +170,7 @@ test("resumable Worker upload persists immutable parts across recreation and pub
   assert.equal((await cancelled.json()).status, "cancelled");
 });
 
-test("Worker upload authentication, cancellation, expiry and reservations share exact owner fences", { timeout: 20_000 }, async () => {
+test("Worker upload authentication, cancellation, expiry and reservations share exact owner fences", {  }, async () => {
   const f = fixture({ AGENT_HUB_ATTACHMENT_MAX_BYTES: 2 * MiB, AGENT_HUB_ATTACHMENT_USER_MAX_BYTES: 3 * MiB });
   const id = randomUUID();
   assert.equal((await worker.default.fetch(new Request("https://hub.test/api/attachment-upload"), f.env)).status, 401);
@@ -217,7 +217,7 @@ test("Worker delayed begin retains the original attempt deadline and metadata", 
   assert.equal((await f.begin(id, 8, { attemptedAtMs })).status, 410);
 });
 
-test("large ready uploads use bounded download transport and cannot resurrect after command cleanup", { timeout: 20_000 }, async () => {
+test("large ready uploads use bounded download transport and cannot resurrect after command cleanup", {  }, async () => {
   const f = fixture();
   const id = randomUUID();
   const bytes = Buffer.alloc(MiB, 29);
@@ -242,7 +242,7 @@ test("large ready uploads use bounded download transport and cannot resurrect af
   assert.equal((await f.begin(id, 21 * MiB)).status, 410);
 });
 
-test("Worker upload finalize detects durable corruption and leaves no ready manifest", { timeout: 20_000 }, async () => {
+test("Worker upload finalize detects durable corruption and leaves no ready manifest", {  }, async () => {
   const f = fixture();
   const id = randomUUID();
   await f.begin(id, 4);
@@ -253,7 +253,7 @@ test("Worker upload finalize detects durable corruption and leaves no ready mani
   assert.equal((await f.enqueue(id)).status, 404);
 });
 
-test("signed service upload streams verified view parts without exposing its owner to public upload operations", { timeout: 20_000 }, async () => {
+test("signed service upload streams verified view parts without exposing its owner to public upload operations", {  }, async () => {
   const f = fixture();
   const id = randomUUID();
   const bytes = Buffer.alloc(MiB, 87);
@@ -291,7 +291,7 @@ test("signed service upload streams verified view parts without exposing its own
   await assert.rejects(damaged.arrayBuffer(), /missing or damaged/u);
 });
 
-test("legacy upload cannot overwrite staged bytes or bypass pending upload reservations", { timeout: 20_000 }, async () => {
+test("legacy upload cannot overwrite staged bytes or bypass pending upload reservations", {  }, async () => {
   const f = fixture({ AGENT_HUB_ATTACHMENT_USER_MAX_BYTES: MiB });
   const id = randomUUID();
   await f.begin(id, MiB);

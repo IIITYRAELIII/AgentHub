@@ -11,7 +11,7 @@ test("POSIX accounting selects only the runner's family and includes cumulative 
 });
 
 test("native accounting includes exited grandchildren CPU and live child resident memory, without kill/CPU/memory limits", {
-  skip: process.platform !== "win32", timeout: 30_000,
+  skip: process.platform !== "win32",
 }, async () => {
   const monitor = await createTestResourceMonitor();
   let worker;

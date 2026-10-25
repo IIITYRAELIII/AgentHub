@@ -3864,7 +3864,7 @@ export class TaskGitWorkspaceService {
       await readFile(path.join(root, "merge.json"), "utf8");
     }
     const composition = await mergeSelectedResults({ root, sourceRoot: snapshot.repositoryRoot,
-      baseCommit: record.before, tasks: [{ taskId: snapshot.taskId, resultCommit: snapshot.headCommit }], identity,
+      baseCommit: record.before, tasks: [{ taskId: snapshot.taskId, baseCommit: snapshot.baseCommit, resultCommit: snapshot.headCommit }], identity,
       resolutionReview: record.nativeResolutionReview ?? null,
       verifyReview: this.verifyNativeResolutionReview,
       deliveredHead: record.target ?? null,

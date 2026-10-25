@@ -248,6 +248,51 @@ test("native busy temp cleanup preserves execution and cleanup outcomes without 
   }
 });
 
+test("owned Windows cleanup waits for a transient native handle without replaying the test", {
+  skip: process.platform !== "win32",
+}, async () => {
+  let holder;
+  let released;
+  let root;
+  let calls = 0;
+  try {
+    await runIsolatedTestCommand("fixture", [], { execute: async (_command, _args, { env }) => {
+      calls += 1;
+      root = env.TEMP;
+      const script = "$f=[IO.File]::Open($env:AH_TEST_LOCK_FILE,'OpenOrCreate','ReadWrite','None');"
+        + "try{[Console]::WriteLine('locked');[Console]::Out.Flush();[Console]::ReadLine()|Out-Null}finally{$f.Dispose()}";
+      holder = spawn(path.join(process.env.SystemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
+        ["-NoProfile", "-NonInteractive", "-Command", script], { windowsHide: true,
+          stdio: ["pipe", "pipe", "pipe"], env: { ...process.env, AH_TEST_LOCK_FILE: path.join(root, "owned.lock") } });
+      const ready = await Promise.race([
+        once(holder.stdout, "data").then(([chunk]) => String(chunk)),
+        once(holder, "exit").then(([code]) => { throw new Error(`lock holder exited ${code}`); }),
+        once(holder, "error").then(([error]) => { throw error; }),
+      ]);
+      assert.match(ready, /locked/u);
+      await assert.rejects(rm(path.join(root, "owned.lock")), { code: "EBUSY" });
+      // Retire the controlled current handle after the cleanup handoff.
+      released = new Promise(resolve => setTimeout(resolve, 300)).then(async () => {
+        if (holder.exitCode !== null || holder.signalCode !== null) return;
+        const closed = once(holder, "close");
+        holder.stdin.end("release\n");
+        await closed;
+      });
+    } });
+    await released;
+    assert.equal(calls, 1);
+    await assert.rejects(access(root), { code: "ENOENT" });
+  } finally {
+    if (holder && holder.exitCode === null) {
+      const closed = once(holder, "close");
+      holder.stdin.end("release\n");
+      await closed;
+    }
+    await released;
+    if (root) await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("a changed runner accounting input invalidates otherwise identical successful test evidence", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "ah-runner-input-"));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -345,9 +390,7 @@ test("test child processes never inherit publication mutation ownership", async 
   }
 });
 
-test("every default-lock validation suite uses a fixture root while the publisher lock is held", {
-  timeout: 60_000,
-}, async () => {
+test("every default-lock validation suite uses a fixture root while the publisher lock is held", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-held-publication-lock-"));
   const previousLocalAppData = process.env.LOCALAPPDATA;
   process.env.LOCALAPPDATA = root;

@@ -36,7 +36,7 @@ async function callDesktopControl(action, params, options) {
   }
 }
 
-test("local control client survives App Server exit during delayed startup and shares tasks", { timeout: 120_000 }, async (t) => {
+test("local control client survives App Server exit during delayed startup and shares tasks", {  }, async (t) => {
   const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "telegram-local-control-e2e-"));
   const dataDir = path.join(runtimeRoot, "data");
   const projectRoot = path.join(runtimeRoot, "project");

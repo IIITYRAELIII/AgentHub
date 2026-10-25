@@ -191,7 +191,10 @@ export async function runIsolatedTestCommand(command, args, { cwd = ROOT, execut
     executionError = error;
   }
   try {
-    await rm(childRoot, { recursive: true, force: true });
+    // Retry only removal of this owned root after native Windows handles retire.
+    // Never replay the test; a persistent lock still preserves both failures.
+    await rm(childRoot, { recursive: true, force: true,
+      maxRetries: process.platform === "win32" ? 3 : 0, retryDelay: 100 });
   } catch (error) {
     cleanupError = error;
     // A known temporary root does not prove that every native handle closed.

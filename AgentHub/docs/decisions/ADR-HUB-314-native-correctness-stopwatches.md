@@ -1,4 +1,4 @@
-# ADR-HUB-314: Native Git correctness uses operation bounds
+# ADR-HUB-314: Correctness orchestration uses operation bounds
 
 Date: 2026-10-26
 Contracts: PERF-001, REL-001
@@ -32,13 +32,19 @@ installed adoption/history, preparation/preflight/generation, metadata paths,
 bundle transport/retention and accepted-main/bootstrap/correction scenarios.
 New cases in this family follow the same rule before their first failure.
 
+Discover timeout metadata across every tracked test module before classifying
+its owning behavior. Helper names, service spellings and directory names must
+not exclude a real-Git publication or recovery scenario from that inventory.
+
 The earlier correction covered52 case definitions and one nested whole-Node
 command. GEN12 exposed that failure-selected coverage was incomplete: the
 ordinary clone-transport case still cancelled at its90000ms aggregate timer.
-The complete static inventory found92 remaining aggregate definitions in20
-native correctness files. Remove all92, retaining the four Windows-only skip
-conditions and every case body. These92 definitions are not claimed to have
-all timed out. The combined correction covers144 case definitions; existing
+The initial helper-name inventory found92 remaining aggregate definitions in20
+native correctness files. Independent review found one more real-Git publication
+case using a differently named helper. Remove all93 in21 files, retaining the
+four Windows-only skip conditions and every case body. These93 definitions are
+not claimed to have all timed out. The combined correction covers145 case
+definitions; existing
 loop expansion does not make this a count of unique executed runtime cases.
 The already removed180-second nested whole-Node command covers multiple
 authority scenarios, and remains separate from an operation deadline.
@@ -48,7 +54,33 @@ lease, readiness, network/build and protocol limits remain. In particular,
 the120-second Worker dry-run execFile and10-second reconciliation CLI command
 are retained; they are operation limits, not native-case metadata. Tests whose
 purpose is a timed behavior keep that assertion/polling/gate. Unrelated config,
-telemetry and E2E case limits are outside this native correctness policy.
+telemetry and E2E case limits are classified separately below.
+
+GEN12 additionally exposed aggregate orchestration clocks outside the native-Git
+family: a 60-second wrapper sequentially executes seven complete
+validation files under the publisher lock; a 120-second wrapper prepares,
+installs and verifies a packaged runtime before its separately bounded
+30-second readiness check and original-owner preservation assertions. An AST
+inventory of all1388 tracked executable modules finds206 remaining direct
+Node-case options and125 other timeout properties, without a helper-name filter.
+Semantic classification selects53 aggregate definitions in23 files: lifecycle
+rotation, prepared/runtime and recording scenarios, cohort adoption/rollback,
+transport/file-transfer correctness, production-factory wiring, native accounting
+and nested validation. These53 are additional to the145 native definitions;
+the combined policy covers198 definitions plus the separate nested-Node clock.
+Loop definitions are not a count of executed runtime cases.
+
+This explicitly extends the operation-bound rule to multi-operation correctness
+orchestration. It does not claim those scenarios passed or permit unbounded
+readiness. All actual inner startup, RPC, smoke/refusal, single-command, lease,
+byte/memory and identity assertions remain. Recording retains its8-second
+polling gates while removing only the25-second aggregate case metadata.
+The inventory separately retains153 Node options:139 explicitly timed UI or
+workload envelopes,8 sole-liveness/startup/protocol cases and6 real deadline/
+termination controls. Some retained UI envelopes contain multiple actions;
+they are not misrepresented as per-step SLOs. All125 non-case fields are kept.
+This is not a blanket timeout deletion or a claim that the repository has no
+aggregate watchdogs. New cases must classify their behavior before exclusion.
 
 This refines ADR-0118's statement that test-local limits remain: actual bounded
 commands, lease loss/cancellation semantics, readiness polling, output-idle
@@ -69,7 +101,7 @@ for an otherwise silent stuck owned test tree.
 ## Evidence and limits
 
 The immutable GEN11 and GEN12 are not edited or retargeted. Exact-edit
-manifests bind all144 scenario definitions and the separate nested
+manifests bind all198 scenario definitions and the separate nested
 whole-Node timer. Inverse application reconstructs every entire original
 test file, proving that fixtures, assertions and explicit operation
 bounds are retained. The complete-family inventory classifies remaining

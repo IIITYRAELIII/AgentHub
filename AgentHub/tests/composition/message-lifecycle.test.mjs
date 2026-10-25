@@ -296,7 +296,7 @@ test("an invalid chat hash invalidates an in-flight navigation intent", async ()
   assert.equal(invalidations, 2);
 });
 
-test("an in-flight completion refresh follows a Stream rotation and discards the old Thread", { timeout: 5000 }, async () => {
+test("an in-flight completion refresh follows a Stream rotation and discards the old Thread", {  }, async () => {
   const source = clientFunctionSource("mergeHistoryLoadRequest", "async function loadVisibleTaskHistories");
   const generations = new Map();
   const responses = [];

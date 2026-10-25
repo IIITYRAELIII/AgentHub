@@ -70,7 +70,7 @@ function multipartField(call, name) {
 }
 
 test("bot routes tasks, live views, queues, parallel turns, failures and restarts headlessly", {
-  timeout: e2eTimeoutMs(120_000),
+
 }, async (t) => {
   const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), "telegram-bot-e2e-"));
   const dataDir = path.join(temporaryRoot, "data");

@@ -9,7 +9,7 @@ import { Miniflare } from "miniflare";
 import { publishChunkedAttachmentView } from "../../../../src/interfaces/web/chunked-attachment-view.mjs";
 import { attachmentUploadLimits } from "../../../../src/domain/attachment-upload-policy.mjs";
 
-test("native workerd DigestStream and SQLite DO preserve multipart commit across reload", { timeout: 25_000 }, async (context) => {
+test("native workerd DigestStream and SQLite DO preserve multipart commit across reload", {  }, async (context) => {
   const options = {
     modules: true,
     // The deployed bundle exposes only the actual handler and Durable Object;
@@ -48,7 +48,7 @@ test("native workerd DigestStream and SQLite DO preserve multipart commit across
   assert.equal((await request("GET", `?id=${id}`)).status, 410);
 });
 
-test("Node large-view publisher crosses signed native Worker upload and public streamed view with exact bytes", { timeout: 25_000 }, async (context) => {
+test("Node large-view publisher crosses signed native Worker upload and public streamed view with exact bytes", {  }, async (context) => {
   const secret = "synthetic-upload-service-test-secret";
   const token = "123456:synthetic-telegram-test-token";
   const runtime = new Miniflare({

@@ -8,7 +8,7 @@ import { E2eChildProcessOwner } from "../../e2e/telegram-harness.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "../..");
 
-test("installed production factories wire every retention owner through ready, timer and shutdown drain", { timeout: 40_000 }, async t => {
+test("installed production factories wire every retention owner through ready, timer and shutdown drain", {  }, async t => {
   const root = await mkdtemp(path.join(os.tmpdir(), "hub-retention-startup-"));
   const owner = new E2eChildProcessOwner({ label: "isolated production retention" });
   t.after(async () => {

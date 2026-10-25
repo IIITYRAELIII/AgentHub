@@ -28,7 +28,7 @@ async function fixture(t) {
   return { base, root, dataDir, original, mapped, config: { dataDir, deferredInputTtlHours: 24, testContourRecording: { root } } };
 }
 
-test("deferred cleanup maps canonical files without mutating message identity or original bytes", { timeout: 5000 }, async (t) => {
+test("deferred cleanup maps canonical files without mutating message identity or original bytes", {  }, async (t) => {
   const f = await fixture(t);
   const composition = createRunAdmissionComposition({ config: f.config, pendingInputs: new Map(), queuedInputs: new Map(), stageLaunchAdmission() {}, abortLaunchAdmission() {} });
   const item = { id: "queued-1", clientUserMessageId: "original-message", temporaryFiles: [f.original], input: [{ type: "localFile", path: f.original }], messageFingerprint: "immutable" };
@@ -40,7 +40,7 @@ test("deferred cleanup maps canonical files without mutating message identity or
   await composition.cleanupDeferredFiles(item); // Idempotent cleanup.
 });
 
-test("unknown cleanup paths and junctions never fall back to the production target", { timeout: 5000 }, async (t) => {
+test("unknown cleanup paths and junctions never fall back to the production target", {  }, async (t) => {
   const f = await fixture(t);
   const remove = createRuntimeFileRemoval(f.config);
   const unknown = path.join(f.base, "unknown.txt");
@@ -53,7 +53,7 @@ test("unknown cleanup paths and junctions never fall back to the production targ
   assert.equal(await readFile(f.original, "utf8"), "production");
 });
 
-test("captured Claude PID and exact fingerprint cannot authorize read, completion or stop", { timeout: 5000 }, async (t) => {
+test("captured Claude PID and exact fingerprint cannot authorize read, completion or stop", {  }, async (t) => {
   const f = await fixture(t);
   let interrupted = 0;
   const forbidden = () => { throw new Error("production process effect"); };
@@ -73,7 +73,7 @@ test("captured Claude PID and exact fingerprint cannot authorize read, completio
   assert.equal(await readFile(f.original, "utf8"), "production");
 });
 
-test("recording Claude provenance survives serialization and allows exact owned reattachment", { timeout: 5000 }, async (t) => {
+test("recording Claude provenance survives serialization and allows exact owned reattachment", {  }, async (t) => {
   const f = await fixture(t);
   const authority = createContourClaudeAuthority(f);
   const run = { id: "run", turnId: "turn", threadId: "thread" };
@@ -108,7 +108,7 @@ test("recording Claude provenance survives serialization and allows exact owned 
   assert.deepEqual(stopped, [12345]);
 });
 
-test("even marked Claude runs reject foreign output and turn path traversal", { timeout: 5000 }, async (t) => {
+test("even marked Claude runs reject foreign output and turn path traversal", {  }, async (t) => {
   const f = await fixture(t);
   const authority = createContourClaudeAuthority(f);
   assert.throws(() => authority.started({ turnId: "../escape" }), /identity/);
@@ -116,7 +116,7 @@ test("even marked Claude runs reject foreign output and turn path traversal", { 
   assert.throws(() => authority.owns({ turnId: "turn", contourProcessRoot: f.root, claudeOutputPath: f.original }), /does not belong/);
 });
 
-test("runtime restoration expires only owned copies while retaining live queue and captured run evidence", { timeout: 5000 }, async (t) => {
+test("runtime restoration expires only owned copies while retaining live queue and captured run evidence", {  }, async (t) => {
   const f = await fixture(t);
   const queues = new Map();
   const runs = [];
@@ -148,7 +148,7 @@ test("runtime restoration expires only owned copies while retaining live queue a
   await assert.rejects(readFile(f.mapped), { code: "ENOENT" });
 });
 
-test("recording diff excludes Git execution and preserves historical diff semantics", { timeout: 5000 }, async (t) => {
+test("recording diff excludes Git execution and preserves historical diff semantics", {  }, async (t) => {
   const f = await fixture(t);
   const capture = createContourAwareDiffCapture(f.config, () => { throw new Error("Git executed"); });
   assert.equal(await capture({ repoRoot: path.join(f.base, "repo"), tree: "historic-tree" }), null);
@@ -199,7 +199,7 @@ test("owned real child records provenance and completes through the guarded outp
   assert.equal(await readFile(f.original, "utf8"), "production");
 });
 
-test("Claude completion cleans canonical restored temporary files through the bound adapter", { timeout: 5000 }, async (t) => {
+test("Claude completion cleans canonical restored temporary files through the bound adapter", {  }, async (t) => {
   const f = await fixture(t);
   const noop = async () => {};
   const run = { id: "run", turnId: "turn", threadId: "thread", claudeTemporaryFiles: [f.original] };
