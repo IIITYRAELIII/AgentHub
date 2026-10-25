@@ -82,7 +82,12 @@ async function fixture(t, { releaseMetadata = false, compatibilityFiles = false 
         observedAt: new Date().toISOString(), observations }), "utf8");
       t.diagnostic(`Preserved native public release identities: ${file}`);
     } catch { /* optional diagnostics never change the original outcome */ }
-    for (const item of ownedReleases) await item.owner.drain(item.operationId);
+    const joining = [...ownedReleases];
+    for (const item of joining) await item.owner.drain(item.operationId);
+    for (const item of joining) {
+      const index = ownedReleases.indexOf(item);
+      if (index >= 0) ownedReleases.splice(index, 1);
+    }
   };
   let workspace, stream;
   const publication = { generation: "fixture", repositories: [{ root: primary, revision: base }] };
@@ -263,6 +268,44 @@ async function fixture(t, { releaseMetadata = false, compatibilityFiles = false 
     },
   };
 }
+
+test("fixture joins its admitted original release before closing stores on reopen", async t => {
+  const f = await fixture(t);
+  const operationId = "fixture-controlled-original-release";
+  let releaseGate, firstEntered, secondEntered, storeClosed;
+  const gate = new Promise(resolve => { releaseGate = resolve; });
+  const first = new Promise(resolve => { firstEntered = resolve; });
+  const second = new Promise(resolve => { secondEntered = resolve; });
+  const closed = new Promise(resolve => { storeClosed = resolve; });
+  let drains = 0, closes = 0;
+  t.mock.method(ReleaseOperationService.prototype, "drain", async id => {
+    assert.equal(id, operationId);
+    drains += 1;
+    if (drains === 1) firstEntered(); else secondEntered();
+    await gate;
+    return { operation: { operationId, state: "waiting" } };
+  });
+  const originalCall = HubMcpService.prototype.call;
+  t.mock.method(HubMcpService.prototype, "call", async function (name, args) {
+    if (name === "hub_release_run") return { operationId };
+    if (name === "hub_release_get") return { operation: { operationId } };
+    return originalCall.call(this, name, args);
+  });
+  const originalClose = f.store.close.bind(f.store);
+  t.mock.method(f.store, "close", () => { closes += 1; storeClosed(); return originalClose(); });
+  const admitted = f.release({ id: "controlled-task" });
+  await first;
+  const reopening = f.reopen();
+  try {
+    assert.equal(await Promise.race([second.then(() => "joined"), closed.then(() => "closed")]), "joined");
+    assert.equal(closes, 0, "the original stores remain open while admitted work is held");
+  } finally {
+    releaseGate();
+    await Promise.all([admitted, reopening]);
+  }
+  assert.equal(closes, 1);
+  assert.equal(drains, 2, "reopen joins the existing original, without starting another release");
+});
 
 for (const scenario of [
   { name: "survivor Test", priorSurvivor: "test" },

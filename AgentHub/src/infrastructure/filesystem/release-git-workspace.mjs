@@ -1727,6 +1727,12 @@ export class ReleaseGitWorkspaceService {
         // Only private native staging has changed at this boundary. Keep its
         // issued checkout for resolution without making a definite conflict
         // an unrecoverable unknown preparation receipt.
+        if (error.code === "RELEASE_SELECTED_CONTENT_MISSING") {
+          throw Object.assign(new ReleasePreparationRejectedError(error.message, { cause: error }), {
+            selectedContentMissing: { taskId: error.taskId, resultCommit: error.resultCommit,
+              candidateCommit: error.candidateCommit, missingPaths: error.missingPaths },
+          });
+        }
         if (preparationGuard && error.code === "RELEASE_NATIVE_MERGE_CONFLICT") {
           throw Object.assign(new ReleasePreparationRejectedError(error.message, { cause: error }),
             { conflictRoot: error.conflictRoot, conflicts: error.conflicts });

@@ -151,6 +151,99 @@ async function requireClean(git) {
   }
 }
 
+// A conflict belongs to its marker ranges, not to every byte of its file.
+// In particular, replacing that whole file with one parent may discard clean
+// changes made by another selected Task outside the actual conflict.
+async function changesCleanConflictContext(git, automaticTree, target, file, before, result) {
+  let body;
+  try { body = String(await git(["show", `${automaticTree}:${file}`], { rawOutput: true })); }
+  catch { return true; }
+  const lines = body.split("\n");
+  const start = `<<<<<<< ${before}`, end = `>>>>>>> ${result}`;
+  if (!lines.includes(start)) {
+    // Binary/type/delete conflicts have no text marker ranges. Existing exact
+    // parent choices remain ordinary resolution; other bytes need review.
+    const entry = async ref => new Map(await entries(git,
+      ["--literal-pathspecs", "ls-tree", "--full-tree", "-z", ref, "--", file])).get(file);
+    const chosen = await entry(target);
+    return chosen !== await entry(before) && chosen !== await entry(result);
+  }
+  const ranges = [];
+  let opened = null, separator = false;
+  for (const [index, line] of lines.entries()) {
+    if (line === start) {
+      if (opened !== null) return true;
+      opened = index + 1; separator = false;
+    } else if (opened !== null && line === "=======") {
+      if (separator) return true;
+      separator = true;
+    } else if (line === end) {
+      if (opened === null || !separator) return true;
+      ranges.push([opened, index + 1]); opened = null;
+    }
+  }
+  if (opened !== null || !ranges.length) return true;
+  const patch = String(await git(["--literal-pathspecs", "-c", "diff.algorithm=myers", "diff", "--no-ext-diff", "--no-textconv",
+    "--no-renames", "--no-color", "--no-indent-heuristic", "--unified=0", "--inter-hunk-context=0",
+    automaticTree, target, "--", file], { rawOutput: true }));
+  let hunks = 0;
+  for (const match of patch.matchAll(/^@@ -(\d+)(?:,(\d+))? \+\d+(?:,\d+)? @@/gmu)) {
+    hunks += 1;
+    const first = Number(match[1]), count = match[2] === undefined ? 1 : Number(match[2]);
+    if (count === 0) {
+      if (!ranges.some(([a, b]) => first >= a - 1 && first <= b)) return true;
+    } else {
+      let next = first;
+      for (const [a, b] of ranges) {
+        if (next >= a && next <= b) next = Math.min(first + count, b + 1);
+        if (next === first + count) break;
+      }
+      if (next !== first + count) return true;
+    }
+  }
+  return hunks === 0;
+}
+
+// Commit reachability proves history, not the continued presence of a Task's
+// changes. Replaying its delta in Git objects is a check only: it never checks
+// out, applies a patch, updates refs or changes the chosen candidate.
+async function assertSelectedContent({ git, baseCommit, tasks, head, resolutions }) {
+  const targetTree = String(await git(["rev-parse", `${head}^{tree}`]));
+  const target = new Map(await entries(git, ["ls-tree", "-r", "-z", targetTree]));
+  const overrides = new Map();
+  for (const { binding } of resolutions) {
+    const automatic = new Map(await entries(git, ["ls-tree", "-r", "-z", binding.automaticTree]));
+    const reviewed = new Map(await entries(git, ["ls-tree", "-r", "-z", binding.tree]));
+    for (const file of new Set([...automatic.keys(), ...reviewed.keys()])) {
+      // Only the exact whole afterimage from an authenticated merge review,
+      // not a caller path list or an older review of a different body.
+      if (automatic.get(file) !== reviewed.get(file) && target.get(file) === reviewed.get(file)) {
+        overrides.set(file, true);
+      }
+    }
+  }
+  for (const task of tasks) {
+    if (String(await git(["rev-parse", `${task.resultCommit}^{tree}`])) === targetTree) continue;
+    const replay = String(await git(["merge-tree", "--write-tree", "--name-only", "-z",
+      `--merge-base=${task.baseCommit || baseCommit}`, head, task.resultCommit], { acceptableExitCodes: [1] })).split("\0");
+    const replayTree = replay.shift();
+    if (!/^[a-f0-9]{40}$/u.test(replayTree)) throw failure("Selected Task content replay is unavailable");
+    const conflicts = new Set();
+    for (const file of replay) { if (!file) break; conflicts.add(file); }
+    const expected = new Map(await entries(git, ["ls-tree", "-r", "-z", replayTree]));
+    const missing = [];
+    for (const file of new Set([...expected.keys(), ...target.keys()])) {
+      if (expected.get(file) === target.get(file) || overrides.has(file)) continue;
+      if (!conflicts.has(file) || await changesCleanConflictContext(git, replayTree, head, file, head, task.resultCommit)) {
+        missing.push(file);
+      }
+    }
+    if (missing.length) throw failure(`Selected Task ${task.taskId} changes are missing from the candidate`,
+      "RELEASE_SELECTED_CONTENT_MISSING", { taskId: task.taskId, resultCommit: task.resultCommit,
+        candidateCommit: head, missingPaths: missing.sort() });
+  }
+}
+
 // Reopen must prove completed native steps from Git objects, rather than trusting
 // a mutable journal's next/head counters. Git identifies the actual conflict
 // boundary; additional compatibility bytes require an exact independent review.
@@ -177,6 +270,10 @@ async function verifyMergeStep(git, before, result, target, { identity, review =
     if (!conflicts.has(file) && automatic.get(file) !== resolved.get(file)) {
       extraPaths.push(file);
     }
+  }
+  for (const file of conflicts) {
+    if (automatic.get(file) !== resolved.get(file)
+        && await changesCleanConflictContext(git, automaticTree, target, file, before, result)) extraPaths.push(file);
   }
   if (extraPaths.length || review) {
     const tree = String(await git(["rev-parse", `${target}^{tree}`]));
@@ -216,19 +313,22 @@ export async function assertNativePreparedComposition({ git, baseCommit, tasks, 
   await assertNativeTaskHistories({ git, baseCommit, tasks, historyAuthority });
   if (!Array.isArray(merges) || merges.length !== tasks.length) throw failure("Prepared native selection changed");
   let prefix = baseCommit;
+  const resolutions = [];
   for (const [index, step] of merges.entries()) {
     const task = tasks[index];
     if (step.taskId !== task.taskId || step.resultCommit !== task.resultCommit) {
       throw failure("Prepared native result evidence changed");
     }
-    await verifyMergeStep(git, prefix, step.resultCommit, step.commit,
+    const resolution = await verifyMergeStep(git, prefix, step.resultCommit, step.commit,
       { identity, review: step.reviewedResolution?.review, verifyReview,
         storedBinding: step.reviewedResolution?.binding });
+    if (resolution) resolutions.push(resolution);
     prefix = step.commit;
   }
   if (prefix !== head || String(await git(["rev-parse", `${head}^{tree}`])) !== tree) {
     throw failure("Prepared native head or tree changed");
   }
+  await assertSelectedContent({ git, baseCommit, tasks, head, resolutions });
 }
 
 // Every accepted step is a real Git merge commit (or an already-contained
@@ -290,13 +390,15 @@ export async function mergeSelectedResults({
     await writeJson(stateFile, state);
   }
   let prefix = baseCommit;
+  const resolutions = [];
   for (const [index, step] of state.merges.entries()) {
     if (step.taskId !== tasks[index].taskId || step.resultCommit !== tasks[index].resultCommit) {
       throw failure("Native merge journal selection changed", "RELEASE_NATIVE_CHECKOUT_CHANGED");
     }
-    await verifyMergeStep(git, prefix, step.resultCommit, step.commit,
+    const resolution = await verifyMergeStep(git, prefix, step.resultCommit, step.commit,
       { identity, review: step.reviewedResolution?.review, verifyReview, evidenceRoot: root,
         storedBinding: step.reviewedResolution?.binding });
+    if (resolution) resolutions.push(resolution);
     prefix = step.commit;
   }
   if (prefix !== state.head) throw failure("Native merge journal prefix changed", "RELEASE_NATIVE_CHECKOUT_CHANGED");
@@ -342,6 +444,7 @@ export async function mergeSelectedResults({
       await requireClean(git);
       const reviewedResolution = await verifyMergeStep(git, state.head, task.resultCommit, head,
         { identity, review: resolutionReview, verifyReview, evidenceRoot: root });
+      if (reviewedResolution) resolutions.push(reviewedResolution);
       state.merges.push({ taskId: task.taskId, resultCommit: task.resultCommit, commit: head, resolved: true,
         ...(reviewedResolution ? { reviewedResolution } : {}) });
       state.head = head;
@@ -390,6 +493,7 @@ export async function mergeSelectedResults({
   }
   await requireClean(git);
   if (String(await git(["rev-parse", "HEAD^{commit}"])) !== state.head) throw failure("Native final merge head changed");
+  await assertSelectedContent({ git, baseCommit, tasks, head: state.head, resolutions });
   return { root: repository, head: state.head,
     tree: String(await git(["rev-parse", "HEAD^{tree}"])), merges: state.merges };
 }
