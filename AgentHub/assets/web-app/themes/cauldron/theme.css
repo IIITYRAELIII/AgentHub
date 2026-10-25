@@ -220,6 +220,17 @@ html[data-theme="cauldron"] .activity-stream-item::after {
   pointer-events: none;
 }
 
+/* Keep the ceramic frame above the shared status paint, but put the opaque
+   card backing below it. The inset leaves the effect inside the frame. */
+html[data-theme="cauldron"] .activity-stream-item > .stream-tab-card {
+  --shell-stream-card-background: transparent;
+}
+
+html[data-theme="cauldron"][data-view="chat"][data-surface] .activity-rail .activity-stream-item > .stream-tab-status-layer {
+  inset: 8px;
+  background: var(--shell-stream-card-background);
+}
+
 /* The card owns decoration; the tab keeps its shared divider and status layer. */
 /* Join the top and bottom frame halves without wrapping or moving shared DOM.
    Each header still belongs to its chat pane, including split Stream views. */

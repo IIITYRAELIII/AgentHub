@@ -709,6 +709,7 @@ export function createDesktopTaskHistoryFactory({
         turnId: completed.turnId,
         answer: completed.text,
         completedAt: completed.updatedAt,
+        status: completed.status,
         terminalRevision: completed.terminalRevision,
       }, {
         matchSingleActive: !unrelatedActiveTurnVisible,

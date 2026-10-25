@@ -2,10 +2,12 @@ import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { protectRuntimeConfig } from "../../infrastructure/filesystem/runtime-security.mjs";
+import { normalizeUsageSyncServerUrl } from "../../domain/default-usage-sync-server.mjs";
 
 const BOOLEAN = "boolean";
 const INTEGER = "integer";
 const CHOICE = "choice";
+const URL_FIELD = "url";
 
 /**
  * The deliberately small, non-secret subset of runtime configuration that
@@ -13,6 +15,7 @@ const CHOICE = "choice";
  * never belong here.
  */
 export const SERVER_CONFIGURATION_FIELDS = Object.freeze([
+  { key: "usageSyncServerUrl", name: "Сервер синхронизации", hint: "HTTP(S)-адрес сервера журнала без логина, пароля и параметров. Пустое поле отключает подключение. Применяется после перезапуска.", type: URL_FIELD },
   { key: "autoApproveOnStart", name: "Автоподтверждение при запуске", hint: "Команды и правки файлов выполняются без запроса. Выключено — Hub спрашивает разрешение на каждое действие агента.", type: BOOLEAN },
   { key: "guardConcurrentRepositoryWrites", name: "Защита параллельной записи", hint: "Не даёт двум потокам писать в один репозиторий одновременно: второй ждёт, пока первый закончит ход.", type: BOOLEAN },
   { key: "codexExecutableAutoUpdate", name: "Автообновление Codex", hint: "На безопасном перезапуске проверяет новейший уже установленный официальный Codex. Не скачивает бинарники и не переключается во время активного хода.", type: BOOLEAN, environment: "CODEX_EXECUTABLE_AUTO_UPDATE", presentation: "advanced" },
@@ -99,6 +102,7 @@ function setAtPath(target, dottedPath, value) {
 }
 
 function normalizeValue(field, value) {
+  if (field.type === URL_FIELD) return normalizeUsageSyncServerUrl(value);
   if (field.type === BOOLEAN) {
     if (typeof value !== "boolean") throw new Error(`«${field.name}»: ожидается переключатель`);
     return value;
@@ -130,6 +134,7 @@ function storedValue(field, value) {
 }
 
 function displayValue(field, value) {
+  if (field.type === URL_FIELD) return value || "Не настроен";
   if (field.type === BOOLEAN) return value ? "Включено" : "Выключено";
   if (field.type === CHOICE) return field.choices.find((choice) => choice.value === value)?.label ?? String(value ?? "");
   return `${value} ${field.unit}`;

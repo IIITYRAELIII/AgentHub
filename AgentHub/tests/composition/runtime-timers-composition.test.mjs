@@ -51,6 +51,7 @@ test("runtime shutdown stops only the pending sign-in CLI and pauses provider ru
     scheduleBugReportScan: () => {},
     rateLimitTelemetry: { schedule: () => {} },
     providerLogin,
+    storageRetention: { stop: () => events.push("retention-stop") },
   });
 
   timers.stopRuntimeTimers();
@@ -59,6 +60,7 @@ test("runtime shutdown stops only the pending sign-in CLI and pauses provider ru
   assert.deepEqual(events.sort(), [
     "login-kill",
     "pause:active-claude-run",
+    "retention-stop",
     "rpc:account/login/cancel:login-1",
     "stop-tree:4242",
   ]);

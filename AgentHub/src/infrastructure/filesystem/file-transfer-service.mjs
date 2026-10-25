@@ -116,6 +116,13 @@ export class FileTransferService {
   #preparations = new Map();
   #initializing;
   #gcTimer = null;
+  #collections = new Set();
+  #intakes = new Set();
+  #closing = false;
+  #closePromise;
+  #quiescing = false;
+  #quiescePromise;
+  #gcIntervalMs = null;
 
   constructor({ dataDir, roots, store, policy, keyring }) {
     this.#artifactsDirectory = path.join(path.resolve(dataDir), "file-transfers", "artifacts");
@@ -141,6 +148,7 @@ export class FileTransferService {
   }
 
   async initialize() {
+    if (this.#closing) throw transferError("transfer-service-closed", 503);
     this.#initializing ??= (async () => {
       await mkdir(this.#artifactsDirectory, { recursive: true, mode: 0o700 });
       await this.#store.initialize();
@@ -213,7 +221,15 @@ export class FileTransferService {
     }
   }
 
-  async prepare({ owner, sourcePath, requestId }) {
+  prepare(input) {
+    if (this.#closing) return Promise.reject(transferError("transfer-service-closed", 503));
+    if (this.#quiescing) return Promise.reject(transferError("transfer-service-quiescing", 503));
+    const intake = this.#prepare(input).finally(() => this.#intakes.delete(intake));
+    this.#intakes.add(intake);
+    return intake;
+  }
+
+  async #prepare({ owner, sourcePath, requestId }) {
     await this.initialize();
     const { candidate, configuredRoot, target } = await this.#resolveSourcePath(sourcePath);
     const source = await open(target, constants.O_RDONLY);
@@ -267,6 +283,11 @@ export class FileTransferService {
     const preparation = this.#copy({ artifact, owner: String(owner), source, sourceIdentity: identity(sourceInfo) })
       .finally(() => this.#preparations.delete(artifact.id));
     this.#preparations.set(artifact.id, preparation);
+    // prepare() returns an intake receipt while #copy owns durable failure and
+    // cleanup. Observe that background rejection immediately even when the
+    // HTTP caller only polls status. Keep the original rejected promise for
+    // an explicit waiter and the existing shutdown drain.
+    void preparation.catch(() => {});
     return artifact;
   }
 
@@ -594,7 +615,15 @@ export class FileTransferService {
   revoke(owner, shareId) { return this.#store.revoke(String(owner), String(shareId)); }
   audit(owner, shareId) { return this.#store.audit(String(owner), String(shareId)); }
 
-  async gc() {
+  gc() {
+    if (this.#closing) return Promise.reject(transferError("transfer-service-closed", 503));
+    if (this.#quiescing) return Promise.reject(transferError("transfer-service-quiescing", 503));
+    const collection = this.#collect().finally(() => this.#collections.delete(collection));
+    this.#collections.add(collection);
+    return collection;
+  }
+
+  async #collect() {
     await this.initialize();
     const removed = [];
     for (const artifactId of await this.#store.gcCandidates()) {
@@ -607,17 +636,45 @@ export class FileTransferService {
   }
 
   startOperationalGc(intervalMs = 15 * 60_000) {
-    if (this.#gcTimer) return;
+    if (this.#closing || this.#quiescing || this.#gcTimer) return;
+    this.#gcIntervalMs = Math.max(60_000, Number(intervalMs) || 0);
     const collect = () => { void this.gc().catch(() => {}); };
     collect();
-    this.#gcTimer = setInterval(collect, Math.max(60_000, Number(intervalMs) || 0));
+    this.#gcTimer = setInterval(collect, this.#gcIntervalMs);
     this.#gcTimer.unref?.();
   }
 
-  async close() {
+  async #drainWork() {
+    // Intakes can still register their admitted background copy. Collections
+    // own both filesystem deletion and the final durable deletion receipt.
+    await Promise.allSettled([...this.#intakes, ...this.#collections, this.#initializing]);
+    await Promise.allSettled(this.#preparations.values());
+  }
+
+  quiesce() {
+    if (this.#closing) return this.close();
+    this.#quiescing = true;
     if (this.#gcTimer) clearInterval(this.#gcTimer);
     this.#gcTimer = null;
-    await Promise.allSettled(this.#preparations.values());
-    await this.#store.close();
+    return this.#quiescePromise ??= this.#drainWork();
+  }
+
+  resume() {
+    if (this.#closing || !this.#quiescing) return;
+    this.#quiescing = false;
+    this.#quiescePromise = undefined;
+    if (this.#gcIntervalMs !== null) this.startOperationalGc(this.#gcIntervalMs);
+  }
+
+  close() {
+    if (this.#closePromise) return this.#closePromise;
+    this.#closing = true;
+    if (this.#gcTimer) clearInterval(this.#gcTimer);
+    this.#gcTimer = null;
+    this.#closePromise = (async () => {
+      await this.#drainWork();
+      await this.#store.close();
+    })();
+    return this.#closePromise;
   }
 }

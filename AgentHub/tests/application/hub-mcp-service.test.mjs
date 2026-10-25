@@ -4,6 +4,9 @@ import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import test from "node:test";
+import { createHash } from "node:crypto";
+import { createReleaseOperation } from "../../src/domain/release-operation.mjs";
+import { WorkspaceReleaseOperationAdapter } from "../../src/application/workspace-release-operation-adapter.mjs";
 
 import { HubMcpService } from "../../src/application/hub-mcp-service.mjs";
 import { measureTaskOperation, withTaskOperationTiming } from "../../src/infrastructure/process/task-operation-timing.mjs";
@@ -540,14 +543,23 @@ async function fixture(context, {
 
 async function preparationFixture(t) {
   const setup = await fixture(t, { releaseWorkflowEnabled: true });
+  setup.workspaceCatalog.checkpointMcpPreparation = (requestId, { state, expectedRevision }) => {
+    const row = setup.operations.get(requestId);
+    assert.equal(row.preparationState?.revision ?? 0, expectedRevision);
+    row.preparationState = structuredClone(state);
+    return structuredClone(row);
+  };
   const envelope = preparationEnvelope(setup.projectRoot);
   envelope.sourceClosureHash = (await readPreparationSourceClosure()).hash;
   setup.tasks.get("task-current").workflowStatus = "awaiting_implementation";
   let calls = 0;
-  setup.service.releasePreflight.prepareCurrentAwaitSet = async ({ validate, commitPrepared, requestId }) => {
+  setup.service.releasePreflight.prepareCurrentAwaitSet = async ({ validate, commitPrepared, requestId,
+    ownPreparation, beforeCompose }) => {
     calls += 1;
     assert.equal(setup.operations.get(requestId).status, "pending", "intake precedes composer");
     await validate();
+    await ownPreparation();
+    await beforeCompose();
     return commitPrepared({ planRevision: envelope.planRevision, taskIds: ["task-current"],
       releaseCandidates: [{ repositoryRoot: setup.projectRoot, preReleaseHead: "8".repeat(40),
         tree: envelope.repositories[0].approvedTree, baseCommit: envelope.repositories[0].approvedBaseCommit,
@@ -1290,6 +1302,31 @@ test("Task status and unknown-operation schemas expose the exact squash transfer
   }
 });
 
+test("public Await forwards a complete reviewed bundle only with exact RM CAS", async context => {
+  const { service, token, tasks, operations } = await fixture(context, { releaseWorkflowEnabled: true });
+  const calls = [];
+  service.taskLifecycle.updateWorkflowStatus = async input => {
+    calls.push(input); return { task: { ...tasks.get("task-current"), workflowStatus: input.status } };
+  };
+  const review = { bundlePath: "owned.bundle", bundleSha256: "a".repeat(64),
+    reviews: [{ requestId: "first", text: "exact first receipt" }, { requestId: "second", text: "exact second receipt" }] };
+  const input = { context_token: token, task_id: "task-current", status: "awaiting_implementation",
+    expected_task_revision: 1, expected_workflow_status: "testing", native_resolution_review: review };
+  assert.equal((await service.call("hub_task_status_update", { ...input, request_id: "all-prefixes" })).workflowStatus,
+    "awaiting_implementation");
+  assert.deepEqual(calls[0].operationEvidence, { nativeResolutionReview: review });
+  const foreignToken = service.contextToken({ provider: "codex", threadId: "thread-2", streamId: "stream-2" });
+  for (const [suffix, patch] of [["array", { native_resolution_review: [] }],
+    ["extra", { native_resolution_review: { ...review, force: true } }],
+    ["duplicate", { native_resolution_review: { ...review, reviews: [review.reviews[0], review.reviews[0]] } }],
+    ["cas", { expected_task_revision: null }], ["test", { status: "testing" }],
+    ["foreign", { context_token: foreignToken }]]) {
+    await assert.rejects(service.call("hub_task_status_update", { ...input, ...patch, request_id: `bundle-${suffix}` }));
+    assert.equal(operations.get(`bundle-${suffix}`).status, "failed");
+  }
+  assert.equal(calls.length, 1);
+});
+
 test("Release Manager cannot reopen fresh selected-materialization preview or confirmation after native cutover", async (context) => {
   const { service, token, tasks, operations } = await fixture(context, {
     releaseWorkflowEnabled: true,
@@ -1729,6 +1766,7 @@ test("HubMcpService exposes cursor events and one durable release operation owne
   });
   assert.equal(ack.operationId, "release-operation-1");
   assert.equal(calls[0][1].authorization.validationMode, "full");
+  assert.equal(Object.hasOwn(calls[0][1].authorization, "releaseMetadata"), false);
   const snapshot = await service.call("hub_release_get", {
     context_token: token, operation_id: ack.operationId,
   });
@@ -1741,6 +1779,74 @@ test("HubMcpService exposes cursor events and one durable release operation owne
   const tools = service.tools().map((tool) => tool.name);
   assert.equal(tools.includes("hub_release_preflight"), false);
   assert.equal(tools.includes("hub_release_complete"), false);
+});
+
+test("HubMcpService forwards original-addressed reviewed-main recovery through the same authenticated continuation", async context => {
+  const calls = [];
+  const { service, token } = await fixture(context, { releaseOperations: {
+    get: operationId => ({ operation: { operationId, workspaceId: "workspace-1", state: "failed", revision: 699 } }),
+    continue: async (...args) => { calls.push(args); return { accepted: true, operationId: args[0] }; },
+    setEventDelivery() {},
+  } });
+  const reviewedMain = { expectedRevision: 699, approvedRepositories: [{ projectRoot: "D:/repo",
+    approvedLocalMainCommit: "a".repeat(40), approvedOriginMainCommit: "a".repeat(40) }] };
+  const input = { context_token: token, request_id: "original-main-rebind", operation_id: "original", reviewed_main: reviewedMain };
+  assert.equal((await service.call("hub_release_continue", input)).accepted, true);
+  assert.deepEqual(calls, [["original", { requestId: input.request_id, reviewedMain }]]);
+});
+
+test("HubMcpService carries exact release metadata through the domain and byte-checking composition owner", async (context) => {
+  let admitted;
+  const { service, token, projectRoot } = await fixture(context, { releaseOperations: {
+    start: (input) => {
+      admitted = createReleaseOperation({ ...input, operationId: input.requestId,
+        runnerVersion: "test", createdAt: "2026-10-18T00:00:00.000Z" });
+      return { accepted: true, operationId: admitted.operationId };
+    },
+    get() {}, continue() {}, setEventDelivery() {},
+  } });
+  const bytes = Buffer.from("release notes\r\n", "utf8");
+  const sourcePath = path.join(projectRoot, "CHANGELOG.md");
+  await writeFile(sourcePath, bytes);
+  const releaseMetadata = {
+    sourcePath, byteLength: bytes.length,
+    rawSha256: createHash("sha256").update(bytes).digest("hex"),
+    canonicalSha256: createHash("sha256").update("release notes\n").digest("hex"),
+  };
+  const args = {
+    context_token: token, request_id: "release-metadata", task_ids: ["task-current"],
+    validation_mode: "full", approved_targets: [{ targetId: "production", kind: "agent-hub-publication" }],
+    release_metadata: releaseMetadata,
+  };
+  const schema = service.tools().find((item) => item.name === "hub_release_run").inputSchema;
+  await service.call("hub_release_run", args);
+  assert.deepEqual(admitted.authorization.releaseMetadata, releaseMetadata);
+  assert.deepEqual(schema.properties.release_metadata.required,
+    ["sourcePath", "byteLength", "rawSha256", "canonicalSha256"]);
+  assert.equal(schema.required.includes("release_metadata"), false);
+  assert.equal(admitted.streamId, "stream-1");
+  assert.equal(admitted.threadId, "thread-1");
+  let preparations = 0;
+  const adapter = new WorkspaceReleaseOperationAdapter({
+    releasePreflight: {
+      prepareOperationGeneration: async ({ changelogContent }) => {
+        preparations += 1;
+        assert.deepEqual(changelogContent, bytes);
+        return { releaseCandidates: [], planRevision: "plan" };
+      },
+      validateOperationGeneration() {}, operationSelection() {}, withAwaitTransition() {},
+    },
+    publication: { publish: () => assert.fail("composition cannot publish"), readback() {} },
+    finalization: { finalize: () => assert.fail("composition cannot finalize") },
+  });
+  await adapter.compose({ operation: admitted, generation: 1 });
+  await writeFile(sourcePath, Buffer.from("RELEASE notes\r\n")); // same length, different digest
+  await assert.rejects(adapter.compose({ operation: admitted, generation: 2 }), /metadata artifact identity changed/u);
+  assert.equal(preparations, 1);
+  await assert.rejects(service.call("hub_release_run", {
+    ...args, request_id: "release-malformed-metadata",
+    release_metadata: { ...releaseMetadata, rawSha256: "invalid" },
+  }), /release metadata digest is invalid/u);
 });
 
 test("HubMcpService restricts release execution to Release Manager Streams", async (context) => {
@@ -1810,7 +1916,7 @@ test("Release Manager reconciliation forwards one exact unknown operation and re
   }]);
   const schema = service.tools().find((tool) => tool.name === "hub_task_operation_reconcile").inputSchema;
   assert.deepEqual(schema.required, [
-    "context_token", "request_id", "task_id", "operation_request_id", "project_root", "confirm_reconcile",
+    "context_token", "request_id", "task_id", "operation_request_id", "confirm_reconcile",
   ]);
   const terminalArgs = { ...args, request_id: "reconcile-command-terminal" };
   delete terminalArgs.guard_id;
@@ -2399,6 +2505,16 @@ test("hub_stream_history projects active content and deterministic lifecycle sta
   assert.equal(repeated.cursor, first.cursor);
   assert.equal(repeated.revision, first.revision);
 
+  firstRun.activityUnknown = true;
+  const unknown = await service.call("hub_stream_history", {
+    context_token: token, stream_id: "stream-3", cursor: first.cursor,
+  });
+  assert.equal(unknown.state, "unknown");
+  assert.equal(unknown.turns[0].active, false);
+  assert.equal(unknown.turns[0].status, "unknown");
+  assert.equal(unknown.turns[0].canStop, true);
+  firstRun.activityUnknown = false;
+
   historyRecordsByThread.set("thread-3", [{
     provider: "codex", threadId: "thread-3", turnId: "turn-foreign-1",
     title: "Persisted too early", prompt: "Inspect foreign state", body: "Persisted partial",
@@ -2827,4 +2943,14 @@ test("HubMcpService rejects non-file attachment sources", async (context) => {
     }),
     /regular file/u,
   );
+});
+
+test("HubMcpService exposes unconfirmed managed ownership as unknown and keeps the Stream reserved", async context => {
+  const { service, token } = await fixture(context);
+  service.setActiveRuns(() => [{ id: "uncertain", provider: "codex", threadId: "thread-1", status: "running", activityUnknown: true }]);
+  const active = await service.call("hub_active_runs_list", { context_token: token });
+  assert.equal(active.runs[0].status, "unknown");
+  assert.equal(active.runs[0].activityUnknown, true);
+  const streams = await service.call("hub_parallel_streams_list", { context_token: token });
+  assert.equal(streams.streams.find(s => s.id === "stream-1").available, false);
 });

@@ -1,5 +1,44 @@
 # MCP-001 — Bounded Agent Hub tool bridge
 
+## Normal release continuation (ADR-0132)
+
+`hub_release_run` keeps preparation inside the existing durable release owner.
+Approved repositories may include an exact authenticated native resolution input
+(`nativeResolutionReview`), either a single review or a digest-bound bundle with
+multiple reviews. This is part of immutable operation authorization; it is not
+a force flag or caller-declared conflict allowlist.
+
+`hub_release_prepare_resume` may continue an already established isolated forward
+segment using its saved original envelope/custody and exact revision. Optional
+`native_resolution_review` changes only that forward segment's review input.
+The owner regenerates the exact isolation plan under existing leases, validates
+the stored proof and reads actual Git before effects. An untransferred legacy
+UNKNOWN, missing isolation or changed proof still refuses. Terminal repetition
+is read-only. The existing local consumer supports `--resume-preparation`; no
+new one-shot entry/driver/config is needed. Historical UNKNOWN is retained.
+
+`hub_release_continue` optionally carries `reviewed_main` with exact positive
+integer `expectedRevision` and bounded original-repository primitive-string Git
+pins. Under the existing genuine RM authorization and original MCP request
+identity, the same release owner verifies and persists ADR-0128 recovery. This
+does not mutate original authorization or add a release/tool/status writer.
+Ordinary terminal continuation remains refused; ambiguous original effects
+cannot receive not-applied credit from the caller envelope.
+
+Task cleanup previews include ignored local data separately from ordinary Git
+dirty state. Confirmed Complete/Delete cannot discard those paths merely because
+Git status is clean or a dirty-worktree option is set; the owning artifact must
+first prove retirement (ADR-0126). Background storage policy adds no public MCP
+mutation or fresh receipt replay route and cannot close Tasks, publish results,
+or reinterpret UNKNOWN operations as no effect.
+
+`hub_release_run` optionally accepts `release_metadata` with the existing
+`sourcePath`, `byteLength`, `rawSha256` and `canonicalSha256` artifact identity.
+It forwards this unchanged as authorization `releaseMetadata` to the same durable
+release owner. The existing domain bound and composition byte/digest checks apply;
+omitting the field preserves the existing authorization. It grants no additional
+publication authority and does not introduce another operation or publisher.
+
 ## Current corrected candidates and historical release facts (2026-10-14)
 
 A new candidate is admitted from the exact CURRENT normally accepted results.
@@ -43,14 +82,22 @@ it does not falsify old receipts or claim the main logical release complete.
 
 ## Preparation-only release admission
 
+The repository envelope also admits the bounded optional localSourceBaseline
+and nativeResolutionReview fields specified by REL-001/ADR-0115. They remain
+inside the same genuine RM authority, exact original argument hash, complete
+selected-row CAS, source closure, existing candidate rollback and terminal
+receipt. No new public command, approval flag, status writer or retry route is
+created. Other unknown fields still reject; old receipts retain their old hashes.
+
 The explicit exception `hub_release_prepare` and original-addressed
 `hub_release_prepare_get` follow REL-001 and ADR-0104. Both require genuine RM
 context; non-RM fails before mutation intake. The preparation original is
 separate from succeeded Task Await and is canonically argument-bound by the
 existing MCP ledger. Terminal persistence occurs inside existing candidate
 rollback ownership, through that same receipt owner, with all selected row CAS
-checked in its SQLite transaction. Exact terminal result stays below 48 KiB,
-so receipt compaction cannot discard candidate/source/request binding.
+checked in its SQLite transaction. The exact preparation terminal result is retained
+in full by that original receipt owner; generic response compaction cannot discard
+candidate/source/request binding. Internal preparation data has no extra byte budget.
 
 This command performs bounded explicit composition without validation,
 publication or installation. UNKNOWN cannot automatically replay Git.
@@ -60,6 +107,23 @@ original-ID tracing covers admission, lock wait, composition, precommit checks,
 terminal persistence and readback without arguments, file contents or secrets.
 
 Native preparation uses the exact agreed-main composition and verified ordered merge history. The prior approved tree, checkpoint/ref/manifest, source closure, Task CAS and immutable terminal receipt remain mandatory. Legacy per-file owned-union projection is not a native composition authority. Existing timing is injected by composition into the application owners.
+
+The explicit local-source forward consumer in ADR-0131 retains the original
+UNKNOWN and appends its current custody/effects/completion to that same row.
+It requires a non-serializable authoritative invocation/children terminal
+observer, or separately authorized `preparation-effects-isolated-v1` evidence
+binding the exact original and finite future write-target plan, plus existing
+leases/CAS. Isolation never supplies `joinedChildren=true` or settles UNKNOWN.
+Ordinary MCP resume and serialized arguments cannot manufacture either proof. Readback reports forward completion separately
+from the retained legacy outcome; no automatic initial prepare replay occurs.
+
+The optional exact `historicalChangelog` candidate-provenance binding in
+ADR-0131 does not add an MCP command or replace original custody evidence. It
+uses the existing original operation reader and exact original argument hash;
+before transfer, the local forward owner checks the original installed manifest
+and selection independently of current installed authority. It admits only the
+bound root notes path/mode/blob for that selected result, never package versions
+or unselected history, and remains bound through normal candidate readback/freeze.
 
 ## Native Git Task/release cutover (HUB-303)
 
@@ -117,8 +181,13 @@ immutable authorization. See REL-001 for metadata and original capture fences.
 
 
 RM Test/Await with exact Task/workflow CAS may include `native_resolution_review`
-for necessary compatibility changes beyond Git conflict paths. Its bounded text
+for necessary compatibility changes beyond Git conflict paths. The exact review
 and original review request ID are canonically bound by the same status receipt.
+Await also accepts the existing digest-bound bundle of multiple exact reviews;
+Test retains the single-review input. Closed record validation, genuine RM/CAS,
+every authenticated review and the native sequencer's full Git checks still apply.
+The ordinary source release consumer's `accept` action forwards these same public
+Await business arguments. It adds no Task/status authority or alternate writer.
 The native owner recomputes the full Git merge diff and accepts only the exact
 independent authenticated inter-Stream ACCEPT binding. Reconciliation includes
 the original argument unchanged; it cannot substitute a newer verdict. This does
@@ -239,6 +308,13 @@ HTTP admission still terminates in bounded time. The deadline applies only to
 
 ## Recovery and retry
 
+Closing and restarting the same MCP server owner preserves its first successfully
+advertised loopback port and capability URL. A surviving App Server can therefore
+reconnect using its existing launch configuration. If another listener occupies
+that port, recovery refuses instead of silently selecting a different endpoint;
+direct HTTP success on a new port is not proof that an agent's tool catalog has
+recovered. This retains the same context authorization and operation receipts.
+
 A failed dynamic `functions.exec` call that contains an `agent_hub` MCP call
 reloads the Codex MCP transport before a later attempt and wakes durable input
 lanes. Read-only calls are safe to retry after that rebind.
@@ -275,6 +351,82 @@ not treated as cutover evidence. Missing, added or changed CAS fields therefore
 change the arguments hash and fail closed. An already failed transition or
 authoritative outcome settles only the original receipt without Git replay;
 pending Git work still requires its existing process-tree guard and owner.
+
+Ordinary workflow CAS refusal on a fresh MCP intake seals a bounded `NO_EFFECT`
+outcome in the existing Task lifecycle owner before throwing. It binds the exact
+request/arguments hash, Workspace/Stream/provider/Thread intake identity, target,
+expected and observed CAS, and repository (nullable for database-only workflows).
+Only a current owned pre-admission boundary may issue it: an existing transition
+or outcome, replayed intake, lost lease or prior preparation excludes issuance.
+The terminal outcome fences any later begin using that operation ID. A refusal
+at BEGIN's CAS is sealed only after rollback and only when no preparation/effects
+preceded BEGIN. Typed errors alone are not a substitute for this owner evidence.
+
+The MCP receipt records `failed` with structural `NO_EFFECT` evidence. A crash
+after outcome commit but before receipt settlement is recovered by pending-startup
+readback or canonical original-ID reconciliation of an unknown receipt, without
+Git/status replay. Reconciliation retains the exact optional CAS argument shape
+and original identity. Its own identity/confirmation/active-worker refusal before
+effects terminalizes only its own receipt; the ambiguous original remains unknown.
+An exact immutable admission refusal settles through the existing SQLite receipt
+CAS only, before release/Git reconciliation locks: database-only workspaces are
+supported with release workflow disabled. `project_root` may be omitted only when
+that owner proof records a null root; a supplied locator in that case grants no
+Git authority. A recorded non-null root still requires an exact locator. Ordinary
+Git recovery still requires its configured root, enabled workflow and owner locks.
+Failures once recovery/settlement begins retain ordinary unknown semantics.
+Legacy missing-admission cases without positive durable owner evidence remain
+unsupported/unknown: absent transitions, error text, timings or current refs are
+not certificates. No operator proof register or new historical recovery API is
+introduced. See ADR-0085.
+
+A claim refused because its previous executor has active or queued work seals
+`task-claim-executor-busy-v1` in that original MCP receipt before Git preparation
+or Task assignment. The existing catalog SQLite transaction binds the fresh
+intake identity, full claim argument shape, observed Task revision/executor and
+the active/queued reason; it rejects prior assignment or lifecycle admission.
+The receipt then becomes terminal `failed` with structural `NO_EFFECT` and
+`TASK_CLAIM_EXECUTOR_BUSY`. Task claim writes are fenced by that same durable
+refusal. Queued input without a Stream ID uses its exact existing Thread binding.
+No context capability or message/file payload is retained in this evidence.
+
+A fresh ordinary claim whose first repository-dev-lock acquisition expires
+before the preparation callback enters may seal `task-claim-lock-admission-v1`
+through that same catalog transaction. The live Git owner binds its actual
+acquisition failure, exact operation/Task/repository key and physical lock path
+while the Task lease still holds. The original receipt binds the complete caller
+and argument identity and observed Task CAS, then becomes terminal `failed` with
+`NO_EFFECT` and `TASK_CLAIM_LOCK_ADMISSION_TIMEOUT`. Task-lock timeouts, dependency
+work, failures after callback entry, forged typed errors and legacy error text
+do not acquire this proof. No shorter timeout, retry or lock removal is added.
+
+The existing RM `hub_task_operation_reconcile` can read or settle this sealed
+claim refusal using the original operation ID and exact recorded repository
+locator, without workflow/Git recovery or new assignment. Active original workers,
+foreign identities and admitted claims refuse. Same-ID retry and startup readback
+recover a lost terminal write from the same seal. An unsealed historical timeout
+is not retroactively proved by this future refusal type or a currently empty Task.
+
+Startup readback and exact same-ID retry recover a lost terminal receipt write
+from the sealed proof, without preparing Git or assigning the Task again. The
+same ID remains refused even after the former executor becomes idle. A typed
+error alone, legacy error text, current executor state, a prior assignment or a
+partial preparation cannot acquire this proof; ambiguous cases remain UNKNOWN.
+No new table, receipt owner, public reconciliation tool or legacy settlement
+permission is introduced. See ADR-0124.
+
+An ordinary original native Test whose merge is already exactly applied may
+finish after a metadata-only Task revision advance. Its original argument hash
+must contain no explicit CAS, cutover, absorption or review family. Recovery
+compares the unchanged Task/Workspace/executor/status/workflow/result state,
+the original native intent, ordered merge parents, source and dev trees and
+clean indexes under their existing leases. A retained process guard refuses.
+Immediately before the owning terminal transaction it repeats that readback
+and CASes the current row revision, preserving current metadata. It commits the
+original outcome/references/status and settles the same receipt; it never
+prepares, snapshots or merges again. Concurrent metadata edits fail the CAS;
+other state or Git drift remains unknown. An already settled matching original
+is a read-only result. See [ADR-0113](../decisions/ADR-0113-native-test-metadata-terminal.md).
 
 The local Await cutover uses the same canonical `hub_task_status_update` receipt.
 When its projector source is a separate Task, the receipt includes that source
@@ -598,3 +750,70 @@ includes exact Stream/provider/Thread and command identity, queue state, wait
 reason, state age and a stalled marker after sixty seconds in `dispatching` or
 `reconciling`. A deferred command never
 becomes a synthetic live run merely to make blocked admission observable.
+
+Original native Await recovery (ADR-0116) uses the existing RM reconciliation
+operation/CLI and the exact original arguments hash and workflow CAS. It adds no
+public approval flag, second receipt or replay identity. An owning proof of the
+bounded already-published-notes archive can substitute for a nonexistent process
+guard; every real guard still refuses. Drift remains UNKNOWN. The same durable
+workflow outcome settles the same receipt; repeated terminal reconciliation
+performs a read without re-composing or re-archiving.
+
+
+## Explicit forward custody of an unsealed claim
+
+An explicitly authorized RM may use the existing `hub_task_operation_reconcile`
+with `claim_custody` to prepare and then fence one exact unsealed claim. This is
+withdrawal of future continuation, never historical NO_EFFECT. The old receipt,
+error, argument identity and UNKNOWN remain unchanged. Dedicated immutable stage
+state and terminal receipts commit in the existing MCP ledger, not a new journal.
+Original/caller/hash/Task/source/WIP/authorization and exact successor ID are
+pinned; changed or partially admitted evidence refuses without guessing effects.
+
+Fence requires positive complete legacy-cohort retirement through an exact
+externally retained native QUERY handle; missing job names or root PIDs do not
+prove it. Ordinary tools cannot acquire a valid witness from inside that job.
+The native port verifies the actual witness process/capture/source and local
+nonce-bound pipe, not caller-supplied retirement flags. A lost witness before the
+fence commit refuses; the committed positive certificate survives later collector
+exit. There is no forced stop or automatic independent launch mechanism.
+
+An explicitly scoped RM authorization may instead select
+`claim_custody.admission=isolated-source-v1` in the prepare envelope. The existing
+Task Git owner stages full independent Git objects and hash-verified WIP under a
+new custody epoch outside legacy source/ref/cleanup paths. The existing catalog
+atomically checks the complete Task-keyed SQL inventory and commits the fence;
+persistent data triggers protect current Task/binding/lifecycle/result/receipt
+writers, including old open connections, cached statements and replace/delete
+paths. Only the new canonical store can use a synchronous transaction-scoped
+epoch permit, cleared before commit. Effects before the fence cause refusal;
+late supported legacy writes are rejected or confined to the old checkout.
+The historical UNKNOWN is unchanged. This is the exact authorized historical
+claim scope in ADR-0131, not a default substitute for missing retirement proof.
+
+Only ordinary successor `hub_task_claim` with the declared ID and
+`forward_custody_request_id` assigns the Task. It retains the current executor's
+active/queued-work guard through the SQL commit and uses the existing managed
+Git owner for read-only source reuse. Original dependency preparation is not
+replayed, and its response says so. Late originals are fenced before any binding
+or baseline update, including receipt writes; exact post-commit retry reuses the
+same binding and assignment. See [ADR-0131](../decisions/ADR-0131-claim-forward-custody.md).
+
+An independently authorized unassigned original may explicitly pin
+`expected_owner_stream_id=null` only with `isolated-source-v1`. Missing/empty
+owner pins remain invalid. The Task must remain open/new without accepted Git
+results. The same owner preserves discovered managed source/WIP, or pins the
+actual registered local-main base only when no prior Task root/refs exist.
+Independent full history/refs and the existing SQL/receipt fences protect the
+one declared successor. Base pinning never repeats prepare/ensure, discards
+discovered Task artifacts or changes the historical UNKNOWN. An unassigned Task
+has no previous-executor busy lane; all assigned-owner guards remain unchanged.
+
+The existing MCP ledger reserves the declared successor by request ID across
+its entire mutating-tool namespace, independently of caller-supplied Task or
+forward fields. Intake checks the exact tool/caller/arguments hash inside the
+existing receipt transaction; a planned successor cannot be consumed before
+its matching fence. Persistent SQL guards also reject old cached receipt
+insert/replace/rekey paths. An occupied ID refuses custody preparation rather
+than replacing a receipt or selecting another ID. Exact genuine replay remains
+readback of that same assignment and receipt.

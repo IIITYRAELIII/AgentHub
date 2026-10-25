@@ -16,35 +16,24 @@ import process from "node:process";
 import { spawn } from "node:child_process";
 
 import { readAgentHubVersion } from "../infrastructure/filesystem/agent-hub-package.mjs";
+import { artifactVersionIdentity, SEMVER_BUILD_SCHEME } from "../domain/agent-hub-version.mjs";
 import { defaultRuntimeRoot, runtimeLayout, runtimeReleaseDirectory } from "../infrastructure/filesystem/runtime-layout.mjs";
-import { verifyRuntimeImportClosure, verifyRuntimeManifest } from "../infrastructure/filesystem/runtime-manifest-verifier.mjs";
+import { isRuntimeSourceFile, isRuntimeSourceModule, verifyRuntimeImportClosure, verifyRuntimeManifest } from "../infrastructure/filesystem/runtime-manifest-verifier.mjs";
 import { nextRuntimeReleaseVersion } from "../infrastructure/filesystem/runtime-release-version.mjs";
 import { protectRuntimeConfig, protectRuntimeDirectory } from "../infrastructure/filesystem/runtime-security.mjs";
 import { buildWindowsRuntimeHost, runtimeHostSourceHash } from "../infrastructure/process/runtime-host-builder.mjs";
 import { processIsAlive } from "../infrastructure/process/process-liveness.mjs";
 import { writeTextAtomic } from "../infrastructure/persistence/state-store.mjs";
+import { migrateUsageSyncServerSetting } from "../infrastructure/filesystem/usage-sync-settings-migration.mjs";
+import { captureRuntimeReleaseBinding, readRuntimePointer, withRuntimeInstallationLease } from "../infrastructure/filesystem/runtime-installation-custody.mjs";
+import { runtimePointerTransition, runtimeRollbackPointer } from "../infrastructure/filesystem/runtime-release-retention-policy.mjs";
 
 const SOURCE_ROOT = path.resolve(import.meta.dirname, "..", "..");
-const TOP_LEVEL_FILES = new Set([
-  "AGENT_HUB_GUIDE.md",
-  "package.json",
-  "package-lock.json",
-  "RuntimeHost.release-acceptance-v1.json",
-  "codex-process-ancestry.ps1",
-  "codex-rollout-processes.ps1",
-  "claude-session-processes.ps1",
-  "requirements.txt",
-  "requirements-tts.txt",
-  "attachment_thumbnail.py",
-  "runtime-launch.sh",
-  "start.ps1",
-  "transcribe.py",
-  "whisper_runtime.py",
-  "tts_worker.py",
-  "work-log.css",
-]);
-
 const RUNTIME_MODULE_ASSETS = [
+  ["src/infrastructure/filesystem/sealed-runtime-release.mjs",
+    "src/infrastructure/filesystem/sealed-runtime-release.cs"],
+  ["src/infrastructure/filesystem/sealed-transport-delete.mjs",
+    "src/infrastructure/filesystem/sealed-transport-delete.cs"],
   ["src/infrastructure/persistence/windows-delete-verified-entry.mjs",
     "src/infrastructure/persistence/windows-delete-verified-entry.cs"],
 ];
@@ -68,12 +57,7 @@ async function releaseFileNames(sourceRoot) {
   const topLevel = entries
     .filter((entry) => (
       (entry.isFile() && (
-        TOP_LEVEL_FILES.has(entry.name)
-        || ((entry.name.endsWith(".mjs") || entry.name.endsWith(".cjs"))
-          && !entry.name.endsWith(".test.mjs")
-          && !entry.name.endsWith(".test.cjs")
-          && !entry.name.endsWith(".e2e.test.mjs")
-          && entry.name !== "syntax-check.mjs")
+        isRuntimeSourceFile(entry.name)
       ))
       || (entry.isDirectory() && entry.name === "assets")
     ))
@@ -87,10 +71,7 @@ async function releaseFileNames(sourceRoot) {
       if (entry.isDirectory()) {
         await visitInternal(child);
       } else if (
-        (entry.name.endsWith(".mjs") || entry.name.endsWith(".cjs"))
-        && !entry.name.endsWith(".test.mjs")
-        && !entry.name.endsWith(".test.cjs")
-        && !entry.name.endsWith(".e2e.test.mjs")
+        isRuntimeSourceModule(child)
       ) {
         internal.push(child);
       }
@@ -148,10 +129,12 @@ async function sameFileContents(left, right) {
 
 async function releaseManifest(releaseRoot, names) {
   const files = [];
+  const directories = [];
   async function visit(relative) {
     const full = path.join(releaseRoot, relative);
     const info = await stat(full);
     if (info.isDirectory()) {
+      directories.push(relative.replaceAll("\\", "/"));
       for (const child of await readdir(full)) await visit(path.join(relative, child));
       return;
     }
@@ -162,27 +145,11 @@ async function releaseManifest(releaseRoot, names) {
     });
   }
   for (const name of names) await visit(name);
-  return files.sort((left, right) => left.path.localeCompare(right.path));
+  return { files: files.sort((left, right) => left.path.localeCompare(right.path)), directories: directories.sort() };
 }
 
 function newReleaseId(now = new Date()) {
   return `${now.toISOString().replace(/[-:.TZ]/g, "").slice(0, 14)}-${randomUUID().slice(0, 8)}`;
-}
-
-async function pruneRuntimeReleases(layout, keep, {
-  removeRelease = (target) => rm(target, { recursive: true, force: true }),
-  onWarning = (error, target) => console.warn(`Cannot prune runtime release ${target}: ${error.message}`),
-} = {}) {
-  for (const entry of await readdir(layout.releasesDir, { withFileTypes: true })) {
-    if (!entry.isDirectory() || keep.has(entry.name)) continue;
-    const target = path.join(layout.releasesDir, entry.name);
-    try {
-      await removeRelease(target);
-    } catch (error) {
-      if (!["EBUSY", "EPERM", "EACCES"].includes(error?.code)) throw error;
-      onWarning(error, target);
-    }
-  }
 }
 
 async function pruneReplacedStableFiles(layout) {
@@ -300,14 +267,21 @@ async function installStableRuntimeFiles(layout, releaseRoot, {
   }
 }
 
-export async function prepareRuntime({
+export async function prepareRuntime(options = {}) {
+  const runtimeRoot = options.runtimeRoot ?? defaultRuntimeRoot();
+  return withRuntimeInstallationLease(runtimeRoot, lease => prepareRuntimeOwned({ ...options, runtimeRoot, lease }));
+}
+
+async function prepareRuntimeOwned({
   sourceRoot = SOURCE_ROOT,
   runtimeRoot = defaultRuntimeRoot(),
   releaseId = newReleaseId(),
   publicationRevision = null,
+  expectedReleaseVersion = null,
   mobileAssetsRoot = null,
   beforeManifest,
   installProductionDependencies = installLockedRuntimeDependencies,
+  lease,
 } = {}) {
   const layout = runtimeLayout(runtimeRoot);
   const releaseRoot = runtimeReleaseDirectory(runtimeRoot, releaseId);
@@ -316,6 +290,26 @@ export async function prepareRuntime({
   await protectRuntimeDirectory(layout.root);
   await mkdir(layout.releasesDir, { recursive: true });
   await protectRuntimeDirectory(layout.releasesDir);
+  const pointer = await readRuntimePointer(runtimeRoot);
+  if (pointer.runtimeRetention?.retired?.some?.(entry => entry.releaseId === releaseId && entry.operationId)) {
+    throw new Error("Partially retired runtime cannot be prepared again");
+  }
+  // A frozen publication may require one exact allocator result. Check it
+  // under the existing installation lease, before copying, compiling or npm ci.
+  // Reuse of an already prepared body belongs to the publication checkpoint.
+  let frozenReleaseVersion = null;
+  const allocationPackageVersion = readAgentHubVersion({ packageFile: path.join(sourceRoot, "package.json") });
+  const expected = typeof expectedReleaseVersion === "string" && expectedReleaseVersion.includes("+build.")
+    ? artifactVersionIdentity(expectedReleaseVersion) : null;
+  frozenReleaseVersion = await nextRuntimeReleaseVersion({
+    releasesDir: layout.releasesDir, packageVersion: allocationPackageVersion,
+    ...(expected ? { allocationFloor: expected.buildNumber - 1 } : {}),
+  });
+  if (expectedReleaseVersion !== null) {
+    if (typeof expectedReleaseVersion !== "string" || expectedReleaseVersion !== frozenReleaseVersion) {
+      throw new Error(`Frozen runtime version differs from the next allocated version: ${frozenReleaseVersion}`);
+    }
+  }
   await mkdir(staging, { recursive: true });
   try {
     const names = await releaseFileNames(sourceRoot);
@@ -383,20 +377,24 @@ export async function prepareRuntime({
       names.push("node_modules");
     }
     const packageVersion = readAgentHubVersion({ packageFile: path.join(sourceRoot, "package.json") });
+    const allocatedVersion = frozenReleaseVersion ?? await nextRuntimeReleaseVersion({
+      releasesDir: layout.releasesDir, packageVersion,
+    });
+    const semanticBuild = allocatedVersion.includes("+build.") ? artifactVersionIdentity(allocatedVersion) : null;
     const manifest = {
       releaseId,
       version: packageVersion,
-      releaseVersion: await nextRuntimeReleaseVersion({
-        releasesDir: layout.releasesDir,
-        packageVersion,
-      }),
+      releaseVersion: allocatedVersion,
+      ...(semanticBuild ? { versionScheme: SEMVER_BUILD_SCHEME,
+        publicVersion: packageVersion, buildNumber: semanticBuild.buildNumber } : {}),
       createdAt: new Date().toISOString(),
       sourceRoot: path.resolve(sourceRoot),
       ...(publicationRevision ? { publicationRevision } : {}),
-      files: await releaseManifest(staging, names),
+      ...await releaseManifest(staging, names),
     };
     await verifyRuntimeImportClosure(staging, manifest.files);
     await writeFile(path.join(staging, "runtime-manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+    await lease.assertOwned();
     await rename(staging, releaseRoot);
     // Staging is created below the already protected releases directory, so
     // every copied file inherits the owner-only ACL. Running icacls /T with
@@ -424,9 +422,14 @@ export async function verifyInstalledRuntime({ runtimeRoot = defaultRuntimeRoot(
   return true;
 }
 
-export async function installPreparedRuntime({
+export async function installPreparedRuntime(options = {}) {
+  const runtimeRoot = options.runtimeRoot ?? defaultRuntimeRoot();
+  return withRuntimeInstallationLease(runtimeRoot, lease => installPreparedRuntimeOwned({ ...options, runtimeRoot, lease }));
+}
+
+async function installPreparedRuntimeOwned({
   runtimeRoot = defaultRuntimeRoot(), releaseId, releaseRoot = runtimeReleaseDirectory(runtimeRoot, releaseId),
-  removeRelease, onPruneWarning, beforeStableLauncherCommit, beforePointerCommit, commitStableFile,
+  beforeStableLauncherCommit, beforePointerCommit, commitStableFile, lease,
   writePointer = atomicJson, protectPointer = protectRuntimeConfig,
   restorePointer = async (target, priorText) => {
     if (priorText === null) await rm(target, { force: true });
@@ -450,17 +453,17 @@ export async function installPreparedRuntime({
       throw error;
     });
     const previousPointer = JSON.parse(priorPointerText ?? "{}");
+    const installed = await captureRuntimeReleaseBinding(releaseRoot, releaseId);
+    const transition = runtimePointerTransition({ pointer: previousPointer, installed });
+    await migrateUsageSyncServerSetting({ layout, previousReleaseId: previousPointer.current });
     const stableFiles = await installStableRuntimeFiles(layout, releaseRoot, {
       beforeCommit: beforeStableLauncherCommit,
       commitFile: commitStableFile,
     });
-    const pointer = {
-      current: releaseId,
-      previous: previousPointer.current ?? previousPointer.previous ?? null,
-      updatedAt: new Date().toISOString(),
-    };
+    const pointer = transition.pointer;
     try {
       await beforePointerCommit?.({ layout, releaseId, releaseRoot, pointer });
+      await lease.assertOwned();
       await writePointer(layout.currentFile, pointer);
       await protectPointer(layout.currentFile);
       await stableFiles.cleanup();
@@ -486,11 +489,9 @@ export async function installPreparedRuntime({
       }
       throw error;
     }
-    await pruneRuntimeReleases(
-      layout,
-      new Set([pointer.current, pointer.previous].filter(Boolean)),
-      { removeRelease, onWarning: onPruneWarning },
-    );
+    // Prepared, running, unpublished and legacy bodies are not disposable by
+    // exclusion from two pointer IDs. The after-ready owner retires only exact
+    // known bindings through its original durable maintenance operation.
     for (const entry of await readdir(layout.root, { withFileTypes: true })) {
       if (entry.isFile() && /^config(?:\\..+)?\\.json$/iu.test(entry.name)) {
         await protectRuntimeConfig(path.join(layout.root, entry.name));
@@ -502,6 +503,8 @@ export async function installPreparedRuntime({
       releaseRoot,
       stableUpdateDeferred: false,
       blockedStableTarget: null,
+      pruningDeferred: true,
+      retentionReason: transition.deferred ?? "after-ready-runtime-owner",
     };
 }
 
@@ -632,15 +635,16 @@ export async function activateRuntime({
 }
 
 export async function rollbackRuntime({ runtimeRoot = defaultRuntimeRoot() } = {}) {
+  return withRuntimeInstallationLease(runtimeRoot, lease => rollbackRuntimeOwned(runtimeRoot, lease));
+}
+
+async function rollbackRuntimeOwned(runtimeRoot, lease) {
   const layout = runtimeLayout(runtimeRoot);
   const pointer = JSON.parse(await readFile(layout.currentFile, "utf8"));
   if (!pointer.previous) throw new Error("No previous runtime release is available");
   await access(runtimeReleaseDirectory(runtimeRoot, pointer.previous));
-  await atomicJson(layout.currentFile, {
-    current: pointer.previous,
-    previous: pointer.current,
-    updatedAt: new Date().toISOString(),
-  });
+  await lease.assertOwned();
+  await atomicJson(layout.currentFile, runtimeRollbackPointer({ pointer }));
   return { current: pointer.previous, previous: pointer.current };
 }
 
@@ -672,20 +676,29 @@ export async function runtimeStatus({ runtimeRoot = defaultRuntimeRoot(), requir
   };
 }
 
-function parseCli(args) {
+export function parseRuntimeArguments(args) {
   const command = args[0] ?? "status";
   let runtimeRoot = defaultRuntimeRoot();
+  let expectedReleaseVersion = null, publicationRevision = null;
   for (let index = 1; index < args.length; index += 1) {
     if (args[index] === "--runtime-root" && args[index + 1]) runtimeRoot = path.resolve(args[++index]);
+    else if (args[index] === "--expected-release-version" && args[index + 1] && expectedReleaseVersion === null) expectedReleaseVersion = args[++index];
+    else if (args[index] === "--publication-revision" && args[index + 1] && publicationRevision === null) publicationRevision = args[++index];
     else throw new Error(`Unknown argument: ${args[index]}`);
   }
-  return { command, runtimeRoot };
+  if (expectedReleaseVersion !== null || publicationRevision !== null) {
+    if (command !== "deploy" || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u.test(publicationRevision ?? "")) {
+      throw new Error("Frozen deploy requires its original source and artifact version");
+    }
+    artifactVersionIdentity(expectedReleaseVersion);
+  }
+  return { command, runtimeRoot, expectedReleaseVersion, publicationRevision };
 }
 
 export async function main(args = process.argv.slice(2)) {
-  const { command, runtimeRoot } = parseCli(args);
+  const { command, runtimeRoot, expectedReleaseVersion, publicationRevision } = parseRuntimeArguments(args);
   if (command === "deploy") {
-    const result = await deployRuntime({ runtimeRoot });
+    const result = await deployRuntime({ runtimeRoot, expectedReleaseVersion, publicationRevision });
     await prepareRuntimeConfig({ runtimeRoot });
     console.log(`Runtime release deployed: ${result.releaseId}`);
   } else if (command === "activate") {

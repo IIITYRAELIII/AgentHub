@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -180,6 +180,63 @@ test("one operation generation isolates source bundles per repository", { timeou
   assert.equal((await readFile(path.join(firstArchive, "identity.json"), "utf8")).includes(common.operationId), true);
   assert.equal((await readFile(path.join(firstArchive, "evidence", `${firstCandidate.manifestHash}.json`))).length > 0, true);
   assert.equal((await readFile(path.join(secondArchive, "evidence", `${secondCandidate.manifestHash}.json`))).length > 0, true);
+});
+
+test("partial generation transport is preserved on failure and is never overwritten by retry", { timeout: 60000 }, async context => {
+  const f = await fixture(context);
+  const selected = await taskResult(f, context, { branch: "HUB-partial-transport", file: "selected.txt" });
+  const input = { projectRoot: f.primary, workspaceId: "workspace", planRevision: "partial-transport-plan",
+    approvedBaseCommit: f.baseCommit, frozenTasks: [{ taskId: "partial-transport", taskRevision: 2, resultCommit: selected }] };
+  await f.service.prepareCandidate(input);
+  const operationId = "partial-transport-operation", generation = 1;
+  const id = createHash("sha256").update(`${operationId}:${generation}:${f.primary}`).digest("hex").slice(0, 24);
+  const root = path.join(f.dataDir, "release-gens", id), bundle = path.join(root, "source.bundle");
+  await mkdir(root, { recursive: true });
+  const partial = Buffer.from("original interrupted pack evidence\n");
+  await writeFile(bundle, partial); await writeFile(path.join(root, "useful.keep"), "unknown useful work");
+  const request = { ...input, operationId, generation, changelogContent: Buffer.from("notes\n") };
+  for (let attempt = 0; attempt < 2; attempt++) {
+    await assert.rejects(f.service.prepareGeneration(request), /bundle|repository|transport/iu);
+    assert.deepEqual(await readFile(bundle), partial);
+    assert.equal(await readFile(path.join(root, "useful.keep"), "utf8"), "unknown useful work");
+  }
+});
+
+test("new permanent release captures keep exact selected history without unrelated refs or object payloads", { timeout: 60000 }, async context => {
+  const f = await fixture(context);
+  const selected = await taskResult(f, context, { branch: "HUB-selected-transport", file: "selected.txt" });
+  const other = await taskResult(f, context, { branch: "HUB-unselected-heavy", file: "unselected.bin", content: randomBytes(256_000) });
+  const otherBlob = await git(f.primary, "rev-parse", `${other}:unselected.bin`);
+  const sourceRefs = await git(f.primary, "show-ref");
+  const frozenTasks = [{ taskId: "selected-transport", taskRevision: 2, resultCommit: selected }];
+  const input = { projectRoot: f.primary, workspaceId: "workspace", planRevision: "selected-transport-plan",
+    approvedBaseCommit: f.baseCommit, frozenTasks };
+  const prepared = await f.service.prepareCandidate(input);
+  await git(prepared.releaseRoot, "cat-file", "-e", `${selected}^{commit}`);
+  await assert.rejects(git(prepared.releaseRoot, "cat-file", "-e", otherBlob));
+  await assert.rejects(git(prepared.releaseRoot, "show-ref", "refs/remotes/workspace/HUB-unselected-heavy"));
+  const request = { ...input, operationId: "selected-transport-operation", generation: 1,
+    changelogContent: Buffer.from("selected release notes\n", "utf8") };
+  const generation = await f.service.prepareGeneration(request);
+  const bundle = path.join(generation.generationRoot, "source.bundle"), original = await readFile(bundle);
+  const broad = path.join(f.root, "all-refs-comparison.bundle");
+  await git(f.primary, "bundle", "create", broad, "--all");
+  const broadBytes = (await stat(broad)).size;
+  assert.ok(broadBytes - original.length > 128_000, "unselected random payload is not copied into the new transport");
+  context.diagnostic(`isolated transport bytes: all-refs=${broadBytes}, selected=${original.length}`);
+  const heads = await git(f.primary, "bundle", "list-heads", bundle);
+  assert.match(heads, / refs\/heads\/main(?:\r?\n|$)/u);
+  assert.doesNotMatch(heads, /HUB-unselected-heavy/u);
+  await git(generation.releaseRoot, "cat-file", "-e", `${selected}^{commit}`);
+  await assert.rejects(git(generation.releaseRoot, "cat-file", "-e", otherBlob));
+  await assert.rejects(git(generation.releaseRoot, "cat-file", "-e", `${other}^{commit}`));
+  await assert.rejects(readFile(path.join(generation.releaseRoot, ".git", "objects", "info", "alternates")), { code: "ENOENT" });
+  assert.equal(await git(generation.releaseRoot, "rev-parse", "HEAD"), generation.preReleaseHead);
+  const repeated = await f.service.prepareGeneration(request);
+  assert.equal(repeated.preReleaseHead, generation.preReleaseHead);
+  assert.deepEqual(await readFile(bundle), original, "original generation transport is never rebuilt on retry");
+  assert.equal(await git(f.primary, "show-ref"), sourceRefs, "capture does not mutate source refs");
+  assert.equal(await git(f.primary, "status", "--porcelain"), "");
 });
 
 for (const binaryOnly of [false, true]) test(`PreRelease preserves ${binaryOnly ? "terminal binary patch delimiters" : "binary patch bytes and a trailing blank context line"}`, { timeout: 180000 }, async (context) => {
@@ -2214,9 +2271,10 @@ test("frozen candidate readback is phase-aware and feeds release completion with
   assert.equal(pending, null);
 });
 
-// Thirteen real Git histories are prepared, frozen, corrected and reverted;
-// retain a bounded margin over the measured 116-second isolated execution.
-test("a frozen 13-Task candidate accepts one descendant result delta with exact native Task history", { timeout: 180000 }, async (context) => {
+// This exercises finite real Git histories, not a latency contract. An overall
+// stopwatch can cancel progressing Git work and start cleanup before it drains.
+// Keep command-level failure handling and await the complete scenario instead.
+test("a frozen 13-Task candidate accepts one descendant result delta with exact native Task history", async (context) => {
   const setup = await fixture(context);
   await writeFile(path.join(setup.primary, "CHANGELOG.md"), "previous\n", "utf8");
   setup.baseCommit = await commit(setup.primary, "release base");
@@ -2360,7 +2418,7 @@ test("prepared candidate natively composes an additional exact correction", { ti
     refreshed.preReleaseHead)).split("\n").filter(Boolean), ["AgentHub/shared.txt"]);
 });
 
-test("operation lineage rejects an unrelated result and accepts a descendant net correction", { timeout: 30000 }, async (context) => {
+test("operation lineage rejects an unrelated result and accepts a descendant net correction", async (context) => {
   const setup = await fixture(context);
   const neighborResult = await taskResult(setup, context, {
     branch: "HUB-lineage-neighbor", file: "AgentHub/neighbor.txt", content: "neighbor\n",

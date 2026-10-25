@@ -9,7 +9,7 @@ export class CodexCatalogProjectionService {
 
   constructor(dependencies = {}) {
     for (const name of [
-      "backfillPricing", "readTitleHistories", "findProject", "rememberRolloutPath",
+      "readTitleHistories", "findProject", "rememberRolloutPath",
       "readActivity", "runForTask", "selectActiveTurnId", "capturedOwner", "runtimeActive",
       "agentHubPid", "resolveOwner", "catalogEntry", "modelLabel", "threadResponseTitle",
       "confirmationKey", "expectedTitle", "clearExpectedTitle", "preferredTitle", "pinnedTitle",
@@ -23,7 +23,6 @@ export class CodexCatalogProjectionService {
     const entries = [];
     let pinnedTitlesChanged = false;
     let titleConfirmationsChanged = false;
-    await d.backfillPricing(threads);
     const titleHistories = await d.readTitleHistories();
     const batchSize = 16;
     for (let start = 0; start < threads.length; start += batchSize) {

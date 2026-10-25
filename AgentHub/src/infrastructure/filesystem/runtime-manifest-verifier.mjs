@@ -4,14 +4,52 @@ import path from "node:path";
 
 import { agentHubReleaseSequence, readAgentHubVersion } from "./agent-hub-package.mjs";
 import { relativeModuleSpecifiers } from "./module-import-specifiers.mjs";
+import { manifestVersionIdentity } from "../../domain/agent-hub-version.mjs";
 
 const MODULE_FILE_PATTERN = /\.(?:cjs|mjs)$/iu;
+
+const RUNTIME_TOP_LEVEL_FILES = new Set([
+  "AGENT_HUB_GUIDE.md",
+  "package.json",
+  "package-lock.json",
+  "RuntimeHost.release-acceptance-v1.json",
+  "codex-process-ancestry.ps1",
+  "codex-rollout-processes.ps1",
+  "claude-session-processes.ps1",
+  "requirements.txt",
+  "requirements-tts.txt",
+  "attachment_thumbnail.py",
+  "runtime-launch.sh",
+  "start.ps1",
+  "transcribe.py",
+  "whisper_runtime.py",
+  "tts_worker.py",
+  "work-log.css",
+]);
 
 function normalizedRelative(value) {
   return value.replaceAll("\\", "/").replace(/^\.\//u, "");
 }
 
-export async function verifyRuntimeImportClosure(releaseRoot, files) {
+// Shared with the canonical source collector and native candidate validation.
+// assets are copied recursively; src and top-level modules exclude test tools.
+export function isRuntimeSourceModule(relative) {
+  const file = normalizedRelative(relative);
+  const name = path.posix.basename(file);
+  if (file.startsWith("assets/")) return MODULE_FILE_PATTERN.test(name);
+  return /\.(?:cjs|mjs)$/u.test(name) && ((!file.includes("/") || file.startsWith("src/"))
+      && !/\.(?:test|e2e\.test)\.(?:cjs|mjs)$/u.test(name)
+      && file !== "syntax-check.mjs");
+}
+
+export function isRuntimeSourceFile(relative) {
+  const file = normalizedRelative(relative);
+  return RUNTIME_TOP_LEVEL_FILES.has(file) || file.startsWith("assets/") || isRuntimeSourceModule(file);
+}
+
+export async function verifyRuntimeImportClosure(releaseRoot, files, {
+  readModule = importer => readFile(releasePath(releaseRoot, importer), "utf8"),
+} = {}) {
   const included = new Set(files.map((entry) => normalizedRelative(entry.path ?? entry)));
   const missing = [];
   // npm's locked package tree is verified by npm ci and the runtime manifest.
@@ -19,7 +57,7 @@ export async function verifyRuntimeImportClosure(releaseRoot, files) {
   // the first-party relative-import rule does not model Node package resolution.
   for (const importer of [...included].filter((entry) =>
     MODULE_FILE_PATTERN.test(entry) && !entry.startsWith("node_modules/"))) {
-    const source = await readFile(releasePath(releaseRoot, importer), "utf8");
+    const source = await readModule(importer);
     for (const specifier of relativeModuleSpecifiers(source)) {
       const target = normalizedRelative(path.posix.normalize(path.posix.join(
         path.posix.dirname(importer),
@@ -58,6 +96,7 @@ export async function verifyRuntimeManifest(releaseRoot, releaseId) {
   }
   if (manifest.releaseVersion != null) {
     agentHubReleaseSequence(packageVersion, manifest.releaseVersion);
+    if (manifest.releaseVersion.includes("+build.")) manifestVersionIdentity(manifest);
   }
   if (!Array.isArray(manifest.files)) throw new Error("Agent Hub runtime manifest has no file list");
   await verifyRuntimeImportClosure(releaseRoot, manifest.files);

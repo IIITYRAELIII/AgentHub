@@ -1,5 +1,24 @@
 # PERF-001 — Local command latency
 
+## Bounded background storage work
+
+Policy v1 admits at most three artifact units per pass and checks a cooperative
+20-second budget between units, with bounded metadata/head lists/file size and
+persisted discovery progress. It does not abandon an in-flight destructive child
+or claim that hashing a large admitted transport has a hard 20-second deadline.
+Owner discovery reads a flat artifact directory; no per-turn recursive scan of
+archives, history or user work is introduced. Runtime health exposes cached
+status only. Filesystem free-space observations remain distinct from logical
+byte counts and can include concurrent allocations. See ADR-0126.
+
+Policy v2 runtime-body batches remove at most 64 files/256 MiB and check a
+cooperative ten-second deletion budget after bounded metadata preflight. Asset
+bytes are hashed only for the admitted batch, through retained deletion handles;
+there is no repeated whole-body hash before every batch. The original partial
+operation remains pending between batches, and shutdown drains its actual child.
+The shared installation lease is scoped to the physical runtime root, outside
+ordinary provider/message admission. Install no longer sweeps prepared bodies.
+
 Repeated journal projection may reuse a verified rendering only within the
 existing usage worker lifetime. Its bounded scalar receipt is not source
 authority: the current SQLite journal revision/index, clean dirty set, exact
@@ -89,7 +108,62 @@ shares the already scheduled durable write instead of serializing and fsyncing
 the complete bounded cache again. A changed value or eviction-order change is
 still persisted, and a failed write remains retryable with the same content.
 
+Admission resets an absent or already-empty diff without promoting an empty
+cache entry or evicting another Stream's diff. This reset still awaits the
+existing write fence and persists any dirty remembered updates; a real stale
+diff is cleared durably. Ordinary cache set/eviction ordering is unchanged.
+The existing restart drain flushes remembered diffs. Persistence errors propagate
+through admission instead of becoming successful diagnostics.
+Content-free child spans retain the original command ID through diff encoding,
+queue wait, open/write/fsync/rename, settlement and an unchanged persistence
+fence; eligibility and the pre-dispatch durable save have separate spans.
+These elapsed spans do not classify filesystem or callback wait as CPU work.
+
 ## Unified performance evidence
+
+Explicitly traced snapshot GETs carry their existing client trace ID to the
+HTTP owner; diagnostic health/static probes may supply the same bounded
+`clientTraceId` query field. The response echoes only that identity. Existing
+trace records separate route/read waiting, synchronous JSON encoding, response
+finish and disconnect, with no URL or payload retention. Thread CPU and loop
+active/idle deltas over an asynchronous span describe the shared window, not
+exclusive CPU attribution to that request. Synchronous encode deltas cover that
+specific operation. No pre-callback network queue duration is invented.
+
+The existing runtime health sampling tick may take one internal CPU sample per
+process when its measured event-loop p95 reaches two seconds. It opens no TCP
+debugger endpoint and executes no debugger evaluation. Sampling targets fifteen
+seconds at a ten-millisecond interval; a delayed stop callback is reported as
+timer overrun rather than a hard deadline. Shutdown stops and drains that sample
+before closing the existing trace worker. Only twenty bounded code-location
+stacks and counters are retained through that worker; raw profiles, source text,
+values, absolute paths and unknown external function names are discarded.
+Failure is diagnostic-only and does not retry or change application outcomes.
+This temporary owning-operator diagnostic is removable once the common runtime
+stall is localized and its corrected production path has verified AFTER evidence;
+it is not itself a latency fix or a new event-loop monitor.
+
+Restart readiness checkpoints use the original restart operation ID and bounded
+content-free blocker run IDs/counts, pending-admission state and request time.
+Changed observations distinguish waiting from ready/cutover; unchanged repeated
+checks do not flood traces. Existing command IDs retain durable intake, dispatch
+and provider-acceptance timings. These observations neither close admission nor
+attribute inclusive waiting time to CPU/network work. Sink failure cannot change
+restart or message delivery, and source/fixture timings are not live latency proof.
+
+Runtime snapshot projection and compaction resolve only their referenced command
+IDs through the existing ledger. They do not hydrate unrelated active or hot
+terminal records before filtering. Full startup/reconnect overlay remains a
+canonical recovery read. This eliminates unnecessary enumeration, not mandatory
+run persistence or its error/recovery fence. Original-command measurements must
+still distinguish snapshot encoding, worker/queue waits and durable writes; a
+file size or inclusive wall duration alone does not identify CPU or fsync cost.
+
+Local submission, durable Hub acceptance, preparation/queueing and exact provider
+acceptance are distinct visible boundaries. Rendering a durable ACK does not
+wait for full snapshot/history synchronization. A preparing run may own admission
+and cancellation without being labelled a running provider. First text and usage
+enrichment are not prerequisites for displaying an accepted provider turn.
 
 Client interactions, navigation, control ACKs, request and rendering durations,
 long main-thread tasks, startup, terminal-outbox phases and existing runtime
@@ -99,6 +173,12 @@ telemetry accepts bounded batches with allowlisted content-free fields through
 the existing authenticated transport; it cannot persist message bodies, DOM
 text, request URLs or arbitrary error text. Telemetry requests do not trace
 themselves. Backpressure drops diagnostics, never application commands.
+For the public Worker upload transport, the local SQLite worker is not in the
+request path: attachment-only failure spans use a separate authenticated,
+bounded Journal Durable Object trace owner. A 24-hour browser cache retries
+those spans after endpoint loss without changing upload or command outcomes.
+The Worker trace is queried by exact upload ID and is not merged into local
+runtime health statistics. See MSG-002 and ADR-0083.
 
 Selected-Stream visibility diagnostics retain the original snapshot request
 identity across the server's bounded run-source/gate observation, the client's
@@ -124,6 +204,20 @@ errors without changing the response; complete action-handler spans include
 the subsequent awaited processing. Aborted requests and paint measurements
 cancelled by a hidden surface have explicit diagnostic outcomes. They never
 claim that a Hub command was cancelled or that hidden content became visible.
+For a materialized terminal history page carrying an exact root-user
+`clientUserMessageId`, `history-retrieved` and `history-terminal-paint` join the
+existing server `terminal-history` span under that original command identity.
+Only bounded Stream/provider/Thread/turn identity and terminal revision pass the
+client telemetry allowlist. Retrieval is not paint; paint is recorded only for
+the selected visible chat after the exact terminal message has been rendered,
+using the existing two-frame paint opportunity (not a compositor guarantee).
+At completion it revalidates the existing navigation generation, selected chat,
+route, materialized page and exact connected visible terminal/revision. Stream,
+view, historical navigation or revision supersession cancels the paired
+diagnostic with `failureKind=superseded`, never claiming an old successful paint.
+Unknown original identity emits no invented command correlation. UTC endpoints
+permit cross-process correlation with clock-skew limitations; the client render
+duration remains monotonic. No history polling or delivery authority is added.
 Configuration and infrastructure construction precede the trace worker. Their
 monotonic durations and original UTC endpoints are captured before the work and
 submitted to that same worker once it exists, marked `bufferedUntilTraceReady`.

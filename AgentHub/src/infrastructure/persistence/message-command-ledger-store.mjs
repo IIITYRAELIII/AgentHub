@@ -422,6 +422,15 @@ function projectedReceipt(record) {
     ...(record.receipt?.result ?? {}),
     ...(record.result ?? {}),
   };
+  result.commandState = record.state;
+  result.provider ??= identity.provider;
+  result.submittedAt = identity.createdAt;
+  if (Object.hasOwn(result, "providerAcceptedAt")) {
+    result.startedAt = result.providerAcceptedAt;
+    result.deliveredAt = result.providerAcceptedAt;
+  } else result.startedAt ??= result.deliveredAt ?? null;
+  result.completedAt = record.terminalAtMs == null ? null : new Date(record.terminalAtMs).toISOString();
+  result.terminalRevision = Number(record.result?.terminalRevision) || 0;
   result.pending = false;
   if (["queued", "dispatching"].includes(record.state)) {
     result.accepted = record.item?.conflictKind === "message-intake" || result.accepted === true;
@@ -452,11 +461,23 @@ function projectedReceipt(record) {
     result.accepted = false;
     result.pending = false;
     result.rejected = true;
+    result.failed = true;
   } else if (record.state === "unknown") {
     result.accepted = false;
     result.deferred = true;
     result.queued = false;
     result.unknown = true;
+  }
+  if (TERMINAL_STATES.has(record.state) || record.state === "unknown") {
+    result.deferred = record.state === "unknown";
+    result.queued = false;
+    result.dispatching = false;
+    result.attentionRequired = false;
+    result.paused = false;
+    result.completed = record.state === "completed";
+    result.failed = record.state === "failed";
+    result.cancelled = record.state === "cancelled";
+    result.unknown = record.state === "unknown";
   }
   return { ...identity, result };
 }
@@ -481,6 +502,15 @@ function terminalRetryTombstone(record) {
   }
   if (!result.provider && receipt?.provider) result.provider = receipt.provider.slice(0, 40);
   if (!result.threadId && receipt?.threadId) result.threadId = receipt.threadId.slice(0, 500);
+  // Only the new captured-time protocol owns this distinction. Keep explicit
+  // unknowns through compaction without inventing fields on legacy tombstones.
+  if (Object.hasOwn(source, "providerAcceptedAt")) {
+    for (const key of ["providerAcceptedAt", "admittedAt"]) {
+      if (Object.hasOwn(source, key)) {
+        result[key] = typeof source[key] === "string" ? source[key].slice(0, 100) : null;
+      }
+    }
+  }
   const terminalRevision = Number(source.terminalRevision);
   if (Number.isSafeInteger(terminalRevision) && terminalRevision > 0) {
     result.terminalRevision = terminalRevision;
@@ -715,9 +745,10 @@ export class MessageCommandLedgerStore {
     const queued = inputByClientId(value, "queuedInputs");
     const runs = runByClientId(value);
     const evidenceIds = new Set([...receipts.keys(), ...pending.keys(), ...queued.keys(), ...runs.keys()]);
-    const records = this.activeRecords().filter((record) => (
-      evidenceIds.has(record.clientUserMessageId)
-    ));
+    // Snapshot projection owns only the identities present in this snapshot.
+    // Do not hydrate every other active lane merely to discard it afterwards.
+    const records = [...evidenceIds].map(id => this.get(id))
+      .filter(record => record && ACTIVE_STATES.includes(record.state));
     if (!records.length) return { scanned: 0, changed: 0 };
     const update = this.#database.prepare(`
       UPDATE message_commands
@@ -1039,6 +1070,11 @@ export class MessageCommandLedgerStore {
     `).get(String(id ?? "").trim()));
   }
 
+  projectReceipt(receipt) {
+    const record = this.get(receipt?.clientUserMessageId);
+    return record ? projectedReceipt(record) ?? receipt : receipt;
+  }
+
   records() {
     return this.#database.prepare(`
       SELECT * FROM message_commands ORDER BY accepted_at_ms, client_user_message_id
@@ -1050,11 +1086,12 @@ export class MessageCommandLedgerStore {
   }
 
   withoutOwnedProjections(value) {
-    return withoutOwnedProjectionRecords(value, this.#recordsForSnapshot(value));
+    return withoutOwnedProjectionRecords(value, this.#recordsForSnapshot(value, { referencedOnly: true }));
   }
 
-  #recordsForSnapshot(value) {
-    const records = new Map(this.projectionRecords().map((record) => [record.clientUserMessageId, record]));
+  #recordsForSnapshot(value, { referencedOnly = false } = {}) {
+    const records = new Map((referencedOnly ? [] : this.projectionRecords())
+      .map((record) => [record.clientUserMessageId, record]));
     // A stale snapshot can still reference a command whose payload was archived.
     // Resolve only those exact IDs; tombstones remain authority beyond hot retention.
     for (const item of [

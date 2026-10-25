@@ -1,8 +1,30 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+
+test("explicit server setting preserves synchronization cursors and does not rewrite enrollment on load", async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "hub-explicit-sync-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const file = path.join(root, "remote.json");
+  const old = { serverUrl: "https://old.example.invalid", deviceId: "device-1", enrolledAt: "2026-01-01T00:00:00Z",
+    lastUsagePushJournalRevision: 7, lastUsagePullRevision: 9, lastUsagePullServerGeneration: "server-1" };
+  await writeFile(file, JSON.stringify(old));
+  const originalBytes = await readFile(file);
+  const store = new UsageSyncRemoteConfigStore({ file, configuredServerUrl: "https://new.example.invalid" });
+  const loaded = await store.load();
+  assert.equal(loaded.serverUrl, "https://new.example.invalid");
+  for (const key of Object.keys(old).filter(key => key !== "serverUrl")) assert.equal(loaded[key], old[key]);
+  assert.deepEqual(await readFile(file), originalBytes);
+  await assert.rejects(store.rememberEnrollment({ serverUrl: "https://old.example.invalid", deviceId: "other" }), /configured server/u);
+  assert.deepEqual(await readFile(file), originalBytes);
+  await store.rememberPush({ ok: true }, { usageJournalRevision: 8 });
+  assert.equal((await store.load()).lastUsagePullRevision, 9);
+  assert.equal((await store.load()).lastUsagePushJournalRevision, 8);
+  const disabled = new UsageSyncRemoteConfigStore({ file, configuredServerUrl: "", defaultServerUrl: "https://fallback.example.invalid" });
+  assert.equal((await disabled.load()).serverUrl, "");
+});
 
 import { UsageSyncRemoteConfigStore } from "../../../src/infrastructure/persistence/usage-sync-remote-config-store.mjs";
 

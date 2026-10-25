@@ -4,7 +4,8 @@ param(
     [ValidateSet('Debug', 'Release')]
     [string]$Configuration = 'Debug',
     [long]$VersionCode = 0,
-    [string]$VersionName = ''
+    [string]$VersionName = '',
+    [string]$ArtifactVersion = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -12,6 +13,22 @@ $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $mobileAssets = Join-Path (Split-Path -Parent $root) 'assets\mobile'
 $publishedManifest = Join-Path $mobileAssets 'update.json'
 $buildTime = [DateTimeOffset]::UtcNow
+if ($ArtifactVersion) {
+    $versionJson = & node (Join-Path (Split-Path -Parent $root) 'release-version.mjs') --android-artifact $ArtifactVersion
+    if ($LASTEXITCODE -ne 0) { throw 'Invalid frozen Android artifact version.' }
+    $frozen = $versionJson | ConvertFrom-Json
+    if (($VersionCode -gt 0 -and $VersionCode -ne $frozen.versionCode) -or
+        ($VersionName -and $VersionName -ne $frozen.versionName)) {
+        throw 'Explicit Android version differs from frozen artifact.'
+    }
+    $VersionCode = [long]$frozen.versionCode
+    $VersionName = [string]$frozen.versionName
+} else {
+    $package = [IO.File]::ReadAllText((Join-Path (Split-Path -Parent $root) 'package.json')) | ConvertFrom-Json
+    if ($package.version -notmatch '^\d{4}\.\d{1,2}\.\d{1,2}$') {
+        throw 'Semantic Android builds require -ArtifactVersion from the frozen release owner.'
+    }
+}
 if ($VersionCode -le 0) {
     $VersionCode = [Math]::Floor($buildTime.ToUnixTimeSeconds() / 60)
     if (Test-Path -LiteralPath $publishedManifest) {
@@ -79,6 +96,9 @@ $metadata = Get-Content -LiteralPath $metadataFile -Raw -Encoding UTF8 | Convert
 $element = @($metadata.elements)[0]
 if (-not $element.versionCode -or -not $element.versionName) {
     throw 'Android output metadata does not contain versionCode/versionName.'
+}
+if ([long]$element.versionCode -ne $VersionCode -or [string]$element.versionName -cne $VersionName) {
+    throw 'Android output version differs from the requested frozen identity.'
 }
 
 $publishedApk = Join-Path $mobileAssets 'AgentHub-Mobile.apk'

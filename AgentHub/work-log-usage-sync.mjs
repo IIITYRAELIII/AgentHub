@@ -87,6 +87,7 @@ if (command === "identity") {
 const remoteConfigStore = new UsageSyncRemoteConfigStore({
   file: remoteConfigFile,
   defaultServerUrl: defaultUsageSyncServerUrl(),
+  configuredServerUrl: runtime.usageSyncServerUrl,
 });
 const remoteConfig = await remoteConfigStore.load();
 

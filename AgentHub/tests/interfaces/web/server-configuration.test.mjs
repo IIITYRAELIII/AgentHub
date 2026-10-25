@@ -4,6 +4,86 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { serverConfigurationEntries, updateServerConfiguration } from "../../../src/interfaces/web/server-configuration.mjs";
+import { UsageSyncRemoteConfigStore } from "../../../src/infrastructure/persistence/usage-sync-remote-config-store.mjs";
+
+test("sync endpoint admission is idempotent across Unicode URL encoding", async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "hub-sync-unicode-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const configPath = path.join(root, "config.json");
+  await writeFile(configPath, JSON.stringify({ unrelated: "preserved", usageSyncServerUrl: "https://old.example.invalid" }));
+  const prefix = "https://sync.example.invalid/", suffix = "/endpoint";
+  const before = await readFile(configPath);
+  await assert.rejects(updateServerConfiguration({ configPath,
+    changes: { usageSyncServerUrl: prefix + "я".repeat(350) + suffix },
+    environment: {}, protectConfig: async () => {} }), /Invalid usage sync server URL/u);
+  assert.deepEqual(await readFile(configPath), before);
+  const accepted = prefix + "я".repeat(335) + suffix;
+  const encoded = prefix + "%D1%8F".repeat(335) + suffix;
+  assert.equal(encoded.length, 2048);
+  await updateServerConfiguration({ configPath, changes: { usageSyncServerUrl: accepted },
+    environment: {}, protectConfig: async () => {} });
+  const saved = JSON.parse(await readFile(configPath, "utf8"));
+  assert.equal(saved.usageSyncServerUrl, encoded);
+  const store = new UsageSyncRemoteConfigStore({ file: path.join(root, "remote.json"), configuredServerUrl: saved.usageSyncServerUrl });
+  assert.equal((await store.load()).serverUrl, encoded);
+  await updateServerConfiguration({ configPath, changes: { usageSyncServerUrl: saved.usageSyncServerUrl },
+    environment: {}, protectConfig: async () => {} });
+  assert.equal(JSON.parse(await readFile(configPath, "utf8")).usageSyncServerUrl, encoded);
+});
+
+test("admitted sync endpoint survives settings and effective-store roundtrip without truncation", async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "hub-sync-url-roundtrip-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const configPath = path.join(root, "config.json");
+  await writeFile(configPath, JSON.stringify({ unrelated: "preserved" }));
+  const prefix = "https://sync.example.invalid/", suffix = "/endpoint";
+  for (const length of [1023, 1024, 1025, 2048]) {
+    const endpoint = prefix + "a".repeat(length - prefix.length - suffix.length) + suffix;
+    assert.equal(endpoint.length, length);
+    await updateServerConfiguration({ configPath, changes: { usageSyncServerUrl: endpoint },
+      environment: {}, protectConfig: async () => {} });
+    const saved = JSON.parse(await readFile(configPath, "utf8"));
+    assert.equal(saved.usageSyncServerUrl, endpoint);
+    assert.equal(saved.unrelated, "preserved");
+    const file = path.join(root, `remote-${length}.json`);
+    const store = new UsageSyncRemoteConfigStore({ file, configuredServerUrl: saved.usageSyncServerUrl });
+    assert.equal((await store.load()).serverUrl, endpoint);
+    await store.rememberEnrollment({ serverUrl: endpoint, deviceId: "synthetic-device" });
+    await store.rememberPull({ ok: true }, { serverRevision: 17, serverGeneration: "synthetic-generation" });
+    const reloaded = await new UsageSyncRemoteConfigStore({ file, configuredServerUrl: saved.usageSyncServerUrl }).load();
+    assert.equal(reloaded.serverUrl, endpoint);
+    assert.equal(reloaded.deviceId, "synthetic-device");
+    assert.equal(reloaded.lastUsagePullRevision, 17);
+    assert.equal(reloaded.lastUsagePullServerGeneration, "synthetic-generation");
+    assert.equal(JSON.parse(await readFile(file, "utf8")).serverUrl, endpoint);
+  }
+  const before = await readFile(configPath);
+  await assert.rejects(updateServerConfiguration({ configPath,
+    changes: { usageSyncServerUrl: prefix + "a".repeat(2049 - prefix.length) },
+    environment: {}, protectConfig: async () => {} }), /Invalid usage sync server URL/u);
+  assert.deepEqual(await readFile(configPath), before);
+});
+
+test("sync endpoint uses the ordinary private writer and preserves unrelated settings", async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "hub-sync-setting-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const configPath = path.join(root, "config.json");
+  const original = { telegramBotToken: "synthetic-secret", dataDir: "own-data", privatePolicy: { version: 1 } };
+  await writeFile(configPath, JSON.stringify(original));
+  await updateServerConfiguration({ configPath, changes: { usageSyncServerUrl: " https://sync.example.invalid/ " },
+    environment: {}, protectConfig: async () => {} });
+  assert.deepEqual(JSON.parse(await readFile(configPath)), { ...original, usageSyncServerUrl: "https://sync.example.invalid" });
+  const entry = serverConfigurationEntries({ usageSyncServerUrl: "https://sync.example.invalid" })
+    .find(value => value.key === "usageSyncServerUrl");
+  assert.equal(entry.type, "url");
+  assert.equal(entry.value, "https://sync.example.invalid");
+  const before = await readFile(configPath);
+  await assert.rejects(updateServerConfiguration({ configPath, changes: { usageSyncServerUrl: "https://user:secret@example.invalid" },
+    environment: {}, protectConfig: async () => {} }), /without credentials/u);
+  assert.deepEqual(await readFile(configPath), before);
+  await updateServerConfiguration({ configPath, changes: { usageSyncServerUrl: "" }, environment: {}, protectConfig: async () => {} });
+  assert.equal(JSON.parse(await readFile(configPath)).usageSyncServerUrl, "");
+});
 
 test("server configuration exposes only its editable non-secret fields", () => {
   const entries = serverConfigurationEntries({
@@ -26,7 +106,7 @@ test("server configuration exposes only its editable non-secret fields", () => {
     logMaxFiles: 5,
     token: "secret",
   }, { logMaxFiles: 7 });
-  assert.equal(entries.length, 15);
+  assert.equal(entries.length, 16);
   assert.equal(JSON.stringify(entries).includes("secret"), false);
   assert.deepEqual(entries.find((entry) => entry.key === "codexExecutableAutoUpdate"), {
     key: "codexExecutableAutoUpdate",

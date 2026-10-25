@@ -3,7 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
 import {
   access, chmod, copyFile, link, lstat, mkdir, mkdtemp, open, readFile, readdir, readlink, rename, rm, rmdir,
-  stat, symlink, unlink, writeFile,
+  stat, symlink, unlink, writeFile, realpath,
 } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
@@ -19,13 +19,19 @@ import { canonicalPath } from "./config.mjs";
 import { taskWorkingTreeDiff } from "./task-git-diff.mjs";
 import * as legacySelectedV1 from "./legacy-selected-composition-materializer-v1.mjs";
 import { mergeSelectedResults, assertNativeTaskHistories } from "./native-release-merge.mjs";
+import { NativeMergeTransportRetention } from "./native-merge-transport-retention.mjs";
+import { installedNativeHistoryBaseline, assertInstalledLocalSourceBaseline,
+  assertInstalledAgreedMainOrigin } from "./local-source-baseline.mjs";
+import { readNativeUpstreamAdoptions, assertNativeUpstreamOrigin } from "./native-upstream-adoption.mjs";
 import {
   applySelectedCompositionFiles, prepareSelectedCompositionFiles, readSelectedCompositionFiles,
   selectedCompositionFilePlan,
 } from "./selected-composition-materializer.mjs";
-import { TaskDependencyPendingError } from "../../domain/task-board-task.mjs";
+import { TaskDependencyPendingError, TaskClaimLockAdmissionError } from "../../domain/task-board-task.mjs";
 import { prepareTaskWorktreeDependencies } from "./task-worktree-dependencies.mjs";
-import { withInterprocessLocks as acquireInterprocessLocks } from "../process/interprocess-lock.mjs";
+import { readClaimCustodyWip, copyClaimCustodyWip } from "./claim-source-custody.mjs";
+import { claimCustodyHash } from "../../domain/claim-forward-custody.mjs";
+import { withInterprocessLocks as acquireInterprocessLocks, interprocessLockAdmissionTimeoutPath } from "../process/interprocess-lock.mjs";
 import {
   measureTaskOperation, measureTaskOperationAwait, recordTaskOperationTiming, withTaskOperationTiming,
 } from "../process/task-operation-timing.mjs";
@@ -208,7 +214,9 @@ export function runTaskGitCommand(args, options = {}) {
 function runTaskGitCommandUntraced(args, {
   cwd, timeoutMs = 60_000, executable = "git", spawnProcess = spawn, signal = null, input = null,
   commandLabel = "git", env = null, rawOutput = false, acceptableExitCodes = [],
+  stdoutFd = null,
 } = {}) {
+  if (stdoutFd !== null && (!Number.isSafeInteger(stdoutFd) || stdoutFd < 3)) throw new TypeError("Invalid owned Git output descriptor");
   return new Promise((resolve, reject) => {
     if (signal?.aborted) {
       reject(signal.reason instanceof Error ? signal.reason : new Error("Task Git lease ownership was lost"));
@@ -217,7 +225,7 @@ function runTaskGitCommandUntraced(args, {
     const child = spawnProcess(executable, args, {
       cwd,
       windowsHide: true,
-      stdio: [input == null ? "ignore" : "pipe", "pipe", "pipe"],
+      stdio: [input == null ? "ignore" : "pipe", stdoutFd ?? "pipe", "pipe"],
       ...(env ? { env: { ...process.env, ...env } } : {}),
     });
     const stdout = [];
@@ -255,8 +263,8 @@ function runTaskGitCommandUntraced(args, {
     };
     const abort = () => terminate("was fenced");
     signal?.addEventListener?.("abort", abort, { once: true });
-    const timer = setTimeout(() => terminate("timed out"), timeoutMs);
-    child.stdout.on("data", (chunk) => stdout.push(chunk));
+    const timer = timeoutMs == null ? null : setTimeout(() => terminate("timed out"), timeoutMs);
+    child.stdout?.on("data", (chunk) => stdout.push(chunk));
     child.stderr.on("data", (chunk) => stderr.push(chunk));
     child.on("error", (error) => {
       clearTimeout(timer);
@@ -604,6 +612,7 @@ async function assertNoTaskChangelogChanges(root) {
 
 export class TaskGitWorkspaceService {
   #contourExternalEffects;
+  #claimLockAdmissionErrors = new WeakMap();
 
   constructor({
     dataDir,
@@ -615,6 +624,7 @@ export class TaskGitWorkspaceService {
     removeProcessGuard = unlink,
     contourExternalEffects = null,
     verifyNativeResolutionReview = null,
+    readClaimCustodyNamespace = () => null,
     recordTiming = (event) => console.info(`[task-operation-timing] ${JSON.stringify(event)}`),
   } = {}) {
     this.#contourExternalEffects = assertContourExternalEffects(contourExternalEffects);
@@ -629,6 +639,7 @@ export class TaskGitWorkspaceService {
     this.removeProcessGuard = removeProcessGuard;
     this.recordTiming = recordTiming;
     this.verifyNativeResolutionReview = verifyNativeResolutionReview;
+    this.readClaimCustodyNamespace = readClaimCustodyNamespace;
   }
 
   withOperationTrace(identity, operation) {
@@ -641,6 +652,52 @@ export class TaskGitWorkspaceService {
 
   #assertAvailable(operation) {
     assertContourGitAvailable(this.#contourExternalEffects, "task-git", operation);
+  }
+
+  #claimNamespace(taskId) {
+    const state = this.readClaimCustodyNamespace(taskId);
+    if (!state) return null;
+    const expected = this.planIndependentClaimNamespace({ taskId, source: state.source,
+      requestId: state.planRequestId, originalHash: state.originalHash });
+    const { workspace, ...identity } = state.namespace;
+    if (!workspace || claimCustodyHash(identity) !== claimCustodyHash(expected)) {
+      throw new Error("This data root does not own the isolated Task source capability");
+    }
+    return state;
+  }
+
+  #custodyBaseRef(taskId, repositoryKey) {
+    const state = this.#claimNamespace(normalizedTaskId(taskId));
+    if (!state) return taskBaseRef(taskId, repositoryKey);
+    if (repositoryKey !== state.namespace.repositoryKey) throw new Error("Custody logical repository key changed");
+    return `${state.namespace.refPrefix}/base`;
+  }
+
+  #custodyResultRef(taskId, repositoryKey) {
+    const state = this.#claimNamespace(normalizedTaskId(taskId));
+    if (!state) return taskResultRef(taskId, repositoryKey);
+    if (repositoryKey !== state.namespace.repositoryKey) throw new Error("Custody logical repository key changed");
+    return `${state.namespace.refPrefix}/result`;
+  }
+
+  async #importCustodySnapshotOwned(snapshot, lease) {
+    const state = this.#claimNamespace(normalizedTaskId(snapshot.taskId));
+    if (!state) {
+      if (snapshot.custodyEpoch) throw new Error("Snapshot custody authority disappeared");
+      return;
+    }
+    if (snapshot.custodyEpoch !== state.namespace.epoch
+        || !samePath(snapshot.repositoryRoot, state.source.repositoryRoot)
+        || !samePath(snapshot.projectRoot, state.namespace.workspace.projectRoot)) throw new Error("Snapshot is outside current Task custody");
+    await this.readIndependentClaimNamespaceOwned({ state, lease });
+    for (const [suffix, commit] of [[`objects/${snapshot.headCommit}`, snapshot.headCommit], ["base", snapshot.baseCommit]]) {
+      const ref = `${state.namespace.refPrefix}/${suffix}`;
+      const old = await gitMaybe(["rev-parse", "--verify", ref], { cwd: snapshot.repositoryRoot });
+      if (old && old !== commit) throw new Error("Immutable custody import reference changed");
+      if (!old) await this.#runOwned(["fetch", "--no-tags", "--no-write-fetch-head",
+        state.namespace.root, `${commit}:${ref}`], { cwd: snapshot.repositoryRoot, lease });
+      if (await runGit(["rev-parse", `${ref}^{commit}`], { cwd: snapshot.repositoryRoot }) !== commit) throw new Error("Canonical custody import readback differs");
+    }
   }
 
   async #runOwned(args, { lease = null, guardCommand = null, guardScope = "repository", ...options } = {}) {
@@ -730,6 +787,20 @@ export class TaskGitWorkspaceService {
     }
   }
 
+  async #acceptedMainBootstrapPublishedAncestry(repoRoot, published, main, base, lease) {
+    const publishedBase = await this.#runOwned([
+      "merge-base", "--all", published, main,
+    ], { cwd: repoRoot, lease });
+    if (publishedBase === base) return true;
+    // Both branches may already contain accepted upstream newer than the last
+    // publication. Admit only an exact published ancestor of that shared base;
+    // an older divergent publication branch grants no additional ancestry.
+    if (publishedBase !== published) return false;
+    return await this.#runOwned([
+      "merge-base", "--all", published, base,
+    ], { cwd: repoRoot, lease }) === published;
+  }
+
   async #readAcceptedMainBootstrapReceipt(repoRoot, requestId) {
     const file = this.#acceptedMainBootstrapReceiptFile(repoRoot, requestId);
     return readFile(file, "utf8").then(JSON.parse, (error) => {
@@ -810,7 +881,9 @@ export class TaskGitWorkspaceService {
     const parents = await this.#runOwned(["rev-list", "--parents", "-n", "1", record.integrationCommit], { cwd: repoRoot, lease });
     const tree = await this.#runOwned(["rev-parse", `${record.integrationCommit}^{tree}`], { cwd: repoRoot, lease });
     const bases = await this.#runOwned(["merge-base", "--all", record.oldDevCommit, record.mainCommit], { cwd: repoRoot, lease });
-    const publishedBase = await this.#runOwned(["merge-base", "--all", record.publishedRevision, record.mainCommit], { cwd: repoRoot, lease });
+    const publishedAncestry = await this.#acceptedMainBootstrapPublishedAncestry(
+      repoRoot, record.publishedRevision, record.mainCommit, record.mergeBaseCommit, lease,
+    );
     const branch = await this.#runOwned(["symbolic-ref", "--quiet", "HEAD"], { cwd: devRoot, lease });
     const current = await this.#runOwned(["rev-parse", `refs/heads/${this.devBranch}^{commit}`], { cwd: repoRoot, lease });
     const indexTree = await this.#runOwned(["write-tree"], { cwd: devRoot, lease });
@@ -821,7 +894,7 @@ export class TaskGitWorkspaceService {
     const oldTree = await this.#runOwned(["rev-parse", `${record.oldDevCommit}^{tree}`], { cwd: repoRoot, lease });
     if (parents !== `${record.integrationCommit} ${record.oldDevCommit} ${record.mainCommit}`
       || tree !== record.resultTree || bases !== record.mergeBaseCommit
-      || publishedBase !== record.mergeBaseCommit
+      || !publishedAncestry
       || branch !== `refs/heads/${this.devBranch}` || worktreeDiff || otherFiles
       || ![oldTree, record.resultTree].includes(indexTree)) {
       throw new Error("Accepted-main bootstrap recovery proof changed");
@@ -1308,6 +1381,14 @@ export class TaskGitWorkspaceService {
     }, options);
   }
 
+  storageRetentionOwner({ taskBoard, isStopping } = {}) {
+    this.#assertAvailable("storageRetentionOwner");
+    return new NativeMergeTransportRetention({ dataDir: this.dataDir, taskBoard, taskGitWorkspaces: this,
+      isStopping, gitAt: (cwd, args, options = {}) => this.#runOwned(args, {
+        ...options, cwd, guardRepositoryRoot: cwd, timeoutMs: 60_000,
+      }) });
+  }
+
   async withTaskLocks(taskIds, operation, { guardTaskId = null, ...options } = {}) {
     this.#assertAvailable("withTaskLocks");
     const ids = [...new Set((taskIds ?? []).map(normalizedTaskId))].sort();
@@ -1392,10 +1473,14 @@ export class TaskGitWorkspaceService {
     });
   }
 
-  async claimAdmissionNoEffectEvidence({ taskId, projectRoot, error } = {}) {
+  async claimAdmissionNoEffectEvidence(params = {}) {
     this.#assertAvailable("claimAdmissionNoEffectEvidence");
+    const { taskId, projectRoot, operationId = null, error } = params;
     const id = normalizedTaskId(taskId);
     const repositoryRootValue = await repositoryIdentityFromPath(projectRoot);
+    const lockAdmission = this.#claimLockAdmissionErrors.get(error);
+    if (lockAdmission && lockAdmission.taskId === id && lockAdmission.operationId === operationId
+        && samePath(lockAdmission.repositoryRoot, repositoryRootValue)) return lockAdmission;
     const message = String(error?.message ?? error ?? "");
     const currentPrefix = `${CLAIM_REPOSITORY_GUARD_ERROR_PREFIX} (`;
     const legacyPrefix = `mutation effect is not authoritatively disproved: ${currentPrefix}`;
@@ -1733,11 +1818,11 @@ export class TaskGitWorkspaceService {
     await this.#runOwned(["branch", "-m", branch], { cwd: root, lease });
   }
 
-  async #prepareDevOwned(projectRoot, repoRoot, lease, { allowUnadoptedLocalMain = false } = {}) {
-    return measureTaskOperation("prepare-dev", () => this.#prepareDevOwnedTraced(projectRoot, repoRoot, lease, { allowUnadoptedLocalMain }));
+  async #prepareDevOwned(projectRoot, repoRoot, lease, { allowUnadoptedLocalMain = false, synchronizeAcceptedMain = false } = {}) {
+    return measureTaskOperation("prepare-dev", () => this.#prepareDevOwnedTraced(projectRoot, repoRoot, lease, { allowUnadoptedLocalMain, synchronizeAcceptedMain }));
   }
 
-  async #prepareDevOwnedTraced(projectRoot, repoRoot, lease, { allowUnadoptedLocalMain }) {
+  async #prepareDevOwnedTraced(projectRoot, repoRoot, lease, { allowUnadoptedLocalMain, synchronizeAcceptedMain }) {
     await requiredGuardLease(lease).assertOwned();
     const mainCommit = await localMainCommit(repoRoot);
     const repoKey = taskRepositoryKey(repoRoot);
@@ -1756,6 +1841,14 @@ export class TaskGitWorkspaceService {
       "merge-base", "--is-ancestor", mainCommit, headCommit,
     ], { cwd: devRoot }) !== null;
     if (!containsAcceptedMain && !allowUnadoptedLocalMain) {
+      if (synchronizeAcceptedMain) {
+        const synchronized = await this.#synchronizeMainIntoDevOwned({ repoRoot,
+          expectedMainCommit: mainCommit, observedMainCommit: mainCommit, lease });
+        if (synchronized.integrated) return { ...synchronized, acceptedMainIntegrated: true };
+        throw Object.assign(new Error(synchronized.reason || "Accepted main conflicts with managed dev"),
+          { code: "RELEASE_PREPARATION_REJECTED", conflicts: synchronized.conflicts,
+            conflictRoot: devRoot });
+      }
       throw new Error(
         `managed dev ${headCommit} does not contain accepted local main ${mainCommit}; explicit adoption required`,
       );
@@ -1810,7 +1903,7 @@ export class TaskGitWorkspaceService {
       const relative = path.relative(this.taskWorktreesRoot, root).split(path.sep);
       if (relative.length !== 2 || relative[0] === taskId || relative[1] !== taskRepositoryKey(repoRoot)) continue;
       const owner = normalizedTaskId(relative[0]);
-      const base = await gitMaybe(["rev-parse", "--verify", `${taskBaseRef(owner, relative[1])}^{commit}`], { cwd: repoRoot });
+      const base = await gitMaybe(["rev-parse", "--verify", `${this.#custodyBaseRef(owner, relative[1])}^{commit}`], { cwd: repoRoot });
       if (!base || !await this.managedRepositoryRoot(root, {
         taskId: owner, taskNumber: /^branch refs\/heads\/(.+)$/mu.exec(record)?.[1],
       })) continue;
@@ -1870,7 +1963,7 @@ export class TaskGitWorkspaceService {
       "rev-parse", "--verify", "refs/heads/main^{commit}",
     ], { cwd: repoRoot, lease });
     const observedBase = await this.#runOwned([
-      "rev-parse", "--verify", `${taskBaseRef(id, repoKey)}^{commit}`,
+      "rev-parse", "--verify", `${this.#custodyBaseRef(id, repoKey)}^{commit}`,
     ], { cwd: repoRoot, lease });
     const observedSnapshot = await this.#runOwned([
       "rev-parse", "--verify", `${branchRef}^{commit}`,
@@ -2153,7 +2246,7 @@ export class TaskGitWorkspaceService {
       if (!existing) {
         await this.#runOwned(["update-ref", "--stdin"], {
           cwd: repoRoot,
-          input: `start\nverify refs/heads/main ${proof.acceptedLocalMainCommit}\nverify ${taskBaseRef(proof.taskId, proof.repositoryKey)} ${proof.taskBaseCommit}\nverify ${proof.branchRef} ${proof.snapshotCommit}\ncreate ${recordRef} ${recordHash}\nprepare\ncommit\n`,
+          input: `start\nverify refs/heads/main ${proof.acceptedLocalMainCommit}\nverify ${this.#custodyBaseRef(proof.taskId, proof.repositoryKey)} ${proof.taskBaseCommit}\nverify ${proof.branchRef} ${proof.snapshotCommit}\ncreate ${recordRef} ${recordHash}\nprepare\ncommit\n`,
           lease,
         });
       }
@@ -2189,39 +2282,16 @@ export class TaskGitWorkspaceService {
       taskId, taskNumber, repoRoot, branch, baseCommit, snapshotCommit,
       localMain, adoptedCommit, lease,
     });
-    const matchingRefs = [];
-    for (const candidateRef of taskUpstreamAdoptionIdentityRefs(
-      proof.taskId, proof.repositoryKey, proof.snapshotCommit, proof.adoptedCommit,
-    )) {
-      const candidateHash = await this.#runOwned(["rev-parse", "--verify", candidateRef], {
-        cwd: repoRoot, lease,
-      }).catch(() => null);
-      if (candidateHash) matchingRefs.push([candidateRef, candidateHash]);
-    }
-    if (!matchingRefs.length) {
-      throw new Error(`approved upstream ${proof.adoptedCommit} requires a durable explicit adoption receipt`);
-    }
-    if (new Set(matchingRefs.map(([, hash]) => hash)).size !== 1) {
-      throw new Error("explicit upstream adoption path aliases have conflicting receipts");
-    }
-    const [recordRef, recordHash] = matchingRefs[0];
-    const type = await this.#runOwned(["cat-file", "-t", recordHash], { cwd: repoRoot, lease });
-    if (type !== "blob") throw new Error("explicit upstream adoption receipt is not a Git blob");
-    const content = await this.#runOwned(["cat-file", "-p", recordHash], { cwd: repoRoot, lease });
-    let record;
-    try {
-      record = JSON.parse(content);
-    } catch {
-      throw new Error("explicit upstream adoption receipt is invalid JSON");
-    }
-    const expected = this.#upstreamAdoptionRecord(proof, record?.requestId);
-    if (JSON.stringify(record) !== JSON.stringify(expected)) {
+    const receipts = await readNativeUpstreamAdoptions({
+      git: (args, options = {}) => this.#runOwned(args, { ...options, cwd: repoRoot, lease }),
+      tasks: [{ taskId: proof.taskId, baseCommit: proof.taskBaseCommit, resultCommit: proof.snapshotCommit }],
+      repositoryRoot: repoRoot, localMainCommit: proof.acceptedLocalMainCommit,
+    });
+    if (receipts.length !== 1) throw new Error("approved upstream requires a durable explicit adoption receipt");
+    const { recordRef, recordHash, record } = receipts[0];
+    if (JSON.stringify(record) !== JSON.stringify(this.#upstreamAdoptionRecord(proof, record.requestId))) {
       throw new Error("explicit upstream adoption receipt identity changed");
     }
-    const verifiedHash = await this.#runOwned(["hash-object", "--stdin"], {
-      cwd: repoRoot, input: `${JSON.stringify(record)}\n`, lease,
-    });
-    if (verifiedHash !== recordHash) throw new Error("explicit upstream adoption receipt hash changed");
     return { recordRef, recordHash, record };
   }
 
@@ -2482,10 +2552,48 @@ export class TaskGitWorkspaceService {
     };
   }
 
-  async prepareDev(projectRoot, { lease = null } = {}) {
+  async prepareDev(projectRoot, { lease = null, synchronizeAcceptedMain = false } = {}) {
     this.#assertAvailable("prepareDev");
     const repoRoot = await repositoryRoot(projectRoot);
-    return this.#withClearDevLock(repoRoot, lease, (owned) => this.#prepareDevOwned(projectRoot, repoRoot, owned));
+    return this.#withClearDevLock(repoRoot, lease, (owned) => this.#prepareDevOwned(projectRoot, repoRoot, owned, { synchronizeAcceptedMain }));
+  }
+
+  // Forward preparation inventories the existing dev under the same already
+  // held repository lease. It never creates a worktree, aborts a merge, clears a
+  // block or runs bootstrap recovery as a side effect of reading integration.
+  async inspectForwardPreparationDevOwned(projectRoot, { lease } = {}) {
+    this.#assertAvailable("inspectForwardPreparationDevOwned");
+    await requiredGuardLease(lease).assertOwned();
+    const repoRoot = await repositoryRoot(projectRoot);
+    if (!lease.repositoryLockKeys?.has(taskRepositoryKey(repoRoot))) throw new Error("Forward dev inspection requires its repository lease");
+    await this.#assertRepositoryProcessTreeClear(repoRoot);
+    const devRoot = await worktreeForBranch(repoRoot, this.devBranch);
+    if (!devRoot || !pathInside(this.devWorktreesRoot, devRoot)) throw new Error("Forward preparation requires the existing managed dev");
+    const info = await lstat(devRoot);
+    if (!info.isDirectory() || info.isSymbolicLink()) throw new Error("Forward managed dev custody changed");
+    for (const file of [this.#withdrawalFile(repoRoot), this.#devBootstrapRecoveryFile(repoRoot),
+      await this.#integrationBlockFile(repoRoot)]) {
+      if (await access(file).then(() => true, error => { if (error.code === "ENOENT") return false; throw error; })) {
+        throw new Error("Forward preparation preserves pending dev recovery; use its original owner first");
+      }
+    }
+    for (const name of ["MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "rebase-apply", "rebase-merge", "sequencer", "index.lock"]) {
+      const file = path.resolve(await runGit(["rev-parse", "--git-path", name], { cwd: devRoot }));
+      if (await access(file).then(() => true, error => { if (error.code === "ENOENT") return false; throw error; })) {
+        throw new Error(`Forward preparation preserves unfinished dev Git operation: ${name}`);
+      }
+    }
+    const mainCommit = await localMainCommit(repoRoot);
+    const headCommit = await runGit(["rev-parse", "HEAD^{commit}"], { cwd: devRoot });
+    const branch = await runGit(["symbolic-ref", "HEAD"], { cwd: devRoot });
+    const reference = await runGit(["rev-parse", `refs/heads/${this.devBranch}^{commit}`], { cwd: repoRoot });
+    const dirty = await runGit(["status", "--porcelain=v1", "-z", "--untracked-files=all"], { cwd: devRoot });
+    if (headCommit !== reference || branch !== `refs/heads/${this.devBranch}` || dirty
+        || await gitMaybe(["merge-base", "--is-ancestor", mainCommit, headCommit], { cwd: devRoot }) === null) {
+      throw new Error("Forward preparation requires exact clean dev containing accepted main");
+    }
+    return { repositoryRoot: repoRoot, projectRoot: devRoot, branch: this.devBranch, mainCommit,
+      headCommit, acceptedMainIntegrated: true, forwardReadOnly: true };
   }
 
   async synchronizeMainIntoDev({ projectRoot, publishedRevision = null } = {}) {
@@ -2572,8 +2680,9 @@ export class TaskGitWorkspaceService {
       }
       if (status) throw new Error("Accepted-main bootstrap requires a clean managed dev worktree");
       if (bases !== base) throw new Error("Accepted-main bootstrap ancestry proof changed");
-      const publishedBase = await this.#runOwned(["merge-base", "--all", published, main], { cwd: repoRoot, lease });
-      if (publishedBase !== base) throw new Error("Accepted-main bootstrap published ancestry proof changed");
+      if (!await this.#acceptedMainBootstrapPublishedAncestry(repoRoot, published, main, base, lease)) {
+        throw new Error("Accepted-main bootstrap published ancestry proof changed");
+      }
       if (await gitMaybe(["merge-base", "--is-ancestor", main, oldDev], { cwd: repoRoot }) !== null) {
         return { status: "already_current", integrated: true, mainCommit: main, headCommit: oldDev };
       }
@@ -2643,8 +2752,9 @@ export class TaskGitWorkspaceService {
         await this.#acceptedMainBootstrapMain(repoRoot, main);
         const currentBase = await this.#runOwned(["merge-base", "--all", oldDev, main], { cwd: repoRoot, lease });
         if (currentBase !== base) throw new Error("Accepted-main bootstrap ancestry changed before CAS");
-        const currentPublishedBase = await this.#runOwned(["merge-base", "--all", published, main], { cwd: repoRoot, lease });
-        if (currentPublishedBase !== base) throw new Error("Accepted-main bootstrap published ancestry changed before CAS");
+        if (!await this.#acceptedMainBootstrapPublishedAncestry(repoRoot, published, main, base, lease)) {
+          throw new Error("Accepted-main bootstrap published ancestry changed before CAS");
+        }
         const record = {
           version: 2, kind: "accepted-local-main-bootstrap-v1", repositoryRoot: repoRoot,
           devRoot, devBranch: this.devBranch, requestId: id, oldDevCommit: oldDev,
@@ -2696,23 +2806,42 @@ export class TaskGitWorkspaceService {
     return this.withTaskLock(params.taskId, (lease) => this.prepareOwned({ ...params, lease }));
   }
 
-  async prepareOwned({ taskId, taskNumber = null, projectRoot, lease = null, dependencyMode = "skip", dependencyOverrideReason = null } = {}) {
+  async prepareOwned({ taskId, taskNumber = null, projectRoot, lease = null, dependencyMode = "skip", dependencyOverrideReason = null, claimOperationId = null } = {}) {
     return measureTaskOperation("prepare-task", () => this.#prepareOwned({
-      taskId, taskNumber, projectRoot, lease, dependencyMode, dependencyOverrideReason,
+      taskId, taskNumber, projectRoot, lease, dependencyMode, dependencyOverrideReason, claimOperationId,
     }));
   }
 
-  async #prepareOwned({ taskId, taskNumber, projectRoot, lease, dependencyMode, dependencyOverrideReason }) {
+  async #prepareOwned({ taskId, taskNumber, projectRoot, lease, dependencyMode, dependencyOverrideReason, claimOperationId }) {
     this.#assertAvailable("prepareOwned");
     if (!["skip", "ensure", "verify"].includes(dependencyMode)) throw new Error("Invalid Task dependency mode");
     const id = normalizedTaskId(taskId);
+    const custody = this.#claimNamespace(id);
+    if (custody) {
+      if (dependencyOverrideReason != null) throw new Error("Custody cannot override a prior release wait");
+      const workspace = await this.readIndependentClaimNamespaceOwned({ state: custody, lease });
+      if (![custody.source.repositoryRoot, custody.source.projectRoot, workspace.projectRoot].some(root => samePath(root, projectRoot))) {
+        throw new Error("Task custody does not match the selected logical repository");
+      }
+      if (dependencyMode !== "skip") {
+        const lockfiles = await trackedNpmLockfiles(custody.namespace.root, workspace.projectRoot);
+        if (lockfiles.length) await withInterprocessLocks([path.join(this.dataDir, "locks", `task-dependencies-${id}-${custody.namespace.epoch}`)], async dependencyLease => {
+          await this.prepareDependencies({ projectRoot: workspace.projectRoot, lockfiles,
+            verify: dependencyMode === "verify", lease: combinedLease(lease, dependencyLease),
+            runNpm: (args, options) => this.#runOwnedNpm(args, { ...options, lease: combinedLease(lease, dependencyLease) }) });
+        });
+      }
+      return workspace;
+    }
     await requiredGuardLease(lease).assertOwned();
     await this.#assertNoProcessTreeGuard(id);
     const selectedRoot = canonicalPath(projectRoot);
     const selectedWorktreeRoot = await worktreeRoot(selectedRoot);
     const selection = taskSparseCheckoutSelection(selectedWorktreeRoot, selectedRoot);
     const repoRoot = await repositoryRoot(projectRoot);
+    let prepareEntered = false;
     const workspace = await this.#withClearDevLock(repoRoot, lease, async (ownedLease) => {
+      prepareEntered = true;
       if (dependencyOverrideReason != null) {
         const reason = String(dependencyOverrideReason).trim();
         if (!reason || reason.length > 2000) throw new Error("Dependency override requires a concise explicit user instruction");
@@ -2727,7 +2856,7 @@ export class TaskGitWorkspaceService {
       }
       const repoKey = taskRepositoryKey(repoRoot);
       const branch = taskBranchName(id, repoRoot, taskNumber);
-      const baseRef = taskBaseRef(id, repoKey);
+      const baseRef = this.#custodyBaseRef(id, repoKey);
       let baseCommit = await gitMaybe(["rev-parse", "--verify", `${baseRef}^{commit}`], { cwd: repoRoot });
       if (!baseCommit) {
         baseCommit = await localMainCommit(repoRoot);
@@ -2784,6 +2913,21 @@ export class TaskGitWorkspaceService {
         headCommit,
         gitBaseline: { repoRoot, tree: baseCommit },
       };
+    }).catch(async error => {
+      const repositoryKey = taskRepositoryKey(repoRoot);
+      const lockPath = path.join(this.dataDir, "locks", `task-git-dev-${repositoryKey}.lock`);
+      const timedOutPath = interprocessLockAdmissionTimeoutPath(error);
+      if (!prepareEntered && typeof claimOperationId === "string" && claimOperationId
+          && timedOutPath && samePath(timedOutPath, lockPath)) {
+        await requiredGuardLease(lease).assertOwned();
+        const refusal = new TaskClaimLockAdmissionError();
+        this.#claimLockAdmissionErrors.set(refusal, Object.freeze({
+          version: 1, kind: "task-git-dev-lock-admission-v1", phase: "before-prepare",
+          taskId: id, operationId: claimOperationId, repositoryRoot: repoRoot, repositoryKey, lockPath,
+        }));
+        throw refusal;
+      }
+      throw error;
     });
     if (dependencyMode !== "skip") {
       const taskRoot = await worktreeRoot(workspace.projectRoot);
@@ -2830,12 +2974,201 @@ export class TaskGitWorkspaceService {
     if (dev !== identity.devCommit && dev !== record?.target) throw new Error("Initial native Test exact dev changed");
   }
 
+  async #readCustodyWip(root, source) {
+    if (source.origin === "registered-base") {
+      if (!Array.isArray(source.wipPaths) || source.wipPaths.length || source.wipDigest !== claimCustodyHash([])) {
+        throw new Error("Registered base cannot replace discovered Task WIP");
+      }
+      return { digest: claimCustodyHash([]), records: [] };
+    }
+    return readClaimCustodyWip(root, source.wipPaths);
+  }
+
+  async #reuseUnassignedBase({ taskId, taskNumber, source, lease, registeredProjectRoot }) {
+    const id = normalizedTaskId(taskId);
+    if (!registeredProjectRoot || !samePath(source.projectRoot, registeredProjectRoot)) {
+      throw new Error("Unassigned base must be the current registered project root");
+    }
+    const repoRoot = await repositoryRoot(registeredProjectRoot);
+    const repoKey = taskRepositoryKey(repoRoot);
+    const branch = taskBranchName(id, repoRoot, taskNumber);
+    // No existing Task artifact is discarded or silently replaced by local main.
+    // An interrupted old prepare must be pinned through the managed-source route.
+    const priorRoot = await lstat(path.join(this.taskWorktreesRoot, id)).catch(error => {
+      if (error.code === "ENOENT") return null;
+      throw error;
+    });
+    const refs = (await this.#runOwned(["for-each-ref", "--format=%(refname)"], { cwd: repoRoot, lease })).split(/\r?\n/);
+    if (priorRoot || refs.some(ref => ref === `refs/heads/${branch}`
+        || ref === `refs/heads/${taskBranchName(id, repoRoot)}` || ref.includes(`/${id}/`) || ref.endsWith(`/${id}`))) {
+      throw new Error("Discovered prior Task source or refs require an exact preserved managed-source handoff");
+    }
+    const headCommit = await localMainCommit(repoRoot);
+    const tree = await this.#runOwned(["rev-parse", `${headCommit}^{tree}`], { cwd: repoRoot, lease });
+    if (source.headCommit !== headCommit || source.baseCommit !== headCommit || source.tree !== tree || source.branch !== branch
+        || source.repositoryRoot && !samePath(source.repositoryRoot, repoRoot)) throw new Error("Pinned registered base changed");
+    const pinned = { ...source, origin: "registered-base" };
+    await this.#readCustodyWip(await worktreeRoot(registeredProjectRoot), pinned);
+    await requiredGuardLease(lease).assertOwned();
+    return { taskId, origin: "registered-base", repositoryRoot: repoRoot, projectRoot: canonicalPath(registeredProjectRoot),
+      branch, baseRef: taskBaseRef(id, repoKey), baseCommit: headCommit, headCommit,
+      gitBaseline: { repoRoot, tree: headCommit }, wipDigest: source.wipDigest };
+  }
+
+  async reuseClaimWorkspaceOwned(params = {}) {
+    this.#assertAvailable("reuseClaimWorkspaceOwned");
+    const { taskId, taskNumber, source, lease, unassigned = false, registeredProjectRoot = null } = params;
+    await requiredGuardLease(lease).assertOwned();
+    await this.#assertNoProcessTreeGuard(taskId);
+    const repoRoot = await this.managedRepositoryRoot(source.projectRoot, { taskId, taskNumber });
+    if (!repoRoot && unassigned) return this.#reuseUnassignedBase({ taskId, taskNumber, source, lease, registeredProjectRoot });
+    if (!repoRoot) throw new Error("Custody source is not this managed Task workspace");
+    if (source.origin === "registered-base" || unassigned && (!registeredProjectRoot
+        || !samePath(repoRoot, await repositoryRoot(registeredProjectRoot)))) throw new Error("Custody registered repository differs");
+    const taskRoot = await worktreeRoot(source.projectRoot);
+    const git = args => this.#runOwned(args, { cwd: taskRoot, lease });
+    const headCommit = await git(["rev-parse", "HEAD^{commit}"]);
+    if (headCommit !== source.headCommit || await git(["rev-parse", "HEAD^{tree}"]) !== source.tree
+        || await git(["status", "--porcelain=v1", "--untracked-files=all"])) throw new Error("Custody source identity or clean state changed");
+    const inventory = await readClaimCustodyWip(taskRoot, source.wipPaths);
+    if (inventory.digest !== source.wipDigest
+        || (await readClaimCustodyWip(taskRoot, source.wipPaths)).digest !== inventory.digest) throw new Error("Custody WIP differs from the saved handoff");
+    const baseRef = this.#custodyBaseRef(normalizedTaskId(taskId), taskRepositoryKey(repoRoot));
+    const baseCommit = await git(["rev-parse", `${baseRef}^{commit}`]);
+    const branch = await git(["symbolic-ref", "--quiet", "--short", "HEAD"]);
+    if ((source.baseCommit && source.baseCommit !== baseCommit) || (source.branch && source.branch !== branch)
+        || (source.repositoryRoot && source.repositoryRoot !== repoRoot)) throw new Error("Custody registered source baseline changed");
+    await requiredGuardLease(lease).assertOwned();
+    return { taskId, repositoryRoot: repoRoot, projectRoot: canonicalPath(source.projectRoot), branch,
+      baseRef, baseCommit, headCommit, gitBaseline: { repoRoot, tree: baseCommit }, wipDigest: inventory.digest };
+  }
+
+  planIndependentClaimNamespace(params) {
+    this.#assertAvailable("planIndependentClaimNamespace");
+    const { taskId, source, requestId, originalHash } = params;
+    const epoch = claimCustodyHash({ taskId, requestId, originalHash, source });
+    return { epoch, root: path.join(this.dataDir, "task-custody", epoch.slice(0, 32), "repository"),
+      repositoryKey: taskRepositoryKey(source.repositoryRoot), logicalRepositoryRoot: source.repositoryRoot,
+      refPrefix: `refs/agent-hub/task-custody/${epoch.slice(0, 32)}` };
+  }
+
+  async stageIndependentClaimNamespaceOwned(params) {
+    this.#assertAvailable("stageIndependentClaimNamespaceOwned");
+    const { state, lease } = params;
+    await requiredGuardLease(lease).assertOwned();
+    const { source, namespace } = state;
+    const root = namespace.root;
+    const expected = this.planIndependentClaimNamespace({ taskId: state.taskId, source,
+      requestId: state.requestId, originalHash: state.originalHash });
+    if (claimCustodyHash(expected) !== claimCustodyHash(namespace)) throw new Error("Independent namespace plan changed");
+    const parent = path.dirname(root);
+    const physicalData = await realpath(this.dataDir);
+    let directory = this.dataDir;
+    for (const segment of path.relative(this.dataDir, parent).split(path.sep)) {
+      if (!segment || segment === "..") throw new Error("Invalid independent custody namespace");
+      directory = path.join(directory, segment);
+      const entry = await lstat(directory).catch(e => { if (e.code === "ENOENT") return null; throw e; });
+      if (entry && (!entry.isDirectory() || entry.isSymbolicLink())) throw new Error("Custody parent is aliased or not a directory");
+      if (!entry) await mkdir(directory);
+      if (!pathInside(physicalData, await realpath(directory))) throw new Error("Custody parent escaped its data owner");
+    }
+    const intentFile = path.join(parent, "intent.json");
+    const prior = await readFile(intentFile, "utf8").then(JSON.parse, e => { if (e.code === "ENOENT") return null; throw e; });
+    if (prior && claimCustodyHash(prior) !== claimCustodyHash(namespace)) throw new Error("Namespace staging is owned by another intent");
+    const existingRoot = await lstat(root).catch(e => { if (e.code === "ENOENT") return null; throw e; });
+    if (existingRoot && (!existingRoot.isDirectory() || existingRoot.isSymbolicLink()
+        || (!prior && (await readdir(root)).length))) throw new Error("Custody refuses an unowned or aliased source namespace");
+    const existingGit = existingRoot && await lstat(path.join(root, ".git")).catch(e => { if (e.code === "ENOENT") return null; throw e; });
+    if (existingGit && (!existingGit.isDirectory() || existingGit.isSymbolicLink())) throw new Error("Custody cannot reuse linked Git");
+    if (!prior) await writeSelectedRecord(intentFile, namespace);
+    await mkdir(root, { recursive: true });
+    // init/fetch by immutable object identity are repeatable private staging,
+    // not Task prepare/ensure. No linked Git/common objects/hardlink clone.
+    const git = args => this.#runOwned(args, { cwd: root, lease });
+    await git(["init", "-b", source.branch]);
+    if (process.platform === "win32") await git(["config", "core.longpaths", "true"]);
+    await git(["config", "core.autocrlf", "false"]);
+    if (await access(path.join(root, ".git", "objects", "info", "alternates")).then(() => true, () => false)
+        || await access(path.join(root, ".git", "shallow")).then(() => true, () => false)) throw new Error("Custody requires independent full Git objects");
+    for (const commit of new Set([source.headCommit, source.baseCommit])) {
+      if (await gitMaybe(["cat-file", "-e", `${commit}^{commit}`], { cwd: root }) === null) {
+        await git(["fetch", "--no-tags", "--no-write-fetch-head", source.repositoryRoot, commit]);
+      }
+      await git(["rev-list", "--objects", "--missing=error", commit]);
+    }
+    const branch = `refs/heads/${source.branch}`;
+    const head = await gitMaybe(["rev-parse", "--verify", branch], { cwd: root });
+    if (head && head !== source.headCommit) throw new Error("Private staged branch changed; refusing overwrite");
+    if (!head) await git(["update-ref", branch, source.headCommit, "0".repeat(40)]);
+    await git(["symbolic-ref", "HEAD", branch]);
+    if (!await access(path.join(root, ".git", "index")).then(() => true, () => false)) await git(["checkout"]);
+    if (await git(["rev-parse", "HEAD^{tree}"]) !== source.tree || await git(["status", "--porcelain=v1", "--untracked-files=all"])) {
+      throw new Error("Independent source did not materialize its exact clean tree");
+    }
+    const sourceRoot = await worktreeRoot(source.projectRoot);
+    const wip = await this.#readCustodyWip(sourceRoot, source);
+    if (wip.digest !== source.wipDigest) throw new Error("Legacy WIP changed before snapshot");
+    await copyClaimCustodyWip(sourceRoot, root, wip);
+    await copyClaimCustodyWip(sourceRoot, path.join(parent, "retained-wip"), wip);
+    if ((await this.#readCustodyWip(root, source)).digest !== wip.digest) throw new Error("Independent WIP copy differs");
+    const baseRef = `${namespace.refPrefix}/base`;
+    const base = await gitMaybe(["rev-parse", "--verify", baseRef], { cwd: root });
+    if (base && base !== source.baseCommit) throw new Error("Private base changed");
+    if (!base) await git(["update-ref", baseRef, source.baseCommit, "0".repeat(40)]);
+    const sourceRef = `${namespace.refPrefix}/source`;
+    const retainedSource = await gitMaybe(["rev-parse", "--verify", sourceRef], { cwd: root });
+    if (retainedSource && retainedSource !== source.headCommit) throw new Error("Retained custody source changed");
+    if (!retainedSource) await git(["update-ref", sourceRef, source.headCommit, "0".repeat(40)]);
+    const workspace = { taskId: state.taskId, repositoryRoot: source.repositoryRoot,
+      projectRoot: canonicalPath(path.join(root, path.relative(sourceRoot, source.projectRoot))),
+      branch: source.branch, baseRef, baseCommit: source.baseCommit, headCommit: source.headCommit,
+      custodyEpoch: namespace.epoch, gitBaseline: { repoRoot: source.repositoryRoot, tree: source.baseCommit, custodyEpoch: namespace.epoch }, wipDigest: wip.digest };
+    const result = { ...namespace, workspace };
+    const snapshotFile = path.join(parent, "snapshot.json");
+    const saved = await readFile(snapshotFile, "utf8").then(JSON.parse, e => { if (e.code === "ENOENT") return null; throw e; });
+    if (saved && claimCustodyHash(saved) !== claimCustodyHash(result)) throw new Error("Independent snapshot differs on exact staging retry");
+    if (!saved) await writeSelectedRecord(snapshotFile, result);
+    return result;
+  }
+
+  async readIndependentClaimNamespaceOwned(params) {
+    this.#assertAvailable("readIndependentClaimNamespaceOwned");
+    const { state, lease, exactInitial = false } = params;
+    await requiredGuardLease(lease).assertOwned();
+    const { namespace } = state;
+    const expected = this.planIndependentClaimNamespace({ taskId: state.taskId, source: state.source,
+      requestId: state.planRequestId ?? state.requestId, originalHash: state.originalHash });
+    const { workspace, ...identity } = namespace;
+    if (!workspace || claimCustodyHash(expected) !== claimCustodyHash(identity)) throw new Error("Namespace authority changed");
+    const root = namespace.root;
+    const physical = await realpath(root);
+    if (!samePath(root, physical) || !(await lstat(path.join(root, ".git"))).isDirectory()
+        || await access(path.join(root, ".git", "objects", "info", "alternates")).then(() => true, () => false)
+        || !samePath(await runGit(["rev-parse", "--absolute-git-dir"], { cwd: root }), path.join(root, ".git"))) {
+      throw new Error("Private custody source shares or aliases mutable Git");
+    }
+    const recorded = JSON.parse(await readFile(path.join(path.dirname(root), "snapshot.json"), "utf8"));
+    if (claimCustodyHash(recorded) !== claimCustodyHash(namespace)) throw new Error("Durable namespace snapshot differs");
+    if (await runGit(["rev-parse", `${namespace.refPrefix}/source^{commit}`], { cwd: root }) !== state.source.headCommit) {
+      throw new Error("Retained custody history reference changed");
+    }
+    const headCommit = await this.#runOwned(["rev-parse", "HEAD^{commit}"], { cwd: root, lease });
+    if (await runGit(["symbolic-ref", "--quiet", "--short", "HEAD"], { cwd: root }) !== workspace.branch
+        || await runGit(["rev-parse", `${workspace.baseRef}^{commit}`], { cwd: root }) !== workspace.baseCommit) throw new Error("Namespace branch/base authority changed");
+    if (exactInitial && (headCommit !== workspace.headCommit
+        || await runGit(["status", "--porcelain=v1", "--untracked-files=all"], { cwd: root })
+        || (await this.#readCustodyWip(root, state.source)).digest !== state.source.wipDigest)) throw new Error("Initial namespace snapshot changed before takeover");
+    return { ...workspace, headCommit };
+  }
+
   async managedRepositoryRoot(projectRoot, { taskId, taskNumber = null } = {}) {
     this.#assertAvailable("managedRepositoryRoot");
     const expectedTaskId = String(taskId ?? "").trim();
     if (!expectedTaskId) return null;
     const id = normalizedTaskId(expectedTaskId);
     const candidate = canonicalPath(projectRoot);
+    const custody = this.#claimNamespace(id);
+    if (custody) return samePath(candidate, custody.namespace.workspace.projectRoot) ? custody.source.repositoryRoot : null;
     if (!pathInside(this.taskWorktreesRoot, candidate)) return null;
     try {
       const taskRoot = await worktreeRoot(candidate);
@@ -2865,7 +3198,7 @@ export class TaskGitWorkspaceService {
     this.#assertAvailable("snapshotOwned");
     await requiredGuardLease(lease).assertOwned();
     await this.#assertNoProcessTreeGuard(taskId);
-    const repoRoot = await repositoryRoot(projectRoot);
+    const repoRoot = this.#claimNamespace(normalizedTaskId(taskId))?.source.repositoryRoot ?? await repositoryRoot(projectRoot);
     return this.#withClearDevLock(repoRoot, lease, async (ownedLease) => {
       const workspace = await this.prepareOwned({ taskId, taskNumber, projectRoot, lease: ownedLease });
       const taskRoot = await worktreeRoot(workspace.projectRoot);
@@ -2886,7 +3219,8 @@ export class TaskGitWorkspaceService {
         ...workspace,
         headCommit,
         changedFiles: changedFilesFromNameStatus(diff, workspace.repositoryRoot),
-        resultSnapshot: { repoRoot: workspace.repositoryRoot, tree: headCommit },
+        resultSnapshot: { repoRoot: workspace.repositoryRoot, tree: headCommit,
+          ...(workspace.custodyEpoch ? { custodyEpoch: workspace.custodyEpoch } : {}) },
       };
     });
   }
@@ -2913,7 +3247,7 @@ export class TaskGitWorkspaceService {
     }), repoRoot)) throw selectedCompositionRequiredError("absorbed source checkout identity changed");
     const [head, base, branch, status] = await Promise.all([
       runGit(["rev-parse", "HEAD^{commit}"], { cwd: sourceRoot }),
-      runGit(["rev-parse", `${taskBaseRef(d.sourceTaskId, repoKey)}^{commit}`], { cwd: repoRoot }),
+      runGit(["rev-parse", `${this.#custodyBaseRef(d.sourceTaskId, repoKey)}^{commit}`], { cwd: repoRoot }),
       runGit(["symbolic-ref", "--quiet", "--short", "HEAD"], { cwd: sourceRoot }),
       runGit(["status", "--porcelain=v1", "-z", "--untracked-files=all"], { cwd: sourceRoot }),
     ]);
@@ -3131,7 +3465,7 @@ export class TaskGitWorkspaceService {
       const [head, status, resultRef] = await Promise.all([
         runGit(["rev-parse", "HEAD^{commit}"], { cwd: preview.devRoot }),
         runGit(["status", "--porcelain=v1", "-z", "--untracked-files=all"], { cwd: preview.devRoot }),
-        gitMaybe(["rev-parse", "--verify", `${taskResultRef(preview.taskId,
+        gitMaybe(["rev-parse", "--verify", `${this.#custodyResultRef(preview.taskId,
           taskRepositoryKey(preview.repositoryRoot))}^{commit}`], { cwd: preview.repositoryRoot }),
       ]);
       if (head !== preview.proofCommit || status || resultRef !== preview.taskCommit) {
@@ -3154,7 +3488,7 @@ export class TaskGitWorkspaceService {
       const readFiles = version === 1 ? legacySelectedV1.readSelectedCompositionFiles : readSelectedCompositionFiles;
       const prepareFiles = version === 1 ? legacySelectedV1.prepareSelectedCompositionFiles : prepareSelectedCompositionFiles;
       const applyFiles = version === 1 ? legacySelectedV1.applySelectedCompositionFiles : applySelectedCompositionFiles;
-      const resultRef = taskResultRef(preview.taskId, taskRepositoryKey(preview.repositoryRoot));
+      const resultRef = this.#custodyResultRef(preview.taskId, taskRepositoryKey(preview.repositoryRoot));
       const materializationBinding = this.#selectedMaterializationBinding(preview, ownedLease);
       const state = await this.readSelectedCompositionOwned(preview, { operationId, lease: ownedLease, validateAbsorption });
       if (state.status === "applied") return state;
@@ -3167,7 +3501,7 @@ export class TaskGitWorkspaceService {
         const [main, base, task, dev, taskStatus, devStatus, publication, remoteOutput,
           currentResultRef, configuredRemote, taskBranch, devBranch] = await Promise.all([
           runGit(["rev-parse", "--verify", "refs/heads/main^{commit}"], { cwd: preview.repositoryRoot }),
-          runGit(["rev-parse", "--verify", `${taskBaseRef(preview.taskId,
+          runGit(["rev-parse", "--verify", `${this.#custodyBaseRef(preview.taskId,
             taskRepositoryKey(preview.repositoryRoot))}^{commit}`], { cwd: preview.repositoryRoot }),
           runGit(["rev-parse", "HEAD^{commit}"], { cwd: preview.taskRoot }),
           runGit(["rev-parse", "HEAD^{commit}"], { cwd: preview.devRoot }),
@@ -3365,6 +3699,61 @@ export class TaskGitWorkspaceService {
     return record.phase === "failed" ? null : record;
   }
 
+  async withAppliedNativeTerminalOwned({ taskId, projectRoot, operationId, lease } = {}, commit) {
+    this.#assertAvailable("withAppliedNativeTerminalOwned");
+    const repoRoot = await repositoryRoot(projectRoot);
+    return this.#withClearDevLock(repoRoot, lease, async (ownedLease) => {
+      const original = await this.pendingNativeIntegrationOwned({ taskId, projectRoot, operationId, lease: ownedLease });
+      if (!original?.target || original.nativeAbsorptionInput || original.nativeAbsorptionHistory
+          || original.initialNativeTest || original.nativeResolutionReview) {
+        throw new Error("Applied ordinary native Test intent is required");
+      }
+      const verify = async () => {
+        await ownedLease.assertOwned();
+        await this.#assertNoProcessTreeGuard(taskId);
+        const record = await this.pendingNativeIntegrationOwned({ taskId, projectRoot, operationId, lease: ownedLease });
+        if (JSON.stringify(record) !== JSON.stringify(original)) throw new Error("Native Test original intent changed");
+        const s = record.snapshot;
+        if (record.nativeHistoryAuthority) await this.#nativeHistoryAuthority(s,
+          { mainCommit: record.mainCommit, headCommit: record.before }, ownedLease, record.nativeHistoryAuthority);
+        const managedRoot = await this.managedRepositoryRoot(s.projectRoot, { taskId, taskNumber: s.branch });
+        if (!managedRoot || !samePath(managedRoot, repoRoot)) {
+          throw new Error("Native Test managed source binding changed");
+        }
+        const git = (args, cwd = repoRoot) => this.#runOwned(["--no-optional-locks", ...args], { cwd, lease: ownedLease });
+        const { root, identity } = this.#nativeIntegrationStaging(record);
+        const capture = JSON.parse(await readFile(path.join(root, "merge.json"), "utf8"));
+        if (!samePath(record.stageRoot, path.join(root, "repository"))
+            || JSON.stringify(capture.identity) !== JSON.stringify(identity)
+            || capture.next !== 1 || capture.head !== record.target || capture.conflict || capture.merging
+            || capture.merges?.length !== 1 || capture.merges[0].taskId !== taskId
+            || capture.merges[0].resultCommit !== s.headCommit || capture.merges[0].commit !== record.target
+            || await git(["rev-parse", "refs/heads/main^{commit}"]) !== record.mainCommit
+            || await git(["rev-parse", `${s.baseRef}^{commit}`]) !== s.baseCommit
+            || await git(["show", "-s", "--format=%P", record.target]) !== `${record.before} ${s.headCommit}`
+            || await git(["rev-parse", `${record.target}^{tree}`]) !== record.targetTree
+            || await git(["rev-parse", "refs/heads/dev^{commit}"]) !== record.target
+            || await git(["symbolic-ref", "-q", "HEAD"], s.projectRoot) !== `refs/heads/${s.branch}`
+            || await git(["rev-parse", "HEAD^{commit}"], s.projectRoot) !== s.headCommit
+            || await git(["status", "--porcelain=v1", "-z", "--untracked-files=all"], s.projectRoot)
+            || await git(["symbolic-ref", "-q", "HEAD"], record.devRoot) !== "refs/heads/dev") {
+          throw new Error("Applied native Test Git binding changed");
+        }
+        for (const cwd of [record.devRoot, record.stageRoot]) {
+          if (await git(["rev-parse", "HEAD^{commit}"], cwd) !== record.target
+              || await git(["rev-parse", "HEAD^{tree}"], cwd) !== record.targetTree
+              || await git(["status", "--porcelain=v1", "-z", "--untracked-files=all"], cwd)) {
+            throw new Error("Applied native Test materialization changed");
+          }
+        }
+        await this.#nativeHistoryOrigin(s, record.nativeHistoryAuthority, ownedLease);
+        await ownedLease.assertOwned();
+      };
+      await verify();
+      return commit(original, verify);
+    });
+  }
+
   async assertNativeIntegrationOwned(snapshot, { operationId, lease, nativeAbsorptionInput = null,
     nativeAbsorptionHistory = null, validateAbsorption = null } = {}) {
     this.#assertAvailable("assertNativeIntegrationOwned");
@@ -3373,7 +3762,7 @@ export class TaskGitWorkspaceService {
     const git = (args, cwd = snapshot.projectRoot) => this.#runOwned(args, { cwd, lease });
     if (await git(["rev-parse", "HEAD^{commit}"]) !== snapshot.headCommit
         || await git(["symbolic-ref", "-q", "HEAD"]) !== `refs/heads/${snapshot.branch}`
-        || await git(["rev-parse", `${taskBaseRef(snapshot.taskId, taskRepositoryKey(snapshot.repositoryRoot))}^{commit}`], snapshot.repositoryRoot) !== snapshot.baseCommit
+        || await git(["rev-parse", `${this.#custodyBaseRef(snapshot.taskId, taskRepositoryKey(snapshot.repositoryRoot))}^{commit}`], snapshot.repositoryRoot) !== snapshot.baseCommit
         || await git(["status", "--porcelain=v1", "-z", "--untracked-files=all"])) {
       throw Object.assign(new Error("Native Test source changed before terminal persistence"), { code: "TASK_NATIVE_INTEGRATION_UNKNOWN" });
     }
@@ -3386,6 +3775,8 @@ export class TaskGitWorkspaceService {
       await this.#nativeSelectedCompositionForResult(nativeAbsorptionHistory, lease);
     }
     if (record) {
+      if (record.nativeHistoryAuthority) await this.#nativeHistoryAuthority(snapshot,
+        { mainCommit: record.mainCommit, headCommit: record.before }, lease, record.nativeHistoryAuthority);
       if (JSON.stringify(record.nativeAbsorptionInput ?? null) !== JSON.stringify(nativeAbsorptionInput)
           || JSON.stringify(record.nativeAbsorptionHistory ?? null) !== JSON.stringify(nativeAbsorptionHistory)) {
         throw new Error("Native Test original absorption binding changed");
@@ -3418,6 +3809,7 @@ export class TaskGitWorkspaceService {
         throw Object.assign(new Error("Reused native Test lacks exact current dev readback"), { code: "TASK_NATIVE_INTEGRATION_UNKNOWN" });
       }
     }
+    await this.#nativeHistoryOrigin(snapshot, record?.nativeHistoryAuthority, lease);
     return record;
   }
 
@@ -3485,7 +3877,7 @@ export class TaskGitWorkspaceService {
     await this.#nativeIntegrationComposition(record, lease);
     if (descriptor.absorptionHistory) await this.#nativeSelectedCompositionForResult(descriptor.absorptionHistory, lease);
     await assertNativeTaskHistories({
-      git: args => this.#runOwned(args, { cwd: descriptor.repositoryRoot, lease }),
+      git: (args, options = {}) => this.#runOwned(args, { ...options, cwd: descriptor.repositoryRoot, lease }),
       baseCommit: descriptor.mainCommit,
       tasks: [{ taskId: descriptor.taskId, baseCommit: descriptor.taskBaseCommit,
         resultCommit: descriptor.taskCommit, selectedComposition: descriptor }],
@@ -3497,6 +3889,7 @@ export class TaskGitWorkspaceService {
     const snapshot = record.snapshot;
     const identity = { policy: "native-dev-merge-v1", taskId: snapshot.taskId,
       resultCommit: snapshot.headCommit, before: record.before, mainCommit: record.mainCommit,
+      ...(record.nativeHistoryAuthority ? { nativeHistoryAuthority: record.nativeHistoryAuthority } : {}),
       ...(record.nativeAbsorptionInput || record.nativeAbsorptionHistory ? {
         ...(record.nativeAbsorptionInput ? { nativeAbsorptionInput: record.nativeAbsorptionInput } : {}),
         ...(record.nativeAbsorptionHistory ? { nativeAbsorptionHistory: record.nativeAbsorptionHistory } : {}),
@@ -3539,6 +3932,42 @@ export class TaskGitWorkspaceService {
     return composition;
   }
 
+  async #nativeHistoryOrigin(snapshot, binding, lease) {
+    if (binding?.adoptions?.length) await assertNativeUpstreamOrigin({
+      git: (args, options = {}) => this.#runOwned(args, { ...options, cwd: snapshot.repositoryRoot, lease }),
+      adoptions: binding.adoptions, originCommit: binding.adoptions[0].adoptedCommit });
+    else if (binding?.baseline?.adoptions) await assertInstalledAgreedMainOrigin({ provenance: binding.baseline,
+      git: (args, options = {}) => this.#runOwned(args, { ...options, cwd: snapshot.repositoryRoot, lease }) });
+  }
+
+  async #nativeHistoryAuthority(snapshot, dev, lease, expected = undefined) {
+    const tasks = [{ taskId: snapshot.taskId, baseCommit: snapshot.baseCommit, resultCommit: snapshot.headCommit }];
+    const git = (args, options = {}) => this.#runOwned(args, { ...options, cwd: snapshot.repositoryRoot, lease });
+    const adoptions = await readNativeUpstreamAdoptions({ git, tasks, repositoryRoot: snapshot.repositoryRoot,
+      localMainCommit: dev.mainCommit });
+    if (adoptions.length) await assertNativeUpstreamOrigin({ git, adoptions, originCommit: adoptions[0].adoptedCommit });
+    const publication = await this.readPublication();
+    const published = publicationStateRepositories(publication ?? {})
+      .find(entry => samePath(entry.root, snapshot.repositoryRoot))?.revision;
+    const runtimeRoot = path.dirname(this.dataDir);
+    const planRevision = `native-test:${snapshot.taskId}:${snapshot.headCommit}`;
+    let baseline = expected?.baseline ?? null;
+    if (expected === undefined && publication?.generation && published) {
+      baseline = await installedNativeHistoryBaseline({ git, repositoryRoot: snapshot.repositoryRoot,
+        primaryMainCommit: dev.mainCommit, publishedRevision: published, tasks, runtimeRoot, planRevision, adoptions,
+        sourceGit: (cwd, args) => this.#runOwned(args, { cwd, lease, guardRepositoryRoot: snapshot.repositoryRoot }) });
+    } else if (baseline) {
+      await assertInstalledLocalSourceBaseline({ provenance: baseline, git, repositoryRoot: snapshot.repositoryRoot,
+        primaryMainCommit: dev.mainCommit, publishedRevision: published, planRevision, tasks, runtimeRoot });
+    }
+    const binding = { baseline, adoptions };
+    if (expected !== undefined && JSON.stringify(binding) !== JSON.stringify(expected)) {
+      throw new Error("Native Test installed source or adoption authority changed");
+    }
+    return { binding, bases: [dev.headCommit, ...(baseline ? [baseline.sourceBaseCommit] : [])],
+      metadataBases: baseline ? [baseline.sourceBaseCommit] : [], adoptions };
+  }
+
   async #mergeIntoDevOwned(snapshot, { lease, operationId = null, nativeAbsorptionInput = null,
     nativeAbsorptionHistory = null, expectedTaskRevision = null, validateAbsorption = null,
     initialNativeTest = null, validateInitialNativeTest = null, nativeResolutionReview = null }) {
@@ -3549,6 +3978,7 @@ export class TaskGitWorkspaceService {
     // lifecycle calls always supply their original durable operation id.
     operationId ??= `native:${snapshot.taskId}:${snapshot.headCommit}`;
     return this.#withClearDevLock(snapshot.repositoryRoot, lease, async (ownedLease) => {
+      await this.#importCustodySnapshotOwned(snapshot, ownedLease);
       const file = this.#nativeIntegrationFile(snapshot.taskId, snapshot.repositoryRoot, operationId);
       let record = await this.pendingNativeIntegrationOwned({ taskId: snapshot.taskId,
         projectRoot: snapshot.repositoryRoot, operationId, lease: ownedLease });
@@ -3582,15 +4012,18 @@ export class TaskGitWorkspaceService {
           validateAbsorption();
           await this.#assertSelectedAbsorptionGit(nativeAbsorptionInput, snapshot.repositoryRoot, ownedLease);
         }
+        const historyAuthority = await this.#nativeHistoryAuthority(snapshot, dev, ownedLease);
         await assertNativeTaskHistories({
-          git: args => this.#runOwned(args, { cwd: snapshot.repositoryRoot, lease: ownedLease }),
+          git: (args, options = {}) => this.#runOwned(args, { ...options, cwd: snapshot.repositoryRoot, lease: ownedLease }),
           baseCommit: dev.mainCommit,
+          historyAuthority,
           tasks: [{ taskId: snapshot.taskId, baseCommit: snapshot.baseCommit, resultCommit: snapshot.headCommit,
             ...(nativeAbsorptionInput || nativeAbsorptionHistory
               ? { nativeAbsorptionInput: nativeAbsorptionInput ?? nativeAbsorptionHistory.absorptionInput } : {}) }],
         });
         record = { version: 1, kind: "native-task-integration-v1", operationId, phase: "prepared",
           snapshot, devRoot: dev.projectRoot, before: dev.headCommit, mainCommit: dev.mainCommit,
+          nativeHistoryAuthority: historyAuthority.binding,
           ...(nativeResolutionReview ? { nativeResolutionReview } : {}),
           ...(initialNativeTest ? { initialNativeTest } : {}),
           ...(nativeAbsorptionInput || nativeAbsorptionHistory ? { expectedTaskRevision,
@@ -3603,6 +4036,14 @@ export class TaskGitWorkspaceService {
         guardRepositoryRoot: snapshot.repositoryRoot, timeoutMs: 300_000 });
       const sourceFence = async () => {
         await ownedLease.assertOwned();
+        if (record.nativeHistoryAuthority) {
+          const historyAuthority = await this.#nativeHistoryAuthority(snapshot, dev, ownedLease, record.nativeHistoryAuthority);
+          await assertNativeTaskHistories({ git: (args, options = {}) => git(args, snapshot.repositoryRoot, options),
+            baseCommit: record.mainCommit, tasks: [{ taskId: snapshot.taskId, baseCommit: snapshot.baseCommit,
+              resultCommit: snapshot.headCommit, ...(nativeAbsorptionInput || nativeAbsorptionHistory
+                ? { nativeAbsorptionInput: nativeAbsorptionInput ?? nativeAbsorptionHistory.absorptionInput } : {}) }],
+            historyAuthority });
+        }
         if (initialNativeTest) await validateInitialNativeTest({ record });
         if (nativeAbsorptionHistory) validateAbsorption();
         if (nativeAbsorptionInput) {
@@ -3614,9 +4055,10 @@ export class TaskGitWorkspaceService {
             || await git(["symbolic-ref", "-q", "HEAD"], snapshot.projectRoot) !== `refs/heads/${snapshot.branch}`
             || await git(["status", "--porcelain=v1", "-z", "--untracked-files=all"], snapshot.projectRoot)
             || await localMainCommit(snapshot.repositoryRoot) !== record.mainCommit
-            || await git(["rev-parse", `${taskBaseRef(snapshot.taskId, taskRepositoryKey(snapshot.repositoryRoot))}^{commit}`], snapshot.repositoryRoot) !== snapshot.baseCommit) {
+            || await git(["rev-parse", `${this.#custodyBaseRef(snapshot.taskId, taskRepositoryKey(snapshot.repositoryRoot))}^{commit}`], snapshot.repositoryRoot) !== snapshot.baseCommit) {
           throw Object.assign(new Error("Native Test source/main changed; original remains unresolved"), { code: "TASK_NATIVE_INTEGRATION_UNKNOWN" });
         }
+        await this.#nativeHistoryOrigin(snapshot, record.nativeHistoryAuthority, ownedLease);
       };
       await sourceFence();
       {
@@ -4007,7 +4449,7 @@ export class TaskGitWorkspaceService {
       await this.#withClearDevLock(snapshot.repositoryRoot, params.lease, (ownedLease) => (
         this.#runOwned([
           "update-ref",
-          taskResultRef(snapshot.taskId, taskRepositoryKey(snapshot.repositoryRoot)),
+          this.#custodyResultRef(snapshot.taskId, taskRepositoryKey(snapshot.repositoryRoot)),
           snapshot.headCommit,
         ], { cwd: snapshot.repositoryRoot, lease: ownedLease })
       ));
@@ -4021,9 +4463,9 @@ export class TaskGitWorkspaceService {
     const workspace = await this.prepareOwned(params);
     if (workspace.headCommit !== expectedCommit) return null;
     const taskRoot = await worktreeRoot(workspace.projectRoot);
-    const resultRef = taskResultRef(workspace.taskId, taskRepositoryKey(workspace.repositoryRoot));
+    const resultRef = this.#custodyResultRef(workspace.taskId, taskRepositoryKey(workspace.repositoryRoot));
     const recordedCommit = await gitMaybe(["rev-parse", "--verify", `${resultRef}^{commit}`], {
-      cwd: taskRoot,
+      cwd: workspace.repositoryRoot,
     });
     if (recordedCommit !== expectedCommit) return null;
     const diff = await runGit([
@@ -4087,13 +4529,19 @@ export class TaskGitWorkspaceService {
       if (values.length > 1) throw new Error("Task repository path aliases have conflicting Git evidence");
       return values[0] ?? null;
     };
-    const baseCommit = await existingCommits((repoKey) => taskBaseRef(id, repoKey));
+    const baseCommit = await existingCommits((repoKey) => this.#custodyBaseRef(id, repoKey));
     if (!baseCommit) {
-      await runGit(["rev-parse", "--verify", `${taskBaseRef(id, repoKeys[0])}^{commit}`], { cwd: repoRoot });
+      await runGit(["rev-parse", "--verify", `${this.#custodyBaseRef(id, repoKeys[0])}^{commit}`], { cwd: repoRoot });
       throw new Error("Task base reference is unavailable");
     }
     const acceptedCommit = await runGit(["rev-parse", "--verify", `${String(resultCommit)}^{commit}`], { cwd: repoRoot });
-    const branchCommit = await runGit(["rev-parse", "--verify", `refs/heads/${storedBranch}^{commit}`], { cwd: repoRoot });
+    const custody = this.#claimNamespace(id);
+    if (custody && storedBranch !== custody.namespace.workspace.branch) throw new Error("Custody result branch differs");
+    const branchCommit = await runGit(["rev-parse", "--verify", `refs/heads/${storedBranch}^{commit}`], {
+      cwd: custody ? custody.namespace.root : repoRoot });
+    if (custody && await runGit(["rev-parse", `${this.#custodyResultRef(id, taskRepositoryKey(repoRoot))}^{commit}`], { cwd: repoRoot }) !== acceptedCommit) {
+      throw new Error("Task result is not the current custody result authority");
+    }
     await runGit(["merge-base", "--is-ancestor", acceptedCommit, branchCommit], { cwd: repoRoot });
     const adoptedCommit = await existingCommits((repoKey) => taskLegacyAdoptionRef(id, repoKey));
     const pathspecs = adoptedCommit === acceptedCommit
@@ -4121,9 +4569,21 @@ export class TaskGitWorkspaceService {
       const localMain = await localMainCommit(repoRoot);
       // local main is the agreed branch baseline. Publication and observation
       // remain separate authorities and do not silently choose another base.
-      void tasks;
+      const adoptions = [];
+      for (const task of [...tasks].sort((a, b) => String(a.taskId).localeCompare(String(b.taskId)))) {
+        const verified = await this.#recordedUpstreamAdoptionForSnapshot({ taskId: task.taskId,
+          repoRoot, snapshotCommit: task.resultCommit, localMain, lease: ownedLease,
+          publishedBaseCommit: published });
+        if (!verified) continue;
+        if (task.baseCommit != null && task.baseCommit !== verified.record.taskBaseCommit) {
+          throw new Error("Selected Task adoption registered base changed");
+        }
+        adoptions.push({ taskId: task.taskId, resultCommit: task.resultCommit,
+          recordRef: verified.recordRef, recordHash: verified.recordHash,
+          adoptedCommit: verified.record.adoptedCommit, acceptedLocalMainCommit: localMain });
+      }
       return { publishedBaseCommit: published, baseCommit: localMain,
-        compositionPolicy: "main-selected-git-merge-v1", adoptions: [] };
+        compositionPolicy: "main-selected-git-merge-v1", adoptions };
     });
   }
 
@@ -4184,10 +4644,10 @@ export class TaskGitWorkspaceService {
     }
     const repoKey = taskRepositoryKey(repoRoot);
     const sourceBase = await this.#runOwned([
-      "rev-parse", "--verify", `${taskBaseRef(sourceId, repoKey)}^{commit}`,
+      "rev-parse", "--verify", `${this.#custodyBaseRef(sourceId, repoKey)}^{commit}`,
     ], { cwd: repoRoot, lease });
     const survivorBase = await this.#runOwned([
-      "rev-parse", "--verify", `${taskBaseRef(survivorId, repoKey)}^{commit}`,
+      "rev-parse", "--verify", `${this.#custodyBaseRef(survivorId, repoKey)}^{commit}`,
     ], { cwd: repoRoot, lease });
     await this.#runOwned(["cat-file", "-e", `${afterTree}^{tree}`], { cwd: repoRoot, lease });
     const devRoot = await worktreeForBranch(repoRoot, this.devBranch);
@@ -4779,9 +5239,10 @@ export class TaskGitWorkspaceService {
     });
   }
 
-  async releaseIntegrationEvidence({ projectRoot, tasks = [], lease = null } = {}) {
+  async releaseIntegrationEvidence({ projectRoot, tasks = [], lease = null, forwardPreparation = false, synchronizeAcceptedMain = false } = {}) {
     this.#assertAvailable("releaseIntegrationEvidence");
-    const dev = await this.prepareDev(projectRoot, { lease });
+    const dev = forwardPreparation ? await this.inspectForwardPreparationDevOwned(projectRoot, { lease })
+      : await this.prepareDev(projectRoot, { lease, synchronizeAcceptedMain });
     const firstParentHistory = String(await runGit([
       "log", "--first-parent", "--reverse", "--format=%H%x00%P", dev.headCommit,
     ], { cwd: dev.projectRoot })).split(/\r?\n/u).filter(Boolean).map((line, order) => {
@@ -4965,7 +5426,7 @@ export class TaskGitWorkspaceService {
     const repoKey = taskRepositoryKey(repoRoot);
     const branch = taskBranchName(id, repoRoot, taskNumber);
     const branchRef = `refs/heads/${branch}`;
-    const baseRef = taskBaseRef(id, repoKey);
+    const baseRef = this.#custodyBaseRef(id, repoKey);
     const adoptionRef = taskLegacyAdoptionRef(id, repoKey);
     const existingBranch = await gitMaybe(["rev-parse", "--verify", `${branchRef}^{commit}`], { cwd: repoRoot });
     const existingBase = await gitMaybe(["rev-parse", "--verify", `${baseRef}^{commit}`], { cwd: repoRoot });
@@ -5082,7 +5543,7 @@ export class TaskGitWorkspaceService {
             repoRoot,
             branch: task.branch,
             baseCommit: await this.#runOwned([
-              "rev-parse", "--verify", `${taskBaseRef(task.taskId, taskRepositoryKey(repoRoot))}^{commit}`,
+              "rev-parse", "--verify", `${this.#custodyBaseRef(task.taskId, taskRepositoryKey(repoRoot))}^{commit}`,
             ], { cwd: repoRoot, lease: ownedLease }),
             snapshotCommit: exactResult,
             localMain,
@@ -5113,6 +5574,16 @@ export class TaskGitWorkspaceService {
   async describe(taskId) {
     this.#assertAvailable("describe");
     const id = normalizedTaskId(taskId);
+    const custody = this.#claimNamespace(id);
+    if (custody) {
+      const root = custody.namespace.root;
+      const status = await runGit(["status", "--porcelain=v1", "--untracked-files=all"], { cwd: root });
+      const entries = status.split(/\r?\n/u).filter(Boolean);
+      return [{ ...custody.namespace.workspace, repositoryKey: custody.namespace.repositoryKey,
+        projectRoot: root, headCommit: await runGit(["rev-parse", "HEAD^{commit}"], { cwd: root }),
+        dirty: entries.length > 0, changedPaths: entries.map(line => line.slice(3)),
+        untrackedPaths: entries.filter(line => line.startsWith("?? ")).map(line => line.slice(3)) }];
+    }
     const root = path.join(this.taskWorktreesRoot, id);
     const entries = await readdir(root, { withFileTypes: true }).catch((error) => {
       if (error?.code === "ENOENT") return [];
@@ -5151,7 +5622,7 @@ export class TaskGitWorkspaceService {
       const root = await this.managedRepositoryRoot(workspace.projectRoot, { taskId, taskNumber });
       if (!root) throw new Error("Рабочая папка больше не принадлежит этой Task");
       const baseCommit = await runGit(["rev-parse", "--verify",
-        `${taskBaseRef(taskId, taskRepositoryKey(root))}^{commit}`], { cwd: workspace.projectRoot });
+        `${this.#custodyBaseRef(taskId, taskRepositoryKey(root))}^{commit}`], { cwd: workspace.projectRoot });
       if (remainingBytes <= 0) return { repositories, truncated: true };
       const diff = await taskWorkingTreeDiff(workspace.projectRoot, baseCommit, { maxOutputBytes: remainingBytes });
       const head = await runGit(["rev-parse", "HEAD^{commit}"], { cwd: workspace.projectRoot });
@@ -5258,8 +5729,8 @@ export class TaskGitWorkspaceService {
         } else if (await gitMaybe(["merge-base", "--is-ancestor", targetHead, dev], { cwd: repoRoot }) === null) {
           throw new Error("Surviving Task result is not integrated into dev");
         }
-        const sourceBase = await runGit(["rev-parse", `${taskBaseRef(source.id, workspace.repositoryKey)}^{commit}`], { cwd: repoRoot });
-        const targetBase = await runGit(["rev-parse", `${taskBaseRef(target.id, workspace.repositoryKey)}^{commit}`], { cwd: repoRoot });
+        const sourceBase = await runGit(["rev-parse", `${this.#custodyBaseRef(source.id, workspace.repositoryKey)}^{commit}`], { cwd: repoRoot });
+        const targetBase = await runGit(["rev-parse", `${this.#custodyBaseRef(target.id, workspace.repositoryKey)}^{commit}`], { cwd: repoRoot });
         const lineage = new Set(String(await runGit([
           "rev-list", "--first-parent", "--max-count=4097", sourceHead, `^${sourceBase}`, `^${main}`,
         ], { cwd: repoRoot })).split(/\r?\n/u).filter(Boolean));
@@ -5446,7 +5917,7 @@ export class TaskGitWorkspaceService {
           throw new Error("Surviving Task exact result is not contained in published main");
         }
         const baseCommit = await runGit([
-          "rev-parse", `${taskBaseRef(source.id, workspace.repositoryKey)}^{commit}`,
+          "rev-parse", `${this.#custodyBaseRef(source.id, workspace.repositoryKey)}^{commit}`,
         ], { cwd: repoRoot });
         repositories.push({
           projectRoot: repoRoot,
@@ -5467,7 +5938,17 @@ export class TaskGitWorkspaceService {
   async cleanupPreview(taskId, { gitReferences = [], squashAbsorbedBy = null } = {}) {
     this.#assertAvailable("cleanupPreview");
     const id = normalizedTaskId(taskId);
+    if (this.#claimNamespace(id)) {
+      throw new Error("Task cleanup blocked: independent custody history/WIP requires its artifact owner's verified retirement");
+    }
     const workspaces = await this.describe(id);
+    // A clean Git status excludes ignored data. Native worktree remove can
+    // discard that data even without --force, so it is a separate cleanup pin.
+    for (const workspace of workspaces) {
+      workspace.ignoredPaths = String(await runGit([
+        "ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "--no-empty-directory", "-z",
+      ], { cwd: workspace.projectRoot })).split("\0").filter(Boolean);
+    }
     const references = [];
     const publication = await this.readPublication();
     let squashTransfer = null;
@@ -5538,8 +6019,8 @@ export class TaskGitWorkspaceService {
       deleting.push(
         { kind: "worktree", path: workspace.projectRoot },
         { kind: "branch", name: workspace.branch, repositoryRoot: workspace.repositoryRoot },
-        { kind: "base_ref", name: taskBaseRef(id, workspace.repositoryKey), repositoryRoot: workspace.repositoryRoot },
-        { kind: "result_ref", name: taskResultRef(id, workspace.repositoryKey), repositoryRoot: workspace.repositoryRoot },
+        { kind: "base_ref", name: this.#custodyBaseRef(id, workspace.repositoryKey), repositoryRoot: workspace.repositoryRoot },
+        { kind: "result_ref", name: this.#custodyResultRef(id, workspace.repositoryKey), repositoryRoot: workspace.repositoryRoot },
         { kind: "adoption_ref", name: taskLegacyAdoptionRef(id, workspace.repositoryKey), repositoryRoot: workspace.repositoryRoot },
       );
       for (const name of await taskUpstreamAdoptionRefs(
@@ -5554,8 +6035,8 @@ export class TaskGitWorkspaceService {
       const repoKey = taskRepositoryKey(reference.projectRoot);
       if (reference.branch) deleting.push({ kind: "branch", name: reference.branch, repositoryRoot: reference.projectRoot });
       deleting.push(
-        { kind: "base_ref", name: taskBaseRef(id, repoKey), repositoryRoot: reference.projectRoot },
-        { kind: "result_ref", name: taskResultRef(id, repoKey), repositoryRoot: reference.projectRoot },
+        { kind: "base_ref", name: this.#custodyBaseRef(id, repoKey), repositoryRoot: reference.projectRoot },
+        { kind: "result_ref", name: this.#custodyResultRef(id, repoKey), repositoryRoot: reference.projectRoot },
         { kind: "adoption_ref", name: taskLegacyAdoptionRef(id, repoKey), repositoryRoot: reference.projectRoot },
       );
       for (const name of await taskUpstreamAdoptionRefs(reference.projectRoot, id, repoKey)) {
@@ -5574,6 +6055,8 @@ export class TaskGitWorkspaceService {
       workspaces,
       gitReferences: references,
       dirty: workspaces.some((item) => item.dirty),
+      retainedIgnored: workspaces.filter(item => item.ignoredPaths.length)
+        .map(item => ({ projectRoot: item.projectRoot, paths: item.ignoredPaths })),
       unpublished: [...references.filter((item) => !item.published || !item.branchPublished), ...unpublishedWorktrees],
       deleting: uniqueDeleting,
       ...(squashTransfer ? { squashTransfer } : {}),
@@ -5614,6 +6097,7 @@ export class TaskGitWorkspaceService {
       }
     }
     const workspaces = preview.workspaces;
+    if (preview.retainedIgnored.length) throw new Error("Task cleanup blocked: ignored local data requires its artifact owner's verified retirement");
     if (!allowDirty && preview.dirty) throw new Error("Task cleanup blocked: managed worktree is dirty");
     if (requirePublished && preview.unpublished.length) {
       throw new Error("Task cleanup blocked: exact result or current branch/worktree head is not contained in published main");
@@ -5648,10 +6132,10 @@ export class TaskGitWorkspaceService {
           if (await worktreeForBranch(repoRoot, workspace.branch)) throw new Error("Task cleanup blocked: branch is still checked out");
           await this.#runOwned(["update-ref", "-d", `refs/heads/${workspace.branch}`, workspace.headCommit], { cwd: repoRoot, lease: ownedLease });
         }
-        await this.#runOwned(["update-ref", "-d", taskBaseRef(id, workspace.repositoryKey)], {
+        await this.#runOwned(["update-ref", "-d", this.#custodyBaseRef(id, workspace.repositoryKey)], {
           cwd: repoRoot, lease: ownedLease,
         });
-        await this.#runOwned(["update-ref", "-d", taskResultRef(id, workspace.repositoryKey)], {
+        await this.#runOwned(["update-ref", "-d", this.#custodyResultRef(id, workspace.repositoryKey)], {
           cwd: repoRoot, lease: ownedLease,
         });
         await this.#runOwned(["update-ref", "-d", taskLegacyAdoptionRef(id, workspace.repositoryKey)], {
@@ -5678,10 +6162,10 @@ export class TaskGitWorkspaceService {
           if (!expectedHead) throw new Error("Task cleanup blocked: branch appeared after confirmation");
           await this.#runOwned(["update-ref", "-d", `refs/heads/${branch}`, expectedHead], { cwd: repoRoot, lease: ownedLease });
         }
-        await this.#runOwned(["update-ref", "-d", taskBaseRef(id, repoKey)], {
+        await this.#runOwned(["update-ref", "-d", this.#custodyBaseRef(id, repoKey)], {
           cwd: repoRoot, lease: ownedLease,
         });
-        await this.#runOwned(["update-ref", "-d", taskResultRef(id, repoKey)], {
+        await this.#runOwned(["update-ref", "-d", this.#custodyResultRef(id, repoKey)], {
           cwd: repoRoot, lease: ownedLease,
         });
         await this.#runOwned(["update-ref", "-d", taskLegacyAdoptionRef(id, repoKey)], {

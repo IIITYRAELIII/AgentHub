@@ -1,6 +1,7 @@
 import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 
+import { normalizeUsageSyncServerUrl } from "../../domain/default-usage-sync-server.mjs";
 import { writeTextAtomic } from "./state-store.mjs";
 
 function text(value, limit = 1024) {
@@ -12,7 +13,7 @@ function positiveInteger(value) {
 }
 
 function normalizeUrl(value) {
-  const candidate = text(value);
+  const candidate = String(value ?? "").trim();
   if (!candidate) return "";
   const url = new URL(candidate);
   if (!["http:", "https:"].includes(url.protocol)) {
@@ -61,19 +62,27 @@ async function readJson(file) {
 export class UsageSyncRemoteConfigStore {
   #file;
   #defaultServerUrl;
+  #configuredServerUrl;
   #now;
   #state = null;
   #tail = Promise.resolve();
 
-  constructor({ file, defaultServerUrl = "", now = () => new Date() } = {}) {
+  constructor({ file, defaultServerUrl = "", configuredServerUrl, now = () => new Date() } = {}) {
     if (!file) throw new TypeError("UsageSyncRemoteConfigStore requires a file");
     this.#file = path.resolve(file);
     this.#defaultServerUrl = defaultServerUrl ? normalizeUrl(defaultServerUrl) : "";
+    this.#configuredServerUrl = configuredServerUrl === undefined ? undefined : normalizeUsageSyncServerUrl(configuredServerUrl);
     this.#now = now;
   }
 
   get file() {
     return this.#file;
+  }
+
+  #normalize(value) {
+    return normalizeState(this.#configuredServerUrl === undefined ? value : {
+      ...value, serverUrl: this.#configuredServerUrl,
+    }, { defaultServerUrl: this.#configuredServerUrl ?? this.#defaultServerUrl });
   }
 
   #enqueue(operation) {
@@ -90,17 +99,18 @@ export class UsageSyncRemoteConfigStore {
   load() {
     return this.#enqueue(async () => {
       if (this.#state) return structuredClone(this.#state);
-      this.#state = normalizeState(await readJson(this.#file), { defaultServerUrl: this.#defaultServerUrl });
+      this.#state = this.#normalize(await readJson(this.#file));
       return structuredClone(this.#state);
     });
   }
 
   rememberEnrollment({ serverUrl, deviceId, result = null } = {}) {
     return this.#enqueue(async () => {
-      const current = this.#state ?? normalizeState(await readJson(this.#file), {
-        defaultServerUrl: this.#defaultServerUrl,
-      });
-      const state = normalizeState({
+      const current = this.#state ?? this.#normalize(await readJson(this.#file));
+      if (this.#configuredServerUrl !== undefined && normalizeUrl(serverUrl) !== this.#configuredServerUrl) {
+        throw new Error("Usage sync enrollment does not match the configured server");
+      }
+      const state = this.#normalize({
         ...current,
         serverUrl,
         deviceId,
@@ -155,10 +165,8 @@ export class UsageSyncRemoteConfigStore {
     replaceCursor = false,
   } = {}) {
     return this.#enqueue(async () => {
-      const current = this.#state ?? normalizeState(await readJson(this.#file), {
-        defaultServerUrl: this.#defaultServerUrl,
-      });
-      const state = normalizeState({
+      const current = this.#state ?? this.#normalize(await readJson(this.#file));
+      const state = this.#normalize({
         ...current,
         [timestampField]: this.#now().toISOString(),
         lastUsagePushWatermark: usageWatermark || current.lastUsagePushWatermark,

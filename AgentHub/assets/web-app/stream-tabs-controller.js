@@ -302,7 +302,7 @@
 
   function attentionStreamCount(tasks) {
     return (tasks ?? []).reduce((count, task) => (
-      count + (task?.running || task?.unread ? 1 : 0)
+      count + (task?.running || task?.preparing || task?.activityUnknown || task?.unread ? 1 : 0)
     ), 0);
   }
 
@@ -310,7 +310,7 @@
     const active = [];
     const recent = [];
     for (const task of tasks ?? []) {
-      if (task?.running || task?.unread) active.push(task);
+      if (task?.running || task?.preparing || task?.activityUnknown || task?.unread) active.push(task);
       else recent.push(task);
     }
     return { active, recent };
@@ -323,6 +323,11 @@
   }
 
   function snapshotTaskPreferred(candidate, current) {
+    // Thread position is assigned by the durable Stream lineage owner.
+    // Historical selection (or a retained old run) must not hide the new head.
+    const candidatePosition = Number(candidate?.threadPosition) || 0;
+    const currentPosition = Number(current?.threadPosition) || 0;
+    if (candidatePosition !== currentPosition) return candidatePosition > currentPosition;
     const rank = (task) => task?.selected
       ? 3
       : task?.running && String(task?.run?.turnId ?? "").trim()
@@ -338,9 +343,6 @@
       const currentStartedAt = Date.parse(current?.run?.startedAt ?? current?.startedAt ?? "") || 0;
       if (candidateStartedAt !== currentStartedAt) return candidateStartedAt > currentStartedAt;
     }
-    const candidatePosition = Number(candidate?.threadPosition) || 0;
-    const currentPosition = Number(current?.threadPosition) || 0;
-    if (candidatePosition !== currentPosition) return candidatePosition > currentPosition;
     return snapshotTaskActivityAtMs(candidate) > snapshotTaskActivityAtMs(current);
   }
 
@@ -505,9 +507,11 @@
   }
 
   function streamStatusPresentation(task) {
-    const running = Boolean(task?.running);
+    const running = Boolean(task?.running) && task?.activityUnknown !== true;
     const answerReady = Boolean(task?.unread);
     const statusLabel = [
+      task?.activityUnknown ? "Состояние уточняется · поток занят" : "",
+      task?.preparing ? "Подготовка хода" : "",
       running ? "Ход выполняется" : "",
       answerReady ? "Ответ готов" : "",
     ].filter(Boolean).join(" · ") || String(task?.statusLabel ?? "");
@@ -605,7 +609,7 @@
 
   function includeTaskInActivityRail(task, kind) {
     const workspaceName = String(task?.workspaceName ?? "").trim();
-    return workspaceName !== "Other" || kind === "running" || kind === "completed";
+    return workspaceName !== "Other" || kind === "running" || kind === "unknown" || kind === "completed";
   }
 
   function resolveTaskHierarchy(task, workspaces) {

@@ -7,14 +7,17 @@ import test from "node:test";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { publishChanged } from "../../publish-changed.mjs";
+import { releaseOperationRuntimePublicationInput } from "../../release-operation-publication-runner.mjs";
 import { createPublicationArtifactSteps, artifactFiles, buildArtifact, readArtifact } from "../../src/infrastructure/process/publication-artifacts.mjs";
 import { publicationCheckpointStore, runPublicationSteps } from "../../src/infrastructure/persistence/publication-checkpoint.mjs";
 import { publicationRunStore } from "../../src/infrastructure/persistence/publication-run-store.mjs";
+import { artifactVersionIdentity } from "../../src/domain/agent-hub-version.mjs";
 
 const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const save = async (file, value) => { await mkdir(path.dirname(file), { recursive: true }); await writeFile(file, value); };
 
-async function fixture(t) {
+async function fixture(t, { runtimePublication = null } = {}) {
+  const semantic = runtimePublication?.version.includes("+build.") ? artifactVersionIdentity(runtimePublication.version) : null;
   const root = await mkdtemp(path.join(os.tmpdir(), "hub-artifacts-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const sourceRoot = path.join(root, "source");
@@ -34,7 +37,11 @@ async function fixture(t) {
     if (step.label === "Сборка Agent Hub Mobile") {
       const apk = Buffer.from("prepared APK");
       await save(path.join(sourceRoot, "assets", "mobile", "AgentHub-Mobile.apk"), apk);
-      await save(path.join(sourceRoot, "assets", "mobile", "update.json"), JSON.stringify({ sha256: hash(apk), bytes: apk.length }));
+      if (semantic) assert.deepEqual(step.args.slice(-2), ["-ArtifactVersion", runtimePublication.version]);
+      await save(path.join(sourceRoot, "assets", "mobile", "update.json"), JSON.stringify({
+        sha256: hash(apk), bytes: apk.length,
+        ...(semantic ? { versionCode: semantic.buildNumber, versionName: semantic.publicVersion } : {}),
+      }));
     }
     if (step.label === "Сборка Mini App Worker") {
       assert.ok(step.args.includes("--dry-run"));
@@ -61,6 +68,7 @@ async function fixture(t) {
   const create = () => {
     const journal = journalFactory();
     const artifacts = createPublicationArtifactSteps({ sourceRoot, runtimeRoot, home, journal, run,
+      runtimePublication,
       capture: async (_command, args) => {
         if (args.includes("deployments")) return JSON.stringify(state.remoteTag ? [{ id: "deployment", created_on: "2026-09-16", versions: [{ version_id: "version", percentage: 100 }] }] : []);
         if (args.includes("versions")) return JSON.stringify({ id: "version", annotations: { "workers/tag": state.remoteTag } });
@@ -83,14 +91,19 @@ async function fixture(t) {
           events.push("worker verified");
         } };
       },
-      prepareRuntimeImpl: async ({ releaseId, publicationRevision }) => {
+      prepareRuntimeImpl: async ({ releaseId, publicationRevision, expectedReleaseVersion }) => {
         events.push("runtime build");
+        state.preparedVersion = expectedReleaseVersion;
         if (state.failBuild) throw new Error("runtime build failed");
         const releaseRoot = path.join(runtimeRoot, "releases", releaseId);
-        const bytes = JSON.stringify({ name: "agent-hub", version: "2026.9.16" });
+        const version = semantic?.publicVersion ?? "2026.9.16";
+        const bytes = JSON.stringify({ name: "agent-hub", version });
         await save(path.join(releaseRoot, "package.json"), bytes);
-        await save(path.join(releaseRoot, "runtime-manifest.json"), JSON.stringify({ releaseId, version: "2026.9.16", publicationRevision, sourceRoot,
+        await save(path.join(releaseRoot, "runtime-manifest.json"), JSON.stringify({ releaseId, version,
+          ...(semantic ? semantic : {}),
+          ...(expectedReleaseVersion ? { releaseVersion: state.overrideRuntimeVersion ?? expectedReleaseVersion } : {}), publicationRevision, sourceRoot,
           files: [{ path: "package.json", bytes: Buffer.byteLength(bytes), sha256: hash(bytes) }] }));
+        if (state.losePreparedReply) { state.losePreparedReply = false; throw new Error("lost prepared reply"); }
       },
       installRuntimeImpl: async ({ releaseId }) => {
         events.push("runtime install");
@@ -102,7 +115,7 @@ async function fixture(t) {
       verifyRuntimeImpl: async ({ releaseId }) => state.release === releaseId,
     });
     return {
-      checkpoint, journal, runtimeRoot, run, prepareArtifactSteps: artifacts.steps, verifyArtifacts: artifacts.verify,
+      checkpoint, journal, runtimeRoot, run, artifacts, prepareArtifactSteps: artifacts.steps, verifyArtifacts: artifacts.verify,
       exclusive: async (operation) => operation(), revision: async () => "a".repeat(40),
       diff: async () => ["AgentHub/AndroidApp/app.gradle", "AgentHub/src/service.mjs", "AgentHub/VSCodeExtension/extension.js"],
       readState: async () => state.publication, writeState: async (value) => { state.publication = value; events.push("record"); },
@@ -115,6 +128,107 @@ async function fixture(t) {
   };
   return { root, sourceRoot, runtimeRoot, home, events, state, create };
 }
+
+const frozenRuntime = { operationId: "fefefefe-fefe-4efe-8efe-fefefefefefe", generation: 2,
+  sourceCommit: "a".repeat(40), version: "2026.9.16.7" };
+
+test("semantic artifact freeze keeps original build and Android identity after lost prepare reply", async t => {
+  const runtimePublication = { ...frozenRuntime, version: "2.0.0+build.30000001" };
+  const f = await fixture(t, { runtimePublication });
+  f.state.losePreparedReply = true;
+  await assert.rejects(publishChanged(["--full-tests"], f.create()), /lost prepared reply/u);
+  assert.equal(f.events.includes("Git"), false);
+  await publishChanged(["--resume"], f.create());
+  const owner = f.create(), identity = (await owner.journal.read()).identity;
+  const first = await owner.artifacts.preparedRuntimeReceipt(identity);
+  assert.equal(first.receipt.version, runtimePublication.version);
+  assert.equal(Object.keys(first.receipt).length, 9);
+  const original = await readFile(first.receiptFile);
+  const repeated = await f.create().artifacts.preparedRuntimeReceipt(identity);
+  assert.deepEqual(repeated, first);
+  assert.deepEqual(await readFile(first.receiptFile), original);
+  assert.equal(f.events.filter(x => x === "runtime build").length, 1);
+  assert.equal(f.events.filter(x => x === "Сборка Agent Hub Mobile").length, 1);
+});
+
+test("frozen publication string fields reject coerced arrays and boxed strings before preparation", () => {
+  let preparations = 0;
+  for (const field of ["operationId", "sourceCommit", "version"]) {
+    for (const value of [[frozenRuntime[field]], Object(frozenRuntime[field])]) {
+      assert.throws(() => createPublicationArtifactSteps({
+        sourceRoot: path.join(os.tmpdir(), "hub-frozen-type-source"),
+        runtimeRoot: path.join(os.tmpdir(), "hub-frozen-type-runtime"),
+        runtimePublication: { ...frozenRuntime, [field]: value },
+        prepareRuntimeImpl: async () => { preparations++; },
+      }), /Invalid frozen runtime publication input/u);
+    }
+  }
+  assert.equal(preparations, 0);
+});
+
+test("original artifact checkpoint yields the exact packager receipt and reuses before allocation", async t => {
+  const runtimePublication = releaseOperationRuntimePublicationInput({
+    operation: { operationId: frozenRuntime.operationId },
+    generation: { operationId: frozenRuntime.operationId, generation: frozenRuntime.generation },
+    candidate: { commit: frozenRuntime.sourceCommit, manifest: { publication: {
+      head: frozenRuntime.sourceCommit, releaseVersion: "2026.9.16", runtimeReleaseVersion: frozenRuntime.version,
+    } } },
+  });
+  const f = await fixture(t, { runtimePublication });
+  await publishChanged(["--full-tests"], f.create());
+  const owner = f.create();
+  const identity = (await owner.journal.read()).identity;
+  const first = await owner.artifacts.preparedRuntimeReceipt(identity);
+  const bytes = await readFile(first.receiptFile);
+  assert.equal(first.receiptSha256, hash(bytes));
+  assert.deepEqual(first.receipt, { schema: 1, phase: "PREPARED", operationId: frozenRuntime.operationId,
+    generation: 2, sourceCommit: frozenRuntime.sourceCommit, releaseId: f.state.release,
+    version: frozenRuntime.version, releaseRoot: path.join(f.runtimeRoot, "releases", f.state.release),
+    manifestSha256: hash(await readFile(path.join(f.runtimeRoot, "releases", f.state.release, "runtime-manifest.json"))) });
+  assert.equal(f.state.preparedVersion, frozenRuntime.version);
+  await publishChanged(["--resume"], f.create());
+  const repeated = await f.create().artifacts.preparedRuntimeReceipt(identity);
+  assert.deepEqual(repeated, first);
+  assert.deepEqual(await readFile(first.receiptFile), bytes);
+  assert.equal(f.events.filter(x => x === "runtime build").length, 1);
+  assert.equal(f.events.filter(x => x === "Полные тесты Agent Hub").length, 1);
+  await assert.rejects(owner.artifacts.preparedRuntimeReceipt({ ...identity, revision: "b".repeat(40) }), /source differs/u);
+  await writeFile(first.receiptFile, "changed receipt");
+  await assert.rejects(owner.artifacts.preparedRuntimeReceipt(identity), /artifact bytes changed/u);
+});
+
+test("a frozen runtime version mismatch cannot reach publication or installation", async t => {
+  const f = await fixture(t, { runtimePublication: frozenRuntime });
+  f.state.overrideRuntimeVersion = "2026.9.16.8";
+  await assert.rejects(publishChanged(["--full-tests"], f.create()), /differs from the frozen/u);
+  assert.equal(f.events.includes("Git"), false);
+  assert.equal(f.events.includes("runtime install"), false);
+});
+
+test("prepared body survives a lost build reply and resumes before another allocation", async t => {
+  const f = await fixture(t, { runtimePublication: frozenRuntime });
+  f.state.losePreparedReply = true;
+  await assert.rejects(publishChanged(["--full-tests"], f.create()), /lost prepared reply/u);
+  assert.equal(f.events.includes("Git"), false);
+  await publishChanged(["--resume"], f.create());
+  assert.equal(f.events.filter(x => x === "runtime build").length, 1);
+  const owner = f.create();
+  const result = await owner.artifacts.preparedRuntimeReceipt((await owner.journal.read()).identity);
+  assert.equal(result.receipt.version, frozenRuntime.version);
+});
+
+test("partial existing prepared body is preserved without another preparation", async t => {
+  const f = await fixture(t, { runtimePublication: frozenRuntime });
+  const artifactIdentity = { revision: frozenRuntime.sourceCommit, sourceRoot: f.sourceRoot,
+    runtimeRoot: f.runtimeRoot, protocol: 1, runtimePublication: frozenRuntime };
+  const releaseId = `publication-${hash(JSON.stringify(artifactIdentity)).slice(0, 32)}`;
+  const partial = path.join(f.runtimeRoot, "releases", releaseId, "partial");
+  await save(partial, "original incomplete output");
+  await assert.rejects(publishChanged(["--full-tests"], f.create()), /Existing prepared runtime is incomplete/u);
+  assert.equal(await readFile(partial, "utf8"), "original incomplete output");
+  assert.equal(f.events.includes("runtime build"), false);
+  assert.equal(f.events.includes("Git"), false);
+});
 
 test("artifact pipeline builds all selected products before Git and applies the prepared bytes", async (t) => {
   const f = await fixture(t);

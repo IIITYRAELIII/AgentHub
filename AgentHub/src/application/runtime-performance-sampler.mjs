@@ -1,6 +1,9 @@
+import { createRuntimeCpuSample } from "./runtime-cpu-sample.mjs";
+
 // Publish existing health counters into the common trace owner; no second
 // event-loop monitor, database or lifecycle state is created here.
 export function createRuntimePerformanceSampler({ trace, readHealth, instanceId,
+  cpuSample = createRuntimeCpuSample({ trace, instanceId }),
   setIntervalImpl = setInterval, clearIntervalImpl = clearInterval, intervalMs = 10_000 }) {
   let timer;
   function sample() {
@@ -22,8 +25,9 @@ export function createRuntimePerformanceSampler({ trace, readHealth, instanceId,
       visit(diagnostics, "", 0);
       trace.recordBestEffort({ commandId: `runtime:${instanceId}`, stage: "runtime-health",
         transport: "runtime", outcome: "succeeded", metadata: { metrics, sampleIntervalMs: intervalMs } });
+      void cpuSample.start(diagnostics.process)?.catch?.(() => {});
     } catch { /* Diagnostics cannot fail application work. */ }
   }
   return { start() { if (!timer) { timer = setIntervalImpl(sample, intervalMs); timer.unref?.(); } },
-    stop() { if (timer) clearIntervalImpl(timer); timer = null; }, sample };
+    stop() { if (timer) clearIntervalImpl(timer); timer = null; return cpuSample.stop(); }, sample };
 }

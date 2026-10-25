@@ -86,6 +86,36 @@ test("DeferredInputController starts a free queued item exactly once", async () 
   assert.match(state.updates[0][1], /отправлено/);
 });
 
+test("eligibility and pre-dispatch persistence traces preserve original identity and the durable launch barrier", async () => {
+  let releaseEligibility, releasePersist;
+  const eligibility = new Promise(resolve=>{releaseEligibility=resolve;});
+  const durable = new Promise(resolve=>{releasePersist=resolve;});
+  const spans = [], effects = [];
+  let saves = 0;
+  const state = fixture({
+    isBlocked:async()=>{await eligibility;return false;},
+    persist:async()=>{if (++saves===1) await durable;},
+    start:async()=>{effects.push("provider");},
+    commandTrace:{startBestEffortSpan(input) {
+      spans.push({...input,outcome:"started"});
+      return {finish(details){spans.push({...input,...details});}};
+    }},
+  });
+  state.queuedInputs.set("one",{id:"one",clientUserMessageId:"original-command",clientSource:"mcp"});
+  const processing = state.controller.process("one");
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(effects.length,0);
+  assert.ok(spans.some(s=>s.stage==="deferred-eligibility" && s.outcome==="started"));
+  releaseEligibility();
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(effects.length,0);
+  assert.ok(spans.some(s=>s.stage==="deferred-dispatch-persist" && s.outcome==="started"));
+  releasePersist(); await processing;
+  assert.deepEqual(effects,["provider"]);
+  assert.ok(spans.every(s=>s.commandId==="original-command"));
+  assert.ok(spans.some(s=>s.stage==="deferred-dispatch-persist" && s.outcome==="succeeded"));
+});
+
 test("DeferredInputController keeps the observed 13.429 second provider steer behind durable dispatch", async () => {
   const providerDelayMs = 13_429;
   let releaseProvider;

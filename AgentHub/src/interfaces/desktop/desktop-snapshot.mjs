@@ -216,6 +216,7 @@ export function createDesktopSnapshotFactory({
       threadId,
       status: "running",
       observer: true,
+      activityUnknown: entry.activityUnknown === true,
       executionOwner: entry.executionOwner ?? null,
       model: entry.model ?? null,
       progressStage: String(entry.stage ?? "").trim() || "Ход выполняется",
@@ -288,6 +289,12 @@ export function createDesktopSnapshotFactory({
           ? { clientProjectionIntent: String(result.clientProjectionIntent).trim() }
           : {}),
         createdAt: receipt.createdAt ?? null,
+        commandState: result.commandState ?? null,
+        submittedAt: result.submittedAt ?? receipt.createdAt ?? null,
+        startedAt: result.startedAt ?? result.deliveredAt ?? null,
+        completedAt: result.completedAt ?? null,
+        terminalRevision: result.terminalRevision ?? null,
+        providerAccepted: result.providerAccepted === true,
         accepted: result.accepted === true,
         deferred: result.deferred === true,
         queued: result.queued === true,
@@ -420,6 +427,7 @@ export function createDesktopSnapshotFactory({
       threadId: run.threadId,
       taskTitle: runs.titleFor(run),
       status: run.status,
+      ...(run.activityUnknown === true ? { activityUnknown: true } : {}),
       ...(operationKind ? { operationKind } : {}),
       observer: run.observer === true,
       executionOwner: run.executionOwner ?? null,
@@ -553,6 +561,7 @@ export function createDesktopSnapshotFactory({
       submittedAt: run.submittedAt ?? runUserMessages[0]?.submittedAt ?? runUserMessages[0]?.time ?? run.startedAt ?? null,
       responseItemId: run.responseItemId ?? null,
       startedAt: run.startedAt ?? null,
+      providerConnection: run.providerStart?.connection ?? null,
       lastActivityAt: run.lastMeaningfulProgressAt ?? run.progressHeartbeatAt ?? run.startedAt ?? null,
       activities,
       ...(activityGroups.length
@@ -671,8 +680,8 @@ export function createDesktopSnapshotFactory({
       threadTitle: entry.title,
       model: visibleRun?.model ?? entry.model ?? null,
       selected,
-      running: Boolean(visibleRun),
-      activityUnknown: entry.activityUnknown === true,
+      running: Boolean(visibleRun) && visibleRun.activityUnknown !== true,
+      activityUnknown: visibleRun ? visibleRun.activityUnknown === true : entry.activityUnknown === true,
       executionOwner: visibleRun?.executionOwner ?? entry.executionOwner ?? null,
       runtime: visibleRun?.appServer ?? (entry.executionOwner
         ? tasks.executionRuntimeLabel(entry.executionOwner)

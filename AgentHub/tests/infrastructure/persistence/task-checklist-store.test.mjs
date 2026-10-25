@@ -32,7 +32,7 @@ async function fixture(t) {
   return { store, create, databaseFile };
 }
 
-function update(store, task, operation, requestId, values = {}) {
+async function update(store, task, operation, requestId, values = {}) {
   return store.updateChecklist({
     id: task.id,
     operation,
@@ -97,7 +97,7 @@ test("checklist mutations persist order and use exact CAS plus idempotency", asy
   assert.equal(replay.itemId, first.itemId);
   assert.equal(replay.task.checklist.length, 1);
 
-  await assert.rejects(() => store.updateChecklist({
+  assert.throws(() => store.updateChecklist({
     id: parent.id,
     operation: "add",
     expectedRevision: 1,
@@ -160,7 +160,7 @@ test("linked Task actions persist exact no-op, status choice and idempotent repl
 
   const awaiting = await linkedChecklistFixture(store, create, "awaiting");
   const other = create("Unrelated exact target");
-  await assert.rejects(() => store.applyChecklistLinkedTaskAction({
+  assert.throws(() => store.applyChecklistLinkedTaskAction({
     ...linkedActionPayload(awaiting.parent, other, awaiting.itemId, "awaiting_implementation", "wrong-target"),
   }), /Связь пункта с Task изменилась/u);
   assert.equal(store.task(other.id).workflowStatus, "new");
@@ -183,7 +183,7 @@ test("linked Task action rejects uncheck and release-enabled Workspace without m
     itemId: linked.itemId,
     completed: false,
   })).task;
-  await assert.rejects(() => store.applyChecklistLinkedTaskAction(linkedActionPayload(
+  assert.throws(() => store.applyChecklistLinkedTaskAction(linkedActionPayload(
     unchecked, linked.linked, linked.itemId, "done", "guarded-after-uncheck",
   )), /больше не отмечен вручную/u);
   assert.equal(store.task(linked.linked.id).workflowStatus, "new");
@@ -228,7 +228,7 @@ test("Done and close persists partial failure then resumes the exact request", a
       SELECT RAISE(ABORT, 'forced close failure');
     END;
   `);
-  await assert.rejects(() => store.applyChecklistLinkedTaskAction(payload), /forced close failure/u);
+  assert.throws(() => store.applyChecklistLinkedTaskAction(payload), /forced close failure/u);
   let current = store.task(linked.linked.id);
   assert.equal(current.workflowStatus, "done");
   assert.notEqual(current.status, "done");
@@ -266,7 +266,7 @@ test("linked Task completion flows one way and broken links preserve the item", 
     itemId: duplicate.itemId,
     linkedTaskId: child.id,
   }), /уже связана/u);
-  await assert.rejects(() => store.updateChecklist({
+  assert.throws(() => store.updateChecklist({
     id: parent.id,
     operation: "toggle",
     itemId: added.itemId,

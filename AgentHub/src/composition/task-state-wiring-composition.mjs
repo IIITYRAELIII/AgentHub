@@ -64,11 +64,13 @@ export function createTaskStateWiring({
     }
   }
 
-  async function persistTaskDiff(key, value) {
+  async function persistTaskDiff(key, value, context = {}) {
     try {
-      await taskDiffs.set(key, value);
+      if (context.admission && value === "") await taskDiffs.clear(key, context);
+      else await taskDiffs.set(key, value, context);
     } catch (error) {
-      logger.error("Cannot persist task diff:", error.message);
+      try { logger.error("Cannot persist task diff:", error.message); } catch { /* Preserve the write error. */ }
+      throw error;
     }
   }
 

@@ -1,5 +1,17 @@
 # MSG-002 — Resumable attachment upload
 
+The owned local HTTP gateway keeps its primary upstream idle pool below the
+Node owner's five-second timeout (currently two seconds). It does not enable
+mutating-request retries or change operator-defined additional upstreams.
+Transient proxy failures expose their bounded upload stage and HTTP status while
+retaining the original draft. Explicit resume reconciles the same upload receipt;
+known committed chunks/ready files are not retransmitted. A diagnostic HTTP UUID
+joins browser, authenticated origin and sanitized gateway-error spans without
+replacing any logical/attempt/message identity. No raw request content enters
+those spans (ADR-0083). Deployment still belongs to the existing gateway/runtime
+owner; these settings cannot be applied by starting a competing listener.
+
+
 ## Authority and transitions
 
 An upload is preparation, not message admission. Its client-created UUID and
@@ -16,6 +28,19 @@ store's serialization/transaction boundary. Same-ID metadata or part-content
 conflicts fail closed. A lost response resumes the same upload, never another
 UUID chosen by a retry loop.
 
+For a durable Blob, the browser records the first begin attempt time in the
+same Blob store before sending the request. Memory-only bytes keep that time
+only for the current page and cannot claim reload recovery. If the response is
+lost, status decides whether the original upload
+exists. Only an upgraded owner that explicitly returns `state="absent"` may
+accept a repeat begin with the same ID, immutable metadata and original attempt
+time. A generic 404, cancelled/consumed/expired receipt, missing original attempt
+time, or elapsed original 30-minute window fails closed. Both stores cap a late
+first admission at the original attempt deadline; a repeat never extends it.
+Expired IDs retain a bounded seven-day tombstone so a delayed retry cannot
+recreate them after staging cleanup. The client never admits a message during
+this recovery; manual resume and reload use the persisted Blob and ID.
+
 `agent-hub-attachment-upload-v1` uses POST begin, GET status/capabilities, PUT
 indexed binary part, POST complete and DELETE abandon at
 `/api/attachment-upload`. Every part is at most 1 MiB and includes SHA-256.
@@ -24,6 +49,22 @@ requires all exact parts and byte lengths, verifies the ordered complete SHA-256
 with bounded working memory, and atomically publishes the existing attachment
 descriptor. No partial file is command-readable. Duplicate completion returns
 the same final identity and hash.
+
+A successful begin response is that same authoritative upload receipt. A fresh
+upload uses it directly; only an existing or lost attempt needs a status request.
+HTTP success headers alone are not a received receipt. An aborted or malformed
+JSON body remains unconfirmed and preserves the saved attempt for explicit
+resume/status reconciliation. It is not an upload-ID, protocol or checksum
+conflict, and cannot authorize a new begin/attempt or accepted message. A decoded
+receipt with a different upload ID or protocol still fails the strict identity
+check. An unreadable error body retains its actual HTTP refusal without guessing
+an absent/expired state.
+Local preparation and the initial capabilities/auth request carry the original
+upload ID, joined to the message ID when sending starts. A failed local read keeps
+its original File and preview in the live draft, alongside successful files in
+the batch. Explicit retry retains the ID and repeats only failed preparation;
+explicit removal or Task invalidation disposes that preview. This is memory
+retention for the current page, not a promise of recovery after closing it.
 
 Admission reserves declared bytes before accepting parts. Defaults are 128 MiB
 per file, 256 MiB per authenticated owner's uploads, at most 32 uploads and a
@@ -39,8 +80,24 @@ cannot delete an accepted command's files. Final local files remain under the
 existing attachment/history lifetime, not a staging timer. In the Worker,
 command linkage and cancellation are transactionally fenced. New-protocol ready
 bytes survive terminal command unlink until their original upload expiry, so an
-explicit rejected retry may reuse the same upload. An expired identity fails
-visibly and is never silently substituted.
+explicit rejected retry may reuse the same upload. An expired transport identity
+is never reused or extended. If the original bytes remain available, an explicit
+send/resume may persist one fresh transport UUID and original-attempt timestamp
+before begin, retaining the logical attachment/Blob and message identities.
+An upgraded owner must explicitly report expired state, or absent state after
+the old deadline (or for a legacy attempt without a saved timestamp). A generic
+404, cancellation, hash conflict or unknown outcome does not authorize renewal.
+The new attempt is visible as recovery, resumes its own lost response and can
+survive reload only with a verified saved Blob and attempt record. Persistence
+failure blocks begin; one invocation cannot loop through fresh attempts.
+Without original bytes a preview is insufficient and selection is required.
+See ADR-0110. Server receipts and tombstones remain the transport authority.
+The browser's prepared uploadId/blobId remains the logical attachment identity;
+its separate saved uploadAttemptId is the current protocol UUID and initially
+equals uploadId. Receipt uploadId still names the transport UUID. Changing an
+attempt does not rewrite the prepared descriptor or local draft recovery
+fingerprint. An already frozen message submission retains its original final
+attachment paths on unknown retry; renewal never replaces an admitted payload.
 
 ## Memory, storage and recovery
 
@@ -117,3 +174,30 @@ the legacy 20 MiB transport; migrating these independent preparation flows is
 outside this change. Native Telegram bot-file intake keeps its upstream getFile limit;
 large files must be attached through Hub's web interface. Running a separate
 local Telegram Bot API server is outside this change.
+
+Local finalization processes at most one protocol part per read/write buffer,
+retaining ordered per-part and final hashes, fsync, atomic publication and the
+original receipt. It does not fragment a small multi-part file into dozens of
+serialized 64 KiB I/O round trips. Existing origin traces and Server-Timing also
+separate owner-queue wait, storage read/open/write/sync/close/rename/publication
+and cleanup awaits. These durations include scheduling delay, not just device
+work; the per-request owner event-loop maximum is separate and must not be
+subtracted as an attribution formula. Incomplete monitor sampling can report
+zero. Timings use a finite scalar vocabulary, survive failed operations through
+the existing trace owner, and never authorize a receipt or alter an outcome.
+
+Upload diagnostics distinguish client session/auth wait, capabilities, durable
+attempt recording, begin/status/part/complete, response parsing and paused
+manual-resume time. Client HTTP spans end at response headers: they are not
+independent measurements of request-body transit or server execution. Where
+available, `Server-Timing` separates server authentication, body read and owner
+work (including storage); the remaining network/queue time is not attributed
+to a specific hop. Upload/message IDs and bounded durations/status/failure kinds
+are allowlisted; file bytes, names, text, URLs, tokens and raw errors are not.
+Receipt measurements retain explicit absent/expired/cancelled state, never infer
+it from error text. The original logical upload ID and message ID join each
+transport uploadAttemptId, including after renewal. Failed upload spans survive a reporting outage in a 24-hour, 256-event browser
+ring and retry without affecting upload results. Local runtime traces use
+`command-traces.sqlite`; public Worker traces are retained separately in the
+authenticated Journal Durable Object for 24 hours, at most 64 upload IDs per
+owner and 256 spans per ID. Neither store is message-admission authority.

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { mcpArgumentsHash } from "./mcp-arguments-hash.mjs";
 
 // Immutable authority for a release candidate base. A candidate whose base
 // differs from the durable published baseline must carry exactly one of these
@@ -11,9 +12,56 @@ import { createHash } from "node:crypto";
 export const EXPLICIT_REVIEWED_MAIN_PROVENANCE = "explicit-reviewed-main-v1";
 export const SELECTED_TASK_ADOPTION_PROVENANCE = "selected-task-adoption-v1";
 export const NATIVE_MAIN_PROVENANCE = "agreed-main-native-git-v1";
+export const LOCAL_SOURCE_BASELINE_PROVENANCE = "installed-local-source-v1";
+
+export function localSourceSelectionHash(tasks) {
+  const selected = tasks.map(({ taskId, taskRevision, baseCommit, resultCommit }) => (
+    { taskId, taskRevision, baseCommit, resultCommit }
+  )).sort((a, b) => a.taskId.localeCompare(b.taskId));
+  return createHash("sha256").update(JSON.stringify(selected)).digest("hex");
+}
 
 const COMMIT = /^[0-9a-f]{40}$/u;
 const ADOPTION_REF_PREFIX = "refs/agent-hub/upstream-adoptions/";
+
+function normalizedHistoricalChangelog(value) {
+  const fields = ["requestId", "argumentsHash", "installedReleaseId", "installedManifestSha256", "sourceCommit",
+    "sourceTree", "taskId", "taskRevision", "resultCommit", "path", "mode", "blob"];
+  if (!value || typeof value !== "object" || Array.isArray(value)
+      || ![Object.prototype, null].includes(Object.getPrototypeOf(value))
+      || Object.keys(value).length !== fields.length || fields.some(key => !Object.hasOwn(value, key))
+      || fields.filter(key => key !== "taskRevision").some(key => typeof value[key] !== "string")
+      || !value.requestId || value.requestId.length > 200 || !value.taskId || value.taskId.length > 200
+      || !Number.isSafeInteger(value.taskRevision) || value.taskRevision < 1
+      || ![value.argumentsHash, value.installedManifestSha256].every(v => /^[a-f0-9]{64}$/u.test(v))
+      || ![value.sourceCommit, value.sourceTree, value.resultCommit, value.blob].every(v => COMMIT.test(v))
+      || !/^[A-Za-z0-9._-]{1,160}$/u.test(value.installedReleaseId) || value.installedReleaseId.includes("..")
+      || value.path !== "CHANGELOG.md" || value.mode !== "100644") {
+    throw new Error("Invalid exact historical root CHANGELOG binding");
+  }
+  return Object.fromEntries(fields.map(key => [key, value[key]]));
+}
+
+// The existing original operation capability supplies this record; a manifest
+// field alone cannot manufacture its original/selection authority.
+export function assertHistoricalChangelogOriginal(provenance, authority, tasks, projectRoot) {
+  const binding = provenance.historicalChangelog;
+  if (!binding) return;
+  const original = authority?.originalPreparation;
+  const rootKey = value => String(value ?? "").replaceAll("\\", "/").replace(/\/+$/u, "").toLowerCase();
+  const repository = original?.repositories?.find(r => rootKey(r.projectRoot) === rootKey(projectRoot));
+  const selected = original?.tasks?.find(t => t.taskId === binding.taskId);
+  if (!original || authority.requestId !== binding.requestId || authority.argumentsHash !== binding.argumentsHash
+      || mcpArgumentsHash({ request_id: authority.requestId, preparation: original }) !== binding.argumentsHash
+      || original.planRevision !== provenance.planRevision || localSourceSelectionHash(original.tasks) !== provenance.selectionHash
+      || !repository || repository.publishedRevision !== provenance.publishedBaseCommit
+      || repository.localSourceBaseline?.installedReleaseId !== binding.installedReleaseId
+      || repository.localSourceBaseline?.installedManifestSha256 !== binding.installedManifestSha256
+      || selected?.taskRevision !== binding.taskRevision || selected?.resultCommit !== binding.resultCommit
+      || !tasks.some(t => t.taskId === binding.taskId && t.taskRevision === binding.taskRevision && t.resultCommit === binding.resultCommit)) {
+    throw new Error("Historical root CHANGELOG original or selection authority changed");
+  }
+}
 
 function text(value) {
   return String(value ?? "").trim();
@@ -46,6 +94,37 @@ function normalizedAdoption(value) {
 export function normalizedReleaseBaseProvenance(value, expectedBaseCommit = null) {
   if (value == null) return null;
   const kind = text(value?.kind);
+  if (kind === LOCAL_SOURCE_BASELINE_PROVENANCE) {
+    const fields = ["schemaVersion", "kind", "publishedBaseCommit", "agreedMainCommit", "sourceBaseCommit",
+      "sourceBaseTree", "sourcePatchSha256", "installedReleaseId", "installedManifestSha256", "planRevision", "selectionHash"];
+    const adopted = value.approvedOriginMainCommit != null || value.adoptions != null;
+    if (adopted) fields.push("approvedOriginMainCommit", "adoptions");
+    if (value.historicalChangelog != null) fields.push("historicalChangelog");
+    if (Object.keys(value).some(key => !fields.includes(key)) || fields.some(key => !Object.hasOwn(value, key))) {
+      throw new Error("Invalid exact installed local source provenance");
+    }
+    const normalized = Object.fromEntries(fields.map(key => [key, key === "schemaVersion" ? value[key]
+      : key === "historicalChangelog" ? normalizedHistoricalChangelog(value[key])
+      : key === "adoptions" ? (Array.isArray(value[key]) ? value[key].map(normalizedAdoption)
+        .sort((a, b) => a.taskId.localeCompare(b.taskId)) : []) : text(value[key])]));
+    if (normalized.schemaVersion !== 1
+        || !["publishedBaseCommit", "agreedMainCommit", "sourceBaseCommit", "sourceBaseTree"].every(key => COMMIT.test(normalized[key]))
+        || !["sourcePatchSha256", "installedManifestSha256", "selectionHash"].every(key => /^[a-f0-9]{64}$/u.test(normalized[key]))
+        || !/^[A-Za-z0-9._-]{1,200}$/u.test(normalized.installedReleaseId) || normalized.installedReleaseId.includes("..")
+        || !normalized.planRevision || normalized.planRevision.length > 128
+        || normalized.sourceBaseCommit === normalized.publishedBaseCommit
+        || expectedBaseCommit && normalized.sourceBaseCommit !== expectedBaseCommit) {
+      throw new Error("Invalid installed local source provenance pins");
+    }
+    if (adopted && (!Array.isArray(value.adoptions) || !COMMIT.test(normalized.approvedOriginMainCommit)
+        || !normalized.adoptions.length && normalized.approvedOriginMainCommit !== normalized.agreedMainCommit
+        || new Set(normalized.adoptions.map(a => a.taskId)).size !== normalized.adoptions.length
+        || normalized.adoptions.some(a => a.acceptedLocalMainCommit !== normalized.agreedMainCommit
+          || a.adoptedCommit !== normalized.approvedOriginMainCommit))) {
+      throw new Error("Invalid installed source selected adoption pins");
+    }
+    return normalized;
+  }
   if (kind === NATIVE_MAIN_PROVENANCE) {
     const normalized = { schemaVersion: Number(value?.schemaVersion), kind,
       publishedBaseCommit: text(value?.publishedBaseCommit), agreedMainCommit: text(value?.agreedMainCommit) };
@@ -107,10 +186,22 @@ export function normalizedReleaseBaseProvenance(value, expectedBaseCommit = null
 // exact approved origin main that the operator expects.
 export function releaseBaseProvenanceApprovedBase(provenance) {
   if (!provenance) return null;
+  if (provenance.kind === LOCAL_SOURCE_BASELINE_PROVENANCE) return provenance.sourceBaseCommit;
   if (provenance.kind === NATIVE_MAIN_PROVENANCE) return provenance.agreedMainCommit;
   return provenance.kind === SELECTED_TASK_ADOPTION_PROVENANCE
     ? provenance.adoptedBaseCommit
     : provenance.approvedOriginMainCommit;
+}
+
+// Composition may start from installed local source while publication still
+// compares and advances the independently approved remote history. Both pins
+// already belong to the sealed candidate provenance; callers supply no override.
+export function releasePublicationBaseCommit({ baseCommit, baseProvenance = null }) {
+  const provenance = normalizedReleaseBaseProvenance(baseProvenance, baseCommit);
+  if (!provenance) return baseCommit;
+  return provenance.approvedOriginMainCommit
+    ?? provenance.adoptedBaseCommit
+    ?? provenance.publishedBaseCommit;
 }
 
 // Recurrence guard shared by preparation, freeze and preflight. A durable

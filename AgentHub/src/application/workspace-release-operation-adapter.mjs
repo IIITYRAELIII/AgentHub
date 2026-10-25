@@ -20,12 +20,18 @@ async function releaseMetadataBytes(metadata) {
   return bytes;
 }
 function approvedRepositories(operation) {
+  if (operation.reviewedMain) return operation.reviewedMain.approvedRepositories.map(repository => {
+    const input = operation.authorization.approvedTargets.find(target => target.repositoryRoot === repository.projectRoot
+      && target.nativeResolutionReview)?.nativeResolutionReview;
+    return { ...repository, ...(input ? { nativeResolutionReview: input } : {}) };
+  });
   return operation.authorization.approvedTargets.flatMap((target) => (
     target.repositoryRoot && target.approvedLocalMainCommit && target.approvedOriginMainCommit
       ? [{
           projectRoot: target.repositoryRoot,
           approvedLocalMainCommit: target.approvedLocalMainCommit,
           approvedOriginMainCommit: target.approvedOriginMainCommit,
+          ...(target.nativeResolutionReview ? { nativeResolutionReview: target.nativeResolutionReview } : {}),
         }]
       : []
   ));
@@ -91,8 +97,13 @@ export class WorkspaceReleaseOperationAdapter {
         frozenTasks: candidate.frozenTasks,
         manifest: candidate.manifest,
       })),
-      sourceFingerprint: `${prepared.planRevision}:${operation.authorization.fingerprint}`,
+      sourceFingerprint: `${prepared.planRevision}:${operation.authorization.fingerprint}${operation.reviewedMain ? `:${operation.reviewedMain.identitySha256}` : ""}`,
     };
+  }
+
+  withReviewedMainRecovery(input) {
+    requiredMethod(this.releasePreflight, "withReviewedMainRecovery");
+    return this.releasePreflight.withReviewedMainRecovery(input);
   }
 
   validate({ operation, generation }) {

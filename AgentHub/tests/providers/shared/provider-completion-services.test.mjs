@@ -84,6 +84,72 @@ test("observed Codex completion marks a real terminal transition", async () => {
   assert.equal(terminalAnswer, "Done");
 });
 
+for (const hooked of [
+  { usageReported: true, usage: { inputTokens: 12 }, estimatedCredits: 0 },
+  { usageReported: false, usage: {}, estimatedCredits: 0.25 },
+]) test(`observed Codex completion adopts ${hooked.usageReported ? "reported usage" : "estimated credits"} before finalization`, async () => {
+  const run = { provider: "codex", threadId: "external-thread", turnId: "external-turn",
+    status: "running", executionOwner: "desktop", clientUserMessageId: "original-client" };
+  const events = [];
+  const captured = { usage: { inputTokens: 1 }, reported: false, model: "captured-model" };
+  const service = new CodexCompletionService({
+    runForTask: () => run,
+    consumeTracker: () => { throw new Error("Captured tracker must remain available"); },
+    waitForCompletion: async identity => {
+      assert.deepEqual(identity, { provider: "codex", threadId: run.threadId, turnId: run.turnId });
+      events.push("hook");
+      return { ...hooked, estimateKind: "hook-estimate", model: "hook-model", serviceTier: "fast",
+        skillsUsed: ["skill"], mcpCalls: ["tool"], toolMetricsKnown: true };
+    },
+    finalizeDelivery: async (target, completion) => {
+      assert.equal(target, run);
+      assert.equal(completion.turnId, "external-turn");
+      assert.equal(completion.answer, "Exact final");
+      assert.equal(completion.status, "completed");
+      assert.equal(completion.deliver, false);
+      assert.equal(completion.silent, true);
+      assert.deepEqual(completion.tracker, {
+        usage: hooked.usage, reported: hooked.usageReported, estimatedCredits: hooked.estimatedCredits,
+        estimateKind: "hook-estimate", model: "hook-model", serviceTier: "fast",
+        skillsUsed: ["skill"], mcpCalls: ["tool"], toolMetricsKnown: true,
+      });
+      assert.equal(target.clientUserMessageId, "original-client");
+      events.push("finalize");
+    },
+    finishProgress: async () => {}, completedAnswer: async () => "unused",
+    rememberSeenTurn: async () => { events.push("seen"); },
+    rememberLastMessage: () => { events.push("answer"); },
+  });
+  await service.completeObserved(run, { snapshot: { status: "completed" }, answer: "Exact final",
+    deliver: false, completedTurnId: run.turnId, tracker: captured });
+  assert.deepEqual(events, ["seen", "answer", "hook", "finalize"]);
+  assert.equal(captured.model, "captured-model");
+});
+
+test("observed Codex completion retains fallback tracker and skips external hook for Hub ownership", async () => {
+  for (const owner of ["desktop", "hub"]) for (const captured of [null, { usage: {}, reported: false }]) {
+    const run = { threadId: "thread", turnId: "turn", executionOwner: owner };
+    const fallback = { usage: { inputTokens: 5 }, reported: false };
+    let hooks = 0, consumed = 0, finalized = 0;
+    const service = new CodexCompletionService({
+      runForTask: () => run,
+      consumeTracker: () => { consumed += 1; return fallback; },
+      waitForCompletion: async () => { hooks += 1; return { usageReported: false, estimatedCredits: 0 }; },
+      finalizeDelivery: async (_run, completion) => {
+        finalized += 1;
+        assert.equal(completion.tracker, captured ?? fallback);
+      },
+      finishProgress: async () => {}, completedAnswer: async () => "unused",
+      rememberSeenTurn: async () => {}, rememberLastMessage: () => {},
+    });
+    await service.completeObserved(run, { snapshot: { status: "completed" }, answer: "Final",
+      completedTurnId: run.turnId, tracker: captured });
+    assert.equal(hooks, owner === "hub" ? 0 : 1);
+    assert.equal(consumed, captured ? 0 : 1);
+    assert.equal(finalized, 1);
+  }
+});
+
 test("observed Codex completion leaves admission release to terminal finalization", async () => {
   const run = {
     threadId: "thread-observed",

@@ -34,7 +34,7 @@ test("editorial changes retain the release identity while row CAS still rejects 
   f.store.updatePresentation(f.task.id, { title: "New title", description: "Clarified description" });
   assert.equal(f.plan().revision, before.revision);
   assert.ok(f.store.task(f.task.id).revision > initial.revision);
-  await assert.rejects(f.store.updateChecklist({ id: f.task.id, operation: "add", text: "stale",
+  assert.throws(() => f.store.updateChecklist({ id: f.task.id, operation: "add", text: "stale",
     expectedRevision: initial.revision, requestId: "stale-checklist" }), /revision|измен/iu);
   await f.store.updateChecklist({ id: f.task.id, operation: "add", text: "Review recorded",
     expectedRevision: f.store.task(f.task.id).revision, requestId: "add-checklist" });

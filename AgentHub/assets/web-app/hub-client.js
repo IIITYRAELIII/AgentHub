@@ -89,6 +89,7 @@ function createLatestIntentController() {
   let generation = 0;
   return Object.freeze({
     begin: () => ++generation,
+    capture: () => generation,
     current: (candidate) => candidate === generation,
   });
 }
@@ -203,7 +204,7 @@ function retainReadMarker(map, key, value) {
   map.delete(key);
   map.set(key, value);
 }
-const { isUserRunningProjection, projectCanonicalMessages } = window.AgentHubMessageProjection;
+const { isUserRunningProjection, projectCanonicalMessages, projectionState: canonicalProjectionState } = window.AgentHubMessageProjection;
 const {
   activeRunSubmissionTiming,
   activeRunMessageReceipts,
@@ -579,9 +580,15 @@ function beginHistoryRequest(id, identity) {
   return { id, identity: stableIdentity(identity), generation };
 }
 
+function historyRequestIdentity(id) {
+  return id === selectedTaskId && directChatRoute()
+    ? historyPageByTask.get(id)?.identity ?? taskIdentity(id)
+    : taskIdentity(id);
+}
+
 function currentHistoryRequest(request) {
   return historyRequestGenerationByTask.get(request.id) === request.generation
-    && sameIdentity(taskIdentity(request.id), request.identity);
+    && sameIdentity(historyRequestIdentity(request.id), request.identity);
 }
 
 function invalidateHistoryRequests(id) {
@@ -633,12 +640,25 @@ function rememberOutgoing(taskIdValue, message) {
   );
 }
 
-function deliveryPatch(stateName) {
+function deliveryPatch(stateName, projection = null) {
+  if (projection?.delivery) return {
+    deliveryState: stateName,
+    delivery: projection.delivery,
+    failed: projection.failed === true,
+    terminalRevision: projection.terminalRevision ?? null,
+    completedAt: projection.completedAt ?? null,
+  };
   const states = {
     preparing: { deliveryState: "preparing", delivery: "Подготовка…", failed: false },
     sending: { deliveryState: "sending", delivery: "Отправляется…", failed: false },
     steering: { deliveryState: "steering", delivery: "В текущем ходе", failed: false },
-    accepted: { deliveryState: "accepted", delivery: "Принято", failed: false },
+    accepted: { deliveryState: "accepted", delivery: "Сохранено в Hub", failed: false },
+    running: { deliveryState: "running", delivery: "Ход выполняется", failed: false },
+    retrying: { deliveryState: "retrying", delivery: "Связь потеряна; повтор запроса Codex", failed: false },
+    "connection-lost": { deliveryState: "connection-lost", delivery: "Связь потеряна; исход уточняется", failed: false },
+    failed: { deliveryState: "failed", delivery: "Ход завершился ошибкой; проверь соединение и ответ", failed: true },
+    completed: { deliveryState: "completed", delivery: "Ход завершён", failed: false },
+    cancelled: { deliveryState: "cancelled", delivery: "Ход остановлен", failed: false },
     deferred: { deliveryState: "deferred", delivery: "Отложено", failed: false },
     queued: { deliveryState: "queued", delivery: "В очереди", failed: false },
     relaying: { deliveryState: "relaying", delivery: "Доставляется в Hub…", failed: false },
@@ -720,7 +740,11 @@ function updateOutgoing(taskIdValue, clientUserMessageId, patch) {
   if (!resolvedTaskId) return "";
   const message = outgoingMessages(resolvedTaskId).get(clientUserMessageId);
   if (!message) return "";
-  Object.assign(message, patch);
+  const absorbingProjection = message.providerAccepted === true
+    || ["completed", "failed", "cancelled"].includes(message.projectionState);
+  Object.assign(message, patch.projectionState && absorbingProjection
+    ? window.AgentHubMessageProjection.reduceProjectionEntity(message, { ...message, ...patch })
+    : patch);
   if (patch.projectionAuthority === "canonical" || ["accepted", "rejected"].includes(patch.deliveryState)) {
     queueMicrotask(() => window.AgentHubPruneComposerFiles?.());
   }
@@ -917,7 +941,7 @@ function restoreImmediateIntakeMessage(deferred, messageReceipts = []) {
       origin: deferredOrigin ?? null,
       kind: deferredOrigin ? "interstream" : null,
       author: (deferredOrigin && String(deferred.author ?? "").trim()) || "Вы",
-      ...deliveryPatch(projection.deliveryState),
+      ...deliveryPatch(projection.deliveryState, projection),
       ...(!existing.submittedAt && projection.submittedAt
         ? { submittedAt: projection.submittedAt }
         : {}),
@@ -947,7 +971,7 @@ function restoreImmediateIntakeMessage(deferred, messageReceipts = []) {
       submittedAt: projection.submittedAt,
       time: projection.submittedAt,
       attachments,
-      ...deliveryPatch(projection.deliveryState),
+      ...deliveryPatch(projection.deliveryState, projection),
     });
   }
   return true;
@@ -1012,7 +1036,7 @@ function applyMessageReceipts(snapshot) {
       outgoingMessages(stableTaskId).delete(clientUserMessageId);
       continue;
     }
-    const patch = projection.deliveryState ? deliveryPatch(projection.deliveryState) : null;
+    const patch = projection.deliveryState ? deliveryPatch(projection.deliveryState, projection) : null;
     if (!patch) continue;
     const restoredText = String(receipt.displayText ?? "");
     // Same reason as the deferred card: the receipt owns the origin of its exact
@@ -1161,12 +1185,23 @@ function promoteLiveCompletion(taskIdValue, selected, incomingTurnId = "") {
 
 function projectedActiveUserRun(taskIdValue, task) {
   const run = activeTaskRun(task);
+  const preparingRun = run && !String(run.turnId ?? "").trim()
+    && String(run.id ?? "").trim() && String(run.clientUserMessageId ?? "").trim();
   if (!run || !isUserRunningProjection(run)
-    || !window.AgentHubStreamTabs.isExactActiveUserTurn(task)) return null;
+    || (!preparingRun && !window.AgentHubStreamTabs.isExactActiveUserTurn(task))) return null;
+  // Before turn binding, the durable original command can already be terminal.
+  // Consume only its exact lane/client/run receipt, never another preparation.
+  if (preparingRun && (lastSnapshot?.messageReceipts ?? []).some((receipt) => (
+    exactSnapshotTaskId(receipt, lastSnapshot?.tasks) === taskIdValue
+    && String(receipt?.clientUserMessageId ?? "").trim() === String(run.clientUserMessageId).trim()
+    && String(receipt?.runId ?? "").trim() === String(run.id).trim()
+    && ["completed", "failed", "cancelled"].includes(queueHistoryReceiptProjection(receipt).projectionState)
+  ))) return null;
   // Canonical terminal history is absorbing for this exact provider/Thread/turn.
   // Reuse the history owner; a later raw active snapshot cannot revive that turn.
   return completedLiveTurnIdentity(historyByTask.get(taskIdValue) ?? [], {
     provider: task.provider, threadId: task.threadId, turnId: run.turnId,
+    clientUserMessageIds: [run.clientUserMessageId],
   }) ? null : run;
 }
 
@@ -1280,7 +1315,7 @@ function syncHistoryPagination(taskIdValue) {
   const page = historyPageByTask.get(taskIdValue);
   agentHub.setHistoryPagination(taskIdValue, {
     hasOlder: page?.nextBefore != null,
-    loading: page?.loading === true,
+    loading: page?.loading === true || (!page && visibleHistoryLoads.has(taskIdValue)),
     messageTotal: page?.messageTotal,
   });
 }
@@ -1352,7 +1387,8 @@ function updateLiveMessage(taskIdValue, selected) {
   }
   const liveCard = mergeLiveMaintenance({
     author: selected.provider === "claude" ? "Claude" : "Codex",
-    stage: activeStageLabel(run.stage),
+    stage: window.AgentHubMessageProjection.userRunActivity(run).preparing
+      ? "Подготовка хода…" : activeStageLabel(run.stage),
     reasoning: run.progress || "",
     text: response,
     attachments: attachmentViews(run.responseAttachments),
@@ -1373,7 +1409,7 @@ function updateLiveMessage(taskIdValue, selected) {
     projectionAuthority: "live",
     projectionState: "active",
     time: run.lastActivityAt ?? run.startedAt ?? null,
-    turnStartedAt: run.startedAt ?? null,
+    turnStartedAt: runTiming.startedAt,
     snapshotLastAnswerAt: selected.lastAnswerAt ?? null,
   }, maintenanceEventsByTask.get(taskIdValue) ?? []);
   liveCardsByTask.set(taskIdValue, liveCard);
@@ -1473,20 +1509,26 @@ async function hubFetch(input, init, retrySession = true, traceId) {
   if (pathname.startsWith("/api/command-trace/")) return hubFetchResponse(input, init, retrySession);
   const route = ["journal", "attachment", "control", "snapshot", "startup", "workspace", "usage", "rate-limit"]
     .find((name) => pathname.startsWith(`/api/${name}`)) || "other";
-  return commandTrace.http(`http-${route}`, () => hubFetchResponse(input, init, retrySession), traceId);
+  return commandTrace.http(`http-${route}`, () => hubFetchResponse(input, init, retrySession, traceId),
+    typeof traceId === "object" ? traceId.traceRequestId || traceId.traceUploadId : traceId);
 }
 
-async function hubFetchResponse(input, init, retrySession = true) {
+async function hubFetchResponse(input, init, retrySession = true, traceId) {
   try {
+    const measured = (action, operation) => traceId?.traceUploadId
+      ? commandTrace.upload(action, operation, { uploadId: traceId.traceUploadId,
+        uploadAttemptId: traceId.traceAttemptId,
+        httpRequestId: traceId.traceHttpRequestId,
+        messageRequestId: traceId.traceRequestId, chunkIndex: traceId.traceChunkIndex }) : operation();
     // Refreshing the session re-issues the HttpOnly cookie that the request below
     // carries automatically as a same-origin request.
-    await window.AgentHubBrowserDevice?.ensureSession?.();
-    const response = await fetch(input, init);
+    await measured("session", () => window.AgentHubBrowserDevice?.ensureSession?.());
+    const response = await measured("transport", () => fetch(input, init));
     if (response.status !== 401 || !retrySession || !window.AgentHubBrowserDevice?.ensureSession) {
       return response;
     }
-    await window.AgentHubBrowserDevice.ensureSession(true);
-    return hubFetchResponse(input, init, false);
+    await measured("session-refresh", () => window.AgentHubBrowserDevice.ensureSession(true));
+    return hubFetchResponse(input, init, false, traceId);
   } catch (error) {
     throw markConnectionFailure(error);
   }
@@ -1619,7 +1661,7 @@ function observeQueuedRemoteMessage(commandId, params) {
           remoteQueued: false,
           remoteCommandId: commandId,
           providerAccepted: projection.providerAccepted,
-          ...deliveryPatch(projection.deliveryState ?? "rejected"),
+          ...deliveryPatch(projection.deliveryState ?? "rejected", projection),
         });
         if (resolvedTaskId) renderTaskMessages(resolvedTaskId);
       }
@@ -1656,6 +1698,7 @@ async function readSnapshot(params = {}) {
 
 function snapshotQuery(params = {}) {
   return new URLSearchParams({
+    clientTraceId: String(params?.clientTraceId ?? ""),
     knownVersion: String(params?.knownVersion ?? ""),
     compactSnapshot: params?.compactSnapshot === true ? "1" : "0",
     snapshotProtocol: String(params?.snapshotProtocol ?? 3),
@@ -1776,6 +1819,9 @@ commandTrace.bindReporter(async (batch) => {
     body: JSON.stringify(batch),
     keepalive: true,
   }, 5_000);
+  // The status is sufficient; release the body so completed keepalive batches
+  // do not retain the document's in-flight request budget.
+  await response.body?.cancel();
   if (!response.ok) throw new Error("Client trace batch rejected");
 });
 
@@ -1830,8 +1876,9 @@ function modelTask(task, snapshot, effectiveSelectedId, serverSelectedId) {
   const streamId = String(task.streamId ?? "").trim()
     || `legacy:${String(task.provider ?? "").trim()}:${String(task.threadId ?? "").trim()}`;
   const answerAt = Date.parse(task.lastAnswerAt ?? "") || 0;
-  const running = Boolean(projectedActiveUserRun(id, task));
-  const unknown = task.activityUnknown === true;
+  const activity = window.AgentHubMessageProjection.userRunActivity(projectedActiveUserRun(id, task));
+  const running = activity.running;
+  const unknown = activity.unknown || task.activityUnknown === true;
   const unread = task.unread === true && !readMarker.cursorCovers(
     task.latestFinal, confirmedReadCursorByThread.get(readMarker.threadIdentity(task.latestFinal)),
   );
@@ -1867,13 +1914,17 @@ function modelTask(task, snapshot, effectiveSelectedId, serverSelectedId) {
     runtimeLabel: runtimeShortLabels[executionOwner] ?? (runtimeTitle ? "EXT" : ""),
     runtimeTitle,
     project: task.projectName || "",
+    canStop: activity.canStop,
+    preparing: activity.preparing === true,
+    activityUnknown: unknown,
     status: running ? "running" : unknown ? "unknown" : unread ? "ready" : "idle",
-    statusLabel: running ? "Выполняется" : unknown ? "Статус неизвестен" : unread ? "Ответ готов" : "",
+    statusLabel: running ? "Выполняется" : unknown ? "Состояние уточняется · поток занят"
+      : activity.preparing ? "Подготовка хода" : unread ? "Ответ готов" : "",
     lastActivity: task.orderingActivityAtMs
       ? new Date(task.orderingActivityAtMs).toISOString()
       : task.lastAnswerAt,
     lastAnswer: task.lastAnswer ?? null,
-    startedAt: running ? task.run?.startedAt ?? task.startedAt ?? null : null,
+    startedAt: running ? activeRunSubmissionTiming(task.run).startedAt : null,
     unread: !running && unread,
     running,
     selected: id === effectiveSelectedId,
@@ -2556,7 +2607,7 @@ function applySnapshotContent(snapshot, { materialized = false } = {}) {
         provider: task.provider,
         threadId: task.threadId,
         turnId: String(task.run?.turnId ?? ""),
-        time: task.run?.startedAt ?? null,
+        startedAt: activeRunSubmissionTiming(task.run).startedAt,
         ...nonEmptyAttachmentPatch(task.run?.attachments),
         // The run-level receipt is assigned only when Agent Hub starts a new
         // turn. It identifies the first user item even while Codex history has
@@ -2564,7 +2615,7 @@ function applySnapshotContent(snapshot, { materialized = false } = {}) {
         turnUserSlot: "root",
         projectionState: "active",
         providerAccepted: true,
-        ...deliveryPatch("accepted"),
+        ...deliveryPatch("running"),
       });
     }
     const selected = representativeTasks.find(
@@ -2574,7 +2625,8 @@ function applySnapshotContent(snapshot, { materialized = false } = {}) {
     for (const task of representativeTasks) {
       const stableTaskId = taskId(task.provider, task.threadId, task.streamId);
       agentHub.setLive(stableTaskId, updateLiveMessage(stableTaskId, task));
-      agentHub.setRunning(stableTaskId, Boolean(projectedActiveUserRun(stableTaskId, task)));
+      agentHub.setRunning(stableTaskId, window.AgentHubMessageProjection.userRunActivity(
+        projectedActiveUserRun(stableTaskId, task)).running);
     }
     for (const task of representativeTasks) {
       renderTaskQueue(taskId(task.provider, task.threadId, task.streamId), snapshot);
@@ -2712,11 +2764,12 @@ function historyMessages(history, focusedTurn = null) {
         ? { operationKindMigrationGuard: String(item.operationKindMigrationGuard) }
         : {}),
       projectionAuthority: "canonical",
-      projectionState: item.completed === true
-        ? (["failed", "cancelled"].includes(String(item.status ?? "").toLowerCase())
-          ? String(item.status).toLowerCase()
-          : "completed")
-        : item.active === true ? "active" : "unknown",
+      projectionState: canonicalProjectionState({
+        status: item.status,
+        terminalRevision: item.completed === true ? Number(item.terminalRevision) || 1 : 0,
+        running: item.active === true,
+        operationKind: "user-turn",
+      }),
       terminalRevision: item.completed === true ? Number(item.terminalRevision) || 1 : 0,
       ...(item.completed === true && !Number(item.terminalRevision)
         ? { terminalRevisionMigrationGuard: "legacy-terminal-revision" }
@@ -3006,6 +3059,8 @@ function applyOpened(result, {
   selectTask = true,
   exactNavigation = null,
 } = {}) {
+  const historyReceivedAtMs = Date.now();
+  const historyProjectionStarted = commandTrace.now();
   const history = result?.history;
   if (!history) {
     applySnapshot(result?.snapshot);
@@ -3050,6 +3105,7 @@ function applyOpened(result, {
   const liveCleared = clearDurablyCompletedLiveCard(id);
   if (!retainsPinnedFocus || !previousPage) {
     historyPageByTask.set(id, {
+      identity: stableIdentity(history),
       start: preserveOlder ? previousPage.start : history.start,
       end: history.end,
       total: history.total,
@@ -3077,6 +3133,38 @@ function applyOpened(result, {
     cleared: liveCleared,
     commandId: commandTrace.objectId(result) || commandTrace.objectId(history) || commandTrace.newId(),
   });
+  // Join the existing server terminal-history span using the original durable
+  // client identity, not this background read's unrelated control request ID.
+  // Retrieval and a visible paint opportunity are distinct diagnostic facts.
+  const finalMessage = newest.findLast((message) => message.role === "agent"
+    && ["completed", "failed", "cancelled"].includes(message.projectionState));
+  const rootUser = finalMessage && newest.find((message) => message.role === "user"
+    && message.turnUserSlot === "root" && message.provider === finalMessage.provider
+    && message.threadId === finalMessage.threadId && message.turnId === finalMessage.turnId);
+  if (rootUser?.clientUserMessageId) {
+    const metadata = { streamId: history.streamId, provider: finalMessage.provider,
+      threadId: finalMessage.threadId, turnId: finalMessage.turnId,
+      terminalRevision: finalMessage.terminalRevision };
+    commandTrace.record("ui-control", "history-retrieved", 0, rootUser.clientUserMessageId,
+      metadata, historyReceivedAtMs);
+    if (selectedTaskId === id && document.documentElement.dataset.view === "chat"
+      && renderedMessages?.some((message) => message.id === finalMessage.id)) {
+      const navigationGeneration = navigationIntents.capture();
+      const page = historyPageByTask.get(id);
+      const route = window.location.hash;
+      const terminalNode = Array.from(document.querySelectorAll("[data-chat-pane] [data-message-id]"))
+        .find((node) => node.dataset.messageId === finalMessage.id);
+      commandTrace.afterPaint("ui-render", "history-terminal-paint", historyProjectionStarted,
+        rootUser.clientUserMessageId, metadata, null, () => navigationIntents.current(navigationGeneration)
+          && selectedTaskId === id && document.documentElement.dataset.view === "chat"
+          && window.location.hash === route && historyPageByTask.get(id) === page
+          && terminalNode?.isConnected === true && terminalNode.getClientRects().length > 0
+          && historyWindowByTask.get(id)?.some((message) => message.id === finalMessage.id
+            && message.provider === finalMessage.provider && message.threadId === finalMessage.threadId
+            && message.turnId === finalMessage.turnId && message.terminalRevision === finalMessage.terminalRevision
+            && message.projectionState === finalMessage.projectionState));
+    }
+  }
   renderTaskQueue(id, lastSnapshot);
   if (result.focusedMessage && !exactNavigation) {
     window.requestAnimationFrame(() => agentHub.focusMessage?.({
@@ -3223,10 +3311,17 @@ function dataUrlBody(dataUrl) {
 
 const attachmentUploader = window.AgentHubAttachmentUpload.create({
   request: async (path, init) => {
-    await localSessionReady;
-    const signal = AbortSignal.any([...(init?.signal ? [init.signal] : []), AbortSignal.timeout(30_000)]);
-    return hubFetch(path, { ...init, signal, headers: { ...authorizationHeaders(), ...init?.headers } });
+    const { traceUploadId, traceAttemptId, traceRequestId, traceHttpRequestId, traceChunkIndex, ...wireInit } = init ?? {};
+    const identity = { traceUploadId, traceAttemptId, traceRequestId, traceHttpRequestId, traceChunkIndex };
+    await commandTrace.upload("local-session", () => localSessionReady,
+      { uploadId: traceUploadId, uploadAttemptId: traceAttemptId, messageRequestId: traceRequestId,
+        httpRequestId: traceHttpRequestId, chunkIndex: traceChunkIndex });
+    const signal = AbortSignal.any([...(wireInit.signal ? [wireInit.signal] : []), AbortSignal.timeout(30_000)]);
+    return hubFetch(path, { ...wireInit, signal, headers: { ...authorizationHeaders(), ...wireInit.headers } }, true, identity);
   },
+  trace: (action, operation, { traceUploadId, traceAttemptId, traceRequestId, traceHttpRequestId, traceChunkIndex } = {}) =>
+    commandTrace.upload(action, operation, { uploadId: traceUploadId, uploadAttemptId: traceAttemptId,
+      messageRequestId: traceRequestId, httpRequestId: traceHttpRequestId, chunkIndex: traceChunkIndex }),
 });
 window.AgentHubAttachmentCapabilities = () => attachmentUploader.capabilities();
 
@@ -3318,9 +3413,12 @@ async function settleOpenedTaskHistory(id, identity) {
 }
 
 function mergeHistoryLoadRequest(previous, next) {
-  if (!previous) return next;
+  if (!previous || !sameIdentity(previous.identity, next.identity)
+    || previous.generation !== next.generation) return next;
   return {
     ...next,
+    traceId: previous.traceId,
+    queuedAt: previous.queuedAt,
     refreshSource: previous.refreshSource || next.refreshSource,
     preserveScroll: previous.preserveScroll || next.preserveScroll,
   };
@@ -3338,7 +3436,9 @@ function enqueueTaskHistoryLoad(id, identity, {
   }
   state.pending = mergeHistoryLoadRequest(state.pending, {
     identity: stableIdentity(identity),
-    request: beginHistoryRequest(id, identity),
+    generation: historyRequestGenerationByTask.get(id) ?? 0,
+    traceId: commandTrace.newId(),
+    queuedAt: performance.now(),
     refreshSource,
     preserveScroll,
     onlyWhenSelected,
@@ -3346,20 +3446,42 @@ function enqueueTaskHistoryLoad(id, identity, {
   if (state.running) return state.running;
   state.running = (async () => {
     visibleHistoryLoads.add(id);
+    syncHistoryPagination(id);
     try {
       while (state.pending) {
         const pending = state.pending;
         state.pending = null;
+        // Dispatch order cannot override a later explicit navigation/page
+        // intent. Notifications during an older-page read also leave it owned
+        // by that user request rather than cancelling it with a latest read.
+        if ((historyRequestGenerationByTask.get(id) ?? 0) !== pending.generation
+          || !sameIdentity(taskIdentity(id), pending.identity)
+          || historyPageByTask.get(id)?.loading === true) continue;
+        // Coalesced notifications for this identity request a later read, not
+        // cancellation of the page already being read. Fence only dispatched
+        // reads; explicit pagination and a changed Thread still supersede it.
+        const request = beginHistoryRequest(id, pending.identity);
         const settled = await settleOptionalRead(() => backgroundHttpScheduler.run(
-          () => control("task-history", {
-            ...pending.identity,
-            limit: 20,
-            includeActive: true,
-            refreshSource: pending.refreshSource,
-            knownVersion: historyPageByTask.get(id)?.version ?? "",
-          }),
+          () => {
+            commandTrace.record("ui-control", "history-queue", performance.now() - pending.queuedAt,
+              pending.traceId, { ...pending.identity, clientAssetRevision: "hub333.history.1" });
+            return control("task-history", {
+              ...pending.identity,
+              clientTraceId: pending.traceId,
+              limit: 20,
+              includeActive: true,
+              refreshSource: pending.refreshSource,
+              knownVersion: historyPageByTask.get(id)?.version ?? "",
+            });
+          },
         ));
-        if (settled.status === "rejected" || !currentHistoryRequest(pending.request)) continue;
+        if (id === selectedTaskId && directChatRoute()) continue;
+        const current = currentHistoryRequest(request);
+        commandTrace.record("ui-control", "history-page-decision", 0, pending.traceId,
+          { ...pending.identity, clientAssetRevision: "hub333.history.1",
+            decision: settled.status === "rejected" ? "failed" : current ? "current" : "superseded",
+            count: settled.value?.items?.length ?? 0 });
+        if (settled.status === "rejected" || !current) continue;
         const history = verifiedTaskHistory(settled.value, pending.identity);
         if (!sameIdentity(taskIdentity(id), history)) continue;
         if (pending.onlyWhenSelected && selectedTaskId !== id) continue;
@@ -3373,10 +3495,23 @@ function enqueueTaskHistoryLoad(id, identity, {
           skipSnapshot: true,
           selectTask: false,
         });
+        const paintedPage = historyPageByTask.get(id);
+        commandTrace.afterPaint("ui-render", "history-page-paint", pending.queuedAt, pending.traceId,
+          { ...pending.identity, clientAssetRevision: "hub333.history.1", count: history.items?.length ?? 0 },
+          () => {
+            const pane = document.querySelector("[data-chat-pane]");
+            const visible = selectedTaskId === id && pane?.dataset.streamChatTaskId === id
+              && pane.getClientRects().length > 0 && document.documentElement.dataset.view === "chat";
+            const superseded = !sameIdentity(taskIdentity(id), pending.identity)
+              || historyPageByTask.get(id) !== paintedPage;
+            return { outcome: visible && !superseded ? "succeeded" : "cancelled",
+              metadata: { render: superseded ? "superseded" : visible ? "viewport" : "hidden" } };
+          });
       }
     } finally {
       visibleHistoryLoads.delete(id);
       if (historyLoadStates.get(id) === state) historyLoadStates.delete(id);
+      syncHistoryPagination(id);
     }
   })();
   return state.running;
@@ -3441,7 +3576,7 @@ agentHub.on("history:trace-page", ({ identity, tracePage, resolve, reject }) => 
 });
 
 agentHub.on("history:load-older", ({ taskId: id }) => runAction(async () => {
-  const identity = taskIdentity(id);
+  const identity = historyRequestIdentity(id);
   const page = historyPageByTask.get(id);
   if (!identity || !page || page.nextBefore == null || page.loading) return;
   const requestedBefore = Number(page.nextBefore);
@@ -3455,7 +3590,7 @@ agentHub.on("history:load-older", ({ taskId: id }) => runAction(async () => {
       before: requestedBefore,
       limit: 20,
     }), identity);
-    if (!currentHistoryRequest(request) || !sameIdentity(taskIdentity(id), history)) {
+    if (!currentHistoryRequest(request) || !sameIdentity(historyRequestIdentity(id), history)) {
       page.loading = false;
       syncHistoryPagination(id);
       return;
@@ -3615,7 +3750,9 @@ function sendUserMessage(request, frozenParams = null) {
           // Draft preparation is local; negotiate server limits once here,
           // before the first upload or provider command can have an effect.
           if (requestAttachments.length) project("uploading", "Проверка лимитов вложений…");
-          await attachmentUploader.validateBatch(requestAttachments, { signal: session.controller.signal });
+          await attachmentUploader.validateBatch(requestAttachments, {
+            signal: session.controller.signal, traceRequestId: request.requestId,
+          });
           session.controller.signal.throwIfAborted();
           assertCurrentSendTaskOperation(sendTaskOperation);
           for (const attachment of requestAttachments) {
@@ -3627,16 +3764,21 @@ function sendUserMessage(request, frozenParams = null) {
                 project("uploading", `Загрузка ${attachment.name}…`);
                 path = await uploadAttachment(attachment, {
                   signal: session.controller.signal,
-                  progress: (bytes) => project("uploading", `Загрузка файлов: ${Math.floor((uploaded + bytes) / Math.max(1, total) * 100)}%`),
+                  traceRequestId: request.requestId,
+                  progress: (bytes, _total, recovery) => project("uploading", recovery?.restarted
+                    ? recovery.reason === "expired" ? "Срок прежней загрузки истёк. Загружаю сохранённый файл заново…"
+                      : "Восстанавливаю загрузку сохранённого файла…"
+                    : `Загрузка файлов: ${Math.floor((uploaded + bytes) / Math.max(1, total) * 100)}%`),
                 });
                 session.controller.signal.throwIfAborted();
               } catch (error) {
                 if (session.controller.signal.aborted || error?.attachmentUploadTerminal
                   || error?.agentHubMessagePreparationCancelled || !attachment.blobId) throw error;
-                await new Promise((resolve) => {
-                  session.resume = resolve;
+                await commandTrace.upload("pause-wait", () => new Promise((resolve, reject) => {
+                  session.resume = () => session.controller.signal.aborted
+                    ? reject(new DOMException("Upload cancelled", "AbortError")) : resolve();
                   project("paused", `Загрузка приостановлена: ${hubErrorMessage(error)}`);
-                });
+                }), { uploadId: attachment.uploadId, messageRequestId: request.requestId });
                 session.resume = null;
               }
             }
@@ -3729,7 +3871,7 @@ function sendUserMessage(request, frozenParams = null) {
         ...(result?.accepted && !result?.steered ? { turnUserSlot: "root" } : {}),
         ...(result?.remoteQueued
           ? deliveryPatch("relaying")
-          : deliveryPatch(projection.deliveryState ?? "rejected")),
+          : deliveryPatch(projection.deliveryState ?? "rejected", projection)),
       });
       renderOutgoingWithoutBlockingSend(request.taskId, { queue: true });
       commandTrace.afterPaint("ui-render", "message-ack-projection", projectionStarted, request.requestId);
@@ -5403,6 +5545,10 @@ async function refreshVisibleTaskHistories(previousSnapshot, snapshot) {
   if (selectedTaskId) visibleIds.add(selectedTaskId);
   const chatVisible = document.documentElement.dataset.view === "chat";
   await Promise.all([...visibleIds].map(async (id) => {
+    // An exact turn route is intentional historical navigation, not a live
+    // Stream route. Keep its page while the head evolves; clicking the Stream
+    // again explicitly returns to the existing head-history path.
+    if (id === selectedTaskId && directChatRoute()) return;
     const previousTask = snapshotTask(previousSnapshot, id);
     const currentTask = snapshotTask(snapshot, id);
     if (!currentTask) return;
@@ -5520,7 +5666,7 @@ async function refresh({ reportError = false } = {}) {
       return;
     }
     const active = Boolean(lastSnapshot?.tasks?.some(
-      (task) => task.running || task.context?.compacting || task.maintenance,
+      (task) => task.running || task.activityUnknown || task.context?.compacting || task.maintenance,
     )) || [...visibleStreamTaskIds].some(historyNeedsCatchUp) || historyNeedsCatchUp(selectedTaskId);
     refreshTimer = window.setTimeout(refresh, active ? 1_200 : 5_000);
   }

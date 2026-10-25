@@ -79,7 +79,7 @@ const localWebSecret = config.miniApp.enabled
   ? await ensureLocalWebSecret(path.join(runtimeCommandRoot, "local-web.secret"))
   : "";
 const { value: {
-  trustedDeviceStore, taskLifecycle,
+  trustedDeviceStore, taskLifecycle, taskGitWorkspaces, releaseGitWorkspaces, releaseOperations,
   contourExternalEffects,
   codexRolloutContextSanitizer,
   workLogUsageStore, workLogUsageIdentityStore, workLogUsageRemoteConfigStore, workspaceCatalogStore, taskReleasePlanner, workspaceReleaseService, preTurnInstructions, taskBoard, taskVoiceTranscriber, hubMcpService, hubMcpServer, mcpAdmissionCoordinator,
@@ -270,6 +270,7 @@ const providerApplication = await createProviderApplicationComposition({
   },
   infrastructure: {
     runJournal,
+    taskBoard, taskGitWorkspaces, releaseGitWorkspaces, releaseOperations,
     contourExternalEffects,
     turnEndNotifications,
     workLogUsageStore, workLogUsageIdentityStore, workLogUsageRemoteConfigStore, workspaceCatalogStore, preTurnInstructions, hubMcpService,

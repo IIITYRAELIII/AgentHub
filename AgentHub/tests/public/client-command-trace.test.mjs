@@ -7,8 +7,9 @@ import { clientPerformanceTraceSpans } from "../../src/application/client-perfor
 
 const source = await readFile(new URL("../../assets/web-app/command-trace.js", import.meta.url), "utf8");
 
-function fixture() {
+function fixture(storage = new Map()) {
   let clock = 10;
+  let wallClock = Date.now();
   let sequence = 0;
   const frames = [];
   const timers = [];
@@ -18,12 +19,97 @@ function fixture() {
     document: { hidden: false, documentElement: { dataset: { view: "chat" } },
       addEventListener: (name, callback) => listeners.set(name, callback) },
     setTimeout: (fn) => { timers.push(fn); return timers.length; },
+    localStorage: { getItem: (key) => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) },
     requestAnimationFrame: (fn) => frames.push(fn), queueMicrotask, addEventListener() {},
   };
-  vm.runInNewContext(source, { window, Date });
-  return { trace: window.AgentHubCommandTrace, advance: (ms) => { clock += ms; }, frames, timers,
+  const FixtureDate = class extends Date { static now() { return wallClock; } };
+  vm.runInNewContext(source, { window, Date: FixtureDate });
+  return { trace: window.AgentHubCommandTrace, storage, advance: (ms) => { clock += ms; }, frames, timers,
+    advanceWall: (ms) => { wallClock += ms; clock += ms; }, wallNow: () => wallClock,
     hide: () => { window.document.hidden = true; listeners.get("visibilitychange")?.(); } };
 }
+
+test("failed upload telemetry survives reporter outage and reload without retaining payloads", async () => {
+  const storage = new Map();
+  const first = fixture(storage);
+  const uploadId = "123e4567-e89b-12d3-a456-426614174000";
+  const requestId = "123e4567-e89b-12d3-a456-426614174001";
+  const original = new Error("private file and credential text");
+  first.trace.bindReporter(async () => { throw new Error("trace endpoint unavailable"); });
+  await assert.rejects(first.trace.upload("begin", async () => { throw original; },
+    { uploadId, messageRequestId: requestId }), (error) => error === original);
+  await first.trace.flush();
+  assert.equal(first.trace.diagnostics().retainedUpload, 2);
+  assert.doesNotMatch([...storage.values()].join(""), /private file|credential text/u);
+  const restored = fixture(storage);
+  const batches = [];
+  restored.trace.bindReporter(async (batch) => { batches.push(...batch.events); });
+  await restored.trace.flush();
+  assert.equal(batches.length, 2);
+  assert.equal(batches[0].commandId, uploadId);
+  assert.equal(batches[1].metadata.messageRequestId, requestId);
+  assert.equal(batches[1].outcome, "failed");
+  assert.equal(restored.trace.diagnostics().retainedUpload, 0);
+  assert.deepEqual(JSON.parse(storage.get("agent-hub-upload-trace-v1")), []);
+  assert.equal(clientPerformanceTraceSpans({ events: batches })[1].metadata.uploadId, uploadId);
+});
+
+test("upload receipt traces retain logical and transport identities and only explicit expiry state", async () => {
+  const { trace } = fixture(); const events = [];
+  trace.bindReporter(async batch => events.push(...batch.events));
+  for (const state of ["expired", "absent", "cancelled", "PRIVATE_ERROR"]) {
+    const error = Object.assign(new Error("PRIVATE file and token"), { attachmentUploadState: state });
+    await assert.rejects(async () => trace.upload("receipt", () => { throw error; },
+      { uploadId: "logical-upload", uploadAttemptId: "transport-attempt", messageRequestId: "original-message" }));
+  }
+  await trace.flush(); const spans = clientPerformanceTraceSpans({ events });
+  assert.ok(spans.every(span => span.commandId === "logical-upload" && span.metadata.uploadAttemptId === "transport-attempt"
+    && span.metadata.messageRequestId === "original-message"));
+  assert.deepEqual(spans.filter(span => span.outcome === "failed").map(span => span.metadata.uploadState),
+    ["expired", "absent", "cancelled", undefined]);
+  assert.doesNotMatch(JSON.stringify(spans), /PRIVATE/u);
+});
+
+test("upload HTTP correlation and failed receipt status survive the existing bounded trace ingest", async () => {
+  const { trace } = fixture(), events = [];
+  trace.bindReporter(async batch => events.push(...batch.events));
+  const error = Object.assign(new Error("private upstream content"), { attachmentUploadStatus: 502 });
+  await assert.rejects(trace.upload("chunk", async () => { throw error; }, {
+    uploadId: "logical-upload", httpRequestId: "http-request", messageRequestId: "original-message",
+  }), value => value === error);
+  await trace.flush();
+  const spans = clientPerformanceTraceSpans({ events });
+  assert.equal(spans.length, 2);
+  assert.ok(spans.every(span => span.metadata.httpRequestId === "http-request"));
+  assert.equal(spans[1].metadata.statusCode, 502);
+  assert.equal(spans[1].outcome, "failed");
+  assert.equal(JSON.stringify(spans).includes("private upstream"), false);
+});
+
+test("expired upload traces cannot poison fresh traces after a same-page outage", async () => {
+  const { trace, storage, advanceWall, wallNow } = fixture();
+  const staleId = "123e4567-e89b-12d3-a456-426614174010";
+  const freshId = "123e4567-e89b-12d3-a456-426614174011";
+  trace.bindReporter(async () => { throw new Error("trace endpoint unavailable"); });
+  await trace.upload("begin", async () => ({ status: 200 }), { uploadId: staleId });
+  await trace.flush();
+  assert.equal(trace.diagnostics().retainedUpload, 2);
+
+  advanceWall(86_400_001);
+  const delivered = [];
+  trace.bindReporter(async ({ events }) => {
+    clientPerformanceTraceSpans({ events }, { now: wallNow() });
+    delivered.push(...events);
+  });
+  await trace.upload("status", async () => ({ status: 200 }), { uploadId: freshId });
+  await trace.flush();
+
+  assert.deepEqual(delivered.map((event) => event.commandId), [freshId, freshId]);
+  assert.equal(trace.diagnostics().retainedUpload, 0);
+  assert.equal(trace.diagnostics().pending, 0);
+  assert.ok(trace.diagnostics().droppedCount >= 2);
+  assert.deepEqual(JSON.parse(storage.get("agent-hub-upload-trace-v1")), []);
+});
 
 test("after-paint observer cancels an obsolete display and read metadata remains content-free", async () => {
   const { trace, frames } = fixture();
@@ -43,6 +129,31 @@ test("after-paint observer cancels an obsolete display and read metadata remains
   assert.equal(spans.at(-1).metadata.terminalRevision, 2);
   assert.equal(spans.at(-1).metadata.codeMarker, "hub291.read-marker.1");
   assert.doesNotMatch(JSON.stringify(spans), /PRIVATE/u);
+});
+
+test("paint ownership guard preserves the existing observer protocol and error outcome", async () => {
+  for (const mode of ["current", "superseded", "observer-error"]) {
+    const { trace, frames } = fixture();
+    const events = [];
+    let observations = 0;
+    trace.bindReporter(async (batch) => events.push(...batch.events));
+    trace.afterPaint("ui-render", "read-marker-clear", 10, "original-read", {}, () => {
+      observations += 1;
+      if (mode === "observer-error") throw new Error("PRIVATE");
+      return { outcome: "cancelled", metadata: { render: "pending", cardReady: true } };
+    }, () => mode !== "superseded");
+    frames.shift()(); frames.shift()();
+    await trace.flush();
+    const spans = clientPerformanceTraceSpans({ events });
+    assert.equal(spans.at(-1).outcome, mode === "observer-error" ? "failed" : "cancelled");
+    assert.equal(observations, mode === "superseded" ? 0 : 1);
+    if (mode === "current") {
+      assert.equal(spans.at(-1).metadata.render, "pending");
+      assert.equal(spans.at(-1).metadata.cardReady, true);
+    }
+    if (mode === "observer-error") assert.equal(spans.at(-1).metadata.failureKind, "error");
+    assert.doesNotMatch(JSON.stringify(spans), /PRIVATE/u);
+  }
 });
 
 test("client trace batches are bounded and do not hold the measured result behind a stalled reporter", async () => {
@@ -176,6 +287,66 @@ test("a hidden surface cancels pending paint measurements and late frames cannot
   assert.equal(events[1].metadata.failureKind, "hidden");
   assert.equal(events[1].monotonicDurationMs, 19);
   assert.equal(events[0].metadata.operationSpanId, events[1].metadata.operationSpanId);
+});
+
+test("paint completion rechecks its owner and a throwing diagnostic guard fails closed", async () => {
+  for (const mode of ["current", "superseded", "throws"]) {
+    const { trace, frames } = fixture();
+    const events = [];
+    trace.bindReporter(async (batch) => events.push(...batch.events));
+    let current = true;
+    trace.afterPaint("ui-render", "history-terminal-paint", 10, "root-command", {}, null, () => {
+      if (mode === "throws") throw new Error("private diagnostic error");
+      return current;
+    });
+    frames.shift()();
+    current = mode === "current";
+    frames.shift()();
+    await trace.flush();
+    const converted = clientPerformanceTraceSpans({ events });
+    assert.deepEqual(converted.map((event) => event.outcome), ["started", mode === "current" ? "succeeded" : "cancelled"]);
+    assert.equal(converted[0].metadata.operationSpanId, converted[1].metadata.operationSpanId);
+    assert.equal(converted[1].commandId, "root-command");
+    if (mode !== "current") assert.equal(converted[1].metadata.failureKind, "superseded");
+    assert.equal(trace.diagnostics().paintPending, 0);
+    assert.equal(JSON.stringify(converted).includes("private diagnostic error"), false);
+  }
+});
+
+test("completed shipped keepalive reports release capacity for later diagnostic batches", { timeout: 30_000 }, async () => {
+  const browser = await launchBrowser();
+  const page = await browser.newPage();
+  try {
+    const diagnostics = await openFixture(page);
+    const received = [];
+    await page.route("**/api/command-trace/client-events", async (route) => {
+      received.push(...clientPerformanceTraceSpans(route.request().postDataJSON()));
+      await route.fulfill({ status: 200, contentType: "application/json", body: "{}" });
+    });
+    await page.waitForFunction(() => {
+      const trace = window.AgentHubCommandTrace;
+      const state = trace.diagnostics();
+      if (state.pending && !state.flushing) void trace.flush();
+      return !state.pending && !state.flushing;
+    });
+    const result = await page.evaluate(async () => {
+      const trace = window.AgentHubCommandTrace;
+      const before = trace.diagnostics();
+      for (let batch = 0; batch < 12; batch += 1) {
+        for (let index = 0; index < 32; index += 1) {
+          trace.record("ui-render", "keepalive-capacity", 0, "capacity-command", {
+            streamId: "s".repeat(190), threadId: "t".repeat(190), turnId: "u".repeat(190),
+          });
+        }
+        await trace.flush();
+      }
+      return { before, after: trace.diagnostics() };
+    });
+    assert.equal(result.after.failedBatches, result.before.failedBatches);
+    assert.equal(result.after.droppedCount, result.before.droppedCount);
+    assert.equal(received.filter((event) => event.metadata.action === "keepalive-capacity").length, 384);
+    assert.deepEqual(diagnostics, []);
+  } finally { await page.close(); await browser.close(); }
 });
 
 test("shipped UI measures navigation, message ACK, rendering and long main-thread work through one batch endpoint", { timeout: 30_000 }, async () => {

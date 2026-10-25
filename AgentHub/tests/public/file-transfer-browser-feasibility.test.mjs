@@ -2,12 +2,61 @@ import assert from "node:assert/strict";
 import { createServer } from "node:https";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createHash, X509Certificate } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { chromium } from "playwright";
+
+async function launchIdentity(channel, environment = process.env) {
+  if (channel !== "chrome" || !environment.AGENT_HUB_CONFIG) return { options: { channel } };
+  const configFile = path.join(path.dirname(path.resolve(environment.AGENT_HUB_CONFIG)), "release-qa-browsers.json");
+  let bytes;
+  try { bytes = await readFile(configFile); }
+  catch (error) { if (error.code === "ENOENT") return { options: { channel } }; throw error; }
+  assert.ok(bytes.length <= 4_096, "bounded QA browser configuration");
+  const config = JSON.parse(bytes);
+  assert.equal(config.schemaVersion, 1);
+  const { executablePath, sha256, version } = config.chrome ?? {};
+  assert.ok(typeof executablePath === "string" && path.isAbsolute(executablePath));
+  assert.match(sha256 ?? "", /^[a-f0-9]{64}$/u);
+  assert.match(version ?? "", /^\d+\.\d+\.\d+\.\d+$/u);
+  const info = await lstat(executablePath);
+  assert.ok(info.isFile() && info.size > 0 && info.size <= 64 * 1024 ** 2, "regular bounded Chrome executable");
+  assert.equal(createHash("sha256").update(await readFile(executablePath)).digest("hex"), sha256);
+  return { options: { executablePath }, version };
+}
+
+test("explicit Chrome QA identity rejects substituted bytes and malformed configuration before launch", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "hub-qa-browser-identity-"));
+  const environment = { AGENT_HUB_CONFIG: path.join(root, "not-read-production-config.json") };
+  const executablePath = path.join(root, "never-executed-fixture.exe");
+  const configFile = path.join(root, "release-qa-browsers.json");
+  const body = Buffer.from("fixture bytes: this file is never executed");
+  const chrome = { executablePath, sha256: createHash("sha256").update(body).digest("hex"), version: "155.0.8059.85" };
+  const configure = (value) => writeFile(configFile, JSON.stringify({ schemaVersion: 1, chrome: value }));
+  try {
+    assert.deepEqual(await launchIdentity("chrome", {}), { options: { channel: "chrome" } });
+    assert.deepEqual(await launchIdentity("chrome", environment), { options: { channel: "chrome" } });
+    await writeFile(executablePath, body);
+    await configure(chrome);
+    assert.deepEqual(await launchIdentity("chrome", environment), { options: { executablePath }, version: chrome.version });
+    await writeFile(executablePath, Buffer.from("different fixture bytes"));
+    await assert.rejects(launchIdentity("chrome", environment), /AssertionError/u);
+    await writeFile(executablePath, body);
+    await configure({ ...chrome, version: "unversioned" });
+    await assert.rejects(launchIdentity("chrome", environment), /AssertionError/u);
+    await configure({ ...chrome, executablePath: root });
+    await assert.rejects(launchIdentity("chrome", environment), /regular bounded/u);
+    await configure({ ...chrome, executablePath: path.join(root, "absent.exe") });
+    await assert.rejects(launchIdentity("chrome", environment), { code: "ENOENT" });
+    await writeFile(configFile, " ".repeat(4_097));
+    await assert.rejects(launchIdentity("chrome", environment), /bounded QA browser/u);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 // Transport feasibility only: this disposable server owns no production capability.
 for (const channel of ["msedge", "chrome"]) for (const behavior of ["default", "allowAndName"]) {
@@ -87,8 +136,14 @@ document.body.dataset.ready='1';});</script>`);
       await writeFile(path.join(directory, "profile", "Default", "Preferences"), JSON.stringify({
         download: { default_directory: directory, prompt_for_download: false, directory_upgrade: true },
       }));
+      const identity = await launchIdentity(channel);
+      const browserEnvironment = Object.fromEntries(
+        ["PATH", "SystemRoot", "WINDIR", "ComSpec", "ProgramFiles", "ProgramFiles(x86)"]
+          .filter((key) => typeof process.env[key] === "string").map((key) => [key, process.env[key]]),
+      );
       context = await chromium.launchPersistentContext(path.join(directory, "profile"), {
-        channel, headless: true, downloadsPath: directory, acceptDownloads: true,
+        ...identity.options, headless: true, downloadsPath: directory, acceptDownloads: true,
+        env: { ...browserEnvironment, TEMP: directory, TMP: directory, LOCALAPPDATA: directory, APPDATA: directory },
         viewport: { width: 1280, height: 720 },
         ignoreHTTPSErrors: true, args: [`--ignore-certificate-errors-spki-list=${spki}`],
       });
@@ -102,6 +157,7 @@ document.body.dataset.ready='1';});</script>`);
       rangeProbes.push({ range: `bytes=${size - 1}-`, status: probe.status(), headers: probe.headers(),
         bodyBytes: lastByte.length, bodySha256: createHash("sha256").update(lastByte).digest("hex") });
       browserVersion = context.browser()?.version();
+      if (identity.version) assert.equal(browserVersion, identity.version);
       t.diagnostic(`browser ${channel}: ${browserVersion}`);
       const page = await context.newPage();
       const cdp = await context.newCDPSession(page);

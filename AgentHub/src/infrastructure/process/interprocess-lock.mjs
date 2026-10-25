@@ -9,6 +9,13 @@ const RELEASE_RETRY_DELAYS_MS = [0, 10, 25, 50, 100, 200];
 const TRANSIENT_LOCK_ERROR_CODES = new Set(["EEXIST", "EPERM", "EACCES", "EBUSY", "ENOTEMPTY"]);
 const inProcessLocks = new Map();
 const PROCESS_INSTANCE_ID = randomUUID();
+const admissionTimeouts = new WeakMap();
+
+// Only acquire can issue this evidence. A matching error code/message is not
+// proof that the protected operation was never entered.
+export function interprocessLockAdmissionTimeoutPath(error) {
+  return admissionTimeouts.get(error) ?? null;
+}
 
 async function acquireInProcessLock(lockPath) {
   let state = inProcessLocks.get(lockPath);
@@ -398,7 +405,10 @@ async function acquire(lockPath, {
         continue;
       }
       if (Date.now() >= deadline) {
-        throw new Error(`Timed out waiting for interprocess lock: ${lockPath}`);
+        const error = new Error(`Timed out waiting for interprocess lock: ${lockPath}`);
+        error.code = "INTERPROCESS_LOCK_ADMISSION_TIMEOUT";
+        admissionTimeouts.set(error, lockPath);
+        throw error;
       }
       await delay(retryDelayMs);
     }

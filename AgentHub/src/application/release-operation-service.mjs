@@ -5,6 +5,9 @@ import {
   RELEASE_OPERATION_STATES,
   releaseIdentitySha256,
   releaseOperationIsTerminal,
+  reviewedMainBinding,
+  failedComposeRecoveryEligible,
+  releaseApprovedTargets,
 } from "../domain/release-operation.mjs";
 
 const DEFAULT_LEASE_MS = 30_000;
@@ -63,6 +66,23 @@ function normalizeReadback(value) {
 function classifiedFailure(error, state, now, retryDelayMs) {
   const details = releaseError(error);
   switch (details.code) {
+    case "RELEASE_PREPARATION_REJECTED":
+    case "RELEASE_NATIVE_MERGE_CONFLICT":
+    case "RELEASE_NATIVE_REVIEW_REQUIRED":
+      return {
+        state: "waiting", currentStep: "compose", resumeState: "compose",
+        waitReason: { code: "preparation_refused", message: details.message, details },
+        nextAction: "correct the owned preparation boundary, then continue this same release",
+        lastError: { ...details, step: "compose" },
+      };
+    case "AWAIT_PREPARATION_UNKNOWN":
+    case "AWAIT_ACCEPTANCE_UNKNOWN":
+      return {
+        state: "waiting", currentStep: state,
+        waitReason: { code: "preparation_effect_unknown", message: details.message, details },
+        nextAction: "read back this original candidate effect before continuation",
+        lastError: { ...details, step: state },
+      };
     case "RELEASE_PREPARED_CANDIDATE_STALE":
       return {
         state: "waiting", currentStep: state, resumeState: "compose",
@@ -142,6 +162,7 @@ export class ReleaseOperationService {
     deliveryRetryMs = 1_000,
     requestCorrection = null,
     cleanupGeneration = null,
+    withReviewedMainRecovery = null,
   } = {}) {
     for (const name of [
       "create", "get", "snapshot", "transition", "acquire", "heartbeat", "release",
@@ -183,6 +204,7 @@ export class ReleaseOperationService {
     this.deliveryRetryMs = Math.max(100, Number(deliveryRetryMs) || 1_000);
     this.requestCorrection = requestCorrection;
     this.cleanupGeneration = cleanupGeneration;
+    this.withReviewedMainRecovery = withReviewedMainRecovery;
   }
 
   start({ requestId, workspaceId, streamId, threadId, authorization } = {}) {
@@ -212,7 +234,34 @@ export class ReleaseOperationService {
     return snapshot;
   }
 
-  continue(operationId) {
+  // Read-only eligibility from this original release owner. Directory age or a
+  // local Git head is never evidence that a release finished publication.
+  retentionGeneration(operationId, number) {
+    const operation = this.store.get(operationId);
+    if (operation?.state !== "done" || !operation.completedAt || operation.currentGeneration !== number) return null;
+    const generation = this.store.generation(operationId, number);
+    if (!generation || generation.operationId !== operationId || generation.generation !== number
+        || generation.candidates?.length > 32) return null;
+    const { identitySha256, ...contents } = generation;
+    if (releaseIdentitySha256(contents) !== identitySha256) return null;
+    const effects = operation.publicationEffects;
+    if (effects?.generation !== number || effects.publishStarted?.candidate !== identitySha256
+        || !operation.authorization.approvedTargets.every(target => publishedTarget(effects.targets?.[target.targetId]))) return null;
+    const validation = this.store.latestStep(operationId, number, "validate");
+    const finalization = this.store.latestStep(operationId, number, "finalize");
+    for (const receipt of [validation, finalization]) {
+      if (receipt?.status !== "applied" || receipt.operationId !== operationId || receipt.generation !== number
+          || receipt.input?.candidate !== identitySha256 || releaseIdentitySha256(receipt.input) !== receipt.inputSha256) return null;
+    }
+    if (releaseIdentitySha256(finalization.input.effects) !== releaseIdentitySha256(effects)
+        || releaseIdentitySha256(finalization.input.selectedResults) !== releaseIdentitySha256(generation.selectedResults)) return null;
+    return { operationId, generation: number, operationRevision: operation.revision, completedAt: operation.completedAt,
+      identitySha256, candidates: generation.candidates.map(({ repositoryRoot, releaseRoot, generationRoot, commit, tree, manifestHash }) =>
+        ({ repositoryRoot, releaseRoot, generationRoot, commit, tree, manifestHash })) };
+  }
+
+  continue(operationId, options = {}) {
+    if (options.reviewedMain != null) return this.#recoverReviewedMain(operationId, options);
     const current = this.store.get(requiredText(operationId, "operationId"));
     if (!current) throw new Error("release operation was not found");
     if (releaseOperationIsTerminal(current)) return { accepted: false, operation: current, reason: "terminal" };
@@ -238,6 +287,45 @@ export class ReleaseOperationService {
     }
     this.#schedule(operation.operationId);
     return { accepted: true, operationId: operation.operationId, state: operation.state, revision: operation.revision };
+  }
+
+  async #recoverReviewedMain(operationId, { requestId, reviewedMain }) {
+    const current = this.store.get(requiredText(operationId, "operationId"));
+    if (!current) throw new Error("release operation was not found");
+    const binding = reviewedMainBinding(current, reviewedMain);
+    if (binding.expectedRevision !== current.revision) return { accepted: false, reason: "stale-revision", operation: current };
+    if (!failedComposeRecoveryEligible(current)) return { accepted: false, reason: "ineligible", operation: current };
+    if (typeof requestId !== "string" || !requestId.trim()) throw new TypeError("Recovery requestId must be a primitive string");
+    if (typeof this.withReviewedMainRecovery !== "function") throw new Error("Reviewed-main recovery verification is unavailable");
+    return this.withReviewedMainRecovery({ workspaceId: current.workspaceId,
+      taskIds: current.authorization.taskIds, approvedRepositories: binding.approvedRepositories,
+      commit: async (authority, validateBeforeCommit) => {
+        if (releaseIdentitySha256(authority.approvedRepositories) !== releaseIdentitySha256(binding.approvedRepositories)) {
+          throw new Error("Reviewed-main verified repository binding changed");
+        }
+        const generation = this.store.generation(current.operationId, current.currentGeneration);
+        if (!generation) throw new Error("Original publication generation is missing");
+        const readbacks = [];
+        for (const target of current.authorization.approvedTargets) {
+          const readback = normalizeReadback(await this.readTarget({ operation: current, generation, target, reviewedMain: authority }));
+          if (readback.status !== "not_applied") throw new Error(`Original publication effect readback is ${readback.status}`);
+          readbacks.push({ targetId: target.targetId, generation: generation.generation, evidence: readback });
+        }
+        await validateBeforeCommit();
+        const contents = { ...authority, requestId, priorRevision: current.revision, priorGeneration: current.currentGeneration,
+          previousBinding: current.reviewedMain?.identitySha256 ?? null,
+          priorFailure: { completedAt: current.completedAt, error: current.lastError },
+          authorizationFingerprint: current.authorization.fingerprint, readbacks };
+        const recovery = { ...contents, identitySha256: releaseIdentitySha256(contents) };
+        const result = this.store.transition(current.operationId, { state: "compose", currentStep: "compose",
+          lastError: null, nextAction: "compose current reviewed main with the original selected set" }, {
+          expectedRevision: binding.expectedRevision, reviewedMainRecovery: recovery, eventKind: "operation.reviewed-main-rebound",
+          event: { operationId: current.operationId, state: "compose", reviewedMain: recovery },
+        });
+        if (result.applied) this.#schedule(current.operationId);
+        return { accepted: result.applied, reason: result.reason, operationId: current.operationId,
+          state: result.operation.state, revision: result.operation.revision };
+      } });
   }
 
   wakeForTask(taskId) {
@@ -365,6 +453,20 @@ export class ReleaseOperationService {
       await new Promise((resolve) => setTimeout(resolve, 5));
     }
     return this.get(id);
+  }
+
+  async drainAddressed({ requestId, operationId, taskId } = {}) {
+    // Local lifetime bookkeeping is not recovery/admission. Read the durable
+    // identity of work already scheduled by this consumer and never wake it.
+    const pending = new Set([...this.#scheduled, ...this.#running]);
+    for (const id of pending) {
+      const original = this.store.get(id);
+      if (original && (operationId ? original.operationId === operationId
+        : taskId ? original.authorization.taskIds.includes(taskId)
+        : typeof requestId === "string" && original.requestId === requestId)) {
+        await this.drain(id);
+      }
+    }
   }
 
   #schedule(operationId) {
@@ -502,6 +604,7 @@ export class ReleaseOperationService {
     const input = {
       authorization: operation.authorization,
       priorGeneration: operation.currentGeneration,
+      ...(operation.reviewedMain ? { reviewedMain: operation.reviewedMain.identitySha256 } : {}),
     };
     const started = this.store.beginStep({
       operationId: operation.operationId,
@@ -544,6 +647,7 @@ export class ReleaseOperationService {
       await this.#discardSupersededFailedValidation(operation);
       return advanced;
     }
+    let composedGeneration = null;
     try {
       const composed = await this.compose({ operation, generation: generationNumber });
       const generation = createCandidateGeneration({
@@ -554,6 +658,7 @@ export class ReleaseOperationService {
         runnerVersion: operation.runnerVersion,
         createdAt: started.receipt.createdAt,
       });
+      composedGeneration = generation;
       this.store.putGeneration(generation, { expectedOwner: owner });
       this.store.finishStep(started.receipt, {
         status: "applied",
@@ -567,7 +672,17 @@ export class ReleaseOperationService {
       await this.#discardSupersededFailedValidation(operation);
       return advanced;
     } catch (error) {
-      this.store.finishStep(started.receipt, { status: "failed", error, expectedOwner: owner });
+      const saved = composedGeneration && this.store.generation(operation.operationId, generationNumber);
+      if (saved?.identitySha256 === composedGeneration?.identitySha256 && saved) {
+        this.#assertOwner(operation.operationId, owner);
+        this.store.finishStep(started.receipt, { status: "applied",
+          effect: { identitySha256: saved.identitySha256 }, expectedOwner: owner });
+        return this.#advance(operation.operationId, "validate", { currentGeneration: generationNumber,
+          selectedResults: saved.selectedResults, nextAction: "validate immutable candidate generation" }, owner);
+      }
+      this.store.finishStep(started.receipt, {
+        status: ["AWAIT_PREPARATION_UNKNOWN", "AWAIT_ACCEPTANCE_UNKNOWN"].includes(error?.code) ? "unknown" : "failed",
+        error, expectedOwner: owner });
       throw error;
     }
   }
@@ -648,7 +763,7 @@ export class ReleaseOperationService {
       if (latest.state === "compose") return latest;
     }
     let effects = targetEffects(latest);
-    for (const target of latest.authorization.approvedTargets) {
+    for (const target of releaseApprovedTargets(latest)) {
       if (publishedTarget(effects[target.targetId])) continue;
       const stepId = `publish:${target.targetId}`;
       const input = { candidate: generation.identitySha256, target };

@@ -23,6 +23,17 @@ import { taskRepositoryKey } from "../../../src/domain/task-git-reference.mjs";
 
 const execFileAsync = promisify(execFile);
 
+test("release Git can omit a wall clock cutoff while retaining explicit abort", async () => {
+  assert.equal(await runTaskGitCommand(["-e", "setTimeout(() => process.stdout.write('completed'), 25)"], {
+    executable: process.execPath, timeoutMs: null,
+  }), "completed");
+  const controller = new AbortController();
+  controller.abort(new Error("exact lease lost"));
+  await assert.rejects(runTaskGitCommand(["-e", "throw new Error('must not start')"], {
+    executable: process.execPath, timeoutMs: null, signal: controller.signal,
+  }), /exact lease lost/u);
+});
+
 for (const advancedRemote of [false, true]) test(`combined Tasks accept published ancestry with advanced remote=${advancedRemote} and reject unproven history`, { timeout: 90_000 }, async (context) => {
   const root = await repository(context);
   const originalMain = await git(root, "rev-parse", "main");
@@ -164,6 +175,13 @@ for (const coversRemote of [false, true]) test(`published ancestry validates exa
   await commit(root, "adopted side");
   const adopted = await git(root, "rev-parse", "HEAD");
   await git(root, "checkout", "main");
+  // Current native admission verifies actual origin as well as retained
+  // tracking refs. Keep both independent observations real in this fixture.
+  const origin = path.join(root, "..", `${path.basename(root)}-approved-origin.git`);
+  context.after(() => rm(origin, { recursive: true, force: true }));
+  await git(root, "clone", "--bare", "--no-local", root, origin);
+  await git(origin, "update-ref", "refs/heads/main", adopted);
+  await git(root, "remote", "add", "origin", origin);
   await git(b.projectRoot, "merge", "--ff-only", remote);
   await writeFile(path.join(b.projectRoot, "b.txt"), "B\n");
   await commit(b.projectRoot, "B result");
@@ -179,7 +197,12 @@ for (const coversRemote of [false, true]) test(`published ancestry validates exa
   const dev = await service.prepareDev(root);
   if (coversRemote) {
     assert.equal((await service.recordExplicitUpstreamAdoption(input)).recordHash, receipt.recordHash);
-    await assert.rejects(service.mergeIntoDev(snapshot), { code: "RELEASE_NATIVE_HISTORY_REQUIRED" });
+    await service.mergeIntoDev(snapshot);
+    assert.notEqual(await git(root, "rev-parse", "dev"), dev.headCommit);
+    assert.equal(await git(root, "merge-base", "--is-ancestor", snapshot.headCommit, "dev"), "");
+    assert.equal(await readFile(path.join(dev.projectRoot, "remote-only.txt"), "utf8"), "remote\n");
+    assert.equal(await readFile(path.join(dev.projectRoot, "adopted.txt"), "utf8"), "approved side\n");
+    assert.equal(await readFile(path.join(dev.projectRoot, "b.txt"), "utf8"), "B\n");
   } else {
     await assert.rejects(service.recordExplicitUpstreamAdoption(input), /unpublished tracked remote history/u);
     await assert.rejects(service.mergeIntoDev(snapshot), { code: "RELEASE_NATIVE_HISTORY_REQUIRED" });
@@ -1005,6 +1028,29 @@ test("a non-ancestral add-and-revert Task is rejected before dev integration", a
   assert.equal(devAfter, devBefore);
 });
 
+test("cleanup preserves ignored WIP despite clean status and explicit dirty permission", async (context) => {
+  const root = await repository(context);
+  await writeFile(path.join(root, ".gitignore"), "WIP/\n");
+  await git(root, "add", ".gitignore");
+  await git(root, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "ignore WIP");
+  const dataDir = path.join(root, "..", `${path.basename(root)}-ignored-data`);
+  context.after(() => rm(dataDir, { recursive: true, force: true }));
+  const service = new TaskGitWorkspaceService({ dataDir });
+  const workspace = await service.prepare({ taskId: "30303030-3030-4030-8030-303030303030", projectRoot: root });
+  await mkdir(path.join(workspace.projectRoot, "WIP"));
+  const useful = path.join(workspace.projectRoot, "WIP", "evidence.txt");
+  await writeFile(useful, "unpublished useful evidence");
+  assert.equal(await git(workspace.projectRoot, "status", "--porcelain"), "");
+  const preview = await service.cleanupPreview(workspace.taskId);
+  assert.equal(preview.dirty, false);
+  assert.deepEqual(preview.retainedIgnored[0].paths, ["WIP/"]);
+  for (const allowDirty of [false, true]) {
+    await assert.rejects(service.cleanup(workspace.taskId, { allowDirty, expectedPreview: preview }), /ignored local data/u);
+    assert.equal(await readFile(useful, "utf8"), "unpublished useful evidence");
+    assert.equal(await git(root, "rev-parse", workspace.branch), workspace.headCommit);
+  }
+});
+
 test("cleanup publication authority requires durable evidence matching origin main", async (context) => {
   const root = await repository(context);
   const revision = await git(root, "rev-parse", "HEAD");
@@ -1735,7 +1781,9 @@ test("release adoption requires a selected Task result and stays pinned when ori
   assert.equal(adopted.adoptedByResultCommit, fixture.snapshot.headCommit);
   const acceptedBase = await fixture.service.releaseBaseEvidence(baseRequest);
   assert.equal(acceptedBase.baseCommit, localMain);
-  assert.deepEqual(acceptedBase.adoptions, []);
+  assert.deepEqual(acceptedBase.adoptions, [{ taskId: fixture.snapshot.taskId,
+    resultCommit: fixture.snapshot.headCommit, recordRef: recorded.recordRef, recordHash: recorded.recordHash,
+    adoptedCommit: fixture.mainCommit, acceptedLocalMainCommit: localMain }]);
   assert.equal(acceptedBase.compositionPolicy, "main-selected-git-merge-v1");
   assert.equal(await git(fixture.root, "rev-parse", recorded.recordRef), recorded.recordHash);
   assert.equal((await fixture.service.releaseBaseEvidence({ ...baseRequest, tasks: [] })).baseCommit, localMain);
@@ -1777,7 +1825,8 @@ test("explicit upstream adoption fences Task snapshot and local-main drift befor
     await git(fixture.root, "update-ref", `refs/heads/${fixture.snapshot.branch}`, movedSnapshot,
       fixture.snapshot.headCommit);
 
-    await assert.rejects(fixture.service.mergeIntoDev(fixture.snapshot), { code: "RELEASE_NATIVE_HISTORY_REQUIRED" });
+    await assert.rejects(fixture.service.mergeIntoDev(fixture.snapshot),
+      /Native upstream adoption receipt or current Git identity changed/u);
     assert.equal(await git(fixture.root, "rev-parse", "refs/heads/dev^{commit}"), fixture.oldDev);
   });
 
@@ -1920,6 +1969,34 @@ test("ordinary Task integration cannot bypass a divergent accepted local-main ba
   await assert.rejects(git(root, "merge-base", "--is-ancestor", localMain, devHeadBefore));
   await assert.rejects(git(root, "merge-base", "--is-ancestor", snapshot.headCommit, devHeadBefore));
   assert.equal(await git(dev.projectRoot, "status", "--porcelain=v1", "--untracked-files=all"), "");
+});
+
+test("release integration synchronizes accepted main once without changing the primary checkout", async context => {
+  const root = await repository(context);
+  const dataDir = path.join(root, "..", `${path.basename(root)}-release-data`);
+  context.after(() => rm(dataDir, { recursive: true, force: true }));
+  const service = new TaskGitWorkspaceService({ dataDir });
+  const dev = await service.prepareDev(root);
+  await writeFile(path.join(dev.projectRoot, "dev-only.txt"), "retained dev\n");
+  await git(dev.projectRoot, "add", "dev-only.txt");
+  await git(dev.projectRoot, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "dev");
+  const prior = await git(dev.projectRoot, "rev-parse", "HEAD");
+  await writeFile(path.join(root, "main-only.txt"), "accepted main\n");
+  await git(root, "add", "main-only.txt");
+  await git(root, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "main");
+  const main = await git(root, "rev-parse", "HEAD");
+  await writeFile(path.join(root, "private-local.txt"), "primary bytes\n");
+  const primaryStatus = await git(root, "status", "--porcelain=v1");
+  await service.releaseIntegrationEvidence({ projectRoot: root, synchronizeAcceptedMain: true });
+  const integrated = await git(dev.projectRoot, "rev-parse", "HEAD");
+  assert.equal(await git(dev.projectRoot, "show", "-s", "--format=%P", integrated), `${prior} ${main}`);
+  const reflog = await git(root, "reflog", "show", "dev");
+  await service.releaseIntegrationEvidence({ projectRoot: root, synchronizeAcceptedMain: true });
+  assert.equal(await git(root, "reflog", "show", "dev"), reflog);
+  assert.equal(await git(root, "rev-parse", "HEAD"), main);
+  assert.equal(await git(root, "status", "--porcelain=v1"), primaryStatus);
+  assert.equal(await readFile(path.join(root, "private-local.txt"), "utf8"), "primary bytes\n");
+  assert.equal(await readFile(path.join(dev.projectRoot, "dev-only.txt"), "utf8"), "retained dev\n");
 });
 
 test("historical reviewed bootstrap does not authorize a fresh native result", async (context) => {
@@ -2132,7 +2209,7 @@ test("ordinary repeated preparation skips dependencies and sparse mutations whil
   assert.equal(await readFile(path.join(first.projectRoot, "app.txt"), "utf8"), "unfinished edit\n");
 });
 
-test("an unreviewed sibling Task merge is refused while unrelated dev work is preserved", { timeout: 90000 }, async (context) => {
+test("known dev sibling context is preview-only while unrelated dev work is preserved", { timeout: 90000 }, async (context) => {
   const root = await repository(context);
   const dataDir = path.join(root, "..", `${path.basename(root)}-conflict-data`);
   context.after(() => rm(dataDir, { recursive: true, force: true }));
@@ -2155,15 +2232,34 @@ test("an unreviewed sibling Task merge is refused while unrelated dev work is pr
   await writeFile(path.join(c.projectRoot, "c.txt"), "C\n");
   await service.snapshotAndMerge({ taskId: c.taskId, projectRoot: root });
   const before = await git(root, "rev-parse", "dev");
-  await assert.rejects(service.snapshotAndMerge({ taskId: b.taskId, projectRoot: root }), {
-    code: "RELEASE_NATIVE_HISTORY_REQUIRED",
-  });
-  assert.equal(await git(root, "rev-parse", "dev"), before);
+  const preview = await service.snapshotAndMerge({ taskId: b.taskId, projectRoot: root });
+  const after = await git(root, "rev-parse", "dev");
+  assert.notEqual(after, before);
+  assert.equal(preview.snapshot.headCommit, combined);
+  assert.deepEqual((await git(root, "show", "-s", "--format=%P", after)).split(" "), [before, combined]);
   const currentDev = await service.prepareDev(root);
-  assert.equal(await readFile(path.join(currentDev.projectRoot, "app.txt"), "utf8"), "A\n");
+  assert.equal(await readFile(path.join(currentDev.projectRoot, "app.txt"), "utf8"), "A and B\n");
   assert.equal(await readFile(path.join(currentDev.projectRoot, "c.txt"), "utf8"), "C\n");
   const parents = (await git(root, "show", "-s", "--format=%P", combined)).split(" ");
   assert.equal(parents[1], testedA.snapshot.headCommit);
+  // Test may use already managed dev ancestry. Publication still validates the
+  // selected source independently and cannot adopt this unselected sibling.
+  const origin = path.join(dataDir, "publication-origin.git");
+  await git(root, "clone", "--bare", "--no-local", root, origin);
+  await git(root, "remote", "add", "origin", origin);
+  const main = await git(root, "rev-parse", "main");
+  const { ReleaseGitWorkspaceService } = await import("../../../src/infrastructure/filesystem/release-git-workspace.mjs");
+  const release = new ReleaseGitWorkspaceService({ dataDir: path.join(dataDir, "publication") });
+  await assert.rejects(release.prepareCandidate({
+    projectRoot: root, workspaceId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    planRevision: "a".repeat(64), approvedBaseCommit: main,
+    frozenTasks: [{ taskId: b.taskId, taskRevision: 1, branch: b.branch,
+      baseCommit: b.baseCommit, resultCommit: combined }],
+  }), { code: "RELEASE_NATIVE_HISTORY_REQUIRED" });
+  assert.equal(await git(root, "rev-parse", "dev"), after);
+  assert.equal(await git(root, "rev-parse", "main"), main);
+  assert.equal(await git(b.projectRoot, "rev-parse", "HEAD"), combined);
+  assert.equal(await readFile(path.join(currentDev.projectRoot, "c.txt"), "utf8"), "C\n");
 });
 
 test("npm holds its Task while another Task can integrate into dev", { timeout: 30_000 }, async (context) => {

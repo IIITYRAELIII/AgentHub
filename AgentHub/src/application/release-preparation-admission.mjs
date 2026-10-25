@@ -1,23 +1,25 @@
 import { createHash } from "node:crypto";
-import { lstat, readFile, readdir } from "node:fs/promises";
+import { lstat, open, readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { canonicalMcpValue } from "../domain/mcp-arguments-hash.mjs";
 import { ReleasePreparationRejectedError } from "../domain/release-preparation.mjs";
+import { LOCAL_SOURCE_BASELINE_PROVENANCE, normalizedReleaseBaseProvenance } from "../domain/release-base-provenance.mjs";
+import { normalizedNativeResolution } from "../domain/native-resolution-input.mjs";
 export { ReleasePreparationRejectedError } from "../domain/release-preparation.mjs";
 
 export const preparationHash = (value) => createHash("sha256")
   .update(JSON.stringify(canonicalMcpValue(value))).digest("hex");
 
-function object(value, fields, label) {
+function object(value, fields, label, optional = []) {
   if (!value || typeof value !== "object" || Array.isArray(value)
-      || Object.keys(value).some((key) => !fields.includes(key))
+      || Object.keys(value).some((key) => !fields.includes(key) && !optional.includes(key))
       || fields.some((key) => !Object.hasOwn(value, key))) {
     throw new ReleasePreparationRejectedError(`Invalid exact ${label} envelope`);
   }
 }
-function text(value, label, max = 200) {
-  if (typeof value !== "string" || !value.trim() || value !== value.trim() || value.length > max) {
+function text(value, label) {
+  if (typeof value !== "string" || !value.trim() || value !== value.trim()) {
     throw new ReleasePreparationRejectedError(`Invalid ${label}`);
   }
 }
@@ -27,7 +29,7 @@ function digest(value, length, label) {
   }
 }
 function unique(items, key, label) {
-  if (!Array.isArray(items) || !items.length || items.length > 128
+  if (!Array.isArray(items) || !items.length
       || new Set(items.map((item) => item?.[key])).size !== items.length) {
     throw new ReleasePreparationRejectedError(`Invalid ${label} set`);
   }
@@ -54,17 +56,26 @@ export function validatePreparationEnvelope(value) {
     }
   }
   unique(value.repositories, "projectRoot", "repository");
-  if (value.repositories.length > 8) throw new ReleasePreparationRejectedError("Too many repositories");
   for (const repository of value.repositories) {
     object(repository, ["projectRoot", "approvedBaseCommit", "publishedRevision", "primaryMainCommit", "originMainCommit",
-      "checkpointHash", "manifestHash", "preReleaseHead", "tree", "approvedTree"], "repository");
+      "checkpointHash", "manifestHash", "preReleaseHead", "tree", "approvedTree"], "repository", ["localSourceBaseline", "nativeResolutionReview"]);
+    if (repository.localSourceBaseline != null) {
+      let p;
+      try { p = normalizedReleaseBaseProvenance(repository.localSourceBaseline, repository.approvedBaseCommit); }
+      catch { throw new ReleasePreparationRejectedError("Invalid local source baseline envelope"); }
+      if (p.kind !== LOCAL_SOURCE_BASELINE_PROVENANCE || p.agreedMainCommit !== repository.primaryMainCommit
+          || p.publishedBaseCommit !== repository.publishedRevision
+          || repository.originMainCommit !== (p.approvedOriginMainCommit ?? p.publishedBaseCommit)
+          || p.planRevision !== value.planRevision) throw new ReleasePreparationRejectedError("Local source baseline pins disagree");
+    }
+    if (repository.nativeResolutionReview != null) {
+      try { normalizedNativeResolution(repository.nativeResolutionReview); }
+      catch { throw new ReleasePreparationRejectedError("Invalid native resolution input"); }
+    }
     text(repository.projectRoot, "repository root", 2048);
     for (const key of ["checkpointHash", "manifestHash"]) digest(repository[key], 64, key);
     for (const key of ["approvedBaseCommit", "publishedRevision", "primaryMainCommit", "originMainCommit",
       "preReleaseHead", "tree", "approvedTree"]) digest(repository[key], 40, key);
-  }
-  if (Buffer.byteLength(JSON.stringify(value)) > 48 * 1024) {
-    throw new ReleasePreparationRejectedError("Preparation envelope exceeds its bounded receipt budget");
   }
   return structuredClone(value);
 }
@@ -72,7 +83,8 @@ export function validatePreparationEnvelope(value) {
 // Fixed runtime root, complete src inventory and executable/package entrypoints.
 // No caller-supplied inventory can silently omit an imported module. Frozen
 // loading additionally verifies these bytes before importing the factory.
-export async function readPreparationSourceClosure(root = fileURLToPath(new URL("../../", import.meta.url))) {
+export const preparationSourceRoot = () => fileURLToPath(new URL("../../", import.meta.url));
+export async function readPreparationSourceClosure(root = preparationSourceRoot()) {
   const inventory = [];
   let total = 0;
   const visit = async (relative) => {
@@ -82,12 +94,22 @@ export async function readPreparationSourceClosure(root = fileURLToPath(new URL(
     if (entry.isDirectory()) {
       for (const name of (await readdir(target)).sort()) await visit(path.join(relative, name));
     } else {
-      if (!entry.isFile() || inventory.length >= 4096 || (total += entry.size) > 32 * 1024 * 1024) {
-        throw new ReleasePreparationRejectedError("Source closure exceeds its bounded regular-file inventory");
-      }
-      const bytes = await readFile(target);
-      inventory.push({ path: relative.split(path.sep).join("/"), length: bytes.length,
-        sha256: createHash("sha256").update(bytes).digest("hex") });
+      if (!entry.isFile()) throw new ReleasePreparationRejectedError("Source closure contains a non-file");
+      const handle = await open(target, "r");
+      const same = info => info.isFile() && ["dev", "ino", "size", "mtimeMs", "ctimeMs"].every(k => info[k] === entry[k]);
+      try {
+        if (!same(await handle.stat())) throw new ReleasePreparationRejectedError("Source closure changed");
+        const hash = createHash("sha256");
+        let length = 0;
+        for await (const chunk of handle.createReadStream({ autoClose: false, highWaterMark: 64 * 1024 })) {
+          hash.update(chunk); length += chunk.length;
+        }
+        if (length !== entry.size || !same(await handle.stat()) || !same(await lstat(target))) {
+          throw new ReleasePreparationRejectedError("Source closure changed");
+        }
+        total += length;
+        inventory.push({ path: relative.split(path.sep).join("/"), length, sha256: hash.digest("hex") });
+      } finally { await handle.close(); }
     }
   };
   await visit("src");

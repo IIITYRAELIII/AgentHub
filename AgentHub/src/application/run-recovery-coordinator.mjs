@@ -26,12 +26,15 @@ export class RunRecoveryCoordinator {
 
   async recover(run) {
     const d = this.#d;
+    // Retained ownership blocks replay; it is not proof of present execution.
+    run.activityUnknown = true;
     let observerSnapshot = null;
     if (run.observer) {
       run.displayRequested = run.displayRequested === true;
       observerSnapshot = await d.providers.call(run.provider, "readRecoverySnapshot", run);
       const action = resolveTaskRecoveryAction({ run, observerSnapshot });
       if (action === TASK_RECOVERY_ACTIONS.OBSERVE) {
+        run.activityUnknown = false;
         d.observer.update(run, observerSnapshot);
         if (run.displayRequested) await d.progress.replace(run);
         else await d.progress.clear(run);

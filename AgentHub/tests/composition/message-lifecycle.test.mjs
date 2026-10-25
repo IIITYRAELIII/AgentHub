@@ -118,8 +118,9 @@ async function pagedActiveHistoryHarness(durableTurnCount) {
     ...run.userMessages[0], submittedAt: startedAt }]]);
   const sandbox = vm.createContext({
     ...lifecycle,
+    canonicalProjectionState: projection.projectionState,
     ...projection,
-    Map, Set,
+    Map, Set, performance,
     historyByTask: new Map(), historyWindowByTask: new Map(), focusedHistoryWindowByTask: new Map(),
     historyPageByTask: new Map(), historyLoadStates: new Map(),
     historyRequestGenerationByTask: new Map(), visibleHistoryLoads: new Set(),
@@ -127,11 +128,13 @@ async function pagedActiveHistoryHarness(durableTurnCount) {
     liveUserMessagesByTask: new Map(), liveProbeByTask: new Map(),
     optimisticDeferredClientUserMessageIds: new Set(), deferredClientUserMessageIds: new Set(),
     selectedTaskId: identity.streamId,
+    directChatRoute: () => null,
     lastSnapshot: { tasks: [] },
     liveCardsByTask: new Map(),
     snapshotResponseIsStale: () => false,
+    snapshotTask: () => null,
     traceHistoryCard: () => {},
-    commandTrace: { objectId: () => "", newId: () => "fixture-open" },
+    commandTrace: { now: () => 0, objectId: () => "", newId: () => "fixture-open", record: () => {}, afterPaint: () => {} },
     taskId: (provider, threadId, streamId) => streamId || `${provider}:${threadId}`,
     taskIdentity: () => identity,
     attachmentViews: (values) => values ?? [],
@@ -293,7 +296,7 @@ test("an invalid chat hash invalidates an in-flight navigation intent", async ()
   assert.equal(invalidations, 2);
 });
 
-test("an in-flight completion refresh follows a Stream rotation and discards the old Thread", async () => {
+test("an in-flight completion refresh follows a Stream rotation and discards the old Thread", { timeout: 5000 }, async () => {
   const source = clientFunctionSource("mergeHistoryLoadRequest", "async function loadVisibleTaskHistories");
   const generations = new Map();
   const responses = [];
@@ -303,9 +306,17 @@ test("an in-flight completion refresh follows a Stream rotation and discards the
   let releaseSecond;
   const firstGate = new Promise((resolve) => { releaseFirst = resolve; });
   const secondGate = new Promise((resolve) => { releaseSecond = resolve; });
+  let dispatchedSecond;
+  const secondDispatched = new Promise((resolve) => { dispatchedSecond = resolve; });
   const sandbox = vm.createContext({
     Map,
+    selectedTaskId: "stream-1",
+    directChatRoute: () => null,
+    performance,
+    commandTrace: { newId: () => "fixture-history", record: () => {}, afterPaint: () => {} },
+    syncHistoryPagination: () => {},
     historyLoadStates: new Map(),
+    historyRequestGenerationByTask: generations,
     visibleHistoryLoads: new Set(),
     historyPageByTask: new Map(),
     beginHistoryRequest: (id, identity) => {
@@ -321,6 +332,7 @@ test("an in-flight completion refresh follows a Stream rotation and discards the
       const index = responses.length;
       const responseIdentity = { ...currentIdentity };
       responses.push(index);
+      if (index === 1) dispatchedSecond();
       await (index === 0 ? firstGate : secondGate);
       return { ...responseIdentity, items: [], version: String(index + 1) };
     },
@@ -335,28 +347,27 @@ test("an in-flight completion refresh follows a Stream rotation and discards the
   const first = sandbox.enqueue("stream-1", identity);
   currentIdentity = { streamId: "stream-1", provider: "claude", threadId: "thread-2" };
   const followUp = sandbox.enqueue("stream-1", currentIdentity, { refreshSource: true });
-  releaseFirst();
-  while (responses.length < 2) await new Promise((resolve) => setImmediate(resolve));
-  releaseSecond();
-  await Promise.all([first, followUp]);
+  let dispatchDeadline;
+  try {
+    releaseFirst();
+    await Promise.race([
+      secondDispatched,
+      first.then(() => assert.fail("history refresh settled before dispatching the rotated Thread")),
+      new Promise((_resolve, reject) => {
+        dispatchDeadline = setTimeout(() => reject(new Error("rotated history request was not dispatched")), 1000);
+      }),
+    ]);
+    releaseSecond();
+    await Promise.all([first, followUp]);
+  } finally {
+    clearTimeout(dispatchDeadline);
+    releaseFirst();
+    releaseSecond();
+    await Promise.allSettled([first, followUp]);
+  }
 
   assert.equal(responses.length, 2);
   assert.deepEqual(applied, ["2"]);
-});
-
-test("background history refresh checks both request generation and current Stream binding", () => {
-  assert.match(
-    hubClientSource,
-    /if \(!sameIdentity\(taskIdentity\(id\), history\)\) continue;/u,
-  );
-  assert.match(
-    hubClientSource,
-    /state\.pending = mergeHistoryLoadRequest\(state\.pending,[\s\S]*?beginHistoryRequest\(id, identity\)/u,
-  );
-  assert.match(
-    hubClientSource,
-    /const bindingTransition = Boolean\(previousTask\) && !sameIdentity\(previousTask, currentTask\);/u,
-  );
 });
 
 test("aggregated Stream history preserves each item's provider and Thread", () => {
@@ -366,6 +377,7 @@ test("aggregated Stream history preserves each item's provider and Thread", () =
     conversationMessageAuthor: (_message, provider) => provider,
     focusedTurnAlreadyVisible: () => true,
     focusedTurnTaskThreadId: () => "",
+    canonicalProjectionState: projection.projectionState,
     historicalMessagesForDisplay: (item) => item.messages,
   });
   vm.runInContext(`${source}; globalThis.mapHistory = historyMessages;`, sandbox);
@@ -395,6 +407,7 @@ test("Web history mapping preserves canonical citation references", () => {
     conversationMessageAuthor: () => "Codex",
     focusedTurnAlreadyVisible: () => true,
     focusedTurnTaskThreadId: (turn) => turn.threadId,
+    canonicalProjectionState: projection.projectionState,
     historicalMessagesForDisplay: (item) => item.messages,
   });
   vm.runInContext(`${source}; globalThis.mapHistory = historyMessages;`, sandbox);
@@ -432,6 +445,7 @@ test("focused completed turn cannot append commentary after its durable final", 
     conversationMessageAuthor: (_message, provider) => provider,
     focusedTurnAlreadyVisible: lifecycle.focusedTurnAlreadyVisible,
     focusedTurnTaskThreadId: lifecycle.focusedTurnTaskThreadId,
+    canonicalProjectionState: projection.projectionState,
     historicalMessagesForDisplay: lifecycle.historicalMessagesForDisplay,
   });
   vm.runInContext(`${source}; globalThis.mapHistory = historyMessages;`, sandbox);
@@ -605,6 +619,7 @@ test("history and focused steers never inherit a parent turn timestamp", () => {
     conversationMessageAuthor: (_message, provider) => provider,
     focusedTurnAlreadyVisible: () => true,
     focusedTurnTaskThreadId: (turn) => turn.threadId,
+    canonicalProjectionState: projection.projectionState,
     historicalMessagesForDisplay: (item) => item.messages,
   });
   vm.runInContext(`${source}; globalThis.mapHistory = historyMessages;`, sandbox);
@@ -630,6 +645,7 @@ test("focused turn without message times keeps its startedAt chronology", () => 
     conversationMessageAuthor: (_message, provider) => provider,
     focusedTurnAlreadyVisible: () => false,
     focusedTurnTaskThreadId: (turn) => turn.threadId,
+    canonicalProjectionState: projection.projectionState,
     historicalMessagesForDisplay: (item) => item.messages,
   });
   vm.runInContext(`${source}; globalThis.mapHistory = historyMessages;`, sandbox);
@@ -2102,6 +2118,7 @@ test("focused history item identity includes its provider Thread", () => {
     conversationMessageAuthor: (_message, provider) => provider,
     focusedTurnAlreadyVisible: () => true,
     focusedTurnTaskThreadId: (turn) => turn.threadId,
+    canonicalProjectionState: projection.projectionState,
     historicalMessagesForDisplay: (item) => item.messages,
   });
   vm.runInContext(`${source}; globalThis.mapHistory = historyMessages;`, sandbox);
@@ -2533,7 +2550,7 @@ test("dispatching, rejected and ambiguous starts remain queue-only", () => {
         reason: "provider-start-unconfirmed",
         clientProjectionIntent: "conversation",
       },
-      deliveryState: "deferred",
+      deliveryState: "unconfirmed",
     },
   ]) {
     const clientUserMessageId = `client-${scenario.state}-${scenario.receipt.reason ?? "active"}`;
@@ -2810,7 +2827,7 @@ test("authoritative provider acceptance moves one exact command into conversatio
   const projection = lifecycle.queueHistoryReceiptProjection(receipt);
   assert.equal(projection.providerAccepted, true);
   assert.equal(projection.ownsDeferredQueue, false);
-  assert.equal(projection.deliveryState, "accepted");
+  assert.equal(projection.deliveryState, "running");
   assert.equal(lifecycle.queuedCommandUsesQueue(deferredInput, [receipt]), false);
   assert.deepEqual(
     lifecycle.queuedCommandClientUserMessageIds([deferredInput], [receipt]),
@@ -3370,6 +3387,7 @@ test("completed history attaches the turn trace to its visible final answer", ()
     conversationMessageAuthor: (_message, provider) => provider,
     focusedTurnAlreadyVisible: () => true,
     focusedTurnTaskThreadId: () => "",
+    canonicalProjectionState: projection.projectionState,
     historicalMessagesForDisplay: lifecycle.historicalMessagesForDisplay,
   });
   vm.runInContext(`${source}; globalThis.mapHistory = historyMessages;`, sandbox);
@@ -3610,6 +3628,7 @@ test("live snapshot projects generated response attachments into the current car
   const taskId = "stream:imagegen-live";
   const liveCardsByTask = new Map();
   const sandbox = vm.createContext({
+    window: { AgentHubMessageProjection: projection },
     activeTaskRun: lifecycle.activeTaskRun,
     isUserRunningProjection: () => true,
     projectedActiveUserRun: (_id, task) => lifecycle.activeTaskRun(task),
@@ -3857,6 +3876,9 @@ test("an active run is authoritative acceptance evidence for its client message"
     submittedAt: "2026-08-25T22:14:00.000Z",
     startedAt: "2026-08-25T22:15:28.000Z",
     deliveredAt: "2026-08-25T22:15:28.000Z",
+    started: true,
+    unknown: false,
+    providerConnection: null,
     attachments: [{ id: "attachment-1" }],
   }]);
 });
@@ -3966,6 +3988,7 @@ function interstreamCardSandbox() {
   const outgoing = new Map();
   const sandbox = vm.createContext({
     ...lifecycle,
+    canonicalProjectionState: projection.projectionState,
     Map,
     Set,
     optimisticDeferredClientUserMessageIds: new Set(),
@@ -4105,6 +4128,7 @@ function receiptCardSandbox() {
   const outgoing = new Map();
   const sandbox = vm.createContext({
     ...lifecycle,
+    canonicalProjectionState: projection.projectionState,
     Map, Set,
     optimisticDeferredClientUserMessageIds: new Set(),
     deferredClientUserMessageIds: new Set(),

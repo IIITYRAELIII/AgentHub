@@ -9,6 +9,30 @@
 - Temporary compatibility logic declares its migration boundary and removal
   condition.
 
+## Public source and private operational data
+
+A standalone public source repository is not a destination for automatic bug
+report commits. Having `AgentHub/package.json` proves source layout only. The
+legacy Utilities report path is identified by its existing inventory/team-setup
+markers, which remain after source removal. Publication checks that boundary
+before Git fetch, report staging or push; an explicit repository argument does
+not bypass it. These local markers do not attest remote visibility: the operator
+must retain the original private reporting destination or leave reporting
+unavailable. Private GitHub vulnerability reporting is a separate explicit
+channel, never an automatic upload of runtime state.
+
+Source-history projection records new commit/tree identities and declared
+exclusions without rewriting original Task refs, receipts, frozen generations or
+UNKNOWN outcomes. A source audit, rewritten OID or packaged runtime alone is not
+release acceptance. The existing release/runtime owners retain composition,
+publication and stopped-writer cutover authority. See ADR-0329.
+
+The projection preserves executable runtime/configuration source and its tests;
+installed-state name filters cannot silently discard those files. Its excluded
+local-state blobs remain absent from the exported object store. A filter change
+requires a fresh projected-history audit rather than reuse of an incomplete
+previous plan as public readiness evidence.
+
 ## Readiness evidence
 
 The change names affected contract IDs, identifies the authoritative owner,

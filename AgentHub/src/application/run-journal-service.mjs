@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { normalizeProviderRunTerminalStatus } from "../domain/provider-run-terminal.mjs";
 import { stat } from "node:fs/promises";
 
 import { legacyTaskRunKeys, taskRunKey } from "../domain/task-runs.mjs";
@@ -81,6 +82,8 @@ export class RunJournalService {
     const authoritativeUpdatedAt = normalizedIsoTimestamp(updatedAt);
     const startedAt = normalizedIsoTimestamp(run.startedAt);
     const sameTurn = Boolean(turnId) && current?.turnId === turnId;
+    const terminalStatus = normalizeProviderRunTerminalStatus(run.providerTerminalStatus ?? run.status)
+      ?? (sameTurn ? normalizeProviderRunTerminalStatus(current?.status) : null);
     if (sameTurn && Number(terminalRevision) > 0
       && Number(current.terminalRevision) > Number(terminalRevision)) return false;
     const currentStartedAt = normalizedIsoTimestamp(current?.startedAt);
@@ -97,6 +100,7 @@ export class RunJournalService {
     ) return false;
     const next = {
       text: value,
+      ...(terminalStatus ? { status: terminalStatus } : {}),
       provider: String(run.provider ?? "").trim() || null,
       threadId: String(run.threadId ?? "").trim(),
       updatedAt: authoritativeUpdatedAt
@@ -112,6 +116,7 @@ export class RunJournalService {
     if (
       current
       && current.text === next.text
+      && current.status === next.status
       && current.provider === next.provider
       && current.threadId === next.threadId
       && current.updatedAt === next.updatedAt
