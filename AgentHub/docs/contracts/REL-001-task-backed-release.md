@@ -56,6 +56,11 @@ query, but result ancestry still validates commit existence even for an empty
 result. An invariant assertion may consume the primary snapshot just acquired at
 that boundary. These local read reductions do not cache refs, worktree/index,
 publication or plan authority across boundaries: promotion and retry re-read them.
+Each primary snapshot resolves HEAD, optional main and the symbolic HEAD ref in
+one invocation-local revision query. Missing main stays distinct from missing
+HEAD; detached, unborn and non-primary holders still refuse. Dirty-path reads,
+physical-byte hashes, exact index entries and worktree-holder checks retain
+their existing independent semantics and run again at the same boundaries.
 Installed-source verification reads selected Git blobs in one invocation-local
 OID batch, checking each object's type, length and content hash. The current
 runtime pointer, manifest digest and every physical file are still read and
