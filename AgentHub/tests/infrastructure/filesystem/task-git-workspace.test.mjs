@@ -92,7 +92,7 @@ for (const advancedRemote of [false, true]) test(`combined Tasks accept publishe
   assert.equal(await git(root, "rev-parse", "main"), originalMain);
 });
 
-test("combined Task rejects unpublished remote fast-forward inside its first-parent history", { timeout: 90_000 }, async (context) => {
+test("combined Task rejects unpublished remote fast-forward inside its first-parent history", async (context) => {
   const root = await repository(context);
   const originalMain = await git(root, "rev-parse", "main");
   const dataDir = path.join(root, "..", `${path.basename(root)}-published-fast-forward`);
@@ -289,7 +289,7 @@ test("withdrawal retains ambiguous intent and resumes the same lifecycle without
   assert.equal(await service.pendingWithdrawal({ projectRoot: root, taskId: a.taskId, operationId: `withdraw-${a.taskId}` }), false);
 });
 
-test("withdrawal does not discard unidentified dev contributions", { timeout: 90_000 }, async (context) => {
+test("withdrawal does not discard unidentified dev contributions", async (context) => {
   const { root, service, a, withdraw } = await withdrawalFixture(context);
   const before = await git(root, "rev-parse", "dev");
   await assert.rejects(withdraw(a, { tasks: [] }), /no unique Task owner/u);
@@ -304,7 +304,7 @@ test("withdrawal does not discard unidentified dev contributions", { timeout: 90
   assert.equal(await readFile(path.join(dev.projectRoot, "unknown.txt"), "utf8"), "unknown contribution\n");
 });
 
-test("an unseparable manual integration is not misreported as a dependent Task to withdraw", { timeout: 90_000 }, async (context) => {
+test("an unseparable manual integration is not misreported as a dependent Task to withdraw", async (context) => {
   const { root, service, a, withdraw } = await withdrawalFixture(context);
   const dev = await service.prepareDev(root);
   await writeFile(path.join(dev.projectRoot, "manual.txt"), "preserve manual resolution\n", "utf8");
@@ -317,7 +317,7 @@ test("an unseparable manual integration is not misreported as a dependent Task t
   assert.equal(await readFile(path.join(dev.projectRoot, "manual.txt"), "utf8"), "preserve manual resolution\n");
 });
 
-test("withdrawing a Task based on another result preserves that ancestor Task", { timeout: 90_000 }, async (context) => {
+test("withdrawing a Task based on another result preserves that ancestor Task", async (context) => {
   const { root, service, a, b, firstA, withdraw } = await withdrawalFixture(context, { dependent: "first-parent" });
   await withdraw(b, { blockedBy: { taskId: a.taskId, resultCommit: firstA.snapshot.headCommit } });
   const dev = await service.prepareDev(root);
@@ -374,7 +374,7 @@ async function repositoryWithOrigin(context) {
   return { root, origin };
 }
 
-test("Task Git preview includes committed, staged and untracked work without changing refs or index", { timeout: 60_000 }, async (context) => {
+test("Task Git preview includes committed, staged and untracked work without changing refs or index", async (context) => {
   const root = await repository(context);
   const dataDir = path.join(root, "..", path.basename(root) + "-review-data");
   context.after(() => rm(dataDir, { recursive: true, force: true }));
@@ -406,7 +406,7 @@ test("Task Git preview includes committed, staged and untracked work without cha
   assert.ok(Buffer.byteLength(large.repositories[0].text) <= 64 * 1024);
 });
 
-test("release service closure proves exact published manifest and Done result without deleting its worktree", { timeout: 90_000 }, async (context) => {
+test("release service closure proves exact published manifest and Done result without deleting its worktree", async (context) => {
   const { root } = await repositoryWithOrigin(context);
   const dataDir = path.join(root, "..", `${path.basename(root)}-release-service-data`);
   context.after(() => rm(dataDir, { recursive: true, force: true }));
@@ -459,7 +459,7 @@ test("release service closure proves exact published manifest and Done result wi
   )), /clean managed worktree/u);
 });
 
-test("published duplicate proof requires exact clean published main and survivor lineage", { timeout: 90_000 }, async (context) => {
+test("published duplicate proof requires exact clean published main and survivor lineage", async (context) => {
   const { root } = await repositoryWithOrigin(context);
   const dataDir = path.join(root, "..", `${path.basename(root)}-published-duplicate-data`);
   context.after(() => rm(dataDir, { recursive: true, force: true }));
@@ -1961,7 +1961,7 @@ test("historical reviewed bootstrap does not authorize a fresh native result", a
   }
 });
 
-test("native Test retains its original across interrupted dev CAS", { timeout: 120_000 }, async (context) => {
+test("native Test retains its original across interrupted dev CAS", async (context) => {
   for (const interruption of ["before CAS", "after CAS", "merge"]) {
     await context.test(interruption, async (child) => {
       const root = await repository(child);
@@ -2101,7 +2101,7 @@ test("a new Task worktree sparsely materializes only its selected project subtre
   assert.equal(await git(taskRoot, "sparse-checkout", "list"), "/*\n!/*/\n/AgentHub/\n!CHANGELOG.md");
 });
 
-test("a legacy cone Task can finish an existing dev merge before sparse migration", { timeout: 90000 }, async (context) => {
+test("a legacy cone Task can finish an existing dev merge before sparse migration", async (context) => {
   const root = await repository(context);
   await mkdir(path.join(root, "AgentHub"));
   await writeFile(path.join(root, "AgentHub", "app.txt"), "base\n");
@@ -2158,7 +2158,7 @@ test("ordinary repeated preparation skips dependencies and sparse mutations whil
   assert.equal(await readFile(path.join(first.projectRoot, "app.txt"), "utf8"), "unfinished edit\n");
 });
 
-test("known dev sibling context is preview-only while unrelated dev work is preserved", { timeout: 90000 }, async (context) => {
+test("known dev sibling context is preview-only while unrelated dev work is preserved", async (context) => {
   const root = await repository(context);
   const dataDir = path.join(root, "..", `${path.basename(root)}-conflict-data`);
   context.after(() => rm(dataDir, { recursive: true, force: true }));
@@ -2211,7 +2211,7 @@ test("known dev sibling context is preview-only while unrelated dev work is pres
   assert.equal(await readFile(path.join(currentDev.projectRoot, "c.txt"), "utf8"), "C\n");
 });
 
-test("npm holds its Task while another Task can integrate into dev", { timeout: 30_000 }, async (context) => {
+test("npm holds its Task while another Task can integrate into dev", async (context) => {
   const root = await repository(context);
   await writeFile(path.join(root, "package.json"), '{"name":"parallel","private":true}\n');
   await writeFile(path.join(root, "package-lock.json"), '{"lockfileVersion":3,"packages":{}}\n');

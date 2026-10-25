@@ -98,7 +98,7 @@ async function inheritedRepositoryFixture(t) {
       provenance: await provenance(), ...extra }) };
 }
 
-test("installed source preserves exact inherited repository files from agreed main", { timeout: 90000 }, async t => {
+test("installed source preserves exact inherited repository files from agreed main", async t => {
   const f = await inheritedRepositoryFixture(t);
   const result = await f.verifyInherited();
   assert.equal(result.runtimeFiles, 1);
@@ -109,7 +109,7 @@ test("installed source preserves exact inherited repository files from agreed ma
   await assert.rejects(f.verifyInherited(), /origin differs from the pinned OWN publication/u);
 });
 
-test("installed source refuses changed, added, deleted or mode-shifted inherited repository files", { timeout: 90000 }, async t => {
+test("installed source refuses changed, added, deleted or mode-shifted inherited repository files", async t => {
   const f = await inheritedRepositoryFixture(t);
   for (const change of ["changed", "added", "deleted", "mode"]) {
     await git(f.carry, ["checkout", "--detach", f.source]);
@@ -130,7 +130,7 @@ test("installed source refuses changed, added, deleted or mode-shifted inherited
   }
 });
 
-test("inherited repository proof refuses malformed or oversized raw Git manifests", { timeout: 90000 }, async t => {
+test("inherited repository proof refuses malformed or oversized raw Git manifests", async t => {
   const f = await inheritedRepositoryFixture(t);
   for (const defect of ["unterminated", "duplicate", "oversized", 41, 63, 65]) {
     await assert.rejects(f.verifyInherited({ git: async (args, options) => {
@@ -232,7 +232,7 @@ test("compiled Host refuses changed, missing or unmanifested physical artifacts"
   }
 });
 
-test("preparation native conflict is a definite refusal with prior candidate pins intact", { timeout: 180000 }, async t => {
+test("preparation native conflict is a definite refusal with prior candidate pins intact", async t => {
   const f = await fixture(t, { conflict: true });
   const service = new ReleaseGitWorkspaceService({ dataDir: path.join(f.root, "data"), environment: f.environment });
   const common = { projectRoot: f.primary, workspaceId: "workspace", planRevision: f.p.planRevision, frozenTasks: f.tasks };
@@ -262,7 +262,7 @@ test("preparation native conflict is a definite refusal with prior candidate pin
   assert.equal(await git(f.primary, ["status", "--porcelain=v1"]), "");
 });
 
-test("installed local source rejects substituted pins, selection, source and actual runtime bytes", { timeout: 90000 }, async t => {
+test("installed local source rejects substituted pins, selection, source and actual runtime bytes", async t => {
   const f = await fixture(t);
   assert.equal((await f.verify()).runtimeFiles, 1);
   for (const key of ["sourceBaseTree", "sourcePatchSha256", "installedManifestSha256"]) {

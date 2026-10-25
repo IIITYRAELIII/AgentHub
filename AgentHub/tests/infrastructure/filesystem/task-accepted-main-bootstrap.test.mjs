@@ -65,7 +65,7 @@ function input(f, requestId = "accepted-main-bootstrap-one") {
     expectedPublicationGeneration: "g1", expectedMergeBaseCommit: f.base, requestId };
 }
 
-test("accepted main bootstrap supports a shared upstream newer than publication", { timeout: 90_000 }, async (context) => {
+test("accepted main bootstrap supports a shared upstream newer than publication", async (context) => {
   const f = await fixture(context, { sharedAdvance: true });
   assert.notEqual(f.base, f.published);
   assert.equal(await git(f.root, "merge-base", f.oldDev, f.main), f.base);
@@ -83,7 +83,7 @@ test("accepted main bootstrap supports a shared upstream newer than publication"
   assert.equal(replay.headCommit, result.headCommit);
 });
 
-test("older divergent publication cannot authorize a newer main-dev common base", { timeout: 90_000 }, async (context) => {
+test("older divergent publication cannot authorize a newer main-dev common base", async (context) => {
   const f = await fixture(context, { sharedAdvance: true, divergedPublication: true });
   await assert.rejects(f.service.bootstrapAcceptedMainIntoDev(input(f, "foreign-older-base")),
     /published ancestry proof changed/u);
@@ -93,7 +93,7 @@ test("older divergent publication cannot authorize a newer main-dev common base"
   assert.equal(await git(f.taskRoot, "rev-parse", "HEAD"), f.taskResult);
 });
 
-test("shared-upstream bootstrap recovers its exact CAS after publication advances", { timeout: 90_000 }, async (context) => {
+test("shared-upstream bootstrap recovers its exact CAS after publication advances", async (context) => {
   const f = await fixture(context, { sharedAdvance: true });
   let casCount = 0;
   let interrupted = false;
@@ -127,7 +127,7 @@ test("shared-upstream bootstrap recovers its exact CAS after publication advance
     /publication provenance changed/u);
 });
 
-test("accepted main bootstraps managed dev without changing a separate Task result", { timeout: 90_000 }, async (context) => {
+test("accepted main bootstraps managed dev without changing a separate Task result", async (context) => {
   const f = await fixture(context);
   const result = await f.service.bootstrapAcceptedMainIntoDev(input(f));
   assert.equal(result.status, "merged");
@@ -144,7 +144,7 @@ test("accepted main bootstraps managed dev without changing a separate Task resu
     /request identity changed/u);
 });
 
-test("accepted main bootstrap keeps divergent published history out of dev", { timeout: 90_000 }, async (context) => {
+test("accepted main bootstrap keeps divergent published history out of dev", async (context) => {
   const f = await fixture(context, { divergedPublication: true });
   const result = await f.service.bootstrapAcceptedMainIntoDev(input(f, "divergent-published-side"));
   assert.equal(result.status, "merged");
@@ -154,7 +154,7 @@ test("accepted main bootstrap keeps divergent published history out of dev", { t
   assert.equal(await git(f.taskRoot, "rev-parse", "HEAD"), f.taskResult);
 });
 
-test("accepted main bootstrap rejects stale CAS and dirty managed dev before effects", { timeout: 90_000 }, async (context) => {
+test("accepted main bootstrap rejects stale CAS and dirty managed dev before effects", async (context) => {
   const f = await fixture(context);
   await assert.rejects(f.service.bootstrapAcceptedMainIntoDev({
     ...input(f), expectedPublicationGeneration: "stale",
@@ -174,7 +174,7 @@ test("accepted main bootstrap rejects stale CAS and dirty managed dev before eff
   assert.equal(await readFile(path.join(f.devRoot, "untracked.txt"), "utf8"), "dirty\n");
 });
 
-test("accepted main bootstrap conflict restores exact managed dev", { timeout: 90_000 }, async (context) => {
+test("accepted main bootstrap conflict restores exact managed dev", async (context) => {
   const f = await fixture(context);
   await writeFile(path.join(f.devRoot, "app.txt"), "dev edit\n");
   f.oldDev = await commit(f.devRoot, "dev conflict");
@@ -188,7 +188,7 @@ test("accepted main bootstrap conflict restores exact managed dev", { timeout: 9
   assert.equal(await readFile(path.join(f.devRoot, "app.txt"), "utf8"), "dev edit\n");
 });
 
-test("reviewed CHANGELOG-only conflict requires exact resolved tree and preserves dev", { timeout: 90_000 }, async (context) => {
+test("reviewed CHANGELOG-only conflict requires exact resolved tree and preserves dev", async (context) => {
   const f = await fixture(context);
   await writeFile(path.join(f.devRoot, "CHANGELOG.md"), "base\ndev entry\n");
   f.oldDev = await commit(f.devRoot, "dev changelog");
@@ -232,7 +232,7 @@ test("reviewed CHANGELOG-only conflict requires exact resolved tree and preserve
   }), /request identity changed/u);
 });
 
-test("accepted main bootstrap recovers one exact CAS after interrupted materialization", { timeout: 90_000 }, async (context) => {
+test("accepted main bootstrap recovers one exact CAS after interrupted materialization", async (context) => {
   const f = await fixture(context);
   await writeFile(path.join(f.devRoot, ".gitignore"), "WIP/\n");
   f.oldDev = await commit(f.devRoot, "ignore local WIP");
@@ -261,7 +261,7 @@ test("accepted main bootstrap recovers one exact CAS after interrupted materiali
   assert.equal(await readFile(path.join(f.devRoot, "WIP", "keep.txt"), "utf8"), "private WIP\n");
 });
 
-test("ignored dependency and WIP files survive exact post-CAS recovery", { timeout: 90_000 }, async (context) => {
+test("ignored dependency and WIP files survive exact post-CAS recovery", async (context) => {
   const f = await fixture(context);
   await writeFile(path.join(f.devRoot, ".gitignore"), "node_modules/\nWIP/\n");
   f.oldDev = await commit(f.devRoot, "ignore local dependencies and WIP");
@@ -280,7 +280,7 @@ test("ignored dependency and WIP files survive exact post-CAS recovery", { timeo
   assert.equal((await f.service.bootstrapAcceptedMainIntoDev(request)).status, "completed_replay");
 });
 
-test("nonignored untracked file still refuses exact post-CAS recovery", { timeout: 90_000 }, async (context) => {
+test("nonignored untracked file still refuses exact post-CAS recovery", async (context) => {
   const f = await fixture(context);
   let injected = false;
   f.service.runCommand = async (args, options) => {
@@ -303,7 +303,7 @@ test("nonignored untracked file still refuses exact post-CAS recovery", { timeou
   assert.equal(await readFile(path.join(f.devRoot, "private-untracked.txt"), "utf8"), "private\n");
 });
 
-test("ignored file colliding with incoming tracked path is never overwritten", { timeout: 90_000 }, async (context) => {
+test("ignored file colliding with incoming tracked path is never overwritten", async (context) => {
   const f = await fixture(context);
   await writeFile(path.join(f.devRoot, ".gitignore"), "vendor-private/\n");
   f.oldDev = await commit(f.devRoot, "ignore private vendor directory");
@@ -320,7 +320,7 @@ test("ignored file colliding with incoming tracked path is never overwritten", {
   assert.equal(await git(f.devRoot, "status", "--porcelain=v1", "--untracked-files=all"), "");
 });
 
-test("late ignored collision on an added path is rejected before merge or CAS", { timeout: 90_000 }, async (context) => {
+test("late ignored collision on an added path is rejected before merge or CAS", async (context) => {
   const f = await fixture(context);
   await writeFile(path.join(f.devRoot, ".gitignore"), "vendor-private/\n");
   f.oldDev = await commit(f.devRoot, "ignore private vendor directory");
@@ -344,7 +344,7 @@ test("late ignored collision on an added path is rejected before merge or CAS", 
   assert.equal(await git(f.root, "rev-parse", "dev"), f.oldDev);
 });
 
-test("late unrelated ignored file survives post-CAS materialization and replay", { timeout: 90_000 }, async (context) => {
+test("late unrelated ignored file survives post-CAS materialization and replay", async (context) => {
   const f = await fixture(context);
   await writeFile(path.join(f.devRoot, ".gitignore"), "vendor-private/\n");
   f.oldDev = await commit(f.devRoot, "ignore private vendor directory");
@@ -400,7 +400,7 @@ test("bootstrap refuses rename destinations, file-directory replacements and typ
   }
 });
 
-test("main content edit cannot re-add a path deleted from dev over an ignored file", { timeout: 90_000 }, async (context) => {
+test("main content edit cannot re-add a path deleted from dev over an ignored file", async (context) => {
   const f = await fixture(context);
   await rm(path.join(f.devRoot, "app.txt"));
   await writeFile(path.join(f.devRoot, ".gitignore"), "app.txt\n");
@@ -413,7 +413,7 @@ test("main content edit cannot re-add a path deleted from dev over an ignored fi
   assert.equal(await readFile(path.join(f.devRoot, "app.txt"), "utf8"), "private ignored replacement\n");
 });
 
-test("publication advance at dev CAS still receipts exact effect and replays it", { timeout: 90_000 }, async (context) => {
+test("publication advance at dev CAS still receipts exact effect and replays it", async (context) => {
   const f = await fixture(context);
   let advanced = false;
   let casCount = 0;
@@ -439,7 +439,7 @@ test("publication advance at dev CAS still receipts exact effect and replays it"
     /publication provenance changed/u);
 });
 
-test("publication advance plus interrupted post-CAS materialization reconciles original receipt", { timeout: 90_000 }, async (context) => {
+test("publication advance plus interrupted post-CAS materialization reconciles original receipt", async (context) => {
   const f = await fixture(context);
   let casCount = 0;
   let resetInterrupted = false;

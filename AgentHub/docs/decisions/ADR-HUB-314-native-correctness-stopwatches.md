@@ -23,19 +23,32 @@ an assertion or native-command timeout. Historical failures remain unchanged.
 
 ## Decision
 
-Remove aggregate test-case timeout options from49 directly cancelled
-correctness definitions. For the recorded late-native-history failure, also
-remove its related outer240-second and called300-second Node-case timers,
-alongside the180-second execFile timer that actually terminated the nested
-Node test. That command contains two full authority scenarios. Its environment,
-observer, output framing, maxBuffer and all original assertions remain.
-The related240/300-second timers are not falsely reported as having fired in
-that original observation. The GEN11 compatibility-cleanup case also has its
-related aggregate240-second clock removed: the incomplete file reported a
-240416.915ms failed case, but retained data do not establish its exact exception.
-The unchanged case completed158733.6271ms in an addressed observer run; this is
-not a product latency SLO or proof of the historical pending phase.
-No replacement larger deadline is introduced.
+Apply one policy to the entire native-Git correctness family: do not put a
+whole-case stopwatch around fixture creation plus several independent Git,
+SQLite, archive, recovery, refusal or cleanup operations. Scope comes from the
+scenario's behavior and owners, not from whether that case already failed.
+This includes native Task Test/Await, selected composition, public lifecycle,
+installed adoption/history, preparation/preflight/generation, metadata paths,
+bundle transport/retention and accepted-main/bootstrap/correction scenarios.
+New cases in this family follow the same rule before their first failure.
+
+The earlier correction covered52 case definitions and one nested whole-Node
+command. GEN12 exposed that failure-selected coverage was incomplete: the
+ordinary clone-transport case still cancelled at its90000ms aggregate timer.
+The complete static inventory found92 remaining aggregate definitions in20
+native correctness files. Remove all92, retaining the four Windows-only skip
+conditions and every case body. These92 definitions are not claimed to have
+all timed out. The combined correction covers144 case definitions; existing
+loop expansion does not make this a count of unique executed runtime cases.
+The already removed180-second nested whole-Node command covers multiple
+authority scenarios, and remains separate from an operation deadline.
+
+No replacement larger case deadline is introduced. Explicit single-command,
+lease, readiness, network/build and protocol limits remain. In particular,
+the120-second Worker dry-run execFile and10-second reconciliation CLI command
+are retained; they are operation limits, not native-case metadata. Tests whose
+purpose is a timed behavior keep that assertion/polling/gate. Unrelated config,
+telemetry and E2E case limits are outside this native correctness policy.
 
 This refines ADR-0118's statement that test-local limits remain: actual bounded
 commands, lease loss/cancellation semantics, readiness polling, output-idle
@@ -55,9 +68,12 @@ for an otherwise silent stuck owned test tree.
 
 ## Evidence and limits
 
-The immutable GEN11 is not edited or retargeted. The exact-edit manifest binds
-the52 scenario definitions and one nested whole-Node timer; inverse application
-reconstructs every entire original test file. Syntax and independent review do
+The immutable GEN11 and GEN12 are not edited or retargeted. Exact-edit
+manifests bind all144 scenario definitions and the separate nested
+whole-Node timer. Inverse application reconstructs every entire original
+test file, proving that fixtures, assertions and explicit operation
+bounds are retained. The complete-family inventory classifies remaining
+operation limits separately; it must not select only newly red cases. Syntax and independent review do
 not establish a passing whole suite. The later ordinary Test/Await composition
 and a new generation of the same prescribed pipeline must execute the cases
 and verify the full outcome. Historical BITS handles and cancelled-child phases

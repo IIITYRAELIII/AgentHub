@@ -468,7 +468,7 @@ test("public fresh native absorption binds authenticated handoff through Test Aw
     proof.selectedComposition.descriptorHash);
 });
 
-test("public native absorption lost terminal reopens same original and refuses live source drift", { timeout: 240_000 }, async t => {
+test("public native absorption lost terminal reopens same original and refuses live source drift", async t => {
   const f = await fixture(t), { source, survivor, handoff, declaration } = await f.absorption();
   const input = await handoff("saved-stopped"), before = f.board.task(survivor.id);
   const original = "native-absorption-lost-terminal", terminal = f.board.commitWorkflowTransition.bind(f.board);
@@ -532,7 +532,7 @@ test("public native absorption lost terminal reopens same original and refuses l
   assert.equal((await f.status(survivor, "awaiting_implementation", "restored-await")).workflowStatus, "awaiting_implementation");
 });
 
-test("public native absorption refuses a reopened source executor at terminal Task CAS", { timeout: 180_000 }, async t => {
+test("public native absorption refuses a reopened source executor at terminal Task CAS", async t => {
   const f = await fixture(t), { source, survivor, handoff, sourceStream, sourceThread } = await f.absorption();
   const input = await handoff("saved-stopped"), terminal = f.board.commitWorkflowTransition.bind(f.board);
   f.board.commitWorkflowTransition = async args => {
@@ -549,7 +549,7 @@ test("public native absorption refuses a reopened source executor at terminal Ta
   assert.equal(await readFile(path.join(source.root, "source.txt"), "utf8"), "saved source\n");
 });
 
-test("public real SQLite Test and Await merge exact full branches and exclude Test-only", { timeout: 180_000 }, async t => {
+test("public real SQLite Test and Await merge exact full branches and exclude Test-only", async t => {
   const f = await fixture(t), a = await f.create("A"), b = await f.create("Test only");
   await assert.rejects(f.status(a, "testing", "closed-legacy-preview", { selected_proof_bundle_path: "unused.bundle" }),
     { code: "TASK_NATIVE_GIT_REQUIRED" });
@@ -583,7 +583,7 @@ test("public real SQLite Test and Await merge exact full branches and exclude Te
   assert.equal(await git(f.primary, "rev-parse", "main"), f.base);
 });
 
-test("public native conflict keeps dev and resumes the ordinary resolution commit", { timeout: 180_000 }, async t => {
+test("public native conflict keeps dev and resumes the ordinary resolution commit", async t => {
   const f = await fixture(t), a = await f.create("A"), b = await f.create("B");
   await writeFile(path.join(a.root, "shared.txt"), "A\n"); await f.status(a, "testing", "test-a");
   const dev = await git(f.primary, "rev-parse", "dev");
@@ -679,7 +679,7 @@ test("public Test and Await accept only the exact reviewed automatic compatibili
   assert.equal((await git(captured.releaseRoot, "show", "HEAD:test-one.js")).match(/function check/gu).length, 1);
 });
 
-test("public native lost terminal and source drift retain UNKNOWN through SQLite reopen", { timeout: 180_000 }, async t => {
+test("public native lost terminal and source drift retain UNKNOWN through SQLite reopen", async t => {
   const f = await fixture(t), a = await f.create("A");
   await writeFile(path.join(a.root, "a.txt"), "result\n");
   const before = f.board.task(a.id), original = "test-a-lost-terminal";
@@ -702,7 +702,7 @@ test("public native lost terminal and source drift retain UNKNOWN through SQLite
   assert.equal(await git(f.primary, "rev-parse", "dev"), dev);
 });
 
-test("public durable release composes native immutable generation with separately approved main history", { timeout: 180000 }, async t => {
+test("public durable release composes native immutable generation with separately approved main history", async t => {
   const f = await fixture(t, { releaseMetadata: true }), a = await f.create("A");
   await writeFile(path.join(a.root, "a.txt"), "selected\n");
   await f.status(a, "testing", "test-a");
@@ -742,7 +742,7 @@ test("public durable release composes native immutable generation with separatel
   assert.equal(await git(candidate.releaseRoot, "rev-parse", "HEAD"), candidate.commit);
 });
 
-test("public release generation retains prepared PreRelease conflict resolution", { timeout: 240_000 }, async t => {
+test("public release generation retains prepared PreRelease conflict resolution", async t => {
   const f = await fixture(t, { releaseMetadata: true }), a = await f.create("A"), b = await f.create("B");
   await writeFile(path.join(a.root, "shared.txt"), "A\n");
   await f.status(a, "testing", "prepared-test-a");

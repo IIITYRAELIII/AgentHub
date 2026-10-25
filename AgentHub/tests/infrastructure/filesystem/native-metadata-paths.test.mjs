@@ -22,7 +22,7 @@ async function commit(root) {
   return git(root, ["rev-parse", "HEAD"]);
 }
 
-test("literal NUL metadata paths refuse invented quoted notes/version and preserve inherited entries", { timeout: 60000 }, async t => {
+test("literal NUL metadata paths refuse invented quoted notes/version and preserve inherited entries", async t => {
   const root = await mkdtemp(path.join(os.tmpdir(), "hub-metadata-paths-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   await git(root, ["init", "--initial-branch=main"]);

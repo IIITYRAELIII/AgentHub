@@ -171,7 +171,7 @@ test("postarchive origin drift refuses promotion and Task callback while retaini
   assert.deepEqual(await readFile(path.join(proof.archiveRoot, "repository/.git/index")), f.index);
 });
 
-test("unpublished/staged/selection/original/publication drift refuse before archiving", { timeout: 90000 }, async t => {
+test("unpublished/staged/selection/original/publication drift refuse before archiving", async t => {
   const f = await fixture(t);
   const inspect = original => f.service.inspectNativeAwaitRecovery({ projectRoot: f.primary,
     original, frozenTasks: [f.selected] });

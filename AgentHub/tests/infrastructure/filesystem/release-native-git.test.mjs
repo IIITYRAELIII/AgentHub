@@ -48,7 +48,7 @@ async function fixture(t) {
   return { root, primary, base, service, result, request, branches };
 }
 
-test("reopen rejects a forged completed native prefix even with exact merge parents", { timeout: 60000 }, async t => {
+test("reopen rejects a forged completed native prefix even with exact merge parents", async t => {
   const f = await fixture(t), a = await f.result("A", "a.txt", "a\n");
   const root = path.join(f.root, "native");
   const request = { root, sourceRoot: f.primary, baseCommit: f.base, tasks: [a],
@@ -152,7 +152,7 @@ test("joint file uses Git merge; conflict retains last candidate and normal reso
   assert.equal((await git(candidate.releaseRoot, "show", "-s", "--format=%P", resolution)).split(" ")[1], b.resultCommit);
 });
 
-test("foreign merge side and release-owned metadata require explicit migration", { timeout: 60000 }, async (t) => {
+test("foreign merge side and release-owned metadata require explicit migration", async (t) => {
   const f = await fixture(t);
   const foreign = await f.result("Foreign", "foreign.txt", "unselected\n");
   const task = await f.result("Task", "own.txt", "own\n");
@@ -249,7 +249,7 @@ test("one-time native cutover retains exact old snapshot and original results", 
   assert.deepEqual(await readFile(manifestFile), bytes);
 });
 
-test("immutable generation promotion uses native checkout and preserves private collision", { timeout: 120000 }, async t => {
+test("immutable generation promotion uses native checkout and preserves private collision", async t => {
   const f = await fixture(t), a = await f.result("A", "a.txt", "a\n");
   const prior = await f.service.prepareCandidate(f.request([a], "prior"));
   await f.result("B", "b.txt", "b\n");
@@ -274,7 +274,7 @@ test("immutable generation promotion uses native checkout and preserves private 
   assert.equal(await git(f.primary, "rev-parse", "main"), f.base);
 });
 
-test("generation promotion reopens its original target after lost SQLite response without another Git CAS", { timeout: 120000 }, async t => {
+test("generation promotion reopens its original target after lost SQLite response without another Git CAS", async t => {
   const f = await fixture(t), a = await f.result("A", "a.txt", "a\n");
   const prior = await f.service.prepareCandidate(f.request([a], "prior"));
   const b = await f.result("B", "b.txt", "b\n");
@@ -296,7 +296,7 @@ test("generation promotion reopens its original target after lost SQLite respons
   assert.equal(await git(f.primary, "rev-parse", "main"), f.base);
 });
 
-test("publication generation refuses stale prepared head result and base", { timeout: 120_000 }, async t => {
+test("publication generation refuses stale prepared head result and base", async t => {
   const f = await fixture(t), a = await f.result("A", "a.txt", "accepted\n");
   const prepared = await f.service.prepareCandidate(f.request([a]));
   const checkpointFile = path.join(path.dirname(prepared.releaseRoot), "checkpoint.json");

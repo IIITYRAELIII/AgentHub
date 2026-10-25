@@ -56,7 +56,7 @@ async function fixture(t) {
     setPublication: value => { publication = value; } };
 }
 
-test("published completed capture retires only independent transport, repeat observes absence", { skip: process.platform !== "win32", timeout: 60_000 }, async t => {
+test("published completed capture retires only independent transport, repeat observes absence", { skip: process.platform !== "win32" }, async t => {
   const f = await fixture(t);
   const originalState = await readFile(f.stateFile), originalRefs = await gitAt(f.source, ["show-ref"]);
   const preview = await f.owner.preview({ candidate: f.candidate });
@@ -75,7 +75,7 @@ test("published completed capture retires only independent transport, repeat obs
   assert.equal(await readFile(path.join(f.repository, "text"), "utf8"), "valuable tracked data");
 });
 
-test("configured logical root alias retires only the verified physical transport", { skip: process.platform !== "win32", timeout: 60_000 }, async t => {
+test("configured logical root alias retires only the verified physical transport", { skip: process.platform !== "win32" }, async t => {
   const f = await fixture(t);
   const alias = path.join(f.root, "logical-data"); await symlink(f.dataDir, alias, "junction");
   const owner = new NativeMergeTransportRetention({ dataDir: alias, taskBoard: { task: () => f.task },
@@ -87,7 +87,7 @@ test("configured logical root alias retires only the verified physical transport
   assert.equal(await readFile(path.join(f.repository, "text"), "utf8"), "valuable tracked data");
 });
 
-test("active/unpublished/dirty captures and changed admission are retained", { skip: process.platform !== "win32", timeout: 60_000 }, async t => {
+test("active/unpublished/dirty captures and changed admission are retained", { skip: process.platform !== "win32" }, async t => {
   const f = await fixture(t);
   f.task.status = "started";
   assert.equal((await f.owner.preview({ candidate: f.candidate })).reason, "task-not-completed");
@@ -107,7 +107,7 @@ test("active/unpublished/dirty captures and changed admission are retained", { s
   assert.ok((await lstat(f.bundle)).size > 0);
 });
 
-test("lost native deletion reply reconciles the original intent without a second deletion", { skip: process.platform !== "win32", timeout: 60_000 }, async t => {
+test("lost native deletion reply reconciles the original intent without a second deletion", { skip: process.platform !== "win32" }, async t => {
   const f = await fixture(t);
   const dataDir = path.join(f.root, "maintenance");
   await mkdir(dataDir);

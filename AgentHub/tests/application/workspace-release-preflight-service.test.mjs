@@ -1135,7 +1135,7 @@ test("release preflight reuses real prepared candidate readback with the reposit
   assert.deepEqual(await readFile(before.checkpointFile), checkpointBefore);
 });
 
-test("reviewed native promotion rechecks changed origin inside its held Git owner", { timeout: 60000 }, async t => {
+test("reviewed native promotion rechecks changed origin inside its held Git owner", async t => {
   let witnessed;
   await assert.rejects(realExternalValidationFixture(t, { reviewedMain: true,
     beforePromotion: async current => {

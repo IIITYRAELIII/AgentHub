@@ -295,7 +295,7 @@ async function lifecycleFixture(f) {
     close: () => { store.close(); catalog.close(); } };
 }
 
-test("retained v1 original completes after cutover while fresh preview and missing original refuse", { timeout: 90000 }, async (t) => {
+test("retained v1 original completes after cutover while fresh preview and missing original refuse", async (t) => {
   const f = await fixture(t);
   const input = { taskId: TASK_ID, expectedTaskRevision: 1, authority: {
     workspaceId: "workspace", streamId: "rm", provider: "codex",
@@ -368,9 +368,7 @@ test("retained v2 completion keeps its seal and refuses paired downgrade", async
   assert.equal(await git(f.root, "status", "--porcelain"), "");
 });
 
-test("retained selected proof has no live effect; late ignored collision preserves bytes and original op recovers", {
-  timeout: 90_000,
-}, async (t) => {
+test("retained selected proof has no live effect; late ignored collision preserves bytes and original op recovers", async (t) => {
   const f = await fixture(t);
   const authority = { workspaceId: "workspace", streamId: "rm", provider: "codex",
     threadId: "thread", proofRequestId: "preview-1" };
@@ -440,9 +438,7 @@ test("retained selected proof has no live effect; late ignored collision preserv
   await assert.rejects(readFile(path.join(candidate, "unselected.txt")), { code: "ENOENT" });
 });
 
-test("one selected operation recovers crashes before journal and completion publication", {
-  timeout: 90_000,
-}, async (t) => {
+test("one selected operation recovers crashes before journal and completion publication", async (t) => {
   const f = await fixture(t);
   const preview = await retainedLegacySelectedPreview(f, {
     taskId: TASK_ID, expectedTaskRevision: 1, authority: { workspaceId: "workspace", streamId: "rm",
@@ -480,9 +476,7 @@ test("one selected operation recovers crashes before journal and completion publ
   assert.equal(await git(f.devWorkspace.projectRoot, "status", "--porcelain"), "");
 });
 
-test("retained selected lifecycle enters Test only after exact Git CAS and durable Task result", {
-  timeout: 90_000,
-}, async (t) => {
+test("retained selected lifecycle enters Test only after exact Git CAS and durable Task result", async (t) => {
   const f = await fixture(t);
   const { taskBoard, lifecycle, input, retainTransition, recover, close } = await lifecycleFixture(f);
   await assert.rejects(lifecycle.selectedComposition({ ...input, operationId: "fresh-preview" }),
@@ -498,9 +492,7 @@ test("retained selected lifecycle enters Test only after exact Git CAS and durab
   assert.equal(await git(f.devWorkspace.projectRoot, "status", "--porcelain"), "");
 });
 
-test("interrupted selected Test retains pending lifecycle and reconciles the same operation", {
-  timeout: 90_000,
-}, async (t) => {
+test("interrupted selected Test retains pending lifecycle and reconciles the same operation", async (t) => {
   const f = await fixture(t);
   const { taskBoard, retainTransition, recover, close } = await lifecycleFixture(f);
   await retainTransition("selected-confirm");
@@ -527,9 +519,7 @@ test("interrupted selected Test retains pending lifecycle and reconciles the sam
   assert.equal(await git(f.devWorkspace.projectRoot, "status", "--porcelain"), "");
 });
 
-test("publication generation drift before CAS leaves dev and Task result untouched", {
-  timeout: 90_000,
-}, async (t) => {
+test("publication generation drift before CAS leaves dev and Task result untouched", async (t) => {
   const f = await fixture(t);
   const preview = await retainedLegacySelectedPreview(f, {
     taskId: TASK_ID, expectedTaskRevision: 1, authority: { workspaceId: "workspace", streamId: "rm",

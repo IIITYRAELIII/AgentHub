@@ -1966,8 +1966,10 @@ output-idle watchdog and local test, network, build and readiness bounds remain;
 those bounds report failure, not an inferred external outcome. Other publication
 steps keep their finite execution bounds. See ADR-0118.
 The later ADR-HUB-314-native-correctness-stopwatches removes only aggregate
-stopwatches on the recorded native-Git correctness scenarios and their nested
-whole-scenario Node command. It does not remove command/lease/readiness bounds,
+stopwatches across the native-Git correctness family and its nested
+whole-scenario Node command. A new correctness case must follow that
+policy before its first failure; elapsed cancellation is not the scope
+selector. It does not remove command/lease/readiness bounds,
 time-specific behavioral assertions, required cases or failure aggregation.
 The two cosmetic browser matrices run in `test:visual`, affected focused UI validation and full
 validation exactly once, rather than every ordinary unit run. See ADR-0034.

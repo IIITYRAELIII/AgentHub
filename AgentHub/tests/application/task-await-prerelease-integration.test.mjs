@@ -93,7 +93,7 @@ async function acceptAndPrepare(fixture, task, operationId) {
   return { response, prepared, candidate: prepared.releaseCandidates[0] };
 }
 
-test("editorial Task changes reuse prepared and frozen candidate identities", { timeout: 90000 }, async (t) => {
+test("editorial Task changes reuse prepared and frozen candidate identities", async (t) => {
   const f = await fixture(t);
   const task = await f.testedTask("Accepted", "accepted.txt", "accepted\n");
   const { candidate } = await acceptAndPrepare(f, task, "accept-editorial");

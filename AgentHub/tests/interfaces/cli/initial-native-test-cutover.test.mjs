@@ -107,7 +107,7 @@ async function fixture(t, { releaseManager = false } = {}) {
   };
 }
 
-test("public native source entry retains original operation timing on success and admission failure", { timeout: 180_000 }, async t => {
+test("public native source entry retains original operation timing on success and admission failure", async t => {
   const f = await fixture(t), events = [];
   f.taskGit.recordTiming = event => events.push(event);
   const success = await f.create("timed-success");
@@ -130,7 +130,7 @@ test("public native source entry retains original operation timing on success an
   assert.equal(f.catalog.mcpOperation(rejectedArgs.requestId).status, "failed");
 });
 
-test("restored preparation public owner preserves native content and same SQLite original", { timeout: 240_000 }, async t => {
+test("restored preparation public owner preserves native content and same SQLite original", async t => {
   const f = await fixture(t, { releaseManager: true }), task = await f.create("accepted");
   await f.status(task, "testing", "accepted-test");
   await f.status(task, "awaiting_implementation", "accepted-await");
@@ -311,7 +311,7 @@ test("public CLI initial native Test retains the prepared accepted candidate and
   assert.equal((await readFile(path.join(current.releaseRoot, "accepted.txt"), "utf8")).replaceAll("\r\n", "\n"), "accepted\n");
 });
 
-test("public CLI initial native Test refuses stale and foreign source, caller, Task and current pins", { timeout: 180_000 }, async t => {
+test("public CLI initial native Test refuses stale and foreign source, caller, Task and current pins", async t => {
   const f = await fixture(t), task = await f.create("guarded"), input = await f.input(task, "guard-original");
   const before = f.board.task(task.id), dev = await git(f.primary, "rev-parse", "dev");
   let opened = false;
@@ -365,7 +365,7 @@ test("public CLI native Test and Await preserve primary hooks without invoking c
   assert.deepEqual((await f.run(task, input)).result, wire(result.result));
 });
 
-test("public CLI initial native Test fences caller rotation in the lifecycle admission transaction", { timeout: 90_000 }, async t => {
+test("public CLI initial native Test fences caller rotation in the lifecycle admission transaction", async t => {
   const f = await fixture(t), task = await f.create("sql-race"), input = await f.input(task, "sql-caller-race");
   const before = f.board.task(task.id), dev = await git(f.primary, "rev-parse", "dev");
   await assert.rejects(f.run(task, input, runtime => {
@@ -382,7 +382,7 @@ test("public CLI initial native Test fences caller rotation in the lifecycle adm
 });
 
 for (const failure of ["sql-terminal", "mcp-receipt"]) {
-  test(`public CLI initial native Test reopens ${failure} UNKNOWN with the same original and no second dev CAS`, { timeout: 180_000 }, async t => {
+  test(`public CLI initial native Test reopens ${failure} UNKNOWN with the same original and no second dev CAS`, async t => {
     const f = await fixture(t), task = await f.create("recover"), input = await f.input(task, `lost-${failure}`);
     const before = f.board.task(task.id);
     await assert.rejects(f.run(task, input, runtime => {

@@ -239,7 +239,7 @@ test("new permanent release captures keep exact selected history without unrelat
   assert.equal(await git(f.primary, "status", "--porcelain"), "");
 });
 
-for (const binaryOnly of [false, true]) test(`PreRelease preserves ${binaryOnly ? "terminal binary patch delimiters" : "binary patch bytes and a trailing blank context line"}`, { timeout: 180000 }, async (context) => {
+for (const binaryOnly of [false, true]) test(`PreRelease preserves ${binaryOnly ? "terminal binary patch delimiters" : "binary patch bytes and a trailing blank context line"}`, async (context) => {
   const setup = await fixture(context);
   await writeFile(path.join(setup.primary, "z-final.txt"), "before\nunchanged\n\n", "utf8");
   await writeFile(path.join(setup.primary, "binary.bin"), Buffer.from([0, 255, 1, 2, 3]));
@@ -2383,7 +2383,7 @@ test("a frozen 13-Task candidate accepts one descendant result delta with exact 
     "reviewed fix");
 });
 
-test("prepared candidate natively composes an additional exact correction", { timeout: 90000 }, async (context) => {
+test("prepared candidate natively composes an additional exact correction", async (context) => {
   const setup = await fixture(context);
   const staleResult = await taskResult(setup, context, {
     branch: "HUB-correction-stale", file: "AgentHub/shared.txt", content: "stale\n",
@@ -2482,7 +2482,7 @@ test("operation lineage rejects an unrelated result and accepts a descendant net
   ), "neighbor");
 });
 
-test("prepared candidate rejects correction-owned publication metadata", { timeout: 30000 }, async (context) => {
+test("prepared candidate rejects correction-owned publication metadata", async (context) => {
   const setup = await fixture(context);
   const staleResult = await taskResult(setup, context, {
     branch: "HUB-metadata-stale", file: "AgentHub/shared.txt", content: "stale\n",
@@ -2512,7 +2512,7 @@ test("prepared candidate rejects correction-owned publication metadata", { timeo
 });
 
 for (const scenario of ["changed selection", "changed base", "non-descendant result"]) {
-  test(`a new native plan does not reuse the frozen tree after ${scenario}`, { timeout: 90000 }, async (context) => {
+  test(`a new native plan does not reuse the frozen tree after ${scenario}`, async (context) => {
     const setup = await fixture(context);
     const ownerRoot = path.join(setup.root, "task-reuse-owner");
     await git(setup.primary, "worktree", "add", "-b", "HUB-reuse-owner", ownerRoot, setup.baseCommit);

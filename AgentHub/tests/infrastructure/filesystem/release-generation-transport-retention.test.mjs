@@ -220,7 +220,7 @@ test("tag ref loss after the fresh preview refuses the before-effect original-ro
   assert.equal(sha(await readFile(f.bundle)), before);
 });
 
-test("generation lease serializes transport retirement with the existing generation owner", { timeout: 15_000 }, async t => {
+test("generation lease serializes transport retirement with the existing generation owner", async t => {
   const f = await fixture(t);
   let enter, release;
   const entered = new Promise(resolve => { enter = resolve; });
@@ -237,7 +237,7 @@ test("generation lease serializes transport retirement with the existing generat
   assert.ok((await lstat(f.bundle)).isFile());
 });
 
-test("a still-active release is retained without joining its held generation queue", { timeout: 15_000 }, async t => {
+test("a still-active release is retained without joining its held generation queue", async t => {
   const f = await fixture(t);
   f.setProof(null);
   await withInterprocessLocks([path.join(f.dataDir, "locks", "release-generation-" + f.candidate.id)], async () => {

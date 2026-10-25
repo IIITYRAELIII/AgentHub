@@ -399,7 +399,7 @@ function currentDrifts(f) {
   ];
 }
 
-test("accepted recovery alone cannot recover the legacy missing-provenance candidate", { timeout: 120000 }, async (context) => {
+test("accepted recovery alone cannot recover the legacy missing-provenance candidate", async (context) => {
   const f = await legacyFrozenFixture(context);
   const before = await candidateState(f);
   const { missingProvenanceRecovery: _request, missingProvenanceResolver: _resolver, ...plain } = f.request();
@@ -599,7 +599,7 @@ test("historical adoption survives advanced primary while ordinary stale adoptio
   assert.equal(replay.proofHash, preview.proofHash);
 });
 
-test("current primary, remote, tracking and URL drift rejects at confirm, resume and completed replay", { timeout: 360000 }, async (context) => {
+test("current primary, remote, tracking and URL drift rejects at confirm, resume and completed replay", async (context) => {
   const f = await legacyFrozenFixture(context, { advancePrimary: true });
   const before = await candidateState(f);
   const preview = await f.service().recoverFreezingPublicationCandidate(f.request());
@@ -647,7 +647,7 @@ test("current primary, remote, tracking and URL drift rejects at confirm, resume
 });
 
 for (const phase of ["evidence", "intent", "detached", "main", "refs", "checkout"]) {
-  test(`missing-provenance recovery resumes exactly after a crash at ${phase}`, { timeout: 120000 }, async (context) => {
+  test(`missing-provenance recovery resumes exactly after a crash at ${phase}`, async (context) => {
     const f = await legacyFrozenFixture(context);
     const preview = await f.service().recoverFreezingPublicationCandidate(f.request());
     const crashing = f.service({
@@ -672,7 +672,7 @@ for (const phase of ["evidence", "intent", "detached", "main", "refs", "checkout
   });
 }
 
-test("missing-provenance recovery rejects every receipt, result and adoption drift before effects", { timeout: 240000 }, async (context) => {
+test("missing-provenance recovery rejects every receipt, result and adoption drift before effects", async (context) => {
   const f = await legacyFrozenFixture(context);
   const before = await candidateState(f);
   const attempt = async (override, pattern) => {
@@ -818,7 +818,7 @@ test("missing-provenance recovery rejects every receipt, result and adoption dri
   await attempt({}, /no outstanding historical adoption/u);
 });
 
-test("historical adoption accepts only a two-parent proof commit", { timeout: 120000 }, async (context) => {
+test("historical adoption accepts only a two-parent proof commit", async (context) => {
   const f = await legacyFrozenFixture(context);
   // An octopus snapshot: the adopted upstream is the second of three parents.
   await writeFile(path.join(f.writer, "extra.txt"), "extra\n", "utf8");
@@ -854,7 +854,7 @@ test("the historical adoption method has exactly one supplemental recovery call 
   assert.deepEqual(callers, ["application/release-missing-provenance-resolver.mjs"]);
 });
 
-test("missing-provenance recovery refuses changed, one-sided or already provenanced candidates", { timeout: 120000 }, async (context) => {
+test("missing-provenance recovery refuses changed, one-sided or already provenanced candidates", async (context) => {
   const f = await legacyFrozenFixture(context);
   const checkpointBytes = await readFile(f.checkpointFile);
   const checkpoint = JSON.parse(checkpointBytes.toString("utf8"));
@@ -896,7 +896,7 @@ test("missing-provenance recovery refuses changed, one-sided or already provenan
   await reject(/durable published revision changed/u);
 });
 
-test("advanced bases require an immutable provenance envelope before candidate effects", { timeout: 120000 }, async (context) => {
+test("advanced bases require an immutable provenance envelope before candidate effects", async (context) => {
   const f = await legacyFrozenFixture(context);
   // RED shape: the same plain preparation now fails before refs or checkpoint.
   const guarded = f.service();
@@ -951,7 +951,7 @@ test("advanced bases require an immutable provenance envelope before candidate e
   assert.equal((JSON.parse(await readFile(f.checkpointFile, "utf8"))).phase, "abandoned");
 });
 
-test("completed historical abandonment permits native preparation with exact recovery evidence and agreed main", { timeout: 120000 }, async (context) => {
+test("completed historical abandonment permits native preparation with exact recovery evidence and agreed main", async (context) => {
   const f = await legacyFrozenFixture(context);
   const guarded = f.service();
   const recovered = await guarded.recoverFreezingPublicationCandidate(f.request({
