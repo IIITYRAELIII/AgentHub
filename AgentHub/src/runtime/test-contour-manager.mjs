@@ -1986,6 +1986,10 @@ export function testContourSmokeJournalMatches(record, {
   const exactTurnId = String(smoke?.turnId ?? "").trim();
   const exactClientUserMessageId = String(smoke?.clientUserMessageId ?? "").trim();
   if (!exactThreadId || !exactTurnId || !exactClientUserMessageId) return false;
+  const completedAtMs = Date.parse(record?.completedAt);
+  // Recovery proves the original accepted send, which may predate this runtime.
+  const completionInScope = Number.isFinite(completedAtMs)
+    && (smoke?.setup === "reconcile-send" || completedAtMs >= Date.parse(startedAt));
   return record?.provider === "codex"
     && record.model === model
     && record.prompt === probe
@@ -1993,7 +1997,7 @@ export function testContourSmokeJournalMatches(record, {
     && String(record.threadId ?? "").trim() === exactThreadId
     && String(record.turnId ?? "").trim() === exactTurnId
     && String(record.clientUserMessageId ?? "").trim() === exactClientUserMessageId
-    && Date.parse(record.completedAt) >= Date.parse(startedAt);
+    && completionInScope;
 }
 
 async function verifyTestContourUnlocked({

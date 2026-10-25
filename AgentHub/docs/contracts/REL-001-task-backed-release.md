@@ -2078,6 +2078,10 @@ submission or provider effect. Successful evidence binds the exact returned
 control receipt, Stream, provider, Thread, client message, provider turn,
 rendered response and journal record. Matching text in another or older
 conversation is not smoke success.
+For an exact `reconcile-send` result, that original completed journal record may
+predate the replacement contour runtime. Fresh UI sends still require completion
+at or after the current contour start; neither path accepts an invalid completion
+time or a different provider, model, prompt, response, Thread, turn or client ID.
 
 Every refresh is one persisted maintenance operation, not a provider turn. Its
 identity binds the exact contour root, contour marker, port, model, source `dev`
