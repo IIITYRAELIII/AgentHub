@@ -1652,7 +1652,7 @@ export class TaskBoardStore {
     });
   }
 
-  async updateChecklist({
+  updateChecklist({
     id, operation, itemId = null, text = null, completed = null,
     beforeItemId = null, linkedTaskId = null, expectedRevision, requestId, taskPrefix = "",
   } = {}) {
@@ -1672,7 +1672,7 @@ export class TaskBoardStore {
     return this.checklistRequestResult(payload, outcome);
   }
 
-  async applyChecklistLinkedTaskAction({
+  applyChecklistLinkedTaskAction({
     id, itemId, linkedTaskId, action, expectedTaskRevision,
     expectedLinkedTaskRevision, requestId,
   } = {}) {
