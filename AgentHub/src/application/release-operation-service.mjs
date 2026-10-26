@@ -253,10 +253,13 @@ export class ReleaseOperationService {
   }
 
   continue(operationId, options = {}) {
-    if (options.testSelection != null || options.taskIds != null || options.releaseMetadata != null) return this.#amendTestSelection(operationId, options);
-    if (options.reviewedMain != null) return this.#recoverReviewedMain(operationId, options);
     const current = this.store.get(requiredText(operationId, "operationId"));
     if (!current) throw new Error("release operation was not found");
+    // A captured amendment remains an amendment even when a replay omits all
+    // optional fields. Check its identity before ordinary resume or recovery.
+    if (current.testSelectionAmendments?.some(item => item.requestId === options.requestId)
+        || options.testSelection != null || options.taskIds != null || options.releaseMetadata != null) return this.#amendTestSelection(operationId, options);
+    if (options.reviewedMain != null) return this.#recoverReviewedMain(operationId, options);
     if (releaseOperationIsTerminal(current)) return { accepted: false, operation: current, reason: "terminal" };
     let operation = current;
     if (current.state === RELEASE_OPERATION_STATES.WAITING) {

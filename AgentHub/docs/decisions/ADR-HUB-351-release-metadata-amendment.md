@@ -19,3 +19,9 @@ their existing identities. Old request replay never adopts a later payload.
 Focused coverage uses the actual durable store/reopen/restore, failed-generation
 preservation, omitted and changed replay arguments, legacy refusal, CAS/unknown
 readback and the composition adapter with real temporary payload files and drift.
+
+Dispatch first recognizes an existing amendment request ID, even if every optional
+field is omitted on replay, before ordinary continue or reviewed-main recovery.
+Original argument checks therefore precede observation, store transitions and
+scheduling. An unaddressed ordinary continue keeps its existing behavior. The
+maintained regression exercises this through the command bridge and actual Store.
