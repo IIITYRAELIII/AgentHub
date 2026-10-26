@@ -41,7 +41,7 @@ export class DesktopTaskBoardController {
   }
 
   read({ id } = {}) {
-    return { task: this.taskBoard.task(id) };
+    return { task: this.taskBoard.card(id) };
   }
 
   async diff({ id } = {}) {

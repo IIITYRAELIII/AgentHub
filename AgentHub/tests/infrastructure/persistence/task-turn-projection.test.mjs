@@ -6,6 +6,8 @@ import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import { TaskBoardStore } from "../../../src/infrastructure/persistence/task-board-store.mjs";
 import { JournalDatabase } from "../../../src/infrastructure/persistence/journal-database.mjs";
+import { TaskBoardService } from "../../../src/application/task-board-service.mjs";
+import { DesktopTaskBoardController } from "../../../src/interfaces/desktop/desktop-task-board-controller.mjs";
 
 async function fixture(t) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "task-turn-projection-"));
@@ -35,6 +37,25 @@ async function fixture(t) {
     },
   };
 }
+
+test("lazy Task read preserves canonical attachment descriptors without exposing source paths", async t => {
+  const f = await fixture(t);
+  const raw = f.store.create({ text: "Attachment card",
+    sourceDetails: { attachments: [path.join(os.tmpdir(), "synthetic", "screenshot.jpg")] } });
+  const workspaceCatalog = { hierarchy: () => [] };
+  const taskBoard = new TaskBoardService({ store: f.store, workspaceCatalog });
+  const card = taskBoard.snapshot().find(value => value.id === raw.id);
+  assert.deepEqual(card.attachments, [{ id: "screenshot.jpg", name: "screenshot.jpg",
+    type: "image/jpeg", isImage: true }]);
+  const controller = new DesktopTaskBoardController({ taskBoard, workspaceCatalog, taskLauncher: {} });
+  const { task } = await controller.read({ id: raw.id });
+  assert.equal(task.id, card.id);
+  assert.equal(task.detailsRevision, card.detailsRevision);
+  assert.deepEqual(task.attachments, card.attachments);
+  assert.equal(Object.hasOwn(task.sourceDetails, "attachments"), false);
+  assert.equal(Object.hasOwn(task, "workLog"), true);
+  assert.equal(Object.hasOwn(card, "workLog"), false);
+});
 
 test("Task history projection follows exact source and binding writes without board history reads", async t => {
   const f = await fixture(t);

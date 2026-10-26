@@ -25,4 +25,3 @@ release eligibility, immutable results and CAS do not derive from this index.
 Read-only historical release evidence without the new index retains its existing
 detail-read query. This migration compatibility is never used by a board list;
 it can be removed when retained release-evidence databases have been migrated.
-
