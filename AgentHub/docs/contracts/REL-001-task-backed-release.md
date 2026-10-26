@@ -2744,3 +2744,16 @@ freezes `authorizedTaskIds` and must contain exactly those selected results. The
 existing Task-operation index retains historical membership for retrospective
 proof, while active correction wake filters by the effective set. No all-Await
 expansion, absorption, hidden source import or new publisher is implied.
+
+Historical reviewed-main recovery keeps the exact membership of its own
+priorRevision/priorGeneration boundary. A later membership amendment cannot
+invalidate, retarget or rewrite that proof. Recovery after a membership amendment
+validates the membership that was effective at that later recovery boundary;
+its origin/authorization/hash/readback fences remain unchanged.
+
+Each new amendment captures normalized requestArguments before resolving
+omissions. Replay compares that original explicit/omitted argument identity and
+returns its saved amendment and committed revision without a write or scheduling.
+Older retained amendments without argument capture resolve omissions only against
+their own saved outcome, never against a later effective selection; their bytes
+and identity stay unchanged. No stored record is enriched during readback.
