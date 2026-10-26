@@ -303,15 +303,33 @@ test("Markdown details safely render historical and new messages with native dis
     for (const width of [1366, 390]) {
       await page.setViewportSize({ width, height: 900 });
       if (width === 390) await page.evaluate(() => window.AgentHub.showSelectedTask());
+      // Measure the completed responsive layout, after resize/view paint work.
+      await page.evaluate(() => new Promise((resolve) => (
+        requestAnimationFrame(() => requestAnimationFrame(resolve))
+      )));
       const geometry = await details.locator("pre").evaluate((node) => ({
         wide: node.scrollWidth > node.clientWidth,
         outside: node.getBoundingClientRect().right > innerWidth + 1,
         pageOverflow: document.documentElement.scrollWidth > innerWidth + 1,
       }));
-      assert.deepEqual(geometry, { wide: true, outside: false, pageOverflow: false });
       if (process.env.AGENT_HUB_QA_SCREENSHOT) await page.screenshot({
         path: `${process.env.AGENT_HUB_QA_SCREENSHOT}-details-${width}.png`, fullPage: false,
       });
+      const overflow = await page.evaluate(() => ({
+        viewport: innerWidth,
+        clientWidth: document.documentElement.clientWidth,
+        scrollWidth: document.documentElement.scrollWidth,
+        elements: [...document.querySelectorAll("body *")]
+          .filter((node) => node.getBoundingClientRect().right > innerWidth + 1)
+          .slice(0, 16).map((node) => ({
+            tag: node.tagName, classes: String(node.className).slice(0, 160),
+            left: node.getBoundingClientRect().left,
+            right: node.getBoundingClientRect().right,
+            width: node.getBoundingClientRect().width,
+          })),
+      }));
+      assert.deepEqual(geometry, { wide: true, outside: false, pageOverflow: false },
+        JSON.stringify({ width, ...overflow }));
     }
     assert.equal(new URL(page.url()).hostname, "127.0.0.1");
     assert.match(await page.title(), /Agent Hub/iu);
