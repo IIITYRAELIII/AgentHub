@@ -56,3 +56,31 @@ lost deletion/mode, a clean omission beside a conflict and exact reviewed
 compatibility. Independent review, ordinary compatible application, Test/Await
 and the original release's later prescribed pipeline remain separate. Historical
 failed generations and UNKNOWN receipts are not rewritten or called successful.
+
+## Explicit unchanged automatic context (2026-10-26)
+
+The accepted HUB-351 Test exposed an inherited dependency context: the real merge base
+was `9a825`, while the immutable Task custody base remained `05c2`. Three source
+entries were identical to dependency `9a825`, and the native automatic result retained
+newer Dev entries. Counterfactual replay correctly reported obligations but the
+old actual-diff review could not authorize retaining unchanged automatic entries.
+This is a compatibility decision, not evidence that every such difference is safe.
+
+Keep immutable Task bases and the old actual-diff review unchanged. A NEW whole
+authenticated native-review message may additionally carry
+`selectedContentCompatibility = {binding, acceptedObligations}`. Its versioned
+binding is derived entirely by the final-check owner from Git and includes the
+complete ordered Task/base/result set, final commit/tree and ALL uncovered replay
+obligations. Each obligation binds the Task, immutable base/result, replay tree,
+path, expected and retained mode/type/OID (or absence), prefix and real automatic
+tree/entry. The accepted indices select exact records in this complete binding.
+The retained entry must equal that real automatic entry. Extra/stale/tampered
+bindings, different Task/base/body/selection and unaccepted obligations refuse.
+
+The existing verifier authenticates both the original native diff review and the
+new compatibility message against exact catalog receipts. The same private merge
+capture may add this second review only while undelivered, after successful full
+replay validation; it preserves the original review. No fake file edits, Task-base
+rewrite, history reset, second publisher, caller allowlist or new approval ledger
+is introduced. Prepared and historical readback rederive the entire binding.
+The HUB-351 Test proof does not authorize another selected PreRelease composition.
