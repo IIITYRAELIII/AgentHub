@@ -2102,7 +2102,7 @@ test("real nested Task evidence projects the selected dependency once before its
   await assert.rejects(readFile(path.join(candidate.releaseRoot, "foreign.txt")));
 });
 
-test("incomparable selected Tasks cannot claim one shared dev integration", async (context) => {
+test("separately integrated current Tasks do not claim their shared historical integration", async (context) => {
   const setup = await fixture(context);
   const sharedRoot = path.join(setup.root, "task-shared-lineage");
   await git(setup.primary, "worktree", "add", "-b", "shared-lineage", sharedRoot, setup.baseCommit);
@@ -2123,12 +2123,15 @@ test("incomparable selected Tasks cannot claim one shared dev integration", asyn
   const dev = await taskGit.prepareDev(setup.primary);
   await git(dev.projectRoot, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
     "merge", "--no-ff", "--no-edit", sharedCommit);
+  const sharedIntegration = await git(dev.projectRoot, "rev-parse", "HEAD");
   await git(dev.projectRoot, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
     "merge", "--no-ff", "--no-edit", leftResult);
+  const leftIntegration = await git(dev.projectRoot, "rev-parse", "HEAD");
   await git(dev.projectRoot, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
     "merge", "--no-ff", "--no-edit", rightResult);
+  const rightIntegration = await git(dev.projectRoot, "rev-parse", "HEAD");
 
-  await assert.rejects(taskGit.releaseIntegrationEvidence({
+  const evidence = await taskGit.releaseIntegrationEvidence({
     projectRoot: setup.primary,
     tasks: [
       { taskId: leftId, taskRevision: 1, projectRoot: setup.primary,
@@ -2136,7 +2139,10 @@ test("incomparable selected Tasks cannot claim one shared dev integration", asyn
       { taskId: rightId, taskRevision: 1, projectRoot: setup.primary,
         branch: right.branch, resultCommit: rightResult },
     ],
-  }), /ambiguously owned/u);
+  });
+  assert.deepEqual(evidence.tasks.map(task => task.integrations.map(entry => entry.commit)),
+    [[leftIntegration], [rightIntegration]]);
+  assert.equal(evidence.tasks.some(task => task.integrations.some(entry => entry.commit === sharedIntegration)), false);
 });
 
 test("an unselected dependency never reaches the release through its dependent Task", async (context) => {

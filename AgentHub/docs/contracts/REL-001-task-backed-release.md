@@ -829,6 +829,16 @@ Existing already-published results retain their separate base checks. Missing
 coverage fails with TASK_RELEASE_RESULT_NOT_COVERED; rerun ordinary Test for the
 exact result rather than borrowing another Task's integration or a dev snapshot.
 
+Shared historical integrations are attributed after unambiguous owners have been
+derived. If every claimant independently has an owned integration whose side
+parent is its exact current result, their otherwise ambiguous shared prefix stays
+unassigned and is omitted from their integration evidence. It supplies no result
+coverage or release content. If any claimant lacks that exact owned integration,
+the ambiguity still refuses; neither ancestry, equal trees nor a foreign wrapper
+can substitute. Unique historical ownership and repeated direct integrations are
+retained. Selected composition still merges the complete exact results from the
+agreed main and verifies their content independently of dev history.
+
 In release-enabled Workspaces, absorbed closure additionally validates the
 prospective surviving result together with the current Await set through the
 canonical composer. Lock order is Workspace Await, both Tasks, then repositories.
