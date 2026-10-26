@@ -23,6 +23,11 @@ publication binding unchanged, so immutable generation capture and the artifact
 owner receive the same original version and source. A historical manifest
 without that binding remains absent; readback does not allocate or enrich it.
 
+The stable publication owner passes its own dependency root to the isolated
+runner when no explicit dependency root was configured. Frozen Worker children
+resolve the candidate-pinned CLI version through the same existing resolver;
+this does not copy dependencies, change the frozen tree or relax version checks.
+
 ## Semantic public version and original build (ADR-HUB-334)
 
 New installer publications migrate recognized calendar versions to public

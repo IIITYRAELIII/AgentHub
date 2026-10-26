@@ -186,6 +186,7 @@ export class ReleaseOperationPublication {
       stdio: ["ignore", stdout.fd, stderr.fd],
       env: {
         ...environment,
+        AGENT_HUB_DEPENDENCY_ROOT: environment.AGENT_HUB_DEPENDENCY_ROOT || path.dirname(runner),
         AGENT_HUB_DATA_DIR: this.dataDir,
         AGENT_HUB_RUNTIME_ROOT: this.runtimeRoot,
         AGENT_HUB_RELEASE_OPERATION_ID: operation.operationId,
