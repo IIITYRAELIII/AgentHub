@@ -417,3 +417,35 @@ test("metadata-only amendment retains effect/CAS guards and never upgrades a leg
   await assert.rejects(f.service.continue("original", { ...options, requestId: retained.requestId }), /identity changed/);
   assert.equal(effectiveReleaseMetadata(f.store.get("original")), null);
 });
+
+test("metadata-only replay is recognized before ordinary/reviewed continuation dispatch", async t => {
+  const observed = [];
+  const f = await fixture(t, { observeOperation: id => observed.push(id) });
+  const command = new ReleaseOperationCommandService({ releaseOperations: f.service,
+    workspaceCatalog: { workspace: () => ({}), hierarchy: () => [] }, taskBoard: { task: () => null } });
+  const original = f.store.get("original");
+  const args = { operationId: "original", requestId: "metadata-only-dispatch",
+    releaseMetadata: { sourcePath: "notes.md", byteLength: 42, rawSha256: "a".repeat(64), canonicalSha256: "b".repeat(64) },
+    expectedRevision: original.revision, expectedGeneration: original.currentGeneration };
+  const accepted = await command.continue(args);
+  assert.equal(accepted.accepted, true);
+  f.scheduled.shift()();
+  await f.service.drain("original");
+  const before = f.store.snapshot("original"), queued = f.scheduled.length, observations = observed.length;
+  await assert.rejects(command.continue({ ...args, releaseMetadata: undefined }), /identity changed/);
+  await assert.rejects(command.continue({ operationId: args.operationId, requestId: args.requestId,
+    expectedRevision: args.expectedRevision, expectedGeneration: args.expectedGeneration }), /identity changed/);
+  await assert.rejects(command.continue({ operationId: args.operationId, requestId: args.requestId }), /identity changed/);
+  await assert.rejects(command.continue({ ...args, releaseMetadata: undefined,
+    reviewedMain: { expectedRevision: before.operation.revision, approvedRepositories: [] } }), /separate original amendments/);
+  const replay = await command.continue(args);
+  assert.equal(replay.duplicate, true);
+  assert.equal(replay.revision, accepted.revision);
+  assert.deepEqual(f.store.snapshot("original"), before);
+  assert.equal(f.scheduled.length, queued);
+  assert.equal(observed.length, observations, "changed/exact replay cannot observe or schedule the operation");
+  assert.equal(command.continue({ operationId: "original" }).accepted, true, "ordinary unaddressed continuation stays supported");
+  assert.equal(f.scheduled.length, queued + 1);
+  f.scheduled.shift()();
+  await f.service.drain("original");
+});
