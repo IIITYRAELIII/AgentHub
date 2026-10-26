@@ -345,3 +345,27 @@ for (const omitted of ["taskIds", "testSelection"]) test(`original replay retain
   assert.deepEqual(f.store.snapshot("original"), before);
   assert.equal(f.scheduled.length, scheduled);
 });
+
+
+test("original replay of a retained amendment without request capture uses only its saved boundary", async t => {
+  const f = await fixture(t, { withTaskSelection: async ({ taskIds, commit }) => commit(taskIds.map(taskId => ({ taskId, resultCommit: `${taskId}-accepted` }))) });
+  const initial = f.store.get("original");
+  const first = { requestId: "retained-before-request-capture", testSelection: selection("none"), expectedRevision: initial.revision, expectedGeneration: 1 };
+  const retained = amendedContents(initial, first.requestId, ["task"]);
+  assert.equal(retained.requestArguments, undefined);
+  assert.equal(f.store.transition("original", { state: "compose", currentStep: "compose", lastError: null, publicationEffects: {} },
+    { expectedRevision: initial.revision, testSelectionAmendment: retained }).applied, true);
+  f.service.continue("original");
+  f.scheduled.shift()();
+  await f.service.drain("original");
+  const current = f.store.get("original");
+  assert.equal((await f.service.continue("original", { requestId: "later-captured-membership", testSelection: selection("all"), taskIds: ["board", "task"],
+    expectedRevision: current.revision, expectedGeneration: 2 })).accepted, true);
+  const before = f.store.snapshot("original");
+  const pending = f.scheduled.length;
+  const replay = await f.service.continue("original", first);
+  assert.equal(replay.duplicate, true);
+  assert.deepEqual(replay.amendment, retained, "readback neither enriches nor rewrites the retained original");
+  assert.deepEqual(f.store.snapshot("original"), before);
+  assert.equal(f.scheduled.length, pending);
+});
