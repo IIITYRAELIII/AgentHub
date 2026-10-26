@@ -306,12 +306,20 @@ is not operation latency and cannot create a second operation.
 Release validation admits independent files against a target of 40% of total
 machine CPU capacity and 40% of physical RAM for the whole test process tree,
 including Git, browsers and helpers. Other applications reduce available
-headroom. Admission uses measured CPU and resident memory plus reservations for
-new, not-yet-sampled work; there is no fixed file/worker ceiling. This is a
-cooperative budget, not an OS throttle: indivisible running tests can overshoot
-and are never killed, suspended or retried merely for doing so. Measurements
-report overshoots. Accounting failure stops new admission and drains started
-tests with their original outcomes/checkpoints.
+headroom. Admission retains one-core and estimated resident-memory demand until
+each active file settles; a quiet I/O sample cannot clear that reservation.
+Measured load and reserved demand are combined by maximum, without counting the
+same active work twice. The count follows machine capacity, not a fixed worker
+setting. On Windows the existing accounting Job also applies CPU rate4000 with
+ENABLE|HARD_CAP to the suite tree, including its accounting helper. No second
+Job, process termination, kill-on-close, memory limit or priority change is used.
+Closing the monitor removes and verifies its owned CPU control before closing
+the Job handle. Setup/readback failure refuses admission. POSIX retains measured
+cooperative admission and does not claim an OS CPU cap. Other jobs/apps are not
+controlled; a stricter ancestor Job can reduce available CPU further. Short
+accounting samples are not a per-instant CPU guarantee. Measurements report
+overshoots. Accounting failure stops new admission and drains started tests with
+their original outcomes/checkpoints. See ADR-0346.
 
 Native-Git correctness scenarios do not assert a total wall-clock
 latency SLO over fixture creation plus several independently bounded operations.

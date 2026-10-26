@@ -5,11 +5,13 @@ import os from "node:os";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 
-async function windowsAccounting() {
+export const TEST_RESOURCE_BUDGET = 0.4;
+
+async function windowsAccounting(cpuBudget) {
   const source = fileURLToPath(new URL("./test-resource-accounting.cs", import.meta.url));
   // The path is a literal PowerShell argument, never executable source text.
   const literal = `'${source.replaceAll("'", "''")}'`;
-  const command = `[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); $ProgressPreference='SilentlyContinue'; $ErrorActionPreference='Stop'; Add-Type -Path ${literal}; [TestResourceAccounting]::Run(${process.pid})`;
+  const command = `[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); $ProgressPreference='SilentlyContinue'; $ErrorActionPreference='Stop'; Add-Type -Path ${literal}; [TestResourceAccounting]::Run(${process.pid},${Math.round(cpuBudget * 10000)})`;
   const child = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-OutputFormat", "Text", "-EncodedCommand", Buffer.from(command, "utf16le").toString("base64")], {
     stdio: ["pipe", "pipe", "pipe"], windowsHide: true,
   });
@@ -117,8 +119,11 @@ function hostTimes() {
     idle: times.reduce((sum, value) => sum + value.idle, 0) };
 }
 
-export async function createTestResourceMonitor() {
-  const accounting = process.platform === "win32" ? await windowsAccounting()
+export async function createTestResourceMonitor({ cpuBudget = TEST_RESOURCE_BUDGET } = {}) {
+  if (!Number.isFinite(cpuBudget) || cpuBudget < 0.0001 || cpuBudget > TEST_RESOURCE_BUDGET) {
+    throw new RangeError("Test CPU budget must be positive and cannot exceed 40 percent");
+  }
+  const accounting = process.platform === "win32" ? await windowsAccounting(cpuBudget)
     : process.platform === "linux" ? await linuxAccounting()
       : await posixAccounting();
   const cores = os.cpus().length;
@@ -132,7 +137,8 @@ export async function createTestResourceMonitor() {
         hostCpuFraction: hostDelta > 0 ? 1 - (current.host.idle - previous.host.idle) / hostDelta : 0,
         rssBytes: current.rssBytes, totalMemory: os.totalmem(), freeMemory: os.freemem(),
         cores, elapsedMs: elapsed, cpuMs: current.cpuMs, processes: current.processes,
-        totalProcesses: current.totalProcesses, limitFlags: current.limitFlags };
+        totalProcesses: current.totalProcesses, limitFlags: current.limitFlags,
+        cpuControlFlags: current.cpuControlFlags, cpuRate: current.cpuRate };
       previous = current;
       return result;
     },

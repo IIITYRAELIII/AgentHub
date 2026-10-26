@@ -1,10 +1,10 @@
 import { setTimeout as delay } from "node:timers/promises";
-import { createTestResourceMonitor } from "./test-resource-monitor.mjs";
+import { createTestResourceMonitor, TEST_RESOURCE_BUDGET } from "./test-resource-monitor.mjs";
 
-export const TEST_RESOURCE_BUDGET = 0.4;
+export { TEST_RESOURCE_BUDGET };
 
-// Cooperative admission, not an OS throttle. Running tests are never killed or
-// suspended on an overshoot; unknown startup work reserves one logical core.
+// Admission retains prospective demand while a file owns work, including I/O
+// phases. The Windows monitor also enforces the same tree CPU budget in its Job.
 export async function testResourceAdmission({
   monitor = null,
   intervalMs = 500,
@@ -15,7 +15,6 @@ export async function testResourceAdmission({
   monitor ??= await createTestResourceMonitor();
   let sample;
   let sampledAt = -Infinity;
-  let unsampledStarts = 0;
   let active = 0;
   let memoryEstimate = process.memoryUsage().rss;
   let peakActive = 0;
@@ -37,7 +36,6 @@ export async function testResourceAdmission({
         throw new Error("Invalid whole test-tree resource sample");
       }
       sampledAt = clock();
-      unsampledStarts = 0;
       if (active) memoryEstimate = Math.max(memoryEstimate, sample.rssBytes / active);
       metrics.samples += 1;
       metrics.cpuMs = sample.cpuMs;
@@ -61,20 +59,22 @@ export async function testResourceAdmission({
       const value = await refresh();
       const otherCpu = Math.max(0, value.hostCpuFraction - value.cpuFraction);
       const cpuCapacity = Math.min(TEST_RESOURCE_BUDGET, Math.max(0, 1 - otherCpu));
-      const cpuReservation = unsampledStarts / value.cores;
+      const cpuDemand = Math.max(value.cpuFraction, active / value.cores);
       const ramCapacity = Math.min(TEST_RESOURCE_BUDGET * value.totalMemory, value.freeMemory + value.rssBytes);
-      const fitsMemory = value.rssBytes + (unsampledStarts + 1) * memoryEstimate <= ramCapacity;
+      const memoryDemand = Math.max(value.rssBytes, active * memoryEstimate);
+      const fitsMemory = memoryDemand + memoryEstimate <= ramCapacity;
       // A single CPU-bound file is indivisible on a 1/2-core host. Allow one
       // when measured load has headroom, and report any resulting overshoot.
       const fitsCpu = value.cpuFraction < cpuCapacity
-        && ((active === 0 && cpuCapacity >= Math.min(TEST_RESOURCE_BUDGET, 1 / value.cores))
-          || value.cpuFraction + cpuReservation + 1 / value.cores <= cpuCapacity);
+        && ((active === 0 && 1 / value.cores > TEST_RESOURCE_BUDGET
+            && cpuCapacity >= Math.min(TEST_RESOURCE_BUDGET, 1 / value.cores))
+          || cpuDemand + 1 / value.cores <= cpuCapacity);
       const allowed = fitsMemory && fitsCpu;
       if (!allowed) blockedSince ??= clock();
       else if (blockedSince !== null) { metrics.waitMs += clock() - blockedSince; blockedSince = null; }
       return allowed;
     },
-    started() { active += 1; unsampledStarts += 1; peakActive = Math.max(peakActive, active); },
+    started() { active += 1; peakActive = Math.max(peakActive, active); },
     finished() { active -= 1; },
     async changed() {
       await wait(Math.max(1, intervalMs - (clock() - sampledAt)));

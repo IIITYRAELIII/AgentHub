@@ -10,7 +10,7 @@ test("POSIX accounting selects only the runner's family and includes cumulative 
   assert.throws(() => parsePosixProcessAccounting("99 1 0:00.01 100", 10), /root is absent/u);
 });
 
-test("native accounting includes exited grandchildren CPU and live child resident memory, without kill/CPU/memory limits", {
+test("native job caps CPU and retains exited grandchildren accounting without kill or memory limits", {
   skip: process.platform !== "win32",
 }, async () => {
   const monitor = await createTestResourceMonitor();
@@ -19,6 +19,8 @@ test("native accounting includes exited grandchildren CPU and live child residen
   try {
     const before = await monitor.sample();
     assert.equal(before.limitFlags, 0);
+    assert.equal(before.cpuControlFlags, 5);
+    assert.equal(before.cpuRate, 4000);
     worker = spawn(process.execPath, ["--input-type=module", "-e", `
       import {spawnSync} from 'node:child_process';
       spawnSync(process.execPath, ['-e', 'const end=performance.now()+180; while(performance.now()<end) Math.sqrt(Math.random())']);
@@ -38,6 +40,61 @@ test("native accounting includes exited grandchildren CPU and live child residen
   } finally {
     if (worker && !worker.stdin.destroyed) worker.stdin.end("finish\n");
     if (exit) await exit;
+    await monitor.close();
+  }
+});
+
+test("CPU budget rejects disabling or increasing the established ceiling before setup", async () => {
+  for (const cpuBudget of [0, -0.1, 0.5, NaN, Infinity]) {
+    await assert.rejects(createTestResourceMonitor({ cpuBudget }), RangeError);
+  }
+});
+
+test("Windows CPU quota applies to one owned low-load child and clears without killing it", {
+  skip: process.platform !== "win32",
+}, async (t) => {
+  const monitor = await createTestResourceMonitor({ cpuBudget: 0.02 });
+  let child;
+  let closed;
+  try {
+    const settings = await monitor.sample();
+    assert.equal(settings.cpuControlFlags, 5);
+    assert.equal(settings.cpuRate, 200);
+    assert.equal(settings.limitFlags, 0);
+    child = spawn(process.execPath, ["-e", `
+      process.stdout.write('ready\\n');
+      process.stdin.once('data', () => {
+        const before=process.cpuUsage();
+        while (true) {
+          const used=process.cpuUsage(before);
+          if (used.user+used.system>=100000) break;
+        }
+        process.stdout.write('done\\n');
+        process.stdin.once('data', () => process.exit(0));
+      });
+    `], { windowsHide: true, stdio: ["pipe", "pipe", "inherit"] });
+    closed = once(child, "close");
+    await Promise.race([once(child.stdout, "data"), closed.then(() => { throw new Error("Quota fixture exited before ready"); })]);
+    await monitor.sample();
+    const done = once(child.stdout, "data");
+    child.stdin.write("go\n");
+    await Promise.race([done, closed.then(() => { throw new Error("Quota fixture exited during work"); })]);
+    const measured = await monitor.sample();
+    t.diagnostic(JSON.stringify({ settings, measured }));
+    assert.ok(measured.totalProcesses >= settings.totalProcesses + 1, "owned child inherits the CPU-controlled Job");
+    assert.ok(measured.cpuMs > settings.cpuMs);
+    // CPU control is a cycle quota over Windows scheduling intervals. A short
+    // elapsed-CPU sample (including the helper and accounting tick granularity)
+    // is not an instantaneous percentage assertion. Verify actual Job state,
+    // child membership, completed work and the owned close boundary instead.
+    assert.equal(measured.cpuControlFlags, 5);
+    assert.equal(measured.cpuRate, 200);
+    await monitor.close();
+    child.stdin.end("finish\n");
+    assert.deepEqual(await closed, [0, null]);
+  } finally {
+    if (child && !child.stdin.destroyed) child.stdin.end("finish\n");
+    if (closed) await closed;
     await monitor.close();
   }
 });

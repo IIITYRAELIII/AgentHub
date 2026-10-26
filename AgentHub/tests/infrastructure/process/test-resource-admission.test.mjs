@@ -20,7 +20,7 @@ async function fixture(values = {}) {
   return { admission, set: (next) => { current = resource(next); }, closed: () => closed };
 }
 
-test("resource admission expands beyond two files, pauses on tree CPU, resumes without killing work", async () => {
+test("resource admission retains active demand across samples and resumes when work finishes", async () => {
   const f = await fixture();
   for (let i = 0; i < 6; i += 1) { assert.equal(await f.admission.canStart(), true); f.admission.started(); }
   assert.equal(await f.admission.canStart(), false, "startup reserves one core per unsampled launch");
@@ -29,13 +29,28 @@ test("resource admission expands beyond two files, pauses on tree CPU, resumes w
   assert.equal(await f.admission.canStart(), false);
   f.set({ cpuFraction: 0.02, hostCpuFraction: 0.2 });
   await f.admission.changed();
-  assert.equal(await f.admission.canStart(), true, "I/O-heavy files can admit more after measurement");
+  assert.equal(await f.admission.canStart(), false, "a low sample cannot retire the six active reservations");
+  f.admission.finished();
+  assert.equal(await f.admission.canStart(), true, "settled work releases its reservation");
   f.admission.started();
-  for (let i = 0; i < 7; i += 1) f.admission.finished();
+  for (let i = 0; i < 6; i += 1) f.admission.finished();
   const result = await f.admission.close();
-  assert.equal(result.peakActive, 7);
+  assert.equal(result.peakActive, 6);
   assert.equal(result.overshootSamples, 1);
   assert.equal(f.closed(), true);
+});
+
+test("repeated quiet samples cannot accumulate a later CPU-bound cohort", async () => {
+  const f = await fixture({ cores: 12 });
+  for (let epoch = 0; epoch < 10; epoch += 1) {
+    for (let i = 0; i < 4; i += 1) {
+      if (await f.admission.canStart()) f.admission.started();
+    }
+    assert.equal(await f.admission.canStart(), false);
+    f.set({ cores: 12, cpuFraction: 0, hostCpuFraction: 0.1 });
+    await f.admission.changed();
+  }
+  assert.equal((await f.admission.close()).peakActive, 4);
 });
 
 test("40 percent is a test-tree budget and uses physical RAM, with other-app headroom", async () => {
@@ -56,7 +71,7 @@ test("40 percent is a test-tree budget and uses physical RAM, with other-app hea
   await f.admission.close();
 });
 
-test("an indivisible CPU-bound file can start on a small host without pretending to enforce a hard cap", async () => {
+test("cooperative admission can start one indivisible file on a small host", async () => {
   const f = await fixture({ cores: 1 });
   assert.equal(await f.admission.canStart(), true);
   f.admission.started();

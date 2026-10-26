@@ -1,6 +1,7 @@
 # ADR-0346 — Load-aware test admission
 
-Status: accepted user direction, 2026-10-24; review/application evidence separate.
+Status: accepted user direction, 2026-10-24; refined after the user's unacceptable
+CPU-load report on2026-10-26; review/application evidence separate.
 
 The user requested a 40% CPU/RAM budget instead of a fixed maximum of two files.
 The previous scheduler also treated a cache declaration as permission to run in
@@ -20,21 +21,33 @@ CPU is elapsed CPU time divided by elapsed wall time and all logical CPUs.
 RAM is summed process working sets/RSS against total physical RAM, not Node
 heap; shared pages can be counted more than once, conservatively. Other apps'
 CPU and available RAM reduce admission headroom. Windows uses an unnamed nested
-accounting job: exited descendant CPU remains counted. No CPU, memory, process,
-UI or kill-on-close limits are installed. The dedicated runner is associated
+accounting job: exited descendant CPU remains counted. The same Job now enforces
+the established40% CPU budget with ENABLE|HARD_CAP and rate4000, verified by
+QueryInformationJobObject before admission. No memory, process, UI or kill-on-close
+limits are installed. The dedicated runner is associated
 before test processes start; the accounting helper is included. Closing the
-observer never kills running work. Linux uses process-family /proc accounting
+observer clears and verifies only its owned CPU control, without killing work.
+Setup/readback/clear failures remain visible. An ancestor Job's stricter CPU quota
+can reduce capacity; the limiter never controls unrelated applications.
+Linux uses process-family /proc accounting
 including reaped-child CPU; BSD ps uses cumulative child times. Those adapters
 require fixtures to join/clean their children: daemonized/reparented processes
 are not a supported fixture isolation model. Windows is the native measured
 platform for this change; POSIX parsing has focused coverage, native portability
 evidence must remain explicit.
 
-Sampled admission reserves one core and estimated resident memory for each new
-unsampled file, then updates from actual tree load. There is no arbitrary worker
-count. On a small host one CPU-bound file is indivisible. Samples may exceed the
-target while it runs, or after a workload changes; no hard OS cap is claimed.
-Running valid tests are not terminated, suspended or automatically retried.
+Admission retains one core and estimated resident memory per active file until
+its existing owner settles. It combines measured and prospective active demand
+by maximum rather than adding the same work twice. This explicitly replaces the
+old I/O expansion policy: clearing reservations on every quiet sample admitted
+ever larger cohorts whose later CPU phases were not bounded by that sample.
+GEN13 reached38 active files and measured70% tree CPU despite its40% target.
+The reservation count follows logical capacity and other-app headroom, without
+an arbitrary fixed worker setting. One file can still be admitted on a1/2-core
+host; Windows Job CPU control governs it too. POSIX admission remains cooperative
+and may overshoot. No platform is given a per-instant sample guarantee.
+Running valid tests are not killed or automatically retried for overshooting.
+Windows schedules CPU duty through the existing Job's cap, not manual suspension.
 An accounting failure drains existing work, persists successes and reports
 unstarted files without fabricating test failure/success.
 
