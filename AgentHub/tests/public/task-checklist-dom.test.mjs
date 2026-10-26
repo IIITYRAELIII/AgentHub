@@ -110,6 +110,65 @@ async function resetAction(page) {
   });
 }
 
+test("Task card loads history only when open and rejects late detail revisions and openings", async () => {
+  const { chromium } = await import("playwright");
+  const browser = await launchEdge(chromium);
+  try {
+    const page = await browser.newPage();
+    await openFixture(page);
+    const parent = task({ detailsDeferred: true, detailsRevision: "r1" });
+    const other = task({ id: "other", title: "Other Task", detailsDeferred: true, detailsRevision: "other-r1" });
+    await page.evaluate(values => {
+      window.AgentHubTaskBoard.setSnapshot({ tasks: values, workspaces: [],
+        columnOrder: [] });
+    }, [parent, other]);
+    assert.deepEqual(await page.evaluate(() => window.__boardActions), []);
+    await setBoard(page, [parent, other]);
+    const first = await page.evaluate(() => window.__boardActions.at(-1));
+    assert.equal(first.type, "read");
+    assert.equal(first.id, parent.id);
+    const full = { ...parent, detailsDeferred: undefined, workLog: [{
+      provider: "codex", threadId: "thread", turnId: "turn", status: "completed",
+      summary: "First history", createdAt: "2026-01-01T00:00:00.000Z", changedFiles: [],
+    }] };
+    await page.evaluate(({ request, value }) => window.AgentHubTaskBoard.showDetails({
+      ...request, result: { task: value },
+    }), { request: first, value: full });
+    assert.match(await page.locator("[data-task-card-work-log-entries]").innerText(), /First history/u);
+    const next = { ...parent, detailsRevision: "r2" };
+    await page.evaluate(value => window.AgentHubTaskBoard.setSnapshot({ tasks: value }), [next, other]);
+    const second = await page.evaluate(() => window.__boardActions.at(-1));
+    assert.equal(second.revision, "r2");
+    await page.evaluate(({ request, value }) => window.AgentHubTaskBoard.showDetails({
+      ...request, result: { task: value },
+    }), { request: first, value: full });
+    assert.doesNotMatch(await page.locator("[data-task-card-work-log-entries]").innerText(), /First history/u);
+    const updated = { ...full, detailsRevision: "r2", workLog: [{ ...full.workLog[0], summary: "Updated history" }] };
+    await page.evaluate(({ request, value }) => window.AgentHubTaskBoard.showDetails({
+      ...request, result: { task: value },
+    }), { request: second, value: updated });
+    assert.match(await page.locator("[data-task-card-work-log-entries]").innerText(), /Updated history/u);
+    await setBoard(page, [next, other], "other");
+    await page.evaluate(({ request, value }) => window.AgentHubTaskBoard.showDetails({
+      ...request, result: { task: value },
+    }), { request: second, value: updated });
+    assert.doesNotMatch(await page.locator("[data-task-card-work-log-entries]").innerText(), /Updated history/u);
+    await setBoard(page, [next, other]);
+    const reopened = await page.evaluate(() => window.__boardActions.at(-1));
+    assert.notEqual(reopened.opening, second.opening);
+    await page.evaluate(({ request, value }) => window.AgentHubTaskBoard.showDetails({
+      ...request, result: { task: value },
+    }), { request: second, value: updated });
+    assert.doesNotMatch(await page.locator("[data-task-card-work-log-entries]").innerText(), /Updated history/u);
+    await page.evaluate(({ request, value }) => window.AgentHubTaskBoard.showDetails({
+      ...request, result: { task: value },
+    }), { request: reopened, value: updated });
+    assert.match(await page.locator("[data-task-card-work-log-entries]").innerText(), /Updated history/u);
+  } finally {
+    await browser.close();
+  }
+});
+
 test("Task checklist performs text mutations and ordering through DOM controls", async () => {
   const { chromium } = await import("playwright");
   const browser = await launchEdge(chromium);

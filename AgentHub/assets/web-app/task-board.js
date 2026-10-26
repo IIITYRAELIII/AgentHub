@@ -2763,7 +2763,12 @@
         // Do not overwrite newer metadata, edits or another opening with it.
         return;
       }
+      const trace = window.AgentHubCommandTrace;
+      const commandId = trace?.objectId(result);
+      const started = trace?.now();
       renderOpenTaskCard();
+      if (commandId) trace.afterPaint("ui-render", "task-card-details", started, commandId,
+        { count: result.task?.workLog?.length || 0 });
     },
     showDiff({ id, generation, result, error }) {
       if (id !== state.openTaskId || generation !== diffGeneration || !taskCardDiff) return;
