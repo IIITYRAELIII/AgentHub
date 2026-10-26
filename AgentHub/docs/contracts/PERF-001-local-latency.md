@@ -573,6 +573,15 @@ on read; non-ledger records remain in the snapshot. A failed writer revision
 rejects only its covered waiters and must not poison a later save.
 
 Periodic Test Contour journal comparison and full Mini App journal publication
+must remain separate from card-list reads. Board snapshots carry only card
+metadata/checklist state and per-Task detail revision counters, not work logs or
+Git details. The existing journal/binding write transactions maintain the derived
+Task-turn SQL projection once per addressed identity; one atomic migration covers
+retained history. Opening a card performs one exact details read, fenced against
+another opening and newer revisions; closing releases the full history. See
+ADR-HUB-350-card-history-projection.
+
+Periodic Test Contour journal comparison and full Mini App journal publication
 must not scan, materialize, stringify or compress the journal on the Hub event
 loop. Test Contour comparison runs in an isolated worker. Production journal
 publication reads one SQLite snapshot and performs JSON encoding plus gzip in an

@@ -64,6 +64,7 @@ const CONTROL_ACTIONS = new Set([
   "archive-task",
   "archive-stream",
   "task-diff",
+  "board-task-read",
   "board-task-diff",
   "cancel-run",
   "resolve-approval",

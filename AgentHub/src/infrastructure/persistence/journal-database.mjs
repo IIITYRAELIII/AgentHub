@@ -12,6 +12,7 @@ import {
 import { usageTurnFactId } from "../../domain/usage-facts.mjs";
 import { applyLedgerDelta } from "./incremental-ledger.mjs";
 import { readJsonWithBackup } from "./state-store.mjs";
+import { configureTaskTurnProjection } from "./task-turn-projection.mjs";
 
 const SCHEMA_VERSION = 3;
 const LEDGER_VERSION = 9;
@@ -154,6 +155,7 @@ function configure(database) {
         INSERT INTO journal_projection_dirty VALUES (COALESCE(OLD.completed_at_ms, -9007199254740991)) ON CONFLICT DO NOTHING;
       END;
     `);
+    configureTaskTurnProjection(database);
     database.exec("COMMIT");
   } catch (error) {
     try {

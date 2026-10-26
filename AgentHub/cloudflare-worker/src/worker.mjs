@@ -139,6 +139,7 @@ const CONTROL_ACTIONS = new Set([
   "revoke-device",
   "message-pin-set",
   "message-pins-clear",
+  "board-task-read",
   "board-task-ingest",
   "board-task-attachment-add",
 ]);
