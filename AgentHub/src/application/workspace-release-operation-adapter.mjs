@@ -1,3 +1,4 @@
+import { effectiveReleaseTaskIds } from "../domain/release-operation.mjs";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { selectedCompositionFields, selectedCompositionIdentity } from "../domain/task-selected-composition.mjs";
@@ -66,7 +67,7 @@ export class WorkspaceReleaseOperationAdapter {
       workspaceId: operation.workspaceId,
       operationId: operation.operationId,
       generation,
-      taskIds: operation.authorization.taskIds,
+      taskIds: effectiveReleaseTaskIds(operation),
       previousSelectedResults: operation.selectedResults,
       approvedRepositories: approvedRepositories(operation),
       ...(changelogContent ? { changelogContent } : {}),
@@ -101,6 +102,22 @@ export class WorkspaceReleaseOperationAdapter {
     };
   }
 
+  withTaskSelection({ operation, taskIds, commit }) {
+    return this.releasePreflight.withAwaitTransition(operation.workspaceId, async () => {
+      const capture = async () => {
+        const results = await this.releasePreflight.operationSelection({ workspaceId: operation.workspaceId, taskIds });
+        if (JSON.stringify([...new Set(results.map(item => item.taskId))].sort()) !== JSON.stringify(taskIds)) {
+          throw new Error("Explicit Task membership contains unaccepted, unknown or foreign Tasks");
+        }
+        return results;
+      };
+      const results = await capture();
+      return commit(results, async () => {
+        if (selectionIdentity(await capture()) !== selectionIdentity(results)) throw new Error("Accepted Task selection changed before amendment CAS");
+      });
+    });
+  }
+
   withReviewedMainRecovery(input) {
     requiredMethod(this.releasePreflight, "withReviewedMainRecovery");
     return this.releasePreflight.withReviewedMainRecovery(input);
@@ -117,7 +134,7 @@ export class WorkspaceReleaseOperationAdapter {
     return this.releasePreflight.withAwaitTransition(operation.workspaceId, async () => {
       const current = await this.releasePreflight.operationSelection({
         workspaceId: operation.workspaceId,
-        taskIds: operation.authorization.taskIds,
+        taskIds: effectiveReleaseTaskIds(operation),
       });
       return selectionIdentity(current) === selectionIdentity(generation.selectedResults)
         ? reserve()

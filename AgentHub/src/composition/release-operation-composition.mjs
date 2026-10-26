@@ -1,3 +1,4 @@
+import { releaseTestPlans } from "../infrastructure/filesystem/release-test-inventory.mjs";
 import { ReleaseOperationService } from "../application/release-operation-service.mjs";
 import { ReleaseOperationCommandService } from "../application/release-operation-command-service.mjs";
 import { ReleaseOperationFinalization } from "../application/release-operation-finalization.mjs";
@@ -20,6 +21,8 @@ export function createReleaseOperationServices({
 } = {}) {
   const adapter = new WorkspaceReleaseOperationAdapter({ releasePreflight, publication, finalization });
   const operations = new ReleaseOperationService({
+    resolveTestPlans: releaseTestPlans,
+    withTaskSelection: input => adapter.withTaskSelection(input),
     store,
     compose: input => adapter.compose(input),
     validate: input => adapter.validate(input),

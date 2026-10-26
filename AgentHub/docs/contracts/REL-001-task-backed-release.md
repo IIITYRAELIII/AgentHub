@@ -2979,3 +2979,40 @@ does not claim a verified physical root. No monitor replacement/kill follows.
 The canonical artifact includes all required viewer files or refuses preparation.
 Affected checks: `tests/interfaces/release-progress-autostart.test.mjs` and the
 `release progress` scenarios in `tests/public/runtime-manager.test.mjs`.
+
+## Explicit test selection (ADR-HUB-351)
+
+An explicit typed selection is `all`, `include`, `exclude`, or `none`, with exact
+inventory IDs. Omission retains prescribed focused/full/quick behavior. Selection
+is separate from immutable initial release authorization. The same RM continue
+owner can append an idempotent request-addressed amendment under exact operation
+revision and prior-generation CAS after its original target readbacks prove
+not-applied and no live release owner remains. Unknown, partial, applied or active
+effects are not reset. The amendment retains prior failure, publication boundary
+and wait state; failed generations, receipts and authorization are not rewritten.
+
+The next composition freezes the full candidate inventory, selected/not-selected
+IDs and digest, amendment identity and exact repository candidates into its
+generation identity. The publication runner consumes that frozen plan and checks
+it against the candidate inventory. No explicit selection silently expands to
+focused/full/unknown-path validation. `none` dispatches no syntax, RC/contour, full,
+file test or Worker verification child. Artifact preparation, provenance, Git CAS,
+publication and runtime identity/readiness owners remain unchanged.
+
+The existing test runner filters before dependencies/accounting/children and keeps
+its cwd, isolation, shared-resource admission and per-file checkpoint owners. A
+manual run cannot inherit successful checkpoints from a different selection.
+Unselected IDs are reported `not-selected`; they create no PASS/cache entry.
+Publication identity, checkpoint scope and result retain the frozen plan. This is
+no second publisher, automatic release, GUI or global validation bypass.
+
+The same optional amendment can carry explicit `task_ids` (CLI `--task-ids=<JSON array>`).
+Only the existing Await/preflight owner verifies those exact IDs and accepted
+result/composition identities under its transition boundary, then rechecks them
+after publication readback and immediately before the operation CAS. Unknown,
+foreign, unaccepted, missing or changed membership refuses. Initial authorization
+is retained. Composition/reservation use the effective IDs; the next generation
+freezes `authorizedTaskIds` and must contain exactly those selected results. The
+existing Task-operation index retains historical membership for retrospective
+proof, while active correction wake filters by the effective set. No all-Await
+expansion, absorption, hidden source import or new publisher is implied.

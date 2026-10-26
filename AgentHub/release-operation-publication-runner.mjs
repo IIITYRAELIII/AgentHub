@@ -19,15 +19,19 @@ function requiredEnvironment(name) {
   return value;
 }
 
-export function releaseOperationPublicationArguments({ operation, candidate, saved } = {}) {
+export function releaseOperationPublicationArguments({ operation, generation, candidate, saved } = {}) {
+  const testPlan = generation?.testPlans?.find(item => path.resolve(item.repositoryRoot) === path.resolve(candidate.repositoryRoot))?.plan;
+  if (generation?.testPlans && !testPlan) throw new Error("Generation test plan does not cover this repository");
+  const mode = operation.authorization.validationMode;
+  if (!testPlan && !["full", "quick", "focused"].includes(mode)) throw new Error("Unsupported original validation mode");
   return [
     ...(saved && !["published", "succeeded"].includes(saved.status) ? ["--resume"] : []),
     "--workspace", operation.workspaceId,
     "--stream", operation.streamId,
     "--thread", operation.threadId,
     "--from", candidate.baseCommit,
-    operation.authorization.validationMode === "full" ? "--full-tests"
-      : operation.authorization.validationMode === "quick" ? "--quick" : "--validation=focused",
+    ...(testPlan ? [`--test-plan=${JSON.stringify(testPlan)}`] : [mode === "full" ? "--full-tests"
+      : mode === "quick" ? "--quick" : "--validation=focused"]),
   ];
 }
 
@@ -99,7 +103,7 @@ async function run() {
     runtimePublication: releaseOperationRuntimePublicationInput({ operation, generation, candidate }),
   });
   const saved = await journal.read();
-  const args = releaseOperationPublicationArguments({ operation, candidate, saved });
+  const args = releaseOperationPublicationArguments({ operation, generation, candidate, saved });
   const result = await publishChanged(args, {
     runtimeRoot,
     checkpoint,
@@ -119,6 +123,7 @@ async function run() {
     generation: generationNumber,
     targetId,
     candidate: generation.identitySha256,
+    ...(generation.testPlans ? { testPlans: generation.testPlans } : {}),
     revision: candidate.commit,
     publicationStatus: result.status,
     publicationRunId: publication?.runId ?? null,
