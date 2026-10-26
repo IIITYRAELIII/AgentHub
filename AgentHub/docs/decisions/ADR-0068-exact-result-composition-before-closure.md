@@ -2,6 +2,23 @@
 
 Status: accepted
 
+## Current results sharing an older integration (2026-10-26)
+
+Native selected composition merges exact Task results from agreed main. A shared
+older integration in several result histories is not itself the current result
+of any of those Tasks. Derive unambiguous integration owners first. An ambiguous
+historical integration may remain unassigned only if every claimant already has
+an independently owned integration naming its exact current result as a side
+parent. Omit that shared integration from all claimants' evidence; it contributes
+neither coverage nor candidate bytes. Preserve unique historical ownership and
+all repeated direct integrations. Missing current coverage, duplicate current
+ownership, ancestry-only coverage and foreign wrappers retain their refusals.
+
+This refines the former blanket ambiguity refusal for otherwise separately
+integrated current results. It does not authorize dev content, absorption, a
+changed Task base, a caller allowlist or mutation of historical receipts. The
+native selected-history and selected-content checks still own the release tree.
+
 The user requires prevention of selected-release composition failures in the
 current release, in addition to repair of the existing mixed history.
 

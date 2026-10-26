@@ -5342,7 +5342,9 @@ export class TaskGitWorkspaceService {
         integrationClaims.set(integration.commit, claims);
       }
     }
+    const integrationParents = new Map(firstParentHistory.map((entry) => [entry.commit, entry.parents]));
     const integrationOwners = new Map();
+    const sharedHistory = [];
     for (const [integrationCommit, claims] of integrationClaims) {
       if (claims.length === 1) {
         integrationOwners.set(integrationCommit, claims[0].taskId);
@@ -5352,12 +5354,25 @@ export class TaskGitWorkspaceService {
         claimant.taskId === candidate.taskId || claimant.lineage.has(candidate.resultCommit)
       )));
       if (nestedOwners.length !== 1) {
-        throw new Error(`dev integration ${integrationCommit} is ambiguously owned by Tasks ${claims
-          .map((claim) => claim.taskId).join(" and ")}`);
+        sharedHistory.push([integrationCommit, claims]);
+        continue;
       }
       integrationOwners.set(integrationCommit, nestedOwners[0].taskId);
     }
-    const integrationParents = new Map(firstParentHistory.map((entry) => [entry.commit, entry.parents]));
+    const ownsCurrentResult = (task) => task.integrations.some((integration) => (
+      integrationOwners.get(integration.commit) === task.taskId
+      && integrationParents.get(integration.commit).slice(1).includes(task.resultCommit)
+    ));
+    for (const [integrationCommit, claims] of sharedHistory) {
+      // A common historical prefix is not another integration of each current
+      // Task. Leave it unassigned only after every claimant independently proves
+      // its own exact current result in an unambiguous dev integration. Ancestry,
+      // equal trees and foreign wrapper integrations cannot supply that proof.
+      if (!claims.every(ownsCurrentResult)) {
+        throw new Error(`dev integration ${integrationCommit} is ambiguously owned by Tasks ${claims
+          .map((claim) => claim.taskId).join(" and ")}`);
+      }
+    }
     for (const task of resolvedTasks) {
       // Dev ancestry alone can come from another Task's nested merge while this
       // Task's effective integrations still carry only an earlier result.

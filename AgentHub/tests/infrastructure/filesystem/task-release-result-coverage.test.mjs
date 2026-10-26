@@ -160,3 +160,83 @@ test("equal bytes carried only by a second-parent Task do not grant first-parent
   await f.integrate(await git(other.projectRoot, "rev-parse", "HEAD"));
   await assert.rejects(f.evidence(resultCommit), /no exact first-parent integration/u);
 });
+
+test("shared historical integrations do not compete with three separately owned current results", async (t) => {
+  const f = await fixture(t);
+  await writeFile(path.join(f.task.projectRoot, "shared.txt"), "shared historical context\n");
+  const shared = await commit(f.task.projectRoot, "shared history");
+  const historical = await f.integrate(shared);
+  const second = await f.service.prepare({ taskId: otherId, projectRoot: f.primary });
+  const thirdId = "91000000-0000-0000-0000-000000000003";
+  const third = await f.service.prepare({ taskId: thirdId, projectRoot: f.primary });
+  await git(second.projectRoot, "merge", "--ff-only", shared);
+  await git(third.projectRoot, "merge", "--ff-only", shared);
+  await writeFile(path.join(f.task.projectRoot, "first.txt"), "first selected change\n");
+  const firstResult = await commit(f.task.projectRoot, "first current result");
+  const firstIntegration = await f.integrate(firstResult);
+  await git(second.projectRoot, "merge", "--ff-only", firstResult);
+  await writeFile(path.join(second.projectRoot, "second.txt"), "second selected change\n");
+  const secondResult = await commit(second.projectRoot, "second current result");
+  const secondIntegration = await f.integrate(secondResult);
+  await writeFile(path.join(third.projectRoot, "third.txt"), "third selected change\n");
+  await commit(third.projectRoot, "third own change");
+  await git(third.projectRoot, "merge", "--no-ff", "--no-edit", firstResult);
+  const thirdResult = await git(third.projectRoot, "rev-parse", "HEAD");
+  const thirdIntegration = await f.integrate(thirdResult);
+  const tasks = [
+    { taskId, taskRevision: 2, projectRoot: f.primary, branch: f.task.branch, resultCommit: firstResult },
+    { taskId: otherId, taskRevision: 2, projectRoot: f.primary, branch: second.branch, resultCommit: secondResult },
+    { taskId: thirdId, taskRevision: 2, projectRoot: f.primary, branch: third.branch, resultCommit: thirdResult },
+  ];
+  const refs = await git(f.primary, "show-ref");
+  const evidence = await f.service.releaseIntegrationEvidence({ projectRoot: f.primary, tasks });
+  assert.deepEqual(evidence.tasks.map(task => task.resultCommit), [firstResult, secondResult, thirdResult]);
+  assert.deepEqual(evidence.tasks.map(task => task.integrations.map(entry => entry.commit)),
+    [[firstIntegration], [secondIntegration], [thirdIntegration]]);
+  assert.equal(evidence.tasks.some(task => task.integrations.some(entry => entry.commit === historical)), false);
+  assert.deepEqual(await f.service.releaseIntegrationEvidence({ projectRoot: f.primary, tasks }), evidence);
+  assert.equal(await git(f.primary, "show-ref"), refs);
+});
+
+test("shared history still refuses when one current result has only foreign integration coverage", async (t) => {
+  const f = await fixture(t);
+  await writeFile(path.join(f.task.projectRoot, "shared.txt"), "shared\n");
+  const shared = await commit(f.task.projectRoot, "shared history");
+  await f.integrate(shared);
+  const second = await f.service.prepare({ taskId: otherId, projectRoot: f.primary });
+  await git(second.projectRoot, "merge", "--ff-only", shared);
+  await writeFile(path.join(f.task.projectRoot, "first.txt"), "first\n");
+  const firstResult = await commit(f.task.projectRoot, "first current result");
+  await f.integrate(firstResult);
+  await writeFile(path.join(second.projectRoot, "second.txt"), "second\n");
+  const secondResult = await commit(second.projectRoot, "second current result");
+  const wrapper = await f.service.prepare({
+    taskId: "91000000-0000-0000-0000-000000000004", projectRoot: f.primary,
+  });
+  await writeFile(path.join(wrapper.projectRoot, "foreign.txt"), "not selected\n");
+  await commit(wrapper.projectRoot, "foreign wrapper");
+  await git(wrapper.projectRoot, "merge", "--no-ff", "--no-edit", secondResult);
+  await f.integrate(await git(wrapper.projectRoot, "rev-parse", "HEAD"));
+  await git(f.primary, "merge-base", "--is-ancestor", secondResult, "dev");
+  const refs = await git(f.primary, "show-ref");
+  await assert.rejects(f.service.releaseIntegrationEvidence({ projectRoot: f.primary, tasks: [
+    { taskId, taskRevision: 2, projectRoot: f.primary, branch: f.task.branch, resultCommit: firstResult },
+    { taskId: otherId, taskRevision: 2, projectRoot: f.primary, branch: second.branch, resultCommit: secondResult },
+  ] }), /ambiguously owned/u);
+  assert.equal(await git(f.primary, "show-ref"), refs);
+});
+
+test("two Tasks cannot use the same current result as independent integration ownership", async (t) => {
+  const f = await fixture(t);
+  await writeFile(path.join(f.task.projectRoot, "shared.txt"), "same current result\n");
+  const resultCommit = await commit(f.task.projectRoot, "same result");
+  await f.integrate(resultCommit);
+  const other = await f.service.prepare({ taskId: otherId, projectRoot: f.primary });
+  await git(other.projectRoot, "merge", "--ff-only", resultCommit);
+  const refs = await git(f.primary, "show-ref");
+  await assert.rejects(f.service.releaseIntegrationEvidence({ projectRoot: f.primary, tasks: [
+    { taskId, taskRevision: 2, projectRoot: f.primary, branch: f.task.branch, resultCommit },
+    { taskId: otherId, taskRevision: 2, projectRoot: f.primary, branch: other.branch, resultCommit },
+  ] }), /ambiguously owned/u);
+  assert.equal(await git(f.primary, "show-ref"), refs);
+});
