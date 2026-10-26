@@ -1,11 +1,11 @@
 import { mkdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { createHash, createHmac, randomUUID } from "node:crypto";
-import { gzip } from "node:zlib";
-import { promisify } from "node:util";
 import path from "node:path";
 import { attachmentUploadLimits } from "../../domain/attachment-upload-policy.mjs";
 import { downloadChunkedAttachment, readAttachmentResponse } from "./chunked-attachment-download.mjs";
 import { publishChunkedAttachmentView } from "./chunked-attachment-view.mjs";
+import { compressedJournalChunks, JournalPublicationWorker } from "./journal-publication.mjs";
+export { compressedJournalChunks } from "./journal-publication.mjs";
 
 import { JournalDatabase } from "../../infrastructure/persistence/journal-database.mjs";
 import {
@@ -36,7 +36,6 @@ import {
 
 const DEFAULT_TIMEOUT_MS = 15_000;
 const ATTACHMENT_TIMEOUT_MS = 60_000;
-const SYNC_CHUNK_BYTES = 1024 * 1024;
 const DEFAULT_CONTROL_POLL_MS = 1_000;
 const MAX_CONTROL_RETRY_MS = 60_000;
 const DEFAULT_SNAPSHOT_REFRESH_MS = 2_000;
@@ -83,7 +82,6 @@ const CONTROL_ACTIONS = new Set([
   "board-task-attachment-add",
 ]);
 const CONTROL_SOURCES = new Set(["telegram-mini-app", "trusted-device", "shared-dashboard-bot"]);
-const gzipAsync = promisify(gzip);
 
 export function signMiniAppSync(body, secret, timestamp = Math.trunc(Date.now() / 1_000)) {
   const bodyHash = createHash("sha256").update(body).digest("hex");
@@ -134,19 +132,6 @@ export function signMiniAppControlRequest({
   return { timestamp, signature };
 }
 
-export async function compressedJournalChunks(payload, {
-  chunkBytes = SYNC_CHUNK_BYTES,
-  syncId = null,
-} = {}) {
-  const compressed = await gzipAsync(Buffer.from(JSON.stringify(payload), "utf8"), { level: 9 });
-  const resolvedSyncId = syncId ?? `sync-${createHash("sha256").update(compressed).digest("hex")}`;
-  const chunks = [];
-  for (let offset = 0; offset < compressed.length; offset += chunkBytes) {
-    chunks.push(compressed.subarray(offset, Math.min(offset + chunkBytes, compressed.length)));
-  }
-  return { syncId: resolvedSyncId, chunks };
-}
-
 export async function journalSyncPayload(journalDatabase) {
   const payload = await journalDatabase?.snapshot?.();
   if (!payload) throw new Error("Agent Hub journal snapshot is unavailable");
@@ -167,6 +152,8 @@ function journalPayloadIdentity(payload) {
 export class MiniAppPublisher {
   #journalDatabase;
   #ownsJournalDatabase;
+  #journalPublication;
+  #recordCommandTrace;
   #publicUrl;
   #syncSecretFile;
   #retryMs;
@@ -235,10 +222,13 @@ export class MiniAppPublisher {
     controlReconciler = null,
     afterControlEffect = null,
     onControlResultDelivered = null,
+    recordCommandTrace = null,
   }) {
     this.#journalDatabase = journalDatabase
       ?? (journalDatabaseFile ? new JournalDatabase(journalDatabaseFile) : null);
     this.#ownsJournalDatabase = Boolean(!journalDatabase && journalDatabaseFile);
+    this.#journalPublication = journalDatabaseFile ? new JournalPublicationWorker(journalDatabaseFile) : null;
+    this.#recordCommandTrace = typeof recordCommandTrace === "function" ? recordCommandTrace : null;
     this.#publicUrl = String(publicUrl).replace(/\/+$/u, "");
     this.#syncSecretFile = path.resolve(syncSecretFile);
     this.#retryMs = Number(retrySeconds) * 1_000;
@@ -808,11 +798,40 @@ export class MiniAppPublisher {
         : null;
       const indexIdentity = journalPayloadIdentity(index);
       if (indexIdentity && indexIdentity === this.#publishedJournalIdentity) return true;
-      const payload = await journalSyncPayload(this.#journalDatabase);
+      // File-backed production publication never hydrates or encodes full
+      // journal fragments on the Hub loop. Injected in-memory sources retain
+      // their existing adapter contract; worker failure never falls back here.
+      let prepared = null;
+      if (this.#journalPublication) {
+        const commandId = `journal-publication:${createHash("sha256").update(indexIdentity).digest("hex")}`;
+        const operationSpanId = randomUUID();
+        const startedAtMs = Date.now();
+        const startedAt = performance.now();
+        const record = (outcome, measurements = {}) => {
+          try {
+            const pending = this.#recordCommandTrace?.({
+              commandId, stage: "journal-publication-prepare", outcome, transport: "server-runtime",
+              monotonicDurationMs: performance.now() - startedAt,
+              metadata: { operationSpanId, startedAtMs, ...measurements },
+            });
+            pending?.catch?.(() => {});
+          } catch { /* Diagnostics cannot change publication or retry outcomes. */ }
+        };
+        record("started");
+        try {
+          prepared = await this.#journalPublication.prepare();
+          record("succeeded", prepared.measurements);
+        } catch (error) {
+          record("failed");
+          throw error;
+        }
+      }
+      const payload = prepared ?? await journalSyncPayload(this.#journalDatabase);
       const payloadIdentity = journalPayloadIdentity(payload);
       if (payloadIdentity && payloadIdentity === this.#publishedJournalIdentity) return true;
+      if (this.#closed) return false;
       const secret = await this.#secret();
-      const { syncId, chunks } = await compressedJournalChunks(payload);
+      const { syncId, chunks } = prepared ?? await compressedJournalChunks(payload);
       for (const [index, body] of chunks.entries()) {
         const count = chunks.length;
         const encoding = "gzip";
@@ -958,6 +977,7 @@ export class MiniAppPublisher {
     await this.#snapshotSyncing?.catch(() => {});
     await this.#controlLoop?.catch(() => {});
     await this.#controlPolling?.catch(() => {});
+    await this.#journalPublication?.close();
     if (this.#ownsJournalDatabase) this.#journalDatabase.close();
   }
 }

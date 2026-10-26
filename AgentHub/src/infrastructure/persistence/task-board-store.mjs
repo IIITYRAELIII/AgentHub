@@ -1319,21 +1319,28 @@ export class TaskBoardStore {
     });
     // The journal owns terminal turns; exact Task bindings own membership.
     // Read scalar fields only: prompts, bodies and diffs do not belong in board snapshots.
+    // Materialize the small scalar tuple once; inlining would make each filter
+    // traverse the large retained record again on the synchronous snapshot path.
     if (this.#tableExists(database, "journal_records")) {
       const rows = database.prepare(`
-        SELECT DISTINCT j.provider, j.thread_id AS threadId, j.turn_id AS turnId,
-          j.task_thread_id AS taskThreadId, j.project_root AS projectRoot,
-          j.completed_at_ms AS completedAtMs,
-          substr(json_extract(j.record_json, '$.title'), 1, 2000) AS summary,
-          json_extract(j.record_json, '$.status') AS status
-        FROM hub_task_turn_bindings b
-        JOIN journal_records j ON j.provider = b.provider
-          AND j.thread_id = b.provider_thread_id AND j.turn_id = b.turn_id
-        WHERE b.task_id = ? AND json_valid(j.record_json)
-          AND j.completed_at_ms IS NOT NULL
-          AND coalesce(json_extract(j.record_json, '$.provisional'), 0) = 0
-          AND coalesce(json_extract(j.record_json, '$.aggregateOnly'), 0) = 0
-          AND json_extract(j.record_json, '$.status') IN ('completed', 'failed', 'cancelled', 'interrupted')
+        WITH bound_records AS MATERIALIZED (
+          SELECT DISTINCT j.provider, j.thread_id AS threadId, j.turn_id AS turnId,
+            j.task_thread_id AS taskThreadId, j.project_root AS projectRoot,
+            j.completed_at_ms AS completedAtMs,
+            json_extract(j.record_json, '$.title', '$.status', '$.provisional', '$.aggregateOnly') AS scalars
+          FROM hub_task_turn_bindings b
+          JOIN journal_records j ON j.provider = b.provider
+            AND j.thread_id = b.provider_thread_id AND j.turn_id = b.turn_id
+          WHERE b.task_id = ? AND json_valid(j.record_json)
+            AND j.completed_at_ms IS NOT NULL
+        )
+        SELECT provider, threadId, turnId, taskThreadId, projectRoot, completedAtMs,
+          substr(json_extract(scalars, '$[0]'), 1, 2000) AS summary,
+          json_extract(scalars, '$[1]') AS status
+        FROM bound_records
+        WHERE coalesce(json_extract(scalars, '$[2]'), 0) = 0
+          AND coalesce(json_extract(scalars, '$[3]'), 0) = 0
+          AND json_extract(scalars, '$[1]') IN ('completed', 'failed', 'cancelled', 'interrupted')
       `).all(taskId);
       const key = (row) => JSON.stringify([row.provider, row.threadId, row.turnId]);
       const current = new Map(rows.map((row) => [key(row), {

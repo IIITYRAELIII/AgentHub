@@ -1,5 +1,16 @@
 # PERF-001 — Local command latency
 
+## SQLite capture deadline coverage
+
+The process-owned capture deadline begins before child launch and includes
+startup, IPC, read pinning, copying, hashing and confirmed termination. Reaching
+a later phase within 500 ms is not a separate startup guarantee. Tests of a
+particular blocked phase drive the existing parent timeout after that real IPC
+checkpoint, retaining actual SQLite pins, native termination and close checks.
+A separate unmocked 500 ms control verifies that an unready child is terminated
+before any capture phase. Production deadlines and failure precedence remain
+unchanged; phase-specific coverage cannot replace the real startup bound.
+
 ## Isolated Windows test-root cleanup
 
 ADR-HUB-314-owned-windows-cleanup permits the existing isolated test owner to

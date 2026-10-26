@@ -18,6 +18,7 @@ import {
   delay,
   diagnosticTail,
   E2eChildProcessOwner,
+  e2eFailureArtifactDirectory,
   e2eTimeoutMs,
   FakeTelegramApi,
   readJson,
@@ -98,6 +99,7 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   let currentStderr = "";
   let diagnosticStage = "initialization";
   let diagnosticTelegramMark = 0;
+  let orphanRecovery = null;
   const botOwner = new E2eChildProcessOwner({ label: "Telegram Agent Hub" });
 
   async function startBot() {
@@ -1045,7 +1047,9 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   telegram.pushCallback(enableOrphanAuto.callback_data, beforeOrphanMode.result);
   await telegram.waitForCall("answerCallbackQuery", (call) => call.body.text === "Автоподтверждение включено", { after: mark });
 
+  diagnosticStage = "orphaned auto-approval recovery";
   mark = telegram.calls.length;
+  diagnosticTelegramMark = mark;
   telegram.pushMessage("[orphan-approval] восстановление потерянного запроса");
   await waitForCodexAccepted(telegram, { after: mark });
   const orphanedBot = bot;
@@ -1056,8 +1060,16 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
     after: mark,
     timeoutMs: 15_000,
   });
-  await waitFor(async () => (await readJson(statePath)).activeRuns.length === 0,
-    "orphaned auto-approval recovery", 15_000);
+  await waitFor(async () => {
+    const runs = (await readJson(statePath)).activeRuns;
+    orphanRecovery = { observedAt: new Date().toISOString(), count: runs.length,
+      runs: runs.slice(0, 16).map(run => ({ id: run.id, provider: run.provider,
+        threadId: run.threadId, turnId: run.turnId, clientUserMessageId: run.clientUserMessageId,
+        observer: run.observer === true, status: run.status, activityUnknown: run.activityUnknown === true,
+        admissionReleased: run.admissionReleased === true,
+        providerStartState: run.providerStart?.state, providerStartTurnId: run.providerStart?.turnId })) };
+    return runs.length === 0;
+  }, "orphaned auto-approval recovery", 15_000);
 
   mark = telegram.calls.length;
   telegram.pushMessage("[crash-once] восстановление App Server");
@@ -1323,8 +1335,8 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
   assert.equal(stderr.includes("Unhandled asynchronous error"), false, stderr);
   assert.equal(stdout.includes("Agent Hub ready"), true, stdout);
   } catch (error) {
-    const evidenceDirectory = `${temporaryRoot}-failure-evidence`;
-    const [state, bindings, botLock, journalLock, journalSnapshot, journalLedger] = await Promise.all([
+    const evidenceDirectory = e2eFailureArtifactDirectory(AGENT_HUB_ROOT, temporaryRoot);
+    const [state, bindings, botLock, journalLock, journalSnapshot, journalLedger, providerState] = await Promise.all([
       readRuntimeState(dataDir, { legacyFile: statePath })
         .catch((readError) => ({ error: readError.message })),
       readMessageBindings(dataDir).catch((readError) => ({ error: readError.message })),
@@ -1332,6 +1344,12 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
       readInterprocessLockOwner(`${journalDatabaseFile}.lock`).catch((readError) => readError.message),
       journalDatabase.snapshot().catch((readError) => ({ error: readError.message })),
       journalDatabase.loadLedger().catch((readError) => ({ error: readError.message })),
+      readJson(codexStatePath).then(value => ({
+        requestCounts: Object.fromEntries(["turn/start", "thread/read", "thread/rollback", "initialize"]
+          .map(method => [method, value.requestCounts?.[method] ?? 0])),
+        threads: (value.threads ?? []).slice(-16).map(thread => ({ id: thread.id,
+          turns: (thread.turns ?? []).slice(-8).map(turn => ({ id: turn.id, status: turn.status })) })),
+      })).catch(readError => ({ error: readError.message })),
     ]);
     throw await captureE2eFailure({
       owner: botOwner,
@@ -1345,6 +1363,8 @@ test("bot routes tasks, live views, queues, parallel turns, failures and restart
         recentTelegramCalls: telegram.recentCalls(diagnosticTelegramMark, 24),
       },
       evidence: {
+        orphanRecovery,
+        providerState,
         state,
         messageBindings: bindings,
         botLock,
