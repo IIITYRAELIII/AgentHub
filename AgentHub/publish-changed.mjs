@@ -1,3 +1,6 @@
+import { normalizeReleaseTaskIds } from "./src/domain/release-operation.mjs";
+import { normalizeTestSelection, resolveTestSelection, verifyTestPlan } from "./src/domain/test-selection.mjs";
+import { discoverReleaseTestInventory, RELEASE_CHECK_IDS } from "./src/infrastructure/filesystem/release-test-inventory.mjs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { createHash } from "node:crypto";
@@ -126,13 +129,15 @@ export function classifyPublicationChanges(files) {
   return plan;
 }
 
-function focusedSteps(plan, {
+export function focusedSteps(plan, {
   fullTestCheckpointId = "",
   testContour = false,
   workerChangedFiles = null,
   quick = false,
   visualTests = false,
+  testPlan = null,
 } = {}) {
+  if (testPlan != null) return selectedPublicationSteps(plan, testPlan, { fullTestCheckpointId, workerChangedFiles });
   const releaseCandidateContour = plan.fullTests;
   const full = publicationSteps({
     skipTests: quick && plan.unknown.length > 0,
@@ -193,6 +198,28 @@ function focusedSteps(plan, {
   if (plan.runtime) steps.push(byLabel.get("Активация runtime-релиза"));
   if (plan.vscode) steps.push(byLabel.get("Установка расширения VS Code"));
   return steps.filter(Boolean);
+}
+
+export function selectedPublicationSteps(plan, testPlan, { fullTestCheckpointId = "", workerChangedFiles = null } = {}) {
+  verifyTestPlan(testPlan);
+  const selected = new Set(testPlan.selectedIds);
+  const files = testPlan.selectedIds.filter(id => !RELEASE_CHECK_IDS.includes(id));
+  const checks = [];
+  if (selected.has("check:release-candidate")) checks.push(npmStep(RELEASE_CANDIDATE_CONTOUR_LABEL,
+    ["run", "contour:verify", "--", "--require-installed", "--release-candidate"]));
+  if (selected.has("check:contour")) checks.push(npmStep("Тестовый контур Agent Hub", ["run", "contour:verify", "--", "--require-installed"]));
+  if (files.length) checks.push({ label: "Выбранные тесты Agent Hub", command: process.execPath,
+    args: ["test-suite.mjs", "selected", `--selection=${JSON.stringify({ mode: "include", ids: files })}`],
+    timeoutMs: null, idleTimeoutMs: 10 * 60 * 1000,
+    env: { AGENT_HUB_FULL_TEST_CHECKPOINT_ID: `${fullTestCheckpointId}:selection:${testPlan.identitySha256}` } });
+  const deployment = focusedSteps({ ...plan, fullTests: false }, { quick: true, workerChangedFiles })
+    .filter(step => step.label !== "Проверка синтаксиса Agent Hub"
+      && (step.label !== "Проверка Mini App Worker" || selected.has("check:worker")));
+  // Explicit worker verification is a selected check even on an unchanged worker.
+  if (selected.has("check:worker") && !deployment.some(step => step.label === "Проверка Mini App Worker")) {
+    deployment.push(npmStep("Проверка Mini App Worker", ["run", "worker:verify"]));
+  }
+  return [...checks, ...deployment];
 }
 
 export function needsVisualPublicationTests(files) {
@@ -280,12 +307,19 @@ export function parseChangedArguments(args, { requireOperationId = false } = {})
   let workspaceId = "";
   let streamId = "";
   let threadId = "";
+  let testSelection = null;
+  let testPlan = null;
+  let taskIds = null;
   for (let index = 0; index < args.length; index += 1) {
     if (args[index] === "--skip-restart") skipRestart = true;
     else if (args[index] === "--full-tests") fullTests = true;
     else if (args[index] === "--test-contour") testContour = true;
     else if (args[index] === "--quick" || args[index] === "--validation=quick") quick = true;
     else if (args[index] === "--validation=full") fullTests = true;
+    else if (args[index].startsWith("--task-ids=")) taskIds = normalizeReleaseTaskIds(JSON.parse(args[index].slice(11)));
+    else if (args[index] === "--validation=none") testSelection = normalizeTestSelection({ mode: "none", ids: [] });
+    else if (args[index].startsWith("--test-selection=")) testSelection = normalizeTestSelection(JSON.parse(args[index].slice(17)));
+    else if (args[index].startsWith("--test-plan=")) testPlan = verifyTestPlan(JSON.parse(args[index].slice(12)));
     else if (args[index] === "--validation=focused") { /* default validation */ }
     else if (args[index] === "--resume") resume = true;
     else if (args[index] === "--status") status = true;
@@ -299,6 +333,7 @@ export function parseChangedArguments(args, { requireOperationId = false } = {})
     else if (args[index] === "--from" && args[index + 1]) from = args[++index];
     else throw new Error(`Неизвестный аргумент: ${args[index]}`);
   }
+  if ((testSelection || testPlan) && (quick || fullTests || testContour) || testSelection && testPlan) throw new Error("Choose one explicit test policy");
   if (quick && fullTests) throw new Error("Choose either quick or full validation");
   if (resume && status) throw new Error("Choose either --resume or --status");
   if (requireOperationId && (resume || status) && !operationId) {
@@ -306,7 +341,7 @@ export function parseChangedArguments(args, { requireOperationId = false } = {})
   }
   if (operationId && !resume && !status) throw new Error("--operation requires --resume or --status");
   return { from, skipRestart, fullTests, testContour, quick, resume, status, operationId,
-    workspaceId, streamId, threadId };
+    workspaceId, streamId, threadId, ...(taskIds ? { taskIds } : {}), ...(testSelection ? { testSelection } : {}), ...(testPlan ? { testPlan } : {}) };
 }
 
 export async function publishChanged(args = process.argv.slice(2), {
@@ -335,18 +370,23 @@ export async function publishChanged(args = process.argv.slice(2), {
   const publicationRoot = path.resolve(repositoryRoot);
   return exclusive(async () => {
     const options = parseChangedArguments(args);
+    const inventory = options.testPlan || options.testSelection ? await discoverReleaseTestInventory(path.join(publicationRoot, "AgentHub")) : null;
+    let testPlan = options.testPlan ? verifyTestPlan(options.testPlan, inventory)
+      : options.testSelection ? resolveTestSelection(options.testSelection, inventory) : null;
     // Finalization may synchronize repository refs before its reply reaches the
     // publisher. Explicit resume owns the saved run and must not prepare or
     // deploy another candidate.
     const pending = options.resume ? await journal?.read?.() : null;
     if (pending?.progress?.publicationState) {
       const identity = pending.identity;
+      if (!testPlan && identity.testPlan) testPlan = verifyTestPlan(identity.testPlan, await discoverReleaseTestInventory(path.join(publicationRoot, "AgentHub")));
+      if (JSON.stringify(testPlan) !== JSON.stringify(identity.testPlan ?? null)) throw new Error("Resume test selection differs from saved publication");
       if (identity?.worktreeRoot !== publicationRoot || identity?.runtimeRoot !== runtimeRoot) {
         throw new Error("No matching publication candidate to resume");
       }
       if (options.from && options.from !== identity.from) throw new Error("Resume source revision differs from the saved publication");
       const explicitMode = args.some((arg) => arg === "--full-tests" || arg === "--quick" || arg.startsWith("--validation="));
-      const requestedMode = options.fullTests ? "full" : options.quick ? "quick" : "focused";
+      const requestedMode = testPlan ? testPlan.selection.mode : options.fullTests ? "full" : options.quick ? "quick" : "focused";
       if ((explicitMode && requestedMode !== identity.validationMode)
         || (options.workspaceId && options.workspaceId !== identity.workspaceId)
         || (options.testContour && !identity.testContour)) {
@@ -396,17 +436,22 @@ export async function publishChanged(args = process.argv.slice(2), {
     if (options.resume && options.from && options.from !== savedIdentity.from) {
       throw new Error("Resume source revision differs from the saved publication");
     }
+    if (sameCandidate && !testPlan && !options.testSelection && !args.some(arg => arg === "--full-tests" || arg === "--quick" || arg.startsWith("--validation=")) && savedIdentity.testPlan) {
+      testPlan = verifyTestPlan(savedIdentity.testPlan, await discoverReleaseTestInventory(path.join(publicationRoot, "AgentHub")));
+    }
+    if (options.resume && JSON.stringify(testPlan) !== JSON.stringify(savedIdentity.testPlan ?? null)) throw new Error("Resume test selection differs from saved publication");
     if (sameCandidate && !options.workspaceId) options.workspaceId = savedIdentity.workspaceId ?? "";
     const explicitValidation = args.some((arg) => arg === "--full-tests" || arg === "--quick" || arg.startsWith("--validation="));
-    if (sameCandidate && !explicitValidation && savedIdentity.validationMode) {
+    if (sameCandidate && !testPlan && !explicitValidation && savedIdentity.validationMode) {
       options.fullTests = savedIdentity.validationMode === "full";
       options.quick = savedIdentity.validationMode === "quick";
       options.testContour ||= savedIdentity.testContour === true;
     }
     const state = await readState();
-    const requestedMode = options.fullTests ? "full" : options.quick ? "quick" : "focused";
+    const requestedMode = testPlan ? testPlan.selection.mode : options.fullTests ? "full" : options.quick ? "quick" : "focused";
     if (sameCandidate && ["succeeded", "published"].includes(saved.status)
       && state?.revision === head && savedIdentity.validationMode === requestedMode
+      && JSON.stringify(savedIdentity.testPlan ?? null) === JSON.stringify(testPlan)
       && savedIdentity.workspaceId === options.workspaceId
       && savedIdentity.testContour === options.testContour
       && (!options.from || options.from === savedIdentity.from)) {
@@ -421,9 +466,9 @@ export async function publishChanged(args = process.argv.slice(2), {
     if (!from) throw new Error("Нет исходной точки публикации. Сначала выполните npm run publish:all или укажите --from <commit>.");
     const files = await diff(from, { cwd: publicationRoot });
     const plan = classifyPublicationChanges(files);
-    if (options.fullTests) plan.fullTests = true;
-    if (plan.unknown.length && !options.quick) plan.fullTests = true;
-    if (plan.unknown.length) console.warn(`Неизвестные пути требуют публикации всех компонентов${options.quick ? " с выбранной quick-проверкой" : " с полными тестами"}: ${plan.unknown.join(", ")}`);
+    if (!testPlan && options.fullTests) plan.fullTests = true;
+    if (!testPlan && plan.unknown.length && !options.quick) plan.fullTests = true;
+    if (!testPlan && plan.unknown.length) console.warn(`Неизвестные пути требуют публикации всех компонентов${options.quick ? " с выбранной quick-проверкой" : " с полными тестами"}: ${plan.unknown.join(", ")}`);
     if (plan.worker) await ensureWorkerDependency();
     const fullTestCheckpointId = createHash("sha256")
       .update(JSON.stringify({ mode: "changed", from }))
@@ -436,12 +481,14 @@ export async function publishChanged(args = process.argv.slice(2), {
       workerChangedFiles,
       quick: options.quick,
       visualTests: needsVisualPublicationTests(files),
+      testPlan,
     }), files, publicationRoot);
     const candidateRoot = path.join(publicationRoot, "AgentHub");
     steps = steps.map((step) => ({ ...step, cwd: step.cwd ?? candidateRoot }));
     const identity = {
       mode: "changed", from, revision: head, worktreeRoot: publicationRoot, runtimeRoot, files,
-      validationMode: plan.fullTests ? "full" : options.quick ? "quick" : "focused",
+      validationMode: testPlan ? testPlan.selection.mode : plan.fullTests ? "full" : options.quick ? "quick" : "focused",
+      ...(testPlan ? { testPlan } : {}),
       testContour: options.testContour,
       workspaceId: options.workspaceId,
       labels: steps.map((step) => step.label),
@@ -460,6 +507,7 @@ export async function publishChanged(args = process.argv.slice(2), {
       && savedIdentity.from === identity.from
       && JSON.stringify(savedIdentity.files) === JSON.stringify(identity.files)
       && JSON.stringify(savedIdentity.labels) === JSON.stringify(identity.labels)
+      && JSON.stringify(savedIdentity.testPlan ?? null) === JSON.stringify(testPlan)
       && savedIdentity.validationMode === identity.validationMode
       && savedIdentity.workspaceId === identity.workspaceId
       && savedIdentity.testContour === identity.testContour;
@@ -476,6 +524,7 @@ export async function publishChanged(args = process.argv.slice(2), {
           from,
           runtimeRoot,
           validationMode: identity.validationMode,
+          ...(testPlan ? { testPlan } : {}),
         },
         identity,
         journal,
@@ -488,6 +537,7 @@ export async function publishChanged(args = process.argv.slice(2), {
           files,
           plan,
           validationMode: identity.validationMode,
+          ...(testPlan ? { testPlan } : {}),
         },
         journal, checkpoint, needsRestart: plan.runtimeRestart, skipRestart: options.skipRestart,
         readRuntimeStatus, verifyRestart, writeState, finalizePublication,
@@ -497,7 +547,7 @@ export async function publishChanged(args = process.argv.slice(2), {
       if (completion.handoff?.action === "yield_current_turn") {
         console.log("Safe restart подготовлен: завершите текущий агентский ход без новых операций.");
       }
-      return { files, plan, revision: head, ...completion };
+      return { files, plan, revision: head, ...(testPlan ? { testPlan } : {}), ...completion };
     } catch (error) {
       await journal?.finish("failed", error);
       throw error;
@@ -515,6 +565,8 @@ export async function runReleaseOperationCli(args = process.argv.slice(2), {
   pollMs = 1_000,
 } = {}) {
   const options = parseChangedArguments(args, { requireOperationId: true });
+  if (options.taskIds && !options.resume) throw new Error("Task membership amendment addresses an original operation with --resume");
+  if (options.testPlan) throw new Error("Frozen test plan belongs to the generation runner; use --test-selection");
   if (options.skipRestart || options.testContour) {
     throw new Error("ReleaseOperation owns restart and contour policy; legacy publication overrides are not supported");
   }
@@ -536,12 +588,19 @@ export async function runReleaseOperationCli(args = process.argv.slice(2), {
       throw new Error("release operation does not belong to this release clone or initiator");
     }
     if (options.status || operation.state === "done") return snapshot;
-    if (operation.state === "failed") {
+    if (operation.state === "failed" && !options.testSelection && !options.taskIds) {
       const error = new Error(operation.lastError?.message ?? "release operation failed");
       error.code = operation.lastError?.code ?? "RELEASE_OPERATION_FAILED";
       throw error;
     }
-    await control("release-operation-continue", { operationId: options.operationId }, { runtimeRoot });
+    const amendment = options.testSelection || options.taskIds ? {
+      ...(options.testSelection ? { testSelection: options.testSelection } : {}),
+      ...(options.taskIds ? { taskIds: options.taskIds } : {}), expectedRevision: operation.revision, expectedGeneration: operation.currentGeneration,
+      requestId: `release-tests-${createHash("sha256").update(JSON.stringify({ operationId: operation.operationId, revision: operation.revision,
+        generation: operation.currentGeneration, selection: options.testSelection ?? null, taskIds: options.taskIds ?? null })).digest("hex")}`,
+    } : {};
+    const continued = await control("release-operation-continue", { operationId: options.operationId, ...amendment }, { runtimeRoot, ...(amendment.requestId ? { commandId: amendment.requestId } : {}) });
+    if (continued?.accepted === false) throw new Error(`Release continuation refused: ${continued.reason}`);
     let lastRevision = -1;
     for (;;) {
       const current = await control("release-operation-get", { operationId: options.operationId }, { runtimeRoot });
@@ -606,10 +665,12 @@ export async function runReleaseOperationCli(args = process.argv.slice(2), {
     target,
     validationMode,
     releaseMetadata,
+    ...(options.testSelection ? { testSelection: options.testSelection } : {}),
   };
   const requestId = `release-cli-${createHash("sha256").update(JSON.stringify(requestIdentity)).digest("hex")}`;
   const acknowledgement = await control("release-operation-run", {
     requestId, workspaceId, streamId, threadId, taskIds, approvedTargets: [target], validationMode, releaseMetadata,
+    ...(options.testSelection ? { testSelection: options.testSelection } : {}),
   }, { runtimeRoot, commandId: requestId });
   const operationId = String(acknowledgement?.operationId ?? "").trim();
   if (!operationId) throw new Error("release operation acknowledgement has no operation id");

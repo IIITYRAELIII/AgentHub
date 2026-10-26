@@ -6,6 +6,7 @@ import { selectedCompositionIdentity } from "../../domain/task-selected-composit
 
 import {
   createCandidateGeneration,
+  effectiveReleaseTaskIds,
   createReleaseOperation,
   RELEASE_OPERATION_STATES,
   releaseIdentitySha256,
@@ -54,7 +55,7 @@ export function readNativePublishedSelectedComposition({ dataDir, preview, remot
       if (identitySha256 !== row.identity_sha256 || releaseIdentitySha256(contents) !== identitySha256) {
         throw new Error("Published native generation identity changed");
       }
-      if (JSON.stringify([...operation.authorization.taskIds].sort())
+      if (JSON.stringify([...(generation.authorizedTaskIds ?? operation.authorization.taskIds)].sort())
           !== JSON.stringify(generation.selectedResults.map(task => task.taskId).sort())) continue;
       const selected = generation.selectedResults.find(task => task.taskId === preview.taskId);
       if (!selected || selected.resultCommit !== preview.taskCommit
@@ -385,6 +386,7 @@ export class ReleaseOperationStore {
     event = null,
     emitEvent = true,
     reviewedMainRecovery = null,
+    testSelectionAmendment = null,
   } = {}) {
     const id = String(operationId ?? "").trim();
     if (!id) throw new TypeError("operationId is required");
@@ -422,10 +424,14 @@ export class ReleaseOperationStore {
             return receipt?.status !== "failed" || receipt.effect?.status !== "not_applied";
           })) throw new Error("Reviewed-main recovery requires terminal not-applied publication receipts");
         }
+        if (testSelectionAmendment && expectedRevision === current.revision
+            && database.prepare("SELECT 1 FROM release_candidate_generations WHERE operation_id=? AND generation=?")
+              .get(id, current.currentGeneration + 1)) throw new Error("Test selection cannot replace an immutable next generation");
         const result = transitionReleaseOperation(current, patch, {
           expectedRevision: expectedRevision ?? current.revision,
           updatedAt: this.now(),
           reviewedMainRecovery,
+          testSelectionAmendment,
         });
         if (!result.applied) {
           database.exec("ROLLBACK");
@@ -439,6 +445,10 @@ export class ReleaseOperationStore {
           id, current.revision,
         );
         if (update.changes !== 1) throw new Error("release operation revision conflict");
+        if (testSelectionAmendment) {
+          const insertTask = database.prepare("INSERT OR IGNORE INTO release_operation_tasks(operation_id, task_id) VALUES (?, ?)");
+          for (const taskId of effectiveReleaseTaskIds(result.operation)) insertTask.run(id, taskId);
+        }
         if (emitEvent) {
           writeEvent(database, result.operation, eventKind, event ?? {
             operationId: id,
@@ -637,7 +647,7 @@ export class ReleaseOperationStore {
       SELECT operation_json FROM release_operations
       WHERE operation_id IN (SELECT operation_id FROM release_operation_tasks WHERE task_id = ?)
       ORDER BY updated_at DESC
-    `).all(String(taskId)).map(operationFromRow).filter(Boolean));
+    `).all(String(taskId)).map(operationFromRow).filter(operation => operation && effectiveReleaseTaskIds(operation).includes(String(taskId))));
   }
 
   pendingEvents({ limit = 100 } = {}) {

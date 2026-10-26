@@ -1,3 +1,4 @@
+import { releaseTestPlans } from "../infrastructure/filesystem/release-test-inventory.mjs";
 import { execFile } from "node:child_process";
 import { createContourExternalEffects } from "../infrastructure/filesystem/test-contour-external-effects.mjs";
 import { reconcileContourAwareStartupGit, refreshContourAwareExchangeRate } from "../application/contour-effect-operations.mjs";
@@ -527,6 +528,8 @@ export async function createHubInfrastructure({
     finalization: releaseOperationFinalization,
   });
   const releaseOperations = new ReleaseOperationService({
+    resolveTestPlans: releaseTestPlans,
+    withTaskSelection: input => releaseOperationAdapter.withTaskSelection(input),
     store: releaseOperationStore,
     compose: (input) => releaseOperationAdapter.compose(input),
     validate: (input) => releaseOperationAdapter.validate(input),

@@ -718,3 +718,11 @@ message and provider critical paths. It inspects only the source Task's bounded
 managed repository set and the survivor's exact stored result references while
 holding existing Await, Task and repository leases. It introduces no startup
 scan, background reconciliation, provider request or second lifecycle owner.
+
+## Explicit selection before test admission
+
+ADR-HUB-351 selection filters the existing file inventory before creating the
+resource-accounting owner or starting a child. `none` has no dependency/accounting
+work. Selected files retain current isolation, shared-resource admission and the
+40% cooperative CPU/RAM policy. Selection is not cacheability and not a resource
+waiver. Inventory listing/plan resolution is read-only; it runs no test.
