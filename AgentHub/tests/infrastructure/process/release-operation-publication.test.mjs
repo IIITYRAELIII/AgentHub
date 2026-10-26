@@ -435,3 +435,62 @@ test("publication classifies a failed pre-effect pipeline step as validation fai
       && error.failedStep === "Контракт интерфейсов Agent Hub",
   );
 });
+
+test("publication forwards its stable dependency root to frozen Worker builds", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "release-worker-dependency-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const { readFile } = await import("node:fs/promises");
+  const resolver = new URL("../../../wrangler-runner.mjs", import.meta.url).href;
+  for (const mode of ["default", "explicit", "mismatch"]) {
+    const directory = path.join(root, mode);
+    const ownerRoot = path.join(directory, "stable-owner");
+    const candidateRoot = path.join(directory, "candidate");
+    const dependencyRoot = mode === "explicit" ? path.join(directory, "configured-dependencies") : ownerRoot;
+    const installedVersion = mode === "mismatch" ? "2.3.5" : "2.3.4";
+    const expectedEntry = path.join(dependencyRoot, "node_modules", "wrangler", "bin", "wrangler.js");
+    await mkdir(path.dirname(expectedEntry), { recursive: true });
+    await mkdir(path.join(candidateRoot, "AgentHub"), { recursive: true });
+    await mkdir(ownerRoot, { recursive: true });
+    await writeFile(path.join(candidateRoot, "AgentHub", "package.json"), JSON.stringify({ devDependencies: { wrangler: "2.3.4" } }));
+    await writeFile(path.join(dependencyRoot, "node_modules", "wrangler", "package.json"), JSON.stringify({ version: installedVersion }));
+    await writeFile(expectedEntry, "process.stdout.write('synthetic pinned Worker CLI\\n');\n");
+    const operation = { operationId: `dependency-${mode}` };
+    const generation = { generation: 1, identitySha256: `dependency-${mode}-identity`, candidates: [{
+      repositoryRoot: candidateRoot, releaseRoot: candidateRoot, commit: "b".repeat(40), baseCommit: "a".repeat(40),
+    }] };
+    const target = { targetId: "production", kind: "agent-hub-publication", repositoryRoot: candidateRoot };
+    const executionRoot = path.join(directory, "data", "release-operation-executions", identity(`${operation.operationId}:1:production`));
+    const observation = path.join(directory, "observed.json");
+    const runnerFile = path.join(ownerRoot, "release-operation-publication-runner.mjs");
+    await writeFile(runnerFile, `
+      import { writeFile } from 'node:fs/promises';
+      import path from 'node:path';
+      import { resolveWrangler, runWrangler } from ${JSON.stringify(resolver)};
+      const entry = resolveWrangler({ root: process.cwd() });
+      await runWrangler(['--version'], { root: process.cwd() });
+      await writeFile(${JSON.stringify(observation)}, JSON.stringify({ entry, dependencyRoot: process.env.AGENT_HUB_DEPENDENCY_ROOT, cwd: process.cwd() }));
+      await writeFile(path.join(process.env.AGENT_HUB_RELEASE_EXECUTION_ROOT, 'result.json'), JSON.stringify({
+        operationId: process.env.AGENT_HUB_RELEASE_OPERATION_ID, generation: Number(process.env.AGENT_HUB_RELEASE_GENERATION),
+        targetId: process.env.AGENT_HUB_RELEASE_TARGET_ID, candidate: process.env.AGENT_HUB_RELEASE_CANDIDATE_IDENTITY,
+        status: 'applied', revision: ${JSON.stringify(generation.candidates[0].commit)},
+      }));
+    `);
+    const publication = new ReleaseOperationPublication({
+      dataDir: path.join(directory, "data"), runtimeRoot: path.join(directory, "runtime"), runnerFile,
+      environment: mode === "explicit" ? { AGENT_HUB_DEPENDENCY_ROOT: dependencyRoot } : {},
+      readPublicationStateImpl: async () => null, gitRemoteHeadImpl: async () => "a".repeat(40),
+      publicationRunStoreFactory: () => ({ read: async () => null }),
+    });
+    if (mode === "mismatch") {
+      await assert.rejects(publication.publish({ operation, generation, target }), /publication runner exited 1/u);
+      await assert.rejects(readFile(observation), { code: "ENOENT" });
+      assert.match(await readFile(path.join(executionRoot, "stderr.log"), "utf8"), /wrangler 2\.3\.4/u);
+    } else {
+      assert.equal((await publication.publish({ operation, generation, target })).status, "applied");
+      assert.deepEqual(JSON.parse(await readFile(observation, "utf8")), {
+        entry: expectedEntry, dependencyRoot, cwd: path.join(candidateRoot, "AgentHub"),
+      });
+      assert.match(await readFile(path.join(executionRoot, "stdout.log"), "utf8"), /synthetic pinned Worker CLI/u);
+    }
+  }
+});
