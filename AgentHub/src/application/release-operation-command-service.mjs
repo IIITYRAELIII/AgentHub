@@ -18,7 +18,7 @@ export class ReleaseOperationCommandService {
     this.taskBoard = taskBoard;
   }
 
-  start({ requestId, workspaceId, streamId, threadId, taskIds, validationMode, approvedTargets, releaseMetadata = null } = {}) {
+  start({ requestId, workspaceId, streamId, threadId, taskIds, validationMode, approvedTargets, releaseMetadata = null, testSelection = null } = {}) {
     const targetWorkspaceId = requiredText(workspaceId, "workspaceId");
     if (!this.workspaceCatalog.workspace(targetWorkspaceId)) throw new Error("Workspace not found");
     const selectedTaskIds = [...new Set((Array.isArray(taskIds) ? taskIds : [])
@@ -45,6 +45,7 @@ export class ReleaseOperationCommandService {
         taskIds: selectedTaskIds,
         validationMode: requiredText(validationMode, "validationMode"),
         approvedTargets: Array.isArray(approvedTargets) ? approvedTargets : [],
+        ...(testSelection != null ? { testSelection } : {}),
         ...(releaseMetadata ? { releaseMetadata } : {}),
       },
     });
@@ -54,7 +55,7 @@ export class ReleaseOperationCommandService {
     return this.releaseOperations.get(requiredText(operationId, "operationId"));
   }
 
-  continue({ operationId } = {}) {
-    return this.releaseOperations.continue(requiredText(operationId, "operationId"));
+  continue({ operationId, ...options } = {}) {
+    return this.releaseOperations.continue(requiredText(operationId, "operationId"), options);
   }
 }

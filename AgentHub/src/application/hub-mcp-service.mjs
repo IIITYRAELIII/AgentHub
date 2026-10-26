@@ -858,6 +858,9 @@ export class HubMcpService {
         workspace_id: { type: "string", description: "Defaults to the caller Workspace." },
         task_ids: { type: "array", minItems: 1, items: { type: "string" } },
         validation_mode: { type: "string", enum: ["focused", "full"] },
+        test_selection: { type: "object", additionalProperties: false, required: ["mode", "ids"], properties: {
+          mode: { type: "string", enum: ["all", "include", "exclude", "none"] }, ids: { type: "array", items: { type: "string" }, uniqueItems: true },
+        } },
         release_metadata: {
           type: "object",
           description: "Exact prepared CHANGELOG artifact identity; the existing release owner verifies its bytes before composition.",
@@ -893,6 +896,12 @@ export class HubMcpService {
       }, ["operation_id"]),
       tool("hub_release_continue", "Wake an existing waiting release operation without changing its original authorization or creating a new operation.", {
         operation_id: { type: "string" },
+        test_selection: { type: "object", additionalProperties: false, required: ["mode", "ids"], properties: {
+          mode: { type: "string", enum: ["all", "include", "exclude", "none"] }, ids: { type: "array", items: { type: "string" }, uniqueItems: true },
+        } },
+        task_ids: { type: "array", minItems: 1, uniqueItems: true, items: { type: "string" } },
+        expected_revision: { type: "integer", minimum: 1 },
+        expected_generation: { type: "integer", minimum: 1 },
         reviewed_main: { type: "object", additionalProperties: false, required: ["expectedRevision", "approvedRepositories"], properties: {
           expectedRevision: { type: "integer", minimum: 1 },
           approvedRepositories: { type: "array", minItems: 1, maxItems: 32, items: { type: "object", additionalProperties: false,
@@ -2197,6 +2206,7 @@ export class HubMcpService {
         taskIds: Array.isArray(args.task_ids) ? args.task_ids : [],
         validationMode: requiredText(args.validation_mode, "validation mode", 32),
         approvedTargets: Array.isArray(args.approved_targets) ? args.approved_targets : [],
+        ...(args.test_selection !== undefined ? { testSelection: args.test_selection } : {}),
         ...(args.release_metadata !== undefined ? { releaseMetadata: args.release_metadata } : {}),
       },
     });
@@ -2214,6 +2224,7 @@ export class HubMcpService {
     this.#workspace(context, snapshot.operation.workspaceId);
     return this.#releaseOperation().continue(operationId, {
       requestId: args.request_id, reviewedMain: args.reviewed_main,
+      testSelection: args.test_selection, taskIds: args.task_ids, expectedRevision: args.expected_revision, expectedGeneration: args.expected_generation,
     });
   }
 

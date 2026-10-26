@@ -655,3 +655,27 @@ bounded already-published-notes archive can substitute for a nonexistent process
 guard; every real guard still refuses. Drift remains UNKNOWN. The same durable
 workflow outcome settles the same receipt; repeated terminal reconciliation
 performs a read without re-composing or re-archiving.
+
+## Explicit release test-selection amendment
+
+`hub_release_run` optionally carries typed `test_selection` (`mode`, exact `ids`).
+`hub_release_continue` carries it with `expected_revision`, `expected_generation`
+and the existing original `request_id`. Existing genuine RM/Workspace checks and
+mutation receipts apply. The same release owner appends the ADR-HUB-351 amendment
+by CAS and composes a new immutable generation; original authorization, failed
+validation and receipts remain history. Same request with changed arguments
+refuses; same request replay reads its amendment without scheduling another run.
+Missing/stale CAS, active owner and unknown/partial/applied effects refuse. The
+reviewed-main recovery and selection amendment are separate original decisions,
+not combined unauthenticated approval flags.
+
+The same optional amendment can carry explicit `task_ids` (CLI `--task-ids=<JSON array>`).
+Only the existing Await/preflight owner verifies those exact IDs and accepted
+result/composition identities under its transition boundary, then rechecks them
+after publication readback and immediately before the operation CAS. Unknown,
+foreign, unaccepted, missing or changed membership refuses. Initial authorization
+is retained. Composition/reservation use the effective IDs; the next generation
+freezes `authorizedTaskIds` and must contain exactly those selected results. The
+existing Task-operation index retains historical membership for retrospective
+proof, while active correction wake filters by the effective set. No all-Await
+expansion, absorption, hidden source import or new publisher is implied.

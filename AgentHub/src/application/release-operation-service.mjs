@@ -1,3 +1,4 @@
+import { normalizeTestSelection } from "../domain/test-selection.mjs";
 import { randomUUID } from "node:crypto";
 
 import {
@@ -8,6 +9,9 @@ import {
   reviewedMainBinding,
   staleReviewedMainFailure,
   releaseApprovedTargets,
+  effectiveTestSelection,
+  effectiveReleaseTaskIds,
+  normalizeReleaseTaskIds,
 } from "../domain/release-operation.mjs";
 
 const DEFAULT_LEASE_MS = 30_000;
@@ -146,6 +150,8 @@ export class ReleaseOperationService {
     requestCorrection = null,
     cleanupGeneration = null,
     withReviewedMainRecovery = null,
+    resolveTestPlans = null,
+    withTaskSelection = null,
   } = {}) {
     for (const name of [
       "create", "get", "snapshot", "transition", "acquire", "heartbeat", "release",
@@ -188,6 +194,8 @@ export class ReleaseOperationService {
     this.requestCorrection = requestCorrection;
     this.cleanupGeneration = cleanupGeneration;
     this.withReviewedMainRecovery = withReviewedMainRecovery;
+    this.resolveTestPlans = resolveTestPlans;
+    this.withTaskSelection = withTaskSelection;
   }
 
   start({ requestId, workspaceId, streamId, threadId, authorization } = {}) {
@@ -244,6 +252,7 @@ export class ReleaseOperationService {
   }
 
   continue(operationId, options = {}) {
+    if (options.testSelection != null || options.taskIds != null) return this.#amendTestSelection(operationId, options);
     if (options.reviewedMain != null) return this.#recoverReviewedMain(operationId, options);
     const current = this.store.get(requiredText(operationId, "operationId"));
     if (!current) throw new Error("release operation was not found");
@@ -272,6 +281,66 @@ export class ReleaseOperationService {
     return { accepted: true, operationId: operation.operationId, state: operation.state, revision: operation.revision };
   }
 
+  async #amendTestSelection(operationId, { requestId, testSelection, taskIds, expectedRevision, expectedGeneration, reviewedMain }) {
+    if (reviewedMain != null) throw new Error("Use separate original amendments for reviewed main and test selection");
+    const current = this.store.get(requiredText(operationId, "operationId"));
+    if (!current) throw new Error("release operation was not found");
+    const requestArguments = { expectedRevision, expectedGeneration,
+      ...(testSelection == null ? {} : { testSelection: normalizeTestSelection(testSelection) }),
+      ...(taskIds == null ? {} : { taskIds: normalizeReleaseTaskIds(taskIds) }),
+    };
+    requiredText(requestId, "amendment requestId");
+    const previous = current.testSelectionAmendments?.find(item => item.requestId === requestId);
+    if (previous) {
+      // Omitted arguments belong to this original request, never to a later
+      // effective selection. Old records without explicit argument capture
+      // retain their saved outcome as that original boundary.
+      const selection = testSelection == null ? previous.selection : requestArguments.testSelection;
+      const selectedTaskIds = taskIds == null ? previous.taskIds : requestArguments.taskIds;
+      if (previous.priorRevision !== expectedRevision || previous.priorGeneration !== expectedGeneration
+          || previous.requestArguments != null && releaseIdentitySha256(previous.requestArguments) !== releaseIdentitySha256(requestArguments)
+          || releaseIdentitySha256(previous.selection) !== releaseIdentitySha256(selection)
+          || JSON.stringify(previous.taskIds) !== JSON.stringify(selectedTaskIds)) throw new Error("Amendment request identity changed");
+      return { accepted: true, duplicate: true, operationId, amendment: previous, revision: previous.priorRevision + 1 };
+    }
+    const selection = testSelection == null ? effectiveTestSelection(current) : requestArguments.testSelection;
+    const selectedTaskIds = taskIds == null ? effectiveReleaseTaskIds(current) : requestArguments.taskIds;
+    if (expectedRevision !== current.revision || expectedGeneration !== current.currentGeneration) {
+      return { accepted: false, reason: "stale-revision", operation: current };
+    }
+    if (current.owner || !["waiting", "failed"].includes(current.state) || current.currentGeneration < 1) {
+      return { accepted: false, reason: "ineligible", operation: current };
+    }
+    const generation = this.store.generation(operationId, current.currentGeneration);
+    if (!generation) throw new Error("Original generation is missing");
+    const commit = async (taskSelection = null, validateBeforeCommit = async () => {}) => {
+    const readbacks = [];
+    for (const target of releaseApprovedTargets(current)) {
+      const evidence = normalizeReadback(await this.readTarget({ operation: current, generation, target }));
+      if (evidence.status !== "not_applied") throw new Error(`Original publication effect is ${evidence.status}`);
+      readbacks.push({ targetId: target.targetId, generation: current.currentGeneration, evidence });
+    }
+    await validateBeforeCommit();
+    const contents = { requestId, requestArguments, selection, taskIds: selectedTaskIds, taskSelection, priorRevision: current.revision, priorGeneration: current.currentGeneration,
+      authorizationFingerprint: current.authorization.fingerprint,
+      priorFailure: { state: current.state, completedAt: current.completedAt, error: current.lastError },
+      priorPublicationEffects: current.publicationEffects, priorWaitReason: current.waitReason, priorResumeState: current.resumeState, readbacks };
+    const amendment = { ...contents, identitySha256: releaseIdentitySha256(contents) };
+    const result = this.store.transition(operationId, { state: "compose", currentStep: "compose", lastError: null,
+      publicationEffects: {}, nextAction: "compose the original release with explicit test selection" }, {
+      expectedRevision, testSelectionAmendment: amendment, eventKind: "operation.test-selection-amended",
+      event: { operationId, amendment },
+    });
+    if (result.applied) this.#schedule(operationId);
+    return { accepted: result.applied, reason: result.reason, operationId, revision: result.operation.revision, amendment };
+    };
+    if (taskIds != null) {
+      if (typeof this.withTaskSelection !== "function") throw new Error("Accepted Task selection owner is unavailable");
+      return this.withTaskSelection({ operation: current, taskIds: selectedTaskIds, commit });
+    }
+    return commit();
+  }
+
   async #recoverReviewedMain(operationId, { requestId, reviewedMain }) {
     const current = this.store.get(requiredText(operationId, "operationId"));
     if (!current) throw new Error("release operation was not found");
@@ -281,7 +350,7 @@ export class ReleaseOperationService {
     if (typeof requestId !== "string" || !requestId.trim()) throw new TypeError("Recovery requestId must be a primitive string");
     if (typeof this.withReviewedMainRecovery !== "function") throw new Error("Reviewed-main recovery verification is unavailable");
     return this.withReviewedMainRecovery({ workspaceId: current.workspaceId,
-      taskIds: current.authorization.taskIds, approvedRepositories: binding.approvedRepositories,
+      taskIds: effectiveReleaseTaskIds(current), approvedRepositories: binding.approvedRepositories,
       commit: async (authority, validateBeforeCommit) => {
         if (releaseIdentitySha256(authority.approvedRepositories) !== releaseIdentitySha256(binding.approvedRepositories)) {
           throw new Error("Reviewed-main verified repository binding changed");
@@ -572,7 +641,9 @@ export class ReleaseOperationService {
     const generationNumber = operation.currentGeneration + 1;
     const input = {
       authorization: operation.authorization,
+      ...(operation.testSelectionAmendments?.length ? { authorizedTaskIds: effectiveReleaseTaskIds(operation) } : {}),
       priorGeneration: operation.currentGeneration,
+      ...(effectiveTestSelection(operation) ? { testSelection: effectiveTestSelection(operation), amendment: operation.testSelectionAmendments?.at(-1)?.identitySha256 ?? null } : {}),
       ...(operation.reviewedMain ? { reviewedMain: operation.reviewedMain.identitySha256 } : {}),
     };
     const started = this.store.beginStep({
@@ -618,8 +689,12 @@ export class ReleaseOperationService {
     }
     try {
       const composed = await this.compose({ operation, generation: generationNumber });
+      if (effectiveTestSelection(operation) && typeof this.resolveTestPlans !== "function") throw new Error("Release test inventory owner is unavailable");
       const generation = createCandidateGeneration({
         ...composed,
+        ...(operation.testSelectionAmendments?.length ? { authorizedTaskIds: effectiveReleaseTaskIds(operation) } : {}),
+        ...(effectiveTestSelection(operation) ? { testPlans: await this.resolveTestPlans(composed.candidates, effectiveTestSelection(operation)),
+          testSelectionAmendmentId: operation.testSelectionAmendments?.at(-1)?.identitySha256 ?? null } : {}),
         operationId: operation.operationId,
         generation: generationNumber,
         supersedesGeneration: operation.currentGeneration || null,
@@ -650,7 +725,8 @@ export class ReleaseOperationService {
       operationId: operation.operationId,
       generation: generation.generation,
       stepId: "validate",
-      input: { candidate: generation.identitySha256, mode: operation.authorization.validationMode },
+      input: { candidate: generation.identitySha256, mode: operation.authorization.validationMode,
+        ...(generation.testPlans ? { testPlans: generation.testPlans } : {}) },
       expectedOwner: owner,
     });
     if (!started.created && started.receipt.status === "applied") {
