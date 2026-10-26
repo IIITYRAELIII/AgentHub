@@ -1,4 +1,4 @@
-import { effectiveReleaseTaskIds } from "../domain/release-operation.mjs";
+import { effectiveReleaseTaskIds, effectiveReleaseMetadata } from "../domain/release-operation.mjs";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { selectedCompositionFields, selectedCompositionIdentity } from "../domain/task-selected-composition.mjs";
@@ -62,7 +62,7 @@ export class WorkspaceReleaseOperationAdapter {
   }
 
   async compose({ operation, generation }) {
-    const changelogContent = await releaseMetadataBytes(operation.authorization.releaseMetadata);
+    const changelogContent = await releaseMetadataBytes(effectiveReleaseMetadata(operation));
     const prepared = await this.releasePreflight.prepareOperationGeneration({
       workspaceId: operation.workspaceId,
       operationId: operation.operationId,

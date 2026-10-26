@@ -12,6 +12,7 @@ import {
   effectiveTestSelection,
   effectiveReleaseTaskIds,
   normalizeReleaseTaskIds,
+  normalizedReleaseMetadata,
 } from "../domain/release-operation.mjs";
 
 const DEFAULT_LEASE_MS = 30_000;
@@ -272,7 +273,7 @@ export class ReleaseOperationService {
   }
 
   continue(operationId, options = {}) {
-    if (options.testSelection != null || options.taskIds != null) return this.#amendTestSelection(operationId, options);
+    if (options.testSelection != null || options.taskIds != null || options.releaseMetadata != null) return this.#amendTestSelection(operationId, options);
     if (options.reviewedMain != null) return this.#recoverReviewedMain(operationId, options);
     // Addressed observation also works while the original is waiting on an
     // external condition. It neither resumes nor publishes that condition.
@@ -314,13 +315,14 @@ export class ReleaseOperationService {
     }
   }
 
-  async #amendTestSelection(operationId, { requestId, testSelection, taskIds, expectedRevision, expectedGeneration, reviewedMain }) {
+  async #amendTestSelection(operationId, { requestId, testSelection, taskIds, releaseMetadata, expectedRevision, expectedGeneration, reviewedMain }) {
     if (reviewedMain != null) throw new Error("Use separate original amendments for reviewed main and test selection");
     const current = this.store.get(requiredText(operationId, "operationId"));
     if (!current) throw new Error("release operation was not found");
     const requestArguments = { expectedRevision, expectedGeneration,
       ...(testSelection == null ? {} : { testSelection: normalizeTestSelection(testSelection) }),
       ...(taskIds == null ? {} : { taskIds: normalizeReleaseTaskIds(taskIds) }),
+      ...(releaseMetadata == null ? {} : { releaseMetadata: normalizedReleaseMetadata(releaseMetadata) }),
     };
     requiredText(requestId, "amendment requestId");
     const previous = current.testSelectionAmendments?.find(item => item.requestId === requestId);
@@ -333,7 +335,8 @@ export class ReleaseOperationService {
       if (previous.priorRevision !== expectedRevision || previous.priorGeneration !== expectedGeneration
           || previous.requestArguments != null && releaseIdentitySha256(previous.requestArguments) !== releaseIdentitySha256(requestArguments)
           || releaseIdentitySha256(previous.selection) !== releaseIdentitySha256(selection)
-          || JSON.stringify(previous.taskIds) !== JSON.stringify(selectedTaskIds)) throw new Error("Amendment request identity changed");
+          || JSON.stringify(previous.taskIds) !== JSON.stringify(selectedTaskIds)
+          || releaseMetadata != null && (previous.releaseMetadata == null || releaseIdentitySha256(previous.releaseMetadata) !== releaseIdentitySha256(requestArguments.releaseMetadata))) throw new Error("Amendment request identity changed");
       return { accepted: true, duplicate: true, operationId, amendment: previous, revision: previous.priorRevision + 1 };
     }
     const selection = testSelection == null ? effectiveTestSelection(current) : requestArguments.testSelection;
@@ -354,7 +357,8 @@ export class ReleaseOperationService {
       readbacks.push({ targetId: target.targetId, generation: current.currentGeneration, evidence });
     }
     await validateBeforeCommit();
-    const contents = { requestId, requestArguments, selection, taskIds: selectedTaskIds, taskSelection, priorRevision: current.revision, priorGeneration: current.currentGeneration,
+    const contents = { requestId, requestArguments, selection, taskIds: selectedTaskIds, taskSelection,
+      ...(releaseMetadata == null ? {} : { releaseMetadata: requestArguments.releaseMetadata }), priorRevision: current.revision, priorGeneration: current.currentGeneration,
       authorizationFingerprint: current.authorization.fingerprint,
       priorFailure: { state: current.state, completedAt: current.completedAt, error: current.lastError },
       priorPublicationEffects: current.publicationEffects, priorWaitReason: current.waitReason, priorResumeState: current.resumeState, readbacks };

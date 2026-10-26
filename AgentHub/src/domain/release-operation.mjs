@@ -98,7 +98,7 @@ function normalizedTargets(value) {
   return targets;
 }
 
-function normalizedReleaseMetadata(value) {
+export function normalizedReleaseMetadata(value) {
   if (value == null) return null;
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("releaseMetadata must be an object");
   const sourcePath = requiredText(value.sourcePath, "release metadata source path");
@@ -481,6 +481,7 @@ export function normalizeTestSelectionAmendment(value, operation) {
       || contents.selection != null && releaseIdentitySha256(normalizeTestSelection(contents.selection)) !== releaseIdentitySha256(contents.selection)
       || releaseIdentitySha256(normalizeReleaseTaskIds(contents.taskIds)) !== releaseIdentitySha256(contents.taskIds)
       || contents.taskSelection != null && JSON.stringify([...new Set(contents.taskSelection.map(item => item.taskId))].sort()) !== JSON.stringify(contents.taskIds)
+      || contents.releaseMetadata != null && releaseIdentitySha256(normalizedReleaseMetadata(contents.releaseMetadata)) !== releaseIdentitySha256(contents.releaseMetadata)
       || contents.requestArguments != null && !validAmendmentRequest(contents)
       || !Array.isArray(contents.readbacks) || contents.readbacks.length !== operation.authorization.approvedTargets.length
       || operation.authorization.approvedTargets.some(target => contents.readbacks.filter(item => item.targetId === target.targetId
@@ -488,6 +489,14 @@ export function normalizeTestSelectionAmendment(value, operation) {
     throw new Error("Invalid original test selection amendment");
   }
   return structuredClone(value);
+}
+
+export function effectiveReleaseMetadata(operation) {
+  const amendments = operation.testSelectionAmendments ?? [];
+  for (let index = amendments.length - 1; index >= 0; index -= 1) {
+    if (amendments[index].releaseMetadata != null) return amendments[index].releaseMetadata;
+  }
+  return operation.authorization.releaseMetadata ?? null;
 }
 
 export function effectiveTestSelection(operation) {
@@ -519,8 +528,9 @@ function releaseTaskIdsAtBoundary(operation, revision, generation) {
 function validAmendmentRequest(contents) {
   const args = contents.requestArguments;
   return args && typeof args === "object" && !Array.isArray(args)
-    && Object.keys(args).every(key => ["expectedRevision", "expectedGeneration", "testSelection", "taskIds"].includes(key))
+    && Object.keys(args).every(key => ["expectedRevision", "expectedGeneration", "testSelection", "taskIds", "releaseMetadata"].includes(key))
     && args.expectedRevision === contents.priorRevision && args.expectedGeneration === contents.priorGeneration
     && (args.testSelection === undefined || releaseIdentitySha256(normalizeTestSelection(args.testSelection)) === releaseIdentitySha256(contents.selection))
-    && (args.taskIds === undefined || releaseIdentitySha256(normalizeReleaseTaskIds(args.taskIds)) === releaseIdentitySha256(contents.taskIds));
+    && (args.taskIds === undefined || releaseIdentitySha256(normalizeReleaseTaskIds(args.taskIds)) === releaseIdentitySha256(contents.taskIds))
+    && (args.releaseMetadata === undefined || releaseIdentitySha256(normalizedReleaseMetadata(args.releaseMetadata)) === releaseIdentitySha256(contents.releaseMetadata));
 }

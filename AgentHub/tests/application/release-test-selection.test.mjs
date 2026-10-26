@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { normalizeTestSelection, resolveTestSelection, verifyTestPlan } from "../../src/domain/test-selection.mjs";
-import { createCandidateGeneration, createReleaseOperation, restoreReleaseOperation, effectiveReleaseTaskIds, releaseIdentitySha256 } from "../../src/domain/release-operation.mjs";
+import { createCandidateGeneration, createReleaseOperation, restoreReleaseOperation, effectiveReleaseTaskIds, effectiveReleaseMetadata, releaseIdentitySha256 } from "../../src/domain/release-operation.mjs";
 import { ReleaseOperationService } from "../../src/application/release-operation-service.mjs";
 import { WorkspaceReleaseOperationAdapter } from "../../src/application/workspace-release-operation-adapter.mjs";
 import { ReleaseOperationStore } from "../../src/infrastructure/persistence/release-operation-store.mjs";
@@ -368,4 +368,52 @@ test("original replay of a retained amendment without request capture uses only 
   assert.deepEqual(replay.amendment, retained, "readback neither enriches nor rewrites the retained original");
   assert.deepEqual(f.store.snapshot("original"), before);
   assert.equal(f.scheduled.length, pending);
+});
+
+test("release metadata amendment preserves failed history, reopens and replays its exact original payload identity", async t => {
+  const f = await fixture(t);
+  const before = f.store.snapshot("original");
+  const metadata = { sourcePath: "new-notes.md", byteLength: 42, rawSha256: "a".repeat(64), canonicalSha256: "b".repeat(64) };
+  const first = { requestId: "new-release-notes", releaseMetadata: metadata,
+    testSelection: selection("none"), expectedRevision: before.operation.revision, expectedGeneration: 1 };
+  const accepted = await f.service.continue("original", first);
+  assert.equal(accepted.accepted, true);
+  assert.deepEqual(f.store.get("original").authorization, before.operation.authorization);
+  assert.deepEqual(f.store.generation("original", 1), before.generations[0]);
+  const reopened = new ReleaseOperationStore({ dataDir: f.root });
+  const restored = restoreReleaseOperation(JSON.parse(JSON.stringify(reopened.get("original"))));
+  assert.deepEqual(effectiveReleaseMetadata(restored), metadata);
+  const altered = structuredClone(restored);
+  altered.testSelectionAmendments[0].releaseMetadata.rawSha256 = "c".repeat(64);
+  assert.equal(restoreReleaseOperation(altered), null, "a changed metadata identity cannot restore with the old amendment digest");
+  f.scheduled.shift()();
+  await f.service.drain("original");
+  const current = f.store.get("original");
+  const later = { requestId: "later-selection-only", testSelection: selection("all"), expectedRevision: current.revision, expectedGeneration: 2 };
+  assert.equal((await f.service.continue("original", later)).accepted, true);
+  assert.deepEqual(effectiveReleaseMetadata(f.store.get("original")), metadata, "omission retains the prior notes rather than the initial artifact");
+  const snapshot = f.store.snapshot("original"), scheduled = f.scheduled.length;
+  assert.equal((await f.service.continue("original", first)).duplicate, true);
+  await assert.rejects(f.service.continue("original", { ...first, releaseMetadata: { ...metadata, rawSha256: "c".repeat(64) } }), /identity changed/);
+  await assert.rejects(f.service.continue("original", { ...first, releaseMetadata: undefined }), /identity changed/);
+  await assert.rejects(f.service.continue("original", { ...later, releaseMetadata: metadata }), /identity changed/);
+  assert.deepEqual(f.store.snapshot("original"), snapshot);
+  assert.equal(f.scheduled.length, scheduled);
+});
+
+test("metadata-only amendment retains effect/CAS guards and never upgrades a legacy original", async t => {
+  const f = await fixture(t);
+  const current = f.store.get("original");
+  const metadata = { sourcePath: "new-notes.md", byteLength: 42, rawSha256: "a".repeat(64), canonicalSha256: "b".repeat(64) };
+  const options = { requestId: "metadata-only", releaseMetadata: metadata, expectedRevision: current.revision, expectedGeneration: 1 };
+  assert.equal((await f.service.continue("original", { ...options, expectedRevision: current.revision - 1 })).reason, "stale-revision");
+  f.service.readTarget = async () => ({ status: "unknown" });
+  await assert.rejects(f.service.continue("original", options), /publication effect/);
+  assert.deepEqual(f.store.get("original"), current);
+  f.service.readTarget = async () => ({ status: "not_applied" });
+  const retained = amendedContents(current, "legacy-no-metadata", ["task"]);
+  assert.equal(f.store.transition("original", { state: "compose", currentStep: "compose", lastError: null, publicationEffects: {} },
+    { expectedRevision: current.revision, testSelectionAmendment: retained }).applied, true);
+  await assert.rejects(f.service.continue("original", { ...options, requestId: retained.requestId }), /identity changed/);
+  assert.equal(effectiveReleaseMetadata(f.store.get("original")), null);
 });

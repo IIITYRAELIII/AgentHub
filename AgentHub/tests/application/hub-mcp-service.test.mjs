@@ -2954,3 +2954,27 @@ test("HubMcpService exposes unconfirmed managed ownership as unknown and keeps t
   const streams = await service.call("hub_parallel_streams_list", { context_token: token });
   assert.equal(streams.streams.find(s => s.id === "stream-1").available, false);
 });
+
+test("HubMcpService forwards amended release notes with the same original selection/CAS and durable receipt", async context => {
+  const calls = [];
+  const { service, token } = await fixture(context, { releaseOperations: {
+    get: operationId => ({ operation: { operationId, workspaceId: "workspace-1", state: "waiting", revision: 699 } }),
+    continue: async (...args) => { calls.push(args); return { accepted: true, operationId: args[0] }; },
+    setEventDelivery() {},
+  } });
+  const metadata = { sourcePath: "new-consolidated-notes.md", byteLength: 42, rawSha256: "a".repeat(64), canonicalSha256: "b".repeat(64) };
+  const input = { context_token: token, request_id: "same-original-new-notes", operation_id: "original",
+    expected_revision: 699, expected_generation: 14, test_selection: { mode: "none", ids: [] },
+    task_ids: ["task-current"], release_metadata: metadata };
+  const schema = service.tools().find(item => item.name === "hub_release_continue").inputSchema;
+  assert.deepEqual(schema.properties.release_metadata.required, ["sourcePath", "byteLength", "rawSha256", "canonicalSha256"]);
+  assert.equal((await service.call("hub_release_continue", input)).accepted, true);
+  assert.equal((await service.call("hub_release_continue", input)).accepted, true);
+  assert.equal(calls.length, 1, "same original MCP receipt does not schedule another continuation");
+  assert.equal(calls[0][0], "original");
+  assert.deepEqual(calls[0][1].releaseMetadata, metadata);
+  assert.deepEqual(calls[0][1].testSelection, input.test_selection);
+  assert.deepEqual(calls[0][1].taskIds, input.task_ids);
+  assert.equal(calls[0][1].expectedRevision, 699);
+  assert.equal(calls[0][1].expectedGeneration, 14);
+});
