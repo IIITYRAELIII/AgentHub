@@ -40,6 +40,10 @@ export class DesktopTaskBoardController {
     };
   }
 
+  read({ id } = {}) {
+    return { task: this.taskBoard.task(id) };
+  }
+
   async diff({ id } = {}) {
     const task = this.taskBoard.task(id);
     if (!this.taskGitWorkspaces) throw new Error("Просмотр Git diff недоступен");

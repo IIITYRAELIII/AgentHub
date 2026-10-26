@@ -4168,6 +4168,13 @@ agentHub.on("directory:browse", ({ initialPath, resolve, reject }) => {
 });
 document.addEventListener("agenthub:board-action", (event) => {
   const detail = event.detail ?? {};
+  if (detail.type === "read") {
+    void control("board-task-read", { id: detail.id }).then(
+      result => window.AgentHubTaskBoard.showDetails({ ...detail, result }),
+      error => window.AgentHubTaskBoard.showDetails({ ...detail, error: String(error?.message ?? error) }),
+    );
+    return;
+  }
   if (detail.type === "diff") {
     void control("board-task-diff", { id: detail.id }).then(
       (result) => window.AgentHubTaskBoard.showDiff({ ...detail, result }),

@@ -93,8 +93,8 @@ export class TaskBoardService {
     return task;
   }
 
-  snapshot() {
-    return this.store.list().map((task) => {
+  snapshot({ includeDetails = false } = {}) {
+    return this.store.list({ includeDetails }).map((task) => {
       const sourceDetails = { ...(task.sourceDetails ?? {}) };
       const attachments = taskAttachmentDescriptors(task);
       delete sourceDetails.attachments;

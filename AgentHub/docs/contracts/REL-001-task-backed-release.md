@@ -1313,6 +1313,16 @@ Task work history projects retained terminal journal records through exact
 provider/thread/turn Task bindings (ADR-0051), independently of changed files.
 It does not infer Git ownership or release readiness. Legacy work logs remain
 visible when no matching terminal journal record is available.
+Board snapshots omit work history and Git details. An authenticated exact Task
+read loads these details only for an open card. The existing journal and binding
+transactions maintain a derived SQL turn projection, keyed by exact Task,
+provider, Thread, turn and operation, with a separate per-Task revision counter.
+Board refresh reads counters rather than journal bodies or turn rows. Terminal
+corrections update/retract projected rows, while journal retention preserves
+already recorded Task history. Binding removal retracts membership. One atomic
+bootstrap migrates retained bindings; read-only old release evidence keeps its
+detail-only legacy read until migrated. No release/CAS/custody authority derives
+from this index. See ADR-HUB-350-card-history-projection.
 Task-card Git diff is a bounded read of the owned managed worktree against its
 Task base; it never prepares, snapshots or integrates the Task.
 
